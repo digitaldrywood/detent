@@ -72,11 +72,12 @@ async function renderSettings(): Promise<void> {
 
 describe("repository policy after setup", () => {
   it.each([
-    { name: "native bound settings", profile: "native", repository: "acme/orders", checkout_repository: "", intake: "automatic", workflow: false, expectedIntake: undefined },
-    { name: "native bound workflow", profile: "native", repository: "acme/orders", checkout_repository: "", intake: "automatic", workflow: true, expectedIntake: undefined },
-    { name: "native checkout workflow", profile: "native", repository: "", checkout_repository: "acme/orders", intake: "automatic", workflow: true, expectedIntake: undefined },
+    { name: "native bound settings", profile: "native", repository: "acme/orders", checkout_repository: "", intake: "automatic", workflow: false, expectedIntake: "disabled" },
+    { name: "native manual import allowed", profile: "native", repository: "acme/orders", checkout_repository: "", intake: "automatic", manual_import_enabled: true, workflow: false, expectedIntake: "manual" },
+    { name: "native bound workflow", profile: "native", repository: "acme/orders", checkout_repository: "", intake: "automatic", workflow: true, expectedIntake: "disabled" },
+    { name: "native checkout workflow", profile: "native", repository: "", checkout_repository: "acme/orders", intake: "automatic", workflow: true, expectedIntake: "disabled" },
     { name: "native unbound workflow", profile: "native", repository: "", checkout_repository: "", intake: "disabled", workflow: true, expectedIntake: "disabled" },
-    { name: "compatibility settings", profile: "github_compatible", repository: "acme/orders", checkout_repository: "", intake: "manual", workflow: false, expectedIntake: "disabled" },
+    { name: "compatibility settings", profile: "github_compatible", repository: "acme/orders", checkout_repository: "", intake: "manual", manual_import_enabled: true, workflow: false, expectedIntake: "disabled" },
   ])("saves $name with only editable intake", async ({ name: _name, workflow, expectedIntake, ...fields }) => {
     const { base } = await mount();
     const realFetch = globalThis.fetch;
@@ -88,17 +89,17 @@ describe("repository policy after setup", () => {
       return response;
     });
     await renderSettings();
-    const intake = await screen.findByRole<HTMLSelectElement>("combobox", { name: "Intake" }, httpWait);
-    expect(intake.value).toBe(fields.intake);
+    await screen.findByRole("heading", { name: "New issues" }, httpWait);
+    expect(screen.queryByRole("combobox", { name: "Intake" })).toBeNull();
     if (workflow) {
       const definition = await screen.findByRole("textbox", { name: "Workflow definition" }, httpWait);
       fireEvent.change(definition, { target: { value: `${(definition as HTMLTextAreaElement).value}\nUpdated instructions.` } });
       fireEvent.click(screen.getByRole("button", { name: "Save workflow" }));
     } else {
       if (fields.profile === "github_compatible") {
-        fireEvent.change(intake, { target: { value: "disabled" } });
+        fireEvent.click(screen.getByRole("switch", { name: "Existing issues" }));
       } else {
-        fireEvent.click(screen.getByRole("switch", { name: "Repository and pull request integration" }));
+        fireEvent.click(screen.getByRole("switch", { name: "Pull requests" }));
       }
       fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     }

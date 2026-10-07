@@ -110,7 +110,7 @@ func (s *Service) startGitHubImportOperation(request startGitHubImportRequest) f
 		if err != nil {
 			return nil, err
 		}
-		if integration.Intake != "manual" && integration.Intake != "automatic" || integration.RepositoryID == 0 || request.IssueNumber <= 0 {
+		if !integration.ManualImportEnabled || integration.RepositoryID == 0 || request.IssueNumber <= 0 {
 			return nil, nativeInvalid("Enable manual intake on a repository-backed project and provide a positive issue number")
 		}
 		var id string
@@ -214,7 +214,7 @@ func (s *Service) advanceGitHubImportCommand(ctx context.Context, scope nativeSc
 	if err != nil {
 		return nil, err
 	}
-	if integration.Intake != "manual" && integration.Intake != "automatic" {
+	if !integration.ManualImportEnabled {
 		return nil, nativeInvalid("Manual intake is disabled")
 	}
 	page, fetchErr := s.fetchImportPage(ctx, integration, current)

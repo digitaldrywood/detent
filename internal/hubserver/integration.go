@@ -24,6 +24,7 @@ type ProjectIntegration struct {
 	Profile                   string                `json:"profile"`
 	Revision                  tracker.Revision      `json:"revision,string"`
 	Intake                    string                `json:"intake"`
+	ManualImportEnabled       bool                  `json:"manual_import_enabled"`
 	Projection                string                `json:"projection"`
 	RepositoryEnabled         bool                  `json:"repository_enabled"`
 	GitHubTransportAvailable  *bool                 `json:"github_transport_available,omitempty"`
@@ -71,6 +72,7 @@ FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organ
 	if err := json.Unmarshal([]byte(states), &result.States); err != nil {
 		return result, err
 	}
+	result.ManualImportEnabled = result.Intake == "manual"
 	if result.Profile == "native" && (result.Repository != "" || result.CheckoutRepository != "") {
 		result.Intake = "automatic"
 	}
@@ -157,8 +159,8 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 		}
 		automaticIntake := current.Profile == "native" && (current.Repository != "" || current.CheckoutRepository != "")
 		preserveIntake := automaticIntake && request.Intake == ""
-		if automaticIntake && request.Intake == "automatic" {
-			request.Intake = "manual"
+		if (!preserveIntake && request.Intake != "disabled" && request.Intake != "manual") || (request.Projection != "disabled" && request.Projection != "summary") {
+			return nil, nativeInvalid("Intake must be disabled or manual; projection must be disabled or summary")
 		}
 		completed, err := archivePeriod(request.ArchiveCompletedAfterDays, current.ArchiveCompletedAfterDays)
 		if err != nil {
@@ -168,8 +170,8 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 		if err != nil {
 			return nil, err
 		}
-		currentIntake := current.Intake
-		if currentIntake == "automatic" {
+		currentIntake := "disabled"
+		if current.ManualImportEnabled {
 			currentIntake = "manual"
 		}
 		archiveSettingsSupplied := len(request.ArchiveCompletedAfterDays) != 0 || len(request.ArchiveCancelledAfterDays) != 0
@@ -180,10 +182,7 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 			}
 			return readProjectIntegration(ctx, tx, scope)
 		}
-		if (!preserveIntake && request.Intake != "disabled" && request.Intake != "manual") || (request.Projection != "disabled" && request.Projection != "summary") {
-			return nil, nativeInvalid("Intake must be disabled or manual; projection must be disabled or summary")
-		}
-		if current.RepositoryID == 0 && ((!preserveIntake && request.Intake != "disabled") || request.Projection != "disabled" || request.RepositoryEnabled) {
+		if current.RepositoryID == 0 && ((!preserveIntake && request.Intake != "disabled" && !automaticIntake) || request.Projection != "disabled" || request.RepositoryEnabled) {
 			return nil, nativeInvalid("Attach a GitHub repository before enabling intake, summaries or repository integration")
 		}
 		if current.Profile == "github_compatible" && request.Projection != "disabled" {

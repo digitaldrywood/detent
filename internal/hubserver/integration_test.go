@@ -123,44 +123,68 @@ func TestProjectIntegrationGitHubAppInstallation(t *testing.T) {
 	}
 }
 
-func TestProjectIntegrationPreservesAutomaticIntake(t *testing.T) {
+func TestProjectIntegrationManualImport(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name     string
-		profile  string
-		bound    bool
-		checkout string
-		stored   string
-		want     int
+		name       string
+		profile    string
+		bound      bool
+		checkout   string
+		stored     string
+		intake     string
+		want       int
+		wantStored string
 	}{
-		{"native bound disabled", "native", true, "", "disabled", http.StatusOK},
-		{"native bound manual", "native", true, "", "manual", http.StatusOK},
-		{"native checkout disabled", "native", false, "acme/orders", "disabled", http.StatusOK},
-		{"native checkout manual", "native", false, "acme/orders", "manual", http.StatusOK},
-		{"native unbound", "native", false, "", "disabled", http.StatusUnprocessableEntity},
-		{"compatibility", "github_compatible", true, "", "manual", http.StatusUnprocessableEntity},
+		{"native bound disabled", "native", true, "", "disabled", "", http.StatusOK, "disabled"},
+		{"native bound manual", "native", true, "", "manual", "", http.StatusOK, "manual"},
+		{"native checkout disabled", "native", false, "acme/orders", "disabled", "", http.StatusOK, "disabled"},
+		{"native checkout manual", "native", false, "acme/orders", "manual", "", http.StatusOK, "manual"},
+		{"native unbound", "native", false, "", "disabled", "", http.StatusUnprocessableEntity, "disabled"},
+		{"compatibility omitted", "github_compatible", true, "", "manual", "", http.StatusUnprocessableEntity, "manual"},
+		{"automatic disabled rejected", "native", true, "", "disabled", "automatic", http.StatusUnprocessableEntity, "disabled"},
+		{"automatic manual rejected", "native", true, "", "manual", "automatic", http.StatusUnprocessableEntity, "manual"},
+		{"automatic checkout rejected", "native", false, "acme/orders", "disabled", "automatic", http.StatusUnprocessableEntity, "disabled"},
+		{"enable manual import", "native", true, "", "disabled", "manual", http.StatusOK, "manual"},
+		{"enable checkout import", "native", false, "acme/orders", "disabled", "manual", http.StatusOK, "manual"},
+		{"disable manual import", "native", true, "", "manual", "disabled", http.StatusOK, "disabled"},
+		{"unchanged disabled", "native", true, "", "disabled", "disabled", http.StatusOK, "disabled"},
+		{"unchanged manual", "native", true, "", "manual", "manual", http.StatusOK, "manual"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newIntegrationFixture(t, &importFixtureBackend{})
+			job := startImportFixture(t, f, 3, false, 0)
 			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE projects SET profile = ?, checkout_repository = ?, github_intake = ?, repository_id = CASE WHEN ? THEN repository_id ELSE NULL END WHERE id = ?`, test.profile, test.checkout, test.stored, test.bound, f.project.ID); err != nil {
 				t.Fatal(err)
 			}
-			response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", f.token, map[string]any{"idempotency_key": "preserve-intake", "expected_revision": "2", "projection": "disabled", "repository_enabled": false})
+			request := map[string]any{"idempotency_key": "preserve-intake", "expected_revision": "2", "projection": "disabled", "repository_enabled": false, "archive_completed_after_days": 30}
+			if test.intake != "" {
+				request["intake"] = test.intake
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", f.token, request)
 			requireNativeStatus(t, response, test.want)
 			if test.want == http.StatusOK {
 				var saved ProjectIntegration
 				decodeHubResponse(t, response, &saved)
-				if saved.Intake != "automatic" || saved.Revision != 3 {
+				if saved.Intake != "automatic" || saved.Revision != 3 || saved.ManualImportEnabled != (test.wantStored == "manual") {
 					t.Fatalf("saved integration = %+v", saved)
 				}
 			}
 			var stored string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT github_intake FROM projects WHERE id = ?", f.project.ID).Scan(&stored); err != nil {
+			var revision tracker.Revision
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT github_intake, integration_revision FROM projects WHERE id = ?", f.project.ID).Scan(&stored, &revision); err != nil {
 				t.Fatal(err)
 			}
-			if stored != test.stored {
-				t.Fatalf("stored intake = %q, want %q", stored, test.stored)
+			if stored != test.wantStored || (test.want != http.StatusOK && revision != 2) {
+				t.Fatalf("stored intake = %q, want %q; revision = %d", stored, test.wantStored, revision)
+			}
+			if test.profile == "native" && test.bound {
+				wantImport := http.StatusOK
+				if test.wantStored == "disabled" {
+					wantImport = http.StatusUnprocessableEntity
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/imports/"+job.ID+"/advance", f.token, map[string]any{"expected_revision": fmt.Sprint(job.Revision)}), wantImport)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/imports", f.token, map[string]any{"idempotency_key": "import-after-save", "issue_number": 4}), wantImport)
 			}
 		})
 	}

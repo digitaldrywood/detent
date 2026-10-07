@@ -273,7 +273,7 @@ test("project settings show the integration and refuse to edit it for a viewer",
   await expectOneHeadingOne(page, "Settings");
   await expect(page.getByLabel("Go to Detent Cloud")).toHaveCount(1);
   await expect(page.getByText(/Hub GitHub integration is unavailable/)).toBeVisible();
-  await expect(page.getByRole("switch", { name: "Repository and pull request integration" })).toHaveCount(0);
+  await expect(page.getByRole("switch", { name: "Pull requests" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Associate runner checkout" })).toBeVisible();
   await expect(page.getByLabel("Intake", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Projection", { exact: true })).toHaveCount(0);
@@ -342,11 +342,14 @@ test("pending invitations can be resent and revoked from their row", async ({ pa
 for (const state of [
   { name: "installed", installed: true, profile: "native", repository: "acme/orders", transport: true, visible: true },
   { name: "not installed", installed: false, profile: "native", repository: "acme/orders", transport: true, visible: true },
+  { name: "long repository", installed: true, profile: "native", repository: "acme/" + "long-repository-name-".repeat(5), transport: true, visible: true },
   { name: "compatibility project", installed: true, profile: "github_compatible", repository: "acme/orders", transport: true, visible: false },
   { name: "unassociated repository", installed: false, profile: "native", repository: "", transport: true, visible: false },
   { name: "unavailable transport", installed: false, profile: "native", repository: "acme/orders", transport: false, visible: false },
-]) {
-  test(`setup and integrations GitHub App installation: ${state.name}`, async ({ page }) => {
+].flatMap((state) => state.visible ? [1440, 390].flatMap((width) => ["light", "dark"].map((theme) => ({ ...state, width, theme }))) : [{ ...state, width: 1440, theme: "light" }])) {
+  test(`setup and integrations GitHub App installation: ${state.name} ${state.width}px ${state.theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: state.width, height: 1100 });
+
     const integrationURL = "**/projects/*/integration";
     let integrationReady = Promise.resolve();
     await page.route(integrationURL, async (route) => {
@@ -356,6 +359,10 @@ for (const state of [
       await route.fulfill({ response, json: {
         ...integration,
         profile: state.profile,
+        intake: state.profile === "native" && state.repository ? "automatic" : "disabled",
+        manual_import_enabled: false,
+        projection: "summary",
+        repository_enabled: true,
         repository: state.repository,
         checkout_repository: state.repository,
         github_transport_available: state.transport,
@@ -375,7 +382,7 @@ for (const state of [
     if (state.visible) {
       await expect(install).toHaveAttribute("href", "https://github.com/apps/detent-cloud/installations/new");
       await expect(install).toHaveAttribute("rel", "noopener noreferrer");
-      await expect(page.getByText(`Detent Cloud is ${state.installed ? "installed" : "not installed"} on acme/orders`, { exact: true })).toBeVisible();
+      await expect(page.getByText(`Detent Cloud is ${state.installed ? "installed" : "not installed"} on ${state.repository}`, { exact: true })).toBeVisible();
       await expect(page.getByText(/New GitHub issues enter Triage automatically once/)).toBeVisible();
       await expectNoSeriousAxeViolations(page, `GitHub App ${state.name}`);
     } else {
@@ -392,14 +399,48 @@ for (const state of [
       releaseIntegration();
     }
     await expect(page.getByRole("heading", { name: "Repository", level: 2, exact: true })).toBeVisible();
+    await page.evaluate((theme) => {
+      document.documentElement.classList.toggle("dark", theme === "dark");
+      document.documentElement.dataset.theme = theme;
+    }, state.theme);
     if (state.visible) {
       await expect(page.getByRole("heading", { name: "GitHub App", exact: true })).toBeVisible();
-      await expect(page.getByText(`Detent Cloud is ${state.installed ? "installed" : "not installed"} on acme/orders`, { exact: true })).toBeVisible();
+      await expect(page.getByText(state.installed ? `Installed on ${state.repository}.` : "Not installed. New issues will not reach this project until it is.", { exact: true })).toBeVisible();
       const link = page.getByRole("link", { name: state.installed ? "Manage installation" : "Install the Detent Cloud GitHub App" });
       await expect(link).toHaveAttribute("href", "https://github.com/apps/detent-cloud/installations/new");
       await expect(link).toHaveAttribute("target", "_blank");
       await expect(link).toHaveAttribute("rel", "noopener noreferrer");
       await expect(install).toHaveCount(state.installed ? 0 : 1);
+      const intake = page.locator('[data-slot="settings-row"]').filter({ has: page.getByRole("heading", { name: "New issues", exact: true }) });
+      await expect(intake).toContainText("Automatic");
+      await expect(intake).toContainText(state.installed ? `Every issue opened on ${state.repository} enters Triage.` : "Waiting for the GitHub App.");
+      await expect(page.getByRole("combobox", { name: "Intake", exact: true })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeDisabled();
+      await expect(page.getByRole("switch", { name: "Existing issues", exact: true })).not.toBeChecked();
+      const invalidSelects = await page.locator("select").evaluateAll((selects) => selects.filter((select) =>
+        !Array.from(select.options).some((option) => option.value === select.value)).length);
+      expect(invalidSelects).toBe(0);
+      await link.focus();
+      await page.keyboard.press("Tab");
+      await expect(page.getByRole("button", { name: "About New issues", exact: true })).toBeFocused();
+      const importSwitch = page.getByRole("switch", { name: "Existing issues", exact: true });
+      await importSwitch.focus();
+      await page.keyboard.press("Space");
+      await expect(importSwitch).toBeChecked();
+      await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeEnabled();
+      await page.keyboard.press("Space");
+      await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeDisabled();
+      const headings = await page.getByRole("heading").allTextContents();
+      const setupRows = headings.filter((title) => ["GitHub App", "New issues", "Existing issues", "Pull requests", "Work summaries", "Authority"].includes(title));
+      expect(setupRows).toEqual(["GitHub App", "New issues", "Existing issues", "Pull requests", "Work summaries", "Authority"]);
+      if (state.width === 390) {
+        const newIssuesRow = page.locator('[data-slot="settings-row"]').filter({ has: page.getByRole("heading", { name: "New issues", exact: true }) });
+        expect(await newIssuesRow.locator(":scope > div").evaluate((element) => getComputedStyle(element).flexDirection)).toBe("column");
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      }
+      await page.screenshot({ path: require("node:path").join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `integrations-${state.name.replaceAll(" ", "-")}-${state.width}-${state.theme}.png`), fullPage: true });
+      await page.getByRole("switch", { name: "Pull requests", exact: true }).click();
+      await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeEnabled();
       await expectNoSeriousAxeViolations(page, `Integrations GitHub App ${state.name}`);
     } else {
       await expect(page.getByRole("heading", { name: "GitHub App", exact: true })).toHaveCount(0);

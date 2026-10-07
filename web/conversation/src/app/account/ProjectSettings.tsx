@@ -8,16 +8,16 @@ import { WorkflowRevisions } from "./WorkflowRevisions.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { Textarea } from "../../components/ui/textarea.tsx";
 import type { ObservedPolicy, PolicyApproval, ProjectIntegration } from "../../contracts/account.ts";
-import { INTAKE_CHOICES, PROJECTION_CHOICES } from "../../contracts/account.ts";
 import {
   SettingsPageContainer,
   SettingsRow,
   SettingsSection,
   SettingsWarning,
+  SettingsUnavailableGroup,
 } from "../settings/settingsLayout.tsx";
 import { RUNNER_HELP } from "../fleet/runnerHelp.ts";
 import { AccountError } from "./api.ts";
-import { ControlError, NativeSelect, PathValue, ToggleControl } from "./controls.tsx";
+import { ControlError, NativeSelect, PathValue, StatusDot, ToggleControl } from "./controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
 import { newKey } from "./idempotency.ts";
 import { parsePolicyDescriptor, POLICY_INSPECT_COMMAND } from "./Setup.tsx";
@@ -25,7 +25,7 @@ import { useMutation, useResource } from "./useResource.ts";
 
 /** The editable half of the integration: what a save sends. */
 export interface IntegrationDraft {
-  readonly intake: string;
+  readonly importAllowed: boolean;
   readonly projection: string;
   readonly repositoryEnabled: boolean;
   readonly archiveCompletedAfterDays: number | null;
@@ -34,7 +34,7 @@ export interface IntegrationDraft {
 
 export function draftOf(integration: ProjectIntegration): IntegrationDraft {
   return {
-    intake: integration.intake,
+    importAllowed: integration.manual_import_enabled ?? integration.intake === "manual",
     projection: integration.projection,
     repositoryEnabled: integration.repository_enabled,
     archiveCompletedAfterDays: integration.archive_completed_after_days,
@@ -48,7 +48,7 @@ function hasAutomaticIntake(integration: ProjectIntegration): boolean {
 
 export function draftChanged(a: IntegrationDraft, b: IntegrationDraft): boolean {
   return (
-    a.intake !== b.intake ||
+    a.importAllowed !== b.importAllowed ||
     a.projection !== b.projection ||
     a.repositoryEnabled !== b.repositoryEnabled ||
     a.archiveCompletedAfterDays !== b.archiveCompletedAfterDays ||
@@ -88,16 +88,6 @@ export function saveMessage(error: AccountError | null): string | null {
 }
 
 const ARCHIVE_OPTIONS = [7, 14, 30, 60, 90].map((days) => ({ value: String(days), label: `After ${days} days` })).concat({ value: "never", label: "Never" });
-
-const INTAKE_OPTIONS = INTAKE_CHOICES.map((value) => ({
-  value,
-  label: value === "manual" ? "Manual" : "Disabled",
-}));
-const AUTOMATIC_INTAKE_OPTIONS = [{ value: "automatic", label: "Automatic" }];
-const PROJECTION_OPTIONS = PROJECTION_CHOICES.map((value) => ({
-  value,
-  label: value === "summary" ? "Summary" : "Disabled",
-}));
 
 export function WorkflowSettings({
   integration,
@@ -308,6 +298,7 @@ export function ProjectSettingsView({
   approveError,
   onOpenFleet,
   onOpenSetup,
+  intakeHref,
   header,
   sprites,
   workflow,
@@ -328,6 +319,7 @@ export function ProjectSettingsView({
   readonly approveError: string | null;
   readonly onOpenFleet: () => void;
   readonly onOpenSetup?: () => void;
+  readonly intakeHref?: string;
   /**
    * Rendered above the screen, inside its own scroll container. The settings
    * page puts its project picker here (§17.3): two `SettingsPageContainer`s
@@ -341,6 +333,10 @@ export function ProjectSettingsView({
   const repository = integration.checkout_repository || integration.repository || "";
   const transportAvailable = integration.github_transport_available !== false;
   const automaticIntake = hasAutomaticIntake(integration);
+  const installed = integration.github_app_installed;
+  const waitingForApp = automaticIntake && installed === false;
+  const unavailable = repository === "" || !transportAvailable;
+  const waitingForRepository = unbound && repository !== "";
   const dirty = draftChanged(draft, draftOf(integration));
   const conflict = conflictingPolicies(observedPolicies);
 
@@ -410,122 +406,116 @@ export function ProjectSettingsView({
             )
           }
         />
-        {integration.profile === "native" && repository !== "" && transportAvailable && integration.github_app_install_url && integration.github_app_installed !== undefined ? (
+        <SettingsUnavailableGroup message={!transportAvailable
+          ? "Hub GitHub integration is unavailable; PR landing uses the runner’s approved repository policy."
+          : repository === "" ? "Associate a runner checkout to configure repository integration." : undefined}>
+          {integration.profile === "native" && installed !== undefined && !unavailable ? (
+            <SettingsRow
+              title="GitHub App"
+              status={<span className="inline-flex items-center gap-2 [overflow-wrap:anywhere]">
+                <StatusDot tone={installed ? "ok" : "warn"} />
+                {installed ? `Installed on ${repository}.` : "Not installed. New issues will not reach this project until it is."}
+              </span>}
+              control={integration.github_app_install_url ? <a className="text-sm text-primary underline underline-offset-2" href={integration.github_app_install_url} target="_blank" rel="noopener noreferrer">
+                {installed ? "Manage installation" : "Install the Detent Cloud GitHub App"}
+              </a> : null}
+            />
+          ) : null}
           <SettingsRow
-            title="GitHub App"
-            status={<span className="[overflow-wrap:anywhere]">Detent Cloud is {integration.github_app_installed ? "installed" : "not installed"} on {repository}</span>}
-            control={
-              <a className="text-sm text-primary underline underline-offset-2" href={integration.github_app_install_url} target="_blank" rel="noopener noreferrer">
-                {integration.github_app_installed ? "Manage installation" : "Install the Detent Cloud GitHub App"}
-              </a>
-            }
+            title="New issues"
+            help={{ label: "New issues", text: "Detent receives GitHub's issue events through the App. There is nothing to turn on here; install or remove the App to change it." }}
+            status={<span className="inline-flex items-center gap-2 [overflow-wrap:anywhere]">
+              <StatusDot tone={automaticIntake && installed === true && !unavailable ? "ok" : "idle"} />
+              {integration.profile === "github_compatible" ? "GitHub owns these issues until cutover."
+                : unavailable ? "New GitHub issues are not reaching this project."
+                : waitingForApp ? "Waiting for the GitHub App."
+                : installed === true ? `Every issue opened on ${repository} enters Triage.` : "GitHub App installation status is unavailable."}
+            </span>}
+            control={!unavailable ? <span className="text-sm text-muted-foreground">{automaticIntake ? "Automatic" : "Manual"}</span> : null}
           />
-        ) : null}
-        <SettingsRow
-          title="Repository and pull request integration"
-          help={transportAvailable ? {
-            label: "Repository and pull request integration",
-            text: "Enabling this permits repository and pull request operations, including reading, creating and merging pull requests subject to GitHub permissions and branch protections. Disabling it stops these operations but keeps the immutable repository binding. Intake and summary projection are separate settings.",
-          } : undefined}
-          description={transportAvailable ? "Allow repository and pull request operations." : "Hub GitHub integration is unavailable; PR landing uses the runner’s approved repository policy."}
-          control={
-            transportAvailable ? (
-              <ToggleControl
-                label="Repository and pull request integration"
-                checked={draft.repositoryEnabled}
-                disabled={!canManage || unbound}
-                onCheckedChange={(repositoryEnabled) => onDraftChange({ ...draft, repositoryEnabled })}
-              />
-            ) : null
-          }
-        />
+          <SettingsRow
+            title="Existing issues"
+            help={{ label: "Existing issues", text: "Let members import older GitHub issues and their discussion into Triage. Turning this off prevents manual imports and keeps previously imported work." }}
+            description={<>Let members import older GitHub issues and their discussion into Triage. Import from {intakeHref ? <a className="text-primary underline underline-offset-2" href={intakeHref}>the project's Intake page</a> : "the project's Intake page"}.</>}
+            control={!unavailable ? <ToggleControl label="Existing issues" checked={draft.importAllowed} disabled={!canManage || saving}
+              onCheckedChange={(importAllowed) => onDraftChange({ ...draft, importAllowed })} /> : null}
+          />
+          <SettingsRow
+            title="Pull requests"
+            help={{ label: "Pull requests", text: "Enabling this permits repository and pull request operations, including reading, creating and merging pull requests subject to GitHub permissions and branch protections. Disabling it stops these operations but keeps the immutable repository binding. Existing issues and work summaries are separate settings." }}
+            status={<span className="inline-flex items-center gap-2 [overflow-wrap:anywhere]">
+              <StatusDot tone={integration.repository_enabled && !unavailable && !waitingForApp && !waitingForRepository ? "ok" : "idle"} />
+              {!transportAvailable ? "Work lands through the runner’s approved repository policy."
+                : !integration.repository_enabled ? "Off. Work lands by git push; no pull requests are created."
+                : waitingForRepository || repository === "" ? "Waiting for repository binding."
+                : waitingForApp ? "Waiting for the GitHub App." : "Detent opens, updates and merges pull requests on this repository."}
+            </span>}
+            control={!unavailable ? <ToggleControl label="Pull requests" checked={draft.repositoryEnabled} disabled={!canManage || unbound || saving}
+              onCheckedChange={(repositoryEnabled) => onDraftChange({ ...draft, repositoryEnabled })} /> : null}
+          />
+          <SettingsRow
+            title="Work summaries"
+            help={{ label: "Work summaries", text: "A summary of each work item is posted to its linked GitHub issue. Turning this off stops new summary writes and leaves existing GitHub content in place. Summary requires native authority; it does not transfer field ownership to GitHub." }}
+            status={<span className="inline-flex items-center gap-2 [overflow-wrap:anywhere]">
+              <StatusDot tone={integration.profile === "native" && integration.projection === "summary" && !unavailable && !waitingForApp && !waitingForRepository ? "ok" : "idle"} />
+              {integration.profile === "github_compatible" ? "Summary projection requires Detent authority."
+                : integration.projection !== "summary" ? "Off. Nothing is written back to GitHub issues."
+                : unavailable ? "Work summaries are not reaching GitHub."
+                : waitingForRepository ? "Waiting for repository binding."
+                : waitingForApp ? "Waiting for the GitHub App." : "A summary of each work item is posted to its linked GitHub issue."}
+            </span>}
+            control={!unavailable ? <ToggleControl label="Work summaries" checked={draft.projection === "summary"} disabled={!canManage || unbound || saving || integration.profile === "github_compatible"}
+              onCheckedChange={(summary) => onDraftChange({ ...draft, projection: summary ? "summary" : "disabled" })} /> : null}
+          />
+          <SettingsRow
+            title="Authority"
+            help={{
+              label: "Authority",
+              text: "The native profile gives Detent ownership of issue title, body, discussion, dependencies, authors, workflow, labels, assignees and priority; the github_compatible profile gives GitHub ownership of those fields. Detent always owns scheduling, progress and native approval. Source timestamps retain their source, repository policy comes from the trusted repository revision, and GitHub controls merge protections. Intake and projection do not change these owners.",
+            }}
+            description="Who manages this project’s issue fields."
+            status={
+              <details className="text-sm">
+                <summary className="cursor-pointer">Field ownership</summary>
+                <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+                  {Object.entries(integration.authority ?? {}).map(([field, owner]) => (
+                    <React.Fragment key={field}>
+                      <dt className="break-words">{field.replaceAll("_", " ")}</dt>
+                      <dd className="break-words">{owner}</dd>
+                    </React.Fragment>
+                  ))}
+                </dl>
+              </details>
+            }
+            control={<span className="text-sm text-muted-foreground">{integration.profile === "native" ? "Detent" : "GitHub compatible"}</span>}
+          />
+        </SettingsUnavailableGroup>
       </SettingsSection>
 
-      <SettingsSection title="Issue flow">
-        {transportAvailable ? <SettingsRow
-          title="Intake"
-          help={{
-            label: "Intake",
-            text: integration.profile === "native"
-              ? "New GitHub issues enter Triage automatically once the Detent Cloud GitHub App is installed on the associated repository. You can also import existing issues and their discussion manually. The native project owns the imported work in Detent."
-              : "Compatibility projects import selected GitHub issues and their discussion when you request manual intake. Disabled prevents new manual imports and keeps previously imported work. GitHub owns the imported fields until native cutover.",
-          }}
-          description={integration.profile === "native" ? "New GitHub issues enter Triage automatically; existing issues can be imported manually." : "Import selected GitHub issues into this project."}
-          control={
-            <NativeSelect
-              aria-label="Intake"
-              value={automaticIntake ? "automatic" : draft.intake}
-              options={automaticIntake ? AUTOMATIC_INTAKE_OPTIONS : INTAKE_OPTIONS}
-              disabled={automaticIntake || !canManage || unbound}
-              onValueChange={(intake) => onDraftChange({ ...draft, intake })}
-            />
-          }
-        /> : null}
-        {transportAvailable ? <SettingsRow
-          title="Projection"
-          help={{
-            label: "Projection",
-            text: "Summary sends a work-item summary from Detent to the linked GitHub issue. Disabled stops new summary writes and leaves existing GitHub content in place. Summary requires native authority; it does not transfer field ownership to GitHub.",
-          }}
-          description="Write work summaries to GitHub."
-          status={integration.profile === "github_compatible" ? "Summary projection requires Detent authority." : undefined}
-          control={
-            <NativeSelect
-              aria-label="Projection"
-              value={draft.projection}
-              options={PROJECTION_OPTIONS}
-              disabled={!canManage || unbound || integration.profile === "github_compatible"}
-              onValueChange={(projection) => onDraftChange({ ...draft, projection })}
-            />
-          }
-        /> : null}
-        {integration.profile === "native" ? <>
-          <SettingsRow
-            title="Archive completed issues"
-            description="Done issues leave the board, lists and counts after this long. They stay in search and can be restored."
-            control={<NativeSelect
-              aria-label="Archive completed issues"
-              value={draft.archiveCompletedAfterDays === null ? "never" : String(draft.archiveCompletedAfterDays)}
-              options={ARCHIVE_OPTIONS}
-              disabled={!canManage || saving}
-              onValueChange={(value) => onDraftChange({ ...draft, archiveCompletedAfterDays: value === "never" ? null : Number(value) })}
-            />}
-          />
-          <SettingsRow
-            title="Archive cancelled issues"
-            description="Cancelled issues follow the same rule on a shorter clock."
-            control={<NativeSelect
-              aria-label="Archive cancelled issues"
-              value={draft.archiveCancelledAfterDays === null ? "never" : String(draft.archiveCancelledAfterDays)}
-              options={ARCHIVE_OPTIONS}
-              disabled={!canManage || saving}
-              onValueChange={(value) => onDraftChange({ ...draft, archiveCancelledAfterDays: value === "never" ? null : Number(value) })}
-            />}
-          />
-        </> : null}
+      {integration.profile === "native" ? <SettingsSection title="Archiving">
         <SettingsRow
-          title="Authority"
-          help={{
-            label: "Authority",
-            text: "The native profile gives Detent ownership of issue title, body, discussion, dependencies, authors, workflow, labels, assignees and priority; the github_compatible profile gives GitHub ownership of those fields. Detent always owns scheduling, progress and native approval. Source timestamps retain their source, repository policy comes from the trusted repository revision, and GitHub controls merge protections. Intake and projection do not change these owners.",
-          }}
-          description="Who manages this project’s issue fields."
-          status={
-            <details className="text-sm">
-              <summary className="cursor-pointer">Field ownership</summary>
-              <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
-                {Object.entries(integration.authority ?? {}).map(([field, owner]) => (
-                  <React.Fragment key={field}>
-                    <dt className="break-words">{field.replaceAll("_", " ")}</dt>
-                    <dd className="break-words">{owner}</dd>
-                  </React.Fragment>
-                ))}
-              </dl>
-            </details>
-          }
-          control={<span className="text-sm text-muted-foreground">{integration.profile === "native" ? "Detent" : "GitHub compatible"}</span>}
+          title="Archive completed issues"
+          description="Done issues leave the board, lists and counts after this long. They stay in search and can be restored."
+          control={<NativeSelect
+            aria-label="Archive completed issues"
+            value={draft.archiveCompletedAfterDays === null ? "never" : String(draft.archiveCompletedAfterDays)}
+            options={ARCHIVE_OPTIONS}
+            disabled={!canManage || saving}
+            onValueChange={(value) => onDraftChange({ ...draft, archiveCompletedAfterDays: value === "never" ? null : Number(value) })}
+          />}
         />
-      </SettingsSection>
+        <SettingsRow
+          title="Archive cancelled issues"
+          description="Cancelled issues follow the same rule on a shorter clock."
+          control={<NativeSelect
+            aria-label="Archive cancelled issues"
+            value={draft.archiveCancelledAfterDays === null ? "never" : String(draft.archiveCancelledAfterDays)}
+            options={ARCHIVE_OPTIONS}
+            disabled={!canManage || saving}
+            onValueChange={(value) => onDraftChange({ ...draft, archiveCancelledAfterDays: value === "never" ? null : Number(value) })}
+          />}
+        />
+      </SettingsSection> : null}
 
       {workflow}
 
@@ -603,13 +593,13 @@ export function ProjectSettingsRoute({
         projectId,
         key: newKey(),
         revision: current.revision,
-        ...(hasAutomaticIntake(current) ? {} : { intake: next.intake }),
+        intake: next.importAllowed ? "manual" : "disabled",
         projection: next.projection,
         repositoryEnabled: next.repositoryEnabled,
         archiveCompletedAfterDays: next.archiveCompletedAfterDays,
         archiveCancelledAfterDays: next.archiveCancelledAfterDays,
       });
-      integration.set({ ...saved, github_transport_available: current.github_transport_available });
+      integration.set({ ...current, ...saved });
       setDraft(draftOf(saved));
       return saved;
     } catch (cause) {
@@ -628,12 +618,12 @@ export function ProjectSettingsRoute({
         projectId,
         key: newKey(),
         revision: current.revision,
-        ...(hasAutomaticIntake(current) ? {} : { intake: current.intake }),
+        intake: draftOf(current).importAllowed ? "manual" : "disabled",
         projection: current.projection,
         repositoryEnabled: current.repository_enabled,
         workflowMarkdown: markdown,
       });
-      integration.set({ ...saved, github_transport_available: current.github_transport_available });
+      integration.set({ ...current, ...saved });
       globalThis.location.reload();
       return saved;
     } catch (cause) {
@@ -750,6 +740,7 @@ export function ProjectSettingsRoute({
       approveError={approve.error?.message ?? null}
       header={header}
       onOpenFleet={() => onNavigate?.("/settings/runners")}
+      intakeHref={`/projects/${projectId}/setup`}
       onOpenSetup={onNavigate ? () => onNavigate(`/projects/${projectId}/setup`) : undefined}
       sprites={<><SpritesCard key={projectId} projectId={projectId} canManage={canManage} /><SpritePoolCard key={`pool-${projectId}`} projectId={projectId} canManage={canManage} /></>}
       workflow={

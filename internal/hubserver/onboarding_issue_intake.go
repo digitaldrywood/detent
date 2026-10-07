@@ -124,6 +124,9 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 		if integration.Profile != "native" || repository == "" {
 			return nil, nativeInvalid("Attach the native project's runner checkout first")
 		}
+		if !integration.ManualImportEnabled {
+			return nil, nativeInvalid("Manual import of existing GitHub issues is disabled")
+		}
 		switch request.Action {
 		case "discover":
 			if batch != nil && (batchHasPending(batch) || slices.ContainsFunc(batch.Items, func(item tracker.GitHubBatchItem) bool { return item.Status == "failed" })) {
