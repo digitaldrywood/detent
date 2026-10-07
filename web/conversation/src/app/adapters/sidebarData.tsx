@@ -6,6 +6,8 @@ import type {
   PreferenceChoices,
 } from "../../contracts/index.ts";
 
+import type { SidebarFinding } from "./sidebarFindings.ts";
+
 export interface SidebarNavigation {
   /** The path of the current route, e.g. `/work/p/proj_1`. */
   readonly activePath: string;
@@ -32,6 +34,7 @@ export interface SidebarShellData {
   readonly onNewChat: (shiftKey: boolean) => void;
   readonly onRename: (conversationId: string, title: string) => Promise<void>;
   readonly attention: ReadonlySet<string>;
+  readonly findings?: readonly SidebarFinding[];
   /** The picker choices the hover card names the model from (§14). */
   readonly preferenceChoices?: PreferenceChoices | undefined;
   /** Navigation for the Work destination and the Browse group (A.1, A.6). */

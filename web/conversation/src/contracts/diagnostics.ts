@@ -95,11 +95,12 @@ export const DiagnosticFinding = Schema.Struct({
 });
 export type DiagnosticFinding = typeof DiagnosticFinding.Type;
 
-const HealthFinding = Schema.Struct({
+export const HealthFinding = Schema.Struct({
   id: Schema.String,
   severity: DiagnosticFinding.fields.severity,
   class: DiagnosticFinding.fields.class,
   opened_at: Schema.String,
+  resolved_at: Schema.optional(Schema.NullOr(Schema.String)),
   summary: Schema.String,
   next_action: Schema.String,
   subject: Schema.Struct({
@@ -108,6 +109,8 @@ const HealthFinding = Schema.Struct({
     project_id: Schema.optional(Schema.String),
   }),
 });
+
+export type HealthFinding = typeof HealthFinding.Type;
 
 export const HealthFindingsRead = Schema.Struct({
   items: Schema.Array(HealthFinding),
