@@ -90,7 +90,10 @@ func decodeAPIJSON(c echo.Context, target any) error {
 	request := c.Request()
 	request.Body = http.MaxBytesReader(c.Response(), request.Body, apiRequestBodyLimit(c))
 	decoder := json.NewDecoder(request.Body)
-	decoder.DisallowUnknownFields()
+	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	if !ok || credential.Scope != apiScopeWorker {
+		decoder.DisallowUnknownFields()
+	}
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}
