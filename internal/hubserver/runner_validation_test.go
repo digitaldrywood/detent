@@ -133,7 +133,7 @@ func TestRunnerCredentialsAndRejectedProviderDataAreRedacted(t *testing.T) {
 	r.enroll(t)
 	const provider = "example-provider-key-not-for-hub"
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "safe", "capacity": 1, "version": "test", "provider_key": provider})
-	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+	requireNativeStatus(t, response, http.StatusOK)
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
 	}

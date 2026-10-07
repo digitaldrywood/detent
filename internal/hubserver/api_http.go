@@ -91,7 +91,7 @@ func decodeAPIJSON(c echo.Context, target any) error {
 	request.Body = http.MaxBytesReader(c.Response(), request.Body, apiRequestBodyLimit(c))
 	decoder := json.NewDecoder(request.Body)
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
-	if !ok || credential.Scope != apiScopeWorker {
+	if !ok || credential.Scope != apiScopeWorker || !strings.HasSuffix(c.Path(), "/heartbeat") {
 		decoder.DisallowUnknownFields()
 	}
 	if err := decoder.Decode(target); err != nil {

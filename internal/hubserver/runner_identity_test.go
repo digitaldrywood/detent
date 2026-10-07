@@ -584,11 +584,6 @@ func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 			t.Fatal(err)
 		}
 		values[key] = "example-secret-do-not-store"
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", r.redemption.Credential, values), http.StatusOK)
-		response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", r.redemption.Credential, nil)
-		requireNativeStatus(t, response, http.StatusOK)
-		if strings.Contains(response.Body.String(), key) || strings.Contains(response.Body.String(), "example-secret-do-not-store") {
-			t.Fatalf("unknown event field was stored: %s", response.Body.String())
-		}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", r.redemption.Credential, values), http.StatusUnprocessableEntity)
 	}
 }
