@@ -193,7 +193,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		{name: "journal mode", query: "PRAGMA journal_mode", want: "wal"},
 		{name: "foreign keys", query: "PRAGMA foreign_keys", want: "1"},
 		{name: "busy timeout", query: "PRAGMA busy_timeout", want: "2500"},
-		{name: "locking mode", query: "PRAGMA locking_mode", want: "exclusive"},
+		{name: "locking mode", query: "PRAGMA locking_mode", want: "normal"},
 		{name: "synchronous mode", query: "PRAGMA synchronous", want: "2"},
 		{name: "application id", query: "PRAGMA application_id", want: strconv.Itoa(hubApplicationID)},
 	}
@@ -211,6 +211,16 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 
 	if service.database.schemaVersion != supportedSchemaVersion(t) {
 		t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion(t))
+	}
+
+	reader, err := sql.Open("sqlite", "file:"+filepath.ToSlash(service.database.path)+"?mode=ro&_pragma=busy_timeout(2500)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	var applicationID int
+	if err := reader.QueryRowContext(t.Context(), "PRAGMA application_id").Scan(&applicationID); err != nil || applicationID != hubApplicationID {
+		t.Fatalf("live replication read = %d, %v; want %d while the Hub holds the database", applicationID, err, hubApplicationID)
 	}
 }
 
