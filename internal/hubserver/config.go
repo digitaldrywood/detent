@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/update"
 )
 
 const (
@@ -42,13 +43,15 @@ var (
 )
 
 type Config struct {
-	SecretKeys            *hubsecrets.Keyring
-	SpritesHTTPClient     *http.Client
-	SlackHTTPClient       *http.Client
-	CredentialMaintenance bool
-	Hosted                *HostedConfig
-	Conversation          *ConversationConfig
-	Usage                 *UsageConfig
+	RunnerReleaseClient            update.ReleaseClient
+	runnerReleaseSignatureVerifier update.ChecksumSignatureVerifier
+	SecretKeys                     *hubsecrets.Keyring
+	SpritesHTTPClient              *http.Client
+	SlackHTTPClient                *http.Client
+	CredentialMaintenance          bool
+	Hosted                         *HostedConfig
+	Conversation                   *ConversationConfig
+	Usage                          *UsageConfig
 	// Workspace enables workspace sessions and the relay (decisions section
 	// 18.1). Nil means the surfaces stay disabled with their reason.
 	Workspace                  *WorkspaceConfig
@@ -90,6 +93,12 @@ type Config struct {
 }
 
 func (c Config) normalized() Config {
+	if c.runnerReleaseSignatureVerifier == nil {
+		c.runnerReleaseSignatureVerifier = update.VerifyChecksumSignature
+	}
+	if c.RunnerReleaseClient == nil {
+		c.RunnerReleaseClient = update.NewGitHubClient(update.GitHubClientConfig{})
+	}
 	if c.Usage != nil {
 		normalized := c.Usage.normalized()
 		c.Usage = &normalized

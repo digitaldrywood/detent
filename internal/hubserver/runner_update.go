@@ -171,10 +171,11 @@ func (s *Service) storeRunnerUpdateObservation(ctx context.Context, tx *sql.Tx, 
 
 func (s *Service) followHubRunnerUpdate(ctx context.Context, tx *sql.Tx, scope nativeScope, report runnerauth.UpdateObservation, now time.Time) error {
 	version := minimumRunnerVersion(s.config.Version)
-	if version == "" || strings.TrimPrefix(version, "v") == strings.TrimPrefix(report.Running.Version, "v") {
+	comparison, err := update.CompareVersions(version, report.Running.Version)
+	if version == "" || err != nil || comparison <= 0 {
 		return nil
 	}
-	if _, err := update.CompareVersions(version, version); err != nil {
+	if _, published := s.runnerPublishedReleases.Load("v" + strings.TrimPrefix(version, "v") + "/" + report.Running.OS + "/" + report.Running.Architecture); !published {
 		return nil
 	}
 	var raw string

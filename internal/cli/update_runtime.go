@@ -61,7 +61,7 @@ func newRuntimeUpdateScheduler(
 	reserveDrain func(context.Context) (func(), error),
 ) (*detentupdate.Scheduler, error) {
 	interval := time.Duration(cfg.Global.Update.NormalizedCheckIntervalHours()) * time.Hour
-	if cfg.Global.Client.Configured() && cfg.Global.Update.CheckIntervalHours == 0 {
+	if cfg.Global.Client.IdentityFile != "" {
 		interval = cfg.Global.Client.HeartbeatInterval()
 	}
 	schedulerConfig := detentupdate.SchedulerConfig{

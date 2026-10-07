@@ -52,6 +52,7 @@ type ClaimState struct {
 }
 
 type RoutingSnapshot struct {
+	TargetRunnerVersion         string                       `json:"target_runner_version,omitempty"`
 	ClaimState                  *ClaimState                  `json:"claim_state,omitempty"`
 	ProjectConfigurationRequest *ProjectConfigurationRequest `json:"project_configuration_request,omitempty"`
 	GitHubIntake                *tracker.GitHubBatchTask     `json:"github_intake,omitempty"`

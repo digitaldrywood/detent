@@ -273,6 +273,14 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	if err := s.ensureNativeMachine(ctx, source); err != nil {
 		return nil, schedulingError(err)
 	}
+	if s.client.runner != nil {
+		s.client.runner.routingMu.Lock()
+		draining := s.client.runner.routing != nil && s.client.runner.routing.Routing.State == "draining"
+		s.client.runner.routingMu.Unlock()
+		if draining {
+			return nil, nil
+		}
+	}
 	session, err := s.sessionID()
 	if err != nil {
 		return nil, err

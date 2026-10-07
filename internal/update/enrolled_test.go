@@ -25,6 +25,7 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 		calls       int
 		follow      bool
 		urgent      bool
+		version     string
 		lastApplied string
 	}{
 		{name: "restart declined", want: "uncertain", calls: 1},
@@ -33,6 +34,8 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 		{name: "urgent release bypasses discovery and automatic opt outs", urgent: true, restart: true, want: "restart_requested", calls: 1},
 		{name: "urgent release preserves a newer applied artifact awaiting restart", urgent: true, lastApplied: "1.2.5", want: "refused"},
 		{name: "Hub follows without automatic opt ins or latest discovery", follow: true, restart: true, want: "restart_requested", calls: 1},
+		{name: "Hub equal version does not drain", follow: true, version: "1.2.3", want: "refused"},
+		{name: "Hub older version does not drain", follow: true, version: "1.2.2", want: "refused"},
 		{name: "Hub follow refuses stale build", follow: true, stale: true, want: "refused"},
 		{name: "stale observed build", stale: true, want: "refused"},
 		{name: "missing restart owner", unavailable: true, want: "refused"},
@@ -65,6 +68,9 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 				t.Fatalf("initial evidence=%+v", observed)
 			}
 			request := runnerauth.UpdateRequest{RequestedAt: now, ID: "update-test", Service: "detent", ExpectedBuildRevision: observed.Revision, Version: "1.2.4", Release: true, FollowHub: test.follow}
+			if test.version != "" {
+				request.Version = test.version
+			}
 			if test.urgent {
 				request.Urgent = true
 				request.ExpectedBuildRevision = ""

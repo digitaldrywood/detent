@@ -274,6 +274,9 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 	if view.ProviderCapacity == nil {
 		view.ProviderCapacity = []providercapacity.View{}
 	}
+	if view.Update.Status == "refused" || view.Update.Status == "uncertain" {
+		view.Health = "needs_attention"
+	}
 	view.Problems = slices.Clone(runner.Problems)
 	if view.Problems == nil {
 		view.Problems = []runnerauth.Problem{}

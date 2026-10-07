@@ -250,6 +250,11 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	if len(request.DisplayName) > 200 || request.Capacity < 0 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || !validRunnerPlatform(request.OS, request.Architecture) {
 		return s.nativeAPIError(c, nativeInvalid("Display name, version and nonnegative capacity are required"))
 	}
+	target := minimumRunnerVersion(s.config.Version)
+	published := false
+	if scope.credential.Runner.RunnerID != "" {
+		published = s.runnerReleasePublished(c.Request().Context(), target, request.OS, request.Architecture)
+	}
 	status := http.StatusNoContent
 	if scope.credential.Runner.RunnerID != "" {
 		status = http.StatusOK
@@ -336,6 +341,9 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			}
 			if configurationRequest.RequestID != "" {
 				snapshot.ProjectConfigurationRequest = &configurationRequest
+			}
+			if published {
+				snapshot.TargetRunnerVersion = strings.TrimPrefix(target, "v")
 			}
 			snapshot.GitHubIntake, err = readGitHubBatchTask(ctx, tx, scope)
 			return snapshot, err

@@ -34,13 +34,23 @@ func (u urgentRuntimeUpdater) Apply(ctx context.Context, opts detentupdate.Apply
 }
 
 func TestEnrolledUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
-	for _, follow := range []bool{false, true} {
-		t.Run(map[bool]string{false: "urgent", true: "follow Hub"}[follow], func(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		follow bool
+		active int
+	}{
+		{name: "urgent finishes active leases", active: 2},
+		{name: "heartbeat target finishes active leases", follow: true, active: 2},
+		{name: "heartbeat target updates idle runner", follow: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			follow := test.follow
 			runtimeCtx, cancelRuntime := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancelRuntime()
 			requestCtx, cancelRequest := context.WithCancel(t.Context())
 			defer cancelRequest()
 			completed := make(chan struct{})
+			restarted := make(chan struct{})
 			waiting := make(chan int)
 			drains, applies, restarts := 0, 0, 0
 			running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: "none", Source: "unknown", OS: "linux", Architecture: "amd64", ObservedAt: time.Now()}
@@ -55,7 +65,7 @@ func TestEnrolledUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
 				}},
 				ReserveDrain: func(ctx context.Context) (func(), error) {
 					drains++
-					for remaining := 2; remaining > 0; remaining-- {
+					for remaining := test.active; remaining > 0; remaining-- {
 						waiting <- remaining
 						select {
 						case <-completed:
@@ -65,7 +75,7 @@ func TestEnrolledUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
 					}
 					return func() {}, nil
 				},
-				RequestRestart: func(string) bool { restarts++; return true },
+				RequestRestart: func(string) bool { restarts++; close(restarted); return true },
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -77,7 +87,7 @@ func TestEnrolledUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
 			}
 			owner(requestCtx, request)
 			cancelRequest()
-			for range 2 {
+			for range test.active {
 				select {
 				case <-waiting:
 				case <-runtimeCtx.Done():
@@ -88,6 +98,11 @@ func TestEnrolledUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
 					t.Fatalf("heartbeat during active sessions: %+v drains/applies/restarts=%d/%d/%d", observed, drains, applies, restarts)
 				}
 				completed <- struct{}{}
+			}
+			select {
+			case <-restarted:
+			case <-runtimeCtx.Done():
+				t.Fatal("heartbeat update did not restart")
 			}
 			if _, err := scheduler.ApplyPending(t.Context()); !errors.Is(err, detentupdate.ErrNoPendingUpdate) {
 				t.Fatalf("pending apply after completed urgent update: %v", err)
@@ -118,8 +133,8 @@ func TestHubRuntimeUpdateSchedule(t *testing.T) {
 		interval time.Duration
 		enrolled bool
 	}{
-		{name: "Hub heartbeat default", client: globalconfig.HubClient{URL: "https://hub.example.test"}, interval: 30 * time.Second},
-		{name: "Hub configured heartbeat", client: globalconfig.HubClient{URL: "https://hub.example.test", HeartbeatIntervalSeconds: 45}, interval: 45 * time.Second},
+		{name: "Hub heartbeat default", client: globalconfig.HubClient{URL: "https://hub.example.test"}, interval: 6 * time.Hour},
+		{name: "Hub configured heartbeat", client: globalconfig.HubClient{URL: "https://hub.example.test", HeartbeatIntervalSeconds: 45}, interval: 6 * time.Hour},
 		{name: "Hub explicit check interval", client: globalconfig.HubClient{URL: "https://hub.example.test"}, hours: 2, interval: 2 * time.Hour},
 		{name: "enrolled follows Hub through heartbeat owner", client: globalconfig.HubClient{URL: "https://hub.example.test", IdentityFile: identityPath}, interval: 30 * time.Second, enrolled: true},
 		{name: "standalone default", interval: 6 * time.Hour},

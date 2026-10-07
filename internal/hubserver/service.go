@@ -31,6 +31,7 @@ const (
 )
 
 type Service struct {
+	runnerPublishedReleases sync.Map
 	mcpHTTP                 *mcp.HTTPHandler
 	operatorChat            *chat.Service
 	administration          *operatoradmin.Executor

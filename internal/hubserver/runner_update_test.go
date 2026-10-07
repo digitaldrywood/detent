@@ -117,20 +117,22 @@ func TestHostedRunnerUpdateReadKeyAuthority(t *testing.T) {
 
 func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 	for _, test := range []struct {
-		name, hub, runner string
-		supported, manual bool
-		want              bool
+		name, hub, runner                      string
+		supported, manual, unpublished, failed bool
+		want                                   bool
 	}{
 		{name: "older runner", hub: "v1.2.4", runner: "1.2.3", supported: true, want: true},
-		{name: "runner ahead", hub: "v1.2.4", runner: "1.2.5", supported: true, want: true},
-		{name: "installed operator build", hub: "v1.2.4", runner: "operator-landed-abcdef123456", supported: true, want: true},
+		{name: "runner ahead", hub: "v1.2.4", runner: "1.2.5", supported: true},
+		{name: "installed operator build", hub: "v1.2.4", runner: "operator-landed-abcdef123456", supported: true},
+		{name: "unpublished release", hub: "v1.2.4", runner: "1.2.3", supported: true, unpublished: true},
+		{name: "update failed", hub: "v1.2.4", runner: "1.2.3", supported: true, failed: true, want: true},
 		{name: "matching release", hub: "v1.2.4", runner: "1.2.4", supported: true},
 		{name: "development Hub", hub: "dev", runner: "1.2.3", supported: true},
 		{name: "missing update owner", hub: "v1.2.4", runner: "1.2.3"},
 		{name: "operator request retained", hub: "v1.2.4", runner: "1.2.3", supported: true, manual: true, want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Version: "dev"})
+			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Version: "dev", RunnerReleaseClient: &runnerReleaseFixture{}})
 			f := newNativeFixture(t, service, "", "follow-hub")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			r.enroll(t)
@@ -154,10 +156,23 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 				request := runnerUpdateChange{ExpectedRevision: snapshot.Revision, ExpectedBuildRevision: report.Revision, Service: "detent", Version: "1.2.5", Release: true, Confirm: true, IdempotencyKey: "operator-selection"}
 				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, r.identityPath()+"/update/apply", testHubAdminToken, request), http.StatusAccepted)
 			}
+			if !test.unpublished {
+				service.runnerPublishedReleases.Store("v1.2.4/linux/amd64", true)
+			}
 			service.config.Version = test.hub
 			snapshot := send()
+			if snapshot.TargetRunnerVersion != "1.2.4" && !test.unpublished && test.hub == "v1.2.4" {
+				t.Fatalf("heartbeat target = %q", snapshot.TargetRunnerVersion)
+			}
+			if test.unpublished && snapshot.TargetRunnerVersion != "" {
+				t.Fatal("advertised unpublished target")
+			}
 			request := snapshot.Routing.UpdateRequest
-			if (request != nil) != test.want || snapshot.Routing.State != "active" {
+			wantState := "active"
+			if test.want && !test.manual {
+				wantState = "draining"
+			}
+			if (request != nil) != test.want || snapshot.Routing.State != wantState {
 				t.Fatalf("routing=%+v", snapshot)
 			}
 			if !test.want {
@@ -169,6 +184,15 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			repeated := send()
 			if *repeated.Routing.UpdateRequest != *request || repeated.Revision != snapshot.Revision {
 				t.Fatal("heartbeat changed the update identity")
+			}
+			if test.failed {
+				report.Receipt = &runnerauth.UpdateReceipt{Request: *request, Status: "refused", FailureReason: "Update download failed", ObservedAt: now}
+				send()
+				stored, err := readRunner(t.Context(), service.database.db, f.project.OrganizationID, r.binding.RunnerID, service.config.now())
+				if err != nil || stored.UpdateView(service.config.now()).Status != "refused" || stored.Update.Receipt.FailureReason != "Update download failed" {
+					t.Fatalf("failed update not reported: %+v %v", stored.Update, err)
+				}
+				return
 			}
 			applied := build
 			applied.Version = request.Version
@@ -184,7 +208,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			observedAt := service.config.now()
 			stored, err := readRunner(t.Context(), service.database.db, f.project.OrganizationID, r.binding.RunnerID, observedAt)
 			if test.manual {
-				if err != nil || stored.UpdateRequest == nil || !stored.UpdateRequest.FollowHub || stored.UpdateRequest.Version != "1.2.4" {
+				if err != nil || stored.UpdateRequest == nil || stored.UpdateRequest.FollowHub || stored.UpdateRequest.Version != "1.2.5" {
 					t.Fatalf("completed operator request suppressed Hub following: %+v %v", stored.UpdateRequest, err)
 				}
 				return
