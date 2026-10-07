@@ -2430,8 +2430,8 @@ what the run taught about proving them.
    `internal/orchestrator/implement_progress.go` — but it keys on an *empty*
    workspace diffstat, and a one-file configuration diff is not empty, so it
    never fired. Teaching that verdict to treat a diff confined to
-   configuration as no progress is a change to a safety-critical brake with a
-   90% coverage floor and its own fuzz seeds; it is **deliberately left for a
+   configuration as no progress is a change to a safety-critical brake with
+   its own fuzz seeds; it is **deliberately left for a
    follow-up** rather than folded into these two fixes.
 3. **An issue attempt resumed the coordinator's Codex thread and inherited its
    restrictions.** *Fixed.* The chat's coordinator turn was claimed as a

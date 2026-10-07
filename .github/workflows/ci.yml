@@ -251,7 +251,7 @@ jobs:
         shell: bash
         run: |
           source scripts/check-evidence.sh
-          check_with_evidence coverage make test-cover-packages
+          check_with_evidence coverage make test-cover
 
   security:
     needs: preflight

@@ -145,10 +145,15 @@ Extend an existing table or fixture with a case instead of adding a sibling
 function that rebuilds the same setup. Do not add tests for generated code,
 for the text of documentation or configuration, or to move a coverage number.
 A test that only re-executes a path another test already asserts is removed in
-review (see [docs/test-suite-audit.md](docs/test-suite-audit.md)).
+review, as is a test with no assertion or a self-comparison, a test whose
+expected value is computed by the code under test, a test that breaks on a
+behavior-preserving refactor, or a private function exported only for a test
+(see [docs/test-suite-audit.md](docs/test-suite-audit.md)). Coverage profiles
+are scheduled evidence only; no package, file or aggregate coverage floor
+exists, and no change is made to move a percentage.
 
 Focused `go test -timeout=60s ./<touched-package>/...`, `go vet`, targeted
-regressions, and [safety-critical coverage and fuzzing](CLAUDE.md#safety-critical-orchestrator-validation)
+regressions, and [safety-critical fuzzing](CLAUDE.md#safety-critical-orchestrator-validation)
 are available for diagnostics during edits. `make check-land` is the
 completion gate. Give each diagnostic `go test` command an explicit timeout appropriate to
 the selected fixtures instead of using Go's ten-minute default. Use a longer

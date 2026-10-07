@@ -71,6 +71,29 @@ its surviving sibling, and both review verdicts are recorded in
 pass), `codex-verify-25.tsv` (second pass with quoted evidence), and
 `deleted.tsv` (the 14 removals).
 
+## Why there are no coverage floors (2026-10-06)
+
+The scheduled suite carried a 70 percent aggregate threshold, a 50 percent
+package floor and exact-file floors of 90 percent on the safety-critical
+orchestrator files. The first time every test passed after the develop
+cleanup, the only red job was the floor check: a fixture package at 0 percent,
+a two-function settings package at 0 percent, `internal/dispatchpriority` at
+49.0 percent, and `internal/orchestrator/ranking.go` at 87.5 percent because a
+refactor had moved its logic into `dispatchpriority` and left an 8-statement
+wrapper under a 90 percent floor. None of those numbers said anything about
+dispatch safety; the named regression tables and
+`FuzzSafetyCriticalOrchestratorBoundaries` still ran and still passed.
+
+OpenClaw reached the same conclusion at scale in 2026: about 400K lines of
+agent-written tests were deleted with coverage essentially unchanged, because
+models write a test for every change and then rewrite the test to match the
+next change. Their deletion criteria are now the review rule in
+[AGENTS.md](../AGENTS.md#validation): no assertion or self-comparison, expected
+value computed by the code under test, breaks on a behavior-preserving
+refactor, duplicates an existing assertion, or exports a private function only
+for a test. Coverage remains a profile the scheduled suite records as
+evidence for the next audit; it gates nothing.
+
 The finding worth keeping: statement overlap is a poor proxy for duplication
 in this suite. Of 1680 tests that add no unique statements to their package,
 and of the 195 that looked like near-duplicates by every structural measure,
