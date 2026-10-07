@@ -100,6 +100,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"hosted_complimentary_grants",
 		"hosted_plan_audit",
 		"hosted_usage_windows",
+		"hosted_work_view_preferences",
 		"hosted_member_reservations",
 		"hosted_artifact_usage",
 		"native_commands",
