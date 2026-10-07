@@ -107,6 +107,9 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 	}
 	previous := e.data.Runtime
 	if previous != nil {
+		if observation.Recovery == nil {
+			observation.Recovery = previous.Recovery
+		}
 		observation.PhasesDropped = previous.PhasesDropped
 		observation.Phases = append([]tracker.NativePhase(nil), previous.Phases...)
 		if observation.Phase == "" {

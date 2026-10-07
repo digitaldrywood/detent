@@ -68,6 +68,7 @@ type NativePhase struct {
 }
 
 type NativeRuntimeObservation struct {
+	Recovery       *NativeRecoveryDecision          `json:"recovery,omitempty"`
 	Completion     *NativeCompletionObservation     `json:"completion,omitempty"`
 	PhasesDropped  int                              `json:"phases_dropped"`
 	LocalAttemptID int64                            `json:"local_attempt_id,omitempty"`
@@ -80,6 +81,11 @@ type NativeRuntimeObservation struct {
 	Landing        *NativeLandingReceipt            `json:"landing,omitempty"`
 	REST           *NativeRESTEvidence              `json:"rest,omitempty"`
 	GitHub         *NativeGitHubScope               `json:"github,omitempty"`
+}
+
+type NativeRecoveryDecision struct {
+	Action string `json:"action"`
+	Reason string `json:"reason"`
 }
 
 type NativeCompletionObservation struct {
