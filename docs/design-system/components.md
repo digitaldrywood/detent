@@ -10,10 +10,10 @@ Catalog totals: 136 entries; by kind: 51 primitive, 79 composition, 6 surface; b
 
 ### Button
 
-Every clickable action: form submission, toolbar and composer actions, icon-only actions. `size="compact"` is the toolbar size family; `icon*` sizes need an accessible name. `ghost-destructive` is the low-emphasis destructive action in menus and toolbars; `media-close` and `media-navigation` belong to media viewers; `sm-multiline` lets a small button wrap. `InlineButton` is a text action inside a sentence, with `tone` default, muted, destructive or picker (a dotted underline that opens a menu).
+Every clickable action: form submission, toolbar and composer actions, icon-only actions. `size="compact"` is the toolbar size family; `icon*` sizes need an accessible name. `ghost-destructive` is the low-emphasis destructive action in menus and toolbars; `media-close` and `media-navigation` belong to media viewers; `sm-multiline` lets a small button wrap. `InlineButton` is a text action inside a sentence, with `tone` default, muted, destructive or picker (a dotted underline that opens a menu). `SplitButton` groups two primary Buttons into a joined 40px control: a main action and a 44px-wide MenuTrigger rendered as an icon Button. Label the group and the menu trigger; Menu owns the popup and keyboard behavior.
 
 - Kind: Primitive; status: available; id: `button`.
-- Import: `import { Button, buttonVariants, InlineButton, ButtonSize, ButtonVariant } from "~/components/ui/button";`
+- Import: `import { Button, buttonVariants, InlineButton, SplitButton, ButtonSize, ButtonVariant } from "~/components/ui/button";`
 - Source: [src/components/ui/button.tsx](../../web/conversation/src/components/ui/button.tsx).
 - Variants: `variant`: `default`, `secondary`, `outline`, `ghost`, `ghost-muted`, `ghost-destructive`, `destructive`, `destructive-outline`, `warning-outline`, `glass`, `overlay`, `link`, `media-close`, `media-navigation`; `size`: `micro`, `compact`, `xs`, `sm`, `sm-multiline`, `default`, `lg`, `xl`, `icon-tiny`, `icon-micro`, `icon-xs`, `icon-sm`, `icon`, `icon-lg`, `icon-xl`; `tone`: `default`, `muted`, `destructive`, `picker`.
 - States: hover, focus-visible, pressed, disabled.
@@ -872,7 +872,7 @@ The runner update control in the sidebar footer, for readers who manage runners;
 
 ### Chat header
 
-The conversation's header content inside WorkspacePageHeader: title, git actions, open-in and panel controls.
+The conversation's header content inside WorkspacePageHeader: title, git actions, open-in and panel controls. `compactOnMobile` keeps the project glyph and thread title visible on phones while hiding desktop project, editor and Git controls.
 
 - Kind: Composition; status: available; id: `chat-header`.
 - Import: `import { ChatHeader } from "~/components/chat/ChatHeader";`

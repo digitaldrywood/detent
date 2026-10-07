@@ -83,6 +83,7 @@ export interface WorkTopBarProps {
   readonly connection: ConnectionChip;
   readonly showConnectionDetailOnMobile?: boolean;
   readonly actions?: React.ReactNode;
+  readonly mobileActions?: React.ReactNode;
 }
 
 export function WorkTopBar(props: WorkTopBarProps): React.ReactElement {
@@ -126,6 +127,7 @@ export function WorkTopBar(props: WorkTopBarProps): React.ReactElement {
       <div className="flex shrink-0 items-center justify-end gap-1.5 @3xl/header-actions:gap-2">
         {props.actions}
         <FreshnessChip chip={props.connection} showDetailOnMobile={props.showConnectionDetailOnMobile} />
+        {props.mobileActions}
         {props.connection.action == null ? null : (
           <Button variant="ghost" size="sm" onClick={props.connection.action.onClick}>
             {props.connection.action.label}

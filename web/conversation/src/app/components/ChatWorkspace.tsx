@@ -1,7 +1,7 @@
 // Conversation layout with the header, transcript, composer, and workspace panels.
 import { PaperclipIcon } from "lucide-react";
 import React from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useLocation, useNavigate } from "@tanstack/react-router";
 
 import { ChatHeader } from "../../components/chat/ChatHeader.tsx";
 import { makeWorkspaceFileDropHandlers } from "../../components/chat/workspaceFileDrop.ts";
@@ -11,6 +11,7 @@ import type { BootstrapProject } from "../../contracts/conversation.ts";
 import type { CollaborationEvent, NativeAttempt } from "../../contracts/work.ts";
 import type { ProjectScript, ThreadId } from "../../contracts/ui.ts";
 import { cn } from "../../lib/utils.ts";
+import { withoutBasePath } from "../../runtime/basePath.ts";
 import { detentKeybindings } from "../adapters/keybindings.ts";
 import {
   HeaderActionsProvider,
@@ -98,6 +99,27 @@ export interface ChatWorkspaceProps {
 
 export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
   const navigate = useNavigate();
+  const pathname = useLocation({ select: (location) => location.pathname });
+  const chatRoute = withoutBasePath(pathname).startsWith("/chat");
+  const viewportRef = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    if (!chatRoute) return;
+    const element = viewportRef.current;
+    const viewport = window.visualViewport;
+    if (element === null || !viewport) return;
+    const update = () => {
+      if (viewport.scale !== 1) return;
+      element.style.setProperty("--chat-viewport-height", `${viewport.height}px`);
+      element.style.setProperty("--chat-viewport-top", `${viewport.offsetTop}px`);
+    };
+    update();
+    viewport.addEventListener("resize", update);
+    viewport.addEventListener("scroll", update);
+    return () => {
+      viewport.removeEventListener("resize", update);
+      viewport.removeEventListener("scroll", update);
+    };
+  }, [chatRoute]);
   const [now, setNow] = React.useState(() => Date.now());
   React.useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 30_000);
@@ -413,7 +435,10 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
     <HeaderActionsProvider value={headerActions}>
 
       <ConversationActionsProvider value={conversationActionsValue}>
-        <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
+        <div
+          ref={viewportRef}
+          className={cn("relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background", chatRoute && "dc-chat-viewport")}
+        >
           {workspace.layoutControls}
           <div
             className={cn(
@@ -445,6 +470,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
                 keybindings={detentKeybindings}
                 availableEditors={OPEN_IN_EDITORS}
                 rightPanelOpen={workspace.open}
+                compactOnMobile={chatRoute}
                 gitCwd={git.worktreePath}
                 onAsk={props.askPanel == null ? undefined : openAsk}
                 onNewThreadInProject={props.onNewThreadInProject}

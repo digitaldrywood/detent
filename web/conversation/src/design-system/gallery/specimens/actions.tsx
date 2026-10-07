@@ -13,7 +13,8 @@ import {
 } from "lucide-react";
 import React from "react";
 
-import { Button, InlineButton, type buttonVariants } from "~/components/ui/button";
+import { Button, InlineButton, SplitButton, type buttonVariants } from "~/components/ui/button";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
 import { PanelTabCloseButton } from "~/components/ui/panel-tab-close-button";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { Spinner } from "~/components/ui/spinner";
@@ -118,6 +119,25 @@ function LoadingButton() {
 export const button: GalleryDoc = {
   meta: { name: "Button", kind: "primitive", group: "actions" },
   specimens: [
+    {
+      id: "split",
+      title: "Split primary action",
+      render: () => (
+        <SplitButton aria-label="Chat actions">
+          <Button>Ask</Button>
+          <Menu>
+            <MenuTrigger render={<Button size="icon" aria-label="More chat actions" />}>
+              <ChevronDownIcon />
+            </MenuTrigger>
+            <MenuPopup align="end">
+              <MenuItem className="min-h-11 sm:min-h-11">Ask Detent</MenuItem>
+              <MenuItem className="min-h-11 sm:min-h-11">New issue</MenuItem>
+              <MenuItem className="min-h-11 sm:min-h-11">Recent chats</MenuItem>
+            </MenuPopup>
+          </Menu>
+        </SplitButton>
+      ),
+    },
     {
       id: "variants",
       title: "Variants × states",

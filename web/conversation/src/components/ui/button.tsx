@@ -100,6 +100,20 @@ function Button({ className, variant, size, render, ...props }: ButtonProps) {
 // renders a Button (with `render` for other elements) instead.
 export { Button, buttonVariants, type ButtonSize, type ButtonVariant };
 
+export function SplitButton({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      role="group"
+      data-slot="split-button"
+      className={cn(
+        "inline-flex shrink-0 [&>button]:h-10 [&>button]:rounded-none [&>button:first-child]:rounded-s-[var(--control-radius)] [&>button:last-child]:w-11 [&>button:last-child]:rounded-e-[var(--control-radius)] [&>button:last-child]:border-s-primary-foreground/25 [&>button:focus-visible]:z-10",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
 const inlineButtonVariants = cva(
   "inline-flex shrink-0 cursor-pointer items-center gap-0.5 font-medium underline-offset-2 [text-align:var(--inline-button-text-align,center)] [white-space:var(--inline-button-white-space,nowrap)] hover:underline focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-64",
   {

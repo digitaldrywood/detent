@@ -590,9 +590,9 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
       onNewThreadInProject={() => void navigate({ to: "/chat" })}
     >
 
-      <div className="dc-hero flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-3 py-8 sm:px-5">
-        <div className="w-full max-w-3xl">
-          <div className="pb-8">
+      <div className="dc-hero dc-chat-composer flex min-h-0 flex-1 flex-col items-center justify-end px-3 pt-8 pb-3 md:justify-center md:overflow-y-auto md:px-5 md:py-8">
+        <div className="flex min-h-0 w-full max-w-3xl flex-1 flex-col md:flex-none">
+          <div className="min-h-0 flex-1 overflow-y-auto pb-8 md:flex-none md:overflow-visible">
             <DraftHeroHeadline
               projects={client.bootstrap.projects}
               activeProjectId={active === "" ? null : active}
@@ -1274,7 +1274,7 @@ export function ConversationView({
           </div>
         )}
 
-        <div className="shrink-0 px-3 pb-3 sm:px-5 sm:pb-4">
+        <div className="dc-chat-composer shrink-0 px-3 pb-3 sm:px-5 sm:pb-4">
           <div className="mx-auto w-full max-w-3xl">
             {handoffOpen ? (
               <HandoffForm

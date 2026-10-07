@@ -62,6 +62,7 @@ interface ChatHeaderProps {
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   rightPanelOpen: boolean;
+  compactOnMobile?: boolean;
   gitCwd: string | null;
   readonly onOpenPullRequest?: ((number: number) => void) | undefined;
   onAsk?: (() => void) | undefined;
@@ -132,6 +133,7 @@ export const ChatHeader = memo(function ChatHeader({
   keybindings,
   availableEditors,
   rightPanelOpen,
+  compactOnMobile = false,
   gitCwd,
   onOpenPullRequest,
   onAsk,
@@ -316,7 +318,7 @@ export const ChatHeader = memo(function ChatHeader({
   );
   return (
     <div
-      className="@container/header-actions flex min-w-0 flex-1 items-center gap-2 sm:gap-3"
+      className={cn("@container/header-actions flex min-w-0 flex-1 items-center gap-2 sm:gap-3", compactOnMobile && "max-md:pr-16")}
       onContextMenu={handleHeaderContextMenu}
     >
       <WorkspaceBreadcrumb
@@ -341,7 +343,7 @@ export const ChatHeader = memo(function ChatHeader({
                   }
                 >
                   <ProjectFavicon project={activeProject} className="size-3.5" />
-                  <span className="max-w-40 truncate">{activeProjectName}</span>
+                  <span className={cn("max-w-40 truncate", compactOnMobile && "hidden md:inline")}>{activeProjectName}</span>
                 </TooltipTrigger>
                 <TooltipPopup side="top">New thread in {activeProjectName}</TooltipPopup>
               </Tooltip>
@@ -406,7 +408,8 @@ export const ChatHeader = memo(function ChatHeader({
         ref={headerActionsRef}
         data-chat-header-actions
         className={cn(
-          "flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
+          "shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
+          compactOnMobile ? "hidden md:flex" : "flex",
           rightPanelOpen ? "pr-0" : "pr-16",
           "[[data-panel-animations=true]_&]:motion-safe:transition-[padding-right] [[data-panel-animations=true]_&]:motion-safe:[transition-duration:var(--panel-animation-duration)] [[data-panel-animations=true]_&]:motion-safe:ease-out",
         )}
