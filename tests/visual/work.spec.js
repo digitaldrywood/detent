@@ -735,24 +735,25 @@ test("shares project scope between the sidebar and Work across reloads", async (
     expect(created).toBe(200);
   }
   const scope = page.getByRole("combobox", { name: "Filter threads by project" });
-  const done = page.getByRole("region", { name: "Done", exact: true });
+  const rows = page.getByTestId("work-list-open");
   const selectScope = async (name) => {
     await scope.click();
     await page.getByRole("option", { name, exact: true }).click();
+  };
+  const openClosedList = async () => {
+    if (await page.getByTestId("list-tab-closed").count() === 0) await page.getByTestId("view-list").click();
+    if (!/tab=closed/.test(page.url())) await page.getByTestId("list-tab-closed").click();
+    await expect(page).toHaveURL(/tab=closed/);
+    await expect(page.locator('[data-testid="board-lane"][data-lane="Done"]')).toHaveCount(0);
   };
   const expectProject = async (project) => {
     await expect.poll(() => new URL(page.url()).pathname).toBe(`/work/p/${project.id}`);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText(project.name);
     await expect(scope).toHaveText(project.name);
-    if (await done.count() === 0) {
-      await page.getByTestId("lanes-trigger").click();
-      await page.getByTestId("lane-toggle-Done").click();
-      await page.keyboard.press("Escape");
-    }
-    await expect(page.getByTestId("lane-count-Done")).toHaveText("1");
-    await expect(done.getByRole("button", { name: project.title, exact: true })).toBeVisible();
+    await openClosedList();
+    await expect(rows.filter({ hasText: project.title })).toHaveCount(1);
     const other = projects.find((candidate) => candidate.id !== project.id);
-    await expect(done.getByRole("button", { name: other.title, exact: true })).toHaveCount(0);
+    await expect(rows.filter({ hasText: other.title })).toHaveCount(0);
   };
   await expect(scope).toHaveText(projects[0].name);
   await selectScope(projects[1].name);
@@ -774,14 +775,9 @@ test("shares project scope between the sidebar and Work across reloads", async (
     await expect(page).toHaveURL(/\/work(?:\?|$)/);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("All projects");
     await expect(scope).toHaveText("All projects");
-    if (await done.count() === 0) {
-      await page.getByTestId("lanes-trigger").click();
-      await page.getByTestId("lane-toggle-Done").click();
-      await page.keyboard.press("Escape");
-    }
-    await expect(page.getByTestId("lane-count-Done")).toHaveText("2");
+    await openClosedList();
     for (const project of projects) {
-      await expect(done.getByRole("button", { name: project.title, exact: true })).toBeVisible();
+      await expect(rows.filter({ hasText: project.title })).toHaveCount(1);
     }
   };
   await expectAll();
