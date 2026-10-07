@@ -312,7 +312,7 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 	if err := followDefaultChangeReviewPolicy(ctx, tx, scope, change.Policy); err != nil {
 		return result, err
 	}
-	result, err = readProjectPolicyWithHistory(ctx, tx, scope, 0, "")
+	result, err = readProjectPolicy(ctx, tx, scope)
 	if err != nil {
 		return result, err
 	}

@@ -42,6 +42,59 @@ func projectAction(t *testing.T, e hubProjectExecutor, ctx context.Context, call
 	return action
 }
 
+func TestBoundedProjectPolicyHistory(t *testing.T) {
+	descriptor := hubTestPolicy()
+	full := policy.Approval{Policy: descriptor, ApprovedBy: "administrator", ApprovedAt: "2026-10-06T21:12:49Z", HistoryNext: "10"}
+	for _, id := range []int64{30, 20, 10} {
+		full.History = append(full.History, policy.WorkflowApply{ID: id, AppliedBy: strings.Repeat("承認者", 100), PreviousDefinition: &descriptor, Definition: &descriptor})
+	}
+	compact := full
+	compact.History = append([]policy.WorkflowApply(nil), full.History...)
+	for i := range compact.History {
+		compact.History[i].PreviousDefinition, compact.History[i].Definition = nil, nil
+	}
+	prefix := compact
+	prefix.History, prefix.HistoryNext = compact.History[:2], "20"
+	raw, err := json.Marshal(prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		budget int
+		count  int
+		next   string
+		fails  bool
+	}{
+		{"exact bytes including cursor", len(raw), 2, "20", false},
+		{"one byte less", len(raw) - 1, 1, "30", false},
+		{"row cursor retained", operatortool.MaxResultBytes, 3, "10", false},
+		{"no entry fits", 1, 0, "", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			page, err := boundedProjectPolicyHistory(full, test.budget)
+			if test.fails {
+				if !errors.Is(err, errProjectServiceUnavailable) {
+					t.Fatalf("unpageable history=%v", err)
+				}
+				return
+			}
+			if err != nil || len(page.History) != test.count || page.HistoryNext != test.next || !reflect.DeepEqual(page.Policy, full.Policy) || page.ApprovedBy != full.ApprovedBy || page.ApprovedAt != full.ApprovedAt {
+				t.Fatalf("bounded policy lost descriptor, provenance or cursor: %v", err)
+			}
+			encoded, err := json.Marshal(page)
+			if err != nil || len(encoded) > test.budget || !reflect.DeepEqual(page.History, compact.History[:test.count]) {
+				t.Fatalf("bounded policy exceeds bytes or changes history: bytes=%d, %v", len(encoded), err)
+			}
+			for _, entry := range full.History {
+				if entry.Definition == nil || entry.PreviousDefinition == nil {
+					t.Fatal("MCP projection mutated immutable REST history")
+				}
+			}
+		})
+	}
+}
+
 func TestHostedProjectTools(t *testing.T) {
 	for _, deployment := range []string{"dedicated", "shared"} {
 		t.Run(deployment, func(t *testing.T) {

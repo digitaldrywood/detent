@@ -110,12 +110,29 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 			if approvalSchema == nil {
 				t.Fatal("policy approval missing from tools/list")
 			}
-			workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+			sources := workflowconfig.ProjectDefinitionSources{
 				ConfigPath: "detent.yaml", HasConfig: true,
 				Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: digitaldrywood/detent\ngate:\n  run: true\n  required_status_checks: []\n"),
-				WorkflowPath: "WORKFLOW.md", Workflow: []byte(strings.Repeat("Implement the assigned issue.\n", 500)),
-				AgentsPath: "AGENTS.md", HasAgents: true, Agents: []byte(strings.Repeat("Preserve policy authority.\n", 50)),
-			})
+				WorkflowPath: "WORKFLOW.md", Workflow: []byte(strings.Repeat("Implement the assigned issue.\n", 1400)),
+				AgentsPath: "AGENTS.md", HasAgents: true, Agents: []byte(strings.Repeat("Preserve policy authority.\n", 150)),
+			}
+			for i := range 4 {
+				priorSources := sources
+				priorSources.Workflow = []byte(string(sources.Workflow) + fmt.Sprintf("Revision %d.\n", i))
+				priorWorkflow, err := workflowconfig.ParseProjectDefinition(priorSources)
+				if err != nil {
+					t.Fatal(err)
+				}
+				prior, err := workflowconfig.ResolvePolicy(priorWorkflow)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.approvePolicy(t.Context(), policyScope, "previous-admin", policy.Change{ExpectedID: previous.ID, Policy: prior}); err != nil {
+					t.Fatal(err)
+				}
+				previous = prior
+			}
+			workflow, err := workflowconfig.ParseProjectDefinition(sources)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -204,6 +221,96 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 			if err != nil || !reflect.DeepEqual(approved.Policy, descriptor) || approved.ApprovedBy != key.ID {
 				t.Fatalf("approval=%+v error=%v", approved, err)
 			}
+			toolText := func(name string, arguments any) string {
+				t.Helper()
+				response := send(map[string]any{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": map[string]any{"name": name, "arguments": arguments}})
+				requireNativeStatus(t, response, http.StatusOK)
+				var reply struct {
+					Result struct {
+						IsError bool `json:"isError"`
+						Content []struct {
+							Text string `json:"text"`
+						} `json:"content"`
+					} `json:"result"`
+				}
+				if err := json.Unmarshal(response.Body.Bytes(), &reply); err != nil || reply.Result.IsError || len(reply.Result.Content) != 1 {
+					t.Fatalf("%s failed: %s, %v", name, response.Body, err)
+				}
+				text := reply.Result.Content[0].Text
+				if len(text) > operatortool.MaxResultBytes {
+					t.Fatalf("%s result is %d bytes", name, len(text))
+				}
+				return text
+			}
+			full, err := readProjectPolicyWithHistory(t.Context(), f.service.database.db, policyScope, 0, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			fullJSON, err := json.Marshal(full)
+			if err != nil || len(full.History) != 5 || len(fullJSON) <= operatortool.MaxResultBytes {
+				t.Fatalf("fixture must exceed the result cap: history=%d bytes=%d, %v", len(full.History), len(fullJSON), err)
+			}
+			call := projectCall(t, "approve_project_policy", string(f.project), "approve", operatortool.PolicyApprovalInput{ExpectedID: previous.ID, Policy: descriptor, RepositoryPolicy: true})
+			var receipt string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT response_json FROM native_commands WHERE actor_id=? AND command_key=?", key.ID, "approve").Scan(&receipt); err != nil {
+				t.Fatal(err)
+			}
+			var durable policy.Approval
+			if err := json.Unmarshal([]byte(receipt), &durable); err != nil || !reflect.DeepEqual(durable, approved) || len(durable.History) != 0 {
+				t.Fatalf("durable approval differs from commit: %v", err)
+			}
+			var action chat.Action
+			replayed := toolText(call.Name, call.Arguments)
+			if err := json.Unmarshal([]byte(replayed), &action); err != nil || action.Status != chat.ActionSucceeded || action.Result != receipt || len(action.Arguments) != 0 && string(action.Arguments) != "null" {
+				t.Fatalf("same-session receipt differs: %v", err)
+			}
+			var polled chat.Action
+			if err := json.Unmarshal([]byte(toolText(operatortool.ActionResult, map[string]string{"action_id": action.ID})), &polled); err != nil || polled.Result != receipt {
+				t.Fatalf("action_result lost receipt: %v", err)
+			}
+			var page struct {
+				Data policy.Approval `json:"data"`
+			}
+			readText := toolText("get_project_policy", operatortool.ProjectReadRequest{ProjectID: string(f.project), RepositoryPolicy: true})
+			if err := json.Unmarshal([]byte(readText), &page); err != nil || !reflect.DeepEqual(page.Data.Policy, descriptor) || page.Data.ApprovedBy != approved.ApprovedBy || page.Data.ApprovedAt != approved.ApprovedAt || len(page.Data.History) != 5 || page.Data.HistoryNext != "" {
+				t.Fatalf("default policy read lost descriptor/provenance: %v", err)
+			}
+			for i, entry := range page.Data.History {
+				expected := full.History[i]
+				expected.PreviousDefinition, expected.Definition = nil, nil
+				if !reflect.DeepEqual(entry, expected) {
+					t.Fatalf("history projection changed apply %s", expected.DefinitionDigest)
+				}
+			}
+			var after string
+			for _, expected := range full.History {
+				text := toolText("get_project_policy", operatortool.ProjectReadRequest{ProjectID: string(f.project), RepositoryPolicy: true, Limit: 1, After: after})
+				page.Data = policy.Approval{}
+				if err := json.Unmarshal([]byte(text), &page); err != nil || len(page.Data.History) != 1 || page.Data.History[0].ID != expected.ID {
+					t.Fatalf("history cursor skipped an apply: %v", err)
+				}
+				after = page.Data.HistoryNext
+			}
+			if after != "" {
+				t.Fatal("terminal history page has a cursor")
+			}
+			sessionID = ""
+			reconnected := send(map[string]any{"jsonrpc": "2.0", "id": 8, "method": "initialize", "params": map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "policy-replay", "version": "1"}}})
+			requireNativeStatus(t, reconnected, http.StatusOK)
+			sessionID = reconnected.Header().Get("Mcp-Session-Id")
+			requireNativeStatus(t, send(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}), http.StatusAccepted)
+			if err := json.Unmarshal([]byte(toolText(call.Name, call.Arguments)), &action); err != nil || action.Status != chat.ActionSucceeded || action.Result != receipt {
+				t.Fatalf("reconnected receipt differs: %v", err)
+			}
+			operatorSQL(t, f, "UPDATE native_commands SET response_json=? WHERE actor_id=? AND command_key=?", string(fullJSON), key.ID, "approve")
+			if err := json.Unmarshal([]byte(toolText(call.Name, call.Arguments)), &action); err != nil || action.Result != receipt {
+				t.Fatalf("legacy oversized receipt replay differs: %v", err)
+			}
+			unchanged, err := readProjectPolicyWithHistory(t.Context(), f.service.database.db, policyScope, 0, "")
+			if err != nil || !reflect.DeepEqual(unchanged, full) {
+				t.Fatalf("replay performed another approval: %v", err)
+			}
+			t.Logf("full policy history=%d bytes, default MCP policy read=%d bytes, approval MCP receipt=%d bytes, durable receipt=%d bytes", len(fullJSON), len(readText), len(replayed), len(receipt))
 			read := send(map[string]any{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": map[string]any{"name": "get_project_policy", "arguments": operatortool.ProjectReadRequest{ProjectID: string(f.project), RepositoryPolicy: true}}})
 			requireNativeStatus(t, read, http.StatusOK)
 			if strings.Contains(read.Body.String(), `"isError":true`) || !strings.Contains(read.Body.String(), descriptor.ID) {

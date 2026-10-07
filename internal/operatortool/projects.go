@@ -120,7 +120,11 @@ func ProjectCatalog() []Definition {
 		if err != nil {
 			panic(err)
 		}
-		out = append(out, Definition{Name: name, Description: "Read authorized project application data: " + strings.ReplaceAll(name, "_", " ") + ". Setup returns the existing browser flow and requirements.", InputSchema: raw, Annotations: Annotations{ReadOnly: true, Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}})
+		description := "Read authorized project application data: " + strings.ReplaceAll(name, "_", " ") + ". Setup returns the existing browser flow and requirements."
+		if name == "get_project_policy" {
+			description = "Read the complete approved policy and approval provenance. History contains compact apply identities, definition digests and provenance, bounded by rows and serialized bytes; pass history_next as after for the next page."
+		}
+		out = append(out, Definition{Name: name, Description: description, InputSchema: raw, Annotations: Annotations{ReadOnly: true, Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}})
 	}
 	out = append(out,
 		Definition{Name: "monthly_usage_costs", Description: "Read UTC monthly infrastructure cost totals and coverage. Project totals are a breakdown of organization totals, never an additional charge.", InputSchema: json.RawMessage(`{"type":"object","properties":{"project_id":{"type":"string","maxLength":256},"month":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}$"},"scope":{"type":"string","enum":["project","organization"]}},"additionalProperties":false}`), Annotations: Annotations{ReadOnly: true, Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}},

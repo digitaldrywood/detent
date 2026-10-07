@@ -117,7 +117,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, scope, entry.Repository, entry.Commit, entry.P
 	return err
 }
 
-func readProjectPolicyWithHistory(ctx context.Context, query nativeQueryer, scope string, limit int, after string) (result policy.Approval, resultErr error) {
+func readProjectPolicyWithHistory(ctx context.Context, query nativeQueryer, scope string, limit int, after string) (policy.Approval, error) {
+	return readProjectPolicyHistory(ctx, query, scope, limit, after, true)
+}
+
+func readProjectPolicyHistory(ctx context.Context, query nativeQueryer, scope string, limit int, after string, definitions bool) (result policy.Approval, resultErr error) {
 	if limit == 0 {
 		limit = defaultAPIPageLimit
 	}
@@ -137,9 +141,9 @@ func readProjectPolicyWithHistory(ctx context.Context, query nativeQueryer, scop
 		return result, err
 	}
 	rows, err := query.QueryContext(ctx, `SELECT a.id, a.repository, a.source_commit, a.previous_definition_digest, a.definition_digest, a.runner_id, a.applied_by, a.applied_at,
-(SELECT r.metadata_json FROM policy_revisions r WHERE r.scope = a.scope AND json_extract(r.metadata_json, '$.source_digest') = a.previous_definition_digest ORDER BY r.approved_at DESC, r.policy_id LIMIT 1),
-(SELECT r.metadata_json FROM policy_revisions r WHERE r.scope = a.scope AND json_extract(r.metadata_json, '$.source_digest') = a.definition_digest AND COALESCE(json_extract(r.metadata_json, '$.workflow.revision'), '') = a.source_commit ORDER BY r.approved_at DESC, r.policy_id LIMIT 1)
-FROM project_workflow_applies a WHERE a.scope = ? AND (? = 0 OR a.id < ?) ORDER BY a.id DESC LIMIT ?`, scope, before, before, limit+1)
+CASE WHEN ? THEN (SELECT r.metadata_json FROM policy_revisions r WHERE r.scope = a.scope AND json_extract(r.metadata_json, '$.source_digest') = a.previous_definition_digest ORDER BY r.approved_at DESC, r.policy_id LIMIT 1) END,
+CASE WHEN ? THEN (SELECT r.metadata_json FROM policy_revisions r WHERE r.scope = a.scope AND json_extract(r.metadata_json, '$.source_digest') = a.definition_digest AND COALESCE(json_extract(r.metadata_json, '$.workflow.revision'), '') = a.source_commit ORDER BY r.approved_at DESC, r.policy_id LIMIT 1) END
+FROM project_workflow_applies a WHERE a.scope = ? AND (? = 0 OR a.id < ?) ORDER BY a.id DESC LIMIT ?`, definitions, definitions, scope, before, before, limit+1)
 	if err != nil {
 		return result, err
 	}

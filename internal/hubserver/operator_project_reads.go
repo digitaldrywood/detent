@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -68,7 +69,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		var policyScope string
 		policyScope, err = operatorPolicyScope(ctx, s.database.db, scope, r.RepositoryPolicy)
 		if err == nil {
-			value, err = readProjectPolicyWithHistory(ctx, s.database.db, policyScope, r.Limit, r.After)
+			value, err = readProjectPolicyHistory(ctx, s.database.db, policyScope, r.Limit, r.After, false)
 		}
 	case "project_secret_metadata":
 		var status projectSecretStatus
@@ -101,12 +102,55 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 	}
 	// Each read carries its application identity and observation time. The value
 	// is a concrete application DTO; no HTTP body or database record is proxied.
-	return hubProjectResult(struct {
+	page := struct {
 		OrganizationID tracker.OrganizationID `json:"organization_id"`
 		ProjectID      tracker.ProjectID      `json:"project_id,omitempty"`
 		ObservedAt     time.Time              `json:"observed_at"`
 		Data           any                    `json:"data"`
-	}{scope.organization, scope.project, s.config.now().UTC(), value})
+	}{scope.organization, scope.project, s.config.now().UTC(), value}
+	if call.Name == "get_project_policy" {
+		approval, ok := value.(policy.Approval)
+		if !ok {
+			return operatortool.Result{}, errProjectServiceUnavailable
+		}
+		page.Data = json.RawMessage(`{}`)
+		envelope, err := json.Marshal(page)
+		if err != nil {
+			return operatortool.Result{}, err
+		}
+		page.Data, err = boundedProjectPolicyHistory(approval, operatortool.MaxResultBytes-len(envelope)+2)
+		if err != nil {
+			return operatortool.Result{}, err
+		}
+	}
+	return hubProjectResult(page)
+}
+
+func boundedProjectPolicyHistory(approval policy.Approval, budget int) (policy.Approval, error) {
+	history, next := approval.History, approval.HistoryNext
+	approval.History, approval.HistoryNext = nil, ""
+	for i, entry := range history {
+		entry.PreviousDefinition, entry.Definition = nil, nil
+		previousNext := approval.HistoryNext
+		approval.History = append(approval.History, entry)
+		approval.HistoryNext = next
+		if i+1 < len(history) {
+			approval.HistoryNext = strconv.FormatInt(entry.ID, 10)
+		}
+		raw, err := json.Marshal(approval)
+		if err != nil {
+			return approval, err
+		}
+		if len(raw) > budget {
+			if i == 0 {
+				return approval, errProjectServiceUnavailable
+			}
+			approval.History = approval.History[:i]
+			approval.HistoryNext = previousNext
+			break
+		}
+	}
+	return approval, nil
 }
 
 type operatorProjectPage struct {
