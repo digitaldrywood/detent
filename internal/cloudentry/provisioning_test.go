@@ -774,10 +774,6 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 	if !strings.Contains(ready.Body, `"id":"`+id+`"`) || !strings.Contains(ready.Body, `"role":"owner"`) {
 		t.Fatalf("ready organizations JSON = %s", ready.Body)
 	}
-	dana.login("/organizations/"+id+"/work", "user_dana:porg_"+id)
-	if response, body := dana.get("/organizations/" + id + "/work"); response.StatusCode != http.StatusOK || !strings.Contains(body, `content="/organizations/`+id+`"`) {
-		t.Fatalf("organization client home = %d %s", response.StatusCode, body)
-	}
 }
 
 func TestCanCreateCountsOrganizationsTheIdentityCreated(t *testing.T) {

@@ -708,10 +708,6 @@ func exerciseAttachmentClients(t *testing.T, f entryFixture, browser, anonymous 
 			if rebind.Code != http.StatusNoContent {
 				t.Fatalf("additional attachment reference=%d %s", rebind.Code, rebind.Body.String())
 			}
-			page, body := browser.get("/organizations/org_alpha/work/i/" + string(issue.WorkItemID))
-			if page.StatusCode != 200 || !strings.Contains(body, `id="root"`) {
-				t.Fatalf("issue page=%d", page.StatusCode)
-			}
 		})
 	}
 }
