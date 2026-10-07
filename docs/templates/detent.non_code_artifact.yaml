@@ -76,7 +76,6 @@ agent:
         pass_state: Ready for Pickup
         rework_state: Rework
         rework_limit: 3
-    # Skills guide: https://github.com/digitaldrywood/detent/blob/main/docs/ONBOARDING.md#skills-and-skill-creation
     skills:
         enabled: true
         path: .detent/skills
@@ -87,7 +86,7 @@ agent:
 codex:
     # Optional model_reasoning_effort is unset because not every model accepts it.
     # An issue-body ```detent-agent``` block can override effort for that issue;
-    # see docs/ONBOARDING.md#per-issue-agent-overrides.
+    # see docs/admission.md#issue-effort-selection.
     command: codex app-server # Provider default: upgrades automatically and avoids retirement breakage.
 gate:
     kind: artifact

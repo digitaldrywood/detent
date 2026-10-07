@@ -1237,7 +1237,7 @@ func checkDoctorIssueEffortGuidance(id string, sourceRoot string) doctorCheck {
 		Name:   name,
 		Status: doctorWarn,
 		Detail: "AGENTS.md and CLAUDE.md contain no detent-agent guidance",
-		Hint:   "Add a project-specific effort-selection rubric; see docs/ONBOARDING.md#per-issue-agent-overrides.",
+		Hint:   "Add a project-specific effort-selection rubric; see docs/admission.md#issue-effort-selection.",
 	}
 }
 

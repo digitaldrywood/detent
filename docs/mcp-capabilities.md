@@ -86,7 +86,8 @@ overlays. The revision covers both global configuration and the selected project
 definition. Provenance
 contains identities and revisions, without file paths, workflow instructions,
 credentials or private configuration values. A Cloud project, runner source
-association and local board registration remain separate authorities.
+association and the runner's local project registration remain separate
+authorities.
 
 `apply_local_project_policy`, `drain_local_project` and `detach_local_project`
 require current admin scope for the exact project, current application authority,
@@ -457,9 +458,8 @@ scenarios are enabled, and returns opaque unavailable otherwise.
 Credential and workflow-file setup stays in that browser flow: tool inputs,
 results, approvals and audit records never carry provider secrets. Secret
 metadata is available through its existing safe read; removal uses its existing
-command. Local project editing/tracker binding is part of interactive onboarding;
-settings/library/reports have no configuration mutation in that dashboard.
-Their reads and filters use the corresponding application owners;
+command. Settings, library and report reads and filters use the corresponding
+application owners;
 shared settings, budget and review-policy prerequisites remain enforced.
 
 ## Workspace, conversation and project actions

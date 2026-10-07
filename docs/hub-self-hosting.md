@@ -16,10 +16,8 @@ supported Hub bearer deployment below has no such dependency. Shared-site mode
 and self-hosted WorkOS configuration separation are design targets documented in
 [the deployment examples](examples/hub/README.md), not new flags in this runbook.
 The native-only example disables GitHub transport.
-Ordinary local Detent remains supported separately: omit `client.hub_url` and
-run `detent` using local configuration and the selected local/tracker backend.
-Durable artifacts are optional in both modes; local-only artifact availability
-depends on retaining the runner and its workspace.
+Durable artifacts are optional; local-only artifact availability depends on
+retaining the runner and its workspace.
 
 ## Install one host
 
@@ -63,9 +61,8 @@ sudo systemctl enable --now detent-hub
 sudo systemctl status detent-hub
 ```
 
-These commands operate on the example installation only. The ordinary
-`detent service install` command supervises the local orchestrator; use this
-separate Hub unit for `hub serve`. The Hub has no source checkouts, agent login
+These commands operate on the example installation only. Use this dedicated
+Hub unit for `hub serve`. The Hub has no source checkouts, agent login
 sessions or execution workspaces on this host. Do not expose the backend port
 by relying on `--trusted-proxy` alone: that flag declares trust, it does not
 create TLS or configure a firewall. Alternatively use `--tls-cert` and
@@ -293,7 +290,7 @@ its version. Each migration is transactional; a crash or failed final validation
 rolls back the unfinished migration. Earlier completed migrations remain applied
 and the same binary retries the remainder on restart. Fix disk/permission
 problems first.
-Never manually advance the schema table or run the unrelated local orchestrator
+Never manually advance the schema table or run the unrelated runner-store
 `make db-migrate` against a Hub database.
 
 The deployment/release owner must verify a normal production restart after

@@ -7,22 +7,13 @@ copies of status examples, blocker syntax, human-question instructions, and lane
 ownership rules, and refer to the appended section instead. Keep project-specific
 validation and deliverable requirements in WORKFLOW.md.
 
-The [operator WORKFLOW patch](templates/detent-orchestration-workflow.patch)
-records the matching migration for the separately managed Detent orchestration
-repository. It removes the duplicate protocol and contradictory lane ownership
-instructions while preserving the operator's existing edits and admission rules.
-Admission Criteria are project-owned WORKFLOW text, not a runner-appended block;
-this change does not alter admission policy.
-
 ## Optional blocker fields
 
 The common dependency example in the canonical handoff needs only `ref` and
 `reason`. The parser supplies an issue-state predicate, orchestrator ownership,
-and tick rechecks. `blocked_by` names GitHub's native dependency relation, not a
-Workpad YAML field. Resolve the blocker issue's REST ID, then POST it as `issue_id`
-to `repos/{owner}/{repo}/issues/{number}/dependencies/blocked_by`. Keep an issue-body
-`Depends on: owner/repo#123` line as the durable fallback. Refs accept `#N` or
-`owner/repo#N`, with positive N, never a URL or bare number.
+and tick rechecks. `blocked_by` is not a Workpad YAML field. Native runs never
+call the GitHub API; they report dependencies as `detent-status` blockers. Refs
+accept `#N` or `owner/repo#N`, with positive N, never a URL or bare number.
 
 For non-default checks, blockers may also specify:
 

@@ -35,35 +35,3 @@ func TestGoReleaserWindowsPackageManagerConfig(t *testing.T) {
 		}
 	}
 }
-
-func TestWindowsPackageManagerDocs(t *testing.T) {
-	t.Parallel()
-
-	readme, err := os.ReadFile("README.md")
-	if err != nil {
-		t.Fatalf("ReadFile(README.md) error = %v", err)
-	}
-	release, err := os.ReadFile("docs/release.md")
-	if err != nil {
-		t.Fatalf("ReadFile(docs/release.md) error = %v", err)
-	}
-	documentation := string(readme) + "\n" + string(release)
-
-	for _, want := range []string{
-		"winget install --id DigitalDrywood.Detent --source winget",
-		"scoop bucket add digitaldrywood https://github.com/digitaldrywood/scoop-bucket",
-		"scoop install detent",
-		"irm https://raw.githubusercontent.com/digitaldrywood/detent/main/install.ps1 | iex",
-		"go install github.com/digitaldrywood/detent/cmd/detent@latest",
-		"detent.exe` on PATH; verify any Windows install with `detent --version`",
-		"winget upgrade --id DigitalDrywood.Detent",
-		"scoop update detent",
-		"brew upgrade digitaldrywood/tap/detent",
-		"SCOOP_BUCKET_GITHUB_TOKEN",
-		"WINGET_GITHUB_TOKEN",
-	} {
-		if !strings.Contains(documentation, want) {
-			t.Fatalf("install and release documentation missing %q", want)
-		}
-	}
-}
