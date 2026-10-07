@@ -125,7 +125,7 @@ func TestNativeReworkTransfersUnpushedSourceAcrossMachines(t *testing.T) {
 					t.Fatal(err)
 				}
 				input := old.Versions[0].ChangeVersionInput
-				input.HeadSHA, input.RunID, input.AttemptID = currentHead, "", ""
+				input.HeadSHA, input.RunID, input.AttemptID, input.Validation = currentHead, "", "", nil
 				input.Code.URI, input.Code.SHA256 = nativeChangeRepository+"/commit/"+currentHead, policy.Digest([]byte(currentHead))
 				input.Source = &capture.Source
 				if _, err := h.admin.PublishChangeVersion(t.Context(), item, first.NativeChange.ChangeID, tracker.PublishChangeVersion{Mutation: nativeMutationKey(), ExpectedVersionID: first.NativeChange.VersionID, ChangeVersionInput: input, SourceBundle: capture.Bundle}); err != nil {

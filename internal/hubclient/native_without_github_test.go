@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -87,6 +88,7 @@ func TestNativeRunnerReachesHumanReviewWithoutGitHub(t *testing.T) {
 			cfg := config.Config{
 				Tracker:     config.Tracker{Kind: config.TrackerHubNative, Repository: "acme/orders"},
 				Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest},
+				Gate:        gate.Config{Run: "true"},
 			}.WithRuntimeGitHubToken("instance-canary")
 			agent := &environmentRecordingAgent{committingAgent: committingAgent{commit: true}}
 			run, err := runner.NewRunner(runner.Dependencies{

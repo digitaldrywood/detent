@@ -133,7 +133,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 	provider := &nativePlanningAgent{failure: failure}
 	agent, err := runner.NewRunner(runner.Dependencies{
 		ProjectID: "local", Store: runtimeStore,
-		Workflow:  config.Workflow{Config: config.Config{Policy: h.descriptor, Plan: plan, Tracker: config.Tracker{Kind: config.TrackerHubNative}}, Prompt: "Complete the issue"},
+		Workflow:  config.Workflow{Config: config.Config{Policy: h.descriptor, Plan: plan, Gate: gate.Config{Run: "true"}, Tracker: config.Tracker{Kind: config.TrackerHubNative}}, Prompt: "Complete the issue"},
 		Workspace: backend, AgentBackend: provider,
 		ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) {
 			if failure == "cleanup" {

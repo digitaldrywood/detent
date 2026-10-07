@@ -328,9 +328,10 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 			if command != "" {
 				commands, canRun := backend.(workspace.ReviewCommandRunner)
 				heads, canRead := backend.(workspace.HeadProvider)
+				tree, canVerify := backend.(workspace.ReviewTreeVerifier)
 				if !canRun || !canRead {
 					finalizationErr = errors.New("workspace cannot validate the finalized native head")
-				} else {
+				} else if !canVerify || tree.VerifyReviewTree(ctx, info, issue) == nil {
 					head, err := heads.Head(ctx, info, issue)
 					if err == nil {
 						validationIssue := issue

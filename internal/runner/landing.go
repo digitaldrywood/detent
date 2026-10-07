@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
@@ -70,6 +71,9 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	var result workspace.LandResult
 	defer func() {
 		if runResult.NativeLanding != nil {
+			if result.Gate.Command == "" && options.Validation != nil && options.Validation != target.Validation {
+				result.Gate = *options.Validation
+			}
 			runResult.NativeLanding.Path, runResult.NativeLanding.Packages = result.Path, result.Packages
 			runResult.NativeLanding.CI = result.CI
 			runResult.NativeLanding.Rebased = result.Rebased
@@ -107,7 +111,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 			}()
 		}
 		result, err = githubLander.LandChangeViaGitHub(ctx, info, issue, options)
-	} else {
+	} else if options.Validation, err = validateLandingHead(ctx, backend, info, issue, options); err == nil {
 		batchLander, batched := backend.(workspace.BatchLander)
 		remoteBatch, remoteBatched := req.Execution.(BatchLandingExecution)
 		remoteBatched = remoteBatched && remoteBatch.BatchLandingEnabled()
@@ -193,6 +197,26 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	r.logWorkerEvent(req.Issue, "worker_native_landed",
 		telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "merge_sha", result.MergeSHA, "base_ref", result.BaseRef, "method", result.Method)
 	return RunResult{FinalState: FinalStateCompleted, Output: RunOutputNativeLanded, NativeLanding: &landed, ForgeWriteCompleted: target.GitHubPullRequest}, nil
+}
+
+func validateLandingHead(ctx context.Context, backend workspace.Backend, info workspace.Info, issue workspace.Issue, options workspace.LandOptions) (*gate.CommandResult, error) {
+	commands, canRun := backend.(workspace.ReviewCommandRunner)
+	heads, canRead := backend.(workspace.HeadProvider)
+	if !canRun || !canRead || options.ValidationCommand == "" || workspace.ValidationCoversHead(options.Validation, options.ValidationCommand, options.HeadSHA) {
+		return options.Validation, nil
+	}
+	if head, err := heads.Head(ctx, info, issue); err != nil || strings.TrimSpace(head) != options.HeadSHA {
+		return options.Validation, nil
+	}
+	issue.PullRequestHeadSHA = options.HeadSHA
+	receipt, err := commands.RunReviewCommand(ctx, info, issue, options.ValidationCommand)
+	if err != nil {
+		return options.Validation, err
+	}
+	if receipt.ExitCode != 0 {
+		return &receipt, &workspace.ValidationError{Output: receipt.Output, Err: fmt.Errorf("exit status %d", receipt.ExitCode)}
+	}
+	return &receipt, nil
 }
 
 func sameLandingExternal(a, b *tracker.ChangeExternalReference) bool {
