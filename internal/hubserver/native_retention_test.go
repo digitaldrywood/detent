@@ -274,7 +274,7 @@ func TestProjectArchivePeriods(t *testing.T) {
 		intake string
 		days   int
 	}{
-		{"checkout-only-period", "automatic", 60},
+		{"checkout-only-period", "disabled", 60},
 		{"checkout-only-omitted-intake", "", 14},
 	} {
 		payload["idempotency_key"] = test.name
