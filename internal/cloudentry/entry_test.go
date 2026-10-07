@@ -1209,7 +1209,7 @@ func TestStoreDSN(t *testing.T) {
 			if parsed.Scheme != "file" || parsed.Host != "" || parsed.Path != tt.want || parsed.Fragment != "" || parsed.EscapedPath() != tt.escaped {
 				t.Fatalf("store URI = %v; want local path %q escaped as %q", parsed, tt.want, tt.escaped)
 			}
-			wantPragmas := []string{"busy_timeout(5000)", "foreign_keys(1)", "locking_mode(EXCLUSIVE)", "synchronous(FULL)"}
+			wantPragmas := []string{"busy_timeout(5000)", "foreign_keys(1)", "synchronous(FULL)"}
 			if len(parsed.Query()) != 1 || !slices.Equal(parsed.Query()["_pragma"], wantPragmas) {
 				t.Fatalf("pragmas = %v", parsed.Query())
 			}
