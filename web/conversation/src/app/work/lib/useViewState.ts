@@ -1,14 +1,10 @@
-// The board's view state, bound to the URL.
-//
-// The URL is the source of truth and `localStorage` is a fallback used exactly
-// once: when a reader arrives at a project's board with no query string at
-// all. A pasted link therefore always shows what its sender saw, and a reader
-// who comes back to a project they were filtering gets their filter without
-// having to reapply it.
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import React from "react";
 
+import { useClient } from "../../client.ts";
+import { useWorkHttp } from "./useWork.ts";
 import {
+  DEFAULT_VIEW_STATE,
   parseViewState,
   readStoredViewState,
   serializeViewState,
@@ -28,42 +24,65 @@ export function useViewState(
   projectId: string | null,
 ): readonly [WorkViewState, (next: WorkViewState) => void] {
   const navigate = useNavigate();
+  const http = useWorkHttp();
+  const client = useClient();
   const searchStr = useRouterState({ select: (state) => state.location.searchStr });
-  const view = React.useMemo(() => parseViewState(searchStr), [searchStr]);
-  const scope = viewScopeKey(projectId);
-  const restored = React.useRef<string | null>(null);
+  const search = React.useRef(searchStr);
+  search.current = searchStr;
+  const scope = JSON.stringify([client.http.origin, client.http.apiBase, client.bootstrap.organization.id,
+    client.bootstrap.actor?.principal_id, viewScopeKey(projectId)]);
+  const cached = React.useMemo(() => readStoredViewState(scope) ?? DEFAULT_VIEW_STATE, [scope]);
+  const [resolved, setResolved] = React.useState({ scope, view: cached });
+  const session = React.useRef<{ scope: string; changed: boolean; save: (next: WorkViewState) => void } | null>(null);
+  const writes = React.useRef<Promise<unknown>>(Promise.resolve());
+  const fallback = resolved.scope === scope ? resolved.view : cached;
+  const view = searchStr.replace(/^\?/, "").length > 0 ? parseViewState(searchStr) : fallback;
 
-  const setView = React.useCallback(
-    (next: WorkViewState) => {
-      writeStoredViewState(scope, next);
-      void navigate({
-        // `to: "."` keeps the route and replaces only the query, so changing a
-        // filter never re-mounts the board.
-        to: ".",
-        search: viewSearch(next),
-        replace: true,
-      });
-    },
-    [navigate, scope],
-  );
-
-  // Restore once per scope, and only into an empty query string: a link that
-  // carries any parameter at all is the sender's view, not the reader's.
   React.useEffect(() => {
-    if (restored.current === scope) return;
-    restored.current = scope;
-    if (searchStr.replace(/^\?/, "").length > 0) return;
-    const stored = readStoredViewState(scope);
-    if (stored === null) return;
-    void navigate({
-      to: ".",
-      search: viewSearch(stored),
-      replace: true,
-    });
-    // `searchStr` is read, not depended on: a later edit to the query must not
-    // re-run the restore and overwrite what the reader just typed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, navigate]);
+    const controller = new AbortController();
+    const initialSearch = search.current;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let pending: WorkViewState | null = null;
+    const flush = () => {
+      if (pending === null) return;
+      const next = pending;
+      pending = null;
+      const query = serializeViewState(next);
+      writes.current = writes.current.catch(() => undefined).then(async () => {
+        const confirmed = await http.setViewPreference(projectId, query === "" ? null : query);
+        writeStoredViewState(scope, parseViewState(confirmed.query ?? ""));
+      }).catch(() => undefined);
+    };
+    const current = { scope, changed: false, save: (next: WorkViewState) => {
+      pending = next;
+      clearTimeout(timer);
+      timer = setTimeout(flush, 400);
+    } };
+    session.current = current;
+    void http.getViewPreference(projectId, controller.signal).then((preference) => {
+      if (controller.signal.aborted || current.changed) return;
+      const restored = parseViewState(preference.query ?? "");
+      writeStoredViewState(scope, restored);
+      setResolved({ scope, view: restored });
+      if (initialSearch.replace(/^\?/, "").length > 0 || search.current !== initialSearch) return;
+      void navigate({ to: ".", search: viewSearch(restored), replace: true });
+    }).catch(() => undefined);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+      flush();
+    };
+  }, [http, navigate, projectId, scope]);
+
+  const setView = React.useCallback((next: WorkViewState) => {
+    const current = session.current;
+    if (current?.scope === scope) {
+      current.changed = true;
+      current.save(next);
+    }
+    setResolved({ scope, view: next });
+    void navigate({ to: ".", search: viewSearch(next), replace: true });
+  }, [navigate, scope]);
 
   return [view, setView] as const;
 }

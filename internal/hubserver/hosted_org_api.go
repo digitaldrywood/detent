@@ -34,6 +34,11 @@ const hostedOrganizationBase = "/api/v2/organizations/:organization"
 
 func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	session := s.hostedSessionOnly
+	for _, path := range []string{hostedOrganizationBase + "/work-view-preference", hostedOrganizationBase + "/projects/:project/work-view-preference"} {
+		e.GET(path, s.workViewPreference, session)
+		e.PUT(path, s.workViewPreference, session)
+		e.DELETE(path, s.workViewPreference, session)
+	}
 	e.GET(hostedOrganizationBase+"/integrations/slack", s.getSlackIntegration, session)
 	e.PUT(hostedOrganizationBase+"/integrations/slack", s.setSlackIntegration, session)
 	e.POST(hostedOrganizationBase+"/integrations/slack/test", s.testSlackIntegration, session)

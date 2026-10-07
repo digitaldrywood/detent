@@ -153,6 +153,8 @@ export interface ListWorkItemsInput {
 }
 
 export interface WorkHttp {
+  readonly getViewPreference: (projectId: string | null, signal?: AbortSignal) => Promise<{ readonly query: string | null }>;
+  readonly setViewPreference: (projectId: string | null, query: string | null) => Promise<{ readonly query: string | null }>;
   readonly origin: string;
   readonly apiBase: string;
   /**
@@ -436,6 +438,9 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   const doFetch: FetchLike = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
   const projectBase = (projectId: string) =>
     `${options.apiBase}/projects/${encodeURIComponent(projectId)}`;
+  const viewPreferenceUrl = (projectId: string | null) =>
+    `${options.origin}${projectId === null ? options.apiBase : projectBase(projectId)}/work-view-preference`;
+  const viewPreferenceSchema = Schema.Struct({ query: Schema.NullOr(Schema.String) });
   const itemBase = (projectId: string, itemId: string) =>
     `${projectBase(projectId)}/work-items/${encodeURIComponent(itemId)}`;
   const workspaceBase = (projectId: string, workspaceId: string) =>
@@ -545,6 +550,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   return {
     origin: options.origin,
     apiBase: options.apiBase,
+    getViewPreference: (projectId, signal) => send(viewPreferenceSchema, "GET", viewPreferenceUrl(projectId), undefined, signal),
+    setViewPreference: (projectId, query) => send(viewPreferenceSchema, query === null ? "DELETE" : "PUT", viewPreferenceUrl(projectId), query === null ? undefined : { query }),
     eventsUrl: (projectId, workspaceId, workItemId) =>
       url(hubPath(`/projects/${encodeURIComponent(projectId)}/events`), { workspace: workspaceId, work_item: workItemId }),
     listHealthFindings: (projectId, cursor, signal) => send(HealthFindingsRead, "GET", url(`${projectBase(projectId)}/health/findings`, { cursor }), undefined, signal),
