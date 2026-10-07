@@ -66,6 +66,7 @@ archives:
 
 brews:
   - name: detent
+    skip_upload: auto
     ids:
       - detent
     repository:
@@ -136,7 +137,7 @@ scoops:
     description: Agent orchestrator for tracker-backed work queues
     license: FSL-1.1-ALv2
     commit_msg_template: "scoop: update detent to {{ .Tag }}"
-    skip_upload: "{{ if index .Env \"SCOOP_BUCKET_GITHUB_TOKEN\" }}false{{ else }}true{{ end }}"
+    skip_upload: "{{ if index .Env \"SCOOP_BUCKET_GITHUB_TOKEN\" }}auto{{ else }}true{{ end }}"
 
 winget:
   - name: Detent
@@ -161,7 +162,7 @@ winget:
     commit_msg_template: "{{ .PackageIdentifier }}: {{ .Tag }}"
     ids:
       - detent
-    skip_upload: "{{ if index .Env \"WINGET_GITHUB_TOKEN\" }}false{{ else }}true{{ end }}"
+    skip_upload: "{{ if index .Env \"WINGET_GITHUB_TOKEN\" }}auto{{ else }}true{{ end }}"
     url_template: "https://github.com/digitaldrywood/detent/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
     short_description: Agent orchestrator for tracker-backed work queues
     description: Detent is status-driven agentic work orchestration for tracker-backed work queues.
@@ -183,6 +184,8 @@ checksum:
     - glob: ./tmp/detent_release_provenance.json
 
 release:
+  prerelease: auto
+  make_latest: "{{ if .Prerelease }}false{{ else }}true{{ end }}"
   extra_files:
     - glob: ./tmp/detent_release_provenance.json
 

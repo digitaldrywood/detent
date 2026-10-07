@@ -177,8 +177,14 @@ job on it regardless of existing tags. Only the successful full-suite finalizer
 publishes `scheduled-full-ci`, creates an annotated validated patch tag and
 dispatches release; release deploys staging, runs its smoke, then deploys
 production and runs its smoke, and a failed smoke stops promotion. An already
-validated commit receives no new tag or deploy, and production artifacts use
-validated tags only. Every failing scheduled job is reported through the
+validated commit receives no new stable tag or deploy. Operator-landed Cloud
+deploys may dispatch the existing release workflow on a pinned develop commit:
+its successful `make check-land` Actions check is authenticated by the existing
+provenance owner, and the workflow publishes a signed next-patch `op.<sha12>`
+prerelease before deploying the same version and binary through staging and
+production. These prereleases do not replace stable installer or package feeds;
+enrolled runners follow the Hub through the existing coordinated update owner.
+Every failing scheduled job is reported through the
 selected native owner at least High into Todo under a stable job fingerprint,
 following [deployment and release failure reporting](../AGENTS.md#deployment-and-release-failure-reporting);
 infrastructure reports carry the infrastructure label and CI-instance
