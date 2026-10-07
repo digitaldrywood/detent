@@ -106,14 +106,15 @@ type Service struct {
 	attachmentSweepAt time.Time
 	githubRoutes      githubRoutes
 
-	stopAllocator context.CancelFunc
-	allocatorDone chan struct{}
-	wake          chan struct{}
-	stopBilling   context.CancelFunc
-	billingDone   chan struct{}
+	stopAllocator     context.CancelFunc
+	allocatorDone     chan struct{}
+	wake              chan struct{}
+	stopBilling       context.CancelFunc
+	billingDone       chan struct{}
+	closeDevelopState func() error
 }
 
-func Open(ctx context.Context, cfg Config) (*Service, error) {
+func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -129,6 +130,15 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if cfg.generateToken == nil {
 		cfg.generateToken = apikey.GenerateToken
 	}
+	cfg, closeDevelopState, err := prepareDevelopState(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if resultErr != nil && closeDevelopState != nil {
+			resultErr = errors.Join(resultErr, closeDevelopState())
+		}
+	}()
 	var attachments attachment.Storage
 	if cfg.Attachments != nil {
 		var err error
@@ -156,7 +166,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, errors.Join(err, authStorage.Close(), registry.Close())
 	}
-	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.now, seal: seal}, secure: strings.HasPrefix(cfg.PublicURL, "https://")}
+	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.now, seal: seal}, secure: strings.HasPrefix(cfg.PublicURL, "https://"), closeDevelopState: closeDevelopState}
 	service.attachments = attachments
 	if cfg.transport == nil {
 		service.config.transport = service.tenantTransport
@@ -165,6 +175,9 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	service.echo.HideBanner, service.echo.HidePort = true, true
 	service.echo.Server.ReadHeaderTimeout = 5 * time.Second
 	service.routes()
+	if err := service.routeDevelopTenants(ctx); err != nil {
+		return nil, errors.Join(err, service.Close())
+	}
 	service.startAllocator(ctx)
 	if err := service.initializeGitHubRoutes(ctx); err != nil {
 		return nil, errors.Join(err, service.Close())
@@ -183,7 +196,11 @@ func (s *Service) Registry() *Registry {
 
 func (s *Service) Close() error {
 	s.closeBillingWorker()
-	return errors.Join(s.closeAllocator(), s.registry.Close(), s.auth.store.Close())
+	err := errors.Join(s.closeAllocator(), s.registry.Close(), s.auth.store.Close())
+	if s.closeDevelopState != nil {
+		err = errors.Join(err, s.closeDevelopState())
+	}
+	return err
 }
 
 func Run(ctx context.Context, cfg Config) (resultErr error) {
