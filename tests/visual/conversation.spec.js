@@ -361,6 +361,15 @@ test("creates a chat from the keyboard", async ({ page }) => {
   // segment is the heading, and the sidebar sections stay at level two.
   await expectOneHeadingOne(page, "Why does the lease lapse under load?");
   await expectNoSeriousAxeViolations(page, "an active conversation");
+  const projectCrumb = page.locator("[data-chat-header]").getByRole("button", {
+    name: "New thread in Browser collaboration", exact: true,
+  });
+  await projectCrumb.hover();
+  await expect(tooltip(page)).toHaveText("New thread in Browser collaboration");
+  await projectCrumb.click();
+  await expect(page).toHaveURL(/\/chat$/);
+  await expect(page.getByTestId("hero-headline")).toContainText("Browser collaboration");
+  await expect(composer(page)).toBeFocused();
   expect(errors).toEqual([]);
 });
 

@@ -66,6 +66,10 @@ interface ChatHeaderProps {
   readonly onOpenPullRequest?: ((number: number) => void) | undefined;
   onAsk?: (() => void) | undefined;
   onNewThreadInProject: () => void;
+  projectBreadcrumbAction?: {
+    readonly label: string;
+    readonly onClick: () => void;
+  } | undefined;
   onOpenProjectSettings?: (() => void) | undefined;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<ProjectScriptActionResult>;
@@ -136,6 +140,7 @@ export const ChatHeader = memo(function ChatHeader({
   onOpenPullRequest,
   onAsk,
   onNewThreadInProject,
+  projectBreadcrumbAction,
   onOpenProjectSettings,
   onRunProjectScript,
   onAddProjectScript,
@@ -159,6 +164,7 @@ export const ChatHeader = memo(function ChatHeader({
   }, [panelAnimationDurationMs, panelAnimationsActive]);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const activeProjectName = activeProject?.title;
+  const projectBreadcrumbLabel = projectBreadcrumbAction?.label ?? `New thread in ${activeProjectName}`;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const fileScripts = useProjectFileScripts(
     activeThreadEnvironmentId,
@@ -334,8 +340,8 @@ export const ChatHeader = memo(function ChatHeader({
                   render={
                     <button
                       type="button"
-                      aria-label={`New thread in ${activeProjectName}`}
-                      onClick={onNewThreadInProject}
+                      aria-label={projectBreadcrumbLabel}
+                      onClick={projectBreadcrumbAction?.onClick ?? onNewThreadInProject}
                       className="inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                     />
                   }
@@ -343,7 +349,7 @@ export const ChatHeader = memo(function ChatHeader({
                   <ProjectFavicon project={activeProject} className="size-3.5" />
                   <span className="max-w-40 truncate">{activeProjectName}</span>
                 </TooltipTrigger>
-                <TooltipPopup side="top">New thread in {activeProjectName}</TooltipPopup>
+                <TooltipPopup side="top">{projectBreadcrumbLabel}</TooltipPopup>
               </Tooltip>
             </WorkspaceBreadcrumbItem>
             <WorkspaceBreadcrumbSeparator />
