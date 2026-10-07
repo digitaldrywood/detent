@@ -93,6 +93,13 @@ type MoveItemArguments struct {
 	ExpectedRevision int64  `json:"expected_revision,string"`
 }
 
+type SetPriorityArguments struct {
+	ExpectedRevision int64  `json:"expected_revision,string"`
+	ProjectID        string `json:"project_id"`
+	Identifier       string `json:"identifier"`
+	Priority         string `json:"priority"`
+}
+
 func DecodeNativeMoveItem(raw json.RawMessage) (MoveItemArguments, error) {
 	var request MoveItemArguments
 	definition, _ := Lookup(MoveItem)

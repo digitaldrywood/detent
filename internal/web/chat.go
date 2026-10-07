@@ -266,12 +266,7 @@ func (s chatExplanationSnapshots) Snapshot(ctx context.Context) (explain.Snapsho
 }
 
 func (s *Server) chatMoveProposal(ctx context.Context, raw json.RawMessage) (chatpkg.ToolResult, error) {
-	var request struct {
-		ExpectedRevision int64  `json:"expected_revision,string"`
-		ProjectID        string `json:"project_id"`
-		Identifier       string `json:"identifier"`
-		TargetState      string `json:"target_state"`
-	}
+	var request operatortool.MoveItemArguments
 	if err := decodeChatToolArguments(raw, &request); err != nil {
 		return chatpkg.ToolResult{}, err
 	}
@@ -308,12 +303,7 @@ func (s *Server) chatMoveProposal(ctx context.Context, raw json.RawMessage) (cha
 }
 
 func (s *Server) chatPriorityProposal(ctx context.Context, raw json.RawMessage) (chatpkg.ToolResult, error) {
-	var request struct {
-		ExpectedRevision int64  `json:"expected_revision,string"`
-		ProjectID        string `json:"project_id"`
-		Identifier       string `json:"identifier"`
-		Priority         string `json:"priority"`
-	}
+	var request operatortool.SetPriorityArguments
 	if err := decodeChatToolArguments(raw, &request); err != nil {
 		return chatpkg.ToolResult{}, err
 	}
