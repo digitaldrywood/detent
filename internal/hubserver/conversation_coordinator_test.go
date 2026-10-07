@@ -453,35 +453,42 @@ func TestConversationCoordinatorAnswersPendingMessages(t *testing.T) {
 func TestConversationCoordinatorPromptTranscriptOnlyWithoutThread(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name     string
-		threadID string
-		want     bool
+		name             string
+		threadID         string
+		want             bool
+		question, answer string
+		followup         string
 	}{
-		{name: "no thread includes transcript", threadID: "", want: true},
-		{name: "thread carries context", threadID: "thread-existing", want: false},
+		{name: "no thread includes transcript", threadID: "", want: true, question: "earlier question", answer: "earlier answer", followup: "follow-up"},
+		{name: "thread carries context", threadID: "thread-existing", want: false, question: "earlier question", answer: "earlier answer", followup: "follow-up"},
+		{name: "Sprite answers survive fresh turn", want: true, question: "I want to add sprites to this project", answer: "How many runners? Default floor 1, ceiling 1.", followup: "no extra steps, 2 and 2"},
+		{name: "Sprite answers stay in resumed thread", threadID: "thread-sprites", question: "I want to add sprites to this project", answer: "How many runners? Default floor 1, ceiling 1.", followup: "no extra steps, 2 and 2"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newCoordinatorFixture(t, "transcript-"+strings.ReplaceAll(test.name, " ", "-"))
 			record := f.seed(t, "Earlier chat", func(record *conversationRecord) { record.ProviderThreadID = test.threadID })
-			f.history(t, &record, conversation.RoleUser, "earlier question", conversation.DeliveryDelivered)
-			f.history(t, &record, conversation.RoleAssistant, "earlier answer", conversation.DeliveryCompleted)
-			f.say(t, &record, "follow-up")
+			f.history(t, &record, conversation.RoleUser, test.question, conversation.DeliveryDelivered)
+			f.history(t, &record, conversation.RoleAssistant, test.answer, conversation.DeliveryCompleted)
+			f.say(t, &record, test.followup)
 			f.backend.waitStarted(t)
 			f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
 			request := f.backend.request(t, 0)
 			if !strings.Contains(request.Prompt, "## Available skills") || !strings.Contains(request.Prompt, "split-issue: Break one large Detent issue") || !strings.Contains(request.Prompt, "decompose-issue") || strings.Contains(request.Prompt, "# Split a large issue into dependent issues") {
 				t.Fatalf("prompt should list built-in metadata without the skill body: %q", request.Prompt)
 			}
-			if got := strings.Contains(request.Prompt, "earlier answer"); got != test.want {
+			if got := strings.Contains(request.Prompt, test.answer); got != test.want {
 				t.Fatalf("prompt transcript present = %v, want %v: %q", got, test.want, request.Prompt)
 			}
-			if !strings.Contains(request.Prompt, "follow-up") {
+			if !strings.Contains(request.Prompt, test.followup) {
 				t.Fatalf("prompt = %q, want the pending message", request.Prompt)
 			}
-			if test.want && (!strings.Contains(request.Prompt, "<transcript>") || strings.Index(request.Prompt, "earlier answer") > strings.Index(request.Prompt, "follow-up")) {
+			if test.want && (!strings.Contains(request.Prompt, "<transcript>") || !strings.Contains(request.Prompt, test.question) || strings.Index(request.Prompt, test.answer) > strings.Index(request.Prompt, test.followup)) {
 				t.Fatalf("prompt = %q, want delimited transcript before the new messages", request.Prompt)
+			}
+			if strings.HasPrefix(test.name, "Sprite") && (!strings.Contains(request.ToolInstructions, "never repeat an answered question") || !strings.Contains(request.ToolInstructions, "use min_runners 2, max_runners 2 and omit bootstrap")) {
+				t.Fatal("provider request must carry guidance to use earlier Sprite answers")
 			}
 			if request.Resume.ThreadID != test.threadID {
 				t.Fatalf("resume = %q, want %q", request.Resume.ThreadID, test.threadID)

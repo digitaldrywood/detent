@@ -8,19 +8,32 @@ items and wakes the runner for new work. This guide takes you from a Fly account
 to a completed issue with the console closed.
 
 An organization owner or admin with the project's runner-management grant can
-also ask **Luna** to "run this project on Fly Sprites." Luna reads the project's
-pool, links to the existing Sprites connector for secure token entry, and
-previews the floor, ceiling and customer bootstrap steps for approval in chat.
-Start with a floor and ceiling of one to connect the first runner even before
-there is queued work. New Sprites run the saved customer bootstrap before the
-pinned runner bootstrap. Reserve customer bootstrap for prerequisites that
-cannot live in a readable repository file, such as obtaining credentials from
-your secret service and preparing the checkout. Put project tool installation
-in the repository setup script described below.
+also ask **Luna** to add Sprites, add a runner, set up Fly, or provide more
+capacity. The AI guided conversation from the Runners page uses the same intake.
+Luna asks one question at a time and remembers answers already given:
 
-Luna reports bootstrap progress and provider readiness. Follow the sign-in steps
-below inside the Sprite; never paste tokens, provider API keys or private
-bootstrap credentials into chat. After a token, billing or bootstrap failure,
+1. Which project? The default is the conversation's project.
+2. Luna reads whether the Sprites organization token is set. If it is missing,
+   follow the secure connector link, save it there, and return to continue.
+3. How many runners? The first-runner default is a floor and ceiling of 1/1,
+   which you can accept with "yes". The floor retains minimum capacity and can
+   incur Fly usage without queued work; the ceiling limits growth and potential
+   concurrent usage. Provider subscriptions and usage are separate costs.
+4. Any bootstrap steps beyond Git access, checkout and dependencies? The default
+   is none. Keep credentials out of chat and bootstrap; use customer-owned
+   login/setup inside the Sprite. "No extra steps" preserves saved bootstrap.
+5. Review one preview of the settings and approve it in chat.
+
+You can answer several questions together, for example "no extra steps, 2 and
+2". Luna uses those answers without asking again. New Sprites run the saved
+customer bootstrap before the pinned runner bootstrap. Put project tool
+installation in the repository setup script described below.
+
+Luna reports observed bootstrap progress in plain language and gives the next
+action you need to take, such as provider sign-in inside the Sprite or Git
+access. Follow the sign-in steps below inside the Sprite; never paste tokens,
+provider API keys or private bootstrap credentials into chat. After a token,
+billing or bootstrap failure,
 correct the cause and approve Luna's scale-up retry. The existing pool lifecycle
 cleans up the failed member and provisions within the saved bounds. A connected
 runner still needs Git access, configured providers and approved repository

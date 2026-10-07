@@ -37,6 +37,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 		if coordinatorSpriteMutation(tool) {
 			outcomes = append(outcomes, "no runner grant", "runner grant revoked", "grantless project")
 		}
+		if tool == "set_sprite_pool" {
+			outcomes = append(outcomes, "intake preview")
+		}
 		for _, outcome := range outcomes {
 			t.Run(tool+"/"+outcome, func(t *testing.T) {
 				f := newHostedSecurityFixture(t, func(cfg *Config) {
@@ -78,7 +81,11 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				id := issue.WorkItemID
 				db := f.service.database.db
 				seedCoordinatorRepository(t, f.service, f.project)
-				response = f.request(t, u, http.MethodPost, f.base+"/conversations", map[string]any{"key": "luna-conversation", "first_message": map[string]any{"key": "luna-message", "text": "Please change this project"}})
+				text := "Please change this project"
+				if outcome == "intake preview" {
+					text = "no extra steps, 2 and 2"
+				}
+				response = f.request(t, u, http.MethodPost, f.base+"/conversations", map[string]any{"key": "luna-conversation", "first_message": map[string]any{"key": "luna-message", "text": text}})
 				requireNativeStatus(t, response, http.StatusCreated)
 				var created struct {
 					Conversation struct {
@@ -120,6 +127,26 @@ func TestCoordinatorProjectActions(t *testing.T) {
 							if err != nil || !result.Success || strings.Contains(result.Content, spritesSecretSentinel) || strings.Contains(result.Content, "private-provider-secret") {
 								t.Fatalf("unsafe or unavailable Sprite read %s: %+v, %v", name, result, err)
 							}
+						}
+					}
+					if outcome == "intake preview" {
+						result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: "get_sprite_pool", Arguments: json.RawMessage(`{}`)})
+						if err != nil || !result.Success {
+							t.Fatalf("read intake state: %+v, %v", result, err)
+						}
+						var status struct {
+							Token struct {
+								Present bool `json:"present"`
+							} `json:"token"`
+							MinRunners          int   `json:"min_runners"`
+							MaxRunners          int   `json:"max_runners"`
+							BootstrapConfigured bool  `json:"bootstrap_configured"`
+							ConnectedRunners    *int  `json:"connected_runners"`
+							Members             []any `json:"members"`
+						}
+						decodeToolResult(t, result, &status)
+						if !status.Token.Present || status.MinRunners != 1 || status.MaxRunners != 1 || !status.BootstrapConfigured || status.ConnectedRunners == nil || status.Members == nil {
+							t.Fatalf("intake read must supply setup facts: %s", result.Content)
 						}
 					}
 				}
@@ -217,6 +244,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}, "edges": []chat.IssueSplitEdge{{Dependent: 2, Blocker: 1}}}
 				case "set_sprite_pool":
 					arguments = map[string]any{"min_runners": 0, "max_runners": 0}
+					if outcome == "intake preview" {
+						arguments = map[string]any{"min_runners": 2, "max_runners": 2}
+					}
 				case "scale_up_sprite_pool":
 					arguments = map[string]any{}
 				}
@@ -336,6 +366,37 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				}
 				if action.RequestID == "" {
 					t.Fatal("inline proposal missing")
+				}
+				if outcome == "intake preview" {
+					var change coordinatorSpriteChange
+					if err := json.Unmarshal(action.Arguments, &change); err != nil {
+						t.Fatal(err)
+					}
+					if change.Input.MinRunners == nil || *change.Input.MinRunners != 2 || change.Input.MaxRunners == nil || *change.Input.MaxRunners != 2 || change.Input.Bootstrap != nil {
+						t.Fatalf("combined answer preview must preserve bootstrap: %s", action.Arguments)
+					}
+					var proposals int
+					for _, message := range messages {
+						var data map[string]json.RawMessage
+						if json.Unmarshal(message.Data, &data) == nil && data["operator_action"] != nil {
+							proposals++
+						}
+					}
+					assertCoordinatorEffect(t, f, id, tool, false)
+					if proposals != 1 {
+						t.Fatalf("intake produced %d previews, want one", proposals)
+					}
+					response = f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
+					requireNativeStatus(t, response, http.StatusOK)
+					var floor, ceiling int
+					var bootstrap string
+					if err := db.QueryRowContext(t.Context(), "SELECT min_runners,max_runners,bootstrap FROM project_sprite_pools WHERE project_id=?", f.project).Scan(&floor, &ceiling, &bootstrap); err != nil {
+						t.Fatal(err)
+					}
+					if floor != 2 || ceiling != 2 || bootstrap != "private-provider-secret" {
+						t.Fatalf("approved intake saved floor=%d ceiling=%d bootstrap=%q", floor, ceiling, bootstrap)
+					}
+					return
 				}
 				if outcome == "number resolution" {
 					var archive chat.IssueArchive
