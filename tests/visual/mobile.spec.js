@@ -6,7 +6,6 @@ const {
 } = require("./kanban-touch-evidence");
 
 test.describe.configure({ mode: "serial" });
-test.skip(({ isMobile }) => !isMobile, "mobile project only");
 
 const routes = [
   { name: "board", path: "/", scenario: "fleet-kanban-multiproject" },

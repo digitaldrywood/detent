@@ -482,10 +482,6 @@ test.describe("the issue page", () => {
     expect(errors).toEqual([]);
   });
 
-  test("merges attempts into the activity feed", async () => {
-    test.skip(true, "The preview seeds no runner attempt: the attempt and diff seeding slice of #2635 is not ported.");
-  });
-
   // Driven on the linked issue rather than on the board's card, so it does not
   // depend on where the keyboard-move test above left that one.
   test("changes the lane from the properties sidebar and records the move", async ({ page }) => {
@@ -552,10 +548,6 @@ test.describe("the issue page", () => {
 
     expect(errors).toEqual([]);
     await scan(page, "issue-with-conversation-panel");
-  });
-
-  test("shows the stored attempt diff, hunks and denied file alike", async () => {
-    test.skip(true, "The preview seeds no stored attempt diff: the attempt and diff seeding slice of #2635 is not ported.");
   });
 
   test("posts a comment that appears as a card in the feed", async ({ page }) => {
@@ -634,7 +626,6 @@ test.describe("the issue page", () => {
   });
 
   test("scans the open label picker", async ({ page }) => {
-    test.skip(true, "Product bug on main: axe aria-hidden-focus flags the tabbable Base UI focus guards around the open label picker.");
     await openWork(page, `/work/i/${hub.fixture.work_item}`);
     await page.getByRole("heading", { level: 1 }).click();
     await page.keyboard.press("l");

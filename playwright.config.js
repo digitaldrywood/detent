@@ -46,6 +46,11 @@ module.exports = defineConfig({
   projects: [
     {
       name: "chromium",
+      testIgnore: [
+        "**/mobile.spec.js",
+        "**/mobile-guard.mobile.spec.js",
+        "**/card-detail-async.mobile.spec.js",
+      ],
     },
     {
       name: "mobile-chromium",
