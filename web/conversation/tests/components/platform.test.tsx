@@ -3,11 +3,12 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
+import { STALE_STAFF_MESSAGE } from "../../src/app/entry/PlatformStaff.tsx";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AccountError } from "../../src/app/account/api.ts";
-import { type EntryApi, SIGN_IN_PLATFORM } from "../../src/app/entry/api.ts";
+import { type EntryApi, type PlatformMembers, makeEntryApi, SIGN_IN_PLATFORM } from "../../src/app/entry/api.ts";
 import {
   EntryApiContext,
 } from "../../src/app/entry/EntryScreens.tsx";
@@ -104,6 +105,8 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     resumePlatformTenant: vi.fn(async () => ({ next: "/platform/tenants" })),
     platformOrganizations: vi.fn(async () => organizations),
     platformAllowlist: vi.fn(async () => allowlist),
+    platformMembers: vi.fn(async () => ({ members: [], revision: 1, self: { email: "admin@detent.build", role: "admin" } })),
+    changePlatformMember: vi.fn(async () => ({ email: "new@example.test", role: "viewer", revision: 2 })),
     platformHealth: vi.fn(async () => health),
     platformEntitlements: vi.fn(async () => entitlements),
     changePlatformEntitlement: vi.fn(async () => ({ action: "grant", grant_id: "comp_new" })),
@@ -508,5 +511,156 @@ describe("tenant discovery and detail", () => {
     expect(api.resumePlatformTenant).not.toHaveBeenCalled();
     fireEvent.click(within(confirmation).getByRole("button", { name: "Resume" }));
     await waitFor(() => expect(api.resumePlatformTenant).toHaveBeenCalledWith({ organization: "org_beta", csrf: "staff-csrf" }));
+  });
+});
+
+if (typeof globalThis.PointerEvent === "undefined") globalThis.PointerEvent = globalThis.MouseEvent as unknown as typeof PointerEvent;
+
+
+const member = (email: string, role: string, bootstrap = false) => ({ email, role, bootstrap,
+  added_by: bootstrap ? "bootstrap" : "admin@example.test", added_at: "2026-10-07T12:00:00Z", updated_at: "2026-10-07T12:00:00Z" });
+const listing: PlatformMembers = { revision: 4, self: { email: "admin@example.test", role: "admin" }, members: [
+  member("admin@example.test", "admin"), member("bootstrap@example.test", "admin", true), member("support@example.test", "support"),
+] };
+
+function openStaff(overrides: Partial<EntryApi> = {}) {
+  let current = listing;
+  const api: EntryApi = { ...makeEntryApi(),
+    session: vi.fn(async () => ({ email: "admin@example.test", csrf: "staff-csrf", platform_role: "admin" })),
+    organizations: vi.fn(async () => ({ email: "admin@example.test", csrf: "staff-csrf", organizations: [] })),
+    platformMembers: vi.fn(async () => current),
+    changePlatformMember: vi.fn(async ({ change }) => {
+      const members = change.action === "add" ? [...current.members, member(change.email, change.role!)] :
+        change.action === "remove" ? current.members.filter((member) => member.email !== change.email) :
+          current.members.map((member) => member.email === change.email ? { ...member, role: change.role! } : member);
+      current = { ...current, members, revision: current.revision + 1 };
+      return { email: change.email, role: change.role ?? "", revision: current.revision };
+    }), ...overrides,
+  };
+  const router = makeEntryRouter(createMemoryHistory({ initialEntries: ["/platform/staff"] }));
+  render(<EntryApiContext.Provider value={api}><RouterProvider router={router} /></EntryApiContext.Provider>);
+  return api;
+}
+
+async function selectRole(label: string, role: string) {
+  await userEvent.click(screen.getByRole("combobox", { name: label }));
+  await userEvent.click(await screen.findByRole("option", { name: role }));
+}
+
+function reason(dialog: HTMLElement, value = "  staffing change  ") {
+  fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value } });
+}
+
+describe("platform staff", () => {
+  it("adds a normalized email with a reason and uses the refreshed revision for removal", async () => {
+    const api = openStaff();
+    await screen.findByRole("table", { name: "Platform members" });
+    fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("combobox", { name: "Role" }).textContent).toContain("Viewer");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("valid email");
+    fireEvent.change(within(dialog).getByLabelText("Email"), { target: { value: " New@Example.test " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Give a reason");
+    expect(api.changePlatformMember).not.toHaveBeenCalled();
+    reason(dialog);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(api.changePlatformMember).toHaveBeenCalledWith({ csrf: "staff-csrf", change: {
+      action: "add", email: "new@example.test", role: "viewer", reason: "staffing change", expected_revision: 4, idempotency_key: expect.any(String),
+    } }));
+    const row = (await screen.findByText("new@example.test")).closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Remove" }));
+    const removal = await screen.findByRole("alertdialog");
+    fireEvent.click(within(removal).getByRole("button", { name: "Remove member" }));
+    expect((await within(removal).findByRole("alert")).textContent).toContain("Give a reason");
+    reason(removal);
+    fireEvent.click(within(removal).getByRole("button", { name: "Remove member" }));
+    await waitFor(() => expect(api.changePlatformMember).toHaveBeenLastCalledWith({ csrf: "staff-csrf", change: {
+      action: "remove", email: "new@example.test", reason: "staffing change", expected_revision: 5, idempotency_key: expect.any(String),
+    } }));
+    await waitFor(() => expect(screen.queryByText("new@example.test")).toBeNull());
+  });
+
+  it("keeps the old role until confirmation, supports cancellation and requires a reason", async () => {
+    const api = openStaff();
+    await screen.findByRole("table");
+    await selectRole("Role for support@example.test", "Billing");
+    let dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("heading").textContent).toBe("Change role for support@example.test from Support to Billing");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("combobox", { name: "Role for support@example.test" }).textContent).toContain("Support");
+    expect(api.changePlatformMember).not.toHaveBeenCalled();
+    await selectRole("Role for support@example.test", "Billing");
+    dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change role" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Give a reason");
+    reason(dialog);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change role" }));
+    await waitFor(() => expect(api.changePlatformMember).toHaveBeenCalledWith({ csrf: "staff-csrf", change: {
+      action: "change", email: "support@example.test", role: "billing", reason: "staffing change", expected_revision: 4, idempotency_key: expect.any(String),
+    } }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Role for support@example.test" }).textContent).toContain("Billing"));
+  });
+
+  it.each([
+    { name: "own", value: listing, email: "admin@example.test", tooltip: "You cannot change your own role" },
+    { name: "bootstrap", value: listing, email: "bootstrap@example.test", tooltip: "The bootstrap admin cannot be demoted" },
+    { name: "last admin", value: { ...listing, self: { email: "reader@example.test", role: "admin" }, members: [member("last@example.test", "admin")] }, email: "last@example.test", tooltip: "At least one admin is required" },
+  ])("protects the $name row", async ({ value, email, tooltip }) => {
+    openStaff({ platformMembers: vi.fn(async () => value) });
+    const table = await screen.findByRole("table", { name: "Platform members" });
+    const row = within(table).getByRole("combobox", { name: `Role for ${email}` }).closest("tr")!;
+    expect((within(row).getByRole("combobox") as HTMLButtonElement).disabled).toBe(true);
+    expect(within(row).queryByRole("button", { name: "Remove" })).toBeNull();
+    expect(within(row).getByLabelText(tooltip)).toBeTruthy();
+  });
+
+  it("shows a duplicate error inline and allows correction", async () => {
+    const api = openStaff({ changePlatformMember: vi.fn(async () => { throw new AccountError({ status: 409, code: "already_member", message: "Already a member" }); }) });
+    await screen.findByRole("table");
+    fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Email"), { target: { value: "support@example.test" } });
+    reason(dialog);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toBe("Already a member");
+    expect((within(dialog).getByLabelText("Email") as HTMLInputElement).disabled).toBe(false);
+    expect(api.platformMembers).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the stale toast, blocks edits and reloads the staff list", async () => {
+    let current = listing;
+    const api = openStaff({ platformMembers: vi.fn(async () => current), changePlatformMember: vi.fn(async () => {
+      current = { ...listing, revision: 7, members: listing.members.map((member) => member.email === "support@example.test" ? { ...member, role: "viewer" } : member) };
+      throw new AccountError({ status: 409, code: "revision_conflict", message: "changed" });
+    }) });
+    await screen.findByRole("table");
+    await selectRole("Role for support@example.test", "Billing");
+    const dialog = await screen.findByRole("dialog");
+    reason(dialog);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change role" }));
+    await screen.findByText(STALE_STAFF_MESSAGE);
+    expect((screen.getByRole("button", { name: "Add member" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    await waitFor(() => expect(api.platformMembers).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Role for support@example.test" }).textContent).toContain("Viewer"));
+    expect((screen.getByRole("button", { name: "Add member" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("retries an unconfirmed write with the same key and input", async () => {
+    const write = vi.fn(async () => { throw new AccountError({ status: 503, code: "unavailable", message: "Retry to verify" }); });
+    openStaff({ changePlatformMember: write });
+    await screen.findByRole("table");
+    await selectRole("Role for support@example.test", "Billing");
+    const dialog = await screen.findByRole("dialog");
+    reason(dialog);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change role" }));
+    await within(dialog).findByRole("alert");
+    expect((within(dialog).getByLabelText("Reason") as HTMLTextAreaElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change role" }));
+    await waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+    expect(write.mock.calls[1]).toEqual(write.mock.calls[0]);
+
   });
 });

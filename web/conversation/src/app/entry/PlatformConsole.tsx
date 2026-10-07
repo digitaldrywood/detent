@@ -27,6 +27,7 @@ import {
   type PlatformHealth,
 } from "./api.ts";
 import { PlatformTenants } from "./PlatformTenants.tsx";
+import { PlatformStaff } from "./PlatformStaff.tsx";
 import { Problem, SignOut, useEntryApi } from "./EntryScreens.tsx";
 
 function Panel({
@@ -157,6 +158,7 @@ const PLATFORM_ROLES: Record<string, string> = {
 };
 
 const PlatformRoleContext = React.createContext("");
+const PlatformCSRFContext = React.createContext("");
 
 function PlatformNavigation({ role }: { readonly role: string }): React.ReactElement {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -208,6 +210,7 @@ export function PlatformConsole(): React.ReactElement {
   const error = session.error ?? organizations.error;
   return (
     <PlatformRoleContext.Provider value={role}>
+      <PlatformCSRFContext.Provider value={value?.csrf ?? ""}>
       <SidebarProvider open className="h-full min-h-0 flex-1 flex-col">
         <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border/60 px-4 py-3 sm:px-8">
           <SidebarTrigger className="md:hidden" />
@@ -249,6 +252,7 @@ export function PlatformConsole(): React.ReactElement {
           </main>
         </div>
       </SidebarProvider>
+    </PlatformCSRFContext.Provider>
     </PlatformRoleContext.Provider>
   );
 }
@@ -294,10 +298,13 @@ export function PlatformAllowlistPage(): React.ReactElement {
 
 export function PlatformSectionPage({ section }: { readonly section: "staff" | "audit" }): React.ReactElement {
   const role = React.useContext(PlatformRoleContext);
+  const csrf = React.useContext(PlatformCSRFContext);
+  usePageTitle(section === "staff" ? "Staff" : "Audit", "Platform");
+  if (section === "staff" && role === "admin") return <PlatformStaff csrf={csrf} />;
   return (
     <>
       <PlatformPageTitle section={section} />
-      {section === "staff" && role !== "admin" ? <Problem message="You do not have permission to do that." /> : null}
+      {section === "staff" ? <Problem message="You do not have permission to do that." /> : null}
     </>
   );
 }

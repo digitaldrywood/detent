@@ -61,6 +61,8 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     resumePlatformTenant: vi.fn(async () => ({ next: "/platform/tenants" })),
     platformOrganizations: vi.fn(async () => ({ email: "", csrf: "", can_support: false, organizations: [], unavailable: [] })),
     platformAllowlist: vi.fn(async () => ({ self_service: false, allowed_emails: [], allowed_domains: [], source: { file: "", keys: [] } })),
+    platformMembers: vi.fn(async () => ({ members: [], revision: 1, self: { email: "admin@detent.build", role: "admin" } })),
+    changePlatformMember: vi.fn(async () => ({ email: "new@example.test", role: "viewer", revision: 2 })),
     platformHealth: vi.fn(async () => ({ registry: { ok: true } })),
     platformEntitlements: vi.fn(async () => ({
       organization_id: "", base: { id: "", version: 1 }, effective_base: { id: "", version: 1 }, source: "base", revision: 1, grants: [], plans: [],
@@ -301,6 +303,24 @@ describe("entry API", () => {
     expect(body.get("name")).toBe("Delta");
     expect(body.get("creation_key")).toBe("key_0123456789abcdef");
     expect(body.get("csrf")).toBe("csrf-token");
+  });
+
+  it.each([
+    { action: "add" as const, method: "POST", suffix: "" },
+    { action: "change" as const, method: "PATCH", suffix: "/member%2Bstaff%40example.test" },
+    { action: "remove" as const, method: "DELETE", suffix: "/member%2Bstaff%40example.test" },
+  ])("sends the $action member command with JSON, CSRF and an encoded target", async ({ action, method, suffix }) => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ email: "member+staff@example.test", role: "viewer", revision: 5 })));
+    const api = makeEntryApi({ fetch });
+    await api.changePlatformMember({ csrf: "staff-csrf", change: {
+      action, email: "member+staff@example.test", ...(action === "remove" ? {} : { role: "viewer" }),
+      reason: "Staffing", expected_revision: 4, idempotency_key: "member-key",
+    } });
+    expect(fetch).toHaveBeenCalledWith("/api/cloud/platform/members" + suffix, expect.objectContaining({
+      method, credentials: "same-origin", headers: { Accept: "application/json", "Content-Type": "application/json", "X-CSRF-Token": "staff-csrf" },
+      body: JSON.stringify({ ...(action === "remove" ? {} : { role: "viewer" }), reason: "Staffing", expected_revision: 4,
+        idempotency_key: "member-key", ...(action === "add" ? { email: "member+staff@example.test" } : {}) }),
+    }));
   });
 
   it("decodes the entry's error body", async () => {

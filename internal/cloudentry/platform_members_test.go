@@ -215,24 +215,33 @@ func TestPlatformMembersAPI(t *testing.T) {
 	}
 	for i, test := range []struct {
 		name, method, email, role, reason string
+		code                              string
 		status                            int
 		stale, noCSRF                     bool
 	}{
 		{name: "add", method: http.MethodPost, email: " New@Example.test ", role: "viewer", reason: "Add observer", status: 200},
-		{name: "duplicate", method: http.MethodPost, email: "new@example.test", role: "viewer", reason: "Duplicate", status: 409},
+		{name: "duplicate", method: http.MethodPost, email: "new@example.test", role: "viewer", reason: "Duplicate", status: 409, code: "already_member"},
 		{name: "self change", method: http.MethodPatch, email: "admin@example.test", role: "viewer", reason: "Demote self", status: 403},
+		{name: "self remove", method: http.MethodDelete, email: "admin@example.test", reason: "Remove self", status: 403},
+		{name: "bootstrap demote", method: http.MethodPatch, email: "bootstrap@example.test", role: "viewer", reason: "Demote bootstrap", status: 403},
 		{name: "bootstrap remove", method: http.MethodDelete, email: "bootstrap@example.test", reason: "Remove bootstrap", status: 403},
 		{name: "unknown role", method: http.MethodPatch, email: "new@example.test", role: "owner", reason: "Unknown role", status: 422},
 		{name: "reason required", method: http.MethodPatch, email: "new@example.test", role: "support", status: 422},
 		{name: "oversized reason", method: http.MethodPatch, email: "new@example.test", role: "support", reason: strings.Repeat("x", 501), status: 422},
-		{name: "stale", method: http.MethodPatch, email: "new@example.test", role: "billing", reason: "Stale update", stale: true, status: 409},
+		{name: "stale", method: http.MethodPatch, email: "new@example.test", role: "billing", reason: "Stale update", stale: true, status: 409, code: "revision_conflict"},
 		{name: "csrf", method: http.MethodPatch, email: "new@example.test", role: "billing", reason: "CSRF", noCSRF: true, status: 403},
 		{name: "change", method: http.MethodPatch, email: "new@example.test", role: "support", reason: "Enable support", status: 200},
 		{name: "remove", method: http.MethodDelete, email: "new@example.test", reason: "Remove observer", status: 200},
 		{name: "missing", method: http.MethodDelete, email: "missing@example.test", reason: "Remove missing", status: 404},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			revision := read().Revision
+			listing := read()
+			for _, member := range listing.Members {
+				if member.Bootstrap != (member.Email == "bootstrap@example.test") {
+					t.Fatalf("bootstrap = %+v", member)
+				}
+			}
+			revision := listing.Revision
 			if test.stale {
 				revision--
 			}
@@ -248,6 +257,15 @@ func TestPlatformMembersAPI(t *testing.T) {
 			status, raw := memberRequest(t, admin, test.method, target, body, !test.noCSRF)
 			if status != test.status {
 				t.Fatalf("response = %d %s", status, raw)
+			}
+			if test.code != "" {
+				var failure struct {
+					Code string `json:"code"`
+				}
+				decodeJSON(t, string(raw), &failure)
+				if failure.Code != test.code {
+					t.Fatalf("code = %s, want %s", failure.Code, test.code)
+				}
 			}
 			if status == 200 {
 				replayStatus, replay := memberRequest(t, admin, test.method, target, body, true)
