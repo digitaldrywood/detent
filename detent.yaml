@@ -161,6 +161,7 @@ gate:
   transient_ci_retry_limit: 2
   validator:
     enabled: false
+    unverified_criteria: rework
     model: ""
     min_score: 0.8
     block_on:

@@ -94,6 +94,66 @@ this worker actually has:
 
 Resume existing work and acceptance evidence in the assigned issue workspace. Todo, In Progress and Rework coding runs stage finished changes; the registered runner finalizes the commit and native version without model-worker pushing or opening GitHub PRs. Native Merging is programmatic landing of the currently reviewed exact head; workers do not merge or publish lane state. Backlog, Blocked, Human Review, Done and Cancelled do not authorize new coding unless Detent explicitly dispatches a permitted recovery. Preserve unresolved human decisions and dependencies; imported source comments are context, not fresh native approval.
 
+## Issue Contract
+
+For issues subject to the contract, admission and Todo dispatch require these
+nonempty issue-body sections. Heading matching is case-insensitive; a precise
+symptom and expected behavior belong under Acceptance criteria, rather than
+substituting for that section.
+
+- **Acceptance criteria** — Checkable outcomes within the requested scope; distinguish source delivery from explicitly assigned integration or release acceptance.
+- **Must not break** — Existing behavior and boundaries that the change must preserve.
+- **How we know it worked** — Observable evidence for the criteria, including applicable commands, fixtures or runtime sequences and the owner of any post-integration verification. Source changes run `make check-land`; scheduled validation remains separate.
+- **Invariants touched** — Applicable INV IDs from `docs/invariants.md` and the behavior preserved. If none applies, say why. A mechanism change must identify the removal or consolidation required by INV-3.
+- **Safety regression** — For the safety-critical paths in `CLAUDE.md`, name the preserved behavior, invariant and existing regression table or boundary fuzz seed to preserve or extend. For other work, state that no safety-critical path is touched and why.
+
+The safety-critical paths are `internal/orchestrator/implement_progress.go`,
+`internal/orchestrator/backend_capacity.go`,
+`internal/orchestrator/spend_progress.go`, `internal/orchestrator/ranking.go`,
+`internal/scheduler/global_gate.go`, and the capacity path in
+`internal/admission/manager.go`. Comparison, signature, time-window, ordering,
+reservation and capacity-cleanup changes identify the relevant seed in
+`FuzzSafetyCriticalOrchestratorBoundaries`. Naming a regression is an authoring
+requirement, not a requirement to add a duplicate test or run a timed fuzz job.
+Follow `CLAUDE.md` and `AGENTS.md` for meaningful regression coverage.
+
+Machine-filed criteria need human confirmation through the native issue owner;
+an origin stamp remains authoritative even when an issue is imported or edited.
+Missing or unconfirmed sections use the existing Blocked human-action path and
+recovery owner. Preserve existing rollout exemptions and running work; this
+revision does not restart rollout, revoke exemptions or re-admit in-flight work.
+
+## Evidence Policy
+
+`detent.yaml` explicitly sets `gate.validator.unverified_criteria: rework` for
+every path. Safety-critical brakes and Hub/runner protocol seams always retain
+this policy. Lower-blast-radius documentation and existing UI surfaces also use
+rework for now; pass-with-disclosure is not enabled without measured evidence
+supporting a later approved revision. The current configuration is project-wide,
+so this policy does not introduce path selectors or change other projects.
+
+Evidence must prove the criterion: a host-observed command receipt must match
+the reviewed head and tree, and a named test must assert the required behavior.
+An assumed, skipped or unrelated check remains not verified. Any not-verified
+criterion under validator review requires rework and is named in the summary;
+minimum score and blocked finding severities remain authoritative. This setting
+does not enable the optional validator or replace the native completion contract,
+which owns permitted post-integration handoffs and pending acceptance disclosure.
+
+The registered runner proposes the committed workflow through the existing
+trusted-revision policy approval path after integration. Preserve exact policy
+identity on active leases. Feature-branch and uncommitted definitions do not
+constitute approved policy; workers do not approve revisions or load credentials.
+Application evidence belongs in native policy history and this issue's outcome.
+
+After seven days of integrated reporting from #671, review Blocked-for-contract,
+rework and escape rates with their time window, denominators and cause evidence
+through the existing API/MCP reads. Separate instance infrastructure from issue
+causes. Assess whether required sections reject otherwise actionable work or
+miss safety regressions, then record the decision on the native tuning issue.
+Any adjustment uses another trusted-revision policy approval; no rate or policy
+application is inferred from source validation alone.
+
 ## Admission Criteria
 
 Used by the scheduled admission pass to decide which `Backlog` issues to
@@ -114,8 +174,9 @@ Admit, in this order of preference:
 2. **Safety-critical correctness.** Defects in the orchestrator brakes
    and dispatch controls named in `CLAUDE.md` —
    `implement_progress.go`, `backend_capacity.go`,
-   `spend_progress.go`, `ranking.go`. These outrank features even when
-   the symptom is mild.
+   `spend_progress.go`, `ranking.go`, `internal/scheduler/global_gate.go`,
+   and the capacity path in `internal/admission/manager.go`. These outrank
+   features even when the symptom is mild.
 3. **Work that removes a standing human step.** Anything that turns a
    recurring operator intervention into something the system does or
    surfaces on its own.
@@ -139,10 +200,12 @@ Do not admit, regardless of how well argued:
 
 An agent must be able to tell when it is done.
 
-A precise symptom plus expected behavior satisfies this. A literal
-"Acceptance criteria" heading is **not** required and its absence is not
-a disqualifier — a bug report with evidence, cause, and file:line is
-ready. What fails this dimension is a wish with no checkable end state.
+Apply the Issue Contract above, using the same required sections and human
+confirmation as Todo dispatch. A precise symptom plus expected behavior is
+enough content for Acceptance criteria, but does not waive that heading or the
+other required sections. Evidence, cause and file:line support the contract;
+a wish with no checkable end state does not satisfy it. Existing rollout
+exemptions and in-flight work retain their exemption at both boundaries.
 
 An issue whose `Depends on:` reference is not merged into `origin/develop`
 is not ready; leave it in `Backlog`.
@@ -152,8 +215,10 @@ Admission recommends an effort using the Issue effort selection section and
 writes it before moving the issue to Todo. Existing effort overrides remain
 authoritative. Require a valid recommendation before admitting an issue.
 
-When an issue fails only on readiness, say what is missing rather than
-admitting it.
+When the contract fails, the existing contract owner records the missing or
+unconfirmed sections in a Blocked human_action with a draft to confirm or edit;
+do not admit it on a separate readiness interpretation. Other readiness failures
+remain in Backlog with the missing dependency or effort recommendation named.
 
 ### Size
 
@@ -163,8 +228,10 @@ dispatch, so decompose first and admit the pieces.
 
 ### Safety Gates
 
-An issue touching the safety-critical files named under Alignment must
-identify the behavior and documented invariant its regression preserves.
+The Issue Contract's Safety regression section identifies the behavior,
+documented invariant and regression table or seed for the safety-critical paths
+named in `CLAUDE.md`. This is the same authoring requirement at admission and
+dispatch, not a separate completion gate.
 Focused coverage and fuzz diagnostics are available for investigating those
 changes. They are not admission or completion gates for this operator project;
 do not require a coverage threshold, seed run or full suite to move work.
