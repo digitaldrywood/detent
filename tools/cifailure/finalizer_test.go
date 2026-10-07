@@ -24,6 +24,7 @@ func TestScheduledFinalizer(t *testing.T) {
 		unchanged           bool
 		cancelledRun        bool
 		cancelledJob        bool
+		workflowCancelled   bool
 	}{
 		{name: "native unchanged validated commit", repository: "digitaldrywood/detent", unchanged: true},
 		{name: "native green evidence", repository: "digitaldrywood/detent"},
@@ -31,13 +32,14 @@ func TestScheduledFinalizer(t *testing.T) {
 		{name: "native publication unavailable", repository: "digitaldrywood/detent", unavailable: true},
 		{name: "GitHub green closure", repository: "owner/other"},
 		{name: "cancelled run with failed jobs", repository: "digitaldrywood/detent", failed: true, cancelledRun: true},
-		{name: "cancelled job with failed jobs", repository: "digitaldrywood/detent", failed: true, cancelledJob: true},
+		{name: "operator-cancelled workflow with failed jobs", repository: "digitaldrywood/detent", failed: true, cancelledJob: true, workflowCancelled: true},
+		{name: "timed-out job reports failure", repository: "digitaldrywood/detent", cancelledJob: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
 			var jobs []job
-			for id := range 15 {
+			for id := range 13 {
 				jobs = append(jobs, job{ID: int64(id + 1), Name: "Validation", Conclusion: "success"})
 			}
 			if tt.failed {
@@ -101,9 +103,10 @@ test "$FIXTURE_UNAVAILABLE" = false
 			command := exec.CommandContext(t.Context(), "bash", "scripts/scheduled-ci-finish.sh")
 			command.Dir = root
 			command.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "TMPDIR="+dir, "GITHUB_REPOSITORY="+tt.repository, "GITHUB_SERVER_URL=https://github.com", "GITHUB_RUN_ID=123", "GITHUB_RUN_ATTEMPT=1", "CI_DEVELOP_SHA="+scheduledEnv("CI_DEVELOP_SHA"), "FIXTURE_LOG="+filepath.Join(dir, "calls"), "FIXTURE_JOBS="+filepath.Join(dir, "jobs"), "FIXTURE_REPORTS="+filepath.Join(dir, "reports"), "FIXTURE_UNCHANGED="+map[bool]string{true: "true", false: "false"}[tt.unchanged], "FIXTURE_UNAVAILABLE="+map[bool]string{true: "true", false: "false"}[tt.unavailable])
-			command.Env = append(command.Env, "FIXTURE_CONCLUSION="+map[bool]string{true: "cancelled", false: "null"}[tt.cancelledRun])
+			command.Env = append(command.Env, "FIXTURE_CONCLUSION="+map[bool]string{true: "cancelled", false: "null"}[tt.cancelledRun], "WORKFLOW_CANCELLED="+map[bool]string{true: "true", false: "false"}[tt.workflowCancelled])
+			skipped := tt.cancelledRun || tt.workflowCancelled
 			output, err := command.CombinedOutput()
-			if (err != nil) != ((tt.failed || tt.unavailable) && !tt.cancelledRun && !tt.cancelledJob) {
+			if (err != nil) != ((tt.failed || tt.unavailable || tt.cancelledJob) && !skipped) {
 				t.Fatalf("finalizer = %v: %s", err, output)
 			}
 			calls, err := os.ReadFile(filepath.Join(dir, "calls"))
@@ -111,7 +114,7 @@ test "$FIXTURE_UNAVAILABLE" = false
 				t.Fatal(err)
 			}
 			text := string(calls)
-			if tt.cancelledRun || tt.cancelledJob {
+			if skipped {
 				if !strings.Contains(string(output), "cancelled; skipping reporting and release") || strings.Contains(text, "native ") || strings.Contains(text, "repository ") || strings.Contains(text, "/statuses/") || strings.Contains(text, "/dispatches") || strings.Contains(text, "forge issue") {
 					t.Fatalf("cancelled run produced reporting or release effects: %s: %s", text, output)
 				}
@@ -135,7 +138,7 @@ test "$FIXTURE_UNAVAILABLE" = false
 				if strings.Contains(text, "tag -a ") || strings.Contains(text, "/dispatches") {
 					t.Fatal("unchanged validated commit released again")
 				}
-			} else if tt.failed {
+			} else if tt.failed || tt.cancelledJob {
 				if strings.Contains(text, "repository tag -a") || strings.Contains(text, "/statuses/") {
 					t.Fatal("failed suite published green evidence")
 				}

@@ -134,9 +134,11 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 	if err := json.NewDecoder(input).Decode(&jobs); err != nil {
 		return fmt.Errorf("decode scheduled CI jobs: %w", err)
 	}
-	for _, j := range jobs {
-		if j.Conclusion == "cancelled" {
-			return nil
+	if getenv("WORKFLOW_CANCELLED") == "true" {
+		for _, j := range jobs {
+			if j.Conclusion == "cancelled" {
+				return nil
+			}
 		}
 	}
 	repository := getenv("GITHUB_REPOSITORY")
