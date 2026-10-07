@@ -39,8 +39,8 @@ publish_failure() {
 trap publish_failure ERR
 
 job_count="$(jq '[.[] | select(.name != "Finalize scheduled validation")] | length' "$jobs_file")"
-if [ "$job_count" -ne 16 ]; then
-  echo "Expected 16 scheduled validation jobs; observed $job_count" >&2
+if [ "$job_count" -ne 15 ]; then
+  echo "Expected 15 scheduled validation jobs; observed $job_count" >&2
   false
 fi
 
