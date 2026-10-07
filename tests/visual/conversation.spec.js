@@ -595,8 +595,9 @@ test("keeps runner conversations out of Chat while preserving issue access", asy
     };
   }, hub.fixture.worker_conversation);
   await page.goto(new URL(`/work/i/${hub.fixture.worker_work_item}?panel=conversation`, hub.fixture.url).toString());
-  await expect(page.getByTestId("issue-properties")).toBeVisible();
   await expect(page.getByTestId("conversation-surface")).toBeVisible();
+  await page.getByTestId("properties-disclosure").click();
+  await expect(page.getByTestId("issue-properties")).toBeVisible();
   const linked = await hubAPI(page, "GET", `/projects/${hub.fixture.project_id}/work-items/${hub.fixture.worker_work_item}/conversation`);
   expect(linked.status).toBe(200);
   expect(linked.payload.conversation.id).toBe(hub.fixture.worker_conversation);
