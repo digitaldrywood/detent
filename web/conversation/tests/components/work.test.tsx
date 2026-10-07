@@ -82,6 +82,7 @@ const LANES: readonly Lane[] = PROJECT.states.map((state) => ({
   id: state.name,
   name: state.name,
   terminal: state.terminal,
+  dispatchable: state.dispatchable,
   category: state.terminal ? "completed" : state.dispatchable ? "unstarted" : "started",
 }));
 
@@ -412,7 +413,7 @@ describe("a lane", () => {
   it("collapses to a counted rail with a labelled toggle and no card body or creation control", () => {
     const onToggleCollapsed = vi.fn();
     renderLane({ collapsed: true, onToggleCollapsed, total: 130, onCreate: vi.fn(),
-      lane: { id: "Blocked", name: "Blocked", terminal: false, category: "started" } });
+      lane: { id: "Blocked", name: "Blocked", terminal: false, dispatchable: false, category: "started" } });
     const toggle = screen.getByRole("button", { name: "Expand Blocked" });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(toggle);
@@ -446,7 +447,7 @@ describe("a lane", () => {
   it.each([true, false])("uses configured terminal=%s before counting and styling live work", (terminal) => {
     const running = item({ state: "Retired", terminal: false, attempt: toAttemptView(ATTEMPTS) });
     renderLane({
-      lane: { id: "Retired", name: "Retired", terminal, category: terminal ? "completed" : "started" },
+      lane: { id: "Retired", name: "Retired", terminal, dispatchable: false, category: terminal ? "completed" : "started" },
       items: [running],
     });
     const lane = screen.getByTestId("board-lane");
@@ -547,7 +548,7 @@ describe("the list view", () => {
 });
 
 describe("the stats row", () => {
-  it("counts queued and open loaded inventory without claiming eligibility", () => {
+  it("partitions loaded work by dispatchable lanes and renders five ordered counters", () => {
     const items = [
       item({ id: "a", state: "Todo", blockedBy: [] }),
       item({ id: "b", state: "In Progress", blockedBy: [], attempt: toAttemptView(ATTEMPTS) }),
@@ -561,35 +562,95 @@ describe("the stats row", () => {
       item({ id: "j", state: "Todo", blockedBy: ["dependency"] }),
       item({ id: "k", state: "Repair", blockedBy: [] }),
       item({ id: "l", state: "Repair", blockedBy: [], attempt: toAttemptView(ATTEMPTS) }),
+      item({ id: "m", state: "Holding", attempt: null }),
+      item({ id: "n", state: "Merging", attempt: null }),
     ];
-    const lanes = [...LANES, { id: "Repair", name: "Repair", terminal: false, category: "unstarted" }, { id: "Retired", name: "Retired", terminal: true, category: "completed" }, { id: "Cancelled", name: "Cancelled", terminal: true, category: "cancelled" }];
+    const lanes = [...LANES.map((lane) => lane.name === "Merging" ? { ...lane, dispatchable: true } : lane),
+      { id: "Repair", name: "Repair", terminal: false, dispatchable: true, category: "started" },
+      { id: "Holding", name: "Holding", terminal: false, dispatchable: false, category: "unstarted" },
+      { id: "Retired", name: "Retired", terminal: true, dispatchable: false, category: "completed" },
+      { id: "Cancelled", name: "Cancelled", terminal: true, dispatchable: false, category: "cancelled" }];
     const stats = boardStats(items, lanes);
     expect(stats.completed).toBe(4);
     expect(stats.importedClosed).toBe(2);
-    render(<StatsRow stats={stats} completedWindow="all" loading={false} />);
+    render(<StatsRow stats={stats} completedWindow="all" onCompletedWindowChange={vi.fn()} loading={false} />);
     expect(screen.getByTestId("stat-running").textContent).toBe("2 running");
-    expect(screen.getByTestId("stat-queued").textContent).toBe("5 queued inventory");
-    expect(screen.getByTestId("stat-open").textContent).toBe("8 open");
-    expect(screen.queryByTestId("stat-ready")).toBeNull();
-    expect(screen.getByTestId("stat-queued").getAttribute("title")).toContain("Human ownership, dependencies");
-    expect(screen.getByTestId("stat-completed").textContent).toBe("4 completed · all (2 imported history loaded)");
+    expect(screen.getByTestId("stat-waiting").textContent).toBe("5 waiting");
+    expect(screen.getByTestId("stat-need-attention").textContent).toBe("2 need attention");
+    expect(screen.getByTestId("stat-backlog").textContent).toBe("1 backlog");
+    expect(stats.running + stats.waiting + stats.needAttention + stats.backlog).toBe(stats.open);
+    expect(stats.open).toBe(10);
+    expect(within(screen.getByTestId("work-stats")).getAllByTestId(/^stat-/).map((counter) => counter.dataset.testid)).toEqual(["stat-running", "stat-waiting", "stat-need-attention", "stat-backlog", "stat-completed"]);
+    expect(screen.getByTestId("stat-waiting").getAttribute("title")).toBe("Items in dispatchable lanes with no live worker. Dependencies, human ownership or capacity may hold them.");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("4 completed · All time");
     expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("including cancelled and custom terminal states");
     expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
   });
 
+  it("partitions server lane totals with custom holding lanes and matches the local fallback", async () => {
+    const fixture = workPaginationFixture();
+    const lanes = [
+      { state: "Backlog", total: 10, running: 0 },
+      { state: "Todo", total: 6, running: 2 },
+      { state: "In Progress", total: 4, running: 1 },
+      { state: "Rework", total: 3, running: 1 },
+      { state: "Merging", total: 2, running: 0 },
+      { state: "Triage", total: 2, running: 0 },
+      { state: "Blocked", total: 1, running: 0 },
+      { state: "Human Review", total: 2, running: 0 },
+      { state: "Holding", total: 4, running: 0 },
+      { state: "Done", total: 7, running: 1 },
+      { state: "Cancelled", total: 2, running: 0 },
+    ];
+    const states = lanes.map((lane) => ({
+      name: lane.state,
+      terminal: ["Done", "Cancelled"].includes(lane.state),
+      dispatchable: ["Todo", "In Progress", "Rework", "Merging"].includes(lane.state),
+      transitions: [],
+    }));
+    vi.stubGlobal("fetch", async (...args: Parameters<typeof fixture.fetch>) => {
+      const response = await fixture.fetch(...args);
+      const url = new URL(args[0], "http://fixture.test");
+      if (url.pathname.endsWith("/projects/proj_alpha")) {
+        return Response.json({ ...await response.json(), states });
+      }
+      if (url.pathname.endsWith("/work-items")) {
+        return Response.json({ ...await response.json(), work: {
+          lanes, completed: 9, total: 43, as_of: "2026-10-07T12:00:00Z", truncated: false, items: [],
+        } });
+      }
+      return response;
+    });
+    let current!: ReturnType<typeof useBoard>;
+    function Probe() { current = useBoard("proj_alpha", { ...DEFAULT_VIEW_STATE, completedWindow: "all" }); return <div />; }
+    render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
+    await waitFor(() => expect(current.resolved).toBe(true));
+    expect(current.error).toBeNull();
+    expect(current.totals).toMatchObject({ running: 4, waiting: 11, needAttention: 9, backlog: 10, open: 34, completed: 9, total: 43 });
+    const localItems = lanes.flatMap((lane) => Array.from({ length: lane.total }, (_, index) => item({
+      id: `${lane.state}-${index}`, state: lane.state,
+      terminal: ["Done", "Cancelled"].includes(lane.state),
+      attempt: index < lane.running ? toAttemptView(ATTEMPTS) : null,
+    })));
+    const fallback = boardStats(localItems, current.lanes);
+    for (const key of ["running", "waiting", "needAttention", "backlog", "open", "completed", "total"] as const) {
+      expect(fallback[key]).toBe(current.totals![key]);
+    }
+    expect(fallback.running + fallback.waiting + fallback.needAttention + fallback.backlog).toBe(34);
+  });
+
   it.each([{ loadedCount: 100, total: 143 }, { loadedCount: 108, total: 569 }])("keeps scoped counts while refreshing without global pagination ($loadedCount of $total)", ({ total }) => {
-    const totals = { lanes: {}, running: 2, queued: 3, open: 17, completed: total - 17, total, asOf: "2026-10-02T17:17:00Z", truncated: true };
+    const totals = { lanes: {}, running: 2, waiting: 3, needAttention: 5, backlog: 7, open: 17, completed: total - 17, total, asOf: "2026-10-02T17:17:00Z", truncated: true };
     const stats = boardStats([item({ state: "Done", sourceProvider: "github" })], LANES);
-    const props = { stats, totals, loading: false };
+    const props = { stats, totals, loading: false, onCompletedWindowChange: vi.fn() };
     const mounted = render(<StatsRow {...props} />);
     const counts = screen.getByTestId("work-stats");
-    expect(counts.textContent).toContain(`2 running·3 queued inventory·17 open·${totals.completed} completed · 48h (1 imported history loaded)`);
-    expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Imported terminal history: 1 of 1 loaded closed items");
-    expect(within(counts).queryByRole("button")).toBeNull();
+    expect(counts.textContent).toContain(`2 running·3 waiting·5 need attention·7 backlog·${totals.completed} completed · 48h`);
+    expect(within(counts).queryByRole("button", { name: /^Load / })).toBeNull();
     mounted.rerender(<StatsRow {...props} loading />);
     expect(counts.getAttribute("aria-busy")).toBe("true");
-    expect(screen.getByTestId("stat-queued").parentElement!.className).toContain("opacity-50");
-    expect(screen.getByTestId("stat-queued").textContent).toBe("3 queued inventory");
+    expect(screen.getByTestId("stat-waiting").parentElement!.className).toContain("opacity-50");
+    expect(screen.getByTestId("stat-waiting").textContent).toBe("3 waiting");
     mounted.rerender(<StatsRow {...props} />);
     expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
   });
@@ -986,8 +1047,8 @@ describe("the live Work continuation intent", () => {
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
     await waitFor(() => expect(current.loading).toBe(false));
     expect(current.totals).toMatchObject(mode === "board"
-      ? { running: 1, queued: 413, open: 415, completed: 131, total: 546 }
-      : { running: 1, queued: 8, open: 10, completed: 131, total: 141 });
+      ? { running: 1, waiting: 8, needAttention: 1, backlog: 405, open: 415, completed: 131, total: 546 }
+      : { running: 1, waiting: 8, needAttention: 1, backlog: 0, open: 10, completed: 131, total: 141 });
     const deferred = fixture.deferPage();
     act(() => mode === "board" ? current.loadBacklog() : current.loadMore());
     await deferred.waiting;
@@ -1085,8 +1146,10 @@ describe("the filter-first Work surface", () => {
   it("opens the completed window menu and requests a fresh count for the selection", async () => {
     const { requests, router } = await pagedWork();
     await settledWork();
-    fireEvent.click(screen.getByTestId("completed-window-trigger"));
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^7d$/ }));
+    expect(within(screen.getByTestId("work-toolbar")).queryByText(/Completed/)).toBeNull();
+    expect(screen.getByTestId("stat-completed").tagName).toBe("BUTTON");
+    fireEvent.click(screen.getByTestId("stat-completed"));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^7 days$/ }));
     await settledWork();
     expect(parseViewState(router.state.location.searchStr).completedWindow).toBe("7d");
     expect(requests.filter((request) => request.url.pathname.endsWith("/work-items")).some((request) => request.url.searchParams.get("completed_window") === "7d")).toBe(true);
@@ -1115,7 +1178,7 @@ describe("the filter-first Work surface", () => {
     expect(screen.getByTestId("lane-count-Todo").textContent).toBe("8");
     expect(screen.getByTestId("lane-count-In Progress").textContent).toBe("2");
     expect(screen.queryByTestId("lane-count-Done")).toBeNull();
-    expect(within(screen.getByTestId("work-stats")).queryByRole("button")).toBeNull();
+    expect(within(screen.getByTestId("work-stats")).getByRole("button", { name: /^131 completed/ })).not.toBeNull();
     expect(screen.queryByRole("button", { name: /^Load more/ })).toBeNull();
     expect(router.state.location.searchStr).toBe("");
     const before = requests.length;
@@ -1141,14 +1204,14 @@ describe("the filter-first Work surface", () => {
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
     expect(screen.queryByText("Observed later-page worker")).toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe(q === "alpha#3421" ? "1 completed · 48h (1 imported history loaded)" : "2 completed · 48h (1 imported history loaded)");
+    expect(screen.getByTestId("stat-completed").textContent).toBe(q === "alpha#3421" ? "1 completed · 48h" : "2 completed · 48h");
     expect(parseViewState(fixture.router.state.location.searchStr).q).toBe(q);
     expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("q")).toBe(q);
     if (q === "Older title needle") {
       fireEvent.change(screen.getByTestId("work-search"), { target: { value: "Older title needle b" } });
       await settledWork();
       expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h");
-      expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Imported terminal history: 0 of 1 loaded closed items");
+      expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Choose the completed window.");
     }
   });
 
@@ -1158,15 +1221,15 @@ describe("the filter-first Work surface", () => {
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
     expect(screen.getByText("Older title needle b")).not.toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h (1 imported history loaded)");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h");
     fireEvent.click(screen.getByTestId("filters-trigger"));
     for (const filter of ["label-choice-b", "assignee-operator-b", "priority-High"]) {
       fireEvent.click(await screen.findByTestId(`filter-${filter}`));
       await settledWork();
-      expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h (1 imported history loaded)");
+      expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h");
       fireEvent.click(await screen.findByTestId(`filter-${filter}`));
       await settledWork();
-      expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h (1 imported history loaded)");
+      expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h");
     }
     fireEvent.keyDown(document, { key: "Escape" });
     const reads = fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items"));
@@ -1189,10 +1252,10 @@ describe("the filter-first Work surface", () => {
     fireEvent.click(screen.getByTestId("filters-trigger"));
     fireEvent.click(await screen.findByTestId("filter-label-choice-a"));
     await settledWork();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h (1 imported history loaded)");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h");
     fireEvent.click(await screen.findByTestId("filter-label-choice-b"));
     await settledWork();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h (1 imported history loaded)");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h");
     expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/work-items"))!.url.searchParams.getAll("label"))
       .toEqual(["choice-a", "choice-b"]);
   });
@@ -1246,7 +1309,7 @@ describe("the filter-first Work surface", () => {
     const fixture = await pagedWork('/work?view=list&tab=all&q=older-label&pages=legacy-cursor');
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h (1 imported history loaded)");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h");
     expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items")).every((request) =>
       !request.url.searchParams.has("cursor"))).toBe(true);
   });
@@ -1356,8 +1419,7 @@ describe("the filter-first Work surface", () => {
     expect(alphaReads[0]!.url.searchParams.has("cursor")).toBe(false);
     expect(alphaReads[1]!.url.searchParams.has("cursor")).toBe(true);
     expect(screen.queryByTestId("work-list-more")).toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h (1 imported history loaded)");
-    expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Imported terminal history: 1 of 1 loaded closed items");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h");
     expect(refreshed.filter((request) => request.url.pathname.endsWith("/attempts"))).toHaveLength(24);
     expect(refreshed.filter((request) => request.url.pathname.endsWith("/changes"))).toHaveLength(24);
     expect(screen.getByText("Observed later-page worker")).not.toBeNull();

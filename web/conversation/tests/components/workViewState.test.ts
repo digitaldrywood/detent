@@ -19,7 +19,7 @@ import {
   writeStoredViewState,
 } from "../../src/app/work/lib/viewState.ts";
 
-const LANES = ["Backlog", "Todo", "In progress", "Review", "Done"].map((name) => ({ id: name, name, terminal: name === "Done", category: "" }));
+const LANES = ["Backlog", "Todo", "In progress", "Review", "Done"].map((name) => ({ id: name, name, terminal: name === "Done", dispatchable: false, category: "" }));
 
 describe("the board's view state", () => {
   it("defaults an empty query string", () => {
@@ -109,7 +109,7 @@ describe("the board's view state", () => {
   });
 
   it("derives default lanes from the current workflow, including empty active and custom lanes", () => {
-    const lanes = [...LANES, { id: "Merging", name: "Merging", terminal: false, category: "" }, { id: "Retired", name: "Retired", terminal: true, category: "" }];
+    const lanes = [...LANES, { id: "Merging", name: "Merging", terminal: false, dispatchable: false, category: "" }, { id: "Retired", name: "Retired", terminal: true, dispatchable: false, category: "" }];
     expect(defaultLaneNames(lanes)).toEqual(["Backlog", "Todo", "In progress", "Review", "Merging"]);
     expect(lanes.filter((lane) => laneVisible(DEFAULT_VIEW_STATE, lane)).map((lane) => lane.name)).toEqual(defaultLaneNames(lanes));
     expect(laneVisible(parseViewState("lanes=Done"), LANES[4]!)).toBe(false);

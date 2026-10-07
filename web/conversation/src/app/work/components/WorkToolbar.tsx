@@ -18,8 +18,6 @@ import { cn } from "../../../lib/utils.ts";
 import type { Lane } from "../lib/model.ts";
 import {
   activeFilterCount,
-  COMPLETED_WINDOWS,
-  type CompletedWindow,
   DEFAULT_VIEW_STATE,
   FILTER_KEYS,
   effectiveSort,
@@ -245,15 +243,6 @@ export function WorkToolbar({
           </MenuGroup>
         </MenuPopup>
       </Menu> : null}
-      <Menu>
-        <MenuTrigger className={TRIGGER} data-testid="completed-window-trigger">Completed · {view.completedWindow}</MenuTrigger>
-        <MenuPopup align="end" className="w-44">
-          <MenuRadioGroup value={view.completedWindow} onValueChange={(value) => onChange({ ...view, completedWindow: value as CompletedWindow })}>
-            <MenuGroupLabel>Completed window</MenuGroupLabel>
-            {COMPLETED_WINDOWS.map((window) => <MenuRadioItem key={window} value={window}>{window === "all" ? "All time" : window}</MenuRadioItem>)}
-          </MenuRadioGroup>
-        </MenuPopup>
-      </Menu>
     </div>
   );
 }

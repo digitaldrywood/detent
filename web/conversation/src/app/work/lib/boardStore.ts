@@ -454,30 +454,35 @@ export class BoardRead {
     let totals: ScopedWorkStats | null = null;
     if (loaded.every((entry) => entry.work !== undefined)) {
       const counts = Object.create(null) as Record<string, number>;
-      let running = 0, queued = 0, closed = 0, total = 0;
+      let running = 0, waiting = 0, needAttention = 0, backlog = 0, closed = 0, total = 0;
       for (const entry of loaded) {
         for (const lane of entry.work!.lanes) {
           const state = entry.project.states.find((state) => state.name === lane.state);
           counts[lane.state] = (counts[lane.state] ?? 0) + lane.total;
           total += lane.total;
-          running += lane.running;
           if (state?.terminal) closed += lane.total;
-          else if (state?.dispatchable || lane.state.toLowerCase() === "backlog") queued += lane.total - lane.running;
+          else {
+            running += lane.running;
+            const idle = lane.total - lane.running;
+            if (lane.state.toLowerCase() === "backlog") backlog += idle;
+            else if (state?.dispatchable) waiting += idle;
+            else needAttention += idle;
+          }
         }
       }
       if (this.view.view === "board") {
         for (const entry of loaded) {
-          const backlog = entry.project.states.find((state) => state.name.toLowerCase() === "backlog");
-          if (backlog === undefined || entry.work!.lanes.some((lane) => lane.state === backlog.name)) continue;
-          counts[backlog.name] = (counts[backlog.name] ?? 0) + entry.backlogTotal;
+          const backlogState = entry.project.states.find((state) => state.name.toLowerCase() === "backlog");
+          if (backlogState === undefined || entry.work!.lanes.some((lane) => lane.state === backlogState.name)) continue;
+          counts[backlogState.name] = (counts[backlogState.name] ?? 0) + entry.backlogTotal;
           total += entry.backlogTotal;
-          queued += entry.backlogTotal;
+          backlog += entry.backlogTotal;
         }
       }
       const completed = loaded.every((entry) => entry.work!.completed !== undefined)
         ? loaded.reduce((count, entry) => count + entry.work!.completed!, 0)
         : this.view.completedWindow === "all" ? closed : null;
-      totals = { lanes: counts, running, queued, open: total - closed, completed, total,
+      totals = { lanes: counts, running, waiting, needAttention, backlog, open: total - closed, completed, total,
         asOf: loaded.map((entry) => entry.work!.as_of).toSorted()[0]!,
         truncated: loaded.some((entry) => entry.work!.truncated) };
     }

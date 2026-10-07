@@ -374,6 +374,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
       {board.resolved ? <StatsRow
         stats={stats}
         completedWindow={view.completedWindow}
+        onCompletedWindowChange={(completedWindow) => setView({ ...view, completedWindow })}
         totals={board.totals}
         loading={board.loading}
       /> : null}
