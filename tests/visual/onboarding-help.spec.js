@@ -121,9 +121,9 @@ for (const width of [1280, 390]) {
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
 
     await steps.getByRole("button").nth(3).click();
-    await help(page, "Local history", "execution host that produced them", tap);
-    await help(page, "Customer service", "does not test storage", tap);
-    await page.getByRole("radio", { name: "Customer service", exact: true }).check();
+    await help(page, "Your runner (local history)", "Detent stores no artifacts", tap);
+    await help(page, "Your bucket and gateway", "you run and pay for", tap);
+    await page.getByRole("radio", { name: "Your bucket and gateway", exact: true }).check();
     await help(page, "Service id", "does not provision or verify storage", tap);
     await help(page, "Gateway origin", "not the S3 bucket URL", tap);
     await help(page, "Publisher token id", "Hub checks that grant", tap, testInfo.outputPath(`publisher-help-${width}.png`));

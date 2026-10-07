@@ -447,17 +447,17 @@ for (const viewport of [
     }
 
     // Clicking anywhere on a card chooses it, and the choice is visible.
-    const local = page.getByRole("radio", { name: "Local history" });
+    const local = page.getByRole("radio", { name: "Your runner (local history)" });
     const selectedChoice = page.locator("[data-checked]").filter({ has: page.getByRole("radio") });
-    await page.getByText("Local history", { exact: true }).click();
+    await page.getByText("Your runner (local history)", { exact: true }).click();
     await expect(local).toBeChecked();
     await expect(selectedChoice).toHaveCount(1);
-    await expect(selectedChoice).toContainText("Local history");
-    await page.getByText("Customer service", { exact: true }).click();
-    await expect(page.getByRole("radio", { name: "Customer service" })).toBeChecked();
+    await expect(selectedChoice).toContainText("Your runner (local history)");
+    await page.getByText("Your bucket and gateway", { exact: true }).click();
+    await expect(page.getByRole("radio", { name: "Your bucket and gateway" })).toBeChecked();
     await expect(local).not.toBeChecked();
     await expect(selectedChoice).toHaveCount(1);
-    await expect(selectedChoice).toContainText("Customer service");
+    await expect(selectedChoice).toContainText("Your bucket and gateway");
 
     // Every step stays reachable from the tabs.
     await tabs.nth(0).click();
