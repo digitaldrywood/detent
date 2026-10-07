@@ -40,6 +40,7 @@ type platformMember struct {
 	AddedBy   string `json:"added_by"`
 	AddedAt   string `json:"added_at"`
 	UpdatedAt string `json:"updated_at"`
+	Bootstrap bool   `json:"bootstrap"`
 }
 
 type platformMembersResult struct {
@@ -50,6 +51,8 @@ type platformMembersResult struct {
 		Role  string `json:"role"`
 	} `json:"self"`
 }
+
+var errPlatformMemberExists = errors.New("platform member already exists")
 
 func platformEmail(email string) string { return strings.ToLower(strings.TrimSpace(email)) }
 
@@ -165,6 +168,7 @@ func (s *Service) readPlatformMembers(ctx context.Context, session accountSessio
 		if err := rows.Scan(&member.Email, &member.Role, &member.AddedBy, &member.AddedAt, &member.UpdatedAt); err != nil {
 			return result, err
 		}
+		member.Bootstrap = member.Email == platformEmail(s.config.Platform.BootstrapAdminEmail)
 		result.Members = append(result.Members, member)
 		if member.Email == platformEmail(session.Email) {
 			result.Self.Email, result.Self.Role = member.Email, member.Role
@@ -211,15 +215,15 @@ func (a entryAdministration) executePlatformMember(ctx context.Context, name str
 		return operatoradmin.Output{}, err
 	}
 	if name == platformMemberAdd && previous != "" {
-		return operatoradmin.Output{}, mutation.ErrConflict
+		return operatoradmin.Output{}, errPlatformMemberExists
 	}
 	if name != platformMemberAdd && previous == "" {
 		return operatoradmin.Output{}, sql.ErrNoRows
 	}
-	if name == platformMemberChange && in.Email == platformEmail(session.Email) {
+	if name != platformMemberAdd && in.Email == platformEmail(session.Email) {
 		return operatoradmin.Output{}, operatortool.ErrAccessDenied
 	}
-	if name == platformMemberRemove && in.Email == platformEmail(s.config.Platform.BootstrapAdminEmail) {
+	if in.Email == platformEmail(s.config.Platform.BootstrapAdminEmail) && (name == platformMemberRemove || name == platformMemberChange && in.Role != "admin") {
 		return operatoradmin.Output{}, operatortool.ErrAccessDenied
 	}
 	if previous == "admin" && (name == platformMemberRemove || in.Role != "admin") {
@@ -290,6 +294,8 @@ func (s *Service) platformMemberFailure(c echo.Context, err error) error {
 		status, code, message = http.StatusForbidden, "forbidden", "This platform membership operation is not allowed"
 	case errors.Is(err, operatortool.ErrInvalidArguments):
 		status, code, message = http.StatusUnprocessableEntity, "invalid_request", "Supply an email, valid role, reason of 1–500 characters, idempotency key and expected revision"
+	case errors.Is(err, errPlatformMemberExists):
+		status, code, message = http.StatusConflict, "already_member", "Already a member"
 	case errors.Is(err, mutation.ErrConflict):
 		status, code, message = http.StatusConflict, "revision_conflict", "Someone changed the staff list; reload and try again"
 	case errors.Is(err, sql.ErrNoRows):

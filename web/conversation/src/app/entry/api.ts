@@ -155,6 +155,34 @@ export type EntitlementChange =
 export const EntitlementChangeResult = Schema.Struct({ action: Schema.String, grant_id: Schema.String });
 export type EntitlementChangeResult = typeof EntitlementChangeResult.Type;
 
+export const PlatformMember = Schema.Struct({
+  email: Schema.String,
+  role: Schema.String,
+  added_by: Schema.String,
+  added_at: Schema.String,
+  updated_at: Schema.String,
+  bootstrap: Schema.Boolean,
+});
+export type PlatformMember = typeof PlatformMember.Type;
+
+export const PlatformMembers = Schema.Struct({
+  members: Schema.Array(PlatformMember),
+  revision: Schema.Number,
+  self: Schema.Struct({ email: Schema.String, role: Schema.String }),
+});
+export type PlatformMembers = typeof PlatformMembers.Type;
+
+export type PlatformMemberChange = {
+  readonly action: "add" | "change" | "remove";
+  readonly email: string;
+  readonly role?: string;
+  readonly reason: string;
+  readonly idempotency_key: string;
+  readonly expected_revision: number;
+};
+
+export const PlatformMemberChangeResult = Schema.Struct({ email: Schema.String, role: Schema.String, revision: Schema.Number });
+
 export const PlatformAllowlist = Schema.Struct({
   self_service: Schema.Boolean,
   open: Schema.optional(Schema.Boolean),
@@ -249,9 +277,9 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
     return Schema.decodeUnknownSync(schema)(await response.json());
   }
 
-  async function post<A>(schema: Schema.Codec<A, any, never, never>, path: string, csrf: string, body: unknown): Promise<A> {
+  async function post<A>(schema: Schema.Codec<A, any, never, never>, path: string, csrf: string, body: unknown, method = "POST"): Promise<A> {
     const response = await fetchImpl(`${origin}${path}`, {
-      method: "POST",
+      method,
       credentials: "same-origin",
       headers: { Accept: "application/json", "Content-Type": "application/json", "X-CSRF-Token": csrf },
       body: JSON.stringify(body),
@@ -277,6 +305,14 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
     resumePlatformTenant: (input: { organization: string; csrf: string }) =>
       submit(NextResult, `/api/cloud/platform/organizations/${encodeURIComponent(input.organization)}/resume`, input.csrf, {}),
     platformAllowlist: () => read(PlatformAllowlist, "/api/cloud/platform/allowlist"),
+    platformMembers: () => read(PlatformMembers, "/api/cloud/platform/members"),
+    changePlatformMember: (input: { csrf: string; change: PlatformMemberChange }) => {
+      const { action, email, ...body } = input.change;
+      return post(PlatformMemberChangeResult,
+        "/api/cloud/platform/members" + (action === "add" ? "" : `/${encodeURIComponent(email)}`),
+        input.csrf, action === "add" ? { ...body, email } : body,
+        action === "add" ? "POST" : action === "change" ? "PATCH" : "DELETE");
+    },
     platformHealth: () => read(PlatformHealth, "/api/cloud/platform/health"),
     platformEntitlements: (organization: string) => read(OrganizationEntitlements, entitlementsPath(organization)),
     changePlatformEntitlement: (input: { organization: string; csrf: string; change: EntitlementChange }) =>
