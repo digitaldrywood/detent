@@ -151,7 +151,7 @@ func seedHostedContextRunner(t *testing.T, f hostedSecurityFixture, id, version 
 func TestHostedContextMCP(t *testing.T) {
 	for _, deployment := range []string{"dedicated", "shared"} {
 		for _, transport := range []string{"stdio", "http"} {
-			for _, scenario := range []string{"content", "disabled services", "viewer", "runner grant removed", "project grant removed", "role downgraded", "membership removed", "session revoked", "foreign identifiers", "unavailable read", "oversized read", "project bound", "runner bound", "workspace observation"} {
+			for _, scenario := range []string{"content", "move revision contract", "disabled services", "viewer", "runner grant removed", "project grant removed", "role downgraded", "membership removed", "session revoked", "foreign identifiers", "unavailable read", "oversized read", "project bound", "runner bound", "workspace observation"} {
 				t.Run(deployment+"/"+transport+"/"+scenario, func(t *testing.T) {
 					role := "owner"
 					if scenario == "viewer" {
@@ -218,6 +218,54 @@ func TestHostedContextMCP(t *testing.T) {
 						if found != (name != operatortool.AppUpdates || scenario != "viewer") {
 							t.Fatalf("discovery %s=%t", name, found)
 						}
+					}
+					if scenario == "move revision contract" {
+						var schema struct {
+							Properties map[string]struct {
+								Type string `json:"type"`
+							} `json:"properties"`
+						}
+						for _, definition := range catalog.Tools {
+							if definition.Name == operatortool.MoveItem {
+								if err := json.Unmarshal(definition.InputSchema, &schema); err != nil {
+									t.Fatal(err)
+								}
+							}
+						}
+						if schema.Properties["expected_revision"].Type != "string" {
+							t.Fatalf("advertised move revision type=%q, want string", schema.Properties["expected_revision"].Type)
+						}
+						states := []tracker.NativeState{{Name: "Backlog", Transitions: []string{"Todo"}}, {Name: "Todo", Dispatchable: true}}
+						stateJSON, err := json.Marshal(states)
+						if err != nil {
+							t.Fatal(err)
+						}
+						operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET states_json=? WHERE id=?", string(stateJSON), project)
+						operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,'Backlog','Backlog',0,0,?,?)", project, testTimestamp, testTimestamp)
+						var created struct {
+							Data struct {
+								WorkItemID string `json:"work_item_id"`
+								Revision   string `json:"revision"`
+							} `json:"data"`
+						}
+						if err := json.Unmarshal(call(operatortool.FileIssue, map[string]any{"project_id": project, "request_id": "create", "title": "Revision contract", "state": "Backlog"}, false), &created); err != nil || created.Data.WorkItemID == "" || created.Data.Revision != "1" {
+							t.Fatalf("created=%+v err=%v", created, err)
+						}
+						arguments := map[string]any{"project_id": project, "request_id": "move", "identifier": created.Data.WorkItemID, "target_state": "Todo", "expected_revision": created.Data.Revision}
+						var moved struct {
+							Status string              `json:"status"`
+							Data   tracker.NativeIssue `json:"data"`
+						}
+						if err := json.Unmarshal(call(operatortool.MoveItem, arguments, false), &moved); err != nil || moved.Status != "succeeded" || string(moved.Data.WorkItemID) != created.Data.WorkItemID || moved.Data.State != "Todo" || moved.Data.Revision != 2 {
+							t.Fatalf("moved=%+v err=%v", moved, err)
+						}
+						var observed struct {
+							Data tracker.NativeIssue `json:"data"`
+						}
+						if err := json.Unmarshal(call(operatortool.WorkItem, map[string]any{"project_id": project, "reference": created.Data.WorkItemID}, false), &observed); err != nil || observed.Data.State != "Todo" || observed.Data.Revision != 2 {
+							t.Fatalf("persisted move=%+v err=%v", observed, err)
+						}
+						return
 					}
 					if scenario == "disabled services" {
 						var bootstrap appBootstrap
