@@ -242,7 +242,6 @@ type ResidualReconciler interface {
 }
 
 type Issue struct {
-	Source                  *ChangeSource
 	Landing                 *LandOptions
 	NativeRework            bool
 	FreshCheckout           bool
@@ -570,17 +569,6 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	if err != nil {
 		return Info{}, err
 	}
-	if issue.Source != nil {
-		release, err := l.acquireSourceOperation(ctx)
-		if err != nil {
-			return Info{}, err
-		}
-		err = l.importChangeSource(ctx, issue.Source)
-		release()
-		if err != nil {
-			return Info{}, err
-		}
-	}
 	if issue.NativeRework && !issue.FreshCheckout {
 		exists, isDir, err := pathExists(info.Path)
 		if err != nil {
@@ -596,9 +584,6 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			if err != nil {
 				return Info{}, err
 			}
-			if err := l.prepareChangeSourceWorktree(ctx, info, issue); err != nil {
-				return Info{}, err
-			}
 			return info, nil
 		}
 	}
@@ -607,11 +592,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	if issue.Landing != nil {
 		info, created, err = l.createLandingWorktree(ctx, info, issue)
 	} else {
-		head := "HEAD"
-		if issue.Source != nil {
-			head = issue.Source.Version.HeadSHA
-		}
-		created, err = l.createWorktree(ctx, info.Path, info.Branch, issue.FreshCheckout, head)
+		created, err = l.createWorktree(ctx, info.Path, info.Branch, issue.FreshCheckout)
 	}
 	if issue.Landing != nil && created {
 		defer func() {
@@ -633,9 +614,6 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			return Info{}, l.preserveFailedWorkspace(ctx, info.Path, err)
 		}
 	}
-	if err := l.prepareChangeSourceWorktree(ctx, info, issue); err != nil {
-		return Info{}, err
-	}
 	if issue.Landing != nil {
 		if err := l.recordCleanupOwnership(ctx, info, issue, true); err != nil {
 			return Info{}, err
@@ -651,13 +629,10 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	return info, nil
 }
 
-func (l *LocalGit) createWorktree(ctx context.Context, path string, branch string, fresh bool, sourceHead ...string) (bool, error) {
+func (l *LocalGit) createWorktree(ctx context.Context, path string, branch string, fresh bool) (bool, error) {
 	l.createMu.Lock()
 	defer l.createMu.Unlock()
 	baseRef := "HEAD"
-	if len(sourceHead) > 0 {
-		baseRef = sourceHead[0]
-	}
 	if fresh {
 		release, err := l.acquireSourceOperation(ctx)
 		if err != nil {
@@ -673,9 +648,7 @@ func (l *LocalGit) createWorktree(ctx context.Context, path string, branch strin
 		if err != nil {
 			return false, err
 		}
-		if baseRef == "HEAD" {
-			baseRef = base
-		}
+		baseRef = base
 		if exists, _, err := pathExists(path); err != nil {
 			return false, err
 		} else if exists {
@@ -684,7 +657,7 @@ func (l *LocalGit) createWorktree(ctx context.Context, path string, branch strin
 			}
 		}
 		if l.autoBranch {
-			if _, err := l.runGit(ctx, "branch", "-f", branch, baseRef); err != nil {
+			if _, err := l.runGit(ctx, "branch", "-f", branch, base); err != nil {
 				return false, err
 			}
 		}
@@ -961,7 +934,7 @@ func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch strin
 	}
 
 	if l.autoBranch {
-		if err := l.addBranchedWorktree(ctx, path, branch, baseRef); err != nil {
+		if err := l.addBranchedWorktree(ctx, path, branch); err != nil {
 			return false, &worktreeCreationError{err: err}
 		}
 		return true, nil
@@ -1029,7 +1002,7 @@ func (l *LocalGit) sourceWorktreeRegistered(ctx context.Context, path string) (b
 	return false, nil
 }
 
-func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch string, sourceHead ...string) error {
+func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch string) error {
 	return l.addWorktreeWithPrune(ctx, func() error {
 		exists, err := l.branchExists(ctx, branch)
 		if err != nil {
@@ -1048,9 +1021,6 @@ func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch 
 		baseRef, err := l.newBranchStartRef(ctx, branch)
 		if err != nil {
 			return err
-		}
-		if len(sourceHead) > 0 && sourceHead[0] != "HEAD" {
-			baseRef = sourceHead[0]
 		}
 		_, err = l.runGit(ctx, "worktree", "add", "-b", branch, path, baseRef)
 		return err
