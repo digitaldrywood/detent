@@ -44,7 +44,7 @@ func (m *cloudMCP) request(ctx context.Context, method string, params any, notif
 	}
 	response, err := m.client.Do(req)
 	if err != nil {
-		return errors.New("scheduled MCP transport unavailable; retained evidence requires retry")
+		return errors.Join(errors.New("scheduled MCP transport unavailable; retained evidence requires retry"), ctx.Err())
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -63,7 +63,7 @@ func (m *cloudMCP) request(ctx context.Context, method string, params any, notif
 		Error   json.RawMessage `json:"error"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&envelope); err != nil || envelope.JSONRPC != "2.0" || envelope.ID != m.sequence {
-		return errors.New("scheduled MCP returned an invalid or failed response")
+		return errors.Join(errors.New("scheduled MCP returned an invalid or failed response"), ctx.Err())
 	}
 	if len(envelope.Error) != 0 && string(envelope.Error) != "null" {
 		var rpcError struct {

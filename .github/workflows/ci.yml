@@ -567,6 +567,7 @@ jobs:
 
   finalize:
     name: Finalize scheduled validation
+    timeout-minutes: 5
     needs: [preflight, invariants, lint, verify-fast, verify-race, test-cover, security, browser-visual-shard, portability-verify, windows-core, installer-smoke, goreleaser-snapshot]
     if: always() && (needs.preflight.outputs.should_run == 'true' || needs.preflight.result == 'failure')
     runs-on: ubuntu-latest
