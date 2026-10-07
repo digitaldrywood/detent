@@ -20,6 +20,11 @@ jobs:
     name: GoReleaser
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      contents: write
+      statuses: read
+      id-token: write
     steps:
       - uses: actions/checkout@v5
         with:
@@ -83,6 +88,28 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y minisign
 
+      - uses: sigstore/cosign-installer@v4.1.0
+        with:
+          cosign-release: v3.0.5
+
+      - name: Install quill
+        run: go install github.com/anchore/quill/cmd/quill@v0.7.1
+
+      - name: Verify macOS signing secrets
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          for secret in MACOS_SIGN_P12 MACOS_SIGN_PASSWORD MACOS_NOTARY_KEY MACOS_NOTARY_KEY_ID MACOS_NOTARY_ISSUER_ID; do
+            if [ -z "${!secret:-}" ]; then
+              echo "$secret secret is required."
+              exit 1
+            fi
+          done
+
       - name: Prepare minisign key
         run: |
           if [ -z "$MINISIGN_KEY" ]; then
@@ -111,6 +138,11 @@ jobs:
           WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
           MINISIGN_KEY_FILE: ${{ runner.temp }}/detent-minisign.key
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          QUILL_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          QUILL_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          QUILL_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          QUILL_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          QUILL_NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
 
       - name: Prepare Hub deployment artifact
         run: |
