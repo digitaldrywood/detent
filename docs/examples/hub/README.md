@@ -138,7 +138,13 @@ operator can grant complimentary access on the shared deployment.
 For each organization the entry creates `tenant_root/ORG/` (mode 0700) holding the
 generated `tenant.yaml` (no secrets), `hub.db` and a private per-tenant Hub admin
 token, and runs `detent hub serve --hosted-config ... --listen unix:socket_root/ORG.sock`
-as a supervised child (restarted with backoff; stopped when the entry stops). The
+as a supervised child (restarted with backoff; stopped when the entry stops).
+The same supervisor checks the authenticated tenant health endpoint every five
+seconds. After 30 seconds without a successful check, including initial startup,
+it interrupts and reaps the child before using the existing restart backoff.
+The entry's `/health` returns 503 when its registry or authentication database is
+unavailable or any ready tenant fails its authenticated health check. Allocating,
+failed and deleted organizations are not expected to serve yet. The
 entry interrupts all children together and waits for their exit before releasing
 its own databases. A child has 15 seconds to exit before the launcher kills and
 reaps it. Keep all tenants in the entry's systemd cgroup: use `KillMode=mixed`
@@ -172,8 +178,15 @@ a failed signup.
 ### Backup and recovery
 
 Back up `state_directory/registry.db` and every `tenant_root/ORG/hub.db` together,
-with the entry and tenants quiesced or through each owner's online backup
-(`detent hub backup` for a stopped tenant). `auth.db` holds only sessions and login
+with the entry and tenants quiesced. `detent hub backup` is offline maintenance:
+it requires the owning tenant to be stopped even though it uses SQLite's backup
+API internally. A scheduled job using this path interrupts all production
+tenants from service stop until entry and tenant health recover. Stop and join
+the whole service cgroup using the shutdown semantics above, then verify the
+entry's `/health` after starting it. Do not copy live database and WAL files to
+avoid the outage; a backup without quiescing requires coordinated snapshots
+through the live database owners, which the shared entry does not expose.
+`auth.db` holds only sessions and login
 transactions and is not restored: a restore starts with no sessions, and every user
 signs in again. To restore one tenant, stop the entry, restore its `hub.db` with
 `detent hub restore`, and if its binding moved, re-register it with a higher

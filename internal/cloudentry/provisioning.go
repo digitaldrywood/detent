@@ -153,6 +153,9 @@ func (s *Service) tenantSpec(organization Organization) TenantSpec {
 		Organization: organization, Directory: filepath.Join(s.config.Allocation.TenantRoot, organization.ID),
 		Socket: strings.TrimPrefix(organization.Endpoint, "unix:"), PublicURL: s.config.PublicURL, Issuer: s.config.Issuer,
 		PublicKey: cloudassert.PublicKeyOf(s.config.SigningKey),
+		Check: func(ctx context.Context) error {
+			return s.checkTenant(ctx, organization)
+		},
 	}
 }
 

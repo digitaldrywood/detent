@@ -4,6 +4,7 @@ package cloudentry
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -173,7 +175,7 @@ func TestExecLauncherJoinsTenantShutdown(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		tenants int
-	}{{name: "Stop", tenants: 1}, {name: "Close", tenants: 2}} {
+	}{{name: "Stop", tenants: 1}, {name: "Close", tenants: 2}, {name: "unreachable child", tenants: 1}} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			directory := t.TempDir()
@@ -191,7 +193,7 @@ func TestExecLauncherJoinsTenantShutdown(t *testing.T) {
 			if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
 				t.Fatal(err)
 			}
-			launcher := &ExecLauncher{Binary: binary, Logger: slog.New(slog.DiscardHandler), Environment: []string{
+			launcher := &ExecLauncher{Binary: binary, RestartLimit: 1, Logger: slog.New(slog.DiscardHandler), Environment: []string{
 				"DETENT_TEST_BINARY=" + os.Args[0], "DETENT_TEST_ADDRESS=" + listener.Addr().String(),
 			}, Configure: func(TenantSpec) ([]byte, error) { return []byte("{}\n"), nil }}
 			t.Cleanup(func() { _ = launcher.Close() })
@@ -206,7 +208,11 @@ func TestExecLauncherJoinsTenantShutdown(t *testing.T) {
 				if err := os.Mkdir(filepath.Join(tenantDirectory, "hub.db.lock.coverage"), 0700); err != nil {
 					t.Fatal(err)
 				}
-				if err := launcher.Start(t.Context(), TenantSpec{Organization: Organization{ID: id}, Directory: tenantDirectory}); err != nil {
+				spec := TenantSpec{Organization: Organization{ID: id}, Directory: tenantDirectory}
+				if test.name == "unreachable child" {
+					spec.Check = func(context.Context) error { return syscall.ECONNREFUSED }
+				}
+				if err := launcher.Start(t.Context(), spec); err != nil {
 					t.Fatal(err)
 				}
 				conn, err := listener.Accept()
@@ -215,7 +221,7 @@ func TestExecLauncherJoinsTenantShutdown(t *testing.T) {
 				}
 				connections = append(connections, conn)
 				t.Cleanup(func() { _ = conn.Close() })
-				if err := conn.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+				if err := conn.SetDeadline(time.Now().Add(time.Minute)); err != nil {
 					t.Fatal(err)
 				}
 				path, err := bufio.NewReader(conn).ReadString('\n')
@@ -225,11 +231,22 @@ func TestExecLauncherJoinsTenantShutdown(t *testing.T) {
 				paths = append(paths, strings.TrimSpace(path))
 			}
 			done := make(chan error, 1)
+			launcher.mu.Lock()
+			tenant := launcher.running["org_0"]
+			launcher.mu.Unlock()
 			go func() {
-				if test.name == "Stop" {
+				switch test.name {
+				case "Stop":
 					done <- launcher.Stop("org_0")
-				} else {
+				case "Close":
 					done <- launcher.Close()
+				default:
+					<-tenant.done
+					if !errors.Is(launcher.Failure("org_0"), syscall.ECONNREFUSED) {
+						done <- fmt.Errorf("unreachable tenant failure: %w", launcher.Failure("org_0"))
+						return
+					}
+					done <- nil
 				}
 			}()
 			for i, conn := range connections {
@@ -294,7 +311,7 @@ func TestTenantShutdownHelperProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = conn.Close() }()
-	if err := conn.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fmt.Fprintln(conn, os.Getenv("DETENT_TEST_LOCK")); err != nil {
@@ -302,7 +319,7 @@ func TestTenantShutdownHelperProcess(t *testing.T) {
 	}
 	select {
 	case <-interrupts:
-	case <-time.After(20 * time.Second):
+	case <-time.After(time.Minute):
 		t.Fatal("tenant received no shutdown signal")
 	}
 	if _, err := fmt.Fprintln(conn, "stopping"); err != nil {

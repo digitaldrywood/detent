@@ -21,6 +21,7 @@ type TenantSpec struct {
 	PublicURL    string
 	Issuer       string
 	PublicKey    string
+	Check        func(context.Context) error
 }
 
 type Launcher interface {
@@ -62,7 +63,11 @@ type ExecLauncher struct {
 	failures map[string]error
 }
 
-const tenantStableUptime = 5 * time.Minute
+const (
+	tenantStableUptime       = 5 * time.Minute
+	tenantProbeInterval      = 5 * time.Second
+	tenantUnavailableTimeout = 30 * time.Second
+)
 
 type supervisedTenant struct {
 	cancel context.CancelFunc
@@ -110,13 +115,15 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 	limited := spec.Organization.State != "ready"
 	for ctx.Err() == nil {
 		started := time.Now()
-		cmd := exec.CommandContext(ctx, l.Binary, "hub", "serve", "--hosted-config", filepath.Join(spec.Directory, "tenant.yaml"),
+		attempt, cancel := context.WithCancel(ctx)
+		cmd := exec.CommandContext(attempt, l.Binary, "hub", "serve", "--hosted-config", filepath.Join(spec.Directory, "tenant.yaml"),
 			"--database", filepath.Join(spec.Directory, "hub.db"), "--listen", "unix:"+spec.Socket) // #nosec G204 -- the operator-configured Detent binary runs with fixed arguments and no shell.
 		cmd.Env = append(append(baseEnvironment(), l.Environment...), "DETENT_HUB_ADMIN_TOKEN="+token)
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 		cmd.WaitDelay = 15 * time.Second
-		err := cmd.Run()
+		err := l.runTenant(attempt, spec, cmd, cancel)
+		cancel()
 		if ctx.Err() != nil {
 			return
 		}
@@ -135,6 +142,49 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 		case <-time.After(backoff):
 		}
 		backoff = min(backoff*2, time.Minute)
+	}
+}
+
+func (l *ExecLauncher) runTenant(ctx context.Context, spec TenantSpec, cmd *exec.Cmd, cancel context.CancelFunc) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	result := make(chan error, 1)
+	go func() { result <- cmd.Wait() }()
+	if spec.Check == nil {
+		return <-result
+	}
+	return l.waitTenant(ctx, spec, result, cancel)
+}
+
+func (l *ExecLauncher) waitTenant(ctx context.Context, spec TenantSpec, result <-chan error, cancel context.CancelFunc) error {
+	ticker := time.NewTicker(tenantProbeInterval)
+	defer ticker.Stop()
+	lastHealthy := time.Now()
+	for {
+		select {
+		case err := <-result:
+			return err
+		case <-ctx.Done():
+			return <-result
+		case <-ticker.C:
+			probe, stop := context.WithTimeout(ctx, platformCallTimeout)
+			err := spec.Check(probe)
+			stop()
+			if ctx.Err() != nil {
+				return <-result
+			}
+			if err == nil {
+				lastHealthy = time.Now()
+				continue
+			}
+			if time.Since(lastHealthy) < tenantUnavailableTimeout {
+				continue
+			}
+			l.logger().Warn("tenant Hub unreachable; stopping for restart", "organization", spec.Organization.ID, "error", err)
+			cancel()
+			return errors.Join(fmt.Errorf("tenant Hub serving health: %w", err), <-result)
+		}
 	}
 }
 
