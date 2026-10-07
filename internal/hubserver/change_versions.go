@@ -16,6 +16,9 @@ import (
 )
 
 func validateChangeVersion(input tracker.ChangeVersionInput) error {
+	if v := input.Validation; v != nil && (v.HeadSHA != input.HeadSHA || v.ExitCode != 0 || v.DurationNS <= 0 || strings.TrimSpace(v.Command) == "" || len(v.Command) > 4096 || len(v.Output) > 64*1024 || !validCommitID(v.TreeSHA) || !v.Evidence.Valid()) {
+		return nativeInvalid("Validation receipt must cover the published head and identify a successful command")
+	}
 	for _, commit := range []string{input.BaseSHA, input.HeadSHA, input.MergeBaseSHA} {
 		if !changerequest.ValidHash(commit, 40) && !changerequest.ValidHash(commit, 64) {
 			return nativeInvalid("Base, head and merge-base must be lowercase commit identities")

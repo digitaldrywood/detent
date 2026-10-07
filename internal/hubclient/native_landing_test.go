@@ -177,6 +177,10 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if err := work.Checkpoint(guarded, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: worktreeState, HeadSHA: head, ExternalEffect: "none", EffectState: "none"}); err != nil {
 		t.Fatal(err)
 	}
+	sourceValidation := gate.CommandResult{Command: "go test -short ./...", HeadSHA: head, TreeSHA: strings.Repeat("a", 40), DurationNS: int64(time.Second)}
+	if err := work.(runner.SourceValidationExecution).RecordSourceValidation(guarded, sourceValidation); err != nil {
+		t.Fatal(err)
+	}
 	if err := work.Finish(guarded, "succeeded"); err != nil {
 		t.Fatal(err)
 	}
@@ -343,6 +347,9 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	target, err := execution.LandingTarget(guarded)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(target.Validation, &sourceValidation) {
+		t.Fatalf("landing lost source receipt: %#v", target.Validation)
 	}
 	if target.ChangeID != change.ChangeID || target.VersionID != change.VersionID || target.HeadSHA != head || target.Method != "squash" || target.Number != 1 || target.Title != "Land me" || target.Repository != nativeChangeRepository || target.GitHubPullRequest != github {
 		t.Fatalf("landing target = %#v", target)
@@ -690,5 +697,68 @@ func TestNativeExecutionOperatorLandingTarget(t *testing.T) {
 	h.descriptor = next
 	if _, err := execution.LandingTarget(t.Context()); !errors.Is(err, runner.ErrLandingNotReviewed) {
 		t.Fatalf("stale policy target error = %v", err)
+	}
+}
+
+func TestNativeLandingBatchClaimsOneCapacityUnit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+	t.Parallel()
+	h := newNativeChangeHubTransport(t, "Human Review", []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"Human Review", "Merging", "In Progress"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Human Review"}},
+		{Name: "Human Review", Transitions: []string{"Merging"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review"}},
+		{Name: "Done", Terminal: true},
+	}, true)
+	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), Policy: tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}); err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Batch source"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		item := tracker.NativeWorkItemID(issue.ID)
+		change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Batch source"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		head := strings.Repeat("c", 40)
+		version, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{Mutation: nativeMutationKey(), ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: strings.Repeat("a", 40), HeadSHA: head, MergeBaseSHA: strings.Repeat("a", 40), Repository: nativeChangeRepository, Code: tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + head, SHA256: policy.Digest([]byte(head)), Availability: "unverified"}, PolicyID: h.descriptor.ID}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Human Review"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, version.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "approved"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := orchestrator.SchedulingRequest{ProjectID: "local", WorkflowStates: []string{"Merging"}, Policy: h.descriptor, AdmissionLimit: 1, CandidateLimit: 10, NativeLandingBatch: true, CandidateReady: func(context.Context, connector.Issue) bool { return true }}
+	candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), request)
+	if err != nil || len(candidates) != 10 {
+		t.Fatalf("batch claims = %d, %v", len(candidates), err)
+	}
+	for _, candidate := range candidates {
+		if _, err := h.scheduler.AdoptClaim(t.Context(), candidate, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		target, err := h.scheduler.RunExecution(candidate.ID).(runner.LandingExecution).LandingTarget(t.Context())
+		if err != nil || target.HeadSHA != strings.Repeat("c", 40) {
+			t.Fatalf("target = %#v, %v", target, err)
+		}
+	}
+	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Ordinary Code remains bounded"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.NativeLandingBatch = false
+	request.WorkflowStates = []string{"Todo"}
+	candidates, err = h.scheduler.FetchCandidateIssues(t.Context(), request)
+	if err != nil || len(candidates) != 0 {
+		t.Fatalf("Code %s claimed beside full landing slot: %v, %v", issue.ID, candidates, err)
 	}
 }

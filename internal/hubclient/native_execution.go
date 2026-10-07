@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -22,6 +23,7 @@ import (
 )
 
 type nativeExecution struct {
+	validation        *gate.CommandResult
 	usageStartedAt    time.Time
 	artifacts         nativeArtifacts
 	scheduler         *Scheduler

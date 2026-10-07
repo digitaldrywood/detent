@@ -86,6 +86,7 @@ func sharedProviderAccount(a, b providercapacity.Report) bool {
 }
 
 type providerCapacitySnapshot struct {
+	groups       map[string]providercapacity.Report
 	reports      []providercapacity.Report
 	reservations []providercapacity.Reservation
 }
@@ -119,15 +120,17 @@ FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organiza
 	if err := rows.Close(); err != nil {
 		return snapshot, err
 	}
-	rows, err = query.QueryContext(ctx, `SELECT p.reservation_json, l.expires_at FROM provider_reservations p JOIN leases l ON l.lease_id = p.lease_id WHERE p.organization_id = ? AND l.released_at IS NULL`, organization)
+	rows, err = query.QueryContext(ctx, `SELECT p.reservation_json, l.expires_at, l.session_id, l.machine_id, `+nativeLandingCapacityProject+` FROM provider_reservations p JOIN leases l ON l.lease_id=p.lease_id JOIN issues i ON i.id=l.issue_id `+nativeLandingCapacityJoins+` WHERE p.organization_id = ? AND l.released_at IS NULL`, organization)
 	if err != nil {
 		return snapshot, err
 	}
 	defer rows.Close()
+	snapshot.groups = map[string]providercapacity.Report{}
 	for rows.Next() {
-		var raw, expiry string
+		var raw, expiry, session, project string
+		var machine tracker.MachineID
 		var reservation providercapacity.Reservation
-		if err := rows.Scan(&raw, &expiry); err != nil {
+		if err := rows.Scan(&raw, &expiry, &session, &machine, &project); err != nil {
 			return snapshot, err
 		}
 		end, err := parseTimeValue(expiry)
@@ -139,6 +142,15 @@ FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organiza
 		}
 		if err := json.Unmarshal([]byte(raw), &reservation); err != nil {
 			return snapshot, err
+		}
+		if reservation.Backend == "git" && reservation.Role == "merge" {
+			group := landingCapacityKey(machine, project, session)
+			if group != "" {
+				if _, exists := snapshot.groups[group]; exists {
+					continue
+				}
+				snapshot.groups[group] = reservation.Report
+			}
 		}
 		snapshot.reservations = append(snapshot.reservations, reservation)
 	}
@@ -224,9 +236,13 @@ func selectProviderCapacity(ctx context.Context, tx *sql.Tx, query claimCandidat
 			if !report.Supports(candidate.Requirement) {
 				continue
 			}
-			view, err := providerView(ctx, tx, query.NativeScope.organization, report, now)
+			snapshot, err := readProviderCapacitySnapshot(ctx, tx, query.NativeScope.organization, now)
 			if err != nil {
 				return providercapacity.Reservation{}, false, err
+			}
+			view := snapshot.view(report, now)
+			if group, exists := snapshot.groups[query.LandingBatchGroup]; exists && candidate.Requirement.Backend == "git" && candidate.Requirement.Role == "merge" && sharedProviderAccount(report, group) {
+				view.Used--
 			}
 			if view.State == "exhausted" || view.Used >= view.MaxConcurrent {
 				return providercapacity.Reservation{}, false, providerWait("provider_capacity", view.Reason)

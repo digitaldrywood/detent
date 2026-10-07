@@ -186,8 +186,10 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	for _, external := range []bool{false, true} {
-		t.Run(fmt.Sprintf("external=%v", external), func(t *testing.T) {
+	for _, mode := range []string{"native", "pull-request", "external"} {
+		t.Run(mode, func(t *testing.T) {
+			external := mode == "external"
+			native := mode == "native"
 			source := initRunnerSourceRepo(t)
 			remote := filepath.Join(t.TempDir(), "origin.git")
 			runRunnerGit(t, source, "init", "--bare", "-b", "main", remote)
@@ -220,7 +222,10 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 			runRunnerGit(t, recovery, "add", "feature.txt")
 			runRunnerGit(t, recovery, "commit", "-m", "finish preserved source")
 			head := strings.TrimSpace(runRunnerGit(t, recovery, "rev-parse", "HEAD"))
-			target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Repository: repository, Method: "merge", GitHubPullRequest: true}
+			target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Repository: repository, Method: "merge", GitHubPullRequest: !native}
+			if native {
+				target.Validation = &gate.CommandResult{Command: "true", HeadSHA: head, TreeSHA: strings.TrimSpace(runRunnerGit(t, recovery, "rev-parse", "HEAD^{tree}")), DurationNS: int64(time.Second)}
+			}
 			if external {
 				target.External = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: repository + "/pull/7"}
 				runRunnerGit(t, source, "push", "origin", head+":refs/heads/"+sourceBranch, head+":refs/pull/7/head")
@@ -252,6 +257,10 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 			originalClient := http.DefaultClient
 			http.DefaultClient = &http.Client{Transport: nativeExecutionTransport(func(req *http.Request) (*http.Response, error) {
 				response := ""
+				if native {
+					operations = append(operations, req.Method)
+					return &http.Response{StatusCode: http.StatusForbidden, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"message":"API rate limit exceeded"}`))}, nil
+				}
 				if req.URL.Path == "/graphql" {
 					return workerGitHubPrincipalResponse(), nil
 				}
@@ -295,7 +304,7 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 			}
 			execution := &landingRunExecution{landingStub: landingStub{target: target}}
 			result, err := runner.Run(t.Context(), RunRequest{Mode: RunModeMerge, Execution: execution, Issue: issue})
-			if err != nil || result.Output != RunOutputNativeLanded || result.NativeLanding == nil || result.NativeLanding.HeadSHA != head || result.NativeLanding.MergeSHA != head || len(execution.recorded) != 1 || provider.calls != 0 {
+			if err != nil || result.Output != RunOutputNativeLanded || result.NativeLanding == nil || result.NativeLanding.HeadSHA != head || result.NativeLanding.MergeSHA == "" || (!native && result.NativeLanding.MergeSHA != head) || len(execution.recorded) != 1 || provider.calls != 0 {
 				t.Fatalf("landing result = %#v, execution %#v, provider calls %d, error %v", result, execution, provider.calls, err)
 			}
 			landingPath := filepath.Join(filepath.Dir(code.Path), ".detent", "landing", head, filepath.Base(code.Path))
@@ -308,25 +317,31 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 			if external && strings.Join(operations, ",") != "GET,GET,PUT" || !external && publishedBranch == code.Branch {
 				t.Fatalf("landing used wrong publication owner: %s, %v", publishedBranch, operations)
 			}
-			if result.GitHubScope == nil || len(execution.observations) == 0 || execution.observations[0].GitHub == nil || result.GitHubScope.WallElapsedNS == nil || result.GitHubScope.SubStepElapsedNS != nil || result.GitHubScope.ObservedAt.Before(result.GitHubScope.StartedAt) {
-				t.Fatalf("landing lost recorded GitHub scope: %#v", result.GitHubScope)
-			}
-			var restHTTP, restToken int64
-			for _, timing := range result.GitHubScope.Timings {
-				if timing.TimedCount != timing.AttemptCount || timing.ElapsedSumNS == nil || timing.ElapsedMaxNS == nil || timing.FirstObservedAt.IsZero() || timing.LastObservedAt.Before(timing.FirstObservedAt) {
-					t.Fatalf("landing lost actual timing: %#v", timing)
+			if native {
+				if len(operations) != 0 || result.GitHubScope != nil || result.NativeLanding.Path != "clean_push" || result.NativeLanding.Gate != nil || strings.TrimSpace(runRunnerGit(t, remote, "rev-parse", "refs/heads/main")) != result.NativeLanding.MergeSHA {
+					t.Fatalf("native landing contacted GitHub or did not push cleanly: operations %v, result %#v", operations, result)
 				}
-				if timing.Protocol == "rest" {
-					switch timing.Boundary {
-					case "http_transport":
-						restHTTP += timing.AttemptCount
-					case "token_resolution_inclusive":
-						restToken += timing.AttemptCount
+			} else {
+				if result.GitHubScope == nil || len(execution.observations) == 0 || execution.observations[0].GitHub == nil || result.GitHubScope.WallElapsedNS == nil || result.GitHubScope.SubStepElapsedNS != nil || result.GitHubScope.ObservedAt.Before(result.GitHubScope.StartedAt) {
+					t.Fatalf("landing lost recorded GitHub scope: %#v", result.GitHubScope)
+				}
+				var restHTTP, restToken int64
+				for _, timing := range result.GitHubScope.Timings {
+					if timing.TimedCount != timing.AttemptCount || timing.ElapsedSumNS == nil || timing.ElapsedMaxNS == nil || timing.FirstObservedAt.IsZero() || timing.LastObservedAt.Before(timing.FirstObservedAt) {
+						t.Fatalf("landing lost actual timing: %#v", timing)
+					}
+					if timing.Protocol == "rest" {
+						switch timing.Boundary {
+						case "http_transport":
+							restHTTP += timing.AttemptCount
+						case "token_resolution_inclusive":
+							restToken += timing.AttemptCount
+						}
 					}
 				}
-			}
-			if restHTTP != int64(len(operations)) || restToken != restHTTP {
-				t.Fatalf("timing changed upstream request population: %d HTTP, %d token, operations %v", restHTTP, restToken, operations)
+				if restHTTP != int64(len(operations)) || restToken != restHTTP {
+					t.Fatalf("timing changed upstream request population: %d HTTP, %d token, operations %v", restHTTP, restToken, operations)
+				}
 			}
 			for file, expected := range files {
 				actual, err := os.ReadFile(file)

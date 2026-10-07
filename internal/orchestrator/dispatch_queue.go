@@ -207,7 +207,7 @@ func (o *Orchestrator) dispatchGrantedRequest(ctx context.Context, state *State,
 	if fresh.BranchName == "" {
 		fresh.BranchName = action.issue.BranchName
 	}
-	if hydrator, ok := o.connector.(connector.PullRequestHydrator); ok && (fresh.PullRequest != nil || fresh.PRNumber != nil) {
+	if hydrator, ok := o.connector.(connector.PullRequestHydrator); ok && o.dispatchPlanner().githubRESTDependent(fresh) && (fresh.PullRequest != nil || fresh.PRNumber != nil) {
 		fresh, err = hydrator.HydratePullRequest(ctx, fresh)
 		if err != nil {
 			return

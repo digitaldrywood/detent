@@ -107,6 +107,9 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 	}
 	previous := e.data.Runtime
 	if previous != nil {
+		if observation.Validation == nil {
+			observation.Validation = previous.Validation
+		}
 		if observation.Recovery == nil {
 			observation.Recovery = previous.Recovery
 		}
@@ -313,7 +316,7 @@ func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, 
 }
 
 func (e *nativeExecution) ObserveLanding(ctx context.Context, landing runner.NativeLanding) error {
-	return e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{HeartbeatAt: time.Now().UTC(), Landing: &tracker.NativeLandingReceipt{CI: landing.CI, Gate: landing.Gate, ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, Landed: landing.Landed, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Rebased: landing.Rebased, RefusalKind: landing.RefusalKind, Refusal: landing.RefusalKind, GateFailed: landing.GateFailed, ObservedAt: time.Now().UTC()}})
+	return e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{HeartbeatAt: time.Now().UTC(), Landing: &tracker.NativeLandingReceipt{Path: landing.Path, Packages: landing.Packages, CI: landing.CI, Gate: landing.Gate, ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, Landed: landing.Landed, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Rebased: landing.Rebased, RefusalKind: landing.RefusalKind, Refusal: landing.RefusalKind, GateFailed: landing.GateFailed, ObservedAt: time.Now().UTC()}})
 }
 
 func (e *nativeExecution) FlushRuntime(ctx context.Context) error {

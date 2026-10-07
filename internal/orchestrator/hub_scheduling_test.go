@@ -170,7 +170,11 @@ func TestHubSchedulingCycle(t *testing.T) {
 					}
 				}
 			}
-			if scheduling.fetches != 0 && (!reflect.DeepEqual(request.DispatchPriorityByState, cfg.DispatchPriorityByState) || !reflect.DeepEqual(request.DispatchPriorityByLabel, cfg.DispatchPriorityByLabel) || !request.PrioritizeUnblockers || request.CandidateLimit != cfg.MaxConcurrentAgents+8 || request.AdmissionLimit != cfg.MaxConcurrentAgents || request.CandidateReady == nil || request.CandidateAdmitted == nil) {
+			candidateLimit := cfg.MaxConcurrentAgents + 8
+			if test.native && test.gitLanding {
+				candidateLimit = max(candidateLimit, 100)
+			}
+			if scheduling.fetches != 0 && (!reflect.DeepEqual(request.DispatchPriorityByState, cfg.DispatchPriorityByState) || !reflect.DeepEqual(request.DispatchPriorityByLabel, cfg.DispatchPriorityByLabel) || !request.PrioritizeUnblockers || request.CandidateLimit != candidateLimit || request.AdmissionLimit != cfg.MaxConcurrentAgents || request.CandidateReady == nil || request.CandidateAdmitted == nil) {
 				t.Fatalf("scheduling request lost configured ranking/readiness: %+v", request)
 			}
 			if test.native && test.mergeOnly && test.restPause && !test.expired && !test.gitLanding && scheduling.fetches != 0 {
@@ -686,7 +690,11 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 				t.Fatal(err)
 			}
 			available := o.dispatchPlanner().hardAvailableSlots(&state)
-			if source.request.CandidateLimit != available+dispatchCandidateLookahead || source.request.AdmissionLimit != max(1, available) {
+			candidateLimit := available + dispatchCandidateLookahead
+			if test.native && !test.githubPR {
+				candidateLimit = max(candidateLimit, 100)
+			}
+			if source.request.CandidateLimit != candidateLimit || source.request.AdmissionLimit != max(1, available) {
 				t.Fatalf("readiness lost bounded lookahead: %+v", source.request)
 			}
 			if test.native && test.githubPR && test.state == "Merging" && stateIn("Merging", source.request.WorkflowStates) {
@@ -699,8 +707,8 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 				source.request.CandidateAdmitted(issue)
 				next := cloneIssue(issue)
 				next.ID = "next-merge"
-				if source.request.CandidateReady(t.Context(), next) {
-					t.Fatal("batch ignored the occupied Merging slot")
+				if ready := source.request.CandidateReady(t.Context(), next); ready == test.githubPR {
+					t.Fatalf("next merge readiness = %t, native batch = %t", ready, !test.githubPR)
 				}
 				next.ID, next.State = "independent", "Todo"
 				if !source.request.CandidateReady(t.Context(), next) {
@@ -758,5 +766,41 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestNativeLandingBatchDispatch(t *testing.T) {
+	now := time.Now()
+	cfg := normalizeConfig(Config{ActiveStates: []string{"Merging"}, TerminalStates: []string{"Done"}, MaxConcurrentAgents: 1, MaxConcurrentAgentsByState: map[string]int{"merging": 1}, WorkerHosts: []string{"local"}})
+	backend := &nativeHubSchedulingConnector{&hubSchedulingConnector{}}
+	runner := &hubSchedulingRunner{requests: make(chan RunRequest, 10)}
+	admission := &countingProjectDispatchGate{}
+	orch, err := New(cfg, Dependencies{Connector: backend, Runner: runner, GlobalDispatchGate: admission})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	state := newState(cfg)
+	state.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
+	issues := make([]connector.Issue, 10)
+	for i := range issues {
+		issues[i] = dispatchTestIssue(fmt.Sprintf("wi_%d", i), "Merging")
+		issues[i].Fields["detent_hub_work_item_id"] = strconv.Itoa(i + 1)
+		issues[i].CreatedAt = new(now.Add(time.Duration(10-i) * time.Second))
+	}
+	orch.dispatchReadyIssues(ctx, &state, issues, now)
+	if len(state.Running) != 10 || admission.tryAcquireCalls != 1 {
+		t.Fatalf("running %d, merge acquisitions %d", len(state.Running), admission.tryAcquireCalls)
+	}
+	for range issues {
+		select {
+		case request := <-runner.requests:
+			if request.LandingBatch == nil || request.Mode != runpkg.RunModeMerge {
+				t.Fatalf("unbatched native request: %#v", request)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("batch member not started")
+		}
 	}
 }

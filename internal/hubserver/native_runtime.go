@@ -27,6 +27,9 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 	if r == nil {
 		return nil
 	}
+	if g := r.Validation; g != nil && (strings.TrimSpace(g.Command) == "" || len(g.Command) > 4096 || len(g.Output) > 64*1024 || g.DurationNS <= 0 || g.ExitCode != 0 || !validCommitID(g.HeadSHA) || !validCommitID(g.TreeSHA) || !g.Evidence.Valid()) {
+		return nativeInvalid("Invalid source validation evidence")
+	}
 	if r.Completion != nil && (r.Completion.ObservedAt.IsZero() || r.Phase != "completed") {
 		return nativeInvalid("Host completion observations require a completed phase and observation time")
 	}
@@ -58,6 +61,9 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 		r.Activity = &profile
 	}
 	if l := r.Landing; l != nil {
+		if l.Path != "" && !slices.Contains([]string{"clean_push", "batch_member", "rebase_short_validation"}, l.Path) || len(l.Packages) > 1024 {
+			return nativeInvalid("Invalid landing validation scope")
+		}
 		if l.Refusal != "" && l.Refusal != l.RefusalKind || l.FromState != "" || l.TargetState != "" {
 			return nativeInvalid("Landing state observations belong to the workflow owner")
 		}

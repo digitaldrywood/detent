@@ -1524,7 +1524,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if mode == RunModeTriage {
 		return r.runTriage(ctx, req)
 	}
-	if mode == RunModeMerge && mergeFastPathCheckedHead(req.Issue) && req.MergeRefreshHeadSHA != req.Issue.PullRequest.HeadSHA {
+	if !nativeLanding && mode == RunModeMerge && mergeFastPathCheckedHead(req.Issue) && req.MergeRefreshHeadSHA != req.Issue.PullRequest.HeadSHA {
 		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_checked_head",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 			"workspace_branch", strings.TrimSpace(req.Issue.BranchName),
@@ -1538,7 +1538,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			Output:     RunOutputMergeFastPathCheckedHead,
 		}, nil
 	}
-	workerGitHub, err := r.workerGitHubPolicy(ctx, workflow.Config, req.Issue.Identifier)
+	var workerGitHub workerGitHubPolicy
+	var err error
+	if !nativeLanding {
+		workerGitHub, err = r.workerGitHubPolicy(ctx, workflow.Config, req.Issue.Identifier)
+	}
 	if err != nil {
 		r.logWorkerGitHubPolicyError(req.Issue, err, telemetry.WorkAttemptIDKey, req.WorkAttemptID)
 		return RunResult{}, err

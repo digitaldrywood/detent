@@ -17,6 +17,7 @@ import (
 // SSHExecutionSources exposes only the checkout bound by the remote runner.
 // Upload credentials, journals, producer tuples and lease ownership stay central.
 type SSHExecutionSources struct {
+	landingBatch func(context.Context, []workspace.LandRequest) []sshLandingOutcome
 	mu           sync.Mutex
 	diff         AttemptDiffSource
 	directory    string
@@ -33,8 +34,14 @@ type sshDiff struct {
 func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []json.RawMessage) (any, error) {
 	s.mu.Lock()
 	diff, directory, evidence, integration, changeSource := s.diff, s.directory, s.evidence, s.integration, s.changeSource
+	landingBatch := s.landingBatch
 	s.mu.Unlock()
 	switch method {
+	case "source.landing_batch":
+		if landingBatch == nil {
+			return nil, errors.New("SSH landing batch source is unavailable")
+		}
+		return invokeSSHMethod(ctx, landingBatch, "", args)
 	case "source.change":
 		if changeSource == nil {
 			if directory == "" {
@@ -81,6 +88,9 @@ func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []
 // interpreted as a local path. Finish can use the last checkpoint diff once the
 // channel closes, just as it does after a local checkout is removed.
 func (c *SSHCallbacks) BindExecutionSources(peer *SSHPeer, journalRoot string) {
+	c.mu.Lock()
+	c.batchLander = &sshBatchLander{peer: peer, callbacks: c}
+	c.mu.Unlock()
 	if source, ok := c.execution.(ChangeSourceExecution); ok {
 		source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 			var result tracker.ChangeSourceCapture
@@ -121,6 +131,7 @@ func (c *SSHCallbacks) BindExecutionSources(peer *SSHPeer, journalRoot string) {
 }
 
 type sshNativeExecution struct {
+	batchedLanding bool
 	*sshExecution
 	sources  *SSHExecutionSources
 	capacity *providercapacity.Reservation
@@ -240,4 +251,8 @@ func (e *sshNativeExecution) ValidatorVersion(ctx context.Context) (NativeValida
 
 func (e *sshNativeExecution) RecordValidator(ctx context.Context, result gate.ValidatorResult) error {
 	return e.peer.Call(ctx, "execution.RecordValidator", nil, result)
+}
+
+func (e *sshNativeExecution) RecordSourceValidation(ctx context.Context, result gate.CommandResult) error {
+	return e.peer.Call(ctx, "execution.RecordSourceValidation", nil, result)
 }

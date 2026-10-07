@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -35,4 +36,12 @@ func (c *NativeClient) PublishValidationEvidence(ctx context.Context, item track
 	}
 	_, err := c.CreateComment(ctx, item, tracker.CreateComment{Mutation: mutation, Body: body.String()})
 	return err
+}
+
+func (e *nativeExecution) RecordSourceValidation(ctx context.Context, result gate.CommandResult) error {
+	if err := e.Validate(ctx); err != nil {
+		return err
+	}
+	e.validation = &result
+	return e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{Validation: &result})
 }

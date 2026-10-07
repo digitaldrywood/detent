@@ -214,7 +214,8 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 		ExpectedVersionID: detail.Change.CurrentVersion,
 		SourceBundle:      bundle,
 		ChangeVersionInput: tracker.ChangeVersionInput{
-			BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, MergeBaseSHA: diff.BaseSHA,
+			Validation: e.validation,
+			BaseSHA:    diff.BaseSHA, HeadSHA: diff.HeadSHA, MergeBaseSHA: diff.BaseSHA,
 			Repository: e.repository,
 			Code:       tracker.ChangeArtifact{Kind: "code", URI: e.repository + "/commit/" + diff.HeadSHA, SHA256: hex.EncodeToString(digest[:]), Availability: "unverified"},
 			Artifacts:  []tracker.ChangeArtifact{},

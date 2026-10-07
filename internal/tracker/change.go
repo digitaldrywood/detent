@@ -90,6 +90,7 @@ type ApproveChangeReviewPolicy struct {
 }
 
 type ChangeVersionInput struct {
+	Validation   *gate.CommandResult      `json:"validation,omitempty"`
 	BaseSHA      string                   `json:"base_sha"`
 	HeadSHA      string                   `json:"head_sha"`
 	MergeBaseSHA string                   `json:"merge_base_sha"`

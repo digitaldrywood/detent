@@ -649,7 +649,7 @@ func TestNativeLandingQuotaWait(t *testing.T) {
 			if test.finishUnavailable {
 				deferred, retained := state.deferredCompletions[issue.ID]
 				_, claimed := state.Claimed[issue.ID]
-				if !retained || !state.Retry[issue.ID].CompletionDeferred || !claimed || len(attempts.completions) != 0 || scheduling.releases != 1 || deferred.Result.NativeLanding == nil || *deferred.Result.NativeLanding != *landing {
+				if !retained || !state.Retry[issue.ID].CompletionDeferred || !claimed || len(attempts.completions) != 0 || scheduling.releases != 1 || deferred.Result.NativeLanding == nil || !reflect.DeepEqual(*deferred.Result.NativeLanding, *landing) {
 					t.Fatalf("Finish outage lost completion ownership: deferred=%t claim=%t retry=%#v completions=%#v releases=%d", retained, claimed, state.Retry[issue.ID], attempts.completions, scheduling.releases)
 				}
 				// Replay the persisted JSON, including typed response evidence.
@@ -686,7 +686,7 @@ func TestNativeLandingQuotaWait(t *testing.T) {
 			completion := attempts.completions[0]
 			attempt := store.WorkAttempt{ID: 42, IssueID: issue.ID, Identifier: issue.Identifier, Lane: "Merging", AttemptNumber: 4, Status: store.WorkAttemptStatusTerminal, TerminalState: completion.TerminalState, ErrorClass: completion.ErrorClass, WorkerMetadataJSON: completion.WorkerMetadataJSON, CompletedAt: now}
 			wait, ok := githubRESTWaitMetadataFromAttempt(attempt)
-			if !ok || wait.Reserve != 0 || wait.NativeLanding == nil || *wait.NativeLanding != *landing || wait.RateLimitKind == "" {
+			if !ok || wait.Reserve != 0 || wait.NativeLanding == nil || !reflect.DeepEqual(*wait.NativeLanding, *landing) || wait.RateLimitKind == "" {
 				t.Fatalf("wait = %#v, valid %t", wait, ok)
 			}
 			if test.reset != !wait.ResetAt.IsZero() || test.retryAfter != "" && wait.RetryAfter != 120*time.Second {

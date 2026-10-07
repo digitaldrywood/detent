@@ -69,6 +69,9 @@ type GitHubRESTClient interface {
 }
 
 type LandOptions struct {
+	Native                bool
+	RebaseRequired        bool
+	Validation            *gate.CommandResult
 	ValidationCommand     string
 	RequiredStatusChecks  []string
 	CITriggerLabel        string
@@ -95,6 +98,8 @@ type LandOptions struct {
 }
 
 type LandResult struct {
+	Path                string                          `json:"path,omitempty"`
+	Packages            []string                        `json:"packages,omitempty"`
 	CI                  *tracker.NativeLandingCIReceipt `json:"ci,omitempty"`
 	Gate                gate.CommandResult              `json:"gate,omitzero"`
 	Rebased             bool                            `json:"rebased,omitempty"`
@@ -285,6 +290,10 @@ func (l *LocalGit) verifyLandingWorktree(ctx context.Context, info Info, issue I
 }
 
 func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts LandOptions) (LandResult, error) {
+	if opts.Native {
+		outcome := l.LandChanges(ctx, []LandRequest{{Info: info, Issue: issue, Options: opts}})[0]
+		return outcome.Result, outcome.Err
+	}
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {
 		return LandResult{}, err

@@ -147,9 +147,17 @@ The sole event exception is `.github/workflows/cla.yml`: its single job runs
 only `contributor-assistant/github-action` without checking out or executing
 PR code, and owns signature records on the unprotected `cla-signatures` branch.
 
-Source completion and landing run `make check-land` and fix failures before
-submission; a failed landing command returns to configured Rework with the
-failing output. The project publishes no local status and sets
+Source completion runs `make check-land` and fixes failures before submission.
+The finalized immutable native version carries its successful command receipt
+for the exact reviewed head and tree. Native direct landing verifies that receipt,
+squashes clean Changes in queue order onto one staging head, and pushes the
+batch without repeating validation or calling a GitHub API. A conflicting
+member leaves the clean batch and retries by rebasing; only the rebased tree
+runs build, short Go tests for touched packages, and lint of touched files.
+The receipt records the landing path and tested packages. A moved base repeats
+the clean-squash decision on the new head. GitHub PR landing stays behind its
+project policy opt-in and retains its configured validation and native checks.
+A failed landing command returns to configured Rework with the failing output. The project publishes no local status and sets
 `gate.required_status_checks: []` and `gate.automated_review: "off"`; ordinary
 merge waits for no additional CI producer or scheduled validation, while
 reported failed CI, native base-branch requirements and reported P1 findings
