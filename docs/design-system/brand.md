@@ -40,7 +40,7 @@ Two Detent surfaces do not use the Cloud workspace tokens. Each is a contract in
 
 | Surface | Owner | Fonts | Accent | Notes |
 | --- | --- | --- | --- | --- |
-| Public sign-in | `.detent-sign-in` in [`index.css`](../../web/conversation/src/app/index.css) (lines 112–146), used by `app/account/Login.tsx` | Geist first (`"Geist", ui-sans-serif, system-ui, sans-serif`), Geist Mono for `.font-mono` | Teal: `#0f766e` light, `#2dd4bf` dark | Scoped palette of 14 tokens; the `--contrast-*` aliases are mapped straight to its roles. Contrast passes; see [color review](color-review.md#contrast). Its header mirrors detent.build. |
+| Public sign-in | `.detent-sign-in` in [`static/css/sign-in.css`](../../static/css/sign-in.css), used by `app/account/Login.tsx` and the server-rendered entry pages | Geist first (`"Geist", ui-sans-serif, system-ui, sans-serif`), Geist Mono for `.font-mono` | Teal: `#0f766e` light, `#2dd4bf` dark | Scoped palette of 14 tokens; the `--contrast-*` aliases are mapped straight to its roles. Contrast passes; see [color review](color-review.md#contrast). Its header mirrors detent.build. |
 | Local Templ dashboard | `static/css/input.css` | Geist first, Geist Mono | Teal `--color-accent` (`#2dd4bf` dark, `#0f766e` light), reserved for interactivity and never used for status | 6px cards (`--radius-card`), 4px chips (`--radius-chip`); separate `--color-ok`/`warn`/`err`/`info` status palette |
 
 The Cloud workspace uses the system font stack with Geist fallbacks and the blue primary ([foundations](foundations.md#typography)). [decisions.md §8](../conversation/decisions.md) records that Templ pages keep their teal accent until the shells are unified; unifying them is a scoped visual decision for a human-authored issue.

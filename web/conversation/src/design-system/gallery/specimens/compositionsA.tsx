@@ -54,6 +54,7 @@ import { ProjectFavicon } from "../../../components/ProjectFavicon.tsx";
 import { resolveThreadStatusPill } from "../../../components/Sidebar.logic.ts";
 import ThreadSidebar from "../../../components/Sidebar.tsx";
 import { SidebarChromeFooter, SidebarChromeHeader } from "../../../components/sidebar/SidebarChrome.tsx";
+import { WorkspacePicker } from "../../../components/sidebar/SidebarWorkspacePicker.tsx";
 import {
   ChangeRequestStatusIcon,
   ThreadStatusLabel,
@@ -61,7 +62,7 @@ import {
 } from "../../../components/ThreadStatusIndicators.tsx";
 import { Button } from "../../../components/ui/button.tsx";
 import { SelectItem, SelectPopup, Select, SelectValue } from "../../../components/ui/select.tsx";
-import { Sidebar, SidebarContent, SidebarProvider } from "../../../components/ui/sidebar.tsx";
+import { Sidebar, SidebarContent, SidebarMenu, SidebarProvider } from "../../../components/ui/sidebar.tsx";
 import { TooltipProvider } from "../../../components/ui/tooltip.tsx";
 import {
   WorkspaceBreadcrumb,
@@ -282,6 +283,82 @@ const sidebarChrome: GalleryDoc = {
             <SidebarChromeFooter />
           </SidebarFrame>
         </SidebarDataProvider>
+      ),
+    },
+  ],
+};
+
+const WORKSPACES = [
+  { id: "org_acme", name: "Acme Robotics" },
+  { id: "org_field", name: "Field Operations and Long-Running Maintenance" },
+  { id: "org_lab", name: "Research Lab" },
+] as const;
+
+function WorkspacePickerFrame({ children }: { readonly children: React.ReactNode }) {
+  return (
+    <SidebarFrame>
+      <SidebarContent />
+      <SidebarMenu className="p-2">{children}</SidebarMenu>
+    </SidebarFrame>
+  );
+}
+
+const sidebarWorkspacePicker: GalleryDoc = {
+  meta: {
+    name: "Sidebar workspace picker",
+    kind: "composition",
+    group: "Workspace",
+    source: "src/components/sidebar/SidebarWorkspacePicker.tsx",
+  },
+  specimens: [
+    {
+      id: "trigger",
+      title: "Trigger: the current workspace's badge; click to open the searchable list",
+      height: 360,
+      render: () => (
+        <WorkspacePickerFrame>
+          <WorkspacePicker
+            current={WORKSPACES[0]}
+            organizations={WORKSPACES}
+            onSelect={() => undefined}
+            onManage={() => undefined}
+            addHref="#"
+          />
+        </WorkspacePickerFrame>
+      ),
+    },
+    {
+      id: "error",
+      title: "A failed switch reopens the list with the error",
+      height: 360,
+      render: () => (
+        <WorkspacePickerFrame>
+          <WorkspacePicker
+            current={WORKSPACES[1]}
+            organizations={WORKSPACES}
+            onSelect={() => undefined}
+            onManage={() => undefined}
+            addHref="#"
+            error="You no longer have access to Research Lab."
+          />
+        </WorkspacePickerFrame>
+      ),
+    },
+    {
+      id: "pending",
+      title: "Pending: rows are disabled while a switch is in flight",
+      height: 360,
+      render: () => (
+        <WorkspacePickerFrame>
+          <WorkspacePicker
+            current={WORKSPACES[2]}
+            organizations={WORKSPACES}
+            onSelect={() => undefined}
+            onManage={() => undefined}
+            addHref="#"
+            pending
+          />
+        </WorkspacePickerFrame>
       ),
     },
   ],
@@ -1138,6 +1215,7 @@ const proposedPlanCard: GalleryDoc = {
 export const COMPOSITIONS_A: Readonly<Record<string, GalleryDoc>> = {
   "thread-sidebar": threadSidebar,
   "sidebar-chrome": sidebarChrome,
+  "sidebar-workspace-picker": sidebarWorkspacePicker,
   "detent-wordmark": detentWordmark,
   "workspace-page-header": workspacePageHeader,
   "workspace-page-container": workspacePageContainer,

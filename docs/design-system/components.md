@@ -4,7 +4,7 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 Each contract states what a component is for, how to import it, the variants its source defines, the interaction states it owns, its keyboard behaviour and what to use instead. The source file is the owner of the component's appearance and behaviour; features compose it and do not restyle it. A proposed entry names a component Detent does not have yet; listing one does not authorize building it.
 
-Catalog totals: 134 entries; by kind: 51 primitive, 77 composition, 6 surface; by status: 134 available, 0 proposed, 0 exception.
+Catalog totals: 135 entries; by kind: 51 primitive, 78 composition, 6 surface; by status: 135 available, 0 proposed, 0 exception.
 
 ## Actions
 
@@ -685,6 +685,19 @@ The sidebar's header (brand, primary actions) and footer (utility menu, update p
 - Keyboard: Header and footer items are buttons or links; the utility menu is a Menu.
 - Avoid: Adding feature shortcuts to the chrome; destinations belong in the sidebar sections or command palette.
 - Related: [Thread sidebar](#thread-sidebar), [Detent wordmark](#detent-wordmark).
+
+### Sidebar workspace picker
+
+Switching between the workspaces (organizations) the signed-in account belongs to, from the sidebar footer, with links to add a workspace or manage the current one.
+
+- Kind: Composition; status: available; id: `sidebar-workspace-picker`.
+- Import: `import { WorkspacePicker, SidebarWorkspacePicker } from "~/components/sidebar/SidebarWorkspacePicker";`
+- Source: [src/components/sidebar/SidebarWorkspacePicker.tsx](../../web/conversation/src/components/sidebar/SidebarWorkspacePicker.tsx).
+- Variants: none.
+- States: open, pending, error, no results.
+- Keyboard: The trigger opens a Menu with focus in the search field; ArrowDown and ArrowUp move from the search field to the first or last workspace; Enter switches; Escape closes and returns focus to the trigger.
+- Avoid: Using it to pick a project or another entity; project choice belongs to the sidebar sections and the command palette.
+- Related: [Sidebar chrome](#sidebar-chrome), [Menu](#menu), [Input](#input), [Badge](#badge).
 
 ### Detent wordmark
 
@@ -1549,8 +1562,8 @@ One workflow lane of the board with its cards.
 - Import: `import { BoardLane, BoardLaneProps } from "~/app/work/components/BoardLane";`
 - Source: [src/app/work/components/BoardLane.tsx](../../web/conversation/src/app/work/components/BoardLane.tsx).
 - Variants: none.
-- States: collapsed, expanded, empty.
-- Keyboard: The lane header's collapse toggle has aria-expanded; the new-issue button is labelled with the lane name.
+- States: populated, empty, drop target.
+- Keyboard: The lane is a labelled region; the new-issue button is labelled with the lane name; each card's menu lists the moves.
 - Avoid: Writing lane state from the client; the orchestrator owns lanes.
 - Related: [Issue card](#issue-card), [Work board](#work-board).
 

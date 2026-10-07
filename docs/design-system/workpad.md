@@ -56,7 +56,11 @@ Run in `web/conversation` on 2026-10-06, after the primitive sync and regenerati
 
 Catalog coverage of `src/components`: 147 of 158 modules are part of an entry and 11 are listed as internal, each with a reason ([element catalog](element-catalog.md#internal-modules)).
 
+## Console audit and rebase
+
+- A headless browser loaded all 471 specimen frames of the 134 entries at 1100px and 390px (942 loads) and recorded console errors and warnings, page errors, failed requests, overflow and blank frames. The only findings were the deliberate `RenderErrorBoundary` throw, a transient network failure that did not reproduce, and two mock-hub gaps on the live issue route: a stale mock process (restarted) and a missing pull-request list (the mock now answers an empty list, as the hub does). The remaining 404 on that route is the hub's answer for an issue without a linked conversation, which the page handles.
+- Rebased onto `develop`. The sign-in palette moved to `static/css/sign-in.css`, which `index.css` imports, so the token generator now reads it as an owner. The new sidebar workspace picker has a catalog entry and specimens, which brings the catalog to 135 entries.
+
 ## Remaining
 
 - `RenderErrorBoundary`'s fallback specimen throws on purpose, so React logs the caught error to the console of that frame.
-- Console capture covered every specimen from the dev-tools side only partly: the browser console was tracked for about 120 specimens; the rest were checked for render failures and overflow, and every specimen renders in both themes in the jsdom suite.

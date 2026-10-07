@@ -846,6 +846,21 @@
       "related": ["thread-sidebar", "detent-wordmark"]
     },
     {
+      "id": "sidebar-workspace-picker",
+      "name": "Sidebar workspace picker",
+      "kind": "composition",
+      "group": "Workspace",
+      "status": "available",
+      "source": "src/components/sidebar/SidebarWorkspacePicker.tsx",
+      "exports": ["WorkspacePicker", "SidebarWorkspacePicker"],
+      "variants": {},
+      "states": ["open", "pending", "error", "no results"],
+      "keyboard": "The trigger opens a Menu with focus in the search field; ArrowDown and ArrowUp move from the search field to the first or last workspace; Enter switches; Escape closes and returns focus to the trigger.",
+      "use": "Switching between the workspaces (organizations) the signed-in account belongs to, from the sidebar footer, with links to add a workspace or manage the current one.",
+      "avoid": "Using it to pick a project or another entity; project choice belongs to the sidebar sections and the command palette.",
+      "related": ["sidebar-chrome", "menu", "input", "badge"]
+    },
+    {
       "id": "detent-wordmark",
       "name": "Detent wordmark",
       "kind": "composition",
@@ -1853,8 +1868,8 @@
       "source": "src/app/work/components/BoardLane.tsx",
       "exports": ["BoardLane", "BoardLaneProps"],
       "variants": {},
-      "states": ["collapsed", "expanded", "empty"],
-      "keyboard": "The lane header's collapse toggle has aria-expanded; the new-issue button is labelled with the lane name.",
+      "states": ["populated", "empty", "drop target"],
+      "keyboard": "The lane is a labelled region; the new-issue button is labelled with the lane name; each card's menu lists the moves.",
       "use": "One workflow lane of the board with its cards.",
       "avoid": "Writing lane state from the client; the orchestrator owns lanes.",
       "related": ["issue-card", "work-board"]

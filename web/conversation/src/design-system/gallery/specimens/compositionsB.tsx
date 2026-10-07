@@ -5,14 +5,17 @@
 // `settings.test.tsx`, `usage.test.tsx`). Clients are in-memory stand-ins that
 // answer from fixtures; nothing here reaches the network. A component that
 // can only exist against the live hub is listed with the reason instead.
+import * as Schema from "effect/Schema";
 import { FileTextIcon, PanelRightOpenIcon } from "lucide-react";
 import React from "react";
 
+import accountFixture from "../../../contracts/fixtures/account-bootstrap.json";
 import changeFixture from "../../../contracts/fixtures/work-change-detail.json";
 import historyFixture from "../../../contracts/fixtures/work-history.json";
 import attemptsFixture from "../../../contracts/fixtures/work-attempt-list.json";
 import attemptDiffFixture from "../../../contracts/fixtures/work-attempt-diff.json";
 import commentsFixture from "../../../contracts/fixtures/work-comment-list.json";
+import { AccountBootstrap } from "../../../contracts/account.ts";
 import type {
   AttemptDiff,
   ChangeDetail,
@@ -519,9 +522,10 @@ const panels: Record<string, GalleryDoc> = {
 
 // --- Settings ---------------------------------------------------------------
 
-/** What `settings.test.tsx` mounts: an owner account, no requests at render. */
+/** What `settings.test.tsx` mounts: the owner account fixture, no requests at render. */
 const OWNER_CLIENT = {
-  account: { actor: { can_manage: true }, support: null },
+  http: { origin: "", apiBase: accountFixture.api_base, csrfToken: accountFixture.csrf_token },
+  account: Schema.decodeUnknownSync(AccountBootstrap)(accountFixture),
 } as unknown as ConversationClient;
 
 const settings: Record<string, GalleryDoc> = {

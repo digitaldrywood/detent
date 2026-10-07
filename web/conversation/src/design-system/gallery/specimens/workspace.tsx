@@ -249,7 +249,6 @@ function laneNamed(name: string): Lane {
 }
 
 function BoardSpecimen() {
-  const [collapsed, setCollapsed] = React.useState(false);
   const progress = laneNamed("In Progress");
   const items: WorkItemView[] = [
     workItem({ id: "wi_ds_1", identifier: "detent#142", title: "Port the design-system gallery", state: progress.name, attempt: runningAttempt() }),
@@ -274,15 +273,12 @@ function BoardSpecimen() {
         {...laneProps}
         lane={progress}
         items={items}
-        collapsed={collapsed}
-        onToggleCollapsed={() => setCollapsed((value) => !value)}
+        total={7}
       />
       <BoardLane
         {...laneProps}
         lane={laneNamed("Todo")}
         items={[]}
-        collapsed={false}
-        onToggleCollapsed={noop}
         emptyLabel="Nothing waiting"
         onCreate={noop}
       />
@@ -301,7 +297,7 @@ export const boardLane: GalleryDoc = {
     {
       id: "lanes",
       title: "Lane with running, labelled and blocked cards; empty lane",
-      note: "The lane header collapses the lane; each card's menu lists the moves.",
+      note: "The lane count shows the cards loaded against the project total; each card's menu lists the moves.",
       minHeight: 520,
       render: () => <BoardSpecimen />,
     },
