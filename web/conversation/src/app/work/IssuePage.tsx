@@ -613,6 +613,10 @@ function IssueSurface({
       issueIdentifier={item === null ? workItemId : issueNumber(item.identifier, item.number)}
       onCreateIssue={null}
       onNewThreadInProject={() => void navigate({ to: "/chat" })}
+      projectBreadcrumbAction={projectId === null ? undefined : {
+        label: `Open ${item?.projectName ?? project?.name ?? "project"} in Work`,
+        onClick: () => void navigate({ to: "/work/p/$projectId", params: { projectId } }),
+      }}
       attempts={data?.attempts ?? []}
       history={data?.history ?? []}
       askPanel={projectId === null ? null : <IssueAskPanel ask={ask} projectId={projectId} identifier={item === null ? workItemId : issueNumber(item.identifier, item.number)} title={item?.title ?? ""} canWrite={canWrite} />}

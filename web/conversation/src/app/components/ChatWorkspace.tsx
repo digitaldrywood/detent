@@ -76,6 +76,10 @@ export interface ChatWorkspaceProps {
   /** Opens the handoff form. Null when linking is not available here. */
   readonly onCreateIssue: (() => void) | null;
   readonly onNewThreadInProject: () => void;
+  readonly projectBreadcrumbAction?: {
+    readonly label: string;
+    readonly onClick: () => void;
+  } | undefined;
   /** The issue page passes its own reads rather than repeating them. */
   readonly attempts?: readonly NativeAttempt[];
   readonly history?: readonly CollaborationEvent[];
@@ -474,6 +478,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
                 gitCwd={git.worktreePath}
                 onAsk={props.askPanel == null ? undefined : openAsk}
                 onNewThreadInProject={props.onNewThreadInProject}
+                projectBreadcrumbAction={props.projectBreadcrumbAction}
                 onRunProjectScript={runScript}
                 onAddProjectScript={actions.add}
                 onUpdateProjectScript={actions.update}

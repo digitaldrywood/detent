@@ -404,6 +404,41 @@ test.describe("the work board", () => {
  */
 test.describe("the issue page", () => {
 
+  test("returns to the issue's project Work board from the project breadcrumb", async ({ page }, testInfo) => {
+    await openWork(page);
+    const otherProjectId = new URL(hub.fixture.private_project).pathname.split("/").at(-1);
+    const otherTitle = "Another project's breadcrumb fixture";
+    const created = await page.evaluate(async ({ projectId, title }) => {
+      const bootstrap = await (await fetch("/chat/bootstrap")).json();
+      const response = await fetch(`${bootstrap.api_base}/projects/${projectId}/work-items`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": bootstrap.csrf_token },
+        body: JSON.stringify({ idempotency_key: "breadcrumb-other-project", title, state: "Todo" }),
+      });
+      return response.status;
+    }, { projectId: otherProjectId, title: otherTitle });
+    expect(created).toBe(200);
+    await page.reload();
+    await expect(page.getByTestId("work-board").getByRole("button", { name: otherTitle, exact: true })).toBeVisible();
+
+    await page.goto(new URL(`/work/i/${hub.fixture.work_item}`, hub.fixture.url).toString());
+    await expect(page.getByTestId("issue-properties")).toBeVisible();
+    const label = "Open Browser collaboration in Work";
+    const crumb = page.locator("[data-chat-header]").getByRole("button", { name: label, exact: true });
+    await crumb.hover();
+    await expect(page.locator("[data-slot='tooltip-popup']")).toHaveText(label);
+    await testInfo.attach("issue-project-breadcrumb", { body: await page.screenshot(), contentType: "image/png" });
+    await crumb.click();
+
+    await expect.poll(() => new URL(page.url()).pathname).toBe(`/work/p/${hub.fixture.project_id}`);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Browser collaboration");
+    await expect(page.getByRole("combobox", { name: "Filter threads by project" })).toHaveText("Browser collaboration");
+    const board = page.getByTestId("work-board");
+    await expect(board.getByRole("button", { name: "Review the invitation flow", exact: true })).toBeVisible();
+    await expect(board.getByRole("button", { name: otherTitle, exact: true })).toHaveCount(0);
+    await testInfo.attach("project-work-board", { body: await page.screenshot(), contentType: "image/png" });
+  });
+
   async function typeInto(box, page, text) {
     await box.focus();
     await page.keyboard.type(text);
