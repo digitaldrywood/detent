@@ -163,15 +163,24 @@ test-fast: generate-docs
 test-race: generate-docs
 	$(GO_TEST) -short -race -timeout=10m ./...
 
+# COVER_SHARD=i/n runs one balanced slice; shard 1 also owns workspace and web.
+COVER_SHARD ?= 1/1
+
 test-cover:
 	@mkdir -p tmp
-	bash scripts/test-workspace.sh -coverprofile tmp/workspace-cover.raw.out -output tmp/workspace-cover-evidence
-	@packages="$$(go list ./...)" && \
-	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/workspace" && $$0 != "github.com/digitaldrywood/detent/internal/web"')" && \
+	@rm -f tmp/workspace-cover.raw.out tmp/rest-cover.raw.out tmp/web-cover.raw.out
+	@if [ "$(firstword $(subst /, ,$(COVER_SHARD)))" = 1 ]; then \
+		bash scripts/test-workspace.sh -coverprofile tmp/workspace-cover.raw.out -output tmp/workspace-cover-evidence; \
+	fi
+	@packages="$$(bash scripts/cover-packages.sh $(COVER_SHARD))" && \
 	$(GO_TEST) -coverprofile=tmp/rest-cover.raw.out $$packages
 	# Keep the web timing check isolated and coverage profiles disjoint.
-	$(GO_TEST) -coverprofile=tmp/web-cover.raw.out ./internal/web
-	go run ./tools/covermerge tmp/workspace-cover.raw.out tmp/rest-cover.raw.out tmp/web-cover.raw.out > $(COVERPROFILE_RAW)
+	@if [ "$(firstword $(subst /, ,$(COVER_SHARD)))" = 1 ]; then \
+		$(GO_TEST) -coverprofile=tmp/web-cover.raw.out ./internal/web && \
+		go run ./tools/covermerge tmp/workspace-cover.raw.out tmp/rest-cover.raw.out tmp/web-cover.raw.out > $(COVERPROFILE_RAW); \
+	else \
+		cp tmp/rest-cover.raw.out $(COVERPROFILE_RAW); \
+	fi
 	@$(MAKE) coverage-check
 
 coverage-check:

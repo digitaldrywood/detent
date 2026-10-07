@@ -216,8 +216,12 @@ jobs:
   test-cover:
     needs: preflight
     if: needs.preflight.outputs.should_run == 'true'
-    name: Test Coverage
+    name: Test Coverage (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -233,13 +237,13 @@ jobs:
         shell: bash
         run: |
           source scripts/check-evidence.sh
-          check_with_evidence coverage make test-cover
+          check_with_evidence coverage make test-cover COVER_SHARD=${{ matrix.shard }}/3
 
       - name: Upload workspace test evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: workspace-test-evidence-${{ runner.os }}
+          name: workspace-test-evidence-${{ runner.os }}-${{ matrix.shard }}
           path: tmp/workspace-cover-evidence
           if-no-files-found: warn
           retention-days: 14
@@ -393,10 +397,9 @@ jobs:
           ref: ${{ needs.preflight.outputs.develop_sha }}
           fetch-depth: 0
 
-      - uses: actions/setup-go@v6
+      - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.6'
-          cache: true
+          key: goreleaser
 
       - uses: actions/setup-node@v6
         with:

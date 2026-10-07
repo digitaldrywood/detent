@@ -39,7 +39,7 @@ func TestScheduledFinalizer(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
 			var jobs []job
-			for id := range 13 {
+			for id := range 15 {
 				jobs = append(jobs, job{ID: int64(id + 1), Name: "Validation", Conclusion: "success"})
 			}
 			if tt.failed {
