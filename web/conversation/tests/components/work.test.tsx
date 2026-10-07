@@ -367,6 +367,8 @@ describe("a lane", () => {
     render(
       <BoardLane
         lane={LANES.find((lane) => lane.name === "Todo")!}
+        collapsed={false}
+        onToggleCollapsed={vi.fn()}
         items={[item({ state: "Todo" })]}
         showProject={false}
         now={NOW}
@@ -395,25 +397,38 @@ describe("a lane", () => {
     expect(screen.getByText("Nothing is merging.")).not.toBeNull();
   });
 
-  it("renders an explicitly selected terminal lane at full width with its cards", () => {
-    renderLane({ lane: { ...LANES.find((lane) => lane.name === "Todo")!, terminal: true } });
-    expect(screen.queryByTestId("issue-card")).not.toBeNull();
-    expect(screen.getByTestId("lane-count-Todo").textContent).toBe("1");
+  it("collapses to a counted rail with a labelled toggle and no card body or creation control", () => {
+    const onToggleCollapsed = vi.fn();
+    renderLane({ collapsed: true, onToggleCollapsed, total: 130, onCreate: vi.fn(),
+      lane: { id: "Blocked", name: "Blocked", terminal: false, category: "started" } });
+    const toggle = screen.getByRole("button", { name: "Expand Blocked" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    expect(onToggleCollapsed).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("board-lane").className).toContain("w-11");
+    expect(screen.getByTestId("lane-count-Blocked").textContent).toBe("130");
+    expect(screen.getByTestId("lane-count-Blocked").className).toContain("bg-error-surface");
+    expect(screen.queryByTestId("lane-body-Blocked")).toBeNull();
+    expect(screen.queryByTestId("lane-new-issue-Blocked")).toBeNull();
+    expect(screen.queryByTestId("issue-card")).toBeNull();
   });
 
-  it("accepts a drop only when the card may land here", () => {
-    const { onDrop } = renderLane();
-    const body = screen.getByTestId("lane-body-Todo");
+  it.each([false, true])("accepts a drop only when the card may land here (collapsed=%s)", (collapsed) => {
+    const { onDrop } = renderLane({ collapsed });
+    const body = screen.getByTestId("board-lane");
     fireEvent.dragOver(body);
+    expect(body.className).toContain("outline-dashed");
     fireEvent.drop(body);
     expect(onDrop).toHaveBeenCalledTimes(1);
+    expect(body.className).not.toContain("outline-dashed");
 
     cleanup();
-    renderLane({ onDrop: null });
-    const refusing = screen.getByTestId("lane-body-Todo");
+    renderLane({ onDrop: null, collapsed });
+    const refusing = screen.getByTestId("board-lane");
+    fireEvent.dragOver(refusing);
     fireEvent.drop(refusing);
-    // Nothing to assert but the absence of a call: the handler is not wired.
-    expect(refusing).not.toBeNull();
+    expect(refusing.className).not.toContain("outline-dashed");
+    expect(onDrop).toHaveBeenCalledTimes(1);
   });
 
   it.each([true, false])("uses configured terminal=%s before counting and styling live work", (terminal) => {
