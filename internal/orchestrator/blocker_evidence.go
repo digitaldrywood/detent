@@ -773,7 +773,7 @@ func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, sta
 	signal := issue.WorkpadSignal
 	if len(reports) > 0 {
 		signal = workpad.CloneSignal(reports[0])
-		if signal == nil || signal.HumanAction != "" || signal.ReasonCode != "" {
+		if signal == nil || signal.HumanAction != "" {
 			return false
 		}
 		signal.RecordedAt = &event.CompletedAt
@@ -800,6 +800,21 @@ func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, sta
 	}
 	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
 		o.scheduleCITriggerLabel(ctx, issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, false)
+	}
+	if reader, native := o.connector.(connector.WorkflowStateReader); native && normalizeState(issue.State) != normalizeState("Blocked") {
+		states, err := reader.WorkflowStates(ctx)
+		if err == nil {
+			target, allowed := connector.CompletionLane(states, issue.State, "Blocked", true)
+			if !allowed {
+				err = fmt.Errorf("native workflow allows no blocker handoff from %s", issue.State)
+			} else {
+				err = o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, target, event.CompletedAt, "completed_active_review_transition", workflowLaneMetadata{})
+			}
+		}
+		if err != nil {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+			return true
+		}
 	}
 	o.recordCompletionUsage(ctx, state, event, issue)
 	detail := workpad.Reason(signal)

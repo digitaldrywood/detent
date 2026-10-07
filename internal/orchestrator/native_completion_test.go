@@ -99,6 +99,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	unfinishedReport := "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"
 	instanceReport := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:worker-loopback\n    reason: sandbox refused the mock listener with EPERM\nhuman_action: null\n```"
 	prerequisiteReport := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: prj_6d4919bebd73446798e6cd807feda10e#411\n    reason: prerequisite must finish\nhuman_action: null\n```"
+	noRecoveryLane := []connector.WorkflowState{
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
+		{Name: "Done", Terminal: true},
+	}
+	checkpoint := DiffStats{Status: "clean", HeadSHA: strings.Repeat("c", 40), RecoveryStateExpected: true, RecoveryStateAvailable: true}
+	checkpointDeadline := fmt.Errorf("worker cancellation: deadline_exceeded (source: orchestrator.parent_context)\nrun agent turn: %w\nresolve cleanup ownership source: git rev-parse --git-common-dir failed: %w", runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded)
 	yes, no := true, false
 	head := strings.Repeat("c", 40)
 	opened := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, Files: 2}
@@ -145,21 +151,38 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		wantRecovery  bool
 		blockerState  string
 		interrupted   bool
+		turnStarted   bool
 	}{
+		{name: "source free completion without Change returns to Todo", states: fourLanes, humanReview: &no, wantSettled: true, wantState: "Todo"},
+		{name: "unfinished completion without Change returns checkpoint to Rework", states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, diffStats: checkpoint, wantSettled: true, wantState: "Rework"},
+		{name: "typed instance blockers retain Blocked with instance reason code", states: blockedLanding, humanReview: &no, finalMessage: strings.Replace(instanceReport, "status: blocked", "status: blocked\nreason_code: instance_limitation", 1), wantInstance: true},
+		{name: "instance blocked completion without Change settles in Blocked", states: blockedLanding, humanReview: &no, finalMessage: instanceReport, wantInstance: true},
+		{name: "instance blocker lane refusal preserves completion authority", states: blockedLanding, humanReview: &no, finalMessage: instanceReport, updateErr: connector.ErrStateUpdateBlocked, wantDeferred: true},
+		{name: "instance blocker without allowed lane retains completion authority", states: fourLanes, humanReview: &no, finalMessage: instanceReport, wantDeferred: true},
+		{name: "unfinished source free completion with checkpoint returns to Rework", states: unfinishedWorkflow, change: &runpkg.NativeChange{}, humanReview: &no, diffStats: checkpoint, wantSettled: true, wantState: "Rework"},
+		{name: "recorded failed completion with retained checkpoint returns to Rework", states: unfinishedWorkflow, humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, turnStarted: true, wantState: "Rework", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
+		{name: "recorded failed completion without checkpoint returns to Todo", states: fourLanes, humanReview: &no, runErr: checkpointDeadline, turnStarted: true, wantState: "Todo", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
+		{name: "retained failed checkpoint uses configured Rework", states: customRework, reworkState: "Fixing", humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, wantState: "Fixing", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
+		{name: "retained failed checkpoint refuses nondispatchable Rework", states: noDispatchRework, humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, wantDeferred: true},
+		{name: "retained failed checkpoint refuses operator Rework", states: operatorRework, humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, wantDeferred: true},
+		{name: "retained checkpoint routing survives deferred replay", states: unfinishedWorkflow, humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, roundTrip: true, wantState: "Rework", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
+		{name: "failed Rework checkpoint stays in Rework", states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, wantState: "Rework", wantSameState: true, wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
+		{name: "retained failed checkpoint lane refusal preserves authority", states: unfinishedWorkflow, humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, updateErr: connector.ErrStateUpdateBlocked, wantDeferred: true},
+		{name: "failed provider with checkpoint returns to Rework", states: unfinishedWorkflow, humanReview: &no, runErr: errors.New("provider failed"), diffStats: checkpoint, wantState: "Rework"},
 		{name: "completed checkpoint ownership deadline is instance owned with human review", states: workflow, humanReview: &yes, runErr: errors.Join(runpkg.ErrWorkspacePreparation, runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded)},
 		{name: "completed checkpoint ownership deadline is instance owned without human review", states: workflow, humanReview: &no, runErr: errors.Join(runpkg.ErrWorkspacePreparation, runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded)},
-		{name: "checkpoint mismatch leaves dispatch without human review", states: fourLanes, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "Human Review", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
-		{name: "checkpoint mismatch prefers Blocked without human review", states: workflow, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "Blocked", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
+		{name: "checkpoint mismatch without retained source returns to Todo", states: fourLanes, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "Todo", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
+		{name: "checkpoint mismatch without human review returns to Todo", states: workflow, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "Todo", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
 		{name: "checkpoint mismatch optout prefers review over Blocked", states: workflow, humanReview: &no, optout: true, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "In Review", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
 		{name: "checkpoint mismatch leaves dispatch with human review", states: workflow, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "In Review", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
-		{name: "deferred checkpoint mismatch retains refusal after restart", states: fourLanes, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "Human Review", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true, roundTrip: true},
-		{name: "persisted policy mismatch leaves dispatch", states: fourLanes, humanReview: &no, runErr: fmt.Errorf("%w: policy_mismatch: persisted session policy changed", runpkg.ErrNativeRecoveryRequired), wantState: "Human Review", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
-		{name: "checkpoint mismatch without destination retains completion", states: hosted, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantDeferred: true, roundTrip: true},
+		{name: "deferred checkpoint mismatch retains refusal after restart", states: fourLanes, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "Todo", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true, roundTrip: true},
+		{name: "persisted policy mismatch leaves dispatch", states: fourLanes, humanReview: &no, runErr: fmt.Errorf("%w: policy_mismatch: persisted session policy changed", runpkg.ErrNativeRecoveryRequired), wantState: "Todo", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
+		{name: "checkpoint mismatch without destination retains completion", states: noRecoveryLane, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantDeferred: true, roundTrip: true},
 		{name: "checkpoint mismatch lane write refusal retains completion", states: fourLanes, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), updateErr: connector.ErrStateUpdateBlocked, wantDeferred: true},
 		{name: "settled head refusal retires deferred completion authority", lifecycle: "refusal", republish: true, change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, VersionError: "the final attempt diff does not identify the current Change Request head"}, states: fourLanes, statesErr: errors.New("workflow temporarily unavailable"), humanReview: &no, wantSettled: true, roundTrip: true},
 		{name: "settled policy refusal retires deferred completion authority", lifecycle: "refusal", republish: true, change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: head, VersionError: "policy mismatch", VersionCode: "policy_mismatch"}, states: landing, statesErr: errors.New("workflow temporarily unavailable"), reviewed: &yes, humanReview: &no, wantSettled: true},
-		{name: "no review missing report retires completion authority", lifecycle: "settle", change: &runpkg.NativeChange{}, states: fourLanes, humanReview: &no, wantSettled: true, roundTrip: true},
-		{name: "no review failed final state settles terminal failure", change: accepted, states: fourLanes, humanReview: &no, finalState: runpkg.FinalStateFailed, wantSettled: true},
+		{name: "no review missing report returns source free completion to Todo", lifecycle: "settle", change: &runpkg.NativeChange{}, states: fourLanes, humanReview: &no, wantSettled: true, wantState: "Todo", roundTrip: true},
+		{name: "no review failed final state returns to Todo", change: accepted, states: fourLanes, humanReview: &no, finalState: runpkg.FinalStateFailed, wantState: "Todo", wantTerminal: store.WorkAttemptTerminalFailure},
 		{name: "refusal without a safe workflow destination settles without relaning", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, VersionError: "head mismatch"}, states: hosted, humanReview: &no, wantSettled: true, roundTrip: true},
 		{name: "native release outage keeps completion ownership", lifecycle: "release", change: accepted, states: landing, reviewed: &yes, wantState: "Merging"},
 		{name: "normal provider exit renews through delayed native settlement", lifecycle: "settle", change: accepted, states: landing, reviewed: &yes, wantState: "Merging"},
@@ -171,7 +194,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "four lane reviewed change lands from current lane", change: accepted, states: fourLanes, humanReview: &no, wantDirect: true},
 		{name: "four lane reviewed change lands during drain", change: accepted, states: fourLanes, humanReview: &no, draining: true, wantDirect: true},
 		{name: "four lane reviewed optout waits for human review", change: accepted, states: fourLanes, reviewed: &yes, optout: true, humanReview: &no, wantState: "Human Review"},
-		{name: "four lane failed run settles without review", lifecycle: "settle", roundTrip: true, change: accepted, states: fourLanes, humanReview: &no, runErr: errors.New("provider failed"), wantSettled: true},
+		{name: "four lane failed run returns to Todo", lifecycle: "settle", roundTrip: true, change: accepted, states: fourLanes, humanReview: &no, runErr: errors.New("provider failed"), wantState: "Todo"},
 		{name: "four lane unreviewed version settles without acceptance", change: waiting, states: fourLanes, humanReview: &no, wantSettled: true},
 		{name: "four lane unfinished source settles without a Rework move", change: accepted, states: fourLanes, humanReview: &no, finalMessage: unfinishedReport, wantSettled: true},
 		{name: "reason only report settles without acceptance", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: "Source conflicts remain unresolved.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```", wantSettled: true},
@@ -232,10 +255,10 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "native272 clean instance report reuses completion owner", change: &runpkg.NativeChange{BaseSHA: head, HeadSHA: head}, states: blockedLanding, humanReview: &no, finalMessage: instanceReport, wantInstance: true, roundTrip: true},
 		{name: "native instance report preserves authentic published source", change: accepted, states: unfinishedWorkflow, sourceState: "Rework", finalMessage: instanceReport, wantInstance: true},
 		{name: "native instance report retains publication refusal with instance owner", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionError: "policy mismatch"}, states: blockedLanding, humanReview: &no, finalMessage: instanceReport, wantInstance: true, roundTrip: true},
-		{name: "native273 malformed predicate settles without acceptance with disabled review", change: &runpkg.NativeChange{BaseSHA: head}, states: blockedLanding, humanReview: &no, finalMessage: strings.Replace(instanceReport, "    reason:", "    predicate: instance_available\n    reason:", 1), wantSettled: true},
+		{name: "native273 malformed predicate settles without acceptance with disabled review", change: &runpkg.NativeChange{BaseSHA: head}, states: blockedLanding, humanReview: &no, finalMessage: strings.Replace(instanceReport, "    reason:", "    predicate: instance_available\n    reason:", 1), wantSettled: true, wantState: "Todo"},
 		{name: "instance and human action retain human owner", change: accepted, states: blockedLanding, humanReview: &no, finalMessage: strings.Replace(instanceReport, "human_action: null", "human_action: Approve the exception", 1), wantState: "Blocked", wantHuman: true},
 		{name: "instance and external blockers settle without acceptance with disabled review", change: accepted, states: blockedLanding, humanReview: &no, finalMessage: strings.Replace(instanceReport, "human_action: null", "  - ref: '#42'\n    reason: Await dependency\nhuman_action: null", 1), wantSettled: true},
-		{name: "malformed status report cannot accept unchanged work", change: &runpkg.NativeChange{BaseSHA: head}, lifecycle: "settle", states: fourLanes, humanReview: &no, roundTrip: true, finalMessage: "```detent-status\nschema: 99\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantSettled: true},
+		{name: "malformed status report cannot accept unchanged work", change: &runpkg.NativeChange{BaseSHA: head}, lifecycle: "settle", states: fourLanes, humanReview: &no, roundTrip: true, finalMessage: "```detent-status\nschema: 99\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantSettled: true, wantState: "Todo"},
 		{name: "ordinary code fence cannot accept unchanged work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, finalMessage: "```text\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "In Review", wantComment: "no valid complete detent-status disposition"},
 		{name: "past incident prose cannot override current typed acceptance", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, finalMessage: "The previous run was blocked; inspection now verifies all acceptance.\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Done", wantComment: "nothing to review"},
 		{name: "native26 unfinished reviewed source continues implementation", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, wantState: "Rework", wantComment: "implementation remains unfinished", roundTrip: true},
@@ -319,6 +342,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 			}
 			scheduling.release = func() {
+				if test.wantInstance && (len(tick.updates) != 1 || tick.updates[0].state != "Blocked") {
+					t.Fatalf("instance claim released before blocker handoff: %v", tick.updates)
+				}
 				if test.wantState != "" && !test.wantSameState && !test.wantDirect && (len(tick.updates) != 1 || tick.updates[0].state != test.wantState) {
 					t.Fatalf("claim released before lane settlement: updates=%v, want=%s", tick.updates, test.wantState)
 				}
@@ -359,9 +385,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				settlement.release = nil
 				owner := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: &recordingWorkAttemptStore{}, scheduling: &settlement}
 				event := runpkg.Completion{IssueID: issue.ID, Err: context.Canceled, CompletedAt: now, Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement}, Result: runpkg.RunResult{TurnStarted: true}}
-				if !owner.completeNativeChangeRun(t.Context(), &interrupted, event, running, runpkg.FinalStateFailed) || len(tick.updates) != 0 {
-					t.Fatalf("interrupted attempt inherited a lane disposition: %v", tick.updates)
+				if !owner.completeNativeChangeRun(t.Context(), &interrupted, event, running, runpkg.FinalStateFailed) || len(tick.updates) != 1 || tick.updates[0].state != "Todo" {
+					t.Fatalf("interrupted attempt did not return to Todo: %v", tick.updates)
 				}
+				tick.updates = nil
+				tick.stateIssues[0] = issue
+				tracker.(*nativeWorkflowConnector).reasons = nil
 				state.Running[issue.ID] = running
 			}
 			finalState := test.finalState
@@ -440,7 +469,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			event := runpkg.Completion{
 				IssueID: issue.ID, CompletedAt: now, Err: test.runErr,
 				Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement, WorkAttemptID: 42, Generation: 7},
-				Result:  runpkg.RunResult{FinalState: finalState, FinalMessage: test.finalMessage, NativeChange: test.change, Tokens: tokens, DiffStats: diffStats, TurnStarted: test.wantInstance || test.wantSettled || test.diffStats.Fingerprint != ""},
+				Result:  runpkg.RunResult{FinalState: finalState, FinalMessage: test.finalMessage, NativeChange: test.change, Tokens: tokens, DiffStats: diffStats, TurnStarted: test.turnStarted || test.wantInstance || test.wantSettled || test.diffStats.Fingerprint != ""},
 			}
 			if test.wantDirect {
 				change := *test.change
@@ -571,7 +600,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 						t.Fatalf("settled refusal omitted host nonacceptance observation: %+v", publisher.observations)
 					}
 				}
-				if len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Completed) != 0 || len(state.Retry) != 0 || len(state.deferredCompletions) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || len(attempts.completions) != 1 {
+				wantTransitions := 0
+				if test.wantState != "" {
+					wantTransitions = 1
+				}
+				if len(tick.updates) != wantTransitions || test.wantState != "" && tick.stateIssues[0].State != test.wantState || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Completed) != 0 || len(state.Retry) != 0 || len(state.deferredCompletions) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || len(attempts.completions) != 1 {
 					t.Fatalf("native settlement accepted, relaned, or replayed immutable outcome: updates=%v completed=%v retry=%v releases=%d attempts=%v", tick.updates, state.Completed, state.Retry, scheduling.releases, attempts.completions)
 				}
 				wantTerminal := test.wantTerminal
@@ -606,7 +639,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				return
 			}
 			if test.wantInstance {
-				if len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Retry) != 0 || len(state.Completed) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || len(state.FailureBreaker.Failures) != 0 {
+				if len(tick.updates) != 1 || tick.updates[0].state != "Blocked" || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Retry) != 0 || len(state.Completed) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || len(state.FailureBreaker.Failures) != 0 {
 					t.Fatalf("instance report acquired issue completion effects: updates=%v blocked=%v retry=%v completed=%v claims=%v releases=%d", tick.updates, state.Blocked, state.Retry, state.Completed, state.Claimed, scheduling.releases)
 				}
 				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess || attempts.completions[0].ErrorClass != "" {
@@ -622,10 +655,10 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 					t.Fatal(err)
 				}
 
-				if len(metadata.Evidence) != 1 || metadata.Evidence[0].Owner != workpad.BlockerOwnerInstance || metadata.Evidence[0].Reference != "instance:worker-loopback" || !strings.Contains(metadata.Evidence[0].Reason, "EPERM") || metadata.Evidence[0].RecordedAt == nil || !metadata.Evidence[0].RecordedAt.Equal(now) || metadata.ChangeID != test.change.ChangeID {
+				if len(metadata.Evidence) != 1 || metadata.Evidence[0].Owner != workpad.BlockerOwnerInstance || metadata.Evidence[0].Reference != "instance:worker-loopback" || !strings.Contains(metadata.Evidence[0].Reason, "EPERM") || metadata.Evidence[0].RecordedAt == nil || !metadata.Evidence[0].RecordedAt.Equal(now) || test.change != nil && metadata.ChangeID != test.change.ChangeID {
 					t.Fatalf("instance or source evidence lost: %#v", metadata)
 				}
-				if metadata.VersionError != test.change.VersionError || metadata.VersionCode != test.change.VersionCode {
+				if test.change != nil && (metadata.VersionError != test.change.VersionError || metadata.VersionCode != test.change.VersionCode) {
 					t.Fatalf("instance completion lost publication refusal: %#v", metadata)
 				}
 				var metrics struct {
@@ -763,21 +796,25 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 						t.Fatal("native cleanup failure consumed issue failure allowance")
 					}
 				}
+				wantTransitions := 1
+				if test.wantSameState {
+					wantTransitions = 0
+				}
 				if test.wantRecovery {
 					receipt := attempts.completions[0]
 					reasons := tracker.(*nativeWorkflowConnector).reasons
-					if len(reasons) != 1 || reasons[0] != test.runErr.Error() || receipt.ErrorClass != workAttemptErrorWorkspace || !allowanceInfrastructureAttempt(store.WorkAttempt{TerminalState: receipt.TerminalState, ErrorClass: receipt.ErrorClass, MetricsJSON: receipt.MetricsJSON}) || len(state.FailureBreaker.Failures) != 0 || dispatchableState(test.states, tick.stateIssues[0].State) {
+					if len(reasons) != wantTransitions || wantTransitions > 0 && reasons[0] != "terminal attempt without work product" || receipt.ErrorClass != workAttemptErrorWorkspace || !allowanceInfrastructureAttempt(store.WorkAttempt{TerminalState: receipt.TerminalState, ErrorClass: receipt.ErrorClass, MetricsJSON: receipt.MetricsJSON}) || len(state.FailureBreaker.Failures) != 0 || !test.optout && test.humanReview != nil && !*test.humanReview && !dispatchableState(test.states, tick.stateIssues[0].State) {
 						t.Fatalf("checkpoint recovery lost mismatch or instance attribution: reasons=%v receipt=%+v state=%s", reasons, receipt, tick.stateIssues[0].State)
 					}
 					for range 3 {
 						orch.retryDeferredCompletions(t.Context(), &state, now.Add(time.Hour))
 					}
-					if len(tick.updates) != 1 || scheduling.releases != 1 || len(state.Retry) != 0 || len(state.deferredCompletions) != 0 || len(attempts.completions) != 1 {
+					if len(tick.updates) != wantTransitions || scheduling.releases != 1 || len(state.Retry) != 0 || len(state.deferredCompletions) != 0 || len(attempts.completions) != 1 {
 						t.Fatal("checkpoint refusal repeated a transition or scheduled another attempt")
 					}
 				}
 				if test.wantState != "" {
-					if len(tick.updates) != 1 || tick.updates[0].state != test.wantState || retried || scheduling.releases != 1 || len(tick.comments) != 0 {
+					if len(tick.updates) != wantTransitions || tick.stateIssues[0].State != test.wantState || retried || scheduling.releases != 1 || len(tick.comments) != 0 {
 						t.Fatalf("failed native handoff: updates=%v retry=%t releases=%d comments=%v", tick.updates, retried, scheduling.releases, tick.comments)
 					}
 				}
