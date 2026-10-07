@@ -42,6 +42,7 @@ var ErrServiceUnavailable = errors.New("change or artifact service is unavailabl
 // ChangeArguments is the typed application selector. Each tool allows only its
 // declared fields; credentials, producer provenance and leases are never input.
 type ChangeArguments struct {
+	Escape            *tracker.QualityEscape           `json:"escape,omitempty"`
 	ProjectID         string                           `json:"project_id"`
 	RequestID         string                           `json:"request_id,omitempty"`
 	ItemID            string                           `json:"work_item_id,omitempty"`
@@ -147,6 +148,7 @@ func ChangeCatalog() []Definition {
 	for _, k := range []string{"project_id", "work_item_id", "change_id", "version_id", "artifact_id", "expected_review_policy_id", "attempt_id", "kind", "status"} {
 		props[k] = str()
 	}
+	props["escape"] = json.RawMessage(`{"type":"object","required":["occurrence_id","kind","observed_at","cause","evidence_reference","evidence_quote","basis_quote"],"properties":{"occurrence_id":{"type":"string","minLength":1,"maxLength":256},"kind":{"type":"string","enum":["revert","scheduled_failure","reopened"]},"observed_at":{"type":"string","format":"date-time"},"cause":{"type":"string","enum":["underspecified_issue","missing_criterion","validator_miss","infrastructure"]},"evidence_reference":{"type":"string","minLength":1,"maxLength":2048},"evidence_quote":{"type":"string","minLength":1,"maxLength":4096},"basis_quote":{"type":"string","minLength":1,"maxLength":4096},"criterion":{"type":"string","maxLength":4096},"instance_id":{"type":"string","maxLength":256},"human_override":{"type":"boolean"}},"additionalProperties":false}`)
 	props["request_id"] = json.RawMessage(`{"type":"string","minLength":1,"maxLength":128}`)
 	props["expected_version_id"] = json.RawMessage(`{"type":"string","maxLength":256}`)
 	props["policy_id"] = str()
@@ -198,7 +200,7 @@ func ChangeCatalog() []Definition {
 	}
 	add(ListChanges, "List Change Requests linked to an owned work item.", "work_item_id", "limit offset", true, false)
 	add(GetChange, "Read Change Request versions, discussion, reviews, checks, landing evidence and bounded local/scheduled check comparisons.", "work_item_id change_id", "", true, false)
-	add(GetChangeVersion, "Read one immutable version with code/diff and artifact references.", "work_item_id change_id version_id", "", true, false)
+	add(GetChangeVersion, "Read one immutable version with code/diff, artifact references and the frozen landing contract and criterion evidence for escape classification.", "work_item_id change_id version_id", "", true, false)
 	add(GetChangeReviewPolicy, "Read the project's approved review policy.", "", "", true, false)
 	add(ChangeViewedFiles, "Read this principal's viewed-file digests for a version.", "work_item_id change_id version_id", "limit offset", true, false)
 	add(ArtifactServices, "Read installed artifact services without publisher credentials.", "", "", true, false)
@@ -207,7 +209,7 @@ func ChangeCatalog() []Definition {
 	add(ArtifactAccess, "Authorize an exact artifact revision for download/export through existing manifest/object endpoints. Token expires within one minute; send it as Bearer, never in a URL. Replays reauthorize and mint fresh ephemeral access.", "work_item_id artifact_id revision sha256 request_id", "", false, false)
 	add(CreateChange, "Create a Change Request using the existing application command, optionally linking other work items owned by this project.", "work_item_id title request_id", "body linked_issues", false, false)
 	add(PublishChangeVersion, "Publish a genuine operator-authored immutable version without a Run/Attempt. Use an empty expected_version_id for first publication. Optional source_capture metadata and base64 source_bundle use the existing HTTP source owner; complete arguments must fit 64 KiB. Reuses approved policy, artifact validation and promotion; returns the stable published version and live current Change/lane. Unverified artifacts remain unverified; external PR references do not bypass repository protection.", "work_item_id change_id expected_version_id base_sha head_sha merge_base_sha repository code policy_id request_id", "artifacts external source_capture source_bundle", false, false)
-	add(DiscussChange, "Discuss a change through its application command.", "work_item_id change_id body request_id", "version_id", false, false)
+	add(DiscussChange, "Discuss a change or record an evidence-backed escape assessment of its landed version. Human overrides require a browser session. Does not file issues or move workflow state.", "work_item_id change_id body request_id", "version_id escape", false, false)
 	add(ReviewChange, "Review the current immutable bundle. Decisions execute using current review authority.", "work_item_id change_id version_id expected_revision decision bundle request_id", "body", false, true)
 	add(ViewChangeFile, "Record a viewed-file digest for an immutable review bundle.", "work_item_id change_id version_id bundle file_sha256 viewed request_id", "", false, false)
 	add(ApproveChangeReviewPolicy, "Approve the project review policy using current administrator authority.", "policy request_id", "expected_review_policy_id", false, true)
@@ -347,6 +349,9 @@ func DecodeChangeArguments(name string, raw json.RawMessage) (ChangeArguments, e
 				return args, ErrInvalidArguments
 			}
 		}
+	}
+	if string(fields["escape"]) == "null" || args.Escape != nil && (args.VersionID == "" || args.Escape.Validate() != nil) {
+		return args, ErrInvalidArguments
 	}
 	return args, nil
 }

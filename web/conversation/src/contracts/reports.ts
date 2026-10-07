@@ -24,6 +24,30 @@ const Page = <S extends Schema.Top>(item: S) =>
     items: Schema.Array(item),
     next_offset: Schema.optional(Schema.Number),
   });
+const QualityCounts = Schema.Struct({
+  worked_items: Schema.Number,
+  reworked_items: Schema.Number,
+  landed_versions: Schema.Number,
+  escaped_versions: Schema.Number,
+  escapes: Schema.Number,
+  infrastructure: Schema.Number,
+  pending_classification: Schema.Number,
+  rework_percent: Schema.NullOr(Schema.Number),
+  escape_percent: Schema.NullOr(Schema.Number),
+  causes: Schema.Record(Schema.String, Schema.Number),
+});
+const Quality = Schema.Struct({
+  ...QualityCounts.fields,
+  source: Schema.String,
+  coverage: Schema.String,
+  partial: Schema.Boolean,
+  unavailable: Schema.Array(Schema.String),
+  buckets: Schema.Array(Schema.Struct({
+    ...QualityCounts.fields,
+    from: Schema.String,
+    to: Schema.String,
+  })),
+});
 export const ReportsReport = Schema.Struct({
   completion: Completion,
   previous: Completion,
@@ -75,6 +99,7 @@ export const ReportsReport = Schema.Struct({
     }),
   ),
   analytics: Schema.Struct({
+    quality: Schema.optional(Quality),
     project_id: Schema.String,
     window: Schema.Struct({ from: Schema.String, to: Schema.String }),
     partial: Schema.Boolean,

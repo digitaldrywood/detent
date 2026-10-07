@@ -194,7 +194,7 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 			return s.createChangeCommand(ctx, tx, scope, args.ItemID, request, now)
 		}
 	case operatortool.DiscussChange:
-		request := tracker.DiscussChange{Mutation: command, VersionID: args.VersionID, Body: args.Body}
+		request := tracker.DiscussChange{Mutation: command, VersionID: args.VersionID, Body: args.Body, Escape: args.Escape}
 		input = request
 		path += "/discussion"
 		op = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {

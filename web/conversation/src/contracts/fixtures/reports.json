@@ -677,6 +677,48 @@
           "cost_usd": 120
         }
       ]
+    },
+    "quality": {
+      "worked_items": 20,
+      "reworked_items": 3,
+      "landed_versions": 10,
+      "escaped_versions": 2,
+      "escapes": 4,
+      "infrastructure": 1,
+      "pending_classification": 0,
+      "rework_percent": 15,
+      "escape_percent": 20,
+      "causes": {
+        "underspecified_issue": 1,
+        "missing_criterion": 1,
+        "validator_miss": 1,
+        "infrastructure": 1
+      },
+      "source": "native_landing_workflow_review_and_escape_evidence",
+      "coverage": "Landing cohorts; escapes grouped by detection time; infrastructure excluded from escape rate",
+      "partial": false,
+      "unavailable": [],
+      "buckets": [
+        {
+          "from": "2026-10-06T00:00:00Z",
+          "to": "2026-10-06T01:00:00Z",
+          "worked_items": 20,
+          "reworked_items": 3,
+          "landed_versions": 10,
+          "escaped_versions": 2,
+          "escapes": 4,
+          "infrastructure": 1,
+          "pending_classification": 0,
+          "rework_percent": 15,
+          "escape_percent": 20,
+          "causes": {
+            "underspecified_issue": 1,
+            "missing_criterion": 1,
+            "validator_miss": 1,
+            "infrastructure": 1
+          }
+        }
+      ]
     }
   }
 }

@@ -77,6 +77,8 @@ func TestChangeArgumentBoundary(t *testing.T) {
 		{"missing selector", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i"}`, false},
 		{"forged authority", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","yolo":true}`, false},
 		{"wrong tool field", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","request_id":"r"}`, false},
+		{"escape assessment", DiscussChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","version_id":"version_v","body":"assessment","request_id":"r","escape":{"occurrence_id":"revert","kind":"revert","observed_at":"2026-10-07T12:00:00Z","cause":"missing_criterion","evidence_reference":"commit","evidence_quote":"reverted source","basis_quote":"contract"}}`, true},
+		{"escape evidence missing", DiscussChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","body":"assessment","request_id":"r","escape":{"occurrence_id":"revert","kind":"revert","observed_at":"2026-10-07T12:00:00Z","cause":"missing_criterion"}}`, false},
 		{"worker lease", DiscussChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","request_id":"r","body":"message","lease_id":"lease"}`, false},
 		{"pagination bound", ListChanges, `{"project_id":"prj_p","work_item_id":"wi_i","limit":201}`, false},
 		{"null binding", BindArtifactService, `{"project_id":"prj_p","binding":null,"request_id":"r"}`, false},

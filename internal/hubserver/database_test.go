@@ -154,6 +154,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"native_attempts",
 		"native_attempt_events",
 		"pull_requests",
+		"quality_landings",
 		"queue_entries",
 		"repositories",
 		"runner_checkout_repositories",
