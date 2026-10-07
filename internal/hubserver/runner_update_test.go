@@ -4,14 +4,116 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestHostedRunnerUpdateReadKeyAuthority(t *testing.T) {
+	for _, test := range []struct{ deployment, role string }{
+		{"dedicated", "owner"}, {"shared", "owner"}, {"dedicated", "member"}, {"shared", "member"},
+	} {
+		t.Run(test.deployment+"/"+test.role, func(t *testing.T) {
+			var f hostedSecurityFixture
+			var shared hostedSharedFixture
+			if test.deployment == "shared" {
+				shared = newHostedSharedFixture(t)
+				f = shared.hostedSecurityFixture
+			} else {
+				f = newHostedSecurityFixture(t)
+			}
+			owner := f.user(t, "reader", test.role, "reader@example.test", "write", "")
+			f.service.config.generateToken = apikey.GenerateToken
+			f.grant(t, owner, true, true)
+			credential, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: owner.identity.Hosted, Email: owner.identity.Email}, apikey.HashToken(owner.token))
+			if err != nil {
+				t.Fatal(err)
+			}
+			operatorSQL(t, f, "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT 'prj_update_other',organization_id,'other',profile,states_json,created_at FROM projects WHERE id=?", f.project)
+			operatorSQL(t, f, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES (?,'org_security','prj_update_other',1,1) ON CONFLICT(user_id,project_id) DO UPDATE SET can_write=1,manage_runner=1", owner.identity.Subject)
+			operatorSQL(t, f, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES (?,'org_security','prj_update_other') ON CONFLICT DO NOTHING", credential.ID)
+			binding := runnerauth.NewBinding()
+			value, err := f.service.createRunnerEnrollmentCommand(t.Context(), nativeScope{organization: "org_security", credential: credential}, runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{f.project}, Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, TTLSeconds: 60})
+			if err != nil {
+				t.Fatal(err)
+			}
+			enrollment := value.(runnerauth.Enrollment)
+			runnerToken, err := apikey.GenerateToken()
+			if err != nil {
+				t.Fatal(err)
+			}
+			redemption := runnerauth.Redemption{Binding: binding, Credential: runnerToken, Hostname: "update-host", Version: "1.2.3", Capacity: 1, BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}}
+			if test.deployment == "shared" {
+				body, err := json.Marshal(redemption)
+				if err != nil {
+					t.Fatal(err)
+				}
+				requireNativeStatus(t, shared.serve(t, hostedSharedRequest{kind: cloudassert.KindMachine, method: http.MethodPost, target: "/organizations/org_security/api/v2/organizations/org_security/runner-enrollments/redeem", bearer: enrollment.Token, body: string(body)}), http.StatusCreated)
+			} else {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/org_security/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
+			}
+			path := "/api/v2/organizations/org_security/runners/" + binding.RunnerID + "/update"
+			for _, keyScope := range []apikey.Scope{apikey.ScopeRead, apikey.ScopeWrite} {
+				t.Run(string(keyScope), func(t *testing.T) {
+					key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "update-reader-" + string(keyScope), Scope: apiScopeOperator, Issuer: &credential, KeyScope: keyScope, ProjectAccess: hostedProjectsAll})
+					if err != nil {
+						t.Fatal(err)
+					}
+					read := func(target string) *httptest.ResponseRecorder {
+						if test.deployment == "shared" {
+							return shared.serve(t, hostedSharedRequest{kind: cloudassert.KindMachine, method: http.MethodGet, target: "/organizations/org_security" + target, bearer: key.Token})
+						}
+						return performHubAPIRequest(t, f.service, http.MethodGet, target, key.Token, nil)
+					}
+					response := read(path)
+					requireNativeStatus(t, response, http.StatusOK)
+					var view runnerauth.UpdateView
+					decodeHubResponse(t, response, &view)
+					if view.RunnerID != binding.RunnerID || view.Status != "unavailable" {
+						t.Fatalf("update receipt=%+v", view)
+					}
+					if keyScope == apikey.ScopeRead {
+						original := key
+						key, err = f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "selected-update-reader", Scope: apiScopeOperator, Issuer: &credential, KeyScope: keyScope, ProjectAccess: hostedProjectsSelected, ProjectIDs: []string{string(f.project)}})
+						if err != nil {
+							t.Fatal(err)
+						}
+						requireNativeStatus(t, read(path), http.StatusForbidden)
+						key = original
+					}
+					requireNativeStatus(t, read(strings.Replace(path, "org_security", "org_other", 1)), http.StatusNotFound)
+					f.grant(t, owner, true, false)
+					want := http.StatusOK
+					if test.role == "member" {
+						want = http.StatusNotFound
+					}
+					requireNativeStatus(t, read(path), want)
+					f.grant(t, owner, true, true)
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET expires_at=? WHERE token_hash=?", formatHubTime(time.Now().Add(-time.Minute)), apikey.HashToken(key.Token)); err != nil {
+						t.Fatal(err)
+					}
+					requireNativeStatus(t, read(path), http.StatusNotFound)
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET expires_at=NULL WHERE token_hash=?", apikey.HashToken(key.Token)); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=? WHERE token_hash=?", formatHubTime(time.Now()), apikey.HashToken(key.Token)); err != nil {
+						t.Fatal(err)
+					}
+					requireNativeStatus(t, read(path), http.StatusNotFound)
+				})
+			}
+		})
+	}
+}
 
 func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 	for _, test := range []struct {

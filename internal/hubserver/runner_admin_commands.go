@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -42,6 +43,10 @@ func (s *Service) runnerAdminTransaction(ctx context.Context, scope nativeScope,
 }
 
 func (s *Service) requireRunnerAdministration(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
+	return s.requireRunnerAccess(ctx, tx, scope, now, apikey.ScopeWrite)
+}
+
+func (s *Service) requireRunnerAccess(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time, required apikey.Scope) error {
 	if scope.credential.Runner.RunnerID != "" || scope.credential.NativeOnly && scope.credential.Hosted == nil {
 		return operatortool.ErrAccessDenied
 	}
@@ -50,7 +55,7 @@ func (s *Service) requireRunnerAdministration(ctx context.Context, tx *sql.Tx, s
 			return operatortool.ErrAccessDenied
 		}
 		scope.credential.ManageRunners = !scope.requireHostedAdmin
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		if err := s.recheckHostedAuthority(ctx, tx, scope, required); err != nil {
 			return err
 		}
 	} else if scope.credential.Scope != apiScopeAdmin {
