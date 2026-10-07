@@ -538,6 +538,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		hubTarget       string
 		hubError        error
 		invalidSelector string
+		missingReceipt  bool
 	}{
 		{name: "selected release", current: "1.2.3"},
 		{name: "explicit release refuses wrong lock selector", current: "1.2.3", explicit: true, hubTarget: "operator-landed-a69c4b1dd060", invalidSelector: "DETENT_INSTALL_LOCK"},
@@ -550,6 +551,10 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		{name: "runner ahead of Hub", current: "1.2.5", follow: true},
 		{name: "installed development build", current: "operator-landed-abcdef123456", follow: true},
 		{name: "Homebrew enrolled runner", current: "1.2.3", follow: true, brew: true},
+		{name: "Homebrew refuses wrong lock selector", current: "1.2.3", follow: true, brew: true, invalidSelector: "DETENT_INSTALL_LOCK"},
+		{name: "Homebrew refuses missing lock selector", current: "1.2.3", follow: true, brew: true, invalidSelector: "DETENT_INSTALL_LOCK", missingReceipt: true},
+		{name: "Homebrew refuses wrong state selector", current: "1.2.3", follow: true, brew: true, invalidSelector: "DETENT_STATE_DIR"},
+		{name: "Homebrew refuses missing state selector", current: "1.2.3", follow: true, brew: true, invalidSelector: "DETENT_STATE_DIR", missingReceipt: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tmp := t.TempDir()
@@ -590,6 +595,12 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				}
 				if test.invalidSelector == "DETENT_STATE_DIR" {
 					installEnv = map[string]string{"DETENT_STATE_DIR": filepath.Dir(lockPath)}
+				}
+			}
+
+			if test.missingReceipt {
+				if err := os.Remove(lockPath); err != nil {
+					t.Fatal(err)
 				}
 			}
 
@@ -726,20 +737,30 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					t.Fatal(schedulerErr)
 				}
 				status, err = scheduler.ApplyRelease(t.Context(), test.fromRelease)
-				if test.invalidSelector != "" {
-					selectedRaw, selectedErr := os.ReadFile(lockPath)
-					defaultRaw, defaultErr := os.ReadFile(legacyLock)
-					binaryRaw, binaryErr := os.ReadFile(binary)
-					if !errors.Is(err, ErrRefused) || status.Action != ActionRefused || drains != 1 || restarts != 0 || releases != 1 || selectedErr != nil || defaultErr != nil || binaryErr != nil || string(selectedRaw) != "binary=/other/install/detent\nversion=1.0.0\n" || string(defaultRaw) != legacyReceipt || string(binaryRaw) != "old" {
-						t.Fatalf("wrong selector update = %+v, error = %v, drains/restarts/releases = %d/%d/%d, selected receipt = %q, default receipt = %q, binary = %q", status, err, drains, restarts, releases, selectedRaw, defaultRaw, binaryRaw)
-					}
-					return
+				if test.invalidSelector != "" && (drains != 1 || restarts != 0 || releases != 1) {
+					t.Fatalf("refused update drains/restarts/releases = %d/%d/%d", drains, restarts, releases)
 				}
 				if err == nil && (drains != 1 || restarts != 1 || releases != 0) {
 					t.Fatalf("drains = %d, restarts = %d, releases = %d", drains, restarts, releases)
 				}
 			} else {
 				status, err = service.Apply(t.Context(), applyOptions)
+			}
+			if test.invalidSelector != "" {
+				selectedRaw, selectedErr := os.ReadFile(lockPath)
+				defaultRaw, defaultErr := os.ReadFile(legacyLock)
+				binaryRaw, binaryErr := os.ReadFile(binary)
+				if !errors.Is(err, ErrRefused) || status.Action != ActionRefused || preflightPath != "" || defaultErr != nil || binaryErr != nil || string(defaultRaw) != legacyReceipt || string(binaryRaw) != "old" {
+					t.Fatalf("wrong selector update = %+v, error = %v, preflight = %q, default receipt = %q, binary = %q", status, err, preflightPath, defaultRaw, binaryRaw)
+				}
+				if test.missingReceipt {
+					if !os.IsNotExist(selectedErr) {
+						t.Fatalf("missing receipt was created: %q, error = %v", selectedRaw, selectedErr)
+					}
+				} else if selectedErr != nil || string(selectedRaw) != "binary=/other/install/detent\nversion=1.0.0\n" {
+					t.Fatalf("other installation receipt changed: %q, error = %v", selectedRaw, selectedErr)
+				}
+				return
 			}
 			if err != nil {
 				t.Fatalf("Apply() error = %v", err)

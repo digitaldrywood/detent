@@ -509,7 +509,7 @@ For a release installation in a custom binary or state directory, set
 `DETENT_STATE_DIR` to the directory containing it. `DETENT_INSTALL_LOCK` takes
 precedence. An explicit receipt selector is exclusive: its receipt must match
 the executable. A missing or mismatched receipt cannot fall back to another
-installation's receipt or inferred Windows/Go installer ownership. Set the
+installation's receipt or inferred Homebrew, Windows or Go ownership. Set the
 environment in the running service as well as in shells
 used for offline updates; a coordinated CLI command cannot change its owner's
 environment. The receipt's `binary` must identify the installed executable.

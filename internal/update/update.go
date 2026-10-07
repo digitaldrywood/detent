@@ -259,25 +259,27 @@ func DetectInstallSource(opts DetectionOptions) InstallInfo {
 		realExecutable = cleanPath(real, goos)
 	}
 
-	if isHomebrewPath(executable) || isHomebrewPath(realExecutable) {
-		return InstallInfo{
-			Source:  InstallSourceHomebrew,
-			Command: homebrewUpdateCommand,
-			Binary:  opts.ExecutablePath,
+	receiptMatches := releaseLockMatches(executable, realExecutable, goos, opts)
+	if explicitInstallLockPath(opts) == "" || receiptMatches {
+		if isHomebrewPath(executable) || isHomebrewPath(realExecutable) {
+			return InstallInfo{
+				Source:  InstallSourceHomebrew,
+				Command: homebrewUpdateCommand,
+				Binary:  opts.ExecutablePath,
+			}
 		}
-	}
-	explicitLock := explicitInstallLockPath(opts)
-	if releaseLockMatches(executable, realExecutable, goos, opts) || explicitLock == "" && windowsInstallerPathMatches(executable, goos, opts) {
-		return InstallInfo{
-			Source: InstallSourceRelease,
-			Binary: opts.ExecutablePath,
+		if receiptMatches || windowsInstallerPathMatches(executable, goos, opts) {
+			return InstallInfo{
+				Source: InstallSourceRelease,
+				Binary: opts.ExecutablePath,
+			}
 		}
-	}
-	if explicitLock == "" && (isGoInstallPath(executable, goos, opts.HomeDir, opts.Env) || isGoInstallPath(realExecutable, goos, opts.HomeDir, opts.Env)) {
-		return InstallInfo{
-			Source:  InstallSourceGoInstall,
-			Command: sourceUpdateCommand,
-			Binary:  opts.ExecutablePath,
+		if isGoInstallPath(executable, goos, opts.HomeDir, opts.Env) || isGoInstallPath(realExecutable, goos, opts.HomeDir, opts.Env) {
+			return InstallInfo{
+				Source:  InstallSourceGoInstall,
+				Command: sourceUpdateCommand,
+				Binary:  opts.ExecutablePath,
+			}
 		}
 	}
 	if IsDevelopmentVersion(opts.CurrentVersion) {
