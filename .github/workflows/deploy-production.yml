@@ -52,8 +52,18 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/cloud-origin-smoke.py --environment production --expected-version "$RELEASE_VERSION" --expected-commit "$RELEASE_COMMIT" 2>&1 | tee -a "$RUNNER_TEMP/release-production.log"
+      - name: Exercise production MCP tools
+        id: mcp_smoke
+        env:
+          TMPDIR: ${{ runner.temp }}
+          DETENT_RELEASE_ENVIRONMENT: production
+          DETENT_SMOKE_API_KEY: ${{ secrets.DETENT_SMOKE_API_KEY }}
+          DETENT_MCP_URL: ${{ vars.DETENT_MCP_URL }}
+        run: |
+          set -euo pipefail
+          go run ./tools/cifailure 2>&1 | tee -a "$RUNNER_TEMP/release-production.log"
       - name: Report release failure at High
-        if: failure() && (steps.deploy.outcome == 'failure' || steps.smoke.outcome == 'failure')
+        if: failure() && (steps.deploy.outcome == 'failure' || steps.smoke.outcome == 'failure' || steps.mcp_smoke.outcome == 'failure')
         env:
           DETENT_RELEASE_ENVIRONMENT: production
           DETENT_RELEASE_TAG: ${{ inputs.version }}

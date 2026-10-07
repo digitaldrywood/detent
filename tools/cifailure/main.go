@@ -33,8 +33,8 @@ type openIssue struct {
 type ghCommand func(context.Context, string, ...string) ([]byte, error)
 
 func main() {
-	if os.Getenv("DETENT_RELEASE_ENVIRONMENT") == "staging" && os.Getenv("DETENT_RELEASE_FAILURE_PHASE") == "" {
-		if err := stagingSmoke(context.Background(), os.Getenv, os.Stdout); err != nil {
+	if environment := os.Getenv("DETENT_RELEASE_ENVIRONMENT"); smokeHosts[environment] != "" && os.Getenv("DETENT_RELEASE_FAILURE_PHASE") == "" {
+		if err := deploySmoke(context.Background(), environment, os.Getenv, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

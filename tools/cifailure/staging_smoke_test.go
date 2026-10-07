@@ -36,12 +36,12 @@ func TestStagingSmokePolicy(t *testing.T) {
 }
 
 func TestStagingSmokeAbsentSecret(t *testing.T) {
-	var output bytes.Buffer
-	if err := stagingSmoke(t.Context(), func(string) string { return "" }, &output); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output.String(), "skipped: DETENT_STAGING_API_KEY is absent") {
-		t.Fatal(output.String())
+	for _, environment := range []string{"staging", "production"} {
+		var output bytes.Buffer
+		err := deploySmoke(t.Context(), environment, func(string) string { return "" }, &output)
+		if err == nil || !strings.Contains(err.Error(), "DETENT_SMOKE_API_KEY is absent") {
+			t.Fatalf("%s absent key = %v", environment, err)
+		}
 	}
 }
 
@@ -234,14 +234,58 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 }
 
 func TestStagingSmokeEndpoint(t *testing.T) {
-	for _, endpoint := range []string{"https://staging.cloud.detent.build/organizations/org_smoke/mcp", "https://staging.cloud.detent.build/mcp"} {
-		if actual, err := smokeEndpoint(endpoint); err != nil || actual != endpoint {
-			t.Fatal(actual, err)
+	for _, tt := range []struct {
+		environment, endpoint string
+		ok                    bool
+	}{
+		{"staging", "https://staging.cloud.detent.build/organizations/org_smoke/mcp", true},
+		{"staging", "https://staging.cloud.detent.build/mcp", true},
+		{"production", "https://cloud.detent.build/organizations/org_smoke/mcp", true},
+		{"staging", "", false},
+		{"staging", "https://cloud.detent.build/organizations/org_smoke/mcp", false},
+		{"production", "https://staging.cloud.detent.build/organizations/org_smoke/mcp", false},
+		{"staging", "http://staging.cloud.detent.build/mcp", false},
+		{"staging", "https://staging.cloud.detent.build/mcp?token=secret", false},
+		{"staging", "https://user@staging.cloud.detent.build/mcp", false},
+		{"preview", "https://cloud.detent.build/organizations/org_smoke/mcp", false},
+	} {
+		actual, err := smokeEndpoint(tt.endpoint, tt.environment)
+		if tt.ok && (err != nil || actual != tt.endpoint) || !tt.ok && err == nil {
+			t.Fatalf("%s %q = %q, %v", tt.environment, tt.endpoint, actual, err)
 		}
 	}
-	for _, endpoint := range []string{"", "https://cloud.detent.build/organizations/org_smoke/mcp", "http://staging.cloud.detent.build/mcp", "https://staging.cloud.detent.build/mcp?token=secret", "https://user@staging.cloud.detent.build/mcp"} {
-		if _, err := smokeEndpoint(endpoint); err == nil {
-			t.Fatalf("accepted endpoint %q", endpoint)
-		}
+}
+
+func TestSmokeVerdictRatchet(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		failures []error
+		called   map[string]bool
+		blocking []string
+	}{
+		{"new failure blocks", []error{errors.New("file_issue: MCP server error")}, map[string]bool{"file_issue": true}, []string{"file_issue: MCP server error"}},
+		{"known gap failing is reported", []error{errors.New("board_session_history: advertised arguments {}; MCP server error")}, map[string]bool{"board_session_history": true}, nil},
+		{"known schema gap failing is reported", []error{errors.New("get_change schema: missing fixture")}, map[string]bool{}, nil},
+		{"known gap passing blocks", nil, map[string]bool{"get_cutover_receipt": true}, []string{"get_cutover_receipt: known gap #724 now passes"}},
+		{"known gap not reached is reported", []error{errors.New("get_conversation: advertised conversation_id={}; smoke project lacks a conversation_id fixture")}, map[string]bool{}, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			err := smokeVerdict(&output, tt.failures, tt.called, smokeKnownGaps)
+			if len(tt.blocking) == 0 {
+				if err != nil {
+					t.Fatalf("verdict = %v, want nil", err)
+				}
+				if !strings.Contains(output.String(), "known gap (") {
+					t.Fatalf("output = %q, want known gap line", output.String())
+				}
+				return
+			}
+			for _, want := range tt.blocking {
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("verdict = %v, want %q", err, want)
+				}
+			}
+		})
 	}
 }

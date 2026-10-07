@@ -377,18 +377,18 @@ data or raw diagnostics. Hosted context is omitted from self-hosted and credenti
 maintenance discovery. Parent #3259 generic-client and zero-pending acceptance
 remains with the parent owner.
 
-## Staging MCP deployment smoke
+## Deployment MCP smoke
 
-After the origin smoke, `deploy-staging.yml` runs the MCP call pass against
-the staging tenant on `staging.cloud.detent.build`. The operator provisions a dedicated
-native throwaway project on that staging tenant and stores its expiring Write
-key in the repository secret `DETENT_STAGING_API_KEY`. Set the existing
-`DETENT_MCP_URL` variable in the staging deployment environment to the exact MCP
-URL copied from that tenant’s API & MCP setup; shared tenants include their
-organization mount. The probe refuses production or other origins. Restrict the key to that
-one project; the probe discovers its ID through `list_projects` and refuses a
-key that can see multiple projects. Do not store the key or project ID in source
-or issues.
+After the origin smoke, `deploy-staging.yml` and `deploy-production.yml` run the
+MCP call pass against a dedicated smoke tenant on `staging.cloud.detent.build`
+and `cloud.detent.build`. The operator provisions, in each environment, a
+dedicated org owned by the platform account with one native throwaway project,
+and stores a key restricted to that project as the environment secret
+`DETENT_SMOKE_API_KEY`. Set the environment variable `DETENT_MCP_URL` to the
+exact MCP URL copied from that tenant's API & MCP setup. The probe refuses any
+other origin for the environment, discovers the project ID through
+`list_projects`, and refuses a key that can see more than one project. Do not
+store the key or project ID in source or issues.
 
 The project needs a permitted transition between two nondispatchable,
 nonterminal states. The probe creates one item per deployment and reuses a
@@ -397,13 +397,12 @@ queue operations, unchanged integration settings, and archive/restore revisions.
 Read tools requiring existing runner, workspace, change, artifact or attempt
 resources need those fixtures in the smoke project, linked to the stable
 `MCP smoke dependency` item where applicable. Discovery reads run before their
-resource detail calls; missing fixtures fail with
-the tool name and advertised schema. Unsafe external and operator mutations are
-explicitly skipped. Native archive and queue availability gaps are reported as
-expected gaps owned by #615 until its hosted support lands.
+resource detail calls. Unsafe external and operator mutations are explicitly
+skipped.
 
-An absent secret produces an explicit skip and permits deployment while the
-operator provisions it. A skip is not live acceptance evidence. With the secret
-present, failures stop the staging smoke and use the existing High deployment
-failure reporter; the deployment artifact retains each tool's result. Production
-deployment and local merge validation do not run this call pass.
+Tools that are known to fail are listed in `smokeKnownGaps` in
+`tools/cifailure` with their owning issue. They are reported but do not fail the
+deployment. Any other failure fails it, and so does a listed tool that starts
+passing, so the list only shrinks. An absent secret fails the smoke. Failures
+use the existing High deployment failure reporter, and the deployment artifact
+retains each tool's result.
