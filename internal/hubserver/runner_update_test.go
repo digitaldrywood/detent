@@ -122,6 +122,9 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 		want              bool
 	}{
 		{name: "older runner", hub: "v1.2.4", runner: "1.2.3", supported: true, want: true},
+		{name: "operator prerelease", hub: "v1.2.4-op.abcdef123456", runner: "1.2.3", supported: true, want: true},
+		{name: "matching operator prerelease", hub: "v1.2.4-op.abcdef123456", runner: "1.2.4-op.abcdef123456", supported: true},
+		{name: "stable release supersedes operator prerelease", hub: "v1.2.4", runner: "1.2.4-op.abcdef123456", supported: true, want: true},
 		{name: "runner ahead", hub: "v1.2.4", runner: "1.2.5", supported: true, want: true},
 		{name: "installed operator build", hub: "v1.2.4", runner: "operator-landed-abcdef123456", supported: true, want: true},
 		{name: "matching release", hub: "v1.2.4", runner: "1.2.4", supported: true},
@@ -163,7 +166,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			if !test.want {
 				return
 			}
-			if request.FollowHub == test.manual || !test.manual && (request.Version != "1.2.4" || request.ExpectedBuildRevision != report.Revision || request.Validate() != nil) {
+			if request.FollowHub == test.manual || !test.manual && (request.Version != strings.TrimPrefix(test.hub, "v") || request.ExpectedBuildRevision != report.Revision || request.Validate() != nil) {
 				t.Fatalf("request=%+v", request)
 			}
 			repeated := send()

@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      operator_landed:
+        description: Publish a signed operator prerelease from develop and deploy Cloud
+        type: boolean
+        default: false
 
 permissions:
   checks: read
@@ -16,11 +21,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  source:
+    name: Verify operator-landed source
+    if: (startsWith(github.ref, 'refs/tags/v') && !inputs.operator_landed) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop' && inputs.operator_landed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify source belongs to develop history
+        run: |
+          git fetch --no-tags origin develop:refs/remotes/origin/develop
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/develop
+      - uses: ./.github/actions/prepare-conversation
+        if: inputs.operator_landed
+      - uses: actions/setup-go@v6
+        if: inputs.operator_landed
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - name: Validate operator-landed source
+        if: inputs.operator_landed
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: make check-land
+
   release:
     name: GoReleaser
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: source
+    outputs:
+      version: ${{ steps.provenance.outputs.version }}
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       checks: read
       contents: write
       statuses: read
@@ -38,16 +75,15 @@ jobs:
           go-version: '1.26.6'
           cache: true
 
-      - name: Verify tag belongs to develop history
-        run: |
-          git fetch --no-tags origin develop:refs/remotes/origin/develop
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/develop
-
       - name: Bind exact-commit check or local-gate status provenance
+        id: provenance
         env:
           GH_TOKEN: ${{ github.token }}
+          TMPDIR: ${{ runner.temp }}
+          OPERATOR_LANDED: ${{ inputs.operator_landed == true }}
           DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}
         run: |
+          set -euo pipefail
           tag_message="$RUNNER_TEMP/detent-release-tag-message"
           check_runs="$RUNNER_TEMP/detent-release-check-runs.json"
           statuses="$RUNNER_TEMP/detent-release-statuses.json"
@@ -58,22 +94,28 @@ jobs:
             echo "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON must be configured as a JSON array; use [] when there are no release-only checks."
             exit 1
           fi
-          # actions/checkout materializes the pushed tag as a lightweight ref to the commit,
-          # which drops the annotation. Re-fetch the real tag object before reading it.
-          git fetch --force origin "+refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
-          if [ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" != "tag" ]; then
-            echo "refs/tags/$GITHUB_REF_NAME is not an annotated tag object"
-            exit 1
-          fi
-          git for-each-ref --format='%(contents)' "refs/tags/$GITHUB_REF_NAME" > "$tag_message"
           gh api -H "Accept: application/vnd.github+json" \
             "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=all&per_page=100" > "$check_runs"
           gh api \
             "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status?per_page=100" > "$statuses"
           scripts/collect-release-rulesets.sh "$GITHUB_REPOSITORY" "$rulesets"
+          release_tag="$GITHUB_REF_NAME"
+          if [ "$OPERATOR_LANDED" = true ]; then
+            latest="$(bash scripts/resolve-release-tag.sh)"
+            jobs="$RUNNER_TEMP/detent-release-jobs.json"
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" --jq '.jobs[]' | jq -s . > "$jobs"
+            check_url="$(jq -er '[.[] | select(.name == "Verify operator-landed source" and .conclusion == "success")] | if length == 1 then .[0].check_run_url else error("operator source check is missing or ambiguous") end' "$jobs")"
+            check_id="${check_url##*/}"
+            release_tag="$(bash scripts/prepare-operator-release.sh "$GITHUB_SHA" "$latest" "$check_runs" "$check_id")"
+            DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON='["Verify operator-landed source"]'
+          else
+            git fetch --force origin "+refs/tags/$release_tag:refs/tags/$release_tag"
+          fi
+          test "$(git cat-file -t "refs/tags/$release_tag")" = tag
+          git for-each-ref --format='%(contents)' "refs/tags/$release_tag" > "$tag_message"
           go run ./tools/releaseprovenance \
             -repository "$GITHUB_REPOSITORY" \
-            -tag "$GITHUB_REF_NAME" \
+            -tag "$release_tag" \
             -commit "$GITHUB_SHA" \
             -default-branch-ref "$default_branch_ref" \
             -tag-message "$tag_message" \
@@ -82,6 +124,10 @@ jobs:
             -github-rulesets "$rulesets" \
             -required-check-names-json "$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON" \
             -output tmp/detent_release_provenance.json
+          if [ "$OPERATOR_LANDED" = true ]; then
+            git push origin "refs/tags/$release_tag"
+          fi
+          echo "version=$release_tag" >> "$GITHUB_OUTPUT"
 
       - name: Install minisign
         run: |
@@ -132,6 +178,7 @@ jobs:
         with:
           args: release --clean
         env:
+          GORELEASER_CURRENT_TAG: ${{ steps.provenance.outputs.version }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           SCOOP_BUCKET_GITHUB_TOKEN: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}
@@ -162,12 +209,12 @@ jobs:
     needs: release
     uses: ./.github/workflows/deploy-staging.yml
     with:
-      version: ${{ github.ref_name }}
+      version: ${{ needs.release.outputs.version }}
     secrets: inherit
 
   production:
-    needs: staging
+    needs: [release, staging]
     uses: ./.github/workflows/deploy-production.yml
     with:
-      version: ${{ github.ref_name }}
+      version: ${{ needs.release.outputs.version }}
     secrets: inherit

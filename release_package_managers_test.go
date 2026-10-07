@@ -19,7 +19,7 @@ func TestGoReleaserWindowsPackageManagerConfig(t *testing.T) {
 		"scoops:",
 		"name: scoop-bucket",
 		"token: \"{{ index .Env \\\"SCOOP_BUCKET_GITHUB_TOKEN\\\" }}\"",
-		"skip_upload: \"{{ if index .Env \\\"SCOOP_BUCKET_GITHUB_TOKEN\\\" }}false{{ else }}true{{ end }}\"",
+		"skip_upload: \"{{ if index .Env \\\"SCOOP_BUCKET_GITHUB_TOKEN\\\" }}auto{{ else }}true{{ end }}\"",
 		"winget:",
 		"package_identifier: DigitalDrywood.Detent",
 		"name: winget-pkgs",
@@ -27,7 +27,7 @@ func TestGoReleaserWindowsPackageManagerConfig(t *testing.T) {
 		"token: \"{{ index .Env \\\"WINGET_GITHUB_TOKEN\\\" }}\"",
 		"owner: microsoft",
 		"branch: master",
-		"skip_upload: \"{{ if index .Env \\\"WINGET_GITHUB_TOKEN\\\" }}false{{ else }}true{{ end }}\"",
+		"skip_upload: \"{{ if index .Env \\\"WINGET_GITHUB_TOKEN\\\" }}auto{{ else }}true{{ end }}\"",
 		"installation_notes: Installs detent.exe on PATH. Verify the release with detent --version.",
 	} {
 		if !strings.Contains(config, want) {
