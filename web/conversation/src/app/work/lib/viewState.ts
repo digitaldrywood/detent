@@ -1,18 +1,5 @@
 import type { Lane } from "./model.ts";
 
-// The board's view state, and where it lives.
-//
-// The URL is the source of truth: a filtered board is a thing people paste to
-// each other, and a filter that only exists in component state cannot be
-// linked, reloaded or navigated back to. `localStorage` is a second-class
-// memory used for exactly one thing — the view you last had *in this project*
-// when you arrive with no query string at all — so a shared link always wins
-// over a remembered preference.
-//
-// Everything here is pure apart from the two storage helpers, which swallow a
-// blocked store: a private window costs the reader a remembered filter, not
-// the board.
-
 export const WORK_VIEWS = ["board", "list"] as const;
 export type WorkViewMode = (typeof WORK_VIEWS)[number];
 
@@ -180,7 +167,7 @@ export function toggleCollapsed(state: WorkViewState, lane: string): WorkViewSta
 
 const STORAGE_PREFIX = "detent.work.view:";
 
-/** The remembered view for a project, or `null` when there is none. */
+
 export function readStoredViewState(projectId: string): WorkViewState | null {
   try {
     const raw = globalThis.localStorage?.getItem(`${STORAGE_PREFIX}${projectId}`);
@@ -191,7 +178,7 @@ export function readStoredViewState(projectId: string): WorkViewState | null {
   }
 }
 
-/** Remembers the view for a project. A default view clears the memory. */
+
 export function writeStoredViewState(projectId: string, state: WorkViewState): void {
   try {
     const key = `${STORAGE_PREFIX}${projectId}`;
@@ -203,7 +190,7 @@ export function writeStoredViewState(projectId: string, state: WorkViewState): v
   }
 }
 
-/** The scope key a view is remembered under. `""` is the all-projects board. */
+
 export function viewScopeKey(projectId: string | null): string {
   return projectId ?? "";
 }

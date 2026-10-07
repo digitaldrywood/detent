@@ -811,6 +811,7 @@ export function createWorkMock(options: {
   }
 
   const base = `${options.apiBase}/projects`;
+  const viewPreferences = new Map<string, string>();
 
   function workspaceProblem(response: ServerResponse, status: number, code: string, message: string, details?: Record<string, unknown>): void {
     json(response, status, { code, message, ...(details === undefined ? {} : { details }) });
@@ -1066,6 +1067,24 @@ export function createWorkMock(options: {
     },
     async handle({ response, url, method, readBody }) {
       const path = url.pathname;
+      const preferenceScope = path === `${options.apiBase}/work-view-preference` ? "" :
+        path.startsWith(`${base}/`) && path.endsWith("/work-view-preference") ? path.slice(base.length + 1, -"/work-view-preference".length) : null;
+      if (preferenceScope !== null) {
+        if (preferenceScope !== "" && !options.projects.some((project) => project.id === preferenceScope)) {
+          json(response, 404, { code: "not_found", message: "Unknown project" });
+          return true;
+        }
+        if (method === "PUT") {
+          const body = await readBody();
+          if (typeof body.query !== "string" || body.query.length > 8192) {
+            json(response, 422, { code: "invalid_request", message: "Invalid view query" });
+            return true;
+          }
+          viewPreferences.set(preferenceScope, body.query);
+        } else if (method === "DELETE") viewPreferences.delete(preferenceScope);
+        json(response, 200, { query: viewPreferences.get(preferenceScope) ?? null });
+        return true;
+      }
 
       // Test control: arm one scripted conflict on the next transition.
       if (path === "/__mock/work/conflict" && method === "POST") {

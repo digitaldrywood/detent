@@ -148,7 +148,7 @@ export function WorkToolbar({
             <MenuCheckboxItem
               checked={false}
               data-testid="filters-reset"
-              onCheckedChange={() => onChange({ ...DEFAULT_VIEW_STATE, view: view.view })}
+              onCheckedChange={() => onChange(DEFAULT_VIEW_STATE)}
             >
               Reset everything
             </MenuCheckboxItem>

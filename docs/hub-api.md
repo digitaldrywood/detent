@@ -14,6 +14,23 @@ Cloud members get one scoped key for direct API and MCP access from
 private credential handling, agent prompts and the browser approval contract.
 Cloud keys do not authorize compatibility, worker, runner or instance-admin routes.
 
+## Work view preferences
+
+Hosted sessions expose `GET`, `PUT`, and `DELETE` at
+`/api/v2/organizations/{organization}/work-view-preference` for the
+all-projects Work view, and at
+`/api/v2/organizations/{organization}/projects/{project}/work-view-preference`
+for a project view. Each member reads and writes only their own preference;
+project scopes require a read grant. These endpoints accept session cookies,
+with the bootstrap CSRF token on mutations, and refuse bearer credentials.
+
+The response is `{ "query": "view=list&tab=closed" }`, or `{ "query": null }`
+when no preference exists. `PUT` accepts the same query field containing a
+serialized view query of at most 8192 bytes. `DELETE` restores defaults and is
+safe to repeat. Explicit URL parameters override the saved preference without
+writing it; user changes save after a debounce. Browser storage caches only
+confirmed Hub values under an account, organization, and view scope key.
+
 ## Project Sprite pools
 
 Hosted projects expose `GET` and `PUT`
