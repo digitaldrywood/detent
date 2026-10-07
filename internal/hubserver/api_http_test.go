@@ -17,6 +17,7 @@ func TestDecodeAPIJSONCompatibility(t *testing.T) {
 		body    string
 		wantErr bool
 		project string
+		path    string
 	}{
 		{name: "worker future heartbeat field", scope: apiScopeWorker, body: `{"version":"develop-040e7195c","future_observation":true}`},
 		{name: "worker newer project configuration", scope: apiScopeWorker, body: `{"version":"develop-040e7195c","project_configuration":{"project_id":"project","policy_mismatch":false}}`, project: "project"},
@@ -24,11 +25,17 @@ func TestDecodeAPIJSONCompatibility(t *testing.T) {
 		{name: "admin nested unknown field", scope: apiScopeAdmin, body: `{"project_configuration":{"project_name":"project"}}`, wantErr: true},
 		{name: "unauthenticated unknown field", body: `{"future_observation":true}`, wantErr: true},
 		{name: "worker invalid known field", scope: apiScopeWorker, body: `{"version":42}`, wantErr: true},
+		{name: "worker unknown run event field", scope: apiScopeWorker, path: nativeBase + "/work-items/:item/events", body: `{"version":"develop-040e7195c","prompt":"private prompt"}`, wantErr: true},
 		{name: "worker multiple values", scope: apiScopeWorker, body: `{"version":"test"} {}`, wantErr: true},
 		{name: "worker malformed JSON", scope: apiScopeWorker, body: `{"version":`, wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(test.body)), httptest.NewRecorder())
+			path := test.path
+			if path == "" {
+				path = nativeBase + "/machines/:machine/heartbeat"
+			}
+			c.SetPath(path)
 			if test.scope != "" {
 				c.Set("hub_api_credential", apiCredential{Scope: test.scope})
 			}
