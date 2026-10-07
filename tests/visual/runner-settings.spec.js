@@ -89,7 +89,11 @@ test("organization project rank persists and viewers cannot edit it", async ({ p
   await list.getByRole("listitem").nth(1).getByRole("button", { name: / up$/ }).click();
   const reordered = await list.getByRole("listitem").allTextContents();
   expect(reordered[0]).not.toBe(before[0]);
+  const saved = page.waitForResponse((response) => response.request().method() === "PUT"
+    && new URL(response.url()).pathname.endsWith("/project-rank"));
   await page.getByRole("button", { name: "Save project rank", exact: true }).click();
+  expect((await saved).ok()).toBe(true);
+  await expect(page.getByRole("button", { name: "Save project rank", exact: true })).toBeEnabled();
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.reload();
   await expect(list.getByRole("listitem").first()).toHaveText(reordered[0]);
