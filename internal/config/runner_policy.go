@@ -83,6 +83,19 @@ func resolvePolicyDescriptor(workflow Workflow, revision, sourceDigest, configDi
 			GitHubPullRequest: cfg.Deliverable.GitHubPullRequest,
 		},
 	}
+	if cfg.Tracker.Kind == TrackerHubNative && cfg.Deliverable.GitHubPullRequest {
+		descriptor.Gates.RequiredChecks = 0
+		if len(g.RequiredStatusChecks) > 0 || g.CITriggerLabel != "" {
+			contract, err := json.Marshal(struct {
+				RequiredStatusChecks []string
+				CITriggerLabel       string
+			}{g.RequiredStatusChecks, g.CITriggerLabel})
+			if err != nil {
+				return policy.Descriptor{}, err
+			}
+			descriptor.Gates.GitHubCIDigest = policy.Digest(contract)
+		}
+	}
 	if cfg.Tracker.Kind == TrackerHubNative && (workflow.Definition.Layout == ProjectDefinitionSplit || workflow.Definition.Layout == ProjectDefinitionLegacy) {
 		if err := cfg.ValidateNativeWorkflow(); err != nil {
 			return policy.Descriptor{}, err

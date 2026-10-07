@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
@@ -120,6 +121,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	}
 	var pull githubLandingPull
 	createdPull := false
+	headChanged := false
 	if opts.External != nil {
 		pull, err = readExternalLandingPull(ctx, opts.GitHubClient, opts.Repository, opts.External, head, base)
 		if err != nil {
@@ -140,6 +142,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		if err != nil {
 			return LandResult{}, fmt.Errorf("inspect published attempt branch: %w", err)
 		}
+		headChanged = exists && previous != head
 		push := []string{"push"}
 		if exists {
 			push = append(push, "--force-with-lease=refs/heads/"+branch+":"+previous)
@@ -196,15 +199,28 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 				return LandResult{}, err
 			}
 		}
+
+		if len(opts.RequiredStatusChecks) > 0 || strings.TrimSpace(opts.CITriggerLabel) != "" {
+			result.CI, err = githubLandingChecks(ctx, opts, repository, pull.Number, head, githubLandingBranch(normalized, opts), base, headChanged, createdPull)
+			if err != nil {
+				return result, err
+			}
+			if result.CI.State == "pending" {
+				return result, nil
+			}
+			if result.CI.State == "failure" {
+				return result, refuse(LandRefusalProtected, "required CI failed on "+head+": "+strings.Join(result.CI.FailedChecks, ", "))
+			}
+		}
 		if _, err := runGitAt(ctx, normalized.Path, "fetch", remote, "+refs/heads/"+base+":"+baseRef); err != nil {
-			return LandResult{}, fmt.Errorf("refresh validated landing base: %w", err)
+			return result, fmt.Errorf("refresh validated landing base: %w", err)
 		}
 		currentBase, err := runGitAt(ctx, normalized.Path, "rev-parse", baseRef)
 		if err != nil {
-			return LandResult{}, err
+			return result, err
 		}
 		if strings.TrimSpace(currentBase) != baseBefore {
-			return LandResult{}, &LandRefusal{Kind: LandRefusalBaseMoved, BaseSHA: strings.TrimSpace(currentBase), Reason: "the base branch changed after landing validation"}
+			return result, &LandRefusal{Kind: LandRefusalBaseMoved, BaseSHA: strings.TrimSpace(currentBase), Reason: "the base branch changed after landing validation"}
 		}
 		var merged githubLandingMerge
 		if err := githubLandingAPI(ctx, opts.GitHubClient, &merged, "PUT", fmt.Sprintf("repos/%s/pulls/%d/merge", repository, pull.Number),
@@ -216,6 +232,9 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 					return LandResult{}, verified
 				}
 				baseBefore = refusal.BaseSHA
+				if len(opts.RequiredStatusChecks) > 0 || strings.TrimSpace(opts.CITriggerLabel) != "" {
+					return result, verified
+				}
 				retryHead, retryValidation, retryErr := l.refreshGitHubLanding(ctx, normalized, issue, opts, remote, baseBefore)
 				if retryValidation.Command != "" {
 					validation = retryValidation
@@ -240,7 +259,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	if mergeSHA == "" {
 		return LandResult{}, errors.New("GitHub reported a merged pull request without a merge commit")
 	}
-	result = LandResult{Gate: validation, MergeSHA: mergeSHA, BaseRef: base, BaseBefore: baseBefore, Method: opts.Method, AttemptBranchPushed: opts.External == nil, Rebased: rebased}
+	result = LandResult{CI: result.CI, Gate: validation, MergeSHA: mergeSHA, BaseRef: base, BaseBefore: baseBefore, Method: opts.Method, AttemptBranchPushed: opts.External == nil, Rebased: rebased}
 	if err := RecordLanding(ctx, normalized, head, result); err != nil {
 		return result, fmt.Errorf("keep merged landing: %w", err)
 	}
@@ -272,6 +291,72 @@ func verifyGitHubLandingMerge(ctx context.Context, path, remote, base, baseRef, 
 		return fmt.Errorf("GitHub merge commit %s is not on %s: %w", mergeSHA, base, err)
 	}
 	return nil
+}
+
+type githubLandingClient struct {
+	GitHubRESTClient
+}
+
+func (c githubLandingClient) REST(ctx context.Context, method, path string, body, result any) error {
+	return githubLandingREST(ctx, c.GitHubRESTClient, method, path, body, result)
+}
+
+func githubLandingChecks(ctx context.Context, opts LandOptions, repository string, number int, head, branch, base string, headChanged, createdPull bool) (*tracker.NativeLandingCIReceipt, error) {
+	var pull githubLandingPull
+	if err := githubLandingAPI(ctx, opts.GitHubClient, &pull, "GET", fmt.Sprintf("repos/%s/pulls/%d", repository, number)); err != nil {
+		return nil, err
+	}
+	if pull.Number != number || pull.State != "open" || pull.Merged || pull.MergedAt != "" || pull.Head.SHA != head || pull.Head.Ref != branch || pull.Head.Repo.FullName != repository || pull.Base.Ref != base || pull.Base.Repo.FullName != repository {
+		return nil, refuse(LandRefusalHeadMoved, "the GitHub pull request differs from the reviewed delivery source")
+	}
+	receipt, err := github.ReadLandingChecks(ctx, githubLandingClient{opts.GitHubClient}, repository, head, opts.RequiredStatusChecks)
+	if err != nil {
+		return nil, err
+	}
+	receipt.PullRequest, receipt.TriggerLabel = number, strings.TrimSpace(opts.CITriggerLabel)
+	if previous := opts.PreviousCI; previous != nil && previous.HeadSHA == head && previous.PullRequest == number && previous.TriggerLabel == receipt.TriggerLabel && previous.Triggered {
+		receipt.Triggered = true
+	}
+	needsTrigger := headChanged || len(receipt.MissingChecks) > 0 || createdPull && len(opts.RequiredStatusChecks) == 0
+	if receipt.TriggerLabel == "" || receipt.State == "failure" || !needsTrigger || receipt.Triggered && !headChanged {
+		return receipt, nil
+	}
+	if opts.CITriggerLabelStagger > 0 {
+		select {
+		case <-ctx.Done():
+			return receipt, ctx.Err()
+		case <-time.After(opts.CITriggerLabelStagger):
+		}
+	}
+	var labels []struct {
+		Name string `json:"name"`
+	}
+	path := fmt.Sprintf("repos/%s/issues/%d/labels", repository, number)
+	present := false
+	for page := 1; ; page++ {
+		if err := githubLandingREST(ctx, opts.GitHubClient, http.MethodGet, fmt.Sprintf("%s?per_page=100&page=%d", path, page), nil, &labels); err != nil {
+			return receipt, err
+		}
+		for _, label := range labels {
+			present = present || label.Name == receipt.TriggerLabel
+		}
+		if present || len(labels) < 100 {
+			break
+		}
+	}
+	if present {
+		if err := githubLandingREST(ctx, opts.GitHubClient, http.MethodDelete, path+"/"+url.PathEscape(receipt.TriggerLabel), nil, nil); err != nil {
+			return receipt, err
+		}
+	}
+	if err := githubLandingREST(ctx, opts.GitHubClient, http.MethodPost, path, map[string][]string{"labels": {receipt.TriggerLabel}}, nil); err != nil {
+		return receipt, err
+	}
+	receipt.Triggered = true
+	if len(opts.RequiredStatusChecks) > 0 {
+		receipt.State = "pending"
+	}
+	return receipt, nil
 }
 
 func (l *LocalGit) prepareGitHubLanding(ctx context.Context, info Info, issue Issue, opts LandOptions, base string) (string, gate.CommandResult, error) {
@@ -512,6 +597,10 @@ func githubLandingAPI(ctx context.Context, client GitHubRESTClient, result any, 
 		}
 		body = values
 	}
+	return githubLandingREST(ctx, client, method, path, body, result)
+}
+
+func githubLandingREST(ctx context.Context, client GitHubRESTClient, method, path string, body, result any) error {
 	err := client.REST(ctx, method, path, body, result)
 	if err == nil || errors.Is(err, github.ErrRateLimited) {
 		return err

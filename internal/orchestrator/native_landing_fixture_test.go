@@ -47,7 +47,13 @@ func nativeLandingGit(t *testing.T, ctx context.Context, dir string, args ...str
 	return strings.TrimSpace(string(output))
 }
 
-func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage string, mergeStatus int, sourceConflict, currentBase bool) *nativeLandingJourney {
+type nativeLandingCIState struct {
+	state    string
+	label    bool
+	triggers int
+}
+
+func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage string, mergeStatus int, sourceConflict, currentBase bool, ci ...*nativeLandingCIState) *nativeLandingJourney {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("real git and native landing integration")
@@ -142,6 +148,23 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case len(ci) > 0 && request.URL.Path == "/repos/example/repo/commits/"+head+"/check-runs":
+			fmt.Fprint(w, `{"check_runs":[]}`)
+		case len(ci) > 0 && request.URL.Path == "/repos/example/repo/commits/"+head+"/statuses":
+			if ci[0].state == "" {
+				fmt.Fprint(w, `[]`)
+			} else {
+				fmt.Fprintf(w, `[{"id":1,"context":"Full CI","state":%q}]`, ci[0].state)
+			}
+		case len(ci) > 0 && request.URL.Path == "/repos/example/repo/issues/7/labels":
+			if request.Method == http.MethodPost {
+				ci[0].label, ci[0].triggers = true, ci[0].triggers+1
+			}
+			if ci[0].label {
+				fmt.Fprint(w, `[{"name":"run-full-ci"}]`)
+			} else {
+				fmt.Fprint(w, `[]`)
+			}
 		case request.Method == http.MethodPost && request.URL.Path == "/graphql":
 			fmt.Fprint(w, `{"data":{"viewer":{"databaseId":42,"login":"detent-worker[bot]","__typename":"Bot"}}}`)
 		case request.Method == http.MethodGet && request.URL.Path == "/repos/example/repo/pulls":
@@ -190,6 +213,9 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	t.Cleanup(func() { http.DefaultClient = previous })
 	cfg := config.Config{}
 	cfg.Gate.Run = "true"
+	if len(ci) > 0 {
+		cfg.Gate.RequiredStatusChecks, cfg.Gate.CITriggerLabel = []string{"Full CI"}, "run-full-ci"
+	}
 	cfg.Worker.GitHubToken = "native-landing-test-token"
 	cfg.Tracker.Kind = config.TrackerGitHub
 	cfg.Tracker.Endpoint = "https://native-landing.test/graphql"

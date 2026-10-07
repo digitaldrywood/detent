@@ -44,7 +44,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 	}
 	issue := running.Issue
 	issueID := strings.TrimSpace(event.IssueID)
-	if !landing.Landed && landing.RefusalKind == workspace.LandRefusalBaseMoved && landing.BaseSHA == "" {
+	if !landing.Landed && (landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved && landing.BaseSHA == "") {
 		o.waitForMergeWorkerRetry(ctx, state, event, running, issue, running.Attempt, landing.Refusal,
 			"merge_worker_waiting", "waiting to retry landing of ")
 		return true
@@ -86,7 +86,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 		if autoPromoteOptoutLabel(issue, cfg) {
 			destination = cfg.SourceState
 		}
-		rework := landing.GateFailed || landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == workspace.LandRefusalBaseMoved
+		rework := landing.CI != nil && landing.CI.State == "failure" || landing.GateFailed || landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == workspace.LandRefusalBaseMoved
 		if rework {
 			destination = cfg.ReworkState
 		}
@@ -137,6 +137,9 @@ func nativeLandingMetadata(landing *runpkg.NativeLanding) map[string]any {
 		return nil
 	}
 	metadata := map[string]any{"native_landed": landing.Landed, "native_change_id": landing.ChangeID, "native_version_id": landing.VersionID, "native_head_sha": landing.HeadSHA}
+	if landing.CI != nil {
+		metadata["native_ci"] = landing.CI
+	}
 	if landing.Rebased {
 		metadata["rebased"] = true
 	}

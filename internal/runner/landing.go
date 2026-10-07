@@ -62,10 +62,15 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		message = tracker.AppendGitHubIssueClosingReferences(message, target.SourceIssues)
 	}
 	workflow, _, _, _ := r.runtimeSnapshot()
-	options := workspace.LandOptions{ValidationCommand: gate.Effective(workflow.Config.Gate).Run, HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
+	effectiveGate := gate.Effective(workflow.Config.Gate)
+	options := workspace.LandOptions{RequiredStatusChecks: effectiveGate.RequiredStatusChecks, CITriggerLabel: effectiveGate.CITriggerLabel, PreviousCI: target.CI, ValidationCommand: effectiveGate.Run, HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
+	if effectiveGate.CITriggerLabelStaggerSeconds != nil {
+		options.CITriggerLabelStagger = time.Duration(*effectiveGate.CITriggerLabelStaggerSeconds) * time.Second
+	}
 	var result workspace.LandResult
 	defer func() {
 		if runResult.NativeLanding != nil {
+			runResult.NativeLanding.CI = result.CI
 			runResult.NativeLanding.Rebased = result.Rebased
 			if result.Gate.Command != "" {
 				runResult.NativeLanding.Gate = &result.Gate
@@ -104,6 +109,11 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	} else {
 		result, err = lander.LandChange(ctx, info, issue, options)
 	}
+	if err == nil && result.CI != nil && result.CI.State == "pending" {
+		waiting := r.refusedLanding(req, target, "", "waiting for required CI on "+result.CI.HeadSHA)
+		waiting.WorkspaceBranch = info.Branch
+		return waiting, nil
+	}
 	if err != nil {
 		if result.MergeSHA == "" {
 			if IsCapacityError(err) || errors.Is(err, github.ErrRateLimited) || errors.Is(err, forgeavailability.ErrUnavailable) {
@@ -130,7 +140,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_native_landing_warning",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "merge_sha", result.MergeSHA, "error", err.Error())
 	}
-	landed := NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, BaseSHA: result.BaseBefore, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
+	landed := NativeLanding{CI: result.CI, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, BaseSHA: result.BaseBefore, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
 	if result.Gate.Command != "" {
 		landed.Gate = &result.Gate
 	}

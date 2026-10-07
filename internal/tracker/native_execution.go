@@ -131,23 +131,36 @@ func (r *NativeRuntimeObservation) WithoutActivitySpans() *NativeRuntimeObservat
 	return &summary
 }
 
+type NativeLandingCIReceipt struct {
+	HeadSHA        string   `json:"head_sha"`
+	PullRequest    int      `json:"pull_request"`
+	State          string   `json:"state"`
+	RequiredChecks []string `json:"required_checks,omitempty"`
+	PendingChecks  []string `json:"pending_checks,omitempty"`
+	MissingChecks  []string `json:"missing_checks,omitempty"`
+	FailedChecks   []string `json:"failed_checks,omitempty"`
+	TriggerLabel   string   `json:"trigger_label,omitempty"`
+	Triggered      bool     `json:"triggered,omitempty"`
+}
+
 type NativeLandingReceipt struct {
-	Gate        *gate.CommandResult `json:"gate,omitempty"`
-	FromState   string              `json:"from_state,omitempty"`
-	TargetState string              `json:"target_state,omitempty"`
-	Refusal     string              `json:"refusal,omitempty"`
-	GateFailed  bool                `json:"gate_failed,omitempty"`
-	Rebased     bool                `json:"rebased,omitempty"`
-	ChangeID    string              `json:"change_id,omitempty"`
-	VersionID   string              `json:"version_id,omitempty"`
-	HeadSHA     string              `json:"head_sha,omitempty"`
-	Landed      bool                `json:"landed"`
-	MergeSHA    string              `json:"merge_sha,omitempty"`
-	BaseRef     string              `json:"base_ref,omitempty"`
-	BaseSHA     string              `json:"base_sha,omitempty"`
-	Method      string              `json:"method,omitempty"`
-	RefusalKind string              `json:"refusal_kind,omitempty"`
-	ObservedAt  time.Time           `json:"observed_at"`
+	CI          *NativeLandingCIReceipt `json:"ci,omitempty"`
+	Gate        *gate.CommandResult     `json:"gate,omitempty"`
+	FromState   string                  `json:"from_state,omitempty"`
+	TargetState string                  `json:"target_state,omitempty"`
+	Refusal     string                  `json:"refusal,omitempty"`
+	GateFailed  bool                    `json:"gate_failed,omitempty"`
+	Rebased     bool                    `json:"rebased,omitempty"`
+	ChangeID    string                  `json:"change_id,omitempty"`
+	VersionID   string                  `json:"version_id,omitempty"`
+	HeadSHA     string                  `json:"head_sha,omitempty"`
+	Landed      bool                    `json:"landed"`
+	MergeSHA    string                  `json:"merge_sha,omitempty"`
+	BaseRef     string                  `json:"base_ref,omitempty"`
+	BaseSHA     string                  `json:"base_sha,omitempty"`
+	Method      string                  `json:"method,omitempty"`
+	RefusalKind string                  `json:"refusal_kind,omitempty"`
+	ObservedAt  time.Time               `json:"observed_at"`
 }
 
 type NativeRESTEvidence struct {

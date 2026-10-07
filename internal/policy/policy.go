@@ -35,6 +35,7 @@ type Gates struct {
 	SecurityAudit     bool   `json:"security_audit"`
 	MergeMethod       string `json:"merge_method"`
 	GitHubPullRequest bool   `json:"github_pull_request,omitempty"`
+	GitHubCIDigest    string `json:"github_ci_digest,omitempty"`
 }
 
 type Descriptor struct {
@@ -273,7 +274,7 @@ func (d Descriptor) Validate() error {
 	g := d.Gates
 	if !slices.Contains([]string{"command", "human_review", "artifact"}, g.Kind) ||
 		!slices.Contains([]string{"none", "human", "automated", "both"}, g.PlanReview) ||
-		!validHash(g.PlanStopDigest, 64) ||
+		!validHash(g.PlanStopDigest, 64) || g.GitHubCIDigest != "" && (!g.GitHubPullRequest || !validHash(g.GitHubCIDigest, 64)) ||
 		(g.Kind == "command" && !slices.Contains([]string{"required", "optional", "off"}, g.AutomatedReview)) ||
 		(g.Kind != "command" && g.AutomatedReview != "") ||
 		!slices.Contains([]string{"squash", "merge", "rebase"}, g.MergeMethod) || g.RequiredChecks < 0 || g.RequiredChecks > 256 {

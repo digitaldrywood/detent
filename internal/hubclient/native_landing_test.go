@@ -59,6 +59,9 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 		{name: "merge method change returns to Rework", policyChange: func(p *policy.Descriptor) { p.Gates.MergeMethod = "merge" }, wantRework: true},
 		{name: "validator change returns to Rework", policyChange: func(p *policy.Descriptor) { p.Gates.Validator = true }, wantRework: true},
 		{name: "required check floor change returns to Rework", policyChange: func(p *policy.Descriptor) { p.Gates.RequiredChecks++ }, wantRework: true},
+		{name: "GitHub CI contract change returns to Rework", policyChange: func(p *policy.Descriptor) {
+			p.Gates.GitHubPullRequest, p.Gates.GitHubCIDigest = true, policy.Digest([]byte("Full CI run-full-ci"))
+		}, wantRework: true},
 		{name: "review change returns to Rework", policyChange: func(p *policy.Descriptor) { p.Gates.HumanReview = true }, wantRework: true},
 		{name: "GitHub landing gate change returns to Rework", policyChange: func(p *policy.Descriptor) { p.Gates.GitHubPullRequest = true }, wantRework: true},
 	} {
@@ -354,6 +357,20 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if err := execution.RecordLanding(guarded, runner.NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, RefusalKind: "conflict"}); err == nil {
 		t.Fatal("a refusal was recorded as a landing")
 	}
+	if github {
+		waiting := runner.NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, CI: &tracker.NativeLandingCIReceipt{HeadSHA: head, PullRequest: 7, State: "pending", RequiredChecks: []string{"Full CI"}, PendingChecks: []string{"Full CI"}, TriggerLabel: "run-full-ci", Triggered: true}}
+		if err := landing.(runner.LandingRuntimeExecution).ObserveLanding(guarded, waiting); err != nil {
+			t.Fatal(err)
+		}
+		evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
+		if err != nil || !reflect.DeepEqual(evidence.Attempt.Runtime.Landing.CI, waiting.CI) || evidence.Change.Change.Landed != nil || h.state(t, issue.ID) != "Merging" {
+			t.Fatalf("waiting CI lost durable native receipt: %+v, %v", evidence, err)
+		}
+		resumed, err := execution.LandingTarget(guarded)
+		if err != nil || !reflect.DeepEqual(resumed.CI, waiting.CI) || resumed.HeadSHA != head || resumed.VersionID != target.VersionID {
+			t.Fatalf("resumed landing lost exact-head trigger receipt: %+v, %v", resumed, err)
+		}
+	}
 	refusalKind := "conflict"
 	if len(refusalKinds) > 0 && refusalKinds[0] != "" {
 		refusalKind = refusalKinds[0]
@@ -411,6 +428,9 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		return
 	}
 	landed := runner.NativeLanding{Gate: &gate.CommandResult{Command: "make check-land", HeadSHA: head, TreeSHA: strings.Repeat("a", 40), DurationNS: 987654}, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Landed: true, MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: target.Method, Rebased: true}
+	if github {
+		landed.CI = &tracker.NativeLandingCIReceipt{HeadSHA: head, PullRequest: 7, State: "success", RequiredChecks: []string{"Full CI"}, TriggerLabel: "run-full-ci", Triggered: true}
+	}
 	if err := execution.RecordLanding(guarded, landed); err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +458,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(evidence.Attempt.Runtime.Landing.Gate, landed.Gate) {
+	if !reflect.DeepEqual(evidence.Attempt.Runtime.Landing.Gate, landed.Gate) || !reflect.DeepEqual(evidence.Attempt.Runtime.Landing.CI, landed.CI) {
 		t.Fatalf("success lost gate: %#v", evidence.Attempt.Runtime.Landing)
 	}
 	landedReceipt := *evidence.Attempt.Runtime.Landing

@@ -20,6 +20,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -97,6 +98,8 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 	}{
 		{name: "absorbed Rework uses the existing landing completion owner", absorbed: true, landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
 		{name: "a landed version is finished by the hub", landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
+		{name: "failed configured CI returns to Rework", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalProtected, Refusal: "Full CI failed", CI: &tracker.NativeLandingCIReceipt{HeadSHA: head, State: "failure", FailedChecks: []string{"Full CI"}}}, hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "Full CI failed", wantMoves: 1},
+		{name: "trigger permission refusal overrides pending CI", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalProtected, Refusal: "Resource not accessible", CI: &tracker.NativeLandingCIReceipt{HeadSHA: head, State: "pending"}}, hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "Resource not accessible", wantMoves: 1},
 		{name: "a red gate returns to Rework with failing output", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, GateFailed: true, Refusal: "short-test-failure-sentinel"}, hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "short-test-failure-sentinel", wantMoves: 1},
 		{name: "a refused landing returns to review with the reason", landing: refused, hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "enable GitHub pull request mode", wantMoves: 1},
 		{name: "a conflict enters rework without human review", landing: conflict, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
@@ -115,6 +118,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "an already landed head prefers Blocked without human review", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalNothing, Refusal: "the base branch already contains everything"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "already contains everything", wantMoves: 1},
 		{name: "a refusal falls back to Human Review without Blocked", landing: refused, hubState: "Merging", states: noBlocked, noHumanReview: true, wantState: "Human Review", wantComment: "was not landed", wantMoves: 1},
 		{name: "an opted out refusal prefers Human Review over Blocked", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, optout: true, wantState: "Human Review", wantComment: "was not landed", wantMoves: 1},
+		{name: "pending configured CI retains the existing landing retry", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Refusal: "waiting for Full CI", CI: &tracker.NativeLandingCIReceipt{HeadSHA: head, State: "pending", Triggered: true}}, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "unproven conflict retains landing retry without coding rework", landing: &waiting, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "stale base projection with current conflict enters configured rework", mergeMessage: "Pull Request has merge conflicts", sourceConflict: true, hubState: "Merging", states: workflow, reworkState: "Refresh", wantState: "Refresh", wantComment: "was not landed", wantMoves: 1},
 		{name: "current base projection with clean source retains landing wait", currentBase: true, mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
@@ -293,7 +297,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &metadata); err != nil {
 					t.Fatal(err)
 				}
-				if metadata["native_landed"] != false || metadata["native_version_id"] != unproven.VersionID || metadata["native_head_sha"] != landingHead || metadata["native_landing_refusal"] != workspace.LandRefusalBaseMoved || metadata["forge_wait"] != nil || metadata["native_merge_sha"] != nil {
+				if metadata["native_landed"] != false || metadata["native_version_id"] != unproven.VersionID || metadata["native_head_sha"] != landingHead || metadata["native_landing_refusal"] != map[bool]any{true: nil, false: workspace.LandRefusalBaseMoved}[test.landing.CI != nil] || metadata["forge_wait"] != nil || metadata["native_merge_sha"] != nil {
 					t.Fatalf("continuation lost immutable reviewed identity: %#v", metadata)
 				}
 				if journey != nil && !genuineOutage {
@@ -430,6 +434,37 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			}
 			if !test.landing.Landed && (metadata["native_landing_refusal"] != test.landing.RefusalKind && !test.landing.GateFailed || metadata["native_merge_sha"] != nil) {
 				t.Fatalf("refusal became landing evidence: %#v", metadata)
+			}
+		})
+	}
+}
+
+func TestNativeLandingConfiguredCI(t *testing.T) {
+	for _, outcome := range []string{"success", "failure"} {
+		t.Run(outcome, func(t *testing.T) {
+			ci := &nativeLandingCIState{}
+			journey := newNativeLandingJourney(t, connector.Issue{ID: "issue_1", Identifier: "DD-1", State: "Merging"}, "", http.StatusOK, false, true, ci)
+			waiting, err := journey.run(t)
+			if err != nil || waiting.NativeLanding.CI == nil || waiting.NativeLanding.CI.State != "pending" || !waiting.NativeLanding.CI.Triggered || waiting.NativeLanding.Landed || len(journey.execution.recorded) != 0 || ci.triggers != 1 {
+				t.Fatalf("missing CI did not produce native waiting receipt: %+v, %v", waiting, err)
+			}
+			journey.execution.target.CI = waiting.NativeLanding.CI
+			ci.label, ci.state = false, "pending"
+			pending, err := journey.run(t)
+			if err != nil || pending.NativeLanding.CI.State != "pending" || pending.NativeLanding.Landed || ci.triggers != 1 || len(journey.execution.recorded) != 0 {
+				t.Fatalf("pending CI lost waiting or retriggered auto-removed label: %+v, %v", pending, err)
+			}
+			ci.state = outcome
+			final, err := journey.run(t)
+			if err != nil || final.NativeLanding.CI.State != outcome || final.NativeLanding.HeadSHA != waiting.NativeLanding.HeadSHA || final.NativeLanding.VersionID != waiting.NativeLanding.VersionID || journey.provider.calls.Load() != 0 {
+				t.Fatalf("native CI outcome lost fenced source: %+v, %v", final, err)
+			}
+			if outcome == "failure" {
+				if final.NativeLanding.Landed || final.NativeLanding.RefusalKind != workspace.LandRefusalProtected || len(journey.execution.recorded) != 0 || nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main") != journey.base {
+					t.Fatalf("failed CI fabricated landing: %+v", final)
+				}
+			} else if !final.NativeLanding.Landed || len(journey.execution.recorded) != 1 || journey.execution.recorded[0].CI == nil || journey.execution.recorded[0].CI.HeadSHA != journey.target.HeadSHA || journey.execution.recorded[0].CI.State != "success" {
+				t.Fatalf("green CI did not produce native delivery receipt: %+v", final)
 			}
 		})
 	}
