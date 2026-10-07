@@ -464,6 +464,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     target: string,
     body?: unknown,
     signal?: AbortSignal,
+    keepalive = false,
   ): Promise<A> {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -476,6 +477,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         headers,
         ...(signal === undefined ? {} : { signal }),
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(keepalive ? { keepalive } : {}),
       });
     } catch (cause) {
       throw new WorkApiError({
@@ -551,7 +553,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     origin: options.origin,
     apiBase: options.apiBase,
     getViewPreference: (projectId, signal) => send(viewPreferenceSchema, "GET", viewPreferenceUrl(projectId), undefined, signal),
-    setViewPreference: (projectId, query) => send(viewPreferenceSchema, query === null ? "DELETE" : "PUT", viewPreferenceUrl(projectId), query === null ? undefined : { query }),
+    setViewPreference: (projectId, query) => send(viewPreferenceSchema, query === null ? "DELETE" : "PUT", viewPreferenceUrl(projectId), query === null ? undefined : { query }, undefined, true),
     eventsUrl: (projectId, workspaceId, workItemId) =>
       url(hubPath(`/projects/${encodeURIComponent(projectId)}/events`), { workspace: workspaceId, work_item: workItemId }),
     listHealthFindings: (projectId, cursor, signal) => send(HealthFindingsRead, "GET", url(`${projectBase(projectId)}/health/findings`, { cursor }), undefined, signal),

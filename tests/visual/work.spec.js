@@ -9,7 +9,7 @@
 //
 const { test, expect } = require("@playwright/test");
 const AxeBuilder = require("@axe-core/playwright").default;
-const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
+const { startHostedHub, resetSavedWorkViews, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
 test.describe.configure({ mode: "serial" });
 
@@ -49,6 +49,7 @@ function watchConsole(page) {
 /** Signs in as the organization owner and opens a work route. */
 async function openWork(page, route = "/work") {
   await page.goto(hub.fixture.accounts.owner, { waitUntil: "domcontentloaded" });
+  await resetSavedWorkViews(page);
   // The router's basepath is `/` now (decisions.md §11, §12): Work is served
   // at the hub's root, not under the chat prefix.
   await page.goto(new URL(route, hub.fixture.url).toString(), {

@@ -1,5 +1,5 @@
 const { test, expect } = require("@playwright/test");
-const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
+const { startHostedHub, resetSavedWorkViews, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
 test.describe.configure({ mode: "serial" });
 
@@ -16,6 +16,7 @@ test.afterAll(async () => { await hub?.stop(); });
 
 async function openWork(page, route) {
   await page.goto(hub.fixture.accounts.owner);
+  await resetSavedWorkViews(page);
   await page.goto(new URL(route, hub.fixture.url).toString());
   await expect(page.getByTestId("work-board")).toBeVisible();
   await expect(page.getByTestId("work-stats")).toHaveAttribute("aria-busy", "false");
@@ -136,7 +137,16 @@ test("terminal URL and stored lane names never produce board lanes", async ({ pa
   await expect(page.getByTestId("board-lane")).toHaveCount(1);
   await expect(page.getByTestId("lane-body-Todo")).toBeVisible();
   await expect(page.getByTestId("lane-body-Done")).toHaveCount(0);
-  await page.evaluate((project) => localStorage.setItem(`detent.work.view:${project}`, "lanes=Backlog,Cancelled"), hub.fixture.project_id);
+  const stored = await page.evaluate(async (project) => {
+    const bootstrap = await (await fetch("/chat/bootstrap")).json();
+    const response = await fetch(`${bootstrap.api_base}/projects/${project}/work-view-preference`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": bootstrap.csrf_token },
+      body: JSON.stringify({ query: "lanes=Backlog,Cancelled" }),
+    });
+    return response.status;
+  }, hub.fixture.project_id);
+  expect(stored).toBe(200);
   await page.goto(new URL(route, hub.fixture.url).toString());
   await expect(page.getByTestId("board-lane")).toHaveCount(1);
   await expect(page.getByTestId("lane-collapse-Backlog")).toBeVisible();

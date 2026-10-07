@@ -113,6 +113,19 @@ describe("Hub Work view preferences", () => {
     expect(fixture.http.setViewPreference).not.toHaveBeenCalled();
   });
 
+  it("flushes a pending edit when the page is hidden", async () => {
+    vi.useFakeTimers();
+    fixture.http.getViewPreference.mockResolvedValue({ query: null });
+    fixture.http.setViewPreference.mockImplementation(async (_project, query) => ({ query }));
+    const { result } = renderHook(() => useViewState("project"));
+    await act(async () => {});
+    act(() => { result.current[1](parseViewState("view=list&tab=closed")); });
+    await act(async () => { window.dispatchEvent(new Event("pagehide")); });
+    expect(fixture.http.setViewPreference).toHaveBeenCalledExactlyOnceWith("project", "view=list&tab=closed");
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    expect(fixture.http.setViewPreference).toHaveBeenCalledTimes(1);
+  });
+
   it("flushes a pending edit on scope exit and serializes saves", async () => {
     vi.useFakeTimers();
     fixture.http.getViewPreference.mockResolvedValue({ query: null });
