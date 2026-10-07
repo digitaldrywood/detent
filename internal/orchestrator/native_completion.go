@@ -61,45 +61,35 @@ func (o *Orchestrator) completeNativeChangeRun(
 	humanReview := cfg.humanReviewEnabled() || autoPromoteOptoutLabel(issue, cfg)
 	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
 		recoveryRequired := errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired)
-		if !event.Result.TurnStarted && running.TurnCount == 0 && running.Tokens.TotalTokens == 0 && event.Result.Tokens.TotalTokens == 0 && !recoveryRequired && o.handlePreTurnFailure(ctx, state, event, running) {
+		if o.handlePreTurnFailure(ctx, state, event, running) {
 			return true
 		}
-		states, err := reader.WorkflowStates(ctx)
-		if err != nil {
-			return handoff(fmt.Errorf("read native workflow states: %w", err))
-		}
-		target := terminalAttemptTodoState(o.cfg.ActiveStates)
-		var allowed bool
-		if humanReview && preTurnFailureClass(event, running) == "" {
+		if humanReview || recoveryRequired {
+			states, err := reader.WorkflowStates(ctx)
+			if err != nil {
+				return handoff(fmt.Errorf("read native workflow states: %w", err))
+			}
 			review := cfg.reviewTargetState()
 			if autoPromoteOptoutLabel(issue, cfg) {
 				review = cfg.SourceState
 			}
-			target, allowed = connector.LandingRefusalLane(states, issue.State, review, false)
+			target, allowed := connector.LandingRefusalLane(states, issue.State, review, false)
 			if !allowed {
 				return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", issue.State, review))
 			}
-		} else {
-			if running.DiffStats.RecoveryStateAvailable {
-				target = cfg.ReworkState
+			metadata := workflowLaneMetadata{}
+			if recoveryRequired {
+				metadata.ReasonDetail = event.Err.Error()
 			}
-			target, allowed = nativeRetryLane(states, issue.State, target)
-			if !allowed {
-				return handoff(fmt.Errorf("native workflow allows no retry from %s", issue.State))
+			var transitionErr error
+			if recoveryRequired {
+				transitionErr = o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, target, event.CompletedAt, terminalAttemptWithoutWorkProductReason, metadata)
+			} else {
+				transitionErr = o.updateIssueStateByID(ctx, state, issueID, issue, target, event.CompletedAt, terminalAttemptWithoutWorkProductReason)
 			}
-		}
-		if normalizeState(issue.State) != normalizeState(target) {
-			metadata := workflowLaneMetadata{ReasonDetail: errorString(event.Err)}
-			if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, target, event.CompletedAt, terminalAttemptWithoutWorkProductReason, metadata); err != nil {
-				return handoff(fmt.Errorf("move failed native item to %s: %w", target, err))
+			if transitionErr != nil {
+				return handoff(fmt.Errorf("move failed native item to %s: %w", target, transitionErr))
 			}
-		}
-		failed := running
-		failed.Issue.State = target
-		failed.CompletionLane = target
-		if o.handlePreTurnFailure(ctx, state, event, failed) {
-			o.recordCompletionUsage(ctx, state, event, issue)
-			return true
 		}
 		if err := o.abandonClaim(ctx, issueID); err != nil {
 			return handoff(err)
@@ -175,8 +165,10 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	validatorRework := change != nil && change.Validator != nil && change.Validator.Verdict == "rework" && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
 	unfinished := validatorRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == ""
-	if unfinished {
-		if rework, allowed := nativeRetryLane(states, issue.State, cfg.ReworkState); allowed {
+	if unfinished && nativePlanStateExists(states, cfg.ReworkState) && dispatchableState(states, cfg.ReworkState) {
+		if normalizeState(issue.State) == normalizeState(cfg.ReworkState) {
+			target, ok = issue.State, true
+		} else if rework, allowed := connector.CompletionLane(states, issue.State, cfg.ReworkState, true); allowed {
 			target, ok = rework, true
 		}
 	}
@@ -334,19 +326,6 @@ func (o *Orchestrator) continueNativeLandingRun(ctx context.Context, state *Stat
 	running.done = o.supervisor.Dispatch(runCtx, request, o.runResults)
 	state.Running[event.IssueID] = running
 	return nil
-}
-
-func nativeRetryLane(states []connector.WorkflowState, current, preferred string) (string, bool) {
-	for _, state := range states {
-		if normalizeState(state.Name) != normalizeState(preferred) || state.Terminal || state.OperatorOnly || !state.Dispatchable {
-			continue
-		}
-		if normalizeState(current) == normalizeState(state.Name) {
-			return state.Name, true
-		}
-		return connector.CompletionLane(states, current, state.Name, true)
-	}
-	return "", false
 }
 
 func nativeCompletionReason(comment string, report *workpad.Signal, finalMessage string) string {
