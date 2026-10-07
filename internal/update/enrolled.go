@@ -60,18 +60,21 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	}
 	defer s.operationMu.Unlock()
 	observed := s.enrolledObservation(running)
+	retry := observed.Receipt != nil && observed.Receipt.Request == *request && observed.Receipt.FailureReason != "" && (observed.Receipt.Status == "refused" || observed.Receipt.Status == "uncertain")
 	if observed.Receipt != nil && observed.Receipt.Request.ID == request.ID {
-		return observed
+		if !retry || s.cfg.Now().Before(observed.Receipt.ObservedAt.Add(s.cfg.CheckInterval)) {
+			return observed
+		}
 	}
 	receipt := &runnerauth.UpdateReceipt{Request: *request, Status: "refused", ObservedAt: s.cfg.Now().UTC()}
-	targetMatches := request.ExpectedBuildRevision == observed.Revision && request.Version == observed.AvailableVersion
+	targetMatches := retry || request.ExpectedBuildRevision == observed.Revision && request.Version == observed.AvailableVersion
 	if request.FollowHub {
-		targetMatches = request.ExpectedBuildRevision == observed.Revision && !IsDevelopmentVersion(request.Version) && strings.TrimPrefix(request.Version, "v") != strings.TrimPrefix(running.Version, "v")
+		targetMatches = retry || request.ExpectedBuildRevision == observed.Revision && !IsDevelopmentVersion(request.Version) && strings.TrimPrefix(request.Version, "v") != strings.TrimPrefix(running.Version, "v")
 	}
 	if request.Urgent {
 		comparison, err := CompareVersions(request.Version, running.Version)
 		targetMatches = err == nil && comparison > 0
-		if applied := s.Status().LastAppliedVersion; applied != "" {
+		if applied := s.Status().LastAppliedVersion; applied != "" && (!retry || applied != request.Version) {
 			comparison, err = CompareVersions(request.Version, applied)
 			targetMatches = targetMatches && err == nil && comparison > 0
 		}
@@ -97,7 +100,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	opts.Urgent = request.Urgent
 	opts.FollowHub = request.FollowHub
 	applied, err := s.drainAndApplyWithOptionsLocked(ctx, opts)
-	if err != nil || applied.Action != ActionUpdated {
+	if err != nil || applied.Action != ActionUpdated || applied.FailureReason != "" {
 		receipt.Status = "refused"
 		if applied.Action == ActionUpdated {
 			if current := s.enrolledObservation(running).Receipt; current != nil {
@@ -105,6 +108,11 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 			}
 			receipt.Status = "uncertain"
 		}
+		receipt.FailureReason = applied.FailureReason
+		if receipt.FailureReason == "" {
+			receipt.FailureReason = "Update apply failed or was refused"
+		}
+		receipt.ObservedAt = s.cfg.Now().UTC()
 		s.setEnrolledReceipt(receipt)
 		if s.persistCurrentState() != nil {
 			return nil
@@ -130,6 +138,7 @@ func (s *Scheduler) enrolledObservation(running runnerauth.BuildEvidence) *runne
 		}
 		if receipt.Applied != nil && running.Matches(*receipt.Applied) {
 			receipt.Status = "running"
+			receipt.FailureReason = ""
 			running.VerifiedRelease = receipt.Applied.VerifiedRelease
 			if running.VerifiedRelease {
 				running.Source = "release"

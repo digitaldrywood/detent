@@ -24,6 +24,7 @@ import (
 	"time"
 
 	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 
 	"golang.org/x/crypto/blake2b"
 )
@@ -539,8 +540,18 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		hubError        error
 		invalidSelector string
 		missingReceipt  bool
+		failureStage    string
+		failureReason   string
+		urgent          bool
 	}{
 		{name: "selected release", current: "1.2.3"},
+		{name: "target failure restores drain", current: "1.2.3", failureStage: "target", failureReason: "Update target resolution failed"},
+		{name: "urgent download failure restores drain", current: "1.2.3", urgent: true, failureStage: "download", failureReason: "Update download failed"},
+		{name: "signature failure restores drain", current: "1.2.3", failureStage: "signature", failureReason: "Update signature verification failed"},
+		{name: "provenance failure restores drain", current: "1.2.3", failureStage: "provenance", failureReason: "Update provenance verification failed"},
+		{name: "checksum failure restores drain", current: "1.2.3", failureStage: "checksum", failureReason: "Update checksum verification failed"},
+		{name: "install failure restores drain", current: "1.2.3", failureStage: "install", failureReason: "Update installation failed"},
+		{name: "urgent restart failure restores drain", current: "1.2.3", urgent: true, failureStage: "restart", failureReason: "Update restart request was declined"},
 		{name: "explicit release refuses wrong lock selector", current: "1.2.3", explicit: true, hubTarget: "operator-landed-a69c4b1dd060", invalidSelector: "DETENT_INSTALL_LOCK"},
 		{name: "explicit release refuses wrong state selector", current: "1.2.3", explicit: true, hubTarget: "operator-landed-a69c4b1dd060", invalidSelector: "DETENT_STATE_DIR"},
 		{name: "explicit release with operator Hub build", current: "1.2.3", explicit: true, hubTarget: "operator-landed-a69c4b1dd060"},
@@ -714,6 +725,85 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					}
 					return nil
 				},
+			}
+			if test.failureStage != "" {
+				now := time.Now().UTC()
+				running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: testPreviousCommit, Source: "release", SHA256: strings.Repeat("a", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
+				draining, drains := false, 0
+				config := SchedulerConfig{CheckInterval: time.Hour, Updater: service, RunningBuild: running, StatePath: filepath.Join(tmp, "scheduler.json"), ApplyOptions: applyOptions, Now: func() time.Time { return now },
+					ReserveDrain: func(context.Context) (func(), error) {
+						drains++
+						draining = true
+						return func() { draining = false }, nil
+					},
+					RequestRestart: func(string) bool { return false },
+				}
+				owner, err := NewScheduler(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				initial := owner.EnrolledUpdate(t.Context(), running, nil)
+				request := runnerauth.UpdateRequest{RequestedAt: now, ID: "failed-update", Service: "detent", Version: "1.2.4", Release: true, ExpectedBuildRevision: initial.Revision, Urgent: test.urgent}
+				if test.urgent {
+					request.ExpectedBuildRevision = ""
+				}
+				switch test.failureStage {
+				case "target":
+					service.cfg.TargetVersion = func(context.Context) (string, error) { return "operator-landed-a69c4b1dd060", nil }
+				case "download":
+					httpClient.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+						if r.URL.Path == "/checksums" {
+							return nil, errors.New("private/token=secret")
+						}
+						recorder := httptest.NewRecorder()
+						handler.ServeHTTP(recorder, r)
+						return recorder.Result(), nil
+					})
+				case "signature":
+					service.cfg.ChecksumSignatureVerifier = func(context.Context, []byte, []byte) error { return errors.New("private/token=secret") }
+				case "provenance":
+					provenanceBytes = []byte("invalid provenance")
+					provenanceSum = sha256.Sum256(provenanceBytes)
+					checksums = fmt.Sprintf("%x  %s\n%x  %s\n", archiveSum, archiveName, provenanceSum, provenanceAssetName)
+					signature = testMinisignSignature(t, privateKey, keyID, []byte(checksums), "detent checksums v1.2.4")
+				case "checksum":
+					archive = []byte("corrupt archive")
+				case "install":
+					config.ApplyOptions.Preflight = func(context.Context, string) error { return errors.New("private/token=secret") }
+					owner.cfg.ApplyOptions = config.ApplyOptions
+				}
+				observed := owner.EnrolledUpdate(t.Context(), running, &request)
+				if draining || drains != 1 || observed == nil || observed.Validate() != nil || observed.Receipt.FailureReason != test.failureReason {
+					t.Fatalf("failed update: draining=%t drains=%d observation=%+v receipt=%+v", draining, drains, observed, observed.Receipt)
+				}
+				if test.failureStage != "restart" {
+					raw, err := os.ReadFile(binary)
+					if err != nil || string(raw) != "old" {
+						t.Fatalf("failure changed binary: %q %v", raw, err)
+					}
+				}
+				if test.failureStage == "restart" {
+					config.LastAppliedVersion = "1.2.4"
+				}
+				resumed, err := NewScheduler(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				observed = resumed.EnrolledUpdate(t.Context(), running, &request)
+				if observed.Receipt.FailureReason != test.failureReason || drains != 1 {
+					t.Fatalf("restart lost failure or retried early: %+v drains=%d", observed.Receipt, drains)
+				}
+				now = now.Add(time.Hour - time.Nanosecond)
+				resumed.EnrolledUpdate(t.Context(), running, &request)
+				if drains != 1 {
+					t.Fatal("retried before normal update schedule")
+				}
+				now = now.Add(time.Nanosecond)
+				resumed.EnrolledUpdate(t.Context(), running, &request)
+				if draining || drains != 2 {
+					t.Fatalf("scheduled retry: draining=%t drains=%d", draining, drains)
+				}
+				return
 			}
 			var status Status
 			if test.explicit {

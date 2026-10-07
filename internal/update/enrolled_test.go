@@ -27,8 +27,8 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 		urgent      bool
 		lastApplied string
 	}{
-		{name: "applied before restart", want: "applied", calls: 1},
-		{name: "detached replacement remains pending", pending: true, want: "uncertain", calls: 1},
+		{name: "restart declined", want: "uncertain", calls: 1},
+		{name: "detached replacement remains pending", pending: true, restart: true, want: "uncertain", calls: 1},
 		{name: "restart requested", restart: true, want: "restart_requested", calls: 1},
 		{name: "urgent release bypasses discovery and automatic opt outs", urgent: true, restart: true, want: "restart_requested", calls: 1},
 		{name: "urgent release preserves a newer applied artifact awaiting restart", urgent: true, lastApplied: "1.2.5", want: "refused"},
@@ -139,27 +139,43 @@ func TestSchedulerEnrolledInterruptedReceipt(t *testing.T) {
 	running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: "none", Source: "unknown", OS: "linux", Architecture: "amd64", ObservedAt: now}
 	request := runnerauth.UpdateRequest{RequestedAt: now, ID: "interrupted", Service: "detent", ExpectedBuildRevision: strings.Repeat("a", 64), Version: "1.2.4", Release: true}
 	path := filepath.Join(t.TempDir(), "scheduler.json")
-	if err := saveSchedulerState(path, schedulerState{LastCheckAt: now, EnrolledReceipt: &runnerauth.UpdateReceipt{Request: request, Status: "draining", ObservedAt: now}}); err != nil {
-		t.Fatal(err)
-	}
 	updater := &schedulerUpdaterStub{}
-	config := SchedulerConfig{CheckInterval: time.Hour, StatePath: path, Updater: updater}
-	scheduler, err := NewScheduler(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	report := scheduler.EnrolledUpdate(t.Context(), running, &request)
-	if report == nil || report.Receipt.Status != "uncertain" || updater.applyCalls != 0 {
-		t.Fatalf("interrupted receipt=%+v", report)
+	config := SchedulerConfig{CheckInterval: time.Hour, StatePath: path, Updater: updater, RunningBuild: running, Now: func() time.Time { return now }}
+	for _, test := range []struct {
+		name    string
+		receipt runnerauth.UpdateReceipt
+		reason  string
+	}{
+		{name: "interrupted drain", receipt: runnerauth.UpdateReceipt{Request: request, Status: "draining", ObservedAt: now}, reason: "Update was interrupted before completion"},
+		{name: "restart returned old build", receipt: runnerauth.UpdateReceipt{Request: request, Status: "applied", Applied: &runnerauth.BuildEvidence{Version: "1.2.4", Commit: strings.Repeat("c", 40), Source: "release", SHA256: strings.Repeat("d", 64), OS: "linux", Architecture: "amd64", VerifiedRelease: true, ObservedAt: now}, ObservedAt: now}, reason: "Update did not restart into the verified build"},
+		{name: "detached replacement returned old build", receipt: runnerauth.UpdateReceipt{Request: request, Status: "uncertain", VerifiedTarget: &runnerauth.BuildEvidence{Version: "1.2.4", Commit: strings.Repeat("c", 40), Source: "release", SHA256: strings.Repeat("d", 64), OS: "linux", Architecture: "amd64", VerifiedRelease: true, ObservedAt: now}, ObservedAt: now}, reason: "Update did not restart into the verified build"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := saveSchedulerState(path, schedulerState{LastCheckAt: now, EnrolledReceipt: &test.receipt}); err != nil {
+				t.Fatal(err)
+			}
+			scheduler, err := NewScheduler(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			report := scheduler.EnrolledUpdate(t.Context(), running, &request)
+			if report == nil || report.Receipt.Status != "uncertain" || report.Receipt.FailureReason != test.reason || updater.applyCalls != 0 {
+				t.Fatalf("interrupted receipt=%+v", report)
+			}
+			persisted, found, err := loadSchedulerState(path)
+			if err != nil || !found || persisted.EnrolledReceipt.FailureReason != test.reason {
+				t.Fatalf("interrupted receipt was not persisted: %+v %v", persisted, err)
+			}
+		})
 	}
 	if err := os.WriteFile(path, []byte("invalid"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	scheduler, err = NewScheduler(config)
+	scheduler, err := NewScheduler(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	report = scheduler.EnrolledUpdate(t.Context(), running, nil)
+	report := scheduler.EnrolledUpdate(t.Context(), running, nil)
 	if report == nil || report.Supported {
 		t.Fatal("invalid receipt state advertised effect support")
 	}

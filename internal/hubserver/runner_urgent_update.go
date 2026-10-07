@@ -58,6 +58,10 @@ func applyUrgentRunnerRouting(ctx context.Context, db nativeQueryer, r *runnerau
 		}
 		return nil
 	}
+	if r.Update != nil && r.Update.Receipt != nil && r.Update.Receipt.Request == *urgent.Request && (r.Update.Receipt.Status == "refused" || r.Update.Receipt.Status == "uncertain" && r.Update.Receipt.FailureReason != "") {
+		r.UpdateRequest = urgent.Request
+		return nil
+	}
 	if r.State == "active" {
 		r.State = "draining"
 	}

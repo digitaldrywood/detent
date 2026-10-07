@@ -366,6 +366,7 @@ type Replacement struct {
 }
 
 type Status struct {
+	FailureReason      string        `json:"failure_reason,omitempty"`
 	ReplacementPending bool          `json:"replacement_pending,omitempty"`
 	BinarySHA256       string        `json:"binary_sha256,omitempty"`
 	VerifiedRelease    bool          `json:"verified_release"`
@@ -414,16 +415,18 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 	target := ""
 	if opts.Urgent || opts.FollowHub {
 		if opts.ExpectedVersion == "" {
-			return Status{Action: ActionRefused}, ErrRefused
+			return Status{Action: ActionRefused, FailureReason: "Update target resolution failed"}, ErrRefused
 		}
 		target = opts.ExpectedVersion
 	}
 	status, release, err := s.planForVersion(ctx, target, opts.FollowHub, opts.PublishedRelease)
 	if err != nil {
+		status.FailureReason = "Update target resolution failed"
 		return status, err
 	}
 	if opts.ExpectedVersion != "" && opts.ExpectedVersion != status.LatestVersion {
 		status.Action = ActionRefused
+		status.FailureReason = "Update was refused"
 		return status, ErrRefused
 	}
 	if !status.UpdateAvailable {
@@ -447,10 +450,12 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 		return s.applyGoInstallUpdate(ctx, status, release, opts)
 	case InstallSourceDevelopment:
 		status.Action = ActionRefused
+		status.FailureReason = "Update was refused"
 		status.Message = "This Detent binary does not include release version metadata. Install a published release before using self-update."
 		return status, ErrRefused
 	default:
 		status.Action = ActionRefused
+		status.FailureReason = "Update was refused"
 		status.Message = "Detent cannot verify that this binary was installed by the release installer, so it will not overwrite it."
 		return status, ErrRefused
 	}
@@ -458,17 +463,20 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 	if !opts.AssumeYes && !opts.FromRelease {
 		if opts.Confirm == nil {
 			status.Action = ActionRefused
+			status.FailureReason = "Update was refused"
 			status.Message = "Update requires confirmation. Rerun with --yes to update non-interactively."
 			return status, ErrConfirmationRequired
 		}
 		confirmed, err := opts.Confirm(status)
 		if err != nil {
 			status.Action = ActionRefused
+			status.FailureReason = "Update was refused"
 			status.Message = err.Error()
 			return status, err
 		}
 		if !confirmed {
 			status.Action = ActionRefused
+			status.FailureReason = "Update was refused"
 			status.Message = "Update cancelled."
 			return status, ErrConfirmationRequired
 		}
@@ -526,12 +534,14 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		}
 	}
 
+	status.FailureReason = "Update target resolution failed"
 	assets, err := SelectReleaseAssets(release, s.cfg.GOOS, s.cfg.GOARCH)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, err
 	}
+	status.FailureReason = "Update download failed"
 	checksums, err := s.cfg.Client.Download(ctx, assets.Checksum.BrowserDownloadURL)
 	if err != nil {
 		status.Action = ActionRefused
@@ -544,17 +554,20 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		status.Message = err.Error()
 		return status, err
 	}
+	status.FailureReason = "Update signature verification failed"
 	if err := s.cfg.ChecksumSignatureVerifier(ctx, checksums, checksumSignature); err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, err
 	}
+	status.FailureReason = "Update download failed"
 	provenanceBytes, err := s.cfg.Client.Download(ctx, assets.Provenance.BrowserDownloadURL)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, err
 	}
+	status.FailureReason = "Update provenance verification failed"
 	if err := VerifyChecksum(checksums, assets.Provenance.Name, provenanceBytes); err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
@@ -567,18 +580,21 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		return status, err
 	}
 	status.LatestCommit = manifest.Commit
+	status.FailureReason = "Update download failed"
 	archive, err := s.cfg.Client.Download(ctx, assets.Archive.BrowserDownloadURL)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, err
 	}
+	status.FailureReason = "Update checksum verification failed"
 	if err := VerifyChecksum(checksums, assets.Archive.Name, archive); err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, err
 	}
 
+	status.FailureReason = "Update installation failed"
 	binary, mode, err := ExtractBinary(archive, s.cfg.GOOS)
 	if err != nil {
 		status.Action = ActionRefused
@@ -649,6 +665,7 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 	}
 	sum := sha256.Sum256(installed)
 	status.BinarySHA256 = hex.EncodeToString(sum[:])
+	status.FailureReason = ""
 	status.VerifiedRelease = true
 	status.Action = ActionUpdated
 	status.Asset = assets.Archive.Name
