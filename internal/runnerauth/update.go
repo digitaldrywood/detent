@@ -65,6 +65,7 @@ func (r UpdateRequest) Validate() error {
 }
 
 type UpdateReceipt struct {
+	FailureReason  string         `json:"failure_reason,omitempty"`
 	Running        *BuildEvidence `json:"running,omitempty"`
 	VerifiedTarget *BuildEvidence `json:"verified_target,omitempty"`
 	Request        UpdateRequest  `json:"request"`
@@ -74,7 +75,7 @@ type UpdateReceipt struct {
 }
 
 func (r UpdateReceipt) Validate() error {
-	if r.Request.Validate() != nil || r.ObservedAt.IsZero() || !slices.Contains([]string{"draining", "refused", "uncertain", "applied", "restart_requested", "running"}, r.Status) {
+	if len(r.FailureReason) > 512 || r.Request.Validate() != nil || r.ObservedAt.IsZero() || !slices.Contains([]string{"draining", "refused", "uncertain", "applied", "restart_requested", "running"}, r.Status) {
 		return errors.New("invalid update receipt")
 	}
 	if r.Running != nil && (r.Running.Validate() != nil || r.Applied == nil || !r.Running.Matches(*r.Applied)) {

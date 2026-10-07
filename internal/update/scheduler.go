@@ -116,6 +116,21 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	if err != nil {
 		cfg.Logger.Warn("load automatic update state failed", "path", cfg.StatePath, "error", err)
 	}
+	if receipt := loadedState.EnrolledReceipt; receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && receipt.Running == nil {
+		switch {
+		case receipt.Status == "draining":
+			receipt.FailureReason = "Update was interrupted before completion"
+		case receipt.Applied != nil && !cfg.RunningBuild.Matches(*receipt.Applied), receipt.VerifiedTarget != nil && !cfg.RunningBuild.Matches(*receipt.VerifiedTarget):
+			receipt.FailureReason = "Update did not restart into the verified build"
+		}
+		if receipt.FailureReason != "" {
+			receipt.Status = "uncertain"
+			receipt.ObservedAt = cfg.Now().UTC()
+			if saveErr := saveSchedulerState(cfg.StatePath, loadedState); saveErr != nil {
+				cfg.Logger.Warn("persist interrupted update receipt failed", "error", saveErr)
+			}
+		}
+	}
 	var lastCheckAt *time.Time
 	if stateFound {
 		lastCheckAt = &loadedState.LastCheckAt
@@ -336,11 +351,14 @@ func (s *Scheduler) drainAndApplyWithOptionsLocked(ctx context.Context, opts App
 	})
 	releaseDrain, err := s.cfg.ReserveDrain(ctx)
 	if err != nil {
+		if releaseDrain != nil {
+			releaseDrain()
+		}
 		s.updateStatus(func(status *AutoStatus) {
 			status.State = "pending_idle"
 			status.LastError = err.Error()
 		})
-		return Status{}, fmt.Errorf("drain runtime for automatic update: %w", err)
+		return Status{FailureReason: "Update drain failed"}, fmt.Errorf("drain runtime for automatic update: %w", err)
 	}
 	return s.applyWithOptionsLocked(ctx, releaseDrain, opts)
 }
@@ -387,12 +405,18 @@ func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func
 	})
 	s.recordEnrolledApplied(applied)
 	persistErr := s.persistCurrentState()
+	if persistErr != nil {
+		applied.FailureReason = "Update state persistence failed"
+		return applied, persistErr
+	}
 	restartRequested := s.cfg.RequestRestart != nil && s.cfg.RequestRestart(applied.Binary)
 	if !restartRequested {
 		s.updateStatus(func(status *AutoStatus) {
 			status.State = "applied_restart_deferred"
+			status.LastError = "Update restart request was declined"
 		})
 		s.cfg.Logger.Warn("Detent update applied; restart deferred because shutdown is already in progress or restart is unavailable", "version", applied.LatestVersion)
+		applied.FailureReason = "Update restart request was declined"
 		return applied, persistErr
 	}
 	s.updateStatus(func(status *AutoStatus) {

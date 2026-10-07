@@ -126,6 +126,46 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 		if !m.older {
 			continue
 		}
+		for _, failure := range []struct{ status, reason string }{
+			{"refused", "Update target resolution failed"},
+			{"refused", "Update download failed"},
+			{"refused", "Update signature verification failed"},
+			{"refused", "Update provenance verification failed"},
+			{"refused", "Update installation failed"},
+			{"uncertain", "Update restart request was declined"},
+			{"refused", ""},
+		} {
+			receipt := &runnerauth.UpdateReceipt{Request: *urgent.Request, Status: failure.status, FailureReason: failure.reason, ObservedAt: now}
+			snapshot := heartbeat(m.runner, m.version, receipt)
+			if snapshot.Routing.State != m.state {
+				t.Fatalf("failed update did not restore operator state: %+v", snapshot)
+			}
+			stored, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, m.runner.binding.RunnerID, now)
+			if err != nil || stored.State != m.state || stored.Update.Receipt.FailureReason != failure.reason {
+				t.Fatalf("runner lost failure: %+v %v", stored, err)
+			}
+			fleet := hostedFleetRunnerView(stored, m.version, map[tracker.ProjectID]bool{f.project.ID: true}, now)
+			if fleet.Update.Observation.Receipt.FailureReason != failure.reason || fleet.State != m.state {
+				t.Fatalf("fleet lost failure: %+v", fleet)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodGet, m.runner.identityPath()+"/update", testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var view runnerauth.UpdateView
+			decodeHubResponse(t, response, &view)
+			if view.Observation.Receipt.FailureReason != failure.reason {
+				t.Fatalf("update read lost failure: %+v", view)
+			}
+		}
+		if m.runner.binding.RunnerID == active.binding.RunnerID {
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", active.redemption.Credential, claim)
+			requireNativeStatus(t, response, http.StatusOK)
+			var resumed tracker.NativeLease
+			decodeHubResponse(t, response, &resumed)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(resumed.ID)+"/release", active.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: resumed.FencingToken, Reason: "completed"}), http.StatusNoContent)
+		}
+		if snapshot := heartbeat(m.runner, m.version, &runnerauth.UpdateReceipt{Request: *urgent.Request, Status: "draining", ObservedAt: now}); m.state == "active" && snapshot.Routing.State != "draining" {
+			t.Fatalf("retry did not drain: %+v", snapshot)
+		}
 		applied := runnerauth.BuildEvidence{Version: "1.2.4", Commit: strings.Repeat("c", 40), Source: "release", SHA256: strings.Repeat("d", 64), OS: "linux", Architecture: "amd64", VerifiedRelease: true, ObservedAt: now}
 		receipt := &runnerauth.UpdateReceipt{Request: *urgent.Request, Status: "running", Applied: &applied, Running: &applied, ObservedAt: now}
 		snapshot := heartbeat(m.runner, "1.2.4", receipt)
