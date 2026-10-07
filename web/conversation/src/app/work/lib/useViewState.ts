@@ -59,6 +59,7 @@ export function useViewState(
       timer = setTimeout(flush, 400);
     } };
     session.current = current;
+    globalThis.addEventListener?.("pagehide", flush);
     void http.getViewPreference(projectId, controller.signal).then((preference) => {
       if (controller.signal.aborted || current.changed) return;
       const restored = parseViewState(preference.query ?? "");
@@ -68,6 +69,7 @@ export function useViewState(
       void navigate({ to: ".", search: viewSearch(restored), replace: true });
     }).catch(() => undefined);
     return () => {
+      globalThis.removeEventListener?.("pagehide", flush);
       controller.abort();
       clearTimeout(timer);
       flush();

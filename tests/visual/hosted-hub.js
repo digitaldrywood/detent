@@ -164,4 +164,16 @@ async function startHostedHub(name = "conversation", options = {}) {
   };
 }
 
-module.exports = { startHostedHub, STARTUP_TIMEOUT_MS };
+async function resetSavedWorkViews(page) {
+  const statuses = await page.evaluate(async () => {
+    const bootstrap = await (await fetch("/chat/bootstrap")).json();
+    const scopes = [bootstrap.api_base, ...bootstrap.projects.map((project) => `${bootstrap.api_base}/projects/${project.id}`)];
+    return Promise.all(scopes.map(async (scope) => (await fetch(`${scope}/work-view-preference`, {
+      method: "DELETE",
+      headers: { "X-CSRF-Token": bootstrap.csrf_token },
+    })).status));
+  });
+  if (statuses.some((status) => status !== 200)) throw new Error(`resetting saved Work views returned ${statuses.join(", ")}`);
+}
+
+module.exports = { startHostedHub, resetSavedWorkViews, STARTUP_TIMEOUT_MS };
