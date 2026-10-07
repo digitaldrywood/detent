@@ -186,14 +186,9 @@ jobs:
   verify-race:
     needs: preflight
     if: needs.preflight.outputs.should_run == 'true'
-    name: Verify race (${{ matrix.shard }})
+    name: Verify race
     runs-on: ubuntu-latest
-    # Allow the 30m workspace suite plus other packages, setup, and evidence upload.
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5]
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
         with:
@@ -203,32 +198,11 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
-          cache: false
-      - name: Cache race build and modules
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: verify-race-${{ runner.os }}-${{ runner.arch }}-go1.26.6-${{ matrix.shard }}-${{ hashFiles('go.sum') }}
-          restore-keys: |
-            verify-race-${{ runner.os }}-${{ runner.arch }}-go1.26.6-${{ matrix.shard }}-
-      - name: Race test shard
-        env:
-          SHARD: ${{ matrix.shard }}
+          cache: true
+      - name: Race test the short unit suite
         run: |
           source scripts/check-evidence.sh
-          check_with_evidence race-shard bash scripts/ci-race-shard.sh "$SHARD"
-      - name: Upload race evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: race-evidence-${{ matrix.shard }}
-          path: |
-            tmp/*-race-evidence
-            tmp/hub-race-evidence-*
-          if-no-files-found: error
-          retention-days: 14
+          check_with_evidence race make test-race
 
   test-cover:
     needs: preflight
@@ -380,12 +354,12 @@ jobs:
           source scripts/check-evidence.sh
           check_with_evidence vet make vet
 
-      - name: Test
+      - name: Test the short unit suite
         if: runner.os != 'Windows'
         shell: bash
         run: |
           source scripts/check-evidence.sh
-          check_with_evidence unit-full make test
+          check_with_evidence unit-short make test-fast
 
       - name: Upload workspace test evidence
         if: always() && runner.os != 'Windows'

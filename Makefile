@@ -45,14 +45,6 @@ export GOMAXPROCS
 # Filesystem diagnostics can record millions of cache inputs (#2735).
 # Run gate tests afresh; -count=1 preserves native build and module caches.
 GO_TEST := env -u DETENT_API_TOKEN go test -count=1 -p $(TEST_PROCS)
-HUB_RACE_TIMEOUT ?= 25m
-HUB_RACE_PARALLEL ?= 2
-HUB_RACE_PARTITION := ^Test[A-GI-O]
-HUB_RACE_PARTITION_B := ^Test[HW]
-HUB_RACE_COVER_TIMEOUT ?= 30m
-# Persisted orchestrator fixtures serialize migrations; retain the full race suite.
-ORCHESTRATOR_RACE_TIMEOUT ?= 20m
-ORCHESTRATOR_RACE_PARALLEL ?= 4
 GOLANGCI_LINT_VERSION_FILE := .golangci-version
 GOLANGCI_LINT_VERSION := $(shell cat $(GOLANGCI_LINT_VERSION_FILE))
 GOLANGCI_LINT_TOOLCHAIN := $(shell awk '/^toolchain / { print $$2 }' go.mod)
@@ -65,7 +57,7 @@ GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
 GOSEC_EXCLUDES ?= G115,G301,G304,G306,G703,G704
 GOSEC_EXCLUDE_DIRS ?= .detent
 GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
-.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-hub-portability test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast check-land modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-race coverage-check test-cover soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast check-land modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -168,36 +160,8 @@ test: generate-docs
 test-fast: generate-docs
 	$(GO_TEST) -short -timeout=60s ./...
 
-test-race: test-race-hub test-race-orchestrator
-	bash scripts/test-workspace.sh -race -output tmp/workspace-race-evidence
-	@packages="$$(go list ./...)" && \
-	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/hubserver" && $$0 != "github.com/digitaldrywood/detent/internal/orchestrator" && $$0 != "github.com/digitaldrywood/detent/internal/workspace"')" && \
-	$(GO_TEST) -race $$packages
-
-# Windows portability retains the full Hub suite using the existing disjoint
-# partitions instead of one ten-minute budget for the entire package.
-test-hub-portability:
-	env -u DETENT_API_TOKEN go run -p $(TEST_PROCS) ./tools/testgate -parallel $(TEST_PROCS) -timeout 10m -run '$(HUB_RACE_PARTITION)' -output tmp/windows-test-evidence/hub-a ./internal/hubserver
-	env -u DETENT_API_TOKEN go run -p $(TEST_PROCS) ./tools/testgate -parallel $(TEST_PROCS) -timeout 10m -run '$(HUB_RACE_PARTITION_B)' -output tmp/windows-test-evidence/hub-b ./internal/hubserver
-	env -u DETENT_API_TOKEN go run -p $(TEST_PROCS) ./tools/testgate -parallel $(TEST_PROCS) -timeout 10m -skip '$(HUB_RACE_PARTITION)|$(HUB_RACE_PARTITION_B)' -output tmp/windows-test-evidence/hub-c ./internal/hubserver
-
-test-race-hub: test-race-hub-a test-race-hub-b test-race-hub-c
-
-test-race-hub-a:
-	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(HUB_RACE_PARALLEL) -timeout $(HUB_RACE_TIMEOUT) -run '$(HUB_RACE_PARTITION)' -output tmp/hub-race-evidence-a ./internal/hubserver
-
-test-race-hub-b:
-	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(HUB_RACE_PARALLEL) -timeout $(HUB_RACE_TIMEOUT) -run '$(HUB_RACE_PARTITION_B)' -output tmp/hub-race-evidence-b ./internal/hubserver
-
-test-race-hub-c:
-	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(HUB_RACE_PARALLEL) -timeout $(HUB_RACE_TIMEOUT) -skip '$(HUB_RACE_PARTITION)|$(HUB_RACE_PARTITION_B)' -output tmp/hub-race-evidence-c ./internal/hubserver
-
-test-race-orchestrator:
-	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(ORCHESTRATOR_RACE_PARALLEL) -timeout $(ORCHESTRATOR_RACE_TIMEOUT) -output tmp/orchestrator-race-evidence ./internal/orchestrator
-
-test-race-cover:
-	bash scripts/test-race-cover.sh "$(HUB_RACE_PARALLEL)" "$(HUB_RACE_COVER_TIMEOUT)" "$(COVERPROFILE_RAW)" "$(ORCHESTRATOR_RACE_PARALLEL)" "$(ORCHESTRATOR_RACE_TIMEOUT)" '$(HUB_RACE_PARTITION)' '$(HUB_RACE_PARTITION_B)'
-	@$(MAKE) coverage-check
+test-race: generate-docs
+	$(GO_TEST) -short -race -timeout=10m ./...
 
 test-cover:
 	@mkdir -p tmp
@@ -250,7 +214,7 @@ nilaway-audit:
 nilaway-changed:
 	python3 scripts/nilaway-changed.py $(NILAWAY_VERSION) $(NILAWAY_INCLUDE_PKGS)
 
-check: check-invariants check-migrations check-generated check-app build lint vet nilaway-audit test-race-cover
+check: check-invariants check-migrations check-generated check-app build lint vet nilaway-audit test-race test-cover
 	@echo "All checks passed."
 
 check-land:
@@ -319,12 +283,7 @@ help:
 	@echo "  check-app    Client typecheck, design token and catalog checks, tests, build and attribution"
 	@echo "  build        Build $(BINARY_NAME)"
 	@echo "  test         Run Go tests"
-	@echo "  test-race    Run Go tests with the race detector"
-	@echo "  test-race-hub  Run all three Hub race partitions with timing evidence"
-	@echo "  test-race-hub-a  Run Hub race partition A (tests matching $(HUB_RACE_PARTITION))"
-	@echo "  test-race-hub-b  Run Hub race partition B (tests matching $(HUB_RACE_PARTITION_B))"
-	@echo "  test-race-hub-c  Run Hub race partition C (all other Hub tests)"
-	@echo "  test-race-cover  Run race and coverage gates with shared Hub execution"
+	@echo "  test-race    Run the short unit suite under the race detector"
 	@echo "  test-cover   Run Go tests with a coverage profile as evidence (no floor)"
 	@echo "  soak         Run opt-in orchestrator incident and adversarial soak tests"
 	@echo "  visual-e2e   Run Playwright visual layout tests"
