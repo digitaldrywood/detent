@@ -532,6 +532,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 	for _, test := range []struct {
 		name            string
 		current         string
+		version         string
 		follow          bool
 		brew            bool
 		explicit        bool
@@ -545,6 +546,8 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		urgent          bool
 	}{
 		{name: "selected release", current: "1.2.3"},
+		{name: "signed operator prerelease", current: "1.2.3", version: "1.2.4-op.abcdef123456", follow: true},
+		{name: "stable supersedes signed operator prerelease", current: "1.2.4-op.abcdef123456", follow: true},
 		{name: "target failure restores drain", current: "1.2.3", failureStage: "target", failureReason: "Update target resolution failed"},
 		{name: "urgent download failure restores drain", current: "1.2.3", urgent: true, failureStage: "download", failureReason: "Update download failed"},
 		{name: "signature failure restores drain", current: "1.2.3", failureStage: "signature", failureReason: "Update signature verification failed"},
@@ -568,6 +571,10 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		{name: "Homebrew refuses missing state selector", current: "1.2.3", follow: true, brew: true, invalidSelector: "DETENT_STATE_DIR", missingReceipt: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			version := test.version
+			if version == "" {
+				version = "1.2.4"
+			}
 			tmp := t.TempDir()
 			binary := filepath.Join(tmp, "bin", "detent")
 			lockPath := filepath.Join(tmp, "state", "install.lock")
@@ -615,11 +622,11 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				}
 			}
 
-			archiveName := "detent_1.2.4_linux_amd64.tar.gz"
-			checksumName := "detent_1.2.4_checksums.txt"
+			archiveName := "detent_" + version + "_linux_amd64.tar.gz"
+			checksumName := "detent_" + version + "_checksums.txt"
 			signatureName := checksumName + ".minisig"
 			archive := detentUpdateArchive(t, "updated")
-			provenanceBytes := testReleaseProvenance(t, "v1.2.4", testUpdatedCommit)
+			provenanceBytes := testReleaseProvenance(t, "v"+version, testUpdatedCommit)
 			archiveSum := sha256.Sum256(archive)
 			provenanceSum := sha256.Sum256(provenanceBytes)
 			checksums := fmt.Sprintf("%x  %s\n%x  %s\n", archiveSum, archiveName, provenanceSum, provenanceAssetName)
@@ -628,7 +635,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				t.Fatalf("GenerateKey() error = %v", err)
 			}
 			keyID := []byte("12345678")
-			signature := testMinisignSignature(t, privateKey, keyID, []byte(checksums), "detent checksums v1.2.4")
+			signature := testMinisignSignature(t, privateKey, keyID, []byte(checksums), "detent checksums v"+version)
 
 			previous := defaultChecksumMinisignPublicKey
 			defaultChecksumMinisignPublicKey = testMinisignPublicKey(publicKey, keyID)
@@ -637,7 +644,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			})
 
 			const releaseURL = "https://releases.example.test"
-			release := Release{TagName: "v1.2.4", Assets: []Asset{
+			release := Release{TagName: "v" + version, Prerelease: strings.Contains(version, "-"), Assets: []Asset{
 				{Name: archiveName, BrowserDownloadURL: releaseURL + "/archive"},
 				{Name: checksumName, BrowserDownloadURL: releaseURL + "/checksums"},
 				{Name: signatureName, BrowserDownloadURL: releaseURL + "/checksums.minisig"},
@@ -649,7 +656,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					if err := json.NewEncoder(w).Encode([]Release{release}); err != nil {
 						t.Fatal(err)
 					}
-				case "/releases/tags/v1.2.4":
+				case "/releases/tags/v" + version:
 					if err := json.NewEncoder(w).Encode(release); err != nil {
 						t.Fatal(err)
 					}
@@ -684,7 +691,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				}),
 				Env: installEnv,
 				BinaryVerifier: func(context.Context, string) (string, error) {
-					return "version: v1.2.4\ncommit: " + testUpdatedCommit + "\n", nil
+					return "version: v" + version + "\ncommit: " + testUpdatedCommit + "\n", nil
 				},
 			})
 
@@ -699,7 +706,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				service.cfg.EvalSymlinks = func(string) (string, error) { return "/opt/homebrew/Cellar/detent/1.2.3/bin/detent", nil }
 			}
 			if !test.follow {
-				service.cfg.TargetVersion = func(context.Context) (string, error) { return "v1.2.4", nil }
+				service.cfg.TargetVersion = func(context.Context) (string, error) { return "v" + version, nil }
 			}
 			if !test.follow && !test.explicit {
 				stale, staleErr := service.Apply(t.Context(), ApplyOptions{AssumeYes: true, ExpectedVersion: "1.2.5"})
@@ -712,7 +719,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				AssumeYes:         true,
 				FollowHub:         test.follow,
 				FromRelease:       test.follow,
-				ExpectedVersion:   "1.2.4",
+				ExpectedVersion:   version,
 				RecoveryStatePath: recoveryStatePath,
 				Preflight: func(_ context.Context, path string) error {
 					preflightPath = path
@@ -743,7 +750,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					t.Fatal(err)
 				}
 				initial := owner.EnrolledUpdate(t.Context(), running, nil)
-				request := runnerauth.UpdateRequest{RequestedAt: now, ID: "failed-update", Service: "detent", Version: "1.2.4", Release: true, ExpectedBuildRevision: initial.Revision, Urgent: test.urgent}
+				request := runnerauth.UpdateRequest{RequestedAt: now, ID: "failed-update", Service: "detent", Version: version, Release: true, ExpectedBuildRevision: initial.Revision, Urgent: test.urgent}
 				if test.urgent {
 					request.ExpectedBuildRevision = ""
 				}
@@ -765,7 +772,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					provenanceBytes = []byte("invalid provenance")
 					provenanceSum = sha256.Sum256(provenanceBytes)
 					checksums = fmt.Sprintf("%x  %s\n%x  %s\n", archiveSum, archiveName, provenanceSum, provenanceAssetName)
-					signature = testMinisignSignature(t, privateKey, keyID, []byte(checksums), "detent checksums v1.2.4")
+					signature = testMinisignSignature(t, privateKey, keyID, []byte(checksums), "detent checksums v"+version)
 				case "checksum":
 					archive = []byte("corrupt archive")
 				case "install":
@@ -887,7 +894,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			if recoveryState.PendingUpdate == nil {
 				t.Fatal("PendingUpdate = nil, want rollback metadata")
 			}
-			if got := recoveryState.PendingUpdate; got.FromVersion != test.current || got.FromCommit != testPreviousCommit || got.ToVersion != "1.2.4" || got.ToCommit != testUpdatedCommit || got.PreviousBinaryPath != previousPath {
+			if got := recoveryState.PendingUpdate; got.FromVersion != test.current || got.FromCommit != testPreviousCommit || got.ToVersion != version || got.ToCommit != testUpdatedCommit || got.PreviousBinaryPath != previousPath {
 				t.Fatalf("PendingUpdate = %#v, want 1.2.3 to 1.2.4 with previous binary", got)
 			}
 			if got := recoveryState.PendingUpdate; got.InstallLockPath != lockPath || !got.PreviousInstallLockFound || got.PreviousInstallLock != "binary="+binary+"\n" {
@@ -897,7 +904,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				ExecutablePath: binary,
 				GOOS:           "linux",
 				Env:            map[string]string{"DETENT_INSTALL_LOCK": lockPath},
-			}); got != "1.2.4" {
+			}); got != version {
 				t.Fatalf("InstalledReleaseVersion() = %q, want 1.2.4", got)
 			}
 			legacyRaw, legacyErr := os.ReadFile(legacyLock)
@@ -1235,6 +1242,7 @@ func TestServiceChoosesHubUpdateTarget(t *testing.T) {
 		{name: "Hub pin resolves to wrong release", target: "v1.2.4", release: "v1.2.5", wantError: true, wantPath: "/releases/tags/v1.2.4"},
 		{name: "Hub pin is draft", target: "v1.2.4", release: "v1.2.4", draft: true, wantError: true, wantPath: "/releases/tags/v1.2.4"},
 		{name: "Hub explicitly pins prerelease", target: "v1.2.4-rc.1", release: "v1.2.4-rc.1", wantTag: "v1.2.4-rc.1", available: true, wantPath: "/releases/tags/v1.2.4-rc.1"},
+		{name: "Hub pins operator prerelease", target: "1.2.4-op.abcdef123456", release: "v1.2.4-op.abcdef123456", wantTag: "v1.2.4-op.abcdef123456", available: true, wantPath: "/releases/tags/v1.2.4-op.abcdef123456"},
 		{name: "Hub rolls back before apply", target: "v1.2.4", release: "v1.2.4", wantTag: "v1.2.4", available: true, wantPath: "/releases/tags/v1.2.4", applyTarget: "v1.2.2"},
 		{name: "Hub unreachable before apply", target: "v1.2.4", release: "v1.2.4", wantTag: "v1.2.4", available: true, wantPath: "/releases/tags/v1.2.4", applyError: errors.New("Hub unavailable before apply")},
 		{name: "urgent target survives Hub advancing during drain", target: "v1.2.4", release: "v1.2.4", wantTag: "v1.2.4", available: true, wantPath: "/releases/tags/v1.2.4", applyTarget: "v1.2.5", urgent: true},
@@ -1245,7 +1253,7 @@ func TestServiceChoosesHubUpdateTarget(t *testing.T) {
 			var paths []string
 			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				paths = append(paths, r.URL.Path)
-				var output any = Release{TagName: test.release, Draft: test.draft, Prerelease: strings.Contains(test.release, "-rc.")}
+				var output any = Release{TagName: test.release, Draft: test.draft, Prerelease: strings.Contains(test.release, "-")}
 				status := http.StatusOK
 				if r.URL.Path == "/releases" {
 					output = []Release{{TagName: "v9.0.0"}}

@@ -283,7 +283,7 @@ func TestDeployStagingRunsFromReleaseOnHostedRunner(t *testing.T) {
 		name, dependency, end string
 	}{
 		{name: "staging", dependency: "release", end: "\n  production:"},
-		{name: "production", dependency: "staging"},
+		{name: "production", dependency: "[release, staging]"},
 	} {
 		t.Run(test.name+" release dependency", func(t *testing.T) {
 			t.Parallel()
@@ -291,7 +291,7 @@ func TestDeployStagingRunsFromReleaseOnHostedRunner(t *testing.T) {
 			for _, want := range []string{
 				"    needs: " + test.dependency + "\n",
 				"    uses: ./.github/workflows/deploy-" + test.name + ".yml\n",
-				"    with:\n      version: ${{ github.ref_name }}\n",
+				"    with:\n      version: ${{ needs.release.outputs.version }}\n",
 			} {
 				if !strings.Contains(job, want) {
 					t.Fatalf("release %s job missing %q", test.name, want)
