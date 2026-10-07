@@ -131,8 +131,12 @@ completion contract owns tracker publication and grants workers no extra writes.
 ## Validation
 
 Run `make check-land` before reporting source work complete and fix every
-failure in the same run. Do not hand back a red gate. Landing runs the same
-configured target; a failed command returns the item to Rework with its output.
+failure in the same run. Do not hand back a red gate. Native landing reuses the
+successful receipt for the reviewed head and tree: clean squashes join one
+ordered staging batch and push without another gate or GitHub API call. After
+a rebase, validate the build, short Go tests for touched packages, and lint of
+touched files; a failed command returns the item to Rework with its output.
+GitHub pull-request landing retains its configured target and checks.
 The target runs the whole-repository short unit suite, lint, vet, the scheduled
 baseline-aware NilAway audit, build, invariants, migrations and generated-source
 checks. Conversation changes also run typecheck, vitest and build. Full

@@ -299,13 +299,17 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		Authors: request.Filter.Authors, Assignees: request.Filter.Assignees, LabelInclude: request.Filter.LabelInclude, LabelExclude: request.Filter.LabelExclude,
 	}
 	s.mu.Lock()
-	limit := min(max(1, request.AdmissionLimit), s.machine.Capacity)
+	machineCapacity := s.machine.Capacity
+	limit := min(max(1, request.AdmissionLimit), machineCapacity)
 	s.mu.Unlock()
+	if request.NativeLandingBatch && machineCapacity > 0 {
+		limit = max(limit, request.CandidateLimit)
+	}
 	if request.CandidateLimit > 0 {
 		limit = min(limit, request.CandidateLimit)
 	}
 	var leases []tracker.NativeLease
-	if s.providerReports != nil || request.CandidateReady != nil {
+	if s.providerReports != nil || request.CandidateReady != nil || request.NativeLandingBatch {
 		leases, err = s.claimPreviewCandidates(ctx, request, source, claimRequest, limit)
 	} else {
 		for len(leases) < limit {

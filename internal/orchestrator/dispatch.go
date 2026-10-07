@@ -20,11 +20,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
 	planner := newDispatchPlanner(o.cfg)
 	planner.nativeWorkflow = o.nativeWorkflow()
+	planner.nativeLandingBatch = o.nativeLandingBatch
 	planner.boundedAdmission = o.scheduling != nil
 	return planner
 }
@@ -173,6 +175,11 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		return
 	}
 	issues = o.localIntakeIssues(state, issues)
+	if o.nativeWorkflow() && !o.cfg.Policy.Gates.GitHubPullRequest {
+		batch := &nativeLandingDispatchBatch{batch: workspace.NewLandingBatch(ctx)}
+		o.nativeLandingBatch = batch
+		defer func() { batch.batch.Seal(); o.nativeLandingBatch = nil }()
+	}
 	rankingIssues := issues
 	// Refresh retains closed snapshots for lane reconciliation, not dispatch.
 	issues = slices.DeleteFunc(slices.Clone(issues), func(issue connector.Issue) bool { return issue.Closed })
@@ -692,14 +699,18 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 			return dispatchIssueOutcome{reason: dispatchIssueFailureLocalSlotUnavailable}
 		}
 	}
+	batchMember := o.dispatchPlanner().joinsNativeLandingBatch(issue)
 	mergeControlEligible := allowMergeControl && !modelPermitRequired && queuedRetry.MergePrecheck == nil && o.dispatchPlanner().readyMergeControlCandidate(state, issue)
 	mergeControl := mergeControlEligible
-	if !mergeControlEligible && o.dispatchPlanner().hardAvailableSlots(state) == 0 {
+	if !batchMember && !mergeControlEligible && o.dispatchPlanner().hardAvailableSlots(state) == 0 {
 		return dispatchIssueOutcome{reason: dispatchSkipProjectCapacityFull}
 	}
 	projectStats := o.projectStateSlotStats(slotIssue, state)
 
 	workerHost, ok := o.liveDispatchPlanner(ctx, nil).selectWorkerHost(state, preferredWorkerHost)
+	if batchMember {
+		workerHost, ok = o.nativeLandingBatch.host, true
+	}
 	if !ok && !mergeControlEligible {
 		o.logMergeWorkerFailure(issue, "worker_host_unavailable", nil)
 		o.recordMergeFailed(state, issue, now, "worker_host_unavailable", nil)
@@ -719,6 +730,8 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 		globalSlot, decision, ok = grant.Slot, grant.Decision, grant.Err == nil
 		grant.Slot = scheduler.Slot{}
+	} else if batchMember {
+		ok = true
 	} else {
 		action := dispatchAction{issue: issue, attempt: attempt, workerHost: preferredWorkerHost, modelPermitRequired: modelPermitRequired, allowMergeControl: allowMergeControl, retryState: retryState}
 		globalSlot, ok, decision = o.acquireOrQueueGlobalDispatchSlot(ctx, state, action, slotIssue, workerHost, now, pressureCapacity, mergeControlEligible)
@@ -1094,6 +1107,11 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 			Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: mergeControlCheckedHeadOutput},
 		})
 		return dispatchIssueOutcome{dispatched: true, mergeControl: true}
+	}
+	if o.nativeLandingBatch != nil && mergeWorkerIssue(issue) && o.nativeWorkflow() && !o.cfg.Policy.Gates.GitHubPullRequest {
+		request.LandingBatch = o.nativeLandingBatch.batch.Add()
+		o.nativeLandingBatch.host = workerHost
+		o.nativeLandingBatch.members++
 	}
 	running.done = o.supervisor.Dispatch(runCtx, request, o.runResults)
 	state.Running[issue.ID] = running

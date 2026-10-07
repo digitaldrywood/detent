@@ -40,6 +40,10 @@ type NativeValidatorExecution interface {
 	RecordValidator(context.Context, gate.ValidatorResult) error
 }
 
+type SourceValidationExecution interface {
+	RecordSourceValidation(context.Context, gate.CommandResult) error
+}
+
 type RuntimeExecution interface {
 	ObserveRuntime(context.Context, tracker.NativeRuntimeObservation) error
 }
@@ -313,6 +317,34 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 					if diffs, ok := req.Execution.(DiffExecution); ok {
 						diffs.SetDiffSource(r.attemptDiffSource(ctx, info, issue))
 					}
+				}
+			}
+		}
+	}
+	if req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
+		if recorder, ok := req.Execution.(SourceValidationExecution); ok {
+			workflow, _, _, _ := r.runtimeSnapshot()
+			command := gate.Effective(workflow.Config.Gate).Run
+			if command != "" {
+				commands, canRun := backend.(workspace.ReviewCommandRunner)
+				heads, canRead := backend.(workspace.HeadProvider)
+				if !canRun || !canRead {
+					finalizationErr = errors.New("workspace cannot validate the finalized native head")
+				} else {
+					head, err := heads.Head(ctx, info, issue)
+					if err == nil {
+						validationIssue := issue
+						validationIssue.PullRequestHeadSHA = strings.TrimSpace(head)
+						receipt, runErr := commands.RunReviewCommand(ctx, info, validationIssue, command)
+						if runErr != nil {
+							err = runErr
+						} else if receipt.ExitCode != 0 {
+							err = &workspace.ValidationError{Output: receipt.Output, Err: fmt.Errorf("exit status %d", receipt.ExitCode)}
+						} else {
+							err = recorder.RecordSourceValidation(ctx, receipt)
+						}
+					}
+					finalizationErr = err
 				}
 			}
 		}

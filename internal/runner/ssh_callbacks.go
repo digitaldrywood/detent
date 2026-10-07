@@ -20,12 +20,13 @@ import (
 )
 
 type SSHRunRequest struct {
-	Request   RunRequest
-	Callbacks []string
-	Recovery  *tracker.NativeRecovery
-	Native    bool
-	Capacity  *providercapacity.Reservation
-	Sources   *SSHExecutionSources `json:"-"`
+	BatchedLanding bool
+	Request        RunRequest
+	Callbacks      []string
+	Recovery       *tracker.NativeRecovery
+	Native         bool
+	Capacity       *providercapacity.Reservation
+	Sources        *SSHExecutionSources `json:"-"`
 }
 
 type SSHRunResponse struct {
@@ -44,7 +45,7 @@ func (r *Runner) SSHHosts() []string {
 }
 
 func NewSSHRunRequest(request RunRequest) SSHRunRequest {
-	wire := SSHRunRequest{Request: request}
+	wire := SSHRunRequest{Request: request, BatchedLanding: request.LandingBatch != nil}
 	callbacks := map[string]bool{
 		"usage": request.OnUsageUpdate != nil, "activity": request.OnActivityUpdate != nil,
 		"override": request.OnOverrideRejected != nil, "progress": request.ProgressProbe != nil,
@@ -103,7 +104,7 @@ func (wire SSHRunRequest) Bind(ctx context.Context, peer *SSHPeer) RunRequest {
 			if sources == nil {
 				sources = &SSHExecutionSources{}
 			}
-			request.Execution = &sshNativeExecution{sshExecution: execution, sources: sources, capacity: wire.Capacity}
+			request.Execution = &sshNativeExecution{batchedLanding: wire.BatchedLanding, sshExecution: execution, sources: sources, capacity: wire.Capacity}
 		}
 	}
 	return request
@@ -135,7 +136,7 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 					return NativeValidation{}, nil
 				}
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)
-			case "Validate", "Start", "Checkpoint", "RecordValidator", "PrepareArtifacts", "ArtifactLog", "FinalizeArtifacts", "PublishValidationEvidence", "SetRepository", "LandingTarget", "RecordLanding", "RecordUsage", "AvailabilityDeadline", "ObserveRuntime", "StartLanding", "ObserveLanding", "RecoverChangeSource":
+			case "RecordSourceValidation", "Validate", "Start", "Checkpoint", "RecordValidator", "PrepareArtifacts", "ArtifactLog", "FinalizeArtifacts", "PublishValidationEvidence", "SetRepository", "LandingTarget", "RecordLanding", "RecordUsage", "AvailabilityDeadline", "ObserveRuntime", "StartLanding", "ObserveLanding", "RecoverChangeSource":
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)
 			}
 			return nil, errors.New("unsupported SSH execution method")

@@ -142,6 +142,7 @@ func (s *Supervisor) Dispatch(ctx context.Context, request RunRequest, completio
 }
 
 func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Completion) {
+	defer request.LandingBatch.Finish()
 	completion = Completion{
 		IssueID:     request.Issue.ID,
 		Request:     request,

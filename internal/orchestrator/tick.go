@@ -697,6 +697,10 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 			WorkflowStates:          states,
 			Filter:                  o.authorizationFilterHint(),
 		}
+		request.NativeLandingBatch = o.nativeWorkflow() && !o.cfg.Policy.Gates.GitHubPullRequest
+		if request.NativeLandingBatch {
+			request.CandidateLimit = max(request.CandidateLimit, 100)
+		}
 		request.CandidateKnownWait = func(issue connector.Issue) bool {
 			now := time.Now()
 			if o.now != nil {
@@ -745,6 +749,9 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 				}
 				host, _ := planner.selectWorkerHost(&preview, preferredHost)
 				planner.markDispatched(&preview, dispatchAction{issue: selected, workerHost: host, modelPermitRequired: required}, now)
+				if request.NativeLandingBatch && mergeWorkerIssue(selected) {
+					planner.nativeLandingBatch = &nativeLandingDispatchBatch{members: 1, host: host}
+				}
 			}
 			if blocked, exists := preview.Blocked[issue.ID]; exists && blockedFromDependency(blocked) && issue.DependencySource == connector.BlockedRefSourceNative && !issueBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
 				delete(preview.Blocked, issue.ID)

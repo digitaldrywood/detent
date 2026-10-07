@@ -14,6 +14,7 @@ import (
 
 func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, claim tracker.NativeClaim, limit int) ([]tracker.NativeLease, error) {
 	leases := make([]tracker.NativeLease, 0, limit)
+	batchSession := claim.SessionID
 	providerEnabled := s.providerReports != nil
 	if providerEnabled && request.ProviderRequirement == nil {
 		return leases, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("provider dispatch needs the local runner's model resolver"))
@@ -64,12 +65,16 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 			} else {
 				claim.WorkItemID = issue.WorkItemID
 			}
+			claim.SessionID = batchSession
 			if len(leases) > 0 {
 				session, err := s.sessionID()
 				if err != nil {
 					return leases, err
 				}
 				claim.SessionID = session
+			}
+			if request.NativeLandingBatch && candidate.State == "Merging" {
+				claim.SessionID = "landing/" + batchSession + "/" + claim.SessionID
 			}
 			lease, err, admitted := claimPreviewCandidate(ctx, request, source, claim, candidate)
 			if !admitted {

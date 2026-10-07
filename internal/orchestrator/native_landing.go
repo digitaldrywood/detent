@@ -44,7 +44,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 	}
 	issue := running.Issue
 	issueID := strings.TrimSpace(event.IssueID)
-	if !landing.Landed && (landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved && landing.BaseSHA == "") {
+	if !landing.Landed && (landing.Path == "batch_member" && landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved && landing.BaseSHA == "") {
 		o.waitForMergeWorkerRetry(ctx, state, event, running, issue, running.Attempt, landing.Refusal,
 			"merge_worker_waiting", "waiting to retry landing of ")
 		return true
@@ -136,7 +136,7 @@ func nativeLandingMetadata(landing *runpkg.NativeLanding) map[string]any {
 	if landing == nil {
 		return nil
 	}
-	metadata := map[string]any{"native_landed": landing.Landed, "native_change_id": landing.ChangeID, "native_version_id": landing.VersionID, "native_head_sha": landing.HeadSHA}
+	metadata := map[string]any{"native_landing_path": landing.Path, "native_landing_packages": landing.Packages, "native_landed": landing.Landed, "native_change_id": landing.ChangeID, "native_version_id": landing.VersionID, "native_head_sha": landing.HeadSHA}
 	if landing.CI != nil {
 		metadata["native_ci"] = landing.CI
 	}

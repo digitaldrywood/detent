@@ -68,6 +68,7 @@ type NativePhase struct {
 }
 
 type NativeRuntimeObservation struct {
+	Validation     *gate.CommandResult              `json:"validation,omitempty"`
 	Recovery       *NativeRecoveryDecision          `json:"recovery,omitempty"`
 	Completion     *NativeCompletionObservation     `json:"completion,omitempty"`
 	PhasesDropped  int                              `json:"phases_dropped"`
@@ -150,6 +151,8 @@ type NativeLandingCIReceipt struct {
 }
 
 type NativeLandingReceipt struct {
+	Path        string                  `json:"path,omitempty"`
+	Packages    []string                `json:"packages,omitempty"`
 	CI          *NativeLandingCIReceipt `json:"ci,omitempty"`
 	Gate        *gate.CommandResult     `json:"gate,omitempty"`
 	FromState   string                  `json:"from_state,omitempty"`

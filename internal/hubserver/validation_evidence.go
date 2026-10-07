@@ -168,12 +168,15 @@ func readValidationCandidates(ctx context.Context, query nativeQueryer, scope na
 		candidate.VersionRunID = version.RunID
 		candidate.IntegratedSource = "unknown"
 		candidate.Attribution = "candidate_only; source_inclusion_and_causality_unverified"
+		candidate.Local, candidate.ObservedAt = version.Validation, version.CreatedAt
 		if receiptRaw != "" {
 			var receipt tracker.NativeLandingReceipt
 			if err := json.Unmarshal([]byte(receiptRaw), &receipt); err != nil {
 				return nil, false, err
 			}
-			candidate.Local, candidate.ObservedAt = receipt.Gate, receipt.ObservedAt
+			if receipt.Gate != nil {
+				candidate.Local, candidate.ObservedAt = receipt.Gate, receipt.ObservedAt
+			}
 			candidate.IntegratedHeadSHA = receipt.MergeSHA
 		} else if request.Landed != nil && request.Landed.VersionID == version.ID {
 			candidate.IntegratedHeadSHA = request.Landed.MergeSHA

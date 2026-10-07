@@ -181,6 +181,7 @@ type ClaimingConfig struct {
 }
 
 type SchedulingRequest struct {
+	NativeLandingBatch      bool
 	DispatchPriorityByState []string
 	DispatchPriorityByLabel []string
 	PrioritizeUnblockers    bool
@@ -285,6 +286,7 @@ type RuntimeUpdate struct {
 }
 
 type Orchestrator struct {
+	nativeLandingBatch      *nativeLandingDispatchBatch
 	cfg                     Config
 	connector               connector.Connector
 	scheduling              SchedulingSource

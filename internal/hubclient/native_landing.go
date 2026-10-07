@@ -30,8 +30,10 @@ func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandi
 			target.HeadSHA, target.Number = version.HeadSHA, version.Number
 			target.Repository, target.GitHubPullRequest = version.Repository, version.Policy.Gates.GitHubPullRequest
 			target.External = version.External
+			target.Validation = version.Validation
 			if version.Landing != nil {
 				target.CI = version.Landing.CI
+				target.RebaseRequired = version.Landing.RefusalKind == "conflict"
 			}
 			if version.Policy.Gates.MergeMethod != "" {
 				target.Method = version.Policy.Gates.MergeMethod

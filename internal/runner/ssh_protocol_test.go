@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestSSHErrorRoundTrip(t *testing.T) {
@@ -41,6 +42,14 @@ func TestSSHErrorRoundTrip(t *testing.T) {
 			return errors.As(err, &status) && status.CredentialIdentity == "local-credential" && status.RetryAfter == 120*time.Second && !status.ObservedAt.IsZero()
 		}},
 		{"landing refusal", ErrLandingNotReviewed, ErrLandingNotReviewed, nil},
+		{"landing conflict", &workspace.LandRefusal{Kind: workspace.LandRefusalConflict, Reason: "conflict"}, nil, func(err error) bool {
+			var refusal *workspace.LandRefusal
+			return errors.As(err, &refusal) && refusal.Kind == workspace.LandRefusalConflict
+		}},
+		{"landing validation", &workspace.ValidationError{Output: "failed package", Err: context.DeadlineExceeded}, context.DeadlineExceeded, func(err error) bool {
+			var validation *workspace.ValidationError
+			return errors.As(err, &validation) && validation.Output == "failed package"
+		}},
 		{"joined", errors.Join(ErrWorkspacePreparation, context.DeadlineExceeded), context.DeadlineExceeded, nil},
 		{"capacity", backendcapacity.NewError(backendcapacity.Scope{BackendID: "code"}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload}, errors.New("busy")), nil, func(err error) bool {
 			e, ok := backendcapacity.As(err)

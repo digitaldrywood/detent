@@ -200,7 +200,7 @@ type sshError struct {
 }
 
 func sshErrorTypes() []error {
-	return []error{&backendcapacity.Error{}, &WorkerGitHubTokenResolutionError{}, &WorkerGitHubBudgetMonitorError{}, &DeliverableCommandError{}, &DeliverableRecoveryError{}, &SessionBrakeError{}, &WorkspaceBranchHeldError{}, &IssueConfigurationError{}, &SessionTokenCeilingError{}, &SessionBudgetProjectionError{}, &SessionMemoryCeilingError{}, &AgentTurnCleanupError{}, &forgeavailability.Error{}, &connector.TrackerAvailabilityError{}, &githubconnector.StatusError{}, &githubconnector.RESTFanoutDeferralError{}, &workspace.HookError{}, &workspace.CommandError{}, &os.PathError{}, &os.LinkError{}, &os.SyscallError{}}
+	return []error{&backendcapacity.Error{}, &WorkerGitHubTokenResolutionError{}, &WorkerGitHubBudgetMonitorError{}, &DeliverableCommandError{}, &DeliverableRecoveryError{}, &SessionBrakeError{}, &WorkspaceBranchHeldError{}, &IssueConfigurationError{}, &SessionTokenCeilingError{}, &SessionBudgetProjectionError{}, &SessionMemoryCeilingError{}, &AgentTurnCleanupError{}, &forgeavailability.Error{}, &connector.TrackerAvailabilityError{}, &githubconnector.StatusError{}, &githubconnector.RESTFanoutDeferralError{}, &workspace.LandRefusal{}, &workspace.ValidationError{}, &workspace.HookError{}, &workspace.CommandError{}, &os.PathError{}, &os.LinkError{}, &os.SyscallError{}}
 }
 
 func sshSentinels() []error {

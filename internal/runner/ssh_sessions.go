@@ -8,23 +8,27 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 // SSHCallbacks shares the existing session lifecycle with the central store.
 // If the channel ends before FinishSession arrives, the owner closes precisely
 // the sessions it opened on that channel using usage already received.
 type SSHCallbacks struct {
-	handle    func(context.Context, string, []json.RawMessage) (any, error)
-	store     SessionStore
-	execution Execution
-	mu        sync.Mutex
-	wg        sync.WaitGroup
-	closed    bool
-	active    map[int64]UsageUpdate
+	landingBatch     *workspace.LandingBatchTicket
+	batchLander      *sshBatchLander
+	batchValidations []func(context.Context) error
+	handle           func(context.Context, string, []json.RawMessage) (any, error)
+	store            SessionStore
+	execution        Execution
+	mu               sync.Mutex
+	wg               sync.WaitGroup
+	closed           bool
+	active           map[int64]UsageUpdate
 }
 
 func (r *Runner) SSHRunCallbacks(request RunRequest) *SSHCallbacks {
-	return &SSHCallbacks{handle: r.SSHCallbackHandler(request), store: r.store, execution: request.Execution, active: make(map[int64]UsageUpdate)}
+	return &SSHCallbacks{landingBatch: request.LandingBatch, handle: r.SSHCallbackHandler(request), store: r.store, execution: request.Execution, active: make(map[int64]UsageUpdate)}
 }
 
 func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.RawMessage) (any, error) {
@@ -36,7 +40,13 @@ func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.Ra
 	c.wg.Add(1)
 	c.mu.Unlock()
 	defer c.wg.Done()
-	result, err := c.handle(ctx, method, args)
+	var result any
+	var err error
+	if method == "landing.submit" || method == "landing.finish" || method == "landing.validate" {
+		result, err = c.handleLandingBatch(ctx, method, args)
+	} else {
+		result, err = c.handle(ctx, method, args)
+	}
 	if err != nil {
 		return result, err
 	}

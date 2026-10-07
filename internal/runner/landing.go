@@ -63,13 +63,14 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	}
 	workflow, _, _, _ := r.runtimeSnapshot()
 	effectiveGate := gate.Effective(workflow.Config.Gate)
-	options := workspace.LandOptions{RequiredStatusChecks: effectiveGate.RequiredStatusChecks, CITriggerLabel: effectiveGate.CITriggerLabel, PreviousCI: target.CI, ValidationCommand: effectiveGate.Run, HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
+	options := workspace.LandOptions{Native: !target.GitHubPullRequest, Validation: target.Validation, RebaseRequired: target.RebaseRequired, RequiredStatusChecks: effectiveGate.RequiredStatusChecks, CITriggerLabel: effectiveGate.CITriggerLabel, PreviousCI: target.CI, ValidationCommand: effectiveGate.Run, HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
 	if effectiveGate.CITriggerLabelStaggerSeconds != nil {
 		options.CITriggerLabelStagger = time.Duration(*effectiveGate.CITriggerLabelStaggerSeconds) * time.Second
 	}
 	var result workspace.LandResult
 	defer func() {
 		if runResult.NativeLanding != nil {
+			runResult.NativeLanding.Path, runResult.NativeLanding.Packages = result.Path, result.Packages
 			runResult.NativeLanding.CI = result.CI
 			runResult.NativeLanding.Rebased = result.Rebased
 			if result.Gate.Command != "" {
@@ -107,7 +108,40 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		}
 		result, err = githubLander.LandChangeViaGitHub(ctx, info, issue, options)
 	} else {
-		result, err = lander.LandChange(ctx, info, issue, options)
+		batchLander, batched := backend.(workspace.BatchLander)
+		remoteBatch, remoteBatched := req.Execution.(BatchLandingExecution)
+		remoteBatched = remoteBatched && remoteBatch.BatchLandingEnabled()
+		if target.RebaseRequired && req.LandingBatch != nil {
+			req.LandingBatch.Finish()
+			result, err = lander.LandChange(ctx, info, issue, options)
+		} else if batched && remoteBatched {
+			if target.RebaseRequired {
+				if err = remoteBatch.FinishLandingBatch(ctx); err == nil {
+					result, err = lander.LandChange(ctx, info, issue, options)
+				}
+			} else {
+				result, err = remoteBatch.LandBatch(ctx, batchLander, workspace.LandRequest{Info: info, Issue: issue, Options: options})
+			}
+		} else if batched && req.LandingBatch != nil {
+			result, err = req.LandingBatch.Land(batchLander, workspace.LandRequest{Info: info, Issue: issue, Options: options, Validate: func(batchCtx context.Context) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if err := req.Execution.Validate(batchCtx); err != nil {
+					return err
+				}
+				current, err := landing.LandingTarget(batchCtx)
+				if err != nil {
+					return err
+				}
+				if current.ChangeID != target.ChangeID || current.VersionID != target.VersionID || current.HeadSHA != target.HeadSHA {
+					return errors.New("reviewed version changed before batch push")
+				}
+				return nil
+			}})
+		} else {
+			result, err = lander.LandChange(ctx, info, issue, options)
+		}
 	}
 	if err == nil && result.CI != nil && result.CI.State == "pending" {
 		waiting := r.refusedLanding(req, target, "", "waiting for required CI on "+result.CI.HeadSHA)
@@ -140,7 +174,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_native_landing_warning",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "merge_sha", result.MergeSHA, "error", err.Error())
 	}
-	landed := NativeLanding{CI: result.CI, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, BaseSHA: result.BaseBefore, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
+	landed := NativeLanding{Path: result.Path, Packages: result.Packages, CI: result.CI, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, BaseSHA: result.BaseBefore, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
 	if result.Gate.Command != "" {
 		landed.Gate = &result.Gate
 	}

@@ -37,6 +37,7 @@ type claimAPIRequest struct {
 }
 
 type claimCandidateQuery struct {
+	LandingBatchGroup       string
 	Limit                   int
 	After                   tracker.WorkItemID
 	WorkItemID              tracker.WorkItemID
@@ -353,7 +354,12 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			return tracker.Lease{}, err
 		}
 	}
-	capacity, err := machineClaimCapacity(ctx, tx, request.MachineID, now)
+	joining, err := nativeLandingCapacityKey(ctx, tx, request.MachineID, request.SessionID, request.WorkItemID)
+	if err != nil {
+		return tracker.Lease{}, err
+	}
+	query.LandingBatchGroup = joining
+	capacity, err := machineClaimCapacity(ctx, tx, request.MachineID, now, joining)
 	if err != nil {
 		return tracker.Lease{}, err
 	}
@@ -546,7 +552,7 @@ JOIN machines m ON m.id = l.machine_id
 WHERE l.session_id = ?`, sessionID))
 }
 
-func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.MachineID, now time.Time) (int, error) {
+func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.MachineID, now time.Time, joining ...string) (int, error) {
 	var capacity int
 	if err := tx.QueryRowContext(ctx, "SELECT capacity FROM machines WHERE id = ?", machineID).Scan(&capacity); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -554,15 +560,16 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 		}
 		return 0, fmt.Errorf("read hub machine capacity: %w", err)
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT expires_at FROM leases WHERE machine_id = ? AND released_at IS NULL", machineID)
+	rows, err := tx.QueryContext(ctx, `SELECT l.expires_at, l.session_id, l.lease_id, `+nativeLandingCapacityProject+` FROM leases l JOIN issues i ON i.id=l.issue_id `+nativeLandingCapacityJoins+` WHERE l.machine_id=? AND l.released_at IS NULL`, machineID)
 	if err != nil {
 		return 0, fmt.Errorf("query hub machine leases: %w", err)
 	}
 	defer rows.Close()
 	active := 0
+	groups := map[string]bool{}
 	for rows.Next() {
-		var value string
-		if err := rows.Scan(&value); err != nil {
+		var value, session, lease, project string
+		if err := rows.Scan(&value, &session, &lease, &project); err != nil {
 			return 0, fmt.Errorf("scan hub machine lease expiry: %w", err)
 		}
 		expiresAt, err := parseTimeValue(value)
@@ -570,11 +577,21 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 			return 0, fmt.Errorf("parse hub machine lease expiry: %w", err)
 		}
 		if expiresAt.After(now) {
-			active++
+			key := landingCapacityKey(machineID, project, session)
+			if key == "" {
+				key = lease
+			}
+			if !groups[key] {
+				active++
+				groups[key] = true
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("iterate hub machine leases: %w", err)
+	}
+	if capacity > 0 && len(joining) > 0 && joining[0] != "" && groups[joining[0]] {
+		active--
 	}
 	return capacity - active, nil
 }
