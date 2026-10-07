@@ -14,6 +14,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
+	t.Setenv("TMPDIR", t.TempDir())
 	source := initSourceRepo(t)
 	remote := initBareRemote(t)
 	repository := "https://github.com/example/source"

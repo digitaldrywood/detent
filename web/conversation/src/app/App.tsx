@@ -53,7 +53,6 @@ import {
 import { QuestionRecord } from "./components/QuestionRecord.tsx";
 import { Timeline } from "./components/Timeline.tsx";
 import { ChatWorkspace } from "./components/ChatWorkspace.tsx";
-import { useSidebarFindings } from "./adapters/sidebarFindings.ts";
 import { SidebarDataProvider } from "./adapters/sidebarData.tsx";
 import { sidebarProjectScopeKey } from "./adapters/shell.ts";
 import { setSidebarProjectScopeKey, useUiStateStore } from "../uiStateStore.ts";
@@ -232,7 +231,6 @@ function ShellBody(): React.ReactElement {
   }, [activePath, params.workItemId]);
 
   const projects = client.bootstrap.projects;
-  const findings = useSidebarFindings(projects);
   const [selectedProjectId, setProjectIdState] = React.useState(
     () => readLastProject() ?? projects[0]?.id ?? "",
   );
@@ -356,7 +354,6 @@ function ShellBody(): React.ReactElement {
       onNavigate: (to: string) => void navigate({ to }),
     },
     attention,
-    findings,
   };
 
   // `state/entities.ts` reads the same value outside React, for the one path
