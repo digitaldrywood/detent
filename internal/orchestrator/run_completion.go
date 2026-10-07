@@ -389,7 +389,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		}
 		return
 	}
-	if (!nativeCompletion || !errors.Is(event.Err, runpkg.ErrWorkerProcessReap)) && o.handlePreTurnFailure(ctx, state, event, running) {
+	if (!nativeCompletion || running.Mode == runpkg.RunModeTriage) && o.handlePreTurnFailure(ctx, state, event, running) {
 		return
 	}
 	if running.Mode == runpkg.RunModeTriage {
@@ -401,6 +401,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 
 	if o.completeNativeChangeRun(ctx, state, event, running, event.Result.FinalState) {
+		return
+	}
+	if nativeCompletion && o.handlePreTurnFailure(ctx, state, event, running) {
 		return
 	}
 	if event.Err != nil && nativeCompletion {
