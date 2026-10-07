@@ -334,17 +334,23 @@ type DependencyMutation struct {
 }
 
 type CollaborationEvent struct {
-	ID                string            `json:"event_id"`
-	OrganizationID    OrganizationID    `json:"organization_id"`
-	ProjectID         ProjectID         `json:"project_id"`
-	AggregateType     string            `json:"aggregate_type"`
-	AggregateID       NativeWorkItemID  `json:"aggregate_id"`
-	AggregateSequence int64             `json:"aggregate_sequence,string"`
-	Type              string            `json:"type"`
-	SchemaVersion     int               `json:"schema_version"`
-	RecordedAt        time.Time         `json:"recorded_at"`
-	Actor             Actor             `json:"actor"`
-	Data              CollaborationData `json:"data"`
+	ID                string               `json:"event_id"`
+	OrganizationID    OrganizationID       `json:"organization_id"`
+	ProjectID         ProjectID            `json:"project_id"`
+	AggregateType     string               `json:"aggregate_type"`
+	AggregateID       NativeWorkItemID     `json:"aggregate_id"`
+	AggregateSequence int64                `json:"aggregate_sequence,string"`
+	Type              string               `json:"type"`
+	SchemaVersion     int                  `json:"schema_version"`
+	RecordedAt        time.Time            `json:"recorded_at"`
+	Actor             Actor                `json:"actor"`
+	Data              CollaborationData    `json:"data"`
+	DataOmission      *HistoryDataOmission `json:"data_omission,omitempty"`
+}
+
+type HistoryDataOmission struct {
+	Bytes  int    `json:"bytes"`
+	SHA256 string `json:"sha256"`
 }
 
 type CollaborationData struct {

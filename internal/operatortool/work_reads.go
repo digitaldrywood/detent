@@ -58,6 +58,8 @@ func (e *ReadUnavailableError) Is(target error) bool {
 
 const WorkListPageBytes = MaxResultBytes / 4
 
+const WorkHistoryPageBytes = MaxResultBytes / 4
+
 // WorkReadRequest contains application selectors only. Organization and principal
 // always come from the connection. Each operation permits only its own fields.
 type WorkReadRequest struct {

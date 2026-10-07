@@ -3,6 +3,7 @@ package operatortool
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -10,30 +11,35 @@ import (
 )
 
 type IssueContext struct {
-	Item          json.RawMessage        `json:"item"`
-	Comments      []json.RawMessage      `json:"comments"`
-	History       []json.RawMessage      `json:"history"`
-	Attempts      []json.RawMessage      `json:"attempts"`
-	LatestWorkpad *tracker.NativeComment `json:"latest_workpad"`
-	Relationships json.RawMessage        `json:"relationships"`
-	References    []json.RawMessage      `json:"references"`
+	Item          json.RawMessage              `json:"item"`
+	Comments      []json.RawMessage            `json:"comments"`
+	History       []json.RawMessage            `json:"history"`
+	Attempts      []json.RawMessage            `json:"attempts"`
+	LatestWorkpad *tracker.NativeComment       `json:"latest_workpad"`
+	Relationships json.RawMessage              `json:"relationships"`
+	References    []json.RawMessage            `json:"references"`
+	Limits        map[string]IssueContextLimit `json:"limits,omitempty"`
+}
+
+type IssueContextLimit struct {
+	Cursor string `json:"cursor"`
+	Offset int    `json:"offset,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 func ReadIssueContext(ctx context.Context, reader WorkReader, request WorkReadRequest) (IssueContext, error) {
-	result := IssueContext{Comments: []json.RawMessage{}, History: []json.RawMessage{}, Attempts: []json.RawMessage{}, References: []json.RawMessage{}}
+	result := IssueContext{Comments: []json.RawMessage{}, History: []json.RawMessage{}, Attempts: []json.RawMessage{}, References: []json.RawMessage{}, Limits: map[string]IssueContextLimit{}}
 	request.Cursor, request.Offset, request.Limit = "", 0, MaxItemLimit
-	for _, section := range []struct {
-		name   string
-		single *json.RawMessage
-		items  *[]json.RawMessage
-	}{
-		{WorkItem, &result.Item, nil}, {WorkComments, nil, &result.Comments}, {WorkHistory, nil, &result.History}, {WorkRuns, nil, &result.Attempts}, {WorkRelationships, &result.Relationships, nil}, {WorkReferences, nil, &result.References},
-	} {
+	for _, section := range []string{WorkItem, WorkComments, WorkHistory, WorkRuns, WorkRelationships, WorkReferences} {
 		pageRequest := request
 		for {
-			read, err := reader.ReadWork(ctx, section.name, pageRequest)
+			read, err := reader.ReadWork(ctx, section, pageRequest)
 			if err != nil {
-				return result, fmt.Errorf("read %s: %w", section.name, err)
+				if !errors.Is(err, ErrReadUnavailable) && !errors.Is(err, ErrResultTooLarge) {
+					return result, fmt.Errorf("read %s: %w", section, err)
+				}
+				result.Limits[section] = IssueContextLimit{Cursor: pageRequest.Cursor, Offset: pageRequest.Offset, Error: err.Error()}
+				break
 			}
 			var envelope struct {
 				Data json.RawMessage `json:"data"`
@@ -41,41 +47,63 @@ func ReadIssueContext(ctx context.Context, reader WorkReader, request WorkReadRe
 			if err := json.Unmarshal(read.Content, &envelope); err != nil {
 				return result, err
 			}
-			if section.single != nil {
-				*section.single = envelope.Data
-				break
-			}
 			var page struct {
 				Items      []json.RawMessage `json:"items"`
 				NextCursor string            `json:"next_cursor"`
 				NextOffset *int              `json:"next_offset"`
 			}
-			if err := json.Unmarshal(envelope.Data, &page); err != nil {
+			candidate := result
+			switch section {
+			case WorkItem:
+				candidate.Item = envelope.Data
+			case WorkRelationships:
+				candidate.Relationships = envelope.Data
+			default:
+				if err := json.Unmarshal(envelope.Data, &page); err != nil {
+					return result, err
+				}
+				switch section {
+				case WorkComments:
+					candidate.Comments = append(candidate.Comments, page.Items...)
+					for _, raw := range page.Items {
+						var comment tracker.NativeComment
+						if err := json.Unmarshal(raw, &comment); err != nil {
+							return result, err
+						}
+						if strings.Contains(comment.Body, "## Codex Workpad") && (candidate.LatestWorkpad == nil || comment.CreatedAt.After(candidate.LatestWorkpad.CreatedAt)) {
+							candidate.LatestWorkpad = &comment
+						}
+					}
+				case WorkHistory:
+					candidate.History = append(candidate.History, page.Items...)
+				case WorkRuns:
+					candidate.Attempts = append(candidate.Attempts, page.Items...)
+				case WorkReferences:
+					candidate.References = append(candidate.References, page.Items...)
+				}
+			}
+			encoded, err := json.Marshal(candidate)
+			if err != nil {
 				return result, err
 			}
-			*section.items = append(*section.items, page.Items...)
+			if len(encoded) > MaxResultBytes/2 {
+				result.Limits[section] = IssueContextLimit{Cursor: pageRequest.Cursor, Offset: pageRequest.Offset}
+				break
+			}
+			result = candidate
 			if page.NextCursor != "" {
 				if page.NextCursor == pageRequest.Cursor {
-					return result, fmt.Errorf("%s returned an unchanged cursor", section.name)
+					return result, fmt.Errorf("%s returned an unchanged cursor", section)
 				}
 				pageRequest.Cursor = page.NextCursor
 			} else if page.NextOffset != nil {
 				if *page.NextOffset <= pageRequest.Offset {
-					return result, fmt.Errorf("%s returned an unchanged offset", section.name)
+					return result, fmt.Errorf("%s returned an unchanged offset", section)
 				}
 				pageRequest.Offset = *page.NextOffset
 			} else {
 				break
 			}
-		}
-	}
-	for _, raw := range result.Comments {
-		var comment tracker.NativeComment
-		if err := json.Unmarshal(raw, &comment); err != nil {
-			return result, err
-		}
-		if strings.Contains(comment.Body, "## Codex Workpad") && (result.LatestWorkpad == nil || comment.CreatedAt.After(result.LatestWorkpad.CreatedAt)) {
-			result.LatestWorkpad = &comment
 		}
 	}
 	return result, nil
