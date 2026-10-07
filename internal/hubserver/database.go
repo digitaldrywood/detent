@@ -289,7 +289,7 @@ func (d *database) verifyIdentity(ctx context.Context) error {
 	}
 
 	var tableCount int
-	if err := d.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").Scan(&tableCount); err != nil {
+	if err := d.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('_litestream_seq', '_litestream_lock')").Scan(&tableCount); err != nil {
 		return fmt.Errorf("inspect hub sqlite schema: %w", err)
 	}
 	if tableCount != 0 {
