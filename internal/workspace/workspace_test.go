@@ -1390,7 +1390,7 @@ func TestHookWithExitedShell(t *testing.T) {
 				t.Cleanup(cancel)
 				done := make(chan error, 1)
 				go func() {
-					done <- run(ctx, "before_run", "sleep 30 & echo $! > descendant.pid", Info{Path: root, Key: "DD-HOOK"}, Issue{Identifier: "DD-HOOK"})
+					done <- run(ctx, "before_run", "sleep 30 & echo $! > descendant.pid.tmp && mv descendant.pid.tmp descendant.pid", Info{Path: root, Key: "DD-HOOK"}, Issue{Identifier: "DD-HOOK"})
 				}()
 				pidPath := filepath.Join(root, "descendant.pid")
 				waitForFile(t, pidPath, 10*time.Second)
