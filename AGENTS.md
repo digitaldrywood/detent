@@ -180,6 +180,33 @@ bypass to implement this repository's policy.
 Detent workers must use their provided `TMPDIR`, `TMP`, or `TEMP`; never
 fall back to host scratch space in a worker.
 
+### Browser tests
+
+Browser specs in `tests/visual` cover critical user journeys only. Verify UI
+issues by default with Vitest component tests in `web/conversation` or Go handler
+tests. Add a browser test only for a journey no existing spec covers and a
+component or API test cannot catch; otherwise extend the existing journey spec
+instead of adding a file.
+
+Every test creates its own data, through the API where possible, and never
+depends on another test's leftovers or test order. Do not use describe serial
+mode or keep mutable shared state in `beforeAll`. Reset or isolate server state
+per test, using a unique project or account or resetting persisted user
+preferences in `beforeEach`.
+
+Locate elements by `getByRole`, then `getByLabel`, then `getByText`, then
+`getByTestId`; do not use CSS or XPath structure. Assert the user's outcome,
+not layout, exact counts or element order unless the issue concerns that detail.
+Use web-first assertions; never use `waitForTimeout` or fixed sleeps. Wait for
+the UI state that follows an animation or debounce.
+
+Use `toHaveScreenshot` only for the short allowlisted set of key pages. Generate
+baselines only in the pinned Playwright Linux container and only in a change
+whose purpose is visual. The frozen `internal/invariants/browser_policy.json`
+allowlists may only shrink; remove entries when files or patterns disappear.
+
+Fix or delete flaky browser tests. Retries provide diagnosis, never a fix.
+
 ## Deployment and release failure reporting
 
 For `digitaldrywood/detent` and its selected native Cloud project, every

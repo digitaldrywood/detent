@@ -810,6 +810,12 @@ test("project kanban supports long-press touch status moves", async ({
       throw new Error("Touch swipe source has no bounding box");
     }
     const headerY = headerBox.y + headerBox.height / 2;
+    await lanes.evaluate((root) => {
+      root.dataset.swipeComplete = "false";
+      root.addEventListener("scrollend", () => {
+        root.dataset.swipeComplete = "true";
+      }, { once: true });
+    });
     await dispatchTouch(session, "touchStart", 330, headerY);
     touchActive = true;
     for (const x of [280, 220, 160, 100, 50]) {
@@ -820,7 +826,7 @@ test("project kanban supports long-press touch status moves", async ({
     await expect
       .poll(() => lanes.evaluate((root) => root.scrollLeft))
       .toBeGreaterThan(0);
-    await page.waitForTimeout(500);
+    await expect(lanes).toHaveAttribute("data-swipe-complete", "true");
     await sourceLane.evaluate((lane) =>
       lane.scrollIntoView({
         behavior: "instant",
@@ -859,7 +865,6 @@ test("project kanban supports long-press touch status moves", async ({
     const dragY = dragBox.y + dragBox.height / 2;
     await dispatchTouch(session, "touchStart", dragX, dragY);
     touchActive = true;
-    await page.waitForTimeout(500);
     await expect(ghost).toHaveCount(1);
     await expect(ghost).toContainText("From Backlog");
     await expect(card).toHaveAttribute("data-kanban-dragging", "true");
@@ -938,7 +943,7 @@ test("project kanban supports long-press touch status moves", async ({
         const box = await targetLane.boundingBox();
         laneSamples.push({ time: Date.now(), box });
         return Boolean(box && box.x <= 340 && box.x + box.width > 340);
-      })
+      }, { intervals: [50] })
       .toBe(true);
     await dispatchTouch(session, "touchEnd", 340, dragY);
     touchActive = false;

@@ -9,9 +9,10 @@ module.exports = defineConfig({
   workers: 4,
   maxFailures: process.env.CI ? 10 : 0,
   retries: process.env.CI ? 1 : 0,
+  failOnFlakyTests: !!process.env.CI,
   timeout: 60_000,
   ignoreSnapshots: !compareSnapshots,
-  updateSnapshots: process.env.CI ? "none" : "missing",
+  updateSnapshots: "none",
   snapshotPathTemplate:
     "{testDir}/__screenshots__{/projectName}/{testFilePath}/{arg}{ext}",
   reporter: process.env.CI
