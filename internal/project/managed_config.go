@@ -3,7 +3,6 @@ package project
 import (
 	"context"
 	"errors"
-	"os"
 	"slices"
 	"time"
 
@@ -106,7 +105,7 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 			}
 			workflow, loadErr := p.loadManagedWorkflow(ctx, request.SourceRevision)
 			if loadErr != nil {
-				view.Constraint = "The configured committed workflow revision is unavailable or has local overlays."
+				view.Constraint = "The configured definition cannot supply the approved policy revision. Keep detent.local.yaml and WORKFLOW.local.md, place the approved shared files in the configured workflow source, then preview selected_policy with local_project_configuration. For workflow_ref, commit those shared files to the configured ref; source_revision is an authored digest, not a Git ref."
 				return false
 			}
 			candidate := workflow
@@ -321,16 +320,7 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 
 func (p *Project) loadManagedWorkflow(ctx context.Context, revision string) (workflowconfig.Workflow, error) {
 	cfg := p.Config()
-	var workflow workflowconfig.Workflow
-	var err error
-	if cfg.WorkflowRef == "" && p.Workflow().Definition.Layout == workflowconfig.ProjectDefinitionCloud {
-		workflow, err = loadWorkflowForScheduling(ctx, cfg, p.policyScheduling)
-	} else {
-		workflow, err = loadManagedWorkflow(ctx, cfg)
-		if errors.Is(err, workflowconfig.ErrNoProjectDefinition) {
-			workflow, err = loadWorkflowForScheduling(ctx, cfg, p.policyScheduling)
-		}
-	}
+	workflow, err := loadWorkflowForScheduling(ctx, cfg, p.policyScheduling)
 	if err != nil {
 		return workflowconfig.Workflow{}, err
 	}
@@ -342,23 +332,6 @@ func (p *Project) loadManagedWorkflow(ctx context.Context, revision string) (wor
 	}
 	if revision != "" && descriptor.SourceRevision != revision {
 		return workflowconfig.Workflow{}, errors.New("configured workflow revision changed")
-	}
-	return workflow, nil
-}
-
-func loadManagedWorkflow(ctx context.Context, cfg globalconfig.Project) (workflowconfig.Workflow, error) {
-	source, err := newWorkflowGitRefSource(cfg)
-	if err != nil {
-		return workflowconfig.Workflow{}, err
-	}
-	for _, path := range []string{source.localPath(), source.localConfigPath()} {
-		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
-			return workflowconfig.Workflow{}, errors.New("local workflow overlays are not a committed policy source")
-		}
-	}
-	workflow, _, err := source.loadSource(ctx, false)
-	if err != nil {
-		return workflowconfig.Workflow{}, err
 	}
 	return workflow, nil
 }

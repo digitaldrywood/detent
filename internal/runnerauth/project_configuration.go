@@ -27,6 +27,17 @@ type ProjectConfigurationCommand struct {
 	RunnerRevision int64                       `json:"runner_revision"`
 }
 
+type ProjectConfigurationReceipt struct {
+	RequestID      string    `json:"request_id"`
+	Operation      string    `json:"operation"`
+	ConfigRevision string    `json:"config_revision,omitempty"`
+	PolicyID       string    `json:"policy_id,omitempty"`
+	Applied        bool      `json:"applied"`
+	Saved          bool      `json:"saved"`
+	Constraint     string    `json:"constraint,omitempty"`
+	ObservedAt     time.Time `json:"observed_at"`
+}
+
 type ProjectConfiguration struct {
 	LocalIntakeEnabled      bool               `json:"local_intake_enabled"`
 	LocalIntakeRemaining    []string           `json:"local_intake_remaining"`
@@ -53,6 +64,8 @@ type ProjectConfiguration struct {
 	Applied                 bool               `json:"applied"`
 	Constraint              string             `json:"constraint,omitempty"`
 	ObservedAt              time.Time          `json:"observed_at"`
+
+	LastOperation *ProjectConfigurationReceipt `json:"last_operation,omitempty"`
 }
 
 func (c ProjectConfiguration) Validate() error {

@@ -29,15 +29,17 @@ func TestManagedProjectConfiguration(t *testing.T) {
 
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	for _, scenario := range []string{"detach", "database detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "unapproved policy", "wrong source", "local overlay", "binding", "binding unapproved", "binding stale overlay", "binding busy", "binding foreign", "binding local source", "binding drained", "binding running", "binding native running", "binding native paused", "binding native drained", "binding native schedule change"} {
+	for _, scenario := range []string{"detach", "database detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "unapproved policy", "wrong source", "local overlay", "local policy", "local policy overlays", "local policy native", "local policy native busy", "local policy native unapproved", "local policy native wrong source", "binding", "binding unapproved", "binding stale overlay", "binding busy", "binding foreign", "binding local source", "binding drained", "binding running", "binding native running", "binding native paused", "binding native drained", "binding native schedule change"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := initWorkflowSourceRepo(t)
 			workflowPath := filepath.Join(root, "WORKFLOW.md")
 			writeWorkflowSourceFile(t, workflowPath, "Private workflow instructions")
 			commitWorkflowSourceRepo(t, root, "initial workflow")
 			binding := strings.HasPrefix(scenario, "binding")
+			localPolicy := strings.HasPrefix(scenario, "local policy")
+			policyOverlay := localPolicy || scenario == "local overlay"
 			otherRoot := root
-			if binding {
+			if binding || policyOverlay {
 				if err := os.WriteFile(workflowPath, []byte("Private workflow instructions\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
@@ -68,9 +70,20 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			if strings.HasSuffix(scenario, "drained") || strings.HasSuffix(scenario, "running") {
 				cfg.Projects[0].Paused = false
 			}
-			if scenario == "binding local source" {
+			if scenario == "binding local source" || localPolicy {
 				cfg.Projects[0].WorkflowRef = ""
 				cfg.Projects[0].Workflow = workflowPath
+			}
+			if localPolicy {
+				private := "schema: 1\nworker:\n  ssh_hosts: [local]\n  github_token: private-worker-credential\nworkspace:\n  root: private-worktrees\nhooks:\n  before_run: private-isolation\n  timeout_ms: 12345\ncodex:\n  command: private-codex-command\n  env:\n    PRIVATE_ENV: private-env-value\nagent:\n  max_concurrent_agents: 1\n"
+				if err := os.WriteFile(filepath.Join(root, "detent.local.yaml"), []byte(private), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "local policy overlays" || strings.HasPrefix(scenario, "local policy native") {
+				if err := os.WriteFile(filepath.Join(root, "WORKFLOW.local.md"), []byte("Private local instructions"), 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := globalconfig.Write(cfg.Path, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
 				t.Fatal(err)
@@ -98,7 +111,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			native := strings.HasPrefix(scenario, "binding native")
+			native := strings.HasPrefix(scenario, "binding native") || strings.HasPrefix(scenario, "local policy native")
 			if native {
 				if err := os.WriteFile(workflowPath, []byte("Shared native instructions\n"), 0600); err != nil {
 					t.Fatal(err)
@@ -147,6 +160,12 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				}
 				return nil
 			})
+			selectedProject, ok := manager.Registry().Get("selected")
+			if !ok {
+				t.Fatal("selected project missing")
+			}
+			initialWorkflow := selectedProject.Workflow()
+			beforeOther := owner.Read(t.Context(), "unrelated")
 			before := owner.Read(t.Context(), "selected")
 			if before.Constraint != "" || before.SelectedPolicy == nil || before.EffectivePolicy == nil {
 				t.Fatalf("read=%+v", before)
@@ -186,10 +205,21 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				}
 			case "stopped owner":
 				manager.running = false
-			case "apply policy", "unapproved policy", "wrong source", "local overlay":
+			case "apply policy", "unapproved policy", "wrong source", "local overlay", "local policy", "local policy overlays", "local policy native", "local policy native busy", "local policy native unapproved", "local policy native wrong source":
 				operation = "apply_local_project_policy"
-				writeWorkflowSourceFile(t, workflowPath, "Changed committed private instructions")
+				if policyOverlay {
+					if err := os.WriteFile(workflowPath, []byte("Changed shared instructions"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					writeWorkflowSourceFile(t, workflowPath, "Changed committed private instructions")
+				}
 				commitWorkflowSourceRepo(t, root, "changed workflow")
+				if scenario == "local overlay" {
+					if err := os.WriteFile(filepath.Join(root, "WORKFLOW.local.md"), []byte("Uncommitted notes"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
 				candidateView := owner.Read(t.Context(), "selected")
 				request.ExpectedConfigRevision = candidateView.ConfigRevision
 				candidate := candidateView.SelectedPolicy
@@ -197,14 +227,25 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					t.Fatal("candidate missing")
 				}
 				request.SourceRevision, request.PolicyID = candidate.SourceRevision, candidate.ID
-				if scenario != "unapproved policy" {
+				if scenario != "unapproved policy" && scenario != "local policy native unapproved" {
 					scheduling.approved["selected"] = *candidate
 				}
-				if scenario == "wrong source" {
+				if scenario == "wrong source" || scenario == "local policy native wrong source" {
 					request.SourceRevision = strings.Repeat("f", 40)
 				}
-				if scenario == "local overlay" {
-					if err := os.WriteFile(filepath.Join(root, "WORKFLOW.local.md"), []byte("Uncommitted notes"), 0600); err != nil {
+			}
+			if scenario == "local policy native busy" {
+				if _, err := attempts.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "selected", IssueID: "active", Identifier: "selected#2", WorkerType: "code", AttemptNumber: 1, Lane: "In Progress", StartedAt: time.Now(), WorkerMetadataJSON: `{"deferred_completion":{"version":1}}`}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			privateFiles := map[string][]byte{}
+			if policyOverlay {
+				for _, name := range []string{"detent.local.yaml", "WORKFLOW.local.md"} {
+					raw, err := os.ReadFile(filepath.Join(root, name))
+					if err == nil {
+						privateFiles[name] = raw
+					} else if !errors.Is(err, os.ErrNotExist) {
 						t.Fatal(err)
 					}
 				}
@@ -375,12 +416,37 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				if err != nil || string(replayed) != string(after) {
 					t.Fatal("retry rewrote configuration")
 				}
-			case "apply policy":
+			case "apply policy", "local overlay", "local policy", "local policy overlays", "local policy native":
 				if !result.Applied || result.EffectivePolicy.ID != request.PolicyID || !result.Paused || string(after) != string(original) {
 					t.Fatalf("apply=%+v", result)
 				}
+				selected, _ := manager.Registry().Get("selected")
+				if localPolicy {
+					loaded := selected.Workflow()
+					if !reflect.DeepEqual(loaded.Config.Worker, initialWorkflow.Config.Worker) || !reflect.DeepEqual(loaded.Config.Hooks, initialWorkflow.Config.Hooks) || !reflect.DeepEqual(loaded.Config.Codex, initialWorkflow.Config.Codex) || !reflect.DeepEqual(loaded.Config.Workspace, initialWorkflow.Config.Workspace) || loaded.Config.Agent.MaxConcurrentAgents != initialWorkflow.Config.Agent.MaxConcurrentAgents {
+						t.Fatal("private execution settings changed")
+					}
+					if strings.Contains(initialWorkflow.Prompt, "Private local instructions") && !strings.Contains(loaded.Prompt, "Private local instructions") {
+						t.Fatal("private instructions lost")
+					}
+					restarted, err := LoadWorkflowContext(t.Context(), selected.Config())
+					if err != nil {
+						t.Fatal(err)
+					}
+					restarted.Config = WithMappedNativeTracker(restarted.Config, scheduling, selected.ID())
+					descriptor, err := ResolvePolicy(selected.Config(), restarted)
+					if err != nil || descriptor.ID != request.PolicyID {
+						t.Fatalf("restart policy=%s err=%v", descriptor.ID, err)
+					}
+				}
+				for name, before := range privateFiles {
+					after, err := os.ReadFile(filepath.Join(root, name))
+					if err != nil || string(after) != string(before) {
+						t.Fatalf("private file %s changed: %v", name, err)
+					}
+				}
 				other := owner.Read(t.Context(), "unrelated")
-				if other.EffectivePolicy.ID != before.EffectivePolicy.ID {
+				if other.EffectivePolicy.ID != beforeOther.EffectivePolicy.ID {
 					t.Fatal("unrelated runtime policy changed")
 				}
 			default:
