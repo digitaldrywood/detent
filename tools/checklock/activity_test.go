@@ -19,7 +19,7 @@ func TestValidationOwnerActivity(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct{ name, output, phase string }{
 		{"build", "go build -o tmp/detent ./cmd/detent\n", "build"},
-		{"tests", "bash scripts/test-race-cover.sh\n", "tests"},
+		{"tests", "env -u DETENT_API_TOKEN go test -count=1 -p 4 -short -race -timeout=10m ./...\n", "tests"},
 		{"generic", "some output\n", "running"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

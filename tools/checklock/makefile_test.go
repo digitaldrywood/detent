@@ -295,7 +295,7 @@ esac
 				t.Setenv("MAKEOVERRIDES", "")
 				ctx, cancel := context.WithTimeout(t.Context(), validationIntegrationTimeout)
 				defer cancel()
-				cmd := exec.CommandContext(ctx, "make", "-o", "check-app", "-o", "build", "-o", "lint", "-o", "vet", "-o", "nilaway-audit", "-o", "test-race-cover", "-o", "test-fast", target, "VERSION=test", "COMMIT=test", "DATE=test", "GOLANGCI_LINT_VERSION=test")
+				cmd := exec.CommandContext(ctx, "make", "-o", "check-app", "-o", "build", "-o", "lint", "-o", "vet", "-o", "nilaway-audit", "-o", "test-race", "-o", "test-cover", "-o", "test-fast", target, "VERSION=test", "COMMIT=test", "DATE=test", "GOLANGCI_LINT_VERSION=test")
 				cmd.Dir = dir
 				output, err := cmd.CombinedOutput()
 				if (err != nil) != tt.wantError {
