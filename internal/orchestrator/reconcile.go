@@ -417,6 +417,11 @@ func mergeIssueTrackerFields(current, refreshed connector.Issue) connector.Issue
 		merged.DependencySource = refreshed.DependencySource
 		merged.DependencyNotes = refreshed.DependencyNotes
 	}
+	if refreshed.Metadata["hub_profile"] == "native" {
+		merged.Metadata = refreshed.Metadata
+		merged.WorkpadSignal = refreshed.WorkpadSignal
+		merged.BlockerReason = refreshed.BlockerReason
+	}
 	if refreshed.BlockerReason != "" {
 		merged.BlockerReason = refreshed.BlockerReason
 	}

@@ -257,15 +257,19 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 
 	now := time.Date(2026, 8, 16, 18, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name             string
-		fingerprint      string
-		wantTransition   bool
-		wantStatus       string
-		priorReworkLimit bool
+		name              string
+		fingerprint       string
+		wantTransition    bool
+		wantStatus        string
+		priorReworkLimit  bool
+		dependencyState   string
+		nativeDisposition bool
 	}{
 		{name: "condition holds", fingerprint: "config-a", wantStatus: blockerEvidenceStatusHolds},
 		{name: "condition clears", fingerprint: "config-b", wantTransition: true},
 		{name: "other current causes preserve recorded recovery order", fingerprint: "config-b", wantTransition: true, priorReworkLimit: true},
+		{name: "stored native terminal prerequisite clears next tick", dependencyState: "Done", nativeDisposition: true, wantTransition: true},
+		{name: "stored native unfinished prerequisite holds", dependencyState: "In Progress", nativeDisposition: true, wantStatus: blockerEvidenceStatusHolds},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -280,6 +284,21 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 					Type:        workpad.PredicateConfigFingerprint,
 					Fingerprint: "config-a",
 				})},
+			}
+			if tt.dependencyState != "" {
+				dependency := connector.Issue{ID: "prerequisite", Identifier: "prj_test#517", State: tt.dependencyState, Closed: tt.dependencyState == "Done"}
+				tracker.blockers = []connector.Issue{dependency}
+				issue.Identifier = "prj_test#519"
+				issue.DependencySource = connector.BlockedRefSourceNative
+				issue.BlockedBy = []connector.BlockedRef{{ID: dependency.ID, Identifier: dependency.Identifier, State: dependency.State, Source: connector.BlockedRefSourceNative}}
+				issue.WorkpadSignal.Blockers = []workpad.Blocker{typedTestBlocker(workpad.Predicate{Type: workpad.PredicateIssueState, Identifier: dependency.Identifier, States: []string{"open"}})}
+			}
+			if tt.nativeDisposition {
+				issue.Metadata = map[string]string{"hub_profile": "native", "hub_disposition_attempt_id": "blocked-attempt", "hub_disposition_return_state": "Todo"}
+				observed := cloneIssue(issue)
+				observed.WorkpadSignal = nil
+				observed.Metadata = map[string]string{"hub_profile": "native"}
+				issue = mergeIssueTrackerFields(observed, issue)
 			}
 			state := newState(orch.cfg)
 			state.Blocked[issue.ID] = Blocked{Issue: issue, BlockedAt: now.Add(-time.Hour), Source: BlockedSourceProjectStatus}

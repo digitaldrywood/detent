@@ -143,6 +143,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		lifecycle     string
 		validationErr error
 		wantRecovery  bool
+		blockerState  string
+		interrupted   bool
 	}{
 		{name: "completed checkpoint ownership deadline is instance owned with human review", states: workflow, humanReview: &yes, runErr: errors.Join(runpkg.ErrWorkspacePreparation, runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded)},
 		{name: "completed checkpoint ownership deadline is instance owned without human review", states: workflow, humanReview: &no, runErr: errors.Join(runpkg.ErrWorkspacePreparation, runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded)},
@@ -263,6 +265,10 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "missing native result keeps ordinary continuation", states: workflow, wantOrdinary: true, wantContinue: true},
 		{name: "dirty1067 prerequisite report retains native blocked handoff", states: workflow, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "detent-status blocked", diffStats: DiffStats{Status: "changed", FilesChanged: 2, TrackedPaths: []string{"inventory.go", "inventory_test.go"}}},
 		{name: "clean prerequisite report retains the same blocked handoff", change: &runpkg.NativeChange{}, states: workflow, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "detent-status blocked"},
+		{name: "terminal prerequisite is evaluated before blocked write", states: workflow, finalMessage: prerequisiteReport, blockerState: "Done", wantState: "Todo", wantComment: "detent-status blocked"},
+		{name: "unfinished prerequisite still writes blocked", states: workflow, finalMessage: prerequisiteReport, blockerState: "In Progress", wantState: "Blocked", wantComment: "detent-status blocked"},
+		{name: "interrupted attempt then satisfied prerequisite does not reapply blocked", states: workflow, humanReview: &no, finalMessage: prerequisiteReport, blockerState: "Done", interrupted: true, wantState: "Todo", wantComment: "detent-status blocked"},
+		{name: "interrupted attempt then unmet prerequisite retains blocked", states: workflow, humanReview: &no, finalMessage: prerequisiteReport, blockerState: "In Progress", interrupted: true, wantState: "Blocked", wantComment: "detent-status blocked"},
 		{name: "prerequisite handoff respects a workflow without Blocked", states: fourLanes, finalMessage: prerequisiteReport, wantDeferred: true},
 		{name: "prerequisite retains blocked owner and publication refusal", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionError: "policy mismatch"}, states: workflow, finalMessage: prerequisiteReport, humanReview: &no, wantState: "Blocked", wantComment: "policy mismatch", roundTrip: true},
 		{name: "no review Rework prerequisite retains readiness owner despite refusal", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, VersionError: "unrelated source provenance", VersionCode: "invalid_request"}, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "unrelated source provenance"},
@@ -282,10 +288,17 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				t.Parallel()
 			}
 			issue := completionTransitionIssue(firstNonBlank(test.sourceState, "In Progress"), "")
+			if test.blockerState != "" {
+				issue.DependencySource = connector.BlockedRefSourceNative
+				issue.Metadata = map[string]string{"hub_profile": "native", "hub_revision": "6"}
+			}
 			if test.optout {
 				issue.Labels = append(issue.Labels, "requires-human-review")
 			}
 			tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}, updateErr: test.updateErr}
+			if test.blockerState != "" {
+				tick.resolvedIssues = []connector.Issue{{ID: "prerequisite", Identifier: "prj_6d4919bebd73446798e6cd807feda10e#411", State: test.blockerState, Closed: test.blockerState == "Done"}}
+			}
 			var tracker connector.Connector = &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: test.states, statesErr: test.statesErr, reviewed: test.reviewed}
 			if test.plain {
 				tracker = tick
@@ -332,6 +345,25 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			}
 			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Generation: 7, SessionID: "native-session", Tokens: TokenTotals{TotalTokens: 42}, Mode: runpkg.RunModeImplement, DispatchSourceState: issue.State, StartedAt: now.Add(-time.Minute)}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+			if test.interrupted {
+				previous := cloneIssue(issue)
+				previous.WorkpadSignal, _ = workpad.SignalFromComment(prerequisiteReport, "", "")
+				previous.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n" + prerequisiteReport}}
+				running := state.Running[issue.ID]
+				running.Issue = previous
+				interrupted := newState(cfg)
+				interrupted.Running[issue.ID] = running
+				interrupted.Claimed[issue.ID] = state.Claimed[issue.ID]
+				settlement := *scheduling
+				settlement.hubSchedulingSource = &hubSchedulingSource{}
+				settlement.release = nil
+				owner := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: &recordingWorkAttemptStore{}, scheduling: &settlement}
+				event := runpkg.Completion{IssueID: issue.ID, Err: context.Canceled, CompletedAt: now, Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement}, Result: runpkg.RunResult{TurnStarted: true}}
+				if !owner.completeNativeChangeRun(t.Context(), &interrupted, event, running, runpkg.FinalStateFailed) || len(tick.updates) != 0 {
+					t.Fatalf("interrupted attempt inherited a lane disposition: %v", tick.updates)
+				}
+				state.Running[issue.ID] = running
+			}
 			finalState := test.finalState
 			if finalState == "" {
 				finalState = FinalStateCompleted

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestTickReconcilesRunningIssueTrackerState(t *testing.T) {
@@ -1211,9 +1213,12 @@ func TestMergeIssueTrackerFieldsDistinguishesMissingAndEmptyMetadata(t *testing.
 	t.Parallel()
 
 	current := connector.Issue{
-		ID:        "issue-running",
-		Assignees: []string{"worker-1"},
-		Fields:    map[string]string{"Status": "Todo"},
+		ID:            "issue-running",
+		Assignees:     []string{"worker-1"},
+		Fields:        map[string]string{"Status": "Todo"},
+		Metadata:      map[string]string{"hub_profile": "native", "hub_revision": "4", "hub_disposition_attempt_id": "blocked-attempt", "hub_disposition_return_state": "Todo"},
+		WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked},
+		BlockerReason: "prerequisite must finish",
 	}
 
 	tests := []struct {
@@ -1234,6 +1239,18 @@ func TestMergeIssueTrackerFieldsDistinguishesMissingAndEmptyMetadata(t *testing.
 			wantAssignees: []string{},
 			wantFields:    map[string]string{},
 		},
+		{
+			name:          "interrupted native attempt clears earlier disposition",
+			refreshed:     connector.Issue{ID: current.ID, Metadata: map[string]string{"hub_profile": "native", "hub_revision": "6"}},
+			wantAssignees: []string{"worker-1"},
+			wantFields:    map[string]string{"Status": "Todo"},
+		},
+		{
+			name:          "new native attempt replaces earlier disposition",
+			refreshed:     connector.Issue{ID: current.ID, Metadata: map[string]string{"hub_profile": "native", "hub_revision": "7", "hub_disposition_attempt_id": "new-attempt", "hub_disposition_return_state": "Rework"}, WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, ReasonCode: "permission_wait"}, BlockerReason: "operator approval"},
+			wantAssignees: []string{"worker-1"},
+			wantFields:    map[string]string{"Status": "Todo"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1241,6 +1258,13 @@ func TestMergeIssueTrackerFieldsDistinguishesMissingAndEmptyMetadata(t *testing.
 			t.Parallel()
 
 			got := mergeIssueTrackerFields(current, tt.refreshed)
+			if tt.refreshed.Metadata["hub_profile"] == "native" {
+				if !reflect.DeepEqual(got.WorkpadSignal, workpad.CloneSignal(tt.refreshed.WorkpadSignal)) || !reflect.DeepEqual(got.Metadata, tt.refreshed.Metadata) || got.BlockerReason != tt.refreshed.BlockerReason {
+					t.Fatalf("fresh native snapshot inherited blocked disposition: %+v", got)
+				}
+			} else if got.WorkpadSignal == nil || got.Metadata["hub_disposition_attempt_id"] != "blocked-attempt" || got.BlockerReason != current.BlockerReason {
+				t.Fatalf("partial snapshot lost retained disposition: %+v", got)
+			}
 			if !slices.Equal(got.Assignees, tt.wantAssignees) {
 				t.Fatalf("Assignees = %#v, want %#v", got.Assignees, tt.wantAssignees)
 			}

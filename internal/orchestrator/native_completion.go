@@ -106,13 +106,21 @@ func (o *Orchestrator) completeNativeChangeRun(
 	report, reported := workpad.SignalFromComment(event.Result.FinalMessage, "", "")
 	humanReview = humanReview || reported && report != nil && report.Invalid == nil && report.HumanAction != ""
 	blocked := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusBlocked
+	clearedBlockers := false
 	if blocked {
 		blocked = len(report.Blockers) > 0 && report.HumanAction == "" && report.ReasonCode == ""
 		for _, blocker := range report.Blockers {
 			blocked = blocked && blocker.Owner == workpad.BlockerOwnerOrchestrator && !blocker.Unverifiable && blocker.Predicate != nil && blocker.Predicate.Type == workpad.PredicateIssueState
 		}
+		if blocked {
+			reportedIssue := cloneIssue(issue)
+			reportedIssue.DependencySource = connector.BlockedRefSourceWorkpad
+			evidence := o.evaluateRecordedBlockerSignal(ctx, state, reportedIssue, report, nil, event.CompletedAt)
+			clearedBlockers = evidence.Found && !evidence.Holds && !evidence.Unverifiable && !evidence.HumanOwned
+			blocked = !clearedBlockers
+		}
 	}
-	if change == nil && !blocked {
+	if change == nil && !blocked && !clearedBlockers {
 		return false
 	}
 	if change != nil && change.Error != "" {
@@ -151,6 +159,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	if blocked {
 		target, ok = connector.CompletionLane(states, issue.State, "Blocked", true)
+	}
+	if clearedBlockers {
+		target, ok = connector.CompletionLane(states, issue.State, normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock).TargetState, true)
 	}
 	validatorRework := change != nil && change.Validator != nil && change.Validator.Verdict == "rework" && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
 	unfinished := validatorRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == ""
