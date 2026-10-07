@@ -482,6 +482,17 @@ describe("the list view", () => {
     expect(screen.getByLabelText("Priority: High").className).toContain("text-muted-foreground");
   });
 
+  it("renders terminal-entry age and the landed change in the Closed list", () => {
+    const item = { ...toWorkItemView(itemFixture as unknown as NativeIssue, "alpha"), state: "Cancelled", terminal: true, updatedAt: new Date(NOW).toISOString(),
+      closedAt: new Date(NOW - 2 * 3_600_000).toISOString(), listChange: { branch: "develop", headSha: "abcdef1234567890" } };
+    render(<WorkList items={[item]} tab="closed" showProject={false} now={NOW} onOpen={() => {}} movesFor={() => []} onMove={() => {}} />);
+    expect(screen.getByRole("columnheader", { name: "Closed" })).not.toBeNull();
+    expect(screen.queryByRole("columnheader", { name: "Status" })).toBeNull();
+    expect(screen.getByText("2h ago")).not.toBeNull();
+    expect(screen.getByText("develop · abcdef1")).not.toBeNull();
+    expect(screen.getByText("Cancelled")).not.toBeNull();
+  });
+
   it("navigates issue titles with the keyboard and opens the focused issue", () => {
     const onOpen = vi.fn();
     const items = [item(), item({ id: "wi_2", title: "Second" }), item({ id: "wi_3", title: "Third" })];
@@ -1071,7 +1082,7 @@ describe("the filter-first Work surface", () => {
     expect(screen.getByTestId("stat-completed").textContent).toContain("completed · 7d");
   });
 
-  it.each(["Todo", ""])("shares the %s lane scope between Board and List", async (lanes) => {
+  it.each(["Todo", ""])("ignores the %s board lane scope in the Active list", async (lanes) => {
     await pagedWork(`/work?lanes=${lanes}`);
     await settledWork();
     const boardIds = screen.queryAllByTestId("issue-card").map((card) => card.getAttribute("data-work-item"));
@@ -1080,10 +1091,11 @@ describe("the filter-first Work surface", () => {
     fireEvent.click(screen.getByRole("radio", { name: "List" }));
     await settledWork();
     const listIds = screen.queryAllByTestId("work-list-row").map((row) => row.getAttribute("data-work-item"));
-    expect(listIds.toSorted()).toEqual(boardIds.toSorted());
+    expect(listIds).toHaveLength(10);
+    expect(screen.queryByTestId("lanes-trigger")).toBeNull();
   });
 
-  it("keeps active workers visible with full-scope totals and appends matching results in both views", async () => {
+  it("keeps active workers visible with full-scope totals while List starts in Active", async () => {
     const { router, requests } = await pagedWork();
     await settledWork();
     expect(screen.getByText("Observed later-page worker")).not.toBeNull();
@@ -1106,12 +1118,12 @@ describe("the filter-first Work surface", () => {
     const before = requests.length;
     fireEvent.click(screen.getByRole("radio", { name: "List" }));
     await screen.findByTestId("work-list");
-    expect(screen.getAllByTestId("work-list-row")).toHaveLength(141);
-    expect(screen.getByText("Older title needle a")).not.toBeNull();
+    expect(screen.getAllByTestId("work-list-row")).toHaveLength(10);
+    expect(screen.queryByText("Older title needle a")).toBeNull();
     expect(screen.getByText("Observed later-page worker")).not.toBeNull();
-    expect(requests).toHaveLength(before);
+    expect(requests.length).toBeGreaterThan(before);
     expect(requests.filter((request) => request.url.pathname.endsWith("/work-items")).every((request) =>
-      request.url.searchParams.get("limit") === "100" && request.url.searchParams.get("include") === "work")).toBe(true);
+      ["1", "100"].includes(request.url.searchParams.get("limit")!) && request.url.searchParams.get("include") === "work")).toBe(true);
   });
 
   it.each(["Older title needle", "alpha#3421", "older-label"])("finds older %s matches beyond the initial inventory and open selection", async (q) => {
@@ -1120,6 +1132,8 @@ describe("the filter-first Work surface", () => {
     fireEvent.click(screen.getByRole("radio", { name: "List" }));
     await screen.findByTestId("work-list");
     expect(screen.queryByText("Older title needle a")).toBeNull();
+    fireEvent.click(screen.getByTestId("list-tab-all"));
+    await settledWork();
     fireEvent.change(screen.getByTestId("work-search"), { target: { value: q } });
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
@@ -1136,7 +1150,7 @@ describe("the filter-first Work surface", () => {
   });
 
   it("applies multiple values in all dimensions to items and counts without expanding the selected project", async () => {
-    const view = parseViewState("view=list&q=Older title needle&state=Todo,Done&label=choice-a,choice-b&assignee=operator-a,operator-b&priority=Urgent,High");
+    const view = parseViewState("view=list&tab=all&q=Older title needle&state=Todo,Done&label=choice-a,choice-b&assignee=operator-a,operator-b&priority=Urgent,High");
     const fixture = await pagedWork(`/work/p/proj_alpha?${serializeViewState(view)}`);
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
@@ -1156,18 +1170,18 @@ describe("the filter-first Work surface", () => {
     expect(reads.length).toBeGreaterThan(0);
     expect(reads.every((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))).toBe(true);
     const params = reads.at(-1)!.url.searchParams;
-    expect(params.getAll("state")).toEqual(["Done", "Todo"]);
+    expect(params.getAll("state")).toEqual([]);
     expect(params.getAll("label")).toEqual(["choice-a", "choice-b"]);
     expect(params.getAll("assignee")).toEqual(["operator-a", "operator-b"]);
     expect(params.getAll("priority")).toEqual(["1", "0"]);
     fireEvent.click(screen.getByRole("radio", { name: "Board" }));
     await screen.findByTestId("work-board");
     expect(parseViewState(fixture.router.state.location.searchStr)).toEqual({ ...view, view: "board" });
-    expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items"))).toHaveLength(reads.length);
+    expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items")).length).toBeGreaterThan(reads.length);
   });
 
   it("keeps a second filter choice available after the first narrows results", async () => {
-    const fixture = await pagedWork("/work/p/proj_alpha?view=list&q=Older+title+needle");
+    const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&q=Older+title+needle");
     await settledWork();
     fireEvent.click(screen.getByTestId("filters-trigger"));
     fireEvent.click(await screen.findByTestId("filter-label-choice-a"));
@@ -1216,10 +1230,8 @@ describe("the filter-first Work surface", () => {
     await fixture.control({ openOverflow: true });
     fireEvent.click(screen.getByRole("button", { name: "Reload" }));
     await settledWork();
-    expect(screen.getByRole("button", { name: /^Load more · \d+ of 134$/ })).not.toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /^Load / }));
-    await waitFor(() => expect(screen.queryByRole("button", { name: /^Load / })).toBeNull());
-    await settledWork();
+    expect(screen.queryByRole("button", { name: /^Load more|Show more/ })).toBeNull();
+    expect(fixture.requests.some((request) => request.url.searchParams.has("cursor"))).toBe(true);
     expect(screen.getAllByTestId("work-list-row")).toHaveLength(134);
     expect(screen.getByText("Queue item 1")).not.toBeNull();
     expect(screen.getByText("Queue item 136")).not.toBeNull();
@@ -1228,7 +1240,7 @@ describe("the filter-first Work surface", () => {
   });
 
   it("restores linked filters and discards legacy transport cursors", async () => {
-    const fixture = await pagedWork('/work?view=list&q=older-label&pages=legacy-cursor');
+    const fixture = await pagedWork('/work?view=list&tab=all&q=older-label&pages=legacy-cursor');
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
     expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h (1 imported history loaded)");

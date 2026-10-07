@@ -87,6 +87,8 @@ type NativeIssue struct {
 	Provenance         *Provenance         `json:"provenance,omitempty"`
 	CreatedAt          time.Time           `json:"created_at"`
 	UpdatedAt          time.Time           `json:"updated_at"`
+	ClosedAt           *time.Time          `json:"closed_at,omitempty"`
+	ListChange         *NativeListChange   `json:"list_change,omitempty"`
 	LastActivityAt     time.Time           `json:"last_activity_at"`
 	Dependencies       []NativeWorkItemID  `json:"dependencies"`
 	Blockers           []NativeDependency  `json:"blockers"`
@@ -95,6 +97,11 @@ type NativeIssue struct {
 	// the caller asked for it with (include=change). It is null everywhere
 	// else, so the default work item resource is what it always was.
 	Change *NativeIssueChange `json:"change,omitempty"`
+}
+
+type NativeListChange struct {
+	Branch  string `json:"branch"`
+	HeadSHA string `json:"head_sha"`
 }
 
 // Change review connectors. The value is stated on every change review

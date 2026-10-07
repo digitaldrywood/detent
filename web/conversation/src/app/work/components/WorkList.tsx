@@ -9,6 +9,8 @@ import {
   TableHeader,
   TableRow,
 } from "../../../components/ui/table.tsx";
+import { Button } from "../../../components/ui/button.tsx";
+import type { WorkTab } from "../lib/viewState.ts";
 import { cn } from "../../../lib/utils.ts";
 import { issueNumber, projectHue } from "../lib/format.ts";
 import { isLive, type WorkItemView } from "../lib/model.ts";
@@ -17,6 +19,10 @@ import { AgeText, ElapsedText, Pill, priorityTone, statusPill } from "./IssueCar
 
 export function WorkList({
   items,
+  tab = "active",
+  hasMore = false,
+  loading = false,
+  onLoadMore,
   showProject,
   now,
   onOpen,
@@ -24,12 +30,18 @@ export function WorkList({
   onMove,
 }: {
   items: readonly WorkItemView[];
+  tab?: WorkTab;
+  hasMore?: boolean;
+  loading?: boolean;
+  onLoadMore?: () => void;
   showProject: boolean;
   now?: number;
   onOpen: (item: WorkItemView) => void;
   movesFor: (item: WorkItemView) => readonly string[];
   onMove: (item: WorkItemView, toState: string) => void;
 }): React.ReactElement {
+  const closedColumns = tab === "closed" || tab === "all";
+  const closedOnly = tab === "closed";
   const issueButtons = React.useRef<(HTMLButtonElement | null)[]>([]);
 
   const navigateRows = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -60,10 +72,13 @@ export function WorkList({
             <TableHead className="w-20">Issue</TableHead>
             <TableHead>Title</TableHead>
             <TableHead className="w-32">Lane</TableHead>
-            <TableHead className="w-36">Status</TableHead>
-            <TableHead className="w-40">Worker</TableHead>
+            {closedColumns ? <TableHead className="w-24">Closed</TableHead> : null}
+            {closedOnly ? null : <>
+              <TableHead className="w-36">Status</TableHead>
+              <TableHead className="w-40">Worker</TableHead>
+            </>}
             <TableHead className="w-24">Priority</TableHead>
-            <TableHead className="w-16 text-right">Age</TableHead>
+            {closedColumns ? <TableHead className="w-48">Change</TableHead> : <TableHead className="w-16 text-right">Age</TableHead>}
             <TableHead className="w-8" />
           </TableRow>
         </TableHeader>
@@ -108,7 +123,17 @@ export function WorkList({
                     </span>
                   )}
                 </TableCell>
-                <TableCell className="text-muted-foreground">{item.state}</TableCell>
+                <TableCell className="text-muted-foreground">
+                  <span className="inline-flex items-center gap-1.5">
+                    {item.terminal ? <span aria-hidden className={cn("size-2 shrink-0 rounded-full",
+                      item.state.toLowerCase() === "cancelled" ? "border border-dashed border-muted-foreground" : "bg-muted-foreground")} /> : null}
+                    {item.state}
+                  </span>
+                </TableCell>
+                {closedColumns ? <TableCell className="text-muted-foreground tabular-nums" title={item.closedAt ?? undefined}>
+                  {item.terminal && item.closedAt ? <><AgeText at={item.closedAt} now={now} /> ago</> : "—"}
+                </TableCell> : null}
+                {closedOnly ? null : <>
                 <TableCell>
                   {status === null ? (
                     <span className="text-muted-foreground">—</span>
@@ -138,6 +163,7 @@ export function WorkList({
                     "—"
                   )}
                 </TableCell>
+                </>}
                 <TableCell>
                   {item.priority === null ? (
                     <span className="text-muted-foreground">—</span>
@@ -147,15 +173,25 @@ export function WorkList({
                     </Pill>
                   )}
                 </TableCell>
-                <TableCell className="text-right text-muted-foreground tabular-nums">
+                {closedColumns ? <TableCell className="text-muted-foreground" title={item.listChange?.headSha}>
+                  <span className="block truncate">{item.listChange === null || item.listChange === undefined ? "—"
+                    : `${item.listChange.branch ? `${item.listChange.branch} · ` : ""}${item.listChange.headSha.slice(0, 7) || "—"}`}</span>
+                </TableCell> : <TableCell className="text-right text-muted-foreground tabular-nums">
                   <AgeText at={item.updatedAt} now={now} />
-                </TableCell>
+                </TableCell>}
                 <TableCell>
                   <LaneMenu item={item} lanes={movesFor(item)} onMove={onMove} />
                 </TableCell>
               </TableRow>
             );
           })}
+          {hasMore ? <TableRow>
+            <TableCell colSpan={(showProject ? 1 : 0) + (closedOnly ? 7 : closedColumns ? 9 : 8)} className="text-center">
+              <Button size="xs" variant="ghost" disabled={loading} onClick={onLoadMore} data-testid="work-list-more">
+                {loading ? "Loading…" : "Show more"}
+              </Button>
+            </TableCell>
+          </TableRow> : null}
         </TableBody>
       </Table>
     </div>

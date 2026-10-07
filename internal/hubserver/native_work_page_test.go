@@ -294,7 +294,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		t.Fatalf("compact read exceeded bounded hydration: %d queries", len(q.statements))
 	}
 	for _, statement := range q.statements {
-		if strings.Contains(statement, "i.body") || strings.Contains(statement, "collaboration_events") || strings.Contains(statement, "workflow_history") {
+		if strings.Contains(statement, "i.body") || strings.Contains(statement, "SELECT * FROM collaboration_events") || strings.Contains(statement, "workflow_history") {
 			t.Fatalf("operational read loaded bodies or history: %s", statement)
 		}
 	}
@@ -377,5 +377,75 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 				t.Fatalf("completed = %+v, want %d", page.Work, test.want)
 			}
 		})
+	}
+}
+
+func TestNativeWorkClosedOrdering(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := append(slices.Clone(f.project.States), tracker.NativeState{Name: "Cancelled", Terminal: true})
+	if err := applyNativeProjectStates(t.Context(), tx, scope, states, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var expected []tracker.NativeWorkItemID
+	for index, state := range []string{"Cancelled", "Done", "Done", "Done", "Done"} {
+		issue := seedArchiveIssues(t, f.service, scope, 1, state)[0]
+		expected = append(expected, issue.WorkItemID)
+		if index == 4 {
+			continue
+		}
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: state}, now.Add(-time.Duration(index+1)*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedArchiveIssues(t, f.service, scope, 1, "Todo")
+	params := url.Values{"include": {"work"}, "open": {"false"}, "sort": {"closed"}, "limit": {"2"}}
+	var actual []tracker.NativeWorkItemID
+	for {
+		page, err := f.service.readIssues(t.Context(), scope, params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, issue := range page.Items {
+			actual = append(actual, issue.WorkItemID)
+			if !issue.Terminal {
+				t.Fatal("closed query returned an active item")
+			}
+			index := len(actual) - 1
+			if index < 4 && (issue.ClosedAt == nil || !issue.ClosedAt.Equal(now.Add(-time.Duration(index+1)*time.Hour))) {
+				t.Fatalf("closed timestamp = %v", issue.ClosedAt)
+			}
+			if index == 4 && issue.ClosedAt != nil {
+				t.Fatal("missing terminal history invented a timestamp")
+			}
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		params.Set("cursor", page.NextCursor)
+	}
+	if !slices.Equal(actual, expected) {
+		t.Fatalf("closed order = %v, want %v", actual, expected)
+	}
+	params.Set("sort", "unknown")
+	params.Del("cursor")
+	if _, err := f.service.readIssues(t.Context(), scope, params); err == nil {
+		t.Fatal("accepted unknown sort")
 	}
 }

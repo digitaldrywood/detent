@@ -1313,7 +1313,7 @@ export function createWorkMock(options: {
       const scoped = issues.filter((issue) => issue.project_id === projectId);
 
       if (segments.length === 2 && method === "GET") {
-        const problem = validateQuery(url, ["state", "label", "assignee", "priority", "include", "archived", "q", "completed_window"], ["state", "label", "assignee", "priority"]);
+        const problem = validateQuery(url, ["state", "label", "assignee", "priority", "include", "archived", "q", "completed_window", "open", "sort"], ["state", "label", "assignee", "priority"]);
         if (problem !== null) {
           invalid(response, problem);
           return true;
@@ -1330,7 +1330,7 @@ export function createWorkMock(options: {
         const priority = url.searchParams.getAll("priority");
         const limit = Math.min(Number(url.searchParams.get("limit") ?? "50"), 200);
         const q = url.searchParams.get("q")?.trim().toLowerCase() ?? "";
-        const cursorScope = JSON.stringify([projectId, state, label, assignee, priority, q, url.searchParams.get("archived"), completedWindow]);
+        const cursorScope = JSON.stringify([projectId, state, label, assignee, priority, q, url.searchParams.get("archived"), completedWindow, url.searchParams.get("open"), url.searchParams.get("sort")]);
         let after = Number(url.searchParams.get("cursor") ?? "0");
         if (pagination && url.searchParams.has("cursor")) {
           try {
@@ -1344,6 +1344,7 @@ export function createWorkMock(options: {
         }
         const filtered = scoped
           .filter(() => url.searchParams.get("archived") !== "true")
+          .filter((issue) => !url.searchParams.has("open") || issue.terminal === (url.searchParams.get("open") === "false"))
           .filter((issue) => state.length === 0 || state.includes(issue.state))
           .filter((issue) => label.length === 0 || label.some((value) => issue.labels.includes(value)))
           .filter((issue) => assignee.length === 0 || assignee.some((value) => issue.assignees.includes(value)))
@@ -1352,8 +1353,10 @@ export function createWorkMock(options: {
             || `${project(projectId)?.name}#${issue.number}`.toLowerCase().includes(q)
             || `${projectId}#${issue.number}`.toLowerCase().includes(q)
             || issue.labels.some((value) => value.toLowerCase().includes(q)));
-        const matching = filtered.filter((issue) => issue.number > after)
-          .toSorted((a, b) => a.number - b.number);
+        const ordered = filtered.toSorted((a, b) => url.searchParams.get("sort") === "closed"
+          ? Date.parse(terminalEntries.get(b.work_item_id) ?? "1970-01-01") - Date.parse(terminalEntries.get(a.work_item_id) ?? "1970-01-01") || a.number - b.number
+          : a.number - b.number);
+        const matching = after === 0 ? ordered : ordered.slice(ordered.findIndex((issue) => issue.number === after) + 1);
         const page = matching.slice(0, limit);
         const last = page.at(-1);
         const workIncluded = url.searchParams.get("include") === "work";
@@ -1363,11 +1366,11 @@ export function createWorkMock(options: {
             - Number(STATES.find((state) => state.name === a.state)?.dispatchable ?? false)
           || b.number - a.number);
         json(response, 200, {
-          items: workIncluded ? page.map((issue) => ({ ...issue, body: "" })) : page,
+          items: workIncluded ? page.map((issue) => ({ ...issue, closed_at: issue.terminal ? terminalEntries.get(issue.work_item_id) : undefined, body: "" })) : page,
           ...(workIncluded ? { work: {
             completed: filtered.filter((issue) => issue.terminal && (completedWindow === "all"
               || Date.parse(terminalEntries.get(issue.work_item_id) ?? "") >= now - hours[completedWindow]! * 3_600_000)).length,
-            items: open.slice(0, limit).map((issue) => ({ ...issue, body: "" })),
+            items: open.slice(0, limit).map((issue) => ({ ...issue, closed_at: issue.terminal ? terminalEntries.get(issue.work_item_id) : undefined, body: "" })),
             lanes: [...new Set(filtered.map((issue) => issue.state))].map((state) => ({
               state, total: filtered.filter((issue) => issue.state === state).length,
               running: filtered.filter((issue) => issue.state === state && running().includes(issue)).length,

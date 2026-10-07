@@ -22,6 +22,7 @@ import {
   type CompletedWindow,
   DEFAULT_VIEW_STATE,
   FILTER_KEYS,
+  effectiveSort,
   FILTER_LABELS,
   isDefaultViewState,
   laneVisible,
@@ -62,7 +63,7 @@ export function WorkToolbar({
   totals,
   searchRef,
 }: WorkToolbarProps): React.ReactElement {
-  const filters = activeFilterCount(view);
+  const filters = activeFilterCount(view.view === "list" ? { ...view, state: [] } : view);
   const boardLanes = React.useMemo(() => lanes.filter((lane) => !lane.terminal), [lanes]);
   const visibleLanes = boardLanes.filter((lane) => laneVisible(view, lane)).length;
 
@@ -116,7 +117,7 @@ export function WorkToolbar({
         <MenuPopup align="start" className="w-64">
           {/* Every label is inside a `MenuGroup`: Base UI's `GroupLabel`
               reads its group's context and throws without one. */}
-          {FILTER_KEYS.map((key) => (
+          {FILTER_KEYS.filter((key) => view.view === "board" || key !== "state").map((key) => (
             <React.Fragment key={key}>
               <MenuGroup>
                 <MenuGroupLabel>{FILTER_LABELS[key]}</MenuGroupLabel>
@@ -158,11 +159,11 @@ export function WorkToolbar({
       <Menu>
         <MenuTrigger className={TRIGGER} data-testid="sort-trigger">
           Sort
-          <span className="text-muted-foreground">{SORT_LABELS[view.sort]}</span>
+          <span className="text-muted-foreground">{SORT_LABELS[effectiveSort(view)]}</span>
         </MenuTrigger>
         <MenuPopup align="start" className="w-52">
           <MenuRadioGroup
-            value={view.sort === "default" ? "priority" : view.sort}
+            value={effectiveSort(view) === "default" ? "priority" : effectiveSort(view)}
             onValueChange={(value) => onChange({ ...view, sort: value as WorkSort })}
           >
             {WORK_SORTS.map((sort) => (
@@ -220,7 +221,7 @@ export function WorkToolbar({
         })}
       </div>
 
-      <Menu>
+      {view.view === "board" ? <Menu>
         <MenuTrigger className={TRIGGER} data-testid="lanes-trigger">
           Lanes
           <span className="text-muted-foreground tabular-nums">
@@ -243,7 +244,7 @@ export function WorkToolbar({
             ))}
           </MenuGroup>
         </MenuPopup>
-      </Menu>
+      </Menu> : null}
       <Menu>
         <MenuTrigger className={TRIGGER} data-testid="completed-window-trigger">Completed · {view.completedWindow}</MenuTrigger>
         <MenuPopup align="end" className="w-44">

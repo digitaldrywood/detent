@@ -53,6 +53,8 @@ export interface ChangeView {
 export type Observation = "known" | "unchecked" | "unavailable" | "partial";
 
 export interface WorkItemView {
+  readonly closedAt?: string | null;
+  readonly listChange?: { readonly branch: string; readonly headSha: string } | null;
   readonly reserveWorkerSpace?: boolean;
   readonly observations?: { readonly worker: Observation; readonly change: Observation };
   readonly archived?: boolean;
@@ -163,6 +165,10 @@ export function sortItems(
       }
       case "updated": {
         const delta = time(b.updatedAt) - time(a.updatedAt);
+        return delta !== 0 ? delta : byIdentifier(a, b);
+      }
+      case "closed": {
+        const delta = time(b.closedAt ?? null) - time(a.closedAt ?? null);
         return delta !== 0 ? delta : byIdentifier(a, b);
       }
       case "created": {

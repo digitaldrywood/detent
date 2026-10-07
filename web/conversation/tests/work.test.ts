@@ -163,14 +163,15 @@ describe("the derived board", () => {
     { sort: "updated", expected: [1, 2, 3] },
     { sort: "created", expected: [3, 2, 1] },
     { sort: "title", expected: [2, 1, 3] },
+    { sort: "closed", expected: [3, 2, 1] },
   ] satisfies { sort: WorkSort; expected: number[] }[])("keeps $sort ordering independent of other timestamps", async ({ sort, expected }) => {
     const page = await http.listWorkItems({ projectId: PROJECT, state: "In Progress", limit: 1 });
     const attempts = await http.listAttempts(PROJECT, page.items[0]!.work_item_id);
     const base = toWorkItemView(page.items[0]!, "alpha");
     const items: WorkItemView[] = [
       { ...base, identifier: "alpha#1", priority: "High", title: "B", terminal: false, lastActivityAt: "2026-10-03", updatedAt: "2026-10-05", createdAt: "2026-10-03", attempt: toAttemptView(attempts.items) },
-      { ...base, identifier: "alpha#2", priority: "High", title: "A", terminal: false, lastActivityAt: "2026-10-04", updatedAt: "2026-10-04", createdAt: "2026-10-04", attempt: null },
-      { ...base, identifier: "alpha#3", priority: "Urgent", title: "C", terminal: true, lastActivityAt: "2026-10-05", updatedAt: "2026-10-03", createdAt: "2026-10-05", attempt: null },
+      { ...base, identifier: "alpha#2", closedAt: "2026-10-01", priority: "High", title: "A", terminal: false, lastActivityAt: "2026-10-04", updatedAt: "2026-10-04", createdAt: "2026-10-04", attempt: null },
+      { ...base, identifier: "alpha#3", closedAt: "2026-10-02", priority: "Urgent", title: "C", terminal: true, lastActivityAt: "2026-10-05", updatedAt: "2026-10-03", createdAt: "2026-10-05", attempt: null },
     ];
     expect(sortItems(items, sort).map((item) => item.identifier)).toEqual(expected.map((number) => `alpha#${number}`));
   });

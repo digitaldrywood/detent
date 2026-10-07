@@ -54,7 +54,7 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
 	var sourceAuthor, sourceCreated, sourceUpdated, sourceObserved string
 	var repositoryOwner, repositoryName, importedURL string
 	var sourceNumber int
-	var provenance sql.NullString
+	var provenance, closedAt, listChange sql.NullString
 	var priority sql.NullInt64
 	bodyColumn := "i.body"
 	if compact {
@@ -64,7 +64,14 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
  i.title, `+bodyColumn+`, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
  i.actor_json, i.provenance_json, i.native_created_at, i.native_updated_at, i.last_activity_at, COALESCE(i.github_node_id, ''),
  i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived,
- COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(i.github_number, 0), i.url
+ COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(i.github_number, 0), i.url,
+ CASE WHEN ws.terminal = 1 THEN `+nativeTerminalEnteredAt+` ELSE NULL END,
+ (SELECT json_object('branch', CASE WHEN json_extract(c.record_json, '$.landed.version_id') = json_extract(c.record_json, '$.current_version_id') THEN COALESCE(json_extract(c.record_json, '$.landed.base_ref'), '') ELSE '' END,
+ 'head_sha', CASE WHEN json_extract(c.record_json, '$.landed.version_id') = json_extract(c.record_json, '$.current_version_id') THEN COALESCE(json_extract(c.record_json, '$.landed.merge_sha'), '') ELSE COALESCE(json_extract(v.record_json, '$.head_sha'), '') END)
+ FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
+ LEFT JOIN change_versions v ON v.id = json_extract(c.record_json, '$.current_version_id') AND v.change_id = c.id
+ WHERE c.organization_id = i.organization_id AND c.project_id = i.project_id AND l.work_item_id = i.native_id
+ ORDER BY c.rowid DESC LIMIT 1)
 FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
 LEFT JOIN repositories r ON r.id = i.repository_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
@@ -73,7 +80,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 		&internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
 		&issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &provenance, &created, &updated, &activity, &externalID,
 		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived,
-		&repositoryOwner, &repositoryName, &sourceNumber, &importedURL)
+		&repositoryOwner, &repositoryName, &sourceNumber, &importedURL, &closedAt, &listChange)
 	if err != nil {
 		return issue, 0, err
 	}
@@ -120,6 +127,18 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 	}
 	if issue.LastActivityAt, err = parseTimeValue(activity); err != nil {
 		return issue, 0, err
+	}
+	if closedAt.Valid {
+		at, err := parseTimeValue(closedAt.String)
+		if err != nil {
+			return issue, 0, err
+		}
+		issue.ClosedAt = &at
+	}
+	if listChange.Valid {
+		if err := json.Unmarshal([]byte(listChange.String), &issue.ListChange); err != nil {
+			return issue, 0, err
+		}
 	}
 	if priority.Valid {
 		value := int(priority.Int64)

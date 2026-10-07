@@ -22,7 +22,7 @@ type nativeIssuePageItem struct {
 	Position nativeIssuePageCursor
 }
 
-func (s *Service) readIssuePageItems(ctx context.Context, query string, args []any, limit int, cursor *nativeCursor) ([]nativeIssuePageItem, error) {
+func (s *Service) readIssuePageItems(ctx context.Context, query string, args []any, limit int, cursor *nativeCursor, sort string) ([]nativeIssuePageItem, error) {
 	position := cursor.Issues
 	if position == nil {
 		if cursor.After != "" {
@@ -49,7 +49,14 @@ CASE WHEN ws.terminal = 1 THEN 0 ELSE COALESCE((SELECT CASE WHEN q.priority_over
 CASE WHEN i.last_activity_at IN ('', '0001-01-01T00:00:00Z') THEN 1 ELSE 0 END,
 CASE WHEN i.last_activity_at = '0001-01-01T00:00:00Z' THEN '' ELSE rtrim(i.last_activity_at, 'Z') END,
 i.project_id || '#' || i.number`
-		statement := strings.Replace(query, "SELECT i.native_id", projection, 1)
+		selected := projection
+		if sort == "closed" {
+			selected = `INSERT INTO native_issue_page_items(page_id, native_id, lane_rank, state_name, priority_rank, activity_missing, activity_at, identifier) SELECT ?, i.native_id,
+0, '', 0, CASE WHEN ws.terminal = 1 AND ` + nativeTerminalEnteredAt + ` IS NOT NULL THEN 0 ELSE 1 END,
+CASE WHEN ws.terminal = 1 THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%f', ` + nativeTerminalEnteredAt + `), '') ELSE '' END,
+i.project_id || '#' || i.number`
+		}
+		statement := strings.Replace(query, "SELECT i.native_id", selected, 1)
 		if _, err = tx.ExecContext(ctx, statement, append([]any{position.Snapshot}, args...)...); err != nil {
 			return nil, err
 		}
