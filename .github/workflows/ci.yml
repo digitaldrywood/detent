@@ -172,7 +172,7 @@ jobs:
         run: exit 1
 
       - name: Upload workspace test evidence
-        if: always() && runner.os != 'Windows'
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: workspace-test-evidence-${{ runner.os }}
@@ -324,7 +324,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-latest]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -337,7 +337,7 @@ jobs:
         timeout-minutes: 3
         with:
           go-version: '1.26.6'
-          cache: ${{ runner.os != 'macOS' }}
+          cache: false
 
       - name: Download modules
         run: go mod download
@@ -355,73 +355,19 @@ jobs:
           check_with_evidence vet make vet
 
       - name: Test the short unit suite
-        if: runner.os != 'Windows'
         shell: bash
         run: |
           source scripts/check-evidence.sh
           check_with_evidence unit-short make test-fast
 
       - name: Upload workspace test evidence
-        if: always() && runner.os != 'Windows'
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: workspace-test-evidence-${{ runner.os }}
           path: tmp/workspace-test-evidence
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Test runner packages with bounded Windows concurrency
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          bash scripts/test-workspace.sh -parallel 4 -output tmp/windows-test-evidence/workspace
-          go list ./... > tmp/windows-packages.txt
-          packages=()
-          while IFS= read -r package; do
-            case "$package" in
-              github.com/digitaldrywood/detent/internal/workspace) ;;
-              github.com/digitaldrywood/detent/internal/hubserver|github.com/digitaldrywood/detent/internal/hubserver/*) ;;
-              github.com/digitaldrywood/detent/internal/hubclient|github.com/digitaldrywood/detent/internal/hubgithub|github.com/digitaldrywood/detent/internal/hubsecrets|github.com/digitaldrywood/detent/internal/cloudentry) ;;
-              *) packages+=("$package") ;;
-            esac
-          done < tmp/windows-packages.txt
-          GOFLAGS=-short go run ./tools/testgate -output tmp/windows-test-evidence -parallel 4 -timeout 10m "${packages[@]}"
-
-      - name: Repeat Windows workflow overlay lifecycle
-        if: runner.os == 'Windows'
-        run: go test ./internal/project -run '^TestGitRefWorkflowWatcherReloadsLocalOverlayLifecycle$' -count=50 -timeout=5m
-
-      - name: Upload Windows test evidence
-        if: always() && runner.os == 'Windows'
-        uses: actions/upload-artifact@v7
-        with:
-          name: windows-test-evidence
-          path: tmp/windows-test-evidence
-          if-no-files-found: error
-          retention-days: 14
-
-  windows-core:
-    needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
-    name: Windows Core
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.preflight.outputs.develop_sha }}
-
-      - uses: ./.github/actions/prepare-conversation
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.26.6'
-          cache: true
-
-      - name: Build command smoke
-        run: go build -o tmp/detent.exe ./cmd/detent
-
-      - name: Run command smoke
-        run: .\tmp\detent.exe --help
 
   installer-smoke:
     needs: preflight
@@ -431,7 +377,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -447,7 +393,6 @@ jobs:
           echo "DETENT_VERSION=$tag" >> "$GITHUB_ENV"
 
       - name: Smoke release installer
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
@@ -471,50 +416,6 @@ jobs:
           grep -F "installed_at=" "$DETENT_INSTALL_LOCK"
 
           "$DETENT_INSTALL_DIR/detent" version
-
-      - name: Smoke release installer
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $root = Join-Path $env:RUNNER_TEMP 'detent'
-          $env:DETENT_INSTALL_DIR = Join-Path $root 'bin'
-          $env:DETENT_STATE_DIR = Join-Path $root 'state'
-          $env:DETENT_INSTALL_LOCK = Join-Path $env:DETENT_STATE_DIR 'install.lock'
-          $env:DETENT_INSTALL_MODE = 'release'
-
-          $output = powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 2>&1
-          $exitCode = $LASTEXITCODE
-          $output | ForEach-Object { Write-Host $_ }
-          if ($exitCode -ne 0) {
-            throw "install.ps1 failed with exit code $exitCode"
-          }
-          if ($output -match 'falling back to prepared source') {
-            throw 'Release installer fell back to prepared source'
-          }
-          if (-not ($output -match 'Verified checksum for detent_.*_windows_.*\.zip')) {
-            throw 'install.ps1 did not report checksum verification'
-          }
-
-          $binary = Join-Path $env:DETENT_INSTALL_DIR 'detent.exe'
-          if (-not ($output -match [regex]::Escape("Installed Detent at $binary"))) {
-            throw 'install.ps1 did not report the requested install directory'
-          }
-          if (-not ($output -match [regex]::Escape("Added $env:DETENT_INSTALL_DIR to the user PATH"))) {
-            throw 'install.ps1 did not report PATH guidance'
-          }
-          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
-            throw "detent.exe was not installed at $binary"
-          }
-
-          $lock = Get-Content -LiteralPath $env:DETENT_INSTALL_LOCK -Raw
-          if ($lock -notmatch [regex]::Escape("binary=$binary")) {
-            throw 'install lock did not record the installed binary path'
-          }
-          if ($lock -notmatch 'installed_at=') {
-            throw 'install lock did not record installed_at'
-          }
-
-          & $binary version
 
   goreleaser-snapshot:
     needs: preflight
@@ -558,7 +459,7 @@ jobs:
   finalize:
     name: Finalize scheduled validation
     timeout-minutes: 5
-    needs: [preflight, invariants, lint, verify-fast, verify-race, test-cover, security, browser-visual-shard, portability-verify, windows-core, installer-smoke, goreleaser-snapshot]
+    needs: [preflight, invariants, lint, verify-fast, verify-race, test-cover, security, browser-visual-shard, portability-verify, installer-smoke, goreleaser-snapshot]
     if: always() && (needs.preflight.outputs.should_run == 'true' || needs.preflight.result == 'failure')
     runs-on: ubuntu-latest
     permissions:

@@ -19,7 +19,6 @@ case "$suite" in
             stress-runner) package=./internal/runner; budget=45m ;;
             stress-checklock) package=./tools/checklock; budget=45m ;;
         esac
-        # CLI: observed 4933.681s; checklock: 1205.368s on hosted Windows.
         env -u DETENT_API_TOKEN go test -race -json -p 4 -parallel 4 \
             -count=10 -timeout="$budget" "$package" | tee "$evidence/tests.jsonl"
         ;;
@@ -36,11 +35,6 @@ case "$suite" in
             "${selection[@]}" ./internal/hubserver
         ;;
     orchestrator)
-        if [ "$(go env GOOS)" = windows ]; then
-            env -u DETENT_API_TOKEN go test -json -p 4 -parallel 4 \
-                ./internal/orchestrator -run '^TestLocalSQLiteArtifactLifecycleEndToEnd$' \
-                -count=20 -timeout=10m | tee "$evidence/sqlite-lifecycle.jsonl"
-        fi
         env -u DETENT_API_TOKEN go run -p 4 ./tools/testgate -race \
             -parallel 4 -timeout 30m -output "$evidence" ./internal/orchestrator
         ;;

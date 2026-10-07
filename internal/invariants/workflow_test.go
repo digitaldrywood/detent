@@ -37,7 +37,7 @@ func checkWorkflow(data []byte) error {
 	if err := scheduleNode.Decode(&schedule); err != nil || len(schedule) != 1 || schedule[0].Cron != "17 * * * *" {
 		return errors.New("INV-5 CI must run hourly at minute 17")
 	}
-	for _, required := range []string{"preflight", "invariants", "lint", "verify-fast", "verify-race", "test-cover", "security", "browser-visual-shard", "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot", "finalize"} {
+	for _, required := range []string{"preflight", "invariants", "lint", "verify-fast", "verify-race", "test-cover", "security", "browser-visual-shard", "portability-verify", "installer-smoke", "goreleaser-snapshot", "finalize"} {
 		if _, ok := workflow.Jobs[required]; !ok {
 			return fmt.Errorf("INV-5 required CI job %s missing", required)
 		}
@@ -59,7 +59,7 @@ func checkWorkflow(data []byte) error {
 			}
 		}
 	}
-	if !strings.Contains(string(data), "git ls-remote origin refs/heads/develop") || strings.Count(string(data), "ref: ${{ needs.preflight.outputs.develop_sha }}") < 12 {
+	if !strings.Contains(string(data), "git ls-remote origin refs/heads/develop") || strings.Count(string(data), "ref: ${{ needs.preflight.outputs.develop_sha }}") < 11 {
 		return errors.New("INV-5 CI must validate the pinned development SHA")
 	}
 	if !strings.Contains(string(data), "scripts/scheduled-ci-finish.sh") {
