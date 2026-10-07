@@ -58,6 +58,9 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg.APIToken = "private-api-credential"
+			cfg.Global.Memory.PressureSomeAvg60Threshold = 100
+			cfg.Global.IO.PressureFullAvg10Threshold = 100
+			cfg.Global.CPU.PressureSomeAvg10Threshold = 100
 			cfg.Projects = []globalconfig.Project{
 				{ID: "selected", Workflow: "WORKFLOW.md", WorkflowRef: "HEAD", Workdir: root, Weight: 1, Paused: true},
 				{ID: "unrelated", Workflow: "WORKFLOW.md", WorkflowRef: "HEAD", Workdir: otherRoot, Weight: 3, Priority: 7, Paused: true, PausedReason: "user pause", PausedUntilIssue: "unrelated#42"},
