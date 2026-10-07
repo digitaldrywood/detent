@@ -1097,6 +1097,14 @@ export function createWorkMock(options: {
             issue.terminal = false;
           }
         }
+        for (const [key, state, count] of [["backlogOverflow", "Backlog", 405], ["activeOverflow", "Todo", 210], ["open79", "Todo", 69]] as const) {
+          if (body[key] !== true || issues.some((issue) => issue.work_item_id === `wi_${key}_0`)) continue;
+          const template = issues[0]!;
+          for (let index = 0; index < count; index++) {
+            issues.push({ ...template, work_item_id: `wi_${key}_${index}`, number: (key === "backlogOverflow" ? 4000 : key === "activeOverflow" ? 5000 : 6000) + index,
+              title: `${state} overflow ${index}`, state, terminal: false, labels: ["overflow"], assignees: [] });
+          }
+        }
         revoked = body.revoked === true;
         expired = body.expired === true;
         json(response, 200, { ready: true });
@@ -1366,6 +1374,7 @@ export function createWorkMock(options: {
             - Number(STATES.find((state) => state.name === a.state)?.dispatchable ?? false)
           || b.number - a.number);
         json(response, 200, {
+          total: filtered.length,
           items: workIncluded ? page.map((issue) => ({ ...issue, closed_at: issue.terminal ? terminalEntries.get(issue.work_item_id) : undefined, body: "" })) : page,
           ...(workIncluded ? { work: {
             completed: filtered.filter((issue) => issue.terminal && (completedWindow === "all"

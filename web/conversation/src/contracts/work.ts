@@ -171,6 +171,7 @@ export const NativeWorkSummary = Schema.Struct({
 export type NativeWorkSummary = typeof NativeWorkSummary.Type;
 
 export const WorkItemPage = Schema.Struct({
+  total: Schema.optional(Schema.Number),
   items: Schema.Array(NativeIssue),
   next_cursor: Schema.optional(Schema.String),
   work: Schema.optional(NativeWorkSummary),

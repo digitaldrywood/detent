@@ -7,7 +7,7 @@ import { workPaginationFixture } from "./workPaginationFixture.ts";
 
 async function mount() {
   const fixture = workPaginationFixture();
-  await fixture.control();
+  await fixture.control(globalThis.location.search.includes("backlog") ? { backlogOverflow: true } : { open79: true });
   globalThis.fetch = fixture.fetch as typeof globalThis.fetch;
   Reflect.set(globalThis, "EventSource", undefined);
   const root = createRootRoute({ component: Outlet });

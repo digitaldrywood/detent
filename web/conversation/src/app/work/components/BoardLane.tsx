@@ -12,6 +12,8 @@ export interface BoardLaneProps {
   readonly onToggleCollapsed: () => void;
   readonly items: readonly WorkItemView[];
   readonly total?: number;
+  readonly onShowMore?: (() => void) | null;
+  readonly loadingMore?: boolean;
   readonly showProject: boolean;
   readonly now?: number;
   readonly onOpen: (item: WorkItemView) => void;
@@ -34,6 +36,8 @@ export function BoardLane({
   onToggleCollapsed,
   items,
   total,
+  onShowMore = null,
+  loadingMore = false,
   showProject,
   now,
   onOpen,
@@ -151,6 +155,11 @@ export function BoardLane({
               onDragEnd={onDragEnd}
             />
           ))
+        )}
+        {onShowMore === null ? null : (
+          <Button variant="ghost" size="sm" disabled={loadingMore} onClick={onShowMore}>
+            {loadingMore ? "Loading…" : "Show more"}
+          </Button>
         )}
       </div>}
     </section>

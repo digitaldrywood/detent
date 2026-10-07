@@ -1,6 +1,5 @@
 import React from "react";
 
-import { Button } from "../../../components/ui/button.tsx";
 import { cn } from "../../../lib/utils.ts";
 import type { CompletedWindow } from "../lib/viewState.ts";
 import type { BoardStats, ScopedWorkStats } from "../lib/model.ts";
@@ -8,18 +7,12 @@ import type { BoardStats, ScopedWorkStats } from "../lib/model.ts";
 export function StatsRow({
   stats,
   completedWindow = "48h",
-  hasMore,
-  loadedCount,
   loading,
-  onLoadMore,
   totals = null,
 }: {
   stats: BoardStats;
   completedWindow?: CompletedWindow;
-  hasMore: boolean;
-  loadedCount: number;
   loading: boolean;
-  onLoadMore: () => void;
   totals?: ScopedWorkStats | null;
 }): React.ReactElement {
   const counters = [
@@ -55,11 +48,6 @@ export function StatsRow({
           </React.Fragment>
         ))}
       </div>
-      {hasMore ? (
-        <Button size="xs" variant="outline" className="shrink-0 px-1.5 text-[10px] sm:px-2 sm:text-xs" disabled={loading} onClick={onLoadMore}>
-          {totals === null ? "Load more" : `Load more · ${loadedCount} of ${totals.total}`}
-        </Button>
-      ) : null}
     </div>
   );
 }

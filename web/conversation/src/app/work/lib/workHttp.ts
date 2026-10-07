@@ -146,8 +146,8 @@ export interface ListWorkItemsInput {
   /** Coordinator work items are excluded unless this is on. */
   readonly includeCoordinator?: boolean;
   readonly includeWork?: boolean;
+  readonly open?: boolean | undefined;
   readonly completedWindow?: string;
-  readonly open?: boolean;
   readonly sort?: "closed";
   readonly archived?: boolean | "all";
 }

@@ -909,9 +909,11 @@ requested page limit of nonterminal items, ordered by live attempt, dispatchable
 state and descending issue number. `work.truncated` marks additional open items;
 state filters and the existing inventory cursor still navigate them.
 Both item selections omit issue bodies and linked-source snapshots in this
-projection; the existing item detail read retains full content. The ordinary
-inventory page keeps ascending issue-number ordering and its scoped opaque
-cursor. Clients retain bounded per-item observations with known, unchecked,
+projection; the existing item detail read retains full content. The inventory page uses a lane, priority and activity ordered snapshot with
+a scoped opaque cursor. Its `total` counts all items in that filtered snapshot
+and stays the same on continuation pages. Clients can omit `include=work` on
+continuations without changing cursor scope; state, open, archive and other
+filters must stay the same. Clients retain bounded per-item observations with known, unchecked,
 unavailable and partial coverage rather than inferring worker state from lanes.
 
 Ordered events may include `runtime`: local attempt/generation attribution,

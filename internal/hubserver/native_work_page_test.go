@@ -109,7 +109,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		for transport, call := range transports {
 			raw := hostedContextData(t, call("tools/call", operatortool.WorkList, args), false)
 			var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
-			if err := json.Unmarshal(raw, &result); err != nil || result.Data.Work == nil || !reflect.DeepEqual(result.Data.Work.Lanes, page.Work.Lanes) || len(result.Data.Work.Items) != len(page.Work.Items) || len(result.Data.Items) != len(page.Items) {
+			if err := json.Unmarshal(raw, &result); err != nil || result.Data.Total != page.Total || result.Data.Work == nil || !reflect.DeepEqual(result.Data.Work.Lanes, page.Work.Lanes) || len(result.Data.Work.Items) != len(page.Work.Items) || len(result.Data.Items) != len(page.Items) {
 				t.Fatalf("%s query=%s result=%s err=%v", transport, query, raw, err)
 			}
 			for index, issue := range page.Items {
@@ -126,6 +126,23 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		return page
 	}
 	first := read("")
+	for _, include := range []string{"", "&include=summary"} {
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?limit=100&cursor="+url.QueryEscape(first.NextCursor)+include, f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var continuation tracker.NativeIssuePage
+		if err := json.Unmarshal(response.Body.Bytes(), &continuation); err != nil || continuation.Work != nil || len(continuation.Items) != 36 || continuation.Total != 136 {
+			t.Fatalf("continuation without work: %s err=%v", response.Body, err)
+		}
+		ids := make(map[string]bool)
+		for _, issue := range first.Items {
+			ids[string(issue.WorkItemID)] = true
+		}
+		for _, issue := range continuation.Items {
+			if ids[string(issue.WorkItemID)] {
+				t.Fatalf("continuation repeated %s", issue.WorkItemID)
+			}
+		}
+	}
 	for transport, call := range transports {
 		for _, name := range []string{operatortool.Dashboard, operatortool.BoardState} {
 			t.Run(transport+"/"+name, func(t *testing.T) {
@@ -193,7 +210,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			page := read(test.query)
-			if page.Work == nil || len(page.Items) > 100 || len(page.Work.Items) != test.open || page.Work.Truncated || page.Work.AsOf.IsZero() {
+			if page.Total != test.total || page.Work == nil || len(page.Items) > 100 || len(page.Work.Items) != test.open || page.Work.Truncated || page.Work.AsOf.IsZero() {
 				t.Fatalf("page lost bounds or open selection: %+v", page.Work)
 			}
 			total, running := 0, 0

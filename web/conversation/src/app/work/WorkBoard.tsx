@@ -262,7 +262,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const firstRun =
     noProjects ||
     (board.resolved && board.error === null && board.items.length === 0 && !narrowed(view) &&
-      !board.hasMore && (board.totals?.total ?? 0) === 0);
+      !board.hasMore && !board.backlogHasMore && (board.totals?.total ?? 0) === 0);
   const firstRunPanel = firstRun ? (
     <FirstRunPanel projectId={projectId} issues={board.items.length} onIssueCreated={board.reload} />
   ) : null;
@@ -333,10 +333,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
         stats={stats}
         completedWindow={view.completedWindow}
         totals={board.totals}
-        hasMore={view.view === "board" && board.hasMore}
-        loadedCount={board.items.length}
         loading={board.loading}
-        onLoadMore={board.loadMore}
       /> : null}
 
       {view.view === "list" ? (
@@ -400,7 +397,9 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
                   collapsed={view.collapsed.includes(lane.name)}
                   onToggleCollapsed={() => setView(toggleCollapsed(view, lane.name))}
                   items={items.filter((item) => item.state === lane.name)}
-                  total={board.totals?.lanes[lane.name] ?? (board.totals === null ? undefined : 0)}
+                  total={lane.name.toLowerCase() === "backlog" ? board.backlogTotal : board.totals?.lanes[lane.name] ?? (board.totals === null ? undefined : 0)}
+                  onShowMore={lane.name.toLowerCase() === "backlog" && board.backlogHasMore ? board.loadBacklog : null}
+                  loadingMore={board.backlogLoading}
                   showProject={projectId === null}
                   onOpen={open}
                   movesFor={movesFor}
