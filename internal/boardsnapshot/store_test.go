@@ -44,6 +44,8 @@ func TestFileStoreLoad(t *testing.T) {
 					GeneratedAt: tt.savedAt.Add(-time.Second),
 					Counts:      telemetry.Counts{Running: 2},
 					Shutdown:    telemetry.Shutdown{Status: "draining", Draining: true},
+					Refresh:     telemetry.Refresh{Status: telemetry.RefreshStatusReady, NextRefreshAt: &tt.savedAt},
+					Projects:    []telemetry.ProjectSnapshot{{Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusReady, NextRefreshAt: &tt.savedAt}}},
 				}); err != nil {
 					t.Fatalf("Save() error = %v", err)
 				}
@@ -64,6 +66,12 @@ func TestFileStoreLoad(t *testing.T) {
 			}
 			if found && got.Refresh.ReadinessStatus() != telemetry.RefreshStatusInitializing {
 				t.Fatalf("Load() refresh = %#v, want initializing", got.Refresh)
+			}
+			if found && (got.Refresh.NextRefreshAt != nil || got.Projects[0].Refresh.NextRefreshAt != nil) {
+				t.Fatalf("Load() next refresh = %v, project %v, want none before dispatch starts", got.Refresh.NextRefreshAt, got.Projects[0].Refresh.NextRefreshAt)
+			}
+			if found && got.Refresh.WithFreshness(now.Add(time.Minute)).ReadinessStatus() != telemetry.RefreshStatusInitializing {
+				t.Fatalf("Load() refresh after startup maintenance = %#v, want initializing", got.Refresh.WithFreshness(now.Add(time.Minute)))
 			}
 			if found && got.Shutdown != (telemetry.Shutdown{Status: "running"}) {
 				t.Fatalf("Load() shutdown = %#v, want the new process running", got.Shutdown)

@@ -82,11 +82,11 @@ func (s *fileStore) Load(ctx context.Context) (telemetry.Snapshot, bool, error) 
 	}
 	cached.Snapshot.LastKnown = true
 	cached.Snapshot.LastKnownUntil = cached.SavedAt.Add(s.maxAge)
-	prepareStartupSnapshot(&cached.Snapshot, now.UTC())
+	prepareStartupSnapshot(&cached.Snapshot)
 	return cached.Snapshot, true, nil
 }
 
-func prepareStartupSnapshot(snapshot *telemetry.Snapshot, now time.Time) {
+func prepareStartupSnapshot(snapshot *telemetry.Snapshot) {
 	if snapshot == nil {
 		return
 	}
@@ -98,7 +98,7 @@ func prepareStartupSnapshot(snapshot *telemetry.Snapshot, now time.Time) {
 	}
 	snapshot.Runtime = telemetry.SnapshotSection{Source: telemetry.SnapshotSourceUnknown}
 	snapshot.Shutdown = telemetry.Shutdown{Status: "running"}
-	snapshot.Refresh = startupRefresh(snapshot.Refresh, now)
+	snapshot.Refresh = startupRefresh(snapshot.Refresh)
 	snapshot.Counts.Running = 0
 	snapshot.Running = nil
 	snapshot.WorkAttempts = nil
@@ -111,15 +111,15 @@ func prepareStartupSnapshot(snapshot *telemetry.Snapshot, now time.Time) {
 			Complete:   true,
 		}
 		project.Runtime = telemetry.SnapshotSection{Source: telemetry.SnapshotSourceUnknown}
-		project.Refresh = startupRefresh(project.Refresh, now)
+		project.Refresh = startupRefresh(project.Refresh)
 		project.Counts.Running = 0
 	}
 }
 
-func startupRefresh(refresh telemetry.Refresh, now time.Time) telemetry.Refresh {
+func startupRefresh(refresh telemetry.Refresh) telemetry.Refresh {
 	refresh.Status = telemetry.RefreshStatusInitializing
 	refresh.LastRefreshAt = nil
-	refresh.NextRefreshAt = &now
+	refresh.NextRefreshAt = nil
 	refresh.NextRefreshOverdue = false
 	refresh.StalenessWindowExceeded = false
 	refresh.LastError = ""
