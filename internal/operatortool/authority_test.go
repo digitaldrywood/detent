@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,9 +17,10 @@ import (
 // application's current authority changes, or reach a read on denial.
 func TestCurrentAuthorityExecution(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		change func(*Connection, *Authority)
-		denied bool
+		name    string
+		change  func(*Connection, *Authority)
+		denied  bool
+		message string
 	}{
 		{name: "current grant"},
 		{name: "revoked credential", denied: true, change: func(c *Connection, a *Authority) {
@@ -25,6 +28,9 @@ func TestCurrentAuthorityExecution(t *testing.T) {
 		}},
 		{name: "removed membership or downgraded grant", denied: true, change: func(c *Connection, a *Authority) {
 			a.Check = func(context.Context, Requirement) error { return errors.New("secret project") }
+		}},
+		{name: "named project denial", denied: true, message: "project missing", change: func(c *Connection, a *Authority) {
+			a.Check = func(context.Context, Requirement) error { return fmt.Errorf("%w: project missing", ErrAccessDenied) }
 		}},
 		{name: "forged organization", denied: true, change: func(c *Connection, a *Authority) { a.Identity.OrganizationID = "other" }},
 		{name: "changed principal", denied: true, change: func(c *Connection, a *Authority) { a.Identity.PrincipalID = "other" }},
@@ -54,6 +60,9 @@ func TestCurrentAuthorityExecution(t *testing.T) {
 			if test.denied {
 				if !errors.Is(err, ErrAccessDenied) || reads != 0 {
 					t.Fatalf("err=%v reads=%d", err, reads)
+				}
+				if test.message != "" && !strings.Contains(err.Error(), test.message) {
+					t.Fatalf("denial detail lost: %v", err)
 				}
 				// An approved action must resolve again, exactly like a direct call.
 				if _, err := AuthorizeCurrent(ctx, Requirement{Scope: apikey.ScopeWrite, ProjectID: "project"}); !errors.Is(err, ErrAccessDenied) {

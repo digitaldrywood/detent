@@ -195,7 +195,7 @@ func (s *Service) spritePoolAuthority(ctx context.Context, query nativeQueryer, 
 	var actor string
 	err := query.QueryRowContext(ctx, `SELECT p.configured_by FROM project_sprite_pools p JOIN api_tokens t ON t.id=p.configured_by AND t.revoked_at IS NULL
 WHERE p.organization_id=? AND p.project_id=? AND (t.expires_at IS NULL OR julianday(t.expires_at)>julianday(?)) AND
-((t.scope='admin' AND t.native_only=0) OR EXISTS (SELECT 1 FROM hosted_members m JOIN hosted_project_grants g ON g.user_id=m.user_id WHERE m.principal_id=t.id AND m.active=1 AND m.role IN ('owner','admin') AND g.organization_id=p.organization_id AND g.project_id=p.project_id AND g.can_write=1 AND g.manage_runner=1))`, scope.organization, scope.project, formatHubTime(s.config.now())).Scan(&actor)
+((t.scope='admin' AND t.native_only=0) OR EXISTS (SELECT 1 FROM hosted_members m JOIN hosted_project_grants g ON g.user_id=m.user_id WHERE m.principal_id=t.id AND m.active=1 AND m.role IN ('owner','admin') AND g.organization_id=p.organization_id AND g.project_id=p.project_id AND g.can_write=1))`, scope.organization, scope.project, formatHubTime(s.config.now())).Scan(&actor)
 	return actor, err
 }
 

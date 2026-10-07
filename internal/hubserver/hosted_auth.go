@@ -357,12 +357,8 @@ WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > ju
 		return nil
 	}
 	if scope.credential.ManageRunners {
-		var projects, granted int
-		err := tx.QueryRowContext(ctx, `SELECT count(*), COALESCE(sum(EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.project_id = p.id AND g.user_id = ? AND g.manage_runner = 1)),0) FROM projects p WHERE p.organization_id = ?`, identity.Subject, scope.organization).Scan(&projects, &granted)
-		if err != nil || projects == 0 || projects != granted {
-			return auth.ErrHostedIdentity
-		}
-		return nil
+		scope.credential.HostedRole = lesserHostedRole(scope.credential.HostedRole, membership.Role.Slug)
+		return s.requireHostedRunnerAdministration(ctx, tx, scope.credential)
 	}
 	if membership.Role.Slug != "owner" && membership.Role.Slug != "admin" {
 		return auth.ErrHostedIdentity

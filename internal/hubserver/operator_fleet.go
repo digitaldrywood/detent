@@ -380,7 +380,7 @@ func safeHubOperatorError(err error) error {
 		return mutation.ErrUncertain
 	}
 	if errors.Is(err, operatortool.ErrAccessDenied) {
-		return operatortool.ErrAccessDenied
+		return err
 	}
 	return errHubOperatorUnavailable
 }

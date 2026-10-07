@@ -14,7 +14,7 @@ type operatorCatalogKey struct{}
 type operatorCatalogAuthority struct {
 	identity           operatortool.Identity
 	credential         apiCredential
-	runners            bool
+	runnerAccess       error
 	support            bool
 	createOrganization bool
 }
@@ -22,7 +22,7 @@ type operatorCatalogAuthority struct {
 func (s *Service) withOperatorCatalog(ctx context.Context, credential apiCredential, organization string) context.Context {
 	catalog := operatorCatalogAuthority{identity: operatorIdentity(credential, organization), credential: credential}
 	if credential.Hosted != nil && credential.HostedRole != "account" {
-		catalog.runners = credential.HostedRole != "viewer" && s.hostedAllRunnerGrants(ctx, credential)
+		catalog.runnerAccess = s.requireHostedRunnerAdministration(ctx, s.database.db, credential)
 	}
 	if s.config.Hosted != nil && !s.hostedShared() && credential.Hosted != nil && credential.SessionHash != "" && credential.Hosted.SupportActor == "" {
 		if session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now()); err == nil {
@@ -81,7 +81,10 @@ func (s *Service) authorizeCatalog(ctx context.Context, requirement operatortool
 		return ctx, operatortool.ErrAccessDenied
 	}
 	if requirement.ResourceKind == "runners" {
-		if credential.Hosted != nil && !catalog.runners || credential.Hosted == nil && (credential.NativeOnly || credential.Scope != apiScopeAdmin) {
+		if credential.Hosted != nil {
+			return ctx, catalog.runnerAccess
+		}
+		if credential.NativeOnly || credential.Scope != apiScopeAdmin {
 			return ctx, operatortool.ErrAccessDenied
 		}
 		return ctx, nil

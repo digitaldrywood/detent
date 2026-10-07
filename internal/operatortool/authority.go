@@ -108,6 +108,9 @@ func AuthorizeCurrent(ctx context.Context, requirement Requirement) (context.Con
 		return ctx, ErrAccessDenied
 	}
 	if err := authority.Check(ctx, requirement); err != nil {
+		if errors.Is(err, ErrAccessDenied) {
+			return ctx, err
+		}
 		return ctx, ErrAccessDenied
 	}
 	if authority.BindContext != nil {
