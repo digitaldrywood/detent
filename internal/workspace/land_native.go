@@ -118,7 +118,8 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 				out[i].Err = errors.Join(err, refuse(LandRefusalHeadMoved, "the worktree no longer identifies the reviewed head"))
 				continue
 			}
-			if err := verifyLandingValidation(ctx, info.Path, request.Options); err != nil {
+			covered, err := landingReceiptCovers(ctx, info.Path, request.Options)
+			if err != nil {
 				out[i].Err = err
 				continue
 			}
@@ -155,6 +156,10 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 				} else {
 					result.Gate, err = l.validateLanding(ctx, validationInfo, request.Issue, command, merged)
 				}
+			} else if !covered && err == nil {
+				validationInfo := info
+				validationInfo.Path = staging
+				result.Gate, err = l.validateLanding(ctx, validationInfo, request.Issue, request.Options.ValidationCommand, merged)
 			}
 			if err != nil {
 				out[i] = LandOutcome{Result: result, Err: err}
@@ -206,22 +211,19 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 	return out
 }
 
-func verifyLandingValidation(ctx context.Context, path string, options LandOptions) error {
+func landingReceiptCovers(ctx context.Context, path string, options LandOptions) (bool, error) {
 	if options.ValidationCommand == "" {
-		return nil
+		return true, nil
 	}
 	receipt := options.Validation
 	if receipt == nil || receipt.Command != options.ValidationCommand || receipt.HeadSHA != options.HeadSHA || receipt.ExitCode != 0 || receipt.DurationNS <= 0 {
-		return refuse(LandRefusalHeadMoved, "the reviewed head has no successful validation receipt for the approved command")
+		return false, nil
 	}
 	tree, err := runGitAt(ctx, path, "rev-parse", options.HeadSHA+"^{tree}")
 	if err != nil {
-		return err
+		return false, err
 	}
-	if receipt.TreeSHA != strings.TrimSpace(tree) {
-		return refuse(LandRefusalHeadMoved, "the validation receipt does not cover the reviewed tree")
-	}
-	return nil
+	return receipt.TreeSHA == strings.TrimSpace(tree), nil
 }
 
 func rebaseLanding(ctx context.Context, path, head, base, message string) (string, error) {

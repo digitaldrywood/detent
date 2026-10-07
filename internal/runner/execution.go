@@ -321,7 +321,28 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 			}
 		}
 	}
-	if req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
+	var publicationErr error
+	deadlineExpired := availabilityStopped(req.Execution, context.Cause(ctx), time.Now())
+	if deadlineExpired {
+		if publisher, ok := backend.(workspace.WorkInProgressPublisher); ok {
+			publicationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+			publicationErr = publisher.PublishWorkInProgress(publicationCtx, issue, req.Execution.Validate)
+			cancel()
+			if publicationErr != nil {
+				r.logger.Warn("unfinished runner work not published", "issue_id", req.Issue.ID, "error", publicationErr)
+			}
+		}
+	}
+	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+	state := r.workspaceRecoveryState(backend, recoveryCtx, info, issue, "native_checkpoint")
+	cancel()
+	checkpoint := executionCheckpoint(state)
+	if state != nil && !agentResumeEmpty(resume) {
+		checkpoint.Resume = "resume_session"
+	} else if turnStarted {
+		checkpoint.Resume = "manual_recovery"
+	}
+	if req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
 		if recorder, ok := req.Execution.(SourceValidationExecution); ok {
 			workflow, _, _, _ := r.runtimeSnapshot()
 			command := gate.Effective(workflow.Config.Gate).Run
@@ -348,27 +369,6 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 				}
 			}
 		}
-	}
-	var publicationErr error
-	deadlineExpired := availabilityStopped(req.Execution, context.Cause(ctx), time.Now())
-	if deadlineExpired {
-		if publisher, ok := backend.(workspace.WorkInProgressPublisher); ok {
-			publicationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
-			publicationErr = publisher.PublishWorkInProgress(publicationCtx, issue, req.Execution.Validate)
-			cancel()
-			if publicationErr != nil {
-				r.logger.Warn("unfinished runner work not published", "issue_id", req.Issue.ID, "error", publicationErr)
-			}
-		}
-	}
-	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
-	state := r.workspaceRecoveryState(backend, recoveryCtx, info, issue, "native_checkpoint")
-	cancel()
-	checkpoint := executionCheckpoint(state)
-	if state != nil && !agentResumeEmpty(resume) {
-		checkpoint.Resume = "resume_session"
-	} else if turnStarted {
-		checkpoint.Resume = "manual_recovery"
 	}
 	artifactCtx := ctx
 	if deadlineExpired {

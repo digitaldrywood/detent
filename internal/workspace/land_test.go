@@ -753,10 +753,11 @@ func TestLocalGitNativeLanding(t *testing.T) {
 		name                    string
 		count                   int
 		conflict, invalid, skip int
-		moved                   bool
+		moved, revalidate       bool
 		receiptMismatch         string
 	}{
 		{name: "clean validated head skips gate", count: 1, conflict: -1, invalid: -1, skip: -1},
+		{name: "head without a receipt runs the approved command before pushing", count: 2, conflict: -1, invalid: -1, skip: -1, revalidate: true},
 		{name: "ten heads share one push", count: 10, conflict: -1, invalid: -1, skip: -1},
 		{name: "conflict does not hold later members", count: 4, conflict: 1, invalid: -1, skip: -1},
 		{name: "preparation failure releases batch", count: 4, conflict: -1, invalid: -1, skip: 1},
@@ -783,6 +784,9 @@ func TestLocalGitNativeLanding(t *testing.T) {
 				head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 				tree := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD^{tree}"))
 				options := LandOptions{Native: true, HeadSHA: head, Method: "squash", TargetBranch: "main", Message: file, ValidationCommand: "exit 73", Validation: &gate.CommandResult{Command: "exit 73", HeadSHA: head, TreeSHA: tree, DurationNS: int64(time.Second)}}
+				if test.revalidate && i == 0 {
+					options.ValidationCommand, options.Validation = "git rev-parse HEAD", nil
+				}
 				if i == test.invalid {
 					switch test.receiptMismatch {
 					case "head":
@@ -856,7 +860,11 @@ func TestLocalGitNativeLanding(t *testing.T) {
 					}
 					continue
 				}
-				if outcome.Err != nil || outcome.Result.Gate.Command != "" || outcome.Result.MergeSHA == "" || outcome.Result.BaseBefore != base {
+				wantGate := ""
+				if test.revalidate && i == 0 {
+					wantGate = "git rev-parse HEAD"
+				}
+				if outcome.Err != nil || outcome.Result.Gate.Command != wantGate || outcome.Result.MergeSHA == "" || outcome.Result.BaseBefore != base || wantGate != "" && (outcome.Result.Gate.HeadSHA != outcome.Result.MergeSHA || !strings.Contains(outcome.Result.Gate.Output, outcome.Result.MergeSHA)) {
 					t.Fatalf("member %d = %#v, base %s", i, outcome, base)
 				}
 				wantPath := "clean_push"
