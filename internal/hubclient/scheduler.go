@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -29,6 +30,7 @@ const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
 	RefreshProjects       func(context.Context, *Scheduler) error
+	Skills                func(project string) []skills.ProviderSkill
 	PrepareProject        func(context.Context, string) error
 	RunnerSetupDeclared   func(context.Context, string) *bool
 	UpdateOwner           func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation
@@ -57,6 +59,7 @@ type Scheduler struct {
 	hostMetrics           *hostmetrics.Collector
 	refreshProjects       func(context.Context, *Scheduler) error
 	projectsMu            sync.RWMutex
+	skills                func(project string) []skills.ProviderSkill
 	projectConfiguration  func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration
 	prepareProject        func(context.Context, string) error
 	runnerSetupDeclared   func(context.Context, string) *bool
@@ -116,6 +119,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		refreshProjects:       config.RefreshProjects,
 		prepareProject:        config.PrepareProject,
 		runnerSetupDeclared:   config.RunnerSetupDeclared,
+		skills:                config.Skills,
 		capacityConfiguration: config.CapacityConfiguration,
 		updateOwner:           config.UpdateOwner,
 		localChecks:           config.LocalChecks,

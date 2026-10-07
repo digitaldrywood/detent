@@ -221,6 +221,24 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	machine.LocalChecks = localChecks
 	machine.Admission = admission
 	machine.CheckoutRepository = repository
+	if s.skills != nil {
+		supported, err := source.client.HubFeature(ctx, tracker.NativeRunnerSkillsCapability)
+		if err != nil {
+			return err
+		}
+		if supported {
+			for name, configured := range s.nativeProjectSnapshot() {
+				if configured != source {
+					continue
+				}
+				report := s.skills(name)
+				if report != nil {
+					machine.Skills = &report
+				}
+				break
+			}
+		}
+	}
 	if s.client.runner != nil && !last.IsZero() {
 		if err := source.client.HeartbeatMachine(ctx, machine); err != nil {
 			return err

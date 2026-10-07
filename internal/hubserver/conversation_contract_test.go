@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -305,6 +306,7 @@ func conversationFixtureCases(t *testing.T) map[string]conversationFixtureCase {
 			Conversations: []conversationResource{projectConversation(linked)}, NextCursor: &nextCursor,
 		}, extra: conversationSection14Fields("conversations[]")},
 		"conversation-snapshot.json": {value: conversationSnapshot{
+			Skills:       []skills.ProviderSkill{{Name: "review", Description: "Review this project", Path: "/workspace/.agents/skills/review/SKILL.md", Scope: "project", Enabled: true, UserInvocable: true, Invocation: "$review"}},
 			Conversation: projectConversation(linked), Messages: messages,
 			Questions: []conversation.Question{conversationFixtureQuestion()}, Cursor: 40, HasMore: true,
 		}, extra: append(conversationSection14Fields("conversation"), conversationSection14Fields("messages[]")...)},

@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -198,9 +199,13 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 	scheduler, err := NewScheduler(client, SchedulerConfig{
 		OrganizationID: "org_test", NativeProjects: map[string]tracker.ProjectID{"native": "prj_test"},
 		CheckoutRepository: func(string) string { return repository },
-		Machine:            Machine{ID: file.Identity.MachineID, Hostname: "host", DisplayName: "Runner", Version: "test", Capacity: 3},
-		LocalChecks:        map[string]runnerauth.LocalChecks{"native": checks, "unrelated": {Checkout: "passed", Doctor: "passed", Provider: "passed"}},
-		HeartbeatInterval:  time.Second, LeaseTTL: time.Minute, Now: func() time.Time { return now },
+		Skills: func(string) []skills.ProviderSkill {
+			t.Error("a Hub without skill support must not request the inventory")
+			return nil
+		},
+		Machine:           Machine{ID: file.Identity.MachineID, Hostname: "host", DisplayName: "Runner", Version: "test", Capacity: 3},
+		LocalChecks:       map[string]runnerauth.LocalChecks{"native": checks, "unrelated": {Checkout: "passed", Doctor: "passed", Provider: "passed"}},
+		HeartbeatInterval: time.Second, LeaseTTL: time.Minute, Now: func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)

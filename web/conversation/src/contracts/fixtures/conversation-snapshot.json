@@ -130,5 +130,16 @@
     }
   ],
   "cursor": 40,
-  "has_more": true
+  "has_more": true,
+  "skills": [
+    {
+      "name": "review",
+      "description": "Review this project",
+      "path": "/workspace/.agents/skills/review/SKILL.md",
+      "scope": "project",
+      "enabled": true,
+      "userInvocable": true,
+      "invocation": "$review"
+    }
+  ]
 }

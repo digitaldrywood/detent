@@ -1,3 +1,4 @@
+import { SHELL_SHORTCUTS } from "../lib/shortcuts.ts";
 import {
   BlocksIcon,
   CreditCardIcon,
@@ -35,7 +36,6 @@ import { useMutation, useResource } from "../account/useResource.ts";
 import { RunnersSettings } from "../fleet/RunnersSection.tsx";
 import { setupStepsLeftLabel } from "../work/components/FirstRun.tsx";
 import { useNewProject } from "../projects/NewProject.tsx";
-import { NEW_CHAT_KEYSHORTCUTS, SEARCH_KEYSHORTCUTS } from "../lib/shortcuts.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import { keybindingCatalogue } from "../adapters/keybindings.ts";
 import {
@@ -549,10 +549,7 @@ export function BillingSettings(): React.ReactElement {
   );
 }
 
-const SHELL_SHORTCUTS: readonly { readonly action: string; readonly keys: readonly string[] }[] = [
-  { action: "New conversation", keys: NEW_CHAT_KEYSHORTCUTS.split(" ") },
-  { action: "Focus search", keys: SEARCH_KEYSHORTCUTS.split(" ") },
-];
+
 
 export function KeybindingsSettings(): React.ReactElement {
   const rows = React.useMemo(() => keybindingCatalogue(), []);

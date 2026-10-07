@@ -176,7 +176,7 @@ func (t *coordinatorToolset) proposeIssueSplit(ctx context.Context, record conve
 	if len(arguments) > coordinatorToolArgumentBytes {
 		return nil, fmt.Errorf("%w: approved split exceeds %d bytes", errCoordinatorToolArguments, coordinatorToolArgumentBytes)
 	}
-	action := chat.Action{ConversationID: record.ID, Kind: chat.ActionIssueSplit, ProjectID: string(record.ProjectID), IssueID: split.ParentID, Identifier: fmt.Sprintf("#%d", parent.Number), Revision: split.Revision, Title: fmt.Sprintf("Split #%d: %s into %d issues", parent.Number, parent.Title, len(split.Children)), Arguments: arguments, Material: true}
+	action := chat.Action{RequiresConfirmation: true, ConversationID: record.ID, Kind: chat.ActionIssueSplit, ProjectID: string(record.ProjectID), IssueID: split.ParentID, Identifier: fmt.Sprintf("#%d", parent.Number), Revision: split.Revision, Title: fmt.Sprintf("Split #%d: %s into %d issues", parent.Number, parent.Title, len(split.Children)), Arguments: arguments, Material: true}
 	return t.submitCoordinatorAction(ctx, record, call, action)
 }
 

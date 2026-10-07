@@ -77,7 +77,7 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 		coordinatorTool(coordinatorToolProposeIssue,
 			"Propose a new issue for the user to confirm. This never creates the issue; it prepares a card the user can accept in the app.",
 			`{"type":"object","required":["title","objective"],"properties":{"title":{"type":"string","maxLength":500},"objective":{"type":"string","maxLength":4000,"description":"What the issue should achieve, in Markdown"},"project_id":{"type":"string","description":"Target project; defaults to this conversation's project"}},"additionalProperties":false}`),
-	}, append(append(coordinatorActionTools(), coordinatorSpriteTools()...), coordinatorRunnerTools()...)...)
+	}, append(append(append(coordinatorActionTools(), coordinatorSlashActionTools()...), coordinatorSpriteTools()...), coordinatorRunnerTools()...)...)
 }
 
 // handle runs one tool call. Errors are returned to the model as
@@ -156,6 +156,10 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 		return t.readIssueHistory(ctx, record, call)
 	case "get_project_integration", "update_project_integration", "move_item", "edit_item", "add_comment":
 		return t.projectAction(ctx, record, call)
+	case "propose_stop_run":
+		return t.proposeStopRun(ctx, record, call)
+	case "propose_file_issue", "propose_maintenance_issue", "propose_move_item", "propose_set_priority", "propose_backlog_admission":
+		return t.slashAction(ctx, record, call)
 	case coordinatorToolListAttention:
 		var args struct {
 			Scope string `json:"scope"`

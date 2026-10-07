@@ -22,6 +22,7 @@ import (
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -262,6 +263,15 @@ func RefreshRunner(ctx context.Context, path string, rotate bool) (identity runn
 }
 
 func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) error {
+	if machine.Skills != nil {
+		supported, err := c.HubFeature(ctx, tracker.NativeRunnerSkillsCapability)
+		if err != nil {
+			return err
+		}
+		if !supported {
+			machine.Skills = nil
+		}
+	}
 	if machine.ProjectConfiguration != nil {
 		supported, err := c.HubFeature(ctx, tracker.NativeProjectConfigurationCapability)
 		if err != nil {
@@ -606,11 +616,12 @@ type nativeMachineHeartbeat struct {
 	// requires set and checks the heartbeat that carried them is fresh.
 	WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 	WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
+	Skills                *[]skills.ProviderSkill        `json:"skills,omitempty"`
 	CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
 	ChangeCursor          *string                        `json:"change_cursor,omitempty"`
 }
 
 func machineHeartbeatPayload(machine Machine, problems []runnerauth.Problem, rejected bool) nativeMachineHeartbeat {
 	capabilities, isolation := machine.workspaceReport()
-	return nativeMachineHeartbeat{machine.HostMetrics, machine.Admission, runnerSpriteName(machine.Hostname), machine.Update, machine.CapacityConfig, machine.ProjectConfiguration, machine.LocalChecks, problems, 2, rejected, machine.BackendIsolation, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.CheckoutRepository, nil}
+	return nativeMachineHeartbeat{machine.HostMetrics, machine.Admission, runnerSpriteName(machine.Hostname), machine.Update, machine.CapacityConfig, machine.ProjectConfiguration, machine.LocalChecks, problems, 2, rejected, machine.BackendIsolation, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.Skills, machine.CheckoutRepository, nil}
 }

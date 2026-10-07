@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -200,6 +201,7 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 		// serves no surface and is never handed a workspace item.
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
+		Skills                *[]skills.ProviderSkill        `json:"skills,omitempty"`
 		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
@@ -227,6 +229,9 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 			if err := updateRunnerWorkspaceReport(ctx, tx, scope, request.WorkspaceCapabilities, request.WorkspaceIsolation); err != nil {
 				return nil, err
 			}
+			if err := updateRunnerSkills(ctx, tx, scope, request.Skills, now); err != nil {
+				return nil, err
+			}
 			if err := updateRunnerCheckoutReport(ctx, tx, scope, request.CheckoutRepository, now); err != nil {
 				return nil, err
 			}
@@ -246,6 +251,9 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 	}
 	if len(request.ProviderReports) != 0 {
 		return s.nativeAPIError(c, nativeInvalid("Provider reports require an enrolled runner"))
+	}
+	if request.Skills != nil {
+		return s.nativeAPIError(c, nativeInvalid("Skill reports require an enrolled runner"))
 	}
 	if request.CheckoutRepository != nil && *request.CheckoutRepository != "" {
 		return s.nativeAPIError(c, nativeInvalid("Checkout reports require an enrolled runner"))

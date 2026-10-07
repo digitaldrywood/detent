@@ -15,19 +15,9 @@ import { ConversationView } from "../App.tsx";
 import { newCommandKey, useClient } from "../client.ts";
 import { useWorkspacePanel } from "../components/ChatWorkspace.tsx";
 
-export const ISSUE_QUESTIONS = [
-  { label: "Why is this Blocked?", prompt: "Why is this Blocked?" },
-  { label: "Summarize the history", prompt: "Summarize the history" },
-  {
-    label: "What is left before it can start?",
-    prompt: "What is left before it can start?",
-  },
-  {
-    label: "Split into smaller issues",
-    prompt:
-      "Use the split-issue skill to break this issue into smaller issues that can each land on their own. Wire up the dependencies so independent pieces can run in parallel, and show me the whole split as one proposal so I can confirm it once.",
-  },
-] as const;
+import { chatSlashCommands, ISSUE_QUESTIONS } from "../adapters/chatPrompts.ts";
+
+export { ISSUE_QUESTIONS };
 
 export interface IssueAsk {
   readonly threads: readonly Conversation[];
@@ -287,6 +277,12 @@ export function IssueAskPanel({
             autoFocus
             preferences={DEFAULT_TURN_PREFERENCES}
             onPreferencesChange={() => {}}
+            slashCommands={chatSlashCommands({
+              issue: attached,
+              coordinator: canWrite,
+              insert: setQuestion,
+              send: (prompt) => void ask.start(prompt, attached).then((sent) => { if (sent) setQuestion(""); }),
+            })}
             domId="dc-issue-ask-composer"
           />
         </div>
