@@ -20,6 +20,19 @@ Every push to `develop` still deploys to staging, whether the scheduled full
 suite passes or fails. Staging is an integration environment, not a production
 release. Production installations and releases use validated version tags.
 
+Develop builds (`develop-` versions) on `https://staging.cloud.detent.build`
+start from a disposable snapshot of the released registry, auth store and
+managed tenant files. SQLite snapshots include committed WAL data and are taken
+without applying migrations to the source databases. The shared entry retains
+the existing release registry ownership lock, routes tenants through preview
+sockets, and runs startup migrations only in the copy under
+`state_directory/.develop`. A fresh develop startup discards any previous copy;
+normal shutdown removes it as well. Staging writes made by a develop build are
+disposable. Released builds use the original state, so reverting a develop-only
+migration cannot advance the database schema that the next release must open.
+Preview startup requires managed tenant allocation and refuses to route unmanaged
+tenants or fall back to migrating the release databases if copying fails.
+
 A failed scheduled job reports through the existing native scheduled reporter
 for `digitaldrywood/detent` and its selected Detent Cloud project, following
 [deployment and release failure reporting](../AGENTS.md#deployment-and-release-failure-reporting).
