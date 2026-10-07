@@ -171,7 +171,10 @@ func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow work
 	if err != nil {
 		return workflowconfig.Workflow{}, fmt.Errorf("load approved shared project configuration: %w", err)
 	}
-	if supplied && approval.Policy.Configuration == nil && approval.Policy.Authored == nil {
+	if supplied && approval.Policy.Authored == nil && (approval.Policy.Configuration == nil || workflow.DefinitionSources != nil) {
+		return workflow, nil
+	}
+	if supplied && approval.Policy.Authored != nil && workflow.Authored != nil && workflow.Authored.Digest != approval.Policy.Authored.Digest {
 		return workflow, nil
 	}
 	return workflowconfig.ApplyNativePolicy(workflow, approval.Policy)
