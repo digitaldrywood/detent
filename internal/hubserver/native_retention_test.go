@@ -268,17 +268,36 @@ func TestProjectArchivePeriods(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload["idempotency_key"] = "checkout-only-period"
-	payload["expected_revision"] = fmt.Sprint(checkout.Revision)
-	payload["intake"] = checkout.Intake
 	delete(payload, "states")
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, payload), http.StatusOK)
-	var intake string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT github_intake FROM projects WHERE id=?", f.project.ID).Scan(&intake); err != nil {
-		t.Fatal(err)
-	}
-	if intake != "disabled" {
-		t.Fatalf("archive-only save changed integration authority: %s", intake)
+	for _, test := range []struct {
+		name   string
+		intake string
+		days   int
+	}{
+		{"checkout-only-period", "automatic", 60},
+		{"checkout-only-omitted-intake", "", 14},
+	} {
+		payload["idempotency_key"] = test.name
+		payload["expected_revision"] = fmt.Sprint(checkout.Revision)
+		payload["archive_completed_after_days"] = test.days
+		if test.intake == "" {
+			delete(payload, "intake")
+		} else {
+			payload["intake"] = test.intake
+		}
+		response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, payload)
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &checkout)
+		if checkout.Intake != "automatic" || checkout.ArchiveCompletedAfterDays == nil || *checkout.ArchiveCompletedAfterDays != test.days {
+			t.Fatalf("archive-only save = %+v", checkout)
+		}
+		var intake string
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT github_intake FROM projects WHERE id=?", f.project.ID).Scan(&intake); err != nil {
+			t.Fatal(err)
+		}
+		if intake != "disabled" {
+			t.Fatalf("archive-only save changed integration authority: %s", intake)
+		}
 	}
 
 }

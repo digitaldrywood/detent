@@ -21,7 +21,8 @@ An administrator can `PUT /integration` with `idempotency_key`,
 `expected_revision` (a decimal string), `intake` (`disabled` or `manual`),
 `projection` (`disabled` or `summary`) and `repository_enabled` (boolean).
 Bound native projects always report `intake: automatic`; intake updates cannot
-disable their webhook intake. These configure transport capabilities, not competing field owners. Compatibility
+disable their webhook intake. Omit `intake` when saving a bound native project's
+other settings to preserve its stored intake value. These configure transport capabilities, not competing field owners. Compatibility
 projects cannot enable native summary projection. Profile changes only occur
 through the cutover operation. Repository integration can be disabled independently
 of issue ownership. Disabling it does not authorize bypassing GitHub merge gates.

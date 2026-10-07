@@ -301,7 +301,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       projectId: string;
       key: string;
       revision: string;
-      intake: string;
+      intake?: string;
       projection: string;
       repositoryEnabled: boolean;
       archiveCompletedAfterDays?: number | null;
@@ -311,7 +311,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     }) =>
       send(ProjectIntegration, "PUT", `${project(input.projectId)}/onboarding/integration`, {
         expected_revision: input.revision,
-        intake: input.intake,
+        ...(input.intake !== undefined ? { intake: input.intake } : {}),
         projection: input.projection,
         repository_enabled: input.repositoryEnabled,
         ...(input.archiveCompletedAfterDays !== undefined ? { archive_completed_after_days: input.archiveCompletedAfterDays } : {}),

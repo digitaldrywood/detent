@@ -123,6 +123,49 @@ func TestProjectIntegrationGitHubAppInstallation(t *testing.T) {
 	}
 }
 
+func TestProjectIntegrationPreservesAutomaticIntake(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		profile  string
+		bound    bool
+		checkout string
+		stored   string
+		want     int
+	}{
+		{"native bound disabled", "native", true, "", "disabled", http.StatusOK},
+		{"native bound manual", "native", true, "", "manual", http.StatusOK},
+		{"native checkout disabled", "native", false, "acme/orders", "disabled", http.StatusOK},
+		{"native checkout manual", "native", false, "acme/orders", "manual", http.StatusOK},
+		{"native unbound", "native", false, "", "disabled", http.StatusUnprocessableEntity},
+		{"compatibility", "github_compatible", true, "", "manual", http.StatusUnprocessableEntity},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newIntegrationFixture(t, &importFixtureBackend{})
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE projects SET profile = ?, checkout_repository = ?, github_intake = ?, repository_id = CASE WHEN ? THEN repository_id ELSE NULL END WHERE id = ?`, test.profile, test.checkout, test.stored, test.bound, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", f.token, map[string]any{"idempotency_key": "preserve-intake", "expected_revision": "2", "projection": "disabled", "repository_enabled": false})
+			requireNativeStatus(t, response, test.want)
+			if test.want == http.StatusOK {
+				var saved ProjectIntegration
+				decodeHubResponse(t, response, &saved)
+				if saved.Intake != "automatic" || saved.Revision != 3 {
+					t.Fatalf("saved integration = %+v", saved)
+				}
+			}
+			var stored string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT github_intake FROM projects WHERE id = ?", f.project.ID).Scan(&stored); err != nil {
+				t.Fatal(err)
+			}
+			if stored != test.stored {
+				t.Fatalf("stored intake = %q, want %q", stored, test.stored)
+			}
+		})
+	}
+}
+
 func TestNativeProjectRepositoryBindingAndIntake(t *testing.T) {
 	t.Parallel()
 	backend := &scriptedReconcileBackend{steps: []reconcileStep{{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_repo", Owner: "digitaldrywood", Name: "detent", UpdatedAt: time.Now().UTC()}}}}}

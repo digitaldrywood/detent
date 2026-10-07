@@ -181,6 +181,25 @@ describe("project settings help", () => {
   });
 
   it.each([
+    { name: "native bound", profile: "native", repository: "acme/orders", checkout_repository: "", intake: "automatic", value: "automatic", options: ["Automatic"], disabled: true },
+    { name: "native checkout", profile: "native", repository: "", checkout_repository: "acme/orders", intake: "automatic", value: "automatic", options: ["Automatic"], disabled: true },
+    { name: "native unbound", profile: "native", repository: "", checkout_repository: "", intake: "disabled", value: "disabled", options: ["Disabled", "Manual"], disabled: true },
+    { name: "compatibility", profile: "github_compatible", repository: "acme/orders", checkout_repository: "", intake: "manual", value: "manual", options: ["Disabled", "Manual"], disabled: false },
+  ])("shows the effective intake for $name", async ({ name: _name, value, options, disabled, ...fields }) => {
+    const current = { ...integration, ...fields };
+    const onDraftChange = vi.fn();
+    renderProject(true, { integration: current, draft: draftOf(current), onDraftChange });
+    const intake = await screen.findByRole<HTMLSelectElement>("combobox", { name: "Intake" });
+    expect(intake.value).toBe(value);
+    expect(intake.disabled).toBe(disabled);
+    expect(Array.from(intake.options, (option) => option.text)).toEqual(options);
+    if (!disabled) {
+      await userEvent.setup().selectOptions(intake, "disabled");
+      expect(onDraftChange).toHaveBeenCalledWith({ ...draftOf(current), intake: "disabled" });
+    }
+  });
+
+  it.each([
     [true, "approved"], [false, "approved"],
     [true, "missing"], [false, "missing"],
     [true, "pending"], [false, "pending"],
