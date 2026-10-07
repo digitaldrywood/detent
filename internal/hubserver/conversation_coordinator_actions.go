@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -162,6 +163,9 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 			return nil, nativeInvalid("Hub GitHub integration is unavailable. Associate the runner checkout in project setup and approve the runner's repository policy with GitHub PR landing enabled.")
 		}
 		input := operatortool.IntegrationInput{ExpectedRevision: current.Revision, Intake: current.Intake, Projection: current.Projection, RepositoryEnabled: current.RepositoryEnabled}
+		if current.Intake == "automatic" {
+			input.Intake = ""
+		}
 		if args.RepositoryEnabled != nil {
 			input.RepositoryEnabled = *args.RepositoryEnabled
 		}
@@ -178,7 +182,8 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 		if _, err := (hubProjectExecutor{s}).command(ctx, operatortool.Call{Name: call.Name, Arguments: action.Arguments}, projectCommandPreview); err != nil {
 			return nil, err
 		}
-		action.Description = fmt.Sprintf("GitHub pull-request mode: %t → %t; intake: %s → %s; projection: %s → %s (revision %d).", current.RepositoryEnabled, input.RepositoryEnabled, current.Intake, input.Intake, current.Projection, input.Projection, current.Revision)
+		proposedIntake := cmp.Or(input.Intake, current.Intake)
+		action.Description = fmt.Sprintf("GitHub pull-request mode: %t → %t; intake: %s → %s; projection: %s → %s (revision %d).", current.RepositoryEnabled, input.RepositoryEnabled, current.Intake, proposedIntake, current.Projection, input.Projection, current.Revision)
 	} else {
 		if args.WorkItemID == "" || len(args.WorkItemID) > 256 {
 			return nil, operatortool.ErrInvalidArguments
