@@ -48,10 +48,11 @@ type ChangeLanding struct {
 // Hub records it and finishes the primary issue in the same transaction.
 type LandChangeVersion struct {
 	Mutation
-	Rebased  bool   `json:"rebased,omitempty"`
-	MergeSHA string `json:"merge_sha"`
-	BaseRef  string `json:"base_ref"`
-	Method   string `json:"method"`
+	Receipt  *NativeLandingReceipt `json:"receipt,omitempty"`
+	Rebased  bool                  `json:"rebased,omitempty"`
+	MergeSHA string                `json:"merge_sha"`
+	BaseRef  string                `json:"base_ref"`
+	Method   string                `json:"method"`
 }
 
 type ChangeArtifact struct {

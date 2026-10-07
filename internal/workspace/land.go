@@ -72,6 +72,8 @@ type LandOptions struct {
 	Native                bool
 	RebaseRequired        bool
 	Validation            *gate.CommandResult
+	LandingMode           string
+	Authorize             func(context.Context) error `json:"-"`
 	ValidationCommand     string
 	RequiredStatusChecks  []string
 	CITriggerLabel        string
@@ -314,6 +316,11 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 		return LandResult{}, fmt.Errorf("wait for source repository operation: %w", err)
 	}
 	defer release()
+	if opts.Authorize != nil {
+		if err := opts.Authorize(ctx); err != nil {
+			return LandResult{}, err
+		}
+	}
 	if err := l.verifyLandingWorktree(ctx, normalized, issue, opts); err != nil {
 		return LandResult{}, err
 	}
@@ -385,17 +392,53 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 	if err != nil {
 		return LandResult{Rebased: rebased}, err
 	}
-	validationInfo := normalized
-	validationInfo.Path = staging
-	validation, err := l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, mergeSHA)
-	if err != nil {
-		return LandResult{Rebased: rebased, Gate: validation, BaseBefore: targetHead}, err
+	var validation gate.CommandResult
+	for {
+		if gate.NormalizeLandingMode(opts.LandingMode) != gate.LandingRollingBarrier {
+			validationInfo := normalized
+			validationInfo.Path = staging
+			validation, err = l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, mergeSHA)
+			if err != nil {
+				return LandResult{Rebased: rebased, Gate: validation, BaseBefore: targetHead}, err
+			}
+		}
+		if opts.Authorize != nil {
+			if err := opts.Authorize(ctx); err != nil {
+				return LandResult{}, err
+			}
+		}
+		pushArgs := []string{"push", "--force-with-lease=refs/heads/" + target + ":" + targetHead, remote, mergeSHA + ":refs/heads/" + target}
+		if _, err := runGitAt(ctx, staging, pushArgs...); err != nil {
+			classified := classifyLandingPush(err, target)
+			var refusal *LandRefusal
+			if gate.NormalizeLandingMode(opts.LandingMode) != gate.LandingRollingBarrier || !errors.As(classified, &refusal) || refusal.Kind != LandRefusalBaseMoved {
+				return LandResult{Rebased: rebased, Gate: validation, BaseBefore: targetHead}, classified
+			}
+			if _, err := runGitAt(ctx, normalized.Path, "fetch", remote, "+refs/heads/"+target+":"+targetRef); err != nil {
+				return LandResult{}, err
+			}
+			current, err := runGitAt(ctx, normalized.Path, "rev-parse", targetRef)
+			if err != nil {
+				return LandResult{}, err
+			}
+			current = strings.TrimSpace(current)
+			if current == targetHead {
+				return LandResult{}, classified
+			}
+			targetHead = current
+			if _, err := runGitAt(ctx, staging, "reset", "--hard", targetHead); err != nil {
+				return LandResult{}, err
+			}
+			mergeSHA, err = combine(ctx, staging, method, head, targetHead, opts.Message)
+			if err != nil {
+				return LandResult{Rebased: true}, err
+			}
+			rebased = true
+			continue
+		}
+		break
 	}
 	result := LandResult{Gate: validation, MergeSHA: mergeSHA, BaseRef: target, BaseBefore: targetHead, Method: method, Rebased: rebased}
-	pushArgs := []string{"push", "--force-with-lease=refs/heads/" + target + ":" + targetHead, remote, mergeSHA + ":refs/heads/" + target}
-	if _, err := runGitAt(ctx, staging, pushArgs...); err != nil {
-		return LandResult{Rebased: rebased, Gate: validation, BaseBefore: targetHead}, classifyLandingPush(err, target)
-	}
 	if opts.PushAttemptBranch && strings.TrimSpace(normalized.Branch) != "" {
 		if _, err := runGitAt(ctx, normalized.Path, "push", remote, head+":refs/heads/"+normalized.Branch); err == nil {
 			result.AttemptBranchPushed = true

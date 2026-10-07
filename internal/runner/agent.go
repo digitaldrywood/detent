@@ -691,7 +691,7 @@ func (r *Runner) prepareMergeFastPath(
 	}
 	// With a local status to post, the clean path runs the gate on the head
 	// it pushes, so the status names a head Detent validated itself.
-	opts := workspace.MergePrepareOptions{ValidationCommand: gateConfig.Run, ValidateHead: gateConfig.LocalStatus != ""}
+	opts := workspace.MergePrepareOptions{LandingMode: gateConfig.LandingMode, ValidationCommand: gateConfig.Run, ValidateHead: gateConfig.LocalStatus != ""}
 	if req.Issue.PullRequest != nil {
 		opts.TargetBranch = strings.TrimSpace(req.Issue.PullRequest.BaseRef)
 		opts.ExpectedRemoteHead = strings.TrimSpace(req.Issue.PullRequest.HeadSHA)
@@ -2301,6 +2301,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		result, turnErr = r.verifyMergeFallback(context.WithoutCancel(ctx), runWorkspace, info, workspaceIssue, workspace.MergePrepareOptions{
 			TargetBranch:       targetBranch,
 			VerifyResolution:   true,
+			LandingMode:        gate.Effective(workflow.Config.Gate).LandingMode,
 			ValidationCommand:  gate.Effective(workflow.Config.Gate).Run,
 			ExpectedRemoteHead: expectedRemoteHead,
 		}, result)

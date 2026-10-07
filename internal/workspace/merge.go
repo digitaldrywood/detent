@@ -26,6 +26,10 @@ func (l *LocalGit) PrepareMerge(
 	issue Issue,
 	opts MergePrepareOptions,
 ) (MergePrepareResult, error) {
+	if gate.NormalizeLandingMode(opts.LandingMode) == gate.LandingRollingBarrier {
+		opts.ValidationCommand = ""
+		opts.ValidateHead = false
+	}
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {
 		return MergePrepareResult{}, err

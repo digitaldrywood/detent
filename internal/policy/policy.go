@@ -23,19 +23,21 @@ type Requirements struct {
 }
 
 type Gates struct {
-	Kind              string `json:"kind"`
-	HumanReview       bool   `json:"human_review,omitempty"`
-	PlanEnabled       bool   `json:"plan_enabled"`
-	PlanReview        string `json:"plan_review"`
-	PlanStopDigest    string `json:"plan_stop_digest"`
-	AutoPromote       bool   `json:"auto_promote"`
-	AutomatedReview   string `json:"automated_review"`
-	RequiredChecks    int    `json:"required_checks"`
-	Validator         bool   `json:"validator"`
-	SecurityAudit     bool   `json:"security_audit"`
-	MergeMethod       string `json:"merge_method"`
-	GitHubPullRequest bool   `json:"github_pull_request,omitempty"`
-	GitHubCIDigest    string `json:"github_ci_digest,omitempty"`
+	LandingCommandDigest string `json:"landing_command_digest,omitempty"`
+	LandingMode          string `json:"landing_mode,omitempty"`
+	Kind                 string `json:"kind"`
+	HumanReview          bool   `json:"human_review,omitempty"`
+	PlanEnabled          bool   `json:"plan_enabled"`
+	PlanReview           string `json:"plan_review"`
+	PlanStopDigest       string `json:"plan_stop_digest"`
+	AutoPromote          bool   `json:"auto_promote"`
+	AutomatedReview      string `json:"automated_review"`
+	RequiredChecks       int    `json:"required_checks"`
+	Validator            bool   `json:"validator"`
+	SecurityAudit        bool   `json:"security_audit"`
+	MergeMethod          string `json:"merge_method"`
+	GitHubPullRequest    bool   `json:"github_pull_request,omitempty"`
+	GitHubCIDigest       string `json:"github_ci_digest,omitempty"`
 }
 
 type Descriptor struct {
@@ -232,6 +234,12 @@ func (d Descriptor) WithID() Descriptor {
 }
 
 func (d Descriptor) Validate() error {
+	if d.Gates.LandingMode != "" && d.Gates.LandingMode != "per_landing" && d.Gates.LandingMode != "rolling_barrier" {
+		return errors.New("policy_mismatch: invalid landing mode")
+	}
+	if d.Gates.LandingMode == "rolling_barrier" && !validHash(d.Gates.LandingCommandDigest, 64) {
+		return errors.New("policy_mismatch: rolling barrier requires a command digest")
+	}
 	if d.Schema != Schema || d.ID != d.WithID().ID {
 		return errors.New("policy_mismatch: invalid policy schema or identity digest")
 	}

@@ -242,6 +242,9 @@ func (s *Service) landChange(c echo.Context) error {
 			return nil, &nativeError{Code: "not_reviewed", Message: "Only a reviewed current version lands: " + strings.Join(detail.Summary.Messages, " "), status: 409}
 		}
 		change.Landed = &tracker.ChangeLanding{VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: request.MergeSHA, BaseRef: request.BaseRef, Method: request.Method, Actor: scope.actor(), LandedAt: now, Rebased: request.Rebased}
+		if err := recordBarrierLanding(ctx, tx, scope, version, change, request, now); err != nil {
+			return nil, err
+		}
 		change.UpdatedAt = now
 		change.Revision++
 		raw, err := marshalNative(change)
@@ -326,6 +329,10 @@ func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nati
 	}
 	version, err := readChangeVersion(ctx, query, change.ID, change.CurrentVersion)
 	if err != nil {
+		return false, true, err
+	}
+	allowed, err := barrierLandingAllowed(ctx, query, *scope, version.Repository, tracker.NativeWorkItemID(item))
+	if err != nil || !allowed {
 		return false, true, err
 	}
 	if version.External != nil || version.AttemptID == "" {

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/gate"
 )
 
 type LandRequest struct {
@@ -69,7 +71,10 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 	if err := l.removeLandingWorktree(ctx, l.sourceRoot, staging); err != nil {
 		return fail(err)
 	}
-	for cycle := range 2 {
+	rolling := gate.NormalizeLandingMode(requests[0].Options.LandingMode) == gate.LandingRollingBarrier
+	var rejectedBase string
+	var rejectedPush error
+	for cycle := 0; ; cycle++ {
 		if _, err := runGitAt(ctx, first.Path, "fetch", remote, "+refs/heads/"+target+":"+baseRef); err != nil {
 			return fail(err)
 		}
@@ -78,6 +83,9 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 			return fail(err)
 		}
 		base = strings.TrimSpace(base)
+		if rejectedPush != nil && base == rejectedBase {
+			return fail(rejectedPush)
+		}
 		if cycle == 0 {
 			if _, err := runGitAt(ctx, first.Path, "worktree", "add", "--detach", staging, base); err != nil {
 				return fail(err)
@@ -90,6 +98,12 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 		for i, request := range requests {
 			if out[i].Err != nil || out[i].Result.MergeSHA != "" {
 				continue
+			}
+			if request.Options.Authorize != nil {
+				if err := request.Options.Authorize(ctx); err != nil {
+					out[i].Err = err
+					continue
+				}
 			}
 			if request.Validate != nil {
 				if err := request.Validate(ctx); err != nil {
@@ -145,7 +159,10 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 			if method == "rebase" && err == nil {
 				result.Rebased, result.Path = true, "rebase_short_validation"
 			}
-			if result.Rebased && err == nil {
+			if result.Rebased && gate.NormalizeLandingMode(request.Options.LandingMode) == gate.LandingRollingBarrier {
+				result.Path = "rebase_push"
+			}
+			if result.Rebased && err == nil && gate.NormalizeLandingMode(request.Options.LandingMode) != gate.LandingRollingBarrier {
 				validationInfo := info
 				validationInfo.Path = staging
 				command, packages, scopeErr := shortLandingCommand(ctx, staging, stageHead, merged, request.Options.ValidationCommand)
@@ -172,6 +189,14 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 			return out
 		}
 		for _, i := range members {
+			if authorize := requests[i].Options.Authorize; authorize != nil {
+				if err := authorize(ctx); err != nil {
+					for _, member := range members {
+						out[member].Result.MergeSHA = ""
+					}
+					return fail(err)
+				}
+			}
 			if requests[i].Validate != nil {
 				if err := requests[i].Validate(ctx); err != nil {
 					for _, member := range members {
@@ -188,7 +213,8 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 			for _, i := range members {
 				out[i].Result.MergeSHA = ""
 			}
-			if errors.As(pushErr, &moved) && moved.Kind == LandRefusalBaseMoved && cycle == 0 {
+			if errors.As(pushErr, &moved) && moved.Kind == LandRefusalBaseMoved && (cycle == 0 || rolling) {
+				rejectedBase, rejectedPush = base, pushErr
 				continue
 			}
 			return fail(pushErr)
@@ -203,7 +229,6 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 		}
 		return out
 	}
-	return out
 }
 
 func verifyLandingValidation(ctx context.Context, path string, options LandOptions) error {

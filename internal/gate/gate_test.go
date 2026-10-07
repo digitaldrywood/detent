@@ -1079,3 +1079,30 @@ func TestEffectivePreservesRequiredStatusPolicyPresence(t *testing.T) {
 		})
 	}
 }
+
+func TestLandingMode(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, input, want string
+		invalid           bool
+	}{
+		{"default", "", LandingPerChange, false},
+		{"per change", "per_landing", LandingPerChange, false},
+		{"rolling", " ROLLING_BARRIER ", LandingRollingBarrier, false},
+		{"unknown", "skip", "skip", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Effective(Config{LandingMode: test.input})
+			if cfg.LandingMode != test.want {
+				t.Fatalf("mode=%q", cfg.LandingMode)
+			}
+			invalid := false
+			for _, problem := range Validate("gate", cfg) {
+				invalid = invalid || strings.Contains(problem, ".landing_mode")
+			}
+			if invalid != test.invalid {
+				t.Fatalf("invalid=%v", invalid)
+			}
+		})
+	}
+}

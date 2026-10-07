@@ -118,6 +118,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "an already landed head prefers Blocked without human review", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalNothing, Refusal: "the base branch already contains everything"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "already contains everything", wantMoves: 1},
 		{name: "a refusal falls back to Human Review without Blocked", landing: refused, hubState: "Merging", states: noBlocked, noHumanReview: true, wantState: "Human Review", wantComment: "was not landed", wantMoves: 1},
 		{name: "an opted out refusal prefers Human Review over Blocked", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, optout: true, wantState: "Human Review", wantComment: "was not landed", wantMoves: 1},
+		{name: "red barrier retains Merging without Rework", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Waiting: true, Refusal: "waiting for rolling barrier repair"}, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "pending configured CI retains the existing landing retry", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Refusal: "waiting for Full CI", CI: &tracker.NativeLandingCIReceipt{HeadSHA: head, State: "pending", Triggered: true}}, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "unproven conflict retains landing retry without coding rework", landing: &waiting, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "stale base projection with current conflict enters configured rework", mergeMessage: "Pull Request has merge conflicts", sourceConflict: true, hubState: "Merging", states: workflow, reworkState: "Refresh", wantState: "Refresh", wantComment: "was not landed", wantMoves: 1},
@@ -297,7 +298,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &metadata); err != nil {
 					t.Fatal(err)
 				}
-				if metadata["native_landed"] != false || metadata["native_version_id"] != unproven.VersionID || metadata["native_head_sha"] != landingHead || metadata["native_landing_refusal"] != map[bool]any{true: nil, false: workspace.LandRefusalBaseMoved}[test.landing.CI != nil] || metadata["forge_wait"] != nil || metadata["native_merge_sha"] != nil {
+				if metadata["native_landed"] != false || metadata["native_version_id"] != unproven.VersionID || metadata["native_head_sha"] != landingHead || metadata["native_landing_refusal"] != map[bool]any{true: nil, false: workspace.LandRefusalBaseMoved}[test.landing.CI != nil || test.landing.Waiting] || metadata["forge_wait"] != nil || metadata["native_merge_sha"] != nil {
 					t.Fatalf("continuation lost immutable reviewed identity: %#v", metadata)
 				}
 				if journey != nil && !genuineOutage {

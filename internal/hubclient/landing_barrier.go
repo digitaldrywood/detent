@@ -1,0 +1,65 @@
+package hubclient
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/url"
+
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func (c *NativeClient) LandingBarrier(ctx context.Context, repository string) (tracker.LandingBarrier, error) {
+	var result tracker.LandingBarrier
+	err := c.client.request(ctx, http.MethodGet, c.base()+"/landing-barrier?repository="+url.QueryEscape(repository), nil, &result)
+	return result, err
+}
+
+func (c *NativeClient) MutateLandingBarrier(ctx context.Context, request tracker.LandingBarrierRequest) (tracker.LandingBarrier, error) {
+	var result tracker.LandingBarrier
+	err := c.client.request(ctx, http.MethodPost, c.base()+"/landing-barrier", request, &result)
+	return result, err
+}
+
+func (s *Scheduler) NextLandingBarrier(ctx context.Context, project, repository, policyID string, recoverClaim bool) (tracker.LandingBarrier, bool, error) {
+	source := s.nativeProjects[project]
+	if source == nil {
+		return tracker.LandingBarrier{}, false, nil
+	}
+	observed, err := source.client.LandingBarrier(ctx, repository)
+	if err != nil || observed.Running && !recoverClaim || !observed.Pending && !observed.Running {
+		return observed, false, err
+	}
+	key, err := randomSessionID()
+	if err != nil {
+		return observed, false, err
+	}
+	result, err := source.client.MutateLandingBarrier(ctx, tracker.LandingBarrierRequest{Mutation: tracker.Mutation{IdempotencyKey: key}, Action: "start", Repository: repository, PolicyID: policyID, Recover: recoverClaim})
+	return result, err == nil && result.Running && result.ID == key, err
+}
+
+func (s *Scheduler) FinishLandingBarrier(ctx context.Context, project string, barrier tracker.LandingBarrier, result *gate.CommandResult) error {
+	source := s.nativeProjects[project]
+	if source == nil {
+		return errors.New("landing barrier project is unavailable")
+	}
+	action := "finish"
+	if result == nil {
+		action = "cancel"
+	}
+	_, err := source.client.MutateLandingBarrier(ctx, tracker.LandingBarrierRequest{Mutation: tracker.Mutation{IdempotencyKey: barrier.ID + ":" + action}, Action: action, Repository: barrier.Repository, ID: barrier.ID, Result: result})
+	return err
+}
+
+func (e *nativeExecution) AuthorizeLanding(ctx context.Context, repository string) error {
+	barrier, err := e.claim.source.client.LandingBarrier(ctx, repository)
+	if err != nil {
+		return err
+	}
+	if barrier.Red && (barrier.Repair == "" || barrier.Repair != e.claim.lease.WorkItemID) {
+		return runner.ErrLandingBarrierRed
+	}
+	return nil
+}

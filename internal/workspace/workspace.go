@@ -181,6 +181,7 @@ type MergePreparer interface {
 }
 
 type MergePrepareOptions struct {
+	LandingMode      string
 	VerifyResolution bool
 	// ValidateHead runs ValidationCommand on a cleanly rebased head before it
 	// is pushed. A resolved merge always runs it.
