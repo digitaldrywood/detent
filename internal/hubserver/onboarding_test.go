@@ -486,6 +486,9 @@ func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
 			if test.selected {
 				target = newNativeFixture(t, f.service, f.project.OrganizationID, "selected project")
 			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = ? WHERE id = ?", "acme/orders", target.project.ID); err != nil {
+				t.Fatal(err)
+			}
 			runner := prepareRunner(t, target, runnerauth.Read, runnerauth.Heartbeat)
 			runner.enroll(t)
 			client, err := hubclient.New(hubclient.Config{URL: "https://pending-policy.example.test", TokenSource: func() string { return runner.redemption.Credential }, HTTPClient: &http.Client{Transport: policyAPITransport{service: f.service}}})
@@ -517,8 +520,9 @@ func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			source := &policy.RepositorySource{Repository: "acme/orders", Commit: candidate.Workflow.Revision, DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("c", 40)}
 			check := func() error {
-				resolved, err := scheduler.ResolveProjectWorkflow(t.Context(), "selected", local, nil)
+				resolved, err := scheduler.ResolveProjectWorkflow(t.Context(), "selected", local, source)
 				if err != nil {
 					return err
 				}
@@ -526,7 +530,7 @@ func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				return scheduler.CheckProjectPolicy(t.Context(), "selected", "", descriptor)
+				return scheduler.CheckProjectPolicyWithSource(t.Context(), "selected", "", descriptor, source)
 			}
 			if err := check(); err == nil {
 				t.Fatal("runner loaded an unapproved policy")
@@ -544,7 +548,7 @@ func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
 				t.Fatalf("pending policy not offered alongside its approval: %+v", setup)
 			}
 			pending := setup.ObservedPolicies[0]
-			if pending.Conflict || pending.PreviouslyApproved || pending.RunnerID != runner.binding.RunnerID || !reflect.DeepEqual(pending.Policy, candidate) {
+			if pending.Conflict || pending.PreviouslyApproved || pending.RunnerID != runner.binding.RunnerID || !reflect.DeepEqual(pending.Policy, candidate) || !reflect.DeepEqual(pending.Source, source) {
 				t.Fatalf("runner candidate cannot be approved exactly: %+v", pending)
 			}
 			if test.selected && len(read(f.base, f.token).ObservedPolicies) != 0 {
