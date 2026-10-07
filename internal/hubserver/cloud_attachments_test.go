@@ -16,7 +16,7 @@ import (
 
 func TestCloudAttachmentSavedReferences(t *testing.T) {
 	t.Parallel()
-	for _, source := range []string{"issue", "comment", "issue-path", "comment-path"} {
+	for _, source := range []string{"issue", "comment", "issue-path", "comment-path", "issue-path-other-item", "comment-path-other-item"} {
 		t.Run(source, func(t *testing.T) {
 			f := newHostedSharedFixture(t)
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
@@ -46,8 +46,7 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 				t.Fatal(err)
 			}
 			body := "![image](attachment:" + record.ID + ")\n[file](attachment:" + record.ID + ")\n![foreign](attachment:" + foreign + ")"
-			copyBody := body
-			if strings.HasSuffix(source, "-path") {
+			if strings.Contains(source, "-path") {
 				body = record.Markdown("org_security")
 			}
 			issue := tracker.NativeIssue{}
@@ -87,8 +86,12 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			if sweep.Code != http.StatusOK || strings.Contains(sweep.Body.String(), record.ID) {
 				t.Fatalf("referenced image swept: %d %s", sweep.Code, sweep.Body.String())
 			}
+			copyItem := issue.WorkItemID
+			if strings.HasSuffix(source, "-other-item") {
+				copyItem = f.seedIssue(t, 2)
+			}
 			var other tracker.NativeComment
-			raw = send(http.MethodPost, "/work-items/"+string(issue.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "copy-image"}, Body: copyBody}, http.StatusOK)
+			raw = send(http.MethodPost, "/work-items/"+string(copyItem)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "copy-image"}, Body: body}, http.StatusOK)
 			if err := json.Unmarshal(raw, &other); err != nil {
 				t.Fatal(err)
 			}
@@ -109,9 +112,9 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			} else {
 				send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID)+"/comments/"+comment.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "remove-image"}, ExpectedRevision: comment.Revision, Body: "No image"}, http.StatusOK)
 			}
-			assertReference(record.ID, string(issue.WorkItemID), other.ID)
+			assertReference(record.ID, string(copyItem), other.ID)
 			var last tracker.NativeComment
-			raw = send(http.MethodPost, "/work-items/"+string(issue.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "retain-copy"}, Body: copyBody}, http.StatusOK)
+			raw = send(http.MethodPost, "/work-items/"+string(copyItem)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "retain-copy"}, Body: body}, http.StatusOK)
 			if err := json.Unmarshal(raw, &last); err != nil {
 				t.Fatal(err)
 			}
@@ -122,10 +125,10 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			if response.Code != http.StatusOK {
 				t.Fatalf("retained copy read=%d %s", response.Code, response.Body.String())
 			}
-			assertReference(record.ID, string(issue.WorkItemID), last.ID)
-			send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID)+"/comments/"+last.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "orphan-copy"}, ExpectedRevision: last.Revision, Body: "No attachment"}, http.StatusOK)
+			assertReference(record.ID, string(copyItem), last.ID)
+			send(http.MethodPatch, "/work-items/"+string(copyItem)+"/comments/"+last.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "orphan-copy"}, ExpectedRevision: last.Revision, Body: "No attachment"}, http.StatusOK)
 			assertReference(record.ID, "", "")
-			raw = send(http.MethodPost, "/work-items/"+string(issue.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "last-copy"}, Body: body}, http.StatusOK)
+			raw = send(http.MethodPost, "/work-items/"+string(copyItem)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "last-copy"}, Body: body}, http.StatusOK)
 			if err := json.Unmarshal(raw, &last); err != nil {
 				t.Fatal(err)
 			}

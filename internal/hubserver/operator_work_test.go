@@ -5,10 +5,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -56,6 +61,49 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if failed || string(raw) != string(replay) {
 		t.Fatalf("creation replay=%s", replay)
 	}
+	t.Run("reused attachment contract", func(t *testing.T) {
+		record := attachment.Metadata{ID: conversation.NewAttachmentID(), ProjectID: string(f.project.ID), Name: "file.txt"}
+		_, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at) SELECT ?,?,?,id,'file.txt','text/plain',5,?,? FROM api_tokens LIMIT 1`, record.ID, f.project.OrganizationID, f.project.ID, artifact.Digest([]byte("hello")), formatHubTime(time.Now()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := record.Markdown(string(f.project.OrganizationID))
+		var items []tracker.NativeIssue
+		for _, key := range []string{"first-attachment", "second-attachment"} {
+			fields := map[string]any{"title": key, "description": body, "state": "Todo"}
+			raw, failed := call(operatortool.FileIssue, key, fields)
+			var item tracker.NativeIssue
+			if err := json.Unmarshal(raw, &item); err != nil || failed || item.WorkItemID == "" || item.Body != body {
+				t.Fatalf("%s result=%s isError=%t err=%v", key, raw, failed, err)
+			}
+			items = append(items, item)
+			replay, failed := call(operatortool.FileIssue, key, fields)
+			if failed || string(replay) != string(raw) {
+				t.Fatalf("%s replay=%s isError=%t", key, replay, failed)
+			}
+		}
+		if items[0].WorkItemID == items[1].WorkItemID {
+			t.Fatal("attachment reuse returned the first issue")
+		}
+		raw, failed := call(operatortool.AddComment, "attachment-comment", map[string]any{"identifier": items[1].WorkItemID, "body": body})
+		var comment tracker.NativeComment
+		if err := json.Unmarshal(raw, &comment); err != nil || failed || comment.ID == "" || comment.Body != body {
+			t.Fatalf("comment result=%s isError=%t err=%v", raw, failed, err)
+		}
+		metadata, err := f.service.readCloudAttachment(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, record.ID)
+		if err != nil || len(metadata.ReferencedBy) != 3 {
+			t.Fatalf("references=%v err=%v", metadata.ReferencedBy, err)
+		}
+		for _, ref := range []attachment.SourceReference{
+			{WorkItemID: string(items[0].WorkItemID)},
+			{WorkItemID: string(items[1].WorkItemID)},
+			{WorkItemID: string(items[1].WorkItemID), CommentID: comment.ID},
+		} {
+			if !slices.Contains(metadata.ReferencedBy, ref) {
+				t.Fatalf("missing reference=%v in %v", ref, metadata.ReferencedBy)
+			}
+		}
+	})
 	for rank := 1; rank <= 4; rank++ {
 		fields := map[string]any{"title": "Priority", "description": "Exact rank", "priority": rank}
 		raw, failed := call("file_issue", "rank-"+strconv.Itoa(rank), fields)
