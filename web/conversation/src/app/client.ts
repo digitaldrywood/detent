@@ -36,3 +36,7 @@ export function newCommandKey(): string {
   const random = globalThis.crypto?.randomUUID?.();
   return `cmd_${random ?? `${Date.now()}_${Math.random().toString(16).slice(2)}`}`;
 }
+
+export function accountKey(client: ConversationClient): string {
+  return `${client.bootstrap.organization.id}:${client.bootstrap.actor.principal_id}`;
+}

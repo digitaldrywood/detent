@@ -3,17 +3,25 @@ import { createRoot } from "react-dom/client";
 import { createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { ClientContext } from "../../web/conversation/src/app/client.ts";
 import { RunnersSettings } from "../../web/conversation/src/app/fleet/RunnersSection.tsx";
+import { DraftStore } from "../../web/conversation/src/runtime/state/drafts.ts";
 import type { ConversationClient } from "../../web/conversation/src/runtime/bootstrap.ts";
 import fleet from "../../web/conversation/src/contracts/fixtures/account-fleet.json";
 import spritePool from "./providers-runners-sprite-pool.json";
 
+const params = new URLSearchParams(location.search);
+const projects = [
+  { id: "proj_preview", name: "Preview project", can_write: true },
+  ...(params.has("multipleProjects") ? [{ id: "proj_second", name: "Second project", can_write: true }, { id: "proj_viewer", name: "Read-only project", can_write: false }] : []),
+];
 const client = {
+  bootstrap: { organization: { id: "org_preview" }, actor: { principal_id: "owner_preview" } },
+  drafts: new DraftStore(),
   account: {
-    version: "v0.9.1",
+    version: params.get("version") ?? "v0.9.1",
     organization: { id: "org_preview", name: "Threefold" },
     organizations: [{ current: true, public_url: "https://runners.detent.test" }],
     actor: { can_manage: true, can_manage_runners: true },
-    projects: [{ id: "proj_preview", name: "Preview project", can_write: true }],
+    projects,
     base_path: "",
   },
   http: { origin: "", apiBase: "/api/v2/organizations/org_preview", csrfToken: "preview" },

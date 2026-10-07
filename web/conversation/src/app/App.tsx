@@ -36,7 +36,7 @@ import {
   latestControl,
   unsettledControls,
 } from "../runtime/state/conversationState.ts";
-import { newCommandKey, readLastProject, useClient, writeLastProject } from "./client.ts";
+import { accountKey, newCommandKey, readLastProject, useClient, writeLastProject } from "./client.ts";
 import { Button } from "../components/ui/button.tsx";
 import { Composer, type ComposerProps } from "./components/Composer.tsx";
 import { ComposerContextAttachment } from "./components/ComposerContextAttachment.tsx";
@@ -671,10 +671,6 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
       </div>
     </ChatWorkspace>
   );
-}
-
-function accountKey(client: ConversationClient): string {
-  return `${client.bootstrap.organization.id}:${client.bootstrap.actor.principal_id}`;
 }
 
 /** The issue a linked conversation carries, as the transcript reports it. */

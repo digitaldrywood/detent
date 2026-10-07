@@ -1,18 +1,22 @@
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
+import { Dialog, DialogTrigger, DialogPopup, DialogHeader, DialogTitle, DialogDescription, DialogPanel } from "../../components/ui/dialog.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { SettingsRow } from "../settings/settingsLayout.tsx";
-import { useAccountApi } from "./context.ts";
+import { useAccountApi, useAccountBootstrap } from "./context.ts";
 import { ControlError } from "./controls.tsx";
 import { useResource } from "./useResource.ts";
 
-export function SpritePoolCard({ projectId, projectName, canManage }: {
+export function SpritePoolCard({ projectId, projectName, canManage, compact = false }: {
   readonly projectId: string;
   readonly projectName?: string;
   readonly canManage: boolean;
+  readonly compact?: boolean;
 }): React.ReactElement {
   const api = useAccountApi();
+  const account = useAccountBootstrap();
+  const token = useResource(() => compact ? api.spritesSecret(projectId) : Promise.resolve(null), [api, projectId, compact]);
   const pool = useResource(() => api.spritePool(projectId), [api, projectId]);
   const [floor, setFloor] = React.useState(0);
   const [ceiling, setCeiling] = React.useState(0);
@@ -42,11 +46,9 @@ export function SpritePoolCard({ projectId, projectName, canManage }: {
     }
   }
 
-  return <SettingsRow
-    title={projectName === undefined ? "Sprite pool" : `Sprite pool · ${projectName}`}
-    description="The Hub creates fresh runners as queued work needs them and deletes idle members above the minimum. Set the maximum to zero to disable provisioning."
-    status={pool.value === undefined ? (pool.error === null ? "Loading…" : "Could not load the pool.") : `${pool.value.members.filter((member) => member.state !== "deleted").length} members`}
-  ><div className="w-full space-y-4 py-4">
+  const title = projectName === undefined ? "Sprite pool" : `Sprite pool · ${projectName}`;
+  const status = pool.value === undefined ? (pool.error === null ? "Loading…" : "Could not load the pool.") : `${pool.value.members.filter((member) => member.state !== "deleted").length} members`;
+  const content = <div className="w-full space-y-4 py-4">
       {canManage && pool.value !== undefined ? <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void save(); }}>
         <div className="grid gap-3 sm:grid-cols-3">
           <label className="space-y-1 text-sm">Minimum runners<Input type="number" min={0} max={100} required value={floor} disabled={pending} onChange={(event) => setFloor(Number(event.target.value))} /></label>
@@ -66,6 +68,23 @@ export function SpritePoolCard({ projectId, projectName, canManage }: {
         {member.runner_id === "" ? <p className="text-xs text-muted-foreground">Runner has not enrolled.</p> : <p className="text-xs text-muted-foreground">Enrolled; work readiness follows runner health, provider setup and project policy.</p>}
         <details><summary className="cursor-pointer text-xs">Last bootstrap log</summary><pre className="mt-2 whitespace-pre-wrap break-words text-xs">{member.bootstrap_log || "No bootstrap progress recorded."}</pre></details>
       </div>)}
-    </div>
-  </SettingsRow>;
+    </div>;
+  if (!compact) return <SettingsRow title={title} description="The Hub creates fresh runners as queued work needs them and deletes idle members above the minimum. Set the maximum to zero to disable provisioning." status={status}>{content}</SettingsRow>;
+  return <div className="px-4" data-testid="sprite-pool-row">
+    <Dialog>
+      <SettingsRow title={title}
+        description={pool.value === undefined ? status : `Floor ${pool.value.min_runners} · Ceiling ${pool.value.max_runners} · Idle ${pool.value.idle_seconds}s · ${status}`}
+        control={<DialogTrigger render={<Button size="xs" variant="outline">{canManage ? "Configure pool" : "View pool"}<span className="sr-only"> {projectName}</span></Button>} />}
+      >
+        {token.loading ? <p className="pb-3 text-xs text-muted-foreground">Checking Sprites token…</p> : token.value?.present !== true ? <p className="pb-3 text-xs text-warning-foreground">
+          {token.value?.present === false ? "No Sprites token is set" : "Could not check the Sprites token"} for {projectName}.{" "}
+          <a className="underline underline-offset-4" href={`${account?.base_path ?? ""}/settings/integrations?project=${encodeURIComponent(projectId)}#sprites`}>Set a Sprites token</a>
+        </p> : null}
+      </SettingsRow>
+      <DialogPopup className="sm:max-w-xl">
+        <DialogHeader><DialogTitle>{title}</DialogTitle><DialogDescription>The Hub creates runners for queued work and deletes idle members above the floor. Set the ceiling to zero to disable provisioning.</DialogDescription></DialogHeader>
+        <DialogPanel>{content}</DialogPanel>
+      </DialogPopup>
+    </Dialog>
+  </div>;
 }

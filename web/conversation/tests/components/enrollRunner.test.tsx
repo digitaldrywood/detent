@@ -225,7 +225,8 @@ describe("the Enroll dialog", () => {
   it.each(["footer", "Escape", "Close"])("discards the token and command from the settings page after %s", async (close) => {
     const user = userEvent.setup();
     await mountDialog(undefined, true);
-    await user.click(await screen.findByRole("button", { name: "Enroll a runner" }));
+    await user.click(await screen.findByRole("button", { name: "Add runner" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Manual" }));
     await user.type(screen.getByLabelText("Name"), "Build host");
     await user.click(screen.getByRole("button", { name: "Create command" }));
     const copy = await screen.findByRole("button", { name: "Copy the register command" });
@@ -249,7 +250,8 @@ describe("the Enroll dialog", () => {
     expect(document.body.innerHTML).not.toContain(token);
     expect(document.body.innerHTML).not.toContain("detent hub runner register");
     await user.keyboard("{Escape}");
-    await user.click(screen.getByRole("button", { name: "Enroll a runner" }));
+    await user.click(screen.getByRole("button", { name: "Add runner" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Manual" }));
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("");
   });
 
@@ -262,7 +264,9 @@ describe("the Enroll dialog", () => {
     const displayName = name!.trim() || "Unnamed runner";
     const existing = { ...fleetFixture.runners[0]!, display_name: displayName } as FleetRunner;
     const { setRunners, fleetReads } = await mountDialog(undefined, true, [existing]);
-    fireEvent.click(await screen.findByRole("button", { name: "Enroll a runner" }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Add runner" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Manual" }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: name } });
     vi.useFakeTimers();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Create command" })));

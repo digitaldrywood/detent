@@ -3,27 +3,27 @@ import React from "react";
 import { Button } from "../../components/ui/button.tsx";
 import type { FleetRunner } from "../../contracts/account.ts";
 import { cn } from "../../lib/utils.ts";
-import { formatRelativeTime } from "./format.ts";
+import type { RunnerProject } from "./RunnerDetailSheet.tsx";
 
 function healthTone(health: string): string {
-  if (health === "healthy") return "bg-success";
+  if (health === "healthy" || health === "online") return "bg-success";
   if (health === "needs_attention") return "bg-warning";
   return "bg-muted-foreground";
 }
 
 export function HostCard({
   runner,
-  now,
+  projects = [],
   onOpen,
   onRemove,
 }: {
   readonly runner: FleetRunner;
-  readonly now?: number;
+  readonly projects?: readonly RunnerProject[];
   readonly onOpen: () => void;
   readonly onRemove?: () => void;
 }): React.ReactElement {
   const health = runner.health === "asleep" ? "Asleep, wakes on new work"
-    : runner.health === "healthy" ? "Healthy"
+    : runner.health === "healthy" || runner.health === "online" ? "Healthy"
     : runner.health === "needs_attention" ? "Needs attention"
     : runner.health === "outside_hours" ? "Outside hours"
     : runner.health;
@@ -44,25 +44,25 @@ export function HostCard({
       id={`runner-${runner.id}`}
       tabIndex={-1}
       data-testid="host-card"
-      className="grid min-w-0 gap-4 px-4 py-4 focus-visible:outline-2 focus-visible:outline-ring sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_7rem_11rem] sm:items-start"
+      className="grid min-w-0 gap-4 px-4 py-4 focus-visible:outline-2 focus-visible:outline-ring @[48rem]/runner-list:grid-cols-[minmax(0,1.2fr)_6rem_minmax(0,1fr)_7rem_minmax(0,1fr)_11rem] @[48rem]/runner-list:items-start"
     >
       <div className="flex min-w-0 items-start gap-2.5">
         <span aria-hidden="true" className={cn("mt-1.5 size-2 shrink-0 rounded-full", healthTone(runner.health))} />
         <div className="min-w-0 space-y-1">
           <h3 className="break-words text-sm font-medium">{runner.display_name}</h3>
           {updateStatus ? <p className="text-xs text-muted-foreground">{updateStatus} · {runner.update?.desired?.version}</p> : null}
-          <p className="break-words text-xs text-muted-foreground">{runner.hostname}, {runner.os} {runner.architecture}</p>
-          <p className={cn("text-xs text-muted-foreground", runner.health === "needs_attention" && "text-warning")}><span>{health}</span> · {runner.state} · Limit {runner.capacity_limit}</p>
         </div>
       </div>
+      <p className="text-xs text-muted-foreground">{runner.sprite ? "Fly Sprite" : "Own machine"}</p>
+      <div className={cn("space-y-1 text-xs text-muted-foreground", runner.health === "needs_attention" && "text-warning-foreground")}>
+        <p>{runner.claim_refusal_reason ? "Can’t take work" : health}</p>
+        <p>{runner.state} · Limit {runner.capacity_limit}</p>
+      </div>
       <div className="min-w-0 space-y-1 text-xs">
-        <p className="text-muted-foreground sm:sr-only">Running</p>
+        <p className="text-muted-foreground @[48rem]/runner-list:sr-only">Running</p>
         <p className="text-muted-foreground tabular-nums">{runner.leases.length} of {runner.host_capacity} slots in use</p>
       </div>
-      <div className="space-y-1 text-xs text-muted-foreground">
-        <p className="sm:sr-only">Last check-in</p>
-        <time dateTime={runner.last_heartbeat_at} title={runner.last_heartbeat_at}>{formatRelativeTime(runner.last_heartbeat_at, now)}</time>
-      </div>
+      <p className="break-words text-xs text-muted-foreground">{runner.routing?.project_ids.map((id) => projects.find((project) => project.id === id)?.name ?? "Unavailable project").join(", ") || "No projects reported"}</p>
       <div className="flex flex-wrap gap-2">
         <Button size="xs" variant="outline" aria-label={`Manage ${runner.display_name}`} onClick={onOpen}>Manage</Button>
         {onRemove ? <Button size="xs" variant="outline" aria-label={`Remove runner ${runner.display_name}`} onClick={onRemove}>Remove runner</Button> : null}

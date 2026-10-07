@@ -24,7 +24,7 @@ const ROUTING: RunnerRouting = {
   isolation_tier: "sandbox", host_services: ["tcp:127.0.0.1:8080"],
   availability: { timezone: "America/Chicago", windows: ["Mon-Fri 09:00-17:00", "Sat-Sun 00:00-24:00"], hard_deadline: "30m" },
 };
-const RUNNER = { can_edit_projects: true, ...FLEET.runners[0]!, routing: ROUTING, revision: 7 };
+const RUNNER = { can_edit_projects: true, ...FLEET.runners[0]!, claim_refusal_reason: "", routing: ROUTING, revision: 7 };
 const PROJECTS = [{ id: "prj_known", name: "Known project" }, { id: "prj_second", name: "Second project" }];
 
 function renderSection(fleet: FleetResponse = FLEET) {
@@ -136,6 +136,7 @@ describe("runner rows", () => {
     ["dev", ""],
   ])("renders the Hub admission refusal for %s", (version, reason) => {
     renderSection({ ...FLEET, current: "v1.2.4", minimum_runner_version: "v1.2.4", runners: [{ ...FLEET.runners[0]!, version, claim_refusal_reason: reason }] });
+    fireEvent.click(screen.getByRole("button", { name: `Manage ${FLEET.runners[0]!.display_name}` }));
     const warning = screen.queryByTestId("host-update");
     if (reason !== "") {
       expect(warning?.textContent).toContain(reason);
@@ -148,9 +149,11 @@ describe("runner rows", () => {
   it("shows contextual problems and filters through the segmented control", () => {
     const problem = { code: "tier_unavailable", message: "Sandbox tooling is unavailable", fix_hint: "Repair the sandbox tooling", first_seen: "2026-09-10T12:00:00Z" };
     renderSection({ ...FLEET, runners: FLEET.runners.map((runner, index) => index === 0 ? { ...runner, health: "needs_attention", problems: [problem] } : runner) });
-    expect(screen.getByText("Needs attention")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Needs attention 1" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: `Manage ${FLEET.runners[0]!.display_name}` }));
     expect(screen.getByText(problem.message)).toBeTruthy();
     expect(screen.getByText(problem.fix_hint)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     fireEvent.click(screen.getByRole("link", { name: "Needs attention 1" }));
     expect(window.location.search).toBe("?health=needs_attention");
     expect(screen.getAllByTestId("host-card")).toHaveLength(1);
@@ -166,7 +169,7 @@ describe("runner rows", () => {
     expect(within(rows[0]!).getByRole("heading", { name: "Michael's MacBook Pro" })).toBeTruthy();
     expect(rows[0]!.textContent).toContain("1 of 2 slots in use");
     expect(rows[1]!.textContent).toContain("0 of 2 slots in use");
-    expect(rows[1]!.textContent).toContain("stale");
+    expect(rows[1]!.textContent).toContain("Can’t take work");
     expect(screen.getByText("1 of 4 slots running work")).toBeTruthy();
     expect(screen.queryAllByRole("heading", { level: 1 })).toHaveLength(0);
   });
@@ -241,8 +244,8 @@ describe("providers", () => {
 
   it("invites enrollment and omits capacity when the fleet is empty", () => {
     renderSection(EMPTY);
-    expect(screen.getByText("No provider capacity reported")).toBeTruthy();
-    expect(screen.getByText("No runners yet. Enroll a machine to start taking work.")).toBeTruthy();
+
+    expect(screen.getByText("No runners yet. Add a runner manually or let Luna help you set one up.")).toBeTruthy();
     expect(screen.queryAllByTestId("host-card")).toHaveLength(0);
     expect(screen.queryByRole("heading", { name: "Capacity right now" })).toBeNull();
   });
@@ -357,7 +360,7 @@ describe("runner details", () => {
       { code: "provider", message: "Provider unavailable", fix_hint: "Sign in", first_seen: "2026-09-10T12:01:00Z" },
     ];
     render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [{ ...RUNNER, health: "needs_attention", problems }] }} projects={PROJECTS} onSaveRouting={save} />);
-    fireEvent.click(within(screen.getByTestId("runner-attention")).getByRole("button", { name: "Open runner Michael's MacBook Pro" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
     const sheet = screen.getByRole("dialog");
     expect(within(sheet).getAllByRole("alert")).toHaveLength(2);
     expect(sheet.textContent).toContain("Seen since");

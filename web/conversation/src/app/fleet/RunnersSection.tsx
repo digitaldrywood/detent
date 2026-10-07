@@ -1,5 +1,8 @@
-import { AlertTriangleIcon, BotIcon, ServerIcon } from "lucide-react";
+import { BotIcon, ChevronDownIcon, ServerIcon } from "lucide-react";
 import React from "react";
+import { useNavigate } from "@tanstack/react-router";
+import { Menu, MenuTrigger, MenuPopup, MenuItem } from "../../components/ui/menu.tsx";
+import { accountKey, readLastProject, useClient } from "../client.ts";
 import { SpritePoolCard } from "../account/SpritePoolCard.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
@@ -16,8 +19,7 @@ import {
 } from "./EnrollRunner.tsx";
 import { HostCard } from "./HostCard.tsx";
 import { RunnerDetailSheet, type RunnerProject } from "./RunnerDetailSheet.tsx";
-import { PathValue } from "../account/controls.tsx";
-import { RUNNER_UPGRADE_COMMAND } from "../lib/detentUpdates.ts";
+import { NativeSelect } from "../account/controls.tsx";
 import { formatLocalTime } from "./format.ts";
 
 export interface ProviderRow {
@@ -99,7 +101,7 @@ export function ProviderSummary({ runners }: { readonly runners: readonly FleetR
                   </div>
                 </td>
                 <td className="max-w-56 px-4 py-4 text-muted-foreground">{row.models.join(", ") || "—"}</td>
-                <td className="px-4 py-4">{status.map((value) => <p key={value} className={value.startsWith("Rate limited") ? "text-warning" : "text-muted-foreground"}>{value}</p>)}</td>
+                <td className="px-4 py-4">{status.map((value) => <p key={value} className={value.startsWith("Rate limited") ? "text-warning-foreground" : "text-muted-foreground"}>{value}</p>)}</td>
               </tr>
             );
           })}
@@ -143,7 +145,7 @@ function Capacity({ runners, onOpen }: { readonly runners: readonly FleetRunner[
       <div className="space-y-5 rounded-xl border border-border/60 bg-card/40 p-4">
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
           <p className="text-base font-medium tabular-nums">{used} of {total} slots running work</p>
-          {unavailable > 0 ? <p className="text-xs text-warning">{unavailable} slots can't take work</p> : null}
+          {unavailable > 0 ? <p className="text-xs text-warning-foreground">{unavailable} slots can't take work</p> : null}
         </div>
         <div className="flex flex-wrap gap-x-8 gap-y-4">
           {hosts.map((host) => (
@@ -170,9 +172,11 @@ function Capacity({ runners, onOpen }: { readonly runners: readonly FleetRunner[
 }
 
 export function RunnersSectionView({
-  fleet, now, organizationName = "this organization", onEnroll, enrollments = [], onSaveRouting, projects = [], onReloadRunner, onRemoveRunner,
+  fleet, now, organizationName = "this organization", onEnroll, enrollments = [], onSaveRouting, projects = [], onReloadRunner, onRemoveRunner, onAssist, spritePools,
 }: {
   readonly fleet: FleetResponse;
+  readonly onAssist?: () => void;
+  readonly spritePools?: React.ReactNode;
   readonly projects?: readonly RunnerProject[];
   readonly onReloadRunner?: () => Promise<void>;
   readonly now?: number;
@@ -246,54 +250,52 @@ export function RunnersSectionView({
       <header className="flex flex-col items-start justify-between gap-4 sm:flex-row">
         <div className="min-w-0 space-y-2">
           <h2 className="text-xl font-semibold tracking-tight">Providers & runners</h2>
-          <p className="text-[13px] text-muted-foreground">The machines that take work for {organizationName}, and the provider accounts each one can reach.</p>
+          <p className="text-[13px] text-muted-foreground">Runners take work for {organizationName}. Add capacity manually, or let Luna walk you through setup.</p>
         </div>
-        {onEnroll === undefined || fleet.runners.length === 0 ? null : <Button size="sm" className="shrink-0" onClick={() => onEnroll()}>Enroll a runner</Button>}
+        {onEnroll === undefined ? null : <Menu>
+          <MenuTrigger render={<Button size="sm">Add runner <ChevronDownIcon aria-hidden="true" /></Button>} />
+          <MenuPopup align="end">
+            <MenuItem onClick={() => onEnroll()}>Manual</MenuItem>
+            <MenuItem disabled={onAssist === undefined} onClick={onAssist}>AI assisted</MenuItem>
+          </MenuPopup>
+        </Menu>}
       </header>
       {fleet.runners.length === 0 ? (
         <div className="flex flex-col items-start gap-4 rounded-xl border border-border/60 bg-card/40 p-6">
-          <p className="text-sm">No runners yet. Enroll a machine to start taking work.</p>
-          {onEnroll === undefined ? null : <Button size="sm" onClick={() => onEnroll()}>Enroll a runner</Button>}
+          <p className="text-sm">No runners yet. Add a runner manually or let Luna help you set one up.</p>
         </div>
       ) : (
         <>
-          <Capacity runners={fleet.runners} onOpen={openRunner} />
-          {fleet.runners.filter((runner) => runner.health === "needs_attention" || runner.claim_refusal_reason).map((runner) => (
-            <div key={runner.id} role="alert" data-testid={runner.health === "needs_attention" ? "runner-attention" : "host-update"} className="flex min-w-0 items-start gap-3 rounded-xl border border-warning/30 bg-warning/8 p-4">
-              <AlertTriangleIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-warning" />
-              <div className="min-w-0 flex-1 space-y-2 text-xs">
-                <p className="text-sm font-medium">{runner.display_name} {runner.health === "needs_attention" && !runner.claim_refusal_reason ? "needs attention" : "can't take work"}</p>
-                {runner.sprite?.wake_failed ? <p>The Hub could not wake this Sprite. Check the Sprite and its project’s Sprites token.</p> : runner.sprite && !runner.sprite.can_wake ? <p>No Sprites token is set for an accessible project; the Hub cannot wake this Sprite.</p> : null}
-                {runner.health === "needs_attention" && runner.problems?.[0] ? <div className="space-y-1"><p>{runner.problems[0].message}</p><p className="text-muted-foreground">{runner.problems[0].fix_hint}</p></div> : null}
-                {runner.claim_refusal_reason ? <div data-testid={runner.health === "needs_attention" ? "host-update" : undefined} className="space-y-2"><p>{runner.claim_refusal_reason}</p><PathValue value={RUNNER_UPGRADE_COMMAND} /></div> : null}
-                <button type="button" className="rounded text-warning underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring" onClick={() => openRunner(runner)}>Open runner<span className="sr-only"> {runner.display_name}</span></button>
-              </div>
-            </div>
-          ))}
           <SettingsSection id="settings-runners" title="Runners" variant="plain">
             <nav aria-label="Filter runners" className="mb-3 flex w-fit max-w-full rounded-lg border border-border/60 bg-muted/40 p-1 text-xs">
               {([[false, "All " + fleet.runners.length], [true, "Needs attention " + attentionCount]] as const).map(([only, label]) => (
                 <a key={label} href={filterUrl(only)} aria-current={attentionOnly === only ? "true" : undefined} onClick={(event) => selectAttentionFilter(event, only)} className={cn("rounded-md px-3 py-1.5 outline-none focus-visible:ring-2 focus-visible:ring-ring", attentionOnly === only ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground")}>{label}</a>
               ))}
             </nav>
-            <div className="overflow-hidden rounded-xl border border-border/60 bg-card/40">
-              <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1fr)_minmax(0,1fr)_7rem_11rem] gap-4 border-b border-border/50 px-4 py-3 text-xs text-muted-foreground sm:grid"><span>Runner</span><span>Running</span><span>Last check-in</span><span /></div>
+            <div className="@container/runner-list overflow-hidden rounded-xl border border-border/60 bg-card/40">
+              <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1.2fr)_6rem_minmax(0,1fr)_7rem_minmax(0,1fr)_11rem] gap-4 border-b border-border/50 px-4 py-3 text-xs text-muted-foreground @[48rem]/runner-list:grid"><span>Runner</span><span>Host kind</span><span>Health</span><span>In use</span><span>Projects</span><span /></div>
               <div className="divide-y divide-border/50">
-                {runners.map((runner) => <HostCard key={runner.id} runner={runner} now={now} onOpen={() => openRunner(runner)} {...(fleet.editable !== false && onRemoveRunner ? { onRemove: () => { setRemoveError(null); setRunnerToRemove(runner); } } : {})} />)}
+                {runners.map((runner) => <HostCard key={runner.id} runner={runner} projects={projects} onOpen={() => openRunner(runner)} {...(fleet.editable !== false && onRemoveRunner ? { onRemove: () => { setRemoveError(null); setRunnerToRemove(runner); } } : {})} />)}
                 {runners.length === 0 ? <p className="px-4 py-6 text-[13px] text-muted-foreground">No runners need attention.</p> : null}
               </div>
+              {spritePools}
             </div>
           </SettingsSection>
         </>
       )}
+      {fleet.runners.length === 0 ? spritePools : null}
       {enrollments.length === 0 ? null : (
         <SettingsSection id="settings-enrollments" title="Waiting to connect" icon={<ServerIcon className="size-3.5" />} headerAction={<span className="text-xs text-muted-foreground">Created in this session</span>}>
           <PendingEnrollments enrollments={enrollments} onRenew={onEnroll} />
         </SettingsSection>
       )}
-      <SettingsSection id="settings-providers" title="Providers" icon={<BotIcon className="size-3.5" />} className="min-w-0">
-        {fleet.runners.some((runner) => runner.provider_capacity.length > 0) ? <ProviderSummary runners={fleet.runners} /> : <SettingsRow title="No provider capacity reported" description="A runner reports the providers it can reach when it heartbeats." />}
-      </SettingsSection>
+      {fleet.runners.length > 0 ? <details className="space-y-4">
+        <summary className="cursor-pointer text-sm text-muted-foreground">Fleet capacity and providers</summary>
+        <Capacity runners={fleet.runners} onOpen={openRunner} />
+        <SettingsSection id="settings-providers" title="Providers" icon={<BotIcon className="size-3.5" />} className="min-w-0">
+          {fleet.runners.some((runner) => runner.provider_capacity.length > 0) ? <ProviderSummary runners={fleet.runners} /> : <SettingsRow title="No provider capacity reported" description="A runner reports the providers it can reach when it heartbeats." />}
+        </SettingsSection>
+      </details> : null}
     </>
   );
 }
@@ -302,6 +304,19 @@ export function RunnersSectionView({
 export function RunnersSettings(): React.ReactElement {
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
+  const client = useClient();
+  const navigate = useNavigate();
+  const [assistOpen, setAssistOpen] = React.useState(false);
+  const writableProjects = bootstrap?.projects.filter((project) => project.can_write) ?? [];
+  const [assistProject, setAssistProject] = React.useState(() => writableProjects.find((project) => project.id === readLastProject())?.id ?? writableProjects[0]?.id ?? "");
+  function assist(projectId: string): void {
+    const scope = { accountKey: accountKey(client), projectId, conversationId: "new" };
+    const request = "Help me add a runner for this project. Ask whether I want a Fly Sprite or a machine I run, then walk me through enrollment, the register command, provider login and the first connection.";
+    const existing = client.drafts.readDraft(scope);
+    client.drafts.writeDraft(scope, existing.trim() ? `${existing}\n\n${request}` : request);
+    setAssistOpen(false);
+    void navigate({ to: "/chat/p/$projectId", params: { projectId } });
+  }
   const fleet = useResource(() => api.fleet(), [api]);
   const [open, setOpen] = React.useState(false);
   const [enrollmentName, setEnrollmentName] = React.useState("");
@@ -347,6 +362,11 @@ export function RunnersSettings(): React.ReactElement {
           organizationName={bootstrap?.organization.name}
           projects={bootstrap?.projects ?? []}
           onReloadRunner={reloadRunner}
+          spritePools={bootstrap?.projects.map((project) => <SpritePoolCard key={project.id} compact projectId={project.id} projectName={project.name} canManage={bootstrap.actor.can_manage && project.can_write} />)}
+          {...(canEnroll && writableProjects.length > 0 ? { onAssist: () => {
+            if (writableProjects.length === 1) assist(writableProjects[0]!.id);
+            else setAssistOpen(true);
+          } } : {})}
           {...(canEnroll && fleet.value.editable ? { onRemoveRunner: async (runner: FleetRunner) => {
             await api.removeRunner(runner.id);
             fleet.set({ ...fleet.value!, runners: fleet.value!.runners.filter((entry) => entry.id !== runner.id) });
@@ -362,7 +382,23 @@ export function RunnersSettings(): React.ReactElement {
           } } : {})}
         />
       )}
-      {bootstrap?.projects.map((project) => <SpritePoolCard key={project.id} projectId={project.id} projectName={project.name} canManage={bootstrap.actor.can_manage && project.can_write} />)}
+      <Dialog open={assistOpen} onOpenChange={setAssistOpen}>
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>Add runner with Luna</DialogTitle>
+            <DialogDescription>Luna will help you choose a Fly Sprite or your own machine and walk you through setup.</DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <label className="grid gap-2 text-sm">Project
+              <NativeSelect aria-label="Project" value={assistProject} onValueChange={setAssistProject} options={writableProjects.map((project) => ({ value: project.id, label: project.name }))} />
+            </label>
+          </DialogPanel>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAssistOpen(false)}>Cancel</Button>
+            <Button disabled={!writableProjects.some((project) => project.id === assistProject)} onClick={() => assist(assistProject)}>Open Luna</Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
       {canEnroll ? (
         <EnrollRunnerDialog
           open={open}
