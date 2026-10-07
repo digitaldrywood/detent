@@ -27,6 +27,10 @@ func privateSocketDirectory(t *testing.T) string {
 }
 
 func TestRunServesPrivateUnixSocket(t *testing.T) {
+	if testing.Short() {
+		t.Skip("hub boot integration")
+	}
+
 	t.Parallel()
 	directory := privateSocketDirectory(t)
 	socket := filepath.Join(directory, "t.sock")
