@@ -26,7 +26,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 	for _, tool := range []string{"update_project_integration", operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, string(chat.ActionIssueSplit), string(chat.ActionArchiveItems), "set_sprite_pool", "scale_up_sprite_pool"} {
 		outcomes := []string{"execute", "reject", "unauthorized", "revoked", "stale", "foreign issue", "expired session", "wrong role", "no write grant", "bad arguments"}
 		if tool == "update_project_integration" {
-			outcomes = append(outcomes, "transport unavailable")
+			outcomes = append(outcomes, "transport unavailable", "execute with manual import")
 		}
 		if tool == string(chat.ActionIssueSplit) {
 			outcomes = append(outcomes, "child failure", "edge failure", "comment failure", "invalid state", "cycle", "validation then valid")
@@ -81,6 +81,11 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				id := issue.WorkItemID
 				db := f.service.database.db
 				seedCoordinatorRepository(t, f.service, f.project)
+				if outcome == "execute with manual import" {
+					if _, err := db.ExecContext(t.Context(), "UPDATE projects SET github_intake='manual' WHERE id=?", f.project); err != nil {
+						t.Fatal(err)
+					}
+				}
 				text := "Please change this project"
 				if outcome == "intake preview" {
 					text = "no extra steps, 2 and 2"
@@ -496,7 +501,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 				}
 				response = f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
-				changed := outcome == "execute" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "runner grant revoked" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
+				changed := outcome == "execute" || outcome == "execute with manual import" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "runner grant revoked" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
 				if changed {
 					requireNativeStatus(t, response, http.StatusOK)
 				} else if response.Code < 400 {
@@ -504,6 +509,19 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				}
 				f.service.spriteWakeWork.Wait()
 				assertCoordinatorEffect(t, f, id, tool, changed)
+				if tool == "update_project_integration" {
+					wantIntake := "disabled"
+					if outcome == "execute with manual import" {
+						wantIntake = "manual"
+					}
+					var intake string
+					if err := db.QueryRowContext(t.Context(), "SELECT github_intake FROM projects WHERE id=?", f.project).Scan(&intake); err != nil {
+						t.Fatal(err)
+					}
+					if intake != wantIntake {
+						t.Fatalf("stored intake = %q, want %q", intake, wantIntake)
+					}
+				}
 				if tool == "scale_up_sprite_pool" && changed {
 					result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: "get_sprite_bootstrap_log", Arguments: json.RawMessage(`{}`)})
 					if err != nil || !result.Success || !strings.Contains(result.Content, "billing enabled") || !strings.Contains(result.Content, "scale_up_sprite_pool") || strings.Contains(result.Content, spritesSecretSentinel) {
