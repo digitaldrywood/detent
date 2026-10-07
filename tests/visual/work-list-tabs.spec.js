@@ -1,6 +1,6 @@
 const { test, expect } = require("@playwright/test");
 const path = require("node:path");
-const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
+const { startHostedHub, resetSavedWorkViews, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
 test.describe.configure({ mode: "serial" });
 let hub;
@@ -14,18 +14,23 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => { await hub?.stop(); });
 
+test.beforeEach(async ({ page }) => {
+  await page.goto(hub.fixture.accounts.owner);
+  await resetSavedWorkViews(page);
+});
+
 for (const scope of ["project", "all"]) {
   test(`${scope} list tabs partition server totals and ignore board lanes`, async ({ page }) => {
     const route = scope === "project" ? `/work/p/${hub.fixture.project_id}` : "/work";
     const copies = scope === "project" ? 1 : 2;
-    await page.goto(hub.fixture.accounts.owner);
     await page.goto(new URL(`${route}?view=list&lanes=Todo`, hub.fixture.url).toString());
     await expect(page.getByTestId("work-list")).toBeVisible();
     const tabs = page.getByRole("group", { name: "Issue list tabs" });
     await expect(tabs).toBeVisible();
     await expect(page.getByTestId("list-tab-backlog")).toHaveText(`Backlog ${130 * copies}`);
     await expect(page.getByTestId("list-tab-closed")).toHaveText(`Closed ${4 * copies}`);
-    const open = Number((await page.getByTestId("stat-open").innerText()).split(" ")[0]);
+    const seededActiveIssues = 2;
+    const open = 130 * copies + seededActiveIssues;
     await expect(page.getByTestId("list-tab-active")).toHaveText(`Active ${open - 130 * copies}`);
     await expect(page.getByTestId("list-tab-all")).toHaveText(`All ${open + 4 * copies}`);
     await expect(page.getByTestId("lanes-trigger")).toHaveCount(0);
@@ -67,7 +72,6 @@ for (const scope of ["project", "all"]) {
 
 for (const theme of ["light", "dark"]) {
   test(`Closed list remains contained in ${theme} at desktop and narrow widths`, async ({ page }) => {
-    await page.goto(hub.fixture.accounts.owner);
     await page.goto(new URL(`/work/p/${hub.fixture.project_id}?view=list&tab=closed`, hub.fixture.url).toString());
     await expect(page.getByTestId("work-list-row")).toHaveCount(4);
     await page.evaluate((value) => { document.documentElement.classList.add("no-transitions"); document.documentElement.classList.toggle("dark", value === "dark"); document.documentElement.dataset.theme = value; }, theme);

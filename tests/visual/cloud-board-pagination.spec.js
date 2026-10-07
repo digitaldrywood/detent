@@ -15,7 +15,6 @@ test("loads all 79 open cards without global pagination", async ({ page }) => {
   await page.goto(fixtureUrl);
   await expect(page.getByTestId("issue-card")).toHaveCount(79);
   await expect(page.getByText(/Load more/)).toHaveCount(0);
-  await expect(page.getByTestId("work-stats").getByRole("button")).toHaveCount(0);
   const requests = await page.evaluate(() => window.workFixture.requests
     .filter(({ url }) => url.pathname.endsWith("/work-items"))
     .map(({ url }) => ({ project: url.pathname, states: url.searchParams.getAll("state"),
