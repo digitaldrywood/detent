@@ -79,7 +79,7 @@ func TestRetentionUnremovableQuarantineWarnsOnce(t *testing.T) {
 		t.Skip("chmod on Windows does not deny directory removal; warning deduplication is covered by TestRetentionQuarantineWarningOncePerPath")
 	}
 	root := filepath.Join(t.TempDir(), "workspaces")
-	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: root, SourceRoot: t.TempDir()})
+	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: root, SourceRoot: e2eInitSourceRepo(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
