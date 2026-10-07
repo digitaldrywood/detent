@@ -49,6 +49,9 @@ describe("the activity merge", () => {
       { type: "change.created", sentence: "opened a change request", lowValue: false },
       { type: "run.checkpointed", sentence: "checkpointed the attempt", lowValue: true },
       { type: "comment.edited", sentence: "edited a comment", lowValue: true },
+      { type: "issue.edited", data: { operation: "archive", fields: ["archived"], reason_detail: "Archived automatically after 30 days" }, sentence: "Archived automatically after 30 days", lowValue: false },
+      { type: "issue.edited", data: { operation: "archive", fields: ["archived"] }, sentence: "archived the issue", lowValue: false },
+      { type: "issue.edited", data: { operation: "restore", fields: ["archived"] }, sentence: "restored the issue", lowValue: false },
       // The log is append-only and the hub grows it: an unknown type is still
       // a row, named by its own type, rather than a dropped page.
       { type: "nothing.we.know", sentence: "recorded nothing.we.know", lowValue: true },
@@ -57,7 +60,7 @@ describe("the activity merge", () => {
       const written = historySentence({
         ...(HISTORY[0] as CollaborationEvent),
         type: testCase.type,
-        data: {},
+        data: "data" in testCase ? testCase.data : {},
       });
       expect(written.sentence, testCase.type).toBe(testCase.sentence);
       expect(written.lowValue, testCase.type).toBe(testCase.lowValue);
@@ -181,6 +184,7 @@ describe("the activity merge", () => {
 
   it("names a runner by its own id and a stranger by a shortened principal", () => {
     expect(actorLabel({ kind: "runner", principal_id: "tok_r" }, null, "rnr_mac")).toBe("rnr_mac");
+    expect(actorLabel({ kind: "integration", principal_id: "auto_archive" }, null, null)).toBe("Detent");
     expect(actorLabel({ kind: "runner", principal_id: "tok_r" }, null, null)).toBe("tok_r");
     expect(
       actorLabel({ kind: "runner", principal_id: "runner_be4aaeec1c424bb6afbe94aea6d605d6" }, null, null),

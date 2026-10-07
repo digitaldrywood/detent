@@ -298,12 +298,19 @@ describe("the project settings save", () => {
     const after = await api.saveIntegration({
       projectId: project.id,
       key: "integration-1",
+      archiveCompletedAfterDays: 14,
+      archiveCancelledAfterDays: null,
       revision: before.revision,
       intake: before.intake,
       projection: before.projection,
       repositoryEnabled: before.repository_enabled,
     });
     expect(after.revision).not.toBe(before.revision);
+    expect(after.archive_completed_after_days).toBe(14);
+    expect(after.archive_cancelled_after_days).toBeNull();
+    const reloaded = await api.integration(project.id);
+    expect(reloaded.archive_completed_after_days).toBe(14);
+    expect(reloaded.archive_cancelled_after_days).toBeNull();
   });
 
   it("refuses a stale revision with a conflict that carries nothing to guess from", async () => {

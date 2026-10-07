@@ -93,6 +93,8 @@ interface IntegrationRow {
   intake: string;
   projection: string;
   repository_enabled: boolean;
+  archive_completed_after_days: number | null;
+  archive_cancelled_after_days: number | null;
   repository?: string;
   checkout_repository?: string;
   authority: Record<string, string>;
@@ -288,6 +290,8 @@ const SEED_INTEGRATIONS: Record<string, IntegrationRow> = {
     intake: "manual",
     projection: "summary",
     repository_enabled: true,
+    archive_completed_after_days: 30,
+    archive_cancelled_after_days: 7,
     repository: "mockorg/alpha",
     authority: SEED_AUTHORITY,
   },
@@ -297,6 +301,8 @@ const SEED_INTEGRATIONS: Record<string, IntegrationRow> = {
     intake: "disabled",
     projection: "disabled",
     repository_enabled: false,
+    archive_completed_after_days: 30,
+    archive_cancelled_after_days: 7,
     authority: SEED_AUTHORITY,
   },
   proj_readonly: {
@@ -305,6 +311,8 @@ const SEED_INTEGRATIONS: Record<string, IntegrationRow> = {
     intake: "manual",
     projection: "summary",
     repository_enabled: true,
+    archive_completed_after_days: 30,
+    archive_cancelled_after_days: 7,
     repository: "mockorg/readonly",
     authority: SEED_AUTHORITY,
   },
@@ -2621,6 +2629,8 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
           intake: "disabled",
           projection: "disabled",
           repository_enabled: false,
+          archive_completed_after_days: 30,
+          archive_cancelled_after_days: 7,
           authority: clone(SEED_AUTHORITY),
         });
         account.progress.set(project.id, {
@@ -2867,6 +2877,8 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
           intake: String(body.intake ?? current.intake),
           projection: String(body.projection ?? current.projection),
           repository_enabled: body.repository_enabled === true,
+          archive_completed_after_days: body.archive_completed_after_days === undefined ? current.archive_completed_after_days : body.archive_completed_after_days === null ? null : Number(body.archive_completed_after_days),
+          archive_cancelled_after_days: body.archive_cancelled_after_days === undefined ? current.archive_cancelled_after_days : body.archive_cancelled_after_days === null ? null : Number(body.archive_cancelled_after_days),
           revision: String(Number(current.revision) + 1),
         };
         account.integrations.set(projectId, next);

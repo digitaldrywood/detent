@@ -91,6 +91,7 @@ export function actorLabel(
   runnerNames?: RunnerNames,
 ): string {
   if (actor === undefined) return "Someone";
+  if (actor.kind === "integration" && actor.principal_id === "auto_archive") return "Detent";
   if (viewerPrincipalId !== null && actor.principal_id === viewerPrincipalId) return "You";
   if (actor.kind === "runner") {
     // A runner's principal is its runner id, so the fleet names it directly;
@@ -131,6 +132,13 @@ export function historySentence(event: CollaborationEvent): HistorySentence {
     case "issue.created":
       return { icon: "created", sentence: "created the issue", lowValue: false };
     case "issue.edited":
+      if (data.operation === "archive" || data.operation === "restore") {
+        return {
+          icon: "edited",
+          sentence: data.reason_detail ?? (data.operation === "archive" ? "archived the issue" : "restored the issue"),
+          lowValue: false,
+        };
+      }
       return {
         icon: "edited",
         sentence:

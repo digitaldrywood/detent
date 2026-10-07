@@ -437,6 +437,9 @@ func (s *Service) maintainGitHubWebhooks(ctx context.Context) {
 		s.config.Logger.Warn("purge GitHub webhook payloads", "error", err)
 	}
 	s.maintainSpritePools(ctx)
+	if err := s.maintainNativeRetention(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
+		s.config.Logger.Warn("maintain native retention", "error", err)
+	}
 }
 
 func (s *Service) stopGitHubWebhookMaintenance() error {

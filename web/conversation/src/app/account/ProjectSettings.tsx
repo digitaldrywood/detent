@@ -28,6 +28,8 @@ export interface IntegrationDraft {
   readonly intake: string;
   readonly projection: string;
   readonly repositoryEnabled: boolean;
+  readonly archiveCompletedAfterDays: number | null;
+  readonly archiveCancelledAfterDays: number | null;
 }
 
 export function draftOf(integration: ProjectIntegration): IntegrationDraft {
@@ -35,6 +37,8 @@ export function draftOf(integration: ProjectIntegration): IntegrationDraft {
     intake: integration.intake,
     projection: integration.projection,
     repositoryEnabled: integration.repository_enabled,
+    archiveCompletedAfterDays: integration.archive_completed_after_days,
+    archiveCancelledAfterDays: integration.archive_cancelled_after_days,
   };
 }
 
@@ -42,7 +46,9 @@ export function draftChanged(a: IntegrationDraft, b: IntegrationDraft): boolean 
   return (
     a.intake !== b.intake ||
     a.projection !== b.projection ||
-    a.repositoryEnabled !== b.repositoryEnabled
+    a.repositoryEnabled !== b.repositoryEnabled ||
+    a.archiveCompletedAfterDays !== b.archiveCompletedAfterDays ||
+    a.archiveCancelledAfterDays !== b.archiveCancelledAfterDays
   );
 }
 
@@ -76,6 +82,8 @@ export function saveMessage(error: AccountError | null): string | null {
   }
   return error.message;
 }
+
+const ARCHIVE_OPTIONS = [7, 14, 30, 60, 90].map((days) => ({ value: String(days), label: `After ${days} days` })).concat({ value: "never", label: "Never" });
 
 const INTAKE_OPTIONS = INTAKE_CHOICES.map((value) => ({
   value,
@@ -465,6 +473,30 @@ export function ProjectSettingsView({
             />
           }
         /> : null}
+        {integration.profile === "native" ? <>
+          <SettingsRow
+            title="Archive completed issues"
+            description="Done issues leave the board, lists and counts after this long. They stay in search and can be restored."
+            control={<NativeSelect
+              aria-label="Archive completed issues"
+              value={draft.archiveCompletedAfterDays === null ? "never" : String(draft.archiveCompletedAfterDays)}
+              options={ARCHIVE_OPTIONS}
+              disabled={!canManage || saving}
+              onValueChange={(value) => onDraftChange({ ...draft, archiveCompletedAfterDays: value === "never" ? null : Number(value) })}
+            />}
+          />
+          <SettingsRow
+            title="Archive cancelled issues"
+            description="Cancelled issues follow the same rule on a shorter clock."
+            control={<NativeSelect
+              aria-label="Archive cancelled issues"
+              value={draft.archiveCancelledAfterDays === null ? "never" : String(draft.archiveCancelledAfterDays)}
+              options={ARCHIVE_OPTIONS}
+              disabled={!canManage || saving}
+              onValueChange={(value) => onDraftChange({ ...draft, archiveCancelledAfterDays: value === "never" ? null : Number(value) })}
+            />}
+          />
+        </> : null}
         <SettingsRow
           title="Authority"
           help={{
@@ -568,6 +600,8 @@ export function ProjectSettingsRoute({
         intake: next.intake,
         projection: next.projection,
         repositoryEnabled: next.repositoryEnabled,
+        archiveCompletedAfterDays: next.archiveCompletedAfterDays,
+        archiveCancelledAfterDays: next.archiveCancelledAfterDays,
       });
       integration.set({ ...saved, github_transport_available: current.github_transport_available });
       setDraft(draftOf(saved));

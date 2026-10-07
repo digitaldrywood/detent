@@ -15,23 +15,25 @@ import (
 )
 
 type ProjectIntegration struct {
-	WorkflowSource           string                `json:"workflow_source,omitempty"`
-	WorkflowSourceRevision   string                `json:"workflow_source_revision,omitempty"`
-	WorkflowMarkdown         string                `json:"workflow_markdown,omitempty"`
-	States                   []tracker.NativeState `json:"states,omitempty"`
-	Profile                  string                `json:"profile"`
-	Revision                 tracker.Revision      `json:"revision,string"`
-	Intake                   string                `json:"intake"`
-	Projection               string                `json:"projection"`
-	RepositoryEnabled        bool                  `json:"repository_enabled"`
-	GitHubTransportAvailable *bool                 `json:"github_transport_available,omitempty"`
-	GitHubAppSlug            string                `json:"github_app_slug,omitempty"`
-	GitHubAppInstallURL      string                `json:"github_app_install_url,omitempty"`
-	GitHubAppInstalled       *bool                 `json:"github_app_installed,omitempty"`
-	Repository               string                `json:"repository,omitempty"`
-	CheckoutRepository       string                `json:"checkout_repository,omitempty"`
-	Authority                map[string]string     `json:"authority"`
-	RepositoryID             int64                 `json:"-"`
+	ArchiveCompletedAfterDays *int                  `json:"archive_completed_after_days"`
+	ArchiveCancelledAfterDays *int                  `json:"archive_cancelled_after_days"`
+	WorkflowSource            string                `json:"workflow_source,omitempty"`
+	WorkflowSourceRevision    string                `json:"workflow_source_revision,omitempty"`
+	WorkflowMarkdown          string                `json:"workflow_markdown,omitempty"`
+	States                    []tracker.NativeState `json:"states,omitempty"`
+	Profile                   string                `json:"profile"`
+	Revision                  tracker.Revision      `json:"revision,string"`
+	Intake                    string                `json:"intake"`
+	Projection                string                `json:"projection"`
+	RepositoryEnabled         bool                  `json:"repository_enabled"`
+	GitHubTransportAvailable  *bool                 `json:"github_transport_available,omitempty"`
+	GitHubAppSlug             string                `json:"github_app_slug,omitempty"`
+	GitHubAppInstallURL       string                `json:"github_app_install_url,omitempty"`
+	GitHubAppInstalled        *bool                 `json:"github_app_installed,omitempty"`
+	Repository                string                `json:"repository,omitempty"`
+	CheckoutRepository        string                `json:"checkout_repository,omitempty"`
+	Authority                 map[string]string     `json:"authority"`
+	RepositoryID              int64                 `json:"-"`
 }
 
 type GitHubAppInstallation struct {
@@ -60,9 +62,9 @@ func readProjectIntegration(ctx context.Context, query nativeQueryer, scope nati
 	var result ProjectIntegration
 	var states string
 	err := query.QueryRowContext(ctx, `SELECT p.profile, p.integration_revision, p.github_intake, p.github_projection,
-p.github_repository_enabled, COALESCE(r.github_owner || '/' || r.github_name, ''), COALESCE(r.id, 0), p.checkout_repository, p.states_json, p.workflow_source, p.workflow_source_revision, p.workflow_markdown
+p.github_repository_enabled, COALESCE(r.github_owner || '/' || r.github_name, ''), COALESCE(r.id, 0), p.checkout_repository, p.states_json, p.workflow_source, p.workflow_source_revision, p.workflow_markdown, p.archive_completed_after_days, p.archive_cancelled_after_days
 FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organization_id = ? AND p.id = ?`, scope.organization, scope.project).Scan(
-		&result.Profile, &result.Revision, &result.Intake, &result.Projection, &result.RepositoryEnabled, &result.Repository, &result.RepositoryID, &result.CheckoutRepository, &states, &result.WorkflowSource, &result.WorkflowSourceRevision, &result.WorkflowMarkdown)
+		&result.Profile, &result.Revision, &result.Intake, &result.Projection, &result.RepositoryEnabled, &result.Repository, &result.RepositoryID, &result.CheckoutRepository, &states, &result.WorkflowSource, &result.WorkflowSourceRevision, &result.WorkflowMarkdown, &result.ArchiveCompletedAfterDays, &result.ArchiveCancelledAfterDays)
 	if err != nil {
 		return result, err
 	}
@@ -122,6 +124,8 @@ func (s *Service) projectIntegration(ctx context.Context, query nativeQueryer, s
 }
 
 type updateProjectIntegrationRequest struct {
+	ArchiveCompletedAfterDays json.RawMessage `json:"archive_completed_after_days,omitempty"`
+	ArchiveCancelledAfterDays json.RawMessage `json:"archive_cancelled_after_days,omitempty"`
 	tracker.Mutation
 	States            *[]tracker.NativeState `json:"states,omitempty"`
 	WorkflowMarkdown  *string                `json:"workflow_markdown,omitempty"`
@@ -153,6 +157,26 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 		}
 		if current.Profile == "native" && (current.Repository != "" || current.CheckoutRepository != "") && request.Intake == "automatic" {
 			request.Intake = "manual"
+		}
+		completed, err := archivePeriod(request.ArchiveCompletedAfterDays, current.ArchiveCompletedAfterDays)
+		if err != nil {
+			return nil, err
+		}
+		cancelled, err := archivePeriod(request.ArchiveCancelledAfterDays, current.ArchiveCancelledAfterDays)
+		if err != nil {
+			return nil, err
+		}
+		currentIntake := current.Intake
+		if currentIntake == "automatic" {
+			currentIntake = "manual"
+		}
+		archiveSettingsSupplied := len(request.ArchiveCompletedAfterDays) != 0 || len(request.ArchiveCancelledAfterDays) != 0
+		integrationChanged := request.States != nil || request.WorkflowMarkdown != nil || request.Intake != currentIntake || request.Projection != current.Projection || request.RepositoryEnabled != current.RepositoryEnabled
+		if archiveSettingsSupplied && !integrationChanged {
+			if _, err := tx.ExecContext(ctx, "UPDATE projects SET integration_revision=integration_revision+1, archive_completed_after_days=?, archive_cancelled_after_days=? WHERE organization_id=? AND id=?", completed, cancelled, scope.organization, scope.project); err != nil {
+				return nil, err
+			}
+			return readProjectIntegration(ctx, tx, scope)
 		}
 		if (request.Intake != "disabled" && request.Intake != "manual") || (request.Projection != "disabled" && request.Projection != "summary") {
 			return nil, nativeInvalid("Intake must be disabled or manual; projection must be disabled or summary")
@@ -204,7 +228,7 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 				return nil, err
 			}
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE projects SET integration_revision = integration_revision + 1, github_intake = ?, github_projection = ?, github_repository_enabled = ? WHERE id = ?`, request.Intake, request.Projection, request.RepositoryEnabled, scope.project)
+		_, err = tx.ExecContext(ctx, `UPDATE projects SET integration_revision = integration_revision + 1, github_intake = ?, github_projection = ?, github_repository_enabled = ?, archive_completed_after_days = ?, archive_cancelled_after_days = ? WHERE id = ?`, request.Intake, request.Projection, request.RepositoryEnabled, completed, cancelled, scope.project)
 		if err != nil {
 			return nil, err
 		}
@@ -213,6 +237,24 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 		}
 		return readProjectIntegration(ctx, tx, scope)
 	}
+}
+
+func archivePeriod(raw json.RawMessage, current *int) (*int, error) {
+	if len(raw) == 0 {
+		return current, nil
+	}
+	var days *int
+	if err := json.Unmarshal(raw, &days); err != nil {
+		return nil, nativeInvalid("Archive period must be 7, 14, 30, 60, 90 days or null")
+	}
+	if days != nil {
+		switch *days {
+		case 7, 14, 30, 60, 90:
+		default:
+			return nil, nativeInvalid("Archive period must be 7, 14, 30, 60, 90 days or null")
+		}
+	}
+	return days, nil
 }
 
 func requireIntegrationIdle(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
