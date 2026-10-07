@@ -2,33 +2,20 @@
 
 Detent separates machine settings, instance settings and project workflows:
 
-- `global.yaml` controls host-wide runtime settings.
+- `global.yaml` controls host-wide runtime settings. An enrolled runner reads
+  `~/.config/detent-runner/global.yaml`.
 - Cloud stores project membership, allowed projects, project rank and organization/project
-  model selection in its database. Without a Hub, the local SQLite store owns the same settings.
+  model selection in its database.
 - Each project has a checked-in `detent.yaml` machine contract, with optional
   machine-local overrides in `detent.local.yaml`. The project contract can also
   live in legacy `WORKFLOW.md` YAML frontmatter.
 
-This page is the reference for machine and project configuration. Local settings
-use the same organization/project model-selection and project-rank API/MCP
-operations as Cloud. Local runner routing uses runner ID `local`; only its
-`project_ids` are editable through routing updates.
-
-The first local start after upgrade imports legacy `projects`, weight/priority
-and `global.agents.model_selection` from `global.yaml` atomically. Higher legacy
-priority sorts first; ties retain list order. Weights do not reserve capacity.
-Import is recorded in SQLite and never repeated, including after an empty first
-start. Later YAML edits cannot override database settings. Legacy keys warn for
-this release and will be rejected in the next release; remove them after import.
-CLI project edits save to SQLite and write machine settings to `global.yaml`.
-Each project's workflow continues to come from its repository.
+This page is the reference for machine and project configuration. Each
+project's workflow continues to come from its repository.
 
 `agent.no_progress_timeout_ms` remains readable for older project files but is
 ignored. Worker sessions use their absolute duration bound, and local validation
 waits use the gate lock deadline.
-
-For instance backend/route inheritance and the opt-in `sol_first` model-selection
-preset, see [Instance agent defaults](multi-project.md#instance-agent-defaults-and-sol-first-selection).
 
 Priority settings order ready work (INV-10). Stored project rank and
 `dispatch_priority_by_state`, `dispatch_priority_by_label`, and
@@ -112,12 +99,8 @@ multipliers, and token exemption settings retain their existing behavior.
 `detent doctor` reports each level's effective limits for the project, plus the
 flat limits used by ineligible backends.
 
-For projects using backlog admission, set `backlog_admission.require_effort: true`
-and configure `effort_file` and `effort_section` to the project's existing effort
-rubric. Admission then writes the recommended effort before Todo when no override
-exists. Existing effort-to-level rules remain authoritative; this feature adds no
-new mapping. An issue filed directly to Todo without sizing uses the default
-level (subject to existing stage and role rules).
+An issue without a `detent-agent` effort uses the default level (subject to
+existing stage and role rules).
 
 ## Terminal attempt recovery
 
@@ -304,7 +287,7 @@ At startup, Detent resolves `global.yaml` in this order. The first matching rule
 
 `DETENT_CONFIG` and `DETENT_HOME` remain deprecated fallbacks for one release. Detent uses `CONFIG_HOME` instead of `HOME` because `HOME` is standard process state, not Detent configuration.
 
-If no global config is found, Detent keeps the single-project fallback and looks for `WORKFLOW.md` in the current working directory. Use `detent config path` to print the resolved config path and the rule that selected it.
+Use `detent config path` to print the resolved config path and the rule that selected it.
 
 Runtime settings resolve in this order: explicit flag, environment variable,
 `global.yaml`, then built-in default.
@@ -318,7 +301,6 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | GitHub token | | `GITHUB_TOKEN` | `github_token` | required for GitHub projects |
 | API token | | `DETENT_API_TOKEN` | `api_token` | open on loopback, fail closed on non-loopback |
 | Loopback peer read trust | | | `trust_loopback_peer_read` | `false` |
-| Private dashboard URL | | | `dashboard_access` | disabled |
 | Hub scheduler | | | `client.hub_url` | disabled |
 | Hub worker token | | `DETENT_HUB_TOKEN` | `client.token_env` names the environment variable | required when Hub scheduling is enabled |
 | tmux window status | | `$TMUX` detection | `ops.tmux_window_status` | enabled inside tmux |
@@ -414,13 +396,13 @@ then constrains and restores admission as contention changes. On systems without
 or when a pressure file cannot be read, Detent fails open and reports the
 unsupported or unavailable signal rather than inventing a zero reading.
 
-`detent state`, `/api/v1/state`, `/health`, and the Health dashboard expose the
-current values, thresholds, read errors, configured degraded capacity,
-effective pressure capacity, constraint start time and duration, and whether
-each signal is holding dispatch under `memory_pressure`, `io_pressure`, and
-`cpu_pressure`. Durable scheduler decisions include pressure capacity, usage,
-availability, reason, and duration. Work-attempt capacity snapshots include the
-active pressure capacity, reason, and duration.
+`detent state`, `/api/v1/state`, and `/health` expose the current values,
+thresholds, read errors, configured degraded capacity, effective pressure
+capacity, constraint start time and duration, and whether each signal is
+holding dispatch under `memory_pressure`, `io_pressure`, and `cpu_pressure`.
+Durable scheduler decisions include pressure capacity, usage, availability,
+reason, and duration. Work-attempt capacity snapshots include the active
+pressure capacity, reason, and duration.
 
 When Detent starts inside tmux, it renames the current window to a compact
 running, ready, waiting, and blocked count summary. It restores the original
@@ -446,17 +428,15 @@ that originally came from remote clients.
 Use `instance_name` to distinguish browser tabs and the dashboard navbar when
 several Detent instances are open at once. Detent resolves the display name
 from the first non-empty value in this order: top-level `instance_name` in
-`global.yaml`, `global.identity.name`, the short hostname, then empty. In
-single-project fallback mode without `global.yaml`, workflow top-level
-`identity.name` is used before the short hostname. Names are trimmed, must be a
-single line, and are capped at 40 characters in the web UI.
+`global.yaml`, `global.identity.name`, the short hostname, then empty. Names
+are trimmed, must be a single line, and are capped at 40 characters in the web
+UI.
 
-`service_name` names the background service `detent start` installs: the
-launchd job `com.digitaldrywood.NAME` and the systemd user unit `NAME.service`.
-It defaults to `detent`. Give each configuration on one host its own name, for
-example a local board and a Detent Cloud runner; `detent hub runner register`
-writes `service_name: detent.runner`. Names use lowercase letters, digits, dots
-and hyphens.
+`service_name` names the background service: the launchd job
+`com.digitaldrywood.NAME` and the systemd user unit `NAME.service`. It defaults
+to `detent`; `detent hub runner register` writes `service_name: detent.runner`.
+Give each configuration on one host its own name. Names use lowercase letters,
+digits, dots and hyphens.
 
 A project listed under `client.native_projects` whose committed `detent.yaml`
 uses the GitHub tracker (`github` or `github_local`) uses the Hub instead
@@ -586,23 +566,13 @@ installed version; an unreachable Hub, missing version or unpublished target
 does not trigger a fallback update. Explicit `auto_check_enabled: false` or
 `auto_apply_enabled: false` settings opt out and survive configuration writes.
 
-Standalone automatic update checks remain disabled by default. When
-enabled, Detent persists the last check and schedules the next jittered check
-from that timestamp, so restarts preserve the remaining delay and overdue
-checks run promptly. The six-hour default keeps release uptake within the same
-day while using about four GitHub requests per host per day. Detent reports the
-last check, available or applied version, and next check on `/health` and the
-Health dashboard. `detent doctor` surfaces the last and next check times,
-reports whether the host is opted in, and suggests enabling checks when it is
-not. Standalone automatic apply remains off unless explicitly enabled. Automatic
-apply only replaces release-installer binaries; other install sources remain
-notification-only.
-When work attempts are active, Detent shows the pending version in the web and
-terminal dashboards and waits for the next fleet-wide idle window before
-applying it. An operator can instead confirm immediate apply from the web
-notification. A successful apply uses the normal graceful drain path, then
-re-executes the replaced binary on POSIX systems or exits cleanly for an
-external supervisor to restart it on other platforms.
+Detent reports the last check, available or applied version, and next check on
+`/health`. `detent doctor` surfaces the last and next check times and reports
+whether the host is opted in. Automatic apply only replaces release-installer
+binaries; other install sources remain notification-only. A successful apply
+uses the normal graceful drain path, then re-executes the replaced binary on
+POSIX systems or exits cleanly for an external supervisor to restart it on
+other platforms.
 
 `detent doctor` prints the resolved runtime values and their sources, with the
 GitHub token redacted.
@@ -619,9 +589,6 @@ when configuring another repository.
   project config.
 - [`config.annotated.yaml`](../config.annotated.yaml) is a realistic GitHub
   setup with explanations beside each deliberate choice.
-- The [worked multi-project configuration](examples/multi-project/README.md)
-  pairs an annotated host config with two complete project configs and explains
-  the operator rationale behind their scheduling and isolation choices.
 - [`config.reference.yaml`](../config.reference.yaml) contains every supported
   project key. It is fully commented so you can copy only what you need.
 
@@ -635,10 +602,10 @@ independent configuration.
 ### Identity, tracker, and polling
 
 `identity` names the Detent persona that owns work. `tracker` connects that
-persona to GitHub, Linear, an embedded SQLite board, or the in-memory tracker.
-The tracker declares workflow states in one ordered `tracker.lanes` list; state maps,
-transition automation, admission, planning, stop behavior, and routing all
-refer back to those names. `polling` controls how often Detent refreshes the
+persona to its work source; native projects use `tracker.kind: hub_native`,
+which keeps issues in the Hub. The tracker declares workflow states in one
+ordered `tracker.lanes` list; state maps, transition automation, admission,
+planning, stop behavior, and routing all refer back to those names. `polling` controls how often Detent refreshes the
 tracker when no event gives it a fresher signal. Its
 `refresh_failure_threshold` controls how many consecutive failures after a
 successful refresh promote project and fleet health to `needs_attention`; a
@@ -647,8 +614,8 @@ project whose first refresh fails needs attention immediately.
 
 Each lane has a `name` and a `role`: `active` means dispatchable, `holding`
 means non-dispatchable and non-terminal, and `terminal` means finished. File
-order is the order on Cloud boards and lists, lane pickers, the local dashboard,
-and approved repository workflow policies.
+order is the order on Cloud boards and lists, lane pickers, and approved
+repository workflow policies.
 
 ```yaml
 tracker:
@@ -675,12 +642,10 @@ running it again leaves the file unchanged. An explicit local `lanes` list
 replaces the shared lane list in full. Cloud-authored Markdown is
 migrated automatically by the Hub, preserving each project's stored lane order.
 
-Choose exactly one GitHub status source: ProjectV2, the repository issue
-`Status` field, or repository labels. `dependency_auto_unblock`,
-`blocked_recovery`, and `blocker_auto_promote` are opt-in tracker automations:
-the first advances work whose dependencies cleared, the second revives
-agent-recoverable PR maintenance, and the third promotes blockers when they
-enter configured states.
+`dependency_auto_unblock`, `blocked_recovery`, and `blocker_auto_promote` are
+opt-in tracker automations: the first advances work whose dependencies cleared,
+the second revives agent-recoverable PR maintenance, and the third promotes
+blockers when they enter configured states.
 
 GitHub and Linear trackers also receive a default Statuspage base URL through
 `tracker.status_page_url`; set that key to override the provider endpoint.
@@ -897,7 +862,6 @@ optionally inserts a plan-review stop before implementation.
 
 ### Operations, budgets, and observability
 
-`server` controls the project dashboard bind and Kanban mutation policy.
 `active_hours` optionally limits new agent dispatches to recurring weekday and
 wall-clock spans in a required IANA timezone. Use window values such as
 `Mon-Fri 22:00-06:00`; ranges that end before their start wrap past
@@ -971,73 +935,12 @@ credentials through a customer's secret service or obtaining the checkout.
 
 ### Intake, retrospectives, routines, and admission
 
-`intake.sources` turns webhook or scheduled external signals into tracker
-items. `retro` periodically mines completed work for recurring operational
-lessons. `routines` schedules arbitrary agent prompts against supported
-trackers.
-
-The `intake.sources[]` keys `enabled`, `paths`, and `exclude_paths` scope the scanner's sources and are not a workaround for a mechanism.
-
-`backlog_admission` is an opt-in scheduled pass that evaluates items from
-configured source states against a named criteria section in `WORKFLOW.md`,
-then proposes a bounded number for a target state. Its five-field cron,
-source-state membership, distinct target state, tracker support, and positive
-run limits are enforced by the same validators that feed the generated table
-below. When `require_effort` is enabled, `effort_section` names a separate
-project-owned `WORKFLOW.md` rubric whose bold or code-formatted list items
-define the allowed recommendations. Detent writes a recommended `detent-agent`
-block before the admission transition only when the issue has no existing
-block; the default remains disabled for compatibility.
-
-Admission screens out non-deliverable tracker and intake artifacts before the
-agent run. Add `<!-- detent:no-dispatch -->` to an issue body for a deterministic
-operator opt-out. The decline remains in the configured source state, is
-commented once, and is reconsidered only after the title or body changes.
-
-When enabled, admission defaults to `*/15 * * * *`, which limits normal
-candidate wait time to 15 minutes. An every-30-minute schedule implies up to 30
-minutes of latency, an hourly schedule up to one hour, and a daily schedule up
-to 24 hours. Restricting a daily schedule to weekdays creates a 72-hour weekend
-gap. A slow schedule is valid, but it can make admission look broken because
-issues accumulate in the source state while Detent is simply waiting for the
-next run.
-
-On the host used to establish the default, 20 admission runs and 18 admission
-agent sessions averaged about 25 seconds of wall time per run and 36,000 tokens
-per candidate-bearing run, with 655,368 tokens total. Runs with no eligible
-candidates are cheaper because they do not start an admission agent. At the
-15-minute default, there are at most 96 runs per day; use `detent doctor` to
-compare your schedule with recent candidate-bearing runs and the runtime and
-token cost observed on your own host. Choose a slower explicit schedule when
-that latency/cost tradeoff is intentional.
-
-The onboarding workflow builder accepts a named `INTAKE_PROFILE` and expands
-these `answers.env` keys into the typed configuration below. The generated
-field reference remains derived from the YAML schema; this table documents the
-interview-to-config mapping that exists before YAML is rendered.
-
-| `answers.env` key | Generated config target |
-| --- | --- |
-| `INTAKE_PROFILE` | Selects the manual, assisted, or autonomous answer expansion |
-| `FOLLOWUPS_ENABLED` | `agent.followups.enabled` |
-| `BACKLOG_ADMISSION_ENABLED` | `backlog_admission.enabled`; the entire block is omitted when false |
-| `BACKLOG_ADMISSION_SCHEDULE` | `backlog_admission.schedule` |
-| `BACKLOG_ADMISSION_SOURCE_STATE` | `backlog_admission.sources.states` |
-| `BACKLOG_ADMISSION_TARGET_STATE` | `backlog_admission.target_state` |
-| `BACKLOG_ADMISSION_CRITERIA_SECTION` | `backlog_admission.criteria_section` and the matching shared `WORKFLOW.md` heading |
-| `BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN` | `backlog_admission.max_candidates_per_run` |
-| `BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN` | `backlog_admission.max_proposals_per_run` |
-| `BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS` | `backlog_admission.max_open_proposals` |
-| `BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS` | `backlog_admission.proposal_expiry_days` |
-| `BACKLOG_ADMISSION_AUTO_ADMIT` | `backlog_admission.auto_admit` |
-| `BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE` | `backlog_admission.auto_admit_min_confidence` |
-| `BACKLOG_ADMISSION_AUTHORS_ALLOW_ASSOCIATION` | `backlog_admission.authors.allow_association` |
-| `ROUTINES_ENABLED` | Controls whether the generated `routines` list is present |
-| `ROUTINE_NAME` | `routines[].name` |
-| `ROUTINE_SCHEDULE` | `routines[].schedule` |
-| `ROUTINE_PROMPT` | `routines[].prompt` |
-| `STALE_TODOS_ENABLED` | Controls whether the built-in scheduled `stale-todos` source is present |
-| `STALE_TODOS_SCHEDULE` | `intake.sources[].cron` for the `stale-todos` source |
+`intake.sources`, `retro`, `routines`, and `backlog_admission` are scheduled
+features of repository trackers. `tracker.kind: hub_native` rejects
+`intake.sources` and `routines`, `retro` requires a `github` or `memory`
+tracker, and `backlog_admission` needs candidate selectors that native trackers
+do not provide. Native cutover refuses a workflow that still enables any of
+them.
 
 ## Fleet staleness warnings
 

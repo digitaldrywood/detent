@@ -21,7 +21,6 @@ writable so read-only module caches can be removed. If a tree still cannot be
 removed, the warning names that tree once per running orchestrator; later
 sweeps continue trying to remove it.
 
-GitHub closure time is preserved separately from the issue's last update time.
 Lane retention uses the lane-entry timestamp, including the existing tracker
 transition reader when needed. If completion time cannot be verified, the
 retention sweep leaves the worktree for ordinary cleanup or a later sweep.
@@ -65,14 +64,5 @@ the most recent in-memory totals for each workdir; they reset on restart until
 the next sweep. Completed-workspace byte totals subtract the new archive size
 and are floored at zero. These are logical file sizes, not filesystem block or
 APFS clone accounting. The sweep never claims an archive failure as reclaimed
-workspace bytes.
-
-Terminal GitHub cleanup can also use a freshly verified merged PR head when a
-squash merge and deleted source branch leave no live branch ancestry proof.
-The existing reaper and `cleanup_workspace` action revalidate the issue's PR
-association and refresh merged state, merge time, repository, PR number, and
-head before passing that exact head to the normal cleanup lifecycle. Verification
-failure falls back to live remote branch proof; without either proof, work stays
-retained. A different local head or dirty files remain protected. Archive branches
-are not required for this verified delivery path. Cleanup counts describe actual
-removed worktrees; verify path absence before reporting recovered storage.
+workspace bytes. Cleanup counts describe actual removed worktrees; verify path
+absence before reporting recovered storage.

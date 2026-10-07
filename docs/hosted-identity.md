@@ -15,8 +15,8 @@ Self-hosting is free with operator-selected auth: WorkOS, custom, generic or loc
 Selecting an auth adapter must never select a billable deployment mode or require
 a Detent Cloud account. The current `--hosted-config` couples WorkOS and hosted
 policy; it is not yet a general self-hosted WorkOS switch. Generic scoped Hub
-bearer auth and local dashboard auth remain supported without it. The proposed
-configuration separation is in [deployment examples](examples/hub/README.md).
+bearer auth remains supported without it. The proposed configuration separation
+is in [deployment examples](examples/hub/README.md).
 
 ## Allocation and configuration
 

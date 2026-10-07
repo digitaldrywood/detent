@@ -71,7 +71,7 @@ The OS-native config directory is `%AppData%\detent\global.yaml` on Windows, `~/
 
 `DETENT_CONFIG` and `DETENT_HOME` remain deprecated fallbacks for one release. Detent uses `CONFIG_HOME` instead of `HOME` because `HOME` is standard process state, not Detent configuration.
 
-After global config lookup fails, startup may fall back to a valid `WORKFLOW.md` in the current working directory for single-project mode. `detent config path` should continue to report both the selected path and the matching rule.
+`detent config path` should continue to report both the selected path and the matching rule.
 
 ## Validation
 

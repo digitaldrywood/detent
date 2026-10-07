@@ -1,36 +1,26 @@
-# Dashboard And APIs
+# Runner Telemetry And APIs
 
 [Back to README](../README.md#documentation)
 
-The web dashboard starts with the main `detent` command. In running mode it
-shows live counts, running issues, retry queue, blocked work, completed
-sessions, token totals, budget status, Codex rate-limit snapshots, and GitHub
-REST and GraphQL rate-limit snapshots. GraphQL also reports rolling one-hour
-request totals and per-cycle query cost contributors. REST request totals
-cover the current cycle. GraphQL hourly totals count requests observed by this
-project's connector, reset on restart, and exclude other tools sharing the token. The remaining quota reflects the
-shared token budget. The shared GitHub API health indicator
-separates primary quota exhaustion from observed secondary REST backoff, so a
-healthy primary budget can still show `backoff` when GitHub returned `429` for
-endpoint families such as pull requests or check runs. Open the indicator to see
-remaining primary quota, reset times, backed-off endpoint families, last status
-codes, retry timing, and tracker refresh timing.
+Each enrolled runner serves a local health and telemetry API on its configured
+listener; the board, issues, and Change Requests live in the Hub (see
+[Hub API](hub-api.md)). The runner's state snapshot reports live counts,
+running issues, retry queue, blocked work, completed sessions, token totals,
+budget status, and provider rate-limit snapshots.
 
-The Health dashboard also shows host memory, IO, and CPU PSI. Each row includes
-the current governing average, configured threshold, support or read-error
-state, configured and effective pressure capacity, constraint duration, and
-whether Detent is holding new dispatches. The same data appears in `detent
-state`, `/api/v1/state`, and `/health` as `memory_pressure`, `io_pressure`, and
-`cpu_pressure`. A pressure constraint is admission backpressure, not a worker
-failure: existing agents continue while new starts wait for available degraded
-capacity or pressure recovery.
+Host memory, IO, and CPU PSI appear in `detent state`, `/api/v1/state`, and
+`/health` as `memory_pressure`, `io_pressure`, and `cpu_pressure`. Each entry
+includes the current governing average, configured threshold, support or
+read-error state, configured and effective pressure capacity, constraint
+duration, and whether Detent is holding new dispatches. A pressure constraint
+is admission backpressure, not a worker failure: existing agents continue while
+new starts wait for available degraded capacity or pressure recovery.
 
 When an agent backend reports `model_context_window`, Detent also surfaces
 context pressure for running and recent sessions. Context pressure is the
 session's `total_tokens` divided by the model context window. The JSON snapshot
 includes `context_pressure.total_tokens`, `context_limit_tokens`,
-`percent_used`, and `threshold_state`; the web dashboard and TUI render the
-same value as a compact percent. Thresholds are `normal` below 70%, `watch` at
+`percent_used`, and `threshold_state`. Thresholds are `normal` below 70%, `watch` at
 70%, `warning` at 85%, and `critical` at 95%. Unknown context windows omit the
 derived fields instead of reporting a misleading zero.
 
@@ -129,7 +119,7 @@ failing-to-passing CI transition each reset the shared token and USD window.
 Usage accumulates only while the PR fingerprint remains static. When an
 effective limit trips, Detent parks the issue in `Blocked` and identifies
 whether no PR evidence was produced or a linked PR remained static. The latter
-points operators toward merge-train capacity and serialization tuning; the
+points operators toward `Merging` capacity and serialization tuning; the
 former recommends narrowing or splitting the task. The next worker must explain
 the missing progress signal in its first Workpad update before using tools.
 `detent doctor` reports both effective brakes for every project and warns when
@@ -143,10 +133,8 @@ a success or different failure class closes the breaker, while the same class
 starts a fresh cooldown. The state and health APIs report failed-attempt and
 distinct-item counts, affected item links and parking state, a representative
 operator cause, backend/provider identity, any matching capacity outage, the
-absolute resume time, and the current eligible-candidate count. The board keeps
-the cause and project-only scope concise while progressively disclosing this
-evidence and clarifying that canary eligibility does not make a parked item
-retryable. The eligible count includes only candidates that dispatched or were
+absolute resume time, and the current eligible-candidate count. Canary
+eligibility does not make a parked item retryable. The eligible count includes only candidates that dispatched or were
 held solely by the project breaker; dependency, budget, provider-capacity, and
 other dispatch gates remain separate reasons that can leave the count at zero.
 
@@ -165,8 +153,8 @@ the full fresh continuation prompt. Set the field to `false` to retain fresh
 redispatch behavior for every restart.
 
 Completed issues persist an efficiency receipt built from session, attempt,
-usage, and workflow-lane rows. Receipts appear in the project Runs table and
-issue detail sheet; Reports shows per-merged-issue percentiles, cache share,
+usage, and workflow-lane rows. Efficiency reporting covers per-merged-issue
+percentiles, cache share,
 first-attempt merge rate, dwell decomposition, anomalies, and a trailing-window
 baseline. The default anomaly threshold is 3x the project baseline and can be
 changed per workflow. OTLP lifecycle export is optional and disabled when no
@@ -192,17 +180,7 @@ Useful endpoints:
 
 | Route | Purpose |
 | --- | --- |
-| `/` | Web dashboard. |
-| `/kanban` | Read-only fleet Kanban board across all registered projects. The sidebar link appears only when more than one project is registered. |
-| `/projects/<id>` | Project-scoped dashboard overview. |
-| `/projects/<id>/kanban` | Project-scoped Kanban board; read-only or integration mode follows that project's workflow config. |
-| `/projects/<id>/runs` | Project running, retry, blocked, and recent session details. |
-| `/projects/<id>/configuration` | Project workflow and runtime configuration view. |
-| `/projects/<id>/diagnostics` | Project health, board flow, and telemetry diagnostics. |
-| `/settings` | Fleet settings and configuration summary. |
-| `/reports` | Usage reports for spend, tokens, projects, issues, PRs, and models. |
 | `/health` | Server health, startup readiness, and configured dependency checks. |
-| `/events` | Server-sent dashboard updates. Use `?view=kanban` for the fleet board and `?project=<id>&view=kanban` for a project board. |
 | `/api/v1/openapi.yaml` | Public OpenAPI 3 catalog for the stable JSON API. HTML, HTMX, and SSE routes are excluded. |
 | `/api/v1/state` | JSON telemetry snapshot. `projection=cli` bounds collections and response bytes with explicit truncation metadata; `fields=update,counts` retains the updater projection. |
 | `/api/v1/timeseries?window=10m&bucket=1m` | Fleet chart samples for running agents, tokens/sec, and completions. |
@@ -210,9 +188,7 @@ Useful endpoints:
 | `/api/v1/projects/<id>/state` | Project-scoped JSON telemetry snapshot; supports the same `projection=cli` after project scoping. |
 | `/api/v1/projects/<id>/timeseries?window=10m&bucket=1m` | Project chart samples for running agents, token spend, and board flow. |
 | `/api/v1/projects/<id>/issues/explanation?reference=<issue>` | Versioned JSON explanation of an issue's current lane, runtime state, evidence, and degraded sources. |
-| `/api/v1/projects/<id>/work-items` | Create a runtime work item with `POST` for `local_sqlite` and `github_local` trackers. |
 | `/api/v1/refresh` | Request an orchestrator refresh with `POST`. |
-| `/api/v1/webhooks/github` | Accept signed GitHub webhook deliveries with `POST`. |
 | `/api/v1/<issue>` | JSON detail for a known board, pipeline, running, retrying, or blocked issue. |
 
 State responses calculate `snapshot_age_seconds` when the request is served,
@@ -227,8 +203,8 @@ headroom. A refresh becomes `degraded` only after that window is exceeded or a
 refresh source reaches its failure threshold.
 `/health` returns HTTP `503` with `status: "not_ready"`, `ready: false`, and a
 `lifecycle` of `starting` until running-mode startup succeeds. A fatal startup
-changes `lifecycle` to `failed` before serving stops. Other dashboard and API
-routes remain available during startup for diagnostics. After startup,
+changes `lifecycle` to `failed` before serving stops. Other API routes
+remain available during startup for diagnostics. After startup,
 `ready: true` and `lifecycle: "ready"` distinguish process readiness from
 project degradation and other operational health details.
 
@@ -246,9 +222,7 @@ error. A failed first refresh is reported immediately because dispatch has
 never observed the project.
 
 Project state scopes workflow metrics from the fleet snapshot enrichment cache
-instead of rerunning historical database reports for each request. The project
-diagnostics page is the opt-in detail path that loads project-specific runtime
-store evidence and history.
+instead of rerunning historical database reports for each request.
 
 The wildcard issue route accepts an issue ID, canonical identifier, issue URL,
 bare number, or `#number`. Add `?project=<id>` when a number or other reference
@@ -259,159 +233,14 @@ takes precedence over pipeline and runtime copies for lane and identity, while
 runtime activity uses running, retrying, then blocked precedence. Completed and
 tracker-drift-only items are not part of this route.
 
-### Dashboard Magic-Link Authentication
-
-Magic-link authentication is disabled unless the top-level `auth` block selects
-`magic_link`. When enabled, dashboard pages, browser API calls, SSE streams, and
-mobile views require a persisted session. Existing API keys and `api_token`
-credentials continue through their normal API checks, while signed GitHub and
-token-authenticated intake webhooks keep their dedicated authentication.
-
-```yaml
-auth:
-  mode: magic_link
-  public_url: https://detent.example.com
-  allowed_emails:
-    - operator@example.com
-  link_ttl: 15m
-  session_ttl: 720h
-  smtp:
-    host: smtp.example.com
-    port: 587
-    username: smtp-user
-    password: smtp-password
-    from: detent@example.com
-```
-
-`public_url` is recommended for reverse-proxy deployments so email and CLI
-links use the externally reachable origin. Without it, the running server uses
-its resolved dashboard URL and the CLI uses the configured local port. SMTP
-credentials are optional, but `username` and `password` must be set together.
-Detent uses STARTTLS when the server advertises it. TLS termination for the
-dashboard remains the operator's responsibility.
-
-Allowed submissions always receive the same “check your inbox” page as denied
-submissions. Links are single-use, short-lived, and stored only as SHA-256
-hashes. Sessions are also hashed in SQLite, survive restarts, and expire after
-`session_ttl`. Auth configuration changes require a Detent restart.
-
-If SMTP delivery is unavailable, create the same one-time link directly:
-
-```sh
-detent auth link operator@example.com --format pretty
-```
-
-### Dashboard OIDC Authentication
-
-Set `auth.mode` to `oidc` to use any OpenID Connect provider that supports
-discovery and the authorization-code flow. Detent uses S256 PKCE, binds and
-validates `state` and `nonce`, verifies the ID-token signature and time claims,
-and requires the configured issuer and client ID to match the token exactly.
-The provider must include a verified `email` claim; authentication alone does
-not grant board access.
-
-```yaml
-auth:
-  mode: oidc
-  public_url: https://detent.example.com
-  allowed_emails:
-    - operator@example.com
-  allowed_domains:
-    - example.org
-  session_ttl: 12h
-  oidc:
-    issuer_url: https://identity.example.com
-    client_id: detent-dashboard
-    client_secret: replace-with-provider-secret
-    scopes:
-      - profile
-      - groups
-```
-
-Register this exact redirect URI with the provider:
-
-```text
-https://detent.example.com/auth/oidc/callback
-```
-
-`issuer_url` is the exact `issuer` value from the provider's
-`/.well-known/openid-configuration` document, not the discovery-document URL.
-Detent always requests `openid` and `email`, then appends configured `scopes`.
-Allowed email and domain comparisons are case-insensitive; a domain entry is an
-exact domain and does not implicitly include subdomains. An absent or false
-`email_verified` claim is denied. Keep `client_secret` only in the
-permission-restricted `global.yaml` and do not commit that file.
-
-OIDC uses the same hashed SQLite sessions as magic links. Sessions survive
-Detent restarts and expire after `session_ttl`; changing OIDC settings requires
-a restart. Existing API keys, `api_token`, signed GitHub webhooks, and intake
-webhooks retain their independent authentication paths.
-
-For a Tailscale-only dashboard, set `public_url` and the provider redirect URI
-to the HTTPS Tailscale hostname, such as
-`https://buildbox.example-tailnet.ts.net`. The browser completing sign-in must
-be connected to that tailnet. Behind a reverse proxy, use the externally
-visible HTTPS origin for both values and forward requests to Detent without
-rewriting `/auth/oidc/callback`. TLS termination remains the operator's
-responsibility.
-
-#### WorkOS AuthKit
-
-Create an OAuth application in [WorkOS Connect](https://workos.com/docs/authkit/connect/oauth),
-add Detent's callback to its redirect URIs, and copy an application credential's
-client ID and secret. Use the AuthKit domain's issuer value, typically
-`https://<subdomain>.authkit.app`; its OpenID configuration is available at
-`/.well-known/openid-configuration`. WorkOS documents `email` and
-`email_verified` in the issued ID token. A minimal WorkOS configuration is:
-
-```yaml
-auth:
-  mode: oidc
-  public_url: https://detent.example.com
-  allowed_domains: [example.com]
-  oidc:
-    issuer_url: https://example.authkit.app
-    client_id: client_01EXAMPLE
-    client_secret: replace-with-workos-credential
-    scopes: [profile]
-```
-
-See the WorkOS [OIDC metadata](https://workos.com/docs/reference/workos-connect/metadata/oauth-authorization-server)
-and [token claims](https://workos.com/docs/reference/workos-connect/token)
-references when confirming an environment's issuer and claims.
-
-#### Clerk
-
-Create an OAuth application in the Clerk Dashboard as described in
-[Clerk's OIDC provider guide](https://clerk.com/docs/guides/configure/auth-strategies/oauth/single-sign-on),
-allow the `openid`, `email`, and optional `profile` scopes, add Detent's callback
-URI, and copy the client ID and secret. Copy the Discovery URL shown in the
-application settings and use its returned `issuer` value. This is normally the
-Clerk Frontend API origin, such as
-`https://verb-noun-00.clerk.accounts.dev` in development or
-`https://clerk.example.com` for a configured production domain.
-
-```yaml
-auth:
-  mode: oidc
-  public_url: https://detent.example.com
-  allowed_emails: [operator@example.com]
-  oidc:
-    issuer_url: https://verb-noun-00.clerk.accounts.dev
-    client_id: oauth_app_example
-    client_secret: replace-with-clerk-secret
-    scopes: [profile]
-```
-
-### API Authentication And Work-Item Submission
+### API Authentication
 
 Configure a top-level `api_token` in `global.yaml`, or set
 `DETENT_API_TOKEN` to override it at runtime. Use a high-entropy value; the
 recommended shape is a `detent_` prefix followed by a random secret. Mutating
 API routes require `Authorization: Bearer <token>` or `X-API-Key: <token>`.
 When a token is configured, read-only `GET /api/v1/*` routes require it too.
-`GET /health` stays unauthenticated, and the GitHub webhook keeps its HMAC
-signature check.
+`GET /health` stays unauthenticated.
 
 If Detent binds a non-loopback host such as `0.0.0.0` without an `api_token`,
 API routes fail closed and mutating routes return `403` until a token is
@@ -429,134 +258,6 @@ The setting hot-reloads.
 Do not enable `trust_loopback_peer_read` behind a reverse proxy on the same
 host. Every remote request relayed by that proxy appears to Detent to have a
 loopback direct peer and would receive read access.
-
-### Remote MCP
-
-The running Detent web server exposes its shared typed operator catalog at
-`/mcp` using the existing listener, application services and shutdown lifecycle.
-Use an existing scoped credential in `Authorization: Bearer <key>` or
-`X-API-Key: <key>` on every request. Existing read/write/admin hierarchy and
-project grants apply; the application rechecks credentials, current authority
-and resource ownership even on a direct `tools/call`. Remote MCP does not infer
-authority from loopback peers or public UI cookies. Existing API rate limits apply.
-
-`2026-07-28` clients use stateless POSTs: send required protocol metadata and
-matching `MCP-Protocol-Version`, `Mcp-Method` and, for tool calls, `Mcp-Name`
-headers. `server/discover` reports versions, identity and supported capabilities.
-Every successful modern response has `resultType: "complete"`. Older supported
-revisions retain `initialize`, `notifications/initialized` and principal-bound
-`Mcp-Session-Id`; DELETE ends those legacy sessions. GET returns `405`. Modern
-requests ignore protocol session IDs and receive no session header.
-
-Both transports use the same bounded `tools/list` response and typed registry.
-The complete authorized catalog is returned by default. Each definition's
-`_meta["detent/toolset"]` identifies its group; select smaller catalogs with
-`params._meta["detent/toolsets"]`, for example `["board", "connection"]`.
-Unavailable application services return safe opaque errors. Structured results
-also have serialized JSON text for older clients. See
-[generic MCP setup](mcp-capabilities.md#generic-client-setup) for portable
-current key authority, client-side confirmation, organization selection and retries.
-
-Use HTTPS for remote MCP, terminating TLS at Detent or a trusted reverse proxy;
-plain HTTP is appropriate only for loopback testing. Configure Detent's existing
-public dashboard URL for TLS termination and preserve the intended public origin
-at the proxy. Origin validation uses the trusted application URL when supplied,
-and does not trust arbitrary forwarding headers. Redact `Authorization` and
-`X-API-Key` in proxy logs and tracing. MCP errors do not include credential or
-raw service-error values.
-
-### Private Dashboard URL Access
-
-For a personal deployment that needs remote dashboard access without a VPN,
-Detent can require a private, unguessable URL. Enable it with the public URL
-served by your TLS proxy:
-
-```sh
-detent auth token enable --base-url https://detent.example.com
-```
-
-The command generates a 256-bit URL-safe token, stores this configuration in
-the permission-restricted global config, and prints the private URL once:
-
-```yaml
-dashboard_access:
-  mode: private_token
-  token: generated_value
-  allow_write: false
-```
-
-Opening the printed `?token=...` URL establishes a Secure, HttpOnly, SameSite
-session cookie and redirects to a clean URL. Dashboard pages, mobile views,
-reports, SSE updates, and read APIs then work without putting the token in later links.
-Requests without the token or a valid session receive the same non-revealing
-`404` response as an unknown route. `/health`, signed GitHub webhooks, intake
-webhooks, and API clients with their own bearer credentials remain independent
-of dashboard access.
-
-Private URL access is read-only by default. This matters because the URL is a
-bearer credential: anyone who receives it can use the dashboard. Set
-`dashboard_access.allow_write: true` only when every holder should also be able
-to stop runs, move or comment on items, rotate API keys, and change runtime
-state. Rotate a leaked or stale URL immediately:
-
-```sh
-detent auth token rotate --base-url https://detent.example.com
-```
-
-Rotation hot-reloads and invalidates every existing private dashboard session.
-Detent redacts the token from reload logs, but browsers, chat systems, proxy
-logs, and referrer destinations can still expose bearer URLs. This mode is
-appropriate for a small personal deployment and is weaker than identity-based
-magic-link or OAuth/OIDC access. TLS termination and proxy log redaction are
-the deployer's responsibility. Public `--base-url` values must use HTTPS;
-plain HTTP is accepted only for loopback testing. To disable the mode, remove
-`dashboard_access` from the global config.
-
-Create a runtime work item:
-
-```sh
-curl -fsS -X POST "http://127.0.0.1:4000/api/v1/projects/digitaldrywood-video/work-items" \
-  -H "Authorization: Bearer $DETENT_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  --data '{
-    "title": "Author beat visuals",
-    "description": "Full markdown brief.",
-    "state": "Todo",
-    "labels": ["video-assets"],
-    "fields": {"render_status": "queued"},
-    "priority": 2,
-    "deliverable": {
-      "kind": "artifact",
-      "review_url": "http://127.0.0.1:8090/v/example/g/assets"
-    }
-  }'
-```
-
-The response is `201` with `{"id":"...","identifier":"...","url":"..."}`.
-Duplicate submitted identifiers return `409`, invalid states or missing title
-and description return `422`, unknown projects return `404`, and trackers other
-than `local_sqlite` or `github_local` return `501`.
-
-The CLI uses the same validation and writes through the configured tracker
-directly:
-
-```sh
-detent work-item add digitaldrywood-video \
-  --title "Author beat visuals" \
-  --body-file brief.md \
-  --label video-assets \
-  --field render_status=queued \
-  --priority 2 \
-  --deliverable-review-url "http://127.0.0.1:8090/v/example/g/assets" \
-  --format json
-```
-
-The terminal TUI renders the same telemetry snapshot model for terminal-first
-operator surfaces. The default binary path starts the web dashboard; embedding
-the TUI uses the `internal/tui` Bubble Tea model with a telemetry hub.
-
-The standing Go-vs-Elixir parity checklist is maintained in
-[docs/parity-audit.md](parity-audit.md).
 
 ## Work attempt recovery
 

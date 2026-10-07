@@ -16,15 +16,15 @@ project-scoped reads or `work_list` cursors to continue inventory reads.
 `eligibility_tool` (`explain_item`) for current native admission evidence,
 including human ownership, dependencies and registered-runner conditions.
 
-For a selected local board, discover the `local_projects` toolset on its
-authenticated `/mcp` connection. `local_project_configuration` reads the actual
+On an enrolled runner host, discover the `local_projects` toolset on the
+runner's authenticated `/mcp` connection. `local_project_configuration` reads the actual
 local revision and redacted selected/effective policy. Its admin commands apply
 an approved committed policy, drain current work or detach one settled migrated
 project. They use the existing operator command API and authority and receipt owner;
 see [managed local project configuration](mcp-capabilities.md#managed-local-project-configuration-native-94)
 for exact revision, policy and handoff requirements. Cloud also reaches the
-enrolled runner's configuration owner through its existing heartbeat transport,
-independently of the local board. Select `runner_id` when more than one granted
+enrolled runner's configuration owner through its existing heartbeat transport.
+Select `runner_id` when more than one granted
 runner reports the project. Commands through Cloud additionally require that
 runner's current `expected_runner_revision`. Runner administration and local
 project commands require an Admin key. Hosted owners and admins have organization
@@ -61,21 +61,6 @@ before changing policy. The grant
 defaults to false and includes connections to other localhost services as well
 as temporary test servers; the sandbox tier and host-service grants retain
 their existing owners.
-
-Without a Hub, a local instance uses its SQLite configuration owner for
-`organization_project_rank`, `organization_project_rank_update`,
-`get_organization_model_selection`, `update_organization_model_selection`,
-`get_project_model_selection` and `update_project_model_selection`. The commands
-are available through `/api/v1/operator-tools/:tool_name` and MCP with the same
-arguments and revision semantics as Cloud. Reads of model selection require read
-scope; mutations and project-rank operations require admin scope. Organization
-settings require an unrestricted credential; project settings respect project
-grants. Updates use the existing operator mutation receipts for retries.
-`get_runner_routing` and `update_runner_routing` use runner ID `local` for the
-allowed-projects list. Preserve the returned machine fields and change only
-`project_ids`; disabling runner access retains the project and its rank/model
-settings. The existing configuration watcher applies database edits to the
-runtime without restarting projects for rank or model-selection changes.
 
 Sign in to the intended Cloud organization and open **Settings → API & MCP**.
 Existing `/settings/mcp` bookmarks open this same page. Create a named key,

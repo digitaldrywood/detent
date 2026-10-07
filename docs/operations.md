@@ -1,9 +1,8 @@
 # Operations report
 
-Open **Operations**, immediately below **Reports** in the sidebar, or read
-`GET /api/v1/operations` using the same authentication and read scope as the
-state API. The report includes its generation time and producing instance name.
-Refresh updates the content in place and preserves the dashboard shell.
+Read `GET /api/v1/operations` from a runner's local API using the same
+authentication and read scope as the state API. The report includes its
+generation time and producing instance name.
 
 The JSON structure is shared in `internal/operations`. Historical aggregation
 lives in the store; the web layer adds instance identity, current merge-queue
@@ -46,8 +45,8 @@ Historical windows include their start and exclude their end.
 
 `since` is an optional RFC3339 timestamp, exclusive, applying only to actions.
 It defaults to 24 hours before the current request. Pass the preceding report's
-`data_time` to retrieve actions since that render. The page's Refresh button
-carries this timestamp; one reader never consumes another reader's actions.
+`data_time` to retrieve actions since that render. One reader never consumes
+another reader's actions.
 
 Only applied lane-ledger writes stamped with the `operator_routine` origin
 appear. The operator routine below produces these writes; the report does not
@@ -97,7 +96,7 @@ available yet; naming them in `actions` is a configuration error.
 ## Exporting the page
 
 `detent report --html <path>` writes the same report as a self-contained HTML
-file for readers away from the dashboard. It replaces the external
+file for readers away from the runner. It replaces the external
 `monitor.py` watcher and `repair.py` repair script, which are retired; actions
 now come from the operator routine and are visible in the report itself. A
 launchd agent keeps a synced copy current:
@@ -156,8 +155,8 @@ pruning. Detent never prunes user-level SQLite databases.
 
 ## Profiling
 
-Profiling is opt-in and disabled by default. Add this block to the instance
-`global.yaml` used by the local orchestrator or Cloud runner:
+Profiling is opt-in and disabled by default. Add this block to the runner's
+`global.yaml` (for an enrolled runner, `~/.config/detent-runner/global.yaml`):
 
 ```yaml
 profiling:
@@ -173,7 +172,7 @@ profiling:
 
 The Hub reads the same block from `detent --config /path/to/global.yaml hub
 serve ...` (or `CONFIG`/`DETENT_CONFIG`). When no instance config is supplied,
-it reads the block from `--hosted-config`, if present. All three processes
+it reads the block from `--hosted-config`, if present. Runners and the Hub
 reload profiling settings from their config file without restarting or ending
 agent sessions. Invalid reloads retain the previous settings. Listener, capture,
 and retention failures are logged through `slog` and do not stop the process.

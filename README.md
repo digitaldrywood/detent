@@ -6,562 +6,144 @@
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/digitaldrywood/detent?include_prereleases&sort=semver)](https://github.com/digitaldrywood/detent/releases)
 
-## License
+Detent runs your engineering process with coding agents. You write issues on a board; Detent hands each ready issue to an agent on a machine you control, checks the result against the gates you defined, and lands it. Many issues run at once, each in its own isolated workspace.
 
-[FSL-1.1-ALv2](LICENSE) permits reading, self-hosting, internal use, modification,
-and redistribution under its terms. It prohibits offering Detent as a competing
-commercial product or service during the first two years after each release.
-Each release becomes available under Apache License 2.0 after two years.
-Earlier MIT-licensed tags remain under the MIT License as published with those
-tags. Learn more at [fsl.software](https://fsl.software/).
+A **detent** is the catch that holds a moving part at a fixed position until it is deliberately released, like the click-stop on a dial. Detent holds each piece of work at a defined stop on the board and only lets it advance when a gate is cleared.
 
-**[detent.build](https://detent.build)** — what Detent is, how it works, and how
-to install it.
+**[detent.build](https://detent.build)** has the product overview. **[cloud.detent.build](https://cloud.detent.build)** is Detent Cloud.
 
-## Start With AI
+## Start with AI
 
-Hi, welcome to Detent. If you are reading this as a human, pause here and paste
-the prompt below into Codex or Claude Code. Detent is meant to be driven from
-the top down by AI agents, so the fastest way to get moving is to let an agent
-inspect the repo, interrogate the onboarding runbook, and guide you through the
-right setup path. You can keep reading by hand too; nobody will revoke your
-keyboard.
+Detent is meant to be set up by an agent. Paste this prompt into Codex or Claude Code from inside the repository you want Detent to work on:
 
 ```text
-You are onboarding Detent with me. Treat this as an AI-driven project, not a
-manual README skim.
+Help me set up Detent for this repository.
 
-Treat https://github.com/digitaldrywood/detent as the canonical Detent source
-repository. Do not assume the current working directory is the Detent source
-checkout or the target repository being onboarded. Use GitHub as the
-first-class Detent documentation source when a verified local checkout is
-absent, stale, or not desired. Do not clone Detent by default; cloning is only
-an optional fallback when remote reads are unavailable or I explicitly ask for a
-local source checkout. Keep the Detent source repository separate from any
-target repository being onboarded; Detent may be a reference/source repository,
-not the target.
+Treat https://github.com/digitaldrywood/detent (branch main) as the source of truth for Detent's docs. Read README.md and docs/cloud-onboarding.md from GitHub; do not clone Detent unless I ask. The repository in the current directory is the target, not Detent itself.
 
-Pin the Detent docs to a concrete canonical commit before relying on them. Run
-`DETENT_DOCS_COMMIT="$(gh api repos/digitaldrywood/detent/git/ref/heads/main --jq '.object.sha')"`
-and record `DETENT_DOCS_ACCESS_METHOD=github_api`,
-`DETENT_DOCS_REPOSITORY=digitaldrywood/detent`, `DETENT_DOCS_REF=main`, and
-`DETENT_DOCS_COMMIT` in the initial evidence packet. Also run
-`detent --format json version` when the binary is available and report installed
-binary version, binary commit, binary build date, and
-`DETENT_BINARY_MATCHES_CANONICAL` against `DETENT_DOCS_COMMIT`. If a verified
-local Detent checkout is present, you may additionally set `DETENT_SOURCE_ROOT`
-and run `git -C "$DETENT_SOURCE_ROOT" fetch origin main:refs/remotes/origin/main`,
-`git -C "$DETENT_SOURCE_ROOT" rev-parse HEAD`, and
-`git -C "$DETENT_SOURCE_ROOT" rev-parse refs/remotes/origin/main`; report the
-local source root, local `HEAD`, canonical `origin/main`, and
-`DETENT_SOURCE_MATCHES_CANONICAL`. If the local checkout is absent, stale, or
-cannot be proven current, read Detent docs from GitHub at `DETENT_DOCS_COMMIT`
-instead of cloning or relying on local files.
+First ask whether I am using Detent Cloud (https://cloud.detent.build) or a self-hosted Hub, and which machine will run the agents (the runner). If self-hosted, also read docs/hub-self-hosting.md.
 
-From the pinned Detent documentation source, read README.md, AGENTS.md and
-CLAUDE.md if present, docs/ONBOARDING.md, CONTRIBUTING.md, build and language
-manifests, .github/workflows, install scripts, docs/templates, workflow
-examples, and any existing WORKFLOW.md or global.yaml examples. Use
-`gh api repos/digitaldrywood/detent/contents/<path>?ref="$DETENT_DOCS_COMMIT"`
-or raw GitHub URLs pinned to the same commit. Detent can drive any project with
-a clear workflow and validation gate, so use the repository evidence to
-identify the stack, tools, and commands instead of starting from one language.
-Do not inspect a target repository's
-ProjectV2 boards, labels, issues, WORKFLOW.md, validation commands, or runtime
-docs until the identity gate below is explicit and confirmed.
+Then inspect this repository (language, build and test commands, CI workflows, existing AGENTS.md or CLAUDE.md) and draft two files for my review:
+- detent.yaml: tracker.kind hub_native, the lanes I want, and a gate whose command is this repository's real check command.
+- WORKFLOW.md: the agent instructions for working in this repository. Do not include GitHub pull request or comment steps; native projects land through Detent.
 
-Use the pinned Detent documentation source's docs/ONBOARDING.md as the interrogation
-guide. First determine which path applies: a new Detent install, an existing
-Detent install that must be found and verified, or a new repository/project
-being added to an existing Detent install. Distinguish reference repositories from the target repository being onboarded. In Phase 0.5, run
-`detent onboarding draft-answers --output pretty` from the target checkout, or
-pass `--target-source-root` if you are currently in the Detent source checkout.
-When a local Detent checkout is available, also pass
-`--detent-source-root "$DETENT_SOURCE_ROOT"` so the draft records source and
-binary freshness evidence.
-To write the candidate identity record, run
-`detent onboarding draft-answers --answers "$ONBOARDING_DIR/answers.env" --write`.
-Treat the draft as a candidate, not confirmation. The command should infer and
-restate an identity candidate from the current git checkout before asking for
-raw answer fields, using only identity-safe local evidence first: `pwd`,
-`git rev-parse --show-toplevel`, `git remote get-url origin`, the Detent
-documentation source identity, the installed Detent config path, and
-registered project ids. If the current working directory is a GitHub checkout
-and is not the canonical Detent source checkout, propose it as the target
-candidate. If the current working directory is the Detent source checkout, do
-not propose Detent as the target unless I explicitly say I am onboarding Detent
-itself. Explain that the customer/workstream id is only a stable local
-workstream id. Present the candidate in human-facing language first, then show
-the `answers.env` representation. Set `IDENTITY_CONFIRMED=true` only after I
-confirm the restatement, then run `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity`.
-If I volunteer a status-source answer before identity is confirmed, such as
-"use label for this repo", preserve it as a pending decision outside
-`answers.env`. Restate it as pending in the conversation. For label mode, say:
-"I have your status-source choice as label mode. I will keep it pending until
-the identity gate validates, then append GITHUB_MODE=label and run the decision
-validator without asking again." Do not write `GITHUB_MODE` to `answers.env`
-until the identity phase passes; after identity validation succeeds, append
-`GITHUB_MODE=label` and run the decision validator without asking again. For
-non-label modes, carry the selected `GITHUB_MODE` value the same way.
-If the `detent` binary is not installed yet, follow the Detent source README's
-Install path or Bootstrap On A New Machine steps 1-3 first, verify the binary
-with `detent version`, and defer `detent onboarding validate-answers` until the
-binary is available.
+After I approve the files, walk me through: creating the project in the Hub, enrolling the runner (Settings > Providers & runners > Enroll a runner, then the detent hub runner register command it shows), cloning the repository into the directory register prints, signing in to Codex or Claude Code on the runner, and approving the repository policy the runner reports. Finish by filing one small issue in Todo and watching it land.
 
-For an existing install, find and verify the detent binary, config path, running
-service or dashboard, registered projects, GitHub auth, Codex auth, and
-read-only doctor status with `detent doctor --port 0` before recommending
-changes. Do not pass `--allow-write-probes` until the mutation gate passes and I
-explicitly confirm mutation. For a new install, follow the bootstrap flow and
-verify each step before moving on. For adding a project, treat existing
-registered projects as examples only; do not reuse tracker mode, status
-namespace, validation gate, dashboard bind, workspace root, scheduling priority,
-auto-promote policy, review policy, or mutation scope unless I explicitly
-accept that setting for this customer/project.
-
-Present findings with evidence and ask only the next necessary human decisions.
-Ask and record `GITHUB_MODE` explicitly after the identity phase and before
-target-specific discovery; never infer ProjectV2, issue-field, or label mode
-from existing projects. Recommendations can cite evidence, but they are not
-selected answers. Before recommending review, auto-promotion, dependency
-unblock, or merging settings, ask in plain English whether I want full
-autopilot, a Human Review gate, or conservative/manual approval. If I ask for
-maximum automation, map that to `DELIVERY_PROFILE=full_autopilot` and summarize
-the behavior before showing `answers.env` fields. Do not recommend
-`AUTO_PROMOTE_ENABLED=false` or stopping at Human Review unless I selected
-review gate or conservative/manual; do not create, link, mutate, or delete GitHub Projects, issue fields, labels,
-issues, PRs, `WORKFLOW.md`, or `global.yaml`, or dispatch agents, until Phase 2
-answers are recorded in `answers.env`, `detent onboarding validate-answers`
-passes for the selected phase, and I explicitly confirm the mutation step.
-Defaults are recommendations only; never execute a defaulted GitHub or config
-mutation without my confirmation.
+If I give you a Detent API key (Settings > API & MCP), connect to the Hub's MCP endpoint and use its tools to read state. Ask before every change to the Hub, the repository, or the runner.
 ```
-
-A **detent** is the catch that holds a moving part at a fixed position until it
-is deliberately released — the click-stop on a dial, the notch on a ratchet.
-Detent holds each piece of work at a defined stop on your board and only lets it
-advance when a gate is cleared.
-
-## What is this
-
-Detent is status-driven agentic work orchestration, shipped as a single Go
-binary, with code as its first proven domain. Today it can use a GitHub
-ProjectV2 board as the source of truth, or it can run boardless from a
-repository's GitHub issue `Status` field or repository status labels while
-Detent supplies the Kanban view. For every code issue you mark ready it creates
-an isolated Git worktree,
-dispatches a Codex coding agent against a workflow contract you wrote, runs
-your validation gate, opens a pull request, waits for review, and merges through
-a serialized train — with all of it live on a web dashboard and a terminal UI.
-The same status-to-gated-review-to-done shape is the trajectory for non-code
-work: validation gates are now pluggable, while non-git or non-PR deliverables
-remain follow-up work described in
-[Execution Seams](docs/execution-seams.md).
-
-**Choosing a GitHub status source:** Prefer `github_status_source: label` for
-boards beyond a few hundred items or instances running several projects on one
-GitHub token. ProjectV2 polling cost scales with total unarchived board item
-count multiplied by refresh rate. Done items still cost on every cycle;
-hiding them in a board view does not reduce polling cost. One large board can
-exhaust the shared GraphQL budget, affecting other projects and the operator's
-`gh` CLI. Label mode avoids board inventory reads; archiving Done board items
-also reduces ProjectV2 cost. `detent doctor` reports total and Done item counts
-and warns above 300 items; this is advisory, not a safe-budget guarantee.
-
-It is a **system, not an agent.** You specify the work — the issues, acceptance
-criteria, review gates, and merge rules — and Detent runs that process with
-rigor, isolation, and parallelism across many issues at once. The intelligence
-stays in your spec; the runtime supplies the discipline.
-
-**See it for real:** Detent uses the same host-and-project configuration model
-to dispatch the agents that build Detent itself. The root `detent.yaml` and
-`WORKFLOW.md` define Detent's own project configuration and agent instructions.
-For reusable starting points, use the paired presets in
-[`docs/templates`](docs/templates) or the in-repository
-[worked multi-project configuration](docs/examples/multi-project/README.md)
-with complete, annotated, and sanitized files you can copy.
-Use
-[Bootstrap On A New Machine](docs/bootstrap.md#bootstrap-on-a-new-machine-humans-and-ai-agents)
-to go from a bare machine to a running board. To onboard a repository, verify an
-existing install, or add a new project to an existing Detent host, use the
-agent-executable [Project Onboarding](docs/ONBOARDING.md) runbook.
-For project settings, start with the
-[complete configuration reference](docs/config.md), the
-[minimal example](config.example.yaml), or the
-[annotated example](config.annotated.yaml).
-
-## Documentation
-
-[detent.build](https://detent.build) is the product site — the overview, the
-mechanism, and install paths. The reference below is the authoritative source
-for operating Detent; start there, then follow the focused document for the task
-at hand.
-
-### Get started
-
-[Detent Cloud](https://cloud.detent.build) is the shared hosted product. See
-[Cloud onboarding](docs/cloud-onboarding.md) for sign-in and runner enrollment.
-
-
-- [Quick Start](docs/getting-started.md) — configure a tracker and run Detent.
-- [Cloud runners on Fly Sprites](docs/sprite-runners.md) — enroll a runner, prepare its agents and checkout, and verify automatic wake and pause.
-- [Project Onboarding](docs/ONBOARDING.md) — agent-guided installation and project setup.
-- [Bootstrap a new machine](docs/bootstrap.md) — install prerequisites, templates, and service files.
-- [Configuration](docs/config.md) — project and host configuration, generated field reference, and sample files.
-
-### Operate Detent
-
-The operator health metric is tokens per merged PR per project per day across
-both hosts, computed from recorded history rather than the dashboard. See
-[Token spend diagnosis](docs/diagnosis.md#token-spend) for authoritative sources,
-join keys, rollout inspection, and runnable audit queries.
-
-- [Concepts](docs/concepts.md) — connectors, board states, cancellation, review gates, and Kanban modes.
-- [Dependency workflows](docs/dependency-workflows.md) and [merge train](docs/merge-train.md).
-- [Multi-project operation](docs/multi-project.md) and [machine-local workflow overlays](docs/workflow-overlays.md).
-- [Webhook freshness](docs/webhook-freshness.md) and [scheduled operations](docs/scheduled-routines.md), including `backlog_admission`.
-- [Admission criteria](docs/admission.md) and [efficiency retrospection](docs/retrospection.md).
-- [Dashboard and APIs](docs/dashboard-api.md).
-
-### Reference and contribute
-
-- [Native Hub and Cloud architecture RFC](docs/cloud-hub-rfc.md) — proposed native authority, portable execution, and launch contracts; [current Hub API](docs/hub-api.md).
-- [Sprites Cloud runners spike](docs/sprites-cloud-runners-spike.md) — measured viability and cost of running Detent runners on Fly Sprites, and the path to production.
-- [CLI reference](docs/cli.md) — exit codes, JSON errors, logging, and structured output.
-- [Release process](docs/release.md) and [branching](docs/branching.md).
-- [Development](docs/development.md) and [contribution guide](CONTRIBUTING.md).
-- [Comparison](docs/comparison.md), [execution seams](docs/execution-seams.md), and [local models](docs/local-models-ollama.md).
 
 ## How it works
 
-Configured GitHub status is the state machine; ProjectV2 board status, the
-boardless issue field, or repository status labels drive everything.
+Detent has two parts, both in the same `detent` binary.
 
-1. **You write the contracts.** Each project has a checked-in `detent.yaml`
-   machine contract for tracker bindings, states, lifecycle policy, scheduling,
-   retries, leases, and gates, plus a checked-in, portable `WORKFLOW.md` agent
-   instruction contract. The prompt declares the project's required CI stage
-   categories and the project-specific commands and check names that satisfy
-   each category. Agents use that declaration when they change CI configuration
-   or review a change: every required stage and mapped tool must exist. Checks
-   must pass on the PR head when jobs run there; for merge-group-only CI, report
-   expected PR skips and require passing merge-group checks before merge.
-   Optional gitignored `detent.local.yaml` and
-   `WORKFLOW.local.md` files apply machine-specific configuration and agent
-   direction, respectively, without changing the shared contracts.
-2. **You mark an issue `Todo`.** Detent claims it, creates an isolated Git
-   worktree from your source checkout, and dispatches a Codex agent with the
-   contract — moving the issue to `In Progress`.
-3. **The agent works** in its own branch, runs your validation gate, and opens
-   or updates a PR. Review-gate workflows move the issue to `Human Review`;
-   autopilot workflows leave it active with `status: complete` in the Workpad.
-4. **Gates decide.** The workflow decides whether promotion to `Merging` waits
-   in `Human Review`, waits in the active lane, requires a current-head
-   automated PR review, or only needs linked PR + green CI + quiet time.
-   Unresolved feedback sends it to `Rework` for another pass.
-5. **The merge train is serialized** — one rebase, CI-watch, and merge at a
-   time, so concurrent candidates never invalidate each other's CI — then the
-   issue is `Done`.
-6. **One host, many repos.** `global.yaml` runs multiple projects with weights,
-   priority, pause, and fair scheduling. The web dashboard and terminal UI show
-   live counts, running agents, token / budget / rate-limit state, and board
-   flow.
+1. **The Hub** holds the board, the issues, the conversation history, the review decisions, and the policy each project is allowed to run under. Use Detent Cloud, or run your own Hub.
+2. **Runners** are machines you enroll: a laptop, a build server, a VM, or a Fly Sprite. A runner keeps your repository checkout, your agent sign-ins, and your toolchain. Nothing that touches your code runs on the Hub.
 
-The full state table and connector model are in
-[Concepts](docs/concepts.md#concepts), and merge-train configuration is in
-[Merge Train](docs/merge-train.md#merge-train).
+A project's behavior lives in two files that you commit to the repository:
 
-## How it's different
+- `detent.yaml` is the machine contract: lanes, gate command, review policy, scheduling, retries, and budgets.
+- `WORKFLOW.md` is the agent contract: how to work in this repository and what done means.
 
-See [How Detent compares to Symphony, Copilot, Cursor, Hermes, and OpenClaw](docs/comparison.md).
+The runner reports the resolved policy to the Hub, and an owner approves it before work runs. A changed `detent.yaml` needs a new approval, so a commit cannot quietly widen what agents may do.
 
-### From OpenAI's Symphony
+Work then moves through the board:
 
-Detent grew out of [OpenAI's Symphony](https://github.com/openai/symphony) — the
-open `SPEC.md` for orchestrating Codex coding agents from a project board instead
-of supervising them interactively ("manage work, not agents"). Symphony ships as
-a spec plus an Elixir reference implementation that polls a **Linear** board.
-Detent takes that idea from spec to a shipped system, and diverges where it
-counts:
+1. **You put an issue in `Todo`.** A runner that holds the project claims it, creates an isolated worktree, and starts an agent (Codex or Claude Code) with the issue and `WORKFLOW.md`. The issue moves to `In Progress`.
+2. **The agent works** on its own branch and runs your gate command. When it commits, the runner publishes a Change Request on the Hub with the diff.
+3. **Gates decide.** With `review.human: false` an accepted change goes straight to `Merging`. With `review.human: true` it waits in `Human Review` until a person approves it or sends it back with requested changes.
+4. **Landing is serialized.** In `Merging` the runner that holds the project lands the change on the base branch with plain git, one change at a time, and the Hub moves the issue to `Done`. A change that cannot land goes to `Blocked` with its reason.
 
-- **A product, not a spec.** One CGO-free Go binary for macOS, Linux, and
-  Windows — a prepared source build, Homebrew, or copy a single file. No BEAM
-  service to adapt, nothing to stand up.
-- **[GitHub Projects v2, not Linear](#why-these-defaults).** Issues, status
-  columns, priorities, labels, blockers, comments, and pull requests are the
-  state machine.
-- **Multi-project from one host.** `global.yaml` runs many repositories with
-  weights, priority, pause, and fair scheduling.
-- **Explicit gates + a serialized merge train.** CI, optional automated PR
-  review criteria, and a one-at-a-time `Merging` lane, so what lands is always
-  green.
-- **Pluggable validation gates.** Code defaults use `make check`, CI, and
-  automated review, while workflow authors can choose whether a command gate
-  requires automated PR review or instead only waits for CI and the quiet
-  window. A human approval-label gate is available when the workflow explicitly
-  wants one.
-- **A real operator surface.** A live dashboard (charts, trends, timelines,
-  hover detail, budget and rate-limit state) and terminal UI, `detent doctor`
-  preflight checks, cross-platform config discovery, and a GoReleaser pipeline.
+Native projects make no GitHub API calls by default; git clone and push still work against any host. GitHub is an optional integration for importing issues and projecting summaries. See [GitHub profiles](docs/github-profiles.md).
 
-### From autonomy-first agents (OpenClaw, Hermes, …)
+## Get started on Detent Cloud
 
-The difference is the interaction model. Autonomy-first tools center a
-persistent assistant: you talk to an agent, it keeps sessions and memory, picks
-its own tools, and acts on your behalf — you steer it and course-correct when it
-drifts. Detent inverts that. **You write the issue first** — scope, acceptance
-criteria, tests, dependency order, review policy, merge rule — and the board
-state decides when it is eligible. The runtime executes your contract in an
-isolated worktree and will not land the work until the gates you encoded pass.
-You are not steering an agent; you are running your own engineering process at
-scale.
+1. Sign in at [cloud.detent.build](https://cloud.detent.build) and create or join an organization.
+2. Create a project. New projects start with `Todo`, `In Progress`, `Merging`, `Done`, `Blocked`, and `Human Review`.
+3. Commit `detent.yaml` and `WORKFLOW.md` to the repository (the [Start with AI](#start-with-ai) prompt drafts them).
+4. [Install Detent](#install) on the runner machine, and sign in there to the agent you plan to use (`codex login` or `claude auth login`).
+5. In **Settings > Providers & runners**, choose **Enroll a runner**, pick its projects, and run the command it shows on the runner:
 
-Concretely: "add OAuth token rotation" in an autonomy-first tool starts as a
-prompt and becomes a supervision loop — review the plan, inspect partial edits,
-redirect when it misses migrations or tests. In Detent it starts as an issue
-that names the storage change, CLI behavior, migration, rollback, and tests; the
-worker produces a reviewable PR and does not merge until your gates are green.
+   ```sh
+   detent hub runner register --url https://cloud.detent.build/organizations/ORGANIZATION_ID \
+     --token TOKEN --name "Build host" --service
+   ```
 
-The goal is not to replace engineers or hide work behind opaque behavior — it is
-to scale the judgment of engineers who already have a high bar. The system does
-not try to be smarter than you; it tries to be as disciplined as you would be,
-every time, in parallel.
+   This creates the runner's identity, writes its configuration, and installs a background service.
+6. Clone the repository into the directory that `register` printed (`~/detent-runner/PROJECT` by default) and install its dependencies.
+7. When the project settings show "A runner is waiting for a new policy", review it and choose **Approve reported policy**.
+8. File an issue in `Todo` and watch it move across the board.
 
-## Why these defaults
+[Cloud onboarding](docs/cloud-onboarding.md) covers each step in detail, including GitHub and artifact storage. For runners on Fly Sprites, see [Sprite runners](docs/sprite-runners.md).
 
-Two choices define Detent's footprint: **GitHub Projects** as the board and
-**Codex** as the coding agent. Both are deliberate.
+## Self-host the Hub
 
-### Why GitHub Projects, not Linear
+Running Detent yourself means running the same Hub on your own machine or VM and enrolling runners against it. There is no separate local mode. Self-hosting is free and needs no Detent Cloud account or billing.
 
-The reference design Detent grew from polls a **Linear** board while code, pull
-requests, and CI live in **GitHub** — two systems for one unit of work. That
-split forces you to map Linear issue IDs onto GitHub PR numbers and to read
-discussion in two places: planning comments in Linear, review comments in
-GitHub. Detent puts the whole state machine in one system. A GitHub Project
-*is* the board; its issues are the work items, its pull requests are the
-deliverables, and its comments and reviews are where every conversation
-happens. One ID space, one place to look.
+```sh
+DETENT_HUB_ADMIN_TOKEN=... detent hub serve --database /var/lib/detent-hub/hub.db \
+  --listen 127.0.0.1:7777 --github-disabled
+```
 
-It is also cheaper at the scale where orchestration matters:
+Put a TLS proxy in front of it, create the organization and project, then enroll runners with your Hub's URL in place of `cloud.detent.build`. [Self-hosted Hub operations](docs/hub-self-hosting.md) covers the systemd unit, Caddy example, authentication, runner enrollment, backup, and upgrades.
 
-- **Cost.** GitHub Projects has no per-seat charge and ships with repositories
-  most teams already pay for. Linear's Business plan is \$16/user/month — about
-  \$9,600/year at 50 seats — and its free tier is capped.
-- **API headroom.** Authenticated GitHub REST allows 5,000 requests/hour (more
-  for GitHub Apps); Linear allows 1,500 requests/hour against a complexity
-  budget. A poller driving many repositories wants the larger ceiling.
+## Agents and MCP
 
-### Why Codex, not Claude
+Runners drive agents through their own CLIs, using the sign-in already on the runner. Detent stores no model credentials.
 
-Detent dispatches agents non-interactively, headless, many at once. The
-important question is how that mode is metered.
+- [OpenAI Codex CLI](https://github.com/openai/codex), through `codex app-server`.
+- [Claude Code](https://code.claude.com), through the `claude` CLI or `ANTHROPIC_API_KEY`.
+- [Pi](docs/pi-agent.md) and [local models through Ollama](docs/local-models-ollama.md).
 
-- A **ChatGPT** plan (Plus, Pro, Business) covers Codex CLI usage *including
-  scripted `codex exec` automation*, billed against the subscription you already
-  have.
-- **Claude Code** keeps interactive terminal and IDE use on subscription usage
-  limits. Effective **June 15, 2026**, Anthropic moves headless `claude -p`,
-  the Agent SDK, Claude Code GitHub Actions, and third-party Agent SDK apps to
-  a separate monthly Agent SDK credit. That credit is per-user, does not roll
-  over, and overages move to usage credits at standard API rates when enabled.
+Model and reasoning effort are set per organization and project in the Hub, not in `detent.yaml`.
 
-For an orchestrator that runs agents around the clock in parallel, the Codex
-subscription is the default that makes the economics work. Detent still supports
-explicit backend routing, including Claude Code, so operators can choose a
-backend per role when the limits, auth mode, and isolation trade-offs fit that
-work.
+The Hub exposes its board, issues, changes, runners, and settings over MCP, so your own agent can file issues, read run history, and review changes. Create a key in **Settings > API & MCP** and point your client at `https://cloud.detent.build/organizations/ORGANIZATION_ID/mcp`. See [API & MCP setup](docs/api-mcp-setup.md).
 
 ## Install
 
-On Windows, use the package manager that already manages your developer tools.
-Use Winget when the Detent package is available from the Windows Package Manager
-community source:
-
-```powershell
-winget install --id DigitalDrywood.Detent --source winget
-```
-
-Use Scoop when you want a user-local install managed from a Scoop bucket:
-
-```powershell
-scoop bucket add digitaldrywood https://github.com/digitaldrywood/scoop-bucket
-scoop install detent
-```
-
-Use the PowerShell installer for bootstrap, CI images, or machines where you do
-not want to configure a Windows package manager first:
-
-```powershell
-irm https://raw.githubusercontent.com/digitaldrywood/detent/main/install.ps1 | iex
-```
-
-The PowerShell installer downloads the Windows release archive, verifies the
-SHA-256 checksum, installs `detent.exe` to `%LOCALAPPDATA%\detent\bin`, and
-adds that directory to the user PATH. Set `DETENT_INSTALL_DIR` to override the
-install directory. Winget and Scoop installs also expose `detent.exe` on PATH; verify any Windows install with `detent --version`.
-
-Install the latest Linux release with the shell installer:
+Install the latest release on macOS or Linux:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh
 ```
 
-The shell installer downloads the Linux release archive, verifies the SHA-256
-checksum, installs `detent` to `/usr/local/bin` when writable or
-`$HOME/.local/bin` otherwise, and prints PATH guidance when the chosen install
-directory is not already on PATH. Set `DETENT_INSTALL_DIR` to override the
-install directory. Source checkouts can also run the repository-local shell
-installer:
-
-```sh
-./install.sh
-```
-
-Use a native Linux package when you want apt, dnf, rpm, or another system
-package workflow to own the binary, removal, and upgrades:
-
-```sh
-DETENT_VERSION=0.5.2 # release version without leading v
-DETENT_ARCH=amd64 # or arm64
-curl -LO "https://github.com/digitaldrywood/detent/releases/download/v${DETENT_VERSION}/detent_${DETENT_VERSION}_linux_${DETENT_ARCH}.deb"
-sudo apt install "./detent_${DETENT_VERSION}_linux_${DETENT_ARCH}.deb"
-detent --version
-```
-
-```sh
-DETENT_VERSION=0.5.2 # release version without leading v
-DETENT_ARCH=amd64 # or arm64
-curl -LO "https://github.com/digitaldrywood/detent/releases/download/v${DETENT_VERSION}/detent_${DETENT_VERSION}_linux_${DETENT_ARCH}.rpm"
-sudo rpm -Uvh "./detent_${DETENT_VERSION}_linux_${DETENT_ARCH}.rpm"
-detent --version
-```
-
-Use the shell installer for a user-local install without sudo, for Linux
-distributions that do not use `.deb` or `.rpm`, or for bootstrap scripts that
-should fall back to a Go-only build of the prepared source archive when a
-binary asset is unavailable.
-
-Use Homebrew on macOS or Linux when you already manage CLI tools with Homebrew:
+Or with Homebrew:
 
 ```sh
 brew install digitaldrywood/tap/detent
 ```
 
-For a Go-only source build, download `detent_<version>_source.tar.gz` and the
-checksums from the same validated [release](https://github.com/digitaldrywood/detent/releases).
-Verify the archive against those checksums, extract it, then build inside it:
+Linux `.deb` and `.rpm` packages, Windows builds, and checksums are attached to each [release](https://github.com/digitaldrywood/detent/releases). Verify the install with `detent --version`.
 
-```sh
-go build -trimpath -ldflags "$(cat BUILD_LDFLAGS)" -o detent ./cmd/detent
-```
+Update a release install with `detent update` (add `--yes` for automation). On a runner, `detent update --yes` drains running work before it restarts. Upgrade Homebrew and native package installs through their package manager.
 
-On PowerShell, use `go build -trimpath -ldflags (Get-Content BUILD_LDFLAGS -Raw).Trim() -o detent.exe ./cmd/detent`.
-The prepared archive includes JavaScript, CSS, lazy chunks and attribution from
-the tagged source; compilation needs only Go, without Node or Make. Keep
-`BUILD_LDFLAGS` to retain the release version and full source commit.
+To build from source, download `detent_<version>_source.tar.gz` from a release, verify it against that release's checksums, and run `go build -trimpath -ldflags "$(cat BUILD_LDFLAGS)" -o detent ./cmd/detent` inside it. It needs only Go 1.26. Raw git checkouts need Node 24 and `make build`; see [Development](docs/development.md).
 
-Raw Git checkouts and GitHub's automatic source archives compile with Go alone;
-prepare the UI with Node 24 and `make assets` before running it.
-`go install github.com/digitaldrywood/detent/cmd/detent@latest`
-is no longer supported: Go module archives contain tracked source only.
-Published tags continue to identify the exact validated source commit, with no
-generated commit substituted underneath them. Developers and private operators
-should use `make build` for their selected source; see [build ownership](docs/development.md#conversation-assets).
+## Documentation
 
-After installing, check for updates with:
+Set up:
 
-```sh
-detent update --check
-```
+- [Cloud onboarding](docs/cloud-onboarding.md): organizations, projects, workflow definitions, runner enrollment, and GitHub.
+- [Self-hosted Hub operations](docs/hub-self-hosting.md): install, authentication, backup, and recovery.
+- [Sprite runners](docs/sprite-runners.md): runners on Fly Sprites that wake when work arrives.
+- [Configuration reference](docs/config.md): every `detent.yaml` and runner setting.
 
-Release-installer installs can update with `detent update`; use
-`detent update --yes` for non-interactive automation and
-`detent update --format json` for machine-readable status. The legacy
-`detent update --json` flag remains supported. On Windows, replacement is
-staged and completes after the running `detent.exe` exits. Package-manager
-installs should be upgraded by the package manager:
+Operate:
 
-```sh
-winget upgrade --id DigitalDrywood.Detent
-scoop update detent
-brew upgrade digitaldrywood/tap/detent
-```
+- [Concepts](docs/concepts.md): lanes, the native tracker, cancellation, and review.
+- [Dependency workflows](docs/dependency-workflows.md) and [admission criteria](docs/admission.md).
+- [Runner capacity](docs/runner-capacity.md) and [runner usage](docs/runner-usage.md).
+- [Runner telemetry and APIs](docs/dashboard-api.md) and [operations reports](docs/operations.md).
+- [Native review](docs/native-review.md) of Change Requests.
+- [API & MCP setup](docs/api-mcp-setup.md), [MCP capabilities](docs/mcp-capabilities.md), and [Hub API](docs/hub-api.md).
+- [Diagnosis](docs/diagnosis.md): how to investigate runtime behavior from recorded history.
 
-Native Linux packages are owned by the system package manager; install a newer
-`.deb` with `sudo apt install ./detent_<version>_linux_<arch>.deb`, or a newer
-`.rpm` with `sudo rpm -Uvh ./detent_<version>_linux_<arch>.rpm` or the distro
-wrapper you normally use. Legacy Go-installed binaries can switch to the
-checksum-verified release binary with `detent update --from-release`.
+Reference and contribute:
 
-When the selected configuration has a running instance, `detent update --yes`
-and `detent update --from-release --yes` ask that instance to drain its work,
-install a published release and restart. Enrolled runners discover published
-runner releases independently of the Hub's build identifier. The Hub can run an
-operator build such as `operator-landed-a69c4b1dd060`; that identifier is not an
-installable runner release. Automatic Hub-follow requests still select their
-explicit release version. Fleet/API `current` with `source: hub` identifies the
-Hub build, while `minimum_runner_version` is empty for a non-release Hub build;
-it does not report the latest published runner release.
+- [CLI reference](docs/cli.md).
+- [Comparison with other agent tools](docs/comparison.md).
+- [Development](docs/development.md), [branching](docs/branching.md), [release process](docs/release.md), and the [contribution guide](CONTRIBUTING.md).
+- [Repository invariants](docs/invariants.md).
 
-For a release installation in a custom binary or state directory, set
-`DETENT_INSTALL_LOCK` to that installation's existing `install.lock`, or set
-`DETENT_STATE_DIR` to the directory containing it. `DETENT_INSTALL_LOCK` takes
-precedence. An explicit receipt selector is exclusive: its receipt must match
-the executable. A missing or mismatched receipt cannot fall back to another
-installation's receipt or inferred Homebrew, Windows or Go ownership. Set the
-environment in the running service as well as in shells
-used for offline updates; a coordinated CLI command cannot change its owner's
-environment. The receipt's `binary` must identify the installed executable.
-These variables select installer metadata, not enrollment or the project
-configuration. Keep other installations' receipts intact. An unknown install
-source refuses binary replacement, even with `--from-release`.
+## License
 
-Go-only source users rebuild the prepared source archive for the selected
-release. `detent update --yes` no longer runs an incomplete module install.
-Source builds still print the recommended command instead of overwriting the binary.
-
-CI runs the `Installer Smoke` confidence job on Ubuntu against the
-current GitHub Release assets on pushes to `main` and `develop` and manual workflow dispatch.
-It does not run on pull requests, tag pushes, or the nightly CI schedule. The job runs `install.sh`
-in release mode, checks checksum output, confirms the
-requested install directory and installer lock metadata, then runs
-`detent update --check` and `detent update --yes` from the release-installer
-install.
-
-Release self-updates verify SHA256 checksums fetched from GitHub releases. The
-checksum verifier supports detached minisign signature assets named
-`<checksum>.minisig`, but enforcement is gated until the binary embeds the
-pinned minisign public key for the release stream. Until that release signing
-key is provisioned in #337, update integrity still depends on GitHub TLS plus
-the published checksum file.
-
-Requirements:
-
-- Go 1.26 or newer when building from prepared release source.
-- The [OpenAI Codex CLI](https://github.com/openai/codex) installed and signed
-  in, so `codex app-server` runs on the host that dispatches agents. Detent
-  drives every agent through this app-server. Verify with `codex --version`.
-  To route selected work to a local Ollama model without Detent code changes,
-  see [Local Models With Codex And Ollama](docs/local-models-ollama.md).
-- The Claude Code CLI installed and signed in when routing selected roles to
-  `claude_code`. Verify with `claude --version`. Detent does not store Claude
-  credentials; it uses the ambient `claude` CLI login or the
-  `ANTHROPIC_API_KEY` environment visible to the Detent worker.
-- The [GitHub CLI](https://cli.github.com) (`gh`) for authentication and GitHub
-  lookups (optional but assumed throughout this guide).
-- A GitHub token for the selected tracker mode. ProjectV2 mode usually needs
-  `repo`, `read:org`, `read:project`, and write `project`. Boardless
-  issue-field mode needs repository issue access plus organization issue-field
-  read access; classic PATs use `repo` and `read:org`.
-
-
-## History
-
-Detent began as an Elixir/OTP implementation of
-[OpenAI's Symphony](https://github.com/openai/symphony) — the open spec for
-orchestrating Codex agents from a project board — adapted from Symphony's Linear
-target to GitHub Projects v2. It is now a ground-up Go rewrite: one CGO-free
-binary instead of a BEAM service, plus multi-project orchestration, the gated
-merge train, a richer operator dashboard, `detent doctor`, Windows support, and
-a GoReleaser pipeline. That earlier Elixir implementation is archived.
+[FSL-1.1-ALv2](LICENSE) permits reading, self-hosting, internal use, modification, and redistribution under its terms. It prohibits offering Detent as a competing commercial product or service during the first two years after each release. Each release becomes available under the Apache License 2.0 after two years. Earlier MIT-licensed tags remain under the MIT License as published with those tags. Learn more at [fsl.software](https://fsl.software/).

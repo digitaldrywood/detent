@@ -272,9 +272,8 @@ detent hub runner register --url https://cloud.detent.build/organizations/org_ex
    An existing `global.yaml` is left untouched; checkout checks use its
    configured projects and `workdir` paths instead of `--workspace-root`.
 4. With `--service`, installs and starts the `detent.runner` background service
-   (launchd `com.digitaldrywood.detent.runner`, systemd `detent.runner.service`),
-   separate from a local board's `detent` service on the same host. If a
-   project's checkout is missing, it prints the clone step and the
+   (launchd `com.digitaldrywood.detent.runner`, systemd `detent.runner.service`).
+   If a project's checkout is missing, it prints the clone step and the
    `detent start --config ... --yes` command to run afterwards instead.
 
 `detent start` and `detent status` default to the runner service when the

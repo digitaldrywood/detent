@@ -1573,7 +1573,7 @@ func TestCheckDoctorIssueEffortGuidance(t *testing.T) {
 			files:      map[string]string{"AGENTS.md": "General agent instructions.", "CLAUDE.md": "General Claude instructions."},
 			wantStatus: doctorWarn,
 			wantDetail: "contain no detent-agent guidance",
-			wantHint:   "docs/ONBOARDING.md#per-issue-agent-overrides",
+			wantHint:   "docs/admission.md#issue-effort-selection",
 		},
 		{
 			name:       "missing docs warn",

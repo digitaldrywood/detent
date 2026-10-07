@@ -128,14 +128,9 @@ Structured command objects:
 | --- | --- |
 | `detent version` | `{"version":"v0.55.0","commit":"abc1234","build_date":"2026-08-01T00:00:00Z","go_version":"go1.26.4","os":"linux","arch":"amd64"}` |
 | `detent update` | The update status object, including `current_version`, `latest_version`, `latest_tag`, `update_available`, `install_source`, `action`, `message`, and `command` when present. |
-| `detent init` | `{"status":"ok","path":"/path/global.yaml","rule":"--config"}` |
-| `detent add-project` | `{"id":"api","workflow":"/repo/WORKFLOW.md","workdir":"/repo","weight":1,"priority":0,"paused":false,"credential_ref":"github"}` |
-| `detent refresh-project api` | A review-only proposal containing `files`, `preserved_settings`, `default_updates`, `opt_in_features`, and a unified `diff`; rerun with `--yes` to apply it. |
 | `detent pause api --reason "maintenance"` / `detent unpause api` | `{"status":"ok","project":"api","paused":true,"paused_reason":"maintenance"}` |
 | `detent resume api --for 2h` | `{"status":"ok","project":"api","active_hours_override_until":"2026-08-07T21:00:00Z"}` |
 | `detent promote api --priority 1` | `{"status":"ok","project":"api","priority":1}` |
-| `detent remove-project api` | `{"status":"ok","project":"api","removed":true}` |
-| `detent work-item add api --title "..." --body "..."` | `{"id":"wi-...","identifier":"wi-...","url":"/projects/api/kanban"}` |
 | `detent config path` | `{"path":"/path/global.yaml","rule":"--config"}` |
 | `detent exposure [--project api]` | `{"findings":[{"source_project":"api","source_repository":"private/api","destination_repository":"public/detent","issue_number":42,"issue_url":"https://github.com/public/detent/issues/42","matched_identifier":"private/api"}],"warnings":[]}` |
 | `detent auth token enable` / `detent auth token rotate` | `{"url":"https://detent.example.com/?token=..."}` |
@@ -168,24 +163,6 @@ Accounting uses usage finish times and attempt completion times (start time for
 unfinished attempts); window-crossing sessions can produce differences. Use
 `usage_events` as the reconciled reporting source. Unavailable database evidence
 warns; these diagnostics do not change policy, tracker lanes, or runtime state.
-
-### Project refresh proposals
-
-`detent refresh-project <project-id>` reads the registered project's split
-`WORKFLOW.md` and `detent.yaml`, derives its existing onboarding choices, and
-reconciles them with the current onboarding preset. It also preserves existing
-`AGENTS.md` content and proposes the current issue-effort rubric when missing.
-
-The command is read-only by default. Its output separates configured values
-that differ from current defaults, generated default additions or updates, and
-new opt-in capabilities with their effects. The unified diff is the proposed
-file change. Existing YAML comments and configured values remain authoritative;
-newly generated defaults carry a content marker so a later refresh can update
-an untouched default while treating an operator edit as explicit.
-
-Run the preview first, then pass `--yes` to apply that proposal. A refresh of
-the resulting files produces an empty diff. Legacy `WORKFLOW.md` frontmatter
-must first be migrated with `detent fix workflow-layout`.
 
 ### MCP stdio server
 

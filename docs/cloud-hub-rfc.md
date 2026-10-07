@@ -8,9 +8,9 @@ exist today. The current API reference describes shipped behavior. Review this
 RFC before dependent implementation. The RFC can finish independently of every
 implementation below.
 
-Detent remains a Go agent orchestrator delivered as one binary. Local operation,
-a customer-hosted Hub, and the shared hosted service at `https://cloud.detent.build`
-are supported directions. Hosted access has organization free/paid entitlements.
+Detent remains a Go agent orchestrator delivered as one binary. A customer-hosted
+Hub and the shared hosted service at `https://cloud.detent.build` are the
+supported directions. Hosted access has organization free/paid entitlements.
 Self-hosted Detent is free with customer-selected authentication, including WorkOS,
 custom, generic or local options; it never requires a Detent hosted account,
 subscription, or billing connection. WorkOS is optional for self-hosting. Customer
@@ -59,7 +59,7 @@ Reinspected at `fafa74a3` (September 4, 2026):
 | [Tracker model](../internal/tracker/tracker.go), `WorkItem` | GitHub-shaped references and `BodyExcerpt` | Full body, comments, native history and organization/project scope |
 | [Outbox](../internal/hubserver/outbox.go), `WorkEventChange` and `WorkflowStateChange` | Typed mutations retain GitHub mutation/label coupling | Native transactions without an obligatory external projection |
 | [Worker API](../internal/hubserver/api_worker.go), [authentication](../internal/hubserver/api_auth.go) | Scoped worker/operator/admin tokens and fenced lease mutations | Enrollment, renewable identity, authenticated runner binding and tenant isolation |
-| [Project loader](../internal/config/project_definition.go), [configuration](config.md), [multi-project operation](multi-project.md) | Split files, legacy frontmatter, local overrides, definition revisions and external definition roots | Trusted policy provenance, native runner selectors, pinned policy enforcement |
+| [Project loader](../internal/config/project_definition.go), [configuration](config.md) | Split files, legacy frontmatter, local overrides, definition revisions and external definition roots | Trusted policy provenance, native runner selectors, pinned policy enforcement |
 
 This RFC supersedes these assumptions from
 [#2049](https://github.com/digitaldrywood/detent/issues/2049), specifically for
@@ -422,8 +422,7 @@ make both systems independently authoritative for the same field.
 | `github_compatible` (proposed profile name) | GitHub owns issue content/lifecycle and configured status fields. Hub mirror, queue/dependency policy and leases retain current documented ownership | Webhooks, targeted hydration and bounded repair maintain external inputs; pending projections and stale required inputs remain visible |
 
 These are design profile names, not accepted `tracker.kind` values today. Preserve
-existing `github_local` operation and current Hub integration while introducing
-them through #2187. Repository/PR/CI access is independent of native issue
+current Hub integration while introducing them through #2187. Repository/PR/CI access is independent of native issue
 ownership. A native project can use GitHub repositories and protected PR merges
 without creating GitHub issues. Native review approval does not impersonate a
 GitHub required review.
@@ -500,7 +499,7 @@ agent:
 The equivalent legacy layout puts the shared mapping without `schema` between
 `---` delimiters in `WORKFLOW.md`, with no `detent.yaml`. The examples do not
 establish all runtime prerequisites or grant permission to weaken a review gate.
-See [configuration](config.md) and [overlay semantics](workflow-overlays.md) for
+See [configuration](config.md) for
 the full current field surface, including named runner requirements and the
 explicit repository-policy approval path and scoped runner enrollment. Authorized
 tag placement remains the separate #2185 deliverable.

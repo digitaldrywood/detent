@@ -216,6 +216,30 @@ generator failures still fail scheduled validation. It does not compare ignored
 output with Git. Optional `configdoc -check` compares existing local output with
 fresh rendering; plain `go test` does not require generated docs.
 
+## Visual tests
+
+Playwright layout tests live under `tests/visual/` and run against isolated
+`detent dev-runtime` instances on port `0`. Install Chromium once, then run:
+
+```sh
+npx playwright install chromium
+make visual-e2e
+```
+
+Committed image baselines are authoritative for Ubuntu x64/Chromium. On other
+hosts `make visual-e2e` runs the layout assertions and captures evidence but
+skips pixel comparison unless `DETENT_VISUAL_STRICT=1` is set. Update baselines
+only for an intentional visual change, in the same Ubuntu x64/Chromium
+environment, then review and commit the files under
+`tests/visual/__screenshots__/chromium/`:
+
+```sh
+make visual-e2e-update
+```
+
+Do not commit `tmp/playwright-evidence`, `tmp/playwright-report`, or
+`tmp/playwright-results`.
+
 ## Published documentation
 
 The detent.build `cmd/docs-sync` consumer must materialize its verified pinned
