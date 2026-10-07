@@ -294,11 +294,17 @@ func TestChangeWorkerRequiresCurrentAttempt(t *testing.T) {
 		{"stale fence", func(r *tracker.PublishChangeVersion) { r.FencingToken++ }, http.StatusConflict},
 		{"unrelated run", func(r *tracker.PublishChangeVersion) { r.RunID = newNativeID("run") }, http.StatusNotFound},
 		{"missing run", func(r *tracker.PublishChangeVersion) { r.RunID, r.AttemptID = "", "" }, http.StatusUnprocessableEntity},
+		{"changed source bytes", func(r *tracker.PublishChangeVersion) { r.SourceBundle = []byte("other source") }, http.StatusUnprocessableEntity},
+		{"wrong source base", func(r *tracker.PublishChangeVersion) { r.Source.BaseSHA = r.HeadSHA }, http.StatusUnprocessableEntity},
+		{"wrong source head", func(r *tracker.PublishChangeVersion) { r.Source.HeadSHA = r.BaseSHA }, http.StatusUnprocessableEntity},
+		{"missing source metadata", func(r *tracker.PublishChangeVersion) { r.Source = nil }, http.StatusUnprocessableEntity},
 		{"current", func(_ *tracker.PublishChangeVersion) {}, http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: test.name, LeaseID: lease.ID, FencingToken: lease.FencingToken}, ChangeVersionInput: changeTestInput()}
 			request.RunID, request.AttemptID = event.Data.RunID, event.Data.AttemptID
+			request.SourceBundle = []byte("retained source")
+			request.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: request.BaseSHA, HeadSHA: request.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(request.SourceBundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(request.SourceBundle))}
 			test.edit(&request)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", worker, request), test.want)
 		})

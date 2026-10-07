@@ -1495,7 +1495,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	freshCheckout := req.Execution != nil && !nativeLanding && nativeCheckpointPolicyChanged(req.Execution.Recovery())
 	if freshCheckout {
 		recovery := req.Execution.Recovery()
-		action, reason := nativeRecoveryAction(recovery, nil, false, store.AgentResumeState{}, tracker.NativeExecutionIdentity{}, false)
+		action, reason := nativeRecoveryAction(recovery, nil, false, store.AgentResumeState{}, tracker.NativeExecutionIdentity{}, false, nil)
 		if action == "manual_recovery" {
 			return RunResult{}, fmt.Errorf("%w: %s", ErrNativeRecoveryRequired, reason)
 		}
@@ -1551,6 +1551,16 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	workspaceIssue.FreshCheckout = freshCheckout
 	landingRework := req.Execution != nil && mode == RunModeImplement && nativeLandingRework(req.Execution.Recovery())
 	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework)
+	if source, ok := req.Execution.(ChangeSourceExecution); ok && (workspaceIssue.NativeRework || nativeLanding) {
+		var recovered workspace.ChangeSource
+		recovered, err = source.RecoverChangeSource(ctx)
+		if err != nil {
+			return RunResult{}, fmt.Errorf("recover native Change source: %w", err)
+		}
+		if recovered.Version.ID != "" {
+			workspaceIssue.Source = &recovered
+		}
+	}
 	var landingTarget NativeLandingTarget
 	if nativeLanding {
 		if runtime, ok := req.Execution.(LandingRuntimeExecution); ok {
@@ -1610,6 +1620,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if err != nil {
 		if workspaceIssue.NativeRework && errors.Is(err, workspace.ErrMergeResolutionInvalid) {
 			return RunResult{}, fmt.Errorf("%w: %w", ErrNativeRecoveryRequired, err)
+		}
+		var sourceRefusal *workspace.LandRefusal
+		if workspaceIssue.NativeRework && workspaceIssue.Source != nil && errors.As(err, &sourceRefusal) {
+			return RunResult{}, fmt.Errorf("%w: recover reviewed source: %w", ErrNativeRecoveryRequired, err)
 		}
 		if nativeLanding && (IsCapacityError(err) || errors.Is(err, github.ErrRateLimited)) {
 			return RunResult{NativeLanding: &NativeLanding{ChangeID: landingTarget.ChangeID, VersionID: landingTarget.VersionID, HeadSHA: landingTarget.HeadSHA}}, err
@@ -1860,6 +1874,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		if repository, ok := req.Execution.(RepositoryExecution); ok {
 			repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
+		}
+		if source, ok := req.Execution.(ChangeSourceExecution); ok {
+			source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+				return workspace.CaptureChangeSource(ctx, info.Path, base, head)
+			})
 		}
 		if source, ok := req.Execution.(IntegrationSourceExecution); ok {
 			if verifier, supported := runWorkspace.(workspace.IntegrationVerifier); supported {
