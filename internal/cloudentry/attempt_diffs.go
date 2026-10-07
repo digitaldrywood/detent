@@ -209,7 +209,7 @@ func (s *Service) attemptDiffResponse(c echo.Context, organization Organization,
 		if err := json.Unmarshal(raw, &frame); err != nil {
 			return err
 		}
-		if len(frame["result"]) == 0 {
+		if frame == nil || len(frame["result"]) == 0 {
 			replaceDiffResponse(response, raw)
 			return nil
 		}

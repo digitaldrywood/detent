@@ -176,9 +176,6 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"conversation_attachment_blobs",
 		"operator_chat_sessions",
 		"message_references",
-		"monthly_budget_admissions",
-		"monthly_budget_leases",
-		"monthly_budget_policies",
 		// Workspace sessions and the relay (decisions sections 18.1 and 18.2).
 		"workspace_sessions",
 		"workspace_items",
