@@ -24,7 +24,6 @@ func TestNativeReworkTransfersUnpushedSourceAcrossMachines(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
-	t.Setenv("TMPDIR", t.TempDir())
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
 		name         string
