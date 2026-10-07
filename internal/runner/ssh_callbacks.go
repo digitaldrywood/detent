@@ -135,7 +135,7 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 					return NativeValidation{}, nil
 				}
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)
-			case "Validate", "Start", "Checkpoint", "RecordValidator", "PrepareArtifacts", "ArtifactLog", "FinalizeArtifacts", "PublishValidationEvidence", "SetRepository", "LandingTarget", "RecordLanding", "RecordUsage", "AvailabilityDeadline", "ObserveRuntime", "StartLanding", "ObserveLanding":
+			case "Validate", "Start", "Checkpoint", "RecordValidator", "PrepareArtifacts", "ArtifactLog", "FinalizeArtifacts", "PublishValidationEvidence", "SetRepository", "LandingTarget", "RecordLanding", "RecordUsage", "AvailabilityDeadline", "ObserveRuntime", "StartLanding", "ObserveLanding", "RecoverChangeSource":
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)
 			}
 			return nil, errors.New("unsupported SSH execution method")
