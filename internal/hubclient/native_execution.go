@@ -438,7 +438,7 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	preparationErr := e.prepareFinish(ctx, outcome)
-	if e.change != nil && e.change.Error != "" {
+	if outcome == "succeeded" && e.change != nil && e.change.Error != "" {
 		return fmt.Errorf("%w: %s", ErrUnavailable, e.change.Error)
 	}
 	if preparationErr != nil {
