@@ -6,12 +6,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 type hostedLogBuffer struct {
@@ -132,5 +134,34 @@ func TestHostedLoginLogsStayRedactedOutsideDenials(t *testing.T) {
 	logged := output.String()
 	if strings.Contains(logged, "tenant content sentinel") || strings.Contains(logged, "attribute-sentinel") || !strings.Contains(logged, "hosted service event") {
 		t.Fatalf("hosted service log was not redacted:\n%s", logged)
+	}
+
+	for _, tt := range []struct {
+		name  string
+		attrs []any
+		want  map[string]any
+	}{
+		{"diagnostic fields kept", []any{"tool", operatortool.FileIssue, "correlation_id", "6f1c1c55-6c0d-4b8e-9a43-0d6c2b7a9e10", "error_class", "sqlite_5", "error", "tenant-error-sentinel"}, map[string]any{"tool": operatortool.FileIssue, "correlation_id": "6f1c1c55-6c0d-4b8e-9a43-0d6c2b7a9e10", "error_class": "sqlite_5"}},
+		{"unknown tool dropped", []any{"tool", "tenant-tool-sentinel", "error_class", "sqlite_5"}, map[string]any{"error_class": "sqlite_5"}},
+		{"free text class dropped", []any{"error_class", "tenant error sentinel", "correlation_id", "tenant-correlation-sentinel"}, map[string]any{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var output hostedLogBuffer
+			logger := slog.New(hostedLogHandler{output: slog.NewJSONHandler(&output, nil)})
+			logger.Error("operator tool failed", tt.attrs...)
+			var record map[string]any
+			if err := json.Unmarshal([]byte(output.String()), &record); err != nil {
+				t.Fatalf("log = %s: %v", output.String(), err)
+			}
+			delete(record, "time")
+			delete(record, "level")
+			if record["msg"] != "hosted service event" {
+				t.Fatalf("msg = %v", record["msg"])
+			}
+			delete(record, "msg")
+			if !reflect.DeepEqual(record, tt.want) {
+				t.Fatalf("attrs = %v, want %v", record, tt.want)
+			}
+		})
 	}
 }

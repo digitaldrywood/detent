@@ -1,7 +1,9 @@
 package hubserver
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -61,6 +63,45 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if failed || string(raw) != string(replay) {
 		t.Fatalf("creation replay=%s", replay)
 	}
+	t.Run("concurrent replication writer", func(t *testing.T) {
+		replica, err := sql.Open("sqlite", sqliteDSN(f.service.config.DatabasePath, time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = replica.Close() })
+		var contended tracker.NativeIssue
+		for _, tool := range []string{operatortool.FileIssue, operatortool.AddComment} {
+			conn, err := replica.Conn(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := conn.ExecContext(t.Context(), "BEGIN IMMEDIATE"); err != nil {
+				t.Fatal(err)
+			}
+			released := make(chan error, 1)
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				_, err := conn.ExecContext(t.Context(), "ROLLBACK")
+				released <- errors.Join(err, conn.Close())
+			}()
+			fields := map[string]any{"title": "Contended", "description": "Written while replication holds the lock", "state": "Todo"}
+			if tool == operatortool.AddComment {
+				fields = map[string]any{"identifier": contended.WorkItemID, "body": "Written while replication holds the lock"}
+			}
+			raw, failed := call(tool, "replication-contention-"+tool, fields)
+			if err := <-released; err != nil {
+				t.Fatal(err)
+			}
+			if failed || !strings.Contains(string(raw), "Written while replication holds the lock") {
+				t.Fatalf("%s under a held replication lock = %s failed=%t", tool, raw, failed)
+			}
+			if tool == operatortool.FileIssue {
+				if err := json.Unmarshal(raw, &contended); err != nil || contended.WorkItemID == "" {
+					t.Fatalf("contended issue = %s: %v", raw, err)
+				}
+			}
+		}
+	})
 	t.Run("reused attachment contract", func(t *testing.T) {
 		record := attachment.Metadata{ID: conversation.NewAttachmentID(), ProjectID: string(f.project.ID), Name: "file.txt"}
 		_, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at) SELECT ?,?,?,id,'file.txt','text/plain',5,?,? FROM api_tokens LIMIT 1`, record.ID, f.project.OrganizationID, f.project.ID, artifact.Digest([]byte("hello")), formatHubTime(time.Now()))

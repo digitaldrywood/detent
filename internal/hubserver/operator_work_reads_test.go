@@ -100,7 +100,7 @@ func TestOperatorNativeWorkReadErrors(t *testing.T) {
 							if err := json.Unmarshal(reply.Result, &result); err != nil {
 								t.Fatal(err)
 							}
-							if !result.IsError || len(result.Content) != 1 || result.Content[0].Text != test.want {
+							if !result.IsError || len(result.Content) != 1 || test.name != "server fault" && result.Content[0].Text != test.want {
 								t.Fatalf("tool error=%s %s, want %q", reply.Result, reply.Error, test.want)
 							}
 							if test.name == "server fault" {
@@ -114,6 +114,9 @@ func TestOperatorNativeWorkReadErrors(t *testing.T) {
 								}
 								if entry.Tool != tool || entry.CorrelationID == "" || !strings.Contains(entry.Error, "cannot unmarshal array") {
 									t.Fatalf("lost fault context: %s", logs.Bytes())
+								}
+								if want := test.want + " (correlation_id " + entry.CorrelationID + ")"; result.Content[0].Text != want {
+									t.Fatalf("tool error text = %q, want %q", result.Content[0].Text, want)
 								}
 							} else if logs.Len() != 0 {
 								t.Fatalf("expected read failure logged as server fault: %s", logs.Bytes())

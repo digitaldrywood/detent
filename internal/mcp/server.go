@@ -643,9 +643,33 @@ func (s *session) toolFailure(ctx context.Context, version, name string, id json
 		if errors.As(err, &unavailable) {
 			cause = unavailable.Err
 		}
-		s.logger.ErrorContext(ctx, "operator tool failed", "tool", name, "correlation_id", uuid.NewString(), "request_id", string(id), "error", cause)
+		correlation := uuid.NewString()
+		s.logger.ErrorContext(ctx, "operator tool failed", "tool", name, "correlation_id", correlation, "error_class", ErrorClass(cause), "request_id", string(id), "error", cause)
+		return NewToolCallResult(version, json.RawMessage("Operator tool is unavailable (correlation_id "+correlation+")"), true)
 	}
 	return failedToolCallResult(version, err)
+}
+
+func ErrorClass(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	}
+	var coded interface{ Code() int }
+	if errors.As(err, &coded) {
+		return "sqlite_" + strconv.Itoa(coded.Code())
+	}
+	for {
+		next := errors.Unwrap(err)
+		if next == nil {
+			return fmt.Sprintf("%T", err)
+		}
+		err = next
+	}
 }
 
 func failedToolCallResult(protocolVersion string, err error) toolCallResult {
