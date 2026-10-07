@@ -539,14 +539,6 @@ jobs:
           cache: npm
           cache-dependency-path: web/conversation/package-lock.json
 
-      - name: Install minisign
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y minisign
-
-      - name: Prepare minisign snapshot key
-        run: minisign -G -W -s "$RUNNER_TEMP/detent-minisign.key" -p "$RUNNER_TEMP/detent-minisign.pub"
-
       - name: Prepare non-published snapshot provenance fixture
         env:
           CI_DEVELOP_SHA: ${{ needs.preflight.outputs.develop_sha }}
@@ -559,11 +551,9 @@ jobs:
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --snapshot --clean
+          args: release --snapshot --clean --skip=sign
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MINISIGN_KEY_FILE: ${{ runner.temp }}/detent-minisign.key
-          MINISIGN_PASSWORD: ""
 
   finalize:
     name: Finalize scheduled validation
