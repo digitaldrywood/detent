@@ -29,7 +29,7 @@ const (
 type WorkArguments struct {
 	ProjectID        string    `json:"project_id"`
 	Identifier       string    `json:"identifier"`
-	ExpectedRevision int64     `json:"expected_revision,omitempty"`
+	ExpectedRevision int64     `json:"expected_revision,string,omitempty"`
 	Title            *string   `json:"title,omitempty"`
 	Body             *string   `json:"body,omitempty"`
 	Labels           *[]string `json:"labels,omitempty"`
@@ -54,7 +54,7 @@ type WorkArguments struct {
 
 func WorkCatalog() []Definition {
 	selector := `"identifier":{"type":"string","minLength":1,"maxLength":256}`
-	revision := `,"expected_revision":{"type":"integer","minimum":1}`
+	revision := `,` + workRevisionProperty
 	body := `,"body":{"type":"string","maxLength":32768}`
 	comment := `,"comment_id":{"type":"string","minLength":1,"maxLength":256}`
 	definitions := []Definition{

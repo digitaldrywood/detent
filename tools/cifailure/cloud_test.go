@@ -433,7 +433,7 @@ func TestCloudReport(t *testing.T) {
 					t.Fatalf("native frame exceeds byte contract: %d bytes, %v", len(frame), err)
 				}
 				if target, move := args["target_state"]; move {
-					if target != "Todo" || args["identifier"] != "wi_imported" || args["expected_revision"] != int64(8) {
+					if target != "Todo" || args["identifier"] != "wi_imported" || args["expected_revision"] != "8" {
 						t.Fatal("transition lost its native revision or target")
 					}
 					continue
@@ -441,7 +441,7 @@ func TestCloudReport(t *testing.T) {
 				if _, edit := args["expected_revision"]; edit {
 					fingerprint := legacyJobFingerprint("scheduled-ci:digitaldrywood/detent:Coverage")
 					key := issueorigin.Fingerprint("digitaldrywood/detent:1:1:1:Coverage:" + fingerprint)
-					if args["expected_revision"] != int64(7) || args["identifier"] != "wi_imported" || args["request_id"] != "scheduled-priority-"+key {
+					if args["expected_revision"] != "7" || args["identifier"] != "wi_imported" || args["request_id"] != "scheduled-priority-"+key {
 						t.Fatal("failure edit lost the observed revision or identity")
 					}
 					if raw, ok := args["labels"]; ok && !reflect.DeepEqual(raw, []string{"operator-label", "ci-infrastructure-failure"}) {
