@@ -31,6 +31,8 @@ func TestLocalGitLandingCI(t *testing.T) {
 		baseRefresh  bool
 		baseDuringCI bool
 		denied       bool
+		mergeStatus  int
+		retryRefused bool
 	}{
 		{name: "missing status triggers and waits"},
 		{name: "present label is reapplied at readiness", label: true},
@@ -45,6 +47,9 @@ func TestLocalGitLandingCI(t *testing.T) {
 		{name: "moved PR head refuses even with green status", state: "success", moved: true},
 		{name: "local gate failure never publishes or triggers", gateFailed: true},
 		{name: "base refresh cannot merge a new head with old CI", state: "success", baseRefresh: true},
+		{name: "unknown mergeability retains green CI without rewriting", state: "success", mergeStatus: http.StatusMethodNotAllowed},
+		{name: "owned head 409 retries with the same green CI", state: "success", mergeStatus: http.StatusConflict},
+		{name: "repeated owned head 409 waits with its green CI", state: "success", mergeStatus: http.StatusConflict, retryRefused: true},
 		{name: "base advance during CI reading refuses unvalidated merge", state: "success", baseDuringCI: true},
 		{name: "trigger permission refusal retains CI evidence", denied: true},
 	} {
@@ -125,7 +130,13 @@ func TestLocalGitLandingCI(t *testing.T) {
 						if err := json.NewDecoder(req.Body).Decode(&body); err != nil || body["sha"] != f.head || body["merge_method"] != "squash" {
 							t.Fatalf("invalid exact head merge: %+v, %v", body, err)
 						}
-						if test.baseRefresh {
+						if test.mergeStatus != 0 && (merges == 1 || test.retryRefused) {
+							message := "Pull Request is not mergeable"
+							if test.mergeStatus == http.StatusConflict {
+								message = "Head branch was modified"
+							}
+							status, response = test.mergeStatus, map[string]string{"message": message}
+						} else if test.baseRefresh {
 							f.advanceMain(t, "parallel.txt", "parallel base\n")
 							status, response = http.StatusMethodNotAllowed, map[string]string{"message": "Pull Request has merge conflicts"}
 						} else {
@@ -169,6 +180,17 @@ func TestLocalGitLandingCI(t *testing.T) {
 			if result.CI == nil || result.CI.HeadSHA != f.head || result.CI.PullRequest != 7 || !slices.Equal(result.CI.RequiredChecks, []string{"Full CI"}) {
 				t.Fatalf("CI receipt lost current source: %+v", result)
 			}
+			if test.mergeStatus == http.StatusMethodNotAllowed || test.retryRefused {
+				var refusal *LandRefusal
+				wantMerges := 1
+				if test.retryRefused {
+					wantMerges = 2
+				}
+				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalBaseMoved || refusal.BaseSHA != "" || result.CI.State != "success" || result.Rebased || result.MergeSHA != "" || merges != wantMerges || f.remoteMain(t) != base || strings.TrimSpace(runGit(t, f.remote, "rev-parse", "refs/heads/"+f.info.Branch)) != f.head {
+					t.Fatalf("projection wait changed the checked head or lost its CI: %+v, %v", result, err)
+				}
+				return
+			}
 			if test.state == "failure" || test.state == "error" || test.denied || test.baseRefresh || test.baseDuringCI {
 				var refusal *LandRefusal
 				kind := LandRefusalProtected
@@ -187,7 +209,11 @@ func TestLocalGitLandingCI(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.state == "success" {
-				if result.CI.State != "success" || result.MergeSHA != f.head || merges != 1 || f.remoteMain(t) != f.head || label {
+				wantMerges := 1
+				if test.mergeStatus == http.StatusConflict {
+					wantMerges = 2
+				}
+				if result.CI.State != "success" || result.MergeSHA != f.head || merges != wantMerges || result.Rebased || f.remoteMain(t) != f.head || label {
 					t.Fatalf("current green did not genuinely land: %+v", result)
 				}
 				return
