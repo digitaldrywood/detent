@@ -259,24 +259,27 @@ func DetectInstallSource(opts DetectionOptions) InstallInfo {
 		realExecutable = cleanPath(real, goos)
 	}
 
-	if isHomebrewPath(executable) || isHomebrewPath(realExecutable) {
-		return InstallInfo{
-			Source:  InstallSourceHomebrew,
-			Command: homebrewUpdateCommand,
-			Binary:  opts.ExecutablePath,
+	receiptMatches := releaseLockMatches(executable, realExecutable, goos, opts)
+	if explicitInstallLockPath(opts) == "" || receiptMatches {
+		if isHomebrewPath(executable) || isHomebrewPath(realExecutable) {
+			return InstallInfo{
+				Source:  InstallSourceHomebrew,
+				Command: homebrewUpdateCommand,
+				Binary:  opts.ExecutablePath,
+			}
 		}
-	}
-	if releaseLockMatches(executable, realExecutable, goos, opts) || windowsInstallerPathMatches(executable, goos, opts) {
-		return InstallInfo{
-			Source: InstallSourceRelease,
-			Binary: opts.ExecutablePath,
+		if receiptMatches || windowsInstallerPathMatches(executable, goos, opts) {
+			return InstallInfo{
+				Source: InstallSourceRelease,
+				Binary: opts.ExecutablePath,
+			}
 		}
-	}
-	if isGoInstallPath(executable, goos, opts.HomeDir, opts.Env) || isGoInstallPath(realExecutable, goos, opts.HomeDir, opts.Env) {
-		return InstallInfo{
-			Source:  InstallSourceGoInstall,
-			Command: sourceUpdateCommand,
-			Binary:  opts.ExecutablePath,
+		if isGoInstallPath(executable, goos, opts.HomeDir, opts.Env) || isGoInstallPath(realExecutable, goos, opts.HomeDir, opts.Env) {
+			return InstallInfo{
+				Source:  InstallSourceGoInstall,
+				Command: sourceUpdateCommand,
+				Binary:  opts.ExecutablePath,
+			}
 		}
 	}
 	if IsDevelopmentVersion(opts.CurrentVersion) {
@@ -325,6 +328,7 @@ type ApplyOptions struct {
 	ExpectedVersion       string
 	Urgent                bool
 	FollowHub             bool
+	PublishedRelease      bool
 	AssumeYes             bool
 	FromRelease           bool
 	Confirm               func(Status) (bool, error)
@@ -414,7 +418,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 		}
 		target = opts.ExpectedVersion
 	}
-	status, release, err := s.planForVersion(ctx, target, opts.FollowHub)
+	status, release, err := s.planForVersion(ctx, target, opts.FollowHub, opts.PublishedRelease)
 	if err != nil {
 		return status, err
 	}
@@ -653,10 +657,10 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 }
 
 func (s *Service) plan(ctx context.Context) (Status, Release, error) {
-	return s.planForVersion(ctx, "", false)
+	return s.planForVersion(ctx, "", false, false)
 }
 
-func (s *Service) planForVersion(ctx context.Context, target string, exact bool) (Status, Release, error) {
+func (s *Service) planForVersion(ctx context.Context, target string, exact bool, published bool) (Status, Release, error) {
 	info := DetectInstallSource(DetectionOptions{
 		CurrentVersion: s.cfg.CurrentVersion,
 		ExecutablePath: s.cfg.ExecutablePath,
@@ -684,7 +688,7 @@ func (s *Service) planForVersion(ctx context.Context, target string, exact bool)
 		return status, Release{}, ErrRefused
 	}
 
-	release, ok, err := s.targetRelease(ctx, target, exact)
+	release, ok, err := s.targetRelease(ctx, target, exact, published)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
@@ -716,8 +720,8 @@ func (s *Service) planForVersion(ctx context.Context, target string, exact bool)
 	return status, release, nil
 }
 
-func (s *Service) targetRelease(ctx context.Context, target string, exact bool) (Release, bool, error) {
-	if target == "" && s.cfg.TargetVersion == nil {
+func (s *Service) targetRelease(ctx context.Context, target string, exact bool, published bool) (Release, bool, error) {
+	if target == "" && (published || s.cfg.TargetVersion == nil) {
 		releases, err := s.cfg.Client.ListReleases(ctx)
 		if err != nil {
 			return Release{}, false, err
@@ -1821,14 +1825,21 @@ func releaseLockMatches(executable string, realExecutable string, goos string, o
 	return false
 }
 
-func installLockCandidates(goos string, opts DetectionOptions) []string {
-	var candidates []string
+func explicitInstallLockPath(opts DetectionOptions) string {
 	if lockPath := envValue(opts.Env, "DETENT_INSTALL_LOCK"); lockPath != "" {
-		candidates = append(candidates, lockPath)
+		return lockPath
 	}
 	if stateDir := envValue(opts.Env, "DETENT_STATE_DIR"); stateDir != "" {
-		candidates = append(candidates, filepath.Join(stateDir, "install.lock"))
+		return filepath.Join(stateDir, "install.lock")
 	}
+	return ""
+}
+
+func installLockCandidates(goos string, opts DetectionOptions) []string {
+	if lockPath := explicitInstallLockPath(opts); lockPath != "" {
+		return []string{lockPath}
+	}
+	var candidates []string
 	home := homeDir(opts.HomeDir, opts.Env)
 	if home != "" {
 		candidates = append(candidates, filepath.Join(home, ".detent", "install.lock"))
@@ -1929,11 +1940,8 @@ func snapshotInstallLock(goos string, opts DetectionOptions) (installLockSnapsho
 }
 
 func installLockPath(goos string, opts DetectionOptions) (string, bool) {
-	if lockPath := envValue(opts.Env, "DETENT_INSTALL_LOCK"); lockPath != "" {
+	if lockPath := explicitInstallLockPath(opts); lockPath != "" {
 		return lockPath, true
-	}
-	if stateDir := envValue(opts.Env, "DETENT_STATE_DIR"); stateDir != "" {
-		return filepath.Join(stateDir, "install.lock"), true
 	}
 	if goos == "windows" {
 		if localAppData := envValue(opts.Env, "LOCALAPPDATA"); localAppData != "" {

@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -189,4 +191,49 @@ func (r *recordingStartupRecovery) MarkHealthy(context.Context) error {
 
 func (r *recordingStartupRecovery) HandleFailure(_ context.Context, err error) {
 	r.failures = append(r.failures, err)
+}
+
+func TestRuntimeUpdaterReleaseDiscoveryForEnrolledRunner(t *testing.T) {
+	t.Setenv("DETENT_HUB_TOKEN", "fixture-token")
+	previousTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+	for _, enrolled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "legacy Hub target", true: "enrolled release discovery"}[enrolled], func(t *testing.T) {
+			releaseReads, hubReads := 0, 0
+			http.DefaultTransport = readinessRoundTripper(func(request *http.Request) (*http.Response, error) {
+				body := `{"version":"operator-landed-a69c4b1dd060"}`
+				if request.URL.Host == "api.github.com" {
+					releaseReads++
+					body = `[{"tag_name":"v0.117.47"}]`
+				} else {
+					hubReads++
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+			})
+			cfg := BootConfig{Global: globalconfig.Config{Client: globalconfig.HubClient{URL: "https://hub.example.test"}}}
+			if enrolled {
+				cfg.Global.Client.IdentityFile = filepath.Join(t.TempDir(), "private", "runner.json")
+				identity, err := runnerauth.Initialize(cfg.Global.Client.IdentityFile, cfg.Global.Client.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				identity.Identity.OrganizationID = "org_example"
+				if err := runnerauth.Save(cfg.Global.Client.IdentityFile, identity); err != nil {
+					t.Fatal(err)
+				}
+			}
+			updater, err := newRuntimeUpdater(cfg, t.TempDir()+"/detent", "0.117.46")
+			if err != nil {
+				t.Fatal(err)
+			}
+			status, err := updater.Check(t.Context())
+			if enrolled {
+				if err != nil || !status.UpdateAvailable || status.LatestVersion != "0.117.47" || releaseReads != 1 || hubReads != 0 {
+					t.Fatalf("release discovery = %+v, error = %v, releases = %d, Hub reads = %d", status, err, releaseReads, hubReads)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "invalid Hub update target") || hubReads != 1 || releaseReads != 0 {
+				t.Fatalf("legacy Hub target = %+v, error = %v, releases = %d, Hub reads = %d", status, err, releaseReads, hubReads)
+			}
+		})
+	}
 }

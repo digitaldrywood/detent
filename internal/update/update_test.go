@@ -529,16 +529,32 @@ func (*contextBlockingBody) Close() error {
 
 func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		current string
-		follow  bool
-		brew    bool
+		name            string
+		current         string
+		follow          bool
+		brew            bool
+		explicit        bool
+		fromRelease     bool
+		hubTarget       string
+		hubError        error
+		invalidSelector string
+		missingReceipt  bool
 	}{
 		{name: "selected release", current: "1.2.3"},
+		{name: "explicit release refuses wrong lock selector", current: "1.2.3", explicit: true, hubTarget: "operator-landed-a69c4b1dd060", invalidSelector: "DETENT_INSTALL_LOCK"},
+		{name: "explicit release refuses wrong state selector", current: "1.2.3", explicit: true, hubTarget: "operator-landed-a69c4b1dd060", invalidSelector: "DETENT_STATE_DIR"},
+		{name: "explicit release with operator Hub build", current: "1.2.3", explicit: true, hubTarget: "operator-landed-a69c4b1dd060"},
+		{name: "explicit from-release with operator Hub build", current: "1.2.3", explicit: true, fromRelease: true, hubTarget: "operator-landed-a69c4b1dd060"},
+		{name: "explicit release ignores older Hub pin", current: "1.2.3", explicit: true, hubTarget: "1.2.2"},
+		{name: "explicit release when Hub is unavailable", current: "1.2.3", explicit: true, hubError: errors.New("Hub unavailable")},
 		{name: "follow Hub below latest", current: "1.2.3", follow: true},
 		{name: "runner ahead of Hub", current: "1.2.5", follow: true},
 		{name: "installed development build", current: "operator-landed-abcdef123456", follow: true},
 		{name: "Homebrew enrolled runner", current: "1.2.3", follow: true, brew: true},
+		{name: "Homebrew refuses wrong lock selector", current: "1.2.3", follow: true, brew: true, invalidSelector: "DETENT_INSTALL_LOCK"},
+		{name: "Homebrew refuses missing lock selector", current: "1.2.3", follow: true, brew: true, invalidSelector: "DETENT_INSTALL_LOCK", missingReceipt: true},
+		{name: "Homebrew refuses wrong state selector", current: "1.2.3", follow: true, brew: true, invalidSelector: "DETENT_STATE_DIR"},
+		{name: "Homebrew refuses missing state selector", current: "1.2.3", follow: true, brew: true, invalidSelector: "DETENT_STATE_DIR", missingReceipt: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tmp := t.TempDir()
@@ -556,6 +572,36 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			}
 			if err := os.WriteFile(lockPath, []byte("binary="+binary+"\n"), 0o600); err != nil {
 				t.Fatalf("WriteFile(lock) error = %v", err)
+			}
+
+			legacyHome := filepath.Join(tmp, "home")
+			legacyLock := filepath.Join(legacyHome, ".detent", "install.lock")
+			legacyReceipt := "binary=/other/install/detent\nversion=1.0.0\n"
+			if err := os.MkdirAll(filepath.Dir(legacyLock), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(legacyLock, []byte(legacyReceipt), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			installEnv := map[string]string{"DETENT_INSTALL_LOCK": lockPath}
+			if test.invalidSelector != "" {
+				if err := os.WriteFile(lockPath, []byte(legacyReceipt), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				legacyReceipt = "binary=" + binary + "\n"
+				if err := os.WriteFile(legacyLock, []byte(legacyReceipt), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if test.invalidSelector == "DETENT_STATE_DIR" {
+					installEnv = map[string]string{"DETENT_STATE_DIR": filepath.Dir(lockPath)}
+				}
+			}
+
+			if test.missingReceipt {
+				if err := os.Remove(lockPath); err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			archiveName := "detent_1.2.4_linux_amd64.tar.gz"
@@ -616,6 +662,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 
 			service := NewService(Config{
 				CurrentVersion: test.current,
+				HomeDir:        legacyHome,
 				CurrentCommit:  testPreviousCommit,
 				ExecutablePath: binary,
 				GOOS:           "linux",
@@ -624,7 +671,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					APIBase:    releaseURL,
 					HTTPClient: httpClient,
 				}),
-				Env: map[string]string{"DETENT_INSTALL_LOCK": lockPath},
+				Env: installEnv,
 				BinaryVerifier: func(context.Context, string) (string, error) {
 					return "version: v1.2.4\ncommit: " + testUpdatedCommit + "\n", nil
 				},
@@ -643,14 +690,14 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			if !test.follow {
 				service.cfg.TargetVersion = func(context.Context) (string, error) { return "v1.2.4", nil }
 			}
-			if !test.follow {
+			if !test.follow && !test.explicit {
 				stale, staleErr := service.Apply(t.Context(), ApplyOptions{AssumeYes: true, ExpectedVersion: "1.2.5"})
 				if !errors.Is(staleErr, ErrRefused) || stale.Action != ActionRefused {
 					t.Fatalf("changed selected release = %+v, %v", stale, staleErr)
 				}
 			}
 			var preflightPath string
-			status, err := service.Apply(context.Background(), ApplyOptions{
+			applyOptions := ApplyOptions{
 				AssumeYes:         true,
 				FollowHub:         test.follow,
 				FromRelease:       test.follow,
@@ -667,7 +714,54 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					}
 					return nil
 				},
-			})
+			}
+			var status Status
+			if test.explicit {
+				service.cfg.TargetVersion = func(context.Context) (string, error) { return test.hubTarget, test.hubError }
+				drains, restarts, releases := 0, 0, 0
+				scheduler, schedulerErr := NewScheduler(SchedulerConfig{
+					CheckInterval: time.Hour, Updater: service, ApplyOptions: applyOptions,
+					ReserveDrain: func(context.Context) (func(), error) {
+						drains++
+						return func() { releases++ }, nil
+					},
+					RequestRestart: func(path string) bool {
+						if path != binary || releases != 0 {
+							t.Errorf("restart path = %q, released drains = %d", path, releases)
+						}
+						restarts++
+						return true
+					},
+				})
+				if schedulerErr != nil {
+					t.Fatal(schedulerErr)
+				}
+				status, err = scheduler.ApplyRelease(t.Context(), test.fromRelease)
+				if test.invalidSelector != "" && (drains != 1 || restarts != 0 || releases != 1) {
+					t.Fatalf("refused update drains/restarts/releases = %d/%d/%d", drains, restarts, releases)
+				}
+				if err == nil && (drains != 1 || restarts != 1 || releases != 0) {
+					t.Fatalf("drains = %d, restarts = %d, releases = %d", drains, restarts, releases)
+				}
+			} else {
+				status, err = service.Apply(t.Context(), applyOptions)
+			}
+			if test.invalidSelector != "" {
+				selectedRaw, selectedErr := os.ReadFile(lockPath)
+				defaultRaw, defaultErr := os.ReadFile(legacyLock)
+				binaryRaw, binaryErr := os.ReadFile(binary)
+				if !errors.Is(err, ErrRefused) || status.Action != ActionRefused || preflightPath != "" || defaultErr != nil || binaryErr != nil || string(defaultRaw) != legacyReceipt || string(binaryRaw) != "old" {
+					t.Fatalf("wrong selector update = %+v, error = %v, preflight = %q, default receipt = %q, binary = %q", status, err, preflightPath, defaultRaw, binaryRaw)
+				}
+				if test.missingReceipt {
+					if !os.IsNotExist(selectedErr) {
+						t.Fatalf("missing receipt was created: %q, error = %v", selectedRaw, selectedErr)
+					}
+				} else if selectedErr != nil || string(selectedRaw) != "binary=/other/install/detent\nversion=1.0.0\n" {
+					t.Fatalf("other installation receipt changed: %q, error = %v", selectedRaw, selectedErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("Apply() error = %v", err)
 			}
@@ -715,6 +809,10 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				Env:            map[string]string{"DETENT_INSTALL_LOCK": lockPath},
 			}); got != "1.2.4" {
 				t.Fatalf("InstalledReleaseVersion() = %q, want 1.2.4", got)
+			}
+			legacyRaw, legacyErr := os.ReadFile(legacyLock)
+			if legacyErr != nil || string(legacyRaw) != legacyReceipt {
+				t.Fatalf("other installation receipt = %q, error = %v", legacyRaw, legacyErr)
 			}
 			metadata, ok := readInstallLock(lockPath)
 			if !ok || metadata.commit != testUpdatedCommit {
@@ -1723,4 +1821,54 @@ func stagedWindowsUpdateFiles(t *testing.T, dir string) (string, string) {
 		t.Fatal("update script was not created")
 	}
 	return stagedBinary, script
+}
+
+func TestExplicitInstallerReceiptDoesNotFallBackToOtherOwners(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		goos      string
+		goInstall bool
+	}{
+		{name: "Windows installer directory", goos: "windows"},
+		{name: "Go install directory", goos: "linux", goInstall: true},
+		{name: "macOS custom release directory", goos: "darwin"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			tmp := t.TempDir()
+			home := filepath.Join(tmp, "home")
+			binDir := filepath.Join(home, ".detent", "bin")
+			name := "detent"
+			if test.goInstall {
+				binDir = filepath.Join(tmp, "gobin")
+			}
+			if test.goos == "windows" {
+				name = "detent.exe"
+			}
+			binary := filepath.Join(binDir, name)
+			defaultLock := filepath.Join(home, ".detent", "install.lock")
+			if err := os.MkdirAll(filepath.Dir(defaultLock), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			defaultOwner := binary
+			if test.goInstall || test.goos == "windows" {
+				defaultOwner = "/other/detent"
+			}
+			if err := os.WriteFile(defaultLock, []byte("binary="+defaultOwner+"\nversion=1.2.3\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			wrongLock := filepath.Join(tmp, "other-install.lock")
+			if err := os.WriteFile(wrongLock, []byte("binary=/other/detent\nversion=1.0.0\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			opts := DetectionOptions{CurrentVersion: "1.2.3", ExecutablePath: binary, HomeDir: home, GOOS: test.goos, Env: map[string]string{"DETENT_INSTALL_LOCK": wrongLock, "DETENT_STATE_DIR": filepath.Dir(defaultLock), "GOBIN": binDir}}
+			if got := DetectInstallSource(opts); got.Source != InstallSourceUnknown {
+				t.Fatalf("explicit wrong receipt owner = %+v", got)
+			}
+			if got := InstalledReleaseVersion(opts); got != "" {
+				t.Fatalf("version from another receipt = %q", got)
+			}
+		})
+	}
 }

@@ -57,6 +57,12 @@ func TestUpdateApplyEndpoint(t *testing.T) {
 			wantStatus: http.StatusAccepted, want: "Detent is restarting", wantCalls: 1,
 		},
 		{
+			name:       "unknown installer owner",
+			applier:    &updateApplierStub{status: update.Status{Action: update.ActionRefused, InstallSource: update.InstallSourceUnknown}, err: update.ErrRefused},
+			form:       url.Values{"confirm": {"true"}, "release": {"true"}},
+			wantStatus: http.StatusConflict, want: "DETENT_INSTALL_LOCK", wantCalls: 1,
+		},
+		{
 			name:       "applies update",
 			applier:    &updateApplierStub{status: update.Status{LatestVersion: "1.2.4"}},
 			form:       url.Values{"confirm": {"true"}},
