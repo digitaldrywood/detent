@@ -54,7 +54,7 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
 	var sourceAuthor, sourceCreated, sourceUpdated, sourceObserved string
 	var repositoryOwner, repositoryName, importedURL string
 	var sourceNumber int
-	var provenance, closedAt, listChange sql.NullString
+	var provenance, closedAt, listChange, pullRequest sql.NullString
 	var priority sql.NullInt64
 	bodyColumn := "i.body"
 	if compact {
@@ -71,7 +71,14 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
  FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
  LEFT JOIN change_versions v ON v.id = json_extract(c.record_json, '$.current_version_id') AND v.change_id = c.id
  WHERE c.organization_id = i.organization_id AND c.project_id = i.project_id AND l.work_item_id = i.native_id
- ORDER BY c.rowid DESC LIMIT 1)
+ ORDER BY c.rowid DESC LIMIT 1),
+ (SELECT json_extract(v.record_json, '$.external')
+ FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
+ JOIN change_versions v ON v.change_id = c.id
+ WHERE c.organization_id = i.organization_id AND c.project_id = i.project_id AND l.work_item_id = i.native_id
+ AND json_extract(v.record_json, '$.external.provider') = 'github'
+ AND COALESCE(json_extract(v.record_json, '$.external.url'), '') <> ''
+ ORDER BY c.rowid DESC, v.number DESC LIMIT 1)
 FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
 LEFT JOIN repositories r ON r.id = i.repository_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
@@ -80,7 +87,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 		&internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
 		&issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &provenance, &created, &updated, &activity, &externalID,
 		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived,
-		&repositoryOwner, &repositoryName, &sourceNumber, &importedURL, &closedAt, &listChange)
+		&repositoryOwner, &repositoryName, &sourceNumber, &importedURL, &closedAt, &listChange, &pullRequest)
 	if err != nil {
 		return issue, 0, err
 	}
@@ -138,6 +145,15 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 	if listChange.Valid {
 		if err := json.Unmarshal([]byte(listChange.String), &issue.ListChange); err != nil {
 			return issue, 0, err
+		}
+	}
+	if pullRequest.Valid {
+		var reference tracker.ChangeExternalReference
+		if err := json.Unmarshal([]byte(pullRequest.String), &reference); err != nil {
+			return issue, 0, err
+		}
+		if number := externalPullRequestNumber(reference); number > 0 {
+			issue.PullRequest = &tracker.NativePullRequest{Number: number, URL: reference.URL}
 		}
 	}
 	if priority.Valid {

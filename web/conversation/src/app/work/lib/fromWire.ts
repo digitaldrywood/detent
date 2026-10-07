@@ -207,6 +207,7 @@ export function toWorkItemView(
     lastActivityAt: issue.last_activity_at ?? null,
     closedAt: issue.closed_at ?? null,
     listChange: issue.list_change === undefined ? null : { branch: issue.list_change.branch, headSha: issue.list_change.head_sha },
+    pullRequest: issue.pull_request ?? null,
     revision: issue.revision,
     // Only a blocker that has not reached a terminal state still blocks. The
     // hub filters out blockers the reader cannot see, so this list is what

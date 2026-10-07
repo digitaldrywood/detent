@@ -1,4 +1,3 @@
-import { GitPullRequestIcon } from "lucide-react";
 import React from "react";
 
 import {
@@ -15,7 +14,7 @@ import { cn } from "../../../lib/utils.ts";
 import { issueNumber, projectHue } from "../lib/format.ts";
 import { isLive, type WorkItemView } from "../lib/model.ts";
 import { LaneMenu } from "./LaneMenu.tsx";
-import { AgeText, ElapsedText, Pill, priorityTone, statusPill } from "./IssueCard.tsx";
+import { AgeText, ElapsedText, Pill, PullRequestBadge, priorityTone, statusPill } from "./IssueCard.tsx";
 
 export function WorkList({
   items,
@@ -116,12 +115,7 @@ export function WorkList({
                   >
                     {item.title}
                   </button>
-                  {item.change === null ? null : (
-                    <span className="ml-2 inline-flex items-center gap-1 text-muted-foreground text-[11px]">
-                      <GitPullRequestIcon className="size-3" />
-                      {item.change.number === null ? "Change" : `PR #${item.change.number}`}
-                    </span>
-                  )}
+                  <PullRequestBadge item={item} className="ml-2" />
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   <span className="inline-flex items-center gap-1.5">

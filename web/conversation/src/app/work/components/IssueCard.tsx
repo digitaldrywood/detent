@@ -1,6 +1,7 @@
 import { GitPullRequestIcon } from "lucide-react";
 import React from "react";
 
+import { Badge } from "../../../components/ui/badge.tsx";
 import { cn } from "../../../lib/utils.ts";
 import { ProjectGlyph } from "../../components/ProjectGlyph.tsx";
 import { ageLabel, elapsedLabel, issueNumber, projectHue } from "../lib/format.ts";
@@ -96,6 +97,23 @@ export function AgeText({ at, now }: { at: string | null | undefined; now?: numb
 export function ElapsedText({ at, now }: { at: string | null | undefined; now?: number }): React.ReactElement {
   const current = useNow();
   return <>{elapsedLabel(at, now ?? current)}</>;
+}
+
+export function PullRequestBadge({ item, className }: { item: WorkItemView; className?: string }): React.ReactElement | null {
+  const pr = item.pullRequest ?? item.change;
+  if (pr === null || pr.number === null || pr.number <= 0 || !pr.url) return null;
+  return (
+    <Badge
+      variant="outline"
+      size="sm"
+      className={className}
+      data-testid="pr-chip"
+      render={<a href={pr.url} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()} />}
+    >
+      <GitPullRequestIcon aria-hidden />
+      PR #{pr.number}
+    </Badge>
+  );
 }
 
 function sourceDescription(item: WorkItemView, now: number): string | null {
@@ -196,8 +214,11 @@ export function IssueCard({
           </span>
         )}
         {item.sourceProvider === null ? null : <SourceBadge item={item} terminal={terminal} now={now} />}
-        <span className="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground/70 tabular-nums">
-          {issueNumber(item.identifier, item.number)}
+        <span className="ml-auto inline-flex shrink-0 items-center gap-1.5">
+          <PullRequestBadge item={item} />
+          <span className="shrink-0 font-mono text-[11px] text-muted-foreground/70 tabular-nums">
+            {issueNumber(item.identifier, item.number)}
+          </span>
         </span>
       </div>
 
@@ -246,16 +267,6 @@ export function IssueCard({
           >
             {status.label}
           </Pill>
-        )}
-        {item.change === null ? null : (
-          <span
-            data-testid="pr-chip"
-            className="inline-flex items-center gap-1 text-muted-foreground"
-            title={item.change.title}
-          >
-            <GitPullRequestIcon className="size-3" />
-            {item.change.number === null ? "Change" : `PR #${item.change.number}`}
-          </span>
         )}
         {attempt === null || attempt.attemptNumber === null || attempt.attemptNumber < 2 ? null : (
           <span>attempt {attempt.attemptNumber}</span>

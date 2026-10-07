@@ -294,27 +294,38 @@ describe("the board card", () => {
     expect(screen.getByText("Blocked · 1")).not.toBeNull();
   });
 
-  it("carries the PR chip when a change is linked", () => {
-    render(
-      <IssueCard
-        item={item({
-          change: {
-            id: "change_1",
-            number: 3372,
-            title: "fix: renewal",
-            state: "blocked",
-            url: null,
-            review: "blocked",
-          },
-        })}
-        showProject={false}
-        now={NOW}
-        onOpen={vi.fn()}
-        moves={[]}
-        onMove={vi.fn()}
-      />,
-    );
-    expect(screen.getByTestId("pr-chip").textContent).toContain("PR #3372");
+  it.each(["board", "list"] as const)("links only the PR and preserves it through %s updates", (mode) => {
+    const onOpen = vi.fn();
+    const onParentClick = vi.fn();
+    const surface = (value: WorkItemView) => <div onClick={onParentClick}>
+      {mode === "board"
+        ? <IssueCard item={value} showProject={false} now={NOW} onOpen={onOpen} moves={[]} onMove={vi.fn()} />
+        : <WorkList items={[value]} showProject={false} now={NOW} onOpen={onOpen} movesFor={() => []} onMove={vi.fn()} />}
+    </div>;
+    const { rerender } = render(surface(item()));
+    expect(screen.queryByTestId("pr-chip")).toBeNull();
+    const linked = toWorkItemView({ ...itemFixture as unknown as NativeIssue,
+      pull_request: { number: 3372, url: "https://github.com/digitaldrywood/detent/pull/3372" } }, "parable");
+    rerender(surface(linked));
+    const link = screen.getByRole("link", { name: "PR #3372" });
+    expect(link.getAttribute("href")).toBe("https://github.com/digitaldrywood/detent/pull/3372");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    fireEvent.click(link);
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(onParentClick).not.toHaveBeenCalled();
+    for (const state of ["In Review", "Merging", "Done"]) {
+      rerender(surface({ ...linked, state, revision: state, terminal: state === "Done", change: null }));
+      expect(screen.getByRole("link", { name: "PR #3372" })).toBe(link);
+    }
+    fireEvent.click(screen.getByTestId(mode === "board" ? "issue-card-open" : "work-list-open"));
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    for (const change of [null, { id: "change_1", number: null, title: "Native change", state: "reviewed", url: null, review: "ready" },
+      { id: "change_1", number: 3372, title: "Unlinked change", state: "reviewed", url: null, review: "ready" }]) {
+      rerender(surface(item({ change })));
+      expect(screen.queryByTestId("pr-chip")).toBeNull();
+      expect(screen.queryByText("Change")).toBeNull();
+    }
   });
 
   it("opens the issue from the title", () => {

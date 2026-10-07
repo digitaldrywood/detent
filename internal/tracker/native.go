@@ -89,6 +89,7 @@ type NativeIssue struct {
 	UpdatedAt          time.Time           `json:"updated_at"`
 	ClosedAt           *time.Time          `json:"closed_at,omitempty"`
 	ListChange         *NativeListChange   `json:"list_change,omitempty"`
+	PullRequest        *NativePullRequest  `json:"pull_request,omitempty"`
 	LastActivityAt     time.Time           `json:"last_activity_at"`
 	Dependencies       []NativeWorkItemID  `json:"dependencies"`
 	Blockers           []NativeDependency  `json:"blockers"`
@@ -102,6 +103,11 @@ type NativeIssue struct {
 type NativeListChange struct {
 	Branch  string `json:"branch"`
 	HeadSHA string `json:"head_sha"`
+}
+
+type NativePullRequest struct {
+	Number int    `json:"number"`
+	URL    string `json:"url"`
 }
 
 // Change review connectors. The value is stated on every change review
