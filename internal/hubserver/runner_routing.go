@@ -22,19 +22,19 @@ const runnerIdentitySelect = `SELECT r.id, r.organization_id, r.machine_id, r.to
 r.reported_capacity, r.os, r.architecture, r.last_heartbeat_at, r.revision, r.operations_json, r.routing_settings_json,
 m.hostname, m.display_name, m.capacity, m.routing_revision, t.created_at, t.expires_at, t.revoked_at,
 (SELECT json_group_array(project_id) FROM (SELECT project_id FROM token_grants WHERE token_id = r.token_id ORDER BY project_id)),
-r.problems_json, r.backend_isolation_json, r.reported_protocol_major, r.settings_rejected, r.capacity_configuration_json, r.provider_reports_json, r.update_observation_json
+r.problems_json, r.backend_isolation_json, r.reported_protocol_major, r.settings_rejected, r.capacity_configuration_json, r.provider_reports_json, r.update_observation_json, r.project_configuration_json
 FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id`
 
 func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.Time) (runnerauth.Runner, []providercapacity.Report, time.Time, error) {
 	var r runnerauth.Runner
 	var tags, operations, heartbeat, created, expires, token, settings string
-	var projects, problems, isolationRaw, capacityRaw, providerRaw, updateRaw string
+	var projects, problems, isolationRaw, capacityRaw, providerRaw, updateRaw, configurationRaw string
 	var protocol int
 	var rejected bool
 	var revoked sql.NullString
 	err := row.Scan(&r.RunnerID, &r.OrganizationID, &r.MachineID, &token, &r.DisplayName, &tags, &r.State, &r.CapacityLimit,
 		&r.ReportedCapacity, &r.OS, &r.Architecture, &heartbeat, &r.Revision, &operations, &settings,
-		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked, &projects, &problems, &isolationRaw, &protocol, &rejected, &capacityRaw, &providerRaw, &updateRaw)
+		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked, &projects, &problems, &isolationRaw, &protocol, &rejected, &capacityRaw, &providerRaw, &updateRaw, &configurationRaw)
 	if err != nil {
 		return r, nil, time.Time{}, err
 	}
@@ -66,7 +66,7 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.T
 		return r, nil, time.Time{}, err
 	}
 	r.Routing = r.Normalized()
-	if err := applyRunnerProblems(&r, problems, isolationRaw, protocol, rejected); err != nil {
+	if err := applyRunnerProblems(&r, problems, isolationRaw, configurationRaw, protocol, rejected); err != nil {
 		return r, nil, time.Time{}, err
 	}
 	if err := json.Unmarshal([]byte(updateRaw), &r.Update); err != nil {
@@ -128,7 +128,7 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope WHERE l.machine_id = ? AND 
 					}
 				}
 				lease.Exclusions = r.Exclusions(lease.ProjectID, lease.Policy.Requirements, true)
-				if lease.Policy.ID == "" || lease.Policy.ID != approved {
+				if lease.Policy.ID == "" || approved == "" {
 					lease.Exclusions = append(lease.Exclusions, runnerauth.Exclusion{Code: "policy_mismatch", Message: "This run's pinned policy is missing or revoked"})
 				}
 				r.Leases = append(r.Leases, lease)

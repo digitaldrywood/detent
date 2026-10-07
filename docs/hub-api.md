@@ -163,8 +163,10 @@ Claim allocation checks approval and requirements in the lease transaction and
 persists the identity with the lease. Responses include `policy_id`; native run
 events must match it. Missing/stale approval returns `409 policy_mismatch` before
 allocation. Unsupported or unmatched requirements return `409 selector_no_match`.
-Current policy cannot be replaced while active leases exist. Revocation denies
-renewals and run events but permits release. Legacy rows migrate without policy
+Approval can replace the current policy while agents are running. Existing
+leases retain their recorded policy revision; new claims require the current
+approved policy. Revocation denies renewals and run events but permits release.
+Legacy rows migrate without policy
 pins and cannot be reused through the API as approved execution claims.
 
 ## Start the Hub

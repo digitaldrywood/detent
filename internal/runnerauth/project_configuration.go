@@ -59,6 +59,7 @@ type ProjectConfiguration struct {
 	Source                  string             `json:"source"`
 	SelectedPolicy          *policy.Descriptor `json:"selected_policy,omitempty"`
 	EffectivePolicy         *policy.Descriptor `json:"effective_policy,omitempty"`
+	PolicyMismatch          bool               `json:"policy_mismatch"`
 	Pending                 bool               `json:"pending,omitempty"`
 	Saved                   bool               `json:"saved"`
 	Applied                 bool               `json:"applied"`
@@ -66,6 +67,16 @@ type ProjectConfiguration struct {
 	ObservedAt              time.Time          `json:"observed_at"`
 
 	LastOperation *ProjectConfigurationReceipt `json:"last_operation,omitempty"`
+}
+
+func (c ProjectConfiguration) SelectedPolicyDiffers() bool {
+	return c.SelectedPolicy != nil && (c.EffectivePolicy == nil || c.SelectedPolicy.ID != c.EffectivePolicy.ID)
+}
+
+func (c ProjectConfiguration) MarshalJSON() ([]byte, error) {
+	type configuration ProjectConfiguration
+	c.PolicyMismatch = c.SelectedPolicyDiffers()
+	return json.Marshal(configuration(c))
 }
 
 func (c ProjectConfiguration) Validate() error {

@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -11,13 +12,155 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
+func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
+	for _, kind := range []string{"legacy", "authored"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
+			r.enroll(t)
+			current := hubTestPolicy()
+			approveHubTestPolicy(t, f.service, f.base+"/policy", current)
+			selected := current
+			selected.Profile = "runner"
+			selected.Gates.HumanReview = true
+			selected = selected.WithID()
+			if kind == "authored" {
+				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+					ConfigPath: "detent.yaml", HasConfig: true,
+					Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: digitaldrywood/detent\ngate:\n  run: make check-land\n  required_status_checks: []\n"),
+					WorkflowPath: "WORKFLOW.md", Workflow: []byte("Implement the assigned issue.\n"),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				selected, err = workflowconfig.ResolvePolicy(workflow)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Registered: true, RuntimeRegistered: true, Source: "configured_committed_workflow", SelectedPolicy: &selected, EffectivePolicy: &current, ObservedAt: f.service.config.now()}
+			post := func() {
+				t.Helper()
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view}), http.StatusOK)
+			}
+			post()
+			scope := string(f.project.OrganizationID) + "/" + view.ProjectID
+			reports, err := readObservedPolicies(t.Context(), f.service.database.db, scope, current, f.service.config.now())
+			if err != nil || len(reports) != 1 || reports[0].Policy.ID != selected.ID {
+				t.Fatalf("heartbeat selected policy reports=%+v %v", reports, err)
+			}
+			source := &policy.RepositorySource{Repository: "digitaldrywood/detent", Commit: strings.Repeat("b", 40)}
+			if err := storeObservedPolicy(t.Context(), f.service.database.db, scope, r.binding.RunnerID, policy.Observation{Descriptor: selected, Source: source}, f.service.config.now()); err != nil {
+				t.Fatal(err)
+			}
+			post()
+			contexts := make(chan context.Context, 1)
+			f.service.echo.GET("/api/v2/organizations/:organization/policy-round-trip-test", func(c echo.Context) error { contexts <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.base+"/policy-round-trip-test", testHubAdminToken, nil), http.StatusOK)
+			ctx := operatortool.BindConnection(<-contexts, "policy-round-trip", "policy fixture")
+			executor := hubProjectExecutor{f.service}
+			if err := executor.OpenConnection(ctx); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(operatortool.LocalProjectArguments{ProjectID: view.ProjectID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			read := operatortool.Call{Name: operatortool.LocalProjectConfiguration, Arguments: raw}
+			result, err := executor.Execute(ctx, read)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var observed struct {
+				Selected json.RawMessage `json:"selected_policy"`
+				Mismatch bool            `json:"policy_mismatch"`
+			}
+			if err := json.Unmarshal(result.Content, &observed); err != nil {
+				t.Fatal(err)
+			}
+			if !observed.Mismatch {
+				t.Fatalf("policy mismatch missing from MCP read: %s", result.Content)
+			}
+			readHealth := func(want bool) {
+				t.Helper()
+				runner, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, problem := range runner.Problems {
+					if problem.Code == "policy_mismatch" {
+						found = problem.Message != "" && problem.FixHint != ""
+					}
+				}
+				if found != want || (runner.Health == "needs_attention") != want {
+					t.Fatalf("runner policy health=%s problems=%+v, want mismatch=%v", runner.Health, runner.Problems, want)
+				}
+				if exclusions := runner.Exclusions(f.project.ID, policy.Requirements{}, false); len(exclusions) != 0 {
+					t.Fatalf("policy observation affected dispatch: %+v", exclusions)
+				}
+			}
+			readReports := func(want int) {
+				t.Helper()
+				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", testHubAdminToken, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var setup onboarding.Project
+				decodeHubResponse(t, response, &setup)
+				if len(setup.ObservedPolicies) != want || want > 0 && setup.ObservedPolicies[0].Policy.ID != selected.ID {
+					t.Fatalf("Integrations policy reports=%+v", setup.ObservedPolicies)
+				}
+				if want > 0 && (setup.ObservedPolicies[0].Source == nil || *setup.ObservedPolicies[0].Source != *source) {
+					t.Fatalf("heartbeat discarded repository provenance: %+v", setup.ObservedPolicies)
+				}
+			}
+			readHealth(true)
+			readReports(1)
+			omitted := selected
+			if kind == "authored" {
+				omitted.Authored = nil
+			} else {
+				omitted.Profile = ""
+			}
+			var refusal *operatortool.RequestError
+			if _, err := executor.Execute(ctx, projectCall(t, "approve_project_policy", view.ProjectID, "incomplete-policy", operatortool.PolicyApprovalInput{ExpectedID: current.ID, Policy: omitted})); !errors.As(err, &refusal) || !strings.Contains(refusal.Message, "entire local_project_configuration.selected_policy") {
+				t.Fatalf("incomplete policy refusal=%v", err)
+			}
+			call := projectCall(t, "approve_project_policy", view.ProjectID, "selected-policy", struct {
+				ExpectedID string          `json:"expected_policy_id"`
+				Policy     json.RawMessage `json:"policy"`
+			}{current.ID, observed.Selected})
+			approved := projectAction(t, executor, ctx, call)
+			if approved.Status != chatpkg.ActionSucceeded {
+				t.Fatalf("selected policy approval=%+v", approved)
+			}
+			stored, err := readProjectPolicy(t.Context(), f.service.database.db, scope)
+			if err != nil || stored.Policy.ID != selected.ID {
+				t.Fatalf("approved policy=%+v %v", stored, err)
+			}
+			readReports(0)
+			readHealth(true)
+			view.EffectivePolicy, view.PolicyMismatch = &selected, true
+			post()
+			readHealth(false)
+			readReports(0)
+			result, err = executor.Execute(ctx, read)
+			if err != nil || json.Unmarshal(result.Content, &observed) != nil || observed.Mismatch {
+				t.Fatalf("applied policy read=%s %v", result.Content, err)
+			}
+		})
+	}
+}
+
 func TestCloudProjectConfigurationOwner(t *testing.T) {
-	for _, scenario := range []string{"apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
+	for _, scenario := range []string{"drain", "apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "project-configuration")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
@@ -73,6 +216,22 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			}
 			if observed.RunnerID != r.binding.RunnerID || observed.ConfigRevision != view.ConfigRevision || observed.AllowLocalBinding || observed.LocalBindingPolicy == nil || observed.LocalBindingPolicy.ID != candidate.ID {
 				t.Fatalf("configuration=%s", result.Content)
+			}
+			if scenario == "drain" {
+				args := operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: observed.RunnerID, ExpectedRunnerRevision: observed.RunnerRevision, RequestID: "drain", ExpectedConfigRevision: observed.ConfigRevision, ExpectedPolicyID: current.ID}
+				result, err := call("drain_local_project", args)
+				if err != nil || !strings.Contains(string(result.Content), `"pending":true`) {
+					t.Fatalf("drain queued=%s %v", result.Content, err)
+				}
+				request := heartbeat().ProjectConfigurationRequest
+				if request == nil || request.Operation != "drain_local_project" || request.RequestID != args.RequestID {
+					t.Fatalf("drain delivery=%+v", request)
+				}
+				view.RequestID, view.Saved, view.Applied, view.Draining = args.RequestID, true, true, true
+				if heartbeat().ProjectConfigurationRequest != nil {
+					t.Fatal("acknowledged drain repeated")
+				}
+				return
 			}
 			enabled := true
 			args := operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: observed.RunnerID, ExpectedRunnerRevision: observed.RunnerRevision, RequestID: "enable-local-binding", ExpectedConfigRevision: observed.ConfigRevision, ExpectedPolicyID: current.ID, PolicyID: candidate.ID, SourceRevision: candidate.SourceRevision, AllowLocalBinding: &enabled}

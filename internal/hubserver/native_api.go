@@ -120,10 +120,14 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET(nativeBase+"/health/findings", s.getHealthFindings, read)
 	write := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
 	admin := s.requireInstanceAdmin()
+	policyAdmin := admin
+	if s.config.Hosted != nil {
+		policyAdmin = s.requireOnboardingAdmin()
+	}
 	worker := s.requireNativeScope(apiScopeWorker)
 	e.GET(nativeBase+"/policy", s.getProjectPolicy, s.requireNativeScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))
-	e.PUT(nativeBase+"/policy", s.approveProjectPolicy, admin)
-	e.DELETE(nativeBase+"/policy", s.revokeProjectPolicy, admin)
+	e.PUT(nativeBase+"/policy", s.approveProjectPolicy, policyAdmin)
+	e.DELETE(nativeBase+"/policy", s.revokeProjectPolicy, policyAdmin)
 	e.POST(nativeBase+"/policy/observed", s.observeProjectPolicy, worker)
 	e.GET("/api/v2/capabilities", s.nativeCapabilities, s.requireAPIScope(apiScopeWorker, apiScopeOperator))
 	e.GET("/api/v2/organizations", s.nativeOrganizations, admin)

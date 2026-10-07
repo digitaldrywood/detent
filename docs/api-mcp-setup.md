@@ -26,10 +26,25 @@ for exact revision, policy and handoff requirements. Cloud also reaches the
 enrolled runner's configuration owner through its existing heartbeat transport,
 independently of the local board. Select `runner_id` when more than one granted
 runner reports the project. Commands through Cloud additionally require that
-runner's current `expected_runner_revision`. A stopped or missing runner owner
+runner's current `expected_runner_revision`. Runner administration and local
+project commands require an Admin key. Hosted owners and admins have organization
+runner access; members require runner management grants on the organization’s
+projects. An all-project Write key
+does not grant runner administration. A stopped or missing runner owner
 returns an explicit constraint; these calls never start or enable a board.
 Verify `registered` and `runtime_registered` through a
 fresh read after a saved removal; a command retry returns its original receipt.
+
+When `policy_mismatch` is true, the selected local policy differs from the
+runner's effective policy. Cloud shows the selected descriptor in the existing
+Integrations policy approval row and marks the runner as needing attention until
+the effective policy matches. To approve it through MCP, pass the entire
+`selected_policy` object unchanged as `approve_project_policy`'s `input.policy`,
+with the current approved ID as `input.expected_policy_id`. Preserve every
+returned field, including `authored`, `profile`, `configuration`, `workflow` and
+`gates.human_review` when present. Reconstructing a subset can invalidate the
+identity digest. Authorized approval executes directly; approval and runner
+application are separate operations.
 
 For the existing `worker.allow_local_binding` setting, read the effective
 `allow_local_binding` and the complete `local_binding_policy` or
