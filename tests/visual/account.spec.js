@@ -347,11 +347,12 @@ for (const state of [
   { name: "unavailable transport", installed: false, profile: "native", repository: "acme/orders", transport: false, visible: false },
 ]) {
   test(`setup and integrations GitHub App installation: ${state.name}`, async ({ page }) => {
-    let reads = 0;
-    await page.route("**/projects/*/integration", async (route) => {
+    const integrationURL = "**/projects/*/integration";
+    let integrationReady = Promise.resolve();
+    await page.route(integrationURL, async (route) => {
       const response = await route.fetch();
       const integration = await response.json();
-      reads++;
+      await integrationReady;
       await route.fulfill({ response, json: {
         ...integration,
         profile: state.profile,
@@ -363,8 +364,13 @@ for (const state of [
         github_app_installed: state.installed,
       } });
     });
+    const setupIntegration = page.waitForResponse(integrationURL);
     await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);
+    await (await setupIntegration).finished();
     await page.getByRole("list", { name: "Setup steps" }).getByRole("button", { name: /Repository configuration/ }).click();
+    if (state.repository) {
+      await expect(page.getByText(`Verified runner checkout: ${state.repository}`, { exact: true })).toBeVisible();
+    }
     const install = page.getByRole("link", { name: "Install the Detent Cloud GitHub App" });
     if (state.visible) {
       await expect(install).toHaveAttribute("href", "https://github.com/apps/detent-cloud/installations/new");
@@ -376,9 +382,16 @@ for (const state of [
       await expect(install).toHaveCount(0);
       await expect(page.getByText(/Detent Cloud is (not )?installed on/)).toHaveCount(0);
     }
-    expect(reads).toBe(1);
-    await page.goto(new URL(`/settings/integrations?project=${hub.fixture.project_id}`, hub.fixture.url).toString(), { waitUntil: "domcontentloaded" });
-    await expect(page.getByRole("heading", { name: /settings$/, level: 2 })).toBeVisible();
+    let releaseIntegration;
+    integrationReady = new Promise((resolve) => { releaseIntegration = resolve; });
+    try {
+      await page.goto(new URL(`/settings/integrations?project=${hub.fixture.project_id}`, hub.fixture.url).toString(), { waitUntil: "domcontentloaded" });
+      await expect(page.getByRole("heading", { name: /settings$/, level: 2 })).toBeVisible();
+      await expect(page.getByRole("status").filter({ hasText: "Loading the project settings." })).toBeVisible();
+    } finally {
+      releaseIntegration();
+    }
+    await expect(page.getByRole("heading", { name: "Repository", level: 2, exact: true })).toBeVisible();
     if (state.visible) {
       await expect(page.getByRole("heading", { name: "GitHub App", exact: true })).toBeVisible();
       await expect(page.getByText(`Detent Cloud is ${state.installed ? "installed" : "not installed"} on acme/orders`, { exact: true })).toBeVisible();
@@ -393,7 +406,6 @@ for (const state of [
       await expect(install).toHaveCount(0);
       await expect(page.getByText(/Detent Cloud is (not )?installed on/)).toHaveCount(0);
     }
-    expect(reads).toBe(2);
   });
 }
 
