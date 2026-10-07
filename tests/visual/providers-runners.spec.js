@@ -120,6 +120,8 @@ for (const width of [1440, 390]) {
       }
     }
     await expect(groups.nth(1).locator('[data-slot-state="unavailable"]')).toHaveCount(4);
+    const buildRunner = page.getByTestId("host-card").filter({ has: page.getByRole("heading", { name: "Build runner", exact: true }) });
+    await expect(buildRunner.getByText("Needs attention", { exact: true })).toBeVisible();
     await expect(page.getByRole("alert")).toHaveCount(0);
     await page.getByRole("button", { name: "Manage Build runner" }).click();
     await expect(page.getByRole("dialog").getByRole("alert")).toContainText(problem.message);
