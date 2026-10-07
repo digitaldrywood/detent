@@ -36,6 +36,21 @@ type landingBackend struct {
 	githubCalled       bool
 	githubRequest      bool
 	preparationRequest bool
+	headReceipt        *gate.CommandResult
+}
+
+func (b *landingBackend) Head(context.Context, workspace.Info, workspace.Issue) (string, error) {
+	if b.headReceipt == nil {
+		return "", nil
+	}
+	return b.headReceipt.HeadSHA, nil
+}
+
+func (b *landingBackend) RunReviewCommand(_ context.Context, _ workspace.Info, issue workspace.Issue, command string) (gate.CommandResult, error) {
+	if issue.PullRequestHeadSHA != b.headReceipt.HeadSHA || command != b.headReceipt.Command {
+		return gate.CommandResult{}, errors.New("validated a different head or command")
+	}
+	return *b.headReceipt, nil
 }
 
 func (b *landingBackend) Create(ctx context.Context, issue workspace.Issue) (workspace.Info, error) {
@@ -369,6 +384,9 @@ func TestLandNativeChange(t *testing.T) {
 	gateResult := gate.CommandResult{Command: "make check-land", HeadSHA: merge, TreeSHA: strings.Repeat("a", 40), DurationNS: 123456}
 	failedGate := gateResult
 	failedGate.ExitCode, failedGate.Output = 1, "lint-error-sentinel"
+	headGate := gate.CommandResult{Command: "make check", HeadSHA: head, TreeSHA: strings.Repeat("a", 40), DurationNS: 123456}
+	failedHeadGate := headGate
+	failedHeadGate.ExitCode, failedHeadGate.Output = 1, "lint-error-sentinel"
 	target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "merge", Title: "Add a sign-in link", Number: 2}
 	githubTarget := target
 	githubTarget.Repository, githubTarget.GitHubPullRequest = "https://github.com/digitaldrywood/detent", true
@@ -400,6 +418,9 @@ func TestLandNativeChange(t *testing.T) {
 		{name: "opted-in project uses GitHub PR landing", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Rebased: true}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true, wantMessage: "Land " + head + "\n\nChange Request change_1, round 0, head " + head + "."},
 		{name: "quota retains reviewed identity and actual metrics", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{githubRequest: true}, wantErr: "github rate limited", quota: true},
+		{name: "an unreceipted reviewed head is validated before it lands", stub: landingStub{target: target}, backend: landingBackend{headReceipt: &headGate, result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Path: "clean_push"}},
+			wantOutput: RunOutputNativeLanded, wantRecorded: 1},
+		{name: "a failing unreceipted reviewed head returns its output without landing", stub: landingStub{target: target}, backend: landingBackend{headReceipt: &failedHeadGate}, wantOutput: RunOutputNativeLandingRefused, gateFailure: true},
 		{name: "gate command failure retains output and reviewed identity", stub: landingStub{target: target}, backend: landingBackend{result: workspace.LandResult{Gate: failedGate}, err: &workspace.ValidationError{Output: "lint-error-sentinel", Err: errors.New("exit status 1")}}, wantOutput: RunOutputNativeLandingRefused, gateFailure: true},
 		{name: "CI waiting retains reviewed identity without recording a merge", stub: landingStub{target: githubTarget}, backend: landingBackend{result: workspace.LandResult{CI: &tracker.NativeLandingCIReceipt{HeadSHA: head, PullRequest: 7, State: "pending", TriggerLabel: "run-full-ci", Triggered: true}}}, wantOutput: RunOutputNativeLandingRefused, wantGitHub: true},
 		{name: "a refusal is reported, not recorded", stub: landingStub{target: target}, backend: landingBackend{err: &workspace.LandRefusal{Kind: workspace.LandRefusalProtected, Reason: "the base branch main refused the push"}},
@@ -482,6 +503,11 @@ func TestLandNativeChange(t *testing.T) {
 					if recorded.Gate == nil || *recorded.Gate != backend.result.Gate {
 						t.Fatalf("published landing lost gate: %#v", recorded)
 					}
+				}
+			}
+			if receipt := backend.headReceipt; receipt != nil {
+				if result.NativeLanding.Gate == nil || !reflect.DeepEqual(*result.NativeLanding.Gate, *receipt) || receipt.ExitCode == 0 && (backend.received.Validation == nil || !reflect.DeepEqual(*backend.received.Validation, *receipt)) || receipt.ExitCode != 0 && backend.received.HeadSHA != "" {
+					t.Fatalf("unreceipted head validation = landing %#v, options %#v", result.NativeLanding, backend.received)
 				}
 			}
 			if result.NativeLanding.Rebased != backend.result.Rebased {

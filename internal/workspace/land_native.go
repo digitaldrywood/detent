@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/gate"
 )
 
 type LandRequest struct {
@@ -211,7 +213,7 @@ func verifyLandingValidation(ctx context.Context, path string, options LandOptio
 		return nil
 	}
 	receipt := options.Validation
-	if receipt == nil || receipt.Command != options.ValidationCommand || receipt.HeadSHA != options.HeadSHA || receipt.ExitCode != 0 || receipt.DurationNS <= 0 {
+	if !ValidationCoversHead(receipt, options.ValidationCommand, options.HeadSHA) {
 		return refuse(LandRefusalHeadMoved, "the reviewed head has no successful validation receipt for the approved command")
 	}
 	tree, err := runGitAt(ctx, path, "rev-parse", options.HeadSHA+"^{tree}")
@@ -222,6 +224,10 @@ func verifyLandingValidation(ctx context.Context, path string, options LandOptio
 		return refuse(LandRefusalHeadMoved, "the validation receipt does not cover the reviewed tree")
 	}
 	return nil
+}
+
+func ValidationCoversHead(receipt *gate.CommandResult, command, head string) bool {
+	return receipt != nil && receipt.Command == command && receipt.HeadSHA == head && receipt.ExitCode == 0 && receipt.DurationNS > 0
 }
 
 func rebaseLanding(ctx context.Context, path, head, base, message string) (string, error) {
