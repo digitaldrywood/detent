@@ -52,7 +52,7 @@ async function terminate(child) {
 async function startHostedHub(name = "conversation", options = {}) {
   const scratch = process.env.TMPDIR || process.env.TMP || process.env.TEMP;
   if (!scratch) throw new Error("The hosted preview requires a scratch directory");
-  const evidenceDir = path.join(scratch, "playwright-evidence", name);
+  const evidenceDir = path.join(scratch, "playwright-evidence", `${name}-worker-${process.env.TEST_WORKER_INDEX ?? 0}`);
   fs.mkdirSync(evidenceDir, { recursive: true });
   const logPath = path.join(evidenceDir, "hosted-hub.log");
   fs.writeFileSync(logPath, "");
