@@ -276,17 +276,11 @@ func verifyGitHubLandingMerge(ctx context.Context, path, remote, base, baseRef, 
 
 func (l *LocalGit) prepareGitHubLanding(ctx context.Context, info Info, issue Issue, opts LandOptions, base string) (string, gate.CommandResult, error) {
 	staging := filepath.Join(l.root, "landing-"+info.Key)
-	defer func() {
-		if err := l.removeLandingWorktree(context.WithoutCancel(ctx), l.sourceRoot, staging); err != nil {
-			l.logger.Warn("landing worktree left behind", "path", staging, "error", err)
-		}
-	}()
-	if err := l.removeLandingWorktree(context.WithoutCancel(ctx), l.sourceRoot, staging); err != nil {
-		return "", gate.CommandResult{}, err
-	}
+	l.removeLandingWorktree(ctx, info.Path, staging)
 	if _, err := runGitAt(ctx, info.Path, "worktree", "add", "--detach", staging, base); err != nil {
 		return "", gate.CommandResult{}, fmt.Errorf("add landing validation worktree: %w", err)
 	}
+	defer l.removeLandingWorktree(context.WithoutCancel(ctx), info.Path, staging)
 	head, err := combine(ctx, staging, opts.Method, opts.HeadSHA, base, opts.Message)
 	if err != nil {
 		return "", gate.CommandResult{}, err
