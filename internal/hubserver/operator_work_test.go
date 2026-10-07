@@ -195,7 +195,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	}{
 		{"edit", "edit_item", map[string]any{"title": "Edited", "priority": 2, "expected_revision": createdFields["revision"]}, false},
 		{"stale", "edit_item", map[string]any{"title": "Stale", "expected_revision": "1"}, true},
-		{"direct body clear", "edit_item", map[string]any{"body": "", "expected_revision": "2"}, false},
+		{"direct body clear", "edit_item", map[string]any{"body": "", "expected_revision": 2}, false},
 		{"comment edit", "edit_comment", map[string]any{"comment_id": comment.ID, "body": "Edited comment", "expected_revision": commentFields["revision"]}, false},
 		{"stale comment", "edit_comment", map[string]any{"comment_id": comment.ID, "body": "Stale", "expected_revision": "1"}, true},
 		{"foreign item", "add_comment", map[string]any{"identifier": "wi_foreign", "body": "Foreign"}, true},
@@ -275,11 +275,12 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	blocker := f.create(t, "blocker")
 	for _, dependency := range []struct {
 		identifier, related string
+		revision            any
 	}{
-		{identifier, string(f.project.ID) + "#" + strconv.Itoa(blocker.Number)},
-		{id, string(blocker.WorkItemID)},
+		{identifier, string(f.project.ID) + "#" + strconv.Itoa(blocker.Number), 4},
+		{id, string(blocker.WorkItemID), json.RawMessage(`4.0`)},
 	} {
-		raw, failed = call("set_dependency", "dependency", map[string]any{"identifier": dependency.identifier, "related": dependency.related, "operation": "add", "expected_revision": "4"})
+		raw, failed = call("set_dependency", "dependency", map[string]any{"identifier": dependency.identifier, "related": dependency.related, "operation": "add", "expected_revision": dependency.revision})
 		var item tracker.NativeIssue
 		if err := json.Unmarshal(raw, &item); err != nil || failed || item.Revision != 5 || len(item.Dependencies) != 1 || item.Dependencies[0] != blocker.WorkItemID {
 			t.Fatalf("dependency alias/replay=%s %v", raw, err)

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -157,6 +158,12 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		request, err = operatortool.DecodeWorkArguments(call.Name, arguments)
 		if err != nil {
 			return operatortool.Result{}, err
+		}
+		if (call.Name == operatortool.EditItem || call.Name == operatortool.SetDependency) && fields["expected_revision"] != nil {
+			fields["expected_revision"], err = json.Marshal(strconv.FormatInt(request.ExpectedRevision, 10))
+			if err != nil {
+				return operatortool.Result{}, operatortool.ErrInvalidArguments
+			}
 		}
 		if request.Target != "pr" {
 			resolve := e.service.resolveOperatorNativeItem

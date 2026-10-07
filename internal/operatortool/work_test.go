@@ -59,7 +59,7 @@ func TestWorkArgumentsDirectCallBounds(t *testing.T) {
 		{"revision required", EditItem, `"title":"title"`, false},
 		{"zero revision", EditItem, `"title":"title","expected_revision":"0"`, false},
 		{"invalid priority", EditItem, `"priority":4,"expected_revision":"1"`, false},
-		{"numeric edit revision", EditItem, `"priority":0,"expected_revision":1`, false},
+		{"numeric edit revision", EditItem, `"priority":0,"expected_revision":1`, true},
 		{"ordinary edit", EditItem, `"priority":0,"expected_revision":"1"`, true},
 		{"native full title", EditItem, `"title":"` + strings.Repeat("x", 500) + `","expected_revision":"1"`, true},
 		{"native oversized title", EditItem, `"title":"` + strings.Repeat("x", 501) + `","expected_revision":"1"`, false},
@@ -75,6 +75,49 @@ func TestWorkArgumentsDirectCallBounds(t *testing.T) {
 				t.Fatalf("valid=%t error=%v", tt.valid, err)
 			}
 		})
+	}
+}
+
+func TestWorkRevisionArguments(t *testing.T) {
+	for _, tool := range []string{EditItem, SetDependency} {
+		for _, test := range []struct {
+			name, value string
+			revision    int64
+		}{
+			{"integer", `1`, 1},
+			{"integral float", `1.0`, 1},
+			{"string", `"1"`, 1},
+			{"exponent", `1e2`, 100},
+			{"above float precision", `9007199254740993`, 9007199254740993},
+			{"maximum integer", `9223372036854775807`, math.MaxInt64},
+			{"maximum integral float", `9223372036854775807.0`, math.MaxInt64},
+			{"zero", `0`, 0},
+			{"negative", `-1`, 0},
+			{"fraction", `1.5`, 0},
+			{"small fraction", `1.00000000000000000001`, 0},
+			{"invalid string", `"x"`, 0},
+			{"overflow integer", `9223372036854775808`, 0},
+			{"overflow string", `"9223372036854775808"`, 0},
+			{"overflow exponent", `1e1000000000`, 0},
+			{"underflow exponent", `1e-1000000000`, 0},
+			{"null", `null`, 0},
+			{"boolean", `true`, 0},
+		} {
+			t.Run(tool+"/"+test.name, func(t *testing.T) {
+				fields := `"title":"Edited"`
+				if tool == SetDependency {
+					fields = `"related":"blocker","operation":"add"`
+				}
+				request, err := DecodeWorkArguments(tool, json.RawMessage(`{"project_id":"project","identifier":"item",`+fields+`,"expected_revision":`+test.value+`}`))
+				if test.revision == 0 {
+					if !errors.Is(err, ErrInvalidArguments) {
+						t.Fatalf("error=%v, want invalid arguments", err)
+					}
+				} else if err != nil || request.ExpectedRevision != test.revision {
+					t.Fatalf("revision=%d error=%v, want %d", request.ExpectedRevision, err, test.revision)
+				}
+			})
+		}
 	}
 }
 
