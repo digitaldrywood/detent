@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -80,12 +81,28 @@ func (e *Executor) Execute(ctx context.Context, call Call) (Result, error) {
 	}
 }
 
+type boardStateArguments struct {
+	ProjectID string `json:"project_id"`
+	State     string `json:"state"`
+	Limit     int    `json:"limit"`
+}
+
+type telemetryUsageArguments struct {
+	ProjectID string `json:"project_id"`
+}
+
+type recentActivityArguments struct {
+	ProjectID string `json:"project_id"`
+	Limit     int    `json:"limit"`
+}
+
+type explainItemArguments struct {
+	ProjectID string `json:"project_id"`
+	Reference string `json:"reference"`
+}
+
 func (e *Executor) boardState(ctx context.Context, raw json.RawMessage) (Result, error) {
-	var request struct {
-		ProjectID string `json:"project_id"`
-		State     string `json:"state"`
-		Limit     int    `json:"limit"`
-	}
+	var request boardStateArguments
 	if err := decodeArguments(raw, &request); err != nil {
 		return Result{}, err
 	}
@@ -130,9 +147,7 @@ func (e *Executor) fleetHealth(ctx context.Context, raw json.RawMessage) (Result
 }
 
 func (e *Executor) telemetryUsage(ctx context.Context, raw json.RawMessage) (Result, error) {
-	var request struct {
-		ProjectID string `json:"project_id"`
-	}
+	var request telemetryUsageArguments
 	if err := decodeArguments(raw, &request); err != nil {
 		return Result{}, err
 	}
@@ -160,10 +175,7 @@ func (e *Executor) telemetryUsage(ctx context.Context, raw json.RawMessage) (Res
 }
 
 func (e *Executor) recentActivity(ctx context.Context, raw json.RawMessage) (Result, error) {
-	var request struct {
-		ProjectID string `json:"project_id"`
-		Limit     int    `json:"limit"`
-	}
+	var request recentActivityArguments
 	if err := decodeArguments(raw, &request); err != nil {
 		return Result{}, err
 	}
@@ -194,10 +206,7 @@ func (e *Executor) recentActivity(ctx context.Context, raw json.RawMessage) (Res
 }
 
 func (e *Executor) explainItem(ctx context.Context, raw json.RawMessage) (Result, error) {
-	var request struct {
-		ProjectID string `json:"project_id"`
-		Reference string `json:"reference"`
-	}
+	var request explainItemArguments
 	if err := decodeArguments(raw, &request); err != nil {
 		return Result{}, err
 	}
@@ -247,11 +256,59 @@ func decodeArguments(raw json.RawMessage, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
+		var typeError *json.UnmarshalTypeError
+		if errors.As(err, &typeError) || strings.HasPrefix(err.Error(), "json: invalid use of ,string struct tag") {
+			if detail := quotedArgumentError(raw, reflect.TypeOf(target), ""); detail != nil {
+				return detail
+			}
+		}
 		return argumentDecodeError(err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return invalidArgument("arguments", "must contain exactly one JSON value")
+	}
+	return nil
+}
+
+func quotedArgumentError(raw json.RawMessage, target reflect.Type, parent string) error {
+	for target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	if target.Kind() != reflect.Struct {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return nil
+	}
+	for i := range target.NumField() {
+		field := target.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		parts := strings.Split(field.Tag.Get("json"), ",")
+		name := parts[0]
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		value, present := fields[name]
+		if !present || string(value) == "null" {
+			continue
+		}
+		path := name
+		if parent != "" {
+			path = parent + "." + name
+		}
+		if slices.Contains(parts[1:], "string") && len(value) > 0 && value[0] != '"' {
+			return invalidArgument(path, "must be a string")
+		}
+		if err := quotedArgumentError(value, field.Type, path); err != nil {
+			return err
+		}
 	}
 	return nil
 }
