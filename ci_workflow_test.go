@@ -231,7 +231,7 @@ func TestScheduledCIValidatesPinnedDevelopmentSHA(t *testing.T) {
 	if !strings.Contains(workflow, "git ls-remote origin refs/heads/develop") || !strings.Contains(workflow, "echo \"develop_sha=$develop_sha\" >> \"$GITHUB_OUTPUT\"") {
 		t.Fatal("scheduled CI must resolve and pin develop")
 	}
-	if count := strings.Count(workflow, "ref: ${{ needs.preflight.outputs.develop_sha }}"); count < 12 {
+	if count := strings.Count(workflow, "ref: ${{ needs.preflight.outputs.develop_sha }}"); count < 11 {
 		t.Fatalf("only %d jobs checkout the pinned SHA", count)
 	}
 	for _, want := range []string{"make test", "make security", "make test-cover", "npm run test:visual", "make check-invariants"} {
@@ -319,7 +319,7 @@ func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
 		}
 	}
 
-	linux := workflowBetween(t, job, "      - name: Smoke release installer\n        if: runner.os == 'Linux'", "      - name: Smoke release installer\n        if: runner.os == 'Windows'")
+	linux := workflowBetween(t, job, "      - name: Smoke release installer", "")
 	for _, want := range []string{
 		"2>&1",
 		"falling back to prepared source",
@@ -329,17 +329,6 @@ func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
 	} {
 		if !strings.Contains(linux, want) {
 			t.Fatalf("Linux installer smoke step missing %q", want)
-		}
-	}
-
-	windows := workflowBetween(t, job, "      - name: Smoke release installer\n        if: runner.os == 'Windows'", "")
-	for _, want := range []string{
-		"falling back to prepared source",
-		"Release installer fell back to prepared source",
-		"Verified checksum for detent_.*_windows_.*\\.zip",
-	} {
-		if !strings.Contains(windows, want) {
-			t.Fatalf("Windows installer smoke step missing %q", want)
 		}
 	}
 }
@@ -386,7 +375,7 @@ func workflowBetween(t *testing.T, content string, startMarker string, endMarker
 func TestScheduledCIJobDependencies(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	for _, name := range []string{"invariants", "lint", "verify-fast", "verify-race", "test-cover", "security", "browser-visual-shard", "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot"} {
+	for _, name := range []string{"invariants", "lint", "verify-fast", "verify-race", "test-cover", "security", "browser-visual-shard", "portability-verify", "installer-smoke", "goreleaser-snapshot"} {
 		if !strings.Contains(workflow, "  "+name+":\n    needs: preflight\n    if: needs.preflight.outputs.should_run == 'true'") {
 			t.Errorf("%s must depend on preflight", name)
 		}

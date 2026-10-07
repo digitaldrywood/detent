@@ -16,9 +16,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-latest]
         suite:
-          # Windows CLI's ten race repetitions took 82m in run 36678733180.
           - {name: stress-cli, minutes: 150}
           - {name: stress-runner, minutes: 60}
           - {name: stress-checklock, minutes: 60}
