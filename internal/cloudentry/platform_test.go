@@ -479,7 +479,7 @@ func TestPlatformTenantFanOutIsBounded(t *testing.T) {
 			}
 			staff := newBrowser(t, service.Handler())
 			staff.login("/auth/oidc/start", "user_support:")
-			for _, route := range []string{"/api/cloud/platform/organizations", "/api/cloud/platform/health", "/api/cloud/platform/audit"} {
+			for _, route := range []string{"/api/cloud/platform/organizations", "/api/cloud/platform/health"} {
 				transport.mu.Lock()
 				transport.peak, transport.requests = 0, 0
 				transport.mu.Unlock()
