@@ -50,10 +50,9 @@ jobs:
           ref: ${{ needs.preflight.outputs.develop_sha }}
       - uses: ./.github/actions/prepare-conversation
 
-      - uses: actions/setup-go@v6
+      - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.6'
-          cache: true
+          key: invariants
       - name: Exercise required invariant behaviors
         shell: bash
         run: |
@@ -72,13 +71,9 @@ jobs:
 
       - uses: ./.github/actions/prepare-conversation
 
-      - uses: actions/setup-go@v6
+      - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.6'
-          cache: true
-
-      - name: Download modules
-        run: go mod download
+          key: lint
 
       - name: Cache golangci-lint
         uses: actions/cache@v5
@@ -104,9 +99,8 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.should_run == 'true'
     name: Verify build and vet
+    timeout-minutes: 20
     runs-on: ubuntu-latest
-    # Allow the 30m workspace suite plus other packages, setup, and evidence upload.
-    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
         with:
@@ -115,31 +109,9 @@ jobs:
 
       - uses: ./.github/actions/prepare-conversation
 
-      - uses: actions/setup-go@v6
+      - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.6'
-          cache: true
-
-      - name: Generate documentation and verify committed SQL sources
-        shell: bash
-        run: |
-          source scripts/check-evidence.sh
-          check_with_evidence generated make check-generated
-
-      - name: Verify Cloud client sources and generated assets
-        shell: bash
-        run: |
-          source scripts/check-evidence.sh
-          check_with_evidence app make check-app
-
-      - name: Check integrated migration versions
-        shell: bash
-        run: |
-          source scripts/check-evidence.sh
-          check_with_evidence migrations make check-migrations
-
-      - name: Download modules
-        run: go mod download
+          key: verify-fast
 
       - name: Build
         shell: bash
@@ -161,27 +133,62 @@ jobs:
           source scripts/check-evidence.sh
           check_with_evidence nilaway-changed make nilaway-changed
 
-      - name: Test
-        shell: bash
-        run: |
-          source scripts/check-evidence.sh
-          check_with_evidence unit-full make test
-
       - name: Force acceptance probe failure
         if: github.event_name == 'workflow_dispatch' && inputs.fail_job == 'verify-fast'
         run: exit 1
 
-      - name: Upload workspace test evidence
-        if: always()
-        uses: actions/upload-artifact@v7
+  generated:
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
+    name: Generated sources
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
         with:
-          name: workspace-test-evidence-${{ runner.os }}
-          path: tmp/workspace-test-evidence
-          if-no-files-found: warn
-          retention-days: 14
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+          fetch-depth: 0
 
-      - name: Repeat subprocess lifecycle readiness
-        run: go test -race ./internal/claudecode ./internal/codex -run '^(TestRunTurnCancellationKillsChildProcessGroup|TestRunTurnDetectsExitedParentWithInheritedStdout|TestLocalTransportCloseKillsChildProcessGroup|TestLocalTransportReapsChildAfterParentExits)$' -count=20 -timeout=5m
+      - uses: ./.github/actions/prepare-conversation
+
+      - uses: ./.github/actions/setup-go-cached
+        with:
+          key: generated
+
+      - name: Generate documentation and verify committed SQL sources
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence generated make check-generated
+
+      - name: Check integrated migration versions
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence migrations make check-migrations
+
+  app:
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
+    name: Cloud client
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/conversation/package-lock.json
+
+      - name: Verify Cloud client sources and generated assets
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence app make check-app
 
   verify-race:
     needs: preflight
@@ -195,14 +202,16 @@ jobs:
           ref: ${{ needs.preflight.outputs.develop_sha }}
       - uses: ./.github/actions/prepare-conversation
 
-      - uses: actions/setup-go@v6
+      - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.6'
-          cache: true
+          key: verify-race
       - name: Race test the short unit suite
         run: |
           source scripts/check-evidence.sh
           check_with_evidence race make test-race
+
+      - name: Repeat subprocess lifecycle readiness
+        run: go test -race ./internal/claudecode ./internal/codex -run '^(TestRunTurnCancellationKillsChildProcessGroup|TestRunTurnDetectsExitedParentWithInheritedStdout|TestLocalTransportCloseKillsChildProcessGroup|TestLocalTransportReapsChildAfterParentExits)$' -count=20 -timeout=5m
 
   test-cover:
     needs: preflight
@@ -216,16 +225,24 @@ jobs:
 
       - uses: ./.github/actions/prepare-conversation
 
-      - uses: actions/setup-go@v6
+      - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.6'
-          cache: true
+          key: test-cover
 
       - name: Check coverage
         shell: bash
         run: |
           source scripts/check-evidence.sh
           check_with_evidence coverage make test-cover
+
+      - name: Upload workspace test evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: workspace-test-evidence-${{ runner.os }}
+          path: tmp/workspace-cover-evidence
+          if-no-files-found: warn
+          retention-days: 14
 
   security:
     needs: preflight
@@ -239,10 +256,9 @@ jobs:
 
       - uses: ./.github/actions/prepare-conversation
 
-      - uses: actions/setup-go@v6
+      - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.6'
-          cache: true
+          key: security
 
       - name: Run govulncheck and gosec
         shell: bash
@@ -253,23 +269,22 @@ jobs:
   browser-visual-shard:
     needs: preflight
     if: needs.preflight.outputs.should_run == 'true'
-    name: Browser Visual (${{ matrix.shard }}/3)
+    name: Browser Visual (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.preflight.outputs.develop_sha }}
           fetch-depth: 0
 
-      - uses: actions/setup-go@v6
+      - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.6'
-          cache: true
+          key: browser-visual-shard
 
       - uses: actions/setup-node@v6
         with:
@@ -289,7 +304,7 @@ jobs:
         env:
           DETENT_BINARY: ${{ github.workspace }}/tmp/detent
           TMPDIR: ${{ runner.temp }}
-        run: npm run test:visual -- --shard=${{ matrix.shard }}/3
+        run: npm run test:visual -- --shard=${{ matrix.shard }}/4
 
       - name: Upload browser visual evidence
         if: always()
@@ -459,7 +474,7 @@ jobs:
   finalize:
     name: Finalize scheduled validation
     timeout-minutes: 5
-    needs: [preflight, invariants, lint, verify-fast, verify-race, test-cover, security, browser-visual-shard, portability-verify, installer-smoke, goreleaser-snapshot]
+    needs: [preflight, invariants, lint, verify-fast, generated, app, verify-race, test-cover, security, browser-visual-shard, portability-verify, installer-smoke, goreleaser-snapshot]
     if: always() && (needs.preflight.outputs.should_run == 'true' || needs.preflight.result == 'failure')
     runs-on: ubuntu-latest
     permissions:
@@ -472,10 +487,9 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.develop_sha }}
           fetch-depth: 0
-      - uses: actions/setup-go@v6
+      - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.6'
-          cache: false
+          key: finalize
       - name: Report source blockers at High and publish validated tag
         env:
           GH_TOKEN: ${{ github.token }}
