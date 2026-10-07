@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -468,6 +469,15 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence >
 		if event.RecordedAt, err = parseTimeValue(recorded); err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			return tracker.Page[tracker.CollaborationEvent]{}, err
+		}
+		if len(encoded) > operatortool.WorkHistoryPageBytes-8192 {
+			digest := sha256.Sum256([]byte(data))
+			event.Data = tracker.CollaborationData{}
+			event.DataOmission = &tracker.HistoryDataOmission{Bytes: len(data), SHA256: hex.EncodeToString(digest[:])}
+		}
 		page.Items = append(page.Items, event)
 	}
 	if err := rows.Err(); err != nil {
@@ -492,9 +502,32 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence >
 			event.Data.RelatedWorkItemID = ""
 		}
 	}
-	if len(page.Items) > limit {
-		page.Items = page.Items[:limit]
-		cursor.After = strconv.FormatInt(page.Items[len(page.Items)-1].AggregateSequence, 10)
+	hasMore := len(page.Items) > limit
+	items := page.Items[:min(len(page.Items), limit)]
+	page.Items = []tracker.CollaborationEvent{}
+	for _, event := range items {
+		next := cursor
+		next.After = strconv.FormatInt(event.AggregateSequence, 10)
+		candidate := tracker.Page[tracker.CollaborationEvent]{Items: append(page.Items, event)}
+		candidate.NextCursor, err = encodeNativeCursor(next, key)
+		if err != nil {
+			return tracker.Page[tracker.CollaborationEvent]{}, err
+		}
+		encoded, err := json.Marshal(candidate)
+		if err != nil {
+			return tracker.Page[tracker.CollaborationEvent]{}, err
+		}
+		if len(encoded) > operatortool.WorkHistoryPageBytes {
+			if len(page.Items) == 0 {
+				return tracker.Page[tracker.CollaborationEvent]{}, operatortool.ErrReadUnavailable
+			}
+			hasMore = true
+			break
+		}
+		page.Items = candidate.Items
+		cursor = next
+	}
+	if hasMore {
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
 		if err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err

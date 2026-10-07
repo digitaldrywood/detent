@@ -2,6 +2,9 @@ package hubserver
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -87,37 +90,145 @@ func TestConversationSubjectOwnership(t *testing.T) {
 }
 
 func TestCoordinatorSubjectRefresh(t *testing.T) {
-	f := newCoordinatorFixture(t, "subject-refresh")
-	issue := f.create(t, "question subject")
-	for index := range 7 {
-		body := fmt.Sprintf("earlier comment %d", index)
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: body}, Body: body}), http.StatusOK)
-	}
-	record := f.seed(t, "private questions", func(r *conversationRecord) { r.SubjectWorkItemID = string(issue.WorkItemID) })
-	for index, body := range []string{"first context", "new context on follow up"} {
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: body}, Body: body}), http.StatusOK)
-		f.backend.setRun(callTool("read_issue_history", `{"section":"work_comments","limit":1}`))
-		f.say(t, &record, "Summarize this issue")
-		waitUntil(t, "subject turn completed", func() bool {
-			return f.backend.turns() >= index+1 && f.conversation(t, record.ID).Execution.Status == conversation.ExecutionIdle
+	for _, test := range []struct {
+		name        string
+		sizes       []int
+		unavailable bool
+		escaped     bool
+	}{
+		{name: "ordinary history"},
+		{name: "oversized page", sizes: []int{40000, 40000, 40000, 40000, 40000, 40000, 40000, 40000, 40000}},
+		{name: "escaped oversized page", escaped: true, sizes: []int{8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000}},
+		{name: "single oversized record", sizes: []int{operatortool.MaxResultBytes + 1, 10}},
+		{name: "failed history read", unavailable: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newCoordinatorFixture(t, "subject-refresh-"+strings.ReplaceAll(test.name, " ", "-"))
+			issue := f.create(t, "question subject")
+			expected := map[string]tracker.HistoryDataOmission{}
+			seedHistory := func(id, data string) {
+				f.transact(t, func(tx *sql.Tx) error {
+					if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET event_sequence=event_sequence+1 WHERE native_id=?", issue.WorkItemID); err != nil {
+						return err
+					}
+					_, err := tx.ExecContext(t.Context(), `INSERT INTO collaboration_events (id, organization_id, project_id, work_item_id, sequence, type, schema_version, actor_json, data_json, recorded_at) SELECT ?, organization_id, project_id, native_id, event_sequence, 'workflow.transitioned', 1, actor_json, ?, ? FROM issues WHERE native_id=?`, id, data, formatHubTime(time.Now().UTC()), issue.WorkItemID)
+					return err
+				})
+			}
+			for index, size := range test.sizes {
+				payload := strings.Repeat("x", size)
+				if test.escaped {
+					payload = strings.Repeat("\x00", size)
+				}
+				data, err := json.Marshal(tracker.CollaborationData{ReasonDetail: payload})
+				if err != nil {
+					t.Fatal(err)
+				}
+				id := fmt.Sprintf("oversized-%d", index)
+				digest := sha256.Sum256(data)
+				expected[id] = tracker.HistoryDataOmission{Bytes: len(data), SHA256: hex.EncodeToString(digest[:])}
+				seedHistory(id, string(data))
+			}
+			if test.unavailable {
+				seedHistory("unreadable-history", "[]")
+			}
+			for index := range 7 {
+				body := fmt.Sprintf("earlier comment %d", index)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: body}, Body: body}), http.StatusOK)
+			}
+			record := f.seed(t, "private questions", func(r *conversationRecord) {
+				r.SubjectWorkItemID = string(issue.WorkItemID)
+				r.Execution.Status = conversation.ExecutionFailed
+				r.Execution.Error = "read work_history: operator tool result exceeds 262144 bytes"
+			})
+			f.history(t, &record, conversation.RoleUser, "why in Human Review?", conversation.DeliveryFailed)
+			f.history(t, &record, conversation.RoleAssistant, "", conversation.DeliveryFailed)
+			for index, body := range []string{"first context", "new context on follow up"} {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: body}, Body: body}), http.StatusOK)
+				f.backend.setRun(func(ctx context.Context, turn int, handle runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+					request := f.backend.request(t, turn-1)
+					if test.unavailable {
+						if !strings.Contains(request.Prompt, `"work_history":{"cursor":"","error":`) {
+							return runner.AgentTurnResult{}, errors.New("history read limitation missing")
+						}
+						return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "History is unavailable; I can answer from the issue and comments."})
+					}
+					cursor := ""
+					seen := map[string]bool{}
+					for {
+						args, err := json.Marshal(map[string]any{"section": "work_history", "limit": 200, "cursor": cursor})
+						if err != nil {
+							return runner.AgentTurnResult{}, err
+						}
+						result, err := handle(ctx, runner.AgentToolCall{Name: "read_issue_history", Arguments: args})
+						if err != nil {
+							return runner.AgentTurnResult{}, err
+						}
+						if !result.Success || len(result.Content) > operatortool.MaxResultBytes {
+							return runner.AgentTurnResult{}, errors.New("history result exceeded budget or failed")
+						}
+						var page operatortool.WorkReadResult[tracker.Page[tracker.CollaborationEvent]]
+						if err := json.Unmarshal([]byte(result.Content), &page); err != nil {
+							return runner.AgentTurnResult{}, err
+						}
+						for _, event := range page.Data.Items {
+							if seen[event.ID] {
+								return runner.AgentTurnResult{}, errors.New("history duplicated an event")
+							}
+							seen[event.ID] = true
+							if len(test.sizes) > 0 && strings.HasPrefix(event.ID, "oversized-") {
+								if test.sizes[0] > operatortool.MaxResultBytes && event.ID == "oversized-0" {
+									if event.DataOmission == nil || *event.DataOmission != expected[event.ID] || event.Data.ReasonDetail != "" {
+										return runner.AgentTurnResult{}, errors.New("oversized record lacks omission provenance")
+									}
+								} else if event.DataOmission != nil {
+									return runner.AgentTurnResult{}, errors.New("bounded event unnecessarily omitted")
+								}
+							}
+						}
+						if page.Data.NextCursor == "" {
+							break
+						}
+						if page.Data.NextCursor == cursor {
+							return runner.AgentTurnResult{}, errors.New("history cursor did not advance")
+						}
+						cursor = page.Data.NextCursor
+					}
+					for index := range test.sizes {
+						if !seen[fmt.Sprintf("oversized-%d", index)] {
+							return runner.AgentTurnResult{}, errors.New("history skipped event")
+						}
+					}
+					return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "I read the bounded history; omitted payloads remain an evidence limitation."})
+				})
+				f.say(t, &record, "Summarize this issue")
+				waitUntil(t, "subject turn completed", func() bool {
+					return f.backend.turns() >= index+1 && f.conversation(t, record.ID).Execution.Status == conversation.ExecutionIdle
+				})
+				messages := f.messages(t, record.ID)
+				assistant, ok := lastReply(messages)
+				if !ok || assistant.Delivery != conversation.DeliveryCompleted || assistant.Text == "" {
+					t.Fatalf("empty or failed reply: %+v", assistant)
+				}
+				request := f.backend.request(t, index)
+				if !strings.Contains(request.Prompt, body) || !strings.Contains(request.Prompt, "earlier comment 0") || !strings.Contains(request.Prompt, string(issue.WorkItemID)) {
+					t.Fatalf("stale subject prompt: %s", request.Prompt)
+				}
+			}
+			results := f.backend.toolResults()
+			for _, result := range results {
+				if !result.Success {
+					t.Fatalf("subject read failed: %s", result.Content)
+				}
+			}
+			var before int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", issue.WorkItemID).Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			if before != 9 {
+				t.Fatalf("coordinator wrote %d issue comments", before)
+			}
 		})
-		request := f.backend.request(t, index)
-		if !strings.Contains(request.Prompt, body) || !strings.Contains(request.Prompt, "earlier comment 0") || !strings.Contains(request.Prompt, string(issue.WorkItemID)) {
-			t.Fatalf("stale subject prompt: %s", request.Prompt)
-		}
-	}
-	results := f.backend.toolResults()
-	for _, result := range results {
-		if !result.Success {
-			t.Fatalf("subject read failed: %s", result.Content)
-		}
-	}
-	var before int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", issue.WorkItemID).Scan(&before); err != nil {
-		t.Fatal(err)
-	}
-	if before != 9 {
-		t.Fatalf("coordinator wrote %d issue comments", before)
 	}
 }
 

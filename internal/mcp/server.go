@@ -454,7 +454,7 @@ func (s *session) execute(ctx context.Context, call operatortool.Call) (operator
 		return operatortool.Result{}, err
 	}
 	if len(result.Content) > operatortool.MaxResultBytes {
-		return operatortool.Result{}, fmt.Errorf("operator tool result exceeds %d bytes", operatortool.MaxResultBytes)
+		return operatortool.Result{}, operatortool.ErrResultTooLarge
 	}
 	if !isJSONObject(result.Content) {
 		return operatortool.Result{}, errors.New("operator tool result is not a JSON object")

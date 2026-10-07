@@ -20,6 +20,7 @@ var (
 	ErrInvalidArguments    = errors.New("invalid tool arguments")
 	ErrSnapshotUnavailable = errors.New("operator telemetry snapshot is unavailable")
 	ErrUnknownTool         = errors.New("unknown read-only operator tool")
+	ErrResultTooLarge      = fmt.Errorf("operator tool result exceeds %d bytes", MaxResultBytes)
 )
 
 type Call struct {
@@ -352,7 +353,7 @@ func encodeResult(value any) (Result, error) {
 		return Result{}, fmt.Errorf("encode operator tool result: %w", err)
 	}
 	if len(data) > MaxResultBytes {
-		return Result{}, fmt.Errorf("operator tool result exceeds %d bytes", MaxResultBytes)
+		return Result{}, ErrResultTooLarge
 	}
 	return Result{Content: data}, nil
 }

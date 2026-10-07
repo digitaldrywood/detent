@@ -239,7 +239,10 @@ describe("Timeline", () => {
     expect(document.querySelector(".dc-delivery-chip .dc-err")).toBeNull();
   });
 
-  it("names a missing coordinator instead of reporting a bare failure", () => {
+  it.each([
+    { code: "coordinator_unavailable", label: "No coordinator is available for this project", explanation: "Enrol a runner for this project so it can answer chats." },
+    { code: "coordinator_error", label: "Reply failed", explanation: "The hub stored this message, but the coordinator failed to answer. Retry to request another turn." },
+  ])("explains the failed stage for $code", ({ code, label, explanation }) => {
     renderTimeline({
       ...unlinked,
       messages: [],
@@ -254,17 +257,18 @@ describe("Timeline", () => {
           receiptStatus: null,
           status: "failed",
           error: "No coordinator backend is configured.",
-          errorCode: "coordinator_unavailable",
+          errorCode: code,
           retryable: false,
         },
       ],
     });
-    expect(screen.getByTestId("delivery-label").textContent).toBe(
-      "No coordinator is available for this project",
-    );
-    expect(
-      screen.getByTitle("Enrol a runner for this project so it can answer chats."),
-    ).toBeTruthy();
+    expect(screen.getByTestId("delivery-label").textContent).toBe(label);
+    expect(screen.getByTitle(explanation)).toBeTruthy();
+  });
+
+  it("does not claim a persisted failed message never reached the hub", () => {
+    renderTimeline({ ...unlinked, messages: [userMessage({ delivery: "failed" })] });
+    expect(screen.getByTitle("The message or its reply failed. Check the conversation error before retrying.")).toBeTruthy();
   });
 
   it("renders a coordinator proposal as a card with the handoff action", () => {
