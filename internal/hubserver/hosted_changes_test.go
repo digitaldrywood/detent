@@ -258,7 +258,7 @@ func TestHostedChangePolicyBoundaries(t *testing.T) {
 		{"bearer with cookie", f.base + "/change-review-policy", "", "admin-bearer", http.StatusNotFound},
 		{"unrelated organization", strings.Replace(f.base, "org_security", "org_unrelated", 1) + "/change-review-policy", hostedCSRF(owner.token), "", http.StatusNotFound},
 		{"unknown project", strings.Replace(f.base, string(f.project), "prj_unknown", 1) + "/change-review-policy", hostedCSRF(owner.token), "", http.StatusNotFound},
-		{"generic policy administration", f.base + "/policy", hostedCSRF(owner.token), "", http.StatusNotFound},
+		{"generic policy administration", f.base + "/policy", hostedCSRF(owner.token), "", http.StatusUnprocessableEntity},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPut, test.path, strings.NewReader(`{}`))

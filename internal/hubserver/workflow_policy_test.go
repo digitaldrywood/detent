@@ -312,8 +312,8 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					t.Fatal(err)
 				}
 				actual, err := workflowconfig.ResolvePolicy(loaded)
-				if err != nil || actual.ID != original.ID || actual.Match(original) != nil || loaded.Config.Hooks != local.Config.Hooks {
-					t.Fatalf("external load changed approved legacy policy or local hooks: %+v %v", actual, err)
+				if err != nil || actual.Match(candidate) != nil || loaded.Config.Hooks != local.Config.Hooks {
+					t.Fatalf("legacy approval hid supplied authored candidate: %+v %v", actual, err)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "machine_second", "hostname": "second", "capacity": 1, "version": "test"}), http.StatusOK)
 				fresh := f.create(t, "Claim retained legacy approval after upgrade")
