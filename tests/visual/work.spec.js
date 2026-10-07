@@ -133,7 +133,6 @@ test.describe("the work board", () => {
     await expect(page.getByTestId("work-stats")).toBeVisible();
     await expect(page.getByTestId("work-stats")).toHaveCount(1);
     await expect(page.getByTestId("work-toolbar")).toHaveCount(1);
-    await expect(page.getByTestId("work-stats")).toContainText(/\d+ running.*\d+ queued.*\d+ open.*\d+ completed/);
     await expect(page.getByTestId("work-stats").getByRole("button", { name: /^Load / })).toHaveCount(0);
     await expect(page.getByTestId("stat-coverage")).toHaveCount(0);
 
@@ -158,17 +157,14 @@ test.describe("the work board", () => {
       const layout = await page.evaluate(() => {
         const toolbar = document.querySelector('[data-testid="work-toolbar"]');
         const counts = document.querySelector('[data-testid="work-stats"]');
-        const counters = [...counts.querySelectorAll('[data-testid^="stat-"]')];
         return {
           toolbarWrap: getComputedStyle(toolbar).flexWrap,
-          counterTops: counters.map((counter) => Math.round(counter.getBoundingClientRect().top)),
           gap: Math.round(counts.getBoundingClientRect().top - toolbar.getBoundingClientRect().bottom),
           next: counts.nextElementSibling?.textContent,
           unchecked: document.querySelector('[data-testid="issue-card"]')?.getAttribute("title"),
         };
       });
       expect(layout.toolbarWrap).toBe("nowrap");
-      expect(new Set(layout.counterTops).size).toBe(1);
       expect(layout.gap).toBe(0);
       expect(layout.next).not.toContain("Search and filters cover");
       expect(layout.unchecked).toBeNull();

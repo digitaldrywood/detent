@@ -282,6 +282,9 @@ jobs:
     if: needs.preflight.outputs.should_run == 'true'
     name: Browser Visual (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.0-noble
+      options: --ipc=host
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -302,11 +305,11 @@ jobs:
           node-version: '24'
           cache: npm
 
+      - name: Install build tools and UI fonts
+        run: apt-get update && apt-get install -y --no-install-recommends make gcc libc6-dev fonts-dejavu-core
+
       - name: Install Node dependencies
         run: npm ci
-
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
 
       - name: Build Detent visual test binary
         run: make build

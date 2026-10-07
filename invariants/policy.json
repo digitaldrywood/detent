@@ -118,6 +118,8 @@
       "TestVerifyMinisignSignatureRejectsTamper"
     ],
     "./internal/invariants": [
+      "TestRepositoryBrowserTests",
+      "TestBrowserPolicyViolations",
       "TestRepositorySources",
       "TestRepositoryWorkflow",
       "TestRepositoryHasNoPullRequestActions",
