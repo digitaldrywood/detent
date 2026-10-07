@@ -1896,7 +1896,7 @@
       "group": "Work",
       "status": "available",
       "source": "src/app/work/components/IssueCard.tsx",
-      "exports": ["IssueCard", "IssueCardProps", "Pill", "statusPill", "priorityTone"],
+      "exports": ["IssueCard", "IssueCardProps", "Pill", "PullRequestBadge", "statusPill", "priorityTone"],
       "variants": {},
       "states": ["hover", "focus-visible", "busy", "terminal"],
       "keyboard": "The card is a link to the issue page; its pills are labelled for assistive technology.",

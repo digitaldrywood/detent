@@ -1585,7 +1585,7 @@ One workflow lane of the board with its cards.
 A board card: identity, title, at most one actionable status line and priority, per INV-13.
 
 - Kind: Composition; status: available; id: `issue-card`.
-- Import: `import { IssueCard, IssueCardProps, Pill, statusPill, priorityTone } from "~/app/work/components/IssueCard";`
+- Import: `import { IssueCard, IssueCardProps, Pill, PullRequestBadge, statusPill, priorityTone } from "~/app/work/components/IssueCard";`
 - Source: [src/app/work/components/IssueCard.tsx](../../web/conversation/src/app/work/components/IssueCard.tsx).
 - Variants: none.
 - States: hover, focus-visible, busy, terminal.

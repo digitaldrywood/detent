@@ -149,6 +149,7 @@ export const NativeIssue = Schema.Struct({
   updated_at: Schema.String,
   closed_at: Schema.optional(Schema.NullOr(Schema.String)),
   list_change: Schema.optional(Schema.Struct({ branch: Schema.String, head_sha: Schema.String })),
+  pull_request: Schema.optional(Schema.Struct({ number: Schema.Number, url: Schema.String })),
   last_activity_at: Schema.optional(Schema.NullOr(Schema.String)),
   dependencies: Schema.Array(NativeWorkItemId),
   /**
