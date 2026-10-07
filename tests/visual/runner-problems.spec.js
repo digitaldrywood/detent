@@ -22,13 +22,14 @@ test("runner diagnostics stay contextual, filter by count, and clear on heartbea
   await page.goto(url);
   const card = page.getByTestId("host-card").filter({ hasText: "Settings runner" });
   await expect(card.getByText("Needs attention", { exact: true })).toBeVisible();
-  await expect(page.getByTestId("runner-attention")).toContainText("The configured isolation tier is unavailable.");
-  await page.getByTestId("runner-attention").getByRole("button", { name: "Open runner Settings runner" }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await card.getByRole("button", { name: "Manage Settings runner" }).click();
   const sheet = page.getByRole("dialog", { name: "Settings runner" });
+  await expect(sheet.getByRole("alert")).toContainText("The configured isolation tier is unavailable.");
   await expect(sheet.getByRole("alert")).toContainText("Install or repair the sandbox tooling");
   await expect(sheet.getByRole("alert")).toContainText("Seen since");
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("alert")).toHaveCount(1);
+  await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(page.getByTestId("host-card")).toHaveCount(2);
   await page.getByRole("link", { name: "Needs attention 1" }).click();
   await expect(page).toHaveURL(/health=needs_attention/);
