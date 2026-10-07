@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,37 @@ import (
 // around.
 type Lander interface {
 	LandChange(context.Context, Info, Issue, LandOptions) (LandResult, error)
+}
+
+type LandingWorkspaceCleaner interface {
+	CleanupLanding(context.Context, Info, Issue) error
+}
+
+func (l *LocalGit) CleanupLanding(ctx context.Context, info Info, issue Issue) error {
+	if issue.Landing == nil {
+		return nil
+	}
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return err
+	}
+	expected, err := l.workspacePathForIssue(issue, normalized.Key)
+	if err != nil || normalized.Path != expected {
+		return errors.Join(err, fmt.Errorf("landing cleanup path differs from the prepared workspace: %s", normalized.Path))
+	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := preserveLandingRecord(ctx, normalized.Path); err != nil {
+		return err
+	}
+	stagingErr := l.removeLandingWorktree(ctx, l.sourceRoot, filepath.Join(l.root, "landing-"+normalized.Key))
+	if err := l.removeLandingWorktree(ctx, l.sourceRoot, normalized.Path); err != nil {
+		return errors.Join(stagingErr, err)
+	}
+	return errors.Join(stagingErr, l.removeOwnershipRecord(normalized.Path))
 }
 
 type GitHubPRLander interface {
@@ -196,12 +228,21 @@ func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue I
 			args = append(args, "-b", info.Branch, info.Path, opts.HeadSHA)
 		}
 	}
+	prepared := false
+	defer func() {
+		if !prepared {
+			if err := l.removeLandingWorktree(context.WithoutCancel(ctx), l.sourceRoot, info.Path); err != nil {
+				l.logger.Warn("landing worktree left behind", "path", info.Path, "error", err)
+			}
+		}
+	}()
 	if err := l.addWorktreeWithPrune(ctx, func() error {
 		_, err := l.runGit(ctx, args...)
 		return err
 	}); err != nil {
 		return info, false, &worktreeCreationError{err: err}
 	}
+	prepared = true
 	return info, true, nil
 }
 
@@ -296,11 +337,17 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 	}
 
 	staging := filepath.Join(l.root, "landing-"+normalized.Key)
-	l.removeLandingWorktree(ctx, normalized.Path, staging)
+	defer func() {
+		if err := l.removeLandingWorktree(context.WithoutCancel(ctx), l.sourceRoot, staging); err != nil {
+			l.logger.Warn("landing worktree left behind", "path", staging, "error", err)
+		}
+	}()
+	if err := l.removeLandingWorktree(context.WithoutCancel(ctx), l.sourceRoot, staging); err != nil {
+		return LandResult{}, err
+	}
 	if _, err := runGitAt(ctx, normalized.Path, "worktree", "add", "--detach", staging, targetHead); err != nil {
 		return LandResult{}, fmt.Errorf("add landing worktree: %w", err)
 	}
-	defer l.removeLandingWorktree(context.WithoutCancel(ctx), normalized.Path, staging)
 
 	mergeSHA, err := combine(ctx, staging, method, head, targetHead, opts.Message)
 	rebased := false
@@ -414,15 +461,57 @@ func (l *LocalGit) VerifyIntegratedChange(ctx context.Context, info Info, issue 
 	return LandResult{MergeSHA: base, BaseRef: target, BaseBefore: base, Method: opts.Method}, nil
 }
 
-// removeLandingWorktree drops the detached staging worktree a landing used.
-// A leftover is reported, not fatal: the next landing clears it again.
-func (l *LocalGit) removeLandingWorktree(ctx context.Context, workspacePath, staging string) {
-	if _, err := runGitAt(ctx, workspacePath, "worktree", "remove", "--force", staging); err != nil && l.logger != nil {
-		l.logger.Debug("landing worktree not removed by git", "path", staging, "error", err)
+func (l *LocalGit) removeLandingWorktree(ctx context.Context, workspacePath, staging string) error {
+	registered, err := l.landingWorktreeRegistered(ctx, staging)
+	if err != nil {
+		return err
 	}
-	if err := os.RemoveAll(staging); err != nil && l.logger != nil {
-		l.logger.Warn("landing worktree left behind", "path", staging, "error", err)
+	if !registered {
+		return removeWorkspacePath(l.root, staging)
 	}
+	if l.isGitWorkspace(ctx, staging) && !l.isSourceWorktree(ctx, staging) {
+		return fmt.Errorf("refusing to remove landing workspace not managed by source: %s", staging)
+	}
+	if _, err := runGitAt(ctx, workspacePath, "worktree", "remove", "--force", staging); err != nil {
+		l.logger.Warn("landing worktree not removed by git", "path", staging, "error", err)
+		if cleanupErr := removeWorkspacePath(l.root, staging); cleanupErr != nil {
+			return errors.Join(err, cleanupErr)
+		}
+		if _, pruneErr := l.runGit(ctx, "worktree", "prune", "--expire", "now"); pruneErr != nil {
+			return errors.Join(err, pruneErr)
+		}
+	}
+	registered, err = l.landingWorktreeRegistered(ctx, staging)
+	if err != nil {
+		return err
+	}
+	if registered {
+		return fmt.Errorf("landing worktree registration remains: %s", staging)
+	}
+	return removeWorkspacePath(l.root, staging)
+}
+
+func (l *LocalGit) landingWorktreeRegistered(ctx context.Context, path string) (bool, error) {
+	output, err := l.runGit(ctx, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range strings.Split(output, "\x00\x00") {
+		found, locked := false, false
+		for _, field := range strings.Split(entry, "\x00") {
+			if listed, ok := strings.CutPrefix(field, "worktree "); ok && filepath.Clean(listed) == filepath.Clean(path) {
+				found = true
+			}
+			locked = locked || field == "locked" || strings.HasPrefix(field, "locked ")
+		}
+		if found {
+			if locked {
+				return true, fmt.Errorf("landing worktree is locked: %s", path)
+			}
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // combine produces the commit the base branch advances to: a squash commit,
@@ -539,6 +628,14 @@ type landingRecord struct {
 }
 
 func landingRecordPath(ctx context.Context, workspacePath string) (string, error) {
+	if isLandingWorkspacePath(workspacePath) {
+		dir, err := gitCommonDir(ctx, workspacePath)
+		if err != nil {
+			return "", err
+		}
+		digest := sha256.Sum256([]byte(filepath.Clean(workspacePath)))
+		return filepath.Join(dir, fmt.Sprintf("detent-landing-%x.json", digest)), nil
+	}
 	dir, err := runGitAt(ctx, workspacePath, "rev-parse", "--git-dir")
 	if err != nil {
 		return "", err
@@ -548,6 +645,39 @@ func landingRecordPath(ctx context.Context, workspacePath string) (string, error
 		dir = filepath.Join(workspacePath, dir)
 	}
 	return filepath.Join(dir, landingRecordFile), nil
+}
+
+func isLandingWorkspacePath(path string) bool {
+	head := filepath.Dir(path)
+	parent := filepath.Dir(head)
+	return validLandingHead(filepath.Base(head)) && filepath.Base(parent) == "landing" && filepath.Base(filepath.Dir(parent)) == ".detent"
+}
+
+func preserveLandingRecord(ctx context.Context, path string) error {
+	if !isLandingWorkspacePath(path) {
+		return nil
+	}
+	exists, _, err := pathExists(path)
+	if err != nil || !exists {
+		return err
+	}
+	dir, err := runGitAt(ctx, path, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return err
+	}
+	legacy := filepath.Join(strings.TrimSpace(dir), landingRecordFile)
+	_, err = os.Stat(legacy)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	destination, err := landingRecordPath(ctx, path)
+	if err != nil {
+		return err
+	}
+	return os.Rename(legacy, destination)
 }
 
 // RecordLanding keeps a landing that reached the base branch, for a report
@@ -581,6 +711,9 @@ func ForgetLanding(ctx context.Context, info Info) error {
 // still reachable from the fetched base; otherwise nothing, and a stale
 // record is forgotten.
 func keptLanding(ctx context.Context, workspacePath, head, targetRef string) (LandResult, bool) {
+	if err := preserveLandingRecord(ctx, workspacePath); err != nil {
+		return LandResult{}, false
+	}
 	path, err := landingRecordPath(ctx, workspacePath)
 	if err != nil {
 		return LandResult{}, false

@@ -34,6 +34,7 @@ type RetentionTotals struct {
 	HookLogs   RemovalTotal `json:"hook_logs"`
 	Attempts   RemovalTotal `json:"attempts"`
 	Ownership  RemovalTotal `json:"ownership"`
+	Landing    RemovalTotal `json:"landing"`
 }
 
 type RetentionSweeper interface {
@@ -114,8 +115,127 @@ func (l *LocalGit) SweepRetention(ctx context.Context, request RetentionRequest)
 	recordError(l.sweepQuarantine(ctx, root, request.Now, &totals.Quarantine))
 	recordError(sweepHookLogs(root, request.Now, &totals.HookLogs))
 	recordError(l.sweepAttempts(ctx, root, request, &totals.Attempts))
+	recordError(l.sweepLanding(ctx, root, request, &totals.Landing))
 	l.logger.Info("workspace retention sweep", "workdir", l.root, "totals", totals, "errors", len(failures))
 	return totals, errors.Join(failures...)
+}
+
+func (l *LocalGit) sweepLanding(ctx context.Context, root *os.Root, request RetentionRequest, total *RemovalTotal) error {
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	output, err := l.runGit(ctx, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return err
+	}
+	active := map[string]bool{}
+	for _, issue := range request.Active {
+		active[issueKey(issue)] = true
+	}
+	var failures []error
+	for _, entry := range strings.Split(output, "\x00\x00") {
+		var path string
+		locked := false
+		for _, field := range strings.Split(entry, "\x00") {
+			if value, ok := strings.CutPrefix(field, "worktree "); ok {
+				path = value
+			}
+			locked = locked || field == "locked" || strings.HasPrefix(field, "locked ")
+		}
+		if locked || path == "" || !pathWithin(l.root, path) {
+			continue
+		}
+		landing := isLandingWorkspacePath(path) && filepath.Dir(filepath.Dir(filepath.Dir(path))) == filepath.Join(l.root, ".detent")
+		staging := filepath.Dir(path) == l.root && strings.HasPrefix(filepath.Base(path), "landing-")
+		if !landing && !staging {
+			continue
+		}
+		key := filepath.Base(path)
+		if filepath.Dir(path) == l.root {
+			key = strings.TrimPrefix(key, "landing-")
+		}
+		if active[key] {
+			continue
+		}
+		relative, err := filepath.Rel(l.root, path)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		info, err := root.Lstat(relative)
+		var size int64
+		var at time.Time
+		if errors.Is(err, fs.ErrNotExist) {
+			at, err = l.missingLandingWorktreeTime(ctx, path)
+		} else if err == nil {
+			err = retentionDirectory(root, relative)
+			at = info.ModTime()
+			if err == nil && !request.Now.Before(at.Add(time.Hour)) {
+				size, err = retentionBytes(root, relative)
+			}
+		}
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		if at.IsZero() || request.Now.Before(at.Add(time.Hour)) {
+			continue
+		}
+		pids, err := scanOwnedWorkspaceProcessIDs(ctx, path, l.scanWorkspacePaths)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		if len(pids) > 0 {
+			continue
+		}
+		if err := preserveLandingRecord(ctx, path); err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		if err := l.removeLandingWorktree(ctx, l.sourceRoot, path); err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		total.Count++
+		total.Bytes += size
+		if err := l.removeOwnershipRecord(path); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func (l *LocalGit) missingLandingWorktreeTime(ctx context.Context, path string) (time.Time, error) {
+	common, err := gitCommonDir(ctx, l.sourceRoot)
+	if err != nil {
+		return time.Time{}, err
+	}
+	parent := filepath.Join(common, "worktrees")
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return time.Time{}, err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		gitdir := filepath.Join(parent, entry.Name(), "gitdir")
+		data, err := os.ReadFile(gitdir)
+		if err != nil {
+			return time.Time{}, err
+		}
+		if filepath.Clean(strings.TrimSpace(string(data))) == filepath.Join(path, ".git") {
+			info, err := os.Stat(gitdir)
+			if err != nil {
+				return time.Time{}, err
+			}
+			return info.ModTime(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("landing registration metadata missing: %s", path)
 }
 
 func (l *LocalGit) closeRetentionRoot(root *os.Root) {

@@ -296,6 +296,13 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 			if err != nil || result.Output != RunOutputNativeLanded || result.NativeLanding == nil || result.NativeLanding.HeadSHA != head || result.NativeLanding.MergeSHA != head || len(execution.recorded) != 1 || provider.calls != 0 {
 				t.Fatalf("landing result = %#v, execution %#v, provider calls %d, error %v", result, execution, provider.calls, err)
 			}
+			landingPath := filepath.Join(filepath.Dir(code.Path), ".detent", "landing", head, filepath.Base(code.Path))
+			if _, err := os.Stat(landingPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("prepared landing worktree remains: %v", err)
+			}
+			if listed := runRunnerGit(t, source, "worktree", "list", "--porcelain"); strings.Contains(listed, "worktree "+filepath.ToSlash(landingPath)) {
+				t.Fatalf("prepared landing registration remains:\n%s", listed)
+			}
 			if external && strings.Join(operations, ",") != "GET,GET,PUT" || !external && publishedBranch == code.Branch {
 				t.Fatalf("landing used wrong publication owner: %s, %v", publishedBranch, operations)
 			}
@@ -537,6 +544,11 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 			var requests int
 			readKept := func() workspace.LandResult {
 				t.Helper()
+				paths, err := filepath.Glob(filepath.Join(source, ".git", "detent-landing-*.json"))
+				if err != nil || len(paths) != 1 {
+					t.Fatalf("kept landing records = %v, error = %v", paths, err)
+				}
+				recordPath = paths[0]
 				raw, err := os.ReadFile(recordPath)
 				if err != nil {
 					t.Fatalf("merged landing was not kept: %v", err)
@@ -593,10 +605,6 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			recordPath = strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "--git-path", "detent-landing.json"))
-			if !filepath.IsAbs(recordPath) {
-				recordPath = filepath.Join(info.Path, recordPath)
-			}
 			target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "squash", Repository: repository, GitHubPullRequest: true}
 			stub := landingStub{target: target}
 			if test.reportFailure {
@@ -605,6 +613,15 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 			var logs bytes.Buffer
 			r := &Runner{workflow: config.Workflow{Config: config.Config{Gate: gate.Config{Run: "git status --porcelain"}}}, logger: slog.New(slog.NewTextHandler(&logs, nil))}
 			result, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, backend, info, issue, workerGitHubPolicy{}, nil)
+			if cleanupErr := backend.CleanupLanding(t.Context(), info, issue); cleanupErr != nil {
+				t.Fatal(cleanupErr)
+			}
+			if _, statErr := os.Stat(info.Path); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("landing workspace remains after cleanup: %v", statErr)
+			}
+			if listed := runRunnerGit(t, source, "worktree", "list", "--porcelain"); strings.Contains(listed, "worktree "+filepath.ToSlash(info.Path)) {
+				t.Fatalf("landing registration remains after cleanup: %s", listed)
+			}
 			if test.cleanupStatus != 0 && (!strings.Contains(logs.String(), "worker_native_landing_warning") || !strings.Contains(logs.String(), "cleanup unavailable") || !strings.Contains(logs.String(), merge)) {
 				t.Fatalf("post-merge warning lost failure evidence: %s", logs.String())
 			}
@@ -614,6 +631,10 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 				}
 				readKept()
 				stub.recordErr = nil
+				info, err = backend.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatal(err)
+				}
 				previousRequests := requests
 				result, err = r.landNativeChange(t.Context(), RunRequest{}, &stub, backend, info, issue, workerGitHubPolicy{}, nil)
 				if requests != previousRequests {
