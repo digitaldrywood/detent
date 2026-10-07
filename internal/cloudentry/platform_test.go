@@ -22,13 +22,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 )
 
-var platformRoutes = []string{"/platform", "/platform/tenants", "/platform/staff", "/platform/audit", "/platform/health", "/platform/allowlist", "/api/cloud/platform/organizations", "/api/cloud/platform/allowlist", "/api/cloud/platform/health"}
+var platformRoutes = []string{"/platform", "/platform/tenants", "/platform/staff", "/platform/audit", "/platform/health", "/platform/allowlist", "/api/cloud/platform/organizations", "/api/cloud/platform/allowlist", "/api/cloud/platform/health", "/api/cloud/platform/audit"}
 
 var platformEvents = map[string]string{
 	"/platform":                         "platform_opened",
 	"/api/cloud/platform/organizations": "platform_organizations_viewed",
 	"/api/cloud/platform/allowlist":     "platform_allowlist_viewed",
 	"/api/cloud/platform/health":        "platform_health_viewed",
+	"/api/cloud/platform/audit":         "platform_audit_viewed",
 }
 
 func withClientShell(s *Service) {
@@ -567,6 +568,183 @@ func TestStaffSessionsReverifyEveryRead(t *testing.T) {
 			provider.mu.Unlock()
 			if extra != test.wantExtra {
 				t.Fatalf("provider verifications for 3 reads = %d, want %d", extra, test.wantExtra)
+			}
+		})
+	}
+}
+
+func TestPlatformAuditTimeline(t *testing.T) {
+	t.Parallel()
+	f := newEntryFixture(t)
+	f.provider.users["user_staff"] = "staff@example.test"
+	staff := newBrowser(t, f.service.Handler())
+	staff.login("/auth/oidc/start", "user_staff:")
+	ctx := t.Context()
+	for _, statement := range []struct {
+		auth  bool
+		query string
+	}{
+		{false, "UPDATE organizations SET state='deleted' WHERE id='org_beta'"},
+		{true, `INSERT INTO audit(subject,organization_id,event,recorded_at) VALUES ('user_staff','','{"kind":"operator_administration","retry_identity":"private-replay","output":{"csrf":"private-token"}}','2026-10-01T12:00:01Z')`},
+		{true, "INSERT INTO audit(subject,organization_id,event,recorded_at) VALUES ('user_staff','org_alpha','support_requested:troubleshooting','2026-10-01T12:00:00.1Z'),('user_staff','org_alpha','support_started:troubleshooting','2026-10-01T12:00:00Z'),('missing_subject','org_beta','organization_deleted','2026-09-30T23:59:59.999999999Z'),('user_staff','','platform_opened','2026-10-01T12:00:00.000000001Z')"},
+		{false, "INSERT INTO entitlement_changes(organization_id,idempotency_key,action,grant_id,plan_id,plan_version,expires_at,reason,staff_email,staff_subject,recorded_at) VALUES ('org_alpha','grant_key','grant','comp_a','growth',1,'2026-12-31T23:59:59Z','pilot','staff@example.test','user_staff','2026-10-01T12:00:00.100000000Z'),('org_beta','revoke_key','revoke','comp_b','team',2,'','ended','billing@example.test','user_billing','2026-09-29T12:00:00Z')"},
+		{false, "INSERT INTO organization_events(organization_id,event,generation,recorded_at) VALUES ('org_alpha','ready',1,'2026-10-01T12:00:00.1Z')"},
+		{false, "INSERT INTO platform_member_changes(email,action,previous_role,role,actor_email,actor_subject,reason,recorded_at) VALUES ('new@example.test','added','','support','staff@example.test','user_staff','new hire','2026-10-01T12:00:00.1Z'),('new@example.test','role_changed','support','viewer','staff@example.test','user_staff','read only','2026-09-28T12:00:00Z'),('old@example.test','removed','viewer','','staff@example.test','user_staff','left','2026-09-27T12:00:00Z'),('seed@example.test','seeded','','admin','bootstrap','','bootstrap','2026-09-26T12:00:00Z')"},
+	} {
+		db := f.service.registry.store.db
+		if statement.auth {
+			db = f.service.auth.store.db
+		}
+		if _, err := db.ExecContext(ctx, statement.query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all := []string{"member_added", "organization_ready", "plan_granted", "support_requested", "platform_opened", "support_started", "organization_deleted", "plan_revoked", "member_role_changed", "member_removed", "member_seeded"}
+	read := func(query string) platformAuditResult {
+		t.Helper()
+		response, body := staff.get("/api/cloud/platform/audit?" + query)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("audit = %d: %s", response.StatusCode, body)
+		}
+		var result platformAuditResult
+		decodeJSON(t, body, &result)
+		return result
+	}
+	names := func(rows []platformAuditRow) []string {
+		result := []string{}
+		for _, row := range rows {
+			result = append(result, row.Event)
+		}
+		return result
+	}
+	for _, test := range []struct {
+		name, query string
+		want        []string
+	}{
+		{"merged", "", all},
+		{"tenant", "tenant=org_alpha", []string{"organization_ready", "plan_granted", "support_requested", "support_started"}},
+		{"actor email substring", "actor=STAFF%40", []string{"member_added", "plan_granted", "support_requested", "platform_opened", "support_started", "member_role_changed", "member_removed"}},
+		{"subject fallback", "actor=missing_subject", []string{"organization_deleted"}},
+		{"system", "actor=system", []string{"organization_ready"}},
+		{"event", "event=support_requested", []string{"support_requested"}},
+		{"from", "from=2026-10-01", all[:6]},
+		{"to", "to=2026-09-27", all[9:]},
+		{"combined", "tenant=org_alpha&actor=staff&event=plan_granted&from=2026-10-01&to=2026-10-01", []string{"plan_granted"}},
+		{"nanosecond boundary", "from=2026-10-01T12%3A00%3A00.000000001Z&to=2026-10-01T12%3A00%3A00.000000001Z", []string{"platform_opened"}},
+		{"empty", "tenant=unknown", []string{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			query := "to=2026-10-01"
+			if test.query != "" {
+				query = test.query + "&" + query
+			}
+			if strings.Contains(test.query, "to=") {
+				query = test.query
+			}
+			result := read(query)
+			if got := names(result.Rows); !slices.Equal(got, test.want) {
+				t.Fatalf("events = %v, want %v", got, test.want)
+			}
+			if !slices.Contains(result.Events, "support_requested") || slices.Contains(result.Events, "support_requested:troubleshooting") {
+				t.Fatalf("event choices = %v", result.Events)
+			}
+		})
+	}
+	first := read("to=2026-10-01")
+	for _, test := range []struct {
+		query string
+		match func(platformAuditRow) bool
+	}{
+		{"tenant=org_beta", func(row platformAuditRow) bool { return row.OrganizationID == "org_beta" }},
+		{"actor=staff%40", func(row platformAuditRow) bool { return strings.Contains(row.Actor, "staff@") }},
+		{"event=member_seeded", func(row platformAuditRow) bool { return row.Event == "member_seeded" }},
+		{"from=2026-10-01T12%3A00%3A00.1Z", func(row platformAuditRow) bool {
+			at, err := parseTime(row.At)
+			return err == nil && !at.Before(time.Date(2026, 10, 1, 12, 0, 0, 100000000, time.UTC))
+		}},
+		{"to=2026-09-30", func(row platformAuditRow) bool { return row.At < "2026-10-01" }},
+	} {
+		t.Run("individual "+test.query, func(t *testing.T) {
+			page := read(test.query)
+			if len(page.Rows) == 0 {
+				t.Fatal("filter excluded every matching event")
+			}
+			for _, row := range page.Rows {
+				if !test.match(row) {
+					t.Fatalf("filter admitted %+v", row)
+				}
+			}
+		})
+	}
+	for _, row := range first.Rows {
+		switch row.Event {
+		case "support_requested", "support_started":
+			if row.Actor != "staff@example.test" || row.Detail != "troubleshooting" || row.OrganizationName != "Alpha" {
+				t.Fatalf("support row = %+v", row)
+			}
+		case "organization_ready":
+			if row.Actor != "system" || row.Detail != "generation 1" {
+				t.Fatalf("system row = %+v", row)
+			}
+		case "plan_granted":
+			if row.Detail != "growth v1 until 2026-12-31T23:59:59Z · pilot" {
+				t.Fatalf("grant row = %+v", row)
+			}
+		case "member_role_changed":
+			if row.Detail != "new@example.test from support to viewer · read only" {
+				t.Fatalf("member row = %+v", row)
+			}
+		case "organization_deleted":
+			if row.Actor != "missing_subject" || !row.OrganizationDeleted || row.OrganizationName != "" {
+				t.Fatalf("deleted row = %+v", row)
+			}
+		case "platform_opened":
+			if row.Detail != "" {
+				t.Fatalf("unexpected detail = %q", row.Detail)
+			}
+		}
+	}
+	for _, limit := range []int{1, 2, 3, 5, 200} {
+		t.Run(fmt.Sprintf("cursor limit %d", limit), func(t *testing.T) {
+			var got []string
+			cursor := ""
+			seen := map[string]bool{}
+			for range len(all) + 1 {
+				page := read(fmt.Sprintf("to=2026-10-01&limit=%d&cursor=%s", limit, url.QueryEscape(cursor)))
+				got = append(got, names(page.Rows)...)
+				for _, row := range page.Rows {
+					key := row.Source + ":" + row.ID
+					if seen[key] {
+						t.Fatalf("duplicate %s", key)
+					}
+					seen[key] = true
+				}
+				if page.NextCursor == "" {
+					break
+				}
+				cursor = page.NextCursor
+			}
+			if !slices.Equal(got, all) {
+				t.Fatalf("pagination = %v, want %v", got, all)
+			}
+		})
+	}
+	for _, query := range []string{"limit=0", "limit=201", "limit=bad", "from=yesterday", "to=bad", "from=2026-10-02&to=2026-10-01", "cursor=bad"} {
+		t.Run(query, func(t *testing.T) {
+			response, _ := staff.get("/api/cloud/platform/audit?" + query)
+			if response.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d", response.StatusCode)
+			}
+		})
+	}
+	for _, role := range []string{"admin", "billing", "support", "viewer"} {
+		t.Run(role, func(t *testing.T) {
+			if _, err := f.service.registry.store.db.ExecContext(ctx, "UPDATE platform_members SET role=? WHERE email='staff@example.test'", role); err != nil {
+				t.Fatal(err)
+			}
+			page := read("event=platform_audit_viewed")
+			if len(page.Rows) == 0 || page.Rows[0].Actor != "staff@example.test" {
+				t.Fatalf("view was not audited: %+v", page.Rows)
 			}
 		})
 	}

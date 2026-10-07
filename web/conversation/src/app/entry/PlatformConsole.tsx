@@ -257,7 +257,7 @@ export function PlatformConsole(): React.ReactElement {
   );
 }
 
-function PlatformPageTitle({ section }: { readonly section: PlatformSection }): React.ReactElement {
+export function PlatformPageTitle({ section }: { readonly section: PlatformSection }): React.ReactElement {
   const title = PLATFORM_SECTIONS.find((item) => item.id === section)!.title;
   usePageTitle(title, "Platform");
   return <h1 className="text-2xl font-semibold tracking-[-0.02em]">{title}</h1>;

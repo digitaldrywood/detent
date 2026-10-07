@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
 //
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { STALE_STAFF_MESSAGE } from "../../src/app/entry/PlatformStaff.tsx";
+import userEvent from "@testing-library/user-event";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AccountError } from "../../src/app/account/api.ts";
-import { type EntryApi, type PlatformMembers, makeEntryApi, SIGN_IN_PLATFORM } from "../../src/app/entry/api.ts";
+import { type EntryApi, type PlatformAudit, type PlatformMembers, makeEntryApi, SIGN_IN_PLATFORM } from "../../src/app/entry/api.ts";
 import {
   EntryApiContext,
 } from "../../src/app/entry/EntryScreens.tsx";
@@ -107,6 +107,7 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     platformAllowlist: vi.fn(async () => allowlist),
     platformMembers: vi.fn(async () => ({ members: [], revision: 1, self: { email: "admin@detent.build", role: "admin" } })),
     changePlatformMember: vi.fn(async () => ({ email: "new@example.test", role: "viewer", revision: 2 })),
+    platformAudit: vi.fn(async () => ({ rows: [], events: [], tenants: [], next_cursor: "" })),
     platformHealth: vi.fn(async () => health),
     platformEntitlements: vi.fn(async () => entitlements),
     changePlatformEntitlement: vi.fn(async () => ({ action: "grant", grant_id: "comp_new" })),
@@ -662,5 +663,246 @@ describe("platform staff", () => {
     await waitFor(() => expect(write).toHaveBeenCalledTimes(2));
     expect(write.mock.calls[1]).toEqual(write.mock.calls[0]);
 
+  });
+});
+
+const audit: PlatformAudit = {
+  rows: [
+    {
+      id: "1",
+      source: "audit",
+      at: "2026-10-01T12:00:00Z",
+      actor: "admin@detent.build",
+      event: "support_started",
+      organization_id: "org_alpha",
+      organization_name: "Alpha",
+      organization_deleted: false,
+      detail: "troubleshooting",
+    },
+    {
+      id: "1",
+      source: "organization_events",
+      at: "2026-09-30T12:00:00Z",
+      actor: "system",
+      event: "organization_ready",
+      organization_id: "org_beta",
+      organization_name: "",
+      organization_deleted: true,
+      detail: "generation 1",
+    },
+  ],
+  events: ["organization_ready", "support_started"],
+  tenants: [
+    { id: "org_alpha", name: "Alpha", deleted: false },
+    { id: "org_beta", name: "Beta", deleted: true },
+  ],
+  next_cursor: "older-cursor",
+};
+
+describe("platform audit", () => {
+  it("restores shared filters, updates the URL, clears and handles history", async () => {
+    const api = fakeApi({ platformAudit: vi.fn(async () => audit) });
+    const router = renderPlatform(
+      api,
+      "/platform/audit?tenant=org_alpha&actor=admin&event=support_started&from=2026-09-01&to=2026-10-01",
+    );
+    await screen.findByRole("table", { name: "Audit events" });
+    expect(document.title).toBe("Audit · Platform · Detent");
+    expect((screen.getByLabelText("Actor") as HTMLInputElement).value).toBe(
+      "admin",
+    );
+    await waitFor(() =>
+      expect((screen.getByLabelText("Tenant") as HTMLInputElement).value).toBe(
+        "Alpha",
+      ),
+    );
+    expect(screen.getByLabelText("Event").textContent).toBe("support_started");
+    expect((screen.getByLabelText("From") as HTMLInputElement).value).toBe(
+      "2026-09-01",
+    );
+    expect((screen.getByLabelText("To") as HTMLInputElement).value).toBe(
+      "2026-10-01",
+    );
+    expect(api.platformAudit).toHaveBeenCalledWith(
+      "tenant=org_alpha&actor=admin&event=support_started&from=2026-09-01&to=2026-10-01",
+    );
+    fireEvent.change(screen.getByLabelText("Actor"), {
+      target: { value: "system" },
+    });
+    await waitFor(() =>
+      expect(router.state.location.searchStr).toContain("actor=system"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    await waitFor(() => expect(router.state.location.searchStr).toBe(""));
+    expect((screen.getByLabelText("Actor") as HTMLInputElement).value).toBe("");
+    await act(async () => {
+      router.history.back();
+    });
+    await waitFor(() =>
+      expect((screen.getByLabelText("Actor") as HTMLInputElement).value).toBe(
+        "system",
+      ),
+    );
+    await act(async () => {
+      router.history.forward();
+    });
+    await waitFor(() =>
+      expect((screen.getByLabelText("Actor") as HTMLInputElement).value).toBe(
+        "",
+      ),
+    );
+  });
+
+  it("uses searchable tenant and stored event choices in the URL", async () => {
+    const router = renderPlatform(
+      fakeApi({ platformAudit: vi.fn(async () => audit) }),
+      "/platform/audit",
+    );
+    await screen.findByRole("table", { name: "Audit events" });
+    fireEvent.click(screen.getByLabelText("Event"));
+    await userEvent.click(
+      await screen.findByRole("option", { name: "organization_ready" }),
+    );
+    await waitFor(() =>
+      expect(router.state.location.searchStr).toBe("?event=organization_ready"),
+    );
+    const tenant = screen.getByLabelText("Tenant");
+    await userEvent.click(tenant);
+    await userEvent.clear(tenant);
+    await userEvent.type(tenant, "Beta");
+    await userEvent.click(
+      await screen.findByRole("option", { name: "Beta (deleted)" }),
+    );
+    await waitFor(() =>
+      expect(router.state.location.searchStr).toBe(
+        "?tenant=org_beta&event=organization_ready",
+      ),
+    );
+  });
+
+  it("appends older rows, preserves tenant links and does not poll", async () => {
+    const old = {
+      ...audit.rows[0]!,
+      id: "2",
+      actor: "unresolved_subject",
+      detail: "older reason",
+    };
+    const api = fakeApi({
+      platformAudit: vi
+        .fn()
+        .mockResolvedValueOnce(audit)
+        .mockResolvedValueOnce({ ...audit, rows: [old], next_cursor: "" }),
+    });
+    renderPlatform(api, "/platform/audit?actor=admin");
+    const table = await screen.findByRole("table", { name: "Audit events" });
+    expect(
+      within(table).getByRole("link", { name: "Alpha" }).getAttribute("href"),
+    ).toBe("/platform/tenants?tenant=org_alpha");
+    expect(
+      within(table)
+        .getByRole("link", { name: "org_beta" })
+        .getAttribute("href"),
+    ).toBe("/platform/tenants?tenant=org_beta");
+    expect(within(table).getByText("deleted")).toBeTruthy();
+    expect(api.platformAudit).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Load older" }));
+    await screen.findByText("older reason");
+    expect(within(table).getAllByRole("row")).toHaveLength(4);
+    expect(within(table).getByText("unresolved_subject").className).toBe(
+      "font-mono",
+    );
+    expect(api.platformAudit).toHaveBeenLastCalledWith(
+      "actor=admin&cursor=older-cursor",
+    );
+    expect(api.platformAudit).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("button", { name: "Load older" })).toBeNull();
+  });
+
+  it("drops an older page after changing filters and preserves rows on a failed retry", async () => {
+    let resolveOlder!: (page: PlatformAudit) => void;
+    const api = fakeApi({
+      platformAudit: vi
+        .fn()
+        .mockResolvedValueOnce(audit)
+        .mockImplementationOnce(
+          () =>
+            new Promise<PlatformAudit>((resolve) => {
+              resolveOlder = resolve;
+            }),
+        )
+        .mockResolvedValueOnce({ ...audit, rows: [audit.rows[1]!] })
+        .mockRejectedValueOnce(
+          new AccountError({
+            status: 503,
+            code: "unavailable",
+            message: "Audit unavailable",
+          }),
+        )
+        .mockResolvedValueOnce({
+          ...audit,
+          rows: [audit.rows[0]!],
+          next_cursor: "",
+        }),
+    });
+    renderPlatform(api, "/platform/audit");
+    await screen.findByRole("table", { name: "Audit events" });
+    fireEvent.click(screen.getByRole("button", { name: "Load older" }));
+    expect(
+      screen
+        .getByRole("button", { name: "Loading older…" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    fireEvent.change(screen.getByLabelText("Actor"), {
+      target: { value: "system" },
+    });
+    await waitFor(() =>
+      expect(api.platformAudit).toHaveBeenCalledWith("actor=system"),
+    );
+    await screen.findByText("generation 1");
+    await act(async () => {
+      resolveOlder({
+        ...audit,
+        rows: [{ ...audit.rows[0]!, detail: "stale older row" }],
+      });
+    });
+    expect(screen.queryByText("stale older row")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Load older" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Audit unavailable",
+    );
+    expect(screen.getByText("generation 1")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load older" }));
+    await screen.findByText("troubleshooting");
+    expect(screen.getByText("generation 1")).toBeTruthy();
+  });
+
+  it.each([401, 403])(
+    "handles an audit %s inside the platform shell",
+    async (status) => {
+      const error = new AccountError({
+        status,
+        code: "denied",
+        message: "Audit denied",
+      });
+      renderPlatform(
+        fakeApi({
+          platformAudit: vi.fn(async () => {
+            throw error;
+          }),
+        }),
+        "/platform/audit",
+      );
+      expect((await screen.findByRole("alert")).textContent).toBe(
+        "Audit denied",
+      );
+      expect(screen.getByText("Platform")).toBeTruthy();
+      if (status === 401) expect(assign).toHaveBeenCalledWith(SIGN_IN_PLATFORM);
+    },
+  );
+
+  it("shows an empty state for filters with no matches", async () => {
+    renderPlatform(fakeApi(), "/platform/audit?actor=nobody");
+    await screen.findByText("No events match these filters.");
+    expect(screen.queryByRole("table")).toBeNull();
   });
 });

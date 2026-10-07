@@ -1,0 +1,96 @@
+{
+  "rows": [
+    {
+      "id": "1",
+      "source": "audit",
+      "at": "2026-10-01T15:21:00Z",
+      "actor": "cory@detent.build",
+      "event": "support_started",
+      "organization_id": "org_alpha",
+      "organization_name": "Parable",
+      "organization_deleted": false,
+      "detail": "troubleshooting"
+    },
+    {
+      "id": "2",
+      "source": "audit",
+      "at": "2026-10-01T15:20:00Z",
+      "actor": "cory@detent.build",
+      "event": "support_requested",
+      "organization_id": "org_alpha",
+      "organization_name": "Parable",
+      "organization_deleted": false,
+      "detail": "troubleshooting"
+    },
+    {
+      "id": "1",
+      "source": "entitlement_changes",
+      "at": "2026-09-30T09:02:00Z",
+      "actor": "billing@detent.build",
+      "event": "plan_granted",
+      "organization_id": "org_beta",
+      "organization_name": "Drywood Creek",
+      "organization_deleted": false,
+      "detail": "growth v1 until 2026-12-31T23:59:59Z \u00b7 pilot"
+    },
+    {
+      "id": "1",
+      "source": "platform_member_changes",
+      "at": "2026-09-29T18:40:00Z",
+      "actor": "cory@detent.build",
+      "event": "member_added",
+      "organization_id": "",
+      "organization_name": "",
+      "organization_deleted": false,
+      "detail": "support@detent.build as support \u00b7 new hire"
+    },
+    {
+      "id": "1",
+      "source": "organization_events",
+      "at": "2026-09-28T11:10:00Z",
+      "actor": "system",
+      "event": "organization_ready",
+      "organization_id": "org_deleted",
+      "organization_name": "",
+      "organization_deleted": true,
+      "detail": "generation 1"
+    },
+    {
+      "id": "3",
+      "source": "audit",
+      "at": "2026-09-27T11:10:00Z",
+      "actor": "hosted_unknown_subject",
+      "event": "organization_deleted",
+      "organization_id": "org_deleted",
+      "organization_name": "",
+      "organization_deleted": true,
+      "detail": ""
+    }
+  ],
+  "events": [
+    "member_added",
+    "organization_deleted",
+    "organization_ready",
+    "plan_granted",
+    "support_requested",
+    "support_started"
+  ],
+  "tenants": [
+    {
+      "id": "org_alpha",
+      "name": "Parable",
+      "deleted": false
+    },
+    {
+      "id": "org_beta",
+      "name": "Drywood Creek",
+      "deleted": false
+    },
+    {
+      "id": "org_deleted",
+      "name": "Example Co",
+      "deleted": true
+    }
+  ],
+  "next_cursor": "older-page"
+}
