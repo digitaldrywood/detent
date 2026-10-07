@@ -285,8 +285,13 @@ type RuntimeUpdate struct {
 	ReplaceRelease bool
 }
 
+type landingBarrierRunner interface {
+	RunLandingBarriers(context.Context, runpkg.LandingBarrierOwner)
+}
+
 type Orchestrator struct {
 	nativeLandingBatch      *nativeLandingDispatchBatch
+	landingBarriers         landingBarrierRunner
 	cfg                     Config
 	connector               connector.Connector
 	scheduling              SchedulingSource
@@ -693,7 +698,12 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		return nil, err
 	}
 
+	var barriers landingBarrierRunner
+	if worker, ok := runner.(landingBarrierRunner); ok {
+		barriers = worker
+	}
 	orchestrator := &Orchestrator{
+		landingBarriers:         barriers,
 		cfg:                     cfg,
 		connector:               deps.Connector,
 		scheduling:              deps.Scheduling,
@@ -786,6 +796,14 @@ type ciTriggerLabelHead struct {
 func (o *Orchestrator) Run(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if worker := o.landingBarriers; worker != nil {
+		if owner, ok := o.scheduling.(runpkg.LandingBarrierOwner); ok {
+			barrierCtx, stop := context.WithCancel(ctx)
+			done := make(chan struct{})
+			go func() { defer close(done); worker.RunLandingBarriers(barrierCtx, owner) }()
+			defer func() { stop(); <-done }()
+		}
 	}
 	o.globalDispatchReady = make(chan struct{}, 1)
 	o.globalDispatchPending = make(map[string]pendingGlobalDispatch)

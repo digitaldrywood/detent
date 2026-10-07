@@ -148,6 +148,7 @@ agent:
 agents:
   model_selection: {}
 gate:
+  landing_mode: rolling_barrier
   kind: command
   run: "make check-land"
   approval_label: human-approved

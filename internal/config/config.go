@@ -1751,6 +1751,9 @@ func (c *Config) Validate() error {
 	}
 	c.Codex.validate(&problems)
 	problems = append(problems, gate.Validate("gate", c.Gate)...)
+	if gate.NormalizeLandingMode(c.Gate.LandingMode) == gate.LandingRollingBarrier && c.Tracker.Kind != TrackerHubNative {
+		problems = append(problems, "gate.landing_mode rolling_barrier requires tracker.kind hub_native for repair ownership")
+	}
 	if c.Gate.SecurityAudit.Enabled {
 		if gate.NormalizeKind(c.Gate.Kind) != gate.KindCommand {
 			problems = append(problems, "gate.security_audit.enabled requires gate.kind command")

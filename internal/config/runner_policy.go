@@ -83,6 +83,10 @@ func resolvePolicyDescriptor(workflow Workflow, revision, sourceDigest, configDi
 			GitHubPullRequest: cfg.Deliverable.GitHubPullRequest,
 		},
 	}
+	if g.LandingMode == gate.LandingRollingBarrier {
+		descriptor.Gates.LandingMode = g.LandingMode
+		descriptor.Gates.LandingCommandDigest = policy.Digest([]byte(g.Run))
+	}
 	if cfg.Tracker.Kind == TrackerHubNative && cfg.Deliverable.GitHubPullRequest {
 		descriptor.Gates.RequiredChecks = 0
 		if len(g.RequiredStatusChecks) > 0 || g.CITriggerLabel != "" {
@@ -154,6 +158,9 @@ func (c Config) ValidateNativeWorkflow() error {
 
 func normalizePolicyConfig(cfg Config) Config {
 	cfg.Policy = policy.Descriptor{}
+	if gate.NormalizeLandingMode(cfg.Gate.LandingMode) == gate.LandingPerChange {
+		cfg.Gate.LandingMode = ""
+	}
 	cfg.Agent.RateWindowPacing = DefaultRateWindowPacing()
 	if !cfg.Worker.EffectiveAllowLocalBinding() {
 		cfg.Worker.AllowLocalBinding = nil

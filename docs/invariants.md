@@ -152,12 +152,17 @@ The finalized immutable native version carries its successful command receipt
 for the exact reviewed head and tree. Native direct landing verifies that receipt,
 squashes clean Changes in queue order onto one staging head, and pushes the
 batch without repeating validation or calling a GitHub API. A conflicting
-member leaves the clean batch and retries by rebasing; only the rebased tree
+member leaves the clean batch and retries by rebasing; in `per_landing` mode the rebased tree
 runs build, short Go tests for touched packages, and lint of touched files.
 The receipt records the landing path and tested packages. A moved base repeats
 the clean-squash decision on the new head. GitHub PR landing stays behind its
 project policy opt-in and retains its configured validation and native checks.
-A failed landing command returns to configured Rework with the failing output. The project publishes no local status and sets
+The approved `rolling_barrier` mode skips landing and merge-resolution commands,
+running the configured gate on the base tip outside the source lock after landings.
+Landing continues during validation; a red barrier stops repository landing
+except for its native repair issue. Repair proceeds forward without auto-revert,
+and a green barrier reopens landing. A failed per-landing command returns to
+configured Rework with the failing output. The project publishes no local status and sets
 `gate.required_status_checks: []` and `gate.automated_review: "off"`; ordinary
 merge waits for no additional CI producer or scheduled validation, while
 reported failed CI, native base-branch requirements and reported P1 findings
@@ -213,6 +218,9 @@ variations. Filing uses the selected tracker's supported owner, preserves
 imported provenance and matches open work before filing: a matching open issue
 receives an occurrence or comment, never a duplicate, and when every match is
 closed the newest one is already handled and nothing is created or changed.
+A newly red rolling landing barrier requires an open repair owner: it reuses an
+open match, or creates a fresh repair when only terminal repairs match, keeping
+that terminal history intact.
 Occurrence evidence identifies runs, attempts, commits and jobs without
 changing problem identity.
 
@@ -228,7 +236,7 @@ Other worker follow-ups remain Backlog. Reuse preserves existing lanes, holds
 and scheduled job origin stamps.
 
 **Enforcement:** `TestMachineIssueTool` in `internal/orchestrator`;
-`TestNativeMachineDefectOccurrences` in `internal/hubserver` and
+`TestNativeMachineDefectOccurrences` and `TestRollingLandingBarrier` in `internal/hubserver` and
 `TestDefectFingerprint` in `internal/issueorigin`;
 `TestMachineIssueDuplicate`, `TestMachineIssueSeparateConnectors`,
 `TestMachineOriginSurvivesBodyUpdates`,

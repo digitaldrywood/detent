@@ -153,6 +153,8 @@ type NativeLandingCIReceipt struct {
 type NativeLandingReceipt struct {
 	Path        string                  `json:"path,omitempty"`
 	Packages    []string                `json:"packages,omitempty"`
+	Barrier     *gate.CommandResult     `json:"barrier,omitempty"`
+	Waiting     bool                    `json:"waiting,omitempty"`
 	CI          *NativeLandingCIReceipt `json:"ci,omitempty"`
 	Gate        *gate.CommandResult     `json:"gate,omitempty"`
 	FromState   string                  `json:"from_state,omitempty"`

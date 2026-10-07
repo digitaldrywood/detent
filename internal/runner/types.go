@@ -849,6 +849,7 @@ type NativeLandingTarget struct {
 type NativeLanding struct {
 	Path        string
 	Packages    []string
+	Waiting     bool
 	CI          *tracker.NativeLandingCIReceipt
 	Gate        *gate.CommandResult
 	Rebased     bool

@@ -16,14 +16,17 @@ func readVersionLanding(ctx context.Context, query nativeQueryer, version string
 	err := query.QueryRowContext(ctx, `SELECT r.record_json FROM change_landing_receipts r
 JOIN native_attempts a ON a.id=r.attempt_id WHERE r.version_id=? ORDER BY a.fencing_token DESC LIMIT 1`, version).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		return tracker.NativeLandingReceipt{}, err
+		err = query.QueryRowContext(ctx, "SELECT record_json FROM landing_barrier_receipts WHERE version_id=?", version).Scan(&raw)
 	}
 	if err != nil {
 		return tracker.NativeLandingReceipt{}, err
 	}
 	var receipt tracker.NativeLandingReceipt
 	err = json.Unmarshal([]byte(raw), &receipt)
-	return receipt, err
+	if err != nil {
+		return receipt, err
+	}
+	return withLandingBarrier(ctx, query, receipt)
 }
 
 func recordAttemptLanding(ctx context.Context, tx *sql.Tx, scope nativeScope, item tracker.NativeWorkItemID, attempt string, receipt tracker.NativeLandingReceipt) error {
@@ -63,6 +66,10 @@ func recordAttemptLanding(ctx context.Context, tx *sql.Tx, scope nativeScope, it
 }
 
 func persistAttemptLanding(ctx context.Context, tx *sql.Tx, attempt string, receipt tracker.NativeLandingReceipt) error {
+	receipt, err := withLandingBarrier(ctx, tx, receipt)
+	if err != nil {
+		return err
+	}
 	raw, err := marshalNative(receipt)
 	if err != nil {
 		return err
@@ -102,4 +109,22 @@ ORDER BY fencing_token DESC LIMIT 1`, scope.organization, scope.project, issue.W
 	}
 	receipt.TargetState = issue.State
 	return persistAttemptLanding(ctx, tx, attempt, receipt)
+}
+
+func withLandingBarrier(ctx context.Context, query nativeQueryer, receipt tracker.NativeLandingReceipt) (tracker.NativeLandingReceipt, error) {
+	if !receipt.Landed || receipt.VersionID == "" {
+		return receipt, nil
+	}
+	var raw sql.NullString
+	err := query.QueryRowContext(ctx, "SELECT json_extract(record_json, '$.barrier') FROM landing_barrier_receipts WHERE version_id=?", receipt.VersionID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return receipt, nil
+	}
+	if err != nil {
+		return receipt, err
+	}
+	if raw.Valid {
+		err = json.Unmarshal([]byte(raw.String), &receipt.Barrier)
+	}
+	return receipt, err
 }

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
@@ -3116,7 +3117,9 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 		gate       string
 		wantError  string
 		wantPushed bool
+		mode       string
 	}{
+		{name: "rolling resolved head skips the gate", mode: gate.LandingRollingBarrier, gate: "exit 19", wantPushed: true},
 		{name: "resolved committed head", wantPushed: true},
 		{name: "already pushed head", before: "push"},
 		{name: "gate failure", gate: "git detent-invalid-gate", wantError: "gate failed"},
@@ -3190,7 +3193,7 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 				}
 			}
 			result, err := backend.(MergePreparer).PrepareMerge(t.Context(), info, issue, MergePrepareOptions{
-				TargetBranch: "main", VerifyResolution: true, ValidationCommand: command, ExpectedRemoteHead: expectedRemote,
+				LandingMode: tt.mode, TargetBranch: "main", VerifyResolution: true, ValidationCommand: command, ExpectedRemoteHead: expectedRemote,
 			})
 			if tt.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
@@ -3206,8 +3209,12 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 			if err != nil || result.Status != MergePrepareStatusClean || result.HeadSHA != head || result.HeadChanged != tt.wantPushed {
 				t.Fatalf("PrepareMerge() = %#v, %v; want validated head %s, pushed %t", result, err, head, tt.wantPushed)
 			}
-			if got := strings.TrimSpace(runGit(t, info.Path, "config", "--get", "detent.validation")); got != "passed" {
-				t.Fatalf("local gate evidence = %q", got)
+			if tt.mode != gate.LandingRollingBarrier {
+				if got := strings.TrimSpace(runGit(t, info.Path, "config", "--get", "detent.validation")); got != "passed" {
+					t.Fatalf("local gate evidence = %q", got)
+				}
+			} else if result.Validated {
+				t.Fatal("rolling merge resolution reported validation")
 			}
 			if got := strings.Fields(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch))[0]; got != head {
 				t.Fatalf("remote head = %s, want %s", got, head)
@@ -3738,9 +3745,11 @@ func TestLocalGitPrepareMergeValidatesTheCleanHeadItPushes(t *testing.T) {
 		wantStatus    MergePrepareStatus
 		wantValidated bool
 		wantPublished bool
+		mode          string
 	}{
 		{name: "gate passes on the rebased head", validate: true, command: "test -f main.txt", wantStatus: MergePrepareStatusClean, wantValidated: true, wantPublished: true},
 		{name: "gate fails on the rebased head", validate: true, command: "test ! -f main.txt", wantStatus: MergePrepareStatusConflict},
+		{name: "rolling mode skips validation", mode: gate.LandingRollingBarrier, validate: true, command: "false", wantStatus: MergePrepareStatusClean, wantPublished: true},
 		{name: "validation not requested", validate: false, command: "false", wantStatus: MergePrepareStatusClean, wantPublished: true},
 	}
 	for _, tt := range tests {
@@ -3774,7 +3783,7 @@ func TestLocalGitPrepareMergeValidatesTheCleanHeadItPushes(t *testing.T) {
 			runGit(t, source, "commit", "-m", "main change")
 			runGit(t, source, "push", "origin", "main")
 
-			result, err := preparer.PrepareMerge(context.Background(), info, issue, MergePrepareOptions{ValidateHead: tt.validate, ValidationCommand: tt.command, ExpectedRemoteHead: published})
+			result, err := preparer.PrepareMerge(context.Background(), info, issue, MergePrepareOptions{LandingMode: tt.mode, ValidateHead: tt.validate, ValidationCommand: tt.command, ExpectedRemoteHead: published})
 			if err != nil {
 				t.Fatalf("PrepareMerge() error = %v", err)
 			}

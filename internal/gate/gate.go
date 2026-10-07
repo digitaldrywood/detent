@@ -11,6 +11,9 @@ import (
 )
 
 const (
+	LandingPerChange      = "per_landing"
+	LandingRollingBarrier = "rolling_barrier"
+
 	KindCommand     = "command"
 	KindHumanReview = "human_review"
 	KindArtifact    = "artifact"
@@ -41,6 +44,7 @@ const (
 )
 
 type Config struct {
+	LandingMode                  string   `yaml:"landing_mode" json:"LandingMode,omitempty"`
 	Kind                         string   `yaml:"kind"`
 	Run                          string   `yaml:"run"`
 	ApprovalLabel                string   `yaml:"approval_label"`
@@ -201,6 +205,7 @@ type Decision struct {
 
 func DefaultConfig() Config {
 	return Config{
+		LandingMode:            LandingPerChange,
 		Kind:                   KindCommand,
 		Run:                    DefaultCommand,
 		ApprovalLabel:          DefaultApprovalLabel,
@@ -228,6 +233,7 @@ func newInt(value int) *int {
 func Effective(cfg Config) Config {
 	ciFailureActionSpecified := strings.TrimSpace(cfg.CIFailureAction) != ""
 	cfg.Kind = NormalizeKind(cfg.Kind)
+	cfg.LandingMode = NormalizeLandingMode(cfg.LandingMode)
 	cfg.Run = strings.TrimSpace(cfg.Run)
 	cfg.ApprovalLabel = normalizeLabel(cfg.ApprovalLabel)
 	cfg.AutomatedReview = NormalizeAutomatedReview(cfg.AutomatedReview)
@@ -389,8 +395,19 @@ func NormalizeRequiredStatusChecks(checks []string) []string {
 	return normalized
 }
 
+func NormalizeLandingMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return LandingPerChange
+	}
+	return mode
+}
+
 func Validate(prefix string, cfg Config) []string {
 	var problems []string
+	if mode := NormalizeLandingMode(cfg.LandingMode); mode != LandingPerChange && mode != LandingRollingBarrier {
+		problems = append(problems, prefix+".landing_mode must be one of per_landing, rolling_barrier")
+	}
 	switch NormalizeKind(cfg.Kind) {
 	case KindCommand, KindHumanReview, KindArtifact:
 	default:

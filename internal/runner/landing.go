@@ -64,9 +64,16 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	}
 	workflow, _, _, _ := r.runtimeSnapshot()
 	effectiveGate := gate.Effective(workflow.Config.Gate)
-	options := workspace.LandOptions{Native: !target.GitHubPullRequest, Validation: target.Validation, RebaseRequired: target.RebaseRequired, RequiredStatusChecks: effectiveGate.RequiredStatusChecks, CITriggerLabel: effectiveGate.CITriggerLabel, PreviousCI: target.CI, ValidationCommand: effectiveGate.Run, HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
+	options := workspace.LandOptions{LandingMode: effectiveGate.LandingMode, Native: !target.GitHubPullRequest, Validation: target.Validation, RebaseRequired: target.RebaseRequired, RequiredStatusChecks: effectiveGate.RequiredStatusChecks, CITriggerLabel: effectiveGate.CITriggerLabel, PreviousCI: target.CI, ValidationCommand: effectiveGate.Run, HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
 	if effectiveGate.CITriggerLabelStaggerSeconds != nil {
 		options.CITriggerLabelStagger = time.Duration(*effectiveGate.CITriggerLabelStaggerSeconds) * time.Second
+	}
+	if effectiveGate.LandingMode == gate.LandingRollingBarrier {
+		authorization, ok := landing.(LandingBarrierAuthorization)
+		if !ok {
+			return RunResult{}, errors.New("rolling landing requires native barrier authority")
+		}
+		options.Authorize = func(ctx context.Context) error { return authorization.AuthorizeLanding(ctx, target.Repository) }
 	}
 	var result workspace.LandResult
 	defer func() {
@@ -154,6 +161,11 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	}
 	if err != nil {
 		if result.MergeSHA == "" {
+			if errors.Is(err, ErrLandingBarrierRed) {
+				waiting := r.refusedLanding(req, target, "", err.Error())
+				waiting.NativeLanding.Waiting = true
+				return waiting, nil
+			}
 			if IsCapacityError(err) || errors.Is(err, github.ErrRateLimited) || errors.Is(err, forgeavailability.ErrUnavailable) {
 				return RunResult{WorkspaceBranch: info.Branch, NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA}}, err
 			}
@@ -165,7 +177,9 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 			if errors.As(err, &refusal) {
 				if refusal.Kind == workspace.LandRefusalBaseMoved {
 					waiting := r.refusedLanding(req, target, refusal.Kind, err.Error())
-					waiting.NativeLanding.BaseSHA = refusal.BaseSHA
+					if effectiveGate.LandingMode != gate.LandingRollingBarrier {
+						waiting.NativeLanding.BaseSHA = refusal.BaseSHA
+					}
 					waiting.WorkspaceBranch = info.Branch
 					return waiting, nil
 				}

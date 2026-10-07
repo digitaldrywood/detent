@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -283,7 +284,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		retryStatus         int
 		retryMoved          bool
 		baseMovesDuringRead bool
+		rolling             bool
 	}{
+		{name: "rolling mode skips a failing gate", method: "squash", rolling: true},
 		{name: "creates the exact source closing payload", method: "squash", sourceIssues: true},
 		{name: "reuse preserves human delivery attribution", method: "squash", pullState: "open", sourceIssues: true, existingBody: "Human attribution\n\nCloses example/repo#44", wantPatch: true},
 		{name: "reuse retains source lines without duplication", method: "squash", pullState: "open", sourceIssues: true, existingBody: "Human attribution\n\nCloses digitaldrywood/detent#3410"},
@@ -602,6 +605,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			}
 			client := newClient(false)
 			opts := LandOptions{HeadSHA: fixture.head, Method: test.method, Repository: repository, Message: "Native Change Request", GitHubClient: client, ValidationCommand: "test -f feature.txt"}
+			if test.rolling {
+				opts.LandingMode = gate.LandingRollingBarrier
+				opts.ValidationCommand = "exit 19"
+			}
 			if test.retryHeadMoved {
 				opts.ValidationCommand = "test -f feature.txt && if test -f parallel.txt; then git push --force origin " + shellQuote(originalBase+":refs/heads/"+fixture.info.Branch) + "; fi"
 			}
@@ -827,7 +834,11 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.Gate.Command != opts.ValidationCommand || result.Gate.ExitCode != 0 || result.Gate.DurationNS <= 0 || !validLandingHead(result.Gate.HeadSHA) || !validLandingHead(result.Gate.TreeSHA) {
+			if test.rolling {
+				if result.Gate.Command != "" {
+					t.Fatalf("rolling gate ran: %+v", result.Gate)
+				}
+			} else if result.Gate.Command != opts.ValidationCommand || result.Gate.ExitCode != 0 || result.Gate.DurationNS <= 0 || !validLandingHead(result.Gate.HeadSHA) || !validLandingHead(result.Gate.TreeSHA) {
 				t.Fatalf("successful gate lost receipt: %#v", result)
 			}
 			wantHead := fixture.head

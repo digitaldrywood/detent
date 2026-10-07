@@ -1335,14 +1335,33 @@ approved repository policy. For a github.com origin and an authenticated `gh`
 on the project runner, landing then publishes the reviewed attempt branch,
 finds or opens a pull request against the remote default branch, and asks
 GitHub to merge the exact reviewed head using the policy's `merge_method`.
-Before publication, the configured command gate runs on a detached combination
-of that head and the fetched base. Nonzero exits retain command evidence and
+In the default `gate.landing_mode: per_landing`, the configured command gate
+runs before publication on a detached combination of that head and the fetched
+base. Nonzero exits retain command evidence and
 failing output and return to configured Rework through the existing landing
 refusal owner. Initial and retry preparation share the same executor. The base
-is refreshed before the merge request; an observed advance refuses the request.
+is refreshed before the merge request; in per-landing mode an observed advance
+refuses the request.
 GitHub's merge API pins the head, but provides no atomic expected-base field,
 so concurrent external base writes still depend on the repository's protection
 and serialized landing policy.
+
+Projects can opt into `gate.landing_mode: rolling_barrier` in the approved gate
+policy. Landing and merge-resolution preparation skip the command in this mode;
+a rejected plain-Git push refreshes the base and recombines the same reviewed
+head. GitHub protection and required checks still apply. The project runner
+claims one repository barrier through `GET`/`POST /landing-barrier`, snapshots the
+base tip in a detached worktree, releases the source lock, and runs `gate.run`.
+Landings continue during this command. The Hub records the checked commit and
+command result in the covered landing receipts. The claim captures landed
+changes at its start; later landings trigger the next barrier.
+
+A red barrier files or appends a High-priority native repair issue through the
+existing machine-report owner, with command output, the checked commit, and the
+changes since the last green barrier. Only that repair issue may land while red;
+a green barrier reopens landing. The worker source completion command remains
+required. Barrier reads and receipts provide diagnostics through the existing
+API and MCP surfaces.
 
 GitHub's branch protection, required checks, and required reviews decide
 whether the merge succeeds. The runner verifies that the returned merge commit
