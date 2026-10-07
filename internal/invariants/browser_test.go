@@ -2,6 +2,7 @@ package invariants
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -37,9 +38,25 @@ func checkBrowserTests(root fs.FS, policy map[string][]string) []string {
 		{"beforeAll", `\bbeforeAll\b`, "do not keep mutable shared state in beforeAll; isolate state per test"},
 	}
 	var problems []string
-	files, err := fs.Glob(root, "tests/visual/*.spec.js")
-	if err != nil {
-		return []string{fmt.Sprintf("tests/visual: AGENTS.md#browser-tests: %v", err)}
+	var files []string
+	testFile := regexp.MustCompile(`\.(spec|test)\.[cm]?[jt]sx?$`)
+	err := fs.WalkDir(root, "tests/visual", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if entry.Name() == "node_modules" {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if testFile.MatchString(path) {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		problems = append(problems, fmt.Sprintf("tests/visual: AGENTS.md#browser-tests: %v", err))
 	}
 	sources := make(map[string][]byte, len(files))
 	for _, file := range files {
@@ -80,14 +97,21 @@ func checkBrowserTests(root fs.FS, policy map[string][]string) []string {
 
 func TestBrowserPolicyViolations(t *testing.T) {
 	t.Parallel()
-	const file = "tests/visual/journey.spec.js"
 	for _, tt := range []struct {
-		name, source, category string
-		allowed, missing       bool
-		want                   string
+		name, file, source, category string
+		allowed, missing             bool
+		want                         string
 	}{
 		{name: "existing file passes", allowed: true},
 		{name: "new file rejected", want: "not on frozen specs allowlist"},
+		{name: "nested spec rejected", file: "nested/journey.spec.js", want: "not on frozen specs allowlist"},
+		{name: "test suffix rejected", file: "journey.test.js", want: "not on frozen specs allowlist"},
+		{name: "TypeScript rejected", file: "journey.spec.ts", want: "not on frozen specs allowlist"},
+		{name: "TSX rejected", file: "journey.test.tsx", want: "not on frozen specs allowlist"},
+		{name: "ES module rejected", file: "journey.spec.mjs", want: "not on frozen specs allowlist"},
+		{name: "CommonJS rejected", file: "journey.test.cjs", want: "not on frozen specs allowlist"},
+		{name: "helper ignored", file: "helper.js"},
+		{name: "nested restricted pattern", file: "nested/journey.test.ts", source: "test.beforeAll(() => {})", category: "beforeAll", want: "not on frozen beforeAll allowlist"},
 		{name: "deleted file", allowed: true, missing: true, want: "remove stale specs allowlist entry"},
 		{name: "serial rejected", source: `test.describe.configure({ mode: "serial" });`, category: "serial", want: "not on frozen serial allowlist"},
 		{name: "single quoted multiline serial", source: "mode:\n 'serial'", category: "serial", want: "not on frozen serial allowlist"},
@@ -106,6 +130,10 @@ func TestBrowserPolicyViolations(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			file := "tests/visual/journey.spec.js"
+			if tt.file != "" {
+				file = "tests/visual/" + tt.file
+			}
 			root := fstest.MapFS{}
 			if !tt.missing {
 				root[file] = &fstest.MapFile{Data: []byte(tt.source)}

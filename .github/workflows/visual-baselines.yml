@@ -46,6 +46,7 @@ jobs:
         run: make build
 
       - name: Regenerate changed baselines
+        shell: bash
         env:
           DETENT_BINARY: ${{ github.workspace }}/tmp/detent
           TMPDIR: ${{ runner.temp }}
