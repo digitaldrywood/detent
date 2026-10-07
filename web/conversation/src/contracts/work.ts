@@ -663,6 +663,15 @@ export const ChangeVersion = Schema.Struct({
 export type ChangeVersion = typeof ChangeVersion.Type;
 
 export const ChangeReview = Schema.Struct({
+  validator: Schema.optional(Schema.Struct({
+    criteria_evidence: Schema.optional(Schema.Array(Schema.Struct({
+      criterion: Schema.String,
+      kind: Schema.Literals(["receipt", "test", "not_verified"]),
+      reference: Schema.String,
+      behavior: Schema.optional(Schema.String),
+    }))),
+    not_verified: Schema.optional(Schema.Array(Schema.String)),
+  })),
   review_id: Schema.String,
   version_id: Schema.String,
   decision: Schema.String,

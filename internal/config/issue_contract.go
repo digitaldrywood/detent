@@ -89,9 +89,77 @@ func IssueContractSectionDigests(body string) map[string]string {
 	return digests
 }
 
+var criterionBullet = regexp.MustCompile(`^([ \t]*)(?:[-*+] |[0-9]+[.)] )`)
+
+func (c IssueContract) AcceptanceCriteria(body string) []string {
+	section := "acceptance criteria"
+	if len(c.Sections) > 0 {
+		section = issueContractSectionKey(c.Sections[0])
+		for _, required := range c.Sections {
+			if issueContractSectionKey(required) == "acceptance criteria" {
+				section = "acceptance criteria"
+				break
+			}
+		}
+	}
+	text := issueContractSectionBodies(body)[section]
+	indent := -1
+	inFence := false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+		}
+		if !inFence {
+			if match := criterionBullet.FindStringSubmatch(line); len(match) > 0 && (indent < 0 || len(match[1]) < indent) {
+				indent = len(match[1])
+			}
+		}
+	}
+	var criteria []string
+	var current strings.Builder
+	flush := func() {
+		if criterion := strings.TrimSpace(current.String()); criterion != "" {
+			criteria = append(criteria, criterion)
+		}
+		current.Reset()
+	}
+	inFence = false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			if indent < 0 && !inFence {
+				flush()
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+		}
+		if match := criterionBullet.FindStringSubmatch(line); !inFence && len(match) > 0 && len(match[1]) == indent {
+			flush()
+			trimmed = criterionBullet.ReplaceAllString(line, "")
+		}
+		if current.Len() > 0 {
+			current.WriteByte('\n')
+		}
+		current.WriteString(trimmed)
+	}
+	flush()
+	return criteria
+}
+
 var issueContractMetadata = regexp.MustCompile("(?ms)^```(?:detent-agent|detent-origin|detent-status|detent-completion)[ \t]*\n.*?^```[ \t]*\r?$\n?")
 
 func issueContractSections(body string) map[string]string {
+	sections := issueContractSectionBodies(body)
+	for section, text := range sections {
+		sections[section] = strings.TrimSpace(text)
+	}
+	return sections
+}
+
+func issueContractSectionBodies(body string) map[string]string {
 	body = issueContractMetadata.ReplaceAllString(body, "")
 	headings := markdownHeadings(body)
 	sections := map[string]string{}
@@ -103,8 +171,8 @@ func issueContractSections(body string) map[string]string {
 				break
 			}
 		}
-		text := strings.TrimSpace(body[heading.End:end])
-		if text != "" {
+		text := strings.Trim(body[heading.End:end], "\r\n")
+		if strings.TrimSpace(text) != "" {
 			key := issueContractSectionKey(heading.Title)
 			if _, duplicate := sections[key]; duplicate {
 				sections[key] = ""

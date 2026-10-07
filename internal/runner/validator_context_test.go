@@ -34,6 +34,9 @@ func TestValidationContext(t *testing.T) {
 		{name: "line endings", change: func(i *connector.Issue, _ *gate.Config) { i.Description += "  \r\n" }},
 		{name: "review score", different: true, change: func(_ *connector.Issue, c *gate.Config) { c.Validator.MinScore = .99 }},
 		{name: "review severities", different: true, change: func(_ *connector.Issue, c *gate.Config) { c.Validator.BlockOn = []string{"p1", "p2"} }},
+		{name: "criterion policy", different: true, change: func(_ *connector.Issue, c *gate.Config) {
+			c.Validator.UnverifiedCriteria = gate.UnverifiedCriteriaDisclose
+		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			issue, policy := original, gate.Config{}

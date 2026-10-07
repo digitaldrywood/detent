@@ -7,6 +7,7 @@ import (
 	"math"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -23,6 +24,24 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 	if !worker || !version.Policy.Gates.Validator || change.CurrentVersion != version.ID || !result.Submitted || result.SessionID <= 0 || result.VersionID != version.ID || result.Repository != version.Repository || result.BaseSHA != version.BaseSHA || result.HeadSHA != version.HeadSHA || !changerequest.ValidHash(result.DiffDigest, 64) || math.IsNaN(result.Score) || math.IsInf(result.Score, 0) || result.Score < 0 || result.Score > 1 {
 		return nativeInvalid("validator review must identify the current immutable version and a fresh validator session")
 	}
+	issue, _, err := readNativeIssue(ctx, tx, scope, string(change.WorkItemID))
+	if err != nil {
+		return err
+	}
+	workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, version.Policy)
+	if err != nil {
+		return err
+	}
+	tree := ""
+	if version.Validation != nil {
+		tree = version.Validation.TreeSHA
+	}
+	contract, err := config.ResolveIssueContract(workflow.SharedPrompt)
+	if err != nil {
+		return err
+	}
+	gate.NormalizeCriterionEvidence(result, contract.AcceptanceCriteria(issue.Body), tree)
+	gate.ApplyCriterionPolicy(workflow.Config.Gate.Validator, result)
 	decision := ""
 	switch result.Verdict {
 	case gate.ValidatorVerdictPass:
@@ -36,7 +55,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		return nativeInvalid("validator verdict does not match the review decision")
 	}
 	var raw string
-	err := tx.QueryRowContext(ctx, "SELECT data_json FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND id=?", scope.organization, scope.project, change.WorkItemID, version.AttemptID).Scan(&raw)
+	err = tx.QueryRowContext(ctx, "SELECT data_json FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND id=?", scope.organization, scope.project, change.WorkItemID, version.AttemptID).Scan(&raw)
 	if err != nil {
 		return err
 	}

@@ -5949,7 +5949,7 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 			{Type: AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 2116, GroupID: 2116, StartedAt: processStartedAt}},
 			{
 				Type:  AgentUpdateMessageDelta,
-				Delta: `{"verdict":"pass","score":0.93,"summary":"Acceptance criteria are covered.","findings":[{"severity":"p2","body":"Follow-up polish.","path":"README.md","line":12}]}`,
+				Delta: `{"verdict":"pass","score":0.93,"summary":"Acceptance criteria are covered.","criteria_evidence":[{"criterion":"Validator checks the PR diff.","kind":"test","reference":"runner_test.go:TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON","behavior":"The independent review receives the identified PR diff"}],"findings":[{"severity":"p2","body":"Follow-up polish.","path":"README.md","line":12}]}`,
 			},
 		},
 		result: AgentTurnResult{ThreadID: "validator-thread", TurnID: "validator-turn"},
@@ -6696,6 +6696,39 @@ func TestParseValidatorResultRejectsMissingOutput(t *testing.T) {
 
 			if _, err := parseValidatorResult(tt.output); err == nil {
 				t.Fatal("parseValidatorResult() error = nil, want missing JSON error")
+			}
+		})
+	}
+}
+
+func TestParseValidatorCriterionEvidence(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		entry   string
+		want    []gate.CriterionEvidence
+		invalid bool
+	}{
+		{name: "receipt", entry: `{"criterion":"Reject invalid input","kind":"receipt","reference":"make check","head_sha":"head","tree_sha":"tree","behavior":"Invalid input errors"}`, want: []gate.CriterionEvidence{{Criterion: "Reject invalid input", Kind: "receipt", Reference: "make check", HeadSHA: "head", TreeSHA: "tree", Behavior: "Invalid input errors"}}},
+		{name: "test", entry: `{"criterion":"Reject invalid input","kind":"test","reference":"input_test.go:TestInvalid","behavior":"Malformed input returns an error"}`, want: []gate.CriterionEvidence{{Criterion: "Reject invalid input", Kind: "test", Reference: "input_test.go:TestInvalid", Behavior: "Malformed input returns an error"}}},
+		{name: "not verified", entry: `{"criterion":"Reject invalid input","kind":"not_verified","reference":"No regression test"}`, want: []gate.CriterionEvidence{{Criterion: "Reject invalid input", Kind: "not_verified", Reference: "No regression test"}}},
+		{name: "empty map", want: []gate.CriterionEvidence{}},
+		{name: "restates implementation", entry: `{"criterion":"Reject invalid input","kind":"test","reference":"input_test.go:TestInvalid","behavior":"Copies code","restates_implementation":true}`, want: []gate.CriterionEvidence{{Criterion: "Reject invalid input", Kind: "test", Reference: "input_test.go:TestInvalid", Behavior: "Copies code", RestatesImplementation: true}}},
+		{name: "malformed entry", entry: `"receipt"`, invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := parseValidatorResult(`{"verdict":"pass","score":0.95,"summary":"Reviewed","criteria_evidence":[` + test.entry + `]}`)
+			if test.invalid {
+				if err == nil {
+					t.Fatal("malformed evidence accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Score != .95 || result.Verdict != "pass" || !reflect.DeepEqual(result.CriteriaEvidence, test.want) {
+				t.Fatalf("parsed result = %+v", result)
 			}
 		})
 	}

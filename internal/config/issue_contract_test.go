@@ -66,3 +66,29 @@ func TestIssueContractDefinitionRefusesInvalidSections(t *testing.T) {
 		}
 	}
 }
+
+func TestAcceptanceCriteria(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		body     string
+		sections []string
+		want     []string
+	}{
+		{name: "absent"},
+		{name: "bullets and continuation", body: "## Acceptance criteria\n- Reject invalid input\n  without changing state.\n- Return valid input\n\n## Must not break\n- Existing users", want: []string{"Reject invalid input\nwithout changing state.", "Return valid input"}},
+		{name: "numbered and prose", body: "Acceptance criteria\n-------------------\n1. Reject invalid input\n2. Return valid input", want: []string{"Reject invalid input", "Return valid input"}},
+		{name: "paragraph", body: "## Acceptance criteria\nReject invalid input and return valid input.", want: []string{"Reject invalid input and return valid input."}},
+		{name: "nested list", body: "## Acceptance criteria\n- Validate input:\n  - Invalid input errors\n  - Valid input succeeds\n- Preserve state", want: []string{"Validate input:\n- Invalid input errors\n- Valid input succeeds", "Preserve state"}},
+		{name: "fenced heading", body: "```md\n## Acceptance criteria\n- Fake criterion\n```"},
+		{name: "indented criteria", body: "## Acceptance criteria\n  - Reject invalid input\n  - Return valid input", want: []string{"Reject invalid input", "Return valid input"}},
+		{name: "code sample", body: "## Acceptance criteria\n- Reject invalid input\n```text\n- malformed input\n```\n- Return valid input", want: []string{"Reject invalid input\n```text\n- malformed input\n```", "Return valid input"}},
+		{name: "custom contract", sections: []string{"Result", "Evidence"}, body: "## Result\n- Reject invalid input\n- Return valid input\n## Evidence\nRun input tests", want: []string{"Reject invalid input", "Return valid input"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := (IssueContract{Sections: test.sections}).AcceptanceCriteria(test.body); !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("criteria = %q, want %q", got, test.want)
+			}
+		})
+	}
+}

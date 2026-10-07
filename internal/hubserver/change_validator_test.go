@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -29,11 +30,32 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"verdict mismatch", func(r *tracker.ReviewChange) { r.Validator.Verdict = "rework" }, http.StatusUnprocessableEntity, "needs_evidence"},
 		{"separate session rework", func(r *tracker.ReviewChange) { r.Decision, r.Validator.Verdict = "changes_requested", "rework" }, http.StatusOK, "needs_evidence"},
 		{"separate session wait", func(r *tracker.ReviewChange) { r.Decision, r.Validator.Verdict = "commented", "wait" }, http.StatusOK, "needs_evidence"},
+		{"missing evidence cannot pass", func(r *tracker.ReviewChange) { r.Validator.CriteriaEvidence = nil }, http.StatusUnprocessableEntity, "needs_evidence"},
+		{"missing evidence rework", func(r *tracker.ReviewChange) {
+			r.Validator.CriteriaEvidence = nil
+			r.Decision, r.Validator.Verdict = "changes_requested", "rework"
+		}, http.StatusOK, "needs_evidence"},
+		{"disclosed missing evidence", func(r *tracker.ReviewChange) { r.Validator.CriteriaEvidence = nil }, http.StatusOK, "reviewed"},
+		{"restated evidence cannot pass", func(r *tracker.ReviewChange) { r.Validator.CriteriaEvidence[0].RestatesImplementation = true }, http.StatusUnprocessableEntity, "needs_evidence"},
+		{"mismatched receipt cannot pass", func(r *tracker.ReviewChange) {
+			r.Validator.CriteriaEvidence[0] = gate.CriterionEvidence{Criterion: "Complete the requested work.", Kind: "receipt", Reference: "make check", HeadSHA: r.Validator.HeadSHA, TreeSHA: "other", Behavior: "The configured check proves the requested behavior"}
+			r.Validator.Commands = []gate.CommandResult{{Command: "make check", HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree"}}
+		}, http.StatusUnprocessableEntity, "needs_evidence"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "validator")
 			descriptor := hubTestPolicy()
+			if test.name == "disclosed missing evidence" {
+				cfg := config.Default()
+				cfg.Gate.Validator.Enabled = true
+				cfg.Gate.Validator.UnverifiedCriteria = gate.UnverifiedCriteriaDisclose
+				resolved, err := config.ResolvePolicy(config.Workflow{Config: cfg})
+				if err != nil {
+					t.Fatal(err)
+				}
+				descriptor.Configuration = resolved.Configuration
+			}
 			descriptor.Gates.Validator = true
 			humanReview := test.name == "separate session pass with human review"
 			if humanReview {
@@ -64,6 +86,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			decodeHubResponse(t, response, &version)
 			mutation.IdempotencyKey = "validator"
 			request := tracker.ReviewChange{Mutation: mutation, ExpectedVersionID: version.ID, Decision: "approved", Validator: &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Submitted: true, Verdict: "pass", Score: .95, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, DiffDigest: policy.Digest([]byte("diff"))}}
+			request.Validator.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: "test", Reference: "change_validator_test.go:TestChangeValidatorSessionAuthority", Behavior: "A separate validator session reviews the immutable version"}}
 			test.edit(&request)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request), test.want)
 			response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
@@ -83,6 +106,12 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			}
 			if test.want == http.StatusOK && (len(detail.Reviews) != 1 || detail.Reviews[0].Validator == nil || detail.Reviews[0].Validator.SessionID != 42) {
 				t.Fatalf("validator session was not persisted: %+v", detail.Reviews)
+			}
+			if test.name == "missing evidence rework" || test.name == "disclosed missing evidence" {
+				stored := detail.Reviews[0].Validator
+				if len(stored.CriteriaEvidence) != 1 || stored.CriteriaEvidence[0].Kind != "not_verified" || len(stored.NotVerified) != 1 || stored.NotVerified[0] != "Complete the requested work." {
+					t.Fatalf("missing evidence not persisted on its version: %+v", stored)
+				}
 			}
 			if strings.HasPrefix(test.name, "separate session pass") {
 				input.HeadSHA = strings.Repeat("c", 40)

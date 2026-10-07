@@ -430,6 +430,37 @@ export function ChangeRequestView(props: ChangeRequestViewProps): React.ReactEle
                   {review.body.length === 0 ? null : (
                     <p className="mt-1 whitespace-pre-wrap text-xs">{review.body}</p>
                   )}
+                  {review.validator === undefined ? null : (
+                    <section aria-label="Acceptance evidence" className="mt-3 space-y-2 text-xs">
+                      <h3 className="font-medium">Acceptance evidence</h3>
+                      {review.validator.criteria_evidence === undefined ? (
+                        <p className="text-muted-foreground">No criterion evidence recorded for this review.</p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {review.validator.criteria_evidence.map((entry, index) => (
+                            <li key={index} className="space-y-1">
+                              <p className="flex flex-wrap items-center gap-2">
+                                <Pill tone={entry.kind === "not_verified" ? "err" : "ok"}>
+                                  {entry.kind === "not_verified" ? "Not verified" : entry.kind === "receipt" ? "Command receipt" : "Named test"}
+                                </Pill>
+                                <span className="whitespace-pre-wrap">{entry.criterion}</span>
+                              </p>
+                              {entry.reference === "" ? null : <p className="break-words text-muted-foreground">{entry.reference}</p>}
+                              {entry.behavior === undefined ? null : <p className="whitespace-pre-wrap text-muted-foreground">{entry.behavior}</p>}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {(review.validator.not_verified?.length ?? 0) === 0 ? null : (
+                        <section aria-label="Not verified criteria" className="space-y-1">
+                          <h4 className="font-medium text-destructive">Not verified</h4>
+                          <ul className="list-inside list-disc">
+                            {review.validator.not_verified?.map((criterion, index) => <li key={index}>{criterion}</li>)}
+                          </ul>
+                        </section>
+                      )}
+                    </section>
+                  )}
                 </li>
               ))}
             </ul>

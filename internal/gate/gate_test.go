@@ -981,6 +981,7 @@ func validatorConfigsEqual(left ValidatorConfig, right ValidatorConfig) bool {
 	if left.Enabled != right.Enabled ||
 		left.Model != right.Model ||
 		left.MinScore != right.MinScore ||
+		left.UnverifiedCriteria != right.UnverifiedCriteria ||
 		left.TurnTimeoutMS != right.TurnTimeoutMS ||
 		!intPointerEqual(left.MaxInlineDiffBytes, right.MaxInlineDiffBytes) ||
 		len(left.BlockOn) != len(right.BlockOn) {
