@@ -968,6 +968,16 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 				issue := h.createInProgress(t, "Native change")
 				h.claim(t, issue.ID)
 				execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+				originalTransport := h.native.client.httpClient.Transport
+				var offline atomic.Bool
+				if test.outage {
+					h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+						if offline.Load() {
+							return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"tenant_unavailable"}`)), Request: request}, nil
+						}
+						return originalTransport.RoundTrip(request)
+					})
+				}
 				guarded, stop, err := execution.Guard(t.Context())
 				if err != nil {
 					t.Fatal(err)
@@ -983,15 +993,7 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 					t.Fatal(err)
 				}
 				originalLease := execution.claim.lease
-				originalTransport := h.native.client.httpClient.Transport
-				var offline atomic.Bool
 				if test.outage {
-					h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
-						if offline.Load() {
-							return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"tenant_unavailable"}`)), Request: request}, nil
-						}
-						return originalTransport.RoundTrip(request)
-					})
 					offline.Store(true)
 					time.Sleep(2 * time.Minute)
 					synctest.Wait()

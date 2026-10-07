@@ -161,7 +161,11 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				descriptor := clientTestPolicy()
+				var offline atomic.Bool
 				transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if offline.Load() {
+						return nil, errors.New("renewal disconnected")
+					}
 					body := []byte(`{}`)
 					if strings.HasSuffix(request.URL.Path, "/renew") {
 						return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"stale_fencing_token"}`)), Request: request}, nil
@@ -281,7 +285,7 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 				}
 				time.Sleep(30 * time.Second)
 				if name == "renewal outage" {
-					client.httpClient.Transport = executionRoundTrip(func(*http.Request) (*http.Response, error) { return nil, errors.New("renewal disconnected") })
+					offline.Store(true)
 					_, err := scheduler.renewNativeClaim(t.Context(), id, scheduler.nativeClaims[id])
 					if err == nil || errors.Is(err, orchestrator.ErrSchedulingClaimLost) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 						t.Fatalf("transient renewal revoked current lease: %v", err)
@@ -312,7 +316,7 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 					if guarded.Err() != nil {
 						t.Fatalf("outage canceled worker: %v", context.Cause(guarded))
 					}
-					client.httpClient.Transport = transport
+					offline.Store(false)
 					time.Sleep(30 * time.Second)
 					synctest.Wait()
 				}
