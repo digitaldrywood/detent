@@ -224,7 +224,7 @@ func (c *cloudDestination) updateFailure(ctx context.Context, issue *cloudIssue,
 	const high = 1
 	origin, _ := issueorigin.Parse(issue.item.Body)
 	promote := issue.item.State == "Backlog" && origin.Kind != "worker"
-	args := map[string]any{"project_id": c.project, "identifier": string(issue.item.WorkItemID), "request_id": "scheduled-priority-" + key, "expected_revision": int64(issue.item.Revision)}
+	args := map[string]any{"project_id": c.project, "identifier": string(issue.item.WorkItemID), "request_id": "scheduled-priority-" + key, "expected_revision": strconv.FormatInt(int64(issue.item.Revision), 10)}
 	if issue.item.Priority == nil || *issue.item.Priority > high {
 		args["priority"] = high
 	}
@@ -252,7 +252,7 @@ func (c *cloudDestination) updateFailure(ctx context.Context, issue *cloudIssue,
 		issue.item.Revision = result.Revision
 	}
 	if promote {
-		args = map[string]any{"project_id": c.project, "identifier": string(issue.item.WorkItemID), "request_id": "scheduled-todo-" + key, "expected_revision": int64(issue.item.Revision), "target_state": "Todo"}
+		args = map[string]any{"project_id": c.project, "identifier": string(issue.item.WorkItemID), "request_id": "scheduled-todo-" + key, "expected_revision": strconv.FormatInt(int64(issue.item.Revision), 10), "target_state": "Todo"}
 		var moved struct {
 			Data tracker.NativeIssue `json:"data"`
 		}

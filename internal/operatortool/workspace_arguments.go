@@ -3,6 +3,7 @@ package operatortool
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -30,6 +31,7 @@ func ValidateWorkspaceArguments(call Call) error {
 
 type argumentSchema struct {
 	Type          string                    `json:"type"`
+	Pattern       string                    `json:"pattern"`
 	Properties    map[string]argumentSchema `json:"properties"`
 	Required      []string                  `json:"required"`
 	Additional    json.RawMessage           `json:"additionalProperties"`
@@ -100,6 +102,15 @@ func (s argumentSchema) validate(value any, field string) error {
 		}
 		if s.MaxLength > 0 && len(v) > s.MaxLength {
 			return invalidArgument(field, fmt.Sprintf("must not exceed %d bytes", s.MaxLength))
+		}
+		if s.Pattern != "" {
+			matched, err := regexp.MatchString(s.Pattern, v)
+			if err != nil {
+				return err
+			}
+			if !matched {
+				return invalidArgument(field, "must match pattern "+s.Pattern)
+			}
 		}
 		if len(s.Enum) > 0 && !slices.Contains(s.Enum, v) {
 			return invalidArgument(field, "must be one of: "+strings.Join(s.Enum, ", "))

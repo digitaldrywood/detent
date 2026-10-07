@@ -3,6 +3,7 @@ package operatortool
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 )
@@ -54,14 +55,15 @@ func TestWorkArgumentsDirectCallBounds(t *testing.T) {
 		{"field from another command", AddComment, `"body":"hello","labels":[]`, false},
 		{"null comment", AddComment, `"body":null`, false},
 		{"oversized comment", AddComment, `"body":"` + strings.Repeat("x", 32769) + `"`, false},
-		{"empty edit", EditItem, `"expected_revision":1`, false},
+		{"empty edit", EditItem, `"expected_revision":"1"`, false},
 		{"revision required", EditItem, `"title":"title"`, false},
-		{"zero revision", EditItem, `"title":"title","expected_revision":0`, false},
-		{"invalid priority", EditItem, `"priority":4,"expected_revision":1`, false},
-		{"ordinary edit", EditItem, `"priority":0,"expected_revision":1`, true},
-		{"native full title", EditItem, `"title":"` + strings.Repeat("x", 500) + `","expected_revision":1`, true},
-		{"native oversized title", EditItem, `"title":"` + strings.Repeat("x", 501) + `","expected_revision":1`, false},
-		{"blank label", EditItem, `"labels":[" "],"expected_revision":1`, false},
+		{"zero revision", EditItem, `"title":"title","expected_revision":"0"`, false},
+		{"invalid priority", EditItem, `"priority":4,"expected_revision":"1"`, false},
+		{"numeric edit revision", EditItem, `"priority":0,"expected_revision":1`, false},
+		{"ordinary edit", EditItem, `"priority":0,"expected_revision":"1"`, true},
+		{"native full title", EditItem, `"title":"` + strings.Repeat("x", 500) + `","expected_revision":"1"`, true},
+		{"native oversized title", EditItem, `"title":"` + strings.Repeat("x", 501) + `","expected_revision":"1"`, false},
+		{"blank label", EditItem, `"labels":[" "],"expected_revision":"1"`, false},
 		{"unknown dependency operation", SetDependency, `"related":"item","operation":"replace"`, false},
 		{"invalid queue priority", SetQueuePriority, `"queue_scope":"work","state":"Todo","queue_priority":"highest"`, false},
 		{"oversized read", ListComments, `"limit":201`, false},
@@ -80,21 +82,37 @@ func TestNativeMoveItemArguments(t *testing.T) {
 	for _, test := range []struct {
 		name, fields string
 		valid        bool
+		revision     int64
 	}{
-		{"configured state", `"target_state":"Ready","expected_revision":2`, true},
-		{"missing revision", `"target_state":"Ready"`, false},
-		{"zero revision", `"target_state":"Ready","expected_revision":0`, false},
-		{"blank state", `"target_state":" ","expected_revision":2`, false},
-		{"oversized state", `"target_state":"` + strings.Repeat("x", 257) + `","expected_revision":2`, false},
-		{"forged approval", `"target_state":"Ready","expected_revision":2,"confirm":true`, false},
-		{"forged fence", `"target_state":"Ready","expected_revision":2,"fencing_token":12`, false},
-		{"forged reason", `"target_state":"Ready","expected_revision":2,"reason":"worker_progress"`, false},
-		{"null field", `"target_state":null,"expected_revision":2`, false},
+		{"configured state", `"target_state":"Ready","expected_revision":"2"`, true, 2},
+		{"response revision", `"target_state":"Ready","expected_revision":"1"`, true, 1},
+		{"maximum revision", `"target_state":"Ready","expected_revision":"9223372036854775807"`, true, math.MaxInt64},
+		{"numeric revision", `"target_state":"Ready","expected_revision":1`, false, 0},
+		{"overflow revision", `"target_state":"Ready","expected_revision":"9223372036854775808"`, false, 0},
+		{"negative revision", `"target_state":"Ready","expected_revision":"-1"`, false, 0},
+		{"signed revision", `"target_state":"Ready","expected_revision":"+1"`, false, 0},
+		{"fractional revision", `"target_state":"Ready","expected_revision":"1.5"`, false, 0},
+		{"nondecimal revision", `"target_state":"Ready","expected_revision":"1e2"`, false, 0},
+		{"blank revision", `"target_state":"Ready","expected_revision":""`, false, 0},
+		{"padded revision", `"target_state":"Ready","expected_revision":" 1 "`, false, 0},
+		{"leading zero", `"target_state":"Ready","expected_revision":"01"`, false, 0},
+		{"null revision", `"target_state":"Ready","expected_revision":null`, false, 0},
+		{"missing revision", `"target_state":"Ready"`, false, 0},
+		{"zero revision", `"target_state":"Ready","expected_revision":"0"`, false, 0},
+		{"blank state", `"target_state":" ","expected_revision":"2"`, false, 0},
+		{"oversized state", `"target_state":"` + strings.Repeat("x", 257) + `","expected_revision":"2"`, false, 0},
+		{"forged approval", `"target_state":"Ready","expected_revision":"2","confirm":true`, false, 0},
+		{"forged fence", `"target_state":"Ready","expected_revision":"2","fencing_token":12`, false, 0},
+		{"forged reason", `"target_state":"Ready","expected_revision":"2","reason":"worker_progress"`, false, 0},
+		{"null field", `"target_state":null,"expected_revision":"2"`, false, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := DecodeNativeMoveItem(json.RawMessage(`{"project_id":"project","request_id":"move","identifier":"item",` + test.fields + `}`))
+			request, err := DecodeNativeMoveItem(json.RawMessage(`{"project_id":"project","request_id":"move","identifier":"item",` + test.fields + `}`))
 			if (err == nil) != test.valid {
 				t.Fatalf("valid=%t error=%v", test.valid, err)
+			}
+			if err == nil && request.ExpectedRevision != test.revision {
+				t.Fatalf("revision=%d want=%d", request.ExpectedRevision, test.revision)
 			}
 		})
 	}
@@ -105,7 +123,7 @@ func TestToolArgumentValidationDetails(t *testing.T) {
 		name, tool, raw, message string
 	}{
 		{"move missing revision", MoveItem, `{"project_id":"detent","request_id":"move","identifier":"295","target_state":"Done"}`, "expected_revision: is required"},
-		{"move rejected revision", MoveItem, `{"project_id":"detent","request_id":"move","identifier":"329","target_state":"Todo","expected_revision":0}`, "expected_revision: must be at least 1"},
+		{"move rejected revision", MoveItem, `{"project_id":"detent","request_id":"move","identifier":"329","target_state":"Todo","expected_revision":"0"}`, "expected_revision: must match pattern ^[1-9][0-9]*$"},
 		{"comment missing body", AddComment, `{"project_id":"detent","identifier":"259"}`, "body: is required"},
 		{"comment rejected target", AddComment, `{"project_id":"detent","identifier":"259","body":"hello","target":"other"}`, "target: must be one of: issue, pr"},
 		{"comment rejected body", AddComment, `{"project_id":"detent","identifier":"259","body":"` + strings.Repeat("x", 32769) + `"}`, "body: must not exceed 32768 bytes"},
@@ -117,7 +135,7 @@ func TestToolArgumentValidationDetails(t *testing.T) {
 		{"comment wrong body type", AddComment, `{"project_id":"detent","identifier":"259","body":123}`, "body: must have type string"},
 		{"comment null body", AddComment, `{"project_id":"detent","identifier":"259","body":null}`, "body: must be a string"},
 		{"edit missing revision", EditItem, `{"project_id":"detent","identifier":"259","title":"title"}`, "expected_revision: is required"},
-		{"edit rejected label", EditItem, `{"project_id":"detent","identifier":"259","expected_revision":1,"labels":[""]}`, "labels[0]: must contain at least 1 characters"},
+		{"edit rejected label", EditItem, `{"project_id":"detent","identifier":"259","expected_revision":"1","labels":[""]}`, "labels[0]: must contain at least 1 characters"},
 		{"comments rejected limit", ListComments, `{"project_id":"detent","identifier":"259","limit":201}`, "limit: must be at most 200"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

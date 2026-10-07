@@ -267,7 +267,10 @@ Native form submission uses `file_issue`, `edit_item`, `move_item`,
 `set_dependency`, `add_comment`, `edit_comment` and `create_change` through their
 existing application owners. A `request_id` is a business retry key, independent
 of JSON-RPC IDs. Changed arguments under the same actor, organization, project,
-operation and key conflict. Tracker lane requests retain the orchestrator owner.
+operation and key conflict. Native work-item and comment revisions are positive
+decimal strings in both responses and `expected_revision` inputs. Copy the
+observed revision unchanged into a mutation; numeric JSON revisions are rejected.
+Tracker lane requests retain the orchestrator owner.
 
 ## Shared mutation audit and retries (#3338)
 

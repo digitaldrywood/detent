@@ -48,6 +48,10 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if err := json.Unmarshal(raw, &created); err != nil || failed || created.WorkItemID == "" {
 		t.Fatalf("create=%s %v failed=%t", raw, err, failed)
 	}
+	var createdFields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &createdFields); err != nil || string(createdFields["revision"]) != `"1"` {
+		t.Fatalf("creation revision=%s err=%v", raw, err)
+	}
 	replay, failed := call("file_issue", "create", map[string]any{"title": "Created", "description": "Keep body", "state": "Todo"})
 	if failed || string(raw) != string(replay) {
 		t.Fatalf("creation replay=%s", replay)
@@ -154,7 +158,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		fields              map[string]any
 	}{
 		{"missing revision", operatortool.MoveItem, "expected_revision: is required", map[string]any{"target_state": "Todo"}},
-		{"rejected revision", operatortool.MoveItem, "expected_revision: must be at least 1", map[string]any{"target_state": "Todo", "expected_revision": 0}},
+		{"rejected revision", operatortool.MoveItem, "expected_revision: must match pattern ^[1-9][0-9]*$", map[string]any{"target_state": "Todo", "expected_revision": "0"}},
 		{"missing body", operatortool.AddComment, "body: is required", map[string]any{}},
 		{"rejected target", operatortool.AddComment, "target: must be one of: issue, pr", map[string]any{"body": "hello", "target": "other"}},
 	} {
@@ -173,6 +177,10 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if err := json.Unmarshal(raw, &comment); err != nil || failed || comment.ID == "" || comment.Body != commentBody {
 		t.Fatalf("comment=%s %v", raw, err)
 	}
+	var commentFields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &commentFields); err != nil || string(commentFields["revision"]) != `"1"` {
+		t.Fatalf("comment revision=%s err=%v", raw, err)
+	}
 	replay, failed = call("add_comment", "comment", map[string]any{"identifier": id, "body": commentBody, "target": "issue"})
 	if failed || string(raw) != string(replay) {
 		t.Fatal("comment replay changed identity")
@@ -185,16 +193,16 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		fields     map[string]any
 		failed     bool
 	}{
-		{"edit", "edit_item", map[string]any{"title": "Edited", "priority": 2, "expected_revision": 1}, false},
-		{"stale", "edit_item", map[string]any{"title": "Stale", "expected_revision": 1}, true},
-		{"direct body clear", "edit_item", map[string]any{"body": "", "expected_revision": 2}, false},
-		{"comment edit", "edit_comment", map[string]any{"comment_id": comment.ID, "body": "Edited comment", "expected_revision": 1}, false},
-		{"stale comment", "edit_comment", map[string]any{"comment_id": comment.ID, "body": "Stale", "expected_revision": 1}, true},
+		{"edit", "edit_item", map[string]any{"title": "Edited", "priority": 2, "expected_revision": createdFields["revision"]}, false},
+		{"stale", "edit_item", map[string]any{"title": "Stale", "expected_revision": "1"}, true},
+		{"direct body clear", "edit_item", map[string]any{"body": "", "expected_revision": "2"}, false},
+		{"comment edit", "edit_comment", map[string]any{"comment_id": comment.ID, "body": "Edited comment", "expected_revision": commentFields["revision"]}, false},
+		{"stale comment", "edit_comment", map[string]any{"comment_id": comment.ID, "body": "Stale", "expected_revision": "1"}, true},
 		{"foreign item", "add_comment", map[string]any{"identifier": "wi_foreign", "body": "Foreign"}, true},
 		{"foreign project prefix", "add_comment", map[string]any{"identifier": "prj_foreign#" + strconv.Itoa(created.Number), "body": "Foreign"}, true},
 		{"no native delete", "delete_comment", map[string]any{"comment_id": comment.ID}, true},
-		{"no hub lane writer", "move_item", map[string]any{"target_state": "Todo", "expected_revision": 2}, true},
-		{"no hub archive approval", "archive_item", map[string]any{"expected_revision": 2}, true},
+		{"no hub lane writer", "move_item", map[string]any{"target_state": "Todo", "expected_revision": "2"}, true},
+		{"no hub archive approval", "archive_item", map[string]any{"expected_revision": "2"}, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.fields["identifier"] == nil {
@@ -243,7 +251,14 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", string(stateJSON), f.project.ID); err != nil {
 		t.Fatal(err)
 	}
-	move := map[string]any{"project_id": f.project.ID, "request_id": "worker-move", "identifier": id, "expected_revision": current.Revision, "target_state": "In Progress"}
+	raw, failed = call(operatortool.WorkList, "", map[string]any{"query": "Edited"})
+	var listed struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &listed); err != nil || failed || len(listed.Items) != 1 || string(listed.Items[0]["revision"]) != `"3"` {
+		t.Fatalf("listed revision=%s failed=%t err=%v", raw, failed, err)
+	}
+	move := map[string]any{"project_id": f.project.ID, "request_id": "worker-move", "identifier": id, "expected_revision": listed.Items[0]["revision"], "target_state": "In Progress"}
 	worker := f.worker(t, "workflow-worker")
 	response := performHubWorkCall(t, f.service, path, worker, operatortool.MoveItem, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": operatortool.MoveItem, "arguments": move}})
 	requireNativeStatus(t, response, http.StatusForbidden)
@@ -251,7 +266,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		t.Fatal("worker request changed workflow")
 	}
 	for _, key := range []string{"operator-move", "operator-move"} {
-		raw, failed = call(operatortool.MoveItem, key, map[string]any{"identifier": id, "expected_revision": current.Revision, "target_state": "In Progress"})
+		raw, failed = call(operatortool.MoveItem, key, map[string]any{"identifier": id, "expected_revision": listed.Items[0]["revision"], "target_state": "In Progress"})
 		var moved tracker.NativeIssue
 		if err := json.Unmarshal(raw, &moved); err != nil || failed || moved.State != "In Progress" || moved.Revision != current.Revision+1 {
 			t.Fatalf("Hub workflow command=%s %v", raw, err)
@@ -264,7 +279,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		{identifier, string(f.project.ID) + "#" + strconv.Itoa(blocker.Number)},
 		{id, string(blocker.WorkItemID)},
 	} {
-		raw, failed = call("set_dependency", "dependency", map[string]any{"identifier": dependency.identifier, "related": dependency.related, "operation": "add", "expected_revision": 4})
+		raw, failed = call("set_dependency", "dependency", map[string]any{"identifier": dependency.identifier, "related": dependency.related, "operation": "add", "expected_revision": "4"})
 		var item tracker.NativeIssue
 		if err := json.Unmarshal(raw, &item); err != nil || failed || item.Revision != 5 || len(item.Dependencies) != 1 || item.Dependencies[0] != blocker.WorkItemID {
 			t.Fatalf("dependency alias/replay=%s %v", raw, err)
@@ -273,7 +288,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "ungranted")
 	foreign := other.create(t, "foreign")
 	for _, related := range []string{"prj_foreign#" + strconv.Itoa(blocker.Number), string(foreign.WorkItemID)} {
-		if _, failed := call("set_dependency", "foreign-"+related, map[string]any{"identifier": identifier, "related": related, "operation": "add", "expected_revision": 5}); !failed {
+		if _, failed := call("set_dependency", "foreign-"+related, map[string]any{"identifier": identifier, "related": related, "operation": "add", "expected_revision": "5"}); !failed {
 			t.Fatalf("foreign dependency accepted: %s", related)
 		}
 	}
@@ -289,7 +304,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		{"foreign alias stale revision", "prj_foreign#" + strconv.Itoa(created.Number), ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			raw, failed := call(operatortool.EditItem, test.name, map[string]any{"identifier": test.reference, "title": "Correction", "expected_revision": 4})
+			raw, failed := call(operatortool.EditItem, test.name, map[string]any{"identifier": test.reference, "title": "Correction", "expected_revision": "4"})
 			var conflict operatortool.ConflictError
 			if !failed {
 				t.Fatal("stale edit succeeded")
@@ -304,7 +319,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		})
 	}
 	for range 2 {
-		raw, failed := call(operatortool.EditItem, "fresh correction", map[string]any{"identifier": identifier, "title": "Correction", "expected_revision": 5})
+		raw, failed := call(operatortool.EditItem, "fresh correction", map[string]any{"identifier": identifier, "title": "Correction", "expected_revision": "5"})
 		var corrected tracker.NativeIssue
 		if err := json.Unmarshal(raw, &corrected); err != nil || failed || corrected.Revision != 6 || corrected.Title != "Correction" {
 			t.Fatalf("fresh edit/replay=%s %v", raw, err)
@@ -358,7 +373,7 @@ func TestHubMCPCompatibilityCommands(t *testing.T) {
 		{"priority", "set_queue_priority", map[string]any{"queue_scope": "fleet", "state": "Todo", "queue_priority": "high"}, false},
 		{"priority replay", "set_queue_priority", map[string]any{"queue_scope": "fleet", "state": "Todo", "queue_priority": "high"}, false},
 		{"lane writer absent", "move_item", map[string]any{"target_state": "Todo"}, true},
-		{"external content", "edit_item", map[string]any{"title": "External", "expected_revision": 1}, true},
+		{"external content", "edit_item", map[string]any{"title": "External", "expected_revision": "1"}, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			key := strings.TrimSuffix(tt.name, " replay")
