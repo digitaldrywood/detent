@@ -79,6 +79,87 @@ its version and full commit to match the signed provenance. After restart,
 startup recovery requires both identities from the running instance before it
 marks the update healthy or removes rollback material.
 
+## Verify release signatures
+
+The release job requires `MACOS_SIGN_P12` (base64 Developer ID Application
+certificate), `MACOS_SIGN_PASSWORD`, `MACOS_NOTARY_KEY` (base64 App Store Connect
+API key), `MACOS_NOTARY_KEY_ID`, and `MACOS_NOTARY_ISSUER_ID`. Missing signing or
+notarization secrets stop the release before publication.
+GoReleaser's Darwin post-build hook runs quill with the fixed signing identifier
+and waits for notarization before archiving. Rejected or timed-out submissions
+stop the release. This hook uses the quill CLI because `notarize.macos` derives
+the signing identifier from the binary filename and cannot override it.
+Snapshots skip the hook and require no Apple credentials.
+
+### macOS binaries
+
+Extract the darwin archive for your architecture and inspect its binary on a
+Mac:
+
+```sh
+codesign -dv --verbose=4 ./detent
+codesign --verify --strict ./detent
+codesign -dr - ./detent
+```
+
+Expect `Identifier=build.detent.detent`, `TeamIdentifier=5UMY5CG893`, a
+Developer ID Application authority for Drywood Creek Consulting, Inc., a secure
+timestamp, and the `runtime` flag. Verification must exit successfully. The
+designated requirement should bind the fixed identifier to the Apple Developer
+ID certificate and team, so successive signed releases retain that identity.
+
+An operator with the App Store Connect key can confirm Apple's accepted
+submissions for both release architectures:
+
+```sh
+xcrun notarytool history \
+  --key ./AuthKey.p8 \
+  --key-id "$MACOS_NOTARY_KEY_ID" \
+  --issuer "$MACOS_NOTARY_ISSUER_ID"
+xcrun notarytool info "$SUBMISSION_ID" \
+  --key ./AuthKey.p8 \
+  --key-id "$MACOS_NOTARY_KEY_ID" \
+  --issuer "$MACOS_NOTARY_ISSUER_ID"
+```
+
+Match the submission IDs from the release job to history and require `Accepted`
+for each architecture. To verify App Management grant continuity, install one
+signed release, grant its requested permission, then replace it with the next
+signed release at the same path and repeat the operation that required the
+grant. It should succeed without another permission prompt. A migration from
+an older ad-hoc signed binary may require a new grant once.
+
+### Checksums
+
+Each release publishes the existing minisign signature
+`detent_<version>_checksums.txt.minisig` and an additional keyless cosign bundle
+`detent_<version>_checksums.txt.sigstore.json`. Minisign keys, release provenance,
+and the self-updater's minisign verification remain unchanged. Linux artifacts
+are covered by the signed checksums; Windows executable signing is not enabled.
+
+Download the checksums, cosign bundle, and desired archives from the same
+release. Set `tag` to the exact release tag you intend to trust, then verify
+with cosign v3:
+
+```sh
+tag=v1.2.3
+checksums="detent_${tag#v}_checksums.txt"
+cosign verify-blob \
+  --bundle "$checksums.sigstore.json" \
+  --certificate-identity "https://github.com/digitaldrywood/detent/.github/workflows/release.yml@refs/tags/$tag" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  "$checksums"
+```
+
+Require successful signature verification before comparing downloaded files to
+the checksums. On Linux use `sha256sum --check --ignore-missing "$checksums"`;
+on macOS use `shasum -a 256 <archive>` and compare the result to that archive's
+entry. The bundle includes the signing certificate and transparency-log
+evidence. Trust the exact workflow and tag identity above, rather than an
+identity copied from an unverified certificate. See the
+[GoReleaser cosign configuration](https://goreleaser.com/customization/sign/sign/#signing-with-cosign)
+and [Sigstore blob signing documentation](https://docs.sigstore.dev/cosign/signing/signing_with_blobs/).
+
 ## Host-admin update boundaries
 
 Detent enforces signed provenance for its release-managed self-update path,
