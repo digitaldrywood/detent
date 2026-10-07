@@ -20,14 +20,16 @@ test("loads all 79 open cards without global pagination", async ({ page }) => {
     .filter(({ url }) => url.pathname.endsWith("/work-items"))
     .map(({ url }) => ({ project: url.pathname, states: url.searchParams.getAll("state"),
       open: url.searchParams.get("open"), limit: url.searchParams.get("limit"), include: url.searchParams.get("include") })));
-  expect(requests).toHaveLength(4);
+  expect(requests).toHaveLength(6);
   for (const project of new Set(requests.map((request) => request.project))) {
-    const pages = requests.filter((request) => request.project === project);
+    const totals = requests.filter((request) => request.project === project && request.include === "work");
+    expect(totals).toEqual([{ project, states: [], open: null, limit: "1", include: "work" }]);
+    const pages = requests.filter((request) => request.project === project && request.include === null);
+    expect(pages).toHaveLength(2);
     expect(pages[0].states).not.toContain("Backlog");
     expect(pages[1].states).toEqual(["Backlog"]);
-    expect(pages.filter((request) => request.include === "work")).toHaveLength(1);
+    expect(pages.every((request) => request.open === "true" && request.limit === "200")).toBe(true);
   }
-  expect(requests.every((request) => request.open === "true" && request.limit === "200")).toBe(true);
 });
 
 test("continues Backlog inside its scroll body and retains the server count", async ({ page }) => {

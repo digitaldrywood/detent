@@ -914,7 +914,7 @@ describe("the cached Work read", () => {
     }
     const mounted = render(<ClientContext.Provider value={fixture.client}><Probe /><Probe /></ClientContext.Provider>);
     await waitFor(() => expect(snapshots.at(-1)!.resolved).toBe(true));
-    expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))).toHaveLength(2);
+    expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))).toHaveLength(3);
     expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/proj_alpha"))).toHaveLength(1);
     mounted.unmount();
     hold = true;
@@ -974,7 +974,7 @@ describe("the live Work continuation intent", () => {
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
     await waitFor(() => expect(current.loading).toBe(false));
     expect(current.totals).toMatchObject(mode === "board"
-      ? { running: 1, queued: 413, open: 415, completed: 0, total: 415 }
+      ? { running: 1, queued: 413, open: 415, completed: 131, total: 546 }
       : { running: 1, queued: 8, open: 10, completed: 131, total: 141 });
     const deferred = fixture.deferPage();
     act(() => mode === "board" ? current.loadBacklog() : current.loadMore());
