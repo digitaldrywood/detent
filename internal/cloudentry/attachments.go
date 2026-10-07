@@ -506,6 +506,9 @@ func (s *Service) sweepOrganizationAttachments(ctx context.Context, organization
 			return err
 		}
 	}
+	if err := s.sweepDiffBodyOrphans(ctx, organization); err != nil {
+		return err
+	}
 	prefix, err := attachment.OrganizationPrefix(organization.ID)
 	if err != nil {
 		return err

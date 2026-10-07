@@ -115,7 +115,7 @@ func apiRequestBodyLimit(c echo.Context) int64 {
 	if c.Path() == nativeBase+"/work-items/:item/source-intake" || c.Path() == nativeBase+"/onboarding/issue-intake/result" {
 		return 64 << 20
 	}
-	if c.Path() == nativeBase+"/attempts/:attempt/diff" {
+	if c.Path() == nativeBase+"/attempts/:attempt/diff" || c.Path() == nativeBase+"/attempts/:attempt/diff/check" {
 		return maxAttemptDiffRequestBytes
 	}
 	if c.Path() == nativeBase+"/workspaces/:workspace/worker/action-runs" {

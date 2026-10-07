@@ -118,6 +118,7 @@ func (s *Service) startAllocator(parent context.Context) {
 				s.resumeDeletions(ctx)
 				s.provisionDue(ctx)
 			}
+			s.maintainOrganizationDiffBodies(ctx)
 			s.sweepAttachments(ctx)
 			select {
 			case <-ctx.Done():

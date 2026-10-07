@@ -20,6 +20,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 var strippedRequestHeaders = []string{
@@ -262,11 +263,15 @@ func (s *Service) proxy(c echo.Context) error {
 		}
 		return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
 	}
-	body, err := io.ReadAll(io.LimitReader(request.Body, cloudassert.MaxBodyBytes+1))
+	limit := int64(cloudassert.MaxBodyBytes)
+	if diffUploadRequest(request) {
+		limit = 6*tracker.MaxDiffBytes + (1 << 20)
+	}
+	body, err := io.ReadAll(io.LimitReader(request.Body, limit+1))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"code": "invalid_request", "message": "Request body could not be read"})
 	}
-	if len(body) > cloudassert.MaxBodyBytes {
+	if int64(len(body)) > limit {
 		return c.JSON(http.StatusRequestEntityTooLarge, map[string]string{"code": "payload_too_large", "message": "Request body is too large"})
 	}
 	claims, err := s.claims(organization, cloudassert.KindMachine, request.Method, request.URL.RequestURI(), body)
@@ -281,6 +286,22 @@ func (s *Service) proxy(c echo.Context) error {
 			defer s.logProxied(c, organization.ID, verification, started)
 			return s.browserFailure(c, organization.ID, status)
 		}
+	}
+	if diffUploadRequest(request) {
+		replacement, status, result, err := s.uploadAttemptDiff(c, organization, claims, body)
+		if status != 0 || err != nil {
+			if len(result) > 0 {
+				return c.Blob(status, echo.MIMEApplicationJSON, result)
+			}
+			if status == 0 {
+				status = http.StatusBadGateway
+			}
+			return c.JSON(status, map[string]string{"code": "diff_unavailable", "message": "Diff could not be stored"})
+		}
+		body = replacement
+		claims.BodyDigest = cloudassert.BodyDigest(body)
+		claims.IssuedAt = s.config.now()
+		claims.ExpiresAt = claims.IssuedAt.Add(assertionLifetime)
 	}
 	authorized := time.Since(started)
 	defer func() { s.logProxied(c, organization.ID, verification, started, "auth_ms", authorized.Milliseconds()) }()
@@ -313,6 +334,9 @@ func (s *Service) proxy(c echo.Context) error {
 				if err := s.refreshGitHubRoutes(c.Request().Context(), organization); err != nil {
 					return err
 				}
+			}
+			if err := s.attemptDiffResponse(c, organization, body, response); err != nil {
+				return err
 			}
 			if err := s.attachmentMCPResponse(c, body, response); err != nil {
 				return err
@@ -398,17 +422,25 @@ func (s *Service) signedCallCSRF(ctx context.Context, organization Organization,
 	if csrf != "" {
 		request.Header.Set("X-CSRF-Token", csrf)
 	}
-	response, err := (&http.Client{Transport: transport, Timeout: 15 * time.Second}).Do(request)
+	timeout := 15 * time.Second
+	if claims.Path == "/internal/v1/diff-bodies/vacuum" {
+		timeout = 5 * time.Minute
+	}
+	response, err := (&http.Client{Transport: transport, Timeout: timeout}).Do(request)
 	if err != nil {
 		return 0, nil, err
 	}
 	defer response.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(response.Body, tenantCallResponseLimit+1))
+	limit := int64(tenantCallResponseLimit)
+	if claims.Path == "/internal/v1/diff-bodies/batch" {
+		limit = 6*tracker.MaxDiffPatchBytes + (1 << 20)
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
 		return 0, nil, err
 	}
-	if len(raw) > tenantCallResponseLimit {
-		return 0, nil, fmt.Errorf("tenant %s %s response exceeds %d bytes", request.Method, request.URL.Path, tenantCallResponseLimit)
+	if int64(len(raw)) > limit {
+		return 0, nil, fmt.Errorf("tenant %s %s response exceeds %d bytes", request.Method, request.URL.Path, limit)
 	}
 	return response.StatusCode, raw, nil
 }
