@@ -312,7 +312,11 @@ test.describe("the work board", () => {
     await expect(
       lane.getByRole("button", { name: "Review the invitation flow", exact: true }),
     ).toBeVisible();
+    const moved = page.waitForResponse((response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname.endsWith("/workflow"));
     released();
+    expect((await moved).ok()).toBe(true);
 
     // The card lands in the new lane and stays there across a reload, which is
     // what proves the move reached the hub rather than only the screen.

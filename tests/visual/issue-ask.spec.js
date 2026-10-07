@@ -60,6 +60,20 @@ test("header and keyboard open the private Ask tab", async ({ page }) => {
 for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844 }]) {
   test(`Ask composer grows and sends multiline questions at ${viewport.width}px`, async ({ page }, testInfo) => {
     await page.setViewportSize(viewport);
+    await page.addInitScript(() => {
+      const NativeEventSource = window.EventSource;
+      window.projectStreams = new Set();
+      window.EventSource = class extends NativeEventSource {
+        constructor(url, options) {
+          super(url, options);
+          if (/\/projects\/[^/]+\/events$/.test(String(url))) window.projectStreams.add(this);
+        }
+        close() {
+          window.projectStreams.delete(this);
+          super.close();
+        }
+      };
+    });
     const title = "Renew the lease before the handoff completes while preserving the earlier questions and attached issue context across the entire conversation";
     await page.route(`**/work-items/${hub.fixture.work_item}`, async (route) => {
       const response = await route.fetch();
@@ -130,6 +144,7 @@ for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844
     await expect(ask.getByRole("textbox", { name: "Ask message", exact: true })).toHaveCount(1);
     await expect(ask.getByRole("button", { name: "#2 attached", exact: true })).toHaveCount(0);
     await expect(ask.getByRole("button", { name: "Split into smaller issues", exact: true })).toHaveCount(0);
+    expect(await page.evaluate(() => window.projectStreams.size)).toBe(1);
     const chats = await read(page, `conversations?subject_work_item_id=${hub.fixture.work_item}`);
     const detail = await read(page, `conversations/${chats.conversations[0].id}`);
     expect(detail.messages.find((message) => message.role === "user").text).toBe("Why is this Blocked?\nPlease summarize the history.");

@@ -10,10 +10,10 @@
     "preview:gallery": "vite preview --config vite.gallery.config.ts --mode gallery --outDir dist-gallery",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "design:catalog": "tsx scripts/design-catalog.ts",
-    "design:catalog:check": "tsx scripts/design-catalog.ts --check",
-    "design:tokens": "tsx scripts/design-tokens.ts",
-    "design:tokens:check": "tsx scripts/design-tokens.ts --check"
+    "design:catalog": "node --import tsx scripts/design-catalog.ts",
+    "design:catalog:check": "node --import tsx scripts/design-catalog.ts --check",
+    "design:tokens": "node --import tsx scripts/design-tokens.ts",
+    "design:tokens:check": "node --import tsx scripts/design-tokens.ts --check"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",

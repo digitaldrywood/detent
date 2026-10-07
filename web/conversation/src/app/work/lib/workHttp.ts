@@ -13,7 +13,7 @@
 // `X-CSRF-Token` from the bootstrap payload, which the hosted boundary
 // requires of any non-GET without an `Authorization` header.
 import * as Schema from "effect/Schema";
-import { IssueExplanation } from "../../../contracts/diagnostics.ts";
+import { HealthFindingsRead, IssueExplanation } from "../../../contracts/diagnostics.ts";
 import { ConversationSnapshot } from "../../../contracts/conversation.ts";
 
 import {
@@ -158,6 +158,7 @@ export interface WorkHttp {
    * emits `event: activity` with a bare decimal sequence as its data.
    */
   readonly eventsUrl: (projectId: string, workspaceId?: string, workItemId?: string) => string;
+  readonly listHealthFindings: (projectId: string, cursor?: string, signal?: AbortSignal) => Promise<HealthFindingsRead>;
   readonly getProject: (projectId: string, signal?: AbortSignal) => Promise<NativeProject>;
   readonly listWorkItems: (input: ListWorkItemsInput) => Promise<WorkItemPage>;
   readonly getWorkItem: (projectId: string, itemId: string) => Promise<NativeIssue>;
@@ -544,6 +545,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     apiBase: options.apiBase,
     eventsUrl: (projectId, workspaceId, workItemId) =>
       url(hubPath(`/projects/${encodeURIComponent(projectId)}/events`), { workspace: workspaceId, work_item: workItemId }),
+    listHealthFindings: (projectId, cursor, signal) => send(HealthFindingsRead, "GET", url(`${projectBase(projectId)}/health/findings`, { cursor }), undefined, signal),
     getProject: (projectId, signal) => send(NativeProject, "GET", url(projectBase(projectId)), undefined, signal),
     listWorkItems: (input) =>
       send(
