@@ -89,13 +89,6 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	if err := validateChangeVersion(request.ChangeVersionInput); err != nil {
 		return nil, err
 	}
-	if request.Source != nil {
-		if err := request.Source.Validate(request.BaseSHA, request.HeadSHA, request.SourceBundle); err != nil {
-			return nil, nativeInvalid(err.Error())
-		}
-	} else if len(request.SourceBundle) != 0 {
-		return nil, nativeInvalid("Source bundle requires immutable source metadata")
-	}
 	approved, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
 		return nil, err
@@ -126,11 +119,6 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO change_versions (id, change_id, number, record_json) VALUES (?, ?, ?, ?)", version.ID, change.ID, version.Number, raw); err != nil {
 		return nil, err
-	}
-	if version.Source != nil {
-		if _, err := tx.ExecContext(ctx, "INSERT INTO change_sources (version_id, bundle) VALUES (?, ?)", version.ID, request.SourceBundle); err != nil {
-			return nil, err
-		}
 	}
 	change.CurrentVersion, change.UpdatedAt = version.ID, now
 	change.Revision++

@@ -1119,31 +1119,9 @@ commits, under the run's lease, and then publishes the run's head as the
 change's version: `base_sha` and `merge_base_sha` are the attempt diff's base,
 `repository` is the https form of the checkout's origin remote, and `code`
 names the head commit under that repository with `availability` `unverified`.
-The runner also captures a Git bundle of the finalized head, excluding its base
-history, and publishes `source` metadata with base/head identities, bundle and
-raw Git diff SHA-256 digests, format and byte count, plus a base64 `source_bundle`.
-The Hub stores these bytes atomically with the fenced version and serves them
-through its version-scoped source read. Bundles are limited to 20 MiB; publication
-requests permit 28 MiB to accommodate base64 encoding. Version metadata reads
-contain no bundle bytes. Captured source excludes workspace setup and credentials.
-
-A rework run whose head, retained source and policy already match the current
-version reuses that version; another head, a policy update, or capture of a legacy
-version's missing source creates a new version with current validation. A forge
-commit URI marked `unverified` never establishes source availability. Rework and
-landing retrieve retained source through the scoped Hub read, verify its digests
-and Git identities, then use the existing refresh and validation path. An older
-committed attempt checkpoint does not supersede the authoritative
-current Change: a clean checkout at its recovered current head starts a fresh
-session, even when the older checkpoint has another head or workspace digest.
-Dirty work, manual recovery requirements, and pending or ambiguous forge effects
-retain their recovery requirements. Lease fencing and current-version publication
-checks remain mandatory, and an older review cannot validate a new head. A legacy
-version without retained bytes must exist in the authorized checkout; otherwise
-recovery refuses a fresh base checkout and requests resumption on the source-owning
-runner to republish the exact head with source capture.
-
-A version the Hub refuses (no https remote, unavailable source, a stale review policy) is
+A rework run whose head is already the current version publishes nothing; any
+other head becomes the next version, so every reviewed head is an immutable
+record. A version the Hub refuses (no https remote, a stale review policy) is
 reported on the run's completion comment and the Change Request stays a draft
 until the next successful run publishes one.
 
@@ -1170,7 +1148,6 @@ also supply their current `lease_id`, `fencing_token`, `run_id`, and `attempt_id
 | `POST /work-items/{item}/changes` | Worker/operator; `title`, `body`, optional `linked_issues` |
 | `GET /work-items/{item}/changes/{change}` | Consistent detail with versions, decisions, checks, discussion and current summary |
 | `POST /work-items/{item}/changes/{change}/versions` | Publish through the primary issue with `expected_version_id` |
-| `GET /work-items/{item}/changes/{change}/versions/{version}/source` | Worker/operator; bounded immutable Git bundle from the authorized project and Change version |
 | `POST /work-items/{item}/changes/{change}/discussion` | Append `body`, optional `version_id`; only operators can import `provenance` |
 | `POST /work-items/{item}/changes/{change}/versions/{version}/reviews` | Operator decision: `approved`, `changes_requested`, or `commented`, plus optional `body` |
 | `POST /work-items/{item}/changes/{change}/versions/{version}/checks` | Credential pinned in the immutable expected check set |
