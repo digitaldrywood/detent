@@ -13,6 +13,9 @@ export interface BoardData {
   readonly cached: boolean;
   readonly totals: ScopedWorkStats | null;
   readonly hasMore: boolean;
+  readonly backlogHasMore: boolean;
+  readonly backlogLoading: boolean;
+  readonly backlogTotal: number;
   readonly loading: boolean;
   readonly error: string | null;
   readonly project: ProjectView | null;
@@ -28,7 +31,7 @@ export interface BoardData {
 }
 
 const EMPTY: BoardData = {
-  resolved: false, refreshing: false, cached: false, totals: null, hasMore: false,
+  resolved: false, refreshing: false, cached: false, totals: null, hasMore: false, backlogHasMore: false, backlogLoading: false, backlogTotal: 0,
   loading: true, error: null, project: null, workflows: [], lanes: [], items: [],
   labels: [], assignees: [], priorities: [], truncated: false, enriched: 0, asOf: null,
 };
@@ -39,6 +42,9 @@ const LoadedSchema = Schema.Struct({
   work: Schema.optional(NativeWorkSummary),
   nextCursor: Schema.optional(Schema.String),
   pageCount: Schema.Number,
+  backlogCursor: Schema.optional(Schema.String),
+  backlogPageCount: Schema.Number,
+  backlogTotal: Schema.Number,
 });
 type Loaded = typeof LoadedSchema.Type;
 
@@ -145,7 +151,7 @@ function getProject(http: WorkHttp, id: string): Promise<NativeProject> {
 function normalized(view: WorkViewState): WorkViewState {
   const values = (entries: readonly string[]) => [...new Set(entries)].sort();
   return { ...view, q: view.q.trim(), state: view.view === "list" ? [] : values(view.state), label: values(view.label),
-    assignee: values(view.assignee), priority: values(view.priority) };
+    assignee: values(view.assignee), priority: values(view.priority), lanes: view.lanes === null ? null : values(view.lanes) };
 }
 
 export function getBoardRead(client: BoardAccount, http: WorkHttp, projectId: string | null, input: WorkViewState): BoardRead {
@@ -156,7 +162,7 @@ export function getBoardRead(client: BoardAccount, http: WorkHttp, projectId: st
   const view = normalized(input);
   const key = JSON.stringify([owner, projectId, scope, view.q, view.state, view.label, view.assignee,
     view.priority.map((name) => String(priorityValue(name) ?? name)).sort(), view.archived === true, view.completedWindow,
-    view.view, view.view === "list" ? view.tab : null, effectiveSort(view) === "closed"]);
+    view.view, view.view === "list" ? view.tab : view.lanes, effectiveSort(view) === "closed"]);
   let board = boards.get(key);
   if (board !== undefined) {
     boards.delete(key);
@@ -252,6 +258,8 @@ export class BoardRead {
       const entries = Schema.decodeUnknownSync(Schema.Array(LoadedSchema))(stored.entries);
       if (entries.length !== this.scope.length || entries.some((entry, index) => entry.project.project_id !== this.scope[index] ||
         !Number.isInteger(entry.pageCount) || entry.pageCount < 1 ||
+        !Number.isInteger(entry.backlogPageCount) || entry.backlogPageCount < 0 ||
+        !Number.isInteger(entry.backlogTotal) || entry.backlogTotal < 0 ||
         [...entry.issues, ...(entry.work?.items ?? [])].some((issue) => issue.project_id !== entry.project.project_id))) return;
       this.entries = entries;
       this.publish({ ...this.build(entries, stored.asOf), cached: true, refreshing: this.controller !== null, error: this.state.error });
@@ -260,26 +268,90 @@ export class BoardRead {
     }
   }
 
-  private async loadProject(id: string, signal: AbortSignal, cursor?: string): Promise<Loaded> {
+  private async loadProject(id: string, signal: AbortSignal, previous?: Loaded, continuing = false): Promise<Loaded> {
     const project = await getProject(this.http, id);
-    const filters = {
-      projectId: id, includeWork: true, completedWindow: this.view.completedWindow, q: this.view.q,
+    const board = this.view.view === "board";
+    if (!board) {
+      if (continuing && previous?.nextCursor === undefined) return previous!;
+      const filters = {
+        projectId: id, includeWork: true, completedWindow: this.view.completedWindow, q: this.view.q,
+        archived: this.view.archived === true, label: this.view.label, assignee: this.view.assignee,
+        priority: this.view.priority.map((name) => String(priorityValue(name) ?? name)), signal,
+      };
+      const issues = continuing ? [...(previous?.issues ?? [])] : [];
+      let cursor = continuing ? previous?.nextCursor : undefined;
+      let pageCount = continuing ? previous!.pageCount : 0;
+      let work: Loaded["work"];
+      do {
+        signal.throwIfAborted();
+        const [page, totals] = await Promise.all([
+          this.http.listWorkItems({ ...filters, limit: 100, ...tabQuery(this.view, toLanes(project)),
+            sort: effectiveSort(this.view) === "closed" ? "closed" : undefined, cursor }),
+          this.http.listWorkItems({ ...filters, limit: 1 }),
+        ]);
+        issues.push(...page.items);
+        work = totals.work ?? page.work;
+        cursor = page.next_cursor;
+        pageCount++;
+      } while (cursor !== undefined && !continuing &&
+        (pageCount < (previous?.pageCount ?? 1) || ["active", "backlog"].includes(this.view.tab)));
+      return { project, issues, work, nextCursor: cursor, pageCount,
+        backlogPageCount: 0, backlogTotal: 0 };
+    }
+    const states = project.states.filter((state) => !state.terminal &&
+      (this.view.lanes === null || this.view.lanes.includes(state.name)) &&
+      (this.view.state.length === 0 || this.view.state.includes(state.name)));
+    const active = states.filter((state) => state.name.toLowerCase() !== "backlog").map((state) => state.name);
+    const backlog = states.find((state) => state.name.toLowerCase() === "backlog");
+    const readPage = (state: readonly string[], cursor?: string, includeWork = false) => this.http.listWorkItems({
+      projectId: id, limit: 200, includeWork, open: true,
+      completedWindow: this.view.completedWindow, q: this.view.q, state,
       archived: this.view.archived === true, label: this.view.label, assignee: this.view.assignee,
-      priority: this.view.priority.map((name) => String(priorityValue(name) ?? name)), signal,
-    };
-    const [page, totals] = await Promise.all([
-      this.http.listWorkItems({ ...filters, limit: 100, ...tabQuery(this.view, toLanes(project)),
-        sort: effectiveSort(this.view) === "closed" ? "closed" : undefined, cursor }),
-      this.view.view === "list" ? this.http.listWorkItems({ ...filters, limit: 1 }) : Promise.resolve(null),
-    ]);
-    return { project, issues: this.view.view === "list" ? page.items : [...(page.work?.items ?? []), ...page.items],
-      work: totals?.work ?? page.work, nextCursor: page.next_cursor, pageCount: 1 };
+      priority: this.view.priority.map((name) => String(priorityValue(name) ?? name)), cursor, signal,
+    });
+    if (continuing) {
+      if (previous?.backlogCursor === undefined || backlog === undefined) return previous!;
+      const page = await readPage([backlog.name], previous.backlogCursor);
+      return { ...previous, issues: [...previous.issues, ...page.items], backlogCursor: page.next_cursor,
+        backlogPageCount: previous.backlogPageCount + 1 };
+    }
+    const issues: NativeIssue[] = [];
+    let work: Loaded["work"];
+    let cursor: string | undefined;
+    let pageCount = 0;
+    if (active.length > 0) {
+      do {
+        signal.throwIfAborted();
+        const page = await readPage(active, cursor, pageCount === 0);
+        work ??= page.work;
+        issues.push(...page.items);
+        cursor = page.next_cursor;
+        pageCount++;
+      } while (cursor !== undefined);
+    }
+    let backlogCursor: string | undefined;
+    let backlogPageCount = 0;
+    let backlogTotal = 0;
+    if (backlog !== undefined) {
+      do {
+        signal.throwIfAborted();
+        const page = await readPage([backlog.name], backlogCursor, backlogPageCount === 0 && pageCount === 0);
+        work ??= page.work;
+        backlogTotal = page.total ?? work?.lanes.find((lane) => lane.state === backlog.name)?.total ?? backlogTotal;
+        issues.push(...page.items);
+        backlogCursor = page.next_cursor;
+        backlogPageCount++;
+      } while (backlogCursor !== undefined && backlogPageCount < (previous?.backlogPageCount ?? 1));
+    }
+    return { project, issues, work, nextCursor: cursor, pageCount: Math.max(1, pageCount),
+      backlogCursor, backlogPageCount, backlogTotal };
   }
 
   private matches(issue: NativeIssue, project: NativeProject): boolean {
     const view = this.view;
     const q = view.q.toLowerCase();
-    return (issue.archived === true) === (view.archived === true) &&
+    return (view.view !== "board" || (!issue.terminal && project.states.some((state) => state.name === issue.state && !state.terminal) &&
+      (view.lanes === null || view.lanes.includes(issue.state)))) && (issue.archived === true) === (view.archived === true) &&
       (view.view === "list" ? tabMatches(view.tab, { state: issue.state, terminal: project.states.find((state) => state.name === issue.state)?.terminal ?? issue.terminal })
         : view.state.length === 0 || view.state.includes(issue.state)) &&
       (view.label.length === 0 || view.label.some((label) => issue.labels.includes(label))) &&
@@ -300,7 +372,13 @@ export class BoardRead {
   };
 
   loadMore = (): void => {
-    if (!this.state.hasMore || this.continuation) return;
+    if (this.view.view === "board" || !this.state.hasMore || this.continuation) return;
+    this.dispose();
+    this.read(true);
+  };
+
+  loadBacklog = (): void => {
+    if (!this.state.backlogHasMore || this.continuation) return;
     this.dispose();
     this.read(true);
   };
@@ -314,24 +392,16 @@ export class BoardRead {
     const signal = controller.signal;
     const generation = ++this.generation;
     let prior = this.entries;
-    this.publish({ ...this.state, loading: continuing || !this.state.resolved, refreshing: true, error: null });
+    this.publish({ ...this.state, loading: (!this.state.resolved || (continuing && this.view.view !== "board")),
+      backlogLoading: continuing && this.view.view === "board", refreshing: true, error: null });
     if (!this.state.resolved) void this.restore(generation);
     void (async () => {
       try {
         const loaded = await pooled(this.scope, async (id) => {
           if (!continuing && prior.length === 0 && this.entries.length > 0) prior = this.entries;
           const previous = prior.find((entry) => entry.project.project_id === id);
-          if (continuing && previous !== undefined && previous.nextCursor === undefined) return previous;
-          let entry = await this.loadProject(id, signal, continuing ? previous?.nextCursor : undefined);
-          const issues = continuing ? [...(previous?.issues ?? []), ...entry.issues] : [...entry.issues];
-          let pageCount = continuing ? (previous?.pageCount ?? 0) + 1 : 1;
-          const pages = () => previous?.pageCount ?? this.entries.find((candidate) => candidate.project.project_id === id)?.pageCount ?? 1;
-          while (!continuing && (pageCount < pages() || (this.view.view === "list" && ["active", "backlog"].includes(this.view.tab))) && entry.nextCursor !== undefined) {
-            signal.throwIfAborted();
-            entry = await this.loadProject(id, signal, entry.nextCursor);
-            issues.push(...entry.issues);
-            pageCount++;
-          }
+          const entry = await this.loadProject(id, signal, previous, continuing);
+          const issues = entry.issues;
           let changed = false;
           const previousItems = new Map(this.entries.flatMap((entry) => entry.issues).map((issue) => [issue.work_item_id, issue]));
           const current = [...new Map(issues.map((issue) => [issue.work_item_id, issue])).values()]
@@ -349,7 +419,7 @@ export class BoardRead {
             current.push(issue);
             changed = true;
           }
-          return { ...entry, pageCount, issues: current, work: changed ? undefined : entry.work };
+          return { ...entry, issues: current, work: changed ? undefined : entry.work };
         });
         if (signal.aborted || generation !== this.generation) return;
         this.entries = loaded;
@@ -359,7 +429,7 @@ export class BoardRead {
       } catch (cause) {
         if (signal.aborted || generation !== this.generation) return;
         if (unauthorized(cause)) rejectBoardCache(this.owner);
-        else this.publish({ ...this.state, loading: false, refreshing: false,
+        else this.publish({ ...this.state, loading: false, backlogLoading: false, refreshing: false,
           error: cause instanceof Error ? cause.message : String(cause) });
       } finally {
         if (generation !== this.generation) return;
@@ -394,6 +464,15 @@ export class BoardRead {
           else if (state?.dispatchable || lane.state.toLowerCase() === "backlog") queued += lane.total - lane.running;
         }
       }
+      if (this.view.view === "board") {
+        for (const entry of loaded) {
+          const backlog = entry.project.states.find((state) => state.name.toLowerCase() === "backlog");
+          if (backlog === undefined || entry.work!.lanes.some((lane) => lane.state === backlog.name)) continue;
+          counts[backlog.name] = (counts[backlog.name] ?? 0) + entry.backlogTotal;
+          total += entry.backlogTotal;
+          queued += entry.backlogTotal;
+        }
+      }
       const completed = loaded.every((entry) => entry.work!.completed !== undefined)
         ? loaded.reduce((count, entry) => count + entry.work!.completed!, 0)
         : this.view.completedWindow === "all" ? closed : null;
@@ -419,10 +498,12 @@ export class BoardRead {
     };
     facets.set(this.facetKey, choices);
     return { resolved: true, refreshing: false, cached: false, loading: false, error: null,
-      totals, hasMore: loaded.some((entry) => entry.nextCursor !== undefined),
+      totals, hasMore: this.view.view !== "board" && loaded.some((entry) => entry.nextCursor !== undefined),
+      backlogHasMore: loaded.some((entry) => entry.backlogCursor !== undefined), backlogLoading: false,
+      backlogTotal: loaded.reduce((total, entry) => total + entry.backlogTotal, 0),
       project: this.projectId === null ? null : { ...current, ...choices, lanes },
       workflows: loaded.map((entry) => entry.project), lanes, items, ...choices,
-      truncated: loaded.some((entry) => entry.nextCursor !== undefined), enriched: 0, asOf };
+      truncated: loaded.some((entry) => entry.nextCursor !== undefined || entry.backlogCursor !== undefined), enriched: 0, asOf };
   }
 
   private enrich(loaded: readonly Loaded[], generation: number): void {

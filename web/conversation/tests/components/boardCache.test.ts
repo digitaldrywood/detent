@@ -20,11 +20,51 @@ async function fixture() {
   const source = workPaginationFixture();
   await source.control();
   const http = makeWorkHttp({ ...source.client.http, fetch: source.fetch });
-  const read = getBoardRead(source.client, http, null, DEFAULT_VIEW_STATE);
+  const read = getBoardRead(source.client, http, null, { ...DEFAULT_VIEW_STATE, view: "list", tab: "all" });
   return { ...source, http, read };
 }
 
 describe("the Work snapshot ordering", () => {
+  it("drains active pages before settling and continues only Backlog", async () => {
+    const source = workPaginationFixture();
+    await source.control({ activeOverflow: true, backlogOverflow: true });
+    const http = makeWorkHttp({ ...source.client.http, fetch: source.fetch });
+    const read = getBoardRead(source.client, http, "proj_alpha", DEFAULT_VIEW_STATE);
+    const held = source.deferPage();
+    read.start();
+    await held.waiting;
+    expect(read.snapshot().resolved).toBe(false);
+    expect(read.snapshot().loading).toBe(true);
+    held.release();
+    await expect.poll(() => read.snapshot().resolved).toBe(true);
+    expect(read.snapshot().hasMore).toBe(false);
+    expect(read.snapshot().items.filter((item) => item.state !== "Backlog")).toHaveLength(217);
+    expect(read.snapshot().items.filter((item) => item.state === "Backlog")).toHaveLength(200);
+    expect(read.snapshot().backlogHasMore).toBe(true);
+    expect(read.snapshot().backlogTotal).toBe(405);
+    expect(read.snapshot().totals?.lanes.Backlog).toBe(405);
+    const initial = source.requests.filter(({ url }) => url.pathname.endsWith("/work-items"));
+    expect(initial).toHaveLength(3);
+    expect(initial.filter(({ url }) => url.searchParams.get("include") === "work")).toHaveLength(1);
+    expect(initial[0]!.url.searchParams.getAll("state")).not.toContain("Backlog");
+    expect(initial.every(({ url }) => url.searchParams.get("open") === "true" && url.searchParams.get("limit") === "200")).toBe(true);
+    const before = source.requests.length;
+    read.loadBacklog();
+    await expect.poll(() => read.snapshot().backlogLoading).toBe(false);
+    expect(read.snapshot().items.filter((item) => item.state === "Backlog")).toHaveLength(400);
+    expect(read.snapshot().hasMore).toBe(false);
+    const pages = source.requests.slice(before).filter(({ url }) => url.pathname.endsWith("/work-items"));
+    expect(pages).toHaveLength(1);
+    expect(pages[0]!.url.searchParams.getAll("state")).toEqual(["Backlog"]);
+    expect(pages[0]!.url.searchParams.has("include")).toBe(false);
+    read.reload();
+    await expect.poll(() => read.snapshot().refreshing).toBe(false);
+    expect(read.snapshot().items.filter((item) => item.state === "Backlog")).toHaveLength(400);
+    read.loadBacklog();
+    await expect.poll(() => read.snapshot().backlogHasMore).toBe(false);
+    expect(read.snapshot().items.filter((item) => item.state === "Backlog")).toHaveLength(405);
+  });
+
   it.each(["disk-first", "network-first"])("keeps fresh revisions with %s completion", async (order) => {
     const stored: disk.BoardDiskRecord[] = [];
     vi.spyOn(disk, "updateBoardDisk").mockImplementation(async (_account, record) => { if (record) stored.push(record); });
@@ -52,7 +92,7 @@ describe("the Work snapshot ordering", () => {
       if (body.work) body.work.items = body.work.items.map((issue: NativeIssue) => issue.work_item_id === id ? { ...issue, revision: "900", title: "Fresh network title" } : issue);
       return Response.json(body);
     } });
-    const read = getBoardRead(source.client, http, null, DEFAULT_VIEW_STATE);
+    const read = getBoardRead(source.client, http, null, { ...DEFAULT_VIEW_STATE, view: "list", tab: "all" });
     read.reload();
     if (order === "disk-first") {
       diskRead.resolve(snapshot);
@@ -88,7 +128,7 @@ describe("the Work snapshot ordering", () => {
       await network.promise;
       return source.fetch(...args);
     } });
-    const read = getBoardRead(source.client, http, null, DEFAULT_VIEW_STATE);
+    const read = getBoardRead(source.client, http, null, { ...DEFAULT_VIEW_STATE, view: "list", tab: "all" });
     read.reload();
     expect(started).toBe(true);
     diskRead.resolve(failure === "storage-failure" ? null : { ...snapshot,
@@ -118,7 +158,7 @@ describe("the Work snapshot ordering", () => {
       if (holding && String(args[0]).includes("/work-items?")) await network.promise;
       return response;
     } });
-    const read = getBoardRead(source.client, http, "proj_alpha", DEFAULT_VIEW_STATE);
+    const read = getBoardRead(source.client, http, "proj_alpha", { ...DEFAULT_VIEW_STATE, view: "list", tab: "all" });
     read.reload();
     await expect.poll(() => read.snapshot().resolved).toBe(true);
     const native = (stored.at(-1)!.entries as { issues: NativeIssue[] }[])[0]!.issues.find((issue) => !issue.terminal)!;
@@ -171,7 +211,7 @@ describe("the Work snapshot ordering", () => {
     expect(source.read.snapshot().totals).toBeNull();
     expect(writes.mock.calls.at(-1)?.[0]).toBeNull();
     const other = { ...source.client, bootstrap: { ...source.client.bootstrap, actor: { ...source.client.bootstrap.actor, principal_id: "another" } } };
-    const read = getBoardRead(other, source.http, null, DEFAULT_VIEW_STATE);
+    const read = getBoardRead(other, source.http, null, { ...DEFAULT_VIEW_STATE, view: "list", tab: "all" });
     read.reload();
     await expect.poll(() => read.snapshot().resolved).toBe(true);
     rejectBoardCache(source.read.owner);

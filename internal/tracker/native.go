@@ -362,7 +362,8 @@ type Page[T any] struct {
 
 type NativeIssuePage struct {
 	Page[NativeIssue]
-	Work *NativeWorkSummary `json:"work,omitempty"`
+	Total int                `json:"total"`
+	Work  *NativeWorkSummary `json:"work,omitempty"`
 }
 
 type NativeWorkSummary struct {

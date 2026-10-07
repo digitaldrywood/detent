@@ -329,7 +329,8 @@ func (r WorkReadRequest) NativeWorkQuery() url.Values {
 
 type NativeWorkPage struct {
 	tracker.Page[NativeItem]
-	Work *NativeWorkSummary `json:"work,omitempty"`
+	Total int                `json:"total"`
+	Work  *NativeWorkSummary `json:"work,omitempty"`
 }
 
 type NativeWorkSummary struct {
@@ -340,7 +341,7 @@ type NativeWorkSummary struct {
 }
 
 func NativeWorkPageView(projectID string, page tracker.NativeIssuePage) NativeWorkPage {
-	result := NativeWorkPage{Page: NativeItemPage(projectID, page.Page)}
+	result := NativeWorkPage{Page: NativeItemPage(projectID, page.Page), Total: page.Total}
 	if page.Work != nil {
 		items := NativeItemPage(projectID, tracker.Page[tracker.NativeIssue]{Items: page.Work.Items})
 		result.Work = &NativeWorkSummary{Items: items.Items, Lanes: page.Work.Lanes, Truncated: page.Work.Truncated, AsOf: page.Work.AsOf}

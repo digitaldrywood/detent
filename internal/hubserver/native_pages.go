@@ -178,12 +178,12 @@ func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.
 	}
 	summary := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "summary" })
 	cursorParams := params
-	if summary {
+	if params.Has("include") {
 		cursorParams = url.Values{}
 		for name, values := range params {
 			cursorParams[name] = values
 		}
-		includes := slices.DeleteFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "summary" })
+		includes := slices.DeleteFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return slices.Contains([]string{"summary", "work"}, strings.TrimSpace(name)) })
 		cursorParams.Del("include")
 		if len(includes) > 0 {
 			cursorParams.Set("include", strings.Join(includes, ","))
@@ -275,6 +275,9 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		return tracker.NativeIssuePage{}, err
 	}
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}
+	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM native_issue_page_items WHERE page_id = ?", cursor.Issues.Snapshot).Scan(&page.Total); err != nil {
+		return tracker.NativeIssuePage{}, err
+	}
 	operational := map[string]tracker.NativeIssue{}
 	if work != nil {
 		for _, issue := range work.Items {

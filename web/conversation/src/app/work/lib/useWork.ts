@@ -33,6 +33,7 @@ export interface BoardState extends BoardData {
 export function useBoard(projectId: string | null, view: WorkViewState): BoardState & {
   readonly reload: () => void;
   readonly loadMore: () => void;
+  readonly loadBacklog: () => void;
   readonly applyItem: (item: WorkItemView) => void;
 } {
   const client = useClient();
@@ -131,7 +132,7 @@ export function useBoard(projectId: string | null, view: WorkViewState): BoardSt
 
   return { ...data, live: data.resolved && state.key === streamKey && state.live,
     sequence: state.key === streamKey ? state.sequence : null,
-    items, reload, loadMore: store.loadMore, applyItem: store.applyItem };
+    items, reload, loadMore: store.loadMore, loadBacklog: store.loadBacklog, applyItem: store.applyItem };
 }
 
 export type TransitionOutcome =
