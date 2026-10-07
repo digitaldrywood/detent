@@ -8,15 +8,20 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
+
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 type cloudMCP struct {
-	endpoint string
-	token    string
-	session  string
-	version  string
-	sequence int
-	client   *http.Client
+	tools      map[string]operatortool.Definition
+	diagnostic bool
+	endpoint   string
+	token      string
+	session    string
+	version    string
+	sequence   int
+	client     *http.Client
 }
 
 func (m *cloudMCP) request(ctx context.Context, method string, params any, notification bool, result any) error {
@@ -66,6 +71,9 @@ func (m *cloudMCP) request(ctx context.Context, method string, params any, notif
 		return errors.Join(errors.New("scheduled MCP returned an invalid or failed response"), ctx.Err())
 	}
 	if len(envelope.Error) != 0 && string(envelope.Error) != "null" {
+		if m.diagnostic {
+			return fmt.Errorf("MCP server error: %s", m.redact(envelope.Error))
+		}
 		var rpcError struct {
 			Code int `json:"code"`
 		}
@@ -101,13 +109,12 @@ func (m *cloudMCP) initialize(ctx context.Context) error {
 		return err
 	}
 	available := map[string]bool{}
+	m.tools = map[string]operatortool.Definition{}
 	cursor := ""
 	for {
 		var page struct {
-			Tools []struct {
-				Name string `json:"name"`
-			} `json:"tools"`
-			NextCursor string `json:"nextCursor"`
+			Tools      []operatortool.Definition `json:"tools"`
+			NextCursor string                    `json:"nextCursor"`
 		}
 		args := map[string]any{}
 		if cursor != "" {
@@ -118,6 +125,7 @@ func (m *cloudMCP) initialize(ctx context.Context) error {
 		}
 		for _, tool := range page.Tools {
 			available[tool.Name] = true
+			m.tools[tool.Name] = tool
 		}
 		if page.NextCursor == "" {
 			break
@@ -148,6 +156,13 @@ func (m *cloudMCP) call(ctx context.Context, name string, args map[string]any, r
 		return err
 	}
 	if response.IsError {
+		if m.diagnostic {
+			raw, encodeErr := json.Marshal(response)
+			if encodeErr != nil {
+				return errors.New("MCP server error could not be decoded")
+			}
+			return fmt.Errorf("MCP server error: %s", m.redact(raw))
+		}
 		return fmt.Errorf("scheduled Cloud %s denied or unavailable; retained evidence requires retry", name)
 	}
 	content := response.StructuredContent
@@ -158,4 +173,15 @@ func (m *cloudMCP) call(ctx context.Context, name string, args map[string]any, r
 		return errors.New("scheduled Cloud result could not be decoded")
 	}
 	return nil
+}
+
+func (m *cloudMCP) redact(raw []byte) string {
+	value := string(raw)
+	if m.token != "" {
+		value = strings.ReplaceAll(value, m.token, "[redacted]")
+	}
+	if len(value) > 4096 {
+		value = value[:4096] + " [truncated]"
+	}
+	return value
 }

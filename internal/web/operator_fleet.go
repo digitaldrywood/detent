@@ -20,26 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type fleetRequest struct {
-	ProjectID   string          `json:"project_id,omitempty"`
-	RequestID   string          `json:"request_id,omitempty"`
-	Reference   string          `json:"reference,omitempty"`
-	RunnerID    string          `json:"runner_id,omitempty"`
-	MachineID   string          `json:"machine_id,omitempty"`
-	Scope       string          `json:"scope,omitempty"`
-	Recovery    string          `json:"recovery,omitempty"`
-	Host        string          `json:"host,omitempty"`
-	Since       string          `json:"since,omitempty"`
-	Limit       int             `json:"limit,omitempty"`
-	Offset      int             `json:"offset,omitempty"`
-	Release     bool            `json:"release,omitempty"`
-	FromRelease bool            `json:"from_release,omitempty"`
-	WarningIDs  []string        `json:"warning_ids,omitempty"`
-	AttemptID   int64           `json:"attempt_id,omitempty"`
-	Action      string          `json:"action,omitempty"`
-	Reason      string          `json:"reason,omitempty"`
-	Change      json.RawMessage `json:"change,omitempty"`
-}
+type fleetRequest = operatortool.FleetArguments
 
 func dashboardFleetTool(name string) bool {
 	return slices.Contains([]string{operatortool.InstanceHealth, operatortool.AIDebugPrompt, operatortool.Dashboard, operatortool.HealthDashboard, operatortool.DiagnosticsDashboard, operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports, operatortool.OperationsReport, operatortool.RunnerFleet, operatortool.Refresh, operatortool.CapacityClear, operatortool.TrackerAvailabilityClear, operatortool.ForgeAvailabilityClear, operatortool.FailureBreakerCanary, operatortool.UpdateApply, operatortool.ProgressCredit, operatortool.AcknowledgeWarnings, operatortool.RecoverAttempt, operatortool.UpdateFleetRunner, operatortool.UpdateFleetHost}, name)

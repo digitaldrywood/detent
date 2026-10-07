@@ -318,13 +318,7 @@ func (s *Server) chatPriorityProposal(ctx context.Context, raw json.RawMessage) 
 }
 
 func (s *Server) chatStopProposal(ctx context.Context, raw json.RawMessage) (chatpkg.ToolResult, error) {
-	var request struct {
-		ProjectID   string `json:"project_id"`
-		Identifier  string `json:"identifier"`
-		Destination string `json:"destination"`
-		Priority    int    `json:"priority"`
-		Reason      string `json:"reason"`
-	}
+	var request operatortool.StopRunArguments
 	if err := decodeChatToolArguments(raw, &request); err != nil {
 		return chatpkg.ToolResult{}, err
 	}

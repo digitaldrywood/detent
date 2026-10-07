@@ -154,9 +154,7 @@ func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortoo
 		return s.credentialExecutor().Execute(ctx, call)
 	}
 	if call.Name == operatortool.ActionResult {
-		var request struct {
-			ActionID string `json:"action_id"`
-		}
+		var request operatortool.ActionResultArguments
 		if operatortool.DecodeArguments(call.Arguments, &request) == nil {
 			if action, ok := s.chat.Action(operatortool.CurrentConnection(ctx).ID, request.ActionID); ok && operatortool.IsAdministration(string(action.Kind)) && !s.usesLocalSettingsTool(ctx, string(action.Kind)) {
 				return s.credentialExecutor().Execute(ctx, call)
@@ -205,9 +203,7 @@ func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortoo
 			Client       string `json:"client"`
 		}{connection.ID, connection.Identity.OrganizationID, conversation.Client})
 	case operatortool.ActionResult:
-		var request struct {
-			ActionID string `json:"action_id"`
-		}
+		var request operatortool.ActionResultArguments
 		if err := operatortool.DecodeArguments(call.Arguments, &request); err != nil || request.ActionID == "" || len(request.ActionID) > 256 {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}

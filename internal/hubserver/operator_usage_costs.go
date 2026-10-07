@@ -10,11 +10,7 @@ import (
 )
 
 func (e hubProjectExecutor) monthlyUsageCosts(ctx context.Context, arguments json.RawMessage) (operatortool.Result, error) {
-	var request struct {
-		ProjectID string `json:"project_id,omitempty"`
-		Month     string `json:"month,omitempty"`
-		Scope     string `json:"scope,omitempty"`
-	}
+	var request operatortool.MonthlyUsageArguments
 	if operatortool.DecodeArguments(arguments, &request) != nil || len(request.ProjectID) > 256 {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}

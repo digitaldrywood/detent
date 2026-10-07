@@ -19,13 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
-type operatorBudgetRequest struct {
-	ProjectID      string   `json:"project_id"`
-	PerDayMaxUSD   *float64 `json:"per_day_max_usd,omitempty"`
-	PerIssueMaxUSD *float64 `json:"per_issue_max_usd,omitempty"`
-	Duration       string   `json:"duration,omitempty"`
-	Reason         string   `json:"reason,omitempty"`
-}
+type operatorBudgetRequest = operatortool.BudgetArguments
 
 func decodeOperatorBudget(name string, raw json.RawMessage) (operatorBudgetRequest, error) {
 	var request operatorBudgetRequest
@@ -140,12 +134,7 @@ func (s *Server) readUsageReport(ctx context.Context, query store.UsageReportQue
 }
 
 func (s *Server) operatorUsageReport(ctx context.Context, raw json.RawMessage) (operatortool.Result, error) {
-	var request struct {
-		ProjectID string `json:"project_id"`
-		By        string `json:"by"`
-		From      string `json:"from"`
-		To        string `json:"to"`
-	}
+	var request operatortool.UsageArguments
 	if operatortool.DecodeArguments(raw, &request) != nil || len(request.ProjectID) > 256 || len(request.From) > 10 || len(request.To) > 10 {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}

@@ -11,13 +11,18 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 type contractSchema struct {
-	Type                 string                    `json:"type"`
+	Type                 any                       `json:"type"`
 	Properties           map[string]contractSchema `json:"properties"`
 	Required             []string                  `json:"required"`
 	Enum                 []any                     `json:"enum"`
+	Format               string                    `json:"format"`
+	Ref                  string                    `json:"$ref"`
+	Defs                 map[string]contractSchema `json:"$defs"`
+	ExclusiveMinimum     *float64                  `json:"exclusiveMinimum"`
 	Pattern              string                    `json:"pattern"`
 	Minimum              float64                   `json:"minimum"`
 	Maximum              *float64                  `json:"maximum"`
@@ -43,15 +48,79 @@ func TestCatalogDecoderContract(t *testing.T) {
 		FileIssue:        reflect.TypeFor[FileIssueArguments](),
 		UploadAttachment: reflect.TypeFor[AttachmentArguments](),
 	}
-	definitions := append(Catalog(), WorkReadCatalog()...)
-	definitions = append(definitions, WorkCatalog()...)
-	definitions = append(definitions, AttachmentCatalog()...)
-	for _, name := range []string{MoveItem, SetPriority, FileIssue} {
-		definition, found := Lookup(name)
-		if !found {
-			t.Fatalf("%s: missing definition", name)
+	definitions := Registry()
+	for name, target := range map[string]reflect.Type{
+		StopRun:               reflect.TypeFor[StopRunArguments](),
+		ActionResult:          reflect.TypeFor[ActionResultArguments](),
+		ConnectionInfo:        reflect.TypeFor[struct{}](),
+		AppBootstrapPayload:   reflect.TypeFor[struct{}](),
+		AppUpdates:            reflect.TypeFor[struct{}](),
+		HostedEvents:          reflect.TypeFor[HostedEventArguments](),
+		"get_operator_chat":   reflect.TypeFor[OperatorChatReadArguments](),
+		"post_operator_chat":  reflect.TypeFor[OperatorChatArguments](),
+		"monthly_usage_costs": reflect.TypeFor[MonthlyUsageArguments](),
+		BillingStatus:         reflect.TypeFor[struct{}](),
+		BillingUsage:          reflect.TypeFor[struct{}](),
+		BillingExport:         reflect.TypeFor[struct{}](),
+		HostedPlan:            reflect.TypeFor[struct{}](),
+		HostedUsage:           reflect.TypeFor[HostedUsageArguments](),
+		BillingCheckout:       reflect.TypeFor[CheckoutArguments](),
+		CreditCheckout:        reflect.TypeFor[CheckoutArguments](),
+		CreditAutoFund:        reflect.TypeFor[AutoFundArguments](),
+		BillingPortal:         reflect.TypeFor[PortalArguments](),
+		BudgetOverrideSet:     reflect.TypeFor[BudgetArguments](),
+		BudgetOverrideClear:   reflect.TypeFor[BudgetArguments](),
+		UsageReport:           reflect.TypeFor[UsageArguments](),
+		IssueExplanation:      reflect.TypeFor[explainItemArguments](),
+	} {
+		targets[name] = target
+	}
+	for _, definition := range ProjectCatalog() {
+		if definition.Annotations.ReadOnly && targets[definition.Name] == nil {
+			targets[definition.Name] = reflect.TypeFor[ProjectReadRequest]()
 		}
-		definitions = append(definitions, definition)
+	}
+	for name, target := range map[string]reflect.Type{
+		"create_native_project":          reflect.TypeFor[ProjectRequest[ProjectCreateInput]](),
+		"create_hosted_project":          reflect.TypeFor[ProjectRequest[HostedProjectCreateInput]](),
+		"save_onboarding":                reflect.TypeFor[ProjectRequest[OnboardingInput]](),
+		"update_project_integration":     reflect.TypeFor[ProjectRequest[IntegrationInput]](),
+		"bind_native_repository":         reflect.TypeFor[ProjectRequest[RepositoryInput]](),
+		"start_git_hub_import":           reflect.TypeFor[ProjectRequest[ImportStartInput]](),
+		"advance_git_hub_import":         reflect.TypeFor[ProjectRequest[ImportAdvanceInput]](),
+		"command_git_hub_batch":          reflect.TypeFor[ProjectRequest[GitHubBatchInput]](),
+		"cutover_project":                reflect.TypeFor[ProjectRequest[CutoverInput]](),
+		"approve_project_policy":         reflect.TypeFor[ProjectRequest[PolicyApprovalInput]](),
+		"revoke_project_policy":          reflect.TypeFor[ProjectRequest[PolicyRevokeInput]](),
+		"project_native_summary":         reflect.TypeFor[ProjectRequest[SummaryInput]](),
+		"remove_project_secret":          reflect.TypeFor[ProjectRequest[struct{}]](),
+		"import_sprite_usage":            reflect.TypeFor[ProjectRequest[SpriteUsageInput]](),
+		GetOrganizationModelSelection:    reflect.TypeFor[ModelSelectionReadRequest](),
+		GetProjectModelSelection:         reflect.TypeFor[ModelSelectionReadRequest](),
+		UpdateOrganizationModelSelection: reflect.TypeFor[ProjectRequest[ModelSelectionInput]](),
+		UpdateProjectModelSelection:      reflect.TypeFor[ProjectRequest[ModelSelectionInput]](),
+	} {
+		targets[name] = target
+	}
+	for _, group := range []struct {
+		catalog []Definition
+		target  reflect.Type
+	}{
+		{LocalProjectCatalog(), reflect.TypeFor[LocalProjectArguments]()},
+		{WorkspaceCatalog(), reflect.TypeFor[WorkspaceArguments]()},
+		{ChangeCatalog(), reflect.TypeFor[ChangeArguments]()},
+		{AdministrationCatalog(), reflect.TypeFor[AdministrationArguments]()},
+		{FleetCatalog(), reflect.TypeFor[FleetArguments]()},
+	} {
+		for _, definition := range group.catalog {
+			targets[definition.Name] = group.target
+		}
+	}
+	for _, name := range []string{AnalyticsDashboard, TimeSeries, Reports} {
+		targets[name] = reflect.TypeFor[AnalyticsRequest]()
+	}
+	for _, name := range []string{InstanceHealth, NativeCapabilities, OutboxHealth, GetRunnerUpdate, GetUrgentRunnerUpdate, MarkUrgentRunnerUpdate, GetRunnerRouting, ListRunnerRouting, GetRunnerCapacity, UpdateRunnerCapacity, UpdateRunnerRouting, UpdateRunnerHost, UpdateApply, HostedFleet, GitHubRequestCounts, CreateRunnerEnrollment, RevokeRunnerEnrollment, RevokeRunnerIdentity} {
+		targets[name] = reflect.TypeFor[HubFleetArguments]()
 	}
 	for _, definition := range definitions {
 		switch {
@@ -66,47 +135,60 @@ func TestCatalogDecoderContract(t *testing.T) {
 	propertiesByTarget := map[reflect.Type]map[string]contractSchema{}
 	namesByTarget := map[reflect.Type][]string{}
 	for _, definition := range definitions {
-		t.Run(definition.Name, func(t *testing.T) {
-			target, found := targets[definition.Name]
-			if !found {
-				t.Fatalf("%s: no decoder target registered", definition.Name)
-			}
-			namesByTarget[target] = append(namesByTarget[target], definition.Name)
-			var schema contractSchema
-			if err := json.Unmarshal(definition.InputSchema, &schema); err != nil {
-				t.Fatalf("%s: schema: %v", definition.Name, err)
-			}
-			if propertiesByTarget[target] == nil {
-				propertiesByTarget[target] = map[string]contractSchema{}
-			}
-			for field, property := range schema.Properties {
-				if field != "request_id" || target == reflect.TypeFor[MoveItemArguments]() || target == reflect.TypeFor[AttachmentArguments]() || target == reflect.TypeFor[AttachmentOperationArguments]() {
-					propertiesByTarget[target][field] = property
+		decoderTargets := []reflect.Type{targets[definition.Name]}
+		if definition.Name == UpdateApply {
+			decoderTargets = append(decoderTargets, reflect.TypeFor[FleetArguments]())
+		}
+		if definition.Name == Dashboard {
+			decoderTargets = append(decoderTargets, reflect.TypeFor[boardStateArguments]())
+		}
+		for _, target := range decoderTargets {
+			t.Run(definition.Name, func(t *testing.T) {
+				if target == nil {
+					t.Fatalf("%s: no decoder target registered", definition.Name)
 				}
-			}
-			for _, all := range []bool{false, true} {
-				value, err := contractValue(schema, all)
-				if err != nil {
-					t.Fatalf("%s: sample: %v", definition.Name, err)
+				namesByTarget[target] = append(namesByTarget[target], definition.Name)
+				var schema contractSchema
+				if err := json.Unmarshal(definition.InputSchema, &schema); err != nil {
+					t.Fatalf("%s: schema: %v", definition.Name, err)
 				}
-				fields := value.(map[string]any)
-				if _, accepted := propertiesByTarget[target]["request_id"]; !accepted {
-					delete(fields, "request_id")
+				if propertiesByTarget[target] == nil {
+					propertiesByTarget[target] = map[string]contractSchema{}
 				}
-				raw, err := json.Marshal(fields)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := decodeArguments(raw, reflect.New(target).Interface()); err != nil {
-					var detail *RequestError
-					if errors.As(err, &detail) {
-						t.Fatalf("%s all_optional=%t: %s; arguments=%s", definition.Name, all, detail.Message, raw)
+				for field, property := range schema.Properties {
+					if field != "request_id" || contractHasField(target, "request_id") {
+						propertiesByTarget[target][field] = property
 					}
-					t.Fatalf("%s all_optional=%t: %v; arguments=%s", definition.Name, all, err, raw)
 				}
-			}
-		})
+				schema = contractResolve(schema, schema.Defs, 0)
+				if slices.Contains([]string{ArchiveItem, OrderItem, SetQueuePriority}, definition.Name) {
+					t.Log("expected hosted availability gap: #615 owns this tool")
+				}
+				for _, all := range []bool{false, true} {
+					value, err := contractValue(schema, all)
+					if err != nil {
+						t.Fatalf("%s: sample: %v", definition.Name, err)
+					}
+					fields := value.(map[string]any)
+					if _, accepted := propertiesByTarget[target]["request_id"]; !accepted {
+						delete(fields, "request_id")
+					}
+					raw, err := json.Marshal(fields)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := decodeArguments(raw, reflect.New(target).Interface()); err != nil {
+						var detail *RequestError
+						if errors.As(err, &detail) {
+							t.Fatalf("%s all_optional=%t: %s; arguments=%s", definition.Name, all, detail.Message, raw)
+						}
+						t.Fatalf("%s all_optional=%t: %v; arguments=%s", definition.Name, all, err, raw)
+					}
+				}
+			})
+		}
 	}
+
 	for target, properties := range propertiesByTarget {
 		t.Run(target.String()+"/documented_fields", func(t *testing.T) {
 			contractFields(t, target, contractSchema{Type: "object", Properties: properties}, strings.Join(namesByTarget[target], ","))
@@ -153,7 +235,7 @@ func contractFields(t *testing.T, target reflect.Type, schema contractSchema, pa
 			schema = *schema.Items
 		}
 	}
-	if target.Kind() != reflect.Struct {
+	if target.Kind() != reflect.Struct || schema.Ref != "" || target == reflect.TypeFor[time.Time]() {
 		return
 	}
 	for i := range target.NumField() {
@@ -185,8 +267,20 @@ func contractValue(schema contractSchema, all bool) (any, error) {
 	if len(schema.Enum) != 0 {
 		return schema.Enum[0], nil
 	}
-	switch schema.Type {
-	case "object":
+	kind, _ := schema.Type.(string)
+	if types, ok := schema.Type.([]any); ok {
+		for _, value := range types {
+			if value != "null" {
+				kind, _ = value.(string)
+				break
+			}
+		}
+	}
+	if schema.Ref != "" {
+		return map[string]any{}, nil
+	}
+	switch kind {
+	case "", "object":
 		for _, alternatives := range [][]contractSchema{schema.AnyOf, schema.OneOf} {
 			if len(alternatives) != 0 {
 				schema.Required = append(slices.Clone(schema.Required), alternatives[0].Required...)
@@ -208,9 +302,23 @@ func contractValue(schema contractSchema, all bool) (any, error) {
 				return nil, fmt.Errorf("%s: required property absent from schema", name)
 			}
 		}
+		if all && len(schema.Properties) == 0 && len(schema.AdditionalProperties) > 0 && string(schema.AdditionalProperties) != "false" && string(schema.AdditionalProperties) != "true" {
+			var child contractSchema
+			if err := json.Unmarshal(schema.AdditionalProperties, &child); err != nil {
+				return nil, err
+			}
+			value, err := contractValue(child, all)
+			if err != nil {
+				return nil, err
+			}
+			fields["sample"] = value
+		}
 		return fields, nil
 	case "string":
 		value := strings.Repeat("x", max(1, schema.MinLength))
+		if schema.Format == "date-time" {
+			value = "2026-01-01T00:00:00Z"
+		}
 		if schema.Pattern != "" {
 			pattern, err := syntax.Parse(schema.Pattern, syntax.Perl)
 			if err != nil {
@@ -235,7 +343,11 @@ func contractValue(schema contractSchema, all bool) (any, error) {
 		}
 		return int64(value), nil
 	case "number":
-		return schema.Minimum, nil
+		value := schema.Minimum
+		if schema.ExclusiveMinimum != nil {
+			value = *schema.ExclusiveMinimum + 1
+		}
+		return value, nil
 	case "boolean":
 		return false, nil
 	case "array":
@@ -294,4 +406,35 @@ func contractPattern(pattern *syntax.Regexp) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported pattern operation %v", pattern.Op)
 	}
+}
+
+func contractHasField(target reflect.Type, name string) bool {
+	for i := range target.NumField() {
+		if strings.Split(target.Field(i).Tag.Get("json"), ",")[0] == name {
+			return true
+		}
+	}
+	return false
+}
+
+func contractResolve(schema contractSchema, definitions map[string]contractSchema, depth int) contractSchema {
+	if schema.Ref != "" {
+		if depth > 8 {
+			return schema
+		}
+		name := strings.TrimPrefix(schema.Ref, "#/$defs/")
+		if value, found := definitions[name]; found {
+			schema = value
+		}
+	}
+	properties := make(map[string]contractSchema, len(schema.Properties))
+	for name, child := range schema.Properties {
+		properties[name] = contractResolve(child, definitions, depth+1)
+	}
+	schema.Properties = properties
+	if schema.Items != nil {
+		value := contractResolve(*schema.Items, definitions, depth+1)
+		schema.Items = &value
+	}
+	return schema
 }
