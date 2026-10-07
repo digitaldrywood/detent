@@ -38,7 +38,7 @@ for ((offset = 0; offset < ${#stages[@]}; offset += workers)); do
                 lint) check_with_evidence lint make lint TEST_PROCS="$budget" ;;
                 vet) check_with_evidence vet make vet TEST_PROCS="$budget" ;;
                 build) check_with_evidence build go build -p "$budget" ./... ;;
-                unit-short) check_with_evidence unit-short make -o generate-docs test-fast TEST_PROCS="$budget" ;;
+                unit-short) check_with_evidence unit-short make -o generate-docs test-race TEST_PROCS="$budget" ;;
             esac
         ) &
         pids+=("$!")
@@ -48,6 +48,31 @@ for ((offset = 0; offset < ${#stages[@]}; offset += workers)); do
     done
     if [ "$result" -ne 0 ]; then exit "$result"; fi
 done
+
+module=$(go list -m)
+touched=()
+while IFS= read -r dir; do
+    [ -d "$dir" ] || continue
+    if package=$(go list "./$dir" 2>/dev/null); then touched+=("$package"); fi
+done < <({ git diff --name-only "$base" -- '*.go'; git ls-files --others --exclude-standard -- '*.go'; } | xargs -r -n1 dirname | sort -u)
+if [ "${#touched[@]}" -gt 0 ]; then
+    full=()
+    for package in "${touched[@]}"; do
+        case "$package" in
+            "$module/internal/workspace") check_with_evidence unit-touched-workspace bash scripts/test-workspace.sh ;;
+            "$module/internal/web") ;;
+            *) full+=("$package") ;;
+        esac
+    done
+    if [ "${#full[@]}" -gt 0 ]; then
+        check_with_evidence unit-touched env -u DETENT_API_TOKEN go test -count=1 -p "$procs" -timeout=20m "${full[@]}"
+    fi
+    for package in "${touched[@]}"; do
+        if [ "$package" = "$module/internal/web" ]; then
+            check_with_evidence unit-touched-web env -u DETENT_API_TOKEN go test -count=1 -timeout=10m ./internal/web
+        fi
+    done
+fi
 
 check_with_evidence invariants env -u DETENT_API_TOKEN go test -count=1 -p "$procs" -timeout=60s ./internal/invariants
 check_with_evidence migrations make check-migrations
