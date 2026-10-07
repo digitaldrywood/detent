@@ -387,7 +387,7 @@ func (s *Service) cloudAttachmentExists(c echo.Context) error {
 
 func bindCloudAttachmentReferences(ctx context.Context, tx *sql.Tx, scope nativeScope, item, comment, body string) error {
 	for _, ref := range attachment.References(body, string(scope.organization), string(scope.project)) {
-		result, err := tx.ExecContext(ctx, `UPDATE attachments SET work_item_id=?,comment_id=nullif(?,'') WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NULL AND (work_item_id IS NULL OR (work_item_id=? AND coalesce(comment_id,'')=?))`, item, comment, scope.organization, scope.project, ref.ID, item, comment)
+		result, err := tx.ExecContext(ctx, `INSERT INTO attachment_references(attachment_id,work_item_id,comment_id) SELECT id,?,? FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NULL ON CONFLICT(attachment_id,work_item_id,comment_id) DO UPDATE SET attachment_id=excluded.attachment_id`, item, comment, scope.organization, scope.project, ref.ID)
 		if err != nil {
 			return err
 		}

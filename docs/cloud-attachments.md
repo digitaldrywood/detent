@@ -34,8 +34,8 @@ clients. A successful upload returns attachment metadata with a random 128-bit `
 identifier and a `reference` field. Embed that markdown in an issue body or
 comment body. Raster references use `![name](path)`; other files use
 `[name](path)`. Native issue/comment creation and editing bind uploads in the
-same transaction. Path references retain their existing binding to one issue
-body or comment. Reads still require a session or a scoped token.
+same transaction. Path references can be reused across issues and comments in
+the same project. Reads still require a session or a scoped token.
 
 Native issue agents can call `read_attachment_metadata` and `read_attachment`
 with `project_id` and `attachment_id` from an issue or comment reference. The
