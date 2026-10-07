@@ -213,24 +213,8 @@ func (s *Service) platformHealthJSON(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusOK, result)
 	}
-	var ids []string
-	for _, organization := range organizations {
-		if organization.State == "ready" {
-			ids = append(ids, organization.ID)
-		}
-	}
-	healthy := make([]bool, len(ids))
-	s.eachReadyTenant(ctx, ids, func(call context.Context, index int, organization Organization) {
-		status, err := s.serviceRequest(call, organization, "/internal/v1/health", map[string]string{}, nil)
-		healthy[index] = err == nil && status == http.StatusNoContent
-	})
-	running := 0
-	for _, ok := range healthy {
-		if ok {
-			running++
-		}
-	}
-	result["tenants"] = map[string]int{"expected": len(ids), "running": running}
+	expected, running := s.servingTenants(ctx, organizations)
+	result["tenants"] = map[string]int{"expected": expected, "running": running}
 	if allocation := s.config.Allocation; allocation != nil {
 		holding, allocating, err := s.admissionLoad(ctx, "")
 		if err != nil {

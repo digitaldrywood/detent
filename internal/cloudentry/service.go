@@ -223,9 +223,7 @@ func (s *Service) routes() {
 	e := s.echo
 	e.Pre(s.boundary)
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", http.FileServerFS(detent.StaticFS()))))
-	e.GET("/health", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]string{"status": "ok", "version": s.config.Build.Version, "commit": s.config.Build.Commit})
-	})
+	e.GET("/health", s.health)
 	e.GET("/", s.home)
 	e.GET("/auth/oidc/start", s.startLogin)
 	e.GET("/auth/oidc/callback", s.completeLogin)

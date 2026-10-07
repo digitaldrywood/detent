@@ -290,6 +290,7 @@ func (s *Service) proxy(c echo.Context) error {
 	}
 	transport, err := s.config.transport(organization)
 	if err != nil {
+		s.config.Logger.WarnContext(ctx, "shared entry tenant transport unavailable", "organization", organization.ID, "error", err)
 		if wantsHTMLNavigation(c) {
 			return s.browserUnavailable(c, http.StatusBadGateway)
 		}
@@ -321,7 +322,8 @@ func (s *Service) proxy(c echo.Context) error {
 			response.Header.Set("Content-Security-Policy", contentSecurity)
 			return nil
 		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			s.config.Logger.Warn("shared entry tenant proxy failed", "organization", organization.ID, "error", err)
 			if wantsHTMLNavigation(c) {
 				if err := s.browserUnavailable(c, http.StatusBadGateway); err != nil {
 					c.Error(err)
