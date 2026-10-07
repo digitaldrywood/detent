@@ -832,49 +832,76 @@ func TestNativeStartupRecoveryTracksActualProviderTurn(t *testing.T) {
 func TestNativeRecoveryDecision(t *testing.T) {
 	t.Parallel()
 	identity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
+	current := &workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "current", ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head"}}}
 	for _, test := range []struct {
-		name   string
-		edit   func(*tracker.NativeRecovery, **workspace.RecoveryState, *bool)
-		action string
-		reason string
+		name    string
+		edit    func(*tracker.NativeRecovery, **workspace.RecoveryState, *bool)
+		action  string
+		reason  string
+		current *workspace.ChangeSource
 	}{
-		{"verified session", func(*tracker.NativeRecovery, **workspace.RecoveryState, *bool) {}, "resume_session", "verified_local_session"},
-		{"first run", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Attempts = nil }, "fresh_checkout", "no_prior_attempt"},
-		{"missing checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Attempts[0].Checkpoint = nil }, "fresh_checkout", "checkpoint_missing"},
-		{"machine lost with dirty work", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Lease.MachineID = "other" }, "manual_recovery", "checkpoint_unavailable"},
-		{"local workspace missing", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) { *local = nil }, "manual_recovery", "checkpoint_unavailable"},
+		{"verified session", func(*tracker.NativeRecovery, **workspace.RecoveryState, *bool) {}, "resume_session", "verified_local_session", nil},
+		{"first run", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Attempts = nil }, "fresh_checkout", "no_prior_attempt", nil},
+		{"missing checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Attempts[0].Checkpoint = nil }, "fresh_checkout", "checkpoint_missing", nil},
+		{"machine lost with dirty work", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Lease.MachineID = "other" }, "manual_recovery", "checkpoint_unavailable", nil},
+		{"local workspace missing", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) { *local = nil }, "manual_recovery", "checkpoint_unavailable", nil},
 		{"dirty checkpoint replaced", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
 			(*local).WorkspaceFingerprint = "different"
-		}, "manual_recovery", "local_checkpoint_changed"},
+		}, "manual_recovery", "local_checkpoint_changed", nil},
 		{"inaccessible checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.Availability = "inaccessible"
-		}, "manual_recovery", "checkpoint_unavailable"},
+		}, "manual_recovery", "checkpoint_unavailable", nil},
 		{"customer receipt unverified", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.Storage = "customer_store"
-		}, "manual_recovery", "checkpoint_unavailable"},
+		}, "manual_recovery", "checkpoint_unavailable", nil},
 		{"clean inaccessible checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.Availability = "missing"
 			r.Attempts[0].Checkpoint.WorktreeState = "clean"
-		}, "fresh_checkout", "checkpoint_unavailable"},
-		{"provider session missing", func(_ *tracker.NativeRecovery, _ **workspace.RecoveryState, available *bool) { *available = false }, "fresh_checkout", "session_restart_required"},
+		}, "fresh_checkout", "checkpoint_unavailable", nil},
+		{"provider session missing", func(_ *tracker.NativeRecovery, _ **workspace.RecoveryState, available *bool) { *available = false }, "fresh_checkout", "session_restart_required", nil},
 		{"policy changed", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Lease.PolicyID = "new-policy"
 			r.Attempts[0].Status = "interrupted"
-		}, "fresh_checkout", "session_restart_required"},
+		}, "fresh_checkout", "session_restart_required", nil},
 		{"backend changed", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "claude", Model: "test"}
-		}, "fresh_checkout", "session_restart_required"},
+		}, "fresh_checkout", "session_restart_required", nil},
 		{"push ambiguity", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.ExternalEffect = "git_push"
 			r.Attempts[0].Checkpoint.EffectState = "ambiguous"
-		}, "manual_recovery", "external_effect_uncertain"},
+		}, "manual_recovery", "external_effect_uncertain", nil},
 		{"PR pending", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.ExternalEffect = "pr_create"
 			r.Attempts[0].Checkpoint.EffectState = "pending"
-		}, "manual_recovery", "external_effect_uncertain"},
+		}, "manual_recovery", "external_effect_uncertain", nil},
 		{"manual checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.Resume = "manual_recovery"
-		}, "manual_recovery", "checkpoint_requires_recovery"},
+		}, "manual_recovery", "checkpoint_requires_recovery", nil},
+		{"current Change supersedes obsolete unpushed checkpoint", func(*tracker.NativeRecovery, **workspace.RecoveryState, *bool) {}, "fresh_checkout", "session_restart_required", current},
+		{"current Change on original machine", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].MachineID = "machine"
+		}, "fresh_checkout", "session_restart_required", current},
+		{"current Change with missing obsolete checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Checkpoint.Availability = "missing"
+		}, "fresh_checkout", "session_restart_required", current},
+		{"current Change with dirty checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Checkpoint.WorktreeState = "dirty"
+		}, "manual_recovery", "checkpoint_unavailable", current},
+		{"current Change with dirty local source", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
+			(*local).TrackedPaths = []string{"work.go"}
+		}, "manual_recovery", "checkpoint_unavailable", current},
+		{"current Change does not match local head", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
+			(*local).HeadSHA = "unrelated"
+		}, "manual_recovery", "checkpoint_unavailable", current},
+		{"current Change preserves ambiguous push", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "git_push", "ambiguous"
+		}, "manual_recovery", "external_effect_uncertain", current},
+		{"current Change preserves pending publication", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "pr_create", "pending"
+		}, "manual_recovery", "external_effect_uncertain", current},
+		{"current Change preserves manual recovery", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Checkpoint.Resume = "manual_recovery"
+		}, "manual_recovery", "checkpoint_requires_recovery", current},
 	} {
 		for _, mode := range []RetryMode{"", RetryModeFresh} {
 			t.Run(test.name+"/"+string(mode), func(t *testing.T) {
@@ -884,8 +911,14 @@ func TestNativeRecoveryDecision(t *testing.T) {
 					NativeRunData: tracker.NativeRunData{Identity: &identity, MachineID: "machine", PolicyID: "policy"},
 					Checkpoint:    &tracker.NativeCheckpoint{Resume: "resume_session", Availability: "available", Storage: "local_only", WorktreeState: "dirty", HeadSHA: "head", WorkspaceDigest: "digest", ExternalEffect: "none", EffectState: "none"},
 				}}}
+				if test.current != nil {
+					recovery.Attempts[0].MachineID = "other"
+					recovery.Attempts[0].Checkpoint.WorktreeState = "unpushed"
+					recovery.Attempts[0].Checkpoint.HeadSHA = "obsolete"
+					recovery.Attempts[0].Checkpoint.WorkspaceDigest = "obsolete-digest"
+				}
 				test.edit(&recovery, &local, &available)
-				action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity, mode == RetryModeFresh)
+				action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity, mode == RetryModeFresh, test.current)
 				wantAction, wantReason := test.action, test.reason
 				if mode == RetryModeFresh && wantAction == "resume_session" {
 					wantAction, wantReason = "fresh_checkout", "session_restart_required"

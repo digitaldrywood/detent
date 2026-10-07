@@ -17,11 +17,12 @@ import (
 // SSHExecutionSources exposes only the checkout bound by the remote runner.
 // Upload credentials, journals, producer tuples and lease ownership stay central.
 type SSHExecutionSources struct {
-	mu          sync.Mutex
-	diff        AttemptDiffSource
-	directory   string
-	evidence    func(context.Context, string) (ValidationEvidence, error)
-	integration func(context.Context, tracker.ChangeVersion, string) (workspace.LandResult, error)
+	mu           sync.Mutex
+	diff         AttemptDiffSource
+	directory    string
+	evidence     func(context.Context, string) (ValidationEvidence, error)
+	integration  func(context.Context, tracker.ChangeVersion, string) (workspace.LandResult, error)
+	changeSource func(context.Context, string, string) (tracker.ChangeSourceCapture, error)
 }
 
 type sshDiff struct {
@@ -31,9 +32,14 @@ type sshDiff struct {
 
 func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []json.RawMessage) (any, error) {
 	s.mu.Lock()
-	diff, directory, evidence, integration := s.diff, s.directory, s.evidence, s.integration
+	diff, directory, evidence, integration, changeSource := s.diff, s.directory, s.evidence, s.integration, s.changeSource
 	s.mu.Unlock()
 	switch method {
+	case "source.change":
+		if changeSource == nil {
+			return nil, errors.New("SSH Change source workspace is unavailable")
+		}
+		return invokeSSHMethod(ctx, changeSource, "", args)
 	case "source.integration":
 		if integration == nil {
 			return nil, errors.New("SSH integration workspace is unavailable")
@@ -70,6 +76,13 @@ func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []
 // interpreted as a local path. Finish can use the last checkpoint diff once the
 // channel closes, just as it does after a local checkout is removed.
 func (c *SSHCallbacks) BindExecutionSources(peer *SSHPeer, journalRoot string) {
+	if source, ok := c.execution.(ChangeSourceExecution); ok {
+		source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+			var result tracker.ChangeSourceCapture
+			err := peer.Call(ctx, "source.change", &result, base, head)
+			return result, err
+		})
+	}
 	if source, ok := c.execution.(IntegrationSourceExecution); ok {
 		source.SetIntegrationSource(func(ctx context.Context, version tracker.ChangeVersion, base string) (workspace.LandResult, error) {
 			var result workspace.LandResult
@@ -133,6 +146,18 @@ func (e *sshNativeExecution) SetRepository(repository string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.setupErr = errors.Join(e.setupErr, err)
+}
+
+func (e *sshNativeExecution) SetChangeSource(source func(context.Context, string, string) (tracker.ChangeSourceCapture, error)) {
+	e.sources.mu.Lock()
+	defer e.sources.mu.Unlock()
+	e.sources.changeSource = source
+}
+
+func (e *sshNativeExecution) RecoverChangeSource(ctx context.Context) (workspace.ChangeSource, error) {
+	var result workspace.ChangeSource
+	err := e.peer.Call(ctx, "execution.RecoverChangeSource", &result)
+	return result, err
 }
 
 func (e *sshNativeExecution) Start(ctx context.Context, identity tracker.NativeExecutionIdentity) error {
