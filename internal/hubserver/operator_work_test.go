@@ -88,9 +88,14 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			if tool == operatortool.AddComment {
 				fields = map[string]any{"identifier": contended.WorkItemID, "body": "Written while replication holds the lock"}
 			}
+			started := time.Now()
 			raw, failed := call(tool, "replication-contention-"+tool, fields)
+			waited := time.Since(started)
 			if err := <-released; err != nil {
 				t.Fatal(err)
+			}
+			if waited < 250*time.Millisecond {
+				t.Fatalf("%s finished in %s without waiting on the held replication lock", tool, waited)
 			}
 			if failed || !strings.Contains(string(raw), "Written while replication holds the lock") {
 				t.Fatalf("%s under a held replication lock = %s failed=%t", tool, raw, failed)
