@@ -16,7 +16,7 @@ async function startDetentRuntime(name, args, options = {}) {
   const host = options.host || "127.0.0.1";
   const port = options.port ?? 0;
   const home = options.home || fs.mkdtempSync(path.join(os.tmpdir(), `detent-${name}-`));
-  const evidenceDir = path.join(process.cwd(), "tmp", "playwright-evidence", name);
+  const evidenceDir = path.join(process.cwd(), "tmp", "playwright-evidence", `${name}-worker-${process.env.TEST_WORKER_INDEX ?? 0}`);
   fs.mkdirSync(evidenceDir, { recursive: true });
   const logPath = path.join(evidenceDir, "runtime.log");
   fs.writeFileSync(logPath, "");
