@@ -29,6 +29,7 @@ import { boardStats, isBlocked, isLive, type Lane, type WorkItemView } from "../
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { ClientContext } from "../../src/app/client.ts";
 import { WorkBoard } from "../../src/app/work/WorkBoard.tsx";
+import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
 import { DEFAULT_VIEW_STATE, parseViewState, serializeViewState } from "../../src/app/work/lib/viewState.ts";
 import { clearBoardCache } from "../../src/app/work/lib/boardStore.ts";
 import { useBoard, useNow } from "../../src/app/work/lib/useWork.ts";
@@ -767,7 +768,7 @@ async function pagedWork(path = "/work", wrapFetch?: (fetch: ReturnType<typeof w
   const fixture = workPaginationFixture();
   await fixture.control();
   vi.stubGlobal("fetch", wrapFetch?.(fixture.fetch) ?? fixture.fetch);
-  const root = createRootRoute({ component: Outlet });
+  const root = createRootRoute({ component: () => <SidebarProvider><Outlet /></SidebarProvider> });
   const all = createRoute({ getParentRoute: () => root, path: "/work", component: () => <WorkBoard projectId={null} /> });
   const project = createRoute({ getParentRoute: () => root, path: "/work/p/$projectId", component: () => {
     const { projectId } = project.useParams();

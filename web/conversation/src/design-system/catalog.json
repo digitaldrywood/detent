@@ -8,7 +8,7 @@
       "group": "Actions",
       "status": "available",
       "source": "src/components/ui/button.tsx",
-      "exports": ["Button", "buttonVariants", "InlineButton", "ButtonSize", "ButtonVariant"],
+      "exports": ["Button", "buttonVariants", "InlineButton", "SplitButton", "ButtonSize", "ButtonVariant"],
       "variants": {
         "variant": ["default", "secondary", "outline", "ghost", "ghost-muted", "ghost-destructive", "destructive", "destructive-outline", "warning-outline", "glass", "overlay", "link", "media-close", "media-navigation"],
         "size": ["micro", "compact", "xs", "sm", "sm-multiline", "default", "lg", "xl", "icon-tiny", "icon-micro", "icon-xs", "icon-sm", "icon", "icon-lg", "icon-xl"],
@@ -16,7 +16,7 @@
       },
       "states": ["hover", "focus-visible", "pressed", "disabled"],
       "keyboard": "Native button: Tab focuses, Enter and Space activate. With `render`, the rendered element must stay focusable and keep button semantics.",
-      "use": "Every clickable action: form submission, toolbar and composer actions, icon-only actions. `size=\"compact\"` is the toolbar size family; `icon*` sizes need an accessible name. `ghost-destructive` is the low-emphasis destructive action in menus and toolbars; `media-close` and `media-navigation` belong to media viewers; `sm-multiline` lets a small button wrap. `InlineButton` is a text action inside a sentence, with `tone` default, muted, destructive or picker (a dotted underline that opens a menu).",
+      "use": "Every clickable action: form submission, toolbar and composer actions, icon-only actions. `size=\"compact\"` is the toolbar size family; `icon*` sizes need an accessible name. `ghost-destructive` is the low-emphasis destructive action in menus and toolbars; `media-close` and `media-navigation` belong to media viewers; `sm-multiline` lets a small button wrap. `InlineButton` is a text action inside a sentence, with `tone` default, muted, destructive or picker (a dotted underline that opens a menu). `SplitButton` groups two primary Buttons into a joined 40px control: a main action and a 44px-wide MenuTrigger rendered as an icon Button. Label the group and the menu trigger; Menu owns the popup and keyboard behavior.",
       "avoid": "Restyling with arbitrary radius, fill or font classes, or calling `buttonVariants` from app code to dress a non-button. Use Badge for static status and a link for navigation that is not an action.",
       "related": ["toggle", "group", "panel-tab-close-button"]
     },
@@ -1077,7 +1077,7 @@
       "variants": {},
       "states": ["editing", "focus-visible"],
       "keyboard": "The title is renamable inline (Enter commits, Escape cancels); header actions are buttons and menus.",
-      "use": "The conversation's header content inside WorkspacePageHeader: title, git actions, open-in and panel controls.",
+      "use": "The conversation's header content inside WorkspacePageHeader: title, git actions, open-in and panel controls. `compactOnMobile` keeps the project glyph and thread title visible on phones while hiding desktop project, editor and Git controls.",
       "avoid": "Adding feature diagnostics to the header.",
       "related": ["workspace-page-header", "git-actions-control"]
     },

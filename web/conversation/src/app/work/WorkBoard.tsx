@@ -6,10 +6,12 @@
 // into a silent overwrite.
 import React from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { LoaderCircleIcon, PlusIcon } from "lucide-react";
+import { ChevronDownIcon, HistoryIcon, LoaderCircleIcon, PlusIcon, SparklesIcon } from "lucide-react";
 
 import { ToggleGroup, ToggleGroupItem } from "../../components/ui/toggle-group.tsx";
-import { Button, InlineButton } from "../../components/ui/button.tsx";
+import { Button, InlineButton, SplitButton } from "../../components/ui/button.tsx";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuShortcut, MenuTrigger } from "../../components/ui/menu.tsx";
+import { useSidebar } from "../../components/ui/sidebar.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useResource } from "../account/useResource.ts";
 import { useClient } from "../client.ts";
@@ -28,7 +30,7 @@ import {
   useNewIssue,
   useNewIssueScope,
 } from "./NewIssue.tsx";
-import { NEW_ISSUE_KEYSHORTCUTS } from "../lib/shortcuts.ts";
+import { NEW_CHAT_KEYSHORTCUTS, NEW_ISSUE_KEYSHORTCUTS } from "../lib/shortcuts.ts";
 import { StatsRow } from "./components/StatsRow.tsx";
 import { toastManager } from "../../components/ui/toast.tsx";
 import { WorkList } from "./components/WorkList.tsx";
@@ -79,6 +81,7 @@ function narrowed(view: WorkViewState): boolean {
 export function WorkBoard({ projectId }: { projectId: string | null }): React.ReactElement {
   const navigate = useNavigate();
   const shell = useShell();
+  const { setOpenMobile } = useSidebar();
   const client = useClient();
   const project = client.bootstrap.projects.find((candidate) => candidate.id === projectId);
   usePageTitle("Work", project?.name);
@@ -267,27 +270,66 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
     <FirstRunPanel projectId={projectId} issues={board.items.length} onIssueCreated={board.reload} />
   ) : null;
 
+  const ask = () => {
+    if (projectId === null) void navigate({ to: "/chat" });
+    else void navigate({ to: "/chat/p/$projectId", params: { projectId } });
+  };
+
   const topBar = (
     <WorkTopBar
       context="Work"
       title={scopeName}
       meta={board.resolved ? boardScopeMeta(projectId, client.bootstrap.projects.length, items.length) : undefined}
       connection={chip}
-      showConnectionDetailOnMobile={chip.label === "Live"}
-      actions={
-        noProjects ? null : (
-          <Button
-            size="sm"
-            data-testid="board-new-issue"
-            aria-keyshortcuts={NEW_ISSUE_KEYSHORTCUTS}
-            disabled={!canCreateHere}
-            title={canCreateHere ? "New issue (C)" : ISSUE_CREATION_NEEDS_WRITE}
-            onClick={() => newIssue.openNewIssue({ projectId })}
-          >
-            <PlusIcon />
-            New issue
+      actions={noProjects ? null : (
+        <Button
+          size="sm"
+          className="hidden md:inline-flex"
+          data-testid="board-new-issue"
+          aria-keyshortcuts={NEW_ISSUE_KEYSHORTCUTS}
+          disabled={!canCreateHere}
+          title={canCreateHere ? "New issue (C)" : ISSUE_CREATION_NEEDS_WRITE}
+          onClick={() => newIssue.openNewIssue({ projectId })}
+        >
+          <PlusIcon />
+          New issue
+        </Button>
+      )}
+      mobileActions={
+        <SplitButton className="md:hidden" aria-label="Work actions">
+          <Button aria-keyshortcuts={NEW_CHAT_KEYSHORTCUTS} onClick={ask}>
+            <SparklesIcon />
+            Ask
           </Button>
-        )
+          <Menu>
+            <MenuTrigger render={<Button size="icon" aria-label="More work actions" />}>
+              <ChevronDownIcon />
+            </MenuTrigger>
+            <MenuPopup align="end">
+              <MenuItem className="min-h-11 sm:min-h-11" onClick={ask} aria-keyshortcuts={NEW_CHAT_KEYSHORTCUTS}>
+                <SparklesIcon />
+                Ask Detent
+                <MenuShortcut>⇧⌘N</MenuShortcut>
+              </MenuItem>
+              <MenuItem
+                className="min-h-11 sm:min-h-11"
+                disabled={!canCreateHere}
+                title={canCreateHere ? "New issue (C)" : ISSUE_CREATION_NEEDS_WRITE}
+                aria-keyshortcuts={NEW_ISSUE_KEYSHORTCUTS}
+                onClick={() => newIssue.openNewIssue({ projectId })}
+              >
+                <PlusIcon />
+                New issue
+                <MenuShortcut>C</MenuShortcut>
+              </MenuItem>
+              <MenuSeparator />
+              <MenuItem className="min-h-11 sm:min-h-11" onClick={() => setOpenMobile(true)}>
+                <HistoryIcon />
+                Recent chats
+              </MenuItem>
+            </MenuPopup>
+          </Menu>
+        </SplitButton>
       }
     />
   );
