@@ -133,6 +133,11 @@ jobs:
           source scripts/check-evidence.sh
           check_with_evidence nilaway-changed make nilaway-changed
 
+      - name: Verify landing gate concurrency and failure propagation
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: python3 -m unittest scripts/check_land_test.py
+
       - name: Force acceptance probe failure
         if: github.event_name == 'workflow_dispatch' && inputs.fail_job == 'verify-fast'
         run: exit 1

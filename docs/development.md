@@ -61,6 +61,12 @@ test, lint, vet, and build target is capped by `TEST_PROCS` (default 4): it
 sets `go test -p`, `GOMAXPROCS` for the test binaries, `golangci-lint
 --concurrency`, and vitest workers, so one worktree's gate leaves the machine
 usable for the others. Raise it for a solo run with `TEST_PROCS=8 make test`.
+`make check-land` generates docs and checks SQL output once before overlapping
+lint, vet, build and short tests. It divides `TEST_PROCS` among these stages,
+running them in batches when the budget is below four. Unchanged conversation
+sources need no frontend build or ignored bundle. Landing retains repository
+source/workflow invariant tests and migration checks; the full behavioral
+invariant manifest and baseline-aware NilAway audit run in the hourly suite.
 Plain `go test ./...` outside `make` has no cap.
 
 Scheduled Windows portability runs the Hub suite through

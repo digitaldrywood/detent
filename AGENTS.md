@@ -137,10 +137,12 @@ ordered staging batch and push without another gate or GitHub API call. After
 a rebase, validate the build, short Go tests for touched packages, and lint of
 touched files; a failed command returns the item to Rework with its output.
 GitHub pull-request landing retains its configured target and checks.
-The target runs the whole-repository short unit suite, lint, vet, the scheduled
-baseline-aware NilAway audit, build, invariants, migrations and generated-source
+The target generates docs and checks SQL output once, then runs lint, vet,
+build and the whole-repository short unit suite concurrently within one
+`TEST_PROCS` budget. It retains source and workflow invariants and migration
 checks. Conversation changes also run typecheck, vitest and build. Full
-integration, race, coverage and fuzz suites remain scheduled release validation.
+behavioral invariants, integration, race, coverage, fuzz and the baseline-aware
+NilAway audit remain scheduled release validation.
 No local commit status or additional CI producer is required. Every target
 shares the host through `TEST_PROCS` (default 4); see
 [docs/development.md](docs/development.md).

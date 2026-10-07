@@ -164,6 +164,8 @@ reported failed CI, native base-branch requirements and reported P1 findings
 remain authoritative. Diagnostics support concurrent worktrees without a shared
 validation lock. Other projects retain their configured policies.
 
+Landing checks repository source and workflow invariants; the full behavioral
+invariant manifest runs only in the scheduled suite.
 Full integration, race, coverage, fuzz, NilAway and generated-output validation
 run in the scheduled suite, which pins the current `develop` SHA and runs every
 job on it regardless of existing tags. Only the successful full-suite finalizer
