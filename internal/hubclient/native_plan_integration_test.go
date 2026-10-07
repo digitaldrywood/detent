@@ -235,7 +235,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 		}
 		wantStates = []string{"Human Review"}
 	}
-	if failure == "refused" {
+	if failure == "refused" || failure == "cleanup" {
 		wantStates = []string{"Todo"}
 	}
 	for _, want := range wantStates {
