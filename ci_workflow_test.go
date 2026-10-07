@@ -337,7 +337,7 @@ func TestBrowserVisualGateCoversBoardInteractions(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
 	visual := workflowBetween(t, workflow, "  browser-visual-shard:", "\n  installer-smoke:")
-	for _, want := range []string{"npm run test:visual", "--shard=${{ matrix.shard }}/4", "name: Upload browser visual evidence", "name: Upload browser visual failure artifacts"} {
+	for _, want := range []string{"npm run test:visual", "--shard=${{ matrix.shard }}/2", "name: Upload browser visual evidence", "name: Upload browser visual failure artifacts"} {
 		if !strings.Contains(visual, want) {
 			t.Errorf("browser visual job missing %q", want)
 		}
@@ -380,7 +380,7 @@ func TestScheduledCIJobDependencies(t *testing.T) {
 			t.Errorf("%s must depend on preflight", name)
 		}
 	}
-	if !strings.Contains(workflow, "shard: [1, 2, 3, 4]") {
+	if !strings.Contains(workflow, "shard: [1, 2]") {
 		t.Fatal("full suite lost visual shards")
 	}
 	if !strings.Contains(workflow, "check_with_evidence race make test-race") {

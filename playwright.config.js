@@ -5,8 +5,9 @@ const compareSnapshots = process.platform === "linux" || process.env.DETENT_VISU
 module.exports = defineConfig({
   testDir: "./tests/visual",
   outputDir: "./tmp/playwright-results",
-  fullyParallel: false,
-  workers: 1,
+  fullyParallel: true,
+  workers: 4,
+  maxFailures: process.env.CI ? 10 : 0,
   retries: process.env.CI ? 1 : 0,
   timeout: 60_000,
   ignoreSnapshots: !compareSnapshots,

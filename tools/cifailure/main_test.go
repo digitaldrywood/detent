@@ -347,21 +347,32 @@ func TestReportFailures(t *testing.T) {
 	for _, tt := range []struct {
 		name, input string
 		backend     fakeGH
+		cancelled   bool
 		wantErr     bool
 		wantIssues  int
 	}{
-		{"malformed jobs", `{`, fakeGH{}, true, 0},
-		{"lookup failure never files blindly", `[{"id":1,"name":"Lint","conclusion":"failure"}]`, fakeGH{listErr: errors.New("unavailable")}, true, 0},
-		{"malformed issue response", `[]`, fakeGH{listOutput: `{`}, true, 0},
-		{"filing failure", `[{"id":1,"name":"Lint","conclusion":"failure"}]`, fakeGH{publishErr: errors.New("unavailable")}, true, 0},
-		{"long diagnostic title remains fileable", `[{"id":1,"name":"Lint","conclusion":"failure"}]`, fakeGH{logs: map[int64]string{1: "internal/one.go:12:3: " + strings.Repeat("diagnostic ", 100)}}, false, 1},
-		{"finalizer failure retains reporting", `[{"id":0,"name":"Finalize scheduled validation","conclusion":"failure"}]`, fakeGH{}, false, 1},
-		{"all green", `[{"id":1,"name":"Lint","conclusion":"success"}]`, fakeGH{}, false, 0},
-		{"cancelled run never loads or files", `[{"id":1,"name":"Lint","conclusion":"failure"},{"id":2,"name":"Coverage","conclusion":"cancelled"}]`, fakeGH{listErr: errors.New("cancelled run must not load issues")}, false, 0},
+		{"malformed jobs", `{`, fakeGH{}, false, true, 0},
+		{"lookup failure never files blindly", `[{"id":1,"name":"Lint","conclusion":"failure"}]`, fakeGH{listErr: errors.New("unavailable")}, false, true, 0},
+		{"malformed issue response", `[]`, fakeGH{listOutput: `{`}, false, true, 0},
+		{"filing failure", `[{"id":1,"name":"Lint","conclusion":"failure"}]`, fakeGH{publishErr: errors.New("unavailable")}, false, true, 0},
+		{"long diagnostic title remains fileable", `[{"id":1,"name":"Lint","conclusion":"failure"}]`, fakeGH{logs: map[int64]string{1: "internal/one.go:12:3: " + strings.Repeat("diagnostic ", 100)}}, false, false, 1},
+		{"finalizer failure retains reporting", `[{"id":0,"name":"Finalize scheduled validation","conclusion":"failure"}]`, fakeGH{}, false, false, 1},
+		{"all green", `[{"id":1,"name":"Lint","conclusion":"success"}]`, fakeGH{}, false, false, 0},
+		{"cancelled run never loads or files", `[{"id":1,"name":"Lint","conclusion":"failure"},{"id":2,"name":"Coverage","conclusion":"cancelled"}]`, fakeGH{listErr: errors.New("cancelled run must not load issues")}, true, false, 0},
+		{"timed-out job files like a failure", `[{"id":1,"name":"Browser Visual (1/2)","conclusion":"cancelled"}]`, fakeGH{}, false, false, 1},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := report(t.Context(), strings.NewReader(tt.input), tt.backend.command, scheduledEnv)
+			getenv := scheduledEnv
+			if tt.cancelled {
+				getenv = func(key string) string {
+					if key == "WORKFLOW_CANCELLED" {
+						return "true"
+					}
+					return scheduledEnv(key)
+				}
+			}
+			err := report(t.Context(), strings.NewReader(tt.input), tt.backend.command, getenv)
 			if (err != nil) != tt.wantErr || len(tt.backend.created) != tt.wantIssues {
 				t.Fatalf("report = %v, %d issues; want error %v, %d issues", err, len(tt.backend.created), tt.wantErr, tt.wantIssues)
 			}

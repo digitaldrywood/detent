@@ -14,7 +14,7 @@ if [ "$run_conclusion" = cancelled ]; then
 fi
 
 gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" --jq '.jobs[]' | jq -s . > "$jobs_file"
-if jq -e 'any(.[]; .conclusion == "cancelled")' "$jobs_file" > /dev/null; then
+if [ "${WORKFLOW_CANCELLED:-false}" = true ] && jq -e 'any(.[]; .conclusion == "cancelled")' "$jobs_file" > /dev/null; then
   echo "Scheduled validation jobs were cancelled; skipping reporting and release."
   exit 0
 fi
@@ -39,8 +39,8 @@ publish_failure() {
 trap publish_failure ERR
 
 job_count="$(jq '[.[] | select(.name != "Finalize scheduled validation")] | length' "$jobs_file")"
-if [ "$job_count" -ne 15 ]; then
-  echo "Expected 15 scheduled validation jobs; observed $job_count" >&2
+if [ "$job_count" -ne 13 ]; then
+  echo "Expected 13 scheduled validation jobs; observed $job_count" >&2
   false
 fi
 
