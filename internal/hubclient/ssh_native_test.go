@@ -82,7 +82,7 @@ func TestSSHNativePublication(t *testing.T) {
 		t.Skip("git subprocess integration")
 	}
 
-	t.Parallel()
+	isolateNativeChangeGit(t)
 	for _, scenario := range []string{"complete", "capture disconnected", "upload acknowledgment lost"} {
 		t.Run(scenario, func(t *testing.T) {
 			h := newNativeChangeHub(t)

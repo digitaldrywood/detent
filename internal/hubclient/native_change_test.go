@@ -2149,6 +2149,10 @@ func nativeChangeGit(t *testing.T, dir string, args ...string) {
 
 func isolateNativeChangeGit(t *testing.T) {
 	t.Helper()
+	scratch := t.TempDir()
+	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(key, scratch)
+	}
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_AUTHOR_NAME", "Test User")
