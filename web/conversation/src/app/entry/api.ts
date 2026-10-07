@@ -99,6 +99,20 @@ export const PlatformAudit = Schema.Struct({
 });
 export type PlatformAudit = typeof PlatformAudit.Type;
 
+const AccountOrganization = { organization_id: Schema.String, organization_name: Schema.String };
+export const PlatformAccounts = Schema.Struct({
+  accounts: Schema.Array(Schema.Struct({
+    email: Schema.String,
+    subject: Schema.String,
+    platform_role: Schema.String,
+    last_sign_in_at: Schema.String,
+    memberships: Schema.Array(Schema.Struct({ ...AccountOrganization, role: Schema.String, joined_at: Schema.String })),
+    invitations: Schema.Array(Schema.Struct({ ...AccountOrganization, expires_at: Schema.String })),
+  })),
+  unsearched: Schema.Array(Schema.Struct(AccountOrganization)),
+});
+export type PlatformAccounts = typeof PlatformAccounts.Type;
+
 export const PlanReference = Schema.Struct({ id: Schema.String, version: Schema.Number });
 export type PlanReference = typeof PlanReference.Type;
 
@@ -335,6 +349,7 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
         action === "add" ? "POST" : action === "change" ? "PATCH" : "DELETE");
     },
     platformHealth: () => read(PlatformHealth, "/api/cloud/platform/health"),
+    platformAccounts: (query: string) => read(PlatformAccounts, `/api/cloud/platform/accounts?q=${encodeURIComponent(query)}`),
     platformAudit: (query: string) => read(PlatformAudit, `/api/cloud/platform/audit${query === "" ? "" : `?${query}`}`),
     platformEntitlements: (organization: string) => read(OrganizationEntitlements, entitlementsPath(organization)),
     changePlatformEntitlement: (input: { organization: string; csrf: string; change: EntitlementChange }) =>

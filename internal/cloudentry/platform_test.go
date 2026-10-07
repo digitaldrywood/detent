@@ -3,6 +3,7 @@
 package cloudentry
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
@@ -20,16 +21,18 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/platformaccounts"
 )
 
-var platformRoutes = []string{"/platform", "/platform/tenants", "/platform/staff", "/platform/audit", "/platform/health", "/platform/allowlist", "/api/cloud/platform/organizations", "/api/cloud/platform/allowlist", "/api/cloud/platform/health", "/api/cloud/platform/audit"}
+var platformRoutes = []string{"/platform", "/platform/tenants", "/platform/accounts", "/platform/staff", "/platform/audit", "/platform/health", "/platform/allowlist", "/api/cloud/platform/organizations", "/api/cloud/platform/allowlist", "/api/cloud/platform/health", "/api/cloud/platform/audit", "/api/cloud/platform/accounts?q=alice"}
 
 var platformEvents = map[string]string{
-	"/platform":                         "platform_opened",
-	"/api/cloud/platform/organizations": "platform_organizations_viewed",
-	"/api/cloud/platform/allowlist":     "platform_allowlist_viewed",
-	"/api/cloud/platform/health":        "platform_health_viewed",
-	"/api/cloud/platform/audit":         "platform_audit_viewed",
+	"/api/cloud/platform/accounts?q=alice": "platform_accounts_searched",
+	"/platform":                            "platform_opened",
+	"/api/cloud/platform/organizations":    "platform_organizations_viewed",
+	"/api/cloud/platform/allowlist":        "platform_allowlist_viewed",
+	"/api/cloud/platform/health":           "platform_health_viewed",
+	"/api/cloud/platform/audit":            "platform_audit_viewed",
 }
 
 func withClientShell(s *Service) {
@@ -128,7 +131,7 @@ func TestPlatformAuthorization(t *testing.T) {
 	for _, event := range platformEvents {
 		want := 2
 		if event == "platform_opened" {
-			want = 12
+			want = 14
 		}
 		if got := platformAuditCount(t, f.service, "user_staff", event); got != want {
 			t.Errorf("staff audit %s = %d, want %d", event, got, want)
@@ -747,5 +750,138 @@ func TestPlatformAuditTimeline(t *testing.T) {
 				t.Fatalf("view was not audited: %+v", page.Rows)
 			}
 		})
+	}
+}
+
+type timedOutPlatformTransport struct{}
+
+func (timedOutPlatformTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, context.DeadlineExceeded
+}
+
+func TestPlatformAccountsSearch(t *testing.T) {
+	t.Parallel()
+	f := newEntryFixture(t)
+	f.provider.users["user_staff"] = "staff@example.test"
+	staff := newBrowser(t, f.service.Handler())
+	staff.login("/auth/oidc/start", "user_staff:")
+	alice := newBrowser(t, f.service.Handler())
+	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	_, body := alice.get("/organizations/org_alpha/organization")
+	invited := alice.do(http.MethodPost, "/organizations/org_alpha/organization/invite", url.Values{"email": {"carol@example.test"}, "role": {"member"}, "csrf": {csrfFrom(t, body)}}, nil)
+	if invited.StatusCode != http.StatusSeeOther {
+		t.Fatalf("invite = %d %s", invited.StatusCode, invited.Body)
+	}
+	now := f.service.auth.now()
+	for _, item := range []struct {
+		hash, subject, email string
+		at                   time.Time
+		support              string
+	}{
+		{"carol-old", "user_carol", "CAROL@example.test", now.Add(-time.Hour), ""},
+		{"carol-new", "user_carol", "carol@example.test", now, ""},
+		{"carol-support", "user_carol", "carol@example.test", now.Add(time.Hour), "support@example.test"},
+		{"session-only", "user_only", "only@example.test", now, ""},
+		{"suffix", "user_suffix", "only@example.test.extra", now, ""},
+		{"literal", "user_literal", "literal_%@example.test", now, ""},
+	} {
+		identity := auth.Identity{Subject: item.subject, Email: item.email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: item.subject, ExpiresAt: now.Add(time.Hour), SupportActor: item.support}}
+		if err := f.service.auth.createSession(t.Context(), item.hash, "csrf", identity); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET created_at=?,revoked_at=? WHERE token_hash=?", formatTime(item.at), formatTime(now), item.hash); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		name, query                             string
+		status, count, memberships, invitations int
+	}{
+		{"full address memberships", "ALICE@example.test", 200, 1, 2, 0},
+		{"substring", "EXAMPLE.test", 200, 8, -1, -1},
+		{"session and invitation", "carol", 200, 1, 0, 1},
+		{"exact is not substring", "only@example.test", 200, 1, 0, 0},
+		{"literal wildcard", "_%@", 200, 1, 0, 0},
+		{"session-only substring", "only", 200, 2, 0, 0},
+		{"no matches", "absent", 200, 0, -1, -1},
+		{"short", "ab", 400, 0, -1, -1},
+		{"empty", "", 400, 0, -1, -1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response, body := staff.get("/api/cloud/platform/accounts?" + url.Values{"q": {test.query}}.Encode())
+			if response.StatusCode != test.status {
+				t.Fatalf("search = %d %s", response.StatusCode, body)
+			}
+			if test.status != 200 {
+				return
+			}
+			var result platformaccounts.Result
+			decodeJSON(t, body, &result)
+			if len(result.Accounts) != test.count || len(result.Unsearched) != 0 {
+				t.Fatalf("result = %+v", result)
+			}
+			if test.count > 0 && test.memberships >= 0 {
+				for _, account := range result.Accounts {
+					if len(account.Memberships) != test.memberships || len(account.Invitations) != test.invitations || account.Subject == "" {
+						t.Fatalf("account = %+v", account)
+					}
+					if account.Email == "carol@example.test" && account.LastSignInAt != formatTime(now) {
+						t.Fatalf("last sign in = %q", account.LastSignInAt)
+					}
+					for _, membership := range account.Memberships {
+						if membership.Name == "" || membership.JoinedAt == "" || membership.Role != "owner" {
+							t.Fatalf("membership = %+v", membership)
+						}
+					}
+				}
+			}
+			var length int
+			var organization, event string
+			if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT query_length,organization_id,event FROM audit WHERE subject='user_staff' ORDER BY id DESC LIMIT 1").Scan(&length, &organization, &event); err != nil {
+				t.Fatal(err)
+			}
+			if length != len(test.query) || organization != "" || event != "platform_accounts_searched" || strings.Contains(body, "Alpha secret project") {
+				t.Fatalf("audit or content leak: %d %q %q %s", length, organization, event, body)
+			}
+		})
+	}
+	for _, role := range []string{"admin", "billing", "support", "viewer"} {
+		t.Run(role, func(t *testing.T) {
+			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform_members SET role=? WHERE email='staff@example.test'", role); err != nil {
+				t.Fatal(err)
+			}
+			response, body := staff.get("/api/cloud/platform/accounts?q=staff")
+			var result platformaccounts.Result
+			decodeJSON(t, body, &result)
+			if response.StatusCode != 200 || len(result.Accounts) != 1 || result.Accounts[0].PlatformRole != role {
+				t.Fatalf("role result = %d %s", response.StatusCode, body)
+			}
+		})
+	}
+	for i := range 60 {
+		email := fmt.Sprintf("cap%02d@example.test", i)
+		identity := auth.Identity{Subject: email, Email: email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: email, ExpiresAt: now.Add(time.Hour)}}
+		if err := f.service.auth.createSession(t.Context(), email, "csrf", identity); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, body = staff.get("/api/cloud/platform/accounts?q=cap")
+	var capped platformaccounts.Result
+	decodeJSON(t, body, &capped)
+	if len(capped.Accounts) != 50 || capped.Accounts[49].Email != "cap49@example.test" {
+		t.Fatalf("cap = %+v", capped)
+	}
+	original := f.service.config.transport
+	f.service.config.transport = func(org Organization) (http.RoundTripper, error) {
+		if org.ID == "org_beta" {
+			return timedOutPlatformTransport{}, nil
+		}
+		return original(org)
+	}
+	_, body = staff.get("/api/cloud/platform/accounts?q=alice")
+	var partial platformaccounts.Result
+	decodeJSON(t, body, &partial)
+	if len(partial.Accounts) != 1 || len(partial.Accounts[0].Memberships) != 1 || len(partial.Unsearched) != 1 || partial.Unsearched[0].ID != "org_beta" {
+		t.Fatalf("partial = %+v", partial)
 	}
 }

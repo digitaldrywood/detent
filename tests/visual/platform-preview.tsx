@@ -6,6 +6,7 @@ import { makeEntryRouter } from "../../web/conversation/src/app/entry/router.tsx
 import { makeEntryApi } from "../../web/conversation/src/app/entry/api.ts";
 import fixture from "./platform-preview-data.json";
 import audit from "./platform-audit-data.json";
+import accounts from "./platform-accounts-data.json";
 
 const params = new URLSearchParams(location.search);
 
@@ -42,6 +43,8 @@ if (location.protocol === "file:") {
       };
     } else if (path.startsWith("/api/cloud/platform/audit")) {
       value = audit;
+    } else if (path.startsWith("/api/cloud/platform/accounts?")) {
+      value = accounts;
     } else if (path.endsWith("/organizations")) {
       value = { ...fixture.organizations, can_grant: !location.search.includes("staff") };
     } else if (path.endsWith("/allowlist")) {
