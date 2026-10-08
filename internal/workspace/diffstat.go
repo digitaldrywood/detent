@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -166,7 +167,7 @@ func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (R
 	if err != nil {
 		return RecoveryState{}, err
 	}
-	stat, err := GitDiffStat(ctx, normalized.Path)
+	stat, err := gitDiffStat(ctx, normalized.Path, true)
 	if err != nil {
 		return RecoveryState{}, err
 	}
@@ -236,6 +237,10 @@ func (l *LocalGit) Diff(ctx context.Context, info Info, issue Issue, maxBytes in
 }
 
 func GitDiffStat(ctx context.Context, workspacePath string) (DiffStat, error) {
+	return gitDiffStat(ctx, workspacePath, false)
+}
+
+func gitDiffStat(ctx context.Context, workspacePath string, includeIndex bool) (DiffStat, error) {
 	if strings.TrimSpace(workspacePath) == "" {
 		return DiffStat{}, errors.New("workspace path is required")
 	}
@@ -246,7 +251,7 @@ func GitDiffStat(ctx context.Context, workspacePath string) (DiffStat, error) {
 		return DiffStat{}, fmt.Errorf("stat workspace path: %w", err)
 	}
 
-	stat, err := gitDiffStatOutput(ctx, workspacePath)
+	stat, err := gitDiffStatOutput(ctx, workspacePath, includeIndex)
 	if err != nil {
 		return DiffStat{}, err
 	}
@@ -308,7 +313,7 @@ func GitDiffFrom(ctx context.Context, workspacePath string, baseRef string, maxB
 	return Diff{Stat: stat, Patch: patch, Truncated: truncated}, nil
 }
 
-func gitDiffStatOutput(ctx context.Context, workspacePath string) (DiffStat, error) {
+func gitDiffStatOutput(ctx context.Context, workspacePath string, includeIndex bool) (DiffStat, error) {
 	index, err := gitIndexLookup(ctx, workspacePath, true)
 	if err != nil {
 		return DiffStat{}, err
@@ -320,12 +325,48 @@ func gitDiffStatOutput(ctx context.Context, workspacePath string) (DiffStat, err
 	defer cleanup()
 
 	env := []string{"GIT_INDEX_FILE=" + tempIndex}
-	if _, err := runGitAtWithEnv(ctx, workspacePath, env, "add", "--intent-to-add", "--", "."); err != nil {
-		return DiffStat{}, fmt.Errorf("git add intent to add: %w", err)
+	addPaths := []string{"."}
+	addEnv := env
+	if includeIndex {
+		output, err := runGitAtWithEnv(ctx, workspacePath, env, gitDiagnosticArgs("ls-files", "--others", "--exclude-standard", "-z")...)
+		if err != nil {
+			return DiffStat{}, fmt.Errorf("git list untracked workspace changes: %w", err)
+		}
+		addPaths = strings.Split(strings.TrimSuffix(output, "\x00"), "\x00")
+		if output == "" {
+			addPaths = nil
+		}
+		addEnv = append(slices.Clone(env), "GIT_LITERAL_PATHSPECS=1")
 	}
-	stat, err := gitDiffStatWithEnv(ctx, workspacePath, env, index.HeadSHA)
-	if err != nil {
-		return DiffStat{}, err
+	if len(addPaths) != 0 {
+		args := append([]string{"add", "--intent-to-add", "--"}, addPaths...)
+		if _, err := runGitAtWithEnv(ctx, workspacePath, addEnv, args...); err != nil {
+			return DiffStat{}, fmt.Errorf("git add intent to add: %w", err)
+		}
+	}
+	var stat DiffStat
+	if includeIndex {
+		staged, err := gitDiffStatWithEnv(ctx, workspacePath, env, "--cached", index.HeadSHA)
+		if err != nil {
+			return DiffStat{}, err
+		}
+		working, err := gitDiffStatWithEnv(ctx, workspacePath, env)
+		if err != nil {
+			return DiffStat{}, err
+		}
+		paths, err := gitDiffPaths(ctx, workspacePath, env, []string{"--cached", index.HeadSHA}, nil)
+		if err != nil {
+			return DiffStat{}, err
+		}
+		stat = DiffStat{Files: len(paths), Added: staged.Added + working.Added, Removed: staged.Removed + working.Removed}
+		if !stat.IsEmpty() {
+			stat.Fingerprint = workspaceRecoveryFingerprint("index", staged.Fingerprint, "worktree", working.Fingerprint)
+		}
+	} else {
+		stat, err = gitDiffStatWithEnv(ctx, workspacePath, env, index.HeadSHA)
+		if err != nil {
+			return DiffStat{}, err
+		}
 	}
 	stat.HeadSHA = index.HeadSHA
 	stat.HeadObservedAt = index.HeadObservedAt
@@ -359,11 +400,29 @@ func gitUnpushedCommitEvidence(ctx context.Context, workspacePath string, base s
 }
 
 func gitTrackedPaths(ctx context.Context, workspacePath string) ([]string, error) {
-	output, err := runGitAt(ctx, workspacePath, gitDiagnosticArgs("diff", "--name-only", "--no-ext-diff", "-z", "HEAD")...)
+	paths, err := gitDiffPaths(ctx, workspacePath, nil, []string{"--cached", "HEAD"}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("git list tracked workspace changes: %w", err)
 	}
-	return boundedNULFields(output, recoveryEvidenceLimit, false), nil
+	return paths[:min(len(paths), recoveryEvidenceLimit)], nil
+}
+
+func gitDiffPaths(ctx context.Context, workspacePath string, env []string, comparisons ...[]string) ([]string, error) {
+	var paths []string
+	for _, comparison := range comparisons {
+		args := append([]string{"diff", "--name-only", "--no-renames", "--no-ext-diff", "-z"}, comparison...)
+		output, err := runGitAtWithEnv(ctx, workspacePath, env, gitDiagnosticArgs(args...)...)
+		if err != nil {
+			return nil, err
+		}
+		for path := range strings.SplitSeq(output, "\x00") {
+			if path != "" {
+				paths = append(paths, path)
+			}
+		}
+	}
+	slices.Sort(paths)
+	return slices.Compact(paths), nil
 }
 
 func gitUntrackedPaths(ctx context.Context, workspacePath string) ([]string, error) {
@@ -497,8 +556,9 @@ func workspaceRecoveryFingerprint(parts ...string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func gitDiffStatWithEnv(ctx context.Context, workspacePath string, env []string, diffBase string) (DiffStat, error) {
-	output, err := runGitAtWithEnv(ctx, workspacePath, env, gitDiagnosticArgs("diff", "--stat", diffBase)...)
+func gitDiffStatWithEnv(ctx context.Context, workspacePath string, env []string, comparison ...string) (DiffStat, error) {
+	args := append([]string{"diff", "--stat"}, comparison...)
+	output, err := runGitAtWithEnv(ctx, workspacePath, env, gitDiagnosticArgs(args...)...)
 	if err != nil {
 		return DiffStat{}, fmt.Errorf("git diff stat: %w", err)
 	}
@@ -506,7 +566,7 @@ func gitDiffStatWithEnv(ctx context.Context, workspacePath string, env []string,
 	if err != nil || stat.IsEmpty() {
 		return stat, err
 	}
-	fingerprint, err := gitDiffFingerprint(ctx, workspacePath, env, diffBase)
+	fingerprint, err := gitDiffFingerprint(ctx, workspacePath, env, comparison...)
 	if err != nil {
 		return DiffStat{}, err
 	}
@@ -514,8 +574,8 @@ func gitDiffStatWithEnv(ctx context.Context, workspacePath string, env []string,
 	return stat, nil
 }
 
-func gitDiffFingerprint(ctx context.Context, workspacePath string, env []string, diffBase string) (string, error) {
-	args := []string{"-C", workspacePath, "diff", "--no-ext-diff", "--binary", "--full-index", diffBase}
+func gitDiffFingerprint(ctx context.Context, workspacePath string, env []string, comparison ...string) (string, error) {
+	args := append([]string{"-C", workspacePath, "diff", "--no-ext-diff", "--binary", "--full-index"}, comparison...)
 	args = gitDiagnosticArgs(args...)
 	cmd := exec.CommandContext(ctx, "git")
 	cmd.Args = append([]string{"git"}, args...)

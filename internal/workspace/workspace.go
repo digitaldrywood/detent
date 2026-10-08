@@ -914,6 +914,9 @@ func (l *LocalGit) branchName(issue Issue, key string) string {
 }
 
 func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch string, baseRef string) (bool, error) {
+	if err := l.checkDanglingSourceWorktree(ctx, path); err != nil {
+		return false, err
+	}
 	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
 		return false, fmt.Errorf("prune stale worktree registrations during preparation: %w", withCommandOutput(err))
 	}
@@ -934,10 +937,6 @@ func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch strin
 				if err := l.recoverStaleSourceWorktree(ctx, path, current, branch); err != nil {
 					return false, err
 				}
-				exists = false
-			} else if removed, err := l.removeDanglingSourceWorktree(ctx, path); err != nil {
-				return false, err
-			} else if removed {
 				exists = false
 			} else if l.isGitWorkspace(ctx, path) {
 				return false, fmt.Errorf("workspace path is a git worktree not managed by source: %s", path)
@@ -1458,31 +1457,27 @@ func detachWorktreeHead(ctx context.Context, path string) error {
 	return nil
 }
 
-func (l *LocalGit) removeDanglingSourceWorktree(ctx context.Context, path string) (bool, error) {
+func (l *LocalGit) checkDanglingSourceWorktree(ctx context.Context, path string) error {
 	gitDir, ok, err := readLinkedWorktreeGitDir(path)
 	if err != nil || !ok {
-		return false, err
+		return err
 	}
 	sourceCommon, err := gitCommonDir(ctx, l.sourceRoot)
 	if err != nil {
-		return false, fmt.Errorf("inspect source for dangling workspace: %w", err)
+		return fmt.Errorf("inspect source for dangling workspace: %w", err)
 	}
 	adminRoot := filepath.Join(sourceCommon, "worktrees")
 	if filepath.Dir(gitDir) != adminRoot {
-		return false, nil
+		return nil
 	}
 	exists, _, err := pathExists(gitDir)
 	if err != nil {
-		return false, fmt.Errorf("inspect linked worktree admin directory: %w", err)
+		return fmt.Errorf("inspect linked worktree admin directory: %w", err)
 	}
 	if exists {
-		return false, nil
+		return nil
 	}
-	if err := removeWorkspacePath(l.root, path); err != nil {
-		return false, fmt.Errorf("remove workspace with dangling gitdir: %w", err)
-	}
-	l.logger.Warn("removed workspace with dangling gitdir", slog.String("path", path), slog.String("git_dir", gitDir))
-	return true, nil
+	return fmt.Errorf("%w at %s: linked worktree admin metadata is unavailable; surviving files retained, source and index cannot be verified", ErrWorkspacePreserved, path)
 }
 
 func relocateWorktreeAdmin(metadata gitMetadata, workspacePath string) error {
