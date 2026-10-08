@@ -526,6 +526,7 @@ func recoveryIssueFromStoreAttempt(attempt store.WorkAttempt) connector.Issue {
 }
 
 func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *State, now time.Time) bool {
+	settled := true
 	for _, issueID := range sortedKeys(state.deferredCompletions) {
 		retry := state.Retry[issueID]
 		if !retry.DueAt.IsZero() && now.Before(retry.DueAt) {
@@ -538,12 +539,13 @@ func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *Stat
 				if errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) {
 					state.Running[issueID] = record.Running
 					o.rejectUnavailableCompletion(ctx, state, record.completion(), record.Running, err, false)
-					return true
+					continue
 				}
 				o.observeTrackerReadFailure(state, "", err, now)
 				retry.DueAt = now.Add(o.cfg.PollInterval)
 				state.Retry[issueID] = retry
-				return false
+				settled = false
+				continue
 			}
 			record.AuthorityRestored = true
 			state.deferredCompletions[issueID] = record
@@ -560,7 +562,8 @@ func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *Stat
 			if !o.persistDeferredCompletion(ctx, state, record) {
 				retry.DueAt = now.Add(o.cfg.PollInterval)
 				state.Retry[issueID] = retry
-				return false
+				settled = false
+				continue
 			}
 			record.Persisted = true
 			state.deferredCompletions[issueID] = record
@@ -583,7 +586,7 @@ func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *Stat
 					if err != nil {
 						o.deferTrackerUnavailableCompletion(ctx, state, completion, record.Running, err)
 						if _, deferred := state.deferredCompletions[issueID]; deferred {
-							return false
+							settled = false
 						}
 						continue
 					}
@@ -595,10 +598,10 @@ func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *Stat
 		}
 		o.handleRunResult(ctx, state, completion)
 		if _, deferred := state.deferredCompletions[issueID]; deferred {
-			return false
+			settled = false
 		}
 	}
-	return true
+	return settled
 }
 
 func (o *Orchestrator) restoreDeferredExecution(ctx context.Context, record deferredCompletion) (Claimed, error) {

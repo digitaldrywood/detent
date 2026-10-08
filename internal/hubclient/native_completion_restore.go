@@ -188,6 +188,10 @@ func sameCompletionRun(current, original tracker.NativeRunData) bool {
 }
 
 func completionRestoreError(err error) error {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Code == "policy_mismatch" {
+		return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+	}
 	if nativeTransportUnavailable(err) || !nativeAuthorityLost(err) {
 		return err
 	}
