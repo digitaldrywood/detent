@@ -116,6 +116,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				state := &coordinatorTurnState{coordinator: c, conversationID: record.ID, users: []conversationMessageRecord{user}}
 				tools := newCoordinatorToolset(c, state)
 				if coordinatorSpriteMutation(tool) {
+					f.service.spriteWakeWork.Wait()
 					envelope, err := f.service.config.SecretKeys.Seal([]byte(spritesSecretSentinel), secretAAD("org_security", string(f.project), flySpritesToken))
 					if err != nil {
 						t.Fatal(err)
