@@ -9,8 +9,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -18,12 +20,13 @@ import (
 // only producer the hub honours today (decisions section 18.5).
 type attemptDiffFixture struct {
 	nativeFixture
-	worker  string
-	issue   tracker.NativeIssue
-	policy  string
-	lease   tracker.NativeLease
-	attempt string
-	run     string
+	worker   string
+	runnerID string
+	issue    tracker.NativeIssue
+	policy   string
+	lease    tracker.NativeLease
+	attempt  string
+	run      string
 }
 
 func newAttemptDiffFixture(t *testing.T) *attemptDiffFixture {
@@ -37,6 +40,11 @@ func newAttemptDiffFixture(t *testing.T) *attemptDiffFixture {
 // so a test can change the item between the claim and the start.
 func newClaimedAttemptDiffFixture(t *testing.T) *attemptDiffFixture {
 	t.Helper()
+	return claimedAttemptDiffFixture(t, false)
+}
+
+func claimedAttemptDiffFixture(t *testing.T, enrolled bool) *attemptDiffFixture {
+	t.Helper()
 	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
 	f := newNativeFixture(t, service, "", "attempt-diff")
 	fixture := &attemptDiffFixture{nativeFixture: f}
@@ -44,12 +52,23 @@ func newClaimedAttemptDiffFixture(t *testing.T) *attemptDiffFixture {
 	approveHubTestPolicy(t, f.service, f.base+"/policy", policy)
 	fixture.policy = policy.ID
 	fixture.issue = f.create(t, "diff-work")
-	fixture.worker = f.worker(t, "attempt-diff-worker")
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", fixture.worker,
-		map[string]any{"id": "diff-machine", "hostname": "fixture", "display_name": "Fixture", "version": "test", "capacity": 1}), http.StatusOK)
+	machine := tracker.MachineID("diff-machine")
+	if enrolled {
+		r := prepareRunner(t, f, runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+		r.enroll(t)
+		fixture.worker, machine, fixture.runnerID = r.redemption.Credential, r.binding.MachineID, r.binding.RunnerID
+	} else {
+		fixture.worker = f.worker(t, "attempt-diff-worker")
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", fixture.worker,
+			map[string]any{"id": machine, "hostname": "fixture", "display_name": "Fixture", "version": "test", "capacity": 1}), http.StatusOK)
+	}
+	capabilities := []string{"native_issues", "scoped_collaboration"}
+	if enrolled {
+		capabilities = append(capabilities, tracker.NativeExecutionCapability)
+	}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", fixture.worker,
-		tracker.NativeClaim{PolicyID: fixture.policy, WorkItemID: fixture.issue.WorkItemID, MachineID: "diff-machine", SessionID: newNativeID("session"),
-			TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
+		tracker.NativeClaim{PolicyID: fixture.policy, WorkItemID: fixture.issue.WorkItemID, MachineID: machine, SessionID: newNativeID("session"),
+			TTLSeconds: 600, ProtocolMajor: 2, Capabilities: capabilities})
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &fixture.lease)
 	fixture.attempt = newNativeID("attempt")
@@ -106,6 +125,115 @@ func requireNativeCode(t *testing.T, response *httptest.ResponseRecorder, status
 		t.Fatalf("code = %q, want %q: %s", failure.Code, code, response.Body.String())
 	}
 	return failure
+}
+
+func TestEnrolledRunnerAttemptDiffAuthorization(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, *attemptDiffFixture, *tracker.AttemptDiffRequest) (string, string)
+		status int
+		code   string
+	}{
+		{name: "current owner", status: http.StatusAccepted},
+		{name: "missing claim", status: http.StatusForbidden, code: "insufficient_scope", mutate: func(t *testing.T, f *attemptDiffFixture, _ *tracker.AttemptDiffRequest) (string, string) {
+			_, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET operations_json = '["read","collaborate","heartbeat","events"]'`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return f.worker, f.base
+		}},
+		{name: "wrong runner", status: http.StatusNotFound, code: "not_found", mutate: func(t *testing.T, f *attemptDiffFixture, _ *tracker.AttemptDiffRequest) (string, string) {
+			r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+			r.enroll(t)
+			return r.redemption.Credential, f.base
+		}},
+		{name: "wrong project", status: http.StatusNotFound, code: "not_found", mutate: func(t *testing.T, f *attemptDiffFixture, _ *tracker.AttemptDiffRequest) (string, string) {
+			other := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign")
+			return f.worker, other.base
+		}},
+		{name: "wrong attempt", status: http.StatusConflict, code: "stale_execution", mutate: func(_ *testing.T, f *attemptDiffFixture, request *tracker.AttemptDiffRequest) (string, string) {
+			request.Producer.ID = newNativeID("attempt")
+			return f.worker, f.base
+		}},
+		{name: "attempt from another work item", status: http.StatusConflict, code: "stale_execution", mutate: func(t *testing.T, f *attemptDiffFixture, request *tracker.AttemptDiffRequest) (string, string) {
+			item := f.create(t, "other-diff-work")
+			claimed := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: item.WorkItemID, MachineID: f.lease.MachineID, SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+			requireNativeStatus(t, claimed, http.StatusOK)
+			var lease tracker.NativeLease
+			decodeHubResponse(t, claimed, &lease)
+			event := nativeStartedEvent(lease)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", f.worker, event), http.StatusOK)
+			f.attempt = event.Data.AttemptID
+			request.Producer.ID = f.attempt
+			return f.worker, f.base
+		}},
+		{name: "revoked token", status: http.StatusUnauthorized, code: "unauthorized", mutate: func(t *testing.T, f *attemptDiffFixture, _ *tracker.AttemptDiffRequest) (string, string) {
+			_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE scope = 'worker'", formatHubTime(f.service.config.now()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return f.worker, f.base
+		}},
+		{name: "expired lease", status: http.StatusConflict, code: "stale_execution", mutate: func(t *testing.T, f *attemptDiffFixture, _ *tracker.AttemptDiffRequest) (string, string) {
+			_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at = ? WHERE lease_id = ?", formatHubTime(f.service.config.now().Add(-time.Second)), f.lease.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return f.worker, f.base
+		}},
+		{name: "superseded fence", status: http.StatusConflict, code: "stale_execution", mutate: func(t *testing.T, f *attemptDiffFixture, _ *tracker.AttemptDiffRequest) (string, string) {
+			_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET fencing_token = fencing_token + 1 WHERE lease_id = ?", f.lease.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return f.worker, f.base
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := claimedAttemptDiffFixture(t, true)
+			f.start(t)
+			request := f.request(2, tracker.AttemptDiffFile{Path: "main.go", Status: tracker.DiffStatusModified, Patch: "+fixed"})
+			token, base := f.worker, f.base
+			if test.mutate != nil {
+				token, base = test.mutate(t, f, &request)
+			}
+			path := base + "/attempts/" + f.attempt + "/diff"
+			check := performHubAPIRequest(t, f.service, http.MethodPost, path+"/check", token, request)
+			if test.status != http.StatusAccepted {
+				requireNativeCode(t, check, test.status, test.code)
+				requireNativeCode(t, performHubAPIRequest(t, f.service, http.MethodPost, path, token, request), test.status, test.code)
+			} else {
+				requireNativeStatus(t, check, http.StatusNoContent)
+			}
+			var count int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM attempt_diffs WHERE attempt_id = ?", f.attempt).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("preflight or denial stored %d diffs: %v", count, err)
+			}
+			if test.status != http.StatusAccepted {
+				return
+			}
+			posted := performHubAPIRequest(t, f.service, http.MethodPost, path, token, request)
+			requireNativeStatus(t, posted, http.StatusAccepted)
+			var receipt tracker.AttemptDiffReceipt
+			decodeHubResponse(t, posted, &receipt)
+			read := performHubAPIRequest(t, f.service, http.MethodGet, path+"?at=2", token, nil)
+			requireNativeStatus(t, read, http.StatusOK)
+			var diff tracker.AttemptDiff
+			decodeHubResponse(t, read, &diff)
+			if diff.ID != receipt.DiffID || diff.AttemptID != f.attempt || diff.Generation.Seq != 2 || diff.Producer.LeaseID != f.lease.ID || diff.Producer.FencingToken != f.lease.FencingToken || diff.Producer.RunnerID != f.runnerID || diff.BaseSHA != request.BaseSHA || diff.HeadSHA != request.HeadSHA || len(diff.Files) != 1 || diff.Files[0].Patch != "+fixed" {
+				t.Fatalf("stored source identity or diff mismatch: %+v", diff)
+			}
+			request.Generation.Seq = 3
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/check", token, request), http.StatusNoContent)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/release", token, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+			requireNativeCode(t, performHubAPIRequest(t, f.service, http.MethodPost, path, token, request), http.StatusConflict, "stale_execution")
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM attempt_diffs WHERE attempt_id = ?", f.attempt).Scan(&count); err != nil || count != 1 {
+				t.Fatalf("released lease changed stored generations: %d, %v", count, err)
+			}
+		})
+	}
 }
 
 // The default read is the latest attempt-produced diff; ?at=<seq> reads that

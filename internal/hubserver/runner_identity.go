@@ -35,7 +35,7 @@ func runnerOperationAllowed(c echo.Context, operations []string) bool {
 		operation = runnerauth.Claim
 	case c.Request().Method == http.MethodGet:
 		operation = runnerauth.Read
-	case path == nativeBase+"/attempts/:attempt/diff":
+	case path == nativeBase+"/attempts/:attempt/diff", path == nativeBase+"/attempts/:attempt/diff/check":
 		// The diff is written by the runner holding the attempt's lease;
 		// postAttemptDiff re-checks that lease and its fencing token.
 		operation = runnerauth.Claim

@@ -10,6 +10,7 @@ import (
 	"testing/fstest"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -32,6 +33,12 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			p := newSharedOriginPilotWith(t, 1, 1, fstest.MapFS{}, test.billing)
+			store := newSpacesFixture(t, false)
+			storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.service.attachments = storage
 			owner := p.browser(t)
 			pilotStatus(t, "sign-in", owner.login("/auth/oidc/start", "user_dana:"), http.StatusSeeOther)
 			created := owner.createOrganization("Alpha Labs")
@@ -92,6 +99,33 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 				Data: tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test-model"}, LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: lease.PolicyID, RunID: run, AttemptID: attempt}}
 			item := hub + "/work-items/" + string(issue.WorkItemID)
 			pilotStatus(t, "run started", p.machine(t, http.MethodPost, item+"/events", credential, start), http.StatusOK)
+
+			diffPath := o.projectAPI() + "/attempts/" + attempt + "/diff"
+			diffRequest := tracker.AttemptDiffRequest{
+				Producer:   tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: attempt, RunnerID: binding.RunnerID, LeaseID: lease.ID, FencingToken: lease.FencingToken},
+				Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 2},
+				BaseSHA:    strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40),
+				Files: []tracker.AttemptDiffFile{{Path: "main.go", Status: tracker.DiffStatusModified, Additions: 1, Patch: "+fixed\n"}},
+			}
+			uploaded := p.machine(t, http.MethodPost, diffPath, credential, diffRequest)
+			pilotStatus(t, "runner diff upload", uploaded, http.StatusAccepted)
+			var receipt tracker.AttemptDiffReceipt
+			pilotDecode(t, uploaded, &receipt)
+			read := p.machine(t, http.MethodGet, diffPath+"?at=2", credential, nil)
+			pilotStatus(t, "runner diff read", read, http.StatusOK)
+			var diff tracker.AttemptDiff
+			pilotDecode(t, read, &diff)
+			if diff.ID != receipt.DiffID || diff.AttemptID != attempt || diff.Generation.Seq != 2 || diff.Producer != diffRequest.Producer || diff.BaseSHA != diffRequest.BaseSHA || diff.HeadSHA != diffRequest.HeadSHA || len(diff.Files) != 1 || diff.Files[0].Patch != "+fixed\n" {
+				t.Fatalf("public diff identity/body mismatch: %+v", diff)
+			}
+			diffRequest.Generation.Seq = 3
+			diffRequest.Producer.FencingToken++
+			before := len(store.requests())
+			denied := p.machine(t, http.MethodPost, diffPath, credential, diffRequest)
+			pilotStatus(t, "stale runner diff", denied, http.StatusConflict)
+			if !strings.Contains(denied.body, "stale_execution") || len(store.requests()) != before {
+				t.Fatal("denied diff reached object storage or lost fencing error")
+			}
 
 			bind := map[string]any{"lease_id": lease.ID, "fencing_token": lease.FencingToken, "attempt_id": attempt, "run_id": run, "capabilities": map[string]bool{"steer": true}}
 			for _, request := range []struct {

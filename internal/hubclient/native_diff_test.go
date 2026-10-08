@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -47,6 +48,9 @@ func newDiffClient(t *testing.T, hub *diffHub) *NativeClient {
 			return
 		}
 		code := "stale_generation"
+		if status == http.StatusForbidden {
+			code = "insufficient_scope"
+		}
 		if status == http.StatusRequestEntityTooLarge {
 			code = "diff_too_large"
 			if hub.tooLargeCode != "" {
@@ -135,15 +139,27 @@ func TestPostAttemptDiffRetriesWithoutPatchesWhenTooLarge(t *testing.T) {
 // A refusal that is not diff_too_large is reported, not retried.
 func TestPostAttemptDiffReportsOtherFailures(t *testing.T) {
 	t.Parallel()
-	hub := &diffHub{statuses: []int{http.StatusConflict}}
-	client := newDiffClient(t, hub)
-	if _, err := client.PostAttemptDiff(t.Context(), testAttemptID, diffRequest(
-		tracker.AttemptDiffFile{Path: "a.go", Status: tracker.DiffStatusModified},
-	)); err == nil {
-		t.Fatal("a refused diff must be reported")
-	}
-	if len(hub.posts) != 1 {
-		t.Fatalf("posts = %d, want 1", len(hub.posts))
+	for _, test := range []struct {
+		name   string
+		status int
+		code   string
+	}{
+		{name: "stale generation", status: http.StatusConflict, code: "stale_generation"},
+		{name: "runner operation denied", status: http.StatusForbidden, code: "insufficient_scope"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			hub := &diffHub{statuses: []int{test.status}}
+			client := newDiffClient(t, hub)
+			_, err := client.PostAttemptDiff(t.Context(), testAttemptID, diffRequest(tracker.AttemptDiffFile{Path: "a.go", Status: tracker.DiffStatusModified}))
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || apiErr.Status != test.status || apiErr.Code != test.code {
+				t.Fatalf("refused diff error = %v, want %d %s", err, test.status, test.code)
+			}
+			if len(hub.posts) != 1 {
+				t.Fatalf("posts = %d, want 1", len(hub.posts))
+			}
+		})
 	}
 }
 

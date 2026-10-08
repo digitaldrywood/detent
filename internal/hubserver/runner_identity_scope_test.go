@@ -20,6 +20,9 @@ func TestRunnerOperationAllowed(t *testing.T) {
 	}{
 		{name: "attempt diff with claim", method: http.MethodPost, path: nativeBase + "/attempts/:attempt/diff", operations: all, want: true},
 		{name: "attempt diff without claim", method: http.MethodPost, path: nativeBase + "/attempts/:attempt/diff", operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Heartbeat, runnerauth.Events}},
+		{name: "attempt diff preflight with claim", method: http.MethodPost, path: nativeBase + "/attempts/:attempt/diff/check", operations: all, want: true},
+		{name: "attempt diff preflight with only claim", method: http.MethodPost, path: nativeBase + "/attempts/:attempt/diff/check", operations: []string{runnerauth.Claim}, want: true},
+		{name: "attempt diff preflight without claim", method: http.MethodPost, path: nativeBase + "/attempts/:attempt/diff/check", operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Heartbeat, runnerauth.Events}},
 		{name: "attempt diff read", method: http.MethodGet, path: nativeBase + "/attempts/:attempt/diff", operations: []string{runnerauth.Read}, want: true},
 		{name: "claims need claim", method: http.MethodPost, path: nativeBase + "/claims", operations: []string{runnerauth.Read}},
 		{name: "dispatch waits need claim", method: http.MethodGet, path: nativeBase + "/claims/wait", operations: []string{runnerauth.Read}},
