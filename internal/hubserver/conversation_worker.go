@@ -294,7 +294,7 @@ func (c *conversationService) requireWorkerOwner(ctx context.Context, tx *sql.Tx
 	if !found {
 		return leaseRecord{}, nativeNotFound()
 	}
-	_, id, err := readNativeIssue(ctx, tx, scope, item)
+	id, err := nativeIssueRowID(ctx, tx, scope, item)
 	if err != nil {
 		return leaseRecord{}, err
 	}
@@ -1117,19 +1117,18 @@ func (c *conversationService) applyDelta(ctx context.Context, tx *sql.Tx, turn *
 		return nativeInvalid("delta text is too long")
 	}
 	owner := turn.execution.Owner
-	query, args := conversationMessageQuery+"conversation_id = ? AND role = 'assistant' AND attempt_id = ? AND provider_item_id = ? ORDER BY seq", []any{turn.record.ID, owner.AttemptID, item}
+	// Only the message identity and its stored length are needed: the
+	// delta is appended in place, never by reading and rewriting the text.
+	query, args := "SELECT id, length(CAST(text AS BLOB)) FROM conversation_messages WHERE conversation_id = ? AND role = 'assistant' AND attempt_id = ? AND provider_item_id = ? ORDER BY seq LIMIT 1", []any{turn.record.ID, owner.AttemptID, item}
 	if event.MessageID != "" {
-		query, args = conversationMessageQuery+"conversation_id = ? AND role = 'assistant' AND attempt_id = ? AND id = ? ORDER BY seq", []any{turn.record.ID, owner.AttemptID, event.MessageID}
+		query, args = "SELECT id, length(CAST(text AS BLOB)) FROM conversation_messages WHERE conversation_id = ? AND role = 'assistant' AND attempt_id = ? AND id = ? ORDER BY seq LIMIT 1", []any{turn.record.ID, owner.AttemptID, event.MessageID}
 	}
-	existing, err := c.queryMessages(ctx, tx, query, args...)
-	if err != nil {
-		return err
-	}
-	var message conversationMessageRecord
-	if len(existing) > 0 {
-		message = existing[0]
-	} else {
-		message = conversationMessageRecord{
+	var messageID string
+	var offset int64
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&messageID, &offset)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		message := conversationMessageRecord{
 			Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding,
 			AttemptID: owner.AttemptID, ThreadID: owner.ThreadID, TurnID: owner.TurnID, ProviderItemID: item,
 			Actor: conversationActorFor(turn.scope),
@@ -1137,11 +1136,14 @@ func (c *conversationService) applyDelta(ctx context.Context, tx *sql.Tx, turn *
 		if err := c.appendMessage(ctx, tx, turn.record, &message, turn.now); err != nil {
 			return err
 		}
+		messageID, offset = message.ID, int64(len(message.Text))
+	case err != nil:
+		return fmt.Errorf("query messages: %w", err)
 	}
 	if event.Text == "" {
 		return nil
 	}
-	return c.appendDelta(ctx, tx, &message, event.Text, turn.now)
+	return c.appendDeltaAt(ctx, tx, turn.record.ID, messageID, offset, event.Text, turn.now)
 }
 
 func (c *conversationService) applyItem(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {

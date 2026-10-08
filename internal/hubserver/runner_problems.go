@@ -57,7 +57,10 @@ func updateRunnerProblems(ctx context.Context, tx *sql.Tx, scope nativeScope, pr
 	if err := runnerauth.ValidateReportedProblems(problems); err != nil {
 		return nativeInvalid(err.Error())
 	}
-	r, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
+	// Problems derive from the runner's own row; the full runner view also
+	// hydrates leases and organization-wide provider capacity, which the
+	// heartbeat must not read while it holds the writer.
+	r, _, _, err := scanRunnerIdentity(tx.QueryRowContext(ctx, runnerIdentitySelect+" WHERE r.organization_id = ? AND r.id = ?", scope.organization, scope.credential.Runner.RunnerID), func() time.Time { return now })
 	if err != nil {
 		return err
 	}

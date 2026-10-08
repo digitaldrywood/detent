@@ -62,6 +62,17 @@ func runnerCollision() error {
 
 func (s *Service) runnerTransaction(c echo.Context, status int, operation func(context.Context, *sql.Tx, time.Time) (any, error)) error {
 	ctx := c.Request().Context()
+	metrics := hostedRunnerTransactionMetrics(c.Path())
+	heartbeat := strings.HasSuffix(c.Path(), "/heartbeat")
+	scope := nativeRequestScope(c)
+	var metering *heartbeatMetering
+	if heartbeat {
+		prepared, err := s.prepareHeartbeatMetering(ctx, scope, metrics)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		metering = &prepared
+	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -79,19 +90,12 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 			return s.nativeAPIError(c, err)
 		}
 	}
-	metrics := hostedRunnerTransactionMetrics(c.Path())
-	heartbeat := strings.HasSuffix(c.Path(), "/heartbeat")
-	scope := nativeRequestScope(c)
-	if heartbeat && s.database.hostedPlans != nil && scope.credential.Runner.RunnerID != "" {
-		var configurationReceipt bool
-		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM runner_identities WHERE organization_id = ? AND id = ? AND json_extract(routing_settings_json, '$.project_configuration_request.request.project_id') = ?)", scope.organization, scope.credential.Runner.RunnerID, scope.project).Scan(&configurationReceipt); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if configurationReceipt {
-			metrics = append(metrics, "collaboration_bytes")
-		}
+	var before map[string]int64
+	if metering != nil {
+		before, err = metering.consumption(ctx, s.database, tx, scope.organization, now)
+	} else {
+		before, err = s.database.hostedConsumption(ctx, tx, now, metrics...)
 	}
-	before, err := s.database.hostedConsumption(ctx, tx, now, metrics...)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -126,7 +130,17 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 		}
 		completion = active > 0
 	}
-	if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion, metrics...); err != nil {
+	if metering != nil {
+		after, err := metering.consumption(ctx, s.database, tx, scope.organization, now)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if s.database.hostedPlans != nil {
+			if err := s.database.checkHostedConsumptionGrowth(ctx, tx, before, after, now, completion); err != nil {
+				return s.nativeAPIError(c, err)
+			}
+		}
+	} else if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion, metrics...); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if heartbeat {
