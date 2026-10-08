@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -32,7 +33,7 @@ func projectToolScope(name string, read bool) apikey.Scope {
 		return apikey.ScopeRead
 	}
 	switch name {
-	case "apply_local_project_policy", "drain_local_project", "detach_local_project", "command_git_hub_batch", "create_native_project", "create_hosted_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret", "import_sprite_usage":
+	case "apply_local_project_policy", "resume_local_project", "drain_local_project", "detach_local_project", "command_git_hub_batch", "create_native_project", "create_hosted_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret", "import_sprite_usage":
 		return apikey.ScopeAdmin
 	}
 	return apikey.ScopeWrite
@@ -53,6 +54,9 @@ func (e hubProjectExecutor) ListTools(ctx context.Context) ([]operatortool.Defin
 			continue
 		}
 		requirement := operatortool.Requirement{Scope: projectToolScope(d.Name, d.Annotations.ReadOnly)}
+		if d.Name == "resume_local_project" {
+			requirement.ResourceKind = "runners"
+		}
 		if requirement.Scope == apikey.ScopeWrite {
 			requirement.ResourceKind = "project"
 		}
@@ -84,7 +88,14 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 		if d.Annotations.ReadOnly {
 			scope = apikey.ScopeRead
 		}
-		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scope, ProjectID: r.ProjectID}); err != nil {
+		requirement := operatortool.Requirement{Scope: scope, ProjectID: r.ProjectID}
+		if call.Name == "resume_local_project" {
+			requirement.ResourceKind = "runners"
+		}
+		if _, err := operatortool.AuthorizeCurrent(ctx, requirement); err != nil {
+			if call.Name == "resume_local_project" {
+				return result, fmt.Errorf("%w: resume_local_project requires runner administration (manage_runner) and admin scope", err)
+			}
 			return result, err
 		}
 		if !d.Annotations.ReadOnly {

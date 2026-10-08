@@ -89,14 +89,17 @@ credentials or private configuration values. A Cloud project, runner source
 association and the runner's local project registration remain separate
 authorities.
 
-`apply_local_project_policy`, `drain_local_project` and `detach_local_project`
-require current admin scope for the exact project, current application authority,
+`apply_local_project_policy`, `resume_local_project`, `drain_local_project` and
+`detach_local_project` require current admin scope for the exact project, current application authority,
 `request_id`, `expected_config_revision` and `expected_policy_id`. They reuse
 durable operator command receipts; retries reauthorize and return the original
 receipt without repeating the effect. Policy application additionally requires
 the exact approved `policy_id` and `source_revision` from the configured committed
-workflow, a paused or draining project and settled work. A settled draining
-project is paused through the existing owner before policy application. Ordinary committed policy
+workflow and settled work. The project is paused through the existing owner
+before policy application, then restored to its prior running, paused or draining
+state. `resume_local_project` clears a saved or runtime pause through the same
+owner and requires runner administration (`manage_runner`) as well as admin scope.
+Ordinary committed policy
 application refuses local overlays. For the existing `worker.allow_local_binding`
 field, the owner resolves complete candidate descriptors from the actual
 definition and its overlays. `local_binding_policy` and

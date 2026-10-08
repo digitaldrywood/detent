@@ -18,7 +18,7 @@ func authorizeAction(ctx context.Context, connection operatortool.Connection, ac
 		requirement.OrganizationID, requirement.ProjectID = action.OrganizationID, action.ProjectID
 	}
 	switch string(action.Kind) {
-	case "apply_local_project_policy", "drain_local_project", "detach_local_project":
+	case "apply_local_project_policy", "resume_local_project", "drain_local_project", "detach_local_project":
 		requirement.Scope = apikey.ScopeAdmin
 	case operatortool.CreateRunnerEnrollment, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerHost, operatortool.UpdateRunnerCapacity:
 		// The hub dashboard grants runner administration separately from project

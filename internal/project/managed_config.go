@@ -71,6 +71,8 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 	view := MissingConfigurationOwner(request.ProjectID)
 	saved := false
 	var resume *Project
+	var resumed *Project
+	var wasPaused bool
 	var draining bool
 	err := o.mutate(ctx, func(cfg *globalconfig.Config, revision string) bool {
 		view = o.observe(ctx, *cfg, revision, request.ProjectID)
@@ -91,6 +93,24 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 			return false
 		}
 		switch operation {
+		case "resume_local_project":
+			wasPaused = view.Paused
+			if err := o.manager.unpauseLocked(ctx, p.ID(), false); err != nil {
+				view.Constraint = "The selected project could not be resumed through its configuration owner."
+				return false
+			}
+			resumed = p
+			for i := range cfg.Projects {
+				if cfg.Projects[i].ID == request.ProjectID {
+					cfg.Projects[i].Paused = false
+					cfg.Projects[i].PausedReason = ""
+					cfg.Projects[i].PausedAt = ""
+					cfg.Projects[i].PausedUntilIssue = ""
+					cfg.Projects[i].PausedUntil = ""
+				}
+			}
+			saved = true
+			return true
 		case "apply_local_project_policy":
 			if p.Running() && !view.Paused {
 				resume, draining = p, view.Draining
@@ -174,15 +194,19 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 		}
 	})
 	if err != nil {
+		if resumed != nil && wasPaused {
+			if pauseErr := resumed.Pause(ctx); pauseErr != nil {
+				view.Constraint = "The selected configuration could not be saved and the project could not be paused again."
+				view.Applied = false
+				return view
+			}
+		}
 		view.Applied = false
 		view.Constraint = "The selected local configuration could not be validated or written."
 		return view
 	}
 	if resume != nil {
 		applied, constraint := view.Applied, view.Constraint
-		if applied && request.AllowLocalBinding == nil {
-			draining = false
-		}
 		if err := o.manager.unpauseLocked(ctx, resume.ID(), draining); err != nil {
 			view.Applied = false
 			view.Constraint = "The selected policy was not applied; verify approval and supported workflow through the existing policy owner."
@@ -205,6 +229,18 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 	}
 	if saved {
 		readErr := o.mutate(ctx, func(cfg *globalconfig.Config, revision string) bool {
+			if resumed != nil {
+				resumed.mu.Lock()
+				resumed.cfg.PausedReason = ""
+				resumed.cfg.PausedAt = ""
+				resumed.cfg.PausedUntilIssue = ""
+				resumed.cfg.PausedUntil = ""
+				resumed.mu.Unlock()
+				view = o.observe(ctx, *cfg, revision, request.ProjectID)
+				view.Saved = view.Registered
+				view.Applied = view.Constraint == "" && !view.Paused && resumed.Running()
+				return false
+			}
 			view = o.observe(ctx, *cfg, revision, request.ProjectID)
 			view.Saved = !view.Registered
 			if view.Registered {

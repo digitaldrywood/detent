@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
@@ -86,7 +88,7 @@ func (e hubProjectExecutor) localProjectConfiguration(ctx context.Context, name 
 	if name == operatortool.LocalProjectConfiguration && selected.RunnerID != "" {
 		var raw, operation string
 		suffix := " " + selected.RunnerID + " " + args.ProjectID
-		err := tx.QueryRowContext(ctx, "SELECT response_json, operation FROM native_commands WHERE organization_id = ? AND operation IN (?, ?, ?) AND coalesce(json_extract(response_json, '$.pending'), 0) = 0 ORDER BY created_at DESC, rowid DESC LIMIT 1", scope.organization, "apply_local_project_policy"+suffix, "drain_local_project"+suffix, "detach_local_project"+suffix).Scan(&raw, &operation)
+		err := tx.QueryRowContext(ctx, "SELECT response_json, operation FROM native_commands WHERE organization_id = ? AND operation IN (?, ?, ?, ?) AND coalesce(json_extract(response_json, '$.pending'), 0) = 0 ORDER BY created_at DESC, rowid DESC LIMIT 1", scope.organization, "apply_local_project_policy"+suffix, "drain_local_project"+suffix, "detach_local_project"+suffix, "resume_local_project"+suffix).Scan(&raw, &operation)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return operatortool.Result{}, err
 		}
@@ -117,7 +119,7 @@ func (e hubProjectExecutor) localProjectConfiguration(ctx context.Context, name 
 	if args.RunnerID != selected.RunnerID || args.ExpectedRunnerRevision != selected.Revision {
 		return operatortool.Result{}, nativeConflict(tracker.Revision(selected.Revision))
 	}
-	if err := e.service.configurationRequestAuthority(ctx, tx, scope, now); err != nil {
+	if err := e.service.configurationRequestAuthority(ctx, tx, scope, now, name); err != nil {
 		return operatortool.Result{}, err
 	}
 	if view.Constraint != "" || view.ConfigRevision != args.ExpectedConfigRevision || view.EffectivePolicy == nil || view.EffectivePolicy.ID != args.ExpectedPolicyID {
@@ -170,7 +172,15 @@ func (e hubProjectExecutor) localProjectConfiguration(ctx context.Context, name 
 	return hubProjectResult(view)
 }
 
-func (s *Service) configurationRequestAuthority(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
+func (s *Service) configurationRequestAuthority(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time, operation string) error {
+	if operation == "resume_local_project" {
+		runnerScope := scope
+		runnerScope.project = ""
+		runnerScope.requireHostedAdmin = true
+		if err := s.requireRunnerAccess(ctx, tx, runnerScope, now, apikey.ScopeAdmin); err != nil {
+			return fmt.Errorf("%w: resume_local_project requires runner administration (manage_runner) and admin scope", err)
+		}
+	}
 	if scope.credential.Runner.RunnerID != "" {
 		return nativeNotFound()
 	}
@@ -270,7 +280,7 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 		return refuse()
 	}
 	issuer := nativeScope{organization: scope.organization, project: scope.project, credential: credential}
-	if s.configurationRequestAuthority(ctx, tx, issuer, now) != nil {
+	if s.configurationRequestAuthority(ctx, tx, issuer, now, request.Operation) != nil {
 		return refuse()
 	}
 	if request.Operation == "apply_local_project_policy" {

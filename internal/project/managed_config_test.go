@@ -29,7 +29,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	for _, scenario := range []string{"native policy git drained", "native policy plain drained", "native policy retry drained", "detach", "database detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "unapproved policy", "wrong source", "local overlay", "local policy", "local policy overlays", "local policy native", "local policy native busy", "local policy native unapproved", "local policy native wrong source", "binding", "binding unapproved", "binding stale overlay", "binding busy", "binding foreign", "binding local source", "binding drained", "binding running", "binding native running", "binding native paused", "binding native drained", "binding native schedule change"} {
+	for _, scenario := range []string{"resume", "resume native", "resume database", "resume restart refused", "resume runtime pause", "resume stale revision", "resume wrong policy", "native policy running", "native policy paused", "native policy git drained", "native policy plain drained", "native policy retry drained", "detach", "database detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "unapproved policy", "wrong source", "local overlay", "local policy", "local policy overlays", "local policy native", "local policy native busy", "local policy native unapproved", "local policy native wrong source", "binding", "binding unapproved", "binding stale overlay", "binding busy", "binding foreign", "binding local source", "binding drained", "binding running", "binding native running", "binding native paused", "binding native drained", "binding native schedule change"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := initWorkflowSourceRepo(t)
 			workflowPath := filepath.Join(root, "WORKFLOW.md")
@@ -73,6 +73,10 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				{ID: "selected", Workflow: "WORKFLOW.md", WorkflowRef: "HEAD", Workdir: root, Weight: 1, Paused: true},
 				{ID: "unrelated", Workflow: "WORKFLOW.md", WorkflowRef: "HEAD", Workdir: otherRoot, Weight: 3, Priority: 7, Paused: true, PausedReason: "user pause", PausedUntilIssue: "unrelated#42"},
 			}
+			if strings.HasPrefix(scenario, "resume") && scenario != "resume runtime pause" {
+				cfg.Projects[0].PausedReason = "operator maintenance"
+				cfg.Projects[0].PausedUntilIssue = "selected#42"
+			}
 			if strings.HasSuffix(scenario, "drained") || strings.HasSuffix(scenario, "running") {
 				cfg.Projects[0].Paused = false
 			}
@@ -107,7 +111,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			if scenario == "database detach" {
+			if scenario == "database detach" || scenario == "resume database" {
 				cfg.Projects[0].Priority = 10
 				if _, err := attempts.InitializeLocalConfiguration(t.Context(), cfg, nil); err != nil {
 					t.Fatal(err)
@@ -117,7 +121,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			native := strings.HasPrefix(scenario, "binding native") || strings.HasPrefix(scenario, "local policy native") || sharedPolicy
+			native := scenario == "resume native" || strings.HasPrefix(scenario, "binding native") || strings.HasPrefix(scenario, "local policy native") || sharedPolicy
 			if native {
 				if err := os.WriteFile(workflowPath, []byte("Shared native instructions\n"), 0600); err != nil {
 					t.Fatal(err)
@@ -281,13 +285,70 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					}
 				}
 			}
+			if strings.HasPrefix(scenario, "resume") {
+				if scenario == "resume native" {
+					scheduling.mu.Lock()
+					scheduling.dispatchPolicy = before.EffectivePolicy.ID
+					scheduling.mu.Unlock()
+				}
+				if scenario == "resume restart refused" {
+					selectedProject.orchFactory = func(orchestrator.Config, orchestrator.Dependencies) (*orchestrator.Orchestrator, error) {
+						return nil, errors.New("restart refused")
+					}
+				}
+				if scenario == "resume runtime pause" {
+					cfg.Projects[0].Paused = false
+					if err := globalconfig.Write(cfg.Path, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
+						t.Fatal(err)
+					}
+					fresh := owner.Read(t.Context(), "selected")
+					request.ExpectedConfigRevision = fresh.ConfigRevision
+				}
+				if scenario == "resume stale revision" {
+					request.ExpectedConfigRevision = strings.Repeat("e", 64)
+				}
+				if scenario == "resume wrong policy" {
+					request.ExpectedPolicyID = "policy_wrong"
+				}
+				result := owner.Apply(t.Context(), "resume_local_project", request)
+				refused := scenario == "resume stale revision" || scenario == "resume wrong policy" || scenario == "resume restart refused"
+				if refused {
+					if result.Applied || result.Constraint == "" || !selectedProject.Paused() {
+						t.Fatalf("resume refusal=%+v", result)
+					}
+					return
+				}
+				if !result.Applied || result.Paused || !selectedProject.Running() {
+					t.Fatalf("resume=%+v", result)
+				}
+				persisted, err := globalconfig.Read(cfg.Path, globalconfig.WithProjectPathLiterals())
+				if scenario == "resume database" {
+					persisted, err = attempts.LocalConfiguration(t.Context(), persisted)
+				}
+				if err != nil || persisted.Projects[0].Paused || persisted.Projects[0].PausedReason != "" || persisted.Projects[0].PausedUntilIssue != "" || !reflect.DeepEqual(persisted.Projects[1], cfg.Projects[1]) {
+					t.Fatalf("resume persistence=%+v %v", persisted.Projects, err)
+				}
+				if scenario == "resume native" {
+					select {
+					case dispatched := <-worker.started:
+						if dispatched.ProjectID != "selected" || dispatched.Policy.ID != request.ExpectedPolicyID {
+							t.Fatalf("resume dispatch=%+v", dispatched)
+						}
+					case <-time.After(30 * time.Second):
+						t.Fatal("no native dispatch after resume")
+					}
+				}
+				return
+			}
 			if sharedPolicy {
 				selected, _ := manager.Registry().Get("selected")
 				previous := selected.Workflow()
 				otherBefore := owner.Read(t.Context(), "unrelated")
-				drained := owner.Apply(t.Context(), "drain_local_project", request)
-				if !drained.Applied || !drained.Draining || drained.UnsettledAttempts != 0 {
-					t.Fatalf("drain=%+v", drained)
+				if strings.HasSuffix(scenario, "drained") {
+					drained := owner.Apply(t.Context(), "drain_local_project", request)
+					if !drained.Applied || !drained.Draining || drained.UnsettledAttempts != 0 {
+						t.Fatalf("drain=%+v", drained)
+					}
 				}
 				approvedWorkflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
 					Workflow:  []byte("Approved shared instructions.\n"),
@@ -316,7 +377,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					request.ExpectedConfigRevision, request.ExpectedPolicyID = fresh.ConfigRevision, fresh.EffectivePolicy.ID
 				}
 				result := owner.Apply(t.Context(), "apply_local_project_policy", request)
-				if !result.Applied || result.Paused || result.Draining || !selected.Running() || result.SelectedPolicy.ID != approved.ID || result.EffectivePolicy.ID != approved.ID || result.EffectivePolicy.SourceRevision != approved.SourceRevision {
+				if !result.Applied || result.Paused != cfg.Projects[0].Paused || result.Draining != strings.HasSuffix(scenario, "drained") || selected.Running() == cfg.Projects[0].Paused || result.SelectedPolicy.ID != approved.ID || result.EffectivePolicy.ID != approved.ID || result.EffectivePolicy.SourceRevision != approved.SourceRevision {
 					t.Fatalf("shared apply=%+v", result)
 				}
 				actual := selected.Workflow()
