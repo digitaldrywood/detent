@@ -223,6 +223,7 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 			supportsCheckout.Store(step.checkout)
 			supportsChecks.Store(step.diagnostics)
 			supportsSetup.Store(step.setup)
+			expireCapabilities(client)
 			repository = step.repository
 			delete(scheduler.localChecks, "native")
 			if step.evidence != nil {
@@ -254,6 +255,7 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 	}
 	for _, supported := range []bool{false, true} {
 		supportsChecks.Store(supported)
+		expireCapabilities(client)
 		machine := scheduler.machine
 		machine.LocalChecks = &checks
 		machine.CheckoutRepository = nil
@@ -285,6 +287,7 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 	} {
 		t.Run(step.name, func(t *testing.T) {
 			supportsRanking.Store(step.supported)
+			expireCapabilities(client)
 			beforeClaims, beforePreviews := claimCalls.Load(), previewCalls.Load()
 			request := orchestrator.SchedulingRequest{ProjectID: "native", Policy: clientTestPolicy(), WorkflowStates: []string{"Todo"}, DispatchPriorityByState: step.states, DispatchPriorityByLabel: step.labels, PrioritizeUnblockers: step.unblocker}
 			if step.preview {
@@ -595,4 +598,10 @@ func TestLegacyIntakeOffClaimsOnlyAdmittedContinuation(t *testing.T) {
 	if err != nil || claims != 1 || len(issues) != 1 || issues[0].ID != "admitted" {
 		t.Fatalf("cohort claims = %v, claims=%d, err=%v", issues, claims, err)
 	}
+}
+
+func expireCapabilities(client *Client) {
+	client.capabilitiesMu.Lock()
+	client.capabilitiesAt = time.Time{}
+	client.capabilitiesMu.Unlock()
 }

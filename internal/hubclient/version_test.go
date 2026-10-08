@@ -18,13 +18,14 @@ func TestHubVersion(t *testing.T) {
 		transport error
 		want      string
 		wantError bool
+		retried   bool
 	}{
 		{name: "running Hub version", body: `{"version":" v1.2.4 "}`, want: "v1.2.4"},
 		{name: "old Hub omits version", body: `{"features":["native_issues"]}`, wantError: true},
 		{name: "empty Hub version", body: `{"version":" "}`, wantError: true},
-		{name: "invalid response", body: `{`, wantError: true},
-		{name: "Hub unavailable", body: `{"code":"unavailable"}`, status: http.StatusServiceUnavailable, wantError: true},
-		{name: "transport unavailable", transport: unavailable, wantError: true},
+		{name: "invalid response", body: `{`, wantError: true, retried: true},
+		{name: "Hub unavailable", body: `{"code":"unavailable"}`, status: http.StatusServiceUnavailable, wantError: true, retried: true},
+		{name: "transport unavailable", transport: unavailable, wantError: true, retried: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -57,6 +58,14 @@ func TestHubVersion(t *testing.T) {
 			}
 			if test.transport != nil && (!errors.Is(err, unavailable) || !errors.Is(err, ErrUnavailable)) {
 				t.Fatalf("Version() lost transport error: %v", err)
+			}
+			again, err := client.Version(t.Context())
+			wantRequests := 1
+			if test.retried {
+				wantRequests = 2
+			}
+			if again != test.want || (err != nil) != test.wantError || requests != wantRequests {
+				t.Fatalf("second Version() = %q, %v, requests %d; want %q, error %t, %d requests", again, err, requests, test.want, test.wantError, wantRequests)
 			}
 		})
 	}
