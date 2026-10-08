@@ -309,7 +309,7 @@ func (a entryAdministration) Execute(ctx context.Context, name string, in operat
 	// Reuse the entry application's audit ledger and serialization for receipts;
 	// no separate persistence owner, retry recovery, or provider retry is added.
 	if name == operatortool.OrganizationCreate {
-		id, err := s.createOrganizationFor(ctx, session, in.Name, m.RetryIdentity)
+		id, err := s.createOrganizationFor(ctx, session, in.Name, m.RetryIdentity, in.Price)
 		return operatoradmin.Output{ResourceID: id, URL: s.config.PublicURL + "/organizations/" + id + "/provisioning", Reconnect: true}, err
 	}
 	s.mutationMu.Lock()

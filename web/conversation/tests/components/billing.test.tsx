@@ -62,6 +62,7 @@ function report(overrides: Partial<BillingReport["state"]> = {}, extra: Partial<
 describe("billing state text", () => {
   it.each([
     [report(), "Free plan"],
+    [report({}, { entitlement: { ...report().entitlement, effective_base: { id: "payment_pending", version: 1 } } }), "Payment pending"],
     [report({}, { entitlement: { ...report().entitlement, name: "Starter", monthly_usd_cents: 4900, effective_base: { id: "starter", version: 1 } } }), "Complimentary access"],
     [report({}, { entitlement: { ...report().entitlement, source: "grant" } }), "Complimentary access"],
     [report({ status: "active", plan: { id: "team", version: 1 }, paid_through: "2026-10-26T00:00:00Z" }), "Subscribed"],
@@ -138,12 +139,13 @@ describe("billing screen", () => {
     expect(screen.getByText(/no AI-dollar allowance is included/)).toBeTruthy();
   });
 
-  it("opens Checkout for a price and keeps the portal closed without a customer", async () => {
+  it.each([false, true])("opens checkout with a selected creation plan: %s", async (created) => {
+    vi.stubGlobal("location", { assign, search: created ? "?checkout_price=price_team" : "", pathname: "/settings/billing" });
     const api = fakeApi(report());
     renderBilling(api);
     expect(await screen.findByText("Free plan")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Billing portal" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
+    if (!created) fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.stripe.com/c/pay/test"));
     const checkout = api.calls.find((call) => call.url.endsWith("/billing/checkout"));
     expect((checkout?.body as { price: string }).price).toBe("price_team");

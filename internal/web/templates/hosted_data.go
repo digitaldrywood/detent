@@ -7,6 +7,7 @@ import (
 )
 
 type HostedPageData struct {
+	FreeSlotUsed         bool
 	CreationKey          string
 	Provisioning         HostedProvisioning
 	PendingOrganizations []HostedOrganizationChoice
@@ -14,6 +15,7 @@ type HostedPageData struct {
 	SharedOrigin         bool
 	BillingEnabled       bool
 	BillingCanPurchase   bool
+	BillingCheckoutPrice string
 	BillingStatus        string
 	BillingMessage       string
 	AICredits            *HostedAICredits
@@ -65,8 +67,8 @@ type HostedAICredits struct {
 }
 
 type HostedBillingPrice struct {
-	ID    string
-	Label string
+	ID    string `json:"id"`
+	Label string `json:"label"`
 }
 
 type HostedBillingAudit struct {

@@ -259,7 +259,7 @@ func TestPlatformStaffLanding(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f.service.config.Allocation = nil
 			if test.canCreate {
-				f.service.config.Allocation = &AllocationConfig{MaxPerIdentity: 1}
+				f.service.config.Allocation = &AllocationConfig{}
 			}
 			user, _, _ := strings.Cut(test.code, ":")
 			session := accountSession{Subject: user, Email: f.provider.users[user], Identity: auth.HostedIdentity{Subject: user}}

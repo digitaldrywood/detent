@@ -34,7 +34,7 @@ templ hostedBilling(data HostedPageData) {
 					<label for="billing-price" class="block text-sm font-medium">Subscription plan</label>
 					<select id="billing-price" name="price" required class="min-h-11 w-full min-w-0 rounded-card border border-line bg-page px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
 						for _, price := range data.BillingPrices {
-							<option value={ price.ID }>{ price.Label }</option>
+							<option value={ price.ID } selected?={ price.ID == data.BillingCheckoutPrice }>{ price.Label }</option>
 						}
 					</select>
 					<button type="submit" class="min-h-11 rounded-card bg-accent px-4 text-sm font-semibold text-page focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Upgrade with Stripe</button>

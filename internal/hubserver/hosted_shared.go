@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -223,15 +224,16 @@ func (s *Service) registerHostedSharedRoutes(e *echo.Echo) {
 }
 
 type hostedSharedBilling struct {
-	Enabled         bool      `json:"enabled"`
-	AccountID       string    `json:"account_id,omitempty"`
-	Mode            string    `json:"mode,omitempty"`
-	CustomerID      string    `json:"customer_id,omitempty"`
-	Status          string    `json:"status"`
-	Plan            string    `json:"plan,omitempty"`
-	PriceLabel      string    `json:"price_label,omitempty"`
-	AccessUntil     time.Time `json:"access_until,omitzero"`
-	CheckoutPending bool      `json:"checkout_pending"`
+	FreeOrganization bool      `json:"free_organization"`
+	Enabled          bool      `json:"enabled"`
+	AccountID        string    `json:"account_id,omitempty"`
+	Mode             string    `json:"mode,omitempty"`
+	CustomerID       string    `json:"customer_id,omitempty"`
+	Status           string    `json:"status"`
+	Plan             string    `json:"plan,omitempty"`
+	PriceLabel       string    `json:"price_label,omitempty"`
+	AccessUntil      time.Time `json:"access_until,omitzero"`
+	CheckoutPending  bool      `json:"checkout_pending"`
 }
 
 type hostedSharedBillingQuery struct {
@@ -241,6 +243,16 @@ type hostedSharedBillingQuery struct {
 func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 	cfg := s.config.Hosted.Billing
 	result := hostedSharedBilling{Status: "free"}
+	entitlement, err := s.database.hostedEntitlement(c.Request().Context(), s.database.db, s.config.now())
+	if err != nil {
+		return s.internalAPIError(c, "entitlements_unavailable", "Organization entitlements are unavailable", err)
+	}
+	result.FreeOrganization = entitlement.EffectiveBase.ID == "free"
+	for _, grant := range entitlement.Grants {
+		if grant.RevokedAt == nil && !grant.StartsAt.After(s.config.now()) && (grant.ExpiresAt == nil || grant.ExpiresAt.After(s.config.now())) && grant.Plan.ID != "free" && (slices.Contains(grant.Scope, "projects") || slices.Contains(grant.Scope, "native_execution")) {
+			result.FreeOrganization = false
+		}
+	}
 	if cfg != nil {
 		result.Enabled, result.AccountID, result.Mode = true, cfg.AccountID, cfg.mode()
 		binding, err := s.database.hostedBillingBinding(c.Request().Context(), cfg)

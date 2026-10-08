@@ -102,7 +102,6 @@ allocation:
   socket_root: /run/detent/tenants
   max_tenants: 20
   max_concurrent_provisions: 1
-  max_organizations_per_identity: 1
   retry_limit: 5
   min_free_disk_bytes: 2147483648
   min_available_memory_bytes: 536870912
@@ -113,13 +112,22 @@ allocation:
   entitlement_admin_token_env: DETENT_ENTITLEMENT_ADMIN_TOKEN
 ```
 
+Organization creation has no per-identity count limit. Each owner has one Free
+organization slot; paid, complimentary and legacy pilot organizations do not
+consume it. When the slot is used, creation requires a configured paid plan and
+continues to hosted checkout. Until payment succeeds, the new organization has
+no project or AI execution allowance. Allocation YAML uses strict field
+validation: remove the retired per-identity organization limit from older files
+before starting Cloud. `max_tenants` remains the operator capacity ceiling.
+
 `max_tenants` and the free-memory/disk floors are admission limits: a request that
 does not fit is stored as a retryable `capacity` failure before any provider or
 filesystem effect, and ready tenants are never disturbed. The memory floor reads Linux `MemAvailable`; where memory cannot be measured a configured floor refuses admission, so leave it at 0 on other platforms. Set the limits from measured
 tenant usage (#2308), not guesses. `allowed_domains`/`allowed_emails` bound a pilot;
 empty lists admit any verified account. `entitlements` is the tenant's
 [versioned plan catalog](../../hosted-allowances.md); its `base` plan is the free
-plan every new organization starts on, and no Stripe customer or card is created.
+plan a new organization starts on when its owner has an available Free slot;
+no Stripe customer or card is created for that organization.
 Left empty (`entitlements: {}`, an empty block, or no key at all), tenants use the
 capacity catalog: `free` as the base, with `starter`, `growth`, and `scale` paid
 versions. Legacy `pilot_free` and `comp_team` remain for existing assignments and grants.
@@ -230,7 +238,6 @@ allocation:
   tenant_root: /var/lib/detent-tenants
   max_tenants: 2
   max_concurrent_provisions: 1
-  max_organizations_per_identity: 1
   memory_reserve_bytes: REPLACE_WITH_MEASURED_INTEGER
   tenant_memory_budget_bytes: REPLACE_WITH_MEASURED_INTEGER
   disk_reserve_bytes: REPLACE_WITH_MEASURED_INTEGER

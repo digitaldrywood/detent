@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
@@ -25,7 +26,7 @@ type AllocationConfig struct {
 	SocketRoot              string
 	MaxTenants              int
 	MaxConcurrent           int
-	MaxPerIdentity          int
+	Prices                  []hubserver.HostedBillingPrice
 	RetryLimit              int
 	MinFreeDiskBytes        uint64
 	MinAvailableMemoryBytes uint64
@@ -42,7 +43,7 @@ func (a *AllocationConfig) validate() error {
 	if !filepath.IsAbs(a.TenantRoot) || !filepath.IsAbs(a.SocketRoot) || a.Launcher == nil {
 		return errors.New("allocation requires absolute tenant and socket roots and a launcher")
 	}
-	if a.MaxTenants < 1 || a.MaxConcurrent < 1 || a.MaxPerIdentity < 1 || a.RetryLimit < 1 {
+	if a.MaxTenants < 1 || a.MaxConcurrent < 1 || a.RetryLimit < 1 {
 		return errors.New("allocation limits must be positive")
 	}
 	return nil
@@ -385,10 +386,14 @@ func (s *Service) newOrganizationPage(c echo.Context) error {
 	if err != nil {
 		return s.denied(c, http.StatusServiceUnavailable, "Organization creation is temporarily unavailable")
 	}
+	used, prices, err := s.creationPlans(c.Request().Context(), session)
+	if err != nil {
+		return s.denied(c, http.StatusServiceUnavailable, "Organization plans are temporarily unavailable")
+	}
 	if served, err := s.clientShell(c); served || err != nil {
 		return err
 	}
-	return s.render(c, http.StatusOK, templates.HostedPageData{Mode: "create", Title: "Create organization", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, ""), CreationKey: key})
+	return s.render(c, http.StatusOK, templates.HostedPageData{FreeSlotUsed: used, BillingPrices: prices, Mode: "create", Title: "Create organization", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, ""), CreationKey: key})
 }
 
 func (s *Service) createOrganization(c echo.Context) error {
@@ -404,12 +409,13 @@ func (s *Service) createOrganization(c echo.Context) error {
 		return s.refuse(c, http.StatusForbidden, "invalid_csrf", "Reload the page and try again")
 	}
 	name, key := strings.TrimSpace(c.FormValue("name")), c.FormValue("creation_key")
-	id, err := s.createOrganizationFor(c.Request().Context(), session, name, key)
+	price := c.FormValue("price")
+	id, err := s.createOrganizationFor(c.Request().Context(), session, name, key, price)
 	switch {
 	case errors.Is(err, errIntentConflict):
 		return s.refuse(c, http.StatusConflict, "intent_conflict", "This creation request was already used with a different name")
-	case errors.Is(err, errQuota):
-		return s.refuse(c, http.StatusTooManyRequests, "quota_reached", "Your account has reached its organization limit")
+	case errors.Is(err, errPaidPlanRequired):
+		return s.refuse(c, http.StatusUnprocessableEntity, "paid_plan_required", "Your Free organization slot is used. Choose a paid plan for this organization.")
 	case errors.Is(err, operatortool.ErrAccessDenied):
 		if session.Identity.SupportActor != "" {
 			return s.refuse(c, http.StatusForbidden, "staff_session", "Support sessions cannot create customer organizations")
@@ -428,13 +434,14 @@ func (s *Service) createOrganization(c echo.Context) error {
 }
 
 var (
-	errIntentConflict = errors.New("creation intent conflict")
-	errQuota          = errors.New("organization quota reached")
+	errIntentConflict   = errors.New("creation intent conflict")
+	errPaidPlanRequired = errors.New("paid plan required")
 )
 
-func (s *Service) recordIntent(ctx context.Context, session accountSession, key, fingerprint, name string) (string, error) {
+func (s *Service) recordIntent(ctx context.Context, session accountSession, key, fingerprint, name, price string) (string, error) {
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
+	bypass := s.entitlementAdministrator(ctx, session)
 	tx, err := s.registry.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -451,12 +458,14 @@ func (s *Service) recordIntent(ctx context.Context, session accountSession, key,
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
-	owned, err := ownedOrganizations(ctx, tx, session.Subject)
-	if err != nil {
-		return "", err
-	}
-	if owned >= s.config.Allocation.MaxPerIdentity {
-		return "", errQuota
+	if !bypass && price == "" {
+		used, err := s.freeSlotUsed(ctx, tx, session)
+		if err != nil {
+			return "", err
+		}
+		if used {
+			return "", errPaidPlanRequired
+		}
 	}
 	random, err := cloudassert.NewID()
 	if err != nil {
@@ -464,8 +473,8 @@ func (s *Service) recordIntent(ctx context.Context, session accountSession, key,
 	}
 	id := "org_" + random[:20]
 	now := formatTime(s.config.now())
-	if _, err := tx.ExecContext(ctx, "INSERT INTO organizations(id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,created_at,updated_at) VALUES (?,'',?,'requested',?,1,1,?,?,?,?)",
-		id, name, "unix:"+filepath.Join(s.config.Allocation.SocketRoot, id+".sock"), session.Subject, strings.ToLower(session.Email), now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO organizations(id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,checkout_price,created_at,updated_at) VALUES (?,'',?,'requested',?,1,1,?,?,?,?,?)",
+		id, name, "unix:"+filepath.Join(s.config.Allocation.SocketRoot, id+".sock"), session.Subject, strings.ToLower(session.Email), price, now, now); err != nil {
 		return "", err
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO organization_intents(subject,idempotency_key,fingerprint,organization_id,created_at) VALUES (?,?,?,?,?)", session.Subject, key, fingerprint, id, now); err != nil {
@@ -474,25 +483,8 @@ func (s *Service) recordIntent(ctx context.Context, session accountSession, key,
 	return id, tx.Commit()
 }
 
-type rowQuerier interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
-func ownedOrganizations(ctx context.Context, q rowQuerier, subject string) (int, error) {
-	var owned int
-	err := q.QueryRowContext(ctx, "SELECT count(*) FROM organizations WHERE creator_subject = ? AND state != 'deleted'", subject).Scan(&owned)
-	return owned, err
-}
-
-func (s *Service) canCreate(ctx context.Context, session accountSession) (bool, error) {
-	if s.config.Allocation == nil || session.Identity.SupportActor != "" {
-		return false, nil
-	}
-	owned, err := ownedOrganizations(ctx, s.registry.store.db, session.Subject)
-	if err != nil {
-		return false, err
-	}
-	return owned < s.config.Allocation.MaxPerIdentity, nil
+func (s *Service) canCreate(_ context.Context, session accountSession) (bool, error) {
+	return s.config.Allocation != nil && session.Identity.SupportActor == "" && s.signupAllowed(session.Email), nil
 }
 
 func (s *Service) creatorOrganization(c echo.Context) (accountSession, Organization, error) {
@@ -532,7 +524,7 @@ func (s *Service) provisioningResult(organization Organization) (provisioningRes
 	}
 	result := provisioningResult{ID: organization.ID, Name: organization.Name, State: organization.State, Step: organization.Step, CanResume: provisioningRetryable(organization)}
 	if organization.State == "ready" {
-		result.Next = s.organizationHome(organization.ID)
+		result.Next = s.creationDestination(organization)
 	}
 	return result, nil
 }
@@ -594,7 +586,7 @@ func (s *Service) provisioningPage(c echo.Context) error {
 		return s.denied(c, http.StatusNotFound, "This organization is unavailable")
 	}
 	if organization.State == "ready" {
-		return c.Redirect(http.StatusSeeOther, s.organizationHome(organization.ID))
+		return c.Redirect(http.StatusSeeOther, s.creationDestination(organization))
 	}
 	if served, err := s.clientShell(c); served || err != nil {
 		return err

@@ -131,7 +131,12 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 	}
 	data.BillingStatus, data.BillingMessage = hostedBillingMessage(report.State, now)
 	if (report.State.Status == "free" || report.State.Status == "") && report.Entitlement.EffectiveBase.ID != "free" {
-		data.BillingStatus, data.BillingMessage = "Complimentary access", "Your existing plan access is complimentary. No paid subscription is active."
+		if report.Entitlement.EffectiveBase.ID == "payment_pending" {
+			data.BillingStatus, data.BillingMessage = "Payment pending", "Complete checkout to activate this organization's paid plan."
+			data.PlanPrice = "Paid access starts after checkout"
+		} else {
+			data.BillingStatus, data.BillingMessage = "Complimentary access", "Your existing plan access is complimentary. No paid subscription is active."
+		}
 	}
 	data.BillingAudit = report.Audit
 	data.BillingCheckedAt = report.ReconciledAt
@@ -158,6 +163,7 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 	if cfg := s.config.Hosted.Billing; cfg != nil {
 		data.BillingEnabled = true
 		data.BillingCanPurchase = report.State.Snapshot.SubscriptionID == "" && report.State.Status != "multiple_subscriptions"
+		data.BillingCheckoutPrice = c.QueryParam("checkout_price")
 		for _, price := range cfg.Prices {
 			data.BillingPrices = append(data.BillingPrices, templates.HostedBillingPrice{ID: price.PriceID, Label: s.hostedPriceLabel(c.Request().Context(), price)})
 		}
