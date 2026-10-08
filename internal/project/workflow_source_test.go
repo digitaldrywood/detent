@@ -641,8 +641,12 @@ func writeWorkflowSourceFile(t *testing.T, path string, prompt string) {
 	t.Helper()
 
 	content := "---\ntracker:\n  kind: memory\n---\n" + prompt + "\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	temporaryPath := path + ".tmp"
+	if err := os.WriteFile(temporaryPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		t.Fatalf("Rename() error = %v", err)
 	}
 }
 
