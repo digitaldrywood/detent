@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/labstack/echo/v4"
 
@@ -25,9 +24,6 @@ func (s *Service) platformUsersJSON(c echo.Context) error {
 	query, err := platformusers.Parse(c.QueryParam("q"))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"code": "invalid_query", "message": "Enter at least three characters"})
-	}
-	if _, err := s.auth.store.db.ExecContext(ctx, "INSERT INTO audit(subject,organization_id,event,recorded_at,query_length) VALUES(?,'','platform_users_searched',?,?)", session.Subject, formatTime(s.auth.now()), utf8.RuneCountInString(query.Text)); err != nil {
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "User search is temporarily unavailable"})
 	}
 	result, err := s.searchPlatformUsers(ctx, query)
 	if err != nil {

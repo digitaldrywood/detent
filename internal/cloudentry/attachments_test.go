@@ -401,8 +401,7 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 	if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM audit WHERE event IN ('attachment_uploaded','attachment_read') AND organization_id='org_alpha'").Scan(&audits); err != nil {
 		t.Fatal(err)
 	}
-	// Six existing operations plus the canonical upload and metadata read.
-	if audits != 8 {
+	if audits != 3 {
 		t.Fatalf("audit entries=%d", audits)
 	}
 	exerciseAttachmentClients(t, f, alice, anonymous, project, writeToken)

@@ -32,8 +32,6 @@ const (
 
 type Service struct {
 	issuePages              nativeIssuePageCache
-	readAudits              sync.Map
-	readAuditStores         atomic.Int64
 	writerStatsAt           atomic.Int64
 	writerWaits             atomic.Int64
 	writerWaited            atomic.Int64

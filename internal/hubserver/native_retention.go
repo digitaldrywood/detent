@@ -15,6 +15,9 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 		return err
 	}
 	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM hosted_audit WHERE julianday(recorded_at)<julianday(?)", formatHubTime(now.Add(-90*24*time.Hour))); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, "UPDATE attachments SET deleted_at=? WHERE deleted_at IS NULL AND work_item_id IS NULL AND julianday(created_at)<=julianday(?)", formatHubTime(now), formatHubTime(now.Add(-attachment.OrphanTTL))); err != nil {
 		return err
 	}

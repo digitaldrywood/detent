@@ -471,17 +471,22 @@ func (s *Service) hostedAudit(ctx context.Context, identity *auth.HostedIdentity
 	return s.hostedAuditWith(ctx, s.database.db, identity, event, route, project, status)
 }
 
-// readAuditInterval bounds how often one session's repeated read of the same
-// route writes an audit row. Support access, writes and security events are
-// always recorded.
-const readAuditInterval = time.Minute
-
 func (s *Service) hostedAuditWith(ctx context.Context, exec hostedExecer, identity *auth.HostedIdentity, event, route, project string, status int) error {
 	if identity == nil {
 		return nil
 	}
-	if s.readAuditRecent(identity, event, route, project) {
-		return nil
+	if _, ok := mutation.FromContext(ctx); !ok {
+		switch event {
+		case "billing_viewed", "billing_exported":
+			return nil
+		case "action", "administration":
+			method, _, _ := strings.Cut(route, " ")
+			switch method {
+			case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			default:
+				return nil
+			}
+		}
 	}
 	actor := identity.Subject
 	if identity.SupportActor != "" {
@@ -503,27 +508,4 @@ func (s *Service) hostedAuditWith(ctx context.Context, exec hostedExecer, identi
 	_, err := exec.ExecContext(ctx, `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, s.config.Hosted.OrganizationID, identity.SessionID, actor, identity.Subject, identity.SupportReason, event, route, project, status, formatHubTime(identity.CreatedAt), formatHubTime(identity.ExpiresAt), formatHubTime(s.config.now()), summary)
 	return err
-}
-
-func (s *Service) readAuditRecent(identity *auth.HostedIdentity, event, route, project string) bool {
-	if event != "action" || identity.SupportActor != "" || !strings.HasPrefix(route, http.MethodGet+" ") {
-		return false
-	}
-	now := s.config.now()
-	key := identity.SessionID + "\x00" + identity.Subject + "\x00" + route + "\x00" + project
-	if previous, ok := s.readAudits.Load(key); ok {
-		if at, valid := previous.(time.Time); valid && now.Sub(at) < readAuditInterval {
-			return true
-		}
-	}
-	s.readAudits.Store(key, now)
-	if s.readAuditStores.Add(1)%1024 == 0 {
-		s.readAudits.Range(func(key, value any) bool {
-			if at, valid := value.(time.Time); !valid || now.Sub(at) >= readAuditInterval {
-				s.readAudits.Delete(key)
-			}
-			return true
-		})
-	}
-	return false
 }

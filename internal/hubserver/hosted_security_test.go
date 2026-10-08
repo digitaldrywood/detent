@@ -631,6 +631,13 @@ func TestHostedSecuritySupportSessionConstraints(t *testing.T) {
 				}
 				requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/work-items", command), wantWrite)
 				requireNativeStatus(t, f.request(t, user, http.MethodGet, "/api/cloud/metadata", nil), http.StatusForbidden)
+				if wantWrite != http.StatusOK {
+					var count int
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id=?", user.identity.Hosted.SessionID).Scan(&count); err != nil || count != 0 {
+						t.Fatalf("routine reads created %d audit rows: %v", count, err)
+					}
+					return
+				}
 				var actor, effective, organization, reason, raw string
 				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor,effective_user,organization_id,reason,event || route || project_id FROM hosted_audit WHERE session_id = ? ORDER BY id LIMIT 1", user.identity.Hosted.SessionID).Scan(&actor, &effective, &organization, &reason, &raw); err != nil {
 					t.Fatal(err)
@@ -814,27 +821,13 @@ func TestHostedSecuritySSEAudit(t *testing.T) {
 			if kind != "activity" {
 				t.Fatalf("initial event = %q", kind)
 			}
-			var actual, effective, organization, project, reason string
 			var count int
-			err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor,effective_user,organization_id,project_id,reason,count(*) FROM hosted_audit WHERE session_id = ? AND route = ? GROUP BY actual_actor,effective_user,organization_id,project_id,reason", user.identity.Hosted.SessionID, "GET /projects/:project/events").Scan(&actual, &effective, &organization, &project, &reason, &count)
+			err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id = ? AND route = ?", user.identity.Hosted.SessionID, "GET /projects/:project/events").Scan(&count)
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantActor := actor
-			if wantActor == "" {
-				wantActor = user.identity.Subject
-			}
-			if actual != wantActor || effective != user.identity.Subject || organization != "org_security" || project != string(f.project) || reason != user.identity.Hosted.SupportReason || count != 1 {
-				t.Fatalf("stream audit actor=%q effective=%q organization=%q project=%q reason=%q count=%d", actual, effective, organization, project, reason, count)
-			}
-			var record string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor || effective_user || organization_id || project_id || reason || event || route FROM hosted_audit WHERE session_id = ?", user.identity.Hosted.SessionID).Scan(&record); err != nil {
-				t.Fatal(err)
-			}
-			for _, forbidden := range []string{user.token, "private-project-sentinel", "private-issue-sentinel", "private-body-sentinel"} {
-				if strings.Contains(record, forbidden) {
-					t.Fatalf("stream audit exposed %q", forbidden)
-				}
+			if count != 0 {
+				t.Fatalf("routine stream read created %d audit rows", count)
 			}
 		})
 	}
@@ -1186,15 +1179,14 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 
 func (*hostedSecurityProvider) HasUser(context.Context, string) (bool, error) { return true, nil }
 
-func TestHostedRepeatedReadsAuditOncePerInterval(t *testing.T) {
+func TestHostedRepeatedReadsAreNotAudited(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		support string
-		want    int
 	}{
-		{name: "member reads coalesce", want: 1},
-		{name: "support reads are each audited", support: "support@example.test", want: 3},
+		{name: "member reads"},
+		{name: "support reads", support: "support@example.test"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -1207,8 +1199,8 @@ func TestHostedRepeatedReadsAuditOncePerInterval(t *testing.T) {
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id = ? AND event = 'action' AND route LIKE 'GET %'", user.identity.Hosted.SessionID).Scan(&count); err != nil {
 				t.Fatal(err)
 			}
-			if count != test.want {
-				t.Fatalf("read audit rows = %d, want %d", count, test.want)
+			if count != 0 {
+				t.Fatalf("read audit rows = %d, want 0", count)
 			}
 		})
 	}

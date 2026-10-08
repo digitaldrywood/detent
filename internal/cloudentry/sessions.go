@@ -373,6 +373,9 @@ func (a *authStore) consumeTransaction(ctx context.Context, hash, id string) (lo
 }
 
 func (a *authStore) audit(ctx context.Context, subject, organization, event string) error {
+	if event == "attachment_read" || event == "platform_opened" || event == "platform_users_searched" || strings.HasPrefix(event, "platform_") && strings.HasSuffix(event, "_viewed") {
+		return nil
+	}
 	_, err := a.store.db.ExecContext(ctx, "INSERT INTO audit(subject,organization_id,event,recorded_at) VALUES (?,?,?,?)", subject, organization, event, formatTime(a.now()))
 	return err
 }
