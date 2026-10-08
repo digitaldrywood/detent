@@ -4,7 +4,10 @@
 
 Enrolled runners learn the target version on every heartbeat after its signed
 release assets are published. They stop taking new work, finish active leases,
-install that exact release and restart. The claim version gate remains a backstop.
+install that exact release and restart. A newer release replaces an update that
+was refused or interrupted. Older runners keep taking work during the update: the
+Hub refuses claims only from runners below its minimum supported runner version,
+which changes only with a release that breaks runner and Hub compatibility.
 A failed update is reported on the next heartbeat and the runner card requests
 human help with the manual reinstall command:
 

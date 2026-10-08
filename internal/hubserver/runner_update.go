@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -170,7 +171,7 @@ func (s *Service) storeRunnerUpdateObservation(ctx context.Context, tx *sql.Tx, 
 }
 
 func (s *Service) followHubRunnerUpdate(ctx context.Context, tx *sql.Tx, scope nativeScope, report runnerauth.UpdateObservation, now time.Time) error {
-	version := minimumRunnerVersion(s.config.Version)
+	version := runnerUpdateTarget(s.config.Version)
 	comparison, err := update.CompareVersions(version, report.Running.Version)
 	if version == "" || err != nil || comparison <= 0 {
 		return nil
@@ -190,7 +191,7 @@ func (s *Service) followHubRunnerUpdate(ctx context.Context, tx *sql.Tx, scope n
 		if current.FollowHub && current.Version == strings.TrimPrefix(version, "v") {
 			return nil
 		}
-		if report.Receipt == nil || report.Receipt.Request != *current || report.Receipt.Status != "running" && (!current.FollowHub || report.Receipt.Status != "refused") {
+		if !runnerUpdateSuperseded(*current, report.Receipt, version) {
 			return nil
 		}
 	}
@@ -241,4 +242,13 @@ func (s *Service) applyRunnerUpdate(c echo.Context) error {
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	return c.JSON(http.StatusAccepted, value)
+}
+
+func runnerUpdateSuperseded(current runnerauth.UpdateRequest, receipt *runnerauth.UpdateReceipt, target string) bool {
+	reported := receipt != nil && receipt.Request == current
+	if reported && !slices.Contains([]string{"running", "refused", "uncertain"}, receipt.Status) {
+		return false
+	}
+	comparison, err := update.CompareVersions(current.Version, target)
+	return err != nil || comparison < 0 || reported && comparison == 0
 }

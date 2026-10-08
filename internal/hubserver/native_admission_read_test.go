@@ -151,7 +151,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			}
 			if test.oldVersion {
 				f.service.config.Version = "v9.0.0"
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET version='v1.0.0' WHERE id=?", r.binding.MachineID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET version='v0.117.55' WHERE id=?", r.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
 			}
