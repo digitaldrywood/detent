@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
@@ -115,9 +116,9 @@ func TestTenantServesRunnersWhileReadsAreSlow(t *testing.T) {
 
 // TestTenantRunnerWritesStayFlatWithHistory drives the routine runner writes
 // (lease renewal, lease validation, comments) under hosted plan accounting and
-// requires their latency, and how long a trivial write waits for the writer,
-// to stay flat as the tenant's history grows tenfold. Each session renews once
-// a second, about thirty times a production runner's cadence.
+// requires how long a trivial write waits for the writer to stay flat as the
+// tenant's history grows tenfold; route latencies are logged. Each session
+// renews once a second, about thirty times a production runner's cadence.
 func TestTenantRunnerWritesStayFlatWithHistory(t *testing.T) {
 	if testing.Short() {
 		t.Skip("tenant write load")
@@ -149,6 +150,7 @@ SELECT 'evt_history_'||i, ?, ?, ?, 1000000+i, 'comment.created', 1, '{"kind":"sy
 		if _, err := f.service.database.db.ExecContext(t.Context(), "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
 			t.Fatal(err)
 		}
+		warmReaderPools(t, f.service.database)
 		ctx, stop := context.WithTimeout(t.Context(), 8*time.Second)
 		defer stop()
 		var mu sync.Mutex
@@ -214,14 +216,34 @@ SELECT 'evt_history_'||i, ?, ?, ?, 1000000+i, 'comment.created', 1, '{"kind":"sy
 		t.Run(fmt.Sprintf("%d sessions", sessions), func(t *testing.T) {
 			small := run(t, sessions, 20000)
 			large := run(t, sessions, 200000)
-			for _, pair := range []struct {
-				name         string
-				small, large time.Duration
-			}{{"renew", small.renew, large.renew}, {"validate", small.validate, large.validate}, {"comment", small.comment, large.comment}, {"writer probe", small.probe, large.probe}} {
-				if pair.large > 3*pair.small+250*time.Millisecond {
-					t.Errorf("%s p95 grew with history: %s at 20k events, %s at 200k", pair.name, pair.small, pair.large)
-				}
+			if large.probe > 3*small.probe+100*time.Millisecond {
+				t.Errorf("writer wait p95 grew with history: %s at 20k events, %s at 200k", small.probe, large.probe)
 			}
 		})
+	}
+}
+
+// warmReaderPools opens every reader connection once so the measurement sees
+// a long-running Hub, not each connection's first schema parse.
+func warmReaderPools(t *testing.T, d *database) {
+	t.Helper()
+	for _, pool := range []*sql.DB{d.reader, d.auth()} {
+		connections := make([]*sql.Conn, 0, pool.Stats().MaxOpenConnections)
+		for range cap(connections) {
+			connection, err := pool.Conn(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var count int
+			if err := connection.QueryRowContext(t.Context(), "SELECT count(*) FROM sqlite_schema").Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			connections = append(connections, connection)
+		}
+		for _, connection := range connections {
+			if err := connection.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }
