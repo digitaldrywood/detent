@@ -1310,6 +1310,17 @@ ownership are checked on execution and replay. `request_id` uses the same
 idempotency owner as the REST `idempotency_key`; identical retries across
 transports retain the original immutable version receipt.
 
+Optional `source_capture` contains the HTTP command's typed `source` metadata
+(`format`, `base_sha`, `head_sha`, `bundle_sha256`, `diff_sha256`, `bytes`);
+`source_bundle` contains its base64-encoded Git bundle. Both forward to the same
+source validation and immutable storage owner. `source_capture` is separate
+from the existing diff-read `source` selector. The complete MCP arguments,
+including metadata and base64 encoding, must fit the existing 64 KiB limit.
+Larger source captures require the existing authenticated HTTP command; MCP
+does not support the HTTP owner's full 20 MiB source limit. Publication retains
+source but does not schedule a validator, attest Code availability, or produce
+a reviewable diff bundle.
+
 The result includes `version` and `receipt` for the published version, `detail`
 for the live current Change and review/check summary, and `work_item_state` for
 the observed current lane. A replay after another publication retains its

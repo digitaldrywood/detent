@@ -135,7 +135,7 @@ FROM native_issue_page_items WHERE page_id = ?`
 		return nil, nil, 0, err
 	}
 	defer rows.Close()
-	var items []nativeIssuePageItem
+	items := make([]nativeIssuePageItem, 0)
 	for rows.Next() {
 		item := nativeIssuePageItem{Position: nativeIssuePageCursor{Snapshot: position.Snapshot}}
 		p := &item.Position

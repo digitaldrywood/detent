@@ -31,12 +31,34 @@ func TestChangeArgumentBoundary(t *testing.T) {
 		}
 		return string(raw)
 	}
+	sourceRaw := func(key string, value any) string {
+		fields := make(map[string]any)
+		if err := json.Unmarshal([]byte(publishRaw("", nil)), &fields); err != nil {
+			t.Fatal(err)
+		}
+		bundle := []byte("source")
+		fields["source_capture"] = tracker.ChangeSource{Format: "git-bundle", BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
+		fields["source_bundle"] = bundle
+		if key != "" {
+			fields[key] = value
+		}
+		raw, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
 	for _, test := range []struct {
 		name, tool, raw string
 		valid           bool
 	}{
 		{"read", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c"}`, true},
 		{"operator publication", PublishChangeVersion, publishRaw("", nil), true},
+		{"operator source capture", PublishChangeVersion, sourceRaw("", nil), true},
+		{"source capture is typed", PublishChangeVersion, sourceRaw("source_capture", "attempt"), false},
+		{"source bundle is base64", PublishChangeVersion, sourceRaw("source_bundle", "not base64!"), false},
+		{"source argument bound", PublishChangeVersion, sourceRaw("source_bundle", make([]byte, MaxArgumentBytes)), false},
+		{"source producer is not input", PublishChangeVersion, sourceRaw("source_capture", map[string]any{"producer": "forged"}), false},
 		{"missing expected version", PublishChangeVersion, publishRaw("expected_version_id", nil), false},
 		{"publication run", PublishChangeVersion, publishRaw("run_id", "run_forged"), false},
 		{"publication attempt", PublishChangeVersion, publishRaw("attempt_id", "attempt_forged"), false},
