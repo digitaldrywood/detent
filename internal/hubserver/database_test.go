@@ -1302,3 +1302,32 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 		})
 	}
 }
+
+func TestHostedWriterLeavesCheckpointsToLitestream(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		hosted bool
+		want   int
+	}{
+		{name: "hosted tenant", hosted: true, want: 0},
+		{name: "self-managed Hub", hosted: false, want: 1000},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			db, err := sql.Open("sqlite", sqliteWriterDSN(filepath.Join(t.TempDir(), "hub.db"), defaultBusyTimeout, test.hosted))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			var got int
+			if err := db.QueryRowContext(t.Context(), "PRAGMA wal_autocheckpoint").Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("wal_autocheckpoint = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
