@@ -22,6 +22,8 @@ import (
 
 const scheduledCloudProject = issueorigin.DetentCloudProjectID
 
+const scheduledListLimit = 100
+
 type cloudCommand func(context.Context, string, map[string]any, any) error
 
 type cloudIssue struct {
@@ -87,10 +89,19 @@ func (c *cloudDestination) load(ctx context.Context) error {
 		return errors.New("scheduled destination has no dispatchable Todo")
 	}
 	c.issues = nil
+	for _, selector := range [][2]string{{"query", "detent-origin"}, {"query", "detent-audit-fp"}, {"label", "ci-scheduled-failure"}} {
+		if err := c.scan(ctx, selector[0], selector[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *cloudDestination) scan(ctx context.Context, selector, value string) error {
 	cursor := ""
 	for {
 		var page operatortool.WorkReadResult[tracker.Page[tracker.NativeIssue]]
-		if err := c.command(ctx, "work_list", map[string]any{"project_id": c.project, "limit": 5, "cursor": cursor}, &page); err != nil {
+		if err := c.command(ctx, "work_list", map[string]any{"project_id": c.project, "open": true, selector: value, "limit": scheduledListLimit, "cursor": cursor}, &page); err != nil {
 			return err
 		}
 		if page.ProjectID != c.project || page.Data.Items == nil {
@@ -100,7 +111,7 @@ func (c *cloudDestination) load(ctx context.Context) error {
 			if string(item.ProjectID) != c.project || string(item.OrganizationID) != c.organization || item.WorkItemID == "" {
 				return errors.New("scheduled work item belongs to another destination")
 			}
-			if item.Terminal || item.Archived {
+			if item.Terminal || item.Archived || slices.ContainsFunc(c.issues, func(loaded *cloudIssue) bool { return loaded.item.WorkItemID == item.WorkItemID }) {
 				continue
 			}
 			var detail operatortool.WorkReadResult[tracker.NativeIssue]
@@ -160,6 +171,9 @@ func occurrenceKey(getenv func(string) string, j job, fingerprint string) string
 func occurrenceMarker(key string) string { return "<!-- detent-scheduled-occurrence:" + key + " -->" }
 
 func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body, key string, labels []string, _ bool) error {
+	if err := c.scan(ctx, "fingerprint", fingerprint); err != nil {
+		return err
+	}
 	marker := occurrenceMarker(key)
 	currentOrigin, _ := issueorigin.Parse(body)
 	currentJob := jobEvidence(body)

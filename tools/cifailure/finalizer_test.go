@@ -152,9 +152,11 @@ test "$FIXTURE_UNAVAILABLE" = false
 				if err != nil || strings.Contains(string(retained), "Finalize scheduled validation") {
 					t.Fatal("publisher failure replaced suite result")
 				}
-				problem, err := os.ReadFile(filepath.Join(dir, "scheduled-ci-publisher-jobs.json"))
-				if err != nil || !strings.Contains(string(problem), "Finalize scheduled validation") {
-					t.Fatal("publisher evidence missing")
+				if _, err := os.Stat(filepath.Join(dir, "scheduled-ci-publisher-jobs.json")); !os.IsNotExist(err) {
+					t.Fatal("reporting failure after release publication reran the reporter")
+				}
+				if strings.Count(text, "native run ./tools/cifailure") != 1 || !strings.Contains(string(output), "Validated release v1.2.4 is published; reporting the green suite to the tracker failed") {
+					t.Fatalf("reporting failure after release publication: %s: %s", text, output)
 				}
 			}
 		})
