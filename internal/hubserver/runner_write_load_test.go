@@ -160,7 +160,12 @@ func requireLoadStatus(t *testing.T, response *responseRecorderCode, status int)
 	}
 }
 
-func medianDuration(values []time.Duration) time.Duration {
+func medianDuration(t *testing.T, values []time.Duration) time.Duration {
+	t.Helper()
+	if len(values) == 0 {
+		t.Fatal("cannot measure median duration without samples")
+		return 0
+	}
 	slices.Sort(values)
 	return values[len(values)/2]
 }
@@ -186,7 +191,7 @@ func serialWriteCost(t *testing.T, f *writeLoadFixture, deltas int) (heartbeat, 
 			streamed = append(streamed, time.Since(started))
 		}
 	}
-	return medianDuration(heartbeats), medianDuration(streamed)
+	return medianDuration(t, heartbeats), medianDuration(t, streamed)
 }
 
 // TestRunnerWritesStayBoundedAsTenantsGrow reproduces the 2026-10-08
