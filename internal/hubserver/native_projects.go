@@ -41,7 +41,7 @@ type nativeCapabilitiesResponse struct {
 
 func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitiesResponse, error) {
 	var serverID string
-	if err := s.database.db.QueryRowContext(ctx, "SELECT id FROM hub_identity").Scan(&serverID); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT id FROM hub_identity").Scan(&serverID); err != nil {
 		return nativeCapabilitiesResponse{}, err
 	}
 	features := []string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", "scoped_runner_identity", "repository_policy", "change_requests", tracker.NativeExecutionCapability, tracker.NativeRuntimeEvidenceCapability, tracker.NativeAdmissionEvidenceCapability, tracker.NativeAdmissionObservationCapability, tracker.NativeProviderCapacityCapability, tracker.NativeCheckoutRepositoryCapability, tracker.NativeLocalChecksCapability, tracker.NativeRunnerCapacityCapability, tracker.NativeProjectConfigurationCapability, tracker.NativeRunnerUpdateCapability}

@@ -67,11 +67,11 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 			return page, nativeInvalid("invalid findings cursor")
 		}
 	}
-	if _, err := readNativeProject(ctx, s.database.db, scope); err != nil {
+	if _, err := readNativeProject(ctx, s.database.reader, scope); err != nil {
 		return page, err
 	}
 	resolved := state == "resolved"
-	rows, err := s.database.db.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code,
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code,
  COALESCE((SELECT work_item_id FROM health_finding_issues WHERE finding_id=health_findings.id AND project_id=?), '') FROM health_findings
  WHERE organization_id=? AND (resolved_at IS NOT NULL)=? AND EXISTS(SELECT 1 FROM json_each(projects_json) WHERE value=?)
  AND (?='' OR julianday(last_seen_at)>=julianday(?) OR julianday(resolved_at)>=julianday(?)) AND rowid>? ORDER BY rowid LIMIT ?`, scope.project, scope.organization, resolved, scope.project, since, since, since, after, limit+1)
@@ -132,7 +132,7 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		return page, err
 	}
 	var tick, unavailable string
-	err = s.database.db.QueryRowContext(ctx, "SELECT last_tick_at,baseline_unavailable_json FROM health_detector_ticks WHERE organization_id=?", scope.organization).Scan(&tick, &unavailable)
+	err = s.database.reader.QueryRowContext(ctx, "SELECT last_tick_at,baseline_unavailable_json FROM health_detector_ticks WHERE organization_id=?", scope.organization).Scan(&tick, &unavailable)
 	if errors.Is(err, sql.ErrNoRows) {
 		return page, nil
 	}

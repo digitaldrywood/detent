@@ -10,7 +10,7 @@ import (
 
 func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, item string) (tracker.NativeRecovery, error) {
 	var result tracker.NativeRecovery
-	tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return result, err
 	}

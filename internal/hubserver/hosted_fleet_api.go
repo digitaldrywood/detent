@@ -145,7 +145,7 @@ func (s *Service) hostedFleet(c echo.Context) error {
 	var result any
 	if c.QueryParam("include") == "names" {
 		var names map[string]hostedRunnerName
-		names, err = readHostedRunnerNames(c.Request().Context(), s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID), true)
+		names, err = readHostedRunnerNames(c.Request().Context(), s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID), true)
 		result = hostedRunnerNamesResponse{RunnerNames: names}
 	} else {
 		result, err = s.readHostedFleet(c.Request().Context(), credential)
@@ -174,7 +174,7 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 		return hostedFleetResponse{}, err
 	}
 	var projects int
-	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE organization_id = ?", s.config.Hosted.OrganizationID).Scan(&projects); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE organization_id = ?", s.config.Hosted.OrganizationID).Scan(&projects); err != nil {
 		return hostedFleetResponse{}, err
 	}
 	if len(readable) < projects {
@@ -189,7 +189,7 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 	if err != nil {
 		return hostedFleetResponse{}, err
 	}
-	names, err := readHostedRunnerNames(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID), false)
+	names, err := readHostedRunnerNames(ctx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID), false)
 	if err != nil {
 		return hostedFleetResponse{}, err
 	}
@@ -198,7 +198,7 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 
 func (s *Service) hostedFleetRunners(ctx context.Context, credential apiCredential, visible map[tracker.ProjectID]bool, editable bool) ([]hostedFleetRunner, error) {
 	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
-	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, '') FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, '') FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
 WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.id`, organization)
 	if err != nil {
 		return nil, fmt.Errorf("list runners: %w", err)
@@ -220,7 +220,7 @@ WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.
 	spriteContext, cancelSprites := context.WithTimeout(ctx, 5*time.Second)
 	defer cancelSprites()
 	for _, entry := range runners {
-		runner, err := readRunnerWithClock(ctx, s.database.db, organization, entry.id, s.config.now)
+		runner, err := readRunnerWithClock(ctx, s.database.reader, organization, entry.id, s.config.now)
 		if err != nil {
 			return nil, fmt.Errorf("read runner %s: %w", entry.id, err)
 		}
@@ -230,14 +230,14 @@ WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.
 			return nil, err
 		}
 		if editable {
-			owned, err := runnerOwnedBy(ctx, s.database.db, organization, runner.RunnerID, credential)
+			owned, err := runnerOwnedBy(ctx, s.database.reader, organization, runner.RunnerID, credential)
 			if err != nil {
 				return nil, err
 			}
 			view.CanEditProjects = owned
 			view.Routing = &runner.Routing
 			view.Revision = runner.Revision
-			capacity, err := s.runnerCapacityView(ctx, s.database.db, runner, "", s.config.now())
+			capacity, err := s.runnerCapacityView(ctx, s.database.reader, runner, "", s.config.now())
 			if err != nil {
 				return nil, err
 			}
@@ -313,7 +313,7 @@ func (s *Service) hostedFleetUsage(ctx context.Context) (hostedFleetUsage, error
 // hostedVisibleReservations reads the live provider reservations held by
 // leases in projects the reader can see.
 func (s *Service) hostedVisibleReservations(ctx context.Context, visible map[tracker.ProjectID]bool) ([]providercapacity.Report, error) {
-	rows, err := s.database.db.QueryContext(ctx, `SELECT p.reservation_json, l.expires_at, coalesce(i.project_id, '') FROM provider_reservations p
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.reservation_json, l.expires_at, coalesce(i.project_id, '') FROM provider_reservations p
 JOIN leases l ON l.lease_id = p.lease_id JOIN issues i ON i.id = l.issue_id
 WHERE p.organization_id = ? AND l.released_at IS NULL`, s.config.Hosted.OrganizationID)
 	if err != nil {
