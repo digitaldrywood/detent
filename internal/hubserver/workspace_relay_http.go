@@ -1041,6 +1041,12 @@ func (w *workspaceService) handleRunnerFrame(ctx context.Context, connection *re
 	if !stream.hubOwned {
 		overflow = w.relay.bufferForPerson(connection.workspaceID, stream, outbound, outbound.Seq)
 	}
+	if stream.channel == workspacesession.ChannelExec && frame.Type == workspacesession.TypeExecOutput {
+		// A person can close the tab as soon as this output reaches them.
+		// Collect it before delivery so teardown cannot finalize the run
+		// without output the person already received.
+		w.recordExecFrame(ctx, connection, stream, frame)
+	}
 	if person != nil {
 		person.send(outbound)
 	}
@@ -1062,7 +1068,7 @@ func (w *workspaceService) handleRunnerFrame(ctx context.Context, connection *re
 		// nothing else to read.
 		w.recordRunnerTerminalFrame(connection, stream, frame)
 	}
-	if stream.channel == workspacesession.ChannelExec {
+	if stream.channel == workspacesession.ChannelExec && frame.Type != workspacesession.TypeExecOutput {
 		// The hub is not only forwarding an exec stream, it is recording
 		// it: the run row is what a person comes back to after the tab is
 		// closed, and it is the only record a run nobody watched leaves.
