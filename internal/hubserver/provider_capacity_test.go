@@ -357,8 +357,8 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", r.redemption.Credential, tracker.NativeCapacityPreview{NativeClaim: claim})
 			requireNativeStatus(t, response, http.StatusOK)
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&writesAfter); err != nil || writesAfter-writesBefore != 9 {
-				t.Fatalf("candidate previews wrote %d rows beyond authentication metadata, err=%v", writesAfter-writesBefore-9, err)
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&writesAfter); err != nil || writesAfter != writesBefore {
+				t.Fatalf("candidate previews wrote %d rows, err=%v", writesAfter-writesBefore, err)
 			}
 			var page tracker.NativeCapacityPage
 			decodeHubResponse(t, response, &page)

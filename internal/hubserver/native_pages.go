@@ -380,10 +380,10 @@ func (s *Service) readComments(ctx context.Context, scope nativeScope, item stri
 		return tracker.Page[tracker.NativeComment]{}, err
 	}
 
-	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
 		return tracker.Page[tracker.NativeComment]{}, err
 	}
-	ids, err := nativePageIDs(ctx, s.database.db, "SELECT id FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence > CAST(? AS INTEGER) ORDER BY sequence LIMIT ?", scope.organization, scope.project, item, cursor.After, limit+1)
+	ids, err := nativePageIDs(ctx, s.database.reader, "SELECT id FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence > CAST(? AS INTEGER) ORDER BY sequence LIMIT ?", scope.organization, scope.project, item, cursor.After, limit+1)
 	if err != nil {
 		return tracker.Page[tracker.NativeComment]{}, err
 	}
@@ -393,7 +393,7 @@ func (s *Service) readComments(ctx context.Context, scope nativeScope, item stri
 		ids = ids[:limit]
 	}
 	for _, id := range ids {
-		comment, err := readNativeComment(ctx, s.database.db, scope, item, id)
+		comment, err := readNativeComment(ctx, s.database.reader, scope, item, id)
 		if err != nil {
 			return tracker.Page[tracker.NativeComment]{}, err
 		}

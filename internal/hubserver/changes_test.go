@@ -594,8 +594,8 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 					for range 16 {
 						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
 					}
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&after); err != nil || after-before != 16 {
-						t.Fatalf("unchanged decisions wrote %d rows beyond authentication metadata, err=%v", after-before-16, err)
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&after); err != nil || after != before {
+						t.Fatalf("unchanged decisions wrote %d rows, err=%v", after-before, err)
 					}
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)

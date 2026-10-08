@@ -172,12 +172,12 @@ func (s *Service) authenticateAPIToken(ctx context.Context, token, renewalRunner
 func (s *Service) authenticateAPIHash(ctx context.Context, hash, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
 	var credential apiCredential
 	var storedHash, createdAt, operations string
-	var revokedAt, expiresAt sql.NullString
-	err := s.database.db.QueryRowContext(ctx, `
-SELECT t.id, t.name, t.scope, t.token_hash, t.revoked_at, t.native_only, t.expires_at, t.created_at,
+	var revokedAt, expiresAt, lastUsedAt sql.NullString
+	err := s.database.reader.QueryRowContext(ctx, `
+SELECT t.id, t.name, t.scope, t.token_hash, t.revoked_at, t.native_only, t.expires_at, t.created_at, t.last_used_at,
 coalesce(r.id, ''), coalesce(r.machine_id, ''), coalesce(r.organization_id, ''), coalesce(r.operations_json, '[]')
 FROM api_tokens t LEFT JOIN runner_identities r ON r.token_id = t.id
-WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credential.Scope, &storedHash, &revokedAt, &credential.NativeOnly, &expiresAt, &createdAt,
+WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credential.Scope, &storedHash, &revokedAt, &credential.NativeOnly, &expiresAt, &createdAt, &lastUsedAt,
 		&credential.Runner.RunnerID, &credential.Runner.MachineID, &credential.Runner.OrganizationID, &operations)
 	if errors.Is(err, sql.ErrNoRows) {
 		return apiCredential{}, http.StatusUnauthorized, errors.New("token was not found")
@@ -212,10 +212,24 @@ WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credentia
 			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
 		}
 	}
-	if _, err := s.database.db.ExecContext(ctx, "UPDATE api_tokens SET last_used_at = ? WHERE id = ?", formatHubTime(now), credential.ID); err != nil {
-		return apiCredential{}, http.StatusServiceUnavailable, fmt.Errorf("record hub API token use: %w", err)
+	if tokenUseStale(lastUsedAt, now) {
+		if _, err := s.database.db.ExecContext(ctx, "UPDATE api_tokens SET last_used_at = ? WHERE id = ?", formatHubTime(now), credential.ID); err != nil {
+			s.config.Logger.Warn("record hub API token use failed", "token_id", credential.ID, "error", err)
+		}
 	}
 	return credential, http.StatusOK, nil
+}
+
+// tokenUseInterval bounds how often an authenticated request writes
+// last_used_at, so authentication reads never queue behind the writer.
+const tokenUseInterval = time.Minute
+
+func tokenUseStale(lastUsed sql.NullString, now time.Time) bool {
+	if !lastUsed.Valid {
+		return true
+	}
+	at, err := parseTimeValue(lastUsed.String)
+	return err != nil || now.Sub(at) >= tokenUseInterval
 }
 
 func (credential apiCredential) timeValid(now time.Time, created string, expires sql.NullString) bool {
