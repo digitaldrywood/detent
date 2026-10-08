@@ -53,20 +53,12 @@ func (s *Service) getLandingBarrier(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	var latest int64
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT COALESCE(MAX(sequence),0) FROM landing_barrier_receipts WHERE organization_id=? AND repository=?", nativeRequestScope(c).organization, result.Repository).Scan(&latest); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	result.Pending = latest > result.Started
 	if result.Running {
 		available, err := landingBarrierOwnerAvailable(c.Request().Context(), s.database.db, nativeRequestScope(c), result, s.config.now(), false)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		if available {
-			result.Running = false
-			result.Pending = true
-		}
+		result.Running = !available
 	}
 	if result.ProjectID != nativeRequestScope(c).project {
 		result = tracker.LandingBarrier{Repository: result.Repository, Running: result.Running, Red: result.Red}
@@ -99,6 +91,9 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 			if approved.Policy.ID != request.PolicyID || approved.Policy.Gates.LandingMode != gate.LandingRollingBarrier {
 				return nil, nativeInvalid("Rolling landing requires the approved project policy")
 			}
+			if !changerequest.ValidHash(request.Head, 40) && !changerequest.ValidHash(request.Head, 64) {
+				return nil, nativeInvalid("Barrier start requires the observed integration branch head")
+			}
 			if barrier.Running {
 				available, err := landingBarrierOwnerAvailable(ctx, tx, scope, barrier, now, request.Recover)
 				if err != nil {
@@ -108,13 +103,12 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 					return barrier, nil
 				}
 				barrier.Started = barrier.Green
+			} else if barrier.Result != nil && barrier.Result.HeadSHA == request.Head {
+				return barrier, nil
 			}
 			var latest int64
 			if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(sequence),0) FROM landing_barrier_receipts WHERE organization_id=? AND repository=? AND project_id=?", scope.organization, request.Repository, scope.project).Scan(&latest); err != nil {
 				return nil, err
-			}
-			if latest <= barrier.Started {
-				return barrier, nil
 			}
 			changes, err := barrierChanges(ctx, tx, scope, request.Repository, barrier.Green, latest)
 			if err != nil {
@@ -168,6 +162,7 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 						}
 					}
 					barrier.Green = barrier.Started
+					barrier.GreenHead = request.Result.HeadSHA
 					barrier.Repair = ""
 				}
 			}
@@ -242,7 +237,11 @@ func coverBarrierReceipts(ctx context.Context, tx *sql.Tx, scope nativeScope, ba
 func barrierReportBody(barrier tracker.LandingBarrier) string {
 	result := barrier.Result
 	var body strings.Builder
-	fmt.Fprintf(&body, "Rolling landing barrier on `%s` at `%s` exited %d.\n\nCommand: `%s`\n\nChanges landed since the last green barrier:\n", barrier.Repository, result.HeadSHA, result.ExitCode, result.Command)
+	fmt.Fprintf(&body, "Rolling landing barrier on `%s` at `%s` exited %d.\n\nCommand: `%s`\n\n", barrier.Repository, result.HeadSHA, result.ExitCode, result.Command)
+	if barrier.GreenHead != "" {
+		fmt.Fprintf(&body, "Commits since the last green barrier: `%s..%s`\n\n", barrier.GreenHead, result.HeadSHA)
+	}
+	body.WriteString("Changes landed since the last green barrier:\n")
 	for _, receipt := range barrier.Changes {
 		fmt.Fprintf(&body, "- Change %s version %s: `%s`\n", receipt.ChangeID, receipt.VersionID, receipt.MergeSHA)
 	}

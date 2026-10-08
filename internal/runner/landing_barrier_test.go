@@ -30,6 +30,9 @@ func (b *barrierWorkspace) AcquireLandingBarrierRunner(context.Context) (func() 
 func (b *barrierWorkspace) LandingRepository(context.Context) string {
 	return "https://github.com/example/repo"
 }
+func (b *barrierWorkspace) LandingBarrierHead(context.Context, string) (string, error) {
+	return strings.Repeat("d", 40), nil
+}
 func (b *barrierWorkspace) RunLandingBarrier(context.Context, string, string, string) (gate.CommandResult, error) {
 	b.runs++
 	return b.result, b.err
@@ -39,12 +42,18 @@ type barrierOwner struct {
 	cancel   context.CancelFunc
 	fail     bool
 	claims   int
+	heads    []string
 	finishes int
 	results  []*gate.CommandResult
 }
 
-func (o *barrierOwner) NextLandingBarrier(context.Context, string, string, string, bool) (tracker.LandingBarrier, bool, error) {
+func (o *barrierOwner) NextLandingBarrier(ctx context.Context, _, _, _ string, _ bool, observeHead func(context.Context, string) (string, error)) (tracker.LandingBarrier, bool, error) {
 	o.claims++
+	head, err := observeHead(ctx, "")
+	if err != nil {
+		return tracker.LandingBarrier{}, false, err
+	}
+	o.heads = append(o.heads, head)
 	return tracker.LandingBarrier{ID: "barrier", Repository: "https://github.com/example/repo"}, true, nil
 }
 func (o *barrierOwner) FinishLandingBarrier(_ context.Context, _ string, _ tracker.LandingBarrier, result *gate.CommandResult) error {
@@ -91,8 +100,8 @@ func TestLandingBarrierPublication(t *testing.T) {
 				if test.publicationFailure {
 					wantFinishes = 2
 				}
-				if backend.runs != 1 || owner.claims != 1 || owner.finishes != wantFinishes || !backend.released {
-					t.Fatalf("runs=%d claims=%d finishes=%d released=%v", backend.runs, owner.claims, owner.finishes, backend.released)
+				if backend.runs != 1 || owner.claims != 1 || owner.finishes != wantFinishes || !backend.released || len(owner.heads) != 1 || owner.heads[0] != strings.Repeat("d", 40) {
+					t.Fatalf("runs=%d claims=%d finishes=%d released=%v heads=%v", backend.runs, owner.claims, owner.finishes, backend.released, owner.heads)
 				}
 				for _, result := range owner.results {
 					if test.instanceFailure {
