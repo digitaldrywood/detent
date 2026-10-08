@@ -38,6 +38,10 @@ type Config struct {
 }
 
 type Client struct {
+	reads             *nativeReadCache
+	capabilitiesAt    time.Time
+	capabilities      nativeCapabilities
+	capabilitiesMu    sync.Mutex
 	artifactServiceID string
 	artifactBytes     int64
 	nativeLeases      sync.Map
@@ -150,7 +154,7 @@ func New(config Config) (*Client, error) {
 		httpClient = http.DefaultClient
 	}
 	baseURL.Path = strings.TrimRight(baseURL.Path, "/")
-	client := &Client{baseURL: baseURL, tokenSource: config.TokenSource, httpClient: httpClient, artifactServiceID: config.ArtifactServiceID, artifactBytes: config.ArtifactBytes}
+	client := &Client{reads: newNativeReadCache(), baseURL: baseURL, tokenSource: config.TokenSource, httpClient: httpClient, artifactServiceID: config.ArtifactServiceID, artifactBytes: config.ArtifactBytes}
 	if config.IdentityFile != "" {
 		file, err := runnerauth.Load(config.IdentityFile)
 		if err != nil {
@@ -230,6 +234,10 @@ func (c *Client) requestWithHeaders(ctx context.Context, method string, path str
 func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration, method string, path string, headers http.Header, input any, output any) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if method != http.MethodGet {
+		c.reads.forget(path)
+		defer c.reads.forget(path)
 	}
 	httpClient := c.httpClient
 	if timeout > 0 {

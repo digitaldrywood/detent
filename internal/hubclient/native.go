@@ -42,9 +42,25 @@ type nativeCapabilities struct {
 	Features       []string `json:"features"`
 }
 
-func (c *Client) Version(ctx context.Context) (string, error) {
+const capabilitiesTTL = 30 * time.Second
+
+func (c *Client) cachedCapabilities(ctx context.Context) (nativeCapabilities, error) {
+	c.capabilitiesMu.Lock()
+	defer c.capabilitiesMu.Unlock()
+	if !c.capabilitiesAt.IsZero() && time.Since(c.capabilitiesAt) < capabilitiesTTL {
+		return c.capabilities, nil
+	}
 	var capabilities nativeCapabilities
 	if err := c.request(ctx, http.MethodGet, "/api/v2/capabilities", nil, &capabilities); err != nil {
+		return nativeCapabilities{}, err
+	}
+	c.capabilities, c.capabilitiesAt = capabilities, time.Now()
+	return capabilities, nil
+}
+
+func (c *Client) Version(ctx context.Context) (string, error) {
+	capabilities, err := c.cachedCapabilities(ctx)
+	if err != nil {
 		return "", err
 	}
 	version := strings.TrimSpace(capabilities.Version)
@@ -55,9 +71,7 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 }
 
 func (c *NativeClient) capabilities(ctx context.Context) (nativeCapabilities, error) {
-	var capabilities nativeCapabilities
-	err := c.client.request(ctx, http.MethodGet, "/api/v2/capabilities", nil, &capabilities)
-	return capabilities, err
+	return c.client.cachedCapabilities(ctx)
 }
 
 // HubFeature reports whether the hub advertises a feature on its capability

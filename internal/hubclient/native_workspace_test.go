@@ -448,8 +448,8 @@ func TestWorkspaceClaimerClaimsOnlyFromAHubThatServesWorkspaces(t *testing.T) {
 			features: []string{"native_issues", tracker.NativeWorkspaceCapability}, wantClaims: 2, wantFeatures: 1,
 		},
 		{
-			name:     "a hub without workspace sessions is never claimed from",
-			features: []string{"native_issues"}, wantErr: ErrWorkspacesNotServed, wantFeatures: 2,
+			name:     "a hub without workspace sessions is never claimed from and asked once",
+			features: []string{"native_issues"}, wantErr: ErrWorkspacesNotServed, wantFeatures: 1,
 		},
 	}
 	for _, test := range tests {

@@ -73,7 +73,7 @@ func (c *NativeConnector) FetchIssuesByStates(ctx context.Context, states []stri
 	for _, state := range states {
 		cursor := ""
 		for {
-			page, err := c.client.Issues(ctx, url.Values{"state": {state}, "limit": {"2"}, "cursor": {cursor}})
+			page, err := c.client.Issues(ctx, url.Values{"state": {state}, "limit": {"200"}, "cursor": {cursor}})
 			if err != nil {
 				return nil, err
 			}
@@ -119,6 +119,7 @@ func (c *NativeConnector) FetchIssueStatesByIDs(ctx context.Context, ids []strin
 
 func (c *NativeConnector) issueWithLanding(ctx context.Context, native tracker.NativeIssue) (connector.Issue, error) {
 	issue := issueFromNative(native)
+	version, versioned := c.client.client.reads.observe(native)
 	if native.IssueContract != nil && native.IssueContract.ReturnState != "" {
 		status := workpad.StatusBlocked
 		if native.IssueContract.HumanAction == "" {
@@ -129,9 +130,16 @@ func (c *NativeConnector) issueWithLanding(ctx context.Context, native tracker.N
 		issue.Metadata["hub_disposition_return_state"] = native.IssueContract.ReturnState
 	}
 	if strings.EqualFold(native.State, "Blocked") && (native.IssueContract == nil || native.IssueContract.ReturnState == "") {
-		attempts, history, err := c.recordedBlockerContext(ctx, native.WorkItemID)
-		if err != nil {
-			return connector.Issue{}, err
+		attempts, history, cached := c.client.client.reads.blockerContext(native.WorkItemID, version)
+		if !versioned || !cached {
+			var err error
+			attempts, history, err = c.recordedBlockerContext(ctx, native.WorkItemID)
+			if err != nil {
+				return connector.Issue{}, err
+			}
+			if versioned {
+				c.client.client.reads.storeBlockerContext(native.WorkItemID, version, attempts, history)
+			}
 		}
 		if attempt, prior, valid := tracker.RecordedNativeBlockers(native, attempts, history); valid {
 			disposition := attempt.Disposition
@@ -163,9 +171,16 @@ func (c *NativeConnector) issueWithLanding(ctx context.Context, native tracker.N
 	if !native.Terminal {
 		return issue, nil
 	}
-	changes, err := c.client.Changes(ctx, native.WorkItemID)
-	if err != nil {
-		return connector.Issue{}, err
+	changes, cached := c.client.client.reads.itemChanges(native.WorkItemID, version)
+	if !versioned || !cached {
+		var err error
+		changes, err = c.client.Changes(ctx, native.WorkItemID)
+		if err != nil {
+			return connector.Issue{}, err
+		}
+		if versioned {
+			c.client.client.reads.storeChanges(native.WorkItemID, version, changes)
+		}
 	}
 	for _, change := range changes {
 		landed := change.CurrentLanding()
@@ -495,6 +510,10 @@ func (c *NativeConnector) UpdateIssueBody(ctx context.Context, id, body string) 
 }
 
 func (c *NativeConnector) FetchIssueComments(ctx context.Context, issue connector.Issue) ([]connector.IssueComment, error) {
+	cachedComments, version, cached := c.client.client.reads.itemComments(tracker.NativeWorkItemID(issue.ID))
+	if cached {
+		return cachedComments, nil
+	}
 	var comments []connector.IssueComment
 	cursor := ""
 	for {
@@ -521,6 +540,7 @@ func (c *NativeConnector) FetchIssueComments(ctx context.Context, issue connecto
 		}
 		cursor = page.NextCursor
 	}
+	c.client.client.reads.storeComments(tracker.NativeWorkItemID(issue.ID), version, comments)
 	return comments, nil
 }
 

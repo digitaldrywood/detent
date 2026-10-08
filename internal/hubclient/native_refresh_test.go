@@ -68,7 +68,7 @@ func TestNativeRefreshOversizedAttemptDetails(t *testing.T) {
 						{OrganizationID: native.OrganizationID, ProjectID: native.ProjectID, AggregateID: native.WorkItemID, AggregateSequence: 2, Type: "workflow.transitioned", RecordedAt: now, Actor: tracker.Actor{Kind: "runner"}, Data: tracker.CollaborationData{Revision: 3, FromState: "In Progress", ToState: "Blocked", Reason: "worker_progress"}},
 					}}
 				case strings.HasSuffix(r.URL.Path, "/work-items"):
-					if r.URL.Query().Get("limit") != "2" || r.URL.Query().Get("state") != "Blocked" {
+					if r.URL.Query().Get("limit") != "200" || r.URL.Query().Get("state") != "Blocked" {
 						t.Error("state page contract changed")
 					}
 					result = tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{native}}
