@@ -1006,18 +1006,33 @@ func (c *conversationService) updateMessage(ctx context.Context, tx *sql.Tx, mes
 // appendDelta records streamed assistant text. The message row keeps the
 // accumulated text so a snapshot is complete without replaying deltas.
 func (c *conversationService) appendDelta(ctx context.Context, tx *sql.Tx, message *conversationMessageRecord, text string, now time.Time) error {
-	offset := int64(len(message.Text))
+	if err := c.appendDeltaAt(ctx, tx, message.ConversationID, message.ID, int64(len(message.Text)), text, now); err != nil {
+		return err
+	}
 	// The caller's record is only advanced once the write succeeded: a
 	// failed write must not leave the accumulated text double-counted on
 	// the next attempt.
-	appended := *message
-	appended.Text += text
-	appended.UpdatedAt = now
-	if err := c.store.updateMessage(ctx, tx, appended); err != nil {
-		return err
+	message.Text += text
+	message.UpdatedAt = now
+	return nil
+}
+
+// appendDeltaAt appends text to a stored message in place. offset is the
+// message's byte length before the append; the stored text is never read
+// back and rewritten, so a long streamed message costs only its new bytes.
+func (c *conversationService) appendDeltaAt(ctx context.Context, tx *sql.Tx, conversationID, messageID string, offset int64, text string, now time.Time) error {
+	result, err := tx.ExecContext(ctx, "UPDATE conversation_messages SET text = text || ?, updated_at = ? WHERE id = ? AND conversation_id = ?", text, conversationTime(now), messageID, conversationID)
+	if err != nil {
+		return fmt.Errorf("append message delta: %w", err)
 	}
-	*message = appended
-	if _, err := c.store.appendEvent(ctx, tx, message.ConversationID, conversation.EventMessageDelta, conversationDeltaBody(message.ID, offset, text), now); err != nil {
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("append message delta: %w", err)
+	}
+	if affected == 0 {
+		return nativeNotFound()
+	}
+	if _, err := c.store.appendEvent(ctx, tx, conversationID, conversation.EventMessageDelta, conversationDeltaBody(messageID, offset, text), now); err != nil {
 		return err
 	}
 	return nil

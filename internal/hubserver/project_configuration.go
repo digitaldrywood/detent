@@ -225,6 +225,13 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 			}
 		}
 	}
+	var pending bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM runner_identities WHERE organization_id = ? AND id = ? AND json_extract(routing_settings_json, '$.project_configuration_request.request.project_id') = ?)", scope.organization, scope.credential.Runner.RunnerID, scope.project).Scan(&pending); err != nil {
+		return runnerauth.ProjectConfigurationRequest{}, err
+	}
+	if !pending {
+		return runnerauth.ProjectConfigurationRequest{}, nil
+	}
 	r, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
 	if err != nil {
 		return runnerauth.ProjectConfigurationRequest{}, err

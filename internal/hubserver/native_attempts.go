@@ -67,7 +67,7 @@ func requireNativeMutationLease(ctx context.Context, tx *sql.Tx, scope nativeSco
 	if !found {
 		return nativeNotFound()
 	}
-	_, id, err := readNativeIssue(ctx, tx, scope, item)
+	id, err := nativeIssueRowID(ctx, tx, scope, item)
 	if err != nil {
 		return err
 	}
@@ -78,6 +78,16 @@ func requireNativeMutationLease(ctx context.Context, tx *sql.Tx, scope nativeSco
 		return err
 	}
 	return requireApprovedLeasePolicy(ctx, tx, mutation.LeaseID, true)
+}
+
+// nativeIssueRowID resolves a work item to its internal row ID with the same
+// scope join as readNativeIssue, without hydrating the issue. Fencing checks
+// only compare row identity.
+func nativeIssueRowID(ctx context.Context, query nativeQueryer, scope nativeScope, item string) (tracker.WorkItemID, error) {
+	var id tracker.WorkItemID
+	err := query.QueryRowContext(ctx, `SELECT i.id FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
+WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.organization, scope.project, item).Scan(&id)
+	return id, err
 }
 
 func validExecutionName(value string) bool {
