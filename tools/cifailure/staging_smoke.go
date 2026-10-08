@@ -112,6 +112,7 @@ func deploySmoke(ctx context.Context, environment string, getenv func(string) st
 
 type mcpSmoke struct {
 	knownGaps map[string]string
+	gapped    []string
 	mcp       *cloudMCP
 	output    io.Writer
 	fixtures  map[string]any
@@ -263,6 +264,7 @@ func (s *mcpSmoke) mutate(ctx context.Context, name string, args map[string]any,
 	if !found && slices.Contains(smokeHostedGaps, name) {
 		fmt.Fprintf(s.output, "%s expected hosted gap (#615): absent from tools/list\n", name)
 		s.called[name] = true
+		s.gapped = append(s.gapped, name)
 		return map[string]any{"expected_gap": true}, previous, nil
 	}
 	var schema smokeSchema
@@ -283,6 +285,7 @@ func (s *mcpSmoke) mutate(ctx context.Context, name string, args map[string]any,
 	result, err := s.call(ctx, name, args)
 	if err != nil && slices.Contains(smokeHostedGaps, name) && strings.Contains(err.Error(), "application service is unavailable") {
 		fmt.Fprintf(s.output, "%s expected hosted gap (#615)\n", name)
+		s.gapped = append(s.gapped, name)
 		return map[string]any{"expected_gap": true}, previous, nil
 	}
 	if err != nil {
@@ -499,11 +502,14 @@ func (s *mcpSmoke) run(ctx context.Context) error {
 			failures = append(failures, fmt.Errorf("%s: non-skipped tool was not exercised", name))
 		}
 	}
-	return smokeVerdict(s.output, failures, s.called, s.knownGaps)
+	return smokeVerdict(s.output, failures, s.called, s.gapped, s.knownGaps)
 }
 
-func smokeVerdict(output io.Writer, failures []error, called map[string]bool, gaps map[string]string) error {
+func smokeVerdict(output io.Writer, failures []error, called map[string]bool, gapped []string, gaps map[string]string) error {
 	failed := map[string]bool{}
+	for _, name := range gapped {
+		failed[name] = true
+	}
 	var blocking []error
 	for _, failure := range failures {
 		name, _, _ := strings.Cut(failure.Error(), ":")
