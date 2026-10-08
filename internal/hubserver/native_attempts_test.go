@@ -2,14 +2,20 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -313,4 +319,205 @@ func TestNativeCheckpointValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNativeAttemptPageBounds(t *testing.T) {
+	t.Parallel()
+	f := newDefaultNativeFixture(t, Config{})
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	issue := f.create(t, "large-attempts")
+	worker := f.worker(t, "worker")
+	path := f.base + "/work-items/" + string(issue.WorkItemID)
+	output := strings.Repeat("<", 64<<10)
+	var fences []tracker.FencingToken
+	var first tracker.NativeLease
+	for index := range 16 {
+		if index > 0 {
+			id := newNativeID("lease")
+			result, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases
+ (lease_id, issue_id, machine_id, session_id, expires_at, acquired_at, renewed_at, released_at, created_at, updated_at)
+ SELECT ?, issue_id, machine_id, ?, expires_at, acquired_at, renewed_at, released_at, created_at, updated_at FROM leases WHERE lease_id = ?`, id, fmt.Sprintf("historical-%d", index), first.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fence, err := result.LastInsertId()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_attempts
+ (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, checkpoint_json, artifact_ids_json, started_at, updated_at, work_item_revision, dispatch_generation)
+ SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status,
+ json_set(data_json, '$.attempt_id', ?, '$.lease_id', ?, '$.fencing_token', ?, '$.run_id', ?),
+ checkpoint_json, artifact_ids_json, started_at, updated_at, work_item_revision, dispatch_generation
+ FROM native_attempts WHERE lease_id = ?`, fmt.Sprintf("attempt_historical_%d", index), id, fence, fmt.Sprintf("run_historical_%d", index), fmt.Sprintf("attempt_historical_%d", index), id, strconv.FormatInt(fence, 10), fmt.Sprintf("run_historical_%d", index), first.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fences = append(fences, tracker.FencingToken(fence))
+			continue
+		}
+		lease := claimNativeAttempt(t, f, worker, "machine", fmt.Sprintf("session-%d", index), issue.WorkItemID)
+		first = lease
+		start := nativeStartedEvent(lease)
+		start.IdempotencyKey = fmt.Sprintf("start-%d", index)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, start), http.StatusOK)
+		checkpoint := start
+		checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "run.checkpointed", fmt.Sprintf("checkpoint-%d", index), 2
+		checkpoint.Data.Handoff = nativeTestCheckpoint()
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
+		finish := start
+		finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", fmt.Sprintf("finish-%d", index), 3, "succeeded"
+		finish.Data.Disposition = &tracker.NativeDisposition{Status: "blocked", HumanAction: true, FinalSummary: strings.Repeat("x", workpad.MaxFinalSummaryBytes)}
+		finish.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: f.service.config.now(),
+			Validation: &gate.CommandResult{Command: "focused test", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), DurationNS: 1, Output: output},
+			Landing:    &tracker.NativeLandingReceipt{Waiting: true, HeadSHA: strings.Repeat("a", 40)}}
+		if err := validateNativeRuntime(finish.Data.Runtime); err != nil {
+			t.Fatalf("fixture is not a legitimate runtime: %v", err)
+		}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, finish), http.StatusOK)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+		fences = append(fences, lease.FencingToken)
+	}
+	var full []tracker.NativeAttempt
+	for _, view := range []string{"", "blockers"} {
+		t.Run("view="+view, func(t *testing.T) {
+			params := url.Values{"limit": {"100"}}
+			if view != "" {
+				params.Set("view", view)
+			}
+			var seen []tracker.FencingToken
+			pages := 0
+			for {
+				response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?"+params.Encode(), worker, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				budget := 1 << 20
+				if view == "blockers" {
+					budget = operatortool.WorkHistoryPageBytes
+				}
+				if response.Body.Len() > budget {
+					t.Fatalf("page bytes=%d, budget=%d", response.Body.Len(), budget)
+				}
+				var page tracker.Page[tracker.NativeAttempt]
+				decodeHubResponse(t, response, &page)
+				pages++
+				for _, attempt := range page.Items {
+					seen = append(seen, attempt.FencingToken)
+					if attempt.Status != "succeeded" || attempt.Identity == nil || attempt.WorkItemRevision != issue.Revision || attempt.StartedAt.IsZero() || attempt.Disposition == nil || !attempt.Disposition.HumanAction || len(attempt.Disposition.FinalSummary) != workpad.MaxFinalSummaryBytes || !reflect.DeepEqual(attempt.Checkpoint, nativeTestCheckpoint()) {
+						t.Fatalf("lost authority/checkpoint at fence %d", attempt.FencingToken)
+					}
+					if view == "blockers" {
+						if attempt.Runtime != nil {
+							t.Fatal("blocker projection included runtime")
+						}
+					} else {
+						if attempt.Runtime == nil || attempt.Runtime.Validation.Output != output || attempt.Runtime.Landing == nil || !attempt.Runtime.Landing.Waiting || attempt.Runtime.Landing.HeadSHA != strings.Repeat("a", 40) {
+							t.Fatal("full attempt lost validation or landing evidence")
+						}
+						full = append(full, attempt)
+					}
+				}
+				if len(seen) > len(fences) {
+					t.Fatal("repeated attempts")
+				}
+				if page.NextCursor == "" {
+					break
+				}
+				if pages == 1 {
+					replay := url.Values{"limit": {"1"}, "cursor": {page.NextCursor}}
+					if view != "" {
+						replay.Set("view", view)
+					}
+					r := performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?"+replay.Encode(), worker, nil)
+					requireNativeStatus(t, r, http.StatusOK)
+					var next tracker.Page[tracker.NativeAttempt]
+					decodeHubResponse(t, r, &next)
+					if len(next.Items) != 1 || next.Items[0].FencingToken != fences[len(seen)] {
+						t.Fatal("byte boundary skipped a fence")
+					}
+					if view == "blockers" {
+						replay.Del("view")
+					} else {
+						replay.Set("view", "blockers")
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?"+replay.Encode(), worker, nil), http.StatusUnprocessableEntity)
+				}
+				params.Set("cursor", page.NextCursor)
+			}
+			if pages < 2 || !reflect.DeepEqual(seen, fences) {
+				t.Fatalf("pages=%d, fences=%v, want=%v", pages, seen, fences)
+			}
+		})
+	}
+	raw, err := json.Marshal(tracker.Page[tracker.NativeAttempt]{Items: full})
+	if err != nil || len(raw) <= 1<<20 {
+		t.Fatalf("old count-only payload bytes=%d, error=%v", len(raw), err)
+	}
+	t.Logf("legitimate count-only attempt payload=%d bytes", len(raw))
+	for _, query := range []string{"view=unknown", "view=blockers&view=blockers"} {
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?"+query, worker, nil), http.StatusUnprocessableEntity)
+	}
+	response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", worker, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var detail tracker.Page[tracker.CollaborationEvent]
+	decodeHubResponse(t, response, &detail)
+	omitted := false
+	for _, event := range detail.Items {
+		if event.Type == "run.finished" && event.DataOmission != nil {
+			omitted = true
+		}
+	}
+	if !omitted {
+		t.Fatal("fixture did not exercise large history data omission")
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?view=blockers", worker, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var projected tracker.Page[tracker.CollaborationEvent]
+	decodeHubResponse(t, response, &projected)
+	found := false
+	for _, event := range projected.Items {
+		if event.Type == "run.finished" {
+			found = event.DataOmission == nil && event.Data.Run != nil && event.Data.Run.FencingToken == first.FencingToken && event.Data.Run.AttemptID != "" && event.Data.Run.Runtime == nil
+		}
+	}
+	if !found {
+		t.Fatal("blocker history omitted recorded run authority")
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO collaboration_events
+ (id, organization_id, project_id, work_item_id, sequence, type, schema_version, actor_json, data_json, recorded_at)
+ SELECT ?, organization_id, project_id, work_item_id, sequence+100, 'issue.edited', schema_version,
+ '{"kind":"human","principal_id":"operator"}', json_set(data_json, '$.revision', '9'), recorded_at
+ FROM collaboration_events WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND type = 'run.finished'`, newNativeID("evt"), f.project.OrganizationID, f.project.ID, issue.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?view=blockers", worker, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &projected)
+	found = false
+	for _, event := range projected.Items {
+		if event.Type == "issue.edited" {
+			found = event.Data.Revision == 9 && event.Actor.Kind == "human" && event.DataOmission == nil
+		}
+	}
+	if !found {
+		t.Fatal("large human edit lost invalidating revision")
+	}
+	for _, query := range []string{"view=unknown", "view=blockers&view=blockers"} {
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?"+query, worker, nil), http.StatusUnprocessableEntity)
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?view=blockers&limit=1", worker, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &projected)
+	if projected.NextCursor == "" {
+		t.Fatal("missing history continuation")
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?cursor="+url.QueryEscape(projected.NextCursor), worker, nil), http.StatusUnprocessableEntity)
+	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.runtime.validation.output', ?) WHERE lease_id = ?`, strings.Repeat("<", 256<<10), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?limit=1", worker, nil), http.StatusInternalServerError)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?view=blockers&limit=1", worker, nil), http.StatusOK)
+	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other")
+	denied := other.worker(t, "denied")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?view=blockers", denied, nil), http.StatusNotFound)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?view=blockers", denied, nil), http.StatusNotFound)
 }

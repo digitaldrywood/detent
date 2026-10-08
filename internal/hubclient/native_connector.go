@@ -185,7 +185,8 @@ func (c *NativeConnector) recordedBlockerContext(ctx context.Context, id tracker
 	var attempts []tracker.NativeAttempt
 	var history []tracker.CollaborationEvent
 	for cursor := ""; ; {
-		page, err := c.client.Attempts(ctx, id, cursor)
+		var page tracker.Page[tracker.NativeAttempt]
+		err := c.client.blockerPage(ctx, id, "attempts", cursor, &page)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -196,7 +197,8 @@ func (c *NativeConnector) recordedBlockerContext(ctx context.Context, id tracker
 		cursor = page.NextCursor
 	}
 	for cursor := ""; ; {
-		page, err := c.client.History(ctx, id, cursor)
+		var page tracker.Page[tracker.CollaborationEvent]
+		err := c.client.blockerPage(ctx, id, "history", cursor, &page)
 		if err != nil {
 			return nil, nil, err
 		}

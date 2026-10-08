@@ -1033,6 +1033,18 @@ contains effective identity/policy, last accepted sequence, server timestamps,
 terminal outcome and the latest retained checkpoint. A running attempt whose lease
 is released or expired reads as `interrupted`. Hub restart retains both the
 projection and append-only history; expired leases and attempts are not deleted.
+Pages are bounded to 1 MiB of encoded JSON, including continuation; a single
+record that cannot fit is explicitly unavailable rather than skipped.
+`view=blockers` omits only runtime observations at the SQL projection boundary
+and uses the existing 64 KiB history-page budget. The runner uses this view for
+recorded blocker authority during observed-state and epic transition refresh;
+fences, identity, status, revision, disposition and checkpoint remain intact.
+`GET /work-items/{item}/history?view=blockers` keeps every event's identity,
+actor, ordering and timestamp plus revision, transition and run fence/attempt
+fields, before content/runtime omission. This preserves edit and operator hold
+evidence for the same blocker read. Full attempt, history and runtime reads
+retain their existing detail contracts and validation/landing evidence. Cursors
+are bound to the view as well as the authorized project, item and caller.
 
 The native scheduler hydrates full issue content, paginated discussion, attempts
 and history, including legacy events, before dispatch. Runner prompts receive this
