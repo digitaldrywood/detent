@@ -775,6 +775,15 @@ func claimWorkspaceExclusionArg(query claimCandidateQuery) int {
 
 func claimCandidateIDs(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, repositoryIDs []tracker.RepositoryID, repositories []string, workflowStates []string, authors []string, assignees []string, labelInclude []string, labelExclude []string, claimableRepositories map[tracker.RepositoryID]struct{}) ([]tracker.WorkItemID, error) {
 	if query.NativeScope != nil {
+		if query.NativeScope.project != "" && !query.WorkspaceLane {
+			now := query.AvailableAt
+			if now.IsZero() {
+				now = time.Now().UTC()
+			}
+			if _, err := reportHealthFindings(ctx, tx, query.NativeScope.organization, now, query.NativeScope.project); err != nil {
+				return nil, err
+			}
+		}
 		return nativeCandidateIDs(ctx, tx, query, repositoryIDs, repositories, workflowStates, authors, assignees, labelInclude, labelExclude)
 	}
 	scope := query.Scope

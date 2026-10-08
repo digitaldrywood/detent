@@ -14,7 +14,12 @@ import (
 
 func addHealthBacklog(t *testing.T, f nativeFixture) {
 	t.Helper()
-	states := append(slices.Clone(f.project.States), tracker.NativeState{Name: "Backlog"})
+	states := append(slices.Clone(f.project.States), tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}})
+	for i := range states {
+		if states[i].Name == "Todo" {
+			states[i].Transitions = append(states[i].Transitions, "Backlog")
+		}
+	}
 	raw, err := json.Marshal(states)
 	if err != nil {
 		t.Fatal(err)
@@ -43,13 +48,13 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "health-issues")
+			addHealthBacklog(t, f)
 			original := f.create(t, "affected-item")
 			now := time.Date(2026, 10, 6, 18, 30, 0, 0, time.UTC)
 			finding := newHealthFinding("retry_storm", test.class, "work_item", string(original.WorkItemID), "Repeated failures.", "Inspect the protocol signature.", []string{string(f.project.ID)}, healthEvidence{AttemptIDs: []string{"attempt_one"}, Signatures: []string{"protocol failure"}, Counts: map[string]int{"attempts": 3}})
 			var owner tracker.NativeIssue
 			var firstFinding string
 			if test.linked {
-				addHealthBacklog(t, f)
 				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 				if err != nil {
 					t.Fatal(err)
@@ -165,6 +170,34 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 					if issue.WorkItemID != owner.WorkItemID || issue.Body != owner.Body {
 						t.Fatalf("occurrence replaced owner: %+v", issue)
 					}
+					if step.offset < 68*time.Minute {
+						wantState := "Backlog"
+						if step.active {
+							wantState = "Todo"
+						}
+						if issue.State != wantState {
+							t.Fatalf("operational state = %s, want %s", issue.State, wantState)
+						}
+						tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer tx.Rollback()
+						ids, err := claimCandidateIDs(t.Context(), tx, claimCandidateQuery{NativeScope: &scope, AvailableAt: now.Add(step.offset)}, nil, nil, nil, nil, nil, nil, nil, nil)
+						if err != nil {
+							t.Fatal(err)
+						}
+						_, id, err := readNativeIssue(t.Context(), tx, scope, string(issue.WorkItemID))
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := tx.Rollback(); err != nil {
+							t.Fatal(err)
+						}
+						if slices.Contains(ids, id) != step.active {
+							t.Fatalf("operational candidate = %v, want %v", slices.Contains(ids, id), step.active)
+						}
+					}
 					if step.offset >= 68*time.Minute && (!issue.Terminal || issue.State != "Done") {
 						t.Fatalf("terminal issue reopened: %+v", issue)
 					}
@@ -274,6 +307,220 @@ func TestHealthFindingReporterPreservesHistory(t *testing.T) {
 			}
 			if pending != 1 || issues != 1 || comments != wantComments {
 				t.Fatalf("pending=%d issues=%d comments=%d", pending, issues, comments)
+			}
+		})
+	}
+}
+
+func TestHealthFindingResolutionOwnership(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		preserved bool
+	}{
+		{"reported resolution before dispatch", false},
+		{"human question", true},
+		{"handwritten goal", true},
+		{"human recovery park", true},
+		{"operator label", true},
+		{"active lane", true},
+		{"expired unreleased lease", true},
+		{"running attempt", true},
+		{"retained checkpoint", true},
+		{"change version and review", true},
+		{"untrusted origin", true},
+		{"wrong finding identity", true},
+		{"wrong tenant", true},
+		{"later unresolved observation", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newNativeFixture(t, nil, "", "health-resolution")
+			addHealthBacklog(t, f)
+			now := f.service.config.now()
+			finding := newHealthFinding("scheduler_loop_behind", "instance", "project", string(f.project.ID), "Scheduler refresh is behind.", "Check scheduler refresh health.", []string{string(f.project.ID)}, healthEvidence{})
+			applyTestHealth(t, f, now, []healthFinding{finding})
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			var item tracker.NativeWorkItemID
+			var findingID string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT finding_id,work_item_id FROM health_finding_issues").Scan(&findingID, &item); err != nil {
+				t.Fatal(err)
+			}
+			issue, id, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(item))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var checkpoint, version, review string
+			switch test.name {
+			case "human question":
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(item)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "hold"}, Body: "Keep this open until I verify the scheduler."}), http.StatusOK)
+			case "human recovery park":
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				runnerScope := scope
+				runnerScope.sourceActor = &tracker.Actor{Kind: "runner", PrincipalID: "health-runner"}
+				for _, body := range []string{"## Detent recovery park\n\n```detent-park\n{\"schema\":1,\"owner\":\"human\",\"phase\":\"applied\"}\n```", "Runner observed the scheduler again."} {
+					if _, err := insertNativeComment(t.Context(), tx, runnerScope, issue, body, nil, now); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			case "handwritten goal":
+				body := issue.Body + "\n\nAlso repair the scheduler source and verify deployment."
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(item), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "goal"}, ExpectedRevision: issue.Revision, Body: &body}), http.StatusOK)
+			case "operator label":
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET labels_json='["infrastructure","migration-hold"]' WHERE id=?`, id); err != nil {
+					t.Fatal(err)
+				}
+			case "active lane":
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE id=?`, scope.project, id); err != nil {
+					t.Fatal(err)
+				}
+			case "expired unreleased lease", "running attempt", "retained checkpoint":
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET issue_contract_json='{"exempt":true}' WHERE id=?`, id); err != nil {
+					t.Fatal(err)
+				}
+				approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+				worker := f.worker(t, "health-worker")
+				lease := claimNativeAttempt(t, f, worker, "health-machine", "health-session", item)
+				if test.name == "expired unreleased lease" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(now.Add(-time.Minute)), lease.ID); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					start := nativeStartedEvent(lease)
+					path := f.base + "/work-items/" + string(item) + "/events"
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, start), http.StatusOK)
+					if test.name == "retained checkpoint" {
+						event := start
+						event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Handoff = "run.checkpointed", "checkpoint", 2, nativeTestCheckpoint()
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+						event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Outcome, event.Data.Handoff = "run.finished", "finish", 3, "failed", nil
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "failed"}), http.StatusNoContent)
+						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT checkpoint_json FROM native_attempts WHERE id=?", start.Data.AttemptID).Scan(&checkpoint); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+			case "change version and review":
+				change := tracker.ChangeRequest{ID: "health-change", OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, CurrentVersion: "health-version"}
+				raw, err := json.Marshal(change)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,?)", change.ID, scope.organization, scope.project, item, string(raw)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_issue_links(change_id,organization_id,project_id,work_item_id) VALUES(?,?,?,?)", change.ID, scope.organization, scope.project, item); err != nil {
+					t.Fatal(err)
+				}
+				version = `{"id":"health-version","head_sha":"retained-head"}`
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_versions(id,change_id,number,record_json) VALUES('health-version',?,1,?)", change.ID, version); err != nil {
+					t.Fatal(err)
+				}
+				review = `{"review":"approved"}`
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,'health-version','review',?)", change.ID, review); err != nil {
+					t.Fatal(err)
+				}
+			case "untrusted origin":
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET actor_json='{"kind":"human","principal_id":"operator"}' WHERE id=?`, id); err != nil {
+					t.Fatal(err)
+				}
+			case "wrong finding identity":
+				finding.Fingerprint = "different-fingerprint"
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE health_findings SET fingerprint=? WHERE id=?", finding.Fingerprint, findingID); err != nil {
+					t.Fatal(err)
+				}
+			case "wrong tenant":
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO organizations(id,name,local,created_at) VALUES('org_health_other','Other',0,?)", formatHubTime(now)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE health_findings SET organization_id='org_health_other' WHERE id=?", findingID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(item))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if _, err := writeHealthEvaluation(t.Context(), tx, scope.organization, now.Add(time.Minute), nil); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(t.Context(), `UPDATE health_finding_issues SET reported_resolved_at=(SELECT resolved_at FROM health_findings WHERE id=finding_id)`); err != nil {
+				t.Fatal(err)
+			}
+			if test.name == "later unresolved observation" {
+				if _, err := writeHealthEvaluation(t.Context(), tx, scope.organization, now.Add(62*time.Minute), []healthFinding{finding}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := reportHealthFindings(t.Context(), tx, scope.organization, now.Add(62*time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ids, err := claimCandidateIDs(t.Context(), tx, claimCandidateQuery{NativeScope: &scope, AvailableAt: now.Add(63 * time.Minute)}, nil, nil, nil, nil, nil, nil, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, _, err := readNativeIssue(t.Context(), tx, scope, string(item))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.preserved {
+				if got.State != before.State || got.Revision != before.Revision || got.Body != before.Body {
+					t.Fatalf("protected issue changed: %+v", got)
+				}
+			} else if got.State != "Backlog" || got.Revision != before.Revision+1 || slices.Contains(ids, id) {
+				t.Fatalf("resolved operational issue remains dispatchable: %+v, candidates=%v", got, ids)
+			}
+			if checkpoint != "" {
+				var retained string
+				if err := tx.QueryRowContext(t.Context(), "SELECT checkpoint_json FROM native_attempts WHERE work_item_id=?", item).Scan(&retained); err != nil {
+					t.Fatal(err)
+				}
+				if retained != checkpoint {
+					t.Fatal("checkpoint changed")
+				}
+			}
+			if version != "" {
+				var retainedVersion, retainedReview string
+				if err := tx.QueryRowContext(t.Context(), "SELECT v.record_json,e.record_json FROM change_versions v JOIN change_evidence e ON e.version_id=v.id WHERE v.id='health-version'").Scan(&retainedVersion, &retainedReview); err != nil {
+					t.Fatal(err)
+				}
+				if retainedVersion != version || retainedReview != review {
+					t.Fatal("immutable source or review changed")
+				}
+			}
+			var fabricated int
+			if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM change_requests WHERE work_item_id=?", item).Scan(&fabricated); err != nil {
+				t.Fatal(err)
+			}
+			if version == "" && fabricated != 0 {
+				t.Fatal("operational acceptance fabricated a Change")
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			applyTestHealth(t, f, now.Add(64*time.Minute), []healthFinding{finding})
+			recurred, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(item))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.preserved && (recurred.State != before.State || recurred.Body != before.Body) {
+				t.Fatal("recurrence erased a protected decision")
+			}
+			if !test.preserved && recurred.State != "Todo" {
+				t.Fatal("new observation did not re-admit operational issue")
 			}
 		})
 	}
