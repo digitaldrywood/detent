@@ -70,7 +70,14 @@ test("boot renders a seeded last-known board before the live morph", async ({ pa
   const runtime = await startDetentRuntime(
     "board-snapshot-startup",
     ["--fixture", fixturePath],
-    { home },
+    {
+      home,
+      holdStartup: true,
+      env: {
+        DETENT_BOARD_SNAPSHOT_BROWSER_HOME: home,
+        DETENT_BOARD_SNAPSHOT_BROWSER_FIXTURE: fixturePath,
+      },
+    },
   );
   try {
     await page.goto(`${runtime.url}/`, { waitUntil: "domcontentloaded" });
@@ -91,13 +98,18 @@ test("boot renders a seeded last-known board before the live morph", async ({ pa
     await expect(tooltip).toHaveAttribute("data-open", "true");
     const originalPriorityTrigger = await priorityTrigger.elementHandle();
 
+    runtime.releaseStartup();
+
     await expect(staleBanner).toHaveCount(0);
     await expect(snapshot).toContainText("Live board card after hydration");
+    await expect(page.locator("#board-freshness")).toContainText("Data current");
+    await expect(tooltip).toHaveAttribute("data-open", "true");
     await expect(page.locator("#board-lanes")).not.toHaveClass(/grayscale/);
     expect(await originalSnapshot?.evaluate((element) => element.isConnected)).toBe(true);
     expect(await originalTooltip?.evaluate((element) => element.isConnected)).toBe(true);
     expect(await originalPriorityTrigger?.evaluate((element) => element.isConnected)).toBe(true);
   } finally {
+    await page.close();
     await runtime.stop();
   }
 });

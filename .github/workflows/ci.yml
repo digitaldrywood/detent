@@ -311,13 +311,16 @@ jobs:
       - name: Build Detent visual test binary
         run: make build
 
-      - name: Build hosted preview test binary
-        run: go test -c -o tmp/hubserver-preview.test ./internal/hubserver
+      - name: Build browser preview test binaries
+        run: |
+          go test -c -o tmp/hubserver-preview.test ./internal/hubserver
+          go test -c -o tmp/startup-preview.test ./internal/cli
 
       - name: Run full browser visual gate
         env:
           DETENT_BINARY: ${{ github.workspace }}/tmp/detent
           DETENT_HOSTED_PREVIEW_BINARY: ${{ github.workspace }}/tmp/hubserver-preview.test
+          DETENT_STARTUP_PREVIEW_BINARY: ${{ github.workspace }}/tmp/startup-preview.test
           TMPDIR: ${{ runner.temp }}
         run: npm run test:visual -- --shard=${{ matrix.shard }}/2
 
