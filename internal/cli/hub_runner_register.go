@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/update"
 )
 
 const runnerServiceName = "detent.runner"
@@ -129,6 +130,13 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 				return fmt.Errorf("runner enrolled; save routing configuration: %w", err)
 			}
 			result := runnerRegistration{RunnerID: identity.RunnerID, MachineID: identity.MachineID, Config: paths.config, Identity: paths.identity}
+			minimumVersion, err := client.MinimumRunnerVersion(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("runner enrolled; read minimum runner version: %w", err)
+			}
+			if order, err := update.CompareVersions(version, minimumVersion); err == nil && order < 0 {
+				result.NextSteps = append(result.NextSteps, fmt.Sprintf("This Hub requires Detent %s or newer; this binary is %s. Update with detent update --yes --from-release (or brew upgrade digitaldrywood/tap/detent for Homebrew), then retry this register command", minimumVersion, version))
+			}
 			config := runnerConfig(base, org, name, capacity, paths)
 			result.Created, err = writeRunnerConfig(paths.config, config)
 			if err != nil {

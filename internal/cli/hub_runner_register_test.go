@@ -233,15 +233,16 @@ func TestRunnerGitHubAuthNextSteps(t *testing.T) {
 }
 
 type registerHub struct {
-	server       *httptest.Server
-	credential   atomic.Value
-	identity     atomic.Value
-	tier         atomic.Value
-	redeemed     atomic.Int32
-	projects     map[tracker.ProjectID]string
-	cloneURLs    map[tracker.ProjectID]string
-	features     []string
-	repositories map[tracker.ProjectID]string
+	server         *httptest.Server
+	credential     atomic.Value
+	identity       atomic.Value
+	tier           atomic.Value
+	redeemed       atomic.Int32
+	projects       map[tracker.ProjectID]string
+	cloneURLs      map[tracker.ProjectID]string
+	features       []string
+	repositories   map[tracker.ProjectID]string
+	minimumVersion string
 }
 
 func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *registerHub {
@@ -261,7 +262,7 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 			ids = append(ids, id)
 		}
 		if strings.HasSuffix(r.URL.Path, "/capabilities") {
-			_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": hub.features})
+			_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": hub.features, "minimum_runner_version": hub.minimumVersion})
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/runner-enrollments/redeem") {
@@ -499,6 +500,52 @@ func checkout(t *testing.T, dir string) {
 	runDoctorWorkflowSourceGit(t, dir, "add", "WORKFLOW.md")
 	runDoctorWorkflowSourceGit(t, dir, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "initial workflow")
 	runDoctorWorkflowSourceGit(t, dir, "remote", "add", "origin", "git@github.com:acme/orders.git")
+}
+
+func TestHubRunnerRegisterVersionGuidance(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, version, minimum string
+		wantUpdate             bool
+	}{
+		{name: "older binary", version: "v0.117.55", minimum: "0.117.56", wantUpdate: true},
+		{name: "minimum supported", version: "v0.117.56", minimum: "0.117.56"},
+		{name: "newer binary", version: "v0.117.60", minimum: "0.117.56"},
+		{name: "development binary", version: "dev", minimum: "0.117.56"},
+		{name: "Hub without a minimum", version: "v0.117.55"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_orders": "orders"})
+			hub.minimumVersion = test.minimum
+			root := t.TempDir()
+			if err := os.Chmod(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			command := newHubRunnerRegisterCommandWithReporter(test.version, func(string) string { return "" }, func(*cobra.Command, string) error {
+				t.Fatal("service started without a checkout")
+				return nil
+			}, func(string) error { return nil }, func(context.Context, globalconfig.Config, string) error { return nil })
+			output, err := executeRegister(t, command, "--url", hub.server.URL+"/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", filepath.Join(root, "global.yaml"), "--workspace-root", filepath.Join(root, "work"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var registration runnerRegistration
+			if err := json.Unmarshal([]byte(output), &registration); err != nil {
+				t.Fatal(err)
+			}
+			steps := strings.Join(registration.NextSteps, "\n")
+			if strings.Contains(steps, "detent update --yes --from-release") != test.wantUpdate {
+				t.Fatalf("update guidance = %q, want update %v", steps, test.wantUpdate)
+			}
+			if test.wantUpdate && (!strings.Contains(steps, "requires Detent 0.117.56 or newer") || !strings.Contains(steps, test.version) || !strings.Contains(steps, "brew upgrade")) {
+				t.Fatalf("missing version or update guidance: %s", steps)
+			}
+			if strings.Contains(output, "det_enroll_example") {
+				t.Fatal("registration output exposed the token")
+			}
+		})
+	}
 }
 
 func TestHubRunnerRegisterRejectsBadInput(t *testing.T) {
