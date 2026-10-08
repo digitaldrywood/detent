@@ -74,7 +74,7 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 		return nil, errors.Join(err, lock.Close())
 	}
 
-	db, err := sql.Open("sqlite", sqliteWriterDSN(path, cfg.BusyTimeout, cfg.Hosted != nil))
+	db, err := openTimedWriter(sqliteWriterDSN(path, cfg.BusyTimeout, cfg.Hosted != nil))
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("open hub database: %w", err), lock.Close())
 	}

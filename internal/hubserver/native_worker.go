@@ -112,10 +112,10 @@ func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tr
 		return s.nativeAPIError(c, err)
 	}
 	var id tracker.NativeWorkItemID
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT native_id FROM issues WHERE id = ? AND organization_id = ? AND project_id = ?", lease.WorkItemID, scope.organization, scope.project).Scan(&id); err != nil {
+	if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT native_id FROM issues WHERE id = ? AND organization_id = ? AND project_id = ?", lease.WorkItemID, scope.organization, scope.project).Scan(&id); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	reservation, reserved, err := readProviderReservation(c.Request().Context(), s.database.db, lease.ID)
+	reservation, reserved, err := readProviderReservation(c.Request().Context(), s.database.reader, lease.ID)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -126,7 +126,7 @@ func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tr
 	var policy *isolation.Policy
 	if scope.credential.Runner.RunnerID != "" {
 		var encoded string
-		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT isolation_policy_json FROM lease_runners WHERE lease_id = ? AND runner_id = ?", lease.ID, scope.credential.Runner.RunnerID).Scan(&encoded); err != nil {
+		if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT isolation_policy_json FROM lease_runners WHERE lease_id = ? AND runner_id = ?", lease.ID, scope.credential.Runner.RunnerID).Scan(&encoded); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		policy = &isolation.Policy{}
@@ -139,7 +139,7 @@ func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tr
 
 func (s *Service) requireNativeLease(c echo.Context) error {
 	scope := nativeRequestScope(c)
-	return requireLeaseRunner(c.Request().Context(), s.database.db, tracker.LeaseID(c.Param("lease")), scope)
+	return requireLeaseRunner(c.Request().Context(), s.database.reader, tracker.LeaseID(c.Param("lease")), scope)
 }
 
 func (s *Service) renewNativeLease(c echo.Context) error {

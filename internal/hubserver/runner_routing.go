@@ -501,7 +501,7 @@ func (s *Service) validateRunnerLease(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
+	return s.runnerReadTransaction(c, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		return validateRunnerLeaseTx(ctx, tx, nativeRequestScope(c), tracker.LeaseID(c.Param("lease")), request.FencingToken, now)
 	})
 }

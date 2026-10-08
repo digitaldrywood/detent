@@ -1181,3 +1181,31 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 }
 
 func (*hostedSecurityProvider) HasUser(context.Context, string) (bool, error) { return true, nil }
+
+func TestHostedRepeatedReadsAuditOncePerInterval(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		support string
+		want    int
+	}{
+		{name: "member reads coalesce", want: 1},
+		{name: "support reads are each audited", support: "support@example.test", want: 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newHostedSecurityFixture(t)
+			user := f.user(t, "customer", "member", "customer@example.test", "read", test.support)
+			for range 3 {
+				requireNativeStatus(t, f.request(t, user, http.MethodGet, f.base, nil), http.StatusOK)
+			}
+			var count int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id = ? AND event = 'action' AND route LIKE 'GET %'", user.identity.Hosted.SessionID).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != test.want {
+				t.Fatalf("read audit rows = %d, want %d", count, test.want)
+			}
+		})
+	}
+}

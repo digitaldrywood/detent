@@ -231,10 +231,10 @@ func TestHostedFleetVisibility(t *testing.T) {
 		browserHostedStatus(t, f.page(t, "", browserHostedOrganizationBase+path), http.StatusUnauthorized)
 	}
 	t.Run("names do not read retained collaboration quotas", func(t *testing.T) {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TABLE github_import_records"); err != nil {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TABLE hosted_usage_counters"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.service.hostedFleetUsage(t.Context()); err == nil || !strings.Contains(err.Error(), "github_import_records") {
+		if _, err := f.service.hostedFleetUsage(t.Context()); err == nil || !strings.Contains(err.Error(), "hosted_usage_counters") {
 			t.Fatalf("full fleet quota read = %v, want unavailable collaboration accounting", err)
 		}
 		f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/fleet", nil, http.StatusInternalServerError)

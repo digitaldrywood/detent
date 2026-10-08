@@ -1134,6 +1134,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 			}
 		}
 		previous = retained
+		requireUsageCountersMatchRecount(t, d)
 		f.service.config.Hosted = &HostedConfig{}
 		d.hostedOrganization = f.project.OrganizationID
 		plans := hostedTestPlans(t, f.service, nil)
@@ -1566,5 +1567,36 @@ func TestHostedNativeRunMutationQuotas(t *testing.T) {
 				t.Fatalf("replay usage changed: %v -> %v error=%v", after, replay, err)
 			}
 		})
+	}
+}
+
+func requireUsageCountersMatchRecount(t *testing.T, d *database) {
+	t.Helper()
+	recounts := map[string]string{
+		"events_total":    "SELECT count(*) FROM collaboration_events",
+		"history_records": "SELECT (SELECT count(*) FROM collaboration_events) + (SELECT count(*) FROM collaboration_versions) + (SELECT count(*) FROM native_attempt_events)",
+		"collaboration_bytes": `SELECT
+		(SELECT coalesce(sum(length(CAST(title AS BLOB))+length(CAST(body AS BLOB))+length(CAST(labels_json AS BLOB))+length(CAST(assignees_json AS BLOB))),0) FROM issues) +
+		(SELECT coalesce(sum(length(CAST(body AS BLOB))),0) FROM native_comments) +
+		(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM collaboration_versions) +
+		(SELECT coalesce(sum(length(CAST(data_json AS BLOB))+length(CAST(actor_json AS BLOB))),0) FROM collaboration_events) +
+		(SELECT coalesce(sum(length(CAST(response_json AS BLOB))),0) FROM native_commands) +
+		(SELECT coalesce(sum(length(CAST(data_json AS BLOB))),0) FROM native_attempts) +
+		(SELECT coalesce(sum(length(CAST(reference_json AS BLOB))),0) FROM artifact_references) +
+		(SELECT coalesce(sum(length(bundle)),0) FROM change_sources) +
+		(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM github_import_records) +
+		(SELECT coalesce(sum(size),0) FROM attachments WHERE object_deleted_at IS NULL)`,
+	}
+	for name, recount := range recounts {
+		var counter, want int64
+		if err := d.db.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name = ?", name).Scan(&counter); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.db.QueryRowContext(t.Context(), recount).Scan(&want); err != nil {
+			t.Fatal(err)
+		}
+		if counter != want || want == 0 {
+			t.Fatalf("%s counter = %d, recount = %d", name, counter, want)
+		}
 	}
 }
