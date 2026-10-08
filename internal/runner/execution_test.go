@@ -36,13 +36,19 @@ type testExecution struct {
 	finish       string
 	started      bool
 	onCheckpoint func(tracker.NativeCheckpoint)
+	onValidate   func()
 }
 
 func (e *testExecution) Guard(ctx context.Context) (context.Context, func(), error) {
 	return ctx, func() {}, e.validateErr
 }
 
-func (e *testExecution) Validate(context.Context) error { return e.validateErr }
+func (e *testExecution) Validate(context.Context) error {
+	if e.onValidate != nil {
+		e.onValidate()
+	}
+	return e.validateErr
+}
 func (e *testExecution) Start(context.Context, tracker.NativeExecutionIdentity) error {
 	e.started = true
 	return nil
@@ -859,6 +865,51 @@ func TestNativeStartupRecoveryTracksActualProviderTurn(t *testing.T) {
 				}
 			} else if !errors.Is(secondErr, overload) || agent.calls != 2 {
 				t.Fatalf("second startup wedged: calls=%d checkpoint=%+v error=%v", agent.calls, first.checkpoint, secondErr)
+			}
+		})
+	}
+}
+
+func TestNativeReworkRefusesSourceLostDuringValidation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name string
+		lose func(*tracker.NativeRecovery)
+	}{
+		{"attempt removed", func(r *tracker.NativeRecovery) { r.Attempts = nil }},
+		{"declared attempt unavailable", func(r *tracker.NativeRecovery) { r.SourceAttemptID = "missing" }},
+		{"checkpoint removed", func(r *tracker.NativeRecovery) { r.Attempts[0].Checkpoint = nil }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			identity := tracker.NativeExecutionIdentity{Role: "rework", Backend: "codex", Model: "test"}
+			execution := &testExecution{recovery: tracker.NativeRecovery{
+				Lease: tracker.NativeLease{MachineID: "owner", PolicyID: "policy"},
+				Attempts: []tracker.NativeAttempt{{
+					NativeRunData: tracker.NativeRunData{AttemptID: "source", MachineID: "owner", PolicyID: "policy", Identity: &identity},
+					Checkpoint:    &tracker.NativeCheckpoint{Resume: "resume_session", WorktreeState: "unpushed", HeadSHA: "recorded-head", WorkspaceDigest: "recorded-digest", ExternalEffect: "none", EffectState: "none"},
+				}},
+			}}
+			local := workspace.RecoveryState{HeadSHA: "published-head", WorkspaceFingerprint: "published-digest"}
+			if _, reason := nativeRecoveryAction(execution.recovery, &local, false, store.AgentResumeState{}, identity, false, nil); reason != "local_checkpoint_changed" {
+				t.Fatalf("fixture did not require rework verification: %s", reason)
+			}
+			validated := false
+			execution.onValidate = func() {
+				validated = true
+				test.lose(&execution.recovery)
+			}
+			verified := false
+			source := &resumedExecutionWorkspace{afterVerification: func() { verified = true }}
+			r := &Runner{}
+			state, err := r.nativeResume(t.Context(), RunRequest{Execution: execution}, nil, AgentProcessRequest{}, &local, store.AgentResumeState{}, identity, source, workspace.Info{}, workspace.Issue{NativeRework: true})
+			if !errors.Is(err, ErrNativeRecoveryRequired) {
+				t.Fatalf("missing refreshed source was not refused: %v", err)
+			}
+			if !validated || verified || execution.started || execution.checkpoint != nil || state != (store.AgentResumeState{}) {
+				t.Fatalf("missing source changed execution: validated=%t verified=%t started=%t checkpoint=%+v state=%+v", validated, verified, execution.started, execution.checkpoint, state)
+			}
+			if local.HeadSHA != "published-head" || local.WorkspaceFingerprint != "published-digest" {
+				t.Fatalf("missing source changed local recovery state: %+v", local)
 			}
 		})
 	}
