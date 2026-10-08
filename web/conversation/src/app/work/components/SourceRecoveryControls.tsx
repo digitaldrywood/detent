@@ -46,6 +46,7 @@ export function SourceRecoveryControls(props: {
 
   if (source === null) return error === null ? null : <p role="alert" className="text-sm text-destructive">{error}</p>;
   if (source.attempt_id === "" && source.version_id === "") return null;
+  const destinationLabel = source.destinations.find((runner) => runner.runner_id === destination)?.name || destination;
   return (
     <section aria-label="Source recovery" className="flex flex-col gap-3 rounded-[var(--radius)] border border-border bg-card p-4 text-sm">
       <h2 className="font-medium">Source recovery</h2>
@@ -56,7 +57,7 @@ export function SourceRecoveryControls(props: {
       {props.canManage && source.available && source.quiesced ? (
         <>
           <Select value={destination || null} onValueChange={(value) => setDestination(value ?? "")} disabled={saving}>
-            <SelectTrigger aria-label="Destination runner"><SelectValue placeholder="Choose a destination runner" /></SelectTrigger>
+            <SelectTrigger aria-label="Destination runner"><SelectValue placeholder="Choose a destination runner">{destinationLabel || undefined}</SelectValue></SelectTrigger>
             <SelectPopup>{source.destinations.map((runner) => <SelectItem key={runner.runner_id} value={runner.runner_id}>{runner.name || runner.runner_id}</SelectItem>)}</SelectPopup>
           </Select>
           <p className="text-muted-foreground">The destination restores and verifies this source before continuing. Transfer preserves workflow, human and delivery holds.</p>

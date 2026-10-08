@@ -54,19 +54,21 @@ describe("source recovery controls", () => {
     expect(writes[1]?.idempotency_key).not.toBe(writes[0]?.idempotency_key);
   });
 
-  it("retries a lost reply with the same snapshot and request identity", async () => {
+  it.each([{ name: "Destination", label: "Destination" }, { name: "", label: "runner_B" }])("retries a lost reply with the same snapshot and request identity using $label", async ({ name, label }) => {
+    const view = { ...source, destinations: [{ runner_id: "runner_B", name }] };
     const writes: Record<string, unknown>[] = [];
     const onTransferred = vi.fn();
     const http = makeWorkHttp({ origin: "http://fixture.test", apiBase: "/api/v2/organizations/org", csrfToken: "fixture-csrf", fetch: async (_url, init) => {
-      if (init?.method !== "POST") return response(source);
+      if (init?.method !== "POST") return response(view);
       writes.push(JSON.parse(String(init.body)) as Record<string, unknown>);
       expect(new Headers(init.headers).get("X-CSRF-Token")).toBe("fixture-csrf");
       if (writes.length === 1) throw new Error("Reply unavailable");
-      return response({ ...source, revision: "8", destination_runner_id: "runner_B" });
+      return response({ ...view, revision: "8", destination_runner_id: "runner_B" });
     } });
     render(<SourceRecoveryControls http={http} projectId="project" itemId="item" revision="7" canManage onTransferred={onTransferred} />);
     fireEvent.click(await screen.findByRole("combobox", { name: "Destination runner" }));
-    fireEvent.click(await screen.findByRole("option", { name: "Destination" }));
+    fireEvent.click(await screen.findByRole("option", { name: label }));
+    expect(screen.getByRole("combobox", { name: "Destination runner" }).textContent).toContain(label);
     fireEvent.click(screen.getByRole("button", { name: "Transfer recovery" }));
     await screen.findByRole("alert");
     fireEvent.click(screen.getByRole("button", { name: "Transfer recovery" }));
