@@ -157,6 +157,8 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET(nativeBase+"/work-items/:item/history", s.listNativeHistory, read)
 	e.GET(nativeBase+"/work-items/:item/runtime", s.getNativeRuntime, read)
 	e.GET(nativeBase+"/work-items/:item/explanation", s.getNativeExplanation, read)
+	e.GET(nativeBase+"/work-items/:item/source-recovery", s.getNativeSourceRecovery, read)
+	e.POST(nativeBase+"/work-items/:item/source-recovery", s.transferNativeSource, write)
 	e.GET(nativeBase+"/work-items/:item/runtime/github-timings", s.getNativeGitHubTimings, read)
 	e.GET(nativeBase+"/work-items/:item/attempts", s.listNativeAttempts, read)
 	e.GET(nativeBase+"/work-items/:item/attempts/:attempt", s.getNativeAttempt, read)
@@ -336,6 +338,7 @@ func (s *Service) nativeMutationStatus(c echo.Context, status int, command track
 }
 
 type nativeCommandOptions struct {
+	RunnerAdministration                     bool
 	OperationID, Item, Feature               string
 	CheckPrincipal, RequireLease, Completion bool
 	ArtifactRead                             bool
@@ -368,6 +371,11 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		}
 	} else if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
 		return nil, err
+	}
+	if options.RunnerAdministration {
+		if err := s.requireRunnerAdministration(ctx, tx, scope, s.config.now()); err != nil {
+			return nil, err
+		}
 	}
 	if s.config.Hosted != nil && scope.credential.Hosted == nil && scope.credential.Runner.RunnerID == "" && options.CheckPrincipal {
 		if err := s.requireHostedChangeCheckPrincipal(ctx, tx, scope); err != nil {

@@ -438,10 +438,10 @@ func nativeLandingRework(recovery tracker.NativeRecovery) bool {
 }
 
 func nativeInterruptedResumeAttempt(recovery tracker.NativeRecovery) *tracker.NativeAttempt {
-	if len(recovery.Attempts) == 0 {
+	previous := nativeSourceAttempt(recovery)
+	if previous == nil {
 		return nil
 	}
-	previous := &recovery.Attempts[len(recovery.Attempts)-1]
 	if previous.Status != "interrupted" || previous.Checkpoint == nil || previous.Checkpoint.Resume != "resume_session" {
 		return nil
 	}
@@ -449,11 +449,30 @@ func nativeInterruptedResumeAttempt(recovery tracker.NativeRecovery) *tracker.Na
 }
 
 func nativeCheckpointPolicyChanged(recovery tracker.NativeRecovery) bool {
-	if len(recovery.Attempts) == 0 {
+	previous := nativeSourceAttempt(recovery)
+	if previous == nil {
 		return false
 	}
-	previous := recovery.Attempts[len(recovery.Attempts)-1]
 	return previous.Checkpoint != nil && previous.PolicyID != recovery.Lease.PolicyID
+}
+
+func nativeSourceAttempt(recovery tracker.NativeRecovery) *tracker.NativeAttempt {
+	for i := len(recovery.Attempts) - 1; i >= 0; i-- {
+		attempt := &recovery.Attempts[i]
+		if recovery.SourceAttemptID != "" {
+			if attempt.AttemptID == recovery.SourceAttemptID {
+				return attempt
+			}
+			continue
+		}
+		if attempt.Checkpoint != nil && (attempt.Checkpoint.WorktreeState != "clean" || attempt.Checkpoint.Resume != "fresh_checkout" || (attempt.Checkpoint.ExternalEffect == "git_push" || attempt.Checkpoint.ExternalEffect == "pr_create") && (attempt.Checkpoint.EffectState == "pending" || attempt.Checkpoint.EffectState == "ambiguous")) {
+			return attempt
+		}
+	}
+	if recovery.SourceAttemptID == "" && len(recovery.Attempts) != 0 {
+		return &recovery.Attempts[len(recovery.Attempts)-1]
+	}
+	return nil
 }
 
 func (r *Runner) nativeInterruptedResumeState(ctx context.Context, req RunRequest, runtime agentRuntime) (store.AgentResumeState, error) {
@@ -492,10 +511,13 @@ func (req RunRequest) operatorFreshRetry() bool {
 }
 
 func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.RecoveryState, sessionAvailable bool, state store.AgentResumeState, identity tracker.NativeExecutionIdentity, operatorFresh bool, current *workspace.ChangeSource) (string, string) {
-	if len(recovery.Attempts) == 0 {
+	if len(recovery.Attempts) == 0 && recovery.SourceAttemptID == "" {
 		return "fresh_checkout", "no_prior_attempt"
 	}
-	previous := recovery.Attempts[len(recovery.Attempts)-1]
+	previous := nativeSourceAttempt(recovery)
+	if previous == nil {
+		return "manual_recovery", "checkpoint_unavailable"
+	}
 	checkpoint := previous.Checkpoint
 	if checkpoint == nil {
 		return "fresh_checkout", "checkpoint_missing"
@@ -571,7 +593,8 @@ func (r *Runner) nativeResume(ctx context.Context, req RunRequest, backend Agent
 				return store.AgentResumeState{}, err
 			}
 			recovery := req.Execution.Recovery()
-			checkpoint := recovery.Attempts[len(recovery.Attempts)-1].Checkpoint
+			sourceAttempt := nativeSourceAttempt(recovery)
+			checkpoint := sourceAttempt.Checkpoint
 			verified, err := preparer.VerifyReworkRecovery(ctx, info, issue, checkpoint.HeadSHA, checkpoint.WorkspaceDigest, *local)
 			if err != nil && !errors.Is(err, workspace.ErrMergeResolutionInvalid) {
 				return store.AgentResumeState{}, nativeGitError("verify native rework", err)
@@ -584,7 +607,12 @@ func (r *Runner) nativeResume(ctx context.Context, req RunRequest, backend Agent
 				observed := executionCheckpoint(local)
 				reconciled.HeadSHA, reconciled.WorkspaceDigest, reconciled.WorktreeState = observed.HeadSHA, observed.WorkspaceDigest, observed.WorktreeState
 				recovery.Attempts = append([]tracker.NativeAttempt(nil), recovery.Attempts...)
-				recovery.Attempts[len(recovery.Attempts)-1].Checkpoint = &reconciled
+				for i := range recovery.Attempts {
+					if recovery.Attempts[i].AttemptID == sourceAttempt.AttemptID {
+						recovery.Attempts[i].Checkpoint = &reconciled
+						break
+					}
+				}
 				action, reason = nativeRecoveryAction(recovery, local, sessionAvailable, state, identity, req.operatorFreshRetry(), issue.Source)
 				if action != "manual_recovery" {
 					if err := req.Execution.Start(ctx, identity); err != nil {

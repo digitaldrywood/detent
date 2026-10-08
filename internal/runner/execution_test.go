@@ -876,6 +876,13 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		current *workspace.ChangeSource
 	}{
 		{"verified session", func(*tracker.NativeRecovery, **workspace.RecoveryState, *bool) {}, "resume_session", "verified_local_session", nil},
+		{"newer clean startup retains source session", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts = append(r.Attempts, tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{MachineID: "other"}, Checkpoint: &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean"}})
+		}, "resume_session", "verified_local_session", nil},
+		{"advertised source is missing", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.SourceAttemptID = "missing"
+			r.Attempts = nil
+		}, "manual_recovery", "checkpoint_unavailable", nil},
 		{"first run", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Attempts = nil }, "fresh_checkout", "no_prior_attempt", nil},
 		{"missing checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Attempts[0].Checkpoint = nil }, "fresh_checkout", "checkpoint_missing", nil},
 		{"machine lost with dirty work", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Lease.MachineID = "other" }, "manual_recovery", "checkpoint_unavailable", nil},

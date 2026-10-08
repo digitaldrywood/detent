@@ -84,6 +84,16 @@ func TestNativeSourcePlacement(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if test.newerClean {
+				recovery, err := f.service.readNativeRecovery(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if recovery.SourceAttemptID != event.Data.AttemptID {
+					t.Fatalf("clean startup hid source recovery: %q", recovery.SourceAttemptID)
+				}
+			}
+
 			_, id, err := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID))
 			if err != nil {
 				t.Fatal(err)

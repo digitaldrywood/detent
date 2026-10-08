@@ -33,6 +33,17 @@ export type NativeWorkItemId = typeof NativeWorkItemId.Type;
 export const Revision = Schema.String;
 export type Revision = typeof Revision.Type;
 
+export const SourceRecovery = Schema.Struct({
+  work_item_id: Schema.String, revision: Revision,
+  source_machine_id: Schema.String, source_runner_id: Schema.String,
+  attempt_id: Schema.String, version_id: Schema.String,
+  head_sha: Schema.String, base_sha: Schema.String,
+  destination_runner_id: Schema.String,
+  available: Schema.Boolean, quiesced: Schema.Boolean, reason: Schema.String,
+  destinations: Schema.Array(Schema.Struct({ runner_id: Schema.String, name: Schema.String })),
+});
+export type SourceRecovery = typeof SourceRecovery.Type;
+
 // --- Shared members ---------------------------------------------------------
 
 export const NativeActorKind = Schema.Literals(["human", "runner", "integration"]);

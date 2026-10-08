@@ -77,6 +77,14 @@ func (o *Orchestrator) completeNativeChangeRun(
 			if !allowed || dispatchableState(states, target) {
 				return handoff(fmt.Errorf("native workflow allows no recovery refusal handoff from %s to Blocked", issue.State))
 			}
+		} else if humanReview && recoveryRequired && preTurnFailureClass(event, running) == "" {
+			target, allowed = connector.CompletionLane(states, issue.State, "Blocked", true)
+			if !allowed {
+				target, allowed = nativeRetryLane(states, issue.State, cfg.ReworkState)
+			}
+			if !allowed {
+				return handoff(fmt.Errorf("native workflow allows no source recovery destination from %s", issue.State))
+			}
 		} else if humanReview && preTurnFailureClass(event, running) == "" {
 			review := cfg.reviewTargetState()
 			if autoPromoteOptoutLabel(issue, cfg) {

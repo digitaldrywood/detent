@@ -86,10 +86,12 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	}
 	t.Run("activity backfill", func(t *testing.T) {
 		f := newPullRequestFixture(t, true)
-		version := f.publishExternal(t, "activity-version")
 		worker := f.worker(t, "activity-migration-worker")
 		lease := claimNativeAttempt(t, f.nativeFixture, worker, "activity-machine", "activity-session", f.issue.WorkItemID)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", worker, nativeStartedEvent(lease)), http.StatusOK)
+		// Start the migration fixture before importing its legacy external Change;
+		// an ownerless source reference does not authorize a recovery claim.
+		version := f.publishExternal(t, "activity-version")
 		for _, body := range []string{"Comment", "## Codex Workpad"} {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: body}, Body: body}), http.StatusOK)
 		}

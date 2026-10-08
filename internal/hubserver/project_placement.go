@@ -449,6 +449,19 @@ func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeSco
 	if allowed, reason, err := nativeSourceClaimAllowed(ctx, q, scope, machine, id); err != nil || !allowed {
 		return allowed, reason, err
 	}
+	var destination, version string
+	if err := q.QueryRowContext(ctx, "SELECT recovery_runner_id,recovery_version_id FROM issues WHERE id=? AND organization_id=? AND project_id=?", id, scope.organization, scope.project).Scan(&destination, &version); err != nil {
+		return false, "", err
+	}
+	if destination != "" {
+		var current string
+		if err := q.QueryRowContext(ctx, `SELECT COALESCE(json_extract(c.record_json,'$.current_version_id'),'') FROM change_requests c JOIN change_issue_links l ON l.change_id=c.id JOIN issues i ON i.native_id=l.work_item_id AND i.project_id=l.project_id AND i.organization_id=l.organization_id WHERE i.id=? ORDER BY c.rowid DESC LIMIT 1`, id).Scan(&current); err != nil {
+			return false, "", err
+		}
+		if current == version && scope.credential.Runner.RunnerID != destination {
+			return false, "The operator selected recovery runner " + destination + " for version " + version, nil
+		}
+	}
 	placement, _, err := readPlacementPolicy(ctx, q, scope)
 	if err != nil {
 		return false, "", err

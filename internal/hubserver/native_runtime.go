@@ -187,6 +187,14 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 	nonExecutableReason := connector.NonExecutableReason(connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels})
 	issue = issue.RuntimeReference()
 	e := tracker.NativeRuntimeEvidence{Issue: issue, ObservedAt: now, Selection: "unavailable", Unavailable: []string{"efficiency_receipt"}, Capacity: []tracker.NativeRuntimeCapacity{}}
+	sourceRecovery, _, err := readSourceRecoveryView(ctx, query, scope, item)
+	if err != nil {
+		return e, err
+	}
+	if sourceRecovery.AttemptID != "" || sourceRecovery.VersionID != "" {
+		e.SourceRecovery = &sourceRecovery
+	}
+
 	if attemptID == "" {
 		err = query.QueryRowContext(ctx, "SELECT id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY fencing_token DESC LIMIT 1", scope.organization, scope.project, item).Scan(&attemptID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
