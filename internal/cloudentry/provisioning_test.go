@@ -438,6 +438,41 @@ func TestProvisioningTenantStartFailure(t *testing.T) {
 	}
 }
 
+func TestTenantStartKeepsSlowReadyTenantSupervised(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		state       string
+		wantRunning int
+	}{
+		{name: "provisioning tenant is stopped for retry", state: "allocating"},
+		{name: "ready tenant stays supervised after a restart", state: "ready", wantRunning: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			launcher := &silentLauncher{running: map[string]bool{}}
+			f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = 1; a.Launcher = launcher }, func(f *provisioningFixture) {
+				f.timeout = 100 * time.Millisecond
+			})
+			dana := newBrowser(t, f.service.Handler())
+			dana.login("/auth/oidc/start", "user_dana:")
+			organization := f.waitState(t, organizationFromLocation(t, f.create(t, dana, "Delta").Header.Get("Location")), "failed")
+			organization.State = tc.state
+			err := f.service.runStep(t.Context(), &organization, "tenant_start")
+			if err == nil || !strings.Contains(failureDetail(err), "did not become healthy within 100ms") {
+				t.Fatalf("tenant_start = %v", err)
+			}
+			if _, _, running := launcher.counts(); running != tc.wantRunning {
+				t.Fatalf("running = %d, want %d; a ready tenant still migrating must not be abandoned", running, tc.wantRunning)
+			}
+		})
+	}
+}
+
 func TestProvisioningFailsWhenTenantExitsEveryStart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live service integration")

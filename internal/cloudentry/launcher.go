@@ -67,6 +67,7 @@ const (
 	tenantStableUptime       = 5 * time.Minute
 	tenantProbeInterval      = 5 * time.Second
 	tenantUnavailableTimeout = 30 * time.Second
+	tenantStartupGrace       = 15 * time.Minute
 )
 
 type supervisedTenant struct {
@@ -161,6 +162,7 @@ func (l *ExecLauncher) waitTenant(ctx context.Context, spec TenantSpec, result <
 	ticker := time.NewTicker(tenantProbeInterval)
 	defer ticker.Stop()
 	lastHealthy := time.Now()
+	served := false
 	for {
 		select {
 		case err := <-result:
@@ -175,10 +177,14 @@ func (l *ExecLauncher) waitTenant(ctx context.Context, spec TenantSpec, result <
 				return <-result
 			}
 			if err == nil {
-				lastHealthy = time.Now()
+				lastHealthy, served = time.Now(), true
 				continue
 			}
-			if time.Since(lastHealthy) < tenantUnavailableTimeout {
+			window := tenantUnavailableTimeout
+			if !served {
+				window = tenantStartupGrace
+			}
+			if time.Since(lastHealthy) < window {
 				continue
 			}
 			l.logger().Warn("tenant Hub unreachable; stopping for restart", "organization", spec.Organization.ID, "error", err)

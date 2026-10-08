@@ -297,8 +297,11 @@ func (s *Service) runStep(ctx context.Context, organization *Organization, step 
 				return errors.Join(terminalError{code: "tenant_start_failed", detail: failure.Error()}, allocation.Launcher.Stop(organization.ID))
 			}
 			if time.Now().After(deadline) {
-				detail := fmt.Sprintf("the tenant Hub did not become healthy within %s", s.config.tenantStartTimeout)
-				return errors.Join(detailedError{detail: detail, cause: err}, allocation.Launcher.Stop(organization.ID))
+				slow := detailedError{detail: fmt.Sprintf("the tenant Hub did not become healthy within %s", s.config.tenantStartTimeout), cause: err}
+				if organization.State == "ready" {
+					return slow
+				}
+				return errors.Join(slow, allocation.Launcher.Stop(organization.ID))
 			}
 			select {
 			case <-ctx.Done():
