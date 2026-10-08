@@ -271,7 +271,7 @@ func TestSmokeVerdictRatchet(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var output bytes.Buffer
-			err := smokeVerdict(&output, tt.failures, tt.called, smokeKnownGaps)
+			err := smokeVerdict(&output, tt.failures, tt.called, smokeKnownGaps["production"])
 			if len(tt.blocking) == 0 {
 				if err != nil {
 					t.Fatalf("verdict = %v, want nil", err)

@@ -45,12 +45,28 @@ var smokeSkipped = strings.Fields(`
 var smokeWrites = strings.Fields(`file_issue edit_item add_comment edit_comment move_item set_dependency order_item set_queue_priority archive_item restore_item set_priority update_project_integration`)
 var errSmokeFixture = errors.New("smoke resource fixture unavailable")
 
-var smokeKnownGaps = map[string]string{
-	operatortool.OrderItem: "#724", operatortool.SetQueuePriority: "#724", "board_session_history": "#724", "get_cutover_receipt": "#724", "get_change_review_policy": "#724",
-	"change_viewed_files": "#725", "get_artifact_reference": "#725", "get_attempt_diff": "#725", "get_change": "#725", "get_change_version": "#725",
-	"get_conversation": "#725", "get_conversation_attachment": "#725", "get_git_hub_import": "#725", "get_native_run": "#725", "get_runner_capacity": "#725",
-	"get_runner_update": "#725", "github_scope_timings": "#725", "list_conversation_messages": "#725", "list_git_hub_import_records": "#725", "read_attachment": "#725",
-	"read_attachment_metadata": "#725", "stream_conversation_events": "#725", "work_attempt_receipt": "#725", "get_project_policy": "#725",
+var smokeFixtureGaps = []string{
+	"change_viewed_files", "get_artifact_reference", "get_attempt_diff", "get_change", "get_change_version", "get_conversation",
+	"get_conversation_attachment", "get_git_hub_import", "get_native_run", "github_scope_timings", "list_conversation_messages",
+	"list_git_hub_import_records", "read_attachment", "read_attachment_metadata", "stream_conversation_events", "work_attempt_receipt",
+}
+
+var smokeKnownGaps = map[string]map[string]string{
+	"production": smokeGaps(map[string]string{
+		operatortool.OrderItem: "#724", operatortool.SetQueuePriority: "#724", "board_session_history": "#724", "get_cutover_receipt": "#724", "get_change_review_policy": "#724",
+		"get_runner_capacity": "#725", "get_runner_update": "#725", "get_project_policy": "#725",
+	}),
+	"staging": smokeGaps(map[string]string{
+		operatortool.OrderItem: "#724", operatortool.SetQueuePriority: "#724", "board_session_history": "#724", "get_cutover_receipt": "#724",
+		"update_project_integration": "#724", operatortool.ActionResult: "#724",
+	}),
+}
+
+func smokeGaps(failing map[string]string) map[string]string {
+	for _, name := range smokeFixtureGaps {
+		failing[name] = "#725"
+	}
+	return failing
 }
 
 var smokeHostedGaps = []string{operatortool.ArchiveItem, operatortool.OrderItem, operatortool.SetQueuePriority}
@@ -91,7 +107,7 @@ func deploySmoke(ctx context.Context, environment string, getenv func(string) st
 	if err := m.initialize(ctx); err != nil {
 		return err
 	}
-	return (&mcpSmoke{mcp: m, output: output, fixtures: map[string]any{}, called: map[string]bool{}, prefix: environment + "-smoke-" + rand.Text(), knownGaps: smokeKnownGaps}).run(ctx)
+	return (&mcpSmoke{mcp: m, output: output, fixtures: map[string]any{}, called: map[string]bool{}, prefix: environment + "-smoke-" + rand.Text(), knownGaps: smokeKnownGaps[environment]}).run(ctx)
 }
 
 type mcpSmoke struct {
