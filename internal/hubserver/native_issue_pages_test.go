@@ -94,9 +94,21 @@ func TestNativeWorkListPagingDuringChanges(t *testing.T) {
 	params := url.Values{"limit": {"2"}}
 	var seen []tracker.NativeWorkItemID
 	var firstCursor string
+	writes := func() int64 {
+		t.Helper()
+		var changes int64
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&changes); err != nil {
+			t.Fatal(err)
+		}
+		return changes
+	}
 	for {
+		before := writes()
 		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?"+params.Encode(), f.token, nil)
 		requireNativeStatus(t, response, http.StatusOK)
+		if len(seen) == 0 && writes() != before {
+			t.Fatal("reading a first work-list page wrote to the database")
+		}
 		var page tracker.NativeIssuePage
 		decodeHubResponse(t, response, &page)
 		for _, issue := range page.Items {

@@ -31,6 +31,7 @@ const (
 )
 
 type Service struct {
+	issuePages              nativeIssuePageCache
 	runnerPublishedReleases sync.Map
 	mcpHTTP                 *mcp.HTTPHandler
 	operatorChat            *chat.Service
