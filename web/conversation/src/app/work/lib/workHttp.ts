@@ -147,6 +147,7 @@ export interface ListWorkItemsInput {
   /** Coordinator work items are excluded unless this is on. */
   readonly includeCoordinator?: boolean;
   readonly includeWork?: boolean;
+  readonly includeBoard?: boolean;
   readonly open?: boolean | undefined;
   readonly completedWindow?: string;
   readonly sort?: "closed";
@@ -162,9 +163,9 @@ export interface WorkHttp {
   readonly apiBase: string;
   /**
    * The hosted activity stream. It is a page route, not an API route, and it
-   * emits `event: activity` with a bare decimal sequence as its data.
+   * emits `event: activity` with a sequence or a requested board delta frame as its data.
    */
-  readonly eventsUrl: (projectId: string, workspaceId?: string, workItemId?: string) => string;
+  readonly eventsUrl: (projectId: string, workspaceId?: string, workItemId?: string, board?: { readonly since: number; readonly filters: ListWorkItemsInput }) => string;
   readonly listHealthFindings: (projectId: string, cursor?: string, signal?: AbortSignal) => Promise<HealthFindingsRead>;
   readonly getProject: (projectId: string, signal?: AbortSignal) => Promise<NativeProject>;
   readonly listWorkItems: (input: ListWorkItemsInput) => Promise<WorkItemPage>;
@@ -557,8 +558,12 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     apiBase: options.apiBase,
     getViewPreference: (projectId, signal) => send(viewPreferenceSchema, "GET", viewPreferenceUrl(projectId), undefined, signal),
     setViewPreference: (projectId, query) => send(viewPreferenceSchema, query === null ? "DELETE" : "PUT", viewPreferenceUrl(projectId), query === null ? undefined : { query }, undefined, true),
-    eventsUrl: (projectId, workspaceId, workItemId) =>
-      url(hubPath(`/projects/${encodeURIComponent(projectId)}/events`), { workspace: workspaceId, work_item: workItemId }),
+    eventsUrl: (projectId, workspaceId, workItemId, board) =>
+      url(hubPath(`/projects/${encodeURIComponent(projectId)}/events`), { workspace: workspaceId, work_item: workItemId,
+        board: board === undefined ? undefined : "true", since: board?.since,
+        q: board?.filters.q || undefined, label: board?.filters.label, assignee: board?.filters.assignee,
+        priority: board?.filters.priority, archived: board?.filters.archived === true ? "true" : undefined,
+        completed_window: board?.filters.completedWindow }),
     listHealthFindings: (projectId, cursor, signal) => send(HealthFindingsRead, "GET", url(`${projectBase(projectId)}/health/findings`, { cursor }), undefined, signal),
     getProject: (projectId, signal) => send(NativeProject, "GET", url(projectBase(projectId)), undefined, signal),
     listWorkItems: (input) =>
@@ -577,7 +582,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
           cursor: input.cursor,
           limit: input.limit,
           completed_window: input.completedWindow,
-          include: input.includeWork === true ? "work" : input.includeCoordinator === true ? "coordinator" : undefined,
+          include: input.includeBoard === true ? "board" : input.includeWork === true ? "work" : input.includeCoordinator === true ? "coordinator" : undefined,
         }),
         undefined,
         input.signal,

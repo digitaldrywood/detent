@@ -399,7 +399,7 @@ func (d *database) applyReconcileSnapshot(ctx context.Context, target reconcileT
 			return fmt.Errorf("complete GitHub hydration request %d: %w", hydration.ID, err)
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := d.commit(ctx, tx); err != nil {
 		return fmt.Errorf("commit GitHub reconciliation: %w", err)
 	}
 	return nil
