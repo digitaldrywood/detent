@@ -250,5 +250,5 @@ func runnerUpdateSuperseded(current runnerauth.UpdateRequest, receipt *runneraut
 		return false
 	}
 	comparison, err := update.CompareVersions(current.Version, target)
-	return err != nil || comparison < 0 || reported
+	return err != nil || comparison < 0 || reported && comparison == 0
 }

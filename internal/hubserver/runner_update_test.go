@@ -133,6 +133,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 		{name: "operator request retained", hub: "v1.2.4", runner: "1.2.3", supported: true, manual: true, want: true},
 		{name: "uncertain older request superseded", hub: "v1.2.4", runner: "1.2.1", prior: "uncertain", supported: true, want: true},
 		{name: "refused older request superseded", hub: "v1.2.4", runner: "1.2.1", prior: "refused", supported: true, want: true},
+		{name: "uncertain newer operator request retained", hub: "v1.2.4", runner: "1.2.1", prior: "uncertain", wantVersion: "1.2.5", supported: true, manual: true, want: true},
 		{name: "draining older request retained", hub: "v1.2.4", runner: "1.2.1", prior: "draining", wantVersion: "1.2.2", supported: true, want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -164,7 +165,11 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 				service.runnerPublishedReleases.Store("v1.2.2/linux/amd64", true)
 				service.config.Version = "v1.2.2"
 				earlier := send().Routing.UpdateRequest
-				if earlier == nil || earlier.Version != "1.2.2" {
+				earlierVersion := "1.2.2"
+				if test.manual {
+					earlierVersion = "1.2.5"
+				}
+				if earlier == nil || earlier.Version != earlierVersion {
 					t.Fatalf("earlier request=%+v", earlier)
 				}
 				report.Receipt = &runnerauth.UpdateReceipt{Request: *earlier, Status: test.prior, FailureReason: "Update was interrupted before completion", ObservedAt: now}
