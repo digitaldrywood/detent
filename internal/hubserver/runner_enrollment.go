@@ -164,6 +164,65 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 	return c.JSON(status, value)
 }
 
+// runnerReadTransaction answers a runner request that only reads, from a
+// consistent reader snapshot, so the answer never occupies the writer; only
+// the plan's request accounting writes. Writes that depend on the answer
+// re-check fencing themselves.
+func (s *Service) runnerReadTransaction(c echo.Context, operation func(context.Context, *sql.Tx, time.Time) (any, error)) error {
+	ctx := c.Request().Context()
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	defer tx.Rollback()
+	now, err := s.database.currentTime()
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if credential, ok := c.Get("hub_api_credential").(apiCredential); ok {
+		if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if err := requireCredentialAuthority(ctx, tx, credential, now); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
+	value, err := operation(ctx, tx, now)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if err := tx.Rollback(); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if err := s.chargeRunnerRead(ctx, c.Path(), now); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	c.Response().Header().Set("Cache-Control", "no-store")
+	return c.JSON(http.StatusOK, value)
+}
+
+// chargeRunnerRead records a successful runner read against the hosted plan's
+// request allowance in one short write, refusing it when the window is spent.
+func (s *Service) chargeRunnerRead(ctx context.Context, path string, now time.Time) error {
+	if s.database.hostedPlans == nil {
+		return nil
+	}
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	metrics := hostedRunnerTransactionMetrics(path)
+	before, err := s.database.hostedConsumption(ctx, tx, now, metrics...)
+	if err != nil {
+		return err
+	}
+	if err := s.database.checkHostedGrowth(ctx, tx, before, now, false, metrics...); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Service) createRunnerEnrollment(c echo.Context) error {
 	var request runnerauth.EnrollmentRequest
 	if err := decodeAPIJSON(c, &request); err != nil {

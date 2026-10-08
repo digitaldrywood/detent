@@ -21,19 +21,9 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 		"unarchived_issues":       "SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.organization_id = ? AND p.profile = 'native' AND i.archived = 0",
 		"repositories":            "SELECT count(*) FROM repositories",
 		"registered_runners":      `SELECT (SELECT count(*) FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE t.revoked_at IS NULL) + (SELECT count(*) FROM machines m JOIN api_tokens t ON t.id = m.token_id WHERE t.revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_identities r WHERE r.machine_id = m.id))`,
-		"history_records":         "SELECT (SELECT count(*) FROM collaboration_events) + (SELECT count(*) FROM collaboration_versions) + (SELECT count(*) FROM native_attempt_events)",
-		"events_total":            "SELECT count(*) FROM collaboration_events",
-		"collaboration_bytes": `SELECT
-		(SELECT coalesce(sum(length(CAST(title AS BLOB))+length(CAST(body AS BLOB))+length(CAST(labels_json AS BLOB))+length(CAST(assignees_json AS BLOB))),0) FROM issues) +
-		(SELECT coalesce(sum(length(CAST(body AS BLOB))),0) FROM native_comments) +
-		(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM collaboration_versions) +
-		(SELECT coalesce(sum(length(CAST(data_json AS BLOB))+length(CAST(actor_json AS BLOB))),0) FROM collaboration_events) +
-		(SELECT coalesce(sum(length(CAST(response_json AS BLOB))),0) FROM native_commands) +
-		(SELECT coalesce(sum(length(CAST(data_json AS BLOB))),0) FROM native_attempts) +
-		(SELECT coalesce(sum(length(CAST(reference_json AS BLOB))),0) FROM artifact_references) +
-		(SELECT coalesce(sum(length(bundle)),0) FROM change_sources) +
-		(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM github_import_records) +
-		(SELECT coalesce(sum(size),0) FROM attachments WHERE object_deleted_at IS NULL)`,
+		"history_records":         "SELECT value FROM hosted_usage_counters WHERE name = 'history_records'",
+		"events_total":            "SELECT value FROM hosted_usage_counters WHERE name = 'events_total'",
+		"collaboration_bytes":     "SELECT value FROM hosted_usage_counters WHERE name = 'collaboration_bytes'",
 	}
 	for name, statement := range queries {
 		if len(metrics) > 0 && !slices.Contains(metrics, name) {

@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -107,6 +108,119 @@ func TestTenantServesRunnersWhileReadsAreSlow(t *testing.T) {
 			}
 			if test.maxP95 != 0 && p95 > test.maxP95 {
 				t.Fatalf("runner request p95 %s exceeds %s while slow reads hold readers", p95, test.maxP95)
+			}
+		})
+	}
+}
+
+// TestTenantRunnerWritesStayFlatWithHistory drives the routine runner writes
+// (lease renewal, lease validation, comments) under hosted plan accounting and
+// requires their latency, and how long a trivial write waits for the writer,
+// to stay flat as the tenant's history grows tenfold. Each session renews once
+// a second, about thirty times a production runner's cadence.
+func TestTenantRunnerWritesStayFlatWithHistory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("tenant write load")
+	}
+	type result struct{ renew, validate, comment, probe time.Duration }
+	run := func(t *testing.T, sessions, history int) result {
+		f := newNativeFixture(t, nil, "", "tenant-writes")
+		approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+		worker := f.worker(t, "worker")
+		f.service.config.Hosted = &HostedConfig{}
+		f.service.database.hostedOrganization = f.project.OrganizationID
+		hostedTestPlans(t, f.service, map[string]int64{"api_mutations": 1 << 40, "ingested_events": 1 << 40, "collaboration_bytes": 1 << 50, "history_records": 1 << 40,
+			"concurrent_work": 10000, "connected_runners": 10000, "registered_runners": 10000, "unarchived_issues": 1 << 30})
+		f.service.config.Hosted = nil
+		leases := make([]tracker.NativeLease, 0, sessions)
+		items := make([]tracker.NativeIssue, 0, sessions)
+		for index := range sessions {
+			issue := f.create(t, fmt.Sprintf("session-%d", index))
+			items = append(items, issue)
+			leases = append(leases, claimNativeAttempt(t, f, worker, fmt.Sprintf("machine-%d", index), fmt.Sprintf("session-%d", index), issue.WorkItemID))
+		}
+		pad := strings.Repeat("h", 200)
+		if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?)
+INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at)
+SELECT 'evt_history_'||i, ?, ?, ?, 1000000+i, 'comment.created', 1, '{"kind":"system"}', json_object('pad', ?), ? FROM n`,
+			history, f.project.OrganizationID, f.project.ID, items[0].WorkItemID, pad, formatHubTime(time.Now())); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+			t.Fatal(err)
+		}
+		ctx, stop := context.WithTimeout(t.Context(), 8*time.Second)
+		defer stop()
+		var mu sync.Mutex
+		latency := map[string][]time.Duration{}
+		var failures []string
+		record := func(kind string, elapsed time.Duration, code, want int) {
+			mu.Lock()
+			defer mu.Unlock()
+			latency[kind] = append(latency[kind], elapsed)
+			if code != want {
+				failures = append(failures, fmt.Sprintf("%s %d", kind, code))
+			}
+		}
+		var work sync.WaitGroup
+		for index, lease := range leases {
+			work.Go(func() {
+				for round := 0; ctx.Err() == nil; round++ {
+					started := time.Now()
+					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90})
+					record("renew", time.Since(started), response.Code, http.StatusOK)
+					started = time.Now()
+					response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/validate", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken})
+					record("validate", time.Since(started), response.Code, http.StatusOK)
+					if round%4 == 0 {
+						started = time.Now()
+						response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(items[index].WorkItemID)+"/comments", f.token,
+							tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("load-%d-%d", index, round)}, Body: "progress"})
+						record("comment", time.Since(started), response.Code, http.StatusOK)
+					}
+					time.Sleep(time.Second)
+				}
+			})
+		}
+		work.Go(func() {
+			for ctx.Err() == nil {
+				started := time.Now()
+				tx, err := f.service.database.db.BeginTx(context.Background(), nil)
+				if err == nil {
+					err = tx.Commit()
+				}
+				record("probe", time.Since(started), map[bool]int{true: 0, false: 1}[err == nil], 0)
+				time.Sleep(20 * time.Millisecond)
+			}
+		})
+		work.Wait()
+		if len(failures) != 0 {
+			t.Fatalf("requests failed: %v", failures[:min(len(failures), 5)])
+		}
+		p95 := func(kind string) time.Duration {
+			values := latency[kind]
+			if len(values) == 0 {
+				t.Fatalf("no %s requests completed", kind)
+			}
+			slices.Sort(values)
+			return values[len(values)*95/100]
+		}
+		got := result{renew: p95("renew"), validate: p95("validate"), comment: p95("comment"), probe: p95("probe")}
+		t.Logf("sessions=%d history=%d requests renew=%d validate=%d comment=%d p95 renew=%s validate=%s comment=%s writer_probe=%s",
+			sessions, history, len(latency["renew"]), len(latency["validate"]), len(latency["comment"]), got.renew, got.validate, got.comment, got.probe)
+		return got
+	}
+	for _, sessions := range []int{12, 50, 100} {
+		t.Run(fmt.Sprintf("%d sessions", sessions), func(t *testing.T) {
+			small := run(t, sessions, 20000)
+			large := run(t, sessions, 200000)
+			for _, pair := range []struct {
+				name         string
+				small, large time.Duration
+			}{{"renew", small.renew, large.renew}, {"validate", small.validate, large.validate}, {"comment", small.comment, large.comment}, {"writer probe", small.probe, large.probe}} {
+				if pair.large > 3*pair.small+250*time.Millisecond {
+					t.Errorf("%s p95 grew with history: %s at 20k events, %s at 200k", pair.name, pair.small, pair.large)
+				}
 			}
 		})
 	}

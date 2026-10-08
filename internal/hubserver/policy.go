@@ -489,7 +489,7 @@ func validateClaimPolicy(ctx context.Context, tx *sql.Tx, query claimCandidateQu
 
 func (d *database) leasePolicyID(ctx context.Context, lease tracker.LeaseID) (string, error) {
 	var id string
-	err := d.db.QueryRowContext(ctx, "SELECT policy_id FROM lease_policies WHERE lease_id = ?", lease).Scan(&id)
+	err := d.reader.QueryRowContext(ctx, "SELECT policy_id FROM lease_policies WHERE lease_id = ?", lease).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}

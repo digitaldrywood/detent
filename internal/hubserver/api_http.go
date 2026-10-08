@@ -35,6 +35,7 @@ const maxAttemptDiffRequestBytes = 6*tracker.MaxDiffBytes + (1 << 20)
 const maxActionRunReportBytes = 6*workspacesession.MaxExecOutputBytes + (1 << 20)
 
 func (s *Service) registerRoutes(e *echo.Echo) {
+	e.Pre(s.timeWriterUse)
 	if s.config.CredentialMaintenance {
 		s.registerCredentialMaintenanceRoutes(e)
 		return
