@@ -26,17 +26,12 @@ async function fixture() {
 }
 
 describe("the Work snapshot ordering", () => {
-  it("drains active pages before settling and continues only Backlog", async () => {
+  it("loads one page per lane and continues only Backlog", async () => {
     const source = workPaginationFixture();
     await source.control({ activeOverflow: true, backlogOverflow: true });
     const http = makeWorkHttp({ ...source.client.http, fetch: source.fetch });
     const read = getBoardRead(source.client, http, "proj_alpha", DEFAULT_VIEW_STATE);
-    const held = source.deferPage();
     read.start();
-    await held.waiting;
-    expect(read.snapshot().resolved).toBe(false);
-    expect(read.snapshot().loading).toBe(true);
-    held.release();
     await expect.poll(() => read.snapshot().resolved).toBe(true);
     expect(read.snapshot().hasMore).toBe(false);
     expect(read.snapshot().items.filter((item) => item.state !== "Backlog")).toHaveLength(217);
@@ -45,16 +40,9 @@ describe("the Work snapshot ordering", () => {
     expect(read.snapshot().backlogTotal).toBe(405);
     expect(read.snapshot().totals?.lanes.Backlog).toBe(405);
     const initial = source.requests.filter(({ url }) => url.pathname.endsWith("/work-items"));
-    expect(initial).toHaveLength(4);
-    const totals = initial.filter(({ url }) => url.searchParams.get("include") === "work");
-    expect(totals).toHaveLength(1);
-    expect(totals[0]!.url.searchParams.has("state")).toBe(false);
-    expect(totals[0]!.url.searchParams.has("open")).toBe(false);
-    expect(totals[0]!.url.searchParams.get("limit")).toBe("1");
-    const initialPages = initial.filter(({ url }) => !url.searchParams.has("include"));
-    expect(initialPages).toHaveLength(3);
-    expect(initialPages[0]!.url.searchParams.getAll("state")).not.toContain("Backlog");
-    expect(initialPages.every(({ url }) => url.searchParams.get("open") === "true" && url.searchParams.get("limit") === "200")).toBe(true);
+    expect(initial).toHaveLength(6);
+    expect(initial.every(({ url }) => url.searchParams.get("include") === "board" && url.searchParams.getAll("state").length === 1)).toBe(true);
+    expect(source.requests.filter(({ url }) => /\/(attempts|changes)(\?|$)/.test(url.pathname))).toHaveLength(0);
     const before = source.requests.length;
     read.loadBacklog();
     await expect.poll(() => read.snapshot().backlogLoading).toBe(false);
@@ -63,7 +51,7 @@ describe("the Work snapshot ordering", () => {
     const pages = source.requests.slice(before).filter(({ url }) => url.pathname.endsWith("/work-items"));
     expect(pages).toHaveLength(1);
     expect(pages[0]!.url.searchParams.getAll("state")).toEqual(["Backlog"]);
-    expect(pages[0]!.url.searchParams.has("include")).toBe(false);
+    expect(pages[0]!.url.searchParams.get("include")).toBe("board");
     read.reload();
     await expect.poll(() => read.snapshot().refreshing).toBe(false);
     expect(read.snapshot().items.filter((item) => item.state === "Backlog")).toHaveLength(400);
@@ -180,14 +168,17 @@ describe("the Work snapshot ordering", () => {
     expect((stored.at(-1)!.entries as { issues: NativeIssue[] }[])[0]!.issues.find((issue) => issue.work_item_id === native.work_item_id)?.revision).toBe("900");
   });
 
-  it("settles reads before delayed attempts and reuses unchanged details across reloads", async () => {
+  it("keeps live summaries consistent across unchanged and revised reloads without per-card reads", async () => {
     vi.spyOn(disk, "updateBoardDisk").mockResolvedValue();
     vi.spyOn(disk, "readBoardDisk").mockResolvedValue(null);
     const source = await fixture();
-    let details = deferred<void>();
     let revision = "1";
+    let perCardReads = 0;
     const http = makeWorkHttp({ ...source.client.http, fetch: async (...args) => {
-      if (/\/(attempts|changes)(\?|$)/.test(String(args[0]))) await details.promise;
+      if (/\/(attempts|changes)(\?|$)/.test(String(args[0]))) {
+        perCardReads++;
+        throw new Error("Unexpected per-card read");
+      }
       const response = await source.fetch(...args);
       if (!String(args[0]).includes("/work-items?")) return response;
       const body = await response.json();
@@ -196,32 +187,23 @@ describe("the Work snapshot ordering", () => {
       return Response.json(body);
     } });
     const read = getBoardRead(source.client, http, null, DEFAULT_VIEW_STATE);
-    const requests = () => source.requests.filter(({ url }) => /\/(attempts|changes)$/.test(url.pathname)).length;
     read.reload();
     await expect.poll(() => read.snapshot().resolved).toBe(true);
     expect(read.snapshot().refreshing).toBe(false);
     expect(read.snapshot().totals?.running).toBe(1);
-    expect(read.snapshot().items.filter((item) => isLive(item))).toHaveLength(0);
-    const count = read.snapshot().items.filter((item) => !item.terminal).length;
-    details.resolve();
-    await expect.poll(() => read.snapshot().enriched).toBe(count);
     expect(read.snapshot().items.filter((item) => isLive(item))).toHaveLength(1);
-    const first = requests();
+    expect(perCardReads).toBe(0);
     read.reload();
     await expect.poll(() => read.snapshot().refreshing).toBe(false);
     expect(read.snapshot().items.filter((item) => isLive(item))).toHaveLength(1);
-    expect(requests()).toBe(first);
+    expect(perCardReads).toBe(0);
     revision = "2";
-    details = deferred<void>();
     read.reload();
     await expect.poll(() => read.snapshot().refreshing).toBe(false);
     expect(read.snapshot().cached).toBe(false);
     expect(read.snapshot().totals?.running).toBe(1);
-    expect(read.snapshot().items.filter((item) => isLive(item))).toHaveLength(0);
-    details.resolve();
-    await expect.poll(() => read.snapshot().enriched).toBe(count);
     expect(read.snapshot().items.filter((item) => isLive(item))).toHaveLength(1);
-    expect(requests()).toBe(first * 2);
+    expect(perCardReads).toBe(0);
   });
 
   it("normalizes identical queries and separates server filters, archive, account and permissions", async () => {

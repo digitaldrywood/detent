@@ -420,7 +420,7 @@ func (s *Service) commitOutbox(ctx context.Context, record outboxRecord, apply f
 		if !existing.matches(record) {
 			return OutboxItem{}, ErrIdempotencyConflict
 		}
-		if err := tx.Commit(); err != nil {
+		if err := s.database.commit(ctx, tx); err != nil {
 			return OutboxItem{}, fmt.Errorf("commit idempotent hub mutation lookup: %w", err)
 		}
 		return existing, nil
@@ -457,7 +457,7 @@ func (s *Service) commitOutbox(ctx context.Context, record outboxRecord, apply f
 	if err := apply(tx, now); err != nil {
 		return OutboxItem{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.database.commit(ctx, tx); err != nil {
 		return OutboxItem{}, fmt.Errorf("commit hub state and outbox transaction: %w", err)
 	}
 
@@ -605,7 +605,7 @@ func (s *Service) claimOutbox(ctx context.Context) (result OutboxItem, found boo
 		&result.Status, &result.Attempts, &createdAt, &result.Profile,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
-		if err := tx.Commit(); err != nil {
+		if err := s.database.commit(ctx, tx); err != nil {
 			return OutboxItem{}, false, fmt.Errorf("commit empty github outbox claim: %w", err)
 		}
 		return OutboxItem{}, false, nil
@@ -636,7 +636,7 @@ func (s *Service) claimOutbox(ctx context.Context) (result OutboxItem, found boo
 	if err != nil || rows != 1 {
 		return OutboxItem{}, false, fmt.Errorf("claim github outbox mutation rows = %d: %w", rows, err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.database.commit(ctx, tx); err != nil {
 		return OutboxItem{}, false, fmt.Errorf("commit github outbox claim: %w", err)
 	}
 	return result, true, nil

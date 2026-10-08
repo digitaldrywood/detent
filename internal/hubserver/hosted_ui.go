@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -232,6 +233,29 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	if err := s.hostedAudit(c.Request().Context(), initial.Hosted, "action", "GET /projects/:project/events", string(initialScope.project), http.StatusOK); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	board := c.QueryParam("board") == "true"
+	var boardSequence int64
+	if board {
+		if workspaceID != "" || workItemID != "" {
+			return s.nativeAPIError(c, nativeInvalid("board stream cannot include a workspace or item"))
+		}
+		value := c.Request().Header.Get("Last-Event-ID")
+		if value == "" {
+			value = c.QueryParam("since")
+		}
+		if value != "" {
+			boardSequence, err = strconv.ParseInt(value, 10, 64)
+			if err != nil || boardSequence < 0 {
+				return s.nativeAPIError(c, nativeInvalid("Stream sequence is invalid"))
+			}
+		}
+		params := c.QueryParams()
+		params.Del("board")
+		params.Del("since")
+		if err := validateNativeIssueQuery(params); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
 	c.Response().Header().Set(echo.HeaderContentType, "text/event-stream")
 	c.Response().Header().Set("Cache-Control", "no-cache")
 	c.Response().Header().Set("X-Accel-Buffering", "no")
@@ -249,8 +273,39 @@ func (s *Service) hostedEvents(c echo.Context) error {
 		if err != nil {
 			return nil
 		}
-		if _, err := fmt.Fprintf(c.Response(), "event: activity\ndata: %d\n\n", observation.Sequence); err != nil {
-			return nil
+		if board {
+			tx, err := s.database.reader.BeginTx(c.Request().Context(), &sql.TxOptions{ReadOnly: true})
+			if err != nil {
+				return nil
+			}
+			frame, err := readNativeBoardFrame(c.Request().Context(), tx, scope, boardSequence)
+			if err == nil {
+				frame.Work, err = readNativeBoardSummary(c.Request().Context(), tx, scope, c.QueryParams(), s.config.now())
+			}
+			if err != nil {
+				_ = tx.Rollback()
+				return nil
+			}
+			if err := tx.Commit(); err != nil {
+				return nil
+			}
+			for i := range frame.Deltas {
+				if frame.Deltas[i].Current != nil {
+					frame.Deltas[i].Current.Issue = s.nativeIssueResponse(frame.Deltas[i].Current.Issue)
+				}
+			}
+			raw, err := json.Marshal(frame)
+			if err != nil {
+				return nil
+			}
+			if _, err := fmt.Fprintf(c.Response(), "id: %d\nevent: activity\ndata: %s\n\n", frame.Sequence, raw); err != nil {
+				return nil
+			}
+			boardSequence = frame.Sequence
+		} else {
+			if _, err := fmt.Fprintf(c.Response(), "event: activity\ndata: %d\n\n", observation.Sequence); err != nil {
+				return nil
+			}
 		}
 		if record := observation.Workspace; record != nil && record.Revision != workspaceRevision {
 			resource, err := json.Marshal(record)

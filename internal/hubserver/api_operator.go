@@ -224,7 +224,7 @@ func (d *database) changeDependency(ctx context.Context, id tracker.WorkItemID, 
 	if err := changeDependencyTx(ctx, tx, id, request, now); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := d.commit(ctx, tx); err != nil {
 		return fmt.Errorf("commit hub dependency mutation: %w", err)
 	}
 	return nil
@@ -247,7 +247,7 @@ func (d *database) changeQueueOrder(ctx context.Context, id tracker.WorkItemID, 
 	if err := changeQueueOrderTx(ctx, tx, id, request, now); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := d.commit(ctx, tx); err != nil {
 		return fmt.Errorf("commit hub order mutation: %w", err)
 	}
 	return nil
