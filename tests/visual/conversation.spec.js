@@ -621,6 +621,8 @@ test("lists the chat in the sidebar and filters it from the search box", async (
   await openChat(page);
   await sendWithKeyboard(page, "Explain the admission gate to me");
   await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
+  await expect(page.getByTestId("user-turn").first()).toContainText("Explain the admission gate to me");
+  await expect(composer(page)).toBeFocused();
 
   const sidebar = page.getByRole("complementary", { name: "Conversations" });
   const newRow = sidebar
