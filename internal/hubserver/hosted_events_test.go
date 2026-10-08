@@ -225,10 +225,22 @@ func TestHostedIssueEvents(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			kind, data := readHostedEvent(t, scanner)
-			next, err := strconv.ParseInt(data, 10, 64)
-			if kind != "activity" || err != nil || (next > previous) != test.changed {
-				t.Fatalf("activity=%q %q changed=%v err=%v", kind, data, test.changed, err)
+			// Stream reads use the WAL reader pool, so one frame may predate
+			// the commit; the change must appear within the next frames.
+			next := previous
+			for range 3 {
+				kind, data := readHostedEvent(t, scanner)
+				value, err := strconv.ParseInt(data, 10, 64)
+				if kind != "activity" || err != nil {
+					t.Fatalf("activity=%q %q err=%v", kind, data, err)
+				}
+				next = value
+				if next > previous {
+					break
+				}
+			}
+			if (next > previous) != test.changed {
+				t.Fatalf("activity sequence %d -> %d, changed want %v", previous, next, test.changed)
 			}
 			previous = next
 		})

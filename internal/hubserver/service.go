@@ -32,6 +32,8 @@ const (
 
 type Service struct {
 	runnerPublishedReleases sync.Map
+	tokenUse                sync.Map
+	tokenUseWork            sync.WaitGroup
 	mcpHTTP                 *mcp.HTTPHandler
 	operatorChat            *chat.Service
 	administration          *operatoradmin.Executor
@@ -410,6 +412,7 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		if s.workspaces != nil {
 			s.workspaces.StopContext(ctx)
 		}
+		s.tokenUseWork.Wait()
 		s.closeErr = errors.Join(mcpErr, httpErr, webhookErr, reconcileErr, s.database.Close())
 	})
 	return s.closeErr

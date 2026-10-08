@@ -50,7 +50,7 @@ func (s *Service) CreateWebSession(ctx context.Context, record auth.SessionRecor
 func (s *Service) storedWebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
 	var session auth.Session
 	var encoded, expiry string
-	err := s.database.db.QueryRowContext(ctx, "SELECT email,identity_json,expires_at FROM hosted_sessions WHERE token_hash = ? AND revoked_at IS NULL", hash).Scan(&session.Email, &encoded, &expiry)
+	err := s.database.auth().QueryRowContext(ctx, "SELECT email,identity_json,expires_at FROM hosted_sessions WHERE token_hash = ? AND revoked_at IS NULL", hash).Scan(&session.Email, &encoded, &expiry)
 	if err != nil || json.Unmarshal([]byte(encoded), &session.Identity) != nil || session.Identity == nil {
 		return auth.Session{}, auth.ErrInvalidSession
 	}
@@ -132,7 +132,7 @@ func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Sessi
 	}
 	var membership auth.Membership
 	var local string
-	err := s.database.db.QueryRowContext(ctx, "SELECT membership_id, role FROM hosted_members WHERE user_id = ? AND active = 1", session.Identity.Subject).Scan(&membership.ID, &local)
+	err := s.database.auth().QueryRowContext(ctx, "SELECT membership_id, role FROM hosted_members WHERE user_id = ? AND active = 1", session.Identity.Subject).Scan(&membership.ID, &local)
 	if errors.Is(err, sql.ErrNoRows) {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
@@ -185,7 +185,7 @@ func (s *Service) hostedMemberCredential(ctx context.Context, session auth.Sessi
 	}
 	credential := apiCredential{Scope: apiScopeOperator, NativeOnly: true, Hosted: session.Identity, SessionHash: hash, HostedRole: membership.Role.Slug, HostedMembership: membership.ID}
 	var localRole string
-	err = s.database.db.QueryRowContext(ctx, "SELECT m.principal_id,t.token_hash,m.role FROM hosted_members m JOIN api_tokens t ON t.id = m.principal_id WHERE m.user_id = ? AND m.membership_id = ? AND m.active = 1 AND t.revoked_at IS NULL", session.Identity.Subject, membership.ID).Scan(&credential.ID, &credential.Hash, &localRole)
+	err = s.database.auth().QueryRowContext(ctx, "SELECT m.principal_id,t.token_hash,m.role FROM hosted_members m JOIN api_tokens t ON t.id = m.principal_id WHERE m.user_id = ? AND m.membership_id = ? AND m.active = 1 AND t.revoked_at IS NULL", session.Identity.Subject, membership.ID).Scan(&credential.ID, &credential.Hash, &localRole)
 	if errors.Is(err, sql.ErrNoRows) {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}

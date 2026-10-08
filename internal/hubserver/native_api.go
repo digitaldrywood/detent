@@ -235,7 +235,7 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 			}
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
 			if c.Path() == nativeOrganizationIssuePath {
-				err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT project_id FROM issues WHERE organization_id = ? AND native_id = ?", scope.organization, c.Param("item")).Scan(&scope.project)
+				err := s.database.auth().QueryRowContext(c.Request().Context(), "SELECT project_id FROM issues WHERE organization_id = ? AND native_id = ?", scope.organization, c.Param("item")).Scan(&scope.project)
 				if err != nil {
 					return s.nativeAPIError(c, err)
 				}
@@ -247,7 +247,7 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				}
 			} else {
 				write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
-				if err := s.requireHostedProject(c.Request().Context(), s.database.reader, scope, write); err != nil {
+				if err := s.requireHostedProject(c.Request().Context(), s.database.auth(), scope, write); err != nil {
 					return s.nativeAPIError(c, err)
 				}
 				if err := s.database.authorizeNativeProject(c.Request().Context(), scope); err != nil {
@@ -267,7 +267,7 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 }
 
 func (d *database) authorizeNativeProject(ctx context.Context, scope nativeScope) error {
-	return authorizeNativeProject(ctx, d.reader, scope)
+	return authorizeNativeProject(ctx, d.auth(), scope)
 }
 
 func authorizeNativeProject(ctx context.Context, db nativeQueryer, scope nativeScope) error {

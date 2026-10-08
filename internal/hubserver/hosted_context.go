@@ -209,18 +209,18 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 
 func (s *Service) readHostedEventObservation(ctx context.Context, scope nativeScope, workspace, item string) (hostedEventObservation, error) {
 	observation := hostedEventObservation{}
-	if err := s.requireHostedProject(ctx, s.database.db, scope, false); err != nil {
+	if err := s.requireHostedProject(ctx, s.database.auth(), scope, false); err != nil {
 		return observation, operatortool.ErrAccessDenied
 	}
 	if err := s.database.authorizeNativeProject(ctx, scope); err != nil {
 		return observation, operatortool.ErrAccessDenied
 	}
 	if item != "" {
-		if err := s.database.db.QueryRowContext(ctx, "SELECT event_sequence FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?", scope.organization, scope.project, item).Scan(&observation.Sequence); err != nil {
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT event_sequence FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?", scope.organization, scope.project, item).Scan(&observation.Sequence); err != nil {
 			return observation, err
 		}
 	} else {
-		if err := s.database.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(rowid),0) FROM collaboration_events WHERE organization_id = ? AND project_id = ?", scope.organization, scope.project).Scan(&observation.Sequence); err != nil {
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT COALESCE(MAX(rowid),0) FROM collaboration_events WHERE organization_id = ? AND project_id = ?", scope.organization, scope.project).Scan(&observation.Sequence); err != nil {
 			return observation, err
 		}
 	}

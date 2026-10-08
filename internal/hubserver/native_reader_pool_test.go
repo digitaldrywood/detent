@@ -47,6 +47,7 @@ func TestAPITokenUseIsRecordedOncePerInterval(t *testing.T) {
 	hash := apikey.HashToken(f.token)
 	lastUsed := func() sql.NullString {
 		t.Helper()
+		f.service.tokenUseWork.Wait()
 		var value sql.NullString
 		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT last_used_at FROM api_tokens WHERE token_hash = ?", hash).Scan(&value); err != nil {
 			t.Fatal(err)

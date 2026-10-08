@@ -173,7 +173,7 @@ func (s *Service) authenticateAPIHash(ctx context.Context, hash, renewalRunner, 
 	var credential apiCredential
 	var storedHash, createdAt, operations string
 	var revokedAt, expiresAt, lastUsedAt sql.NullString
-	err := s.database.reader.QueryRowContext(ctx, `
+	err := s.database.auth().QueryRowContext(ctx, `
 SELECT t.id, t.name, t.scope, t.token_hash, t.revoked_at, t.native_only, t.expires_at, t.created_at, t.last_used_at,
 coalesce(r.id, ''), coalesce(r.machine_id, ''), coalesce(r.organization_id, ''), coalesce(r.operations_json, '[]')
 FROM api_tokens t LEFT JOIN runner_identities r ON r.token_id = t.id
@@ -213,11 +213,27 @@ WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credentia
 		}
 	}
 	if tokenUseStale(lastUsedAt, now) {
-		if _, err := s.database.db.ExecContext(ctx, "UPDATE api_tokens SET last_used_at = ? WHERE id = ?", formatHubTime(now), credential.ID); err != nil {
-			s.config.Logger.Warn("record hub API token use failed", "token_id", credential.ID, "error", err)
-		}
+		s.recordTokenUse(ctx, credential.ID, now)
 	}
 	return credential, http.StatusOK, nil
+}
+
+// recordTokenUse writes last_used_at off the request path, at most one write
+// in flight per token, so authentication never waits for the writer.
+func (s *Service) recordTokenUse(ctx context.Context, id string, now time.Time) {
+	if _, pending := s.tokenUse.LoadOrStore(id, struct{}{}); pending {
+		return
+	}
+	s.tokenUseWork.Add(1)
+	go func() {
+		defer s.tokenUseWork.Done()
+		defer s.tokenUse.Delete(id)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if _, err := s.database.db.ExecContext(ctx, "UPDATE api_tokens SET last_used_at = ? WHERE id = ?", formatHubTime(now), id); err != nil {
+			s.config.Logger.Warn("record hub API token use failed", "token_id", id, "error", err)
+		}
+	}()
 }
 
 // tokenUseInterval bounds how often an authenticated request writes
