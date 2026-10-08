@@ -81,7 +81,7 @@ func (l *LocalGit) VerifyReworkRecovery(ctx context.Context, info Info, issue Is
 	if _, err := runGitAt(ctx, replay, "-c", "core.hooksPath="+os.DevNull, "checkout", "-B", info.Branch, sourceHead); err != nil {
 		return false, err
 	}
-	stat, err := GitDiffStat(ctx, replay)
+	stat, err := gitDiffStat(ctx, replay, true)
 	if err != nil {
 		return false, err
 	}
@@ -97,7 +97,7 @@ func (l *LocalGit) VerifyReworkRecovery(ctx context.Context, info Info, issue Is
 	if err != nil {
 		return false, err
 	}
-	stat, err = GitDiffStat(ctx, replay)
+	stat, err = gitDiffStat(ctx, replay, true)
 	if err != nil {
 		return false, err
 	}
