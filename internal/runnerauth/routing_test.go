@@ -18,6 +18,10 @@ func TestRoutingNormalizationAndValidation(t *testing.T) {
 		valid   bool
 	}{
 		{"normalized", Routing{DisplayName: " Builder ", Tags: []string{" Linux ", "BUILD", "linux"}, State: "active", CapacityLimit: 2}, true},
+		{"organization scope", Routing{Scope: "organization", DisplayName: "Builder", State: "active"}, true},
+		{"unknown scope", Routing{Scope: "all", DisplayName: "Builder", State: "active"}, false},
+		{"organization with list", Routing{Scope: "organization", DisplayName: "Builder", State: "active", ProjectIDs: []tracker.ProjectID{"prj_a"}}, false},
+		{"negative rank", Routing{DisplayName: "Builder", State: "active", ProjectRanks: map[tracker.ProjectID]int{"prj_a": -1}}, false},
 		{"empty name", Routing{State: "active"}, false},
 		{"invalid tag", Routing{DisplayName: "Builder", Tags: []string{"has space"}, State: "active"}, false},
 		{"invalid state", Routing{DisplayName: "Builder", State: "paused"}, false},
@@ -97,6 +101,7 @@ func TestRunnerEligibility(t *testing.T) {
 	}{
 		{"empty selector", func(*Runner) {}, policy.Requirements{}, false, ""},
 		{"all selectors", func(*Runner) {}, policy.Requirements{RequiredTags: []string{"build", "linux"}, RunnerID: "runner_a", MachineID: "machine_a"}, false, ""},
+		{"organization scope grants unlisted project", func(r *Runner) { r.Scope = "organization"; r.ProjectIDs = nil }, policy.Requirements{}, false, ""},
 		{"no access", func(r *Runner) { r.ProjectIDs = nil }, policy.Requirements{}, false, "project_access_denied"},
 		{"no claim permission", func(r *Runner) { r.Operations = nil }, policy.Requirements{}, false, "claim_not_permitted"},
 		{"disabled", func(r *Runner) { r.State = "disabled" }, policy.Requirements{}, false, "runner_disabled"},

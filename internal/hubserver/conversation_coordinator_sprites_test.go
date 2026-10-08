@@ -22,7 +22,7 @@ func TestCoordinatorSpriteIntakeInstructions(t *testing.T) {
 		})
 	}
 	previous := -1
-	for _, step := range []string{"Start with get_sprite_pool", "1. Token setup:", "2. How many runners?", "3. Access:", "4. Once token, bounds and access are resolved"} {
+	for _, step := range []string{"Start with get_sprite_pool", "1. Scope:", "2. Token setup:", "3. How many runners?", "4. Access:", "5. Once scope, token, bounds and access are resolved"} {
 		index := strings.Index(intake, step)
 		if index <= previous {
 			t.Fatalf("missing or out-of-order intake step %q", step)
@@ -34,7 +34,7 @@ func TestCoordinatorSpriteIntakeInstructions(t *testing.T) {
 		want []string
 	}{
 		{"read instead of asking", []string{"token presence/validation", "current floor/ceiling", "bootstrap_configured", "connected_runners", "provider_readiness", "never ask the user for information this read provides", "If already valid, skip token setup"}},
-		{"one unanswered question", []string{"never repeat an answered question", "one at a time", "accepted with one word", "default 1/1"}},
+		{"one unanswered question", []string{"never repeat an answered question", "one at a time", "accepted with one word", "default to All projects", "default 1/1"}},
 		{"missing token waits", []string{"use set_sprites_token", "wait for the user to save it before continuing", "Read get_sprite_pool again"}},
 		{"bounds explain cost", []string{"minimum retained runner capacity", "even without queued work", "ceiling caps growth", "Do not invent prices"}},
 		{"combined answer preserves setup", []string{"Omit bootstrap to preserve the saved bootstrap", "call set_sprite_pool exactly once", "wait for the client's approval/submission result"}},

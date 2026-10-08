@@ -141,8 +141,12 @@ export interface ShellState {
 const ShellContext = React.createContext<ShellState | null>(null);
 
 /** The shell's state, for the route surfaces it renders through its outlet. */
+export function useOptionalShell(): ShellState | null {
+  return React.useContext(ShellContext);
+}
+
 export function useShell(): ShellState {
-  const shell = React.useContext(ShellContext);
+  const shell = useOptionalShell();
   if (shell === null) throw new Error("The shell is not mounted.");
   return shell;
 }

@@ -159,13 +159,22 @@ type runnerFixture struct {
 
 func prepareRunner(t *testing.T, f nativeFixture, operations ...string) runnerFixture {
 	t.Helper()
+	return prepareRunnerForScope(t, f, "projects", operations...)
+}
+
+func prepareRunnerForScope(t *testing.T, f nativeFixture, scope string, operations ...string) runnerFixture {
+	t.Helper()
 	binding := runnerauth.NewBinding()
 	credential, err := apikey.GenerateToken()
 	if err != nil {
 		t.Fatal(err)
 	}
 	base := "/api/v2/organizations/" + string(f.project.OrganizationID)
-	response := performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments", testHubAdminToken, runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{f.project.ID}, Operations: operations, TTLSeconds: 60})
+	projects := []tracker.ProjectID{f.project.ID}
+	if scope == "organization" {
+		projects = nil
+	}
+	response := performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments", testHubAdminToken, runnerauth.EnrollmentRequest{Scope: scope, Binding: binding, ProjectIDs: projects, Operations: operations, TTLSeconds: 60})
 	requireNativeStatus(t, response, http.StatusCreated)
 	var enrollment runnerauth.Enrollment
 	decodeHubResponse(t, response, &enrollment)

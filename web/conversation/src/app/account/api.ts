@@ -281,15 +281,15 @@ export function makeAccountApi(options: AccountApiOptions) {
 
     // --- Project settings ---------------------------------------------------
     spritesSecret: (projectId: string) =>
-      send(ProjectSecretStatus, "GET", `${project(projectId)}/secrets/fly_sprites_token`),
-    spritePool: (projectId: string) =>
-      send(SpritePool, "GET", `${project(projectId)}/sprite-pool`),
-    setSpritePool: (projectId: string, settings: { min_runners: number; max_runners: number; idle_seconds: number; bootstrap: string; revision: number }) =>
-      send(SpritePool, "PUT", `${project(projectId)}/sprite-pool`, settings),
+      send(ProjectSecretStatus, "GET", `${projectId ? project(projectId) : base}/secrets/fly_sprites_token`),
+    spritePool: (_projectId: string) =>
+      send(SpritePool, "GET", `${base}/sprite-pool`),
+    setSpritePool: (_projectId: string, settings: { min_runners: number; max_runners: number; idle_seconds: number; bootstrap: string; revision: number }) =>
+      send(SpritePool, "PUT", `${base}/sprite-pool`, settings),
     setSpritesSecret: (projectId: string, token: string) =>
-      send(ProjectSecretStatus, "PUT", `${project(projectId)}/secrets/fly_sprites_token`, { token }),
+      send(ProjectSecretStatus, "PUT", `${projectId ? project(projectId) : base}/secrets/fly_sprites_token`, { token }),
     removeSpritesSecret: (projectId: string) =>
-      send(ProjectSecretStatus, "DELETE", `${project(projectId)}/secrets/fly_sprites_token`),
+      send(ProjectSecretStatus, "DELETE", `${projectId ? project(projectId) : base}/secrets/fly_sprites_token`),
     integration: (projectId: string) =>
       send(ProjectIntegration, "GET", `${project(projectId)}/integration`),
     deleteProject: (input: { projectId: string; name: string; key: string }) =>
@@ -399,6 +399,7 @@ export function makeAccountApi(options: AccountApiOptions) {
      * identifiers is made safe by the hub's identity collision (409).
      */
     enrollRunner: (input: {
+      scope?: "projects" | "organization";
       projectIds: readonly string[];
       runnerId?: string;
       machineId?: string;
@@ -408,6 +409,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       send(RunnerEnrollment, "POST", `${base}/runner-enrollments`, {
         ...(input.runnerId === undefined ? {} : { runner_id: input.runnerId }),
         ...(input.machineId === undefined ? {} : { machine_id: input.machineId }),
+        scope: input.scope ?? "projects",
         project_ids: [...input.projectIds],
         operations: [
           ...(input.operations ?? ["read", "collaborate", "claim", "heartbeat", "events"]),
@@ -422,6 +424,8 @@ export function makeAccountApi(options: AccountApiOptions) {
      * conflict cannot be recovered from its own response.
      */
     setRunnerRouting: (input: {
+      scope?: "projects" | "organization";
+      projectRanks?: Readonly<Record<string, number>>;
       runner: string;
       revision: number;
       displayName: string;
@@ -440,6 +444,8 @@ export function makeAccountApi(options: AccountApiOptions) {
         state: input.state,
         capacity_limit: input.capacityLimit,
         project_ids: input.projectIds,
+        ...(input.scope !== undefined ? { scope: input.scope } : {}),
+        ...(input.projectRanks !== undefined ? { project_ranks: input.projectRanks } : {}),
         ...(input.isolationTier !== undefined ? { isolation_tier: input.isolationTier } : {}),
         ...(input.hostServices !== undefined ? { host_services: input.hostServices } : {}),
         ...(input.availability !== undefined ? { availability: input.availability } : {}),

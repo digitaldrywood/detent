@@ -21,7 +21,7 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 		t.Skip("durable SQLite integration")
 	}
 
-	for _, scenario := range []string{"resume", "read", "removed intake key", "foreign project", "revoked project grant", "replaced mapping", "foreign binding", "expired identity"} {
+	for _, scenario := range []string{"resume", "organization scope", "read", "removed intake key", "foreign project", "revoked project grant", "replaced mapping", "foreign binding", "expired identity"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			if err := os.Chmod(root, 0700); err != nil {
@@ -34,6 +34,10 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 			}
 			identity.Identity.OrganizationID = "org_test"
 			identity.Identity.ProjectIDs = []tracker.ProjectID{"prj_test"}
+			if scenario == "organization scope" {
+				identity.Identity.Scope = "organization"
+				identity.Identity.ProjectIDs = nil
+			}
 			identity.Identity.ExpiresAt = time.Now().Add(time.Hour)
 			if err := runnerauth.Save(identityPath, identity); err != nil {
 				t.Fatal(err)
@@ -132,7 +136,7 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 						t.Fatalf("resume heartbeat receipt=%+v", receipt)
 					}
 				}
-			} else if scenario == "read" || scenario == "removed intake key" {
+			} else if scenario == "read" || scenario == "organization scope" || scenario == "removed intake key" {
 				if view.Constraint != "" || !view.Registered || view.EffectivePolicy == nil || view.LocalBindingPolicy == nil || view.AllowLocalBinding {
 					t.Fatalf("selected owner=%+v", view)
 				}
