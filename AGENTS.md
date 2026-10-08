@@ -188,6 +188,12 @@ tests. Add a browser test only for a journey no existing spec covers and a
 component or API test cannot catch; otherwise extend the existing journey spec
 instead of adding a file.
 
+Prefer the fastest test layer that catches the failure. Before adding browser
+coverage, check existing Playwright, Vitest and Go tests for the same behavior;
+do not duplicate coverage. Do not consolidate spec files solely to reduce file
+count. Performance changes must preserve valuable coverage and demonstrate an
+improvement through comparable measurements.
+
 Every test creates its own data, through the API where possible, and never
 depends on another test's leftovers or test order. Do not use describe serial
 mode or keep mutable shared state in `beforeAll`. Reset or isolate server state
