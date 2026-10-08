@@ -1210,7 +1210,7 @@ func TestStoreDSN(t *testing.T) {
 				t.Fatalf("store URI = %v; want local path %q escaped as %q", parsed, tt.want, tt.escaped)
 			}
 			wantPragmas := []string{"busy_timeout(5000)", "foreign_keys(1)", "synchronous(FULL)"}
-			if len(parsed.Query()) != 1 || !slices.Equal(parsed.Query()["_pragma"], wantPragmas) {
+			if len(parsed.Query()) != 2 || !slices.Equal(parsed.Query()["_pragma"], wantPragmas) || parsed.Query().Get("_txlock") != "immediate" {
 				t.Fatalf("pragmas = %v", parsed.Query())
 			}
 		})

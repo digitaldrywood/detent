@@ -387,6 +387,43 @@ func TestOpenRejectsUnrecognizedDatabase(t *testing.T) {
 	}
 }
 
+func TestHubTransactionsWaitForConcurrentReplicationWriter(t *testing.T) {
+	t.Parallel()
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), BusyTimeout: 5 * time.Second})
+	db := service.database.db
+	if _, err := db.ExecContext(t.Context(), "CREATE TABLE _litestream_seq (id INTEGER PRIMARY KEY, seq INTEGER)"); err != nil {
+		t.Fatal(err)
+	}
+	replicator, err := sql.Open("sqlite", "file:"+filepath.ToSlash(service.database.path)+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replicator.Close()
+	tx, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM _litestream_seq").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	replicated := make(chan error, 1)
+	go func() {
+		_, err := replicator.ExecContext(context.Background(), "INSERT INTO _litestream_seq (seq) VALUES (1)")
+		replicated <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+	if _, err := tx.ExecContext(t.Context(), "INSERT INTO _litestream_seq (seq) VALUES (2)"); err != nil {
+		t.Fatalf("hub write after a concurrent replication write: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-replicated; err != nil {
+		t.Fatalf("replication write: %v", err)
+	}
+}
+
 func TestOpenAcceptsLitestreamTablesOnNewDatabase(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "hub.db")

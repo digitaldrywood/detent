@@ -125,6 +125,7 @@ func storeDSN(path string) string {
 	query.Add("_pragma", "busy_timeout(5000)")
 	query.Add("_pragma", "foreign_keys(1)")
 	query.Add("_pragma", "synchronous(FULL)")
+	query.Add("_txlock", "immediate")
 	dsn.RawQuery = query.Encode()
 	return dsn.String()
 }
