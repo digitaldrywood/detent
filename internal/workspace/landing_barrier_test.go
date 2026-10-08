@@ -72,6 +72,11 @@ func TestLandingBarrierRunsOutsideSourceLock(t *testing.T) {
 			defer cancel()
 			f := newLandingFixture(t)
 			before := f.remoteMain(t)
+			for _, base := range []string{"", "main"} {
+				if head, err := f.backend.LandingBarrierHead(ctx, base); err != nil || head != before {
+					t.Fatalf("observed head for %q = %q error=%v, want %s", base, head, err, before)
+				}
+			}
 			started, resume := filepath.Join(t.TempDir(), "started"), filepath.Join(t.TempDir(), "resume")
 			if output, err := exec.CommandContext(ctx, "mkfifo", started, resume).CombinedOutput(); err != nil {
 				t.Fatalf("mkfifo: %s %v", output, err)

@@ -23,20 +23,24 @@ func (c *NativeClient) MutateLandingBarrier(ctx context.Context, request tracker
 	return result, err
 }
 
-func (s *Scheduler) NextLandingBarrier(ctx context.Context, project, repository, policyID string, recoverClaim bool) (tracker.LandingBarrier, bool, error) {
+func (s *Scheduler) NextLandingBarrier(ctx context.Context, project, repository, policyID string, recoverClaim bool, observeHead func(context.Context, string) (string, error)) (tracker.LandingBarrier, bool, error) {
 	source := s.nativeProjects[project]
 	if source == nil {
 		return tracker.LandingBarrier{}, false, nil
 	}
 	observed, err := source.client.LandingBarrier(ctx, repository)
-	if err != nil || observed.Running && !recoverClaim || !observed.Pending && !observed.Running {
+	if err != nil || observed.ProjectID == "" || observed.Running && !recoverClaim {
+		return observed, false, err
+	}
+	head, err := observeHead(ctx, observed.BaseRef)
+	if err != nil || !observed.Running && observed.Result != nil && observed.Result.HeadSHA == head {
 		return observed, false, err
 	}
 	key, err := randomSessionID()
 	if err != nil {
 		return observed, false, err
 	}
-	result, err := source.client.MutateLandingBarrier(ctx, tracker.LandingBarrierRequest{Mutation: tracker.Mutation{IdempotencyKey: key}, Action: "start", Repository: repository, PolicyID: policyID, Recover: recoverClaim})
+	result, err := source.client.MutateLandingBarrier(ctx, tracker.LandingBarrierRequest{Mutation: tracker.Mutation{IdempotencyKey: key}, Action: "start", Repository: repository, PolicyID: policyID, Head: head, Recover: recoverClaim})
 	return result, err == nil && result.Running && result.ID == key, err
 }
 

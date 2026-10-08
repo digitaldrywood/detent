@@ -46,9 +46,9 @@ func TestRollingLandingBarrier(t *testing.T) {
 				}
 				return version
 			}
-			mutate := func(key, action, id string, result *gate.CommandResult) tracker.LandingBarrier {
+			mutate := func(key, action, id string, result *gate.CommandResult, head string) tracker.LandingBarrier {
 				t.Helper()
-				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/landing-barrier", f.token, tracker.LandingBarrierRequest{Mutation: tracker.Mutation{IdempotencyKey: key}, Repository: repository, PolicyID: descriptor.ID, Action: action, ID: id, Result: result})
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/landing-barrier", f.token, tracker.LandingBarrierRequest{Mutation: tracker.Mutation{IdempotencyKey: key}, Repository: repository, PolicyID: descriptor.ID, Action: action, ID: id, Result: result, Head: head})
 				requireNativeStatus(t, response, http.StatusOK)
 				var barrier tracker.LandingBarrier
 				decodeHubResponse(t, response, &barrier)
@@ -71,17 +71,19 @@ func TestRollingLandingBarrier(t *testing.T) {
 			if count != 1 {
 				t.Fatalf("landing created %d receipts", count)
 			}
-			barrier := mutate("start", "start", "", nil)
+			checked, landed, outOfBand := strings.Repeat("e", 40), strings.Repeat("1", 40), strings.Repeat("2", 40)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/landing-barrier", f.token, tracker.LandingBarrierRequest{Mutation: tracker.Mutation{IdempotencyKey: "headless"}, Repository: repository, PolicyID: descriptor.ID, Action: "start"}), http.StatusUnprocessableEntity)
+			barrier := mutate("start", "start", "", nil, landed)
 			if !barrier.Running || len(barrier.Changes) != 1 || barrier.Changes[0].VersionID != first.ID {
 				t.Fatalf("barrier=%+v", barrier)
 			}
-			if overlap := mutate("overlap", "start", "", nil); overlap.ID != barrier.ID {
+			if overlap := mutate("overlap", "start", "", nil, landed); overlap.ID != barrier.ID {
 				t.Fatalf("overlapping barrier=%+v", overlap)
 			}
 			secondItem := f.create(t, "second")
 			second := land("second", secondItem)
-			red := &gate.CommandResult{Command: "make verify", HeadSHA: strings.Repeat("e", 40), TreeSHA: strings.Repeat("f", 40), ExitCode: 7, Output: "integration failure sentinel"}
-			barrier = mutate("red", "finish", barrier.ID, red)
+			red := &gate.CommandResult{Command: "make verify", HeadSHA: checked, TreeSHA: strings.Repeat("f", 40), ExitCode: 7, Output: "integration failure sentinel"}
+			barrier = mutate("red", "finish", barrier.ID, red, "")
 			if !barrier.Red || barrier.Running || barrier.Repair == "" || len(barrier.Changes) != 2 {
 				t.Fatalf("red barrier=%+v", barrier)
 			}
@@ -114,11 +116,11 @@ func TestRollingLandingBarrier(t *testing.T) {
 			if err != nil || uncovered.Barrier != nil {
 				t.Fatalf("later landing covered early: %+v error=%v", uncovered, err)
 			}
-			next := mutate("next", "start", "", nil)
+			next := mutate("next", "start", "", nil, landed)
 			if !next.Running || next.ID == barrier.ID || len(next.Changes) != 2 {
 				t.Fatalf("next=%+v", next)
 			}
-			repeated := mutate("red-again", "finish", next.ID, red)
+			repeated := mutate("red-again", "finish", next.ID, red, "")
 			if repeated.Repair != barrier.Repair {
 				t.Fatalf("duplicate repair=%+v", repeated)
 			}
@@ -126,28 +128,40 @@ func TestRollingLandingBarrier(t *testing.T) {
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", barrier.Repair).Scan(&occurrences); err != nil || occurrences != 1 {
 				t.Fatalf("occurrences=%d error=%v", occurrences, err)
 			}
-			if idle := mutate("idle-red", "start", "", nil); idle.Running {
-				t.Fatal("barrier ran without a new landing")
+			if idle := mutate("idle-red", "start", "", nil, checked); idle.Running {
+				t.Fatal("barrier reran an unchanged head")
 			}
 			land("repair", repair)
-			next = mutate("repair-start", "start", "", nil)
+			next = mutate("repair-start", "start", "", nil, landed)
 			green := *red
 			green.ExitCode, green.Output = 0, "passed"
-			finished := mutate("green", "finish", next.ID, &green)
+			finished := mutate("green", "finish", next.ID, &green, "")
 			if finished.Red || finished.Running || finished.Repair != "" {
 				t.Fatalf("green=%+v", finished)
 			}
 			if allowed, err := barrierLandingAllowed(t.Context(), f.service.database.db, scope, repository, secondItem.WorkItemID); err != nil || !allowed {
 				t.Fatalf("green did not reopen: %v %v", allowed, err)
 			}
-			if idle := mutate("idle-green", "start", "", nil); idle.Running {
-				t.Fatal("barrier ran without a new landing")
+			if idle := mutate("idle-green", "start", "", nil, checked); idle.Running {
+				t.Fatal("barrier reran an unchanged head")
+			}
+			merged := mutate("out-of-band", "start", "", nil, outOfBand)
+			if !merged.Running || len(merged.Changes) != 0 {
+				t.Fatalf("out-of-band merge did not start the barrier: %+v", merged)
+			}
+			mergedGreen := green
+			mergedGreen.HeadSHA = outOfBand
+			if finished := mutate("out-of-band-green", "finish", merged.ID, &mergedGreen, ""); finished.Red || finished.GreenHead != outOfBand {
+				t.Fatalf("out-of-band green=%+v", finished)
 			}
 			land("after-green", f.create(t, "after-green"))
-			next = mutate("new-start", "start", "", nil)
-			newRed := mutate("new-red", "finish", next.ID, red)
+			next = mutate("new-start", "start", "", nil, landed)
+			newRed := mutate("new-red", "finish", next.ID, red, "")
 			if newRed.Repair == "" || newRed.Repair == repair.WorkItemID {
 				t.Fatalf("new red reused terminal repair: %+v", newRed)
+			}
+			if report, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(newRed.Repair)); err != nil || !strings.Contains(report.Body, outOfBand+".."+checked) {
+				t.Fatalf("red report omits commits since the last green head: %+v %v", report, err)
 			}
 			historical, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(repair.WorkItemID))
 			if err != nil || !historical.Terminal {

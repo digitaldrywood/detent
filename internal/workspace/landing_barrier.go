@@ -16,6 +16,7 @@ import (
 type LandingBarrierWorkspace interface {
 	AcquireLandingBarrierRunner(context.Context) (func() error, error)
 	LandingRepository(context.Context) string
+	LandingBarrierHead(context.Context, string) (string, error)
 	RunLandingBarrier(context.Context, string, string, string) (gate.CommandResult, error)
 }
 
@@ -33,6 +34,18 @@ func (l *LocalGit) AcquireLandingBarrierRunner(ctx context.Context) (func() erro
 
 func (l *LocalGit) LandingRepository(ctx context.Context) string {
 	return RepositoryURL(ctx, l.sourceRoot)
+}
+
+func (l *LocalGit) LandingBarrierHead(ctx context.Context, base string) (string, error) {
+	if base == "" {
+		_, head, err := remoteDefaultBranchHead(ctx, l.sourceRoot, defaultGitRemote)
+		return head, err
+	}
+	head, exists, err := remoteBranchHead(ctx, l.sourceRoot, defaultGitRemote, base)
+	if err == nil && !exists {
+		err = fmt.Errorf("remote %s branch %s is missing", defaultGitRemote, base)
+	}
+	return head, err
 }
 
 func (l *LocalGit) RunLandingBarrier(ctx context.Context, id, base, command string) (result gate.CommandResult, resultErr error) {

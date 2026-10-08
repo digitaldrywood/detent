@@ -1379,12 +1379,15 @@ head. GitHub protection and required checks still apply. The project runner
 claims one repository barrier through `GET`/`POST /landing-barrier`, snapshots the
 base tip in a detached worktree, releases the source lock, and runs `gate.run`.
 Landings continue during this command. The Hub records the checked commit and
-command result in the covered landing receipts. The claim captures landed
-changes at its start; later landings trigger the next barrier.
+command result in the covered landing receipts. The runner reports the observed
+integration branch head when it claims; the Hub starts a barrier whenever that
+head differs from the last checked commit, so ordinary pull request merges
+trigger it as well as native landings. The claim captures the native landing
+receipts since the last green barrier.
 
 A red barrier files or appends a High-priority native repair issue through the
-existing machine-report owner, with command output, the checked commit, and the
-changes since the last green barrier. Only that repair issue may land while red;
+existing machine-report owner, with command output, the checked commit, the
+commit range since the last green barrier, and the native changes in it. Only that repair issue may land while red;
 a green barrier reopens landing. The worker source completion command remains
 required. Barrier reads and receipts provide diagnostics through the existing
 API and MCP surfaces.

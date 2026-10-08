@@ -14,7 +14,7 @@ import (
 var ErrLandingBarrierRed = errors.New("the rolling landing barrier is red; waiting for its repair")
 
 type LandingBarrierOwner interface {
-	NextLandingBarrier(context.Context, string, string, string, bool) (tracker.LandingBarrier, bool, error)
+	NextLandingBarrier(context.Context, string, string, string, bool, func(context.Context, string) (string, error)) (tracker.LandingBarrier, bool, error)
 	FinishLandingBarrier(context.Context, string, tracker.LandingBarrier, *gate.CommandResult) error
 }
 
@@ -36,7 +36,7 @@ func (r *Runner) RunLandingBarriers(ctx context.Context, owner LandingBarrierOwn
 		}
 	}()
 	recoverClaim := true
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for ctx.Err() == nil {
 		workflow, _, _, _ := r.runtimeSnapshot()
@@ -52,7 +52,7 @@ func (r *Runner) RunLandingBarriers(ctx context.Context, owner LandingBarrierOwn
 			}
 			descriptor, err := config.ResolvePolicy(workflow)
 			if err == nil {
-				barrier, started, claimErr := owner.NextLandingBarrier(ctx, r.projectID, backend.LandingRepository(ctx), descriptor.ID, recoverClaim)
+				barrier, started, claimErr := owner.NextLandingBarrier(ctx, r.projectID, backend.LandingRepository(ctx), descriptor.ID, recoverClaim, backend.LandingBarrierHead)
 				if claimErr == nil {
 					recoverClaim = false
 				}
