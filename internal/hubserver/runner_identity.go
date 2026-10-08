@@ -31,7 +31,7 @@ func runnerOperationAllowed(c echo.Context, operations []string) bool {
 		operation = runnerauth.Read
 	case !strings.HasPrefix(path, nativeBase):
 		return false
-	case path == nativeBase+"/claims", path == nativeBase+"/claims/preview", path == nativeBase+"/claims/wait", path == nativeBase+"/leases/:lease/renew", path == nativeBase+"/leases/:lease/release", path == nativeBase+"/leases/:lease/validate":
+	case path == nativeBase+"/claims", path == nativeBase+"/claims/preview", path == nativeBase+"/claims/wait", path == nativeBase+"/leases/:lease/renew", path == nativeBase+"/leases/:lease/release", path == nativeBase+"/leases/:lease/validate", path == nativeBase+"/landing-barrier" && c.Request().Method == http.MethodPost:
 		operation = runnerauth.Claim
 	case c.Request().Method == http.MethodGet:
 		operation = runnerauth.Read
