@@ -427,6 +427,8 @@ func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, nam
 		return s.operatorCompatibilityWork(ctx, scope, name, request, command)
 	}
 	switch name {
+	case operatortool.TransferItem:
+		return s.transferNativeSourceCommand(ctx, scope, request.Identifier, sourceTransferRequest{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), VersionID: request.VersionID, DestinationRunnerID: request.DestinationRunnerID})
 	case operatortool.EditItem:
 		return s.updateNativeIssueCommand(ctx, scope, request.Identifier, tracker.UpdateIssue{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), Title: request.Title, Body: request.Body, Labels: request.Labels, Priority: tracker.SetPriority(request.Priority)})
 	case operatortool.AddComment:

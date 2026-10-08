@@ -718,11 +718,15 @@ func gitIndexPath(ctx context.Context, workspacePath string) (string, error) {
 }
 
 func gitIndexLookup(ctx context.Context, workspacePath string, observeHead bool) (gitIndexObservation, error) {
+	path, err := filepath.Abs(workspacePath)
+	if err != nil {
+		return gitIndexObservation{}, fmt.Errorf("resolve workspace path: %w", err)
+	}
 	args := []string{"rev-parse", "--git-path", "index"}
 	if observeHead {
 		args = append(args, "--verify", "HEAD")
 	}
-	output, err := runGitAt(ctx, workspacePath, args...)
+	output, err := runGitAtWithEnv(ctx, workspacePath, []string{"GIT_CEILING_DIRECTORIES=" + filepath.Dir(path)}, args...)
 	if err != nil {
 		return gitIndexObservation{}, fmt.Errorf("git index path: %w", err)
 	}

@@ -24,34 +24,37 @@ const (
 	DisposeSecurityFinding = "dispose_security_finding"
 	OrderItem              = "order_item"
 	SetQueuePriority       = "set_queue_priority"
+	TransferItem           = "transfer_item"
 )
 
 // WorkArguments are application inputs only. Connection authority, actor,
 // approval and native worker fencing cannot be supplied by a tool caller.
 type WorkArguments struct {
-	ProjectID        string    `json:"project_id"`
-	Identifier       string    `json:"identifier"`
-	ExpectedRevision int64     `json:"expected_revision,string,omitempty"`
-	Title            *string   `json:"title,omitempty"`
-	Body             *string   `json:"body,omitempty"`
-	Labels           *[]string `json:"labels,omitempty"`
-	Priority         *int      `json:"priority,omitempty"`
-	Target           string    `json:"target,omitempty"`
-	CommentID        string    `json:"comment_id,omitempty"`
-	Related          string    `json:"related,omitempty"`
-	Operation        string    `json:"operation,omitempty"`
-	Cursor           string    `json:"cursor,omitempty"`
-	Limit            int       `json:"limit,omitempty"`
-	QueuePriority    string    `json:"queue_priority,omitempty"`
-	Scope            string    `json:"queue_scope,omitempty"`
-	State            string    `json:"state,omitempty"`
-	Rank             string    `json:"rank,omitempty"`
-	Repository       string    `json:"repository,omitempty"`
-	PullRequest      int       `json:"pull_request,omitempty"`
-	BaseSHA          string    `json:"base_sha,omitempty"`
-	HeadSHA          string    `json:"head_sha,omitempty"`
-	FindingID        string    `json:"finding_id,omitempty"`
-	Evidence         string    `json:"evidence,omitempty"`
+	DestinationRunnerID string    `json:"destination_runner_id,omitempty"`
+	VersionID           string    `json:"version_id,omitempty"`
+	ProjectID           string    `json:"project_id"`
+	Identifier          string    `json:"identifier"`
+	ExpectedRevision    int64     `json:"expected_revision,string,omitempty"`
+	Title               *string   `json:"title,omitempty"`
+	Body                *string   `json:"body,omitempty"`
+	Labels              *[]string `json:"labels,omitempty"`
+	Priority            *int      `json:"priority,omitempty"`
+	Target              string    `json:"target,omitempty"`
+	CommentID           string    `json:"comment_id,omitempty"`
+	Related             string    `json:"related,omitempty"`
+	Operation           string    `json:"operation,omitempty"`
+	Cursor              string    `json:"cursor,omitempty"`
+	Limit               int       `json:"limit,omitempty"`
+	QueuePriority       string    `json:"queue_priority,omitempty"`
+	Scope               string    `json:"queue_scope,omitempty"`
+	State               string    `json:"state,omitempty"`
+	Rank                string    `json:"rank,omitempty"`
+	Repository          string    `json:"repository,omitempty"`
+	PullRequest         int       `json:"pull_request,omitempty"`
+	BaseSHA             string    `json:"base_sha,omitempty"`
+	HeadSHA             string    `json:"head_sha,omitempty"`
+	FindingID           string    `json:"finding_id,omitempty"`
+	Evidence            string    `json:"evidence,omitempty"`
 }
 
 func WorkCatalog() []Definition {
@@ -60,6 +63,7 @@ func WorkCatalog() []Definition {
 	body := `,"body":{"type":"string","maxLength":32768}`
 	comment := `,"comment_id":{"type":"string","minLength":1,"maxLength":256}`
 	definitions := []Definition{
+		commandDefinition(TransferItem, "Select a recovery runner for a verified retained source version after the owner finishes and releases its lease. Requires runner management. Forced transfer of active or partitioned execution and uncaptured pending source is refused. Omit destination_runner_id to restore automatic routing. Workflow and delivery holds remain.", selector+revision+`,"version_id":{"type":"string","minLength":1,"maxLength":256},"destination_runner_id":{"type":"string","minLength":1,"maxLength":256}`, `"identifier","expected_revision","version_id"`, true),
 		commandDefinition(SetQueuePriority, "Set a compatibility work-item queue priority using the existing dashboard command.", selector+`,"queue_scope":{"type":"string","minLength":1,"maxLength":256},"state":{"type":"string","minLength":1,"maxLength":256},"queue_priority":{"type":"string","enum":["urgent","high","normal","low","none"]}`, `"identifier","queue_scope","state","queue_priority"`, false),
 		commandDefinition(EditItem, "Edit native work-item content, labels and priority with an expected revision. GitHub-backed editing is unavailable when the dashboard does not offer it.", selector+revision+body+`,"title":{"type":"string","minLength":1,"maxLength":500},"labels":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":200}},"priority":{"type":"integer","minimum":0,"maximum":3}`, `"identifier","expected_revision"`, true),
 		commandDefinition(AddComment, "Add an issue or supported pull-request comment through the dashboard application command. Embed upload_attachment reference in body to attach a file.", selector+body+`,"target":{"type":"string","enum":["issue","pr"]},"repository":{"type":"string","minLength":1,"maxLength":256},"pull_request":{"type":"integer","minimum":1}`, `"identifier","body"`, false),

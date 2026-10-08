@@ -320,7 +320,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 					var change tracker.ChangeRequest
 					decodeHubResponse(t, response, &change)
 					cf := changeFixture{nativeFixture: f, issue: issue, change: change, path: path + "/" + change.ID}
-					cf.publish(t, "version", "")
+					cf.publish(t, "version", "", true)
 					wantReviewed := test.unavailable != "required review"
 					if detail := cf.detail(t); (detail.Summary.Status == "reviewed") != wantReviewed {
 						t.Fatalf("change readiness = %+v", detail.Summary)

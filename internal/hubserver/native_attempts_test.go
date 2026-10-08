@@ -179,7 +179,11 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 	}
 	f.service = openTestService(t, config)
 	now = now.Add(90*time.Second + time.Nanosecond)
-	replacement := claimNativeAttempt(t, f, other, "other-machine", "other-session", issue.WorkItemID)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", other, map[string]any{"id": "other-machine", "hostname": "other-machine", "version": "test", "capacity": 1}), http.StatusOK)
+	refused := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", other, tracker.NativeClaim{PolicyID: lease.PolicyID, WorkItemID: issue.WorkItemID, MachineID: "other-machine", SessionID: "other-session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+	requireNativeStatus(t, refused, http.StatusConflict)
+	other = worker
+	replacement := claimNativeAttempt(t, f, other, "first-machine", "other-session", issue.WorkItemID)
 	if replacement.FencingToken <= lease.FencingToken {
 		t.Fatal("lease reassignment did not advance fencing")
 	}
@@ -220,6 +224,7 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 		t.Fatalf("recovery lost evidence: %#v", page)
 	}
 	next := nativeStartedEvent(replacement)
+	next.IdempotencyKey = "replacement-start"
 	next.Data.RunID = event.Data.RunID
 	next.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 168, Generation: 28, Phase: "rework", HeartbeatAt: now}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", other, next), http.StatusOK)

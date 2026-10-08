@@ -163,6 +163,9 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 	if state.HeadSHA == issue.Source.Version.HeadSHA || len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 || state.UnpushedCommits > 0 {
 		return nil
 	}
+	if state.HeadSHA != issue.Source.Version.BaseSHA {
+		return refuse(LandRefusalHeadMoved, "the existing clean worktree differs from the recorded source base and head; preserve its current head and reconcile the Change before recovery")
+	}
 	_, err = runGitAt(ctx, info.Path, "-c", "core.hooksPath="+os.DevNull, "reset", "--hard", issue.Source.Version.HeadSHA)
 	return err
 }

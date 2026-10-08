@@ -23,7 +23,13 @@ func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, ite
 	if err != nil {
 		return result, err
 	}
-	var sourceAttempt string
+	source, err := readNativeSourceCheckpoint(ctx, tx, scope, item)
+	if err != nil {
+		return result, err
+	}
+	sourceAttempt, changeAttempt := source.AttemptID, ""
+
+	result.SourceAttemptID = sourceAttempt
 	if found {
 		detail, err := readChangeDetailView(ctx, tx, scope, item, change.ID, s.config.now(), true)
 		if err != nil {
@@ -35,8 +41,12 @@ func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, ite
 				return result, fmt.Errorf("read change: current version %s is missing", change.CurrentVersion)
 			}
 			version := detail.Versions[0]
+			changeAttempt = version.AttemptID
 			result.Change = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
-			sourceAttempt = version.AttemptID
+			if sourceAttempt == "" {
+				sourceAttempt = version.AttemptID
+				result.SourceAttemptID = sourceAttempt
+			}
 		}
 	}
 	ids, err := nativePageIDs(ctx, tx, `SELECT id FROM native_comments
@@ -57,13 +67,13 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND (
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
-WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND (a.id = ? OR a.id = (
+WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND (a.id = ? OR a.id = ? OR a.id = (
  SELECT id FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ? ORDER BY fencing_token DESC LIMIT 1)
  OR a.id = (SELECT id FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ?
  AND json_extract(data_json, '$.runtime.landing') IS NOT NULL ORDER BY fencing_token DESC LIMIT 1)
  OR a.id = (SELECT id FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ?
  AND checkpoint_json IS NOT NULL ORDER BY fencing_token DESC LIMIT 1))
-ORDER BY a.fencing_token LIMIT 4`, scope.organization, scope.project, item, sourceAttempt,
+ORDER BY a.fencing_token LIMIT 5`, scope.organization, scope.project, item, sourceAttempt, changeAttempt,
 		scope.organization, scope.project, item, scope.organization, scope.project, item, scope.organization, scope.project, item)
 	if err != nil {
 		return result, err

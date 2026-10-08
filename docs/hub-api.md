@@ -1085,6 +1085,32 @@ does not claim that a local workspace survives machine loss. Before epilogue hoo
 dirty/unpushed work uses the existing workspace retention mechanism;
 checkpoint publication is metadata only and does not publish source.
 
+Recovery placement uses the latest source-bearing checkpoint's enrolled runner
+and lease provenance. A later clean startup does not replace that checkpoint.
+Local-only or pending dirty source stays pinned to its owner. A retained Change
+bundle allows another eligible runner only after its bounded bytes and digests
+match the checkpoint, or an immutable version proves the same base and raw diff.
+Missing source produces a recovery blocker rather than Human Review readiness.
+
+`GET /work-items/{item}/source-recovery` reports the source runner, checkpoint,
+current immutable version, retained-source availability, execution quiescence,
+selected destination and eligible destination runners. Runtime and explanation
+reads, including MCP `explain_item`, include the same recovery facts.
+`POST /work-items/{item}/source-recovery` and MCP `transfer_item` require work-write
+and runner-administration authority, a command request identity, the expected
+issue revision and exact `version_id`. Selecting `destination_runner_id` routes
+that version to the selected eligible runner; omitting it restores automatic
+routing. Existing lease validation and source restoration run before worker work.
+The command records an issue edit and reuses dispatch generation without changing
+workflow lanes, human/delivery holds, Change versions, validation or reviews.
+
+Transfer requires acknowledged terminal execution and release of every lease,
+including a claim that has not started. Expiry is not quiescence. Active,
+partitioned, archived or terminal work and uncertain Git/PR effects are refused.
+The current command transfers retained committed source; uncaptured legacy and
+dirty source must first be captured on the owning runner. It does not revoke Git
+credentials, force an unreachable process to stop, or recover unavailable copies.
+
 Native executions revalidate the pinned policy and current lease before startup,
 provider turns and epilogue hooks. Lease responses include `server_time`; the
 local deadline uses the remaining server lifetime minus request elapsed time and

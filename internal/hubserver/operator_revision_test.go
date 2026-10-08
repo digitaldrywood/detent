@@ -19,6 +19,7 @@ func TestOperatorRevisionSchemaContract(t *testing.T) {
 		operatortool.SetDependency:                    &operatortool.WorkArguments{},
 		operatortool.ArchiveItem:                      &operatortool.WorkArguments{},
 		operatortool.RestoreItem:                      &operatortool.WorkArguments{},
+		operatortool.TransferItem:                     &operatortool.WorkArguments{},
 		operatortool.ReviewChange:                     &operatortool.ChangeArguments{},
 		operatortool.OrganizationProjectRankUpdate:    &operatoradmin.Input{},
 		operatortool.UpdateApply:                      &runnerUpdateChange{},
@@ -94,6 +95,8 @@ func TestOperatorRevisionSchemaContract(t *testing.T) {
 							fields["comment_id"], fields["body"] = "comment", "Edited comment"
 						case operatortool.SetDependency:
 							fields["related"], fields["operation"] = "blocker", "add"
+						case operatortool.TransferItem:
+							fields["version_id"] = "version"
 						}
 						raw, err := json.Marshal(fields)
 						if err != nil {

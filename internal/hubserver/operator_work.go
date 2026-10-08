@@ -52,7 +52,7 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	}
 	for _, definition := range operatortool.CommandCatalog() {
 		switch definition.Name {
-		case operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.EditComment, operatortool.SetDependency, operatortool.RestoreItem, operatortool.OrderItem, operatortool.SetQueuePriority:
+		case operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.EditComment, operatortool.SetDependency, operatortool.RestoreItem, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.TransferItem:
 			if writable {
 				definitions = append(definitions, definition)
 			}

@@ -38,6 +38,7 @@ import {
   PullRequestActionAccepted,
   RelayTicket,
   REVISION_CONFLICT,
+  SourceRecovery,
   type TransitionReason,
   WorkItemPage,
   WorkItemPullRequestList,
@@ -153,6 +154,8 @@ export interface ListWorkItemsInput {
 }
 
 export interface WorkHttp {
+  readonly getSourceRecovery: (projectId: string, itemId: string) => Promise<SourceRecovery>;
+  readonly transferSource: (input: { projectId: string; itemId: string; key: string; expectedRevision: string; versionId: string; destinationRunnerId: string }) => Promise<SourceRecovery>;
   readonly getViewPreference: (projectId: string | null, signal?: AbortSignal) => Promise<{ readonly query: string | null }>;
   readonly setViewPreference: (projectId: string | null, query: string | null) => Promise<{ readonly query: string | null }>;
   readonly origin: string;
@@ -623,6 +626,13 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
       send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit, cursor }), undefined, signal),
     getExplanation: (projectId, itemId) =>
       send(IssueExplanation, "GET", url(`${itemBase(projectId, itemId)}/explanation`)),
+    getSourceRecovery: (projectId, itemId) =>
+      send(SourceRecovery, "GET", url(`${itemBase(projectId, itemId)}/source-recovery`)),
+    transferSource: (input) =>
+      send(SourceRecovery, "POST", url(`${itemBase(input.projectId, input.itemId)}/source-recovery`), {
+        idempotency_key: input.key, expected_revision: input.expectedRevision,
+        version_id: input.versionId, destination_runner_id: input.destinationRunnerId,
+      }),
     getWorkItemDiff: (projectId, itemId) =>
       send(WorkItemDiff, "GET", url(`${itemBase(projectId, itemId)}/diff`)),
     listHistory: (input) =>

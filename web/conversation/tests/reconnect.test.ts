@@ -8,6 +8,7 @@ import type { Result } from "effect/Result";
 
 import { makeHarness, PROJECT, type Harness } from "./harness.ts";
 import type { CreateConversationResponse } from "../src/contracts/index.ts";
+import { fetchEventStreamTransport } from "../src/runtime/rpc/sse.ts";
 
 let harness: Harness | undefined;
 
@@ -18,7 +19,13 @@ afterEach(async () => {
 
 describe("reconnect", () => {
   it.each(["transport drop", "server_error", "server_shutdown"])("resumes after %s without hiding or duplicating messages", async (reason) => {
-    const h = (harness = await makeHarness());
+    let streamOpened = () => {};
+    const opened = new Promise<void>((resolve) => { streamOpened = resolve; });
+    const transport = fetchEventStreamTransport();
+    const h = (harness = await makeHarness({ transport: (url, handlers) => transport(url, {
+      ...handlers,
+      onFrame: (frame) => { streamOpened(); handlers.onFrame(frame); },
+    }) }));
     const created = (await h.run(
       h.client.effects.createConversation({
         projectId: PROJECT,
@@ -46,6 +53,7 @@ describe("reconnect", () => {
       "the first reply",
     );
     const beforeIds = Option.getOrThrow(before.data).messages.map((message) => message.id);
+    await opened;
     let emptied = false;
     const unsubscribe = h.registry.subscribe(atom, (value) => {
       const state = Option.getOrUndefined(AsyncResult.value(value));
@@ -55,8 +63,9 @@ describe("reconnect", () => {
 
     // Kill the open stream. The client reconnects and resubscribes with its
     // own cursor, so the hub replays only what came after it.
+    const interrupted = h.waitFor(atom, (value) => value.status === "synchronizing", "the interrupted stream");
     await h.control("drop-open-streams", { reason });
-    await h.waitFor(atom, (value) => value.status === "synchronizing", "the interrupted stream");
+    await interrupted;
     await h.run(
       h.client.effects.sendMessage({
         projectId: PROJECT,

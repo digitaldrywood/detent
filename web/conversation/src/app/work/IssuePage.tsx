@@ -56,6 +56,7 @@ import {
 } from "./components/IssueProperties.tsx";
 import { IssueResources, type ResourceRow } from "./components/IssueResources.tsx";
 import { IssueDiagnostics, IssueDetailTabs } from "./components/IssueDiagnostics.tsx";
+import { SourceRecoveryControls } from "./components/SourceRecoveryControls.tsx";
 import { mergeActivity, runnerLabel, type ActivityRow } from "./lib/activity.ts";
 import { toChangeView, toWorkItemView, transitionsFrom } from "./lib/fromWire.ts";
 import { elapsedLabel, issueNumber } from "./lib/format.ts";
@@ -644,6 +645,9 @@ function IssueSurface({
 
   return frame(
     <IssueBody
+      http={http}
+      canManageRunners={project?.can_manage_runners === true}
+      onTransferred={reload}
       onBodySave={async (body) => {
         const updated = await http.patchWorkItem({ projectId, itemId: workItemId, key: newWorkKey("body"), expectedRevision: data.issue.revision, body });
         apply((current) => current === null ? current : { ...current, issue: updated });
@@ -779,6 +783,9 @@ function IssueSurface({
 }
 
 interface IssueBodyProps {
+  readonly http: WorkHttp;
+  readonly canManageRunners: boolean;
+  readonly onTransferred: () => void;
   readonly onBodySave: (body: string) => Promise<void>;
   readonly item: WorkItemView;
   readonly data: IssueData;
@@ -1078,6 +1085,8 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
               </Button>
             ) : null}
           </header>
+
+          {data.project.profile === "native" ? <SourceRecoveryControls key={data.issue.work_item_id} http={props.http} projectId={data.issue.project_id} itemId={data.issue.work_item_id} revision={data.issue.revision} canManage={props.canWrite && props.canManageRunners} onTransferred={props.onTransferred} /> : null}
 
           {/* With the panel open the sidebar yields its width, so the facts it
               carries stay reachable here (decisions.md §19.3). */}
