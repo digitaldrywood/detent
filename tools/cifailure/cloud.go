@@ -22,6 +22,8 @@ import (
 
 const scheduledCloudProject = issueorigin.DetentCloudProjectID
 
+const scheduledListLimit = 100
+
 type cloudCommand func(context.Context, string, map[string]any, any) error
 
 type cloudIssue struct {
@@ -35,6 +37,7 @@ type cloudDestination struct {
 	organization string
 	issues       []*cloudIssue
 	evidence     io.Writer
+	scannedAll   bool
 }
 
 func reportingDestination(ctx context.Context, getenv func(string) string) (issueDestination, error) {
@@ -87,10 +90,24 @@ func (c *cloudDestination) load(ctx context.Context) error {
 		return errors.New("scheduled destination has no dispatchable Todo")
 	}
 	c.issues = nil
+	c.scannedAll = false
+	for _, selector := range []map[string]any{{"query": "detent-origin"}, {"query": "detent-audit-fp"}, {"label": "ci-scheduled-failure"}} {
+		if err := c.scan(ctx, selector); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *cloudDestination) scan(ctx context.Context, selector map[string]any) error {
 	cursor := ""
 	for {
+		args := map[string]any{"project_id": c.project, "open": true, "limit": scheduledListLimit, "cursor": cursor}
+		for key, value := range selector {
+			args[key] = value
+		}
 		var page operatortool.WorkReadResult[tracker.Page[tracker.NativeIssue]]
-		if err := c.command(ctx, "work_list", map[string]any{"project_id": c.project, "limit": 5, "cursor": cursor}, &page); err != nil {
+		if err := c.command(ctx, "work_list", args, &page); err != nil {
 			return err
 		}
 		if page.ProjectID != c.project || page.Data.Items == nil {
@@ -100,7 +117,7 @@ func (c *cloudDestination) load(ctx context.Context) error {
 			if string(item.ProjectID) != c.project || string(item.OrganizationID) != c.organization || item.WorkItemID == "" {
 				return errors.New("scheduled work item belongs to another destination")
 			}
-			if item.Terminal || item.Archived {
+			if item.Terminal || item.Archived || slices.ContainsFunc(c.issues, func(loaded *cloudIssue) bool { return loaded.item.WorkItemID == item.WorkItemID }) {
 				continue
 			}
 			var detail operatortool.WorkReadResult[tracker.NativeIssue]
@@ -160,32 +177,20 @@ func occurrenceKey(getenv func(string) string, j job, fingerprint string) string
 func occurrenceMarker(key string) string { return "<!-- detent-scheduled-occurrence:" + key + " -->" }
 
 func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body, key string, labels []string, _ bool) error {
+	if err := c.scan(ctx, map[string]any{"fingerprint": fingerprint}); err != nil {
+		return err
+	}
 	marker := occurrenceMarker(key)
-	currentOrigin, _ := issueorigin.Parse(body)
-	currentJob := jobEvidence(body)
-	currentName := scheduledJob(body)
-	runPrefix, _, _ := strings.Cut(currentOrigin.Source, "/actions/runs/")
-	var match *cloudIssue
-	for _, issue := range c.issues {
-		for _, previous := range issue.bodies {
-			if strings.Contains(previous, marker) {
-				return c.updateFailure(ctx, issue, key, labels)
-			}
-			origin, ok := issueorigin.Parse(previous)
-			if !ok {
-				continue
-			}
-			sameJob := currentName != "" && scheduledJob(previous) == currentName && origin.Kind == "doctor" && origin.Instance == "github-actions" && strings.HasPrefix(origin.Source, runPrefix+"/actions/runs/")
-			if !issueorigin.SameDefect(previous, body) && !sameJob {
-				continue
-			}
-			if origin.Source == currentOrigin.Source && currentJob != "" && jobEvidence(previous) == currentJob {
-				return c.updateFailure(ctx, issue, key, labels)
-			}
-			if match == nil || issue.item.Number < match.item.Number {
-				match = issue
-			}
+	replay, match := c.match(body, marker)
+	if replay == nil && match == nil && !c.scannedAll {
+		if err := c.scan(ctx, nil); err != nil {
+			return err
 		}
+		c.scannedAll = true
+		replay, match = c.match(body, marker)
+	}
+	if replay != nil {
+		return c.updateFailure(ctx, replay, key, labels)
 	}
 	body += "\n\n" + marker
 	if match != nil {
@@ -218,6 +223,35 @@ func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body,
 	}
 	c.issues = append(c.issues, &cloudIssue{item: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(result.ResourceID), Revision: result.Revision}, State: state, Priority: &priority, Labels: labels}, bodies: []string{retainedBody}})
 	return nil
+}
+
+func (c *cloudDestination) match(body, marker string) (replay, match *cloudIssue) {
+	currentOrigin, _ := issueorigin.Parse(body)
+	currentJob := jobEvidence(body)
+	currentName := scheduledJob(body)
+	runPrefix, _, _ := strings.Cut(currentOrigin.Source, "/actions/runs/")
+	for _, issue := range c.issues {
+		for _, previous := range issue.bodies {
+			if strings.Contains(previous, marker) {
+				return issue, nil
+			}
+			origin, ok := issueorigin.Parse(previous)
+			if !ok {
+				continue
+			}
+			sameJob := currentName != "" && scheduledJob(previous) == currentName && origin.Kind == "doctor" && origin.Instance == "github-actions" && strings.HasPrefix(origin.Source, runPrefix+"/actions/runs/")
+			if !issueorigin.SameDefect(previous, body) && !sameJob {
+				continue
+			}
+			if origin.Source == currentOrigin.Source && currentJob != "" && jobEvidence(previous) == currentJob {
+				return issue, nil
+			}
+			if match == nil || issue.item.Number < match.item.Number {
+				match = issue
+			}
+		}
+	}
+	return nil, match
 }
 
 func (c *cloudDestination) updateFailure(ctx context.Context, issue *cloudIssue, key string, labels []string) error {

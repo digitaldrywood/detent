@@ -38,6 +38,14 @@ publish_failure() {
 }
 trap publish_failure ERR
 
+report_validated() {
+  trap - ERR
+  if ! go run ./tools/cifailure < "$jobs_file" >> "$evidence_file"; then
+    echo "Validated release $1 is published; reporting the green suite to the tracker failed. The scheduled reporting artifact retains the evidence." >&2
+    exit 1
+  fi
+}
+
 job_count="$(jq '[.[] | select(.name != "Finalize scheduled validation")] | length' "$jobs_file")"
 if [ "$job_count" -ne 15 ]; then
   echo "Expected 15 scheduled validation jobs; observed $job_count" >&2
@@ -53,7 +61,7 @@ for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list 'v*'); do
     if [[ "$existing_message" == *'"name":"scheduled-full-ci"'* ]]; then
       echo "Validated release $existing already contains $CI_DEVELOP_SHA; no new release or deployment."
       if [ "$GITHUB_REPOSITORY" = digitaldrywood/detent ]; then
-        go run ./tools/cifailure < "$jobs_file" >> "$evidence_file"
+        report_validated "$existing"
       fi
       exit 0
     fi
@@ -78,7 +86,7 @@ git tag -a "$tag" "$CI_DEVELOP_SHA" -F "$message_file"
 git push origin "refs/tags/$tag"
 gh api -X POST "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/dispatches" -f ref="$tag"
 if [ "$GITHUB_REPOSITORY" = digitaldrywood/detent ]; then
-  go run ./tools/cifailure < "$jobs_file" >> "$evidence_file"
+  report_validated "$tag"
 else
   gh issue list --repo "$GITHUB_REPOSITORY" --label ci-scheduled-failure --state open --limit 10000 --json number > "$issues_file"
   for number in $(jq -r '.[].number' "$issues_file"); do
