@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1786,38 +1787,72 @@ func TestLocalGitCreateRepairsWorkspacePreparationFailures(t *testing.T) {
 			},
 		},
 		{
-			name: "dangling gitdir is recreated",
+			name: "dangling gitdir retains unverifiable source",
 			run: func(t *testing.T) {
-				source := initSourceRepo(t)
-				root := filepath.Join(t.TempDir(), "workspaces")
-				backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
-				if err != nil {
-					t.Fatalf("NewLocalGit() error = %v", err)
-				}
-
-				issue := Issue{Identifier: "DD-DANGLING-GITDIR"}
-				first, err := backend.Create(t.Context(), issue)
-				if err != nil {
-					t.Fatalf("first Create() error = %v", err)
-				}
-				adminDir := linkedWorktreeGitDir(t, first.Path)
-				orphanedAdminDir := adminDir + "-orphaned"
-				if err := os.Rename(adminDir, orphanedAdminDir); err != nil {
-					t.Fatalf("orphan admin directory: %v", err)
-				}
-
-				second, err := backend.Create(t.Context(), issue)
-				if err != nil {
-					t.Fatalf("second Create() error = %v", err)
-				}
-				if !second.Created {
-					t.Fatal("second Create() Created = false, want true")
-				}
-				if got, want := filepath.Base(linkedWorktreeGitDir(t, second.Path)), filepath.Base(second.Path); got != want {
-					t.Fatalf("replacement admin name = %q, want %q", got, want)
-				}
-				if _, err := os.Stat(orphanedAdminDir); !errors.Is(err, os.ErrNotExist) {
-					t.Fatalf("orphaned admin directory stat error = %v, want absent", err)
+				for _, pending := range []bool{false, true} {
+					name := "clean but unverifiable"
+					if pending {
+						name = "pending source refuses replacement"
+					}
+					t.Run(name, func(t *testing.T) {
+						source := initSourceRepo(t)
+						root := filepath.Join(t.TempDir(), "workspaces")
+						backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+						if err != nil {
+							t.Fatal(err)
+						}
+						issue := Issue{Identifier: "DD-DANGLING-GITDIR"}
+						first, err := backend.Create(t.Context(), issue)
+						if err != nil {
+							t.Fatal(err)
+						}
+						adminDir := linkedWorktreeGitDir(t, first.Path)
+						wantFiles := map[string]string{"README.md": "source repo\n"}
+						if pending {
+							writeFileDiffFile(t, first.Path, "README.md", "staged source B\n")
+							runGit(t, first.Path, "add", "README.md")
+							writeFileDiffFile(t, first.Path, "README.md", "pending working source\n")
+							writeFileDiffFile(t, first.Path, "pending.go", "untracked sentinel\n")
+							wantFiles["README.md"] = "pending working source\n"
+							wantFiles["pending.go"] = "untracked sentinel\n"
+						}
+						gitPointer, err := os.ReadFile(filepath.Join(first.Path, ".git"))
+						if err != nil {
+							t.Fatal(err)
+						}
+						wantFiles[".git"] = string(gitPointer)
+						orphanedAdminDir := adminDir + "-orphaned"
+						var orphanedIndex []byte
+						if pending {
+							if err := os.RemoveAll(adminDir); err != nil {
+								t.Fatal(err)
+							}
+						} else {
+							orphanedIndex, err = os.ReadFile(filepath.Join(adminDir, "index"))
+							if err != nil {
+								t.Fatal(err)
+							}
+							if err := os.Rename(adminDir, orphanedAdminDir); err != nil {
+								t.Fatal(err)
+							}
+						}
+						second, createErr := backend.Create(t.Context(), issue)
+						if !errors.Is(createErr, ErrWorkspacePreserved) || second.Created {
+							t.Errorf("missing admin metadata did not refuse replacement: created=%t error=%v", second.Created, createErr)
+						}
+						for path, want := range wantFiles {
+							got, readErr := os.ReadFile(filepath.Join(first.Path, path))
+							if readErr != nil || string(got) != want {
+								t.Errorf("replacement discarded surviving %s: got=%q want=%q error=%v", path, got, want, readErr)
+							}
+						}
+						if !pending {
+							got, readErr := os.ReadFile(filepath.Join(orphanedAdminDir, "index"))
+							if readErr != nil || !slices.Equal(got, orphanedIndex) {
+								t.Errorf("preparation discarded available orphaned index: %v", readErr)
+							}
+						}
+					})
 				}
 			},
 		},
