@@ -19,11 +19,13 @@ func TestTenantServingSupervision(t *testing.T) {
 		healthyFor     time.Duration
 		unavailableFor time.Duration
 		stalled        bool
+		wait           time.Duration
 		wantRestart    bool
 	}{
-		{name: "alive without listener", unavailableFor: time.Minute, wantRestart: true},
+		{name: "migrating longer than the serving window", unavailableFor: 2 * time.Minute, wait: 3 * time.Minute},
+		{name: "never serves within the startup grace", unavailableFor: time.Hour, wait: tenantStartupGrace + 10*time.Second, wantRestart: true},
 		{name: "listener lost after serving", healthyFor: time.Minute, unavailableFor: time.Minute, wantRestart: true},
-		{name: "health request stalls", unavailableFor: time.Minute, stalled: true, wantRestart: true},
+		{name: "health request stalls after serving", healthyFor: time.Minute, unavailableFor: time.Minute, stalled: true, wantRestart: true},
 		{name: "transient failure recovers", unavailableFor: 20 * time.Second},
 		{name: "healthy child", healthyFor: 2 * time.Minute},
 	} {
@@ -53,7 +55,11 @@ func TestTenantServingSupervision(t *testing.T) {
 				processResult := make(chan error, 1)
 				result := make(chan error, 1)
 				go func() { result <- launcher.waitTenant(ctx, spec, processResult, cancel) }()
-				time.Sleep(test.healthyFor + 40*time.Second)
+				wait := test.wait
+				if wait == 0 {
+					wait = test.healthyFor + 40*time.Second
+				}
+				time.Sleep(wait)
 				if restarted := ctx.Err() != nil; restarted != test.wantRestart {
 					t.Fatalf("restart = %v, want %v", restarted, test.wantRestart)
 				}

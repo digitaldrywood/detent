@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -148,22 +149,37 @@ func TestExecLauncherKeepsRestartingReadyTenants(t *testing.T) {
 	}
 
 	t.Parallel()
-	directory := t.TempDir()
-	launcher := &ExecLauncher{Binary: "/usr/bin/false", RestartLimit: 1, Logger: slog.New(slog.DiscardHandler), Configure: func(TenantSpec) ([]byte, error) { return []byte("{}\n"), nil }}
-	spec := TenantSpec{Organization: Organization{ID: "org_ready", State: "ready"}, Directory: directory, Socket: filepath.Join(directory, "t.sock")}
-	if err := launcher.Start(t.Context(), spec); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = launcher.Close() })
-	time.Sleep(2500 * time.Millisecond)
-	if failure := launcher.Failure("org_ready"); failure != nil {
-		t.Fatalf("a ready tenant gave up after a crash burst: %v", failure)
-	}
-	launcher.mu.Lock()
-	_, running := launcher.running["org_ready"]
-	launcher.mu.Unlock()
-	if !running {
-		t.Fatal("a ready tenant stopped being supervised")
+	for _, tc := range []struct {
+		name  string
+		limit int
+	}{
+		{name: "restart limit of one", limit: 1},
+		{name: "default restart limit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			directory := t.TempDir()
+			logs := &lockedBuffer{}
+			launcher := &ExecLauncher{Binary: "/usr/bin/false", RestartLimit: tc.limit, Logger: slog.New(slog.NewTextHandler(logs, nil)), Configure: func(TenantSpec) ([]byte, error) { return []byte("{}\n"), nil }}
+			spec := TenantSpec{Organization: Organization{ID: "org_ready", State: "ready"}, Directory: directory, Socket: filepath.Join(directory, "t.sock")}
+			if err := launcher.Start(t.Context(), spec); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = launcher.Close() })
+			time.Sleep(2500 * time.Millisecond)
+			if failure := launcher.Failure("org_ready"); failure != nil {
+				t.Fatalf("a ready tenant gave up after a crash burst: %v", failure)
+			}
+			launcher.mu.Lock()
+			_, running := launcher.running["org_ready"]
+			launcher.mu.Unlock()
+			if !running {
+				t.Fatal("a ready tenant stopped being supervised")
+			}
+			if restarts := strings.Count(logs.String(), "tenant Hub exited; restarting"); restarts < 2 {
+				t.Fatalf("restart attempts logged = %d, want every exit restarted and logged:\n%s", restarts, logs.String())
+			}
+		})
 	}
 }
 
@@ -210,7 +226,13 @@ func TestExecLauncherJoinsTenantShutdown(t *testing.T) {
 				}
 				spec := TenantSpec{Organization: Organization{ID: id}, Directory: tenantDirectory}
 				if test.name == "unreachable child" {
-					spec.Check = func(context.Context) error { return syscall.ECONNREFUSED }
+					var served atomic.Bool
+					spec.Check = func(context.Context) error {
+						if served.CompareAndSwap(false, true) {
+							return nil
+						}
+						return syscall.ECONNREFUSED
+					}
 				}
 				if err := launcher.Start(t.Context(), spec); err != nil {
 					t.Fatal(err)
