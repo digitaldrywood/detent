@@ -41,28 +41,28 @@ func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope s
 	}
 	if descriptor.Workflow != nil {
 		if source == nil || !validCommitID(source.Commit) || !validCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" || source.Commit != descriptor.Workflow.Revision {
-			return tx.Commit()
+			return d.commit(ctx, tx)
 		}
 		repository, err := policyRepository(ctx, tx, scope)
 		if err != nil {
 			return err
 		}
 		if repository == "" || !strings.EqualFold(repository, source.Repository) {
-			return tx.Commit()
+			return d.commit(ctx, tx)
 		}
 		if !carryover && !source.DefaultBranchReachable {
-			return tx.Commit()
+			return d.commit(ctx, tx)
 		}
 	} else {
 		if !carryover {
-			return tx.Commit()
+			return d.commit(ctx, tx)
 		}
 		if err := validateWorkflowPolicy(ctx, tx, scope, descriptor); err != nil {
 			return err
 		}
 	}
 	if carryover && descriptor.Authored.Version < approval.Policy.Authored.Version {
-		return tx.Commit()
+		return d.commit(ctx, tx)
 	}
 	if current != descriptor.ID {
 		actor := approval.ApprovedBy
@@ -73,7 +73,7 @@ func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope s
 			return err
 		}
 	}
-	return tx.Commit()
+	return d.commit(ctx, tx)
 }
 
 func policyRepository(ctx context.Context, query policyQuerier, scope string) (string, error) {

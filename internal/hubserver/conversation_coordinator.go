@@ -427,7 +427,7 @@ func (c *conversationTurnCoordinator) write(ctx context.Context, conversationID 
 	if err := fn(ctx, tx, &record, now); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := c.service.server.database.commit(ctx, tx); err != nil {
 		return fmt.Errorf("commit coordinator write: %w", err)
 	}
 	c.service.committed(record)

@@ -66,5 +66,5 @@ ORDER BY i.id LIMIT 200`, formatHubTime(now), formatHubTime(now))
 			return err
 		}
 	}
-	return tx.Commit()
+	return s.database.commit(ctx, tx)
 }

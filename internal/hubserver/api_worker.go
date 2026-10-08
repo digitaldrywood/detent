@@ -419,7 +419,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		if err := checkMonthlyLease(ctx, tx, existing, now); err != nil {
 			return tracker.Lease{}, err
 		}
-		if err := tx.Commit(); err != nil {
+		if err := d.commit(ctx, tx); err != nil {
 			return tracker.Lease{}, fmt.Errorf("commit idempotent hub claim next: %w", err)
 		}
 		return leaseFromRecord(existing), nil
@@ -485,7 +485,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			return tracker.Lease{}, err
 		}
 		if revision != mode.hint.revision {
-			if err := tx.Commit(); err != nil {
+			if err := d.commit(ctx, tx); err != nil {
 				return tracker.Lease{}, err
 			}
 			return tracker.Lease{}, errClaimHintStale
@@ -497,7 +497,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			return tracker.Lease{}, err
 		}
 		if restricted && selectedID == 0 {
-			if err := tx.Commit(); err != nil {
+			if err := d.commit(ctx, tx); err != nil {
 				return tracker.Lease{}, err
 			}
 			return tracker.Lease{}, ErrNoClaimableWork
@@ -656,12 +656,12 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", Reason: "The scheduler granted a fenced lease"}, now); err != nil {
 			return tracker.Lease{}, err
 		}
-		if err := tx.Commit(); err != nil {
+		if err := d.commit(ctx, tx); err != nil {
 			return tracker.Lease{}, fmt.Errorf("commit hub claim next: %w", err)
 		}
 		return lease, nil
 	}
-	if err := tx.Commit(); err != nil {
+	if err := d.commit(ctx, tx); err != nil {
 		return tracker.Lease{}, fmt.Errorf("commit idle hub claim: %w", err)
 	}
 	if mode.hint != nil {
