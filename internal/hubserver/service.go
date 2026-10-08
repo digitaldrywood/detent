@@ -467,7 +467,7 @@ func (s *Service) maintainGitHubWebhooks(ctx context.Context) {
 	if err := s.database.processPendingWebhooks(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.Error("process pending GitHub webhooks", "error", err)
 	}
-	if _, err := s.database.purgeWebhookPayloads(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
+	if _, err := s.database.purgeWebhookPayloads(ctx, now, s.config.WebhookPayloadRetention); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.Warn("purge GitHub webhook payloads", "error", err)
 	}
 	s.maintainSpritePools(ctx)

@@ -88,7 +88,7 @@ func TestHostedProjectRetryAfterDowngrade(t *testing.T) {
 					t.Fatalf("rejected allocation left %s records: %d %v", table, orphans, err)
 				}
 			}
-			for _, path := range []string{"/projects/" + project, "/api/v2/organizations/org_browser_preview/projects/" + project + "/onboarding", "/organization/plan", "/api/cloud/billing"} {
+			for _, path := range []string{"/api/v2/organizations/org_browser_preview/projects/" + project, "/api/v2/organizations/org_browser_preview/projects/" + project + "/onboarding", "/organization/plan", "/api/cloud/billing"} {
 				requireNativeStatus(t, f.page(t, "owner", path), http.StatusOK)
 			}
 		})

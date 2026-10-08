@@ -53,47 +53,81 @@ func TestGitHubWebhookRejectsUnverifiableSignaturesWithoutReceipt(t *testing.T) 
 func TestGitHubWebhookDeduplicatesDeliveriesAndRejectsConflicts(t *testing.T) {
 	t.Parallel()
 
-	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, true)
-	payload := completeIssueWebhookPayload(t, "Original title", "2026-09-02T12:00:00Z")
-	for attempt := range 2 {
-		response := sendSignedWebhookRequest(t, service, "duplicate-delivery", "issues", payload)
-		if response.Code != http.StatusAccepted {
-			t.Fatalf("attempt %d status = %d body = %s, want %d", attempt, response.Code, response.Body.String(), http.StatusAccepted)
-		}
-		var body webhookResponse
-		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
-			t.Fatalf("decode attempt %d response: %v", attempt, err)
-		}
-		if body.Duplicate != (attempt == 1) {
-			t.Fatalf("attempt %d duplicate = %t, want %t", attempt, body.Duplicate, attempt == 1)
-		}
-	}
+	for _, expired := range []bool{false, true} {
+		t.Run(fmt.Sprintf("payload expired=%t", expired), func(t *testing.T) {
+			t.Parallel()
 
-	conflictingPayload := completeIssueWebhookPayload(t, "Conflicting title", "2026-09-02T12:00:00Z")
-	response := sendSignedWebhookRequest(t, service, "duplicate-delivery", "issues", conflictingPayload)
-	if response.Code != http.StatusConflict {
-		t.Fatalf("conflict status = %d body = %s, want %d", response.Code, response.Body.String(), http.StatusConflict)
-	}
+			now := time.Date(2026, 9, 2, 13, 0, 0, 0, time.UTC)
+			service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), func() time.Time { return now }, true)
+			payload := completeIssueWebhookPayload(t, "Original title", "2026-09-02T12:00:00Z")
+			for attempt := range 2 {
+				if attempt == 1 && expired {
+					if _, err := service.database.db.ExecContext(t.Context(), "UPDATE github_webhook_inbox SET processed_at=? WHERE delivery_id='duplicate-delivery'", formatWebhookTime(now.Add(-8*24*time.Hour))); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := service.database.db.ExecContext(t.Context(), "UPDATE github_webhook_payloads SET expires_at=?", formatWebhookTime(now.Add(-24*time.Hour))); err != nil {
+						t.Fatal(err)
+					}
+					service.maintainGitHubWebhooks(t.Context())
+					var payloads int
+					if err := service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM github_webhook_payloads").Scan(&payloads); err != nil {
+						t.Fatal(err)
+					}
+					if payloads != 0 {
+						t.Fatalf("payloads after retention = %d, want 0", payloads)
+					}
+				}
+				response := sendSignedWebhookRequest(t, service, "duplicate-delivery", "issues", payload)
+				if response.Code != http.StatusAccepted {
+					t.Fatalf("attempt %d status = %d body = %s, want %d", attempt, response.Code, response.Body.String(), http.StatusAccepted)
+				}
+				var body webhookResponse
+				if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+					t.Fatalf("decode attempt %d response: %v", attempt, err)
+				}
+				if body.Duplicate != (attempt == 1) {
+					t.Fatalf("attempt %d duplicate = %t, want %t", attempt, body.Duplicate, attempt == 1)
+				}
+			}
 
-	var receipts int
-	var redeliveries int
-	var status string
-	if err := service.database.db.QueryRowContext(t.Context(), `
+			conflictingPayload := completeIssueWebhookPayload(t, "Conflicting title", "2026-09-02T12:00:00Z")
+			response := sendSignedWebhookRequest(t, service, "duplicate-delivery", "issues", conflictingPayload)
+			if response.Code != http.StatusConflict {
+				t.Fatalf("conflict status = %d body = %s, want %d", response.Code, response.Body.String(), http.StatusConflict)
+			}
+
+			var receipts int
+			var redeliveries int
+			var status string
+			if err := service.database.db.QueryRowContext(t.Context(), `
 		SELECT COUNT(*), max(redelivery_count), max(status)
 		FROM github_webhook_inbox
 	`).Scan(&receipts, &redeliveries, &status); err != nil {
-		t.Fatalf("read webhook receipt: %v", err)
-	}
-	if receipts != 1 || redeliveries != 1 || status != "processed" {
-		t.Fatalf("receipt = count %d redeliveries %d status %q, want 1, 1, processed", receipts, redeliveries, status)
-	}
-	var issues int
-	var title string
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*), max(title) FROM issues").Scan(&issues, &title); err != nil {
-		t.Fatalf("read issue projection: %v", err)
-	}
-	if issues != 1 || title != "Original title" {
-		t.Fatalf("issue projection = count %d title %q, want one original issue", issues, title)
+				t.Fatalf("read webhook receipt: %v", err)
+			}
+			if receipts != 1 || redeliveries != 1 || status != "processed" {
+				t.Fatalf("receipt = count %d redeliveries %d status %q, want 1, 1, processed", receipts, redeliveries, status)
+			}
+			var payloads int
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM github_webhook_payloads").Scan(&payloads); err != nil {
+				t.Fatal(err)
+			}
+			wantPayloads := 1
+			if expired {
+				wantPayloads = 0
+			}
+			if payloads != wantPayloads {
+				t.Fatalf("payloads after terminal redelivery = %d, want %d", payloads, wantPayloads)
+			}
+			var issues int
+			var title string
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*), max(title) FROM issues").Scan(&issues, &title); err != nil {
+				t.Fatalf("read issue projection: %v", err)
+			}
+			if issues != 1 || title != "Original title" {
+				t.Fatalf("issue projection = count %d title %q, want one original issue", issues, title)
+			}
+		})
 	}
 }
 
@@ -228,7 +262,8 @@ func TestHostedGitHubWebhooksDoNotCreateProjects(t *testing.T) {
 func TestGitHubWebhookAcknowledgesDurableReceiptWhenProcessingFails(t *testing.T) {
 	t.Parallel()
 
-	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, false)
+	now := time.Date(2026, 9, 2, 13, 0, 0, 0, time.UTC)
+	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), func() time.Time { return now }, false)
 	for _, repository := range []struct {
 		nodeID string
 		owner  string
@@ -287,7 +322,7 @@ func TestGitHubWebhookAcknowledgesDurableReceiptWhenProcessingFails(t *testing.T
 	if checkpointError == "" || !strings.Contains(checkpointState, "last_error_at") {
 		t.Fatalf("webhook checkpoint = error %q state %q, want visible repository error", checkpointError, checkpointState)
 	}
-	freshness, err := service.database.repositoryFreshness(t.Context(), time.Now().UTC(), time.Minute)
+	freshness, err := service.database.repositoryFreshness(t.Context(), now, time.Minute)
 	if err != nil {
 		t.Fatalf("read freshness after webhook failure: %v", err)
 	}
@@ -299,6 +334,50 @@ func TestGitHubWebhookAcknowledgesDurableReceiptWhenProcessingFails(t *testing.T
 	}
 	if exposed == nil || exposed.Message != checkpointError {
 		t.Fatalf("exposed webhook error = %#v, want %q", exposed, checkpointError)
+	}
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE github_webhook_payloads SET expires_at=?", formatWebhookTime(now.Add(-24*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	service.maintainGitHubWebhooks(t.Context())
+	var retained []byte
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT body FROM github_webhook_payloads").Scan(&retained); err != nil {
+		t.Fatalf("read retained failed payload: %v", err)
+	}
+	if string(retained) != payload {
+		t.Fatal("failed delivery payload changed during retention")
+	}
+	if _, err := service.database.db.ExecContext(t.Context(), "DELETE FROM repositories WHERE github_node_id='R_conflicting_node'"); err != nil {
+		t.Fatal(err)
+	}
+	response = sendSignedWebhookRequest(t, service, "processing-failure", "issues", payload)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("resolved delivery status = %d body = %s", response.Code, response.Body.String())
+	}
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT status FROM github_webhook_inbox WHERE delivery_id='processing-failure'").Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "processed" {
+		t.Fatalf("resolved receipt status = %q, want processed", status)
+	}
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE github_webhook_payloads SET expires_at=?", formatWebhookTime(now.Add(-24*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	service.maintainGitHubWebhooks(t.Context())
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM github_webhook_payloads").Scan(&payloadCount); err != nil {
+		t.Fatal(err)
+	}
+	if payloadCount != 1 {
+		t.Fatalf("payloads immediately after resolving failure = %d, want 1", payloadCount)
+	}
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE github_webhook_inbox SET processed_at=? WHERE delivery_id='processing-failure'", formatWebhookTime(now.Add(-7*24*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	service.maintainGitHubWebhooks(t.Context())
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM github_webhook_payloads").Scan(&payloadCount); err != nil {
+		t.Fatal(err)
+	}
+	if payloadCount != 0 {
+		t.Fatalf("payloads after resolved delivery retention = %d, want 0", payloadCount)
 	}
 }
 
@@ -689,25 +768,55 @@ func TestGitHubWebhookPayloadRetentionPreservesAuditAndProjection(t *testing.T) 
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("status = %d body = %s", response.Code, response.Body.String())
 	}
-	pendingPayload := []byte(`{}`)
-	pendingDigest := sha256.Sum256(pendingPayload)
-	if _, err := service.database.recordWebhook(t.Context(), webhookReceipt{
-		DeliveryID:       "pending-retention",
-		EventType:        "issues",
-		HeadersJSON:      "{}",
-		Payload:          pendingPayload,
-		PayloadSHA256:    hex.EncodeToString(pendingDigest[:]),
-		ReceivedAt:       now.Add(-2 * time.Hour),
-		PayloadExpiresAt: now.Add(-time.Hour),
-	}); err != nil {
-		t.Fatalf("record pending retention receipt: %v", err)
+	retainedPayload := []byte(`{}`)
+	retainedDigest := sha256.Sum256(retainedPayload)
+	for _, test := range []struct {
+		deliveryID  string
+		status      string
+		processedAt string
+		wantPayload bool
+	}{
+		{deliveryID: "pending-retention", status: "pending", wantPayload: true},
+		{deliveryID: "processing-retention", status: "processing", wantPayload: true},
+		{deliveryID: "failed-retention", status: "failed", wantPayload: true},
+		{deliveryID: "ignored-retention", status: "ignored", processedAt: now.Format(time.RFC3339)},
+		{deliveryID: "recent-processing", status: "processed", processedAt: formatWebhookTime(now.Add(90 * time.Minute)), wantPayload: true},
+		{deliveryID: "boundary-retention", status: "processed", processedAt: formatWebhookTime(now.Add(time.Hour))},
+	} {
+		t.Run(test.deliveryID, func(t *testing.T) {
+			receipt, err := service.database.recordWebhook(t.Context(), webhookReceipt{
+				DeliveryID:       test.deliveryID,
+				EventType:        "issues",
+				HeadersJSON:      "{}",
+				Payload:          retainedPayload,
+				PayloadSHA256:    hex.EncodeToString(retainedDigest[:]),
+				ReceivedAt:       now.Add(-2 * time.Hour),
+				PayloadExpiresAt: now.Add(-time.Hour),
+			})
+			if err != nil {
+				t.Fatalf("record retention receipt: %v", err)
+			}
+			if _, err := service.database.db.ExecContext(t.Context(), "UPDATE github_webhook_inbox SET status=?,processed_at=NULLIF(?, '') WHERE id=?", test.status, test.processedAt, receipt.InboxID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.database.purgeWebhookPayloads(t.Context(), now.Add(2*time.Hour), service.config.WebhookPayloadRetention); err != nil {
+				t.Fatal(err)
+			}
+			var present bool
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM github_webhook_payloads WHERE inbox_id=?)", receipt.InboxID).Scan(&present); err != nil {
+				t.Fatal(err)
+			}
+			if present != test.wantPayload {
+				t.Fatalf("payload present = %t, want %t", present, test.wantPayload)
+			}
+		})
 	}
-	deleted, err := service.database.purgeWebhookPayloads(t.Context(), now.Add(2*time.Hour))
+	deleted, err := service.database.purgeWebhookPayloads(t.Context(), now.Add(2*time.Hour), service.config.WebhookPayloadRetention)
 	if err != nil {
 		t.Fatalf("purgeWebhookPayloads() error = %v", err)
 	}
-	if deleted != 1 {
-		t.Fatalf("purged payloads = %d, want 1", deleted)
+	if deleted != 0 {
+		t.Fatalf("purged payloads on repeated cleanup = %d, want 0", deleted)
 	}
 
 	var payloads int
@@ -725,7 +834,7 @@ func TestGitHubWebhookPayloadRetentionPreservesAuditAndProjection(t *testing.T) 
 	`).Scan(&payloads, &receipts, &issues, &payloadHash, &payloadBytes); err != nil {
 		t.Fatalf("read retained webhook state: %v", err)
 	}
-	if payloads != 1 || receipts != 2 || issues != 1 || payloadHash == "" || payloadBytes != len(payload) {
+	if payloads != 4 || receipts != 7 || issues != 1 || payloadHash == "" || payloadBytes != len(payload) {
 		t.Fatalf("retained state = payloads %d receipts %d issues %d hash %q bytes %d", payloads, receipts, issues, payloadHash, payloadBytes)
 	}
 }

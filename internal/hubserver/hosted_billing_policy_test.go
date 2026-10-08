@@ -55,7 +55,7 @@ func TestHostedBillingDowngradePreservesGrantsAndData(t *testing.T) {
 				want = http.StatusSeeOther
 			}
 			requireNativeStatus(t, response, want)
-			for _, path := range []string{"/projects/" + project, "/organization/plan", "/organization/billing", "/api/cloud/billing", "/api/cloud/billing/subscription"} {
+			for _, path := range []string{"/api/v2/organizations/org_browser_preview/projects/" + project, "/organization/plan", "/organization/billing", "/api/cloud/billing", "/api/cloud/billing/subscription"} {
 				requireNativeStatus(t, f.page(t, "owner", path), http.StatusOK)
 			}
 			page := f.page(t, "owner", "/organization/billing").Body.String()
