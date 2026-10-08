@@ -587,6 +587,8 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 				claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "capacity-refusal", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 				assertUnchangedDecision := func() {
 					t.Helper()
+					// Finish credential bookkeeping before measuring decision writes.
+					f.service.tokenUseWork.Wait()
 					var before, after int64
 					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&before); err != nil {
 						t.Fatal(err)
