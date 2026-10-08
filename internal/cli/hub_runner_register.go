@@ -142,16 +142,9 @@ func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(stri
 			if err != nil {
 				return fmt.Errorf("runner enrolled; report local setup: %w", err)
 			}
-			missing := false
-			for _, project := range result.Projects {
-				if !project.Checkout {
-					missing = true
-					result.NextSteps = append(result.NextSteps, fmt.Sprintf("Clone the %s repository into %s (it needs its WORKFLOW.md and detent.yaml)", project.Name, project.Workdir))
-				}
-			}
 			start := fmt.Sprintf("detent start --config %s --yes", shellQuote(paths.config))
 			switch {
-			case service && !missing:
+			case service:
 				if err := startService(cmd, paths.config); err != nil {
 					return err
 				}
@@ -160,8 +153,6 @@ func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(stri
 				if result.Created {
 					result.Service = runnerServiceName
 				}
-			case service:
-				result.NextSteps = append(result.NextSteps, "Then start the runner service: "+start)
 			default:
 				result.NextSteps = append(result.NextSteps, "Start the runner: "+start+" (or run it in the foreground: detent --config "+shellQuote(paths.config)+" --headless)")
 			}

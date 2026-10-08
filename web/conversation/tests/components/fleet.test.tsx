@@ -326,6 +326,21 @@ describe("runner details", () => {
     expect(sheet.textContent).toContain("Sat-Sun 00:00-24:00");
   });
 
+  it("shows project checkout failures and the authentication command on the runner sheet", () => {
+    const runner = { ...RUNNER, project_checkouts: {
+      prj_known: { status: "missing", message: "Cannot clone https://github.com/acme/orders.git", fix_command: "gh auth login --hostname github.com --git-protocol https" },
+      prj_unknown: { status: "ready" },
+    } };
+    render(<RunnersSectionView fleet={{ ...FLEET, runners: [runner] }} projects={PROJECTS} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    const sheet = screen.getByRole("dialog");
+    expect(within(sheet).getByText("Checkout unavailable")).toBeTruthy();
+    expect(within(sheet).getByText("Cannot clone https://github.com/acme/orders.git")).toBeTruthy();
+    expect(within(sheet).getByText("gh auth login --hostname github.com --git-protocol https")).toBeTruthy();
+    expect(within(sheet).getByText("Checkout ready")).toBeTruthy();
+    expect(within(sheet).getByText("The runner retries automatically after repository access is fixed.")).toBeTruthy();
+  });
+
   it("does not invent settings when the fleet omits routing for a viewer", () => {
     render(<RunnersSectionView fleet={{ ...FLEET, editable: false, runners: [{ ...FLEET.runners[0]!, availability: ROUTING.availability }] }} projects={PROJECTS} />);
     fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));

@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Scheduler) WaitCandidateChanges(ctx context.Context, project string, wake chan<- struct{}) {
-	source := s.nativeProjects[project]
+	source := s.nativeProject(project)
 	if source == nil {
 		return
 	}

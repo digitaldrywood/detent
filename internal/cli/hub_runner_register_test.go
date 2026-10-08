@@ -158,6 +158,8 @@ type registerHub struct {
 	identity   atomic.Value
 	redeemed   atomic.Int32
 	projects   map[tracker.ProjectID]string
+	cloneURLs  map[tracker.ProjectID]string
+	features   []string
 }
 
 func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *registerHub {
@@ -166,12 +168,16 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 	hub.credential.Store("")
 	hub.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if !strings.HasPrefix(r.URL.Path, "/organizations/org_example/api/v2/organizations/org_example/") {
+		if !strings.HasPrefix(r.URL.Path, "/organizations/org_example/api/v2/organizations/org_example/") && !strings.HasSuffix(r.URL.Path, "/capabilities") {
 			t.Errorf("request outside the organization: %s", r.URL.Path)
 		}
 		ids := make([]tracker.ProjectID, 0, len(projects))
 		for id := range projects {
 			ids = append(ids, id)
+		}
+		if strings.HasSuffix(r.URL.Path, "/capabilities") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": hub.features})
+			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/runner-enrollments/redeem") {
 			if r.Header.Get("Authorization") != "Bearer det_enroll_example" {
@@ -203,9 +209,13 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 			_ = json.NewEncoder(w).Encode(identity)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/policy/observed") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		for id, name := range projects {
 			if strings.HasSuffix(r.URL.Path, "/projects/"+string(id)) {
-				_ = json.NewEncoder(w).Encode(tracker.NativeProject{ID: id, OrganizationID: "org_example", Name: name})
+				_ = json.NewEncoder(w).Encode(tracker.NativeProject{ID: id, OrganizationID: "org_example", Name: name, CloneURL: hub.cloneURLs[id]})
 				return
 			}
 		}
@@ -266,8 +276,8 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	steps := strings.Join(registration.NextSteps, "\n")
-	if len(started) != 0 || !strings.Contains(steps, "Clone the ops-tools repository into "+filepath.Join(workspaces, "ops-tools")) || !strings.Contains(steps, "detent start --config") {
-		t.Fatalf("service started before every checkout exists (%v):\n%s", started, output)
+	if len(started) != 1 || !registration.ServiceRun || steps != "" {
+		t.Fatalf("service did not start with a missing checkout (%v):\n%s", started, output)
 	}
 
 	var written runnerConfigFile
@@ -294,7 +304,7 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &rerun); err != nil {
 		t.Fatalf("rerun output is not JSON: %v\n%s", err, output)
 	}
-	if len(started) != 1 || started[0] != configPath || rerun.Created || !rerun.ServiceRun || !strings.HasPrefix(mustRead(t, configPath), "# edited by the operator") {
+	if len(started) != 2 || started[0] != configPath || rerun.Created || !rerun.ServiceRun || !strings.HasPrefix(mustRead(t, configPath), "# edited by the operator") {
 		t.Fatalf("rerun: started %v, output:\n%s", started, output)
 	}
 
@@ -400,14 +410,11 @@ func TestHubRunnerRegisterChecksKeptProjectWorkdirs(t *testing.T) {
 			if err := json.Unmarshal([]byte(output), &result); err != nil {
 				t.Fatal(err)
 			}
-			if started != test.ready || result.ServiceRun != test.ready || len(result.Projects) != 1 || result.Projects[0].Workdir != workdir || result.Projects[0].Checkout != test.ready {
+			if !started || !result.ServiceRun || len(result.Projects) != 1 || result.Projects[0].Workdir != workdir || result.Projects[0].Checkout != test.ready {
 				t.Fatalf("started %v, registration %+v", started, result)
 			}
-			if !test.ready {
-				steps := strings.Join(result.NextSteps, "\n")
-				if !strings.Contains(steps, "Clone the local-project repository into "+workdir) || !strings.Contains(steps, "detent start --config "+shellQuote(configPath)+" --yes") {
-					t.Fatalf("next steps = %v", result.NextSteps)
-				}
+			if len(result.NextSteps) != 0 {
+				t.Fatalf("next steps = %v", result.NextSteps)
 			}
 			if mustRead(t, configPath) != string(body) {
 				t.Fatal("kept config was rewritten")

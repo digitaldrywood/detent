@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +27,7 @@ import (
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
+	RefreshProjects       func(context.Context, *Scheduler) error
 	PrepareProject        func(context.Context, string) error
 	UpdateOwner           func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation
 	CapacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
@@ -49,6 +52,8 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	refreshProjects       func(context.Context, *Scheduler) error
+	projectsMu            sync.RWMutex
 	projectConfiguration  func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration
 	prepareProject        func(context.Context, string) error
 	updateOwner           func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation
@@ -102,6 +107,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
+		refreshProjects:       config.RefreshProjects,
 		prepareProject:        config.PrepareProject,
 		capacityConfiguration: config.CapacityConfiguration,
 		updateOwner:           config.UpdateOwner,
@@ -146,7 +152,7 @@ func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrat
 	if err := s.CheckProjectPolicy(ctx, request.ProjectID, request.Repository, request.Policy); err != nil {
 		return nil, schedulingError(err)
 	}
-	if source := s.nativeProjects[request.ProjectID]; source != nil {
+	if source := s.nativeProject(request.ProjectID); source != nil {
 		return s.fetchNativeCandidate(ctx, request, source)
 	}
 	if err := s.ensureMachine(ctx); err != nil {
@@ -220,7 +226,7 @@ func (s *Scheduler) PrepareProject(ctx context.Context, project string) error {
 		s.localChecks[project] = checks
 	}
 	s.mu.Unlock()
-	if source := s.nativeProjects[project]; source != nil && reported && previous != checks.Setup {
+	if source := s.nativeProject(project); source != nil && reported && previous != checks.Setup {
 		s.mu.Lock()
 		if !s.nativeHeartbeats[source.client.project].IsZero() {
 			s.nativeHeartbeats[source.client.project] = s.now().Add(-s.heartbeatInterval)
@@ -583,4 +589,47 @@ func (s *Scheduler) fetchLegacyContinuation(ctx context.Context, request orchest
 		}
 		query.Set("cursor", page.NextCursor)
 	}
+}
+
+func (s *Scheduler) nativeProject(project string) *NativeConnector {
+	s.projectsMu.RLock()
+	defer s.projectsMu.RUnlock()
+	return s.nativeProjects[project]
+}
+
+func (s *Scheduler) nativeProjectSnapshot() map[string]*NativeConnector {
+	s.projectsMu.RLock()
+	defer s.projectsMu.RUnlock()
+	return maps.Clone(s.nativeProjects)
+}
+
+func (s *Scheduler) SetNativeProjects(organization tracker.OrganizationID, projects map[string]tracker.ProjectID, checks map[string]runnerauth.LocalChecks) error {
+	s.projectsMu.Lock()
+	defer s.projectsMu.Unlock()
+	for name, id := range projects {
+		if current := s.nativeProjects[name]; current != nil && current.client.project == id {
+			continue
+		}
+		native, err := s.client.Native(organization, id)
+		if err != nil {
+			return err
+		}
+		native.githubBatch = func(ctx context.Context, task tracker.GitHubBatchTask) error {
+			return s.processGitHubBatch(ctx, native, task)
+		}
+		s.nativeProjects[name] = &NativeConnector{client: native}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name, value := range checks {
+		previous, ok := s.localChecks[name]
+		if !ok || !reflect.DeepEqual(previous, value) {
+			if s.localChecks == nil {
+				s.localChecks = make(map[string]runnerauth.LocalChecks)
+			}
+			s.localChecks[name] = value
+			delete(s.nativeHeartbeats, projects[name])
+		}
+	}
+	return nil
 }

@@ -581,6 +581,7 @@ export type RunnerRouting = typeof RunnerRouting.Type;
  * why the host card draws two meters rather than one.
  */
 export const FleetRunner = Schema.Struct({
+  project_checkouts: Schema.optional(Schema.Record(Schema.String, Schema.Struct({ status: Schema.String, message: Schema.optional(Schema.String), fix_command: Schema.optional(Schema.String) }))),
   update: Schema.optional(Schema.Struct({
     status: Schema.String,
     desired: Schema.NullOr(Schema.Struct({ version: Schema.String })),

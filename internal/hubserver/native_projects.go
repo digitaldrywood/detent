@@ -48,7 +48,7 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 	if s.workspaces != nil {
 		features = append(features, tracker.NativeWorkspaceCapability)
 	}
-	features = append(features, tracker.NativeRunnerSetupCapability)
+	features = append(features, tracker.NativeRunnerSetupCapability, tracker.NativeProjectCheckoutCapability)
 	features = append(features, tracker.NativeDispatchPriorityCapability, tracker.NativeDispatchWaitCapability)
 	return nativeCapabilitiesResponse{
 		ServerID: serverID, Version: s.config.Version, MinimumRunnerVersion: minimumRunnerVersion(s.config.Version),
@@ -192,6 +192,17 @@ func readNativeProject(ctx context.Context, query nativeQueryer, scope nativeSco
 	selection, err := readCloudModelSelection(ctx, query, scope)
 	if err != nil {
 		return project, err
+	}
+	integration, err := readProjectIntegration(ctx, query, scope)
+	if err != nil {
+		return project, err
+	}
+	repository := integration.Repository
+	if repository == "" {
+		repository = integration.CheckoutRepository
+	}
+	if repository != "" {
+		project.CloneURL = "https://github.com/" + repository + ".git"
 	}
 	project.ModelSelection, err = json.Marshal(selection.Effective)
 	return project, err

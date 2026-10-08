@@ -631,6 +631,8 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 	decodeHubResponse(t, response, &issue)
 	response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/claims", credential, tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: binding.MachineID, SessionID: "private-run", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
 	requireNativeStatus(t, response, http.StatusOK)
+	checks := runnerauth.LocalChecks{Checkout: "failed", Setup: "failed", Doctor: "pending", Provider: "pending", CheckoutMessage: "Cannot clone https://github.com/acme/private.git", CheckoutFix: "gh auth login"}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/machines/"+string(binding.MachineID)+"/heartbeat", credential, map[string]any{"version": "test", "capacity": 2, "display_name": "Shared runner", "local_checks": checks}), http.StatusOK)
 	for _, test := range []struct {
 		account string
 		used    int
@@ -644,6 +646,10 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 			browserHostedDecode(t, f.api(t, test.account, http.MethodGet, organization+"/fleet", nil, http.StatusOK), &fleet)
 			if len(fleet.Runners) != 1 || fleet.Runners[0].MachineID != string(binding.MachineID) || fleet.Runners[0].HostUsed != test.used || len(fleet.Runners[0].Leases) != test.leases {
 				t.Fatalf("fleet = %#v", fleet.Runners)
+			}
+			checkout, reported := fleet.Runners[0].ProjectCheckouts[tracker.ProjectID(f.privateProject)]
+			if reported != (test.account == "owner") || reported && (checkout.Status != "missing" || checkout.FixCommand != "gh auth login" || checkout.Message != checks.CheckoutMessage) {
+				t.Fatalf("checkout guidance leaked or missing: %+v", fleet.Runners[0].ProjectCheckouts)
 			}
 		})
 	}

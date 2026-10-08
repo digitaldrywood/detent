@@ -46,86 +46,97 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 	if testing.Short() {
 		t.Skip("headless enrolled runner startup integration")
 	}
-	observations := make(chan *runnerauth.UpdateObservation, 1)
-	var identity runnerauth.File
-	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		var response any
-		switch {
-		case r.URL.Path == "/api/v2/capabilities":
-			response = map[string]any{"version": "dev", "protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeRunnerUpdateCapability}}
-		case strings.HasSuffix(r.URL.Path, "/runners/"+identity.Identity.RunnerID):
-			response = identity.Identity
-		case strings.HasSuffix(r.URL.Path, "/projects/prj_test"):
-			response = tracker.NativeProject{Profile: "native"}
-		case strings.HasSuffix(r.URL.Path, "/heartbeat"):
-			var report struct {
-				Update *runnerauth.UpdateObservation `json:"update"`
+	for _, missingCheckout := range []bool{false, true} {
+		name := "enrolled runner"
+		if missingCheckout {
+			name = "enrolled runner with absent checkout"
+		}
+		t.Run(name, func(t *testing.T) {
+			observations := make(chan *runnerauth.UpdateObservation, 1)
+			var identity runnerauth.File
+			hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				var response any
+				switch {
+				case r.URL.Path == "/api/v2/capabilities":
+					response = map[string]any{"version": "dev", "protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeRunnerUpdateCapability}}
+				case strings.HasSuffix(r.URL.Path, "/runners/"+identity.Identity.RunnerID):
+					response = identity.Identity
+				case strings.HasSuffix(r.URL.Path, "/projects/prj_test"):
+					response = tracker.NativeProject{Profile: "native"}
+				case strings.HasSuffix(r.URL.Path, "/heartbeat"):
+					var report struct {
+						Update *runnerauth.UpdateObservation `json:"update"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
+						t.Error(err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					select {
+					case observations <- report.Update:
+					default:
+					}
+					response = runnerauth.RoutingSnapshot{RunnerID: identity.Identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 1}.Normalized()}
+				default:
+					t.Errorf("unexpected Hub request: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				if err := json.NewEncoder(w).Encode(response); err != nil {
+					t.Error(err)
+				}
+			}))
+			t.Cleanup(hub.Close)
+			root := t.TempDir()
+			var err error
+			identity, err = runnerauth.Initialize(filepath.Join(root, "private", "runner.json"), hub.URL)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
-				t.Error(err)
-				w.WriteHeader(http.StatusBadRequest)
-				return
+			identity.Identity.OrganizationID = "org_test"
+			identity.Identity.ProjectIDs = []tracker.ProjectID{"prj_test"}
+			identity.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
+			if err := runnerauth.Save(filepath.Join(root, "private", "runner.json"), identity); err != nil {
+				t.Fatal(err)
 			}
+			port := 0
+			cfg := BootConfig{Mode: BootModeRunning, Version: "dev", Headless: true, Host: "127.0.0.1", Port: &port, Output: newBootOutput(), Shutdown: NewShutdownController(), Restart: NewRestartRequest()}
+			cfg.Global, err = globalconfig.Default()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Global.Path = filepath.Join(root, "global.yaml")
+			cfg.Global.Client = globalconfig.HubClient{URL: hub.URL, IdentityFile: filepath.Join(root, "private", "runner.json"), OrganizationID: "org_test", NativeProjects: map[string]string{"test": "prj_test"}}
+			if missingCheckout {
+				cfg.Global.Projects = []globalconfig.Project{{ID: "test", Workdir: filepath.Join(root, "missing"), Workflow: filepath.Join(root, "missing", "WORKFLOW.md"), Weight: 1, Priority: 3}}
+			}
+			if err := globalconfig.Write(cfg.Global.Path, cfg.Global, globalconfig.WithMissingProjectPaths()); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			done := make(chan error, 1)
+			go func() { done <- startRunning(ctx, cfg) }()
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case err := <-done:
+					if err != nil && !errors.Is(err, context.Canceled) {
+						t.Error(err)
+					}
+				case <-time.After(10 * time.Second):
+					t.Error("headless runtime did not stop")
+				}
+			})
 			select {
-			case observations <- report.Update:
-			default:
+			case observed := <-observations:
+				if observed == nil || !observed.Supported || observed.Validate() != nil {
+					t.Fatalf("headless heartbeat update observation = %+v", observed)
+				}
+			case <-time.After(15 * time.Second):
+				t.Fatal("headless runner did not publish a heartbeat")
 			}
-			response = runnerauth.RoutingSnapshot{RunnerID: identity.Identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 1}.Normalized()}
-		default:
-			t.Errorf("unexpected Hub request: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		if err := json.NewEncoder(w).Encode(response); err != nil {
-			t.Error(err)
-		}
-	}))
-	t.Cleanup(hub.Close)
-	root := t.TempDir()
-	var err error
-	identity, err = runnerauth.Initialize(filepath.Join(root, "private", "runner.json"), hub.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity.Identity.OrganizationID = "org_test"
-	identity.Identity.ProjectIDs = []tracker.ProjectID{"prj_test"}
-	identity.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
-	if err := runnerauth.Save(filepath.Join(root, "private", "runner.json"), identity); err != nil {
-		t.Fatal(err)
-	}
-	port := 0
-	cfg := BootConfig{Mode: BootModeRunning, Version: "dev", Headless: true, Host: "127.0.0.1", Port: &port, Output: newBootOutput(), Shutdown: NewShutdownController(), Restart: NewRestartRequest()}
-	cfg.Global, err = globalconfig.Default()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Global.Path = filepath.Join(root, "global.yaml")
-	cfg.Global.Client = globalconfig.HubClient{URL: hub.URL, IdentityFile: filepath.Join(root, "private", "runner.json"), OrganizationID: "org_test", NativeProjects: map[string]string{"test": "prj_test"}}
-	if err := globalconfig.Write(cfg.Global.Path, cfg.Global); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- startRunning(ctx, cfg) }()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil && !errors.Is(err, context.Canceled) {
-				t.Error(err)
-			}
-		case <-time.After(10 * time.Second):
-			t.Error("headless runtime did not stop")
-		}
-	})
-	select {
-	case observed := <-observations:
-		if observed == nil || !observed.Supported || observed.Validate() != nil {
-			t.Fatalf("headless heartbeat update observation = %+v", observed)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("headless runner did not publish a heartbeat")
+		})
 	}
 }
 
