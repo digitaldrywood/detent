@@ -66,7 +66,18 @@ FROM runner_identities r JOIN machines m ON m.id = r.machine_id WHERE r.id = ? A
 		return err
 	}
 	current := slices.DeleteFunc(slices.Clone(r.Problems), func(p runnerauth.Problem) bool { return p.Code == "policy_mismatch" })
-	for _, projectID := range r.ProjectIDs {
+	projects := slices.Clone(r.ProjectIDs)
+	if r.Scope == "organization" {
+		for projectID := range configurations {
+			projects = append(projects, tracker.ProjectID(projectID))
+		}
+		for projectID := range admissions {
+			projects = append(projects, tracker.ProjectID(projectID))
+		}
+		slices.Sort(projects)
+		projects = slices.Compact(projects)
+	}
+	for _, projectID := range projects {
 		scope := string(r.OrganizationID) + "/" + string(projectID)
 		id := admissions[string(projectID)].Context.PolicyID
 		if effective := configurations[string(projectID)].EffectivePolicy; effective != nil {

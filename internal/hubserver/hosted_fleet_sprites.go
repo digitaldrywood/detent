@@ -24,18 +24,15 @@ func (s *Service) hostedFleetSprite(ctx, statusContext context.Context, credenti
 	}
 	view.Sprite = &hostedFleetSprite{Name: name, Status: "unknown"}
 	if s.config.SecretKeys != nil && runner.State == "active" && runner.ConnectionHealth != "revoked" && runner.ConnectionHealth != "expired" {
-		for _, project := range runner.ProjectIDs {
+		for project := range visible {
+			if !runner.AllowsProject(project) {
+				continue
+			}
 			if !visible[project] {
 				continue
 			}
 			scope := nativeScope{organization: runner.OrganizationID, project: project, credential: credential}
-			var envelope hubsecrets.Envelope
-			var organization string
-			err := s.database.db.QueryRowContext(ctx, `SELECT ps.organization_slug, ps.ciphertext, ps.nonce, ps.wrapped_data_key, ps.master_key_version FROM project_secrets ps
-JOIN token_grants g ON g.organization_id=ps.organization_id AND g.project_id=ps.project_id
-JOIN api_tokens t ON t.id=g.token_id AND t.revoked_at IS NULL
-JOIN runner_identities r ON r.token_id=t.id AND r.organization_id=ps.organization_id
-WHERE ps.organization_id=? AND ps.project_id=? AND ps.kind=? AND r.id=?`, scope.organization, project, flySpritesToken, runner.RunnerID).Scan(&organization, &envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
+			scope, organization, envelope, err := resolveSpritesSecret(ctx, s.database.db, scope)
 			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			}

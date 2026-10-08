@@ -332,10 +332,10 @@ func TestSpriteUsageAPI(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
 	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	runner.enroll(t)
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO project_sprite_pools(organization_id,project_id,configured_by) SELECT ?,?,id FROM api_tokens WHERE token_hash=?`, f.project.OrganizationID, f.project.ID, apikey.HashToken(testHubAdminToken)); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_pools(organization_id,configured_by) SELECT ?,id FROM api_tokens WHERE token_hash=?`, f.project.OrganizationID, apikey.HashToken(testHubAdminToken)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO project_sprite_members(organization_id,project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,?,?,'enrolled',?,?)`, f.project.OrganizationID, f.project.ID, "worker", "customer", runner.enrollment.ID, formatHubTime(from), formatHubTime(from)); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,token_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,?,?,'enrolled',?,?)`, f.project.OrganizationID, f.project.ID, "worker", "customer", runner.enrollment.ID, formatHubTime(from), formatHubTime(from)); err != nil {
 		t.Fatal(err)
 	}
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other")
@@ -435,7 +435,7 @@ func TestSpriteUsageAPI(t *testing.T) {
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM usage_cost_observations WHERE metric='ram'").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("failed batch partially committed: count=%d error=%v", count, err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE project_sprite_members SET state='deleted' WHERE project_id=?", f.project.ID); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE organization_sprite_members SET state='deleted' WHERE organization_id=?", f.project.OrganizationID); err != nil {
 		t.Fatal(err)
 	}
 	window, _ := costMonth("2026-02", now)
@@ -443,7 +443,7 @@ func TestSpriteUsageAPI(t *testing.T) {
 	if err != nil || len(report.Sources) != 2 || report.Sources[0].ProjectID != string(f.project.ID) || *report.Totals[0].KnownMicros != 40_000 {
 		t.Fatalf("deleted Sprite attribution was lost: %+v %v", report, err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_sprite_pools WHERE project_id=?", f.project.ID); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM organization_sprite_pools WHERE organization_id=?", f.project.OrganizationID); err != nil {
 		t.Fatal(err)
 	}
 	after, err := f.service.database.monthlyCosts(t.Context(), string(f.project.OrganizationID), "organization", nil, window, now)

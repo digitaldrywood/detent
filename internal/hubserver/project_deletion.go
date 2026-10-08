@@ -78,7 +78,7 @@ func requireProjectDeletionIdle(ctx context.Context, tx *sql.Tx, scope nativeSco
 		{`SELECT EXISTS(SELECT 1 FROM conversation_messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.organization_id=? AND c.project_id=? AND m.delivery IN ('queued','sending','sent','delivered','responding','unknown'))`, nil},
 		{`SELECT EXISTS(SELECT 1 FROM github_imports g JOIN projects p ON p.id=g.project_id WHERE p.organization_id=? AND p.id=? AND (g.status IN ('pending','running','partial') OR g.intake_pending=1))`, nil},
 		{`SELECT EXISTS(SELECT 1 FROM github_outbox o JOIN issues i ON i.id=o.issue_id WHERE i.organization_id=? AND i.project_id=? AND o.status IN ('pending','retrying','processing'))`, nil},
-		{`SELECT EXISTS(SELECT 1 FROM project_sprite_members WHERE organization_id=? AND project_id=? AND state<>'deleted')`, nil},
+		{`SELECT EXISTS(SELECT 1 FROM organization_sprite_members WHERE organization_id=? AND token_project_id=? AND state<>'deleted')`, nil},
 	}
 	for _, check := range queries {
 		args := check.args
@@ -90,7 +90,7 @@ func requireProjectDeletionIdle(ctx context.Context, tx *sql.Tx, scope nativeSco
 			return err
 		}
 		if active {
-			return &nativeError{Code: "invalid_request", Message: "Finish or cancel active work, close workspaces, finish imports and GitHub writes, and remove provisioned Sprite pool members before deleting this project", status: http.StatusUnprocessableEntity, publicMessage: true}
+			return &nativeError{Code: "invalid_request", Message: "Finish or cancel active work, close workspaces, finish imports and GitHub writes, and remove Sprite pool members using this project's token before deleting this project", status: http.StatusUnprocessableEntity, publicMessage: true}
 		}
 	}
 	return nil
