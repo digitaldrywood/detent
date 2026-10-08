@@ -426,15 +426,27 @@ func (s *Service) listNativeHistory(c echo.Context) error {
 func (s *Service) readHistory(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.CollaborationEvent], error) {
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/history"
 
-	if err := validateNativeQuery(params); err != nil {
+	if err := validateNativeQuery(params, "view"); err != nil {
 		return tracker.Page[tracker.CollaborationEvent]{}, err
+	}
+	view := params.Get("view")
+	if view != "" && view != "blockers" {
+		return tracker.Page[tracker.CollaborationEvent]{}, nativeInvalid("view supports blockers")
+	}
+	dataColumn := "data_json"
+	if view == "blockers" {
+		dataColumn = `json_object('revision', json_extract(data_json, '$.revision'),
+ 'from_state', json_extract(data_json, '$.from_state'), 'to_state', json_extract(data_json, '$.to_state'),
+ 'reason', json_extract(data_json, '$.reason'), 'run', CASE WHEN json_type(data_json, '$.run') = 'object'
+ THEN json_object('attempt_id', json_extract(data_json, '$.run.attempt_id'),
+ 'fencing_token', json_extract(data_json, '$.run.fencing_token')) ELSE NULL END)`
 	}
 	limit, cursor, key, err := s.readNativePage(ctx, scope, path, params)
 	if err != nil {
 		return tracker.Page[tracker.CollaborationEvent]{}, err
 	}
 
-	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+	if _, _, err := readNativeIssueProjection(ctx, s.database.db, scope, item, true); err != nil {
 		return tracker.Page[tracker.CollaborationEvent]{}, err
 	}
 	var after int64
@@ -444,7 +456,7 @@ func (s *Service) readHistory(ctx context.Context, scope nativeScope, item strin
 			return tracker.Page[tracker.CollaborationEvent]{}, nativeInvalid("History cursor is invalid")
 		}
 	}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT id, sequence, type, schema_version, actor_json, data_json, recorded_at FROM collaboration_events
+	rows, err := s.database.db.QueryContext(ctx, `SELECT id, sequence, type, schema_version, actor_json, `+dataColumn+`, recorded_at FROM collaboration_events
 WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence > ? ORDER BY sequence LIMIT ?`, scope.organization, scope.project, item, after, limit+1)
 	if err != nil {
 		return tracker.Page[tracker.CollaborationEvent]{}, err

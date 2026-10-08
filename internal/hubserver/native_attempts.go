@@ -19,6 +19,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -330,15 +331,25 @@ func (s *Service) listNativeAttempts(c echo.Context) error {
 func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeAttempt], error) {
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/attempts"
 
-	if err := validateNativeQuery(params); err != nil {
+	if err := validateNativeQuery(params, "view"); err != nil {
 		return tracker.Page[tracker.NativeAttempt]{}, err
+	}
+	view := params.Get("view")
+	if view != "" && view != "blockers" {
+		return tracker.Page[tracker.NativeAttempt]{}, nativeInvalid("view supports blockers")
+	}
+	budget := 1 << 20
+	dataColumn := "a.data_json"
+	if view == "blockers" {
+		budget = operatortool.WorkHistoryPageBytes
+		dataColumn = "json_remove(a.data_json, '$.runtime')"
 	}
 	limit, cursor, key, err := s.readNativePage(ctx, scope, path, params)
 	if err != nil {
 		return tracker.Page[tracker.NativeAttempt]{}, err
 	}
 
-	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
+	if _, _, err := readNativeIssueProjection(ctx, s.database.reader, scope, item, true); err != nil {
 		return tracker.Page[tracker.NativeAttempt]{}, err
 	}
 	var after int64
@@ -348,7 +359,7 @@ func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item stri
 			return tracker.Page[tracker.NativeAttempt]{}, nativeInvalid("Attempt cursor is invalid")
 		}
 	}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT `+dataColumn+`, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
 WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fencing_token > ? ORDER BY a.fencing_token LIMIT ?`, scope.organization, scope.project, item, after, limit+1)
 	if err != nil {
@@ -356,20 +367,42 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fe
 	}
 	defer rows.Close()
 	page := tracker.Page[tracker.NativeAttempt]{Items: []tracker.NativeAttempt{}}
+	hasMore := false
 	for rows.Next() {
+		if len(page.Items) == limit {
+			hasMore = true
+			break
+		}
 		attempt, err := scanNativeAttempt(rows, s.config.now())
 		if err != nil {
 			return tracker.Page[tracker.NativeAttempt]{}, err
 		}
 		attempt.Runtime = attempt.Runtime.WithoutActivitySpans()
-		page.Items = append(page.Items, attempt)
+		next := cursor
+		next.After = strconv.FormatInt(int64(attempt.FencingToken), 10)
+		candidate := tracker.Page[tracker.NativeAttempt]{Items: append(page.Items, attempt)}
+		candidate.NextCursor, err = encodeNativeCursor(next, key)
+		if err != nil {
+			return tracker.Page[tracker.NativeAttempt]{}, err
+		}
+		encoded, err := json.Marshal(candidate)
+		if err != nil {
+			return tracker.Page[tracker.NativeAttempt]{}, err
+		}
+		if len(encoded)+1 > budget {
+			if len(page.Items) == 0 {
+				return tracker.Page[tracker.NativeAttempt]{}, operatortool.ErrReadUnavailable
+			}
+			hasMore = true
+			break
+		}
+		page.Items = candidate.Items
+		cursor = next
 	}
 	if err := rows.Err(); err != nil {
 		return tracker.Page[tracker.NativeAttempt]{}, err
 	}
-	if len(page.Items) > limit {
-		page.Items = page.Items[:limit]
-		cursor.After = strconv.FormatInt(int64(page.Items[len(page.Items)-1].FencingToken), 10)
+	if hasMore {
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
 		if err != nil {
 			return tracker.Page[tracker.NativeAttempt]{}, err
