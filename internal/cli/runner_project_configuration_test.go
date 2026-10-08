@@ -21,7 +21,7 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 		t.Skip("durable SQLite integration")
 	}
 
-	for _, scenario := range []string{"read", "intake off", "foreign project", "revoked project grant", "replaced mapping", "foreign binding", "expired identity"} {
+	for _, scenario := range []string{"resume", "read", "intake off", "foreign project", "revoked project grant", "replaced mapping", "foreign binding", "expired identity"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			if err := os.Chmod(root, 0700); err != nil {
@@ -118,7 +118,19 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 			if view.ProjectID != id {
 				t.Fatalf("foreign identity in receipt=%+v", view)
 			}
-			if scenario == "read" || scenario == "intake off" {
+			if scenario == "resume" {
+				request := &runnerauth.ProjectConfigurationRequest{ProjectID: id, RequestID: "resume-mapped-project", Operation: "resume_local_project", ExpectedConfigRevision: view.ConfigRevision, ExpectedPolicyID: view.EffectivePolicy.ID}
+				resumed := owner(t.Context(), id, request)
+				if resumed.ProjectID != id || resumed.RequestID != request.RequestID || !resumed.Applied || !resumed.Saved || resumed.Paused || resumed.Constraint != "" {
+					t.Fatalf("mapped resume=%+v", resumed)
+				}
+				for _, next := range []*runnerauth.ProjectConfigurationRequest{request, nil} {
+					receipt := owner(t.Context(), id, next)
+					if receipt.ProjectID != id || receipt.RequestID != request.RequestID || receipt.ConfigRevision != resumed.ConfigRevision || !receipt.Applied || receipt.Paused {
+						t.Fatalf("resume heartbeat receipt=%+v", receipt)
+					}
+				}
+			} else if scenario == "read" || scenario == "intake off" {
 				if view.Constraint != "" || !view.Registered || view.EffectivePolicy == nil || view.LocalBindingPolicy == nil || view.AllowLocalBinding {
 					t.Fatalf("selected owner=%+v", view)
 				}

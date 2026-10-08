@@ -14,6 +14,7 @@ func TestLocalProjectArgumentBoundary(t *testing.T) {
 	}{
 		{"read", LocalProjectConfiguration, `{"project_id":"p"}`, true},
 		{"drain", "drain_local_project", valid, true},
+		{"resume", "resume_local_project", valid, true},
 		{"detach", "detach_local_project", strings.TrimSuffix(valid, "}") + `,"checkpoint":"` + strings.Repeat("b", 64) + `"}`, true},
 		{"policy", "apply_local_project_policy", strings.TrimSuffix(valid, "}") + `,"source_revision":"` + strings.Repeat("c", 40) + `","policy_id":"policy_new"}`, true},
 		{"missing checkpoint", "detach_local_project", valid, false},

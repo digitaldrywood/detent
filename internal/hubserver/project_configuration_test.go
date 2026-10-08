@@ -160,7 +160,7 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 }
 
 func TestCloudProjectConfigurationOwner(t *testing.T) {
-	for _, scenario := range []string{"drain", "apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
+	for _, scenario := range []string{"resume", "resume stale runner", "resume stale configuration", "resume denied", "resume revoked", "drain", "apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "project-configuration")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
@@ -197,6 +197,22 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			f.service.echo.GET("/api/v2/organizations/:organization/configuration-context-test", func(c echo.Context) error { contexts <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.base+"/configuration-context-test", testHubAdminToken, nil), http.StatusOK)
 			ctx := <-contexts
+			if scenario == "resume denied" {
+				connection := operatortool.CurrentConnection(ctx)
+				resolve := connection.Resolve
+				connection.Resolve = func(ctx context.Context) (operatortool.Authority, error) {
+					authority, err := resolve(ctx)
+					check := authority.Check
+					authority.Check = func(ctx context.Context, requirement operatortool.Requirement) error {
+						if requirement.ResourceKind == "runners" {
+							return operatortool.ErrAccessDenied
+						}
+						return check(ctx, requirement)
+					}
+					return authority, err
+				}
+				ctx = operatortool.WithConnection(ctx, connection)
+			}
 			executor := hubProjectExecutor{f.service}
 			call := func(name string, args operatortool.LocalProjectArguments) (operatortool.Result, error) {
 				t.Helper()
@@ -216,6 +232,62 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			}
 			if observed.RunnerID != r.binding.RunnerID || observed.ConfigRevision != view.ConfigRevision || observed.AllowLocalBinding || observed.LocalBindingPolicy == nil || observed.LocalBindingPolicy.ID != candidate.ID {
 				t.Fatalf("configuration=%s", result.Content)
+			}
+			if strings.HasPrefix(scenario, "resume") {
+				args := operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: observed.RunnerID, ExpectedRunnerRevision: observed.RunnerRevision, RequestID: "resume", ExpectedConfigRevision: observed.ConfigRevision, ExpectedPolicyID: current.ID}
+				if scenario == "resume stale runner" {
+					args.ExpectedRunnerRevision++
+				}
+				if scenario == "resume stale configuration" {
+					args.ExpectedConfigRevision = strings.Repeat("b", 64)
+				}
+				result, err := call("resume_local_project", args)
+				if scenario == "resume denied" || strings.Contains(scenario, "stale") {
+					if err == nil || heartbeat().ProjectConfigurationRequest != nil {
+						t.Fatalf("resume refusal=%s %v", result.Content, err)
+					}
+					if strings.Contains(scenario, "stale") {
+						var conflict *nativeError
+						if !errors.As(err, &conflict) || conflict.Code != "revision_conflict" || int64(conflict.CurrentRevision) != observed.RunnerRevision {
+							t.Fatalf("resume CAS mismatch=%v", err)
+						}
+					}
+					if scenario == "resume denied" && (!errors.Is(err, operatortool.ErrAccessDenied) || !strings.Contains(err.Error(), "manage_runner")) {
+						t.Fatalf("unnamed permission=%v", err)
+					}
+					return
+				}
+				if err != nil || !strings.Contains(string(result.Content), `"pending":true`) {
+					t.Fatalf("resume queued=%s %v", result.Content, err)
+				}
+				if scenario == "resume revoked" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE token_hash = ?", formatHubTime(time.Now()), apikey.HashToken(testHubAdminToken)); err != nil {
+						t.Fatal(err)
+					}
+					if heartbeat().ProjectConfigurationRequest != nil {
+						t.Fatal("revoked resume reached runner")
+					}
+					return
+				}
+				request := heartbeat().ProjectConfigurationRequest
+				if request == nil || request.Operation != "resume_local_project" || request.RequestID != args.RequestID {
+					t.Fatalf("resume delivery=%+v", request)
+				}
+				view.RequestID, view.Saved, view.Applied, view.Paused = args.RequestID, true, true, false
+				if heartbeat().ProjectConfigurationRequest != nil {
+					t.Fatal("acknowledged resume repeated")
+				}
+				result, err = call("resume_local_project", args)
+				if err != nil || !strings.Contains(string(result.Content), `"applied":true`) || !strings.Contains(string(result.Content), `"paused":false`) {
+					t.Fatalf("resume receipt=%s %v", result.Content, err)
+				}
+				view.RequestID = ""
+				heartbeat()
+				result, err = call(operatortool.LocalProjectConfiguration, operatortool.LocalProjectArguments{ProjectID: view.ProjectID})
+				if err != nil || json.Unmarshal(result.Content, &observed) != nil || observed.Paused || observed.LastOperation == nil || observed.LastOperation.Operation != "resume_local_project" || !observed.LastOperation.Applied {
+					t.Fatalf("resume readback=%s %v", result.Content, err)
+				}
+				return
 			}
 			if scenario == "drain" {
 				args := operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: observed.RunnerID, ExpectedRunnerRevision: observed.RunnerRevision, RequestID: "drain", ExpectedConfigRevision: observed.ConfigRevision, ExpectedPolicyID: current.ID}
