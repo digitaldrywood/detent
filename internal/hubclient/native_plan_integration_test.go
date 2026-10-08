@@ -10,11 +10,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/codex"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -38,9 +40,11 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
-		name    string
-		abandon bool
-		failure string
+		name             string
+		abandon          bool
+		failure          string
+		planRecoveryRole string
+		resumeCase       string
 	}{
 		{name: "automatic handoff"},
 		{name: "abandon deferred planner and recover", abandon: true},
@@ -49,14 +53,27 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 		{name: "owned cleanup failure settles instance outcome", failure: "cleanup"},
 		{name: "completed provider with exited process preserves staged finalization", failure: "exited"},
 		{name: "permanent pre-provider recovery refusal settles claim", failure: "recovery"},
+		{name: "planning-enabled Todo refuses recorded code before provider", failure: "recovery", planRecoveryRole: runner.RoleCode},
+		{name: "planning-enabled Todo refuses recorded rework before provider", failure: "recovery", planRecoveryRole: runner.RoleRework},
+		{name: "planning-enabled clean code identity mismatch preserves current version", failure: "recovery", planRecoveryRole: runner.RoleCode, resumeCase: "identity"},
+		{name: "planning-enabled persisted policy refusal preserves current version", failure: "recovery", planRecoveryRole: runner.RoleCode, resumeCase: "policy"},
 	} {
-		t.Run(test.name, func(t *testing.T) { testNativePlannerHandoff(t, test.abandon, test.failure) })
+		t.Run(test.name, func(t *testing.T) {
+			testNativePlannerHandoff(t, test.abandon, test.failure, test.planRecoveryRole, test.resumeCase)
+		})
 	}
 }
 
-func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
+func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryRole, resumeCase string) {
 	t.Helper()
-	h := newNativeChangeHubTransport(t, "Human Review", hubserverPlanStates(), true)
+	planningRecovery := planRecoveryRole != ""
+	states := hubserverPlanStates()
+	if failure == "recovery" {
+		states[0].Transitions = append(states[0].Transitions, "Blocked")
+		states[1].Transitions = append(states[1].Transitions, "Blocked")
+		states = append(states, tracker.NativeState{Name: "Blocked", Transitions: []string{"Todo"}})
+	}
+	h := newNativeChangeHubTransport(t, "Human Review", states, true)
 	previousPolicyID := h.descriptor.ID
 	h.descriptor.Gates.HumanReview = true
 	h.descriptor = h.descriptor.WithID()
@@ -75,18 +92,31 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := runtimeStore.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	var preserved *tracker.NativeCheckpoint
+	var preservedRecovery tracker.NativeRecovery
+	var preservedChanges []tracker.ChangeRequest
 	if failure == "recovery" {
 		candidate := h.claim(t, issue.ID)
 		info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier, BranchName: candidate.BranchName})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("preserved source\n"), 0o600); err != nil {
-			t.Fatal(err)
+		if resumeCase == "" {
+			if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("preserved source\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			nativeChangeGit(t, info.Path, "add", "README.md")
+			nativeChangeGit(t, info.Path, "commit", "-m", "preserved source")
 		}
-		nativeChangeGit(t, info.Path, "add", "README.md")
-		nativeChangeGit(t, info.Path, "commit", "-m", "preserved source")
 		state, err := backend.(workspace.RecoveryStateProvider).RecoveryState(t.Context(), info, workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier})
 		if err != nil {
 			t.Fatal(err)
@@ -106,10 +136,50 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 			}
 			return request, true
 		})
-		if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "provider_default"}); err != nil {
+		recordedRole := runner.RoleCode
+		if planningRecovery {
+			recordedRole = planRecoveryRole
+		}
+		if resumeCase != "" {
+			if len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 || state.UnpushedCommits != 0 {
+				t.Fatalf("resume refusal setup is not clean: tracked=%d untracked=%d unpushed=%d", len(state.TrackedPaths), len(state.UntrackedPaths), state.UnpushedCommits)
+			}
+			started := time.Now().Add(-time.Minute)
+			identity := agentidentity.Configured("codex", "codex", "", recordedRole, "provider_default", "openai", "high", "", started)
+			sessionPolicy := h.descriptor
+			if resumeCase == "policy" {
+				sessionPolicy.ConfigDigest = policy.Digest([]byte("prior persisted session policy"))
+				sessionPolicy = sessionPolicy.WithID()
+			}
+			metadata, err := json.Marshal(map[string]any{"policy": sessionPolicy})
+			if err != nil {
+				t.Fatal(err)
+			}
+			localAttempt, err := runtimeStore.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "local", IssueID: issue.ID, WorkerType: "agent", StartedAt: started, WorkerMetadataJSON: string(metadata), RuntimeIdentity: identity})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := runtimeStore.StartSession(t.Context(), store.SessionStart{ProjectID: "local", IssueID: issue.ID, WorkAttemptID: localAttempt, StartedAt: started, RequestedModel: "provider_default", Model: "provider_default", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: recordedRole, RuntimeIdentity: identity})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := runtimeStore.FinishSession(t.Context(), session, store.SessionFinish{Turns: 1, CompletedAt: started.Add(time.Second), FinalState: "failed", ProviderThreadID: "recorded-thread", ProviderSessionID: "recorded-session"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := runtimeStore.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: localAttempt, CompletedAt: started.Add(time.Second), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalCancelled, WorkerMetadataJSON: string(metadata), MetricsJSON: `{"turns":1,"total_tokens":0}`}); err != nil {
+				t.Fatal(err)
+			}
+			if err := execution.(runner.RuntimeExecution).ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{LocalAttemptID: localAttempt, Generation: 1, Phase: "implementation", HeartbeatAt: started, Identity: identity}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: recordedRole, Backend: "codex", Model: "provider_default"}); err != nil {
 			t.Fatal(err)
 		}
 		checkpoint := tracker.NativeCheckpoint{Resume: "manual_recovery", Availability: "available", Storage: "local_only", WorktreeState: "unpushed", HeadSHA: state.HeadSHA, WorkspaceDigest: state.WorkspaceFingerprint, ExternalEffect: "none", EffectState: "none"}
+		if resumeCase != "" {
+			checkpoint.Resume, checkpoint.WorktreeState = "resume_session", "clean"
+		}
 		preserved = &checkpoint
 		if err := execution.Checkpoint(t.Context(), checkpoint); err != nil {
 			t.Fatal(err)
@@ -120,17 +190,25 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "interrupted"); err != nil {
 			t.Fatal(err)
 		}
-	}
-	runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := runtimeStore.Close(); err != nil {
-			t.Error(err)
+		if planningRecovery {
+			if resumeCase != "" {
+				change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Preserved current Change"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				h.publish(t, tracker.NativeWorkItemID(issue.ID), change.ID, state.HeadSHA, "", state.HeadSHA)
+			}
+			preservedRecovery, err = h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil || len(preservedRecovery.Attempts) != 1 || preservedRecovery.Attempts[0].Identity == nil || preservedRecovery.Attempts[0].Identity.Role != planRecoveryRole || preservedRecovery.Issue.State != "Todo" {
+				t.Fatalf("planning refusal setup did not preserve a Todo source receipt: role=%s attempts=%d change=%v state=%s error=%v", planRecoveryRole, len(preservedRecovery.Attempts), preservedRecovery.Change, preservedRecovery.Issue.State, err)
+			}
+			preservedChanges = h.changes(t, issue.ID)
+			if resumeCase != "" && (preservedRecovery.Change == nil || preservedRecovery.Change.ChangeID == "" || preservedRecovery.Change.VersionID == "" || preservedRecovery.ChangeDetail == nil || len(preservedChanges) != 1 || preservedChanges[0].CurrentVersion == "") {
+				t.Fatal("resume refusal setup has no genuine current Change version")
+			}
 		}
-	})
-	plan := gate.PlanConfig{Enabled: failure == "", Review: gate.PlanReviewAutomated}
+	}
+	plan := gate.PlanConfig{Enabled: failure == "" || planningRecovery, Review: gate.PlanReviewAutomated}
 	provider := &nativePlanningAgent{failure: failure}
 	agent, err := runner.NewRunner(runner.Dependencies{
 		ProjectID: "local", Store: runtimeStore,
@@ -152,6 +230,19 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 	h.native.client.httpClient.Transport = transport
 	if failure == "recovery" {
 		h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+			if planningRecovery && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/release") {
+				current, readErr := h.native.Issue(request.Context(), tracker.NativeWorkItemID(issue.ID))
+				h.scheduler.mu.Lock()
+				claim, claimed := h.scheduler.nativeClaims[issue.ID]
+				h.scheduler.mu.Unlock()
+				var authorityErr error
+				if claimed {
+					_, authorityErr = h.native.ValidateLease(request.Context(), claim.lease)
+				}
+				response, releaseErr := transport.RoundTrip(request)
+				finished <- nativePlanFinish{state: current.State, authorityLive: claimed && authorityErr == nil, err: errors.Join(readErr, authorityErr, releaseErr)}
+				return response, releaseErr
+			}
 			response, err := transport.RoundTrip(request)
 			if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/release") {
 				current, readErr := h.native.Issue(request.Context(), tracker.NativeWorkItemID(issue.ID))
@@ -168,7 +259,16 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 	if abandon {
 		orchCfg.PollInterval = time.Hour
 	}
-	orch, err := orchestrator.New(orchCfg, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: agent, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, WorkflowMetrics: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	var runBackend runner.Backend = agent
+	observed := make(chan nativePlanRunObservation, 8)
+	if failure == "recovery" {
+		orchCfg.ObservedStates = append(orchCfg.ObservedStates, "Blocked")
+	}
+	if planningRecovery {
+		orchCfg.PollInterval = time.Hour
+		runBackend = &nativePlanObservedRunner{Runner: agent, observed: observed}
+	}
+	orch, err := orchestrator.New(orchCfg, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: runBackend, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, WorkflowMetrics: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +284,9 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 	wantStates := []string{"In Progress", "Human Review"}
 	if failure != "" {
 		wantStates = []string{"Human Review"}
+	}
+	if failure == "recovery" {
+		wantStates = []string{"Blocked"}
 	}
 	if abandon {
 		select {
@@ -239,14 +342,41 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 	if failure == "refused" || failure == "cleanup" {
 		wantStates = []string{"Todo"}
 	}
+	var refusalAttemptID int64
 	for _, want := range wantStates {
 		select {
 		case got := <-finished:
 			if got.err != nil {
 				t.Fatal(got.err)
 			}
+			if planningRecovery {
+				select {
+				case run := <-observed:
+					refusalAttemptID = run.localAttemptID
+					wantReason := "checkpoint_requires_recovery"
+					switch resumeCase {
+					case "identity":
+						wantReason = "session_restart_required"
+					case "policy":
+						wantReason = "policy_mismatch"
+					}
+					if run.mode != runner.RunModePlan || run.state != "Todo" || run.recordedRole != planRecoveryRole || !errors.Is(run.err, runner.ErrNativeRecoveryRequired) || !strings.Contains(run.err.Error(), wantReason) {
+						t.Fatalf("planning refusal ran the wrong dispatch or failure: mode=%s state=%s recorded_role=%s error=%v", run.mode, run.state, run.recordedRole, run.err)
+					}
+					t.Logf("verified dispatch: mode=%s state=%s recorded_role=%s refusal=%v authority_live_at_release=%v lane_before_release=%s", run.mode, run.state, run.recordedRole, run.err, got.authorityLive, got.state)
+				default:
+					t.Fatal("native release preceded the observed planning refusal")
+				}
+				if !got.authorityLive {
+					t.Fatal("planning refusal lost native claim authority before settlement")
+				}
+			}
 			if got.state != want {
-				t.Fatalf("native run finished in %s, want handoff to %s before lease retirement", got.state, want)
+				if planningRecovery {
+					t.Errorf("native run finished in %s, want handoff to %s before lease retirement", got.state, want)
+				} else {
+					t.Fatalf("native run finished in %s, want handoff to %s before lease retirement", got.state, want)
+				}
 			}
 		case <-time.After(10 * time.Second):
 			state, _ := orch.State(t.Context())
@@ -254,6 +384,33 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 		}
 	}
 	changes := h.changes(t, issue.ID)
+	if planningRecovery {
+		current, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+		if err != nil || current.Issue.State != "Blocked" || !reflect.DeepEqual(current.Attempts, preservedRecovery.Attempts) || !reflect.DeepEqual(current.Change, preservedRecovery.Change) || !reflect.DeepEqual(current.ChangeDetail, preservedRecovery.ChangeDetail) || provider.calls.Load() != 0 || !reflect.DeepEqual(changes, preservedChanges) {
+			t.Errorf("planning refusal changed preserved evidence: state=%s receipt_unchanged=%v change_unchanged=%v calls=%d changes=%d error=%v", current.Issue.State, reflect.DeepEqual(current.Attempts, preservedRecovery.Attempts), reflect.DeepEqual(current.Change, preservedRecovery.Change), provider.calls.Load(), len(changes), err)
+		}
+		if resumeCase == "identity" && provider.resumeVerified.Load() != 1 || resumeCase == "policy" && provider.resumeVerified.Load() != 0 {
+			t.Fatalf("resume refusal did not exercise the intended boundary: case=%s verification_calls=%d", resumeCase, provider.resumeVerified.Load())
+		}
+		for range 2 {
+			if candidates := h.candidates(t); len(candidates) != 0 {
+				t.Errorf("permanent planning refusal reclaimable: candidates=%d", len(candidates))
+			}
+		}
+		state, err := orch.State(t.Context())
+		if err != nil || state.FailureBreaker.Count != 0 || len(state.Retry) != 0 || len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 {
+			t.Errorf("planning refusal charged failures or queued retry: breaker=%d retry=%d instant=%d repeated=%d error=%v", state.FailureBreaker.Count, len(state.Retry), len(state.InstantFailures), len(state.RepeatedFailures), err)
+		}
+		attempt, err := runtimeStore.WorkAttempt(t.Context(), refusalAttemptID)
+		var metadata struct {
+			RunMode string `json:"run_mode"`
+		}
+		metadataErr := json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata)
+		if err != nil || metadataErr != nil || metadata.RunMode != runner.RunModePlan || attempt.WorkerType != "planner" || attempt.Status != store.WorkAttemptStatusTerminal || attempt.TerminalState != store.WorkAttemptTerminalCancelled || attempt.ErrorClass != "workspace_preparation" {
+			t.Fatalf("planning refusal lost instance accounting: mode=%s worker=%s status=%s terminal=%s class=%s error=%v", metadata.RunMode, attempt.WorkerType, attempt.Status, attempt.TerminalState, attempt.ErrorClass, errors.Join(err, metadataErr))
+		}
+		return
+	}
 	if failure == "recovery" {
 		if preserved == nil {
 			t.Fatal("recovery fixture has no preserved checkpoint")
@@ -376,9 +533,18 @@ func hubserverPlanStates() []tracker.NativeState {
 }
 
 type nativePlanningAgent struct {
-	failure   string
-	calls     atomic.Int64
-	workspace string
+	failure        string
+	calls          atomic.Int64
+	workspace      string
+	resumeVerified atomic.Int64
+}
+
+func (a *nativePlanningAgent) VerifyResume(_ context.Context, _ runner.AgentProcessRequest, resume runner.AgentResume) error {
+	if resume.ThreadID != "recorded-thread" || resume.SessionID != "recorded-session" {
+		return errors.New("recorded provider session unavailable")
+	}
+	a.resumeVerified.Add(1)
+	return nil
 }
 
 func (a *nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
@@ -406,9 +572,41 @@ func (a *nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnR
 }
 
 type nativePlanFinish struct {
-	state string
-	err   error
+	state         string
+	authorityLive bool
+	err           error
 }
+
+type nativePlanRunObservation struct {
+	mode           string
+	state          string
+	recordedRole   string
+	err            error
+	localAttemptID int64
+}
+
+type nativePlanObservedRunner struct {
+	*runner.Runner
+	observed chan<- nativePlanRunObservation
+}
+
+func (r *nativePlanObservedRunner) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
+	observation := nativePlanRunObservation{mode: request.Mode, state: request.Issue.State, localAttemptID: request.WorkAttemptID}
+	if request.Execution != nil {
+		attempts := request.Execution.Recovery().Attempts
+		if len(attempts) > 0 && attempts[len(attempts)-1].Identity != nil {
+			observation.recordedRole = attempts[len(attempts)-1].Identity.Role
+		}
+	}
+	result, err := r.Runner.Run(ctx, request)
+	observation.err = err
+	select {
+	case r.observed <- observation:
+	default:
+	}
+	return result, err
+}
+
 type nativePlanTransport struct {
 	next         http.RoundTripper
 	native       *NativeClient

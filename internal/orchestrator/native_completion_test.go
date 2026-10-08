@@ -81,6 +81,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{Name: "Human Review", Transitions: []string{"In Progress", "Done"}},
 		{Name: "Done", Terminal: true},
 	}
+	planRecovery := append([]connector.WorkflowState(nil), workflow...)
+	planRecovery[0].Transitions = append([]string{"Blocked"}, planRecovery[0].Transitions...)
+	dispatchableBlocked := append([]connector.WorkflowState(nil), planRecovery...)
+	dispatchableBlocked[2].Dispatchable = true
+	operatorBlocked := append([]connector.WorkflowState(nil), planRecovery...)
+	operatorBlocked[2].OperatorOnly = true
 	undispatched := append([]connector.WorkflowState(nil), landing...)
 	undispatched[3].Dispatchable = false
 	rework := append(append([]connector.WorkflowState(nil), landing...), connector.WorkflowState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Review", "Merging", "Blocked"}})
@@ -152,7 +158,24 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		blockerState  string
 		interrupted   bool
 		turnStarted   bool
+		mode          string
+		preProvider   bool
+		wantAuthority bool
 	}{
+		{name: "PLAN ordinary provider failure retains ordinary completion", mode: runpkg.RunModePlan, sourceState: "Todo", states: planRecovery, runErr: errors.New("provider failed"), turnStarted: true, wantOrdinary: true, wantContinue: true},
+		{name: "PLAN post-provider recovery error retains ordinary completion", mode: runpkg.RunModePlan, sourceState: "Todo", states: planRecovery, runErr: runpkg.ErrNativeRecoveryRequired, turnStarted: true, wantOrdinary: true, wantContinue: true},
+		{name: "PLAN recovery refusal settles Blocked before release", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: planRecovery, runErr: fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired), wantState: "Blocked", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
+		{name: "CODE pre-provider recovery refusal settles Blocked before release", preProvider: true, states: planRecovery, humanReview: &no, runErr: fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired), wantState: "Blocked", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
+		{name: "PLAN persisted policy refusal settles Blocked", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: planRecovery, runErr: fmt.Errorf("%w: policy_mismatch", runpkg.ErrNativeRecoveryRequired), wantState: "Blocked", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
+		{name: "PLAN recovery refusal denied lane remains deferred after replay", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: planRecovery, updateErr: connector.ErrStateUpdateBlocked, runErr: fmt.Errorf("%w: session_restart_required", runpkg.ErrNativeRecoveryRequired), wantDeferred: true, roundTrip: true},
+		{name: "PLAN recovery refusal unavailable workflow remains deferred", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: planRecovery, statesErr: errors.New("native workflow unavailable"), runErr: fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired), wantDeferred: true},
+		{name: "PLAN recovery refusal stale lane fencing remains deferred", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: planRecovery, updateErr: tracker.ErrStaleFencingToken, runErr: fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired), wantDeferred: true},
+		{name: "PLAN recovery refusal unavailable lane write remains deferred", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: planRecovery, updateErr: errors.New("native lane write unavailable"), runErr: fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired), wantDeferred: true},
+		{name: "PLAN recovery refusal cannot use dispatchable Blocked", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: dispatchableBlocked, runErr: fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired), wantDeferred: true},
+		{name: "PLAN recovery refusal cannot use operator Blocked", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: operatorBlocked, runErr: fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired), wantDeferred: true},
+		{name: "PLAN recovery refusal without permitted Blocked remains deferred", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: fourLanes, runErr: fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired), wantDeferred: true},
+		{name: "PLAN recovery refusal with expired authority preserves issue", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: planRecovery, runErr: errors.Join(runpkg.ErrNativeRecoveryRequired, runpkg.ErrExecutionAuthorityUnavailable, tracker.ErrStaleFencingToken), wantAuthority: true},
+		{name: "PLAN recovery refusal loses authority at lane write", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: planRecovery, updateErr: errors.Join(runpkg.ErrExecutionAuthorityUnavailable, tracker.ErrStaleFencingToken), runErr: fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired), wantAuthority: true},
 		{name: "source free completion without Change returns to Todo", states: fourLanes, humanReview: &no, wantSettled: true, wantState: "Todo"},
 		{name: "unfinished completion without Change returns checkpoint to Rework", states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, diffStats: checkpoint, wantSettled: true, wantState: "Rework"},
 		{name: "typed instance blockers retain Blocked with instance reason code", states: blockedLanding, humanReview: &no, finalMessage: strings.Replace(instanceReport, "status: blocked", "status: blocked\nreason_code: instance_limitation", 1), wantInstance: true},
@@ -371,7 +394,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			if test.quotaWait {
 				orch.setGitHubRESTCapacityOutage(&state, githubRESTBudgetEvidence{Consumer: "worker", CredentialIdentity: "runner", RateLimitKind: "primary_exhausted", ObservedAt: now, ResetAt: now.Add(time.Hour)}, now)
 			}
-			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Generation: 7, SessionID: "native-session", Tokens: TokenTotals{TotalTokens: 42}, Mode: runpkg.RunModeImplement, DispatchSourceState: issue.State, StartedAt: now.Add(-time.Minute)}
+			mode := firstNonBlank(test.mode, runpkg.RunModeImplement)
+			runningTokens := TokenTotals{TotalTokens: 42}
+			if test.preProvider {
+				runningTokens = TokenTotals{}
+			}
+			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Generation: 7, SessionID: "native-session", Tokens: runningTokens, Mode: mode, DispatchSourceState: issue.State, StartedAt: now.Add(-time.Minute)}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
 			if test.interrupted {
 				previous := cloneIssue(issue)
@@ -400,7 +428,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				finalState = FinalStateCompleted
 			}
 			tokens := TokenTotals{TotalTokens: 42}
-			if test.noUsage {
+			if test.noUsage || test.preProvider {
 				tokens = TokenTotals{}
 			}
 			diffStats := test.diffStats
@@ -470,7 +498,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			}
 			event := runpkg.Completion{
 				IssueID: issue.ID, CompletedAt: now, Err: test.runErr,
-				Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement, WorkAttemptID: 42, Generation: 7},
+				Request: runpkg.RunRequest{Mode: mode, WorkAttemptID: 42, Generation: 7},
 				Result:  runpkg.RunResult{FinalState: finalState, FinalMessage: test.finalMessage, NativeChange: test.change, Tokens: tokens, DiffStats: diffStats, TurnStarted: test.turnStarted || test.wantInstance || test.wantSettled || test.diffStats.Fingerprint != ""},
 			}
 			if test.wantDirect {
@@ -495,6 +523,28 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				t.Fatal("nil native result bypassed ordinary continuation ownership")
 			}
 			orch.handleRunResult(t.Context(), &state, event)
+			if test.preProvider {
+				if len(state.Completed) != 0 || len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 || state.FailureBreaker.Count != 0 {
+					t.Fatal("pre-provider native refusal consumed issue failures or acceptance")
+				}
+				if test.wantAuthority {
+					if tick.stateIssues[0].State != issue.State || len(tick.comments) != 0 || len(state.deferredCompletions) != 0 || len(state.Retry) != 0 || len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalAbandoned {
+						t.Fatal("lost native authority fabricated lane settlement or retained obsolete replay")
+					}
+					return
+				}
+				if test.wantDeferred {
+					record, retained := state.deferredCompletions[issue.ID]
+					if !retained || !record.NativeRecoveryRequired || record.Request.Mode != mode || !state.Retry[issue.ID].CompletionDeferred || scheduling.releases != 0 || len(attempts.completions) != 0 || tick.stateIssues[0].State != issue.State || len(tick.comments) != 0 {
+						t.Fatal("refused native handoff lost durable refusal, authority, or lane")
+					}
+					return
+				}
+				if len(state.Retry) != 0 || scheduling.releases != 1 || len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalCancelled || attempts.completions[0].ErrorClass != workAttemptErrorWorkspace || tick.stateIssues[0].State != "Blocked" || len(tick.comments) != 0 {
+					t.Fatal("permanent native refusal did not settle Blocked without coding retry")
+				}
+				return
+			}
 			if test.lifecycle == "refusal" {
 				if !state.Retry[issue.ID].CompletionDeferred || scheduling.releases != 0 || len(attempts.completions) != 0 {
 					t.Fatal("workflow outage lost retained refusal authority")

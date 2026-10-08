@@ -400,14 +400,16 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 
-	if o.completeNativeChangeRun(ctx, state, event, running, event.Result.FinalState) {
-		return
-	}
-	if nativeCompletion && o.handlePreTurnFailure(ctx, state, event, running) {
-		return
-	}
-	if event.Err != nil && nativeCompletion {
-		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
+	if nativeCompletion {
+		if o.completeNativeChangeRun(ctx, state, event, running, event.Result.FinalState) {
+			return
+		}
+		if o.handlePreTurnFailure(ctx, state, event, running) {
+			return
+		}
+		if event.Err != nil {
+			o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
+		}
 	}
 
 	if event.Err != nil {
