@@ -252,6 +252,39 @@ func TestConversationStreamRejectsInvalidCursorAndHiddenConversation(t *testing.
 			requireNativeStatus(t, response, tt.status)
 		})
 	}
+	t.Run("compacted cursor requests a snapshot", func(t *testing.T) {
+		old := time.Now().UTC().Add(-31 * 24 * time.Hour)
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if _, err := f.service.conversations.store.appendEvent(t.Context(), tx, id, conversation.EventMessageDelta, map[string]string{"text": "transient"}, old); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), "UPDATE conversations SET status='settled',settled_at=?,updated_at=? WHERE id=?", conversationTime(old), conversationTime(old), id); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.maintainNativeRetention(t.Context(), time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+		stream := f.open(t, f.token, id, 0)
+		defer stream.close()
+		frame := stream.nextEvent(t)
+		if frame.Event != string(conversation.EventClosed) || !strings.Contains(frame.Data, conversationClosedCursorExpired) {
+			t.Fatalf("stale stream = %+v", frame)
+		}
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+id, f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var snapshot conversationSnapshot
+		decodeHubResponse(t, response, &snapshot)
+		if snapshot.Compaction == nil || snapshot.Compaction.RemovedEvents != 1 || snapshot.Cursor < 1 {
+			t.Fatalf("snapshot = %+v", snapshot)
+		}
+	})
 }
 
 func TestConversationStreamClosesOnRevocationAndShutdown(t *testing.T) {

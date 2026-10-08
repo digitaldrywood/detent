@@ -69,5 +69,20 @@ ORDER BY i.id LIMIT 200`, formatHubTime(now), formatHubTime(now))
 			return err
 		}
 	}
-	return tx.Commit()
+	conversations, removed, err := compactEvents(ctx, tx, now)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if s.conversations != nil {
+		for _, id := range conversations {
+			s.conversations.broker.notify(id)
+		}
+	}
+	if removed > 0 {
+		s.config.Logger.InfoContext(ctx, "compacted retained events", "removed_events", removed)
+	}
+	return nil
 }
