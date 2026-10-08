@@ -10,31 +10,50 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// nativeSourceClaimAllowed is part of placement, shared by claim acquisition,
-// runner selection and admission reads. A checkout URL is not source evidence.
+type nativeSourceCheckpoint struct {
+	AttemptID                    string
+	MachineID                    tracker.MachineID
+	RunnerID, RunnerName, Status string
+	Released                     sql.NullString
+	Checkpoint                   *tracker.NativeCheckpoint
+}
+
+func readNativeSourceCheckpoint(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (nativeSourceCheckpoint, error) {
+	rows, err := q.QueryContext(ctx, `SELECT a.id,l.machine_id,COALESCE(lr.runner_id,''),COALESCE(NULLIF(r.display_name,''),m.hostname,''),a.status,l.released_at,a.checkpoint_json
+FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
+LEFT JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=a.organization_id LEFT JOIN machines m ON m.id=l.machine_id AND m.organization_id=a.organization_id
+WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.checkpoint_json IS NOT NULL ORDER BY a.fencing_token DESC`, scope.organization, scope.project, item)
+	if err != nil {
+		return nativeSourceCheckpoint{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var source nativeSourceCheckpoint
+		var raw string
+		if err := rows.Scan(&source.AttemptID, &source.MachineID, &source.RunnerID, &source.RunnerName, &source.Status, &source.Released, &raw); err != nil {
+			return source, err
+		}
+		if err := json.Unmarshal([]byte(raw), &source.Checkpoint); err != nil {
+			return source, err
+		}
+		if source.Checkpoint.PreservesSource() {
+			return source, nil
+		}
+	}
+	return nativeSourceCheckpoint{}, rows.Err()
+}
+
 func nativeSourceClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID) (bool, string, error) {
 	var item string
 	if err := q.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE id=? AND organization_id=? AND project_id=?", id, scope.organization, scope.project).Scan(&item); err != nil {
 		return false, "", err
 	}
-	var owner tracker.MachineID
-	var attempt, ownerRunner, raw string
-	var checkpoint *tracker.NativeCheckpoint
-	// Ignore startup's clean checkout when looking for preserved work. Failed
-	// destination startups must not overwrite the source owner's provenance.
-	err := q.QueryRowContext(ctx, `SELECT a.id, l.machine_id, COALESCE(lr.runner_id,''), a.checkpoint_json
-FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
-WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.checkpoint_json IS NOT NULL
-AND (json_extract(a.checkpoint_json,'$.worktree_state') <> 'clean' OR json_extract(a.checkpoint_json,'$.resume') <> 'fresh_checkout' OR (json_extract(a.checkpoint_json,'$.external_effect') IN ('git_push','pr_create') AND json_extract(a.checkpoint_json,'$.effect_state') IN ('pending','ambiguous')))
-ORDER BY a.fencing_token DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&attempt, &owner, &ownerRunner, &raw)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	source, err := readNativeSourceCheckpoint(ctx, q, scope, item)
+	if err != nil {
 		return false, "", err
 	}
-	if err == nil {
-		if err := json.Unmarshal([]byte(raw), &checkpoint); err != nil {
-			return false, "", err
-		}
-	}
+	owner, ownerRunner, attempt, checkpoint := source.MachineID, source.RunnerID, source.AttemptID, source.Checkpoint
+
 	change, found, err := readLatestNativeChangeRequest(ctx, q, scope, item)
 	if err != nil {
 		return false, "", err
@@ -53,9 +72,6 @@ WHERE a.id=? AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, v
 		}
 		matches := checkpoint == nil || checkpoint.WorktreeState != "dirty" && checkpoint.WorktreeState != "unknown" && checkpoint.HeadSHA == version.HeadSHA
 		if !matches && checkpoint != nil && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") && version.Source != nil {
-			// An operator can republish the same base/tree under a new head.
-			// Prove source equivalence through immutable retained versions;
-			// their validation and review receipts remain version-scoped.
 			var priorRaw string
 			err := q.QueryRowContext(ctx, `SELECT record_json FROM change_versions WHERE change_id=? AND json_extract(record_json,'$.head_sha')=? ORDER BY rowid DESC LIMIT 1`, change.ID, checkpoint.HeadSHA).Scan(&priorRaw)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -78,7 +94,16 @@ WHERE a.id=? AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, v
 			if err == nil && version.Source.Validate(version.BaseSHA, version.HeadSHA, bundle) == nil {
 				return true, "Verified retained Change source is available", nil
 			}
-			return false, fmt.Sprintf("Change %s version %s retained source is missing or corrupt; recover and republish the exact head on source runner %s", change.ID, version.ID, sourceOwner), nil
+			if checkpoint == nil {
+				owner, ownerRunner = sourceOwner, sourceRunner
+			}
+			if owner == "" {
+				return false, "Preserved source owner is unavailable; locate the exact checkpoint before recovery", nil
+			}
+			if checkpoint == nil || checkpoint.HeadSHA != version.HeadSHA || checkpoint.Availability != "available" || checkpoint.Storage != "local_only" {
+				return false, fmt.Sprintf("Change %s version %s retained source is missing or corrupt; verify the local checkpoint on source runner %s before recapture", change.ID, version.ID, owner), nil
+			}
+			return machine == owner && (ownerRunner == "" || ownerRunner == scope.credential.Runner.RunnerID), fmt.Sprintf("Change %s version %s retained source is missing or corrupt; verify and recapture the exact local head on source runner %s", change.ID, version.ID, owner), nil
 		}
 		if checkpoint == nil {
 			owner, ownerRunner, attempt = sourceOwner, sourceRunner, version.AttemptID

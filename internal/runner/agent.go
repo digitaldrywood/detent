@@ -1558,6 +1558,16 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	landingRework := req.Execution != nil && mode == RunModeImplement && nativeLandingRework(req.Execution.Recovery())
 	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework)
 	if source, ok := req.Execution.(ChangeSourceExecution); ok && (workspaceIssue.NativeRework || nativeLanding) {
+		if local, ok := runWorkspace.(interface {
+			Existing(workspace.Issue) (workspace.Info, error)
+		}); ok {
+			if existing, existingErr := local.Existing(workspaceIssue); existingErr == nil {
+				source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+					return workspace.CaptureChangeSource(ctx, existing.Path, base, head)
+				})
+			}
+		}
+
 		var recovered workspace.ChangeSource
 		recovered, err = source.RecoverChangeSource(ctx)
 		if err != nil {

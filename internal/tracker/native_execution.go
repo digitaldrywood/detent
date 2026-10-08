@@ -325,11 +325,37 @@ type NativeRecovery struct {
 	ChangeDetail    *ChangeDetail          `json:"change_detail,omitempty"`
 }
 
+func (c *NativeCheckpoint) PreservesSource() bool {
+	return c != nil && (c.WorktreeState != "clean" || c.Resume != "fresh_checkout" || c.UncertainForgeEffect())
+}
+
+func (c *NativeCheckpoint) UncertainForgeEffect() bool {
+	return c != nil && (c.ExternalEffect == "git_push" || c.ExternalEffect == "pr_create") && (c.EffectState == "pending" || c.EffectState == "ambiguous")
+}
+
+func (r NativeRecovery) SourceAttempt() *NativeAttempt {
+	for i := len(r.Attempts) - 1; i >= 0; i-- {
+		attempt := &r.Attempts[i]
+		if r.SourceAttemptID != "" {
+			if attempt.AttemptID == r.SourceAttemptID {
+				return attempt
+			}
+		} else if attempt.Checkpoint.PreservesSource() {
+			return attempt
+		}
+	}
+	if r.SourceAttemptID == "" && len(r.Attempts) > 0 {
+		return &r.Attempts[len(r.Attempts)-1]
+	}
+	return nil
+}
+
 type NativeSourceRecovery struct {
 	Destinations        []NativeSourceRecoveryRunner `json:"destinations"`
 	WorkItemID          NativeWorkItemID             `json:"work_item_id"`
 	Revision            Revision                     `json:"revision,string"`
 	SourceMachineID     MachineID                    `json:"source_machine_id"`
+	SourceRunnerName    string                       `json:"source_runner_name"`
 	SourceRunnerID      string                       `json:"source_runner_id"`
 	AttemptID           string                       `json:"attempt_id"`
 	VersionID           string                       `json:"version_id"`

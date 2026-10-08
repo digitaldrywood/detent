@@ -49,7 +49,7 @@ export function SourceRecoveryControls(props: {
   return (
     <section aria-label="Source recovery" className="flex flex-col gap-3 rounded-[var(--radius)] border border-border bg-card p-4 text-sm">
       <h2 className="font-medium">Source recovery</h2>
-      <p className="break-all text-muted-foreground">Source runner: {source.source_runner_id || source.source_machine_id || "Unknown"}</p>
+      <p className="break-all text-muted-foreground">Source runner: {source.source_runner_name || source.source_runner_id || source.source_machine_id || "Unknown"}</p>
       <p>Checkpoint: {source.available ? "Verified retained source" : "Source capture required"}{source.head_sha !== "" ? ` · ${source.head_sha.slice(0, 12)}` : ""}</p>
       <p>Execution: {source.quiesced ? "Stopped and lease released" : "Active or not confirmed stopped"}</p>
       <p className="text-muted-foreground">{source.reason}</p>
@@ -57,7 +57,7 @@ export function SourceRecoveryControls(props: {
         <>
           <Select value={destination || null} onValueChange={(value) => setDestination(value ?? "")} disabled={saving}>
             <SelectTrigger aria-label="Destination runner"><SelectValue placeholder="Choose a destination runner" /></SelectTrigger>
-            <SelectPopup>{source.destinations.map((runner) => <SelectItem key={runner.runner_id} value={runner.runner_id}>{runner.name || runner.runner_id} · {runner.runner_id}</SelectItem>)}</SelectPopup>
+            <SelectPopup>{source.destinations.map((runner) => <SelectItem key={runner.runner_id} value={runner.runner_id}>{runner.name || runner.runner_id}</SelectItem>)}</SelectPopup>
           </Select>
           <p className="text-muted-foreground">The destination restores and verifies this source before continuing. Transfer preserves workflow, human and delivery holds.</p>
           <div className="flex flex-wrap gap-2">

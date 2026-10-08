@@ -438,7 +438,7 @@ func nativeLandingRework(recovery tracker.NativeRecovery) bool {
 }
 
 func nativeInterruptedResumeAttempt(recovery tracker.NativeRecovery) *tracker.NativeAttempt {
-	previous := nativeSourceAttempt(recovery)
+	previous := recovery.SourceAttempt()
 	if previous == nil {
 		return nil
 	}
@@ -449,30 +449,11 @@ func nativeInterruptedResumeAttempt(recovery tracker.NativeRecovery) *tracker.Na
 }
 
 func nativeCheckpointPolicyChanged(recovery tracker.NativeRecovery) bool {
-	previous := nativeSourceAttempt(recovery)
+	previous := recovery.SourceAttempt()
 	if previous == nil {
 		return false
 	}
 	return previous.Checkpoint != nil && previous.PolicyID != recovery.Lease.PolicyID
-}
-
-func nativeSourceAttempt(recovery tracker.NativeRecovery) *tracker.NativeAttempt {
-	for i := len(recovery.Attempts) - 1; i >= 0; i-- {
-		attempt := &recovery.Attempts[i]
-		if recovery.SourceAttemptID != "" {
-			if attempt.AttemptID == recovery.SourceAttemptID {
-				return attempt
-			}
-			continue
-		}
-		if attempt.Checkpoint != nil && (attempt.Checkpoint.WorktreeState != "clean" || attempt.Checkpoint.Resume != "fresh_checkout" || (attempt.Checkpoint.ExternalEffect == "git_push" || attempt.Checkpoint.ExternalEffect == "pr_create") && (attempt.Checkpoint.EffectState == "pending" || attempt.Checkpoint.EffectState == "ambiguous")) {
-			return attempt
-		}
-	}
-	if recovery.SourceAttemptID == "" && len(recovery.Attempts) != 0 {
-		return &recovery.Attempts[len(recovery.Attempts)-1]
-	}
-	return nil
 }
 
 func (r *Runner) nativeInterruptedResumeState(ctx context.Context, req RunRequest, runtime agentRuntime) (store.AgentResumeState, error) {
@@ -514,7 +495,7 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 	if len(recovery.Attempts) == 0 && recovery.SourceAttemptID == "" {
 		return "fresh_checkout", "no_prior_attempt"
 	}
-	previous := nativeSourceAttempt(recovery)
+	previous := recovery.SourceAttempt()
 	if previous == nil {
 		return "manual_recovery", "checkpoint_unavailable"
 	}
@@ -522,7 +503,7 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 	if checkpoint == nil {
 		return "fresh_checkout", "checkpoint_missing"
 	}
-	if checkpoint.ExternalEffect != "none" && checkpoint.ExternalEffect != "provider_turn" && (checkpoint.EffectState == "pending" || checkpoint.EffectState == "ambiguous") {
+	if checkpoint.UncertainForgeEffect() {
 		return "manual_recovery", "external_effect_uncertain"
 	}
 	if nativeCheckpointPolicyChanged(recovery) {
@@ -593,7 +574,7 @@ func (r *Runner) nativeResume(ctx context.Context, req RunRequest, backend Agent
 				return store.AgentResumeState{}, err
 			}
 			recovery := req.Execution.Recovery()
-			sourceAttempt := nativeSourceAttempt(recovery)
+			sourceAttempt := recovery.SourceAttempt()
 			checkpoint := sourceAttempt.Checkpoint
 			verified, err := preparer.VerifyReworkRecovery(ctx, info, issue, checkpoint.HeadSHA, checkpoint.WorkspaceDigest, *local)
 			if err != nil && !errors.Is(err, workspace.ErrMergeResolutionInvalid) {

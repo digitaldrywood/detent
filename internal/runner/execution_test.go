@@ -866,7 +866,7 @@ func TestNativeStartupRecoveryTracksActualProviderTurn(t *testing.T) {
 
 func TestNativeRecoveryDecision(t *testing.T) {
 	t.Parallel()
-	identity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
+	identity := tracker.NativeExecutionIdentity{Role: "plan", Backend: "codex", Model: "test"}
 	current := &workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "current", ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head"}}}
 	for _, test := range []struct {
 		name    string
@@ -879,6 +879,16 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		{"newer clean startup retains source session", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts = append(r.Attempts, tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{MachineID: "other"}, Checkpoint: &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean"}})
 		}, "resume_session", "verified_local_session", nil},
+		{"recorded rework source survives failed plan retry but cannot resume under another role", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].AttemptID, r.SourceAttemptID = "recorded-rework", "recorded-rework"
+			r.Attempts[0].Status = "interrupted"
+			r.Attempts[0].Checkpoint.WorktreeState = "clean"
+			r.Attempts[0].Identity = &tracker.NativeExecutionIdentity{Role: "rework", Backend: "codex", Model: "test"}
+			r.Attempts = append(r.Attempts, tracker.NativeAttempt{Status: "failed", NativeRunData: tracker.NativeRunData{AttemptID: "failed-plan", Identity: &tracker.NativeExecutionIdentity{Role: "plan", Backend: "codex", Model: "test"}}, Checkpoint: &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean"}})
+		}, "manual_recovery", "session_restart_required", nil},
+		{"clean startup with uncertain publication remains source", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts = append(r.Attempts, tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{MachineID: "other"}, Checkpoint: &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean", ExternalEffect: "pr_create", EffectState: "ambiguous"}})
+		}, "manual_recovery", "external_effect_uncertain", nil},
 		{"advertised source is missing", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.SourceAttemptID = "missing"
 			r.Attempts = nil

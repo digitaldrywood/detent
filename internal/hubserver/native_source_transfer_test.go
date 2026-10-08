@@ -48,6 +48,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 			f.service.config.Logger = slog.New(slog.NewTextHandler(&diagnostics, nil))
 			a := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
 			b := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
+			a.redemption.DisplayName, b.redemption.DisplayName = "Source Air", "Destination Mini"
 			a.enroll(t)
 			b.enroll(t)
 			claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: f.issue.WorkItemID, MachineID: a.binding.MachineID, SessionID: "source", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
@@ -98,7 +99,6 @@ func TestNativeSourceTransfer(t *testing.T) {
 				edited := performHubAPIRequest(t, f.service, http.MethodPatch, itemPath, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "human-hold"}, ExpectedRevision: f.issue.Revision, Labels: &labels})
 				requireNativeStatus(t, edited, http.StatusOK)
 				decodeHubResponse(t, edited, &f.issue)
-				// Model the operator's existing parked lane without adding a workflow.
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET dispatchable=0 WHERE project_id=? AND detent_state=?", f.project.ID, f.issue.State); err != nil {
 					t.Fatal(err)
 				}
@@ -108,13 +108,16 @@ func TestNativeSourceTransfer(t *testing.T) {
 			requireNativeStatus(t, recoveryRead, http.StatusOK)
 			var observed sourceRecoveryView
 			decodeHubResponse(t, recoveryRead, &observed)
+			if observed.SourceRunnerName != "Source Air" {
+				t.Fatalf("scoped source runner name missing: %q", observed.SourceRunnerName)
+			}
 			explanationRead := performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"/explanation", f.token, nil)
 			requireNativeStatus(t, explanationRead, http.StatusOK)
 			var explanation struct {
 				Runtime *tracker.NativeRuntimeEvidence `json:"native_runtime"`
 			}
 			decodeHubResponse(t, explanationRead, &explanation)
-			if explanation.Runtime == nil || explanation.Runtime.SourceRecovery == nil || explanation.Runtime.SourceRecovery.AttemptID != observed.AttemptID || explanation.Runtime.SourceRecovery.Quiesced != observed.Quiesced || explanation.Runtime.SourceRecovery.Reason != observed.Reason {
+			if explanation.Runtime == nil || explanation.Runtime.SourceRecovery == nil || explanation.Runtime.SourceRecovery.AttemptID != observed.AttemptID || explanation.Runtime.SourceRecovery.SourceRunnerName != observed.SourceRunnerName || explanation.Runtime.SourceRecovery.Quiesced != observed.Quiesced || explanation.Runtime.SourceRecovery.Reason != observed.Reason {
 				t.Fatal("existing explanation lost source ownership or waiting reason")
 			}
 
@@ -163,8 +166,6 @@ func TestNativeSourceTransfer(t *testing.T) {
 				t.Fatal("transfer changed workflow state or archive hold")
 			}
 			if test.name == "transfer and duplicate request" {
-				// MCP must use the same revision/receipt owner and enforce runner
-				// management in addition to ordinary work-item write access.
 				body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]any{"name": "test", "version": "1"}}, "name": operatortool.TransferItem, "arguments": map[string]any{"project_id": f.project.ID, "identifier": f.issue.WorkItemID, "request_id": "mcp-transfer", "expected_revision": strconv.FormatInt(int64(view.Revision), 10), "version_id": version.ID, "destination_runner_id": b.binding.RunnerID}}}
 				path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp"
 				for _, credential := range []string{f.token, testHubAdminToken} {

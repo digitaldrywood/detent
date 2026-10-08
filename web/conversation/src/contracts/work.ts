@@ -35,7 +35,7 @@ export type Revision = typeof Revision.Type;
 
 export const SourceRecovery = Schema.Struct({
   work_item_id: Schema.String, revision: Revision,
-  source_machine_id: Schema.String, source_runner_id: Schema.String,
+  source_machine_id: Schema.String, source_runner_name: Schema.String, source_runner_id: Schema.String,
   attempt_id: Schema.String, version_id: Schema.String,
   head_sha: Schema.String, base_sha: Schema.String,
   destination_runner_id: Schema.String,

@@ -33,9 +33,10 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
-		name    string
-		edit    func(*ChangeSource)
-		pending string
+		name      string
+		edit      func(*ChangeSource)
+		pending   string
+		published bool
 	}{
 		{name: "corrupt bundle", edit: func(s *ChangeSource) { s.Bundle = []byte("changed") }},
 		{name: "wrong diff", edit: func(s *ChangeSource) { s.Version.Source.DiffSHA256 = strings.Repeat("a", 64) }},
@@ -47,6 +48,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		{name: "staged deletion with restored working file survives restoration", pending: "deletion"},
 		{name: "working source survives restoration", pending: "working"},
 		{name: "untracked source survives restoration", pending: "untracked"},
+		{name: "newer clean published head survives older source restoration", published: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "second")
@@ -62,6 +64,40 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 				test.edit(retained)
 			}
 			issue := Issue{Identifier: "native#584", NativeRework: true, Source: retained, BaseRef: base}
+			if test.published {
+				runGit(t, dir, "config", "url."+remote+".insteadOf", repository)
+				initial := issue
+				initial.Source = nil
+				info, err := backend.Create(t.Context(), initial)
+				if err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, source, "push", "origin", head+":refs/heads/retained-work")
+				runGit(t, dir, "fetch", "origin")
+				runGit(t, info.Path, "reset", "--hard", head)
+				writeFileDiffFile(t, info.Path, "source.txt", "newer completed work\n")
+				runGit(t, info.Path, "add", "source.txt")
+				runGit(t, info.Path, "-c", "user.name=Recovery Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "newer completed work")
+				newer := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+				runGit(t, info.Path, "push", "origin", "HEAD:refs/heads/published-work")
+				runGit(t, dir, "fetch", "origin")
+				before, err := backend.(RecoveryStateProvider).RecoveryState(t.Context(), info, initial)
+				if err != nil || before.HeadSHA != newer || before.UnpushedCommits != 0 || len(before.TrackedPaths) != 0 || len(before.UntrackedPaths) != 0 {
+					t.Fatalf("fixture lacks a clean newer published head: %+v, %v", before, err)
+				}
+				_, restoreErr := backend.Create(t.Context(), issue)
+				var refusal *LandRefusal
+				if !errors.As(restoreErr, &refusal) || refusal.Kind != LandRefusalHeadMoved {
+					t.Errorf("older retained source must require explicit reconciliation: %v", restoreErr)
+				}
+				if got := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")); got != newer {
+					t.Errorf("source restoration replaced newer published head: got=%s want=%s", got, newer)
+				}
+				if got := readFile(t, filepath.Join(info.Path, "source.txt")); got != "newer completed work\n" {
+					t.Errorf("source restoration replaced newer published bytes: %q", got)
+				}
+				return
+			}
 			if test.pending != "" {
 				runGit(t, dir, "config", "url."+remote+".insteadOf", repository)
 				initial := issue

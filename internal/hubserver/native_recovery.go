@@ -23,11 +23,12 @@ func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, ite
 	if err != nil {
 		return result, err
 	}
-	var sourceAttempt, changeAttempt string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND checkpoint_json IS NOT NULL
-AND (json_extract(checkpoint_json,'$.worktree_state') <> 'clean' OR json_extract(checkpoint_json,'$.resume') <> 'fresh_checkout' OR (json_extract(checkpoint_json,'$.external_effect') IN ('git_push','pr_create') AND json_extract(checkpoint_json,'$.effect_state') IN ('pending','ambiguous'))) ORDER BY fencing_token DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&sourceAttempt); err != nil && err != sql.ErrNoRows {
+	source, err := readNativeSourceCheckpoint(ctx, tx, scope, item)
+	if err != nil {
 		return result, err
 	}
+	sourceAttempt, changeAttempt := source.AttemptID, ""
+
 	result.SourceAttemptID = sourceAttempt
 	if found {
 		detail, err := readChangeDetailView(ctx, tx, scope, item, change.ID, s.config.now(), true)

@@ -56,13 +56,18 @@ func changeTestArtifact(kind string) tracker.ChangeArtifact {
 	return tracker.ChangeArtifact{Kind: kind, URI: "s3://customer/change/" + kind, SHA256: policy.Digest([]byte(kind)), Availability: "available"}
 }
 
-func (f changeFixture) publish(t *testing.T, key, expected string) tracker.ChangeVersion {
+func (f changeFixture) publish(t *testing.T, key, expected string, retained ...bool) tracker.ChangeVersion {
 	t.Helper()
 	input := changeTestInput()
 	if expected != "" {
 		input.HeadSHA = strings.Repeat("c", 40)
 	}
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: key}, ExpectedVersionID: expected, ChangeVersionInput: input})
+	var bundle []byte
+	if len(retained) > 0 && retained[0] {
+		bundle = []byte("retained admission fixture")
+		input.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
+	}
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: key}, ExpectedVersionID: expected, ChangeVersionInput: input, SourceBundle: bundle})
 	requireNativeStatus(t, response, http.StatusOK)
 	var version tracker.ChangeVersion
 	decodeHubResponse(t, response, &version)
@@ -558,10 +563,8 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 			var change tracker.ChangeRequest
 			decodeHubResponse(t, response, &change)
 			path += "/" + change.ID
-			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish"}, ChangeVersionInput: changeTestInput()})
-			requireNativeStatus(t, response, http.StatusOK)
-			var version tracker.ChangeVersion
-			decodeHubResponse(t, response, &version)
+			cf := changeFixture{nativeFixture: f, issue: issue, change: change, path: path}
+			version := cf.publish(t, "publish", "", true)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, Decision: "approved"}), http.StatusOK)
 			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID), f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)

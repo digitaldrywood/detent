@@ -182,8 +182,6 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", other, map[string]any{"id": "other-machine", "hostname": "other-machine", "version": "test", "capacity": 1}), http.StatusOK)
 	refused := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", other, tracker.NativeClaim{PolicyID: lease.PolicyID, WorkItemID: issue.WorkItemID, MachineID: "other-machine", SessionID: "other-session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
 	requireNativeStatus(t, refused, http.StatusConflict)
-	// Restart the execution on its source-owning machine. A new session must
-	// fence the old session even though both share the same machine and token.
 	other = worker
 	replacement := claimNativeAttempt(t, f, other, "first-machine", "other-session", issue.WorkItemID)
 	if replacement.FencingToken <= lease.FencingToken {

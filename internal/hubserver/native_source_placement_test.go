@@ -12,21 +12,23 @@ import (
 func TestNativeSourcePlacement(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name, state, availability   string
-		source, initial, newerClean bool
-		corrupt, missing, wrongHead bool
-		owner, destination          bool
+		name, state, availability              string
+		source, initial, newerClean, uncertain bool
+		corrupt, missing, wrongHead            bool
+		owner, destination                     bool
 	}{
 		{name: "local dirty", state: "dirty", owner: true},
 		{name: "legacy unpushed", state: "unpushed", owner: true},
 		{name: "missing local source", state: "dirty", availability: "missing"},
 		{name: "inaccessible local source", state: "dirty", availability: "inaccessible"},
 		{name: "verified immutable source", state: "unpushed", source: true, owner: true, destination: true},
-		{name: "corrupt retained bytes", state: "unpushed", source: true, corrupt: true},
-		{name: "missing retained bytes", state: "unpushed", source: true, missing: true},
+		{name: "corrupt retained bytes", state: "unpushed", source: true, corrupt: true, owner: true},
+		{name: "corrupt retained and missing local source", state: "unpushed", source: true, corrupt: true, availability: "missing"},
+		{name: "missing retained bytes", state: "unpushed", source: true, missing: true, owner: true},
 		{name: "retained older head cannot replace checkpoint", state: "unpushed", source: true, wrongHead: true, owner: true},
 		{name: "durable commit does not contain dirty changes", state: "dirty", source: true, owner: true},
 		{name: "initial checkout is not completed source", state: "clean", initial: true, owner: true, destination: true},
+		{name: "clean startup with uncertain publication owns source", state: "clean", initial: true, uncertain: true, owner: true},
 		{name: "newer clean startup does not hide source", state: "dirty", newerClean: true, owner: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -46,6 +48,10 @@ func TestNativeSourcePlacement(t *testing.T) {
 			if test.initial {
 				event.Data.Handoff.Resume = "fresh_checkout"
 			}
+			if test.uncertain {
+				event.Data.Handoff.ExternalEffect, event.Data.Handoff.EffectState = "pr_create", "ambiguous"
+				event.Data.Handoff.EffectID = "effect_" + strings.Repeat("e", 32)
+			}
 			if test.availability != "" {
 				event.Data.Handoff.Availability = test.availability
 			}
@@ -57,7 +63,6 @@ func TestNativeSourcePlacement(t *testing.T) {
 				input.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source-version"}, ChangeVersionInput: input, SourceBundle: bundle}), http.StatusOK)
 				if test.corrupt || test.missing {
-					// Simulate lost/corrupt storage, beyond normal immutable writes.
 					statement := "DROP TRIGGER change_sources_no_update"
 					if test.missing {
 						statement = "DROP TRIGGER change_sources_no_delete"
@@ -75,7 +80,6 @@ func TestNativeSourcePlacement(t *testing.T) {
 				}
 			}
 			if test.newerClean {
-				// Model a historic destination startup before owner affinity existed.
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
 				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases (lease_id,issue_id,machine_id,session_id,fencing_token,acquired_at,renewed_at,expires_at,updated_at,created_at) SELECT 'new-startup',issue_id,machine_id,'startup',fencing_token+1,acquired_at,renewed_at,expires_at,updated_at,created_at FROM leases WHERE lease_id=?`, lease.ID); err != nil {
 					t.Fatal(err)
@@ -84,7 +88,7 @@ func TestNativeSourcePlacement(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if test.newerClean {
+			if !test.initial || test.uncertain {
 				recovery, err := f.service.readNativeRecovery(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID))
 				if err != nil {
 					t.Fatal(err)

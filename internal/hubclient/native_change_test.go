@@ -341,6 +341,11 @@ func (h *nativeChangeHub) repolicy(t *testing.T) {
 // would, so a rework run finds a current version to compare its head with.
 func (h *nativeChangeHub) publish(t *testing.T, item tracker.NativeWorkItemID, changeID, head string, previous ...string) tracker.ChangeVersion {
 	t.Helper()
+	return h.publishCaptured(t, item, changeID, head, nil, previous...)
+}
+
+func (h *nativeChangeHub) publishCaptured(t *testing.T, item tracker.NativeWorkItemID, changeID, head string, captured *tracker.ChangeSourceCapture, previous ...string) tracker.ChangeVersion {
+	t.Helper()
 	digest := policy.Digest([]byte(head))
 	var expectedVersionID string
 	if len(previous) > 0 {
@@ -350,19 +355,34 @@ func (h *nativeChangeHub) publish(t *testing.T, item tracker.NativeWorkItemID, c
 	if len(previous) > 1 {
 		base = previous[1]
 	}
+	var source *tracker.ChangeSource
+	var bundle []byte
+	if captured == nil && base != head {
+		capture := nativeChangeSourceFixture(base, head)
+		captured = &capture
+	}
+	if captured != nil {
+		source, bundle = &captured.Source, captured.Bundle
+	}
 	version, err := h.admin.PublishChangeVersion(t.Context(), item, changeID, tracker.PublishChangeVersion{
+		SourceBundle:      bundle,
 		Mutation:          nativeMutationKey(),
 		ExpectedVersionID: expectedVersionID,
 		ChangeVersionInput: tracker.ChangeVersionInput{
 			BaseSHA: base, HeadSHA: head, MergeBaseSHA: base, Repository: nativeChangeRepository,
 			Code:      tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + head, SHA256: digest, Availability: "unverified"},
-			Artifacts: []tracker.ChangeArtifact{}, PolicyID: h.descriptor.ID,
+			Artifacts: []tracker.ChangeArtifact{}, PolicyID: h.descriptor.ID, Source: source,
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return version
+}
+
+func nativeChangeSourceFixture(base, head string) tracker.ChangeSourceCapture {
+	bundle := []byte("bounded retained source fixture")
+	return tracker.ChangeSourceCapture{Source: tracker.ChangeSource{Format: "git-bundle", BaseSHA: base, HeadSHA: head, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}, Bundle: bundle}
 }
 
 func nativeChangeDiff(head string, files ...string) runner.AttemptDiffSource {
@@ -1256,22 +1276,19 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			reviewedPath := source
 			var expected *tracker.ChangeDetail
 			var candidate connector.Issue
 			if test.rework {
-				if test.land && !test.lateConflict {
-					info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier})
-					if err != nil {
-						t.Fatal(err)
-					}
-					reviewedPath = info.Path
-					if err := os.WriteFile(filepath.Join(reviewedPath, "PRESERVED.md"), []byte("reviewed source\n"), 0o600); err != nil {
-						t.Fatal(err)
-					}
-					nativeChangeGit(t, reviewedPath, "add", "PRESERVED.md")
-					nativeChangeGit(t, reviewedPath, "commit", "-m", "preserved reviewed source")
+				info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier})
+				if err != nil {
+					t.Fatal(err)
 				}
+				reviewedPath := info.Path
+				if err := os.WriteFile(filepath.Join(reviewedPath, "PRESERVED.md"), []byte("reviewed source\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				nativeChangeGit(t, reviewedPath, "add", "PRESERVED.md")
+				nativeChangeGit(t, reviewedPath, "commit", "-m", "preserved reviewed source")
 				item := tracker.NativeWorkItemID(issue.ID)
 				if test.staleBase {
 					if _, err := h.admin.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: nativeMutationKey(), Body: "Human hold: preserve the original checkpoint and staged source"}); err != nil {
@@ -1314,7 +1331,15 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatal(err)
 				}
 				base := strings.TrimSpace(string(baseOutput))
-				current := h.publish(t, item, change.ID, strings.TrimSpace(string(head)), old.ID, base)
+				capture, err := workspace.CaptureChangeSource(t.Context(), reviewedPath, base, strings.TrimSpace(string(head)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				current := h.publishCaptured(t, item, change.ID, strings.TrimSpace(string(head)), &capture, old.ID, base)
+				if test.advanceTarget {
+					nativeChangeGit(t, source, "merge", "--ff-only", current.HeadSHA)
+					nativeChangeGit(t, source, "push", "origin", "main")
+				}
 				if test.absorbed {
 					nativeChangeGit(t, source, "merge", "--squash", current.HeadSHA)
 					nativeChangeGit(t, source, "commit", "-m", "absorb reviewed source")

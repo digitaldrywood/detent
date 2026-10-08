@@ -1111,7 +1111,7 @@ func TestGitDiffStatMissingWorkspaceIsClassified(t *testing.T) {
 
 	t.Parallel()
 
-	for _, name := range []string{"missing", "not git", "unborn", "missing index", "canceled"} {
+	for _, name := range []string{"missing", "not git", "nested missing git", "unborn", "missing index", "canceled"} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "repo")
 			if name != "missing" {
@@ -1123,6 +1123,16 @@ func TestGitDiffStatMissingWorkspaceIsClassified(t *testing.T) {
 				runGit(t, path, "init")
 				if _, err := gitIndexPath(t.Context(), path); err != nil {
 					t.Fatalf("path-only lookup in unborn repository: %v", err)
+				}
+			}
+			if name == "nested missing git" {
+				path = filepath.Join(initSourceRepo(t), "child")
+				if err := os.Mkdir(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, path, "init")
+				if err := os.RemoveAll(filepath.Join(path, ".git")); err != nil {
+					t.Fatal(err)
 				}
 			}
 			if name == "missing index" || name == "canceled" {

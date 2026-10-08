@@ -33,24 +33,17 @@ func readSourceRecoveryView(ctx context.Context, q nativeQueryer, scope nativeSc
 	if err := q.QueryRowContext(ctx, "SELECT recovery_runner_id,recovery_version_id FROM issues WHERE id=?", id).Scan(&view.DestinationRunnerID, &routedVersion); err != nil {
 		return view, id, err
 	}
-	var rawStatus string
-	var released sql.NullString
-	var checkpoint string
-	var uncertainEffect bool
-	err = q.QueryRowContext(ctx, `SELECT a.id,l.machine_id,COALESCE(lr.runner_id,''),a.status,l.released_at,a.checkpoint_json
-FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.checkpoint_json IS NOT NULL
-AND (json_extract(a.checkpoint_json,'$.worktree_state') <> 'clean' OR json_extract(a.checkpoint_json,'$.resume') <> 'fresh_checkout' OR (json_extract(a.checkpoint_json,'$.external_effect') IN ('git_push','pr_create') AND json_extract(a.checkpoint_json,'$.effect_state') IN ('pending','ambiguous'))) ORDER BY a.fencing_token DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&view.AttemptID, &view.SourceMachineID, &view.SourceRunnerID, &rawStatus, &released, &checkpoint)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	source, err := readNativeSourceCheckpoint(ctx, q, scope, item)
+	if err != nil {
 		return view, id, err
 	}
-	if err == nil {
-		var saved tracker.NativeCheckpoint
-		if err := json.Unmarshal([]byte(checkpoint), &saved); err != nil {
-			return view, id, err
-		}
-		view.HeadSHA = saved.HeadSHA
-		uncertainEffect = saved.ExternalEffect != "none" && saved.ExternalEffect != "provider_turn" && (saved.EffectState == "pending" || saved.EffectState == "ambiguous")
+	view.AttemptID, view.SourceMachineID, view.SourceRunnerID, view.SourceRunnerName = source.AttemptID, source.MachineID, source.RunnerID, source.RunnerName
+	rawStatus, released := source.Status, source.Released
+	uncertainEffect := source.Checkpoint.UncertainForgeEffect()
+	if source.Checkpoint != nil {
+		view.HeadSHA = source.Checkpoint.HeadSHA
 	}
+
 	change, found, err := readLatestNativeChangeRequest(ctx, q, scope, item)
 	if err != nil || !found || change.CurrentVersion == "" {
 		return view, id, err
@@ -65,7 +58,7 @@ AND (json_extract(a.checkpoint_json,'$.worktree_state') <> 'clean' OR json_extra
 	}
 	if view.AttemptID == "" {
 		view.HeadSHA, view.AttemptID = version.HeadSHA, version.AttemptID
-		err = q.QueryRowContext(ctx, `SELECT l.machine_id, COALESCE(lr.runner_id,''), a.status, l.released_at FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id WHERE a.id=? AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, version.AttemptID, scope.organization, scope.project, item).Scan(&view.SourceMachineID, &view.SourceRunnerID, &rawStatus, &released)
+		err = q.QueryRowContext(ctx, `SELECT l.machine_id, COALESCE(lr.runner_id,''),COALESCE(NULLIF(r.display_name,''),m.hostname,''), a.status, l.released_at FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id LEFT JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=a.organization_id LEFT JOIN machines m ON m.id=l.machine_id AND m.organization_id=a.organization_id WHERE a.id=? AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, version.AttemptID, scope.organization, scope.project, item).Scan(&view.SourceMachineID, &view.SourceRunnerID, &view.SourceRunnerName, &rawStatus, &released)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return view, id, err
 		}
@@ -185,8 +178,6 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeS
 				return nil, nativeInvalid("Destination runner must support its configured isolation tier")
 			}
 		}
-		// The owner has acknowledged terminal execution and released its lease.
-		// Existing lease validation rejects every later write under that tuple.
 		_, err = tx.ExecContext(ctx, `UPDATE issues SET recovery_runner_id=?,recovery_version_id=?,revision=revision+1,native_updated_at=?,updated_at=? WHERE id=?`, request.DestinationRunnerID, view.VersionID, formatHubTime(now), formatHubTime(now), id)
 		if err != nil {
 			return nil, err

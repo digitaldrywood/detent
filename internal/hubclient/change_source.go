@@ -66,11 +66,19 @@ func (e *nativeExecution) RecoverChangeSource(ctx context.Context) (workspace.Ch
 		source := workspace.ChangeSource{Version: version}
 		if version.Source != nil {
 			source.Bundle, err = e.claim.source.client.ChangeSource(ctx, e.claim.lease.WorkItemID, detail.Change.ID, version.ID)
-			if err != nil {
-				return workspace.ChangeSource{}, err
+			if err == nil {
+				err = version.Source.Validate(version.BaseSHA, version.HeadSHA, source.Bundle)
 			}
-			if err := version.Source.Validate(version.BaseSHA, version.HeadSHA, source.Bundle); err != nil {
-				return workspace.ChangeSource{}, err
+			if err != nil {
+				var apiErr *APIError
+				if errors.As(err, &apiErr) && apiErr.Status < 500 {
+					return workspace.ChangeSource{}, err
+				}
+				capture, recoveryErr := e.recoverLocalChangeSource(ctx, version)
+				if recoveryErr != nil {
+					return workspace.ChangeSource{}, errors.Join(err, runner.ErrNativeRecoveryRequired, recoveryErr)
+				}
+				source.Bundle, source.Version.Source = capture.Bundle, &capture.Source
 			}
 		}
 		if err := e.Validate(ctx); err != nil {
@@ -95,4 +103,26 @@ func (e *nativeExecution) requireRecoveredSource(detail tracker.ChangeDetail, di
 		}
 	}
 	return errors.New("the current Change version differs from the recovered source; reconcile the newer version before publishing")
+}
+
+func (e *nativeExecution) recoverLocalChangeSource(ctx context.Context, version tracker.ChangeVersion) (tracker.ChangeSourceCapture, error) {
+	recovery := e.Recovery()
+	owner := recovery.SourceAttempt()
+	if owner == nil || owner.Checkpoint == nil || owner.MachineID != recovery.Lease.MachineID || owner.Checkpoint.HeadSHA != version.HeadSHA || owner.Checkpoint.Availability != "available" || owner.Checkpoint.Storage != "local_only" || e.changeSource == nil {
+		return tracker.ChangeSourceCapture{}, errors.New("retained source is unavailable; verify the exact local checkpoint on its source runner before recapture")
+	}
+	capture, err := e.changeSource(ctx, version.BaseSHA, version.HeadSHA)
+	if err != nil {
+		return capture, err
+	}
+	if err := capture.Source.Validate(version.BaseSHA, version.HeadSHA, capture.Bundle); err != nil {
+		return capture, err
+	}
+	if version.Source != nil && capture.Source.DiffSHA256 != version.Source.DiffSHA256 {
+		return capture, errors.New("local source differs from the immutable Change version")
+	}
+	if err := e.Validate(ctx); err != nil {
+		return capture, err
+	}
+	return capture, nil
 }

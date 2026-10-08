@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SourceRecoveryControls } from "../../src/app/work/components/SourceRecoveryControls.tsx";
@@ -7,7 +6,7 @@ import type { SourceRecovery } from "../../src/contracts/work.ts";
 
 afterEach(cleanup);
 const source: SourceRecovery = {
-  work_item_id: "item", revision: "7", source_machine_id: "machine_A", source_runner_id: "runner_A",
+  work_item_id: "item", revision: "7", source_runner_name: "", source_machine_id: "machine_A", source_runner_id: "runner_A",
   attempt_id: "attempt", version_id: "version", head_sha: "abc123", base_sha: "base",
   destination_runner_id: "", available: true, quiesced: true,
   reason: "Verified retained source can be restored before continuing; workflow, human and delivery holds remain in force",
@@ -19,11 +18,12 @@ describe("source recovery controls", () => {
   it.each([
     { name: "uncaptured local work", view: { ...source, available: false, reason: "Wait for source runner runner_A to capture its local checkpoint" }, canManage: true },
     { name: "partitioned owner", view: { ...source, quiesced: false, reason: "Expiry does not prove the source owner stopped" }, canManage: true },
-    { name: "read-only operator", view: source, canManage: false },
+    {name:"friendly source name",view:{...source,source_runner_name:"Source Air"},canManage:false},
+ { name: "read-only operator", view: source, canManage: false },
   ])("shows recovery facts and refuses transfer controls for $name", async ({ view, canManage }) => {
     const http = makeWorkHttp({ origin: "http://fixture.test", apiBase: "/api/v2/organizations/org", csrfToken: "fixture-csrf", fetch: async () => response(view) });
     render(<SourceRecoveryControls http={http} projectId="project" itemId="item" revision="7" canManage={canManage} onTransferred={() => {}} />);
-    await screen.findByText("Source runner: runner_A");
+    await screen.findByText(`Source runner: ${view.source_runner_name || view.source_runner_id}`);
     expect(screen.getByText(view.reason)).toBeTruthy();
     expect(screen.queryByRole("combobox", { name: "Destination runner" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Transfer recovery" })).toBeNull();
@@ -41,13 +41,13 @@ describe("source recovery controls", () => {
     const onTransferred = vi.fn();
     render(<SourceRecoveryControls http={http} projectId="project" itemId="item" revision="7" canManage onTransferred={onTransferred} />);
     fireEvent.click(await screen.findByRole("combobox", { name: "Destination runner" }));
-    fireEvent.click(await screen.findByRole("option", { name: "Destination · runner_B" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Destination" }));
     fireEvent.click(screen.getByRole("button", { name: "Transfer recovery" }));
     await screen.findByText(/Source changed/);
     expect(screen.getByText(/def456/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Transfer recovery" }).hasAttribute("disabled")).toBe(true);
     fireEvent.click(screen.getByRole("combobox", { name: "Destination runner" }));
-    fireEvent.click(await screen.findByRole("option", { name: "Destination · runner_B" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Destination" }));
     fireEvent.click(screen.getByRole("button", { name: "Transfer recovery" }));
     await waitFor(() => expect(onTransferred).toHaveBeenCalledOnce());
     expect(writes[1]).toMatchObject({ expected_revision: "8", version_id: "replacement" });
@@ -66,7 +66,7 @@ describe("source recovery controls", () => {
     } });
     render(<SourceRecoveryControls http={http} projectId="project" itemId="item" revision="7" canManage onTransferred={onTransferred} />);
     fireEvent.click(await screen.findByRole("combobox", { name: "Destination runner" }));
-    fireEvent.click(await screen.findByRole("option", { name: "Destination · runner_B" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Destination" }));
     fireEvent.click(screen.getByRole("button", { name: "Transfer recovery" }));
     await screen.findByRole("alert");
     fireEvent.click(screen.getByRole("button", { name: "Transfer recovery" }));

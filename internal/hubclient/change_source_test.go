@@ -1,7 +1,11 @@
 package hubclient
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,15 +78,18 @@ func TestNativeReworkTransfersUnpushedSourceAcrossMachines(t *testing.T) {
 				}
 				return strings.TrimSpace(string(data))
 			}
+			initialBase := head(sourceA)
 			run := func(source string, provider *committingAgent, candidate connector.Issue, execution runner.Execution) runner.RunResult {
 				backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 				if err != nil {
 					t.Fatal(err)
 				}
 				if candidate.State == "Rework" && !updatePolicy {
-					if _, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: candidate.ID, Identifier: candidate.Identifier}); err != nil {
+					info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: candidate.ID, Identifier: candidate.Identifier})
+					if err != nil {
 						t.Fatal(err)
 					}
+					nativeChangeGit(t, info.Path, "reset", "--hard", initialBase)
 				}
 				runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
 				if err != nil {
@@ -218,6 +225,138 @@ func TestNativeRecoveredSourceRequiresCurrentVersion(t *testing.T) {
 			detail := tracker.ChangeDetail{Change: tracker.ChangeRequest{ID: test.change, CurrentVersion: test.version}, Versions: []tracker.ChangeVersion{{ID: test.version, ChangeVersionInput: tracker.ChangeVersionInput{RunID: "run", AttemptID: test.attempt, BaseSHA: test.base, HeadSHA: "head", PolicyID: test.policy}}}}
 			if err := execution.requireRecoveredSource(detail, tracker.AttemptDiffRequest{BaseSHA: "base", HeadSHA: "head"}); (err != nil) != test.wantError {
 				t.Fatalf("recovered source publication authority: %v", err)
+			}
+		})
+	}
+}
+
+func TestNativeDamagedSourceRecoversOnlyVerifiedOwner(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+	isolateNativeChangeGit(t)
+	for _, test := range []struct {
+		name                                     string
+		status                                   int
+		foreign, wrongHead, lostLease, wrongDiff bool
+		missingCapture, wrongWorktree            bool
+		wantError                                bool
+	}{
+		{name: "owner recaptures missing artifact", status: http.StatusInternalServerError},
+		{name: "owner recaptures corrupt artifact"},
+		{name: "foreign runner cannot recapture", foreign: true, wantError: true},
+		{name: "wrong local checkpoint cannot recapture", wrongHead: true, wantError: true},
+		{name: "changed immutable diff cannot recapture", wrongDiff: true, wantError: true},
+		{name: "owner workspace cannot be read", missingCapture: true, wantError: true},
+		{name: "local worktree differs from checkpoint", wrongWorktree: true, wantError: true},
+		{name: "lease lost during capture", lostLease: true, wantError: true},
+		{name: "authorization denial cannot recapture", status: http.StatusForbidden, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newNativeChangeHub(t)
+			issue := h.createInProgress(t, "Recover owner source")
+			h.claim(t, issue.ID)
+			execution, ok := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			if !ok {
+				t.Fatal("native execution missing")
+			}
+			repo := nativeChangeSourceRepo(t)
+			head := func() string {
+				data, err := exec.CommandContext(t.Context(), "git", "-C", repo, "rev-parse", "HEAD").Output()
+				if err != nil {
+					t.Fatal(err)
+				}
+				return strings.TrimSpace(string(data))
+			}
+			base := head()
+			if err := os.WriteFile(filepath.Join(repo, "CHANGE.md"), []byte("saved work\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			nativeChangeGit(t, repo, "add", "CHANGE.md")
+			nativeChangeGit(t, repo, "commit", "-m", "preserved source")
+			exactHead := head()
+			capture, err := workspace.CaptureChangeSource(t.Context(), repo, base, exactHead)
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := tracker.NativeWorkItemID(issue.ID)
+			change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: issue.Title})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.wrongDiff {
+				capture.Source.DiffSHA256 = strings.Repeat("d", 64)
+			}
+			version, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{
+				Mutation: nativeMutationKey(), ChangeVersionInput: tracker.ChangeVersionInput{
+					BaseSHA: base, HeadSHA: exactHead, MergeBaseSHA: base, Repository: nativeChangeRepository,
+					Code:      tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + exactHead, SHA256: policy.Digest([]byte(exactHead)), Availability: "unverified"},
+					Artifacts: []tracker.ChangeArtifact{}, PolicyID: h.descriptor.ID, Source: &capture.Source,
+				}, SourceBundle: capture.Bundle,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner := execution.claim.lease.MachineID
+			if test.foreign {
+				owner = "other"
+			}
+			checkpointHead := exactHead
+			if test.wrongHead {
+				checkpointHead = base
+			}
+			execution.claim.recovery.SourceAttemptID = "saved-source"
+			execution.claim.recovery.Attempts = []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "saved-source", MachineID: owner}, Checkpoint: &tracker.NativeCheckpoint{Resume: "resume_session", WorktreeState: "unpushed", HeadSHA: checkpointHead, Availability: "available", Storage: "local_only"}}}
+			original := h.native.client.httpClient.Transport
+			h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(request.URL.Path, "/source") {
+					status := test.status
+					body := []byte("corrupt source")
+					if status != 0 {
+						body = []byte(`{"error":{"code":"internal_error","message":"source unavailable"}}`)
+					} else {
+						status = http.StatusOK
+					}
+					return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body)), Request: request}, nil
+				}
+				return original.RoundTrip(request)
+			})
+			if test.wrongWorktree {
+				nativeChangeGit(t, repo, "checkout", "--detach", base)
+			}
+			calls := 0
+			if !test.missingCapture {
+				execution.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+					calls++
+					if test.lostLease {
+						h.scheduler.mu.Lock()
+						delete(h.scheduler.nativeClaims, issue.ID)
+						h.scheduler.mu.Unlock()
+					}
+					return workspace.CaptureChangeSource(ctx, repo, base, head)
+				})
+			}
+			pending := filepath.Join(repo, "PENDING.md")
+			if err := os.WriteFile(pending, []byte("pending local work"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			recovered, err := execution.RecoverChangeSource(t.Context())
+			if (err != nil) != test.wantError {
+				t.Fatalf("recovery error = %v", err)
+			}
+			if !test.wantError && (calls != 1 || recovered.Version.ID != version.ID || recovered.Version.BaseSHA != base || recovered.Version.HeadSHA != exactHead || !bytes.Equal(recovered.Bundle, capture.Bundle)) {
+				t.Fatalf("exact source not recovered: %+v calls=%d", recovered.Version, calls)
+			}
+			if test.foreign || test.wrongHead || test.status == http.StatusForbidden {
+				if calls != 0 {
+					t.Fatal("denied recovery read local source")
+				}
+			}
+			if test.lostLease && !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+				t.Fatalf("lost lease accepted: %v", err)
+			}
+			if data, err := os.ReadFile(pending); err != nil || string(data) != "pending local work" {
+				t.Fatalf("pending work changed: %q %v", data, err)
 			}
 		})
 	}
