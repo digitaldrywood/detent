@@ -4316,6 +4316,9 @@ func TestRunnerClassifiesWorkspaceBranchHold(t *testing.T) {
 		BranchName: "detent/issue-1965",
 		PRNumber:   &prNumber,
 	}})
+	if err == nil {
+		t.Fatal("Run() succeeded, want WorkspaceBranchHeldError")
+	}
 	var heldErr *WorkspaceBranchHeldError
 	if !errors.As(err, &heldErr) {
 		t.Fatalf("Run() error = %v, want WorkspaceBranchHeldError", err)

@@ -97,6 +97,7 @@ type NativeCompletionObservation struct {
 }
 
 type NativeFinalization struct {
+	Publication     *NativePRPublication   `json:"publication,omitempty"`
 	Unavailable     []string               `json:"unavailable"`
 	ObservedAt      time.Time              `json:"observed_at"`
 	Source          string                 `json:"source"`
@@ -116,6 +117,19 @@ type NativeFinalization struct {
 	TextRedacted    bool                   `json:"text_redacted"`
 	SourceVersion   *NativeChangeReference `json:"source_version,omitempty"`
 	SourceAttemptID string                 `json:"source_attempt_id,omitempty"`
+}
+
+type NativePRPublication struct {
+	ChangeID        string                  `json:"change_id"`
+	VersionID       string                  `json:"version_id"`
+	Repository      string                  `json:"repository"`
+	BaseRef         string                  `json:"base_ref"`
+	Branch          string                  `json:"branch"`
+	HeadSHA         string                  `json:"head_sha"`
+	PolicyID        string                  `json:"policy_id"`
+	SourceVersion   NativeChangeReference   `json:"source_version"`
+	SourceAttemptID string                  `json:"source_attempt_id"`
+	External        ChangeExternalReference `json:"external"`
 }
 
 const NativeFinalizationTextLimit = 4096

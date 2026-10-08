@@ -15,16 +15,20 @@ import (
 // If the channel ends before FinishSession arrives, the owner closes precisely
 // the sessions it opened on that channel using usage already received.
 type SSHCallbacks struct {
-	landingBatch     *workspace.LandingBatchTicket
-	batchLander      *sshBatchLander
-	batchValidations []func(context.Context) error
-	handle           func(context.Context, string, []json.RawMessage) (any, error)
-	store            SessionStore
-	execution        Execution
-	mu               sync.Mutex
-	wg               sync.WaitGroup
-	closed           bool
-	active           map[int64]UsageUpdate
+	publicationMu        sync.Mutex
+	publicationSequence  uint64
+	publicationAuthorize func(uint64, string, workspace.GitHubPublication) error
+	publicationEffect    func(uint64, string, workspace.GitHubPublication, string, string, workspace.GitHubPublication) error
+	landingBatch         *workspace.LandingBatchTicket
+	batchLander          *sshBatchLander
+	batchValidations     []func(context.Context) error
+	handle               func(context.Context, string, []json.RawMessage) (any, error)
+	store                SessionStore
+	execution            Execution
+	mu                   sync.Mutex
+	wg                   sync.WaitGroup
+	closed               bool
+	active               map[int64]UsageUpdate
 }
 
 func (r *Runner) SSHRunCallbacks(request RunRequest) *SSHCallbacks {
@@ -42,9 +46,20 @@ func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.Ra
 	defer c.wg.Done()
 	var result any
 	var err error
-	if method == "landing.submit" || method == "landing.finish" || method == "landing.validate" {
+	switch method {
+	case "publication.authorize", "publication.effect":
+		c.mu.Lock()
+		if c.closed {
+			err = errors.New("SSH publication channel is closed")
+		} else if method == "publication.authorize" {
+			result, err = invokeSSHMethod(ctx, c.publicationAuthorize, "", args)
+		} else {
+			result, err = invokeSSHMethod(ctx, c.publicationEffect, "", args)
+		}
+		c.mu.Unlock()
+	case "landing.submit", "landing.finish", "landing.validate":
 		result, err = c.handleLandingBatch(ctx, method, args)
-	} else {
+	default:
 		result, err = c.handle(ctx, method, args)
 	}
 	if err != nil {

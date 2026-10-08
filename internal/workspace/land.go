@@ -73,7 +73,8 @@ type LandOptions struct {
 	RebaseRequired        bool
 	Validation            *gate.CommandResult
 	LandingMode           string
-	Authorize             func(context.Context) error `json:"-"`
+	Authorize             func(context.Context) error                                    `json:"-"`
+	PublicationEffect     func(context.Context, string, string, GitHubPublication) error `json:"-"`
 	ValidationCommand     string
 	RequiredStatusChecks  []string
 	CITriggerLabel        string

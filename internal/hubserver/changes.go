@@ -170,6 +170,9 @@ func readChangeVersion(ctx context.Context, query nativeQueryer, changeID, versi
 	if err := json.Unmarshal([]byte(raw), &version); err != nil {
 		return version, err
 	}
+	if err := resolveVersionPublication(ctx, query, changeID, &version); err != nil {
+		return version, err
+	}
 	receipt, err := readVersionLanding(ctx, query, version.ID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return version, nil
@@ -178,6 +181,32 @@ func readChangeVersion(ctx context.Context, query nativeQueryer, changeID, versi
 		version.Landing = &receipt
 	}
 	return version, err
+}
+
+func resolveVersionPublication(ctx context.Context, query nativeQueryer, changeID string, version *tracker.ChangeVersion) error {
+	if version.External != nil {
+		return nil
+	}
+	var raw string
+	err := query.QueryRowContext(ctx, `SELECT json_extract(a.data_json, '$.finalization.publication')
+FROM native_attempts a JOIN change_requests c ON c.id=? AND json_extract(c.record_json, '$.current_version_id')=?
+AND c.organization_id=a.organization_id AND c.project_id=a.project_id AND c.work_item_id=a.work_item_id
+WHERE json_extract(a.data_json, '$.finalization.publication.version_id')=?
+ORDER BY a.fencing_token DESC LIMIT 1`, changeID, version.ID, version.ID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var publication tracker.NativePRPublication
+	if err := json.Unmarshal([]byte(raw), &publication); err != nil {
+		return err
+	}
+	if publication.Matches(changeID, *version) {
+		version.External = &publication.External
+	}
+	return nil
 }
 
 func changeRows[T any](ctx context.Context, query nativeQueryer, statement string, args ...any) ([]T, error) {
@@ -275,6 +304,9 @@ func readChangeDetailView(ctx context.Context, query nativeQueryer, scope native
 		return result, err
 	}
 	for i := range result.Versions {
+		if err := resolveVersionPublication(ctx, query, id, &result.Versions[i]); err != nil {
+			return result, err
+		}
 		receipt, err := readVersionLanding(ctx, query, result.Versions[i].ID)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue

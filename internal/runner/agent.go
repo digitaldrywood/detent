@@ -1502,7 +1502,13 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		req.ResumeState = store.AgentResumeState{}
 		req.RetryMode = RetryModeFresh
 	}
-	if req.Execution != nil && !nativeLanding && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
+	publicationRecovery := false
+	if req.Execution != nil && mode == RunModeImplement && runRole(mode, req.Issue) == RoleRework {
+		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil {
+			publicationRecovery = previous.Checkpoint.UncertainForgeEffect()
+		}
+	}
+	if req.Execution != nil && !nativeLanding && !publicationRecovery && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
 		if !freshCheckout && !req.operatorFreshRetry() {
 			resume, err := r.nativeInterruptedResumeState(ctx, req, agentRuntime)
 			if err != nil {
@@ -1925,13 +1931,22 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				return RunResult{}, err
 			}
 		}
-		checkpoint := executionCheckpoint(recoveryState)
+		checkpoint := executionCheckpointPreservingPublication(req.Execution, recoveryState)
 		if !agentResumeEmpty(agentResumeFromState(resumeState)) {
 			checkpoint.Resume = "resume_session"
 		}
 		if err := req.Execution.Checkpoint(ctx, checkpoint); err != nil {
 			return RunResult{}, err
 		}
+	}
+	if publicationRecovery {
+		if !nativePublicationRecovery(req.Execution.Recovery(), recoveryState, executionIdentity, workspaceIssue.Source) {
+			return RunResult{}, fmt.Errorf("%w: publication source changed before reconciliation", ErrNativeRecoveryRequired)
+		}
+		req.finalizeNativeWork = true
+		afterRunPending = false
+		err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, AgentResume{}, false)
+		return RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}, err
 	}
 	reworkPrecheck := workspace.MergePrepareResult{}
 	if workspaceIssue.NativeRework {
@@ -1963,7 +1978,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			evidenceIssue := workspaceIssue
 			evidenceIssue.BaseRef = recoveryState.HeadSHA
 			req.validationEvidenceSource = r.attemptDiffSource(ctx, info, evidenceIssue)
-			checkpoint := executionCheckpoint(recoveryState)
+			checkpoint := executionCheckpointPreservingPublication(req.Execution, recoveryState)
 			if !agentResumeEmpty(agentResumeFromState(resumeState)) {
 				checkpoint.Resume = "resume_session"
 			}

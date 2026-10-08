@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -1339,12 +1340,17 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 }
 
 type artifactExecutionProbe struct {
+	publicationSource func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)
 	testExecution
 	failure         error
 	evidenceFailure error
 	finalized       bool
 	evidence        []ValidationEvidence
 	onFinalize      func(context.Context) error
+}
+
+func (e *artifactExecutionProbe) SetPublicationSource(source func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)) {
+	e.publicationSource = source
 }
 
 func (*artifactExecutionProbe) PrepareArtifacts(context.Context, string) error { return nil }
@@ -1369,6 +1375,16 @@ type finalizingExecutionWorkspace struct {
 	preserveErr   error
 	preserveDelay time.Duration
 	finalized     bool
+}
+
+func (w *finalizingExecutionWorkspace) PrepareGitHubPublication(ctx context.Context, _ workspace.Info, issue workspace.Issue, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+	if !w.finalized || opts.Repository != "https://github.com/example/repo" || opts.HeadSHA != strings.Repeat("c", 40) || opts.TargetBranch != issue.ProgressBaseRef || opts.GitHubClient == nil || opts.Authorize == nil {
+		return workspace.GitHubPublication{}, errors.New("publication hook lost finalized source, target, client or authority")
+	}
+	if err := opts.Authorize(ctx); err != nil {
+		return workspace.GitHubPublication{}, err
+	}
+	return workspace.GitHubPublication{Repository: opts.Repository, HeadSHA: opts.HeadSHA, BaseRef: opts.TargetBranch}, nil
 }
 
 func (w *finalizingExecutionWorkspace) FinalizeNativeWork(ctx context.Context, _ workspace.Info, _ workspace.Issue, validate func(context.Context) error) (string, error) {
@@ -1399,20 +1415,22 @@ func TestNativeEpilogueStageContexts(t *testing.T) {
 	t.Parallel()
 	uploadErr := errors.New("artifact upload unavailable")
 	for _, test := range []struct {
-		name           string
-		finalDelay     time.Duration
-		artifactDelay  time.Duration
-		cancel         bool
-		authorityErr   error
-		artifactErr    error
-		finalErr       error
-		preserveErr    error
-		preserveDelay  time.Duration
-		parentDeadline time.Duration
-		clean          bool
-		wantErr        error
+		name            string
+		finalDelay      time.Duration
+		artifactDelay   time.Duration
+		cancel          bool
+		authorityErr    error
+		artifactErr     error
+		finalErr        error
+		preserveErr     error
+		preserveDelay   time.Duration
+		parentDeadline  time.Duration
+		clean           bool
+		wantErr         error
+		publicationHook bool
 	}{
 		{name: "slow finalization", finalDelay: 2 * time.Second},
+		{name: "required PR hook retains configured source and target", publicationHook: true},
 		{name: "slow artifacts", artifactDelay: 2 * time.Second},
 		{name: "clean committed source cancelled during artifacts", finalDelay: 2 * time.Second, artifactDelay: 2 * time.Second, clean: true, cancel: true, wantErr: context.Canceled},
 		{name: "genuine parent deadline retains source without success", finalDelay: 2 * time.Second, artifactDelay: 2 * time.Second, parentDeadline: 3 * time.Second, clean: true, wantErr: context.DeadlineExceeded},
@@ -1446,7 +1464,26 @@ func TestNativeEpilogueStageContexts(t *testing.T) {
 					return errors.Join(ctx.Err(), test.artifactErr)
 				}
 				r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
-				err := r.afterExecution(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}, finalizeNativeWork: true}, backend, workspace.Info{}, workspace.Issue{}, AgentResume{}, true)
+				issue := workspace.Issue{}
+				if test.publicationHook {
+					issue.ProgressBaseRef = "develop"
+				}
+				err := r.afterExecution(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}, finalizeNativeWork: true}, backend, workspace.Info{}, issue, AgentResume{}, true)
+				if test.publicationHook {
+					if err != nil || execution.publicationSource == nil || execution.checkpoint == nil {
+						t.Fatalf("host finalization omitted publication hook: %v", err)
+					}
+					client, clientErr := github.NewClient(github.ClientConfig{TokenSource: github.StaticTokenSource(t.Name()), HTTPClient: workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+						return nil, errors.New("publication fixture must not reach GitHub")
+					})})
+					if clientErr != nil {
+						t.Fatal(clientErr)
+					}
+					publication, publicationErr := execution.publicationSource(ctx, tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{Repository: "https://github.com/example/repo", HeadSHA: strings.Repeat("c", 40)}}, workspace.LandOptions{GitHubClient: client, Authorize: execution.Validate})
+					if publicationErr != nil || publication.Repository != "https://github.com/example/repo" || publication.HeadSHA != strings.Repeat("c", 40) || publication.BaseRef != "develop" {
+						t.Fatalf("publication hook changed source binding: %+v, %v", publication, publicationErr)
+					}
+				}
 				preserved := test.preserveErr == nil && test.preserveDelay == 0
 				if !errors.Is(err, test.wantErr) || backend.afterRun || backend.retained != preserved {
 					t.Fatalf("error=%v retained=%t cleaned=%t", err, backend.retained, backend.afterRun)

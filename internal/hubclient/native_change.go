@@ -172,7 +172,135 @@ func (e *nativeExecution) publishVersion(ctx context.Context, diff tracker.Attem
 		return err
 	}
 	change.VersionID, change.VersionError, change.VersionCode, change.Reviewed = id, "", "", reviewed
+	if err := e.preparePRPublication(ctx, change); err != nil {
+		change.VersionError, change.VersionCode, change.Reviewed = err.Error(), hubErrorCode(err), false
+		return err
+	}
 	return nil
+}
+
+func (e *nativeExecution) SetPublicationSource(source func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.publicationSource = source
+}
+
+func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runner.NativeChange) error {
+	detail, err := e.claim.source.client.Change(ctx, e.claim.lease.WorkItemID, change.ChangeID)
+	if err != nil {
+		return err
+	}
+	for _, version := range detail.Versions {
+		if version.ID != change.VersionID {
+			continue
+		}
+		if !version.Policy.Gates.GitHubPullRequest {
+			return nil
+		}
+		authorize := func(ctx context.Context) error {
+			if err := ctx.Err(); err != nil {
+				return e.executionError(errors.Join(err, context.Cause(ctx)))
+			}
+			if checkpoint := e.data.Handoff; checkpoint != nil && (checkpoint.EffectState == "pending" || checkpoint.EffectState == "ambiguous") && checkpoint.ExternalEffect != "git_push" && checkpoint.ExternalEffect != "pr_create" {
+				return fmt.Errorf("%w: PR publication has an unresolved external effect; preserve source and reconcile its checkpoint before resuming", ErrUnavailable)
+			}
+			if e.remaining() <= 0 {
+				if err := e.renew(ctx); err != nil {
+					return e.executionError(err)
+				}
+			}
+			if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.data.PolicyID); err != nil {
+				return e.executionError(e.scheduler.nativeClaimError(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err))
+			}
+			if _, err := e.claim.source.client.ValidateLease(ctx, e.claim.lease); err != nil {
+				return e.executionError(err)
+			}
+			current, err := e.claim.source.client.Change(ctx, e.claim.lease.WorkItemID, change.ChangeID)
+			if err != nil {
+				return err
+			}
+			if current.Change.CurrentVersion != version.ID || version.HeadSHA != change.HeadSHA || version.Repository != e.repository || version.PolicyID != e.data.PolicyID || current.Summary.Status == "stale_policy" || current.Change.CurrentLanding() != nil {
+				return errors.New("PR publication source, current version or approved policy changed; reconcile the current Change before retrying")
+			}
+			if previous := e.claim.recovery.SourceAttempt(); previous != nil && previous.Checkpoint != nil &&
+				(previous.Checkpoint.EffectState == "pending" || previous.Checkpoint.EffectState == "ambiguous") {
+				checkpoint := previous.Checkpoint
+				if e.role != runner.RoleRework || !checkpoint.UncertainForgeEffect() || e.recoveredSource == nil || previous.MachineID != e.claim.lease.MachineID ||
+					previous.PolicyID != version.PolicyID || checkpoint.Change == nil || *checkpoint.Change != (tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) ||
+					checkpoint.HeadSHA != version.HeadSHA || checkpoint.Storage != "local_only" || checkpoint.Availability != "available" || e.lastDiff.HeadSHA != version.HeadSHA {
+					return errors.New("uncertain publication requires unchanged verified current Rework source under its newly owned lease; preserve its checkpoint and reconcile the source, version and policy before retrying")
+				}
+			}
+			return e.requireRecoveredSource(current, *e.lastDiff)
+		}
+		if err := authorize(ctx); err != nil {
+			return err
+		}
+		if e.publication != nil && e.publication.Matches(change.ChangeID, version) {
+			return nil
+		}
+		if e.publicationSource == nil {
+			return errors.New("required GitHub PR preparation is unavailable; retain the current Change source and resume on its authorized publication runner")
+		}
+		confirmedPR := workspace.GitHubPublication{}
+		effect := func(ctx context.Context, kind, state string, publication workspace.GitHubPublication) error {
+			if err := authorize(ctx); err != nil {
+				return err
+			}
+			if publication.Repository != version.Repository || publication.HeadSHA != version.HeadSHA || publication.BaseRef == "" || publication.Branch == "" {
+				return errors.New("publication effect differs from the current source repository, head, branch or target")
+			}
+			checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: e.worktreeState, HeadSHA: version.HeadSHA}
+			if e.data.Handoff != nil {
+				checkpoint = *e.data.Handoff
+			}
+			binding := tracker.NativePRPublication{ChangeID: change.ChangeID, VersionID: version.ID, Repository: publication.Repository, HeadSHA: publication.HeadSHA, BaseRef: publication.BaseRef, Branch: publication.Branch, PolicyID: version.PolicyID, SourceVersion: tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}, SourceAttemptID: version.AttemptID, External: publication.External}
+			if checkpoint.EffectState == "pending" || checkpoint.EffectState == "ambiguous" {
+				unresolved := binding
+				unresolved.External = tracker.ChangeExternalReference{}
+				if checkpoint.EffectID != unresolved.EffectID(checkpoint.ExternalEffect) || checkpoint.Change == nil || *checkpoint.Change != binding.SourceVersion {
+					return errors.New("unresolved publication effect differs from the current source identity; preserve source and reconcile its checkpoint before resuming")
+				}
+			}
+			if state == "pending" && (checkpoint.EffectState == "pending" || checkpoint.EffectState == "ambiguous") {
+				return errors.New("PR publication has an unresolved external effect; reconcile the exact repository, branch, head and PR before retrying a write")
+			}
+			if state == "confirmed" && kind == "git_push" && checkpoint.ExternalEffect == "pr_create" {
+				return nil
+			}
+			checkpoint.ExternalEffect, checkpoint.EffectState = kind, state
+			checkpoint.EffectID = binding.EffectID(kind)
+			checkpoint.Change = &tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
+			if state == "none" {
+				checkpoint.ExternalEffect, checkpoint.EffectID = "none", ""
+			}
+			if err := e.append(ctx, "run.checkpointed", "", &checkpoint); err != nil {
+				return err
+			}
+			if kind == "pr_create" && state == "confirmed" {
+				confirmedPR = publication
+			}
+			return nil
+		}
+		publication, err := e.publicationSource(ctx, version, workspace.LandOptions{Authorize: authorize, PublicationEffect: effect, External: version.External, SourceIssues: detail.SourceIssues})
+		if err != nil {
+			if e.data.Handoff != nil && e.data.Handoff.EffectState == "ambiguous" {
+				return fmt.Errorf("%w: required GitHub PR has an ambiguous publication response; retain source and reconcile the exact existing PR before another write: %w", ErrUnavailable, err)
+			}
+			return fmt.Errorf("required GitHub PR is not ready; preserve source and resolve publication blocker: %w", err)
+		}
+		if err := authorize(ctx); err != nil {
+			return err
+		}
+		receipt := &tracker.NativePRPublication{ChangeID: change.ChangeID, VersionID: version.ID, Repository: publication.Repository, BaseRef: publication.BaseRef, Branch: publication.Branch, HeadSHA: publication.HeadSHA, PolicyID: version.PolicyID,
+			SourceVersion: tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}, SourceAttemptID: version.AttemptID, External: publication.External}
+		if !receipt.Matches(change.ChangeID, version) || publication != confirmedPR || e.data.Handoff == nil || e.data.Handoff.ExternalEffect != "pr_create" || e.data.Handoff.EffectState != "confirmed" || e.data.Handoff.EffectID != receipt.EffectID("pr_create") {
+			return errors.New("PR publication response lacks an exact verified identity and confirmed effect; reconcile publication before reporting success")
+		}
+		e.publication = receipt
+		return nil
+	}
+	return errors.New("PR publication requires the current Change version; reload the source before retrying")
 }
 
 // publishChangeVersion reports the version that carries the head and whether

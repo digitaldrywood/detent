@@ -229,6 +229,9 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 		if issue.Change, err = readNativeIssueChange(ctx, s.database.reader, scope, string(issue.WorkItemID)); err != nil {
 			return s.nativeAPIError(c, err)
 		}
+		if issue.Change.Number > 0 && issue.Change.URL != "" {
+			issue.PullRequest = &tracker.NativePullRequest{Number: issue.Change.Number, URL: issue.Change.URL}
+		}
 	}
 	return c.JSON(http.StatusOK, s.nativeIssueResponse(issue))
 }

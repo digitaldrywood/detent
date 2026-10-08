@@ -285,7 +285,41 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		retryMoved          bool
 		baseMovesDuringRead bool
 		rolling             bool
+		prepareOnly         bool
+		stagedWork          bool
+		lostCreate          bool
+		authorityFail       int
+		wrongPull           string
+		pushRefused         bool
+		targetBranch        string
+		ambiguousEffect     bool
+		wrongRemote         string
+		duplicatePull       bool
+		remoteNewer         bool
+		remoteOnlyHead      bool
+		preservePublication bool
 	}{
+		{name: "prepare refuses a different selected remote", prepareOnly: true, wrongRemote: "selected", method: "squash", wantRefusal: LandRefusalProtected},
+		{name: "prepare refuses a different push repository", prepareOnly: true, wrongRemote: "pushurl", method: "squash", wantRefusal: LandRefusalProtected},
+		{name: "prepare refuses duplicate matching PRs", prepareOnly: true, duplicatePull: true, preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
+		{name: "landing refuses newer published head", remoteNewer: true, preservePublication: true, pullState: "open", method: "squash", wantRefusal: LandRefusalHeadMoved},
+		{name: "prepare refuses newer remote-only published head", prepareOnly: true, remoteNewer: true, remoteOnlyHead: true, preservePublication: true, pullState: "open", method: "squash", wantRefusal: LandRefusalHeadMoved},
+		{name: "prepare refuses newer published head", prepareOnly: true, remoteNewer: true, preservePublication: true, pullState: "open", method: "squash", wantRefusal: LandRefusalHeadMoved},
+		{name: "prepare legitimate forward Rework", prepareOnly: true, reworked: true, pullState: "stale", method: "squash"},
+		{name: "prepare existing committed work under human hold", prepareOnly: true, method: "squash"},
+		{name: "prepare existing staged work under human hold", prepareOnly: true, stagedWork: true, method: "squash"},
+		{name: "prepare uses the configured target branch", prepareOnly: true, targetBranch: "develop", method: "squash"},
+		{name: "prepare adopts PR after lost create response", prepareOnly: true, lostCreate: true, method: "squash"},
+		{name: "prepare refuses wrong PR head", prepareOnly: true, pullState: "open", wrongPull: "head", method: "squash", wantRefusal: LandRefusalHeadMoved},
+		{name: "prepare refuses wrong PR repository", prepareOnly: true, pullState: "open", wrongPull: "repository", method: "squash", wantRefusal: LandRefusalHeadMoved},
+		{name: "prepare refuses wrong PR target", prepareOnly: true, pullState: "open", wrongPull: "target", preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
+		{name: "prepare preserves source on push refusal", prepareOnly: true, pushRefused: true, method: "squash", wantRefusal: LandRefusalProtected},
+		{name: "prepare refuses lost authority before preparation", prepareOnly: true, authorityFail: 1, method: "squash"},
+		{name: "prepare refuses lost authority before push", prepareOnly: true, authorityFail: 2, method: "squash"},
+		{name: "prepare refuses lost authority before create", prepareOnly: true, authorityFail: 3, method: "squash"},
+		{name: "prepare refuses lost authority before recording", prepareOnly: true, authorityFail: 4, method: "squash"},
+		{name: "prepare refuses ambiguous external effect before push", prepareOnly: true, ambiguousEffect: true, authorityFail: 2, method: "squash"},
+		{name: "prepare preserves source on authentication refusal", prepareOnly: true, method: "squash", failureMethod: "POST", status: 403, message: "Resource not accessible by integration", wantRefusal: LandRefusalProtected},
 		{name: "rolling mode skips a failing gate", method: "squash", rolling: true},
 		{name: "creates the exact source closing payload", method: "squash", sourceIssues: true},
 		{name: "reuse preserves human delivery attribution", method: "squash", pullState: "open", sourceIssues: true, existingBody: "Human attribution\n\nCloses example/repo#44", wantPatch: true},
@@ -392,11 +426,19 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				fixture.advanceMain(t, "parallel.txt", "parallel landing\n")
 			}
 			base := fixture.remoteMain(t)
+			target := "main"
+			if test.targetBranch != "" {
+				target = test.targetBranch
+				runGit(t, fixture.remote, "update-ref", "refs/heads/"+target, base)
+			}
 			repository := "https://github.com/example/repo"
 			runGit(t, fixture.source, "config", "url.file://"+fixture.remote+".insteadOf", repository+".git")
 			runGit(t, fixture.source, "remote", "set-url", "origin", repository+".git")
 			previous := base
 			externalHead := fixture.head
+			if test.pullState == "merged" {
+				runGit(t, fixture.source, "push", "origin", fixture.head+":refs/heads/"+fixture.info.Branch)
+			}
 			if test.external {
 				if test.pullError == "head" {
 					externalHead = base
@@ -408,9 +450,32 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				previous = strings.TrimSpace(runGit(t, fixture.source, "commit-tree", tree, "-p", base, "-m", "Previous attempt"))
 				runGit(t, fixture.source, "push", "origin", previous+":refs/heads/"+fixture.info.Branch)
 			}
+			if test.preservePublication {
+				if test.remoteNewer {
+					tree := strings.TrimSpace(runGit(t, fixture.source, "rev-parse", fixture.head+"^{tree}"))
+					if test.remoteOnlyHead {
+						runGit(t, fixture.source, "push", "origin", fixture.head+":refs/heads/"+fixture.info.Branch)
+						previous = strings.TrimSpace(runGit(t, fixture.remote, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit-tree", tree, "-p", fixture.head, "-m", "Newer remote work"))
+					} else {
+						previous = strings.TrimSpace(runGit(t, fixture.source, "commit-tree", tree, "-p", fixture.head, "-m", "Newer published work"))
+					}
+				}
+				if test.remoteOnlyHead {
+					runGit(t, fixture.remote, "update-ref", "refs/heads/"+fixture.info.Branch, previous)
+				} else {
+					runGit(t, fixture.source, "push", "origin", previous+":refs/heads/"+fixture.info.Branch)
+				}
+			}
 			runGit(t, fixture.remote, "config", "core.logAllRefUpdates", "true")
+			preservedBranch := runGit(t, fixture.remote, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"+fixture.info.Branch)
+			preservedLog := ""
+			if test.preservePublication {
+				preservedLog = runGit(t, fixture.remote, "reflog", "show", "--format=%H %gs", "refs/heads/"+fixture.info.Branch)
+			}
 			previousRun := test.repeatRun
 			var methods []string
+			var createCalls int
+			createResponseLost := false
 			mergeCalls := 0
 			createdPull := false
 			reset := time.Now().Add(time.Hour).Truncate(time.Second)
@@ -445,6 +510,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 						headers.Set("X-RateLimit-Remaining", "4990")
 						headers.Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
 						pull := fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":"%s","ref":%q,"repo":{"full_name":"example/repo"}},"base":{"ref":"main","repo":{"full_name":"example/repo"}}}`, fixture.head, fixture.info.Branch)
+						if test.targetBranch != "" {
+							pull = strings.Replace(pull, `"ref":"main"`, `"ref":`+strconv.Quote(target), 1)
+						}
 						var response string
 						if test.external {
 							pullHead, headRef, baseRef, headRepo, baseRepo := externalHead, fixture.info.Branch, "main", "example/repo", "example/repo"
@@ -464,6 +532,14 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 							pull = fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":"%s","ref":"%s","repo":{"full_name":"%s"}},"base":{"sha":"%s","ref":"%s","repo":{"full_name":"%s"}}}`, pullHead, headRef, headRepo, base, baseRef, baseRepo)
 						}
 						pull = strings.Replace(pull, `"number":7,`, fmt.Sprintf(`"number":7,"body":%q,`, test.existingBody), 1)
+						switch test.wrongPull {
+						case "head":
+							pull = strings.ReplaceAll(pull, fixture.head, originalBase)
+						case "repository":
+							pull = strings.ReplaceAll(pull, "example/repo", "other/repo")
+						case "target":
+							pull = strings.ReplaceAll(pull, `"ref":"main"`, `"ref":"wrong"`)
+						}
 						if !healthy && req.Method == test.failureMethod && (!test.retrySuccess || mergeCalls == 1) {
 							status = test.status
 							if test.moved && test.status == http.StatusConflict || test.retryMoved && mergeCalls > 1 {
@@ -497,9 +573,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 						} else {
 							switch req.Method {
 							case "GET":
-								published := strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
-								if !test.external && req.URL.RawQuery != "" && published != fixture.head {
-									t.Fatalf("list read preceded reviewed head publication: %s", published)
+								published, _, readErr := remoteBranchHead(t.Context(), fixture.info.Path, "origin", fixture.info.Branch)
+								if readErr != nil {
+									t.Fatal(readErr)
 								}
 								switch {
 								case req.URL.Path == "/repos/example/repo/pulls/7" && !test.external:
@@ -515,6 +591,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 										pullBase = ""
 									}
 									response = fmt.Sprintf(`{"number":7,"state":"open","mergeable":null,"mergeable_state":"unknown","head":{"sha":"%s","ref":"%s","repo":{"full_name":"example/repo"}},"base":{"sha":"%s","ref":"main","repo":{"full_name":"example/repo"}}}`, pullHead, pullBranch, pullBase)
+									if test.prepareOnly {
+										response = pull
+									}
 									if test.refreshQuota && !healthy {
 										status = http.StatusTooManyRequests
 										headers.Del("X-RateLimit-Reset")
@@ -551,9 +630,15 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 										t.Fatalf("external PR lookup = %s", req.URL)
 									}
 									response = pull
+								case test.duplicatePull:
+									response = "[" + pull + "," + strings.Replace(pull, `"number":7`, `"number":8`, 1) + "]"
 								case createdPull:
 									response = "[" + pull + "]"
+								case test.remoteNewer:
+									response = "[" + strings.ReplaceAll(pull, fixture.head, previous) + "]"
 								case test.pullState == "open":
+									response = "[" + pull + "]"
+								case test.prepareOnly && test.pullState == "stale" && published == fixture.head:
 									response = "[" + pull + "]"
 								case test.pullState == "stale":
 									response = "[" + strings.ReplaceAll(pull, fixture.head, previous) + "]"
@@ -569,11 +654,12 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 									response = "[]"
 								}
 							case "POST":
+								createCalls++
 								wantBody := "Native Change Request"
 								if test.sourceIssues {
 									wantBody += "\n\nCloses digitaldrywood/detent#3410"
 								}
-								if body["body"] != wantBody || body["title"] != "Native Change Request" || body["base"] != "main" || body["head"] != "example:"+fixture.info.Branch {
+								if body["body"] != wantBody || body["title"] != "Native Change Request" || body["base"] != target || body["head"] != "example:"+fixture.info.Branch {
 									t.Fatalf("PR creation payload = %+v, want body %q", body, wantBody)
 								}
 								createdPull = true
@@ -585,6 +671,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 								}
 								response = pull
 							case "PUT":
+								if test.moved && test.failureMethod == "" {
+									runGit(t, fixture.remote, "update-ref", "refs/heads/"+fixture.info.Branch, previous)
+								}
 								published := strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
 								if published != body["sha"] {
 									status = http.StatusConflict
@@ -594,6 +683,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 									response = fmt.Sprintf(`{"merged":true,"sha":"%s"}`, body["sha"])
 								}
 							}
+						}
+						if test.lostCreate && req.Method == http.MethodPost && !createResponseLost {
+							createResponseLost = true
+							return nil, errors.New("PR create response lost")
 						}
 						return &http.Response{StatusCode: status, Header: headers, Body: io.NopCloser(strings.NewReader(response))}, nil
 					}),
@@ -605,6 +698,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			}
 			client := newClient(false)
 			opts := LandOptions{HeadSHA: fixture.head, Method: test.method, Repository: repository, Message: "Native Change Request", GitHubClient: client, ValidationCommand: "test -f feature.txt"}
+			opts.TargetBranch = test.targetBranch
 			if test.rolling {
 				opts.LandingMode = gate.LandingRollingBarrier
 				opts.ValidationCommand = "exit 19"
@@ -644,8 +738,104 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					t.Fatalf("landing ownership = %#v", landingInfo)
 				}
 			}
+			if test.prepareOnly {
+				authorityCalls := 0
+				authorityErr := errors.New("publication authority lost; resume under the current source owner")
+				if test.ambiguousEffect {
+					authorityErr = errors.New("publication has an ambiguous external effect; reconcile its receipt before resuming")
+				}
+				opts.Authorize = func(context.Context) error {
+					authorityCalls++
+					if authorityCalls == test.authorityFail {
+						return authorityErr
+					}
+					return nil
+				}
+				if test.stagedWork {
+					if err := os.WriteFile(filepath.Join(landingInfo.Path, "repair.txt"), []byte("existing staged repair\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					runGit(t, landingInfo.Path, "add", "repair.txt")
+					if _, err := fixture.backend.FinalizeNativeWork(t.Context(), landingInfo, landingIssue, func(context.Context) error { return nil }); err != nil {
+						t.Fatal(err)
+					}
+					fixture.head = strings.TrimSpace(runGit(t, landingInfo.Path, "rev-parse", "HEAD"))
+					opts.HeadSHA = fixture.head
+				}
+				if test.pushRefused {
+					hooks := filepath.Join(fixture.remote, "hooks")
+					if err := os.WriteFile(filepath.Join(hooks, "pre-receive"), []byte("#!/bin/sh\nprintf publication-policy-refusal >&2\nexit 1\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.wrongRemote != "" {
+					runGit(t, fixture.source, "config", "url.file://"+fixture.remote+".insteadOf", "https://github.com/other/repo.git")
+				}
+				switch test.wrongRemote {
+				case "selected":
+					opts.Remote = "delivery"
+					runGit(t, fixture.source, "remote", "add", opts.Remote, "https://github.com/other/repo.git")
+				case "pushurl":
+					runGit(t, fixture.source, "config", "remote.origin.pushurl", "https://github.com/other/repo.git")
+				}
+				publication, err := fixture.backend.PrepareGitHubPublication(t.Context(), landingInfo, landingIssue, opts)
+				if test.lostCreate {
+					if err == nil || createCalls != 1 {
+						t.Fatalf("lost create response did not preserve one publication: %+v, %v, calls=%d", publication, err, createCalls)
+					}
+					publication, err = fixture.backend.PrepareGitHubPublication(t.Context(), landingInfo, landingIssue, opts)
+				}
+				if fixture.remoteMain(t) != base || mergeCalls != 0 || strings.TrimSpace(runGit(t, landingInfo.Path, "rev-parse", "HEAD")) != fixture.head || strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+target)) != base {
+					t.Fatalf("PR preparation changed source or merged under a human hold: %+v, %v", publication, err)
+				}
+				if test.authorityFail != 0 {
+					if !errors.Is(err, authorityErr) || publication.External.ID != "" {
+						t.Fatalf("lost authority yielded a publication receipt: %+v, %v", publication, err)
+					}
+					if test.authorityFail == 1 && len(methods) != 0 || test.authorityFail == 3 && createCalls != 0 {
+						t.Fatalf("publication continued after authority or effect refusal: requests=%v creates=%d", methods, createCalls)
+					}
+					if test.authorityFail == 4 {
+						opts.Authorize = func(context.Context) error { return nil }
+						publication, err = fixture.backend.PrepareGitHubPublication(t.Context(), landingInfo, landingIssue, opts)
+						if err != nil || publication.External.ID != "7" || createCalls != 1 || mergeCalls != 0 {
+							t.Fatalf("receipt authority recovery duplicated the PR: %+v, %v, creates=%d", publication, err, createCalls)
+						}
+					}
+					return
+				}
+				if test.wantRefusal != "" {
+					if test.preservePublication && (preservedBranch != runGit(t, fixture.remote, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"+fixture.info.Branch) || preservedLog != runGit(t, fixture.remote, "reflog", "show", "--format=%H %gs", "refs/heads/"+fixture.info.Branch)) {
+						t.Fatalf("refusal overwrote published branch or PR head: old=%s current=%s", previous, runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
+					}
+					if test.wrongRemote != "" && len(methods) != 0 || test.duplicatePull && createCalls != 0 {
+						t.Fatalf("unsafe publication issued requests: %v, creates=%d", methods, createCalls)
+					}
+					var refusal *LandRefusal
+					if !errors.As(err, &refusal) || refusal.Kind != test.wantRefusal || publication.External.ID != "" {
+						t.Fatalf("unsafe publication was not refused: %+v, %v", publication, err)
+					}
+					return
+				}
+				if err != nil || publication.Repository != repository || publication.HeadSHA != fixture.head || publication.BaseRef != target || publication.Branch != landingInfo.Branch || publication.External.ID != "7" || publication.External.URL != repository+"/pull/7" {
+					t.Fatalf("publication did not record the exact reviewable PR: %+v, %v", publication, err)
+				}
+				again, err := fixture.backend.PrepareGitHubPublication(t.Context(), landingInfo, landingIssue, opts)
+				wantCreates := 1
+				if test.pullState == "stale" || test.pullState == "open" {
+					wantCreates = 0
+				}
+				if err != nil || again != publication || createCalls != wantCreates || mergeCalls != 0 {
+					t.Fatalf("publication retry duplicated or merged work: %+v, %v, creates=%d merges=%d", again, err, createCalls, mergeCalls)
+				}
+				return
+			}
 			if test.repeatRun {
 				result, err := fixture.backend.LandChangeViaGitHub(t.Context(), landingInfo, landingIssue, opts)
+				if test.preservePublication && (preservedBranch != runGit(t, fixture.remote, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"+fixture.info.Branch) || preservedLog != runGit(t, fixture.remote, "reflog", "show", "--format=%H %gs", "refs/heads/"+fixture.info.Branch) || mergeCalls != 0) {
+					t.Fatal("landing refusal changed published source")
+				}
+
 				var refusal *LandRefusal
 				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalBaseMoved || refusal.BaseSHA != "" || result.Rebased || mergeCalls != 1 {
 					t.Fatalf("prior landing did not wait without rewriting: result=%#v err=%v calls=%d", result, err, mergeCalls)
@@ -790,7 +980,11 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					}
 					return
 				}
-				if !test.external && (!strings.Contains(strings.Join(methods, ","), "PUT") || !strings.Contains(refusal.Reason, "GitHub refused")) {
+				if test.remoteNewer {
+					if strings.Join(methods, ",") != "GET" || !strings.Contains(refusal.Reason, "newer work") || createCalls != 0 || mergeCalls != 0 {
+						t.Fatalf("rollback preflight mutated publication: %v, %v", err, methods)
+					}
+				} else if !test.external && (!strings.Contains(strings.Join(methods, ","), "PUT") || !strings.Contains(refusal.Reason, "GitHub refused")) {
 					t.Fatalf("refusal did not come from the atomic merge: %v, %v", err, methods)
 				}
 				if test.external {
