@@ -36,10 +36,11 @@ func (c *NativeClient) base() string {
 }
 
 type nativeCapabilities struct {
-	Version        string   `json:"version"`
-	ProtocolMajors []int    `json:"protocol_majors"`
-	EventSchemas   []int    `json:"event_schema_versions"`
-	Features       []string `json:"features"`
+	MinimumRunnerVersion string   `json:"minimum_runner_version"`
+	Version              string   `json:"version"`
+	ProtocolMajors       []int    `json:"protocol_majors"`
+	EventSchemas         []int    `json:"event_schema_versions"`
+	Features             []string `json:"features"`
 }
 
 const capabilitiesTTL = 30 * time.Second
@@ -68,6 +69,14 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 		return "", errors.New("hub did not report its version")
 	}
 	return version, nil
+}
+
+func (c *Client) MinimumRunnerVersion(ctx context.Context) (string, error) {
+	capabilities, err := c.cachedCapabilities(ctx)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(capabilities.MinimumRunnerVersion), nil
 }
 
 func (c *NativeClient) capabilities(ctx context.Context) (nativeCapabilities, error) {

@@ -193,16 +193,51 @@ project is the only way to give its workers GitHub access.
 
 ## Customer host enrollment
 
-In the organization's runner settings, choose Enroll a runner, give the runner
-a name, pick its projects, and copy the one command the dialog shows. Run it on
-the host:
+In Settings > Providers & runners, choose Add runner > Manual to enroll a
+runner, give it a name and pick its projects. The dialog preselects macOS or
+Linux from your browser; switch it if the target machine uses the other OS.
+Install Detent before creating the one-time token, which expires after 15
+minutes. The existing installer selects the latest release for macOS or Linux
+and detects amd64 or arm64:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh
+```
+
+On macOS, Homebrew is an alternative:
+
+```sh
+brew install digitaldrywood/tap/detent
+```
+
+The dialog shows the Hub's minimum runner version. Check `detent version` on
+an existing installation and, if older, run `detent update --yes --from-release`
+or `brew upgrade digitaldrywood/tap/detent` for Homebrew before registering.
+The registration output also tells older binaries to update.
+
+For a fresh machine, copy the dialog's combined install and register command.
+It adds the install directories to PATH so the new binary is available in the
+same shell:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh && \
+  export PATH="$HOME/.local/bin:/usr/local/bin:$PATH" && \
+  detent hub runner register --url https://cloud.detent.build/organizations/ORGANIZATION_ID \
+  --token TOKEN --name "Build host" --service
+```
+
+If Detent is already installed, copy the register command alone:
 
 ```sh
 detent hub runner register --url https://cloud.detent.build/organizations/ORGANIZATION_ID \
   --token TOKEN --name "Build host" --service
 ```
 
-The command generates the host's identity locally, redeems the one-time token,
+AI assisted setup with Luna gives the same installation guidance before
+registration on your own machine. Keep the token out of chat; the dialog masks
+it by default and copies it only into the command you run on the target host.
+
+The register command generates the host's identity locally, redeems the one-time token,
 writes `~/.config/detent-runner/global.yaml` and `identity.json`, and installs
 the `detent.runner` background service. Clone each project's repository into
 the directory it prints (`~/detent-runner/PROJECT` by default) first, or run the

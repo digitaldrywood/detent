@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/update"
 )
 
 const runnerServiceName = "detent.runner"
@@ -105,11 +106,14 @@ func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(stri
 			if err != nil {
 				return err
 			}
-			projects, err := runnerProjectNames(cmd.Context(), base, paths.identity, identity)
+			projects, minimumVersion, err := runnerProjectNames(cmd.Context(), base, paths.identity, identity)
 			if err != nil {
 				return err
 			}
 			result := runnerRegistration{RunnerID: identity.RunnerID, MachineID: identity.MachineID, Config: paths.config, Identity: paths.identity}
+			if order, err := update.CompareVersions(version, minimumVersion); err == nil && order < 0 {
+				result.NextSteps = append(result.NextSteps, fmt.Sprintf("This Hub requires Detent %s or newer; this binary is %s. Update with detent update --yes --from-release (or brew upgrade digitaldrywood/tap/detent for Homebrew), then retry this register command", minimumVersion, version))
+			}
 			for _, project := range projects {
 				workdir := filepath.Join(paths.workspaces, project.Name)
 				result.Projects = append(result.Projects, runnerRegisteredCheck{Name: project.Name, ID: project.ID, Workdir: workdir, Checkout: runnerCheckoutReady(cmd.Context(), globalconfig.Project{Workdir: workdir})})
@@ -306,21 +310,21 @@ type runnerProject struct {
 	ID   tracker.ProjectID
 }
 
-func runnerProjectNames(ctx context.Context, base, identityPath string, identity runnerauth.Identity) ([]runnerProject, error) {
+func runnerProjectNames(ctx context.Context, base, identityPath string, identity runnerauth.Identity) ([]runnerProject, string, error) {
 	client, err := hubclient.New(hubclient.Config{URL: base, IdentityFile: identityPath})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	projects := make([]runnerProject, 0, len(identity.ProjectIDs))
 	used := map[string]bool{}
 	for _, id := range identity.ProjectIDs {
 		native, err := client.Native(identity.OrganizationID, id)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		project, err := native.Project(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("read project %s: %w", id, err)
+			return nil, "", fmt.Errorf("read project %s: %w", id, err)
 		}
 		name := runnerProjectSlug(project.Name, id)
 		if used[name] {
@@ -329,7 +333,8 @@ func runnerProjectNames(ctx context.Context, base, identityPath string, identity
 		used[name] = true
 		projects = append(projects, runnerProject{Name: name, ID: id})
 	}
-	return projects, nil
+	minimumVersion, err := client.MinimumRunnerVersion(ctx)
+	return projects, minimumVersion, err
 }
 
 // runnerProjectSlug is the local project ID and checkout directory name.

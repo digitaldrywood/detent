@@ -41,6 +41,11 @@ for (const width of [1440, 390]) {
     test(`enrollment on ${location} at ${width}px`, async ({ page, context }) => {
       await page.setViewportSize({ width, height: 1100 });
       await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+      const platform = width === 1440 ? "MacIntel" : "Linux x86_64";
+      await page.addInitScript((platform) => {
+        Object.defineProperty(navigator, "platform", { value: platform });
+        Object.defineProperty(navigator, "userAgent", { value: platform });
+      }, platform);
       await openFleet(page, fleet, "", location === "sprite");
       await page.getByRole("button", { name: "Add runner", exact: true }).click();
       await page.getByRole("menuitem", { name: "Manual", exact: true }).click();
@@ -59,6 +64,9 @@ for (const width of [1440, 390]) {
         }
       } else {
         await expect(dialog.getByLabel("A machine I run")).toBeChecked();
+        await expect(dialog.getByRole("radio", { name: width === 1440 ? "macOS" : "Linux", exact: true })).toBeChecked();
+        await expect(dialog).toContainText("This Hub requires Detent v0.9.1 or newer");
+        await expect(dialog.getByRole("button", { name: "Copy the install command", exact: true })).toBeVisible();
       }
       const name = sprite ? "build-sprite" : "Build machine";
       await dialog.getByLabel("Name", { exact: true }).fill(name);
@@ -84,6 +92,19 @@ for (const width of [1440, 390]) {
       expect(copied).toContain("--token det_enroll_preview");
       expect(copied).toContain(sprite ? "--name build-sprite" : "--name 'Build machine'");
       expect(copied.includes("--service")).toBe(!sprite);
+      if (!sprite) {
+        await expect(dialog).toContainText("curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh");
+        for (const os of ["macOS", "Linux"]) {
+          await dialog.getByRole("radio", { name: os, exact: true }).check();
+          await expect(dialog).toContainText(`Installs the latest release for ${os}`);
+          await expect(dialog.getByRole("button", { name: "Copy the Homebrew command" })).toHaveCount(os === "macOS" ? 1 : 0);
+          await dialog.getByRole("button", { name: /^(?:Copy|Copied) the install and register command$/ }).click();
+          const combined = await page.evaluate(() => navigator.clipboard.readText());
+          expect(combined).toBe(`curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh && export PATH="$HOME/.local/bin:/usr/local/bin:$PATH" && ${copied}`);
+          expect(await dialog.innerHTML()).not.toContain("det_enroll_preview");
+          await expect(dialog.getByRole("button", { name: "Copied the install and register command" })).toBeVisible();
+        }
+      }
       expect(await dialog.innerHTML()).not.toContain("det_enroll_preview");
       expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
@@ -189,7 +210,8 @@ for (const width of [1440, 390]) {
     const dialog = page.getByRole("dialog", { name: "Enroll a runner", exact: true });
     await dialog.getByLabel("Name", { exact: true }).fill("New build runner");
     await dialog.getByRole("button", { name: "Create command" }).click();
-    const command = await dialog.locator("code").textContent();
+    await expect(dialog.getByRole("button", { name: "Copy the register command", exact: true })).toBeVisible();
+    const command = await dialog.textContent();
     const token = command.match(/--token (\S+)/)[1];
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
@@ -313,6 +335,8 @@ for (const multiple of [false, true]) {
     expect(draft).toContain("Help me add a runner for this project.");
     expect(draft).toContain("Fly Sprite or a machine I run");
     expect(draft).toContain("enrollment, the register command, provider login and the first connection");
+    expect(draft).toContain("install Detent before creating the enrollment token: curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh");
+    expect(draft).toContain("brew install digitaldrywood/tap/detent");
     if (multiple) {
       expect(await page.evaluate(() => localStorage.getItem("detent.conversation.draft:org_preview:owner_preview:proj_preview:new"))).toBeNull();
     }
