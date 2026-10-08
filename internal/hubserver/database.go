@@ -74,7 +74,7 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 		return nil, errors.Join(err, lock.Close())
 	}
 
-	db, err := sql.Open("sqlite", sqliteDSN(path, cfg.BusyTimeout))
+	db, err := sql.Open("sqlite", sqliteWriterDSN(path, cfg.BusyTimeout, cfg.Hosted != nil))
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("open hub database: %w", err), lock.Close())
 	}
@@ -233,6 +233,18 @@ func sqliteDSN(path string, busyTimeout time.Duration) string {
 	query.Add("_txlock", "immediate")
 	databaseURL.RawQuery = query.Encode()
 	return databaseURL.String()
+}
+
+// sqliteWriterDSN leaves WAL checkpoints to Litestream on hosted tenants:
+// Litestream owns checkpointing for every replicated tenant database, and an
+// application checkpoint inside a committing request both races it and stalls
+// that request.
+func sqliteWriterDSN(path string, busyTimeout time.Duration, hosted bool) string {
+	dsn := sqliteDSN(path, busyTimeout)
+	if !hosted {
+		return dsn
+	}
+	return dsn + "&" + url.Values{"_pragma": {"wal_autocheckpoint(0)"}}.Encode()
 }
 
 func sqliteReaderDSN(path string, busyTimeout time.Duration) string {
