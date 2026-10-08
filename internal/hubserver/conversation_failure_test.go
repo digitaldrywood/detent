@@ -682,12 +682,42 @@ func TestConversationLostAcknowledgementStaysUnknown(t *testing.T) {
 	requireConversationDelivery(t, f, lost, "lost-1", conversation.DeliveryUnknown)
 }
 
-// TestConversationHubRestartRecovery covers a hub process restart with work
-// in flight: nothing that could not be established survives as live, the
-// control that was never handed out is still queued and re-woken, stored
-// receipts still answer a replay, and no message is duplicated.
 func TestConversationHubRestartRecovery(t *testing.T) {
 	t.Parallel()
+	t.Run("restart refuses lost owners", func(t *testing.T) {
+		for _, test := range []struct {
+			name  string
+			query string
+		}{
+			{name: "expired lease", query: "UPDATE leases SET expires_at = acquired_at WHERE lease_id = ?"},
+			{name: "released lease", query: "UPDATE leases SET released_at = acquired_at WHERE lease_id = ?"},
+			{name: "terminal attempt", query: "UPDATE native_attempts SET status = 'succeeded' WHERE lease_id = ?"},
+			{name: "foreign attempt", query: "UPDATE conversations SET execution_json = json_set(execution_json, '$.attempt_id', 'foreign-attempt') WHERE json_extract(execution_json, '$.lease_id') = ?"},
+			{name: "foreign work item", query: "UPDATE native_attempts SET work_item_id = (SELECT native_id FROM issues WHERE title = 'foreign-worker-issue') WHERE lease_id = ?"},
+			{name: "foreign run", query: "UPDATE native_attempts SET run_id = 'foreign-run' WHERE lease_id = ?"},
+			{name: "wrong fence", query: "UPDATE native_attempts SET fencing_token = fencing_token + 1 WHERE lease_id = ?"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				t.Parallel()
+				f := newConversationWorkerFixture(t)
+				requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+				requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-1"}), http.StatusAccepted)
+				if test.name == "foreign work item" {
+					f.create(t, "foreign-worker-issue")
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), test.query, f.lease.ID); err != nil {
+					t.Fatal(err)
+				}
+				f.restart(t)
+				if execution := f.load(t).Execution; execution.Status != conversation.ExecutionUnknown || execution.Capabilities != (conversation.Capabilities{}) {
+					t.Fatalf("lost owner remained live after restart: %#v", execution)
+				}
+				requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")
+				requireConversationErrorCode(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "late", "text": "late evidence"}), http.StatusConflict, "stale_execution")
+			})
+		}
+	})
+
 	f := newConversationWorkerFixture(t)
 	requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 	requireNativeStatus(t, f.turnEvents(t,
@@ -701,20 +731,21 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 	requireConversationDelivery(t, f, handed, "restart-handed", conversation.DeliverySending)
 	requireConversationDelivery(t, f, waiting, "restart-waiting", conversation.DeliveryQueued)
 	before := f.messages(t)
+	execution := f.load(t).Execution
 
 	f.restart(t)
 
 	record := f.load(t)
-	if record.Execution.Status != conversation.ExecutionUnknown {
-		t.Fatalf("execution after restart = %#v, want unknown", record.Execution)
+	if record.Execution.Status != execution.Status || record.Execution.Owner != execution.Owner || record.Execution.Capabilities != execution.Capabilities {
+		t.Fatalf("execution after restart = %#v, want current worker %#v", record.Execution, execution)
 	}
 	if record.Execution.Owner.AttemptID != f.attempt {
 		t.Fatalf("the owner tuple must survive a restart: %#v", record.Execution.Owner)
 	}
-	requireConversationDelivery(t, f, handed, "restart-handed", conversation.DeliveryUnknown)
+	requireConversationDelivery(t, f, handed, "restart-handed", conversation.DeliverySending)
 	requireConversationDelivery(t, f, waiting, "restart-waiting", conversation.DeliveryQueued)
-	if got := f.questions(t)[0].Status; got != conversation.QuestionExpired {
-		t.Fatalf("question status = %q, want expired", got)
+	if got := f.questions(t)[0].Status; got != conversation.QuestionPending {
+		t.Fatalf("question status = %q, want pending", got)
 	}
 	after := f.messages(t)
 	if len(after) != len(before) {
@@ -722,7 +753,7 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 	}
 	for _, message := range after {
 		if message.Role == conversation.RoleAssistant && message.ProviderItemID == "item-1" {
-			if message.Delivery != conversation.DeliveryUnknown || message.Text != "partial" {
+			if message.Delivery != conversation.DeliveryResponding || message.Text != "partial" {
 				t.Fatalf("streaming assistant message after restart = %#v", message)
 			}
 		}
@@ -734,7 +765,7 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 		if err != nil || stored == nil || conflict {
 			t.Fatalf("reserveCommand() = %#v, %v, %v", stored, conflict, err)
 		}
-		if stored.Status != conversation.DeliveryUnknown || stored.MessageID != handed.ID {
+		if stored.Status != conversation.DeliverySending || stored.MessageID != handed.ID {
 			t.Fatalf("stored receipt = %#v", stored)
 		}
 	})
@@ -752,24 +783,35 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 		}
 	})
 
-	t.Run("a fresh attempt receives the queued control once", func(t *testing.T) {
-		f.release(t)
-		f.claim(t)
-		response := f.bind(t, nil)
+	t.Run("the original worker resumes controls and evidence", func(t *testing.T) {
+		response := f.controls(t, handed.Seq, 0)
 		requireNativeStatus(t, response, http.StatusOK)
-		var bound workerBindResponse
-		decodeHubResponse(t, response, &bound)
-		if len(bound.Pending) != 1 || bound.Pending[0].MessageID != waiting.ID || bound.Pending[0].Expected.AttemptID != f.attempt {
-			t.Fatalf("pending = %#v, want only %s for %s", bound.Pending, waiting.ID, f.attempt)
+		var page workerControlsResponse
+		decodeHubResponse(t, response, &page)
+		if len(page.Controls) != 1 || page.Controls[0].MessageID != waiting.ID || page.Controls[0].Expected.AttemptID != f.attempt || page.Controls[0].Expected.TurnID != "turn-1" {
+			t.Fatalf("controls after reconnect = %#v", page.Controls)
 		}
-		requireConversationDelivery(t, f, handed, "restart-handed", conversation.DeliveryUnknown)
-		// The replacement runner cannot resume the provider thread, so the
-		// bind records the transcript hand-off in the history and appends
-		// nothing else (decisions section 10.4).
-		if got := len(f.messages(t)); got != len(before)+1 {
-			t.Fatalf("messages = %d, want %d and the transcript notice", got, len(before)+1)
+		requireConversationDelivery(t, f, handed, "restart-handed", conversation.DeliverySent)
+		requireNativeStatus(t, f.turnEvents(t,
+			map[string]any{"type": "control_result", "key": "restart-handed", "status": "delivered"},
+			map[string]any{"type": "control_result", "key": "restart-waiting", "status": "delivered"},
+			map[string]any{"type": "delta", "provider_item_id": "item-1", "text": " resumed"},
+		), http.StatusAccepted)
+		requireConversationDelivery(t, f, handed, "restart-handed", conversation.DeliveryDelivered)
+		requireConversationDelivery(t, f, waiting, "restart-waiting", conversation.DeliveryDelivered)
+		for _, message := range f.messages(t) {
+			if message.ProviderItemID == "item-1" && message.Text != "partial resumed" {
+				t.Fatalf("resumed evidence = %#v", message)
+			}
 		}
-		requireConversationTranscriptNotice(t, f)
+		requireConversationErrorCode(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "foreign-turn"}), http.StatusConflict, "stale_execution")
+		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_completed", "turn_id": "turn-1", "status": "completed"}), http.StatusAccepted)
+		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-2"}), http.StatusAccepted)
+		if owner := f.load(t).Execution.Owner; owner.TurnID != "turn-2" || owner.AttemptID != execution.Owner.AttemptID {
+			t.Fatalf("next provider turn = %#v", owner)
+		}
+		requireNativeStatus(t, f.unbind(t, "succeeded"), http.StatusOK)
+		requireConversationErrorCode(t, f.controls(t, page.Cursor, 0), http.StatusConflict, "stale_execution")
 	})
 }
 

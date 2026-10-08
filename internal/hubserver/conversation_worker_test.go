@@ -727,6 +727,18 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 		if !found {
 			t.Fatal("registered event did not persist authentic transcript")
 		}
+		f.restart(t)
+		if execution := f.load(t).Execution; execution.Owner != owner || execution.Status != conversation.ExecutionRunning {
+			t.Fatalf("restart lost the registered worker: %+v", execution)
+		}
+		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
+		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-registered", "text": " after restart"}), http.StatusAccepted)
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE id = (SELECT token_id FROM runner_identities WHERE id = ?)", formatHubTime(f.now), r.binding.RunnerID); err != nil {
+			t.Fatal(err)
+		}
+		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusUnauthorized)
+		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-registered", "text": " revoked"}), http.StatusUnauthorized)
+
 	})
 	f := newConversationWorkerFixture(t)
 	prompt := f.queue(t, conversation.MessageText, "prompt-1", "Fix the bug", nil)
@@ -1028,17 +1040,17 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 		requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")
 	})
 
-	t.Run("restart normalization then fresh bind", func(t *testing.T) {
+	t.Run("restart preserves a current owner then fresh bind", func(t *testing.T) {
 		f.claim(t)
 		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-3"}), http.StatusAccepted)
 		if _, err := f.chat.store.normalizeAfterRestart(t.Context(), f.service.config.now()); err != nil {
 			t.Fatal(err)
 		}
-		if record := f.load(t); record.Execution.Status != conversation.ExecutionUnknown {
+		if record := f.load(t); record.Execution.Status != conversation.ExecutionRunning {
 			t.Fatalf("execution after restart = %#v", record.Execution)
 		}
-		requireConversationErrorCode(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-9", "text": "late"}), http.StatusConflict, "stale_execution")
+		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-9", "text": "resumed"}), http.StatusAccepted)
 		f.release(t)
 		f.claim(t)
 		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
