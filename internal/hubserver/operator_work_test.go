@@ -136,6 +136,19 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		if err := json.Unmarshal(raw, &comment); err != nil || failed || comment.ID == "" || comment.Body != body {
 			t.Fatalf("comment result=%s isError=%t err=%v", raw, failed, err)
 		}
+		receiptBody := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": operatortool.AddComment, "arguments": map[string]any{"project_id": f.project.ID, "request_id": "attachment-comment", "identifier": items[1].WorkItemID, "body": body}, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]any{"name": "test", "version": "1"}}}}
+		var receipt struct {
+			Result struct {
+				Content struct {
+					CommentID string `json:"comment_id"`
+					URL       string `json:"url"`
+				} `json:"structuredContent"`
+			} `json:"result"`
+		}
+		decodeHubResponse(t, performHubWorkCall(t, f.service, path, f.token, operatortool.AddComment, receiptBody), &receipt)
+		if receipt.Result.Content.CommentID != comment.ID || !strings.HasSuffix(receipt.Result.Content.URL, "/comments#"+comment.ID) {
+			t.Fatalf("add_comment receipt = %+v, want comment_id %s", receipt.Result.Content, comment.ID)
+		}
 		metadata, err := f.service.readCloudAttachment(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, record.ID)
 		if err != nil || len(metadata.ReferencedBy) != 3 {
 			t.Fatalf("references=%v err=%v", metadata.ReferencedBy, err)

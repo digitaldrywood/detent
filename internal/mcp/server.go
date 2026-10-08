@@ -665,6 +665,11 @@ func ErrorClass(err error) string {
 	}
 	for {
 		next := errors.Unwrap(err)
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			if causes := joined.Unwrap(); len(causes) > 0 {
+				next = causes[len(causes)-1]
+			}
+		}
 		if next == nil {
 			return fmt.Sprintf("%T", err)
 		}

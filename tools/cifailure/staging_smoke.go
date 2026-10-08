@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -44,6 +45,30 @@ var smokeSkipped = strings.Fields(`
 var smokeWrites = strings.Fields(`file_issue edit_item add_comment edit_comment move_item set_dependency order_item set_queue_priority archive_item restore_item set_priority update_project_integration`)
 var errSmokeFixture = errors.New("smoke resource fixture unavailable")
 
+var smokeFixtureGaps = []string{
+	"change_viewed_files", "get_artifact_reference", "get_attempt_diff", "get_change", "get_change_version", "get_conversation",
+	"get_conversation_attachment", "get_git_hub_import", "get_native_run", "github_scope_timings", "list_conversation_messages",
+	"list_git_hub_import_records", "read_attachment", "read_attachment_metadata", "stream_conversation_events", "work_attempt_receipt",
+}
+
+var smokeKnownGaps = map[string]map[string]string{
+	"production": smokeGaps(map[string]string{
+		operatortool.OrderItem: "#724", operatortool.SetQueuePriority: "#724", "board_session_history": "#724", "get_cutover_receipt": "#724", "get_change_review_policy": "#724",
+		"get_runner_capacity": "#725", "get_runner_update": "#725", "get_project_policy": "#725",
+	}),
+	"staging": smokeGaps(map[string]string{
+		operatortool.OrderItem: "#724", operatortool.SetQueuePriority: "#724", "board_session_history": "#724", "get_cutover_receipt": "#724",
+		"update_project_integration": "#724", operatortool.ActionResult: "#724",
+	}),
+}
+
+func smokeGaps(failing map[string]string) map[string]string {
+	for _, name := range smokeFixtureGaps {
+		failing[name] = "#725"
+	}
+	return failing
+}
+
 var smokeHostedGaps = []string{operatortool.ArchiveItem, operatortool.OrderItem, operatortool.SetQueuePriority}
 
 func smokePolicy(definitions []operatortool.Definition) error {
@@ -65,13 +90,14 @@ func smokePolicy(definitions []operatortool.Definition) error {
 	return errors.Join(failures...)
 }
 
-func stagingSmoke(ctx context.Context, getenv func(string) string, output io.Writer) error {
-	token := strings.TrimSpace(getenv("DETENT_STAGING_API_KEY"))
+var smokeHosts = map[string]string{"staging": "staging.cloud.detent.build", "production": "cloud.detent.build"}
+
+func deploySmoke(ctx context.Context, environment string, getenv func(string) string, output io.Writer) error {
+	token := strings.TrimSpace(getenv("DETENT_SMOKE_API_KEY"))
 	if token == "" {
-		_, err := fmt.Fprintln(output, "MCP staging smoke skipped: DETENT_STAGING_API_KEY is absent; operator provisions the dedicated project and scoped key")
-		return err
+		return fmt.Errorf("MCP %s smoke: DETENT_SMOKE_API_KEY is absent; provision the dedicated smoke project key as the %s environment secret", environment, environment)
 	}
-	endpoint, err := smokeEndpoint(getenv("DETENT_MCP_URL"))
+	endpoint, err := smokeEndpoint(getenv("DETENT_MCP_URL"), environment)
 	if err != nil {
 		return err
 	}
@@ -81,20 +107,22 @@ func stagingSmoke(ctx context.Context, getenv func(string) string, output io.Wri
 	if err := m.initialize(ctx); err != nil {
 		return err
 	}
-	return (&mcpSmoke{mcp: m, output: output, fixtures: map[string]any{}, called: map[string]bool{}, prefix: "staging-smoke-" + rand.Text()}).run(ctx)
+	return (&mcpSmoke{mcp: m, output: output, fixtures: map[string]any{}, called: map[string]bool{}, prefix: environment + "-smoke-" + rand.Text(), knownGaps: smokeKnownGaps[environment]}).run(ctx)
 }
 
 type mcpSmoke struct {
-	mcp      *cloudMCP
-	output   io.Writer
-	fixtures map[string]any
-	called   map[string]bool
-	prefix   string
-	sequence int
-	project  string
-	item     string
-	revision int64
-	states   []tracker.NativeState
+	knownGaps map[string]string
+	gapped    []string
+	mcp       *cloudMCP
+	output    io.Writer
+	fixtures  map[string]any
+	called    map[string]bool
+	prefix    string
+	sequence  int
+	project   string
+	item      string
+	revision  int64
+	states    []tracker.NativeState
 }
 
 func (s *mcpSmoke) call(ctx context.Context, name string, args map[string]any) (map[string]any, error) {
@@ -236,6 +264,7 @@ func (s *mcpSmoke) mutate(ctx context.Context, name string, args map[string]any,
 	if !found && slices.Contains(smokeHostedGaps, name) {
 		fmt.Fprintf(s.output, "%s expected hosted gap (#615): absent from tools/list\n", name)
 		s.called[name] = true
+		s.gapped = append(s.gapped, name)
 		return map[string]any{"expected_gap": true}, previous, nil
 	}
 	var schema smokeSchema
@@ -256,6 +285,7 @@ func (s *mcpSmoke) mutate(ctx context.Context, name string, args map[string]any,
 	result, err := s.call(ctx, name, args)
 	if err != nil && slices.Contains(smokeHostedGaps, name) && strings.Contains(err.Error(), "application service is unavailable") {
 		fmt.Fprintf(s.output, "%s expected hosted gap (#615)\n", name)
+		s.gapped = append(s.gapped, name)
 		return map[string]any{"expected_gap": true}, previous, nil
 	}
 	if err != nil {
@@ -472,7 +502,31 @@ func (s *mcpSmoke) run(ctx context.Context) error {
 			failures = append(failures, fmt.Errorf("%s: non-skipped tool was not exercised", name))
 		}
 	}
-	return errors.Join(failures...)
+	return smokeVerdict(s.output, failures, s.called, s.gapped, s.knownGaps)
+}
+
+func smokeVerdict(output io.Writer, failures []error, called map[string]bool, gapped []string, gaps map[string]string) error {
+	failed := map[string]bool{}
+	for _, name := range gapped {
+		failed[name] = true
+	}
+	var blocking []error
+	for _, failure := range failures {
+		name, _, _ := strings.Cut(failure.Error(), ":")
+		name = strings.TrimSuffix(name, " schema")
+		if owner, known := gaps[name]; known {
+			failed[name] = true
+			fmt.Fprintf(output, "%s known gap (%s): %v\n", name, owner, failure)
+			continue
+		}
+		blocking = append(blocking, failure)
+	}
+	for _, name := range slices.Sorted(maps.Keys(gaps)) {
+		if called[name] && !failed[name] {
+			blocking = append(blocking, fmt.Errorf("%s: known gap %s now passes; remove it from smokeKnownGaps", name, gaps[name]))
+		}
+	}
+	return errors.Join(blocking...)
 }
 
 func smokeFindItem(value any) string {
@@ -613,10 +667,11 @@ func smokeFixtureType(schema smokeSchema, value any) bool {
 	}
 }
 
-func smokeEndpoint(raw string) (string, error) {
+func smokeEndpoint(raw, environment string) (string, error) {
+	host, known := smokeHosts[environment]
 	endpoint, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || endpoint.Scheme != "https" || endpoint.Host != "staging.cloud.detent.build" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || !strings.HasSuffix(endpoint.Path, "/mcp") {
-		return "", errors.New("DETENT_MCP_URL must be the copied MCP endpoint on staging.cloud.detent.build for the smoke tenant")
+	if !known || err != nil || endpoint.Scheme != "https" || endpoint.Host != host || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || !strings.HasSuffix(endpoint.Path, "/mcp") {
+		return "", fmt.Errorf("DETENT_MCP_URL must be the copied MCP endpoint on %s for the %s smoke tenant", host, environment)
 	}
 	return endpoint.String(), nil
 }

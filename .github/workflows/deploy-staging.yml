@@ -90,7 +90,7 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
           DETENT_RELEASE_ENVIRONMENT: staging
-          DETENT_STAGING_API_KEY: ${{ secrets.DETENT_STAGING_API_KEY }}
+          DETENT_SMOKE_API_KEY: ${{ secrets.DETENT_SMOKE_API_KEY }}
           DETENT_MCP_URL: ${{ vars.DETENT_MCP_URL }}
         run: |
           set -euo pipefail

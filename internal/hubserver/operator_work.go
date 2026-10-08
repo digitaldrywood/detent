@@ -251,7 +251,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	var resource struct {
 		WorkItemID json.RawMessage  `json:"work_item_id"`
 		Revision   tracker.Revision `json:"revision,string"`
-		ID         string           `json:"id"`
+		ID         string           `json:"comment_id"`
 	}
 	if err := json.Unmarshal(raw, &resource); err != nil {
 		return operatortool.Result{}, operatortool.ErrSnapshotUnavailable
