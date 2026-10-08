@@ -698,3 +698,27 @@ func nativeMoveArgumentError() error {
 	_, err := operatortool.DecodeNativeMoveItem(json.RawMessage(`{"project_id":"detent","request_id":"move","identifier":"295","target_state":"Done"}`))
 	return err
 }
+
+type codedTestError struct{ code int }
+
+func (e codedTestError) Error() string { return "coded" }
+func (e codedTestError) Code() int     { return e.code }
+
+func TestErrorClass(t *testing.T) {
+	sentinel := errors.New("sentinel")
+	for _, tt := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"plain", errors.New("tenant text"), "*errors.errorString"},
+		{"deadline", fmt.Errorf("query: %w", context.DeadlineExceeded), "deadline_exceeded"},
+		{"canceled", fmt.Errorf("query: %w", context.Canceled), "canceled"},
+		{"sqlite code", fmt.Errorf("insert: %w", codedTestError{5}), "sqlite_5"},
+		{"multi wrap reaches the cause", fmt.Errorf("%w: %w", sentinel, &json.SyntaxError{}), "*json.SyntaxError"},
+	} {
+		if got := ErrorClass(tt.err); got != tt.want {
+			t.Errorf("%s: ErrorClass = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
