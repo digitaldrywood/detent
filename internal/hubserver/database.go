@@ -20,12 +20,20 @@ import (
 
 const hubApplicationID = 0x44544842
 
-const readerConnections = 4
+// readerConnections sizes the WAL read pool. Readers never block the
+// writer, so the pool is sized for slow list reads and streams to coexist
+// with the short reads every runner request makes.
+const readerConnections = 32
+
+// authConnections is a separate read pool for credential and scope lookups,
+// so authentication never queues behind long reads on the shared pool.
+const authConnections = 4
 
 type database struct {
 	linkedSourceBase       string
 	db                     *sql.DB
 	reader                 *sql.DB
+	authReader             *sql.DB
 	lock                   *instancelock.Lock
 	path                   string
 	schemaVersion          int64
@@ -248,7 +256,25 @@ func (d *database) openReader(ctx context.Context, busyTimeout time.Duration) er
 	if err := reader.PingContext(ctx); err != nil {
 		return fmt.Errorf("open hub database reader: %w", err)
 	}
+	authReader, err := sql.Open("sqlite", sqliteReaderDSN(d.path, busyTimeout))
+	if err != nil {
+		return fmt.Errorf("open hub database authentication reader: %w", err)
+	}
+	authReader.SetMaxOpenConns(authConnections)
+	authReader.SetMaxIdleConns(authConnections)
+	d.authReader = authReader
+	if err := authReader.PingContext(ctx); err != nil {
+		return fmt.Errorf("open hub database authentication reader: %w", err)
+	}
 	return nil
+}
+
+// auth returns the pool reserved for credential and scope lookups.
+func (d *database) auth() *sql.DB {
+	if d.authReader != nil {
+		return d.authReader
+	}
+	return d.reader
 }
 
 func isWindowsDrivePath(path string) bool {
@@ -362,11 +388,14 @@ func (d *database) Close() error {
 		return nil
 	}
 	d.closeOnce.Do(func() {
-		var readerErr error
+		var readerErr, authErr error
 		if d.reader != nil && d.reader != d.db {
 			readerErr = d.reader.Close()
 		}
-		d.closeErr = errors.Join(readerErr, d.db.Close(), d.lock.Close())
+		if d.authReader != nil && d.authReader != d.db && d.authReader != d.reader {
+			authErr = d.authReader.Close()
+		}
+		d.closeErr = errors.Join(readerErr, authErr, d.db.Close(), d.lock.Close())
 	})
 	return d.closeErr
 }

@@ -81,7 +81,7 @@ func hostedRoleAllows(role string, scope apikey.Scope) bool {
 func (s *Service) hostedAPITokenCredential(ctx context.Context, credential apiCredential, created string, expires sql.NullString) (apiCredential, error) {
 	var user, organization, membership, scope sql.NullString
 	var access hostedProjectAccess
-	err := s.database.reader.QueryRowContext(ctx, "SELECT hosted_user_id,hosted_organization_id,hosted_membership_id,operator_key_scope,operator_project_access FROM api_tokens WHERE id=?", credential.ID).Scan(&user, &organization, &membership, &scope, &access)
+	err := s.database.auth().QueryRowContext(ctx, "SELECT hosted_user_id,hosted_organization_id,hosted_membership_id,operator_key_scope,operator_project_access FROM api_tokens WHERE id=?", credential.ID).Scan(&user, &organization, &membership, &scope, &access)
 	if err != nil {
 		return apiCredential{}, err
 	}
@@ -111,7 +111,7 @@ func (s *Service) hostedAPITokenCredential(ctx context.Context, credential apiCr
 		return apiCredential{}, auth.ErrHostedIdentity
 	}
 	var local string
-	err = s.database.reader.QueryRowContext(ctx, `SELECT m.principal_id,m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.membership_id=? AND m.active=1 AND t.revoked_at IS NULL`, user.String, membership.String).Scan(&credential.HostedPrincipal, &local)
+	err = s.database.auth().QueryRowContext(ctx, `SELECT m.principal_id,m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.membership_id=? AND m.active=1 AND t.revoked_at IS NULL`, user.String, membership.String).Scan(&credential.HostedPrincipal, &local)
 	if err != nil || !auth.ValidOrganizationRole(local) {
 		return apiCredential{}, auth.ErrHostedIdentity
 	}

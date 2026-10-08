@@ -149,6 +149,10 @@ func (s *Service) sharedHostedSession(ctx context.Context, c echo.Context) (auth
 	if identity.SupportActor != "" && !auth.ValidSupportReason(identity.SupportReason) {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
+	if session, err := s.storedWebSession(ctx, claims.Binding, now); err == nil && sharedSessionMatches(session, identity, claims.Email) {
+		c.Set("hosted_session", session)
+		return session, claims.Binding, nil
+	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return auth.Session{}, "", auth.ErrInvalidSession
@@ -165,11 +169,15 @@ func (s *Service) sharedHostedSession(ctx context.Context, c echo.Context) (auth
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
 	session, err := s.storedWebSession(ctx, claims.Binding, now)
-	if err != nil || session.Identity == nil || session.Identity.Subject != identity.Subject || session.Identity.SessionID != identity.SessionID || session.Identity.OrganizationID != identity.OrganizationID || session.Identity.SupportActor != identity.SupportActor || session.Identity.SupportReason != identity.SupportReason || !strings.EqualFold(session.Email, claims.Email) {
+	if err != nil || !sharedSessionMatches(session, identity, claims.Email) {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
 	c.Set("hosted_session", session)
 	return session, claims.Binding, nil
+}
+
+func sharedSessionMatches(session auth.Session, identity auth.HostedIdentity, email string) bool {
+	return session.Identity != nil && session.Identity.Subject == identity.Subject && session.Identity.SessionID == identity.SessionID && session.Identity.OrganizationID == identity.OrganizationID && session.Identity.SupportActor == identity.SupportActor && session.Identity.SupportReason == identity.SupportReason && strings.EqualFold(session.Email, email)
 }
 
 func (s *Service) hostedSharedCSRF(c echo.Context) string {

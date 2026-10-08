@@ -214,7 +214,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 		return c.NoContent(status)
 	}
 	initialScope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(c.Param("project")), credential: initial}
-	if err := s.requireHostedProject(c.Request().Context(), s.database.db, initialScope, false); err != nil {
+	if err := s.requireHostedProject(c.Request().Context(), s.database.auth(), initialScope, false); err != nil {
 		return c.NoContent(http.StatusForbidden)
 	}
 	workspaceID := c.QueryParam("workspace")
@@ -264,7 +264,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 		}
 		if workspaceID == "" && workItemID == "" {
 			var tick string
-			err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT last_tick_at FROM health_detector_ticks WHERE organization_id=?", scope.organization).Scan(&tick)
+			err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT last_tick_at FROM health_detector_ticks WHERE organization_id=?", scope.organization).Scan(&tick)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}
