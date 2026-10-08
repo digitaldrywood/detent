@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"time"
@@ -88,7 +90,11 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 	t.Cleanup(func() { a.Close(); b.Close() })
 	execution := &readToolTestExecution{}
 	callback := NewSSHCallbackHandler(RunRequest{Execution: execution}, nil, nil, nil)
-	central := NewSSHPeer(t.Context(), a, a, func(ctx context.Context, method string, args []json.RawMessage) (any, error) {
+	publicationOwner := &artifactExecutionProbe{testExecution: testExecution{validateErr: errors.New("public validation is forbidden during PrepareFinish"), onCheckpoint: func(tracker.NativeCheckpoint) {
+		t.Error("publication transport called public Checkpoint during PrepareFinish")
+	}}}
+	callbacks := (&Runner{}).SSHRunCallbacks(RunRequest{Execution: publicationOwner})
+	callbacks.handle = func(ctx context.Context, method string, args []json.RawMessage) (any, error) {
 		if method == "execution.PrepareFinish" {
 			return callback(ctx, method, args)
 		}
@@ -98,12 +104,28 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 		var value int
 		err := json.Unmarshal(args[0], &value)
 		return value, err
-	})
+	}
+	central := NewSSHPeer(t.Context(), a, a, callbacks.Handle)
+	callbacks.BindExecutionSources(central, t.TempDir())
 	t.Cleanup(central.Close)
 	var remote *SSHPeer
+	sources := &SSHExecutionSources{}
+	var invocation atomic.Uint64
 	ready := make(chan struct{})
 	remote = NewSSHPeer(t.Context(), b, b, func(ctx context.Context, method string, args []json.RawMessage) (any, error) {
 		<-ready
+		if method == "source.publication" {
+			var id uint64
+			if len(args) > 0 {
+				if err := json.Unmarshal(args[0], &id); err != nil {
+					return nil, err
+				}
+			}
+			if id != 0 {
+				invocation.Store(id)
+			}
+			return sources.Handle(ctx, method, args)
+		}
 		var value int
 		if err := remote.Call(ctx, "echo", &value, 42); err != nil {
 			return nil, err
@@ -130,6 +152,101 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 	got := execution.completionFailure
 	if execution.completionBody != "failed request" || got == nil || got.Operation != failure.Operation || got.RPCCode == nil || *got.RPCCode != code || got.MaxChars == nil || *got.MaxChars != maxChars || got.ActualChars == nil || *got.ActualChars != actualChars || !got.ObservedAt.Equal(failure.ObservedAt) {
 		t.Fatalf("SSH completion dropped provider failure: %+v", got)
+	}
+	remoteExecution := &sshNativeExecution{sshExecution: &sshExecution{peer: remote}, sources: sources}
+	version := tracker.ChangeVersion{ID: "version", ChangeVersionInput: tracker.ChangeVersionInput{Repository: "https://github.com/example/repo", HeadSHA: strings.Repeat("a", 40), PolicyID: "policy"}}
+	identity := workspace.GitHubPublication{Repository: version.Repository, HeadSHA: version.HeadSHA, Branch: "detent/rework", BaseRef: "develop"}
+	remoteExecution.setPublicationIdentity(func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error) {
+		return identity, nil
+	})
+	var privateOwner sync.Mutex
+	for _, mode := range []string{"confirmed", "wrong head", "wrong base", "wrong repository", "wrong branch", "wrong version", "stale invocation", "merge", "cancelled", "lost authority", "ambiguous", "disconnect"} {
+		t.Run("publication/"+mode, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var authorizations, effects atomic.Int32
+			refusal := errors.New("current lease was lost")
+			opts := workspace.LandOptions{Authorize: func(ctx context.Context) error {
+				authorizations.Add(1)
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if mode == "lost authority" && authorizations.Load() >= 4 {
+					return refusal
+				}
+				return nil
+			}, PublicationEffect: func(_ context.Context, kind, state string, value workspace.GitHubPublication) error {
+				effects.Add(1)
+				if kind == "pr_create" && state == "confirmed" && value.External.ID != "7" {
+					t.Error("PR identity was dropped")
+				}
+				return nil
+			}}
+			remoteExecution.SetPublicationSource(func(ctx context.Context, received tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+				if received.ID != version.ID || opts.Repository != version.Repository || opts.HeadSHA != version.HeadSHA || opts.TargetBranch != "develop" || opts.Authorize == nil || opts.PublicationEffect == nil || opts.GitHubClient != nil {
+					return workspace.GitHubPublication{}, errors.New("publication forwarding lost exact binding or leaked a client")
+				}
+				if mode == "cancelled" {
+					cancel()
+				}
+				if err := opts.Authorize(ctx); err != nil {
+					return workspace.GitHubPublication{}, err
+				}
+				if mode == "disconnect" {
+					b.Close()
+				}
+				if mode == "merge" {
+					return workspace.GitHubPublication{}, remote.Call(ctx, "publication.merge", nil)
+				}
+				if strings.HasPrefix(mode, "wrong") || mode == "stale invocation" {
+					target := identity
+					id, versionID := invocation.Load(), version.ID
+					switch mode {
+					case "wrong head":
+						target.HeadSHA = strings.Repeat("b", 40)
+					case "wrong repository":
+						target.Repository += "-other"
+					case "wrong branch":
+						target.Branch += "-other"
+					case "wrong base":
+						target.BaseRef = "main"
+					case "wrong version":
+						versionID = "replaced"
+					case "stale invocation":
+						id++
+					}
+					return workspace.GitHubPublication{}, remote.Call(ctx, "publication.effect", nil, id, versionID, target, "git_push", "pending", target)
+				}
+				if err := opts.PublicationEffect(ctx, "git_push", "confirmed", identity); err != nil {
+					return workspace.GitHubPublication{}, err
+				}
+				if mode == "ambiguous" {
+					if err := opts.PublicationEffect(ctx, "pr_create", "ambiguous", identity); err != nil {
+						return workspace.GitHubPublication{}, err
+					}
+					return workspace.GitHubPublication{}, errors.New("create response lost")
+				}
+				result := identity
+				result.External = tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: version.Repository + "/pull/7"}
+				if err := opts.PublicationEffect(ctx, "pr_create", "confirmed", result); err != nil {
+					return workspace.GitHubPublication{}, err
+				}
+				return result, nil
+			})
+			privateOwner.Lock()
+			result, err := publicationOwner.publicationSource(ctx, version, opts)
+			privateOwner.Unlock()
+			if mode == "confirmed" {
+				if err != nil || result.External.ID != "7" || effects.Load() != 2 {
+					t.Fatalf("SSH held publication=%s effects=%d error=%v", result.External.ID, effects.Load(), err)
+				}
+			} else if err == nil || result.External.ID != "" || mode != "ambiguous" && effects.Load() != 0 {
+				t.Fatalf("unbound or uncertain SSH publication succeeded: mode=%s effects=%d error=%v", mode, effects.Load(), err)
+			}
+			if err := remote.Call(t.Context(), "publication.authorize", nil, invocation.Load(), version.ID, identity); err == nil {
+				t.Fatal("publication callback survived its invocation")
+			}
+		})
 	}
 	b.Close()
 	<-central.Context().Done()

@@ -33,6 +33,8 @@ type nativeExecution struct {
 	data              tracker.NativeRunData
 	evidenceSource    func(context.Context, string) (runner.ValidationEvidence, error)
 	integrationSource func(context.Context, tracker.ChangeVersion, string) (workspace.LandResult, error)
+	publicationSource func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)
+	publication       *tracker.NativePRPublication
 	pending           *tracker.NativeRunEvent
 	cancel            context.CancelCauseFunc
 	// diffSource computes the stored attempt diff the execution posts before
@@ -312,6 +314,9 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 	if e.data.Identity == nil {
 		return nil
 	}
+	if previous := e.data.Handoff; previous.UncertainForgeEffect() && checkpoint.EffectState == "none" {
+		checkpoint = *previous
+	}
 	e.worktreeState = checkpoint.WorktreeState
 	e.worktreeHead = checkpoint.HeadSHA
 	if err := e.flush(ctx); err != nil {
@@ -451,7 +456,8 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 	e.data.TerminalFailure = e.preparedFailure
 	if change := e.change; change != nil {
 		finalization := (tracker.NativeFinalization{
-			ObservedAt: e.scheduler.now().UTC(), Settled: e.settled,
+			Publication: e.publication,
+			ObservedAt:  e.scheduler.now().UTC(), Settled: e.settled,
 			Changed: change.Changed, Files: change.Files, ChangeID: change.ChangeID,
 			VersionID: change.VersionID, BaseSHA: change.BaseSHA, HeadSHA: change.HeadSHA,
 			Reviewed: change.Reviewed, VersionError: change.VersionError, VersionCode: change.VersionCode,
@@ -589,7 +595,11 @@ func (e *nativeExecution) flush(ctx context.Context) error {
 	if err := e.claim.source.client.AppendEvent(ctx, e.claim.lease.WorkItemID, *e.pending); err != nil {
 		return e.executionError(err)
 	}
+	checkpoint := e.data.Handoff
 	e.data = e.pending.Data
+	if e.data.Handoff == nil {
+		e.data.Handoff = checkpoint
+	}
 	e.pending = nil
 	e.runtimeDirty = false
 	return nil

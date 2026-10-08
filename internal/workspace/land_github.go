@@ -46,6 +46,251 @@ type githubLandingMerge struct {
 	SHA    string `json:"sha"`
 }
 
+type GitHubPublication struct {
+	Repository string                          `json:"repository"`
+	BaseRef    string                          `json:"base_ref"`
+	HeadSHA    string                          `json:"head_sha"`
+	Branch     string                          `json:"branch"`
+	External   tracker.ChangeExternalReference `json:"external"`
+}
+
+func (l *LocalGit) PrepareGitHubPublication(ctx context.Context, info Info, issue Issue, opts LandOptions) (GitHubPublication, error) {
+	if opts.Authorize == nil {
+		return GitHubPublication{}, refuse(LandRefusalProtected, "PR publication requires current fenced execution authority; resume on the authorized source-owning runner")
+	}
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return GitHubPublication{}, err
+	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return GitHubPublication{}, err
+	}
+	defer release()
+	if err := opts.Authorize(ctx); err != nil {
+		return GitHubPublication{}, err
+	}
+	identity, err := l.GitHubPublicationIdentity(ctx, normalized, issue, opts)
+	if err != nil {
+		return GitHubPublication{}, err
+	}
+	if opts.GitHubClient == nil {
+		return GitHubPublication{}, refuse(LandRefusalProtected, "PR publication requires runner authentication; verify the authorized runner credentials")
+	}
+	repository, owner, _ := githubLandingRepository(opts.Repository)
+	remote := strings.TrimSpace(opts.Remote)
+	if remote == "" {
+		remote = defaultGitRemote
+	}
+	branch, base := identity.Branch, identity.BaseRef
+	var pull githubLandingPull
+	var created bool
+	if opts.External != nil {
+		pull, err = readExternalLandingPull(ctx, opts.GitHubClient, opts.Repository, opts.External, opts.HeadSHA, base)
+	} else {
+		pull, created, _, err = l.publishGitHubPull(ctx, normalized, issue, opts, repository, owner, remote, branch, opts.HeadSHA, base)
+	}
+	if err != nil {
+		return GitHubPublication{}, fmt.Errorf("prepare GitHub PR; preserve source and retry publication after resolving this blocker: %w", err)
+	}
+	if opts.External == nil && !created && pull.Number != 0 && pull.State == "open" {
+		if err := githubLandingAPI(ctx, opts.GitHubClient, &pull, "GET", "repos/"+repository+"/pulls/"+strconv.Itoa(pull.Number)); err != nil {
+			return GitHubPublication{}, err
+		}
+	}
+	if !githubPublicationMatches(pull, repository, branch, opts.HeadSHA, base) || pull.State != "open" || pull.Merged || pull.MergedAt != "" {
+		return GitHubPublication{}, refuse(LandRefusalHeadMoved, "the PR does not match the source repository, branch, target and head; reconcile its delivery identity before retrying publication")
+	}
+	publication := GitHubPublication{Repository: opts.Repository, BaseRef: base, HeadSHA: opts.HeadSHA, Branch: branch,
+		External: tracker.ChangeExternalReference{Provider: "github", ID: strconv.Itoa(pull.Number), URL: opts.Repository + "/pull/" + strconv.Itoa(pull.Number)}}
+	if opts.PublicationEffect != nil {
+		if err := opts.PublicationEffect(ctx, "pr_create", "confirmed", publication); err != nil {
+			return GitHubPublication{}, err
+		}
+	}
+	if err := opts.Authorize(ctx); err != nil {
+		return GitHubPublication{}, err
+	}
+	if err := l.verifyGitHubPublicationSource(ctx, normalized, issue, opts); err != nil {
+		return GitHubPublication{}, err
+	}
+	return publication, nil
+}
+
+func (l *LocalGit) GitHubPublicationIdentity(ctx context.Context, info Info, issue Issue, opts LandOptions) (GitHubPublication, error) {
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return GitHubPublication{}, err
+	}
+	_, _, ok := githubLandingRepository(opts.Repository)
+	if !ok || RepositoryURL(ctx, normalized.Path) != opts.Repository {
+		return GitHubPublication{}, refuse(LandRefusalProtected, "PR publication requires the configured GitHub repository and runner authentication; verify the authorized runner checkout and credentials")
+	}
+	if err := l.verifyGitHubPublicationSource(ctx, normalized, issue, opts); err != nil {
+		return GitHubPublication{}, err
+	}
+	remote := strings.TrimSpace(opts.Remote)
+	if remote == "" {
+		remote = defaultGitRemote
+	}
+	if err := verifyGitHubPublicationRemote(ctx, normalized.Path, remote, opts.Repository); err != nil {
+		return GitHubPublication{}, err
+	}
+	base := strings.TrimSpace(opts.TargetBranch)
+	if base == "" {
+		base, err = remoteDefaultBranch(ctx, normalized.Path, remote)
+		if err != nil {
+			return GitHubPublication{}, err
+		}
+	}
+	branch := strings.TrimSpace(normalized.Branch)
+	if branch == "" {
+		return GitHubPublication{}, refuse(LandRefusalProtected, "PR publication requires the assigned source branch")
+	}
+	if _, err := runGitAt(ctx, normalized.Path, "check-ref-format", "--branch", branch); err != nil {
+		return GitHubPublication{}, refuse(LandRefusalProtected, "the assigned publication branch is invalid")
+	}
+	return GitHubPublication{Repository: opts.Repository, BaseRef: base, Branch: branch, HeadSHA: opts.HeadSHA}, nil
+}
+
+func (l *LocalGit) verifyGitHubPublicationSource(ctx context.Context, info Info, issue Issue, opts LandOptions) error {
+	if err := l.verifyLandingWorktree(ctx, info, issue, opts); err != nil {
+		return err
+	}
+	head, err := runGitAt(ctx, info.Path, "rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	if !validLandingHead(opts.HeadSHA) || strings.TrimSpace(head) != opts.HeadSHA {
+		return refuse(LandRefusalHeadMoved, "the source head changed before PR publication; finalize and validate the intended current head")
+	}
+	return nil
+}
+
+func verifyGitHubPublicationRemote(ctx context.Context, path, remote, repository string) error {
+	urls, err := runGitAt(ctx, path, "config", "--get-all", "remote."+remote+".url")
+	if err != nil || HTTPSRemoteURL(urls) != repository {
+		return refuse(LandRefusalProtected, "the selected publication remote does not identify the current version repository; restore the configured project remote before retrying")
+	}
+	pushURLs, err := runGitAt(ctx, path, "config", "--get-all", "remote."+remote+".pushurl")
+	if err == nil && HTTPSRemoteURL(pushURLs) != repository {
+		return refuse(LandRefusalProtected, "the publication push remote differs from the current version repository; restore its configured push destination before retrying")
+	}
+	return nil
+}
+
+func githubPublicationMatches(pull githubLandingPull, repository, branch, head, base string) bool {
+	return pull.Number > 0 && pull.Head.SHA == head && pull.Head.Ref == branch && pull.Head.Repo.FullName == repository && pull.Base.Ref == base && pull.Base.Repo.FullName == repository
+}
+
+func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue, opts LandOptions, repository, owner, remote, branch, head, base string) (githubLandingPull, bool, bool, error) {
+	authorize := func() error {
+		if opts.Authorize != nil {
+			if err := opts.Authorize(ctx); err != nil {
+				return err
+			}
+		}
+		return l.verifyGitHubPublicationSource(ctx, info, issue, opts)
+	}
+	if err := verifyGitHubPublicationRemote(ctx, info.Path, remote, opts.Repository); err != nil {
+		return githubLandingPull{}, false, false, err
+	}
+	previous, exists, err := remoteBranchHead(ctx, info.Path, remote, branch)
+	if err != nil {
+		return githubLandingPull{}, false, false, fmt.Errorf("inspect published attempt branch: %w", err)
+	}
+	headChanged := exists && previous != head
+	var pulls []githubLandingPull
+	query := "repos/" + repository + "/pulls?state=all&head=" + url.QueryEscape(owner+":"+branch) + "&per_page=100"
+	if err := githubLandingAPI(ctx, opts.GitHubClient, &pulls, "GET", query); err != nil {
+		return githubLandingPull{}, false, headChanged, err
+	}
+	var pull githubLandingPull
+	for _, candidate := range pulls {
+		if candidate.State == "open" && (candidate.Number <= 0 || candidate.Head.Ref != branch || candidate.Head.Repo.FullName != repository || candidate.Base.Repo.FullName != repository) {
+			return githubLandingPull{}, false, headChanged, refuse(LandRefusalHeadMoved, "an open PR does not identify the configured publication repository and branch; reconcile its delivery identity before retrying")
+		}
+		if candidate.State == "open" && candidate.Head.SHA != head && (!exists || candidate.Head.SHA != previous) {
+			return githubLandingPull{}, false, headChanged, refuse(LandRefusalHeadMoved, "the open PR head differs from the observed publication branch; preserve both sources and reconcile before retrying")
+		}
+		if candidate.Base.Ref == base && (candidate.State == "open" || candidate.Head.SHA == head && (candidate.Merged || candidate.MergedAt != "")) {
+			if pull.Number != 0 {
+				return githubLandingPull{}, false, headChanged, refuse(LandRefusalHeadMoved, "multiple PRs match the publication branch; reconcile their delivery identity before retrying publication")
+			}
+			pull = candidate
+			continue
+		}
+		if candidate.State == "open" {
+			return githubLandingPull{}, false, headChanged, refuse(LandRefusalHeadMoved, "an open PR on the publication branch targets another base; reconcile its delivery identity before retrying publication")
+		}
+	}
+	if exists && previous != head {
+		if _, err := runGitAt(ctx, info.Path, "cat-file", "-e", previous+"^{commit}"); err != nil {
+			if _, err := runGitAt(ctx, info.Path, "fetch", remote, "refs/heads/"+branch); err != nil {
+				return githubLandingPull{}, false, false, fmt.Errorf("inspect preserved publication ancestry: %w", err)
+			}
+		}
+		common, err := runGitAt(ctx, info.Path, "merge-base", head, previous)
+		if err != nil {
+			return githubLandingPull{}, false, false, fmt.Errorf("verify preserved publication ancestry: %w", err)
+		}
+		if strings.TrimSpace(common) == head {
+			return githubLandingPull{}, false, false, refuse(LandRefusalHeadMoved, "the published branch contains newer work than the current native head; recover its exact source version before retrying publication")
+		}
+	}
+	effect := func(kind, state string) error {
+		if opts.PublicationEffect == nil {
+			return nil
+		}
+		return opts.PublicationEffect(ctx, kind, state, GitHubPublication{Repository: opts.Repository, BaseRef: base, HeadSHA: head, Branch: branch})
+	}
+	push := []string{"push"}
+	if exists {
+		push = append(push, "--force-with-lease=refs/heads/"+branch+":"+previous)
+	}
+	push = append(push, remote, head+":refs/heads/"+branch)
+	if previous != head {
+		if err := authorize(); err != nil {
+			return githubLandingPull{}, false, headChanged, err
+		}
+		if err := effect("git_push", "pending"); err != nil {
+			return githubLandingPull{}, false, headChanged, err
+		}
+		if _, err := runGitAt(ctx, info.Path, push...); err != nil {
+			var refusal *LandRefusal
+			if classified := classifyLandingPush(err, branch); errors.As(classified, &refusal) && refusal.Kind == LandRefusalProtected {
+				return githubLandingPull{}, false, headChanged, errors.Join(refuse(LandRefusalProtected, "the runner cannot publish the reviewed attempt branch "+branch+": "+strings.TrimSpace(commandErrorOutput(err))), effect("git_push", "none"))
+			}
+			return githubLandingPull{}, false, headChanged, errors.Join(classifyLandingPush(err, branch), effect("git_push", "ambiguous"))
+		}
+	}
+	if err := effect("git_push", "confirmed"); err != nil {
+		return githubLandingPull{}, false, headChanged, err
+	}
+	created := false
+	if pull.Number == 0 {
+		if err := authorize(); err != nil {
+			return githubLandingPull{}, false, headChanged, err
+		}
+		if err := effect("pr_create", "pending"); err != nil {
+			return githubLandingPull{}, false, headChanged, err
+		}
+		title, _, _ := strings.Cut(opts.Message, "\n")
+		if err := githubLandingAPI(ctx, opts.GitHubClient, &pull, "POST", "repos/"+repository+"/pulls",
+			"title="+title, "body="+tracker.AppendGitHubIssueClosingReferences(opts.Message, opts.SourceIssues),
+			"head="+owner+":"+branch, "base="+base); err != nil {
+			state := "ambiguous"
+			var refusal *LandRefusal
+			if errors.As(err, &refusal) && refusal.Kind == LandRefusalProtected {
+				state = "none"
+			}
+			return githubLandingPull{}, false, headChanged, errors.Join(err, effect("pr_create", state))
+		}
+		created = true
+	}
+	return pull, created, headChanged, nil
+}
+
 func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Issue, opts LandOptions) (result LandResult, returnErr error) {
 	rebased := false
 	var validation gate.CommandResult
@@ -146,44 +391,9 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		}
 	}
 	if opts.External == nil {
-		previous, exists, err := remoteBranchHead(ctx, normalized.Path, remote, branch)
+		pull, createdPull, headChanged, err = l.publishGitHubPull(ctx, normalized, issue, opts, repository, owner, remote, branch, head, base)
 		if err != nil {
-			return LandResult{}, fmt.Errorf("inspect published attempt branch: %w", err)
-		}
-		headChanged = exists && previous != head
-		push := []string{"push"}
-		if exists {
-			push = append(push, "--force-with-lease=refs/heads/"+branch+":"+previous)
-		}
-		push = append(push, remote, head+":refs/heads/"+branch)
-		if previous != head {
-			if _, err := runGitAt(ctx, normalized.Path, push...); err != nil {
-				var refusal *LandRefusal
-				if classified := classifyLandingPush(err, branch); errors.As(classified, &refusal) && refusal.Kind == LandRefusalProtected {
-					return LandResult{}, refuse(LandRefusalProtected, "the runner cannot publish the reviewed attempt branch "+branch+": "+strings.TrimSpace(commandErrorOutput(err)))
-				}
-				return LandResult{}, classifyLandingPush(err, branch)
-			}
-		}
-		var pulls []githubLandingPull
-		query := "repos/" + repository + "/pulls?state=all&head=" + url.QueryEscape(owner+":"+branch) + "&per_page=100"
-		if err := githubLandingAPI(ctx, opts.GitHubClient, &pulls, "GET", query); err != nil {
 			return LandResult{}, err
-		}
-		for _, candidate := range pulls {
-			if candidate.Base.Ref == base && (candidate.State == "open" || candidate.Head.SHA == head && (candidate.Merged || candidate.MergedAt != "")) {
-				pull = candidate
-				break
-			}
-		}
-		if pull.Number == 0 {
-			title, _, _ := strings.Cut(opts.Message, "\n")
-			if err := githubLandingAPI(ctx, opts.GitHubClient, &pull, "POST", "repos/"+repository+"/pulls",
-				"title="+title, "body="+tracker.AppendGitHubIssueClosingReferences(opts.Message, opts.SourceIssues),
-				"head="+owner+":"+branch, "base="+base); err != nil {
-				return LandResult{}, err
-			}
-			createdPull = true
 		}
 	}
 	var mergeSHA string

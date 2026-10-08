@@ -17,13 +17,16 @@ import (
 // SSHExecutionSources exposes only the checkout bound by the remote runner.
 // Upload credentials, journals, producer tuples and lease ownership stay central.
 type SSHExecutionSources struct {
-	landingBatch func(context.Context, []workspace.LandRequest) []sshLandingOutcome
-	mu           sync.Mutex
-	diff         AttemptDiffSource
-	directory    string
-	evidence     func(context.Context, string) (ValidationEvidence, error)
-	integration  func(context.Context, tracker.ChangeVersion, string) (workspace.LandResult, error)
-	changeSource func(context.Context, string, string) (tracker.ChangeSourceCapture, error)
+	landingBatch        func(context.Context, []workspace.LandRequest) []sshLandingOutcome
+	mu                  sync.Mutex
+	diff                AttemptDiffSource
+	directory           string
+	evidence            func(context.Context, string) (ValidationEvidence, error)
+	integration         func(context.Context, tracker.ChangeVersion, string) (workspace.LandResult, error)
+	changeSource        func(context.Context, string, string) (tracker.ChangeSourceCapture, error)
+	publication         func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)
+	publicationIdentity func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)
+	publicationPeer     *SSHPeer
 }
 
 type sshDiff struct {
@@ -34,9 +37,30 @@ type sshDiff struct {
 func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []json.RawMessage) (any, error) {
 	s.mu.Lock()
 	diff, directory, evidence, integration, changeSource := s.diff, s.directory, s.evidence, s.integration, s.changeSource
+	publication, publicationIdentity, publicationPeer := s.publication, s.publicationIdentity, s.publicationPeer
 	landingBatch := s.landingBatch
 	s.mu.Unlock()
 	switch method {
+	case "source.publication":
+		return invokeSSHMethod(ctx, func(ctx context.Context, invocation uint64, version tracker.ChangeVersion, opts workspace.LandOptions, identity *workspace.GitHubPublication) (workspace.GitHubPublication, error) {
+			if identity == nil {
+				if invocation != 0 || publicationIdentity == nil {
+					return workspace.GitHubPublication{}, errors.New("SSH publication identity is unavailable")
+				}
+				return publicationIdentity(ctx, version, opts)
+			}
+			if invocation == 0 || publication == nil || publicationPeer == nil || identity.Repository != version.Repository || identity.HeadSHA != version.HeadSHA || identity.Branch == "" || identity.BaseRef == "" {
+				return workspace.GitHubPublication{}, errors.New("SSH publication invocation is unavailable or unbound")
+			}
+			opts.Repository, opts.HeadSHA, opts.TargetBranch = identity.Repository, identity.HeadSHA, identity.BaseRef
+			opts.Authorize = func(ctx context.Context) error {
+				return publicationPeer.Call(ctx, "publication.authorize", nil, invocation, version.ID, *identity)
+			}
+			opts.PublicationEffect = func(ctx context.Context, kind, state string, result workspace.GitHubPublication) error {
+				return publicationPeer.Call(ctx, "publication.effect", nil, invocation, version.ID, *identity, kind, state, result)
+			}
+			return publication(ctx, version, opts)
+		}, "", args)
 	case "source.landing_batch":
 		if landingBatch == nil {
 			return nil, errors.New("SSH landing batch source is unavailable")
@@ -98,6 +122,72 @@ func (c *SSHCallbacks) BindExecutionSources(peer *SSHPeer, journalRoot string) {
 			return result, err
 		})
 	}
+	if source, ok := c.execution.(PublicationSourceExecution); ok {
+		source.SetPublicationSource(func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+			c.publicationMu.Lock()
+			defer c.publicationMu.Unlock()
+			if opts.Authorize == nil || opts.PublicationEffect == nil {
+				return workspace.GitHubPublication{}, errors.New("SSH publication requires private fenced authority and checkpoint callbacks")
+			}
+			if err := opts.Authorize(ctx); err != nil {
+				return workspace.GitHubPublication{}, err
+			}
+			wire := opts
+			wire.Authorize, wire.PublicationEffect, wire.GitHubClient = nil, nil, nil
+			var identity workspace.GitHubPublication
+			if err := peer.Call(ctx, "source.publication", &identity, uint64(0), version, wire, nil); err != nil {
+				return workspace.GitHubPublication{}, err
+			}
+			if identity.Repository != version.Repository || identity.HeadSHA != version.HeadSHA || identity.Branch == "" || identity.BaseRef == "" || identity.External.ID != "" || identity.External.URL != "" || opts.TargetBranch != "" && opts.TargetBranch != identity.BaseRef {
+				return workspace.GitHubPublication{}, errors.New("SSH publication target differs from the current version and configured base")
+			}
+			if err := opts.Authorize(ctx); err != nil {
+				return workspace.GitHubPublication{}, err
+			}
+			c.mu.Lock()
+			if c.closed {
+				c.mu.Unlock()
+				return workspace.GitHubPublication{}, errors.New("SSH publication channel is closed")
+			}
+			c.publicationSequence++
+			invocation := c.publicationSequence
+			c.publicationAuthorize = func(id uint64, versionID string, target workspace.GitHubPublication) error {
+				if id != invocation || versionID != version.ID || target != identity {
+					return errors.New("SSH publication callback differs from the active invocation")
+				}
+				if err := context.Cause(ctx); err != nil {
+					return err
+				}
+				return opts.Authorize(ctx)
+			}
+			c.publicationEffect = func(id uint64, versionID string, target workspace.GitHubPublication, kind, state string, result workspace.GitHubPublication) error {
+				if err := c.publicationAuthorize(id, versionID, target); err != nil {
+					return err
+				}
+				actual := result
+				actual.External = tracker.ChangeExternalReference{}
+				if actual != identity || kind != "git_push" && kind != "pr_create" || state != "pending" && state != "confirmed" && state != "ambiguous" && state != "none" {
+					return errors.New("SSH publication effect differs from its bound source or checkpoint operation")
+				}
+				return opts.PublicationEffect(ctx, kind, state, result)
+			}
+			c.mu.Unlock()
+			defer func() { c.mu.Lock(); c.publicationAuthorize, c.publicationEffect = nil, nil; c.mu.Unlock() }()
+			var result workspace.GitHubPublication
+			if err := peer.Call(ctx, "source.publication", &result, invocation, version, wire, &identity); err != nil {
+				return workspace.GitHubPublication{}, err
+			}
+			actual := result
+			actual.External = tracker.ChangeExternalReference{}
+			if actual != identity {
+				return workspace.GitHubPublication{}, errors.New("SSH publication returned a different source identity")
+			}
+			if err := opts.Authorize(ctx); err != nil {
+				return workspace.GitHubPublication{}, err
+			}
+			return result, nil
+		})
+	}
 	if source, ok := c.execution.(IntegrationSourceExecution); ok {
 		source.SetIntegrationSource(func(ctx context.Context, version tracker.ChangeVersion, base string) (workspace.LandResult, error) {
 			var result workspace.LandResult
@@ -149,6 +239,18 @@ func (e *sshNativeExecution) SetDiffSource(source AttemptDiffSource) {
 	e.sources.mu.Lock()
 	defer e.sources.mu.Unlock()
 	e.sources.diff = source
+}
+
+func (e *sshNativeExecution) SetPublicationSource(source func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)) {
+	e.sources.mu.Lock()
+	defer e.sources.mu.Unlock()
+	e.sources.publication, e.sources.publicationPeer = source, e.peer
+}
+
+func (e *sshNativeExecution) setPublicationIdentity(source func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)) {
+	e.sources.mu.Lock()
+	defer e.sources.mu.Unlock()
+	e.sources.publicationIdentity = source
 }
 
 func (e *sshNativeExecution) SetIntegrationSource(source func(context.Context, tracker.ChangeVersion, string) (workspace.LandResult, error)) {

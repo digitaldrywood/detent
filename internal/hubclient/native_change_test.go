@@ -408,43 +408,68 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 	base := strings.Repeat("a", 40)
 	head := strings.Repeat("c", 40)
 	for _, test := range []struct {
-		name           string
-		role           string
-		outcome        string
-		worktree       string
-		source         runner.AttemptDiffSource
-		loseLease      bool
-		validationErr  error
-		restart        bool
-		legacyRestart  bool
-		restoreRefusal string
-		failCreate     bool
-		retainSource   bool
-		sourceRefusal  bool
-		failDiff       bool
-		failDetail     bool
-		failVersion    bool
-		dropVersion    bool
-		versionCode    string
-		diffCode       string
-		conversation   bool
-		land           bool
-		finalMessage   string
-		disposition    *tracker.NativeDisposition
-		unreadFinal    bool
-		checkpointHead string
-		existing       bool
-		published      string
-		repolicy       bool
-		noRemote       bool
-		reviewer       bool
-		wantChange     *runner.NativeChange
-		wantDiagnostic string
-		wantChanges    int
+		name                    string
+		role                    string
+		outcome                 string
+		worktree                string
+		source                  runner.AttemptDiffSource
+		loseLease               bool
+		validationErr           error
+		restart                 bool
+		legacyRestart           bool
+		restoreRefusal          string
+		failCreate              bool
+		retainSource            bool
+		sourceRefusal           bool
+		failDiff                bool
+		failDetail              bool
+		failVersion             bool
+		dropVersion             bool
+		versionCode             string
+		diffCode                string
+		conversation            bool
+		land                    bool
+		finalMessage            string
+		disposition             *tracker.NativeDisposition
+		unreadFinal             bool
+		checkpointHead          string
+		existing                bool
+		published               string
+		repolicy                bool
+		noRemote                bool
+		reviewer                bool
+		requiredPR              bool
+		lostPRResponse          bool
+		publicationWriteRefusal string
+		publicationFenceLoss    int
+		publicationFailure      string
+		publicationStaged       bool
+		publicationRestore      bool
+		publicationUncertain    bool
+		wantChange              *runner.NativeChange
+		wantDiagnostic          string
+		wantChanges             int
 		// wantVersions is the versions the item's change carries after the
 		// finish; the last one is current and carries the run's head.
 		wantVersions int
 	}{
+		{name: "required PR refuses unrelated ambiguous external effect", requiredPR: true, publicationUncertain: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "required PR no edit Rework preserves human hold", requiredPR: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "required PR lost response adopts one PR under human hold", requiredPR: true, lostPRResponse: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "required PR refuses replaced version at persistence", requiredPR: true, publicationWriteRefusal: "version", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
+		{name: "required PR refuses lost fence at persistence", requiredPR: true, publicationWriteRefusal: "fence", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
+		{name: "required PR refuses ambiguous effect at persistence", requiredPR: true, publicationWriteRefusal: "ambiguous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
+		{name: "required PR refuses moved final head at persistence", requiredPR: true, publicationWriteRefusal: "head", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
+		{name: "required PR refuses substituted PR target at persistence", requiredPR: true, publicationWriteRefusal: "base", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
+		{name: "required PR refuses substituted PR branch at persistence", requiredPR: true, publicationWriteRefusal: "branch", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
+		{name: "required PR refuses substituted PR identity at persistence", requiredPR: true, publicationWriteRefusal: "identity", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
+		{name: "required PR survives completion restoration without duplicate effects", requiredPR: true, publicationRestore: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true}, wantChanges: 1, wantVersions: 1},
+		{name: "required PR fences push", requiredPR: true, publicationFenceLoss: 2, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
+		{name: "required PR fences create", requiredPR: true, publicationFenceLoss: 3, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
+		{name: "required PR fences returning the verified receipt", requiredPR: true, publicationFenceLoss: 4, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
+		{name: "required PR records actionable authentication blocker", requiredPR: true, publicationFailure: "auth", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
+		{name: "required PR records actionable push blocker", requiredPR: true, publicationFailure: "push", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
+		{name: "required PR finalizes existing staged repair under human hold", requiredPR: true, publicationStaged: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true}, wantChanges: 1, wantVersions: 1},
 		{name: "canceled deferred validation preserves authority", validationErr: context.Canceled, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "timed out deferred validation preserves authority", validationErr: context.DeadlineExceeded, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "excluded checkpoint path is a permanent publication refusal", sourceRefusal: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantDiagnostic: `excluded source path ".detent/skills/split-issue.md"`},
@@ -529,19 +554,160 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			}
 			issue := h.createInProgress(t, "Native change")
 			item := tracker.NativeWorkItemID(issue.ID)
+			base, head := base, head
+			var publicationSource func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)
+			var publicationCalls int
+			var original tracker.ChangeDetail
+			var ci *NativeClient
+			var publicationOwner *nativeExecution
+			if test.requiredPR {
+				source := nativeChangeSourceRepo(t)
+				remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
+				nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
+				nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
+				nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+				nativeChangeGit(t, source, "push", "origin", "main")
+				backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				work := workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier}
+				info, err := backend.Create(t.Context(), work)
+				if err != nil {
+					t.Fatal(err)
+				}
+				readHead := func(path string) string {
+					output, err := exec.CommandContext(context.WithoutCancel(t.Context()), "git", "-C", path, "rev-parse", "HEAD").Output()
+					if err != nil {
+						t.Fatal(err)
+					}
+					return strings.TrimSpace(string(output))
+				}
+				base = readHead(info.Path)
+				if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("existing repair\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				nativeChangeGit(t, info.Path, "add", "README.md")
+				if test.publicationStaged {
+					if _, err := backend.(workspace.NativeWorkFinalizer).FinalizeNativeWork(t.Context(), info, work, func(context.Context) error { return nil }); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					nativeChangeGit(t, info.Path, "commit", "-m", "existing repair")
+				}
+				if test.publicationFailure == "push" {
+					if err := os.WriteFile(filepath.Join(remote, "hooks", "pre-receive"), []byte("#!/bin/sh\nprintf publication-policy-refusal >&2\nexit 1\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				head = readHead(info.Path)
+				test.published, test.checkpointHead = head, head
+				test.wantChange = &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}
+				test.source = func(context.Context) (tracker.AttemptDiffRequest, bool) {
+					return tracker.AttemptDiffRequest{BaseSHA: base, HeadSHA: head, Files: []tracker.AttemptDiffFile{{Path: "README.md", Status: "modified"}}}, true
+				}
+				client, err := github.NewClient(github.ClientConfig{TokenSource: github.StaticTokenSource(t.Name()), DisableConditionalRequests: true, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					pull := fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/native-change"}},"base":{"ref":"main","repo":{"full_name":"example/native-change"}}}`, head, info.Branch)
+					response := "[]"
+					switch request.Method {
+					case http.MethodGet:
+						if publicationCalls > 0 {
+							response = "[" + pull + "]"
+							if strings.HasSuffix(request.URL.Path, "/pulls/7") {
+								response = pull
+							}
+						}
+					case http.MethodPost:
+						publicationCalls++
+						if test.publicationFailure == "auth" {
+							return &http.Response{StatusCode: http.StatusForbidden, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"message":"Resource not accessible by integration"}`))}, nil
+						}
+						if test.lostPRResponse && publicationCalls == 1 {
+							return nil, errors.New("GitHub create response lost after publication")
+						}
+						response = pull
+					default:
+						t.Fatalf("held publication attempted %s %s", request.Method, request.URL)
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}, nil
+				})}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				publicationSource = func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+					if test.publicationFenceLoss > 0 {
+						authorize := opts.Authorize
+						calls := 0
+						opts.Authorize = func(ctx context.Context) error {
+							calls++
+							if calls == test.publicationFenceLoss {
+								if err := h.native.Release(ctx, publicationOwner.claim.lease, "released"); err != nil {
+									return err
+								}
+							}
+							return authorize(ctx)
+						}
+					}
+					opts.HeadSHA, opts.Repository, opts.TargetBranch, opts.Message, opts.GitHubClient = version.HeadSHA, version.Repository, "main", "Publish existing repair", client
+					publisher := backend.(interface {
+						PrepareGitHubPublication(context.Context, workspace.Info, workspace.Issue, workspace.LandOptions) (workspace.GitHubPublication, error)
+					})
+					return publisher.PrepareGitHubPublication(ctx, info, work, opts)
+				}
+				t.Cleanup(func() {
+					wantCalls := 1
+					if test.publicationUncertain || test.publicationFailure == "push" || test.publicationFenceLoss > 0 && test.publicationFenceLoss < 4 {
+						wantCalls = 0
+					}
+					if readHead(info.Path) != head || readHead(source) != base || publicationCalls != wantCalls {
+						t.Errorf("publication changed source, merged or duplicated a PR: calls=%d", publicationCalls)
+					}
+				})
+			}
+			if test.requiredPR {
+				previousPolicy := h.descriptor.ID
+				h.descriptor.Gates.GitHubPullRequest = true
+				h.descriptor = h.descriptor.WithID()
+				if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{Policy: h.descriptor, ExpectedID: previousPolicy}); err != nil {
+					t.Fatal(err)
+				}
+				rules, err := h.admin.ChangeReviewPolicy(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), ExpectedID: rules.ID, Policy: tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.existing {
 				earlier, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Earlier change"})
 				if err != nil {
 					t.Fatal(err)
 				}
+				if test.requiredPR {
+					ci = h.publicationCI(t)
+				}
 				if test.published != "" {
-					h.publish(t, item, earlier.ID, test.published)
+					version := h.publish(t, item, earlier.ID, test.published, "", base)
+					if test.requiredPR {
+						check := version.Checks[0]
+						if _, err := ci.SubmitChangeCheck(t.Context(), item, earlier.ID, version.ID, tracker.SubmitChangeCheck{Mutation: nativeMutationKey(), ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: check.CheckRunID, HeadSHA: version.HeadSHA, RunID: version.RunID, PolicyID: version.PolicyID, ConfigDigest: version.Policy.ConfigDigest, WorkflowID: check.WorkflowID, WorkflowSHA256: check.WorkflowSHA256, Source: check.Source, Conclusion: "success", CompletedAt: version.CreatedAt, Evidence: []tracker.ChangeArtifact{{Kind: "test", URI: "s3://fixture/test", SHA256: policy.Digest([]byte("test receipt")), Availability: "available"}}}}); err != nil {
+							t.Fatal(err)
+						}
+						if _, err := h.admin.ReviewChange(t.Context(), item, earlier.ID, version.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), ExpectedVersionID: version.ID, Decision: "changes_requested", Body: "Human hold: prepare the missing PR, do not land this version"}); err != nil {
+							t.Fatal(err)
+						}
+						original, err = h.admin.Change(t.Context(), item, earlier.ID)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
 				}
 				if test.repolicy {
 					h.repolicy(t)
 				}
 			}
-			if test.reviewer {
+			if test.reviewer && !test.requiredPR {
 				rules := tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}
 				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), Policy: rules}); err != nil {
 					t.Fatal(err)
@@ -549,6 +715,10 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			}
 			candidate := h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID)
+			publicationOwner = execution.(*nativeExecution)
+			if publicationSource != nil {
+				execution.(runner.PublicationSourceExecution).SetPublicationSource(publicationSource)
+			}
 			guarded, stop, err := execution.Guard(t.Context())
 			if err != nil {
 				t.Fatal(err)
@@ -570,6 +740,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				t.Fatal(err)
 			}
 			checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: test.worktree, HeadSHA: test.checkpointHead, ExternalEffect: "none", EffectState: "none"}
+			if test.publicationUncertain {
+				checkpoint.ExternalEffect, checkpoint.EffectState, checkpoint.EffectID = "provider_turn", "ambiguous", "effect_"+strings.Repeat("a", 32)
+			}
 			if err := execution.Checkpoint(guarded, checkpoint); err != nil {
 				t.Fatal(err)
 			}
@@ -635,13 +808,108 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					t.Fatal("runtime acknowledgment loss did not retain a pending event")
 				}
 			}
+			if test.publicationRestore {
+				before := execution.(*nativeExecution)
+				if err := before.PrepareFinish(guarded, test.outcome, "", nil); err != nil || before.publication == nil {
+					t.Fatalf("prepare publication for restored completion: %v", err)
+				}
+				saved := before.CompletionState()
+				stop()
+				h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: h.scheduler.machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.scheduler.RestoreCompletion(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, Repository: nativeChangeRepository}, candidate, saved); err != nil {
+					t.Fatal(err)
+				}
+				execution = h.scheduler.RunExecution(issue.ID)
+				publicationOwner = execution.(*nativeExecution)
+				guarded = t.Context()
+			}
+			if test.publicationUncertain {
+				owner := execution.(*nativeExecution)
+				if err := owner.PrepareFinish(guarded, test.outcome, "", nil); err != nil || owner.publication != nil || owner.data.Outcome != "" || owner.data.Handoff.ExternalEffect != "provider_turn" || owner.data.Handoff.EffectState != "ambiguous" || publicationCalls != 0 || !strings.Contains(owner.change.Error, "unresolved external effect") {
+					t.Fatalf("publication erased unrelated effect ambiguity: %+v, %v", owner.data, err)
+				}
+				return
+			}
 			finish := execution.Finish
+			if test.lostPRResponse {
+				if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.outcome, "", nil); err != nil {
+					t.Fatal(err)
+				}
+				owner := execution.(*nativeExecution)
+				if owner.publication != nil || owner.change.Error == "" || owner.data.Handoff.EffectState != "ambiguous" || publicationCalls != 1 || owner.data.Outcome != "" {
+					t.Fatalf("lost response was represented as success: %+v", owner.data)
+				}
+			}
+
+			if test.publicationWriteRefusal != "" {
+				owner := execution.(*nativeExecution)
+				if err := owner.PrepareFinish(guarded, test.outcome, "", nil); err != nil || owner.publication == nil {
+					t.Fatalf("prepare held publication: %v", err)
+				}
+				switch test.publicationWriteRefusal {
+				case "version":
+					bundle, err := h.admin.ChangeSource(t.Context(), item, original.Change.ID, original.Change.CurrentVersion)
+					if err != nil {
+						t.Fatal(err)
+					}
+					input := original.Versions[0].ChangeVersionInput
+					if _, err := h.admin.PublishChangeVersion(t.Context(), item, original.Change.ID, tracker.PublishChangeVersion{SourceBundle: bundle, Mutation: tracker.Mutation{IdempotencyKey: t.Name(), LeaseID: owner.claim.lease.ID, FencingToken: owner.claim.lease.FencingToken}, ExpectedVersionID: original.Change.CurrentVersion, ChangeVersionInput: input}); err != nil {
+						t.Fatal(err)
+					}
+				case "fence":
+					if err := h.native.Release(t.Context(), owner.claim.lease, "released"); err != nil {
+						t.Fatal(err)
+					}
+				case "ambiguous":
+					checkpoint := *owner.data.Handoff
+					checkpoint.EffectState = "ambiguous"
+					if err := owner.Checkpoint(guarded, checkpoint); err != nil {
+						t.Fatal(err)
+					}
+				case "head":
+					owner.SetDiffSource(nativeChangeDiff(strings.Repeat("d", 40), "README.md"))
+				case "base":
+					owner.publication.BaseRef = "another-target"
+				case "branch":
+					owner.publication.Branch = "another-branch"
+				case "identity":
+					owner.publication.External = tracker.ChangeExternalReference{Provider: "github", ID: "8", URL: nativeChangeRepository + "/pull/8"}
+				}
+				if err := owner.Finish(guarded, test.outcome); err == nil {
+					t.Fatal("stale or ambiguous publication was persisted as success")
+				}
+				evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
+				if err != nil || evidence.Attempt == nil || evidence.Attempt.Finalization != nil {
+					t.Fatalf("refused publication leaked into finalization reads: %+v, %v", evidence, err)
+				}
+				return
+			}
 			if test.wantDiagnostic != "" || test.finalMessage != "" {
 				finish = func(ctx context.Context, outcome string) error {
 					return execution.(runner.CompletionExecution).PrepareFinish(ctx, outcome, test.finalMessage, nil)
 				}
 			}
 			finishErr := finish(guarded, test.outcome)
+			if test.publicationFailure != "" {
+				change := publicationOwner.NativeChange()
+				if finishErr != nil || publicationOwner.publication != nil || change == nil || change.VersionError == "" || change.Reviewed || change.VersionID != original.Change.CurrentVersion || !strings.Contains(change.VersionError, "preserve source") {
+					t.Fatalf("publication failure lost its actionable blocker or current source: %+v, %v", change, finishErr)
+				}
+				h.complete(t, issue.ID, change)
+				if h.state(t, issue.ID) != h.review {
+					t.Fatal("publication blocker bypassed the existing review hold")
+				}
+				return
+			}
+			if test.publicationFenceLoss > 0 {
+				if !errors.Is(finishErr, runner.ErrExecutionAuthorityUnavailable) || publicationOwner.publication != nil || publicationOwner.data.Outcome != "" {
+					t.Fatalf("lost fence fabricated successful publication: %+v, %v", publicationOwner.data, finishErr)
+				}
+				return
+			}
 			if test.finalMessage != "" && finishErr == nil {
 				if err := execution.(runner.RuntimeExecution).ObserveRuntime(guarded, tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: time.Now()}); err != nil {
 					t.Fatalf("post-preparation runtime observation: %v", err)
@@ -902,6 +1170,12 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 							}
 						} else {
 							current := detail.Versions[len(detail.Versions)-1]
+							if test.requiredPR && (detail.Summary.NativeReview != "changes_requested" || current.ID != got.VersionID || len(detail.Versions) != 1) {
+								t.Fatal("publication-only recovery replaced the current version or discarded its human hold")
+							}
+							if test.requiredPR && current.External == nil {
+								t.Fatal("required PR no edit Rework retained native work but published no operator-visible GitHub PR")
+							}
 							runPublished := test.published != got.HeadSHA || test.repolicy
 							if got.VersionID != current.ID || got.VersionError != "" || detail.Change.CurrentVersion != current.ID || current.HeadSHA != got.HeadSHA || current.BaseSHA != got.BaseSHA || runPublished && (current.RunID == "" || current.AttemptID == "") || current.Repository != nativeChangeRepository || current.Code.Kind != "code" || detail.Summary.Status != map[bool]string{false: "reviewed", true: "needs_evidence"}[test.reviewer] || got.Reviewed == test.reviewer {
 								t.Fatalf("version = %#v for native change %#v (summary %#v)", current, got, detail.Summary)
@@ -914,6 +1188,28 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}
 			}
 			checkChange(test.wantChanges, test.wantVersions)
+			if test.requiredPR {
+				current, err := h.admin.Change(t.Context(), item, original.Change.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				version := current.Versions[0]
+				version.External = nil
+				if !reflect.DeepEqual(version, original.Versions[0]) || !reflect.DeepEqual(current.Reviews, original.Reviews) || !reflect.DeepEqual(current.Checks, original.Checks) {
+					t.Fatal("same-head publication changed immutable version, reviews or CI evidence")
+				}
+				var visible tracker.NativeIssue
+				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/work-items/"+issue.ID+"?include=change", nil, &visible); err != nil {
+					t.Fatal(err)
+				}
+				if visible.Change == nil || visible.Change.URL != nativeChangeRepository+"/pull/7" || visible.PullRequest == nil || visible.PullRequest.Number != 7 || visible.PullRequest.URL != visible.Change.URL {
+					t.Fatalf("operator reads omitted the verified PR: %+v", visible)
+				}
+				target, err := execution.(runner.LandingExecution).LandingTarget(t.Context())
+				if !errors.Is(err, runner.ErrLandingNotReviewed) || target.External == nil || target.External.URL != visible.Change.URL {
+					t.Fatalf("publication lost the human hold or landing identity: %+v, %v", target, err)
+				}
+			}
 			if again := execution.Finish(guarded, test.outcome); test.loseLease == (again == nil) {
 				t.Fatalf("repeated finish error = %v", again)
 			}
@@ -1088,39 +1384,61 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
-		largeOutput    bool
-		dependencyOnly bool
-		failedCheck    bool
-		absorbed       bool
-		hold           bool
-		lowScore       bool
-		wantVerdict    string
-		ssh            bool
-		validator      string
-		name           string
-		localIntakeOff bool
-		interactive    bool
-		hosted         bool
-		rework         bool
-		reopened       bool
-		formal         bool
-		failDetail     bool
-		failVersion    bool
-		land           bool
-		commit         bool
-		staged         bool
-		expired        bool
-		signingFail    bool
-		lateConflict   bool
-		advanceTarget  bool
-		baseMoved      bool
-		staleBase      bool
-		dirty          bool
-		wantNone       bool
-		wantChanged    bool
-		wantState      string
-		wantChanges    int
+		publicationFault string
+		publication      string
+		largeOutput      bool
+		dependencyOnly   bool
+		failedCheck      bool
+		absorbed         bool
+		hold             bool
+		lowScore         bool
+		wantVerdict      string
+		ssh              bool
+		validator        string
+		name             string
+		localIntakeOff   bool
+		interactive      bool
+		hosted           bool
+		rework           bool
+		reopened         bool
+		formal           bool
+		failDetail       bool
+		failVersion      bool
+		land             bool
+		commit           bool
+		staged           bool
+		expired          bool
+		signingFail      bool
+		lateConflict     bool
+		advanceTarget    bool
+		baseMoved        bool
+		staleBase        bool
+		dirty            bool
+		wantNone         bool
+		wantChanged      bool
+		wantState        string
+		wantChanges      int
 	}{
+		{name: "held publication reconciles lost create through new Runner lease", publication: "lost_create", rework: true, formal: true},
+		{name: "held publication reconciles lost push through new Runner lease", publication: "lost_push", rework: true, formal: true},
+		{name: "held publication preserves validator review identity on new Runner lease", publication: "lost_create", rework: true, formal: true, validator: "pass"},
+		{name: "held publication reconciles staged work through new Runner lease", publication: "lost_create", rework: true, formal: true, staged: true},
+		{name: "held publication refuses replaced version on new Runner lease", publication: "lost_create", publicationFault: "version", rework: true, formal: true},
+		{name: "held publication refuses foreign source admission", publication: "lost_create", publicationFault: "foreign_source", rework: true, formal: true},
+		{name: "held publication refuses unavailable source on new Runner lease", publication: "lost_create", publicationFault: "unavailable_source", rework: true, formal: true},
+		{name: "held publication refuses missing_pr on new Runner lease", publication: "lost_create", publicationFault: "missing_pr", rework: true, formal: true},
+		{name: "held publication refuses wrong_base on new Runner lease", publication: "lost_create", publicationFault: "wrong_base", rework: true, formal: true},
+		{name: "held publication refuses wrong_repository on new Runner lease", publication: "lost_create", publicationFault: "wrong_repository", rework: true, formal: true},
+		{name: "held publication refuses wrong_head on new Runner lease", publication: "lost_create", publicationFault: "wrong_head", rework: true, formal: true},
+		{name: "held publication refuses wrong_branch on new Runner lease", publication: "lost_create", publicationFault: "wrong_branch", rework: true, formal: true},
+		{name: "held publication refuses multiple_prs on new Runner lease", publication: "lost_create", publicationFault: "multiple_prs", rework: true, formal: true},
+		{name: "held publication refuses unavailable_forge on new Runner lease", publication: "lost_create", publicationFault: "unavailable_forge", rework: true, formal: true},
+		{name: "held publication refuses missing_remote on new Runner lease", publication: "lost_create", publicationFault: "missing_remote", rework: true, formal: true},
+		{name: "held publication refuses dirty_source on new Runner lease", publication: "lost_create", publicationFault: "dirty_source", rework: true, formal: true},
+		{name: "held publication refuses changed_head on new Runner lease", publication: "lost_create", publicationFault: "changed_head", rework: true, formal: true},
+		{name: "held publication refuses policy on new Runner lease", publication: "lost_create", publicationFault: "policy", rework: true, formal: true},
+		{name: "held publication refuses lease on new Runner lease", publication: "lost_create", publicationFault: "lease", rework: true, formal: true},
+		{name: "held publication refuses branch on new Runner lease", publication: "lost_create", publicationFault: "branch", rework: true, formal: true},
 		{name: "absorbed Rework settles the original version on its actual base", absorbed: true, rework: true, land: true, wantState: "Done", wantChanges: 1},
 		{name: "absorbed SSH Rework settles without a second provider session", absorbed: true, ssh: true, rework: true, land: true, wantState: "Done", wantChanges: 1},
 		{name: "absorbed Rework preserves formal human rejection", absorbed: true, rework: true, formal: true, land: true, wantState: "Human Review", wantChanges: 1},
@@ -1199,6 +1517,15 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				states[4].Transitions = []string{"Rework"}
 			}
 			h := newNativeChangeHubTransport(t, review, states, true)
+			var publicationCI *NativeClient
+			if test.publication != "" {
+				previous := h.descriptor.ID
+				h.descriptor.Gates.GitHubPullRequest = true
+				h.descriptor = h.descriptor.WithID()
+				if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{Policy: h.descriptor, ExpectedID: previous}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.validator != "" {
 				previous := h.descriptor.ID
 				h.descriptor.Gates.Validator = true
@@ -1220,6 +1547,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if err != nil || state.LocalIntake.Enabled || len(state.Running) != 0 {
 					t.Fatalf("local intake state: %+v, %v", state.LocalIntake, err)
 				}
+			}
+			if test.publication != "" {
+				publicationCI = h.publicationCI(t)
 			}
 			var issue connector.Issue
 			if test.interactive {
@@ -1304,7 +1634,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatal(err)
 				}
 				historicalDecision := "changes_requested"
-				if test.reopened {
+				if test.reopened || test.publication != "" {
 					historicalDecision = "approved"
 				}
 				if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, old.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: historicalDecision, Body: "Historical review"}); err != nil {
@@ -1336,6 +1666,13 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatal(err)
 				}
 				current := h.publishCaptured(t, item, change.ID, strings.TrimSpace(string(head)), &capture, old.ID, base)
+				if publicationCI != nil {
+					check := current.Checks[0]
+					if _, err := publicationCI.SubmitChangeCheck(t.Context(), item, change.ID, current.ID, tracker.SubmitChangeCheck{Mutation: nativeMutationKey(), ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: check.CheckRunID, HeadSHA: current.HeadSHA, RunID: current.RunID, PolicyID: current.PolicyID, ConfigDigest: current.Policy.ConfigDigest, WorkflowID: check.WorkflowID, WorkflowSHA256: check.WorkflowSHA256, Source: check.Source, Conclusion: "success", CompletedAt: current.CreatedAt, Evidence: []tracker.ChangeArtifact{{Kind: "test", URI: "s3://fixture/test", SHA256: policy.Digest([]byte("test receipt")), Availability: "available"}}}}); err != nil {
+						t.Fatal(err)
+					}
+				}
+
 				if test.advanceTarget {
 					nativeChangeGit(t, source, "merge", "--ff-only", current.HeadSHA)
 					nativeChangeGit(t, source, "push", "origin", "main")
@@ -1572,12 +1909,226 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				defer closePeers()
 				runExecution = remote
 			}
+			var oldPublicationHead, oldPublicationBranch string
+			var forge *github.Client
+			var forgeCreates int
+			var forgePull string
+			var publicationRetry bool
+			losePush := test.publication == "lost_push"
+			if test.publication != "" {
+				forge, err = github.NewClient(github.ClientConfig{TokenSource: github.StaticTokenSource(t.Name()), DisableConditionalRequests: true, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					body := "[]"
+					switch request.Method {
+					case http.MethodGet:
+						if !publicationRetry && (forgeCreates > 0 || test.publication == "lost_push" && !losePush) {
+							return nil, fmt.Errorf("%w: forge observation unavailable after lost reply", ErrUnavailable)
+						}
+						if publicationRetry && test.publicationFault == "unavailable_forge" {
+							return nil, fmt.Errorf("%w: forge unavailable", ErrUnavailable)
+						}
+						observedPull := forgePull
+						if publicationRetry {
+							switch test.publicationFault {
+							case "missing_pr":
+								observedPull = ""
+							case "wrong_base":
+								observedPull = strings.ReplaceAll(observedPull, `"ref":"main"`, `"ref":"wrong-base"`)
+							case "wrong_repository":
+								observedPull = strings.ReplaceAll(observedPull, "example/native-change", "foreign/repository")
+							case "wrong_head":
+								observedPull = strings.ReplaceAll(observedPull, oldPublicationHead, strings.Repeat("d", 40))
+							case "wrong_branch":
+								observedPull = strings.ReplaceAll(observedPull, oldPublicationBranch, "foreign-branch")
+							}
+						}
+						if observedPull != "" {
+							body = "[" + observedPull + "]"
+							if publicationRetry && test.publicationFault == "multiple_prs" {
+								body = "[" + observedPull + "," + strings.Replace(observedPull, `"number":7`, `"number":8`, 1) + "]"
+							}
+							if strings.HasSuffix(request.URL.Path, "/pulls/7") {
+								body = observedPull
+							}
+						}
+					case http.MethodPost:
+						forgeCreates++
+						headOutput, err := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "rev-parse", "HEAD").Output()
+						if err != nil {
+							t.Fatal(err)
+						}
+						branchOutput, err := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "symbolic-ref", "--short", "HEAD").Output()
+						if err != nil {
+							t.Fatal(err)
+						}
+						forgePull = fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/native-change"}},"base":{"ref":"main","repo":{"full_name":"example/native-change"}}}`, strings.TrimSpace(string(headOutput)), strings.TrimSpace(string(branchOutput)))
+						if forgeCreates == 1 && test.publication != "lost_push" {
+							return nil, errors.New("create reply lost after forge accepted PR")
+						}
+						body = forgePull
+					default:
+						t.Fatalf("publication attempted forbidden forge operation: %s %s", request.Method, request.URL.Path)
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+				})}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				runExecution = &nativePublicationFixtureExecution{nativeExecution: execution.(*nativeExecution), forge: forge, losePush: &losePush}
+			}
 			runCtx, cancelRun := context.WithCancelCause(t.Context())
 			defer cancelRun(context.Canceled)
 			if test.expired {
 				provider.afterTurn = func() { cancelRun(context.DeadlineExceeded) }
 			}
 			result, err := agent.Run(runCtx, runner.RunRequest{Execution: runExecution, DeferExecutionFinish: test.failVersion, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+			if test.publication != "" {
+				owner := execution.(*nativeExecution)
+				wantEffect, wantState, wantCreates := "pr_create", "ambiguous", 1
+				if test.publication == "lost_push" {
+					wantEffect, wantState, wantCreates = "git_push", "pending", 0
+				}
+				if err == nil || owner.data.Handoff == nil || owner.data.Handoff.ExternalEffect != wantEffect || owner.data.Handoff.EffectState != wantState || forgeCreates != wantCreates {
+					t.Fatalf("first Runner attempt did not preserve lost create: effect=%+v creates=%d error=%v", owner.data.Handoff, forgeCreates, err)
+				}
+				if test.staged {
+					current, readErr := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
+					if readErr != nil || len(current.Versions) != len(expected.Versions)+1 || !reflect.DeepEqual(current.Reviews, expected.Reviews) || !reflect.DeepEqual(current.Checks, expected.Checks) {
+						t.Fatal("staged publication changed prior immutable evidence")
+					}
+					expected = &current
+				}
+				oldCheckpoint := *owner.data.Handoff
+				oldPublicationHead = oldCheckpoint.HeadSHA
+				branchOutput, readErr := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "symbolic-ref", "--short", "HEAD").Output()
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				oldPublicationBranch = strings.TrimSpace(string(branchOutput))
+				if test.publicationFault == "dirty_source" {
+					if err := os.WriteFile(filepath.Join(provider.workspace, "UNFINISHED.md"), []byte("preserve unfinished source"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.publicationFault == "changed_head" {
+					nativeChangeGit(t, provider.workspace, "commit", "--allow-empty", "-m", "new local source")
+				}
+				if test.publicationFault == "branch" {
+					nativeChangeGit(t, provider.workspace, "branch", "-m", "renamed-publication")
+				}
+				if test.publicationFault == "missing_remote" {
+					nativeChangeGit(t, remote, "update-ref", "-d", "refs/heads/"+oldPublicationBranch)
+				}
+
+				oldAttempt, oldLease := owner.data.AttemptID, owner.claim.lease
+				if err := h.native.Release(t.Context(), oldLease, "released"); err != nil {
+					t.Fatal(err)
+				}
+				machineID := tracker.MachineID("machine-native-change")
+				if test.publicationFault == "foreign_source" {
+					machineID = "foreign-machine"
+				}
+				h.scheduler, err = NewScheduler(h.scheduler.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: machineID, Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if test.publicationFault == "policy" {
+					h.repolicy(t)
+				}
+				publicationRetry = true
+				candidates := h.candidatesIn(t, "Rework")
+
+				if len(candidates) != 1 {
+					t.Fatalf("unchanged held source not admitted: candidates=%d", len(candidates))
+				}
+				candidate = candidates[0]
+				if _, err := h.scheduler.AdoptClaim(t.Context(), candidate, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				execution = h.scheduler.RunExecution(issue.ID)
+				owner = execution.(*nativeExecution)
+				if owner.claim.lease.MachineID != machineID || owner.claim.lease.ID == oldLease.ID || owner.claim.lease.FencingToken <= oldLease.FencingToken {
+					t.Fatal("retry reused old lease authority")
+				}
+				if test.publicationFault == "version" {
+					base := expected.Versions[len(expected.Versions)-1].BaseSHA
+					capture, captureErr := workspace.CaptureChangeSource(t.Context(), provider.workspace, base, oldPublicationHead)
+					if captureErr != nil {
+						t.Fatal(captureErr)
+					}
+					h.publishCaptured(t, tracker.NativeWorkItemID(issue.ID), expected.Change.ID, oldPublicationHead, &capture, expected.Change.CurrentVersion, base)
+					current, readErr := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					expected = &current
+				}
+				if test.publicationFault == "unavailable_source" {
+					next := h.native.client.httpClient.Transport
+					h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+						if request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/changes/") {
+							return &http.Response{StatusCode: http.StatusForbidden, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"insufficient_scope","message":"source read refused"}`))}, nil
+						}
+						return next.RoundTrip(request)
+					})
+				}
+				if test.publicationFault == "lease" {
+					if err := h.native.Release(t.Context(), owner.claim.lease, "released"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				remoteBefore, readErr := exec.CommandContext(t.Context(), "git", "-C", remote, "show-ref").Output()
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				prBefore := forgePull
+				callsBefore := provider.calls
+				result, err = agent.Run(t.Context(), runner.RunRequest{Execution: &nativePublicationFixtureExecution{nativeExecution: owner, forge: forge, losePush: &losePush}, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+				if test.publicationFault != "" {
+					if err == nil && (result.NativeChange == nil || result.NativeChange.VersionError == "" && result.NativeChange.Error == "") || owner.publication != nil || forgeCreates != wantCreates || forgePull != prBefore || provider.calls != callsBefore {
+						t.Fatalf("unresolved publication was accepted or rewrote forge/source: fault=%s creates=%d publication=%v provider_calls=%d error=%v", test.publicationFault, forgeCreates, owner.publication != nil, provider.calls-callsBefore, err)
+					}
+					remoteAfter, readErr := exec.CommandContext(t.Context(), "git", "-C", remote, "show-ref").Output()
+					if readErr != nil || string(remoteBefore) != string(remoteAfter) {
+						t.Fatal("refused reconciliation modified bare remote")
+					}
+				} else if provider.calls != callsBefore {
+					t.Fatal("publication-only reconciliation invoked another provider turn")
+				}
+
+				if test.publicationFault == "" && (err != nil || result.NativeChange == nil || owner.publication == nil || forgeCreates != 1) {
+					t.Fatalf("real Runner retry failed exact PR adoption: creates=%d publication=%v error=%v", forgeCreates, owner.publication != nil, err)
+				}
+				item := tracker.NativeWorkItemID(issue.ID)
+				oldEvidence, err := h.admin.RuntimeEvidence(t.Context(), item, oldAttempt)
+				if err != nil || oldEvidence.Attempt == nil || oldEvidence.Attempt.Checkpoint == nil || !reflect.DeepEqual(*oldEvidence.Attempt.Checkpoint, oldCheckpoint) {
+					t.Fatalf("retry changed old attempt checkpoint: %v", err)
+				}
+				detail, err := h.admin.Change(t.Context(), item, expected.Change.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for i := range detail.Versions {
+					detail.Versions[i].External = nil
+				}
+				if detail.Change.CurrentVersion != expected.Change.CurrentVersion || !reflect.DeepEqual(detail.Versions, expected.Versions) || !reflect.DeepEqual(detail.Reviews, expected.Reviews) || !reflect.DeepEqual(detail.Checks, expected.Checks) || detail.Change.Landed != nil {
+					t.Fatal("held retry changed version, reviews, checks or landing identity")
+				}
+				if test.publicationFault != "" {
+					return
+				}
+				var visible tracker.NativeIssue
+				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/work-items/"+issue.ID+"?include=change", nil, &visible); err != nil {
+					t.Fatal(err)
+				}
+				if visible.Change == nil || visible.Change.URL != nativeChangeRepository+"/pull/7" || visible.PullRequest == nil || visible.PullRequest.Number != 7 {
+					t.Fatal("reconciled PR absent from existing issue/PR reads")
+				}
+				target, err := execution.(runner.LandingExecution).LandingTarget(t.Context())
+				if !errors.Is(err, runner.ErrLandingNotReviewed) || target.External == nil || target.External.URL != visible.Change.URL {
+					t.Fatal("publication cleared human hold or lost landing PR identity")
+				}
+				return
+			}
 			if test.expired {
 				evidence, readErr := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
 				if !errors.Is(context.Cause(runCtx), context.DeadlineExceeded) || readErr != nil || evidence.Attempt == nil || evidence.Attempt.Status != "succeeded" {
@@ -2253,6 +2804,7 @@ func nativeChangeSourceRepo(t *testing.T) string {
 	dir := nativeChangeTempDir(t)
 	for _, args := range [][]string{
 		{"init", "-b", "main"}, {"config", "core.autocrlf", "false"},
+		{"config", "commit.gpgsign", "false"}, {"config", "core.hooksPath", os.DevNull},
 		{"config", "user.name", "Test User"}, {"config", "user.email", "test@example.com"},
 	} {
 		nativeChangeGit(t, dir, args...)
@@ -2345,4 +2897,59 @@ func versionsWithoutLanding(versions []tracker.ChangeVersion) []tracker.ChangeVe
 		stripped[i] = version
 	}
 	return stripped
+}
+
+type nativePublicationFixtureExecution struct {
+	*nativeExecution
+	forge    *github.Client
+	losePush *bool
+}
+
+func (e *nativePublicationFixtureExecution) SetPublicationSource(source func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)) {
+	e.nativeExecution.SetPublicationSource(func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+		opts.GitHubClient = e.forge
+		if e.losePush != nil {
+			effect := opts.PublicationEffect
+			opts.PublicationEffect = func(ctx context.Context, kind, state string, publication workspace.GitHubPublication) error {
+				if *e.losePush && kind == "git_push" && state == "confirmed" {
+					*e.losePush = false
+					return fmt.Errorf("%w: push confirmation lost after remote accepted head", ErrUnavailable)
+				}
+				return effect(ctx, kind, state, publication)
+			}
+		}
+		return source(ctx, version, opts)
+	})
+}
+
+func (h *nativeChangeHub) publicationCI(t *testing.T) *NativeClient {
+	t.Helper()
+	rules, err := h.admin.ChangeReviewPolicy(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var token struct {
+		ID    string `json:"id"`
+		Token string `json:"token"`
+	}
+	if err := h.admin.client.request(t.Context(), http.MethodPost, "/api/v1/tokens", map[string]string{"name": "publication-fixture-ci", "scope": "operator"}, &token); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.admin.client.request(t.Context(), http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", map[string]any{"organization_id": h.organization, "project_id": h.project}, nil); err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(Config{URL: h.admin.client.baseURL.String(), TokenSource: func() string { return token.Token }, HTTPClient: h.admin.client.httpClient})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci, err := client.Native(h.organization, h.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules.PolicyID = h.descriptor.ID
+	rules.RequiredChecks = []tracker.ChangeCheckSpec{{Name: "full-ci", PrincipalID: token.ID, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}
+	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), ExpectedID: rules.ID, Policy: rules}); err != nil {
+		t.Fatal(err)
+	}
+	return ci
 }

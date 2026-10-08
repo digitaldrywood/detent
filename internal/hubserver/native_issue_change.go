@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -67,6 +68,11 @@ func readNativeIssueChange(ctx context.Context, query nativeQueryer, scope nativ
 	change.HeadSHA = version.HeadSHA
 	if version.External != nil {
 		change.URL = version.External.URL
+		if version.External.Provider == "github" {
+			if number, err := strconv.Atoi(version.External.ID); err == nil && number > 0 {
+				change.Number = number
+			}
+		}
 	}
 	if binding == nil || version.External == nil {
 		return change, nil
@@ -126,6 +132,9 @@ func readNativeChangeVersion(ctx context.Context, query nativeQueryer, request t
 	}
 	if err := json.Unmarshal([]byte(record), &version); err != nil {
 		return version, false, fmt.Errorf("decode change version %s: %w", request.CurrentVersion, err)
+	}
+	if err := resolveVersionPublication(ctx, query, request.ID, &version); err != nil {
+		return version, false, err
 	}
 	return version, true, nil
 }

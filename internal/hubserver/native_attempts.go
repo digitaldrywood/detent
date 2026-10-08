@@ -118,6 +118,10 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 		if v := f.SourceVersion; v != nil && (v.ChangeID != f.ChangeID || !validNativeID(v.ChangeID, "change") || !validNativeID(v.VersionID, "version") || !validCommitID(v.HeadSHA)) {
 			return nativeInvalid("Invalid finalizer source version identity")
 		}
+		if p := f.Publication; p != nil && (!f.Settled || !f.Changed || f.VersionError != "" || f.Error != "" || p.ChangeID != f.ChangeID || p.VersionID != f.VersionID || p.HeadSHA != f.HeadSHA || !validNativeID(p.PolicyID, "policy") ||
+			p.SourceAttemptID != "" && !validNativeID(p.SourceAttemptID, "attempt") || len(p.BaseRef) > 255 || len(p.Branch) > 255 || strings.ContainsAny(p.BaseRef+p.Branch, " \t\r\n~^:?*[\\") || strings.Contains(p.BaseRef+p.Branch, "..")) {
+			return nativeInvalid("PR publication requires a settled exact version, policy and verified delivery identity")
+		}
 		*f = f.Public()
 	}
 	if len(data.Evidence) != 0 {
@@ -190,6 +194,41 @@ func recordNativeAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, ite
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, false, err
+	}
+	if f := data.Finalization; f != nil && f.Publication != nil {
+		if err := requireNativeMutationLease(ctx, tx, scope, string(item), tracker.Mutation{LeaseID: data.LeaseID, FencingToken: data.FencingToken}, now); err != nil {
+			return false, false, err
+		}
+		change, err := readChange(ctx, tx, scope, string(item), f.ChangeID)
+		if err != nil {
+			return false, false, err
+		}
+		version, err := readChangeVersion(ctx, tx, f.ChangeID, f.VersionID)
+		if err != nil {
+			return false, false, err
+		}
+		if change.CurrentVersion != f.VersionID || data.PolicyID != f.Publication.PolicyID || !version.Policy.Gates.GitHubPullRequest || !f.Publication.Matches(f.ChangeID, version) {
+			return false, false, nativeExecutionConflict("PR publication no longer matches the current Change version, source or approved policy")
+		}
+		var raw string
+		if err := tx.QueryRowContext(ctx, "SELECT checkpoint_json FROM native_attempts WHERE id=?", data.AttemptID).Scan(&raw); err != nil {
+			return false, false, err
+		}
+		var checkpoint tracker.NativeCheckpoint
+		if err := json.Unmarshal([]byte(raw), &checkpoint); err != nil {
+			return false, false, err
+		}
+		if checkpoint.ExternalEffect != "pr_create" || checkpoint.EffectState != "confirmed" || checkpoint.EffectID != f.Publication.EffectID("pr_create") || checkpoint.Change == nil || *checkpoint.Change != f.Publication.SourceVersion || checkpoint.HeadSHA != f.HeadSHA {
+			return false, false, nativeExecutionConflict("PR publication requires its exact confirmed checkpoint; reconcile pending or ambiguous effects before completion")
+		}
+		var head string
+		if err := tx.QueryRowContext(ctx, `SELECT head_sha FROM attempt_diffs WHERE organization_id=? AND project_id=? AND work_item_id=?
+AND attempt_id=? AND source='attempt' AND seq=? AND producer_lease_id=? AND producer_fencing_token=?`, scope.organization, scope.project, item, data.AttemptID, data.Sequence, data.LeaseID, data.FencingToken).Scan(&head); err != nil {
+			return false, false, nativeExecutionConflict("PR publication requires the current fenced final diff; retain source and reconcile its head before completion")
+		}
+		if head != f.HeadSHA {
+			return false, false, nativeExecutionConflict("PR publication head changed after verification; reconcile the current source before completion")
+		}
 	}
 	var previousJSON, status string
 	var sequence int64

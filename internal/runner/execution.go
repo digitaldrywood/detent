@@ -142,6 +142,10 @@ type IntegrationSourceExecution interface {
 	SetIntegrationSource(func(context.Context, tracker.ChangeVersion, string) (workspace.LandResult, error))
 }
 
+type PublicationSourceExecution interface {
+	SetPublicationSource(func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error))
+}
+
 type ChangeSourceExecution interface {
 	SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error))
 	RecoverChangeSource(context.Context) (workspace.ChangeSource, error)
@@ -293,7 +297,71 @@ func executionCheckpoint(state *workspace.RecoveryState) tracker.NativeCheckpoin
 	return checkpoint
 }
 
+func executionCheckpointPreservingPublication(execution Execution, state *workspace.RecoveryState) tracker.NativeCheckpoint {
+	if execution != nil {
+		if previous := execution.Recovery().SourceAttempt(); previous != nil && previous.Checkpoint.UncertainForgeEffect() {
+			return *previous.Checkpoint
+		}
+	}
+	return executionCheckpoint(state)
+}
+
+func nativePublicationRecovery(recovery tracker.NativeRecovery, local *workspace.RecoveryState, identity tracker.NativeExecutionIdentity, current *workspace.ChangeSource) bool {
+	previous := recovery.SourceAttempt()
+	if identity.Role != RoleRework || previous == nil || previous.Checkpoint == nil || !previous.Checkpoint.UncertainForgeEffect() || current == nil || local == nil {
+		return false
+	}
+	checkpoint, version := previous.Checkpoint, current.Version
+	if previous.MachineID != recovery.Lease.MachineID || previous.PolicyID != recovery.Lease.PolicyID || version.PolicyID != recovery.Lease.PolicyID ||
+		version.Policy.ID != version.PolicyID || !version.Policy.Gates.GitHubPullRequest || version.ID == "" || version.ChangeID == "" || version.Repository == "" ||
+		checkpoint.Change == nil || *checkpoint.Change != (tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) ||
+		checkpoint.HeadSHA != version.HeadSHA || checkpoint.EffectID == "" || checkpoint.Availability != "available" || checkpoint.Storage != "local_only" ||
+		(checkpoint.WorktreeState != "clean" && checkpoint.WorktreeState != "unpushed") || local.HeadSHA != version.HeadSHA ||
+		checkpoint.WorkspaceDigest == "" || checkpoint.WorkspaceDigest != local.WorkspaceFingerprint || len(local.TrackedPaths) != 0 || len(local.UntrackedPaths) != 0 {
+		return false
+	}
+	return recovery.ChangeDetail != nil && recovery.ChangeDetail.Change.ID == version.ChangeID && recovery.ChangeDetail.Change.CurrentVersion == version.ID &&
+		recovery.ChangeDetail.Change.CurrentLanding() == nil && recovery.ChangeDetail.Summary.Status != "stale_policy"
+}
+
 func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, turnStarted bool) error {
+	if req.finalizeNativeWork && !req.retainCheckpoint {
+		if execution, ok := req.Execution.(PublicationSourceExecution); ok {
+			if remote, ok := execution.(*sshNativeExecution); ok {
+				remote.setPublicationIdentity(func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+					resolver, ok := backend.(interface {
+						GitHubPublicationIdentity(context.Context, workspace.Info, workspace.Issue, workspace.LandOptions) (workspace.GitHubPublication, error)
+					})
+					if !ok {
+						return workspace.GitHubPublication{}, errors.New("SSH workspace cannot resolve the required PR publication identity")
+					}
+					opts.Repository, opts.HeadSHA, opts.TargetBranch = version.Repository, version.HeadSHA, issue.ProgressBaseRef
+					return resolver.GitHubPublicationIdentity(ctx, info, issue, opts)
+				})
+			}
+			execution.SetPublicationSource(func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+				publisher, ok := backend.(interface {
+					PrepareGitHubPublication(context.Context, workspace.Info, workspace.Issue, workspace.LandOptions) (workspace.GitHubPublication, error)
+				})
+				if !ok {
+					return workspace.GitHubPublication{}, errors.New("workspace cannot prepare the required GitHub PR; resume on the source-owning runner with publication support")
+				}
+				opts.Repository, opts.HeadSHA = version.Repository, version.HeadSHA
+				opts.TargetBranch, opts.Message = issue.ProgressBaseRef, req.Issue.Title
+				if issue.Landing != nil {
+					opts.GitHubClient = issue.Landing.GitHubClient
+				}
+				if opts.GitHubClient == nil {
+					client, _, err := r.nativeLandingGitHubClient(ctx, req, workerGitHubPolicy{})
+					if err != nil {
+						return workspace.GitHubPublication{}, fmt.Errorf("prepare required GitHub PR; verify runner authentication and retry with retained source: %w", err)
+					}
+					opts.GitHubClient = client
+				}
+				return publisher.PrepareGitHubPublication(ctx, info, issue, opts)
+			})
+		}
+	}
 	if req.Execution == nil {
 		if req.retainCheckpoint {
 			return nil
@@ -365,7 +433,7 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 	state := r.workspaceRecoveryState(backend, recoveryCtx, info, issue, "native_checkpoint")
 	cancel()
-	checkpoint := executionCheckpoint(state)
+	checkpoint := executionCheckpointPreservingPublication(req.Execution, state)
 	if state != nil && !agentResumeEmpty(resume) {
 		checkpoint.Resume = "resume_session"
 	} else if turnStarted {
@@ -504,6 +572,9 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 		return "fresh_checkout", "checkpoint_missing"
 	}
 	if checkpoint.UncertainForgeEffect() {
+		if nativePublicationRecovery(recovery, local, identity, current) {
+			return "fresh_checkout", "publication_reconciliation_required"
+		}
 		return "manual_recovery", "external_effect_uncertain"
 	}
 	if nativeCheckpointPolicyChanged(recovery) {
