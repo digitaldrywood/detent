@@ -28,6 +28,7 @@ func collectRunnerLocalChecks(ctx context.Context, cfg globalconfig.Config, name
 		return checks
 	}
 	checks.Checkout = "passed"
+	checks.RunnerSetupDeclared = new(workflow.Config.Hooks.RunnerSetup != "")
 	report := diagnose(ctx, doctorConfig{ConfigPath: cfg.Path, ProjectID: name, Output: io.Discard, CheckTimeout: doctorCheckTimeout, Flags: runtimeFlags{Port: runtimeIntFlag{Value: 0, Set: true}}})
 	checks.Doctor = "passed"
 	for _, check := range report.Checks {

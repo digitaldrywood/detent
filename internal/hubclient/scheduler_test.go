@@ -63,7 +63,7 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 		LabelExclude       []string                          `json:"label_exclude,omitempty"`
 	}
 	var supportsChecks, supportsCheckout, wrongIdentity atomic.Bool
-	var supportsSetup atomic.Bool
+	var supportsSetup, supportsDeclaration atomic.Bool
 	var supportsRanking atomic.Bool
 	var claimCalls, previewCalls atomic.Int64
 	var mu sync.Mutex
@@ -86,6 +86,9 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 			}
 			if supportsSetup.Load() {
 				features = append(features, tracker.NativeRunnerSetupCapability)
+			}
+			if supportsDeclaration.Load() {
+				features = append(features, tracker.NativeRunnerSetupDeclarationCapability)
 			}
 			if supportsRanking.Load() {
 				features = append(features, tracker.NativeDispatchPriorityCapability)
@@ -191,7 +194,7 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 	}
 	now := time.Now()
 	repository := "Acme/Private"
-	checks := runnerauth.LocalChecks{Checkout: "passed", Doctor: "failed", Provider: "failed", ProviderKinds: []string{"codex"}, Setup: "failed"}
+	checks := runnerauth.LocalChecks{Checkout: "passed", Doctor: "failed", Provider: "failed", ProviderKinds: []string{"codex"}, Setup: "failed", RunnerSetupDeclared: new(false)}
 	scheduler, err := NewScheduler(client, SchedulerConfig{
 		OrganizationID: "org_test", NativeProjects: map[string]tracker.ProjectID{"native": "prj_test"},
 		CheckoutRepository: func(string) string { return repository },
@@ -207,22 +210,24 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 		t.Fatal("native project connector is missing")
 	}
 	for _, step := range []struct {
-		name                         string
-		checkout, diagnostics, setup bool
-		repository                   string
-		evidence                     *runnerauth.LocalChecks
+		name                                      string
+		checkout, diagnostics, setup, declaration bool
+		repository                                string
+		evidence                                  *runnerauth.LocalChecks
 	}{
-		{"older Hub", false, false, false, "Acme/Private", &checks},
-		{"checkout-report Hub", true, false, false, "Acme/Private", &checks},
-		{"local-checks Hub", true, true, false, "Acme/Private", &checks},
-		{"current Hub failed evidence", true, true, true, "Acme/Private", &checks},
-		{"current Hub missing evidence", true, true, true, "", nil},
-		{"neither optional field", false, false, false, "", &checks},
+		{"older Hub", false, false, false, false, "Acme/Private", &checks},
+		{"checkout-report Hub", true, false, false, false, "Acme/Private", &checks},
+		{"local-checks Hub", true, true, false, false, "Acme/Private", &checks},
+		{"current Hub failed evidence", true, true, true, false, "Acme/Private", &checks},
+		{"setup declaration Hub", true, true, true, true, "Acme/Private", &checks},
+		{"current Hub missing evidence", true, true, true, true, "", nil},
+		{"neither optional field", false, false, false, false, "", &checks},
 	} {
 		t.Run(step.name, func(t *testing.T) {
 			supportsCheckout.Store(step.checkout)
 			supportsChecks.Store(step.diagnostics)
 			supportsSetup.Store(step.setup)
+			supportsDeclaration.Store(step.declaration)
 			expireCapabilities(client)
 			repository = step.repository
 			delete(scheduler.localChecks, "native")
@@ -242,9 +247,14 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 			if !step.diagnostics {
 				want = nil
 			}
-			if want != nil && !step.setup {
+			if want != nil {
 				copy := *want
-				copy.Setup = ""
+				if !step.setup {
+					copy.Setup = ""
+				}
+				if !step.declaration {
+					copy.RunnerSetupDeclared = nil
+				}
 				want = &copy
 			}
 			if !reflect.DeepEqual(got.checks, want) {

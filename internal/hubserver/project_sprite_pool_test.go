@@ -290,16 +290,25 @@ func TestSpritePoolLifecycle(t *testing.T) {
 		name, failure                            string
 		wantCreated, wantDeleted, wantCheckpoint int
 		heartbeat                                bool
+		setup                                    *bool
+		emptyBootstrap                           bool
 	}{
-		{"two independent connected members then idle deletion", "", 2, 2, 2, false},
-		{"project heartbeat triggers idle cleanup", "", 2, 2, 2, true},
-		{"bootstrap failure deletes only its member", "bootstrap", 1, 1, 0, false},
-		{"checkpoint failure deletes enrolled member", "checkpoint", 1, 1, 1, false},
-		{"billing failure is retained for onboarding", "billing", 1, 1, 0, false},
-		{"token rejection is retained for onboarding", "invalid token", 1, 1, 0, false},
+		{"two independent connected members then idle deletion", "", 2, 2, 2, false, nil, false},
+		{"project heartbeat triggers idle cleanup", "", 2, 2, 2, true, nil, false},
+		{"bootstrap failure deletes only its member", "bootstrap", 1, 1, 0, false, nil, false},
+		{"checkpoint failure deletes enrolled member", "checkpoint", 1, 1, 1, false, nil, false},
+		{"billing failure is retained for onboarding", "billing", 1, 1, 0, false, nil, false},
+		{"token rejection is retained for onboarding", "invalid token", 1, 1, 0, false, nil, false},
+		{"empty bootstrap with declared setup", "", 2, 2, 2, false, new(true), true},
+		{"empty bootstrap without setup", "", 2, 2, 2, false, new(false), true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, scope, provider := newSpritePoolFixture(t, test.failure)
+			if test.emptyBootstrap {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE project_sprite_pools SET bootstrap='' WHERE project_id=?", scope.project); err != nil {
+					t.Fatal(err)
+				}
+			}
 			var err error
 			if test.failure == "" {
 				f.service.wakeSpriteRunnersAfter(scope, json.RawMessage(`{"state":"Todo"}`))
@@ -325,6 +334,14 @@ func TestSpritePoolLifecycle(t *testing.T) {
 					t.Fatalf("missing safe failure guidance: %s", member.BootstrapLog)
 				}
 			}
+			if test.setup != nil {
+				for _, runner := range provider.runners {
+					checks := runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", RunnerSetupDeclared: test.setup}
+					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.MachineID)+"/heartbeat", runner.Credential, map[string]any{"display_name": runner.DisplayName, "capacity": runner.Capacity, "version": runner.Version, "sprite_name": runner.SpriteName, "local_checks": checks})
+					requireNativeStatus(t, response, http.StatusOK)
+				}
+				f.service.spriteWakeWork.Wait()
+			}
 			view.Bootstrap = "private-saved-bootstrap"
 			status, err := f.service.coordinatorSpritePoolStatus(t.Context(), scope, view, "/settings/integrations#sprites")
 			if err != nil {
@@ -338,6 +355,10 @@ func TestSpritePoolLifecycle(t *testing.T) {
 				t.Fatal("onboarding status exposed private setup or credentials")
 			}
 			projection := status.(map[string]any)
+			declaration := projection["runner_setup_declared"].(*bool)
+			if (declaration == nil) != (test.setup == nil) || declaration != nil && *declaration != *test.setup {
+				t.Fatalf("setup declaration = %v, want %v", declaration, test.setup)
+			}
 			wantConnected := 0
 			if test.failure == "" {
 				wantConnected = 2
@@ -614,5 +635,30 @@ func TestSpritePoolMutationDuringDeletion(t *testing.T) {
 	}
 	if active != 2 {
 		t.Fatalf("active members=%d, want 2", active)
+	}
+}
+
+func TestSpritePoolSettingsValidation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		settings spritePoolSettings
+		valid    bool
+	}{
+		{"enabled without bootstrap", spritePoolSettings{MinRunners: 2, MaxRunners: 2}, true},
+		{"bootstrap byte limit", spritePoolSettings{MaxRunners: 1, Bootstrap: strings.Repeat("x", 65536)}, true},
+		{"bootstrap too large", spritePoolSettings{MaxRunners: 1, Bootstrap: strings.Repeat("x", 65537)}, false},
+		{"negative floor", spritePoolSettings{MinRunners: -1, MaxRunners: 1}, false},
+		{"inverted bounds", spritePoolSettings{MinRunners: 2, MaxRunners: 1}, false},
+		{"ceiling too high", spritePoolSettings{MaxRunners: 101}, false},
+		{"idle too small", spritePoolSettings{MaxRunners: 1, IdleSeconds: 29}, false},
+		{"idle too large", spritePoolSettings{MaxRunners: 1, IdleSeconds: 86401}, false},
+		{"negative revision", spritePoolSettings{MaxRunners: 1, Revision: -1}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateSpritePoolSettings(&test.settings); (err == nil) != test.valid {
+				t.Fatalf("validation error = %v, valid = %t", err, test.valid)
+			}
+		})
 	}
 }

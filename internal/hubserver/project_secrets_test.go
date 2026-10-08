@@ -173,6 +173,32 @@ func TestProjectSecretPermissions(t *testing.T) {
 			f.api(t, "viewer", http.MethodPut, poolPath, spritePoolSettings{MaxRunners: 2, IdleSeconds: 300, Bootstrap: "true", Revision: pool.Revision}, status)
 		})
 	}
+	t.Run("pool bootstrap is optional and omission preserves saved steps", func(t *testing.T) {
+		poolPath := strings.TrimSuffix(base, "/secrets/"+flySpritesToken) + "/sprite-pool"
+		for _, test := range []struct {
+			name      string
+			bootstrap *string
+			max       int
+			want      string
+		}{
+			{"enable without bootstrap", new(""), 2, ""},
+			{"save extra steps", new("true"), 0, "true"},
+			{"omit extra steps", nil, 0, "true"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				var pool spritePoolView
+				decodeHubResponse(t, f.api(t, "owner", http.MethodGet, poolPath, nil, http.StatusOK), &pool)
+				input := map[string]any{"min_runners": 0, "max_runners": test.max, "revision": pool.Revision}
+				if test.bootstrap != nil {
+					input["bootstrap"] = *test.bootstrap
+				}
+				decodeHubResponse(t, f.api(t, "owner", http.MethodPut, poolPath, input, http.StatusOK), &pool)
+				if pool.Bootstrap != test.want || pool.MaxRunners != test.max {
+					t.Fatalf("saved pool = %+v", pool)
+				}
+			})
+		}
+	})
 	f.api(t, "owner", http.MethodPut, strings.Replace(base, f.project, "prj_other", 1), map[string]any{"token": spritesSecretSentinel}, http.StatusNotFound)
 	f.api(t, "wrong-organization", http.MethodPut, base, map[string]any{"token": spritesSecretSentinel}, http.StatusForbidden)
 	t.Run("authority removed during validation", func(t *testing.T) {

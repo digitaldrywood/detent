@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -36,8 +35,9 @@ type spritePoolMember struct {
 
 type spritePoolView struct {
 	spritePoolSettings
-	Members  []spritePoolMember `json:"members"`
-	Decision *placementDecision `json:"placement_decision,omitempty"`
+	Members             []spritePoolMember `json:"members"`
+	Decision            *placementDecision `json:"placement_decision,omitempty"`
+	RunnerSetupDeclared *bool              `json:"runner_setup_declared"`
 }
 
 type spriteScaleInput struct {
@@ -80,6 +80,10 @@ func (s *Service) getSpritePool(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	view.Decision = &decision.placementDecision
+	view.RunnerSetupDeclared, err = s.projectRunnerSetupDeclaration(c.Request().Context(), nativeRequestScope(c))
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	return c.JSON(http.StatusOK, view)
 }
@@ -124,9 +128,22 @@ func (s *Service) setSpritePool(c echo.Context) error {
 	if !canManageProjectSecrets(scope.credential) {
 		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Sprite pool settings require owner or admin access"})
 	}
-	var settings spritePoolSettings
-	if err := decodeAPIJSON(c, &settings); err != nil {
+	var input struct {
+		spritePoolSettings
+		Bootstrap *string `json:"bootstrap"`
+	}
+	if err := decodeAPIJSON(c, &input); err != nil {
 		return invalidAPIRequest(c, err)
+	}
+	settings := input.spritePoolSettings
+	if input.Bootstrap != nil {
+		settings.Bootstrap = *input.Bootstrap
+	} else {
+		view, err := s.readSpritePool(c.Request().Context(), scope)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		settings.Bootstrap = view.Bootstrap
 	}
 	if err := s.updateSpritePool(c.Request().Context(), scope, settings); err != nil {
 		return s.nativeAPIError(c, err)
@@ -146,8 +163,8 @@ func validateSpritePoolSettings(settings *spritePoolSettings) error {
 	if settings.IdleSeconds == 0 {
 		settings.IdleSeconds = 300
 	}
-	if settings.MinRunners < 0 || settings.MaxRunners < settings.MinRunners || settings.MaxRunners > 100 || settings.IdleSeconds < 30 || settings.IdleSeconds > 86400 || len(settings.Bootstrap) > 65536 || settings.MaxRunners > 0 && strings.TrimSpace(settings.Bootstrap) == "" || settings.Revision < 0 {
-		return nativeInvalid("Sprite pools require 0 <= min_runners <= max_runners <= 100, an idle threshold of 30 to 86400 seconds, and customer provider/project bootstrap steps when enabled")
+	if settings.MinRunners < 0 || settings.MaxRunners < settings.MinRunners || settings.MaxRunners > 100 || settings.IdleSeconds < 30 || settings.IdleSeconds > 86400 || len(settings.Bootstrap) > 65536 || settings.Revision < 0 {
+		return nativeInvalid("Sprite pools require 0 <= min_runners <= max_runners <= 100, an idle threshold of 30 to 86400 seconds, optional bootstrap of at most 65536 bytes, and a nonnegative revision")
 	}
 	return nil
 }

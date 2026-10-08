@@ -186,6 +186,26 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 	return nil
 }
 
+func (p *runnerProjects) runnerSetupDeclared(ctx context.Context, name string) *bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.syncRuntimeLocked()
+	for _, selected := range project.ManagerConfigFromGlobal(p.cfg).Projects {
+		if selected.ID != name {
+			continue
+		}
+		if id := p.cfg.Client.NativeProjects[name]; id != "" {
+			selected.ID = id
+		}
+		workflow, err := project.LoadWorkflowContext(ctx, selected)
+		if err != nil {
+			return nil
+		}
+		return new(workflow.Config.Hooks.RunnerSetup != "")
+	}
+	return nil
+}
+
 func (p *runnerProjects) repository(ctx context.Context, name string) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()

@@ -21,7 +21,7 @@ import (
 func coordinatorSpriteTools() []runner.AgentTool {
 	empty := `{"type":"object","properties":{},"additionalProperties":false}`
 	return []runner.AgentTool{
-		coordinatorTool("get_sprite_pool", "Read this project's Sprites token metadata, pool bounds, bootstrap state and runner connection/provider readiness. Enrollment alone is not readiness.", empty),
+		coordinatorTool("get_sprite_pool", "Read this project's Sprites token metadata, pool bounds, bootstrap state, runner_setup_declared (null means unknown) and runner connection/provider readiness. Enrollment alone is not readiness.", empty),
 		coordinatorTool("set_sprites_token", "Get the secure Sprites connector link for setting or replacing this project's write-only organization token. The user enters the token there, never in chat or tool arguments.", empty),
 		coordinatorTool("set_sprite_pool", "Preview pool floor/ceiling and optional customer bootstrap steps. Preserve existing bootstrap when omitted. Never include credentials in bootstrap; use customer-owned login/setup. Requires current owner/admin authority; the client controls confirmation; saving starts the existing pool lifecycle.", `{"type":"object","required":["min_runners","max_runners"],"properties":{"min_runners":{"type":"integer","minimum":0,"maximum":100},"max_runners":{"type":"integer","minimum":0,"maximum":100},"idle_seconds":{"type":"integer","minimum":30,"maximum":86400},"bootstrap":{"type":"string","maxLength":12000}},"additionalProperties":false}`),
 		coordinatorTool("scale_up_sprite_pool", "Preview a scale-up or retry through the existing pool lifecycle, within the saved floor and ceiling. Set a floor of one for the first runner on an empty project. Requires current owner/admin authority; the client controls confirmation.", empty),
@@ -84,7 +84,7 @@ func decodeCoordinatorSpriteArguments(name string, raw json.RawMessage) (coordin
 		}
 		return args, nil
 	}
-	if args.MinRunners == nil || args.MaxRunners == nil || *args.MinRunners < 0 || *args.MaxRunners < *args.MinRunners || *args.MaxRunners > 100 || args.IdleSeconds != nil && (*args.IdleSeconds < 30 || *args.IdleSeconds > 86400) || args.Bootstrap != nil && (len(*args.Bootstrap) > 12000 || *args.MaxRunners > 0 && strings.TrimSpace(*args.Bootstrap) == "") {
+	if args.MinRunners == nil || args.MaxRunners == nil || *args.MinRunners < 0 || *args.MaxRunners < *args.MinRunners || *args.MaxRunners > 100 || args.IdleSeconds != nil && (*args.IdleSeconds < 30 || *args.IdleSeconds > 86400) || args.Bootstrap != nil && len(*args.Bootstrap) > 12000 {
 		return args, operatortool.ErrInvalidArguments
 	}
 	return args, nil
@@ -284,5 +284,27 @@ func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeS
 		}
 		members = append(members, item)
 	}
-	return map[string]any{"token": secret, "token_validation": validation, "connector_url": connector, "min_runners": view.MinRunners, "max_runners": view.MaxRunners, "idle_seconds": view.IdleSeconds, "revision": view.Revision, "bootstrap_configured": strings.TrimSpace(view.Bootstrap) != "", "connected_runners": connected, "members": members, "login_guide": "https://github.com/digitaldrywood/detent/blob/develop/docs/sprite-runners.md#6-sign-in-to-your-agents"}, nil
+	declared, err := s.projectRunnerSetupDeclaration(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"runner_setup_declared": declared, "token": secret, "token_validation": validation, "connector_url": connector, "min_runners": view.MinRunners, "max_runners": view.MaxRunners, "idle_seconds": view.IdleSeconds, "revision": view.Revision, "bootstrap_configured": strings.TrimSpace(view.Bootstrap) != "", "connected_runners": connected, "members": members, "login_guide": "https://github.com/digitaldrywood/detent/blob/develop/docs/sprite-runners.md#6-sign-in-to-your-agents"}, nil
+}
+
+func (s *Service) projectRunnerSetupDeclaration(ctx context.Context, scope nativeScope) (*bool, error) {
+	onboarding, err := s.projectOnboarding(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	var declared *bool
+	for _, entry := range onboarding.Runners {
+		if entry.Runner.State != "active" || entry.Runner.ConnectionHealth != "online" || entry.LocalChecks == nil || entry.LocalChecks.Checkout != "passed" || entry.LocalChecks.RunnerSetupDeclared == nil {
+			continue
+		}
+		declared = entry.LocalChecks.RunnerSetupDeclared
+		if !*declared {
+			break
+		}
+	}
+	return declared, nil
 }

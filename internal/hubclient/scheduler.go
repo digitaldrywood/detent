@@ -29,6 +29,7 @@ const hubWorkItemField = "detent_hub_work_item_id"
 type SchedulerConfig struct {
 	RefreshProjects       func(context.Context, *Scheduler) error
 	PrepareProject        func(context.Context, string) error
+	RunnerSetupDeclared   func(context.Context, string) *bool
 	UpdateOwner           func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation
 	CapacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
 	// LocalChecks are startup observations by local project, reused by the heartbeat owner.
@@ -56,6 +57,7 @@ type Scheduler struct {
 	projectsMu            sync.RWMutex
 	projectConfiguration  func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration
 	prepareProject        func(context.Context, string) error
+	runnerSetupDeclared   func(context.Context, string) *bool
 	updateOwner           func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation
 	capacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
 	localChecks           map[string]runnerauth.LocalChecks
@@ -109,6 +111,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 	scheduler := &Scheduler{
 		refreshProjects:       config.RefreshProjects,
 		prepareProject:        config.PrepareProject,
+		runnerSetupDeclared:   config.RunnerSetupDeclared,
 		capacityConfiguration: config.CapacityConfiguration,
 		updateOwner:           config.UpdateOwner,
 		localChecks:           config.LocalChecks,
@@ -215,10 +218,20 @@ func (s *Scheduler) PrepareProject(ctx context.Context, project string) error {
 		return nil
 	}
 	err := s.prepareProject(ctx, project)
+	var declared *bool
+	if s.runnerSetupDeclared != nil {
+		declared = s.runnerSetupDeclared(ctx, project)
+	}
 	s.mu.Lock()
 	checks, reported := s.localChecks[project]
 	previous := checks.Setup
+	declarationChanged := false
 	if reported {
+		if s.runnerSetupDeclared != nil {
+			previousDeclaration := checks.RunnerSetupDeclared
+			declarationChanged = (previousDeclaration == nil) != (declared == nil) || previousDeclaration != nil && declared != nil && *previousDeclaration != *declared
+			checks.RunnerSetupDeclared = declared
+		}
 		checks.Setup = "passed"
 		if err != nil {
 			checks.Setup = "failed"
@@ -226,7 +239,7 @@ func (s *Scheduler) PrepareProject(ctx context.Context, project string) error {
 		s.localChecks[project] = checks
 	}
 	s.mu.Unlock()
-	if source := s.nativeProject(project); source != nil && reported && previous != checks.Setup {
+	if source := s.nativeProject(project); source != nil && reported && (previous != checks.Setup || declarationChanged) {
 		s.mu.Lock()
 		if !s.nativeHeartbeats[source.client.project].IsZero() {
 			s.nativeHeartbeats[source.client.project] = s.now().Add(-s.heartbeatInterval)

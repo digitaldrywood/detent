@@ -34,6 +34,7 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 		missingOrigin                          bool
 		unsupportedOrigin                      bool
 		missingWorkflow                        bool
+		runnerSetup                            bool
 		doctor                                 doctorStatus
 		auth                                   bool
 		wantCheckout, wantDoctor, wantProvider string
@@ -41,6 +42,7 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 		{name: "missing checkout", doctor: doctorOK, auth: true, wantCheckout: "failed", wantDoctor: "pending", wantProvider: "pending"},
 		{name: "failed doctor", checkout: true, doctor: doctorFail, auth: true, wantCheckout: "passed", wantDoctor: "failed", wantProvider: "passed"},
 		{name: "missing provider", checkout: true, doctor: doctorOK, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "failed"},
+		{name: "declared runner setup", runnerSetup: true, checkout: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
 		{name: "success", checkout: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
 		{name: "startup readiness ignores operational instruction estimate", startup: true, checkout: true, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
 		{name: "warnings", checkout: true, doctor: doctorWarn, auth: true, wantCheckout: "passed", wantDoctor: "warning", wantProvider: "passed"},
@@ -72,6 +74,9 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 					t.Fatal(err)
 				}
 				body := "---\ntracker:\n  kind: memory\n  repository: acme/orders\n"
+				if tt.runnerSetup {
+					body += "hooks:\n  runner_setup: setup.sh\n"
+				}
 				if tt.pi {
 					body += "agents:\n  backends:\n    - id: pi\n      kind: pi_agent\n  routes:\n    - backend: pi\n      default: true\n"
 				}
@@ -119,6 +124,9 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 			}, func(_ context.Context, b workflowconfig.AgentBackend) bool { auths++; return tt.auth })
 			if checks.Checkout != tt.wantCheckout || checks.Doctor != tt.wantDoctor || checks.Provider != tt.wantProvider {
 				t.Fatalf("checks=%+v", checks)
+			}
+			if (checks.RunnerSetupDeclared != nil) != (tt.wantCheckout == "passed") || checks.RunnerSetupDeclared != nil && *checks.RunnerSetupDeclared != tt.runnerSetup {
+				t.Fatalf("runner setup declaration = %v", checks.RunnerSetupDeclared)
 			}
 			if tt.wantCheckout == "passed" && (doctors != 1 || !tt.pi && auths == 0 || tt.pi && auths != 0) {
 				t.Fatalf("probes doctor=%d auth=%d", doctors, auths)

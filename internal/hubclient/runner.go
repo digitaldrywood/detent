@@ -278,6 +278,17 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 			machine.LocalChecks = &checks
 		}
 	}
+	if machine.LocalChecks != nil && machine.LocalChecks.RunnerSetupDeclared != nil {
+		supported, err := c.HubFeature(ctx, tracker.NativeRunnerSetupDeclarationCapability)
+		if err != nil {
+			return err
+		}
+		if !supported {
+			checks := *machine.LocalChecks
+			checks.RunnerSetupDeclared = nil
+			machine.LocalChecks = &checks
+		}
+	}
 	if machine.LocalChecks != nil && machine.LocalChecks.Setup != "" {
 		supported, err := c.HubFeature(ctx, tracker.NativeRunnerSetupCapability)
 		if err != nil {

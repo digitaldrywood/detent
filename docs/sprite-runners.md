@@ -12,22 +12,24 @@ also ask **Luna** to add Sprites, add a runner, set up Fly, or provide more
 capacity. The AI guided conversation from the Runners page uses the same intake.
 Luna asks one question at a time and remembers answers already given:
 
-1. Which project? The default is the conversation's project.
-2. Luna reads whether the Sprites organization token is set. If it is missing,
+1. Luna reads whether the Sprites organization token is set. If it is missing,
    follow the secure connector link, save it there, and return to continue.
-3. How many runners? The first-runner default is a floor and ceiling of 1/1,
+2. How many runners? The first-runner default is a floor and ceiling of 1/1,
    which you can accept with "yes". The floor retains minimum capacity and can
    incur Fly usage without queued work; the ceiling limits growth and potential
    concurrent usage. Provider subscriptions and usage are separate costs.
-4. Any bootstrap steps beyond Git access, checkout and dependencies? The default
-   is none. Keep credentials out of chat and bootstrap; use customer-owned
-   login/setup inside the Sprite. "No extra steps" preserves saved bootstrap.
-5. Review one preview of the settings and approve it in chat.
+3. Review one preview of the settings and approve it in chat.
 
-You can answer several questions together, for example "no extra steps, 2 and
-2". Luna uses those answers without asking again. New Sprites run the saved
-customer bootstrap before the pinned runner bootstrap. Put project tool
-installation in the repository setup script described below.
+The conversation selects the project. Luna remembers bounds already supplied,
+for example "2 and 2", without asking again. Pool bootstrap is optional; saved
+extra steps are preserved and run before the pinned runner bootstrap. Project
+setup comes from the repository's hooks.runner_setup after checkout. The runner
+reports whether that hook is declared with its readiness report. If a connected
+runner reports a checkout without it, Luna offers one Todo issue, "derive runner
+setup from CI", for an agent to inspect CI workflows, Makefile, lockfiles and
+toolchain files and land the setup script as a normal reviewed change. You do
+not need to write setup commands in chat. Unknown readiness is not evidence of
+a missing hook, and setup detection does not block enabling the pool.
 
 Luna reports observed bootstrap progress in plain language and gives the next
 action you need to take, such as provider sign-in inside the Sprite or Git

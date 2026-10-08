@@ -55,10 +55,10 @@ export function SpritePoolCard({ projectId, projectName, canManage, compact = fa
           <label className="space-y-1 text-sm">Maximum runners<Input type="number" min={floor} max={100} required value={ceiling} disabled={pending} onChange={(event) => setCeiling(Number(event.target.value))} /></label>
           <label className="space-y-1 text-sm">Idle seconds<Input type="number" min={30} max={86400} required value={idle} disabled={pending} onChange={(event) => setIdle(Number(event.target.value))} /></label>
         </div>
-        <label className="block space-y-1 text-sm">Customer bootstrap
-          <textarea className="min-h-32 w-full rounded-md border border-border bg-background p-2 font-mono text-xs" value={bootstrap} maxLength={65536} required={ceiling > 0} disabled={pending} onChange={(event) => setBootstrap(event.target.value)} />
+        <label className="block space-y-1 text-sm">Extra bootstrap (optional)
+          <textarea className="min-h-32 w-full rounded-md border border-border bg-background p-2 font-mono text-xs" value={bootstrap} maxLength={65536} disabled={pending} onChange={(event) => setBootstrap(event.target.value)} />
         </label>
-        <p className="text-xs text-muted-foreground">These shell steps run before runner enrollment. Configure legitimate provider authentication, Git access and the project checkout. Use your secret delivery service; do not paste credentials here. DETENT_PROJECT_ID and DETENT_HUB_URL are available. Runner policy approval is still required.</p>
+        <p className="text-xs text-muted-foreground">Optional shell steps run before runner enrollment. Repository setup comes from hooks.runner_setup after checkout. Use your secret delivery service; do not paste credentials here. DETENT_PROJECT_ID and DETENT_HUB_URL are available. Runner policy approval is still required.</p>
         <Button type="submit" size="sm" disabled={pending}>{pending ? "Saving…" : "Save pool"}</Button>
       </form> : null}
       {error === null ? null : <ControlError message={error} />}
