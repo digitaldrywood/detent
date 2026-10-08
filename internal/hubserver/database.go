@@ -212,6 +212,7 @@ func sqliteDSN(path string, busyTimeout time.Duration) string {
 	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeoutMillis(busyTimeout)))
 	query.Add("_pragma", "foreign_keys(1)")
 	query.Add("_pragma", "synchronous(FULL)")
+	query.Add("_txlock", "immediate")
 	databaseURL.RawQuery = query.Encode()
 	return databaseURL.String()
 }
