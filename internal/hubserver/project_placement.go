@@ -446,6 +446,9 @@ func readPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeSco
 }
 
 func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, now time.Time, overrides []tracker.NativeCapacityCandidate) (bool, string, error) {
+	if allowed, reason, err := nativeSourceClaimAllowed(ctx, q, scope, machine, id); err != nil || !allowed {
+		return allowed, reason, err
+	}
 	placement, _, err := readPlacementPolicy(ctx, q, scope)
 	if err != nil {
 		return false, "", err
