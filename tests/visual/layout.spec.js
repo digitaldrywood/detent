@@ -1126,6 +1126,14 @@ test("board card opens the detail sheet on a glide click", async ({
     hasText: "Kanban demo backlog intake",
   });
   await expect(card).toBeVisible();
+  await expect.poll(() => page.evaluate(() => {
+    const snapshot = document.getElementById("snapshot");
+    const metrics = window.__detentSSEMetrics?.snapshot()?.snapshot;
+    return metrics?.swaps > 0 && metrics.pending === 0 &&
+      metrics.processing === 0 && snapshot?.dataset.detentSseProcessing !== "true" &&
+      !snapshot?.matches(".htmx-swapping, .htmx-settling");
+  })).toBe(true);
+  await card.click({ trial: true });
   const box = await card.boundingBox();
   if (!box) {
     throw new Error("Draggable card has no bounding box");
@@ -1138,12 +1146,29 @@ test("board card opens the detail sheet on a glide click", async ({
   const startX = box.x + box.width / 2;
   const startY = box.y + box.height / 2;
   await page.mouse.move(startX, startY);
-  await page.mouse.down();
-  await page.mouse.move(startX + 8, startY + 6, { steps: 2 });
-  await page.mouse.up();
+  const input = await page.context().newCDPSession(page);
+  try {
+    await input.send("Input.dispatchMouseEvent", {
+      type: "mousePressed", x: startX, y: startY,
+      button: "left", buttons: 1, clickCount: 1,
+    });
+    await input.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved", x: startX + 4, y: startY + 3, buttons: 1,
+    });
+    await input.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved", x: startX + 8, y: startY + 6, buttons: 1,
+    });
+    await input.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased", x: startX + 8, y: startY + 6,
+      button: "left", buttons: 0, clickCount: 1,
+    });
+  } finally {
+    await input.detach();
+  }
 
-  const sheet = page.locator("[data-detail-sheet]");
+  const sheet = page.getByRole("dialog");
   await expect(sheet).toBeVisible();
+  await expect(sheet).toContainText("Kanban demo backlog intake");
   await expect(
     page.locator("[data-kanban-drop-allowed]"),
   ).toHaveCount(0);
@@ -1154,6 +1179,8 @@ test("board card opens the detail sheet on a glide click", async ({
   // A plain zero-travel click must keep working too.
   await card.click();
   await expect(sheet).toBeVisible();
+  await expect(sheet).toContainText("Kanban demo backlog intake");
+  await expect(page.locator("[data-kanban-drop-allowed]")).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(sheet).toHaveCount(0);
 });
