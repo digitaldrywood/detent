@@ -575,6 +575,9 @@ func (r *Runner) nativeResume(ctx context.Context, req RunRequest, backend Agent
 			}
 			recovery := req.Execution.Recovery()
 			sourceAttempt := recovery.SourceAttempt()
+			if sourceAttempt == nil || sourceAttempt.Checkpoint == nil {
+				return store.AgentResumeState{}, fmt.Errorf("%w: checkpoint_unavailable", ErrNativeRecoveryRequired)
+			}
 			checkpoint := sourceAttempt.Checkpoint
 			verified, err := preparer.VerifyReworkRecovery(ctx, info, issue, checkpoint.HeadSHA, checkpoint.WorkspaceDigest, *local)
 			if err != nil && !errors.Is(err, workspace.ErrMergeResolutionInvalid) {
