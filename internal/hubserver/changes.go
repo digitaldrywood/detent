@@ -210,10 +210,10 @@ func (s *Service) listChanges(c echo.Context) error {
 }
 
 func (s *Service) readChanges(ctx context.Context, scope nativeScope, item string) ([]tracker.ChangeRequest, error) {
-	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
 		return nil, err
 	}
-	result, err := changeRows[tracker.ChangeRequest](ctx, s.database.db, `SELECT c.record_json FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
+	result, err := changeRows[tracker.ChangeRequest](ctx, s.database.reader, `SELECT c.record_json FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
 WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? ORDER BY c.rowid`, scope.organization, scope.project, item)
 	if err != nil {
 		return nil, err
@@ -233,7 +233,7 @@ func (s *Service) createChange(c echo.Context) error {
 
 func (s *Service) getChange(c echo.Context) error {
 	scope, ctx := nativeRequestScope(c), c.Request().Context()
-	tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

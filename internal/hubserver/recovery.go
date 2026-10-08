@@ -65,7 +65,7 @@ func openRecoverySource(ctx context.Context, source string) (*database, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	owner := &database{db: db, lock: lock, path: path}
+	owner := &database{db: db, reader: db, lock: lock, path: path}
 	if err := owner.configure(ctx, cfg.BusyTimeout); err != nil {
 		return nil, errors.Join(err, owner.Close())
 	}

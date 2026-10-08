@@ -741,7 +741,7 @@ func (s *Service) OutboxHealth(ctx context.Context) (OutboxHealth, error) {
 	}
 
 	var oldest sql.NullString
-	if err := s.database.db.QueryRowContext(ctx, `
+	if err := s.database.reader.QueryRowContext(ctx, `
 		SELECT MIN(created_at) FROM github_outbox WHERE status IN (?, ?, ?)`,
 		outboxPending, outboxRetrying, outboxProcessing,
 	).Scan(&oldest); err != nil {
@@ -755,7 +755,7 @@ func (s *Service) OutboxHealth(ctx context.Context) (OutboxHealth, error) {
 		health.OldestPendingAt = &parsed
 	}
 
-	actions, err := s.database.db.QueryContext(ctx, `
+	actions, err := s.database.reader.QueryContext(ctx, `
 		SELECT id, idempotency_key, mutation_kind, COALESCE(target_node_id, ''), operator_action
 		FROM github_outbox
 		WHERE status = ? AND operator_action IS NOT NULL
@@ -779,7 +779,7 @@ func (s *Service) OutboxHealth(ctx context.Context) (OutboxHealth, error) {
 }
 
 func (s *Service) readOutboxStatusCounts(ctx context.Context, health *OutboxHealth) (resultErr error) {
-	rows, err := s.database.db.QueryContext(ctx, `
+	rows, err := s.database.reader.QueryContext(ctx, `
 		SELECT status, COUNT(*)
 		FROM github_outbox
 		WHERE status IN (?, ?, ?, ?)

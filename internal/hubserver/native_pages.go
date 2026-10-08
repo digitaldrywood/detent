@@ -64,7 +64,7 @@ func (s *Service) readNativePage(ctx context.Context, scope nativeScope, path st
 	}
 	cursor := nativeCursor{Version: 2, Scope: fingerprint, Expires: s.config.now().Add(time.Hour).Unix()}
 	var key []byte
-	if err := s.database.db.QueryRowContext(ctx, "SELECT cursor_key FROM hub_identity").Scan(&key); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT cursor_key FROM hub_identity").Scan(&key); err != nil {
 		return 0, cursor, nil, err
 	}
 	value := requestedCursor
@@ -265,7 +265,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 
 	var work *tracker.NativeWorkSummary
 	if workIncluded {
-		work, err = readNativeWorkSummary(ctx, s.database.db, scope, query, args, limit, s.config.now(), params.Get("completed_window"))
+		work, err = readNativeWorkSummary(ctx, s.database.reader, scope, query, args, limit, s.config.now(), params.Get("completed_window"))
 		if err != nil {
 			return tracker.NativeIssuePage{}, err
 		}
@@ -276,7 +276,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		return tracker.NativeIssuePage{}, err
 	}
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}
-	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM native_issue_page_items WHERE page_id = ?", cursor.Issues.Snapshot).Scan(&page.Total); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM native_issue_page_items WHERE page_id = ?", cursor.Issues.Snapshot).Scan(&page.Total); err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
 	operational := map[string]tracker.NativeIssue{}
@@ -293,7 +293,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		id := item.ID
 		issue, loaded := operational[id]
 		if !loaded {
-			issue, _, err = readNativeIssueProjection(ctx, s.database.db, scope, id, workIncluded || summary)
+			issue, _, err = readNativeIssueProjection(ctx, s.database.reader, scope, id, workIncluded || summary)
 			if err != nil {
 				return tracker.NativeIssuePage{}, err
 			}

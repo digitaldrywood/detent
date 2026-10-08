@@ -26,7 +26,7 @@ func (s *Service) policyScope(c echo.Context) (string, error) {
 	if c.Param("organization") != "" {
 		scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project"))}
 		var count int
-		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM projects WHERE organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&count); err != nil {
+		if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM projects WHERE organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&count); err != nil {
 			return "", err
 		}
 		if count != 1 {
@@ -36,7 +36,7 @@ func (s *Service) policyScope(c echo.Context) (string, error) {
 	}
 	repository := c.Param("owner") + "/" + c.Param("repo")
 	var count int
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM repositories WHERE github_owner || '/' || github_name = ? COLLATE NOCASE", repository).Scan(&count); err != nil {
+	if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM repositories WHERE github_owner || '/' || github_name = ? COLLATE NOCASE", repository).Scan(&count); err != nil {
 		return "", err
 	}
 	if count != 1 {
@@ -54,7 +54,7 @@ func (s *Service) getProjectPolicy(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
-	approval, err := readProjectPolicyWithHistory(c.Request().Context(), s.database.db, scope, limit, c.QueryParam("after"))
+	approval, err := readProjectPolicyWithHistory(c.Request().Context(), s.database.reader, scope, limit, c.QueryParam("after"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

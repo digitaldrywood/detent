@@ -338,7 +338,7 @@ func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item stri
 		return tracker.Page[tracker.NativeAttempt]{}, err
 	}
 
-	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
 		return tracker.Page[tracker.NativeAttempt]{}, err
 	}
 	var after int64
@@ -348,7 +348,7 @@ func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item stri
 			return tracker.Page[tracker.NativeAttempt]{}, nativeInvalid("Attempt cursor is invalid")
 		}
 	}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
 WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fencing_token > ? ORDER BY a.fencing_token LIMIT ?`, scope.organization, scope.project, item, after, limit+1)
 	if err != nil {
@@ -454,7 +454,7 @@ func (s *Service) getNativeAttempt(c echo.Context) error {
 }
 
 func (s *Service) readNativeAttempt(ctx context.Context, scope nativeScope, item, id string) (tracker.NativeAttempt, error) {
-	return readNativeAttempt(ctx, s.database.db, scope, item, id, s.config.now())
+	return readNativeAttempt(ctx, s.database.reader, scope, item, id, s.config.now())
 }
 
 func readNativeAttempt(ctx context.Context, q nativeQueryer, scope nativeScope, item, id string, now time.Time) (tracker.NativeAttempt, error) {

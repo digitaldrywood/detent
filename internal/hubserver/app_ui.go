@@ -584,7 +584,7 @@ func (s *Service) appBootstrapPlan(ctx context.Context) *appBootstrapPlan {
 // capabilities the client needs to render them.
 func (s *Service) hostedReadableProjects(ctx context.Context, credential apiCredential) ([]appBootstrapProject, error) {
 	projects := []appBootstrapProject{}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT p.id, p.name, p.profile, p.states_json, g.can_write, g.manage_runner
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.id, p.name, p.profile, p.states_json, g.can_write, g.manage_runner
 FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id
 WHERE g.user_id = ? AND p.organization_id = ? ORDER BY p.name, p.id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
 	if err != nil {

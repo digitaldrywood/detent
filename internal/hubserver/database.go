@@ -20,9 +20,12 @@ import (
 
 const hubApplicationID = 0x44544842
 
+const readerConnections = 4
+
 type database struct {
 	linkedSourceBase       string
 	db                     *sql.DB
+	reader                 *sql.DB
 	lock                   *instancelock.Lock
 	path                   string
 	schemaVersion          int64
@@ -88,6 +91,9 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 		return nil, errors.Join(err, store.Close())
 	}
 	if err := store.enableWAL(ctx); err != nil {
+		return nil, errors.Join(err, store.Close())
+	}
+	if err := store.openReader(ctx, cfg.BusyTimeout); err != nil {
 		return nil, errors.Join(err, store.Close())
 	}
 	version, err := runMigrations(ctx, db, cfg.Logger)
@@ -202,12 +208,16 @@ func createPrivateDatabaseFile(path string) error {
 	return nil
 }
 
-func sqliteDSN(path string, busyTimeout time.Duration) string {
+func sqliteFileURL(path string) *url.URL {
 	databasePath := filepath.ToSlash(path)
 	if isWindowsDrivePath(databasePath) {
 		databasePath = "/" + databasePath
 	}
-	databaseURL := &url.URL{Scheme: "file", Path: databasePath}
+	return &url.URL{Scheme: "file", Path: databasePath}
+}
+
+func sqliteDSN(path string, busyTimeout time.Duration) string {
+	databaseURL := sqliteFileURL(path)
 	query := databaseURL.Query()
 	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeoutMillis(busyTimeout)))
 	query.Add("_pragma", "foreign_keys(1)")
@@ -215,6 +225,30 @@ func sqliteDSN(path string, busyTimeout time.Duration) string {
 	query.Add("_txlock", "immediate")
 	databaseURL.RawQuery = query.Encode()
 	return databaseURL.String()
+}
+
+func sqliteReaderDSN(path string, busyTimeout time.Duration) string {
+	databaseURL := sqliteFileURL(path)
+	query := databaseURL.Query()
+	query.Add("mode", "ro")
+	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeoutMillis(busyTimeout)))
+	query.Add("_pragma", "query_only(1)")
+	databaseURL.RawQuery = query.Encode()
+	return databaseURL.String()
+}
+
+func (d *database) openReader(ctx context.Context, busyTimeout time.Duration) error {
+	reader, err := sql.Open("sqlite", sqliteReaderDSN(d.path, busyTimeout))
+	if err != nil {
+		return fmt.Errorf("open hub database reader: %w", err)
+	}
+	reader.SetMaxOpenConns(readerConnections)
+	reader.SetMaxIdleConns(readerConnections)
+	d.reader = reader
+	if err := reader.PingContext(ctx); err != nil {
+		return fmt.Errorf("open hub database reader: %w", err)
+	}
+	return nil
 }
 
 func isWindowsDrivePath(path string) bool {
@@ -310,10 +344,10 @@ func (d *database) verifyIdentity(ctx context.Context) error {
 }
 
 func (d *database) health(ctx context.Context) error {
-	if err := d.db.PingContext(ctx); err != nil {
+	if err := d.reader.PingContext(ctx); err != nil {
 		return fmt.Errorf("ping hub database: %w", err)
 	}
-	version, err := currentSchemaVersion(ctx, d.db)
+	version, err := currentSchemaVersion(ctx, d.reader)
 	if err != nil {
 		return err
 	}
@@ -328,7 +362,11 @@ func (d *database) Close() error {
 		return nil
 	}
 	d.closeOnce.Do(func() {
-		d.closeErr = errors.Join(d.db.Close(), d.lock.Close())
+		var readerErr error
+		if d.reader != nil && d.reader != d.db {
+			readerErr = d.reader.Close()
+		}
+		d.closeErr = errors.Join(readerErr, d.db.Close(), d.lock.Close())
 	})
 	return d.closeErr
 }

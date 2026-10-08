@@ -94,7 +94,7 @@ func repositoryFreshnessSortValues(repository RepositoryFreshness) []string {
 }
 
 func (d *database) repositoryFreshness(ctx context.Context, now time.Time, reconcileInterval time.Duration) (repositoryFreshnessResponse, error) {
-	return queryRepositoryFreshness(ctx, d.db, now, reconcileInterval)
+	return queryRepositoryFreshness(ctx, d.reader, now, reconcileInterval)
 }
 
 func queryRepositoryFreshness(ctx context.Context, queryer freshnessQueryer, now time.Time, reconcileInterval time.Duration) (repositoryFreshnessResponse, error) {

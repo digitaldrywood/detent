@@ -214,7 +214,7 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 		result.Issue = s.nativeIssueResponse(result.Issue)
 		return c.JSON(http.StatusOK, result)
 	}
-	issue, _, err := readNativeIssue(ctx, s.database.db, scope, c.Param("item"))
+	issue, _, err := readNativeIssue(ctx, s.database.reader, scope, c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -226,7 +226,7 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if included {
-		if issue.Change, err = readNativeIssueChange(ctx, s.database.db, scope, string(issue.WorkItemID)); err != nil {
+		if issue.Change, err = readNativeIssueChange(ctx, s.database.reader, scope, string(issue.WorkItemID)); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}

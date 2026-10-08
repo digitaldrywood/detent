@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1176,5 +1177,128 @@ func seedCompatibilityProject(t *testing.T, db *sql.DB, repositoryID int64) {
 SELECT o.id,r.id,r.github_owner || '/' || r.github_name,'github_compatible',r.created_at FROM organizations o CROSS JOIN repositories r WHERE o.local=1 AND r.id=?
 ON CONFLICT(repository_id) DO NOTHING`, repositoryID); err != nil {
 		t.Fatalf("seed compatibility project: %v", err)
+	}
+}
+
+func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
+	t.Parallel()
+
+	type read struct {
+		name string
+		run  func(context.Context, nativeFixture, nativeScope, string) error
+	}
+	health := read{"health", func(ctx context.Context, f nativeFixture, _ nativeScope, _ string) error {
+		if response, status := f.service.readInstanceHealth(ctx); status != http.StatusOK {
+			return fmt.Errorf("health = %d %q", status, response.Status)
+		}
+		return nil
+	}}
+	internalHealth := read{"internal health", func(ctx context.Context, f nativeFixture, _ nativeScope, _ string) error {
+		return f.service.database.health(ctx)
+	}}
+	detail := read{"work item detail", func(ctx context.Context, f nativeFixture, scope nativeScope, item string) error {
+		_, _, err := readNativeIssue(ctx, f.service.database.reader, scope, item)
+		return err
+	}}
+	attempts := read{"attempts", func(ctx context.Context, f nativeFixture, scope nativeScope, item string) error {
+		_, err := f.service.readAttempts(ctx, scope, item, url.Values{})
+		return err
+	}}
+	changes := read{"changes", func(ctx context.Context, f nativeFixture, scope nativeScope, item string) error {
+		_, err := f.service.readChanges(ctx, scope, item)
+		return err
+	}}
+	findings := read{"health findings", func(ctx context.Context, f nativeFixture, scope nativeScope, _ string) error {
+		_, err := f.service.readHealthFindings(ctx, scope, "", "", "", 10)
+		return err
+	}}
+	capabilities := read{"capabilities", func(ctx context.Context, f nativeFixture, _ nativeScope, _ string) error {
+		_, err := f.service.readNativeCapabilities(ctx)
+		return err
+	}}
+	board := read{"board", func(ctx context.Context, f nativeFixture, scope nativeScope, _ string) error {
+		page, err := f.service.readIssues(ctx, scope, url.Values{"limit": {"1"}})
+		if err == nil && page.Total != 2 {
+			err = fmt.Errorf("board total = %d, want 2", page.Total)
+		}
+		return err
+	}}
+
+	tests := []struct {
+		name  string
+		hold  func(*testing.T, *Service) *sql.Tx
+		reads []read
+		write bool
+	}{
+		{
+			name: "writer holds a write transaction",
+			hold: func(t *testing.T, s *Service) *sql.Tx {
+				tx, err := s.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), "UPDATE projects SET name = name"); err != nil {
+					t.Fatal(err)
+				}
+				return tx
+			},
+			reads: []read{health, internalHealth, detail, attempts, changes, findings, capabilities},
+			write: true,
+		},
+		{
+			name: "reader pool holds a long read",
+			hold: func(t *testing.T, s *Service) *sql.Tx {
+				tx, err := s.database.reader.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var count int
+				if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM issues").Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				return tx
+			},
+			reads: []read{health, internalHealth, detail, attempts, changes, findings, capabilities, board},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newDefaultNativeFixture(t, Config{})
+			issue := f.create(t, "first")
+			f.create(t, "second")
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			item := string(issue.WorkItemID)
+
+			held := test.hold(t, f.service)
+			defer func() { _ = held.Rollback() }()
+			for _, read := range test.reads {
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				started := time.Now()
+				err := read.run(ctx, f, scope, item)
+				cancel()
+				if err != nil {
+					t.Fatalf("%s beside a held connection: %v after %s", read.name, err, time.Since(started))
+				}
+			}
+
+			if _, err := f.service.database.reader.ExecContext(t.Context(), "UPDATE projects SET name = name"); err == nil {
+				t.Fatal("reader pool accepted a write")
+			}
+			if !test.write {
+				return
+			}
+			blocked, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+			defer cancel()
+			if _, err := f.service.database.db.ExecContext(blocked, "UPDATE projects SET name = name"); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("second write beside a held write = %v, want it to wait for the writer", err)
+			}
+			if err := held.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET name = name"); err != nil {
+				t.Fatalf("write after the held write committed: %v", err)
+			}
+		})
 	}
 }
