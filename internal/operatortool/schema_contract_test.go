@@ -1,6 +1,7 @@
 package operatortool
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ type contractSchema struct {
 	Required             []string                  `json:"required"`
 	Enum                 []any                     `json:"enum"`
 	Format               string                    `json:"format"`
+	ContentEncoding      string                    `json:"contentEncoding"`
 	Ref                  string                    `json:"$ref"`
 	Defs                 map[string]contractSchema `json:"$defs"`
 	ExclusiveMinimum     *float64                  `json:"exclusiveMinimum"`
@@ -318,6 +320,9 @@ func contractValue(schema contractSchema, all bool) (any, error) {
 		value := strings.Repeat("x", max(1, schema.MinLength))
 		if schema.Format == "date-time" {
 			value = "2026-01-01T00:00:00Z"
+		}
+		if schema.ContentEncoding == "base64" {
+			value = base64.StdEncoding.EncodeToString([]byte(value))
 		}
 		if schema.Pattern != "" {
 			pattern, err := syntax.Parse(schema.Pattern, syntax.Perl)

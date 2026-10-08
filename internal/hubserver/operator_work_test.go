@@ -1,11 +1,14 @@
 package hubserver
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -18,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestHubMCPWorkCommands(t *testing.T) {
@@ -25,7 +29,9 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp"
 	call := func(name, key string, fields map[string]any) (json.RawMessage, bool) {
 		t.Helper()
-		fields["project_id"] = f.project.ID
+		if fields["project_id"] == nil {
+			fields["project_id"] = f.project.ID
+		}
 		if key != "" {
 			fields["request_id"] = key
 		}
@@ -339,11 +345,144 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		t.Fatalf("MCP Change creation=%s %v", raw, err)
 	}
 	input := changeTestInput()
-	fields := map[string]any{"work_item_id": id, "change_id": change.ChangeID, "expected_version_id": "", "base_sha": input.BaseSHA, "head_sha": input.HeadSHA, "merge_base_sha": input.MergeBaseSHA, "repository": input.Repository, "policy_id": input.PolicyID, "code": input.Code, "artifacts": input.Artifacts}
+	sourceDir := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		command := exec.CommandContext(t.Context(), "git", append([]string{"-C", sourceDir, "-c", "user.name=Source Fixture", "-c", "user.email=source@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"}, args...)...)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("source fixture git %v: %s: %v", args, output, err)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	git("init", "-b", "main")
+	sourcePath := filepath.Join(sourceDir, "source.txt")
+	if err := os.WriteFile(sourcePath, []byte("base source\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "source.txt")
+	git("commit", "-m", "base")
+	input.BaseSHA = git("rev-parse", "HEAD")
+	if err := os.WriteFile(sourcePath, []byte("operator source\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "source.txt")
+	git("commit", "-m", "operator work")
+	input.HeadSHA, input.MergeBaseSHA = git("rev-parse", "HEAD"), input.BaseSHA
+	capture, err := workspace.CaptureChangeSource(t.Context(), sourceDir, input.BaseSHA, input.HeadSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Code.Availability = "unverified"
+	fields := map[string]any{"work_item_id": id, "change_id": change.ChangeID, "expected_version_id": "", "base_sha": input.BaseSHA, "head_sha": input.HeadSHA, "merge_base_sha": input.MergeBaseSHA, "repository": input.Repository, "policy_id": input.PolicyID, "code": input.Code, "artifacts": input.Artifacts, "source_capture": capture.Source, "source_bundle": capture.Bundle}
+	sourceOther := newChangeFixture(t, f.service)
+	foreignArguments := make(map[string]any, len(fields)+2)
+	for key, value := range fields {
+		foreignArguments[key] = value
+	}
+	foreignArguments["project_id"], foreignArguments["request_id"] = f.project.ID, "foreign-source-tenant"
+	foreignCall := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": operatortool.PublishChangeVersion, "arguments": foreignArguments, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]any{"name": "test", "version": "1"}}}}
+	foreignResponse := performHubWorkCall(t, f.service, path, sourceOther.token, operatortool.PublishChangeVersion, foreignCall)
+	requireNativeStatus(t, foreignResponse, http.StatusOK)
+	var foreignResult struct {
+		Result struct {
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
+	decodeHubResponse(t, foreignResponse, &foreignResult)
+	if !foreignResult.Result.IsError {
+		t.Fatal("foreign tenant source publication succeeded")
+	}
+	for _, denied := range []struct {
+		name string
+		edit func(map[string]any)
+	}{
+		{"missing source metadata", func(a map[string]any) { delete(a, "source_capture") }},
+		{"missing source bytes", func(a map[string]any) { delete(a, "source_bundle") }},
+		{"source digest", func(a map[string]any) {
+			s := capture.Source
+			s.BundleSHA256 = strings.Repeat("f", 64)
+			a["source_capture"] = s
+		}},
+		{"source size", func(a map[string]any) { s := capture.Source; s.Bytes++; a["source_capture"] = s }},
+		{"source base", func(a map[string]any) {
+			s := capture.Source
+			s.BaseSHA = strings.Repeat("f", 40)
+			a["source_capture"] = s
+		}},
+		{"source head", func(a map[string]any) {
+			s := capture.Source
+			s.HeadSHA = strings.Repeat("f", 40)
+			a["source_capture"] = s
+		}},
+		{"source diff digest", func(a map[string]any) { s := capture.Source; s.DiffSHA256 = "invalid"; a["source_capture"] = s }},
+		{"source transport bound", func(a map[string]any) { a["source_bundle"] = bytes.Repeat([]byte("x"), operatortool.MaxArgumentBytes) }},
+		{"source stale policy", func(a map[string]any) { a["policy_id"] = "policy_stale" }},
+		{"source stale current version", func(a map[string]any) { a["expected_version_id"] = "version_stale" }},
+		{"source foreign project", func(a map[string]any) { a["project_id"] = sourceOther.project.ID }},
+		{"source foreign item", func(a map[string]any) { a["work_item_id"] = sourceOther.issue.WorkItemID }},
+		{"source foreign change", func(a map[string]any) { a["change_id"] = sourceOther.change.ID }},
+	} {
+		t.Run(denied.name, func(t *testing.T) {
+			arguments := make(map[string]any, len(fields))
+			for key, value := range fields {
+				arguments[key] = value
+			}
+			denied.edit(arguments)
+			if denied.name == "source transport bound" {
+				arguments["project_id"], arguments["request_id"] = f.project.ID, denied.name
+				body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": operatortool.PublishChangeVersion, "arguments": arguments, "_meta": foreignCall["params"].(map[string]any)["_meta"]}}
+				response := performHubWorkCall(t, f.service, path, f.token, operatortool.PublishChangeVersion, body)
+				requireNativeStatus(t, response, http.StatusBadRequest)
+				var envelope struct {
+					Error struct {
+						Code int `json:"code"`
+					} `json:"error"`
+				}
+				decodeHubResponse(t, response, &envelope)
+				if envelope.Error.Code != -32602 {
+					t.Fatal("oversized source arguments escaped the MCP boundary")
+				}
+				return
+			}
+			if _, failed := call(operatortool.PublishChangeVersion, denied.name, arguments); !failed {
+				t.Fatal("invalid source publication succeeded")
+			}
+		})
+	}
+	response := performHubAPIRequest(t, f.service, http.MethodGet, change.URL, f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var unpublished tracker.ChangeDetail
+	decodeHubResponse(t, response, &unpublished)
+	if len(unpublished.Versions) != 0 {
+		t.Fatal("source refusals published a version")
+	}
 	raw, failed = call(operatortool.PublishChangeVersion, "mcp-publication", fields)
 	var published operatortool.ChangeResult
 	if err := json.Unmarshal(raw, &published); err != nil || failed || published.Version == nil || published.Detail == nil || published.Detail.Change.CurrentVersion != published.Version.ID || published.WorkItemState != current.State || published.Version.RunID != "" || published.Version.AttemptID != "" {
 		t.Fatalf("MCP operator publication=%s %v", raw, err)
+	}
+	if published.Version.Source == nil || *published.Version.Source != capture.Source || published.Version.Policy.ID != input.PolicyID || published.Version.Actor.Kind != "human" || published.Version.Code.Availability != "unverified" {
+		t.Fatal("MCP source publication changed source, policy or operator provenance")
+	}
+	sourceURL := change.URL + "/versions/" + published.Version.ID + "/source"
+	response = performHubAPIRequest(t, f.service, http.MethodGet, sourceURL, f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	if !bytes.Equal(response.Body.Bytes(), capture.Bundle) {
+		t.Fatal("MCP publication did not retain the genuine Git bundle")
+	}
+	foreignSource := sourceOther.path + "/versions/" + published.Version.ID + "/source"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, foreignSource, sourceOther.token, nil), http.StatusNotFound)
+	replay, failed = call(operatortool.PublishChangeVersion, "mcp-publication", fields)
+	var sourceReplay operatortool.ChangeResult
+	if failed || json.Unmarshal(replay, &sourceReplay) != nil || sourceReplay.Version == nil || sourceReplay.Version.ID != published.Version.ID || !bytes.Equal(sourceReplay.Receipt, published.Receipt) {
+		t.Fatal("source retry changed the immutable publication receipt")
+	}
+	input.Source = &capture.Source
+	response = performHubAPIRequest(t, f.service, http.MethodPost, change.URL+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "mcp-publication"}, ChangeVersionInput: input, SourceBundle: capture.Bundle})
+	requireNativeStatus(t, response, http.StatusOK)
+	if !bytes.Equal(bytes.TrimSpace(response.Body.Bytes()), published.Receipt) {
+		t.Fatal("HTTP and MCP source publication do not share the command receipt")
 	}
 	states := append([]tracker.NativeState(nil), f.project.States...)
 	for i := range states {
@@ -367,7 +506,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	}
 	move := map[string]any{"project_id": f.project.ID, "request_id": "worker-move", "identifier": id, "expected_revision": listed.Items[0]["revision"], "target_state": "In Progress"}
 	worker := f.worker(t, "workflow-worker")
-	response := performHubWorkCall(t, f.service, path, worker, operatortool.MoveItem, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": operatortool.MoveItem, "arguments": move}})
+	response = performHubWorkCall(t, f.service, path, worker, operatortool.MoveItem, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": operatortool.MoveItem, "arguments": move}})
 	requireNativeStatus(t, response, http.StatusForbidden)
 	if observed := readWorkItem(t, f, created.WorkItemID, ""); observed.State != current.State || observed.Revision != current.Revision {
 		t.Fatal("worker request changed workflow")
