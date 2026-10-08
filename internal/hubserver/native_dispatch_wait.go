@@ -108,7 +108,7 @@ func (s *Service) waitNativeCandidates(c echo.Context) error {
 	s.notifications.dispatchCursor(key)
 	authorize := func() error {
 		ctx := c.Request().Context()
-		tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 		if err != nil {
 			return err
 		}
