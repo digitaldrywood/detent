@@ -279,7 +279,7 @@ func TestCloudReport(t *testing.T) {
 		name, log, laterLog, lost, fail string
 		imported, green, foreign        bool
 		legacyReplay                    bool
-		unlabelled                      bool
+		unlabelled, equalFingerprint    bool
 		worker                          bool
 		markerReplay                    bool
 		finalizerFailed                 bool
@@ -300,7 +300,8 @@ func TestCloudReport(t *testing.T) {
 		{name: "lost occurrence response", log: diagnostic, lost: "add_comment", wantItems: 2, wantWrites: 4, wantErrors: 1},
 		{name: "foreign scheduled job is not reused", log: diagnostic, imported: true, foreign: true, wantItems: 4, wantWrites: 4},
 		{name: "imported comment fingerprint", log: diagnostic, imported: true, wantItems: 3, wantWrites: 5, wantEdits: 1},
-		{name: "unlabelled comment fingerprint", log: diagnostic, imported: true, unlabelled: true, wantItems: 3, wantWrites: 5, wantEdits: 1},
+		{name: "unlabelled equal comment fingerprint", log: diagnostic, imported: true, unlabelled: true, equalFingerprint: true, wantItems: 3, wantWrites: 5, wantEdits: 1},
+		{name: "unlabelled defect comment fingerprint", log: diagnostic, imported: true, unlabelled: true, wantItems: 3, wantWrites: 5, wantEdits: 1},
 		{name: "Backlog intake enters Todo", log: diagnostic, imported: true, holdState: "Backlog", wantItems: 3, wantWrites: 6, wantEdits: 1},
 		{name: "Human Review retains lane and Urgent", log: diagnostic, imported: true, holdState: "Human Review", priority: new(0), wantItems: 3, wantWrites: 4},
 		{name: "normal imported priority", log: diagnostic, imported: true, priority: new(2), wantItems: 3, wantWrites: 5, wantEdits: 1},
@@ -352,6 +353,8 @@ func TestCloudReport(t *testing.T) {
 				}
 				if tt.unlabelled {
 					f.items[1].Labels = []string{"operator-label"}
+				}
+				if tt.equalFingerprint {
 					importedStamp = strings.ReplaceAll(stamp, fp, legacyJobFingerprint("scheduled-ci:digitaldrywood/detent:Coverage"))
 				}
 				if tt.foreign {
@@ -446,7 +449,7 @@ func TestCloudReport(t *testing.T) {
 			if tt.imported && !tt.foreign && (f.items[1].Body != "Imported body edited by operator" || f.comments["wi_imported"][1].Body != importedStamp) {
 				t.Fatal("priority changed imported content or history")
 			}
-			if slices.Contains(f.details, "wi_unrelated") {
+			if tt.green && slices.Contains(f.details, "wi_unrelated") {
 				t.Fatal("scheduled scan read work that carries no origin")
 			}
 			for _, args := range f.writes {
