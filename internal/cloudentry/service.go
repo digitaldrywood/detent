@@ -113,6 +113,7 @@ type Service struct {
 	stopBilling       context.CancelFunc
 	billingDone       chan struct{}
 	closeDevelopState func() error
+	closePlatformMCP  func() error
 }
 
 func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
@@ -176,6 +177,7 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	service.echo.HideBanner, service.echo.HidePort = true, true
 	service.echo.Server.ReadHeaderTimeout = 5 * time.Second
 	service.routes()
+	service.registerPlatformCredits(ctx)
 	if err := service.routeDevelopTenants(ctx); err != nil {
 		return nil, errors.Join(err, service.Close())
 	}
@@ -197,7 +199,11 @@ func (s *Service) Registry() *Registry {
 
 func (s *Service) Close() error {
 	s.closeBillingWorker()
-	err := errors.Join(s.closeAllocator(), s.registry.Close(), s.auth.store.Close())
+	var mcpErr error
+	if s.closePlatformMCP != nil {
+		mcpErr = s.closePlatformMCP()
+	}
+	err := errors.Join(mcpErr, s.closeAllocator(), s.registry.Close(), s.auth.store.Close())
 	if s.closeDevelopState != nil {
 		err = errors.Join(err, s.closeDevelopState())
 	}

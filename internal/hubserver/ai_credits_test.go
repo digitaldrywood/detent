@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
@@ -129,6 +130,119 @@ func TestAICreditPaymentConfirmation(t *testing.T) {
 			}
 			if test.wantBalance > 0 && (len(view.History) != 1 || !view.CanAutoFund) {
 				t.Fatalf("history/method=%+v", view)
+			}
+		})
+	}
+}
+
+func TestPlatformAICreditAdjustments(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, amount, reason string
+		initial, wantBalance int64
+		conflict, rollback   bool
+		wantError            bool
+	}{
+		{name: "complimentary grant", amount: "10.25", reason: "design partner", wantBalance: 10250000},
+		{name: "correction", amount: "-2.50", reason: "correction", initial: 10000000, wantBalance: 7500000},
+		{name: "micro precision", amount: "0.000001", reason: "rounding correction", wantBalance: 1},
+		{name: "conflicting replay", amount: "10", reason: "design partner", wantBalance: 10000000, conflict: true},
+		{name: "zero", amount: "0", reason: "invalid", wantError: true},
+		{name: "missing reason", amount: "10", reason: "  ", wantError: true},
+		{name: "excess precision", amount: "0.0000001", reason: "invalid", wantError: true},
+		{name: "overflow", amount: "1", reason: "invalid", initial: math.MaxInt64, wantBalance: math.MaxInt64, wantError: true},
+		{name: "underflow", amount: "-1", reason: "invalid", initial: math.MinInt64, wantBalance: math.MinInt64, wantError: true},
+		{name: "failed balance write rolls back ledger", amount: "10", reason: "design partner", rollback: true, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f, base := newHostedBillingFixture(t)
+			configureTestCredits(t, f, base)
+			d := f.service.database
+			now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+			d.now = func() time.Time { return now }
+			if _, err := d.db.ExecContext(t.Context(), "UPDATE ai_credit_accounts SET balance_micros=?", test.initial); err != nil {
+				t.Fatal(err)
+			}
+			if test.rollback {
+				if _, err := d.db.ExecContext(t.Context(), "CREATE TRIGGER reject_credit_update BEFORE UPDATE ON ai_credit_accounts BEGIN SELECT RAISE(ABORT,'balance write failed'); END"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			adjustment := billing.CreditAdjustment{IdempotencyKey: "comp-credit-1", AmountUSD: test.amount, Reason: test.reason}
+			for range 2 {
+				balance, err := d.adjustAICredits(t.Context(), "staff@example.test", adjustment)
+				if (err != nil) != test.wantError || err == nil && balance != test.wantBalance {
+					t.Fatalf("balance=%d err=%v", balance, err)
+				}
+			}
+			if test.conflict {
+				for _, changed := range []billing.CreditAdjustment{
+					{IdempotencyKey: adjustment.IdempotencyKey, AmountUSD: "11", Reason: adjustment.Reason},
+					{IdempotencyKey: adjustment.IdempotencyKey, AmountUSD: adjustment.AmountUSD, Reason: "different reason"},
+				} {
+					_, err := d.adjustAICredits(t.Context(), "staff@example.test", changed)
+					var conflict *nativeError
+					if !errors.As(err, &conflict) || conflict.status != http.StatusConflict {
+						t.Fatalf("conflicting replay=%v", err)
+					}
+				}
+			}
+			view, err := f.service.readAICredits(t.Context())
+			if err != nil || view.BalanceMicros != test.wantBalance {
+				t.Fatalf("credits=%+v err=%v", view, err)
+			}
+			if test.wantError {
+				if len(view.History) != 0 {
+					t.Fatalf("rejected adjustment has ledger rows: %+v", view.History)
+				}
+				return
+			}
+			if len(view.History) != 1 {
+				t.Fatalf("history=%+v", view.History)
+			}
+			item := view.History[0]
+			if item.AmountMicros != test.wantBalance-test.initial || item.Kind != "complimentary" || item.Actor != "staff@example.test" || item.Reason != test.reason || !item.At.Equal(d.now()) {
+				t.Fatalf("ledger=%+v", item)
+			}
+		})
+	}
+}
+
+func TestPlatformAICreditServiceAuthority(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, kind, bearer string
+		identity           bool
+		want               int
+	}{
+		{"organization owner key", cloudassert.KindMachine, "org-owner-key", false, http.StatusNotFound},
+		{"non-admin key", cloudassert.KindMachine, "member-key", false, http.StatusNotFound},
+		{"browser identity", cloudassert.KindBrowser, "", true, http.StatusNotFound},
+		{"anonymous service assertion", cloudassert.KindService, "", false, http.StatusForbidden},
+		{"entry-authorized administrator", cloudassert.KindService, "", true, http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newHostedSharedFixture(t)
+			d := f.service.database
+			d.aiCreditMode = billing.ModeTest
+			f.service.config.Hosted.Billing = &HostedBillingConfig{}
+			if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode) VALUES(?,'test')", d.hostedOrganization); err != nil {
+				t.Fatal(err)
+			}
+			owner := f.member(t, "owner", "owner", "")
+			var user *hostedSecurityUser
+			if test.identity {
+				user = &owner
+			}
+			for range 2 {
+				response := f.serve(t, hostedSharedRequest{user: user, kind: test.kind, bearer: test.bearer, method: http.MethodPost, target: "/internal/v1/platform/ai-credits", body: `{"idempotency_key":"platform-credit","amount_usd":"5","reason":"complimentary pilot"}`})
+				requireNativeStatus(t, response, test.want)
+			}
+			view, err := f.service.readAICredits(t.Context())
+			if err != nil || test.want == http.StatusOK && view.BalanceMicros != 5000000 || test.want != http.StatusOK && view.BalanceMicros != 0 {
+				t.Fatalf("credits=%+v err=%v", view, err)
 			}
 		})
 	}
