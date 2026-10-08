@@ -41,7 +41,10 @@ func (o *Orchestrator) completeNativeChangeRun(
 		return true
 	}
 	mode := firstNonBlank(event.Request.Mode, running.Mode)
-	if mergeWorkerIssue(running.Issue) || mode != "" && mode != runpkg.RunModeImplement {
+	recoveryRequired := errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired)
+	preProvider := !event.Result.TurnStarted && running.TurnCount == 0 && !running.WorkProductPushed && running.Tokens.TotalTokens == 0 && event.Result.Tokens.TotalTokens == 0
+	recoveryRefusal := recoveryRequired && preProvider && running.Cancellation == nil && preTurnFailureClass(event, running) == "" && !errors.Is(event.Err, context.Canceled) && !errors.Is(event.Err, context.DeadlineExceeded)
+	if mergeWorkerIssue(running.Issue) || mode != "" && mode != runpkg.RunModeImplement && (mode != runpkg.RunModePlan || !recoveryRefusal) {
 		return false
 	}
 	if finalState == "" {
@@ -60,8 +63,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	humanReview := cfg.humanReviewEnabled() || autoPromoteOptoutLabel(issue, cfg)
 	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
-		recoveryRequired := errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired)
-		if !event.Result.TurnStarted && running.TurnCount == 0 && running.Tokens.TotalTokens == 0 && event.Result.Tokens.TotalTokens == 0 && !recoveryRequired && o.handlePreTurnFailure(ctx, state, event, running) {
+		if preProvider && !recoveryRequired && o.handlePreTurnFailure(ctx, state, event, running) {
 			return true
 		}
 		states, err := reader.WorkflowStates(ctx)
@@ -70,7 +72,12 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 		target := terminalAttemptTodoState(o.cfg.ActiveStates)
 		var allowed bool
-		if humanReview && preTurnFailureClass(event, running) == "" {
+		if recoveryRefusal {
+			target, allowed = connector.CompletionLane(states, issue.State, "Blocked", true)
+			if !allowed || dispatchableState(states, target) {
+				return handoff(fmt.Errorf("native workflow allows no recovery refusal handoff from %s to Blocked", issue.State))
+			}
+		} else if humanReview && preTurnFailureClass(event, running) == "" {
 			review := cfg.reviewTargetState()
 			if autoPromoteOptoutLabel(issue, cfg) {
 				review = cfg.SourceState
