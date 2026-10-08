@@ -323,17 +323,7 @@ func (s *Service) maintainAttemptDiffBodies(ctx context.Context, organization Or
 			return false, fmt.Errorf("diff body acknowledgment refused: %d", status)
 		}
 	}
-	if batch.VacuumPending {
-		status, raw, err := s.serviceCall(ctx, organization, "/internal/v1/diff-bodies/vacuum", struct{}{}, nil)
-		if err != nil {
-			return false, err
-		}
-		if status != http.StatusOK {
-			return false, fmt.Errorf("diff body vacuum refused: %d", status)
-		}
-		s.config.Logger.InfoContext(ctx, "tenant diff body migration vacuum", "organization", organization.ID, "result", string(raw))
-	}
-	return len(batch.Files) > 0 || batch.VacuumPending, nil
+	return len(batch.Files) > 0, nil
 }
 
 func (s *Service) sweepDiffBodyOrphans(ctx context.Context, organization Organization) error {
