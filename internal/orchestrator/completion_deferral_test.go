@@ -635,3 +635,62 @@ func TestCompletionFenceMissingLaneDefers(t *testing.T) {
 		})
 	}
 }
+
+func TestDeferredCompletionsRetryIndependently(t *testing.T) {
+	t.Parallel()
+
+	unavailable := completionDeferralAvailabilityError()
+	superseded := runpkg.ErrExecutionAuthorityUnavailable
+	tests := []struct {
+		name        string
+		restore     map[string]error
+		wantSettled bool
+		wantPending []string
+	}{
+		{name: "unavailable first record does not starve a superseded one", restore: map[string]error{"issue-a": unavailable, "issue-b": superseded}, wantPending: []string{"issue-a"}},
+		{name: "superseded first record does not stop later records", restore: map[string]error{"issue-a": superseded, "issue-b": superseded}, wantSettled: true},
+		{name: "every unavailable record backs off on its own", restore: map[string]error{"issue-a": unavailable, "issue-b": unavailable}, wantPending: []string{"issue-a", "issue-b"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 10, 8, 8, 0, 0, 0, time.UTC)
+			cfg := completionDeferralConfig()
+			source := &perIssueRestoreScheduling{hubSchedulingSource: &hubSchedulingSource{}, errs: tt.restore}
+			orch := Orchestrator{cfg: cfg, connector: &backendCapacityTestConnector{}, scheduling: source, now: func() time.Time { return now }}
+			state := newState(cfg)
+			for id := range tt.restore {
+				issue := completionDeferralIssue(id, "In Progress")
+				state.deferredCompletions[id] = deferredCompletion{Schema: deferredCompletionSchema, Running: completionDeferralRunning(issue, 0, now), Persisted: true}
+				state.Retry[id] = Retry{Issue: issue, DueAt: now, CompletionDeferred: true, TrackerUnavailable: true}
+			}
+
+			if settled := orch.retryDeferredCompletions(t.Context(), &state, now); settled != tt.wantSettled {
+				t.Fatalf("retryDeferredCompletions() = %t, want %t", settled, tt.wantSettled)
+			}
+			if len(source.restored) != len(tt.restore) {
+				t.Fatalf("restored %v, want every due record attempted once", source.restored)
+			}
+			pending := sortedKeys(state.deferredCompletions)
+			if strings.Join(pending, ",") != strings.Join(tt.wantPending, ",") {
+				t.Fatalf("pending deferrals = %v, want %v", pending, tt.wantPending)
+			}
+			for _, id := range tt.wantPending {
+				if due := state.Retry[id].DueAt; !due.Equal(now.Add(cfg.PollInterval)) {
+					t.Fatalf("Retry[%q].DueAt = %v, want one poll interval later", id, due)
+				}
+			}
+		})
+	}
+}
+
+type perIssueRestoreScheduling struct {
+	*hubSchedulingSource
+	errs     map[string]error
+	restored []string
+}
+
+func (s *perIssueRestoreScheduling) RestoreCompletion(_ context.Context, _ SchedulingRequest, issue connector.Issue, _ json.RawMessage) (Claimed, error) {
+	s.restored = append(s.restored, issue.ID)
+	return Claimed{}, s.errs[issue.ID]
+}
