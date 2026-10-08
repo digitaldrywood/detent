@@ -138,11 +138,19 @@ a rebase, validate the build, short Go tests for touched packages, and lint of
 touched files; a failed command returns the item to Rework with its output.
 GitHub pull-request landing retains its configured target and checks.
 The target generates docs and checks SQL output once, then runs lint, vet,
-build and the whole-repository short unit suite concurrently within one
-`TEST_PROCS` budget. It retains source and workflow invariants and migration
-checks. Conversation changes also run typecheck, vitest and build. Full
-behavioral invariants, integration, race, coverage, fuzz and the baseline-aware
-NilAway audit remain scheduled release validation.
+build and the whole-repository short unit suite without the race detector
+concurrently within one `TEST_PROCS` budget. It retains source and workflow
+invariants and migration checks. The rest depends on what the change touches
+relative to the merge base:
+
+- Changed Go packages: the baseline-aware NilAway audit of those packages.
+- `web/conversation` changes: typecheck, vitest and build.
+- A changed `scripts/` file: its own `scripts/*_test.py`. A changed `Makefile`
+  runs `scripts/check_land_test.py`.
+
+Playwright browser tests, race, full Go tests, coverage, fuzz, the
+repository-wide NilAway audit and full integration run in the rolling landing
+barrier (`make check-barrier`) and the scheduled suite.
 No local commit status or additional CI producer is required. Every target
 shares the host through `TEST_PROCS` (default 4); see
 [docs/development.md](docs/development.md).

@@ -16,7 +16,8 @@ RELATED_DIAGNOSTIC = re.compile(r"^\(Same nil source could also cause potential 
 
 
 def main():
-    version, include_packages = sys.argv[1:]
+    version, include_packages, *packages = sys.argv[1:]
+    packages = packages or ["./..."]
     baseline = json.loads(BASELINE.read_text())
     allowed = {(entry["file"], entry["line"], entry["column"], entry["rule"]): entry["source_sha256"] for entry in baseline}
     scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
@@ -35,7 +36,7 @@ def main():
             print(install.stdout)
             return 1
         binary = Path(directory) / ("nilaway.exe" if os.name == "nt" else "nilaway")
-        command = ["go", "vet", "-p=1", f"-vettool={binary}", f"-include-pkgs={include_packages}", "./..."]
+        command = ["go", "vet", "-p=1", f"-vettool={binary}", f"-include-pkgs={include_packages}", *packages]
         result = subprocess.run(command, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
     if result.returncode not in (0, 1):
         print(result.stdout)
@@ -72,7 +73,8 @@ def main():
     if result.returncode and not diagnostics:
         print(result.stdout)
         return result.returncode
-    print(f"Audited all Go packages; {diagnostics} reviewed legacy diagnostics")
+    scope = "all Go packages" if packages == ["./..."] else f"{len(packages)} changed Go packages"
+    print(f"Audited {scope}; {diagnostics} reviewed legacy diagnostics")
     return 0
 
 
