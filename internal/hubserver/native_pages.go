@@ -270,15 +270,12 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 			return tracker.NativeIssuePage{}, err
 		}
 	}
-	newPage := cursor.Issues == nil
-	items, err := s.readIssuePageItems(ctx, query, args, limit, &cursor, params.Get("sort"))
+	items, frozen, total, err := s.readIssuePageItems(ctx, query, args, limit, &cursor, params.Get("sort"))
 	if err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM native_issue_page_items WHERE page_id = ?", cursor.Issues.Snapshot).Scan(&page.Total); err != nil {
-		return tracker.NativeIssuePage{}, err
-	}
+	page.Total = total
 	operational := map[string]tracker.NativeIssue{}
 	if work != nil {
 		for _, issue := range work.Items {
@@ -328,10 +325,8 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		if err != nil {
 			return tracker.NativeIssuePage{}, err
 		}
-	}
-	if newPage && !hasMore {
-		if _, err := s.database.db.ExecContext(ctx, "DELETE FROM native_issue_pages WHERE id = ?", cursor.Issues.Snapshot); err != nil {
-			return tracker.NativeIssuePage{}, err
+		if frozen != nil {
+			s.issuePages.store(cursor.Issues.Snapshot, cursor.Scope, cursor.Expires, frozen, s.config.now())
 		}
 	}
 	page.Work = work
