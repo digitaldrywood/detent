@@ -212,7 +212,7 @@ func (d *database) approvePolicy(ctx context.Context, scope, actor string, chang
 	if err != nil {
 		return result, err
 	}
-	return result, tx.Commit()
+	return result, d.commit(ctx, tx)
 }
 func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor string, change policy.Change) (result policy.Approval, resultErr error) {
 	resolved, err := workflowconfig.ResolveSharedPolicy(change.Policy)

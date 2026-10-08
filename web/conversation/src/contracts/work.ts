@@ -182,11 +182,34 @@ export const NativeWorkSummary = Schema.Struct({
 });
 export type NativeWorkSummary = typeof NativeWorkSummary.Type;
 
+export const NativeBoardCard = Schema.Struct({
+  status_line: Schema.optional(Schema.String),
+  issue: NativeIssue,
+  attempt: Schema.NullOr(Schema.Struct({ count: Schema.optional(Schema.Number), attempt_id: Schema.String, status: Schema.String,
+    runner_id: Schema.optional(Schema.String), machine_id: Schema.optional(Schema.String),
+    identity: Schema.optional(Schema.Struct({ role: Schema.String, backend: Schema.String, model: Schema.String })),
+    started_at: Schema.String, expires_at: Schema.optional(Schema.String) })),
+  change: Schema.NullOr(Schema.Struct({ change_id: Schema.String, title: Schema.String, status: Schema.String,
+    external: Schema.optional(Schema.Struct({ provider: Schema.String, id: Schema.String, url: Schema.String })) })),
+});
+export type NativeBoardCard = typeof NativeBoardCard.Type;
+
+export const NativeBoardFrame = Schema.Struct({
+  sequence: Schema.Number,
+  gap: Schema.Boolean,
+  deltas: Schema.Array(Schema.Struct({ sequence: Schema.Number,
+    previous: Schema.NullOr(NativeBoardCard), current: Schema.NullOr(NativeBoardCard) })),
+  work: Schema.optional(NativeWorkSummary),
+});
+export type NativeBoardFrame = typeof NativeBoardFrame.Type;
+
 export const WorkItemPage = Schema.Struct({
   total: Schema.optional(Schema.Number),
   items: Schema.Array(NativeIssue),
   next_cursor: Schema.optional(Schema.String),
   work: Schema.optional(NativeWorkSummary),
+  cards: Schema.optional(Schema.Array(NativeBoardCard)),
+  sequence: Schema.optional(Schema.Number),
 });
 export type WorkItemPage = typeof WorkItemPage.Type;
 
