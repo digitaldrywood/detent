@@ -419,6 +419,7 @@ func TestRunnerBehind(t *testing.T) {
 		current  string
 		reported string
 		want     bool
+		refused  bool
 	}{
 		{name: "same build", current: "v1.2.3", reported: "v1.2.3"},
 		{name: "older build", current: "v1.2.4", reported: "v1.2.3", want: true},
@@ -426,6 +427,9 @@ func TestRunnerBehind(t *testing.T) {
 		{name: "prerelease of the hub's build", current: "v1.2.4", reported: "v1.2.4-rc.1", want: true},
 		{name: "newer build", current: "v1.2.3", reported: "v1.2.4"},
 		{name: "unprefixed versions", current: "1.2.4", reported: "1.2.3", want: true},
+		{name: "older supported release", current: "v0.117.60", reported: "v0.117.57", want: true},
+		{name: "below supported minimum", current: "v0.117.60", reported: "v0.117.55", want: true, refused: true},
+		{name: "unprefixed below supported minimum", current: "0.117.60", reported: "0.117.55", want: true, refused: true},
 		{name: "not a release version", current: "v1.2.3", reported: "abc123"},
 		{name: "runner never reported", current: "v1.2.3", reported: ""},
 		{name: "runner on a development build", current: "v1.2.3", reported: "dev"},
@@ -437,7 +441,7 @@ func TestRunnerBehind(t *testing.T) {
 			t.Parallel()
 			minimum := minimumRunnerVersion(test.current)
 			wantReason := ""
-			if test.want {
+			if test.refused {
 				wantReason = "Too old to take work, needs " + minimum
 			}
 			if got := runnerClaimRefusal(minimum, test.reported); got != wantReason {
@@ -489,12 +493,12 @@ func TestAppUpdates(t *testing.T) {
 		t.Fatalf("an unenrolled organization reports %#v", payload)
 	}
 
-	f.service.config.Version = "v1.2.4"
-	behind := enrollAppRunner(t, f, "Athens", "v1.2.3")
-	offline := enrollAppRunner(t, f, "Cairo", "v1.2.3")
-	revoked := enrollAppRunner(t, f, "Delhi", "v1.0.0")
-	up := enrollAppRunner(t, f, "Dublin", "v1.2.4")
-	ahead := enrollAppRunner(t, f, "Essen", "v1.3.0")
+	f.service.config.Version = "v0.117.60"
+	behind := enrollAppRunner(t, f, "Athens", "v0.117.55")
+	offline := enrollAppRunner(t, f, "Cairo", "v0.117.57")
+	revoked := enrollAppRunner(t, f, "Delhi", "v0.110.0")
+	up := enrollAppRunner(t, f, "Dublin", "v0.117.60")
+	ahead := enrollAppRunner(t, f, "Essen", "v0.118.0")
 	stale := formatHubTime(f.service.config.now().Add(-2 * runnerauth.HeartbeatTimeout))
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at = ? WHERE id = ?", stale, offline.RunnerID); err != nil {
 		t.Fatal(err)
@@ -504,14 +508,14 @@ func TestAppUpdates(t *testing.T) {
 	}
 
 	payload = read(t, "owner")
-	if payload.Current != "v1.2.4" || payload.MinimumRunnerVersion != "v1.2.4" || payload.BehindCount != 2 || len(payload.Runners) != 4 {
+	if payload.Current != "v0.117.60" || payload.MinimumRunnerVersion != "0.117.56" || payload.BehindCount != 1 || len(payload.Runners) != 4 {
 		t.Fatalf("report = %#v", payload)
 	}
 	for index, want := range []appUpdateRunner{
-		{RunnerID: behind.RunnerID, DisplayName: "Athens", Version: "v1.2.3", Online: true, Behind: true, ClaimRefusalReason: "Too old to take work, needs v1.2.4"},
-		{RunnerID: offline.RunnerID, DisplayName: "Cairo", Version: "v1.2.3", Behind: true, ClaimRefusalReason: "Too old to take work, needs v1.2.4"},
-		{RunnerID: up.RunnerID, DisplayName: "Dublin", Version: "v1.2.4", Online: true},
-		{RunnerID: ahead.RunnerID, DisplayName: "Essen", Version: "v1.3.0", Online: true},
+		{RunnerID: behind.RunnerID, DisplayName: "Athens", Version: "v0.117.55", Online: true, Behind: true, ClaimRefusalReason: "Too old to take work, needs 0.117.56"},
+		{RunnerID: offline.RunnerID, DisplayName: "Cairo", Version: "v0.117.57"},
+		{RunnerID: up.RunnerID, DisplayName: "Dublin", Version: "v0.117.60", Online: true},
+		{RunnerID: ahead.RunnerID, DisplayName: "Essen", Version: "v0.118.0", Online: true},
 	} {
 		if payload.Runners[index] != want {
 			t.Fatalf("runner %d = %#v, want %#v", index, payload.Runners[index], want)
@@ -539,12 +543,12 @@ func TestAppUpdates(t *testing.T) {
 	if fleet.Current != operator.Current || fleet.MinimumRunnerVersion != "" {
 		t.Fatalf("fleet operator build = %#v", fleet)
 	}
-	f.service.config.Version = "v1.2.4"
+	f.service.config.Version = "v0.117.60"
 
 	heartbeat := "/api/v2/organizations/org_browser_preview/projects/" + f.project + "/machines/" + string(behind.MachineID) + "/heartbeat"
-	browserHostedStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, heartbeat, behind.Credential, map[string]any{"display_name": "Athens", "capacity": 1, "version": "v1.2.4"}), http.StatusOK)
+	browserHostedStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, heartbeat, behind.Credential, map[string]any{"display_name": "Athens", "capacity": 1, "version": "v0.117.60"}), http.StatusOK)
 	payload = read(t, "owner")
-	if payload.BehindCount != 1 || payload.Runners[0].Version != "v1.2.4" || payload.Runners[0].Behind {
+	if payload.BehindCount != 0 || payload.Runners[0].Version != "v0.117.60" || payload.Runners[0].Behind {
 		t.Fatalf("after upgrade heartbeat = %#v", payload)
 	}
 }

@@ -189,7 +189,7 @@ func TestHostedContextMCP(t *testing.T) {
 						for _, runner := range []struct {
 							id, version     string
 							online, revoked bool
-						}{{"a-old", "v1.2.3", true, false}, {"b-offline", "v1.2.4", false, false}, {"c-current", "v1.2.4", true, false}, {"d-revoked", "v1.0.0", true, true}} {
+						}{{"a-old", "v0.117.55", true, false}, {"b-offline", "v1.2.4", false, false}, {"c-current", "v1.2.4", true, false}, {"d-revoked", "v1.0.0", true, true}} {
 							at := f.service.config.now()
 							if !runner.online {
 								at = at.Add(-time.Hour)
@@ -202,7 +202,7 @@ func TestHostedContextMCP(t *testing.T) {
 						}
 						var dashboard appUpdates
 						decodeHubResponse(t, f.browser(http.MethodGet, "/app/updates", nil), &dashboard)
-						if !reflect.DeepEqual(updates, dashboard) || updates.Current != "v1.2.4" || updates.Source != "hub" || updates.Client != f.service.clientBuild || updates.MinimumRunnerVersion != "v1.2.4" || updates.BehindCount != 1 || len(updates.Runners) != 3 || !updates.Runners[0].Online || !updates.Runners[0].Behind || updates.Runners[0].ClaimRefusalReason == "" || updates.Runners[1].Online || updates.Runners[2].Behind {
+						if !reflect.DeepEqual(updates, dashboard) || updates.Current != "v1.2.4" || updates.Source != "hub" || updates.Client != f.service.clientBuild || updates.MinimumRunnerVersion != "0.117.56" || updates.BehindCount != 1 || len(updates.Runners) != 3 || !updates.Runners[0].Online || !updates.Runners[0].Behind || updates.Runners[0].ClaimRefusalReason == "" || updates.Runners[1].Online || updates.Runners[2].Behind {
 							t.Fatalf("updates=%+v dashboard=%+v", updates, dashboard)
 						}
 					}

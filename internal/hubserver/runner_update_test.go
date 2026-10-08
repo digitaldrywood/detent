@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -117,7 +118,7 @@ func TestHostedRunnerUpdateReadKeyAuthority(t *testing.T) {
 
 func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 	for _, test := range []struct {
-		name, hub, runner                      string
+		name, hub, runner, prior, wantVersion  string
 		supported, manual, unpublished, failed bool
 		want                                   bool
 	}{
@@ -130,6 +131,9 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 		{name: "development Hub", hub: "dev", runner: "1.2.3", supported: true},
 		{name: "missing update owner", hub: "v1.2.4", runner: "1.2.3"},
 		{name: "operator request retained", hub: "v1.2.4", runner: "1.2.3", supported: true, manual: true, want: true},
+		{name: "uncertain older request superseded", hub: "v1.2.4", runner: "1.2.1", prior: "uncertain", supported: true, want: true},
+		{name: "refused older request superseded", hub: "v1.2.4", runner: "1.2.1", prior: "refused", supported: true, want: true},
+		{name: "draining older request retained", hub: "v1.2.4", runner: "1.2.1", prior: "draining", wantVersion: "1.2.2", supported: true, want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Version: "dev", RunnerReleaseClient: &runnerReleaseFixture{}})
@@ -156,6 +160,18 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 				request := runnerUpdateChange{ExpectedRevision: snapshot.Revision, ExpectedBuildRevision: report.Revision, Service: "detent", Version: "1.2.5", Release: true, Confirm: true, IdempotencyKey: "operator-selection"}
 				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, r.identityPath()+"/update/apply", testHubAdminToken, request), http.StatusAccepted)
 			}
+			if test.prior != "" {
+				service.runnerPublishedReleases.Store("v1.2.2/linux/amd64", true)
+				service.config.Version = "v1.2.2"
+				earlier := send().Routing.UpdateRequest
+				if earlier == nil || earlier.Version != "1.2.2" {
+					t.Fatalf("earlier request=%+v", earlier)
+				}
+				report.Receipt = &runnerauth.UpdateReceipt{Request: *earlier, Status: test.prior, FailureReason: "Update was interrupted before completion", ObservedAt: now}
+				if test.prior == "draining" {
+					report.Receipt.FailureReason = ""
+				}
+			}
 			if !test.unpublished {
 				service.runnerPublishedReleases.Store("v1.2.4/linux/amd64", true)
 			}
@@ -178,8 +194,12 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			if !test.want {
 				return
 			}
-			if request.FollowHub == test.manual || !test.manual && (request.Version != "1.2.4" || request.ExpectedBuildRevision != report.Revision || request.Validate() != nil) {
+			wantVersion := cmp.Or(test.wantVersion, "1.2.4")
+			if request.FollowHub == test.manual || !test.manual && (request.Version != wantVersion || request.ExpectedBuildRevision != report.Revision || request.Validate() != nil) {
 				t.Fatalf("request=%+v", request)
+			}
+			if test.wantVersion != "" {
+				return
 			}
 			repeated := send()
 			if *repeated.Routing.UpdateRequest != *request || repeated.Revision != snapshot.Revision {

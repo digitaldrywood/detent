@@ -23,7 +23,7 @@ func (f nativeFixture) worker(t *testing.T, name string) string {
 func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }, Version: "v1.2.3"}
+	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }, Version: "v0.117.50"}
 	f := newNativeFixture(t, openTestService(t, config), "", "claims")
 	descriptor := hubTestPolicy()
 	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
@@ -33,7 +33,7 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/dependencies", f.token, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "block"}, ExpectedRevision: 1, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}), http.StatusOK)
 	worker := f.worker(t, "worker")
 	otherWorker := f.worker(t, "other-worker")
-	machine := map[string]any{"id": "native-machine", "hostname": "runner", "display_name": "Runner", "version": "v1.2.3", "capacity": 1}
+	machine := map[string]any{"id": "native-machine", "hostname": "runner", "display_name": "Runner", "version": "v0.117.50", "capacity": 1}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, machine), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", otherWorker, machine), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/machines/register", testHubAdminToken, machine), http.StatusNotFound)
@@ -51,7 +51,7 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", otherWorker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusNotFound)
 	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "run-start"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{LeaseID: lease.ID, FencingToken: lease.FencingToken, RunID: newNativeID("run"), AttemptID: newNativeID("attempt"), PolicyID: descriptor.ID}}
-	f.service.config.Version = "v1.2.4"
+	f.service.config.Version = "v0.117.60"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
 	newClaim := request
@@ -76,12 +76,12 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	config.Version = "v1.2.4"
+	config.Version = "v0.117.60"
 	f.service = openTestService(t, config)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, worker, nil), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 	now = now.Add(91 * time.Second)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/native-machine/heartbeat", worker, map[string]any{"version": "v1.2.4", "capacity": 1}), http.StatusNoContent)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/native-machine/heartbeat", worker, map[string]any{"version": "v0.117.60", "capacity": 1}), http.StatusNoContent)
 	for _, test := range []struct {
 		name       string
 		credential string
@@ -139,7 +139,7 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 			}
 		}
 	}
-	f.service.config.Version = "v1.2.5"
+	f.service.config.Version = "v0.117.61"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(replacement.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: replacement.FencingToken, Reason: "completed"}), http.StatusNoContent)
 	var aliases, outbox int
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE github_node_id IS NOT NULL").Scan(&aliases); err != nil {
@@ -164,13 +164,15 @@ func TestNativeRunnerMinimumVersion(t *testing.T) {
 		name, hub, runner, minimum string
 		refused                    bool
 	}{
-		{name: "below", hub: "v1.2.4", runner: "v1.2.3", minimum: "v1.2.4", refused: true},
-		{name: "equal", hub: "v1.2.4", runner: "v1.2.4", minimum: "v1.2.4"},
-		{name: "above", hub: "v1.2.4", runner: "v1.3.0", minimum: "v1.2.4"},
-		{name: "prerelease", hub: "v1.2.4", runner: "v1.2.4-rc.1", minimum: "v1.2.4", refused: true},
-		{name: "build metadata", hub: "v1.2.4", runner: "v1.2.4+local", minimum: "v1.2.4"},
-		{name: "unprefixed", hub: " v1.2.4 ", runner: "1.2.3", minimum: "v1.2.4", refused: true},
-		{name: "development runner", hub: "v1.2.4", runner: "dev", minimum: "v1.2.4"},
+		{name: "below", hub: "v0.117.60", runner: "v0.117.55", minimum: "0.117.56", refused: true},
+		{name: "older supported release", hub: "v0.117.60", runner: "v0.117.57", minimum: "0.117.56"},
+		{name: "supported minimum", hub: "v0.117.60", runner: "v0.117.56", minimum: "0.117.56"},
+		{name: "above", hub: "v0.117.60", runner: "v0.118.0", minimum: "0.117.56"},
+		{name: "prerelease", hub: "v0.117.60", runner: "v0.117.56-rc.1", minimum: "0.117.56", refused: true},
+		{name: "build metadata", hub: "v0.117.60", runner: "v0.117.56+local", minimum: "0.117.56"},
+		{name: "unprefixed", hub: " v0.117.60 ", runner: "0.117.55", minimum: "0.117.56", refused: true},
+		{name: "development runner", hub: "v0.117.60", runner: "dev", minimum: "0.117.56"},
+		{name: "hub older than supported minimum", hub: "v0.117.50", runner: "v0.117.49", minimum: "v0.117.50", refused: true},
 		{name: "development hub", hub: "dev", runner: "v1.0.0"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
