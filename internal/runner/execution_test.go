@@ -273,6 +273,11 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			e.recovery.Attempts[0].Checkpoint.Availability = "inaccessible"
 		}},
 		{name: "rework unavailable session", rework: true, restartSession: true, startupFailsAgain: true, edit: func(_ *testExecution, a *fakeCodexClient) { a.verifyErr = errors.New("session unavailable") }},
+		{name: "running retained lease resumes session", edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Status = "running"
+			e.recovery.Attempts[0].LeaseID = e.recovery.Lease.ID
+			e.recovery.Attempts[0].FencingToken = e.recovery.Lease.FencingToken
+		}},
 		{name: "clean 94"},
 		{name: "clean provider never started", providerNotStarted: true},
 		{name: "provider startup fails again", providerNotStarted: true, startupFailsAgain: true},

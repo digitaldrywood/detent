@@ -201,6 +201,10 @@ func revokeRunnerIdentityInTx(ctx context.Context, tx *sql.Tx, scope nativeScope
 	if err := requireRunnerUpdate(result, err); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE leases SET released_at = ?, updated_at = ? WHERE released_at IS NULL AND lease_id IN
+(SELECT lr.lease_id FROM lease_runners lr JOIN runner_identities r ON r.id = lr.runner_id WHERE r.id = ? AND r.organization_id = ?)`, formatHubTime(now), formatHubTime(now), resource, scope.organization); err != nil {
+		return err
+	}
 	return recordRunnerEvent(ctx, tx, resource, scope.credential.ID, "revoked", now)
 }
 

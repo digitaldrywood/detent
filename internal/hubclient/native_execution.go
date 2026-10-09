@@ -24,6 +24,7 @@ import (
 )
 
 type nativeExecution struct {
+	reconnecting      bool
 	validation        *gate.CommandResult
 	usageStartedAt    time.Time
 	artifacts         nativeArtifacts
@@ -118,6 +119,19 @@ func (s *Scheduler) RunExecution(issueID string) runner.Execution {
 		RunID: executionID("run", string(claim.lease.WorkItemID)), AttemptID: executionID("attempt", string(claim.lease.ID)),
 		PolicyID: claim.lease.PolicyID, LeaseID: claim.lease.ID, FencingToken: claim.lease.FencingToken,
 	}}
+	for _, attempt := range claim.recovery.Attempts {
+		if attempt.Identity != nil && attempt.LeaseID == claim.lease.ID && attempt.FencingToken == claim.lease.FencingToken && (attempt.Status == "running" || attempt.Status == "interrupted") {
+			execution.data = attempt.NativeRunData
+			execution.usageStartedAt = attempt.StartedAt
+			execution.role = attempt.Identity.Role
+			execution.reconnecting = true
+			if attempt.Checkpoint != nil {
+				execution.worktreeState = attempt.Checkpoint.WorktreeState
+				execution.worktreeHead = attempt.Checkpoint.HeadSHA
+			}
+			break
+		}
+	}
 	claim.execution = execution
 	s.nativeClaims[issueID] = claim
 	return execution
@@ -278,9 +292,28 @@ func (e *nativeExecution) validationError(err error) error {
 func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExecutionIdentity) error {
 	e.mu.Lock()
 	if e.data.Identity != nil && e.data.Sequence > 0 {
+		if e.reconnecting {
+			e.mu.Unlock()
+			if err := e.Validate(ctx); err != nil {
+				return err
+			}
+			e.mu.Lock()
+		}
 		defer e.mu.Unlock()
 		if *e.data.Identity != identity {
 			return errors.New("native execution identity changed during an attempt")
+		}
+		if e.reconnecting {
+			e.data.Outcome = ""
+			e.data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: e.scheduler.now().UTC()}
+			e.data.Finalization = nil
+			e.data.TerminalFailure = nil
+			e.data.Disposition = nil
+			e.data.CompletionBody = ""
+			if err := e.append(ctx, "run.observed", "", nil); err != nil {
+				return err
+			}
+			e.reconnecting = false
 		}
 		return e.flush(ctx)
 	}

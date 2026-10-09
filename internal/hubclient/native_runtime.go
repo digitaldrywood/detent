@@ -79,6 +79,14 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 		}
 	}()
 	e.mu.Lock()
+	reconnecting, identity := e.reconnecting, e.data.Identity
+	e.mu.Unlock()
+	if reconnecting && identity != nil {
+		if err := e.Start(ctx, *identity); err != nil {
+			return err
+		}
+	}
+	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.runtimeSupported == nil {
 		if e.claim.source == nil || e.claim.source.client == nil {

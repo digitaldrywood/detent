@@ -518,7 +518,14 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err := execution.Finish(t.Context(), "interrupted"); err != nil {
 		t.Fatal(err)
 	}
+	retained := scheduler.nativeClaims[string(issue.WorkItemID)].lease
 	if err := scheduler.ReleaseClaim(t.Context(), string(issue.WorkItemID), "interrupted"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Renew(t.Context(), retained, 90); err != nil {
+		t.Fatalf("interruption released the original lease: %v", err)
+	}
+	if err := native.Release(t.Context(), retained, "cancelled"); err != nil {
 		t.Fatal(err)
 	}
 	if err := admin.RevokeRunner(t.Context(), organization, identity.Binding); err != nil {

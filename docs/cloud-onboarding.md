@@ -282,6 +282,21 @@ Remaining manual steps, which the script never performs:
   route a Todo issue and confirm it pushes a branch.
 - Take a new checkpoint so the baseline includes the sign-ins and checkouts.
 
+### Runner restart and claim recovery
+
+The default claim lease is ten minutes, renewed every thirty seconds. This
+window covers a normal update's drain, binary swap and reconnect. Draining or
+interrupted runners retain in-flight claims until their leases expire, including
+when a policy or heartbeat error interrupts execution. Other runners cannot
+claim that work during the live lease.
+
+A returning runner renews its retained leases with their existing fencing tokens
+and resumes the recorded attempts, local worktrees and provider sessions. If it
+does not return before expiry, any eligible runner can claim the work with a new
+fencing token and recover from the pushed branch and Change evidence. Revocation
+or removal releases the runner's claims immediately. An explicitly configured
+`client.lease_ttl_seconds` continues to determine the lease window.
+
 ## Artifact history and GitHub
 
 Preserve the September 7 choices: local-only history, customer-managed durable

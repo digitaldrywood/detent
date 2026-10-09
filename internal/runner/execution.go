@@ -514,7 +514,8 @@ func nativeInterruptedResumeAttempt(recovery tracker.NativeRecovery) *tracker.Na
 	if previous == nil {
 		return nil
 	}
-	if previous.Status != "interrupted" || previous.Checkpoint == nil || previous.Checkpoint.Resume != "resume_session" {
+	retained := previous.Status == "running" && previous.LeaseID == recovery.Lease.ID && previous.FencingToken == recovery.Lease.FencingToken
+	if previous.Status != "interrupted" && !retained || previous.Checkpoint == nil || previous.Checkpoint.Resume != "resume_session" {
 		return nil
 	}
 	return previous
