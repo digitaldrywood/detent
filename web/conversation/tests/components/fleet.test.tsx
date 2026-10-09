@@ -48,12 +48,13 @@ describe("runner rows", () => {
   it.each([
     ["draining", "Waiting for active work"],
     ["refused", "Update failed"],
+    ["uncertain", "Update needs attention"],
     ["restart_requested", "Restart requested"],
     ["running", "Updated"],
   ])("shows the enrolled update outcome %s", (status, label) => {
     renderSection({ ...FLEET, runners: [{ ...FLEET.runners[0]!, update: { status, desired: { version: "1.2.4" } } }] });
     expect(screen.getByText(`${label} · 1.2.4`)).toBeTruthy();
-    if (status === "refused") {
+    if (status === "refused" || status === "uncertain") {
       expect(screen.getByText(/Needs human: reinstall/)).toBeTruthy();
       expect(screen.getByText("curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh")).toBeTruthy();
     }
@@ -211,6 +212,13 @@ describe("shared host capacity", () => {
     ["offline", { health: "offline" }, 0],
     ["outside hours", { health: "outside_hours" }, 0],
     ["needs attention", { health: "needs_attention" }, 0],
+    ["uncertain update on an online runner", { health: "needs_attention", capacity_health: "online", update: { status: "uncertain", desired: { version: "1.2.4" } } }, 7],
+    ["refused update on an online runner", { health: "needs_attention", capacity_health: "online", update: { status: "refused", desired: { version: "1.2.4" } } }, 7],
+    ["uncertain update with claim refused", { health: "needs_attention", capacity_health: "online", claim_refusal_reason: "Too old to take work", update: { status: "uncertain", desired: { version: "1.2.4" } } }, 0],
+    ["uncertain update on an offline runner", { health: "needs_attention", capacity_health: "offline", update: { status: "uncertain", desired: { version: "1.2.4" } } }, 0],
+    ["uncertain update outside hours", { health: "needs_attention", capacity_health: "outside_hours", update: { status: "uncertain", desired: { version: "1.2.4" } } }, 0],
+    ["uncertain update with other problems", { health: "needs_attention", capacity_health: "needs_attention", update: { status: "uncertain", desired: { version: "1.2.4" } } }, 0],
+    ["uncertain update with provider exhausted", { health: "needs_attention", capacity_health: "online", update: { status: "uncertain", desired: { version: "1.2.4" } }, provider_capacity: [{ ...FLEET.runners[0]!.provider_capacity[0]!, state: "exhausted" }] }, 0],
     ["claim refused", { claim_refusal_reason: "Too old to take work" }, 0],
     ["reported limit", { reported_capacity: 3 }, 2],
     ["routing limit", { capacity_limit: 2 }, 1],
@@ -221,6 +229,11 @@ describe("shared host capacity", () => {
     expect(host.querySelectorAll('[data-slot-state="running"]')).toHaveLength(1);
     expect(host.querySelectorAll('[data-slot-state="free"]')).toHaveLength(free);
     expect(host.querySelectorAll('[data-slot-state="unavailable"]')).toHaveLength(7 - free);
+    if (free < 7) {
+      expect(screen.getByText(`${7 - free} slots can't take work`)).toBeTruthy();
+    } else {
+      expect(screen.queryByText(/slots can't take work/)).toBeNull();
+    }
   });
 
   it("uses only an active sibling's remaining allowance while another drains", () => {

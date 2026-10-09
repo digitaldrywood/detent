@@ -12,9 +12,9 @@ import (
 )
 
 func TestUrgentRunnerUpdateFleet(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "urgent-update")
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
 	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/runner-update/urgent"
-	now := f.service.config.now()
 	heartbeat := func(r runnerFixture, version string, receipt *runnerauth.UpdateReceipt) runnerauth.RoutingSnapshot {
 		t.Helper()
 		build := runnerauth.BuildEvidence{Version: version, Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
@@ -147,6 +147,9 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 			fleet := hostedFleetRunnerView(stored, m.version, map[tracker.ProjectID]bool{f.project.ID: true}, now)
 			if fleet.Update.Observation.Receipt.FailureReason != failure.reason || fleet.State != m.state {
 				t.Fatalf("fleet lost failure: %+v", fleet)
+			}
+			if fleet.Health != "needs_attention" || fleet.CapacityHealth != "online" {
+				t.Fatalf("update failure changed capacity health: %+v", fleet)
 			}
 			response := performHubAPIRequest(t, f.service, http.MethodGet, m.runner.identityPath()+"/update", testHubAdminToken, nil)
 			requireNativeStatus(t, response, http.StatusOK)

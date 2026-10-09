@@ -130,7 +130,8 @@ function Capacity({ runners, onOpen }: { readonly runners: readonly FleetRunner[
     const used = Math.max(leases.length, ...group.map((entry) => entry.host_used));
     const capacity = runner.host_capacity;
     const available = group.reduce((count, entry) => {
-      if (entry.state !== "active" || (entry.health !== "online" && entry.health !== "asleep") || entry.claim_refusal_reason) return count;
+      const health = entry.capacity_health ?? entry.health;
+      if (entry.state !== "active" || (health !== "online" && health !== "asleep") || entry.claim_refusal_reason) return count;
       if (entry.provider_capacity.length > 0 && !entry.provider_capacity.some((provider) => provider.state !== "exhausted" && provider.used < provider.max_concurrent)) return count;
       return count + Math.max(0, Math.min(entry.capacity_limit, entry.reported_capacity) - entry.leases.length);
     }, 0);
