@@ -920,69 +920,125 @@ func TestLocalGitPrepareMergeAbortsConflictingRebase(t *testing.T) {
 		t.Skip("git subprocess integration")
 	}
 
-	t.Parallel()
+	for _, tt := range []struct {
+		name         string
+		commits      int
+		failSubjects bool
+	}{
+		{name: "target intent", commits: 1},
+		{name: "subject lookup is best effort", commits: 1, failSubjects: true},
+		{name: "bounded target history", commits: 42},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if !tt.failSubjects {
+				t.Parallel()
+			} else {
+				skipWindows(t)
+			}
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
 
-	source := initSourceRepo(t)
-	remote := initBareRemote(t)
-	runGit(t, source, "remote", "add", "origin", remote)
-	runGit(t, source, "push", "-u", "origin", "main")
+			root := filepath.Join(t.TempDir(), "workspaces")
+			backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+				Root:       root,
+				SourceRoot: source,
+				AutoBranch: true,
+			})
+			if err != nil {
+				t.Fatalf("NewBackend() error = %v", err)
+			}
+			preparer, ok := backend.(MergePreparer)
+			if !ok {
+				t.Fatal("backend does not implement MergePreparer")
+			}
+			issue := Issue{Identifier: "DD-CONFLICT"}
+			info, err := backend.Create(context.Background(), issue)
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("feature\n"), 0o600); err != nil {
+				t.Fatalf("write feature README: %v", err)
+			}
+			runGit(t, info.Path, "add", "README.md")
+			runGit(t, info.Path, "commit", "-m", "feature conflict")
 
-	root := filepath.Join(t.TempDir(), "workspaces")
-	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
-		Root:       root,
-		SourceRoot: source,
-		AutoBranch: true,
-	})
-	if err != nil {
-		t.Fatalf("NewBackend() error = %v", err)
-	}
-	preparer, ok := backend.(MergePreparer)
-	if !ok {
-		t.Fatal("backend does not implement MergePreparer")
-	}
-	issue := Issue{Identifier: "DD-CONFLICT"}
-	info, err := backend.Create(context.Background(), issue)
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("feature\n"), 0o600); err != nil {
-		t.Fatalf("write feature README: %v", err)
-	}
-	runGit(t, info.Path, "add", "README.md")
-	runGit(t, info.Path, "commit", "-m", "feature conflict")
+			if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("main\n"), 0o600); err != nil {
+				t.Fatalf("write main README: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(source, "other.txt"), []byte("unrelated"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, source, "add", "other.txt")
+			runGit(t, source, "commit", "-m", "unrelated target behavior")
+			runGit(t, source, "add", "README.md")
+			runGit(t, source, "commit", "-m", "main conflict")
+			for n := 1; n < tt.commits; n++ {
+				if err := os.WriteFile(filepath.Join(source, "README.md"), []byte(fmt.Sprintf("target %d\n", n)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, source, "add", "README.md")
+				runGit(t, source, "commit", "-m", fmt.Sprintf("target conflict %d", n))
+			}
+			runGit(t, source, "push", "origin", "main")
 
-	if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("main\n"), 0o600); err != nil {
-		t.Fatalf("write main README: %v", err)
-	}
-	runGit(t, source, "add", "README.md")
-	runGit(t, source, "commit", "-m", "main conflict")
-	runGit(t, source, "push", "origin", "main")
-
-	result, err := preparer.PrepareMerge(context.Background(), info, issue, MergePrepareOptions{})
-	if err != nil {
-		t.Fatalf("PrepareMerge() error = %v", err)
-	}
-	if result.Status != MergePrepareStatusConflict {
-		t.Fatalf("PrepareMerge() status = %q, want conflict", result.Status)
-	}
-	if len(result.ConflictPaths) != 1 || result.ConflictPaths[0] != "README.md" {
-		t.Fatalf("conflict paths = %v, want README.md", result.ConflictPaths)
-	}
-	if got := strings.TrimSpace(runGit(t, info.Path, "status", "--short")); got != "" {
-		t.Fatalf("status after aborted rebase = %q, want clean", got)
-	}
-	if got := strings.TrimSpace(runGit(t, info.Path, "branch", "--show-current")); got != info.Branch {
-		t.Fatalf("branch after aborted rebase = %q, want %q", got, info.Branch)
-	}
-	if got := readFile(t, filepath.Join(info.Path, "README.md")); got != "feature\n" {
-		t.Fatalf("README after aborted rebase = %q, want feature branch content", got)
-	}
-	inProgress, err := rebaseInProgress(context.Background(), info.Path)
-	if err != nil {
-		t.Fatalf("rebaseInProgress() error = %v", err)
-	}
-	if inProgress {
-		t.Fatal("rebase still in progress after PrepareMerge conflict")
+			if tt.failSubjects {
+				realGit, err := exec.LookPath("git")
+				if err != nil {
+					t.Fatal(err)
+				}
+				directory := t.TempDir()
+				script := "#!/bin/sh\nif [ \"$4\" = \"log\" ]; then exit 29; fi\nexec " + shellQuote(realGit) + " \"$@\"\n"
+				if err := os.WriteFile(filepath.Join(directory, "git"), []byte(script), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+				subjects, err := mergeTargetCommitSubjects(t.Context(), info.Path, "HEAD", "main", []string{"README.md"})
+				if len(subjects) != 0 || err == nil || !strings.Contains(err.Error(), "read merge target commit subjects") {
+					t.Fatalf("failed subject lookup = %v, %v", subjects, err)
+				}
+				var commandErr *CommandError
+				if !errors.As(err, &commandErr) || commandErr.ExitCode != 29 {
+					t.Fatalf("subject lookup error = %v, want wrapped exit code 29", err)
+				}
+			}
+			result, err := preparer.PrepareMerge(context.Background(), info, issue, MergePrepareOptions{})
+			if err != nil {
+				t.Fatalf("PrepareMerge() error = %v", err)
+			}
+			if result.Status != MergePrepareStatusConflict {
+				t.Fatalf("PrepareMerge() status = %q, want conflict", result.Status)
+			}
+			if tt.failSubjects && len(result.TargetCommitSubjects) != 0 {
+				t.Fatalf("failed subject lookup = %v, want empty", result.TargetCommitSubjects)
+			}
+			if !tt.failSubjects && tt.commits == 1 && !slices.Equal(result.TargetCommitSubjects, []string{"main conflict"}) {
+				t.Fatalf("target commit subjects = %v", result.TargetCommitSubjects)
+			}
+			if tt.commits > 40 && (len(result.TargetCommitSubjects) != 41 || result.TargetCommitSubjects[0] != "target conflict 41" || result.TargetCommitSubjects[40] != "[additional target commits truncated]") {
+				t.Fatalf("target commit truncation = %v", result.TargetCommitSubjects)
+			}
+			if len(result.ConflictPaths) != 1 || result.ConflictPaths[0] != "README.md" {
+				t.Fatalf("conflict paths = %v, want README.md", result.ConflictPaths)
+			}
+			if got := strings.TrimSpace(runGit(t, info.Path, "status", "--short")); got != "" {
+				t.Fatalf("status after aborted rebase = %q, want clean", got)
+			}
+			if got := strings.TrimSpace(runGit(t, info.Path, "branch", "--show-current")); got != info.Branch {
+				t.Fatalf("branch after aborted rebase = %q, want %q", got, info.Branch)
+			}
+			if got := readFile(t, filepath.Join(info.Path, "README.md")); got != "feature\n" {
+				t.Fatalf("README after aborted rebase = %q, want feature branch content", got)
+			}
+			inProgress, err := rebaseInProgress(context.Background(), info.Path)
+			if err != nil {
+				t.Fatalf("rebaseInProgress() error = %v", err)
+			}
+			if inProgress {
+				t.Fatal("rebase still in progress after PrepareMerge conflict")
+			}
+		})
 	}
 }
 
@@ -3144,17 +3200,80 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 		t.Skip("git subprocess integration")
 	}
 
-	t.Parallel()
-
 	tests := []struct {
-		name       string
-		before     string
-		gate       string
-		wantError  string
-		wantStage  string
-		wantPushed bool
-		mode       string
+		name             string
+		before           string
+		gate             string
+		wantError        string
+		wantStage        string
+		wantPushed       bool
+		mode             string
+		baseGo           string
+		resolvedGo       string
+		description      string
+		wantMissing      string
+		prGo             string
+		targetGo         string
+		goFile           string
+		moveFile         bool
+		deleteFile       bool
+		wantMissingCount int
+		baseFiles        map[string]string
+		prFiles          map[string]string
+		targetFiles      map[string]string
+		resolvedFiles    map[string]string
+		gitFailure       string
+		mergeCleanly     bool
 	}{
+		{name: "drops a platform function variant", goFile: "watch_linux.go", baseGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", baseFiles: map[string]string{"watch_windows.go": "//go:build windows\n\npackage example\nfunc Watch() {}\n"}, resolvedGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", resolvedFiles: map[string]string{"watch_windows.go": ""}, wantMissing: "Watch"},
+		{name: "drops a platform receiver variant", goFile: "watch_linux.go", baseGo: "//go:build linux\n\npackage example\ntype Watcher struct{}\nfunc (w *Watcher) Watch() {}\n", baseFiles: map[string]string{"watch_windows.go": "//go:build windows\n\npackage example\ntype Watcher struct{}\nfunc (w *Watcher) Watch() {}\n"}, resolvedGo: "//go:build linux\n\npackage example\ntype Watcher struct{}\nfunc (w *Watcher) Watch() {}\n", resolvedFiles: map[string]string{"watch_windows.go": ""}, wantMissing: "Watcher.Watch"},
+		{name: "platform file rename preserves variants", goFile: "watch_linux.go", baseGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", baseFiles: map[string]string{"watch_windows.go": "//go:build windows\n\npackage example\nfunc Watch() {}\n"}, resolvedGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", moveFile: true, wantPushed: true},
+		{name: "PR intentionally deletes a platform variant", goFile: "watch_linux.go", baseGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", baseFiles: map[string]string{"watch_windows.go": "//go:build windows\n\npackage example\nfunc Watch() {}\n"}, prFiles: map[string]string{"watch_windows.go": ""}, resolvedGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", mergeCleanly: true, wantPushed: true},
+		{name: "do not removal bullet", resolvedGo: "package example\nfunc PR() {}\n", description: "Do not:\n- Remove `Target`.", wantMissing: "Target"},
+		{name: "out of scope removal bullet", resolvedGo: "package example\nfunc PR() {}\n", description: "## Out of scope\n- Remove `Target`.", wantMissing: "Target"},
+		{name: "do not rename bullet", resolvedGo: "package example\nfunc PR() {}\nfunc Renamed() {}\n", description: "Do not:\n- Rename `Target` to `Renamed`.", wantMissing: "Target"},
+		{name: "out of scope bare instruction", resolvedGo: "package example\nfunc PR() {}\n", description: "Out of scope:\nRemove `Target`.", wantMissing: "Target"},
+		{name: "nested context cannot authorize removal", resolvedGo: "package example\nfunc PR() {}\n", description: "## Out of scope\n### Acceptance criteria\n- Remove `Target`.", wantMissing: "Target"},
+		{name: "standalone removal bullet", resolvedGo: "package example\nfunc PR() {}\n", description: "- Remove `Target`.", wantPushed: true},
+		{name: "later context makes removal ambiguous", resolvedGo: "package example\nfunc PR() {}\n", description: "Remove `Target`.\nDo not remove `Target`.", wantMissing: "Target"},
+		{name: "indented example cannot authorize removal", resolvedGo: "package example\nfunc PR() {}\n", description: "    Remove `Target`.", wantMissing: "Target"},
+		{name: "PR deletes a file", mergeCleanly: true, prFiles: map[string]string{"example.go": ""}, deleteFile: true, resolvedGo: "deleted", wantPushed: true},
+		{name: "target deletes a file", mergeCleanly: true, targetFiles: map[string]string{"example.go": ""}, deleteFile: true, resolvedGo: "deleted", wantPushed: true},
+		{name: "PR deletes a function", mergeCleanly: true, prGo: "package example\nfunc Target() {}\n", resolvedGo: "package example\nfunc Target() {}\n", wantPushed: true},
+		{name: "target deletes a function", mergeCleanly: true, targetGo: "package example\nfunc PR() {}\n", resolvedGo: "package example\nfunc PR() {}\n", wantPushed: true},
+		{name: "PR renames a function", mergeCleanly: true, prGo: "package example\nfunc Renamed() {}\nfunc Target() {}\n", resolvedGo: "package example\nfunc Renamed() {}\nfunc Target() {}\n", wantPushed: true},
+		{name: "target renames a function", mergeCleanly: true, targetGo: "package example\nfunc PR() {}\nfunc Renamed() {}\n", resolvedGo: "package example\nfunc PR() {}\nfunc Renamed() {}\n", wantPushed: true},
+		{name: "PR moves a function to another package", mergeCleanly: true, prGo: "package example\nfunc Target() {}\n", prFiles: map[string]string{"moved/example.go": "package moved\nfunc PR() {}\n"}, resolvedGo: "package example\nfunc Target() {}\n", wantPushed: true},
+		{name: "target moves a function to another package", mergeCleanly: true, targetGo: "package example\nfunc PR() {}\n", targetFiles: map[string]string{"moved/example.go": "package moved\nfunc Target() {}\n"}, resolvedFiles: map[string]string{"moved/example.go": "package moved\nfunc Target() {}\n"}, resolvedGo: "package example\nfunc PR() {}\n", wantPushed: true},
+		{name: "declarations added after the base", baseGo: "package example\n", prGo: "package example\nfunc PR() {}\n", targetGo: "package example\nfunc Target() {}\n", resolvedGo: "package example\nfunc PR() {}\n", wantPushed: true},
+		{name: "generated templ declarations", goFile: "example_templ.go", baseGo: "// Code generated by templ - DO NOT EDIT.\npackage example\nfunc Target() {}\n", resolvedGo: "// Code generated by templ - DO NOT EDIT.\npackage example\n", wantPushed: true},
+		{name: "generated sqlc declarations", baseGo: "// Code generated by sqlc. DO NOT EDIT.\npackage example\nfunc Target() {}\n", resolvedGo: "// Code generated by sqlc. DO NOT EDIT.\npackage example\n", wantPushed: true},
+		{name: "unparseable generated resolution", baseGo: "// Code generated by templ - DO NOT EDIT.\npackage example\nfunc Target() {}\n", resolvedGo: "// Code generated by templ - DO NOT EDIT.\npackage example\nPARTIAL", wantPushed: true},
+		{name: "renamed init file", baseGo: "package example\nfunc init() {}\nfunc init() {}\n", resolvedGo: "package example\nfunc init() {}\nfunc init() {}\n", moveFile: true, wantPushed: true},
+		{name: "init moves within package", baseGo: "package example\nfunc init() {}\nfunc init() {}\n", resolvedGo: "package example\nfunc init() {}\n", resolvedFiles: map[string]string{"other.go": "package example\nfunc init() {}\n"}, wantPushed: true},
+		{name: "drops one init", baseGo: "package example\nfunc init() {}\nfunc init() {}\n", resolvedGo: "package example\nfunc init() {}\n", wantMissing: "init"},
+		{name: "unparseable PR blob", prGo: "//go:build fixture\n\npackage example\nPARTIAL", resolvedGo: "package example\nfunc PR() {}\nfunc Target() {}\n", wantPushed: true},
+		{name: "unparseable target blob", targetGo: "package example\nPARTIAL", resolvedGo: "package example\nfunc PR() {}\nfunc Target() {}\n", wantPushed: true},
+		{name: "unparseable base blob", baseGo: "package example\nPARTIAL", prGo: "package example\nfunc PR() {}\n", targetGo: "package example\nfunc Target() {}\n", resolvedGo: "package example\nfunc PR() {}\nfunc Target() {}\n", wantPushed: true},
+		{name: "changed paths Git failure", resolvedGo: "package example\nfunc PR() {}\n", gitFailure: "diff --name-only --no-renames", wantError: "read merge resolution changed paths"},
+		{name: "merge base Git failure", resolvedGo: "package example\nfunc PR() {}\n", gitFailure: "merge-base", wantError: "read merge base"},
+		{name: "tree listing Git failure", resolvedGo: "package example\nfunc PR() {}\n", gitFailure: "ls-tree -r", wantError: "list merge tree Go files"},
+		{name: "blob read Git failure", resolvedGo: "package example\nfunc PR() {}\n", gitFailure: "cat-file blob", wantError: "read merge tree Go source"},
+		{name: "file rename preserves both parents", moveFile: true, resolvedGo: "package example\nfunc PR() {}\nfunc Target() {}\n", wantPushed: true},
+		{name: "deleted file loses both parents", deleteFile: true, resolvedGo: "deleted", wantMissing: "PR", wantMissingCount: 2},
+		{name: "invalid Go resolution", resolvedGo: "package example\nCUSTOMER_PRIVATE_CONTENT", wantError: "cannot parse Go declarations"},
+		{name: "drops PR function", resolvedGo: "package example\nfunc Target() {}\n", wantMissing: "PR"},
+		{name: "drops target function", resolvedGo: "package example\nfunc PR() {}\n", wantMissing: "Target"},
+		{name: "preserves both parents", resolvedGo: "package example\nfunc PR() {}\nfunc Target() {}\n", wantPushed: true},
+		{name: "renames a function", resolvedGo: "package example\nfunc Renamed() {}\nfunc Target() {}\n", description: "Rename `PR` to `Renamed`.", wantPushed: true},
+		{name: "authorized removal", resolvedGo: "package example\nfunc PR() {}\n", description: "Remove `Target`.", wantPushed: true},
+		{name: "negated removal", resolvedGo: "package example\nfunc PR() {}\n", description: "Do not remove `Target`.", wantMissing: "Target"},
+		{name: "drops generic receiver method", baseGo: "package example\nfunc PR() {}\ntype Widget[T any] struct{}\nfunc (w *Widget[T]) Save() {}\n", resolvedGo: "package example\nfunc PR() {}\ntype Widget[T any] struct{}\n", wantMissing: "Widget.Save"},
+		{name: "drops target test", goFile: "example_test.go", baseGo: "package example\nimport \"testing\"\nfunc PR() {}\nfunc TestTarget(t *testing.T) {}\n", resolvedGo: "package example\nfunc PR() {}\n", wantMissing: "TestTarget"},
+		{name: "rename without replacement", resolvedGo: "package example\nfunc Target() {}\n", description: "Rename `PR` to `Renamed`.", wantMissing: "PR"},
+		{name: "conditional removal is ambiguous", resolvedGo: "package example\nfunc PR() {}\n", description: "Remove `Target` if unused.", wantMissing: "Target"},
+		{name: "shorter fence cannot authorize removal", resolvedGo: "package example\nfunc PR() {}\n", description: "````\n```\nRemove `Target`.\n````", wantMissing: "Target"},
+		{name: "removal mentioned as an example", resolvedGo: "package example\nfunc PR() {}\n", description: "```\nRemove `Target`.\n```", wantMissing: "Target"},
 		{name: "rolling resolved head skips the gate", mode: gate.LandingRollingBarrier, gate: "exit 19", wantPushed: true},
 		{name: "resolved committed head", wantPushed: true},
 		{name: "already pushed head", before: "push"},
@@ -3171,8 +3290,49 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+			if tt.gitFailure == "" {
+				t.Parallel()
+			} else {
+				skipWindows(t)
+			}
+			goFile := tt.goFile
+			if goFile == "" {
+				goFile = "example.go"
+			}
+			baseGo := tt.baseGo
+			if baseGo == "" {
+				baseGo = "package example\nfunc PR() {}\nfunc Target() {}\n"
+			}
+			prGo := tt.prGo
+			if prGo == "" {
+				prGo = baseGo
+			}
+			targetGo := tt.targetGo
+			if targetGo == "" {
+				targetGo = baseGo
+			}
+			writeGoFiles := func(directory string, files map[string]string) {
+				t.Helper()
+				for name, content := range files {
+					if content == "" {
+						runGit(t, directory, "rm", name)
+						continue
+					}
+					if err := os.MkdirAll(filepath.Dir(filepath.Join(directory, name)), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(directory, name), []byte(content), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					runGit(t, directory, "add", name)
+				}
+			}
 			source := initSourceRepo(t)
+			if tt.resolvedGo != "" {
+				writeGoFiles(source, map[string]string{goFile: baseGo})
+				writeGoFiles(source, tt.baseFiles)
+				runGit(t, source, "commit", "-m", "base behavior")
+			}
 			remote := initBareRemote(t)
 			runGit(t, source, "remote", "add", "origin", remote)
 			runGit(t, source, "push", "-u", "origin", "main")
@@ -3187,8 +3347,37 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if tt.resolvedGo != "" {
+				writeGoFiles(info.Path, map[string]string{goFile: prGo})
+				writeGoFiles(info.Path, tt.prFiles)
+				runGit(t, info.Path, "commit", "--allow-empty", "-m", "PR behavior")
+				writeGoFiles(source, map[string]string{goFile: targetGo})
+				writeGoFiles(source, tt.targetFiles)
+				runGit(t, source, "commit", "--allow-empty", "-m", "target behavior")
+				runGit(t, source, "push", "origin", "main")
+			}
 			runGit(t, info.Path, "push", "origin", "HEAD:"+info.Branch)
 			expectedRemote := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			if tt.resolvedGo != "" {
+				if tt.mergeCleanly {
+					runGit(t, info.Path, "merge", "--no-edit", "main")
+				} else {
+					runGit(t, info.Path, "merge", "-s", "ours", "--no-edit", "main")
+				}
+				if tt.deleteFile {
+					runGit(t, info.Path, "rm", "--ignore-unmatch", goFile)
+				} else {
+					if tt.moveFile {
+						runGit(t, info.Path, "mv", goFile, "renamed.go")
+						goFile = "renamed.go"
+					}
+					if err := os.WriteFile(filepath.Join(info.Path, goFile), []byte(tt.resolvedGo), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					runGit(t, info.Path, "add", goFile)
+				}
+			}
+			writeGoFiles(info.Path, tt.resolvedFiles)
 			runGit(t, info.Path, "commit", "--allow-empty", "-m", "resolved")
 			head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 			mutateRemote := func(branch string) {
@@ -3228,10 +3417,54 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 					command += " && " + tt.gate
 				}
 			}
+			if tt.gitFailure != "" {
+				realGit, err := exec.LookPath("git")
+				if err != nil {
+					t.Fatal(err)
+				}
+				directory := t.TempDir()
+				failure := "case \"$*\" in *" + shellQuote(" "+tt.gitFailure+" ") + "*) exit 29;; esac\n"
+				if tt.gitFailure == "merge-base" {
+					failure = "if [ \"$3\" = \"merge-base\" ] && [ \"$4\" != \"--is-ancestor\" ]; then exit 29; fi\n"
+				}
+				script := "#!/bin/sh\n" + failure + "exec " + shellQuote(realGit) + " \"$@\"\n"
+				if err := os.WriteFile(filepath.Join(directory, "git"), []byte(script), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+			}
 			result, err := backend.(MergePreparer).PrepareMerge(t.Context(), info, issue, MergePrepareOptions{
-				LandingMode: tt.mode, TargetBranch: "main", VerifyResolution: true, ValidationCommand: command, ExpectedRemoteHead: expectedRemote,
+				LandingMode: tt.mode, TargetBranch: "main", VerifyResolution: true, ValidationCommand: command, ExpectedRemoteHead: expectedRemote, IssueDescription: tt.description,
 			})
+			if tt.wantMissing != "" {
+				count := tt.wantMissingCount
+				if count == 0 {
+					count = 1
+				}
+				if len(result.Findings) != count {
+					t.Fatalf("missing declarations = %v, want %d", result.Findings, count)
+				}
+				if err != nil || result.Status != MergePrepareStatusConflict || !strings.Contains(strings.Join(result.Findings, "\n"), tt.wantMissing) {
+					t.Fatalf("missing declaration verification = %#v, %v", result, err)
+				}
+				if got := strings.TrimSpace(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch)); got != remoteBefore {
+					t.Fatal("published a lossy resolution")
+				}
+				if out, _ := runGitAt(t.Context(), info.Path, "config", "--get", "detent.validation"); out != "" {
+					t.Fatal("ran gate before refusing loss")
+				}
+				return
+			}
 			if tt.wantError != "" {
+				if tt.gitFailure != "" {
+					var commandErr *CommandError
+					if !errors.As(err, &commandErr) || commandErr.ExitCode != 29 {
+						t.Fatalf("Git error = %v, want wrapped exit code 29", err)
+					}
+				}
+				if err != nil && strings.Contains(err.Error(), "CUSTOMER_PRIVATE_CONTENT") {
+					t.Fatal("error exposed customer content")
+				}
 				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
 					t.Fatalf("PrepareMerge() = %#v, %v; want error containing %q", result, err, tt.wantError)
 				}

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/docs/templates"
 	"github.com/digitaldrywood/detent/internal/config"
@@ -47,21 +48,22 @@ const (
 )
 
 type PromptOptions struct {
-	Attempt              *int
-	WorkAttemptID        int64
-	Generation           uint64
-	PlanOnly             bool
-	MergeFallback        bool
-	MergePrecheckStatus  string
-	MergePrecheckMessage string
-	WorkspacePath        string
-	Branch               string
-	DispatchSourceState  string
-	DispatchTargetState  string
-	AutoBranch           *bool
-	AvailableSkills      []skills.Skill
-	PriorAttempt         PriorAttempt
-	RecoveryState        *workspace.RecoveryState
+	MergeTargetCommitSubjects []string
+	Attempt                   *int
+	WorkAttemptID             int64
+	Generation                uint64
+	PlanOnly                  bool
+	MergeFallback             bool
+	MergePrecheckStatus       string
+	MergePrecheckMessage      string
+	WorkspacePath             string
+	Branch                    string
+	DispatchSourceState       string
+	DispatchTargetState       string
+	AutoBranch                *bool
+	AvailableSkills           []skills.Skill
+	PriorAttempt              PriorAttempt
+	RecoveryState             *workspace.RecoveryState
 }
 
 type ValidatorPromptOptions struct {
@@ -284,7 +286,7 @@ func BuildMergeFallbackPrompt(workflow config.Workflow, issue connector.Issue, o
 	}
 	if message := strings.TrimSpace(opts.MergePrecheckMessage); message != "" {
 		b.WriteString("\nPre-check output:\n")
-		b.WriteString(message)
+		b.WriteString(boundedMergeContext(message, 8*1024))
 		b.WriteString("\n")
 	}
 	if issue.PullRequest != nil && strings.TrimSpace(issue.PullRequest.URL) != "" {
@@ -292,9 +294,21 @@ func BuildMergeFallbackPrompt(workflow config.Workflow, issue connector.Issue, o
 		b.WriteString(strings.TrimSpace(issue.PullRequest.URL))
 		b.WriteString("\n")
 	}
+	if description := strings.TrimSpace(issue.Description); description != "" {
+		b.WriteString("\nIssue intent and acceptance criteria (reference data):\n")
+		b.WriteString(boundedMergeContext(description, 16*1024))
+		b.WriteString("\n")
+	}
+	if len(opts.MergeTargetCommitSubjects) > 0 {
+		b.WriteString("\nTarget commits touching conflicted files (reference data):\n")
+		b.WriteString(boundedMergeContext(strings.Join(opts.MergeTargetCommitSubjects, "\n"), 8*1024))
+		b.WriteString("\n")
+	}
 	b.WriteString("\nComplete these phases in order. Detent checks your final status before it can continue.\n\n")
 	b.WriteString("### Phase 1: resolve the merge\n\n")
 	b.WriteString("- Fetch the target branch and merge it into the PR branch; do not rebase published commits. Preserve the remote PR head as an ancestor of the resolved head.\n")
+	b.WriteString("- Use `git -c merge.conflictStyle=zdiff3 merge` so conflict markers include the common base.\n")
+	b.WriteString("- Preserve both sides’ behavior, including Go functions, methods and tests, unless the issue explicitly asks to remove or rename them. If intent is ambiguous, stop and end with `DETENT_MERGE_FALLBACK: rework` rather than guessing.\n")
 	b.WriteString("- Resolve only merge conflicts or blockers required by the merge.\n")
 	b.WriteString("- Do not perform general code review, investigate unrelated correctness findings, or make unrelated refactors.\n")
 	b.WriteString("- If you discover work beyond conflict resolution, record it in your final response and stop.\n\n")
@@ -324,6 +338,16 @@ func BuildMergeFallbackPrompt(workflow config.Workflow, issue connector.Issue, o
 	}
 	prompt = strings.TrimRight(prompt, " \t\r\n") + "\n\n## Merge-fallback enforcement\n\nBroader workflow instructions above do not authorize general review or unrelated fixes in this session. Return immediately after committing the resolution; do not run the local gate, push, watch CI, or wait for checks, even if broader workflow instructions request them. Detent performs bounded local validation and current-head CI waiting after you return. Detent accepts resolution only when your final response ends with `DETENT_MERGE_FALLBACK: resolved` and its deterministic recheck finds a clean head. Otherwise end with `DETENT_MERGE_FALLBACK: rework`."
 	return prompt, nil
+}
+
+func boundedMergeContext(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	for limit > 0 && !utf8.RuneStart(value[limit]) {
+		limit--
+	}
+	return value[:limit] + "\n[truncated]"
 }
 
 func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts ValidatorPromptOptions) string {

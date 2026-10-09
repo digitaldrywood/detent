@@ -4348,8 +4348,9 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 			},
 		},
 		prepareResult: workspace.MergePrepareResult{
-			Status:  workspace.MergePrepareStatusConflict,
-			Message: "CONFLICT (content): Merge conflict in README.md",
+			Status:               workspace.MergePrepareStatusConflict,
+			Message:              "CONFLICT (content): Merge conflict in README.md",
+			TargetCommitSubjects: []string{"fix: preserve the target feature"},
 		},
 	}
 	codexClient := &fakeCodexClient{
@@ -4362,6 +4363,12 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 		},
 		Workspace:    workspaceBackend,
 		AgentBackend: codexClient,
+		lookupEnv: func(name string) string {
+			if name == "GIT_CONFIG_PARAMETERS" {
+				return "'merge.renames'='false'"
+			}
+			return os.Getenv(name)
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
@@ -4369,10 +4376,11 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 
 	_, err = runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
-			ID:         "issue-860",
-			Identifier: "digitaldrywood/detent#860",
-			Title:      "Deterministic merge fast-path",
-			BranchName: "detent/digitaldrywood_detent_860",
+			ID:          "issue-860",
+			Identifier:  "digitaldrywood/detent#860",
+			Title:       "Deterministic merge fast-path",
+			Description: "Acceptance: keep both behaviors.",
+			BranchName:  "detent/digitaldrywood_detent_860",
 			PullRequest: &connector.PullRequest{
 				URL: "https://github.com/digitaldrywood/detent/pull/900",
 			},
@@ -4383,9 +4391,21 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
+	if got := codexClient.request.Environment.Variables["GIT_CONFIG_PARAMETERS"]; got != "'merge.renames'='false' 'merge.conflictStyle'='zdiff3'" {
+		t.Fatalf("merge conflict style override = %q", got)
+	}
+	styleCommand := exec.CommandContext(t.Context(), "git", "config", "--get", "merge.conflictStyle")
+	styleCommand.Dir = workspacePath
+	procgroup.SetEnvironment(styleCommand, codexClient.request.Environment)
+	style, styleErr := styleCommand.CombinedOutput()
+	if styleErr != nil || strings.TrimSpace(string(style)) != "zdiff3" {
+		t.Fatalf("Git conflict style = %q, %v", style, styleErr)
+	}
 	prompt := codexClient.request.Prompt
 	for _, want := range []string{
 		"merge-worker fallback",
+		"Acceptance: keep both behaviors.",
+		"fix: preserve the target feature",
 		"Deterministic merge pre-check status: conflict",
 		"CONFLICT (content): Merge conflict in README.md",
 		"Do not perform general code review",
@@ -4412,16 +4432,45 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 	t.Parallel()
 
+	findings := make([]string, 60)
+	for i := range findings {
+		findings[i] = fmt.Sprintf("missing declaration %02d", i+1)
+	}
+
 	tests := []struct {
 		name             string
 		agentOutput      string
 		verification     workspace.MergePrepareResult
 		verificationErr  error
 		wantOutput       string
+		wantFinding      string
+		unwantedFinding  string
+		wantSummary      string
+		wantFindingCount int
 		wantError        string
 		wantPrepareCalls int
 		wantHeadPushed   bool
 	}{
+		{
+			name:         "findings at the limit",
+			agentOutput:  "DETENT_MERGE_FALLBACK: resolved",
+			verification: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict, Findings: findings[:50]},
+			wantOutput:   RunOutputMergeFallbackRework, wantPrepareCalls: 2,
+			wantFinding: "missing declaration 50", unwantedFinding: "more findings", wantFindingCount: 50,
+		},
+		{
+			name:         "excess findings are summarized",
+			agentOutput:  "DETENT_MERGE_FALLBACK: resolved",
+			verification: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict, Findings: findings},
+			wantOutput:   RunOutputMergeFallbackRework, wantPrepareCalls: 2,
+			wantFinding: "missing declaration 50", unwantedFinding: "missing declaration 51", wantSummary: "10 more findings", wantFindingCount: 50,
+		},
+		{
+			name:         "missing declaration goes to rework with findings",
+			agentOutput:  "DETENT_MERGE_FALLBACK: resolved",
+			verification: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict, Message: "merge resolution removes unexplained Go declarations", Findings: []string{"example.go: Widget.Save"}},
+			wantOutput:   RunOutputMergeFallbackRework, wantPrepareCalls: 2, wantFinding: "example.go: Widget.Save",
+		},
 		{
 			name:             "resolved conflict is deterministically reverified",
 			agentOutput:      "Resolved the README conflict and passed make check.\nDETENT_MERGE_FALLBACK: resolved",
@@ -4533,6 +4582,18 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 			}
 			if !strings.HasPrefix(result.MergeFallbackFindings, tt.agentOutput) {
 				t.Fatalf("MergeFallbackFindings = %q, want agent output", result.MergeFallbackFindings)
+			}
+			if tt.wantFinding != "" && !strings.Contains(result.MergeFallbackFindings, tt.wantFinding) {
+				t.Fatalf("missing finding: %q", result.MergeFallbackFindings)
+			}
+			if tt.unwantedFinding != "" && strings.Contains(result.MergeFallbackFindings, tt.unwantedFinding) {
+				t.Fatalf("unexpected finding: %q", result.MergeFallbackFindings)
+			}
+			if tt.wantSummary != "" && !strings.Contains(result.MergeFallbackFindings, tt.wantSummary) {
+				t.Fatalf("missing findings summary: %q", result.MergeFallbackFindings)
+			}
+			if tt.wantFindingCount > 0 && strings.Count(result.MergeFallbackFindings, "missing declaration ") != tt.wantFindingCount {
+				t.Fatalf("findings = %q, want %d declarations", result.MergeFallbackFindings, tt.wantFindingCount)
 			}
 			if workspaceBackend.prepareCalls != tt.wantPrepareCalls {
 				t.Fatalf("PrepareMerge() calls = %d, want %d", workspaceBackend.prepareCalls, tt.wantPrepareCalls)

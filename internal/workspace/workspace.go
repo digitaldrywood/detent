@@ -181,6 +181,7 @@ type MergePreparer interface {
 }
 
 type MergePrepareOptions struct {
+	IssueDescription string
 	LandingMode      string
 	VerifyResolution bool
 	// ValidateHead runs ValidationCommand on a cleanly rebased head before it
@@ -193,13 +194,15 @@ type MergePrepareOptions struct {
 }
 
 type MergePrepareResult struct {
-	ConflictPaths []string
-	BaseSHA       string
-	HeadSHA       string
-	Status        MergePrepareStatus
-	DiffStat      DiffStat
-	Message       string
-	HeadChanged   bool
+	TargetCommitSubjects []string
+	Findings             []string
+	ConflictPaths        []string
+	BaseSHA              string
+	HeadSHA              string
+	Status               MergePrepareStatus
+	DiffStat             DiffStat
+	Message              string
+	HeadChanged          bool
 	// Validated reports that ValidationCommand passed on exactly HeadSHA.
 	Validated bool
 }

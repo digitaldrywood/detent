@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -1594,18 +1595,39 @@ func TestPromptDoesNotUseRepositoryNotes(t *testing.T) {
 
 func TestMergeFallbackPromptPreservesPublishedHistory(t *testing.T) {
 	t.Parallel()
-	prompt, err := BuildMergeFallbackPrompt(config.Workflow{}, connector.Issue{}, PromptOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		"merge it into the PR branch",
-		"do not rebase published commits",
-		"Preserve the remote PR head as an ancestor",
+	for _, tt := range []struct {
+		name        string
+		description string
+		subjects    []string
+		message     string
+		want        []string
+		truncated   bool
+	}{
+		{name: "intent", description: "Keep the acceptance criteria intact.", subjects: []string{"fix: preserve target behavior"}, want: []string{"Keep the acceptance criteria intact.", "fix: preserve target behavior"}},
+		{name: "bounded context", description: strings.Repeat("界", 10000), subjects: []string{strings.Repeat("commit subject\n", 1000)}, message: strings.Repeat("precheck\n", 2000), truncated: true},
 	} {
-		t.Run(want, func(t *testing.T) {
-			if !strings.Contains(prompt, want) {
-				t.Errorf("fallback prompt missing %q", want)
+		t.Run(tt.name, func(t *testing.T) {
+			prompt, err := BuildMergeFallbackPrompt(config.Workflow{}, connector.Issue{Description: tt.description}, PromptOptions{MergeTargetCommitSubjects: tt.subjects, MergePrecheckMessage: tt.message})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range append(tt.want,
+				"Preserve both sides’ behavior",
+				"intent is ambiguous",
+				"merge.conflictStyle=zdiff3",
+				"merge it into the PR branch",
+				"do not rebase published commits",
+				"Preserve the remote PR head as an ancestor",
+			) {
+				if !strings.Contains(prompt, want) {
+					t.Errorf("fallback prompt missing %q", want)
+				}
+			}
+			if tt.truncated && (len(prompt) > 40*1024 || strings.Count(prompt, "[truncated]") != 3 || !utf8.ValidString(prompt)) {
+				t.Fatalf("context truncation: bytes=%d markers=%d valid=%t", len(prompt), strings.Count(prompt, "[truncated]"), utf8.ValidString(prompt))
+			}
+			if !strings.HasSuffix(prompt, "Otherwise end with `DETENT_MERGE_FALLBACK: rework`.") {
+				t.Fatal("bounded context lost enforcement")
 			}
 		})
 	}
