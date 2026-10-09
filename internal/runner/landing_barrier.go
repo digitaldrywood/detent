@@ -145,9 +145,17 @@ func (r *Runner) repairLandingBarrier(ctx context.Context, backend workspace.Lan
 			r.logger.Warn("landing barrier repair cleanup failed", "error", err)
 		}
 	}()
+	failed := barrierFailures(result.Output)
 	if head != result.HeadSHA {
-		r.logger.Info("landing barrier repair skipped; base moved", "red_head", result.HeadSHA, "head", head)
-		return
+		current, _, err := repairer.VerifyLandingBarrierRepair(ctx, path, "", command, failed)
+		if err != nil {
+			r.logger.Warn("landing barrier repair verification failed", "head", head, "error", err)
+			return
+		}
+		if current.ExitCode == 0 {
+			r.logger.Info("landing barrier failures already pass on the current head", "red_head", result.HeadSHA, "head", head)
+			return
+		}
 	}
 	scratch, err := os.MkdirTemp("", "detent-barrier-repair-")
 	if err != nil {
@@ -162,7 +170,6 @@ func (r *Runner) repairLandingBarrier(ctx context.Context, backend workspace.Lan
 	turnCtx, cancel := context.WithTimeout(ctx, barrierRepairDuration)
 	defer cancel()
 	r.logger.Info("landing barrier repair started", "head", head, "backend", selection.BackendID)
-	failed := barrierFailures(result.Output)
 	if _, err := agent.RunTurn(turnCtx, AgentTurnRequest{Workspace: path, TempDir: scratch, Prompt: barrierRepairPrompt(result, failed), MaxDuration: barrierRepairDuration}, nil); err != nil {
 		r.logger.Warn("landing barrier repair turn failed", "head", head, "error", err)
 	}
