@@ -475,3 +475,29 @@ workers no additional write authority.
 [CLAUDE.md](../CLAUDE.md#repository-invariants) and the evidence instructions in
 the [PR template](../.github/PULL_REQUEST_TEMPLATE.md). This is a review rule;
 it adds no check, gate, configuration or runtime mechanism.
+
+## INV-17 — Runners are stateless, like GitHub Actions runners
+
+A runner needs only its install configuration: the Hub URL, its identity, a
+capacity limit and one workspace root that it owns. Nothing else about the
+machine may change which work it can claim or how a job behaves: not other
+directories, symlinks, existing checkouts, shell profiles, tool logins or
+files left behind by earlier jobs.
+
+Every job starts in a workspace the runner prepares itself under its workspace
+root, from an exact commit or a Hub-stored source bundle. Work a job must keep
+(commits, uncommitted changes, plan and validation receipts) is published to
+the Hub when the job checkpoints or ends; the copy on the machine is only a
+cache. Any eligible runner can claim any item. No item is pinned to the machine
+that last ran it, and losing a machine loses no work.
+
+A change may not add machine-local state that later jobs depend on, discover
+configuration by scanning the machine, or route work by where earlier work
+ran. A failure caused by machine-local state is fixed by publishing that state
+to the Hub or removing the dependency, never by adding pinning, transfer or
+recovery logic. Existing local-only checkpoints, source-owner pinning and
+source transfer are being removed under this rule; no change may extend them.
+
+**Enforcement:** Review applies this rule to changes in runner, workspace,
+hubclient, recovery and placement code. This is a review rule; it adds no
+check, gate, configuration or runtime mechanism.

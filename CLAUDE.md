@@ -117,3 +117,9 @@ Never use repository files to pass knowledge between issues or runs. Keep
 repository documentation normative; do not append evidence, notes or history,
 and do not treat any repository file as append-only. The current completion
 contract retains ownership of tracker publication.
+
+Follow [INV-17](docs/invariants.md#inv-17--runners-are-stateless-like-github-actions-runners):
+runners are stateless like GitHub Actions runners. A runner depends only on its
+install configuration; every job starts in a fresh workspace from an exact commit
+or a Hub-stored source bundle; work that must survive is published to the Hub.
+Never pin work to a machine or add machine-local state later jobs depend on.
