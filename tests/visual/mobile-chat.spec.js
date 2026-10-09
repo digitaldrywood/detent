@@ -60,7 +60,7 @@ test.describe("phone chat", () => {
         await expect(editor).toBeVisible();
         await expect(page.getByRole("button", { name: "Project actions", exact: true })).toBeHidden();
         if (width === 375) {
-          await page.getByRole("button", { name: "Choose a project", exact: true }).click();
+          await page.getByRole("button", { name: "Change project", exact: true }).click();
           await page.getByRole("menuitemradio").first().click();
         }
         await expect(page.locator('meta[name="viewport"]')).toHaveAttribute("content", /viewport-fit=cover/);

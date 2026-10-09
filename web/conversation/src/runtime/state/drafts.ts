@@ -20,6 +20,11 @@ export const ACTOR_STORAGE_KEY = "detent.conversation.actor";
  * on an account change (decisions.md §3 rule 8).
  */
 export const LAST_PROJECT_STORAGE_KEY = "detent.conversation.lastProject";
+/**
+ * The last real project the reader chose. The scope above may be "" for All
+ * projects; Chat still needs a project, so it reads this instead.
+ */
+export const LAST_CHAT_PROJECT_STORAGE_KEY = "detent.conversation.lastChatProject";
 
 /** Per-entry cap. A draft longer than this is a paste accident, not prose. */
 export const MAX_DRAFT_LENGTH = 32_000;
@@ -105,6 +110,7 @@ export class DraftStore {
       for (const key of doomed) storage.removeItem(key);
       storage.removeItem(ACTOR_STORAGE_KEY);
       storage.removeItem(LAST_PROJECT_STORAGE_KEY);
+      storage.removeItem(LAST_CHAT_PROJECT_STORAGE_KEY);
     } catch {
       // Nothing to do: a store that cannot be read cannot leak either.
     }
