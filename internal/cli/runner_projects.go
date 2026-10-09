@@ -297,10 +297,10 @@ func runnerProjectCheckout(ctx context.Context, root, name, repository string, r
 	}
 	candidates := make(map[string]string)
 	for _, entry := range entries {
-		candidates[filepath.Join(root, entry.Name())] = entry.Name()
+		candidates[canonicalCheckoutPath(filepath.Join(root, entry.Name()))] = entry.Name()
 	}
 	for _, selected := range retained {
-		candidates[selected.Workdir] = selected.ID
+		candidates[canonicalCheckoutPath(selected.Workdir)] = selected.ID
 	}
 	var matches []string
 	for candidate := range candidates {
@@ -328,4 +328,11 @@ func runnerProjectCheckout(ctx context.Context, root, name, repository string, r
 		return "", "", fmt.Errorf("runner checkout %s does not match Cloud repository %s", target, repository)
 	}
 	return target, "", nil
+}
+
+func canonicalCheckoutPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
 }
