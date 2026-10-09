@@ -55,6 +55,15 @@ func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv fu
 }
 
 func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error) *cobra.Command {
+	return newHubRunnerRegisterCommandWithGitHubAuth(version, lookupEnv, startService, privateLocation, report, func(ctx context.Context) error {
+		commandCtx, cancel := context.WithTimeout(ctx, runtimeCommandTimeout)
+		defer cancel()
+		_, err := defaultCommandRunner(commandCtx, "gh", "auth", "status")
+		return err
+	})
+}
+
+func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error) *cobra.Command {
 	var hubURL, token, organization, name, configPath, workspaceRoot, isolationTier string
 	var capacity int
 	var service bool
@@ -166,6 +175,13 @@ func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(stri
 			if err != nil {
 				return fmt.Errorf("runner enrolled; report local setup: %w", err)
 			}
+			if githubTokenSentinel(loaded.GitHubToken) && strings.TrimSpace(lookupEnv("GITHUB_TOKEN")) == "" {
+				steps, err := runnerGitHubAuthNextSteps(cmd.Context(), loaded, ghAuthStatus)
+				if err != nil {
+					return err
+				}
+				result.NextSteps = append(result.NextSteps, steps...)
+			}
 			start := fmt.Sprintf("detent start --config %s --yes", shellQuote(paths.config))
 			switch {
 			case service:
@@ -193,6 +209,37 @@ func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(stri
 	cmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "where project checkouts live (default: ~/detent-runner)")
 	cmd.Flags().BoolVar(&service, "service", false, "install and start the runner as a background service ("+runnerServiceName+")")
 	return cmd
+}
+
+func runnerGitHubAuthNextSteps(ctx context.Context, cfg globalconfig.Config, ghAuthStatus func(context.Context) error) ([]string, error) {
+	var projects []string
+	for _, selected := range cfg.Projects {
+		workflow, err := project.LoadWorkflowContext(ctx, selected)
+		if err != nil {
+			continue
+		}
+		if trackerUsesGitHubToken(workflow.Config.Tracker.Kind) || workflow.Config.Deliverable.GitHubPullRequest {
+			projects = append(projects, selected.ID)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(projects) == 0 {
+		return nil, nil
+	}
+	err := ghAuthStatus(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err == nil {
+		return nil, nil
+	}
+	steps := make([]string, 0, len(projects))
+	for _, name := range projects {
+		steps = append(steps, fmt.Sprintf("Project %s needs GitHub authentication: run gh auth login", name))
+	}
+	return steps, nil
 }
 
 // prepareRunnerIdentity creates the host identity, or checks that an existing
@@ -375,6 +422,7 @@ type runnerConfigFile struct {
 	InstanceName string              `yaml:"instance_name"`
 	ServiceName  string              `yaml:"service_name"`
 	Port         int                 `yaml:"port"`
+	GitHubToken  string              `yaml:"github_token"`
 	Client       runnerConfigClient  `yaml:"client"`
 	Global       runnerConfigGlobal  `yaml:"global"`
 	Projects     []runnerConfigEntry `yaml:"projects"`
@@ -408,6 +456,7 @@ func runnerConfig(base string, org tracker.OrganizationID, name string, capacity
 		Kind:         "GlobalConfig",
 		InstanceName: name,
 		ServiceName:  runnerServiceName,
+		GitHubToken:  "gh",
 		Client: runnerConfigClient{
 			HubURL:         base,
 			IdentityFile:   paths.identity,

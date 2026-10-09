@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +20,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -149,6 +152,98 @@ func TestRunnerProjectSlug(t *testing.T) {
 		if got := runnerProjectSlug(test.name, "prj_fallback"); got != test.want {
 			t.Errorf("runnerProjectSlug(%q) = %q, want %q", test.name, got, test.want)
 		}
+	}
+}
+
+func TestRunnerConfigGitHubToken(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		existing *string
+	}{
+		{name: "new config"},
+		{name: "existing custom credential", existing: new("$CUSTOM_GITHUB_TOKEN")},
+		{name: "existing omitted credential", existing: new("")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			paths := runnerPaths{config: filepath.Join(root, "global.yaml"), identity: filepath.Join(root, "identity.json"), workspaces: filepath.Join(root, "work")}
+			config := runnerConfig("https://hub.example.test", "org_example", "Build host", 2, paths, []runnerRegisteredCheck{{Name: "orders", ID: "prj_orders", Workdir: filepath.Join(paths.workspaces, "orders")}})
+			var before string
+			if test.existing != nil {
+				before = "github_token: " + *test.existing + "\n"
+				if err := os.WriteFile(paths.config, []byte(before), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			created, err := writeRunnerConfig(paths.config, config)
+			if err != nil || created != (test.existing == nil) {
+				t.Fatalf("created = %v, error = %v", created, err)
+			}
+			body := mustRead(t, paths.config)
+			if test.existing != nil {
+				if body != before {
+					t.Fatal("existing credential setting was rewritten")
+				}
+				return
+			}
+			cfg, err := readRunnerSetupConfig(paths.config)
+			if err != nil || cfg.GitHubToken != "gh" {
+				t.Fatalf("generated GitHub credential source = %q, error = %v", cfg.GitHubToken, err)
+			}
+		})
+	}
+}
+
+func TestRunnerGitHubAuthNextSteps(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		definition string
+		missing    bool
+		authErr    error
+		wantCheck  bool
+		wantSteps  []string
+	}{
+		{name: "GitHub signed in", definition: "tracker:\n  kind: github\n", wantCheck: true},
+		{name: "GitHub signed out", definition: "tracker:\n  kind: github\n", authErr: errors.New("private auth output"), wantCheck: true, wantSteps: []string{"Project affected needs GitHub authentication: run gh auth login"}},
+		{name: "GitHub local signed out", definition: "tracker:\n  kind: github_local\n", authErr: errors.New("signed out"), wantCheck: true, wantSteps: []string{"Project affected needs GitHub authentication: run gh auth login"}},
+		{name: "native PR landing signed out", definition: "tracker:\n  kind: hub_native\ndeliverable:\n  github_pull_request: true\n", authErr: errors.New("signed out"), wantCheck: true, wantSteps: []string{"Project affected needs GitHub authentication: run gh auth login"}},
+		{name: "native Git landing", definition: "tracker:\n  kind: hub_native\n"},
+		{name: "checkout not cloned", missing: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			workflow := filepath.Join(root, "WORKFLOW.md")
+			if !test.missing {
+				if err := os.WriteFile(workflow, []byte("Work the issue.\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(root, "detent.yaml"), []byte("schema: 1\n"+test.definition), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := globalconfig.Config{Projects: []globalconfig.Project{{ID: "affected", Workflow: workflow, Workdir: root}, {ID: "uncloned", Workflow: filepath.Join(root, "uncloned", "WORKFLOW.md")}}}
+			if !test.missing {
+				if _, err := project.LoadWorkflowContext(t.Context(), cfg.Projects[0]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			checks := 0
+			steps, err := runnerGitHubAuthNextSteps(t.Context(), cfg, func(context.Context) error {
+				checks++
+				return test.authErr
+			})
+			wantChecks := 0
+			if test.wantCheck {
+				wantChecks = 1
+			}
+			if err != nil || checks != wantChecks || !slices.Equal(steps, test.wantSteps) {
+				t.Fatalf("next steps = %v, error = %v, checks = %d; want %v, %d", steps, err, checks, test.wantSteps, wantChecks)
+			}
+		})
 	}
 }
 
@@ -575,37 +670,86 @@ func TestHubRunnerRegisterReportsBeforeService(t *testing.T) {
 	}
 
 	t.Parallel()
-	hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_orders": "orders"})
-	root := t.TempDir()
-	if err := os.Chmod(root, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(root, "global.yaml")
-	workspaces := filepath.Join(root, "work")
-	checkout(t, filepath.Join(workspaces, "orders"))
-	reported := false
-	reporter := func(_ context.Context, cfg globalconfig.Config, version string) error {
-		if _, err := os.Stat(cfg.Path); err != nil {
-			t.Fatal("diagnostics ran before config was written", err)
-		}
-		if version != "test" || cfg.Client.NativeProjects["orders"] != "prj_orders" {
-			t.Fatalf("wrong diagnostic context: %+v", cfg)
-		}
-		reported = true
-		return nil
-	}
-	starter := func(_ *cobra.Command, path string) error {
-		if !reported {
-			t.Fatal("service started before diagnostics")
-		}
-		return nil
-	}
-	cmd := newHubRunnerRegisterCommandWithReporter("test", func(string) string { return "" }, starter, func(string) error { return nil }, reporter)
-	_, err := executeRegister(t, cmd, "--url", hub.server.URL+"/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--workspace-root", workspaces, "--service")
-	if err != nil || !reported {
-		t.Fatalf("reported=%v err=%v", reported, err)
-	}
-	if got, err := cmd.Flags().GetInt("capacity"); err != nil || cmd.Flags().Lookup("capacity").DefValue != "1" || got != 2 {
-		t.Fatalf("capacity=%d %v", got, err)
+	for _, test := range []struct {
+		name       string
+		credential string
+		envToken   string
+		authErr    error
+		wantChecks int
+		wantLogin  bool
+	}{
+		{name: "signed in", wantChecks: 1},
+		{name: "signed out still starts service", authErr: errors.New("private credential output"), wantChecks: 1, wantLogin: true},
+		{name: "kept custom credential", credential: "custom-token", authErr: errors.New("signed out")},
+		{name: "environment credential", envToken: "environment-token", authErr: errors.New("signed out")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_orders": "orders"})
+			root := t.TempDir()
+			if err := os.Chmod(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			configPath := filepath.Join(root, "global.yaml")
+			workspaces := filepath.Join(root, "work")
+			workdir := filepath.Join(workspaces, "orders")
+			checkout(t, workdir)
+			if err := os.WriteFile(filepath.Join(workdir, "WORKFLOW.md"), []byte("Work the issue.\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(workdir, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: github\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var before string
+			if test.credential != "" {
+				paths := runnerPaths{config: configPath, identity: filepath.Join(root, "identity.json"), workspaces: workspaces}
+				kept := runnerConfig(hub.server.URL+"/organizations/org_example", "org_example", "Build host", 2, paths, []runnerRegisteredCheck{{Name: "orders", ID: "prj_orders", Workdir: workdir}})
+				kept.GitHubToken = test.credential
+				if _, err := writeRunnerConfig(configPath, kept); err != nil {
+					t.Fatal(err)
+				}
+				before = mustRead(t, configPath)
+			}
+			reported, started := false, false
+			reporter := func(_ context.Context, cfg globalconfig.Config, version string) error {
+				if _, err := os.Stat(cfg.Path); err != nil {
+					t.Fatal("diagnostics ran before config was written", err)
+				}
+				if version != "test" || cfg.Client.NativeProjects["orders"] != "prj_orders" {
+					t.Fatalf("wrong diagnostic context: %+v", cfg)
+				}
+				reported = true
+				return nil
+			}
+			starter := func(_ *cobra.Command, path string) error {
+				if !reported {
+					t.Fatal("service started before diagnostics")
+				}
+				started = true
+				return nil
+			}
+			checks := 0
+			cmd := newHubRunnerRegisterCommandWithGitHubAuth("test", mapLookup(map[string]string{"GITHUB_TOKEN": test.envToken}), starter, func(string) error { return nil }, reporter, func(context.Context) error {
+				checks++
+				return test.authErr
+			})
+			output, err := executeRegister(t, cmd, "--url", hub.server.URL+"/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--workspace-root", workspaces, "--service")
+			if err != nil || !reported || !started || checks != test.wantChecks {
+				t.Fatalf("reported=%v started=%v checks=%d err=%v", reported, started, checks, err)
+			}
+			var registration runnerRegistration
+			if err := json.Unmarshal([]byte(output), &registration); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(strings.Join(registration.NextSteps, "\n"), "Project orders needs GitHub authentication: run gh auth login") != test.wantLogin || strings.Contains(output, "private credential output") {
+				t.Fatalf("next steps = %v", registration.NextSteps)
+			}
+			if test.credential != "" && mustRead(t, configPath) != before {
+				t.Fatal("registration rewrote the operator's credential setting")
+			}
+			if got, err := cmd.Flags().GetInt("capacity"); err != nil || cmd.Flags().Lookup("capacity").DefValue != "1" || got != 2 {
+				t.Fatalf("capacity=%d %v", got, err)
+			}
+		})
 	}
 }
