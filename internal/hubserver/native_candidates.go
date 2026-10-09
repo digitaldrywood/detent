@@ -92,6 +92,7 @@ SELECT i.id,
   THEN substr(COALESCE(i.native_created_at, i.created_at), 21, length(COALESCE(i.native_created_at, i.created_at)) - 21) || '000000000'
   ELSE '000000000' END, 1, 9) AS created,
  p.scheduling_rank AS project_rank,
+ CASE WHEN lower(trim(ws.detent_state)) = 'merging' THEN 0 ELSE 1 END AS landing,
  i.project_id || '#' || i.number AS identifier
 FROM issues i
 JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
@@ -171,7 +172,7 @@ WHERE i.organization_id = `,
 		return nil, encodingErr
 	}
 	statement += `)`
-	order := "priority, project_rank, created, identifier, id"
+	order := "priority, landing, project_rank, created, identifier, id"
 	baseArgs := args
 	readPage := func(after tracker.WorkItemID, limit int, anchor bool) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
 		args = append([]any(nil), baseArgs...)
