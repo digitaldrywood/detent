@@ -1603,7 +1603,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					".test-bin/make":        "#!/bin/sh\ntest \"$(cat frontend/package.json)\" = '{\"dependencies\":{}}' || exit 2\nmkdir -p .generated\nprintf 'make %s passed\\n' \"$1\" | tee .generated/result\n",
 				} {
 					if test.largeOutput && name == ".test-bin/make" {
-						content += "printf '%070000d\\n' 0\n"
+						content = strings.Replace(content, "mkdir -p .generated\n", "mkdir -p .generated\nprintf '%070000d\\n' 0\n", 1)
 					}
 					path := filepath.Join(source, name)
 					if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
