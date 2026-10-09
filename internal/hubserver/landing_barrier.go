@@ -88,7 +88,7 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 				return nil, nativeInvalid("Barrier start requires the observed integration branch head")
 			}
 			takeover := false
-			if requester := scope.credential.Runner.RunnerID; requester != "" {
+			if requester := landingBarrierOwner(scope); strings.HasPrefix(requester, "runner_") {
 				preferred, err := preferredBarrierRunner(ctx, tx, scope, now)
 				if err != nil {
 					return nil, err
