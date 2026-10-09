@@ -35,6 +35,7 @@ import { clearBoardCache } from "../../src/app/work/lib/boardStore.ts";
 import { useBoard, useNow } from "../../src/app/work/lib/useWork.ts";
 import { resetRunnerNamesForTests } from "../../src/app/work/lib/runnerNames.ts";
 import { workPaginationFixture } from "../workPaginationFixture.ts";
+import { plainSearchOptions } from "../../src/app/lib/searchParams.ts";
 
 const clockRenders = vi.hoisted(() => ({ card: 0, toolbar: 0, list: 0 }));
 
@@ -847,7 +848,7 @@ async function pagedWork(path = "/work", wrapFetch?: (fetch: ReturnType<typeof w
     return <WorkBoard projectId={projectId} />;
   } });
   const history = createMemoryHistory({ initialEntries: [path] });
-  const router = createRouter({ routeTree: root.addChildren([all, project]), history });
+  const router = createRouter({ routeTree: root.addChildren([all, project]), history, ...plainSearchOptions });
   render(<ClientContext.Provider value={fixture.client}><RouterProvider router={router} /></ClientContext.Provider>);
   return { ...fixture, router, history };
 }
@@ -1143,6 +1144,39 @@ describe("the live Work continuation intent", () => {
 });
 
 describe("the filter-first Work surface", () => {
+  it.each(["4", "42", "true", "false", "null", "4.0", "1e3", "9007199254740993", '"4"', '[4]', '{"number":4}'])("preserves the literal search %s through URL edits", async (q) => {
+    const fixture = await pagedWork();
+    await settledWork();
+    const search = screen.getByRole("searchbox", { name: "Search issues" });
+    for (const value of [q, q.slice(0, -1), q]) {
+      fireEvent.change(search, { target: { value } });
+      await waitFor(() => expect((search as HTMLInputElement).value).toBe(value));
+      await settledWork();
+      expect(new URLSearchParams(fixture.router.state.location.searchStr).get("q") ?? "").toBe(value);
+      expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("q") ?? "").toBe(value);
+    }
+  });
+
+  it.each(["linked", "restored"])("preserves every %s view parameter when editing a numeric query", async (source) => {
+    const query = "archived=true&view=list&tab=all&q=4&state=42&label=true&assignee=null&priority=4&sort=title&lanes=false&collapsed=0&completed=7d";
+    const fixture = await pagedWork(source === "linked" ? `/work?${query}` : "/work", (fetch) => async (input, init) => {
+      if (source === "restored" && String(input).endsWith("/work-view-preference") && (init?.method ?? "GET") === "GET") {
+        return Response.json({ query });
+      }
+      return fetch(input, init);
+    });
+    const search = await screen.findByRole("searchbox", { name: "Search issues" });
+    await waitFor(() => expect((search as HTMLInputElement).value).toBe("4"));
+    await settledWork();
+    expect(new URLSearchParams(fixture.router.state.location.searchStr).get("q")).toBe("4");
+    fireEvent.change(search, { target: { value: "42" } });
+    await settledWork();
+    expect(parseViewState(fixture.router.state.location.searchStr)).toEqual({
+      archived: true, view: "list", tab: "all", q: "42", state: ["42"], label: ["true"],
+      assignee: ["null"], priority: ["4"], sort: "title", lanes: ["false"], collapsed: ["0"], completedWindow: "7d",
+    });
+  });
+
   it("opens the completed window menu and requests a fresh count for the selection", async () => {
     const { requests, router } = await pagedWork();
     await settledWork();
@@ -1192,19 +1226,28 @@ describe("the filter-first Work surface", () => {
       ["1", "100"].includes(request.url.searchParams.get("limit")!) && request.url.searchParams.get("include") === "work")).toBe(true);
   });
 
-  it.each(["Older title needle", "alpha#3421", "older-label"])("finds older %s matches beyond the initial inventory and open selection", async (q) => {
-    const fixture = await pagedWork();
+  it.each([
+    { q: "Older title needle", linked: false },
+    { q: "alpha#3421", linked: false },
+    { q: "3421", linked: false },
+    { q: "3421", linked: true },
+    { q: "older-label", linked: false },
+  ])("finds older $q matches beyond the initial inventory and open selection (linked=$linked)", async ({ q, linked }) => {
+    const fixture = await pagedWork(linked ? `/work?view=list&tab=all&q=${q}` : "/work");
     await settledWork();
-    fireEvent.click(screen.getByRole("radio", { name: "List" }));
-    await screen.findByTestId("work-list");
-    expect(screen.queryByText("Older title needle a")).toBeNull();
-    fireEvent.click(screen.getByTestId("list-tab-all"));
-    await settledWork();
-    fireEvent.change(screen.getByTestId("work-search"), { target: { value: q } });
-    await settledWork();
+    if (!linked) {
+      fireEvent.click(screen.getByRole("radio", { name: "List" }));
+      await screen.findByTestId("work-list");
+      expect(screen.queryByText("Older title needle a")).toBeNull();
+      fireEvent.click(screen.getByTestId("list-tab-all"));
+      await settledWork();
+      fireEvent.change(screen.getByRole("searchbox", { name: "Search issues" }), { target: { value: q } });
+      await settledWork();
+    }
+    expect((screen.getByRole("searchbox", { name: "Search issues" }) as HTMLInputElement).value).toBe(q);
     expect(screen.getByText("Older title needle a")).not.toBeNull();
     expect(screen.queryByText("Observed later-page worker")).toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe(q === "alpha#3421" ? "1 completed · 48h" : "2 completed · 48h");
+    expect(screen.getByTestId("stat-completed").textContent).toBe(q === "alpha#3421" || q === "3421" ? "1 completed · 48h" : "2 completed · 48h");
     expect(parseViewState(fixture.router.state.location.searchStr).q).toBe(q);
     expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("q")).toBe(q);
     if (q === "Older title needle") {

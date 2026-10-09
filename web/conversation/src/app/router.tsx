@@ -28,6 +28,7 @@ import { ChangesPage } from "./work/ChangesPage.tsx";
 import { IssuePage } from "./work/IssuePage.tsx";
 import { WorkBoard } from "./work/WorkBoard.tsx";
 import { routerBasePath, withoutBasePath } from "../runtime/basePath.ts";
+import { plainSearchOptions } from "./lib/searchParams.ts";
 
 // --- Design system (dev builds only) ----------------------------------------
 //
@@ -201,7 +202,7 @@ const routeTree = rootRoute.addChildren([
 
 /** `history` is for tests, which have no browser location to navigate. */
 export function makeRouter(history?: RouterHistory, basepath: string = routerBasePath()) {
-  return createRouter({ routeTree, basepath, ...(history === undefined ? {} : { history }) });
+  return createRouter({ routeTree, basepath, ...plainSearchOptions, ...(history === undefined ? {} : { history }) });
 }
 
 declare module "@tanstack/react-router" {
