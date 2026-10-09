@@ -112,8 +112,11 @@ func TestStripeReconcile(t *testing.T) {
 	for _, test := range []struct {
 		name, path, before, after, status, hold string
 		wantError                               bool
+		discounted, zeroInvoice                 bool
 	}{
 		{name: "paid active", status: "active"},
+		{name: "fully discounted without payment method", path: "/v1/subscriptions", before: `"amount_paid":1000`, after: `"amount_paid":0,"amount_due":0`, status: "active", discounted: true, zeroInvoice: true},
+		{name: "partially discounted", path: "/v1/subscriptions", before: `"amount_paid":1000`, after: `"amount_paid":500,"amount_due":500`, status: "active", discounted: true},
 		{name: "partial refund", path: "/v1/charges/ch_test", before: `"amount_refunded":0`, after: `"amount_refunded":200`, status: "active"},
 		{name: "full refund", path: "/v1/charges/ch_test", before: `"amount_refunded":0`, after: `"amount_refunded":1000`, status: "active", hold: "refunded"},
 		{name: "past due", path: "/v1/subscriptions", before: `"status":"active"`, after: `"status":"past_due"`, status: "past_due"},
@@ -139,7 +142,18 @@ func TestStripeReconcile(t *testing.T) {
 			if test.path != "" {
 				f.responses[test.path] = strings.Replace(f.responses[test.path], test.before, test.after, 1)
 			}
+			if test.discounted {
+				f.responses["/v1/subscriptions"] = strings.Replace(f.responses["/v1/subscriptions"], `"status":"active"`, `"status":"active","discounts":["di_test"],"default_payment_method":null`, 1)
+				if test.zeroInvoice {
+					delete(f.responses, "/v1/invoice_payments")
+				} else {
+					f.responses["/v1/invoice_payments"] = strings.Replace(f.responses["/v1/invoice_payments"], `"amount_paid":1000`, `"amount_paid":500`, 1)
+				}
+			}
 			snapshot, err := provider.Reconcile(t.Context(), fixtureBinding())
+			if test.discounted && (snapshot.PriceID != "price_test" || snapshot.InvoiceStatus != "paid") {
+				t.Fatalf("discount changed subscribed price or invoice status: %+v", snapshot)
+			}
 			if test.name == "paid active" && (!snapshot.PeriodStart.Equal(time.Unix(1890000000, 0)) || !snapshot.PeriodEnd.Equal(time.Unix(1900000000, 0))) {
 				t.Fatalf("period = %+v", snapshot)
 			}
@@ -210,8 +224,11 @@ func TestStripeSessions(t *testing.T) {
 			if !test.portal && (f.keys[0] != "request_test" || f.posts[0].Get("mode") != "subscription" || f.posts[0].Get("line_items[0][price]") != "price_test" || f.posts[0].Get("subscription_data[metadata][detent_organization_id]") != "org_test") {
 				t.Fatalf("checkout parameters = %v", f.posts)
 			}
-			if f.posts[0].Get("automatic_tax[enabled]") != "" || f.posts[0].Get("allow_promotion_codes") != "" {
-				t.Fatal("checkout enabled unconfigured tax or discounts")
+			if !test.portal && (f.posts[0].Get("allow_promotion_codes") != "true" || f.posts[0].Get("payment_method_collection") != "if_required") {
+				t.Fatalf("checkout promotion and payment collection parameters = %v", f.posts)
+			}
+			if f.posts[0].Get("automatic_tax[enabled]") != "" {
+				t.Fatal("checkout enabled unconfigured tax")
 			}
 		})
 	}
