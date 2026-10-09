@@ -250,7 +250,7 @@ const nativeCandidateCompletionEvidence = `
  AND json_extract(a.checkpoint_json, '$.worktree_state') IN ('dirty', 'unpushed')
  AND json_extract(a.checkpoint_json, '$.resume') = 'resume_session'
  AND json_extract(a.checkpoint_json, '$.availability') = 'available'
- AND json_extract(a.checkpoint_json, '$.storage') = 'local_only'
+ AND json_extract(a.checkpoint_json, '$.storage') IN ('local_only', 'git_ref')
  AND json_extract(a.checkpoint_json, '$.external_effect') = 'none'
  AND json_extract(a.checkpoint_json, '$.effect_state') = 'none'
  AND COALESCE(json_extract(a.checkpoint_json, '$.effect_id'), '') = ''

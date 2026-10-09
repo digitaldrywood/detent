@@ -1355,7 +1355,8 @@ Ordered `run.checkpointed` events require a bounded `handoff` object:
 | Field | Accepted values or format |
 | --- | --- |
 | `resume` | `resume_session`, `fresh_checkout`, `manual_recovery` |
-| `storage` | `local_only`, `customer_store` |
+| `storage` | `git_ref`, `local_only` (legacy), `customer_store` |
+| `ref`, `commit_sha`, `tree_sha`, `base_sha` | Required with `git_ref` (`base_sha` optional): a `refs/detent/checkpoints/` ref and hexadecimal Git IDs; forbidden otherwise |
 | `availability` | `available`, `missing`, `inaccessible`, `unverified` |
 | `worktree_state` | `clean`, `dirty`, `unpushed`, `unknown` |
 | `head_sha`, `expected_head_sha`, `workspace_digest` | Optional hexadecimal Git commit IDs or workspace digest |
@@ -1370,27 +1371,31 @@ independent durable receipt/integrity/access verification follows the
 download capability nor proof of ownership or availability. Hub never receives
 workspace paths, provider session state, manifest contents, source, diffs, raw
 transcripts, storage credentials, signed URLs or artifact bytes through handoffs.
-Runner-local checkpoints remain local even when the metadata survives in Hub.
 
-Resume requires a locally present workspace, matching machine/head/digest and
-policy/runtime identity, plus successful backend session verification. Otherwise
-the runner starts a fresh session while retaining recoverable local work, or
-requires explicit recovery for unavailable dirty/unpushed checkpoints and ambiguous
-Git/PR effects. A clean missing checkpoint permits a fresh checkout/session. This
-does not claim that a local workspace survives machine loss. Before epilogue hooks,
-dirty/unpushed work uses the existing workspace retention mechanism;
-checkpoint publication is metadata only and does not publish source.
+A `git_ref` checkpoint names work the runner pushed to the project's own Git
+remote (INV-17): a commit whose parent is the item branch head and whose tree
+holds every uncommitted change, force-pushed with plain `git push` to
+`refs/detent/checkpoints/<work_item_id>`. The item branch is never rewritten,
+the ref raises no branch push event, and Hub stores only the reference. Runners
+push at each stage end, after agent turns that changed the worktree and at
+most five minutes apart while files change; an unchanged tree is skipped and a
+failed push is logged and retried at the next trigger without failing the job.
+Excluded paths stay on the machine; credential content or more than 20 MiB of
+unpublished objects refuses the push. Terminal workspace cleanup deletes the ref.
 
-Recovery placement uses the latest source-bearing checkpoint's enrolled runner
-and lease provenance. A later clean startup does not replace that checkpoint.
-Local-only or pending dirty source stays pinned to its owner. A retained Change
-bundle allows another eligible runner only after its bounded bytes and digests
-match the checkpoint, or an immutable version proves the same base and raw diff,
-and only while the owner runner is offline, draining, revoked, removed or
-otherwise ineligible for the project, or an operator selected that runner. While
-the owner is online and eligible, other runners refuse the claim and the
-explanation names the owner the item waits for.
-Missing source produces a recovery blocker rather than Human Review readiness.
+Any runner restores the newest recorded `git_ref` checkpoint into a fresh
+workspace by fetching its exact commit; an identical local worktree is reused and
+any other is quarantined. Provider session resume is only an optimisation for the
+runner that still holds the session; otherwise a fresh session starts on the
+restored workspace. A legacy `local_only` checkpoint whose workspace is not on the
+claiming runner starts fresh from the branch or current Change version. Ambiguous
+Git/PR effects still require reconciliation by their source runner.
+
+Recovery placement never routes by where earlier work ran. It refuses only
+checkpoints reported missing or inaccessible, a current Change version without a
+verified Hub source bundle (recaptured on its source runner), and an uncertain
+Git/PR effect, which waits for its source runner. Missing source produces a
+recovery blocker rather than Human Review readiness.
 
 `GET /work-items/{item}/source-recovery` reports the source runner, checkpoint,
 current immutable version, retained-source availability, execution quiescence,
@@ -1398,18 +1403,17 @@ selected destination and eligible destination runners. Runtime and explanation
 reads, including MCP `explain_item`, include the same recovery facts.
 `POST /work-items/{item}/source-recovery` and MCP `transfer_item` require work-write
 and runner-administration authority, a command request identity, the expected
-issue revision and exact `version_id`. Selecting `destination_runner_id` routes
-that version to the selected eligible runner; omitting it restores automatic
-routing. Existing lease validation and source restoration run before worker work.
+issue revision and exact `version_id`. The selected `destination_runner_id` is
+recorded and audited but no longer routes claims: any eligible runner restores
+the source. The command and its read are retired with INV-17 source transfer.
 The command records an issue edit and reuses dispatch generation without changing
 workflow lanes, human/delivery holds, Change versions, validation or reviews.
 
 Transfer requires acknowledged terminal execution and release of every lease,
 including a claim that has not started. Expiry is not quiescence. Active,
 partitioned, archived or terminal work and uncertain Git/PR effects are refused.
-The current command transfers retained committed source; uncaptured legacy and
-dirty source must first be captured on the owning runner. It does not revoke Git
-credentials, force an unreachable process to stop, or recover unavailable copies.
+It does not revoke Git credentials, force an unreachable process to stop, or
+recover unavailable copies.
 
 Native executions revalidate the pinned policy and current lease before startup,
 provider turns and epilogue hooks. Lease responses include `server_time`; the

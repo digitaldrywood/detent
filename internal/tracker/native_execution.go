@@ -36,6 +36,16 @@ type NativeCheckpoint struct {
 	EffectState     string                 `json:"effect_state"`
 	EffectID        string                 `json:"effect_id,omitempty"`
 	Change          *NativeChangeReference `json:"change,omitempty"`
+	Ref             string                 `json:"ref,omitempty"`
+	CommitSHA       string                 `json:"commit_sha,omitempty"`
+	BaseSHA         string                 `json:"base_sha,omitempty"`
+	TreeSHA         string                 `json:"tree_sha,omitempty"`
+}
+
+const CheckpointRefPrefix = "refs/detent/checkpoints/"
+
+func (c *NativeCheckpoint) GitRef() bool {
+	return c != nil && c.Storage == "git_ref" && c.Ref != "" && c.CommitSHA != "" && c.TreeSHA != ""
 }
 
 type NativeChangeReference struct {

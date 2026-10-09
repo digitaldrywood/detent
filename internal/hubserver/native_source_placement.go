@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -44,7 +43,9 @@ WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.checkpoi
 	return nativeSourceCheckpoint{}, rows.Err()
 }
 
-func nativeSourceClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, now time.Time) (bool, string, error) {
+// nativeSourceClaimAllowed never routes work by where earlier work ran
+// (INV-17). It refuses only a Hub-recorded source that no runner can restore.
+func nativeSourceClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID) (bool, string, error) {
 	var item string
 	if err := q.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE id=? AND organization_id=? AND project_id=?", id, scope.organization, scope.project).Scan(&item); err != nil {
 		return false, "", err
@@ -53,117 +54,60 @@ func nativeSourceClaimAllowed(ctx context.Context, q nativeQueryer, scope native
 	if err != nil {
 		return false, "", err
 	}
-	owner, ownerRunner, attempt, checkpoint := source.MachineID, source.RunnerID, source.AttemptID, source.Checkpoint
-
+	checkpoint := source.Checkpoint
+	owned := func(owner tracker.MachineID, ownerRunner string) bool {
+		return owner != "" && machine == owner && (ownerRunner == "" || ownerRunner == scope.credential.Runner.RunnerID)
+	}
+	if checkpoint.UncertainForgeEffect() {
+		return owned(source.MachineID, source.RunnerID), fmt.Sprintf("Checkpoint %s on source runner %s has an uncertain Git push or PR creation; that runner reconciles it first", source.AttemptID, source.MachineID), nil
+	}
+	if checkpoint.GitRef() {
+		return true, "Checkpoint " + checkpoint.Ref + " is in the project repository; any eligible runner restores it", nil
+	}
 	change, found, err := readLatestNativeChangeRequest(ctx, q, scope, item)
 	if err != nil {
 		return false, "", err
 	}
+	var version tracker.ChangeVersion
 	if found && change.CurrentVersion != "" {
-		version, err := readChangeVersion(ctx, q, change.ID, change.CurrentVersion)
+		version, err = readChangeVersion(ctx, q, change.ID, change.CurrentVersion)
 		if err != nil {
 			return false, "", err
 		}
-		var sourceOwner tracker.MachineID
-		var sourceRunner string
-		err = q.QueryRowContext(ctx, `SELECT l.machine_id,COALESCE(lr.runner_id,'') FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
-WHERE a.id=? AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, version.AttemptID, scope.organization, scope.project, item).Scan(&sourceOwner, &sourceRunner)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return false, "", err
+		stored, err := nativeChangeSourceStored(ctx, q, version)
+		if err != nil || stored {
+			return stored, "Verified Change source is stored on the Hub; any eligible runner restores it", err
 		}
-		matches := checkpoint == nil || checkpoint.WorktreeState != "dirty" && checkpoint.WorktreeState != "unknown" && checkpoint.HeadSHA == version.HeadSHA
-		if !matches && checkpoint != nil && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") && version.Source != nil {
-			var priorRaw string
-			err := q.QueryRowContext(ctx, `SELECT record_json FROM change_versions WHERE change_id=? AND json_extract(record_json,'$.head_sha')=? ORDER BY rowid DESC LIMIT 1`, change.ID, checkpoint.HeadSHA).Scan(&priorRaw)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return false, "", err
-			}
-			if err == nil {
-				var prior tracker.ChangeVersion
-				if err := json.Unmarshal([]byte(priorRaw), &prior); err != nil {
-					return false, "", err
-				}
-				matches = prior.Source != nil && prior.BaseSHA == version.BaseSHA && prior.Source.DiffSHA256 == version.Source.DiffSHA256
-			}
-		}
-		if matches && version.Source != nil {
-			var bundle []byte
-			err := q.QueryRowContext(ctx, "SELECT bundle FROM change_sources WHERE version_id=?", version.ID).Scan(&bundle)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return false, "", err
-			}
-			if checkpoint == nil {
-				owner, ownerRunner = sourceOwner, sourceRunner
-			}
-			if err == nil && version.Source.Validate(version.BaseSHA, version.HeadSHA, bundle) == nil {
-				return nativeRetainedSourceClaimAllowed(ctx, q, scope, machine, id, owner, ownerRunner, change.CurrentVersion, now)
-			}
-			if owner == "" {
-				return false, "Preserved source owner is unavailable; locate the exact checkpoint before recovery", nil
-			}
-			if checkpoint == nil || checkpoint.HeadSHA != version.HeadSHA || checkpoint.Availability != "available" || checkpoint.Storage != "local_only" {
-				return false, fmt.Sprintf("Change %s version %s retained source is missing or corrupt; verify the local checkpoint on source runner %s before recapture", change.ID, version.ID, owner), nil
-			}
-			return machine == owner && (ownerRunner == "" || ownerRunner == scope.credential.Runner.RunnerID), fmt.Sprintf("Change %s version %s retained source is missing or corrupt; verify and recapture the exact local head on source runner %s", change.ID, version.ID, owner), nil
-		}
-		if checkpoint == nil {
-			owner, ownerRunner, attempt = sourceOwner, sourceRunner, version.AttemptID
-		}
-	}
-	if checkpoint == nil && (!found || change.CurrentVersion == "") {
-		return true, "No preserved source requires runner ownership", nil
-	}
-	if owner == "" {
-		return false, "Preserved source owner is unavailable; locate the exact checkpoint before recovery", nil
 	}
 	if checkpoint != nil && (checkpoint.Availability == "missing" || checkpoint.Availability == "inaccessible" || checkpoint.Storage == "customer_store") {
-		return false, fmt.Sprintf("Checkpoint %s on source runner %s is %s; restore and verify source before recovery", attempt, owner, checkpoint.Availability), nil
+		return false, fmt.Sprintf("Checkpoint %s on source runner %s is %s; restore and verify source before recovery", source.AttemptID, source.MachineID, checkpoint.Availability), nil
 	}
-	return machine == owner && (ownerRunner == "" || ownerRunner == scope.credential.Runner.RunnerID), fmt.Sprintf("Checkpoint %s is local to source runner %s; wait for that runner to be online, eligible and available, or capture the exact source there before transfer", attempt, owner), nil
+	if version.ID != "" {
+		owner, ownerRunner := source.MachineID, source.RunnerID
+		if checkpoint == nil {
+			err = q.QueryRowContext(ctx, `SELECT l.machine_id,COALESCE(lr.runner_id,'') FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
+WHERE a.id=? AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, version.AttemptID, scope.organization, scope.project, item).Scan(&owner, &ownerRunner)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return false, "", err
+			}
+		}
+		reason := fmt.Sprintf("Change %s version %s has no verified Hub source; recapture the exact head on source runner %s", change.ID, version.ID, owner)
+		return owned(owner, ownerRunner), reason, nil
+	}
+	return true, "No source is pinned to a runner", nil
 }
 
-func nativeRetainedSourceClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, owner tracker.MachineID, ownerRunner, version string, now time.Time) (bool, string, error) {
-	const available = "Verified retained Change source is available"
-	if machine == "" || machine == owner || ownerRunner == "" || ownerRunner == scope.credential.Runner.RunnerID {
-		return true, available, nil
+func nativeChangeSourceStored(ctx context.Context, q nativeQueryer, version tracker.ChangeVersion) (bool, error) {
+	if version.Source == nil {
+		return false, nil
 	}
-	var destination, routed string
-	if err := q.QueryRowContext(ctx, "SELECT recovery_runner_id,recovery_version_id FROM issues WHERE id=? AND organization_id=? AND project_id=?", id, scope.organization, scope.project).Scan(&destination, &routed); err != nil {
-		return false, "", err
+	var bundle []byte
+	err := q.QueryRowContext(ctx, "SELECT bundle FROM change_sources WHERE version_id=?", version.ID).Scan(&bundle)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
 	}
-	if destination != "" && routed == version {
-		return true, available, nil
-	}
-	eligible, err := nativeSourceOwnerEligible(ctx, q, scope, ownerRunner, now)
-	if err != nil {
-		return false, "", err
-	}
-	if eligible {
-		return false, fmt.Sprintf("Verified retained Change source stays with source runner %s while it is online and eligible; another runner recovers it only when that runner is unavailable or an operator selects a recovery runner", owner), nil
-	}
-	return true, fmt.Sprintf("%s; source runner %s is offline or ineligible", available, owner), nil
-}
-
-func nativeSourceOwnerEligible(ctx context.Context, q nativeQueryer, scope nativeScope, runnerID string, now time.Time) (bool, error) {
-	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
-	var refusal *nativeError
-	if err != nil && (!errors.As(err, &refusal) || refusal.Code != "policy_mismatch") {
-		return false, err
-	}
-	runners, err := readPlacementRunners(ctx, q, scope, now)
 	if err != nil {
 		return false, err
 	}
-	for _, r := range runners {
-		if r.RunnerID != runnerID {
-			continue
-		}
-		if r.Paused && !r.Pending || len(r.Problems) != 0 || r.State == "draining" || r.Health == "offline" || r.ConnectionHealth == "offline" ||
-			len(r.Exclusions(scope.project, approval.Policy.Requirements, true)) != 0 {
-			return false, nil
-		}
-		availability, err := r.Availability.Evaluate(now)
-		return err == nil && availability.Open, nil
-	}
-	return false, nil
+	return version.Source.Validate(version.BaseSHA, version.HeadSHA, bundle) == nil, nil
 }

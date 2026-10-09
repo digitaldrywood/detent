@@ -107,6 +107,11 @@ func validCommitID(value string) bool {
 	return err == nil
 }
 
+func validCheckpointRef(ref string) bool {
+	name, ok := strings.CutPrefix(ref, tracker.CheckpointRefPrefix)
+	return ok && name != "" && len(name) <= 128 && strings.Trim(name, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") == "" && !strings.HasPrefix(name, ".") && !strings.Contains(name, "..") && !strings.HasSuffix(name, ".lock")
+}
+
 func validateNativeExecution(data tracker.NativeRunData, eventType string) error {
 	if f := data.TerminalFailure; f != nil {
 		if eventType != "run.finished" || data.Sequence <= 0 || f.ObservedAt.IsZero() || data.Outcome == "succeeded" {
@@ -164,7 +169,7 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 	c := data.Handoff
 	if eventType != "run.checkpointed" || !slices.Contains([]string{"resume_session", "fresh_checkout", "manual_recovery"}, c.Resume) ||
 		!slices.Contains([]string{"available", "missing", "inaccessible", "unverified"}, c.Availability) ||
-		!slices.Contains([]string{"local_only", "customer_store"}, c.Storage) ||
+		!slices.Contains([]string{"local_only", "git_ref", "customer_store"}, c.Storage) ||
 		!slices.Contains([]string{"clean", "dirty", "unpushed", "unknown"}, c.WorktreeState) ||
 		!slices.Contains([]string{"none", "git_push", "pr_create", "provider_turn"}, c.ExternalEffect) ||
 		!slices.Contains([]string{"none", "pending", "confirmed", "ambiguous"}, c.EffectState) {
@@ -175,6 +180,10 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 	}
 	if c.ExternalEffect == "none" && (c.EffectState != "none" || c.EffectID != "") || c.ExternalEffect != "none" && (c.EffectState == "none" || !validNativeID(c.EffectID, "effect")) {
 		return nativeInvalid("External effects require a typed reconciliation identity and state")
+	}
+	if (c.Storage == "git_ref") != (c.Ref != "" || c.CommitSHA != "" || c.TreeSHA != "" || c.BaseSHA != "") || c.Storage == "git_ref" &&
+		(!validCheckpointRef(c.Ref) || !validCommitID(c.CommitSHA) || !validCommitID(c.TreeSHA) || c.BaseSHA != "" && !validCommitID(c.BaseSHA)) {
+		return nativeInvalid("Git checkpoints require a Detent checkpoint ref and commit, tree and base IDs")
 	}
 	if c.Storage == "customer_store" && (len(data.ArtifactIDs) == 0 || c.Availability == "available") {
 		return nativeInvalid("Customer checkpoint references require artifacts and independent availability verification")
