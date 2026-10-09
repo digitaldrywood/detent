@@ -11,9 +11,76 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
+
+func TestDeployReadiness(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, version, commit string
+		healthAfter, mcpAfter time.Duration
+		wantErr               bool
+	}{
+		{name: "ready immediately", version: "1.2.3", commit: "expected"},
+		{name: "own restart and MCP startup", version: "v1.2.3", commit: "expected", healthAfter: 30 * time.Second, mcpAfter: 34 * time.Second},
+		{name: "wrong version", version: "1.2.2", commit: "expected", wantErr: true},
+		{name: "wrong commit", version: "1.2.3", commit: "wrong", wantErr: true},
+		{name: "Hub stays unavailable", healthAfter: 3 * time.Minute, wantErr: true},
+		{name: "MCP stays unavailable", version: "1.2.3", commit: "expected", mcpAfter: 3 * time.Minute, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				mcpCalls := 0
+				f := &fakeCloud{}
+				handler := mcp.NewHTTPHandler(f, "test", mcp.HTTPConfig{Principal: func(*http.Request) operatortool.Identity {
+					return operatortool.Identity{PrincipalID: "operator", OrganizationID: "org", CredentialID: "scoped-key"}
+				}})
+				client := &http.Client{Transport: handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/health" {
+						if r.Header.Get("Authorization") != "" {
+							t.Fatal("health request exposed smoke credential")
+						}
+						if time.Since(start) < test.healthAfter {
+							w.WriteHeader(http.StatusBadGateway)
+							return
+						}
+						if err := json.NewEncoder(w).Encode(map[string]string{"version": test.version, "commit": test.commit}); err != nil {
+							t.Fatal(err)
+						}
+						return
+					}
+					mcpCalls++
+					if time.Since(start) < test.mcpAfter {
+						w.WriteHeader(http.StatusBadGateway)
+						return
+					}
+					handler.ServeHTTP(w, r)
+				})}}
+				transport := &cloudMCP{endpoint: "https://example.test/organizations/org/mcp", token: "test-key", client: client}
+				var output bytes.Buffer
+				err := waitForDeploy(t.Context(), transport, "v1.2.3", "expected", &output)
+				if (err != nil) != test.wantErr {
+					t.Fatalf("readiness = %v", err)
+				}
+				if test.wantErr {
+					if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != 2*time.Minute || strings.Contains(output.String(), "PASS") {
+						t.Fatalf("readiness did not fail at deadline: %v after %s", err, time.Since(start))
+					}
+					if test.mcpAfter == 0 && mcpCalls != 0 {
+						t.Fatal("wrong build reached MCP smoke")
+					}
+				} else if time.Since(start) != max(test.healthAfter, test.mcpAfter) || len(transport.tools) == 0 || !strings.Contains(output.String(), "PASS") {
+					t.Fatal("readiness did not wait for identity and MCP initialization")
+				}
+			})
+		})
+	}
+}
 
 func TestStagingSmokePolicy(t *testing.T) {
 	if err := smokePolicy(operatortool.Registry()); err != nil {

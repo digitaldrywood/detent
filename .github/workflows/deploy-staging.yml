@@ -90,6 +90,8 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
           DETENT_RELEASE_ENVIRONMENT: staging
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
           DETENT_SMOKE_API_KEY: ${{ secrets.DETENT_SMOKE_API_KEY }}
           DETENT_MCP_URL: ${{ vars.DETENT_MCP_URL }}
         run: |

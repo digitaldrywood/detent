@@ -5,6 +5,7 @@ import argparse
 import json
 import socket
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -13,6 +14,27 @@ import urllib.request
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+def wait_for_release(request, url, version, commit, timeout=120, interval=2,
+                     monotonic=time.monotonic, sleep=time.sleep):
+    deadline = monotonic() + timeout
+    while monotonic() < deadline:
+        try:
+            status, _, body = request(url, timeout=min(20, deadline - monotonic()))
+            identity = json.loads(body)
+            if (monotonic() < deadline and status == 200 and isinstance(identity, dict) and
+                    identity.get("version", "") in (version.removeprefix("v"), "v" + version.removeprefix("v")) and
+                    identity.get("commit") == commit):
+                print("PASS deployed release identity", flush=True)
+                return
+        except (OSError, ValueError, urllib.error.URLError):
+            pass
+        remaining = deadline - monotonic()
+        if remaining > 0:
+            print("WAIT deployed release identity", flush=True)
+            sleep(min(interval, remaining))
+    raise RuntimeError("deployed release identity did not become ready before deadline")
 
 
 def main():
@@ -30,16 +52,19 @@ def main():
     mode = "test" if prefix else "live"
     opener = urllib.request.build_opener(NoRedirect())
 
-    def request(url, data=None):
+    def request(url, data=None, timeout=20):
         req = urllib.request.Request(url, data=data)
         if data is not None:
             req.add_header("Content-Type", "application/json")
         try:
-            response = opener.open(req, timeout=20)
+            response = opener.open(req, timeout=timeout)
         except urllib.error.HTTPError as err:
             response = err
         with response:
             return response.code, response.headers, response.read()
+
+    if args.expected_version:
+        wait_for_release(request, canonical + "/health", args.expected_version, args.expected_commit)
 
     for origin in (canonical, legacy):
         host = urllib.parse.urlsplit(origin).hostname
@@ -55,10 +80,6 @@ def main():
             raise RuntimeError(description)
         print("PASS", description)
 
-    if args.expected_version:
-        status, _, body = request(canonical + "/health")
-        identity = json.loads(body)
-        check(status == 200 and identity.get("version", "").removeprefix("v") == args.expected_version.removeprefix("v") and identity.get("commit") == args.expected_commit, "deployed release identity")
     status, _, _ = request(canonical + "/")
     check(status == 200, "canonical sign-in page")
     for path in ("/organizations?return=%2Fwork&view=all", "/invite?invitation_token=domain_smoke"):

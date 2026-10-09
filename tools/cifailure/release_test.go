@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"strconv"
 	"strings"
 	"testing"
@@ -32,7 +33,6 @@ func TestReleaseFailureReportsNativeHighAndReusesOccurrence(t *testing.T) {
 				f.items = []tracker.NativeIssue{item}
 			}
 			var evidence bytes.Buffer
-			destination := &cloudDestination{command: f.command, project: scheduledCloudProject, evidence: &evidence}
 			attempt := 1
 			getenv := func(key string) string {
 				switch key {
@@ -48,8 +48,10 @@ func TestReleaseFailureReportsNativeHighAndReusesOccurrence(t *testing.T) {
 					return scheduledEnv(key)
 				}
 			}
+			destination := restFixture(t, f, getenv)
+			destination.evidence = &evidence
 			for range 2 {
-				if err := reportReleaseFailure(t.Context(), strings.NewReader(test.diagnostic), getenv, destination); err != nil {
+				if err := run(t.Context(), strings.NewReader(test.diagnostic), nil, getenv, func(context.Context, func(string) string) (issueDestination, error) { return destination, nil }); err != nil {
 					t.Fatal(err)
 				}
 			}
