@@ -1869,8 +1869,8 @@
       "exports": ["WorkToolbar", "WorkToolbarProps", "ToolbarFacets"],
       "variants": {},
       "states": ["active", "open"],
-      "keyboard": "Search input and facet menus; menus as Menu.",
-      "use": "The board's search, facet filters and sort.",
+      "keyboard": "Facet menus; menus as Menu.",
+      "use": "The board's facet filters and sort.",
       "avoid": "Filter controls inside lanes.",
       "related": ["work-board"]
     },

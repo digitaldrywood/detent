@@ -276,7 +276,7 @@ test.describe("a board that already has issues", () => {
   test("the c shortcut opens the dialog, but not while typing", async ({ page }) => {
     const errors = watchConsole(page);
     await openStudioBoard(page);
-    const search = page.getByTestId("work-search");
+    const search = page.getByRole("searchbox", { name: "Search issues" });
     await search.focus();
     await page.keyboard.type("c");
     await expect(search).toHaveValue("c");

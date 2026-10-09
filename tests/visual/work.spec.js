@@ -226,7 +226,7 @@ test.describe("the work board", () => {
 
   test("keeps the search in the URL and filters the board", async ({ page }) => {
     await openWork(page, `/work/p/${hub.fixture.project_id}`);
-    const search = page.getByTestId("work-search");
+    const search = page.getByRole("searchbox", { name: "Search issues" });
     await search.fill("invitation");
     await expect(page).toHaveURL(/q=invitation/);
     await expect(page.getByRole("button", { name: "Review the invitation flow", exact: true })).toBeVisible();

@@ -97,7 +97,7 @@ async function mountShell(
     </RegistryProvider>,
   );
   if (!path.startsWith("/settings")) {
-    await screen.findByLabelText("Search threads", undefined, { timeout: 10_000 });
+    await screen.findByLabelText(path.startsWith("/work") ? "Search issues" : "Search threads", undefined, { timeout: 10_000 });
   }
   return { router };
 }

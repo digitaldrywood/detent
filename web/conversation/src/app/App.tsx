@@ -69,6 +69,7 @@ import { composerBanners } from "./adapters/composerBanners.tsx";
 import { usePendingQuestion } from "./adapters/pendingQuestions.ts";
 import {
   focusSidebarSearch,
+  SidebarSearchProvider,
   publishSidebarData,
   useSidebarSearchQuery,
   type SidebarShellData,
@@ -375,6 +376,7 @@ function ShellBody(): React.ReactElement {
     <ShellContext.Provider value={shell}>
 
       <SidebarDataProvider value={sidebarProps}>
+        <SidebarSearchProvider work={activePath === "/work" || activePath.startsWith("/work/")}>
 
         <NewProjectProvider>
           <NewIssueProvider>
@@ -389,6 +391,7 @@ function ShellBody(): React.ReactElement {
             </CommandPalette>
           </NewIssueProvider>
         </NewProjectProvider>
+        </SidebarSearchProvider>
       </SidebarDataProvider>
     </ShellContext.Provider>
   );

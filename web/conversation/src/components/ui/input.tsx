@@ -4,6 +4,7 @@ import { Input as InputPrimitive } from "@base-ui/react/input";
 import type * as React from "react";
 
 import { cn } from "~/lib/utils";
+import { useSidebarSearchInput } from "~/app/adapters/sidebarData";
 
 type InputProps = Omit<InputPrimitive.Props & React.RefAttributes<HTMLInputElement>, "size"> & {
   size?: "sm" | "compact" | "default" | "lg" | number;
@@ -21,6 +22,7 @@ function Input({
   nativeInput = false,
   ...props
 }: InputProps) {
+  const sidebarSearchProps = useSidebarSearchInput(nativeInput && props.type === "search" && props["aria-label"] === "Search threads");
   const inputClassName = cn(
     "h-8.5 w-full min-w-0 rounded-[inherit] px-[calc(--spacing(3)-1px)] leading-8.5 outline-none placeholder:text-placeholder sm:h-7.5 sm:leading-7.5 [transition:background-color_5000000s_ease-in-out_0s]",
     size === "compact" && "h-7 px-[calc(--spacing(2.5)-1px)] text-xs leading-7 sm:h-7 sm:leading-7",
@@ -47,6 +49,7 @@ function Input({
         size={typeof size === "number" ? size : undefined}
         style={nativeStyle}
         {...(nativeInputProps as React.ComponentProps<"input">)}
+        {...sidebarSearchProps}
       />
     );
   } else {

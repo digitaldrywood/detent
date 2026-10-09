@@ -1,3 +1,4 @@
+import { useSidebarThreadSearch } from "../app/adapters/sidebarData";
 import { useAtomValue } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
 import {
@@ -2557,7 +2558,7 @@ export default function Sidebar() {
   }, [nowMinute, optimisticDrop, scopedProjectKeys, serverConfigs, snoozeWakeTick, threads]);
 
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
-  const [threadSearchQuery, setThreadSearchQuery] = useState("");
+  const [threadSearchQuery, setThreadSearchQuery] = useSidebarThreadSearch();
   const [activeSearchResultIndex, setActiveSearchResultIndex] = useState(0);
   const isSearchingThreads = threadSearchQuery.trim().length > 0;
   const searchableThreads = useMemo(
