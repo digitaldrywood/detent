@@ -29,7 +29,7 @@ async function startDetentRuntime(name, args, options = {}) {
     : ["dev-runtime", "--home", home, "--host", host, "--port", String(port), ...args];
   const child = spawn(command, commandArgs, {
     cwd: process.cwd(),
-    env: { ...process.env, DETENT_API_TOKEN: "", ...options.env, NO_COLOR: "1" },
+    env: { ...process.env, DETENT_API_TOKEN: "", TMUX: "", TMUX_PANE: "", ...options.env, NO_COLOR: "1" },
     stdio: [options.holdStartup ? "pipe" : "ignore", "pipe", "pipe"],
   });
 
