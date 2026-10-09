@@ -75,6 +75,7 @@ type conversationRecord struct {
 	Title             string
 	Visibility        conversation.Visibility
 	Status            conversation.Status
+	Archived          bool
 	SubjectWorkItemID string
 	WorkItemID        string
 	LinkedAt          *time.Time
@@ -172,7 +173,7 @@ func conversationParseNullTime(value sql.NullString) (*time.Time, error) {
 }
 
 const conversationColumns = `id, organization_id, project_id, owner_principal_id, owner_subject, origin, title, visibility, status,
- subject_work_item_id, work_item_id, linked_at, revision, provider_thread_id, provider_thread_runner_id, provider_thread_origin, execution_json, event_seq, preferences_json, created_at, updated_at, last_message_at, settled_at`
+ subject_work_item_id, work_item_id, linked_at, revision, provider_thread_id, provider_thread_runner_id, provider_thread_origin, execution_json, event_seq, preferences_json, created_at, updated_at, last_message_at, settled_at, archived`
 
 // conversationMessageCount counts the conversation's whole history for the
 // resource's message_count (decisions section 10.5). It is a correlated
@@ -195,7 +196,7 @@ func scanConversation(row conversationScanner) (conversationRecord, error) {
 	var execution, preferences, created, updated string
 	if err := row.Scan(
 		&record.ID, &record.OrganizationID, &record.ProjectID, &record.OwnerPrincipalID, &record.OwnerSubject, &record.Origin, &record.Title, &record.Visibility, &record.Status,
-		&subject, &workItem, &linkedAt, &record.Revision, &record.ProviderThreadID, &record.ProviderThreadRunnerID, &record.ProviderThreadOrigin, &execution, &record.EventSeq, &preferences, &created, &updated, &lastMessageAt, &settledAt,
+		&subject, &workItem, &linkedAt, &record.Revision, &record.ProviderThreadID, &record.ProviderThreadRunnerID, &record.ProviderThreadOrigin, &execution, &record.EventSeq, &preferences, &created, &updated, &lastMessageAt, &settledAt, &record.Archived,
 		&record.MessageCount,
 	); err != nil {
 		return record, err
@@ -326,10 +327,10 @@ func (s *conversationStore) createConversation(ctx context.Context, tx *sql.Tx, 
 		return fmt.Errorf("encode conversation preferences: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO conversations (`+conversationColumns+`)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, record.OrganizationID, record.ProjectID, record.OwnerPrincipalID, record.OwnerSubject, record.Origin, record.Title, record.Visibility, record.Status,
 		nullString(record.SubjectWorkItemID), nullString(record.WorkItemID), conversationNullTime(record.LinkedAt), record.Revision, record.ProviderThreadID, record.ProviderThreadRunnerID, record.ProviderThreadOrigin, execution, record.EventSeq,
-		preferences, conversationTime(record.CreatedAt), conversationTime(record.UpdatedAt), conversationNullTime(record.LastMessageAt), conversationNullTime(record.SettledAt),
+		preferences, conversationTime(record.CreatedAt), conversationTime(record.UpdatedAt), conversationNullTime(record.LastMessageAt), conversationNullTime(record.SettledAt), record.Archived,
 	); err != nil {
 		return fmt.Errorf("insert conversation: %w", conversationLinkError(err))
 	}
@@ -450,7 +451,7 @@ func (s *conversationStore) listConversations(ctx context.Context, query nativeQ
 		limit = 200
 	}
 	var where strings.Builder
-	where.WriteString("organization_id = ? AND origin = 'user' AND (visibility = 'shared' OR owner_principal_id = ?)")
+	where.WriteString("organization_id = ? AND origin = 'user' AND archived = 0 AND (visibility = 'shared' OR owner_principal_id = ?)")
 	args := []any{filter.Organization, filter.Principal}
 	if filter.Project != "" {
 		where.WriteString(" AND project_id = ?")
@@ -545,10 +546,10 @@ func (s *conversationStore) updateConversation(ctx context.Context, tx *sql.Tx, 
 	}
 	next := expectedRevision + 1
 	result, err := tx.ExecContext(ctx, `UPDATE conversations SET owner_principal_id = ?, owner_subject = ?, title = ?, visibility = ?, status = ?,
- work_item_id = ?, linked_at = ?, revision = ?, provider_thread_id = ?, provider_thread_runner_id = ?, provider_thread_origin = ?, execution_json = ?, preferences_json = ?, updated_at = ?, last_message_at = ?, settled_at = ?
+ work_item_id = ?, linked_at = ?, revision = ?, provider_thread_id = ?, provider_thread_runner_id = ?, provider_thread_origin = ?, execution_json = ?, preferences_json = ?, updated_at = ?, last_message_at = ?, settled_at = ?, archived = ?
 WHERE id = ? AND organization_id = ? AND project_id = ? AND revision = ?`,
 		record.OwnerPrincipalID, record.OwnerSubject, record.Title, record.Visibility, record.Status,
-		nullString(record.WorkItemID), conversationNullTime(record.LinkedAt), next, record.ProviderThreadID, record.ProviderThreadRunnerID, record.ProviderThreadOrigin, execution, preferences, conversationTime(record.UpdatedAt), conversationNullTime(record.LastMessageAt), conversationNullTime(record.SettledAt),
+		nullString(record.WorkItemID), conversationNullTime(record.LinkedAt), next, record.ProviderThreadID, record.ProviderThreadRunnerID, record.ProviderThreadOrigin, execution, preferences, conversationTime(record.UpdatedAt), conversationNullTime(record.LastMessageAt), conversationNullTime(record.SettledAt), record.Archived,
 		record.ID, record.OrganizationID, record.ProjectID, expectedRevision,
 	)
 	if err != nil {

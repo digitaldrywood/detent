@@ -13,11 +13,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { subscribeProjectEvents } from "../../src/app/work/lib/projectEvents.ts";
 import { useSidebarFindings } from "../../src/app/adapters/sidebarFindings.ts";
 import { resetUpdateCheckState } from "../../src/app/adapters/detentUpdates.ts";
+import * as settings from "../../src/hooks/useSettings.ts";
+import { makeClient } from "../../src/runtime/bootstrap.ts";
+import type { Bootstrap } from "../../src/contracts/index.ts";
+import bootstrapFixture from "../../src/contracts/fixtures/bootstrap.json";
 import { conversation } from "./builders.ts";
 import { renderSidebar, resetSidebarState, rowFor } from "./sidebarHarness.tsx";
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   resetUpdateCheckState();
 });
@@ -370,4 +375,52 @@ it("discards an older response after a live refresh", async () => {
   await waitFor(() => expect(mocks.listHealthFindings).toHaveBeenCalledTimes(2));
   await act(async () => finish({ items: [{ id: "stale", class: "flow", summary: "Flow attention", next_action: "Check flow", subject: { kind: "project", id: "p1" }, opened_at: "2026-10-06T00:00:00Z", severity: "attention", resolved_at: null }], last_tick_at: null }));
   expect(result.current).toEqual([]);
+});
+
+
+describe("existing thread removal menu", () => {
+  it.each([
+    { action: "archive", label: "Archive thread", outcome: "cancel" },
+    { action: "delete", label: "Delete", outcome: "cancel" },
+    { action: "archive", label: "Archive thread", outcome: "failure" },
+    { action: "delete", label: "Delete", outcome: "failure" },
+    { action: "archive", label: "Archive thread", outcome: "success" },
+    { action: "delete", label: "Delete", outcome: "success" },
+  ])("$action $outcome preserves confirmation and navigation", async ({ action, label, outcome }) => {
+    const chat = conversation({ id: "conv_removal", project_id: "proj_alpha", title: "Menu removal", execution: { ...recentChat.execution, status: "idle" } });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(outcome !== "cancel");
+    vi.spyOn(settings, "useClientSettings").mockImplementation((select) => select({
+      ...settings.getClientSettings(), confirmThreadArchive: true, confirmThreadDelete: true,
+    }));
+    const request = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => outcome === "failure"
+      ? new Response(JSON.stringify({ code: "stale_execution", message: "Finish the running turn first" }), { status: 409 })
+      : action === "archive"
+        ? new Response(JSON.stringify({ ...chat, archived: true, revision: chat.revision + 1 }), { status: 200 })
+        : new Response(null, { status: 204 }));
+    const client = makeClient({ bootstrap: bootstrapFixture as Bootstrap, fetch: request });
+    const h = await renderSidebar({ conversations: [chat], activeConversationId: chat.id }, { client });
+    fireEvent.contextMenu(rowFor(sidebar(), chat.title)!);
+    await act(async () => {
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    });
+    fireEvent.click(await screen.findByRole("button", { name: label }));
+    await waitFor(() => expect(confirm).toHaveBeenCalled());
+    expect(confirm.mock.calls[0]?.[0]).toContain(chat.title);
+    if (outcome === "cancel") {
+      expect(request).not.toHaveBeenCalled();
+      expect(h.onNavigate).not.toHaveBeenCalled();
+      expect(rowFor(sidebar(), chat.title)).not.toBeNull();
+      return;
+    }
+    await waitFor(() => expect(request).toHaveBeenCalledOnce());
+    expect(String(request.mock.calls[0]?.[0])).toContain(`/projects/proj_alpha/conversations/${chat.id}${action === "archive" ? "/archive" : ""}`);
+    if (outcome === "failure") {
+      await screen.findByText(action === "archive" ? "Failed to archive thread" : "Failed to delete thread");
+      expect(screen.getByText("Finish the running turn first")).toBeTruthy();
+      expect(h.onNavigate).not.toHaveBeenCalled();
+      expect(rowFor(sidebar(), chat.title)).not.toBeNull();
+    } else {
+      await waitFor(() => expect(h.onNavigate).toHaveBeenCalledWith("/chat/p/proj_alpha"));
+    }
+  });
 });

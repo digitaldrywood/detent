@@ -25,11 +25,6 @@ export const COMMAND_KEY_MAX_BYTES = 128;
 export const ConversationVisibility = Schema.Literals(["private", "shared"]);
 export type ConversationVisibility = typeof ConversationVisibility.Type;
 
-/**
- * Settled replaces Archive (decisions.md §13.9, §14). A conversation is
- * `active` or `settled`; the hub dropped `archived` with the rest of the
- * archive surface.
- */
 export const ConversationStatus = Schema.Literals(["active", "settled"]);
 export type ConversationStatus = typeof ConversationStatus.Type;
 
@@ -299,6 +294,7 @@ export const Conversation = Schema.Struct({
   visibility: ConversationVisibility,
   origin: Schema.optional(Schema.Literals(["user", "worker"])),
   status: ConversationStatus,
+  archived: Schema.optional(Schema.Boolean),
   subject_work_item_id: Schema.optional(Schema.NullOr(WorkItemId)),
   work_item_id: Schema.NullOr(WorkItemId),
   linked_at: Schema.NullOr(Schema.String),

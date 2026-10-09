@@ -183,6 +183,14 @@ export interface DetentHttpClient {
     readonly conversationId: string;
     readonly title: string;
   }) => Effect.Effect<typeof Conversation.Type, HttpFailure>;
+  readonly archiveConversation: (input: {
+    readonly projectId: string;
+    readonly conversationId: string;
+  }) => Effect.Effect<typeof Conversation.Type, HttpFailure>;
+  readonly deleteConversation: (input: {
+    readonly projectId: string;
+    readonly conversationId: string;
+  }) => Effect.Effect<void, HttpFailure>;
   /**
    * `POST {nativeBase}/conversations/:id/attachments` (decisions.md §17.1).
    * Multipart with one `file` part and an `idempotency_key` field, exactly as
@@ -477,6 +485,10 @@ export function makeHttpClient(options: HttpClientOptions): DetentHttpClient {
         ),
         { title: input.title },
       ),
+    archiveConversation: (input) =>
+      send(Conversation, "POST", url(`${projectBase(input.projectId)}/conversations/${encodeURIComponent(input.conversationId)}/archive`)),
+    deleteConversation: (input) =>
+      send(Schema.Void, "DELETE", url(`${projectBase(input.projectId)}/conversations/${encodeURIComponent(input.conversationId)}`)),
     uploadAttachment: (input) =>
       Effect.flatMap(
         Effect.tryPromise({

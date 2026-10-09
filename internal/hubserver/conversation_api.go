@@ -46,6 +46,8 @@ func (s *Service) registerConversationAPIRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/conversations/:conversation/commands", s.postConversationCommand, scope, s.operatorAuthority)
 	e.POST(nativeBase+"/conversations/:conversation/link", s.linkConversation, scope)
 	e.PATCH(nativeBase+"/conversations/:conversation", s.patchConversation, scope)
+	e.POST(nativeBase+"/conversations/:conversation/archive", s.archiveConversation, scope)
+	e.DELETE(nativeBase+"/conversations/:conversation", s.deleteConversation, scope)
 	e.GET(nativeBase+"/work-items/:item/references", s.listWorkItemReferences, scope)
 	e.POST(nativeBase+"/conversations/:conversation/attachments", s.uploadConversationAttachment, scope)
 	// The download also answers a worker: the runner fetches the files the

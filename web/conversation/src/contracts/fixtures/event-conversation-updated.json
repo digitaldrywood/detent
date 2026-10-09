@@ -8,6 +8,7 @@
     "visibility": "shared",
     "origin": "user",
     "status": "active",
+    "archived": false,
     "work_item_id": "wi_3363",
     "linked_at": "2026-09-09T09:41:12Z",
     "work_item": {
