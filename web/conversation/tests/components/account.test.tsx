@@ -10,9 +10,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import React from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 
-import type { Member, OnboardingStep } from "../../src/contracts/account.ts";
-import { WorkspacePicker } from "../../src/components/sidebar/SidebarWorkspacePicker.tsx";
+import { decodeAccountBootstrap, type Member, type OnboardingStep } from "../../src/contracts/account.ts";
+import { SidebarWorkspacePicker, WorkspacePicker } from "../../src/components/sidebar/SidebarWorkspacePicker.tsx";
+import { ClientContext } from "../../src/app/client.ts";
+import type { ConversationClient } from "../../src/runtime/bootstrap.ts";
+import accountFixture from "../../src/contracts/fixtures/account-bootstrap.json";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
 import {
   LoginCard,
@@ -41,6 +45,44 @@ afterEach(cleanup);
 describe("the footer workspace picker", () => {
   const current = { id: "org_a", name: "Threefold Solutions" };
   const other = { id: "org_b", name: "Another workspace with a long name" };
+
+  it.each(["admin", "support", "billing", "viewer", "", undefined])("offers the platform console only to platform staff (%s)", async (platform_role) => {
+    const account = decodeAccountBootstrap({
+      ...accountFixture,
+      actor: { ...accountFixture.actor, role: "member", can_manage: false, platform_role },
+    });
+    const root = createRootRoute({
+      component: () => <SidebarProvider><ul><SidebarWorkspacePicker /></ul></SidebarProvider>,
+    });
+    const router = createRouter({
+      routeTree: root,
+      history: createMemoryHistory({ initialEntries: ["/"] }),
+    });
+    render(
+      <ClientContext.Provider value={{
+        http: { origin: "", apiBase: account.api_base, csrfToken: account.csrf_token },
+        account,
+      } as ConversationClient}>
+        <RouterProvider router={router as never} />
+      </ClientContext.Provider>,
+    );
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /Switch workspace/ }));
+    await screen.findByRole("menu");
+    const entry = screen.queryByRole("menuitem", { name: "Platform console" });
+    if (platform_role) {
+      expect(entry?.getAttribute("href")).toBe("/platform/tenants");
+      const activate = vi.fn((event: MouseEvent) => event.preventDefault());
+      entry!.addEventListener("click", activate);
+      await user.click(entry!);
+      expect(activate).toHaveBeenCalledOnce();
+      await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    } else {
+      expect(entry).toBeNull();
+      expect(screen.getByRole("menuitem", { name: "Add a workspace" })).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: "Manage current workspace" })).toBeTruthy();
+    }
+  });
 
   function mount() {
     const onSelect = vi.fn();

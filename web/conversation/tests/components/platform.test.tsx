@@ -199,12 +199,16 @@ describe("platform console", () => {
   it("opens the account's organizations and preserves the header when navigating", async () => {
     const api = fakeApi({ organizations: vi.fn(async () => ({
       email: "admin@detent.build", csrf: "c", platform_role: "admin",
-      organizations: [{ id: "org_alpha", name: "My Alpha", url: "/organizations/org_alpha/organization" }],
+      organizations: [
+        { id: "org_alpha", name: "My Alpha", url: "/organizations/org_alpha/organization" },
+        { id: "org_beta", name: "My Beta", url: "/organizations/org_beta/work" },
+      ],
     })) });
     const router = renderPlatform(api);
     fireEvent.click(await screen.findByRole("button", { name: "Open organization" }));
     const menu = await screen.findByRole("menu");
     expect(within(menu).getByRole("menuitem", { name: "My Alpha" }).getAttribute("href")).toBe("/organizations/org_alpha/organization");
+    expect(within(menu).getByRole("menuitem", { name: "My Beta" }).getAttribute("href")).toBe("/organizations/org_beta/work");
     fireEvent.keyDown(menu, { key: "Escape" });
     fireEvent.click(screen.getByRole("link", { name: "Health" }));
     await screen.findByRole("region", { name: "Service health" });
