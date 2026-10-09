@@ -66,7 +66,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 	var approved policy.Approval
 	browserHostedDecode(t, api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{Policy: hubTestPolicy()}, http.StatusOK), &approved)
 	var blocker tracker.NativeIssue
-	browserHostedDecode(t, api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "blocker"}, Title: "Retain prerequisite", State: "Todo"}, http.StatusOK), &blocker)
+	browserHostedDecode(t, api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "blocker"}, Title: "Retain prerequisite", Body: nativeContractTestBody, State: "Todo"}, http.StatusOK), &blocker)
 	api(t, "owner", http.MethodPost, base+"/work-items/"+string(currentItem.WorkItemID)+"/dependencies", tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "dependency"}, ExpectedRevision: currentItem.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}, http.StatusOK)
 	browserHostedDecode(t, api(t, "owner", http.MethodGet, base+"/work-items/"+string(currentItem.WorkItemID), nil, http.StatusOK), &currentItem)
 	var integration ProjectIntegration
@@ -291,7 +291,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 			}
 		}
 		var movable tracker.NativeIssue
-		browserHostedDecode(t, api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "repository-task"}, Title: "Repository-defined transitions", State: "Todo"}, http.StatusOK), &movable)
+		browserHostedDecode(t, api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "repository-task"}, Title: "Repository-defined transitions", Body: nativeContractTestBody, State: "Todo"}, http.StatusOK), &movable)
 		api(t, "member", http.MethodPost, base+"/work-items/"+string(movable.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "authorized-move"}, ExpectedRevision: movable.Revision, State: "In Progress", Reason: "user_requested"}, http.StatusOK)
 		removedMarkdown := strings.Replace(repositoryMarkdown, "{name: In Progress, role: active}, ", "", 1)
 		removed := resolveRepositoryPolicy(removedMarkdown, strings.Repeat("c", 40))

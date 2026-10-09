@@ -432,6 +432,11 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 	_, machineOrigin := issueorigin.Parse(issue.Body)
 	if issue.Actor.Kind == "human" && !machineOrigin && !machineIntake && issue.Provenance == nil {
 		issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(issue.Body)
+		if !issue.IssueContract.Exempt {
+			if err := requireNativeIssueContractAtFiling(ctx, tx, scope, issue); err != nil {
+				return tracker.NativeIssue{}, err
+			}
+		}
 	}
 	contractJSON, err := marshalNative(issue.IssueContract)
 	if err != nil {

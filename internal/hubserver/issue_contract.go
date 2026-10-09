@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -68,4 +69,26 @@ func nativeIssueContractClaimable(ctx context.Context, q nativeQueryer, scope na
 		return false, err
 	}
 	return contract.Evaluate(nativeContractIssue(issue)).Satisfied(), nil
+}
+
+func requireNativeIssueContractAtFiling(ctx context.Context, q nativeQueryer, scope nativeScope, issue tracker.NativeIssue) error {
+	cfg, err := nativeIssueContractConfig(ctx, q, scope)
+	if err != nil {
+		return nil
+	}
+	target := cfg.BacklogAdmission.TargetState
+	if target == "" {
+		target = "Todo"
+	}
+	if !strings.EqualFold(issue.State, target) || strings.Contains(strings.ToLower(issue.Body), "detent:no-dispatch") {
+		return nil
+	}
+	contract, err := nativeIssueContract(ctx, q, scope)
+	if err != nil {
+		return fmt.Errorf("resolve issue contract: %w", err)
+	}
+	if missing := contract.Evaluate(nativeContractIssue(issue)).Missing; len(missing) > 0 {
+		return nativeWorkflowInvalid(fmt.Sprintf("Add these required issue sections before filing into %s: %s. File into Backlog to draft it first.", issue.State, strings.Join(missing, ", ")))
+	}
+	return nil
 }
