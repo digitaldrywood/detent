@@ -1307,12 +1307,13 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 func TestHostedWriterLeavesCheckpointsToLitestream(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name   string
-		hosted bool
-		want   int
+		name            string
+		hosted          bool
+		want            int
+		wantSynchronous int
 	}{
-		{name: "hosted tenant", hosted: true, want: 0},
-		{name: "self-managed Hub", hosted: false, want: 1000},
+		{name: "hosted tenant", hosted: true, want: 0, wantSynchronous: 1},
+		{name: "self-managed Hub", hosted: false, want: 1000, wantSynchronous: 2},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1328,6 +1329,13 @@ func TestHostedWriterLeavesCheckpointsToLitestream(t *testing.T) {
 			}
 			if got != test.want {
 				t.Fatalf("wal_autocheckpoint = %d, want %d", got, test.want)
+			}
+			var synchronous int
+			if err := db.QueryRowContext(t.Context(), "PRAGMA synchronous").Scan(&synchronous); err != nil {
+				t.Fatal(err)
+			}
+			if synchronous != test.wantSynchronous {
+				t.Fatalf("synchronous = %d, want %d", synchronous, test.wantSynchronous)
 			}
 		})
 	}

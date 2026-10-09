@@ -92,7 +92,7 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 		store.workspaceRetainAfterRun = cfg.Workspace.RetainAfterRun
 		store.workspaceTerminalIsolation = cfg.Workspace.Terminal.Isolation
 	}
-	if err := store.configure(ctx, cfg.BusyTimeout); err != nil {
+	if err := store.configure(ctx, cfg.BusyTimeout, cfg.Hosted != nil); err != nil {
 		return nil, errors.Join(err, store.Close())
 	}
 	if err := store.verifyIdentity(ctx); err != nil {
@@ -225,11 +225,15 @@ func sqliteFileURL(path string) *url.URL {
 }
 
 func sqliteDSN(path string, busyTimeout time.Duration) string {
+	return sqliteDSNWithSynchronous(path, busyTimeout, "FULL")
+}
+
+func sqliteDSNWithSynchronous(path string, busyTimeout time.Duration, synchronous string) string {
 	databaseURL := sqliteFileURL(path)
 	query := databaseURL.Query()
 	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeoutMillis(busyTimeout)))
 	query.Add("_pragma", "foreign_keys(1)")
-	query.Add("_pragma", "synchronous(FULL)")
+	query.Add("_pragma", "synchronous("+synchronous+")")
 	query.Add("_txlock", "immediate")
 	databaseURL.RawQuery = query.Encode()
 	return databaseURL.String()
@@ -238,13 +242,22 @@ func sqliteDSN(path string, busyTimeout time.Duration) string {
 // sqliteWriterDSN leaves WAL checkpoints to Litestream on hosted tenants:
 // Litestream owns checkpointing for every replicated tenant database, and an
 // application checkpoint inside a committing request both races it and stalls
-// that request.
+// that request. Hosted tenants commit with synchronous=NORMAL: in WAL mode a
+// power loss can drop the most recent commits but never corrupts the database,
+// and Litestream already bounds hosted durability to its replication lag.
 func sqliteWriterDSN(path string, busyTimeout time.Duration, hosted bool) string {
-	dsn := sqliteDSN(path, busyTimeout)
 	if !hosted {
-		return dsn
+		return sqliteDSN(path, busyTimeout)
 	}
+	dsn := sqliteDSNWithSynchronous(path, busyTimeout, "NORMAL")
 	return dsn + "&" + url.Values{"_pragma": {"wal_autocheckpoint(0)"}}.Encode()
+}
+
+func writerSynchronousMode(hosted bool) (int, string) {
+	if hosted {
+		return 1, "NORMAL"
+	}
+	return 2, "FULL"
 }
 
 func sqliteReaderDSN(path string, busyTimeout time.Duration) string {
@@ -296,7 +309,7 @@ func isWindowsDrivePath(path string) bool {
 	return path[0] >= 'A' && path[0] <= 'Z' || path[0] >= 'a' && path[0] <= 'z'
 }
 
-func (d *database) configure(ctx context.Context, busyTimeout time.Duration) error {
+func (d *database) configure(ctx context.Context, busyTimeout time.Duration, hosted bool) error {
 	wantBusyTimeout := busyTimeoutMillis(busyTimeout)
 	var gotBusyTimeout int64
 	if err := d.db.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&gotBusyTimeout); err != nil {
@@ -309,8 +322,8 @@ func (d *database) configure(ctx context.Context, busyTimeout time.Duration) err
 	if err := d.db.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&synchronous); err != nil {
 		return fmt.Errorf("read hub sqlite synchronous mode: %w", err)
 	}
-	if synchronous != 2 {
-		return fmt.Errorf("hub sqlite synchronous mode is %d, want FULL", synchronous)
+	if want, name := writerSynchronousMode(hosted); synchronous != want {
+		return fmt.Errorf("hub sqlite synchronous mode is %d, want %s", synchronous, name)
 	}
 
 	var foreignKeys int
