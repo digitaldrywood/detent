@@ -87,7 +87,8 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 			if !changerequest.ValidHash(request.Head, 40) && !changerequest.ValidHash(request.Head, 64) {
 				return nil, nativeInvalid("Barrier start requires the observed integration branch head")
 			}
-			if requester := scope.credential.Runner.RunnerID; requester != "" && (!request.Recover || !barrier.Running || barrier.Owner != requester) {
+			takeover := false
+			if requester := scope.credential.Runner.RunnerID; requester != "" {
 				preferred, err := preferredBarrierRunner(ctx, tx, scope, now)
 				if err != nil {
 					return nil, err
@@ -95,13 +96,14 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 				if preferred != "" && preferred != requester {
 					return barrier, nil
 				}
+				takeover = preferred == requester && barrier.Running && barrier.Owner != requester
 			}
 			if barrier.Running {
 				available, err := landingBarrierOwnerAvailable(ctx, tx, scope, barrier, now, request.Recover)
 				if err != nil {
 					return nil, err
 				}
-				if !available {
+				if !available && !takeover {
 					return barrier, nil
 				}
 				barrier.Started = barrier.Green
