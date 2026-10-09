@@ -328,9 +328,9 @@ func gitDiffStatOutput(ctx context.Context, workspacePath string, includeIndex b
 	addPaths := []string{"."}
 	addEnv := env
 	if includeIndex {
-		output, err := runGitAtWithEnv(ctx, workspacePath, env, gitDiagnosticArgs("ls-files", "--others", "--exclude-standard", "-z")...)
+		output, err := gitUntrackedOutput(ctx, workspacePath, env)
 		if err != nil {
-			return DiffStat{}, fmt.Errorf("git list untracked workspace changes: %w", err)
+			return DiffStat{}, err
 		}
 		addPaths = strings.Split(strings.TrimSuffix(output, "\x00"), "\x00")
 		if output == "" {
@@ -426,11 +426,19 @@ func gitDiffPaths(ctx context.Context, workspacePath string, env []string, compa
 }
 
 func gitUntrackedPaths(ctx context.Context, workspacePath string) ([]string, error) {
-	output, err := runGitAt(ctx, workspacePath, gitDiagnosticArgs("ls-files", "--others", "--exclude-standard", "-z")...)
+	output, err := gitUntrackedOutput(ctx, workspacePath, nil)
 	if err != nil {
-		return nil, fmt.Errorf("git list untracked workspace changes: %w", err)
+		return nil, err
 	}
 	return boundedNULFields(output, recoveryEvidenceLimit, false), nil
+}
+
+func gitUntrackedOutput(ctx context.Context, workspacePath string, env []string) (string, error) {
+	output, err := runGitAtWithEnvCapture(ctx, workspacePath, env, true, gitDiagnosticArgs("ls-files", "--others", "--exclude-standard", "-z")...)
+	if err != nil {
+		return "", fmt.Errorf("git list untracked workspace changes: %w", err)
+	}
+	return output, nil
 }
 
 func gitCommitsNotInPullRequest(

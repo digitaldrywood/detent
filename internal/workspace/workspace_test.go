@@ -3383,11 +3383,15 @@ func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
 		redirection string
 		exitCode    int
 		wantDelay   bool
+		untracked   bool
 	}{
 		{name: "stdout retained", redirection: "2>/dev/null", wantDelay: true},
 		{name: "stderr retained", redirection: ">/dev/null", wantDelay: true},
 		{name: "failed command", exitCode: 23},
 		{name: "output closed", redirection: ">/dev/null 2>&1"},
+		{name: "untracked stdout retained", redirection: "2>/dev/null", untracked: true},
+		{name: "untracked stderr retained", redirection: ">/dev/null", untracked: true},
+		{name: "failed untracked command", exitCode: 23, untracked: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -3409,6 +3413,10 @@ exit %d
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("DETENT_PIPE_RELEASE", fifoPath)
+			t.Setenv("DETENT_PIPE_DONE", donePath)
+			scratch := t.TempDir()
+			t.Setenv("TMPDIR", scratch)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			type result struct {
@@ -3419,10 +3427,15 @@ exit %d
 			joined := make(chan struct{})
 			go func() {
 				defer close(joined)
-				output, err := runGitAtWithEnv(ctx, dir, []string{
-					"DETENT_PIPE_RELEASE=" + fifoPath,
-					"DETENT_PIPE_DONE=" + donePath,
-				}, "worktree", "prune")
+				var output string
+				var err error
+				if tt.untracked {
+					var paths []string
+					paths, err = gitUntrackedPaths(ctx, dir)
+					output = strings.Join(paths, "\x00")
+				} else {
+					output, err = runGitAtWithEnv(ctx, dir, nil, "worktree", "prune")
+				}
 				results <- result{output: output, err: err}
 			}()
 			defer func() {
@@ -3457,6 +3470,13 @@ exit %d
 			case got = <-results:
 			case <-time.After(10 * time.Second):
 				t.Fatal("Git command did not return while descendant retained output")
+			}
+			files, err := os.ReadDir(scratch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(files) != 0 {
+				t.Fatalf("Git output files remain after command: %v", files)
 			}
 			if errors.Is(got.err, exec.ErrWaitDelay) != tt.wantDelay {
 				t.Fatalf("runGitAtWithEnv() error = %v, want WaitDelay = %t", got.err, tt.wantDelay)
