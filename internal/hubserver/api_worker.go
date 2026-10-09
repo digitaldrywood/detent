@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -250,7 +252,83 @@ func trackerAPIError(c echo.Context, err error) error {
 	return c.JSON(status, apiErrorResponse{Code: code, Message: message})
 }
 
-func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (lease tracker.Lease, resultErr error) {
+// claimNext decides most claim attempts without the writer. A preflight runs
+// the whole claim on a read-only snapshot: refusals that record nothing new
+// are answered from it, and a selected candidate is claimed by a short write
+// transaction that re-validates only that candidate. Anything the preflight
+// cannot settle runs the full claim under the write lock, as before.
+func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (tracker.Lease, error) {
+	if d.claimReader != nil {
+		lease, err := d.claimPreflight(ctx, request, query, reconcileInterval)
+		var selected *claimSelected
+		switch {
+		case errors.As(err, &selected):
+			lease, err = d.claimNextOn(ctx, d.db, nil, claimMode{hint: selected}, request, query, reconcileInterval)
+			if !errors.Is(err, errClaimHintStale) {
+				return lease, err
+			}
+		case err == nil:
+			return lease, nil
+		case preflightAnswered(err):
+			return tracker.Lease{}, err
+		}
+	}
+	return d.claimNextOn(ctx, d.db, nil, claimMode{}, request, query, reconcileInterval)
+}
+
+// claimPreflightAcquire bounds how long a preflight waits for a claim reader;
+// a busy pool sends the claim down the full write pass instead of queueing.
+const claimPreflightAcquire = 250 * time.Millisecond
+
+func (d *database) claimPreflight(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (lease tracker.Lease, resultErr error) {
+	acquire, cancel := context.WithTimeout(ctx, claimPreflightAcquire)
+	conn, err := d.claimReader.Conn(acquire)
+	cancel()
+	if err != nil {
+		return tracker.Lease{}, err
+	}
+	defer func() {
+		if err := conn.Close(); err != nil {
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
+	return d.claimNextOn(ctx, conn, &sql.TxOptions{ReadOnly: true}, claimMode{preflight: true}, request, query, reconcileInterval)
+}
+
+// claimMode selects how one claim pass runs: a preflight on the reader that
+// stops at the first claimable candidate, a write pass restricted to that
+// candidate, or the full write pass.
+type claimMode struct {
+	hint      *claimSelected
+	preflight bool
+}
+
+type claimBeginner interface {
+	BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+}
+
+type claimSelected struct {
+	id       tracker.WorkItemID
+	revision int64
+}
+
+func (s *claimSelected) Error() string { return fmt.Sprintf("claim candidate %d selected", s.id) }
+
+var errClaimHintStale = errors.New("selected claim candidate is no longer claimable")
+
+// preflightAnswered reports whether a preflight result is the claim's answer.
+// Write attempts on the read-only snapshot and unexpected failures defer to
+// the full write pass instead.
+func preflightAnswered(err error) bool {
+	var failure *sqlite.Error
+	if errors.As(err, &failure) && failure.Code()&0xff == sqlite3.SQLITE_READONLY {
+		return false
+	}
+	var refusal *nativeError
+	return errors.Is(err, ErrNoClaimableWork) || errors.As(err, &refusal) || errors.Is(err, tracker.ErrLeaseConflict) || errors.Is(err, tracker.ErrInvalidClaimRequest) || errors.Is(err, tracker.ErrInvalidCandidateQuery)
+}
+
+func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *sql.TxOptions, mode claimMode, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (lease tracker.Lease, resultErr error) {
 	request.MachineID = tracker.MachineID(strings.TrimSpace(string(request.MachineID)))
 	request.SessionID = strings.TrimSpace(request.SessionID)
 	query.Scope = strings.TrimSpace(query.Scope)
@@ -285,7 +363,7 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	if len(query.LabelExclude) > 0 && len(labelExclude) == 0 {
 		return tracker.Lease{}, tracker.ErrInvalidCandidateQuery
 	}
-	tx, err := d.db.BeginTx(ctx, nil)
+	tx, err := db.BeginTx(ctx, options)
 	if err != nil {
 		return tracker.Lease{}, fmt.Errorf("begin hub claim next: %w", err)
 	}
@@ -400,29 +478,44 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		}
 	}
 	query.WorkItemID = request.WorkItemID
-	selectedID, restricted, err := d.runnerAllowedSelection(ctx, tx, query, now)
-	if err != nil {
-		return tracker.Lease{}, err
-	}
-	if restricted && selectedID == 0 {
-		if err := tx.Commit(); err != nil {
+	var ids []tracker.WorkItemID
+	if mode.hint != nil {
+		var revision int64
+		if err := tx.QueryRowContext(ctx, "SELECT revision FROM issues WHERE id = ?", mode.hint.id).Scan(&revision); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return tracker.Lease{}, err
 		}
-		return tracker.Lease{}, ErrNoClaimableWork
-	}
-	if restricted {
-		query.OnlyIDs = []tracker.WorkItemID{selectedID}
-	}
-	query.AvailableAt = now
-	if query.NativeScope != nil {
-		query.Limit = 100
-		if request.WorkItemID > 0 || len(query.ProviderCandidates) == 1 {
-			query.Limit = 1
+		if revision != mode.hint.revision {
+			if err := tx.Commit(); err != nil {
+				return tracker.Lease{}, err
+			}
+			return tracker.Lease{}, errClaimHintStale
 		}
-	}
-	ids, err := claimCandidateIDs(ctx, tx, query, repositoryIDs, repositories, workflowStates, authors, assignees, labelInclude, labelExclude, claimableRepositories)
-	if err != nil {
-		return tracker.Lease{}, err
+		ids = []tracker.WorkItemID{mode.hint.id}
+	} else {
+		selectedID, restricted, err := d.runnerAllowedSelection(ctx, tx, query, now)
+		if err != nil {
+			return tracker.Lease{}, err
+		}
+		if restricted && selectedID == 0 {
+			if err := tx.Commit(); err != nil {
+				return tracker.Lease{}, err
+			}
+			return tracker.Lease{}, ErrNoClaimableWork
+		}
+		if restricted {
+			query.OnlyIDs = []tracker.WorkItemID{selectedID}
+		}
+		query.AvailableAt = now
+		if query.NativeScope != nil {
+			query.Limit = 100
+			if request.WorkItemID > 0 || len(query.ProviderCandidates) == 1 {
+				query.Limit = 1
+			}
+		}
+		ids, err = claimCandidateIDs(ctx, tx, query, repositoryIDs, repositories, workflowStates, authors, assignees, labelInclude, labelExclude, claimableRepositories)
+		if err != nil {
+			return tracker.Lease{}, err
+		}
 	}
 	if len(ids) == 0 && request.WorkItemID > 0 {
 		return tracker.Lease{}, recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_claim_eligibility", ErrNoClaimableWork, now)
@@ -525,6 +618,13 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 				continue
 			}
 		}
+		if mode.preflight {
+			var revision int64
+			if err := tx.QueryRowContext(ctx, "SELECT revision FROM issues WHERE id = ?", id).Scan(&revision); err != nil {
+				return tracker.Lease{}, err
+			}
+			return tracker.Lease{}, &claimSelected{id: id, revision: revision}
+		}
 		request.WorkItemID = id
 		lease, err = d.claimInTransaction(ctx, tx, request, now, exposure)
 		if err != nil {
@@ -563,6 +663,9 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	}
 	if err := tx.Commit(); err != nil {
 		return tracker.Lease{}, fmt.Errorf("commit idle hub claim: %w", err)
+	}
+	if mode.hint != nil {
+		return tracker.Lease{}, errClaimHintStale
 	}
 	if providerWait != nil {
 		return tracker.Lease{}, providerWait

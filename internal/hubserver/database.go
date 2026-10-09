@@ -29,11 +29,17 @@ const readerConnections = 32
 // so authentication never queues behind long reads on the shared pool.
 const authConnections = 4
 
+// claimReaderConnections bounds claim preflights on their own read-only pool,
+// so a burst of claims never drains the readers that authentication and
+// ordinary reads share.
+const claimReaderConnections = 2
+
 type database struct {
 	linkedSourceBase       string
 	db                     *sql.DB
 	reader                 *sql.DB
 	authReader             *sql.DB
+	claimReader            *sql.DB
 	lock                   *instancelock.Lock
 	path                   string
 	schemaVersion          int64
@@ -291,6 +297,16 @@ func (d *database) openReader(ctx context.Context, busyTimeout time.Duration) er
 	if err := authReader.PingContext(ctx); err != nil {
 		return fmt.Errorf("open hub database authentication reader: %w", err)
 	}
+	claimReader, err := sql.Open("sqlite", sqliteReaderDSN(d.path, busyTimeout))
+	if err != nil {
+		return fmt.Errorf("open hub claim reader: %w", err)
+	}
+	claimReader.SetMaxOpenConns(claimReaderConnections)
+	claimReader.SetMaxIdleConns(claimReaderConnections)
+	d.claimReader = claimReader
+	if err := claimReader.PingContext(ctx); err != nil {
+		return fmt.Errorf("open hub claim reader: %w", err)
+	}
 	return nil
 }
 
@@ -413,14 +429,17 @@ func (d *database) Close() error {
 		return nil
 	}
 	d.closeOnce.Do(func() {
-		var readerErr, authErr error
+		var readerErr, authErr, claimReaderErr error
 		if d.reader != nil && d.reader != d.db {
 			readerErr = d.reader.Close()
 		}
 		if d.authReader != nil && d.authReader != d.db && d.authReader != d.reader {
 			authErr = d.authReader.Close()
 		}
-		d.closeErr = errors.Join(readerErr, authErr, d.db.Close(), d.lock.Close())
+		if d.claimReader != nil {
+			claimReaderErr = d.claimReader.Close()
+		}
+		d.closeErr = errors.Join(readerErr, authErr, claimReaderErr, d.db.Close(), d.lock.Close())
 	})
 	return d.closeErr
 }
