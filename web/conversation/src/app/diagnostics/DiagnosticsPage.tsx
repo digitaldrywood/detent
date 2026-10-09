@@ -1,3 +1,4 @@
+import { RunnerProblems } from "../fleet/RunnerProblems.tsx";
 import React, { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Badge } from "../../components/ui/badge.tsx";
@@ -390,6 +391,12 @@ export function DiagnosticsView({
                   value={conflictPercent}
                 />
               </section>
+              {runners?.some((runner) => runner.problems?.length) ? <Section title="Runners needing attention">
+                {runners.filter((runner) => runner.problems?.length).map((runner) => <article key={runner.id} className="min-w-0 space-y-3 border-b border-border py-3">
+                  <Link to="/settings/runners" className="text-sm font-medium hover:underline">{runner.display_name || runner.hostname}</Link>
+                  <RunnerProblems runner={runner} />
+                </article>)}
+              </Section> : null}
               <Section title="Needs attention">
                 {findings === null ? (
                   <Unavailable>

@@ -21,11 +21,14 @@ func isolationProblems(report isolation.Report, tier string) []runnerauth.Proble
 		if len(tiers) == 0 && strings.HasSuffix(backend, "/workflow") {
 			problems = append(problems, runnerauth.NewProblem("settings_invalid"))
 		} else if len(tiers) == 0 {
-			problems = append(problems, runnerauth.NewProblem("backend_missing"))
+			p := runnerauth.NewProblem("backend_missing")
+			p.Subject = backend
+			problems = append(problems, p)
 		}
 	}
 	if !report.Supports(tier) {
 		problem := runnerauth.NewProblem("tier_unavailable")
+		problem.Subject = tier
 		unavailable := []string{}
 		for backend, tiers := range report {
 			if !slices.Contains(tiers, tier) {
@@ -88,13 +91,22 @@ func (r *runnerCredentialSource) heartbeatProblems(ctx context.Context, machine 
 		problems = append(problems, runnerauth.NewProblem("settings_invalid"))
 		routing.IsolationTier = isolation.Sandbox
 	}
-	for _, problem := range isolationProblems(machine.BackendIsolation, routing.IsolationTier) {
-		index := slices.IndexFunc(problems, func(p runnerauth.Problem) bool { return p.Code == problem.Code })
-		if index >= 0 {
-			problems[index].FixHint = problem.FixHint
-		} else {
-			problems = append(problems, problem)
+	for _, generic := range isolationProblems(machine.BackendIsolation, routing.IsolationTier) {
+		matched := false
+		for i := range problems {
+			if problems[i].Code == generic.Code && (problems[i].Subject == generic.Subject || generic.Subject == routing.IsolationTier) {
+				if generic.Code == "tier_unavailable" {
+					problems[i].FixHint = generic.FixHint
+				}
+				matched = true
+			}
 		}
+		if !matched {
+			problems = append(problems, generic)
+		}
+	}
+	for i := range problems {
+		problems[i].ReportedAt = time.Now()
 	}
 	if !runnerHostServicesReachable(ctx, routing.HostServices) {
 		problems = append(problems, runnerauth.NewProblem("host_service_unreachable"))

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -45,42 +44,51 @@ func runnerIsolationPolicy(identityPath string) func() (isolation.Policy, error)
 
 func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config) (isolation.Report, []runnerauth.Problem) {
 	report := isolation.Report{}
-	var services []string
+	problems := []runnerauth.Problem{}
 	tier := isolation.Sandbox
+	var services []string
 	if cfg.Client.IdentityFile != "" {
 		if snapshot, err := runnerauth.LoadRoutingCache(cfg.Client.IdentityFile); err == nil {
 			services = snapshot.Routing.HostServices
 			tier = snapshot.Routing.IsolationTier
 		}
 	}
-	failures := []string{}
 	for _, configured := range cfg.Projects {
 		workflow, err := project.LoadWorkflowContext(ctx, configured)
 		if err != nil {
 			report[configured.ID+"/workflow"] = []string{}
-			failures = append(failures, configured.ID+"/workflow: "+err.Error())
+			p := runnerauth.NewProblem("settings_invalid")
+			p.ProjectID = configured.ID
+			p.Subject = configured.ID + "/workflow"
+			p.Check = "load workflow"
+			p.ErrorOutput = err.Error()
+			problems = append(problems, runnerauth.SanitizeProblem(p))
 			continue
 		}
 		for _, backend := range workflow.Config.AgentBackendConfigs() {
 			key := configured.ID + "/" + backend.ID
-			tiers, reasons := probeBackendTiers(ctx, backend, isolation.Policy{WritableRoots: []string{configured.Workdir}, HostServices: services, AllowLocalBinding: workflow.Config.Worker.EffectiveAllowLocalBinding(), ExtraNetworkDomains: workflow.Config.Worker.ExtraNetworkDomains}, probeBackendIsolation)
-			report[key] = tiers
-			if reason := reasons[tier]; reason != "" {
-				failures = append(failures, key+": "+reason)
-			}
+			var unavailable error
+			report[key], _ = probeBackendTiers(ctx, backend, isolation.Policy{WritableRoots: []string{configured.Workdir}, HostServices: services, AllowLocalBinding: workflow.Config.Worker.EffectiveAllowLocalBinding(), ExtraNetworkDomains: workflow.Config.Worker.ExtraNetworkDomains}, func(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy) error {
+				if policy.Tier == isolation.Sandbox && unavailable != nil {
+					return unavailable
+				}
+				err := probeBackendIsolation(ctx, backend, policy)
+				if policy.Tier == isolation.NativeTrusted {
+					if err == nil {
+						err = probeBackendSignIn(ctx, backend)
+					}
+					unavailable = err
+				}
+				if err != nil && (policy.Tier == isolation.NativeTrusted || policy.Tier == tier) {
+					p := backendReadinessProblem(key, backend.Kind, policy.Tier, runtime.GOOS, err)
+					p.ProjectID = configured.ID
+					problems = append(problems, p)
+				}
+				return err
+			})
 		}
 	}
-	if len(failures) == 0 {
-		return report, nil
-	}
-	slices.Sort(failures)
-	problem := runnerauth.NewProblem("tier_unavailable")
-	problem.Message = fmt.Sprintf("Agent access %s is unavailable: %s", tier, strings.Join(failures, "; "))
-	problem.Message = strings.ReplaceAll(problem.Message, "\x00", "")
-	if len(problem.Message) > 1000 {
-		problem.Message = strings.ToValidUTF8(problem.Message[:997], "") + "..."
-	}
-	return report, []runnerauth.Problem{problem}
+	return report, runnerauth.MergeProblems(nil, problems, time.Now())
 }
 
 func probeBackendTiers(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy, probe func(context.Context, workflowconfig.AgentBackend, isolation.Policy) error) ([]string, map[string]string) {
@@ -150,13 +158,13 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 	}
 	output, err := runBackendProbe(backendProbeCommand(ctx, command, shell, []string{"--version"}))
 	if err != nil {
-		return errors.New("backend version probe failed")
+		return &backendCheckError{Check: command + " --version", Err: err}
 	}
 	if policy.Tier == isolation.NativeTrusted {
 		return nil
 	}
 	if !backendVersionAtLeast(output, minimum) {
-		return errors.New("backend lacks required fail-closed sandbox settings")
+		return &backendCheckError{Check: command + " --version", Err: fmt.Errorf("backend lacks required fail-closed sandbox settings: %s; minimum %d.%d.%d", output, minimum[0], minimum[1], minimum[2])}
 	}
 	if !isolation.SandboxAvailable() {
 		return isolation.ErrSandboxUnavailable
@@ -187,7 +195,7 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 		profile := permissions[options.PermissionProfile]
 		args := []string{"-c", "permissions." + options.PermissionProfile + "=" + tomlInline(profile), "-c", "features.network_proxy=true", "sandbox", "-P", options.PermissionProfile, "-C", inside, "/bin/sh", "-c", `touch allowed && ! touch "$1/denied" && test -n "${HTTPS_PROXY:-${https_proxy:-}}"`, "probe", base}
 		if _, err := runBackendProbe(backendProbeCommand(ctx, command, shell, args)); err != nil {
-			return errors.New("codex sandbox enforcement probe failed")
+			return &backendCheckError{Check: command + " " + strings.Join(args, " "), Err: err}
 		}
 		return nil
 	}
@@ -208,11 +216,11 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 	procgroup.SetTempDir(cmd, inside)
 	procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: map[string]string{"CLAUDE_CODE_TMPDIR": inside}})
 	if err := claudecode.VerifySandboxCommand(ctx, cmd, settings); err != nil {
-		return errors.New("claude effective sandbox settings probe failed")
+		return &backendCheckError{Check: command + " " + strings.Join(args, " "), Err: err}
 	}
 	host := exec.CommandContext(ctx, "/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)(deny file-write*)", "/usr/bin/true")
 	if err := host.Run(); err != nil {
-		return errors.New("claude host sandbox probe failed")
+		return &backendCheckError{Check: strings.Join(host.Args, " "), Err: err}
 	}
 	return nil
 }
@@ -254,12 +262,122 @@ func backendProbeCommand(ctx context.Context, command, shell string, args []stri
 }
 
 func runBackendProbe(cmd *exec.Cmd) ([]byte, error) {
-	var output bytes.Buffer
+	var output boundedProbeOutput
 	cmd.Stdout = &output
+	cmd.Stderr = &output
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 	groupID := procgroup.GroupID(cmd)
 	err := cmd.Wait()
-	return output.Bytes(), errors.Join(err, procgroup.Cleanup(groupID))
+	err = errors.Join(err, procgroup.Cleanup(groupID))
+	if err != nil {
+		err = fmt.Errorf("%w: %s", err, output.data)
+	}
+	return output.data, err
+}
+
+type boundedProbeOutput struct{ data []byte }
+
+func (b *boundedProbeOutput) Write(p []byte) (int, error) {
+	size := len(p)
+	if available := 8192 - len(b.data); available > 0 {
+		b.data = append(b.data, p[:min(available, size)]...)
+	}
+	return size, nil
+}
+
+type backendCheckError struct {
+	Check     string
+	Err       error
+	SignedOut bool
+}
+
+func (e *backendCheckError) Error() string { return e.Err.Error() }
+func (e *backendCheckError) Unwrap() error { return e.Err }
+
+func backendReadinessProblem(subject, kind, tier, goos string, err error) runnerauth.Problem {
+	code := "backend_missing"
+	if tier == isolation.Sandbox {
+		code = "tier_unavailable"
+	}
+	p := runnerauth.NewProblem(code)
+	p.Subject = subject
+	if tier == isolation.Sandbox {
+		p.Subject += "/sandbox"
+	}
+	p.Check = "isolation " + tier
+	p.ErrorOutput = err.Error()
+	var check *backendCheckError
+	if errors.As(err, &check) {
+		p.Check = check.Check
+		if check.SignedOut {
+			p.Message = "not signed in"
+			p.FixHint = "Sign in on this runner, then wait for its next heartbeat."
+		}
+	}
+	switch kind {
+	case workflowconfig.AgentBackendCodex:
+		p.FixCommand = "npm install -g @openai/codex"
+		if check != nil && check.SignedOut {
+			p.FixCommand = "codex login --device-auth"
+		}
+	case workflowconfig.AgentBackendClaudeCode:
+		p.FixCommand = "npm install -g @anthropic-ai/claude-code"
+		if check != nil && check.SignedOut {
+			p.FixCommand = "claude auth login"
+		}
+	}
+	if tier == isolation.Sandbox && (check == nil || !strings.HasSuffix(check.Check, " --version")) {
+		p.FixCommand = ""
+	}
+	output := strings.ToLower(err.Error())
+	missingTool := strings.Contains(output, "bwrap") || strings.Contains(output, "bubblewrap") || strings.Contains(output, "socat")
+	missingCommand := strings.Contains(output, "not found") || strings.Contains(output, "not installed") || strings.Contains(output, "no such file")
+	if tier == isolation.Sandbox && goos == "linux" && missingTool && missingCommand {
+		p.FixCommand = "sudo apt-get install bubblewrap socat"
+	}
+	return runnerauth.SanitizeProblem(p)
+}
+
+func probeBackendSignIn(ctx context.Context, backend workflowconfig.AgentBackend) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	command := backend.Command
+	var shell string
+	var args []string
+	var environment map[string]string
+	switch backend.Kind {
+	case workflowconfig.AgentBackendCodex:
+		prepared, err := prepareCodexCommandForRuntime(command)
+		if err != nil {
+			return &backendCheckError{Check: "prepare isolated Codex home", Err: err}
+		}
+		command, _, _ = strings.Cut(prepared.Command, " app-server")
+		environment = prepared.Environment
+		shell = backend.CodexOptions().Shell
+		args = []string{"login", "status"}
+	case workflowconfig.AgentBackendClaudeCode:
+		shell = backend.ClaudeCodeOptions().Shell
+		args = []string{"auth", "status", "--json"}
+	default:
+		return nil
+	}
+	cmd := backendProbeCommand(ctx, command, shell, args)
+	procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: environment})
+	output, err := runBackendProbe(cmd)
+	if err == nil && backend.Kind == workflowconfig.AgentBackendClaudeCode {
+		var status struct {
+			LoggedIn bool `json:"loggedIn"`
+		}
+		if decodeErr := json.Unmarshal(output, &status); decodeErr != nil {
+			err = decodeErr
+		} else if !status.LoggedIn {
+			err = fmt.Errorf("%s", output)
+		}
+	}
+	if err != nil {
+		return &backendCheckError{Check: command + " " + strings.Join(args, " "), Err: err, SignedOut: strings.Contains(strings.ToLower(string(output)), "not logged in") || strings.Contains(strings.ToLower(string(output)), "not signed in") || strings.Contains(string(output), `"loggedIn":false`) || strings.Contains(string(output), `"loggedIn": false`)}
+	}
+	return nil
 }

@@ -131,6 +131,10 @@ func updateRunnerProblems(ctx context.Context, tx *sql.Tx, scope nativeScope, pr
 	if err := json.Unmarshal([]byte(raw), &report); err != nil {
 		return err
 	}
+	for i := range problems {
+		problems[i] = runnerauth.SanitizeProblem(problems[i])
+		problems[i].ReportedAt = now
+	}
 	current := append(slices.Clone(problems), runnerHubProblems(r, report, protocol, rejected)...)
 	if err := applyRunnerPolicyProblems(ctx, tx, &r); err != nil {
 		return err
