@@ -3,6 +3,7 @@ package hubserver
 import (
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -606,5 +607,31 @@ func TestProviderPoolIsolation(t *testing.T) {
 				t.Fatalf("historical report changed: %+v, %v", stored, err)
 			}
 		})
+	}
+}
+
+func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
+	t.Parallel()
+	f := newDefaultNativeFixture(t, Config{})
+	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+	r.enroll(t)
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	publishCapacity(t, f, r, capacityReport(f.service.config.now()))
+	issue := f.create(t, "candidate")
+	claim := providerClaim(r, issue, "")
+	writer, err := f.service.database.db.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", r.redemption.Credential, tracker.NativeCapacityPreview{NativeClaim: claim})
+	}()
+	select {
+	case response := <-done:
+		requireNativeStatus(t, response, http.StatusOK)
+	case <-time.After(5 * time.Second):
+		t.Fatal("claim preview waited on the held writer")
 	}
 }
