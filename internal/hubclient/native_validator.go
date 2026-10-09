@@ -32,11 +32,7 @@ func (e *nativeExecution) ValidatorVersion(ctx context.Context) (runner.NativeVa
 		if version.HeadSHA != e.lastDiff.HeadSHA || version.BaseSHA != e.lastDiff.BaseSHA || version.PolicyID != e.data.PolicyID {
 			return runner.NativeValidation{}, errors.New("native validator version differs from the published source")
 		}
-		if e.publication != nil && e.role == runner.RoleRework && e.recoveredSource != nil &&
-			*e.recoveredSource == e.publication.SourceVersion && e.publication.Matches(detail.Change.ID, version) {
-			return runner.NativeValidation{}, nil
-		}
-		if !version.Policy.Gates.Validator {
+		if !version.Policy.Gates.Validator || detail.Summary.Status == "reviewed" {
 			return runner.NativeValidation{}, nil
 		}
 		raw, err := json.Marshal(e.lastDiff.Files)
