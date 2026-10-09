@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -289,6 +290,20 @@ func TestLargestRunnerTakesOverSmallerRunnersBarrier(t *testing.T) {
 	large := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	large.redemption.Capacity = 8
 	large.enroll(t)
+	observe := func(r runnerFixture) tracker.LandingBarrier {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/landing-barrier?repository="+url.QueryEscape(repository), r.redemption.Credential, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var barrier tracker.LandingBarrier
+		decodeHubResponse(t, response, &barrier)
+		return barrier
+	}
+	if seen := observe(large); seen.Running {
+		t.Fatalf("preferred runner sees the smaller runner's barrier as running, so it never asks to take over: %+v", seen)
+	}
+	if seen := observe(small); !seen.Running {
+		t.Fatalf("owner no longer sees its running barrier: %+v", seen)
+	}
 	if taken := start(large, "large-start"); !taken.Running || taken.ID != "large-start" || taken.Owner != large.binding.RunnerID {
 		t.Fatalf("largest runner did not take over: %+v", taken)
 	}
