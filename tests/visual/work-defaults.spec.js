@@ -42,9 +42,12 @@ for (const scope of ["all", "project"]) {
     expect(await heading.evaluate((title) => title.closest("header")?.textContent)).not.toMatch(/\d+ (projects|issues)/);
     expect(await completed.evaluate((counter) => Boolean(counter.closest("header")?.querySelector("h1")?.compareDocumentPosition(counter) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
     const titleBox = await heading.boundingBox();
+    const liveBox = await page.getByTestId("stat-live").boundingBox();
     const counterBox = await completed.boundingBox();
-    expect(counterBox.x).toBeGreaterThan(titleBox.x + titleBox.width);
-    expect(counterBox.x - titleBox.x - titleBox.width).toBeLessThanOrEqual(16);
+    expect(liveBox.x).toBeGreaterThan(titleBox.x + titleBox.width);
+    expect(liveBox.x - titleBox.x - titleBox.width).toBeLessThanOrEqual(16);
+    expect(counterBox.x).toBeGreaterThan(liveBox.x + liveBox.width);
+    expect(counterBox.x - liveBox.x - liveBox.width).toBeLessThanOrEqual(16);
     expect(counterBox.y).toBeLessThan(titleBox.y + titleBox.height);
     await expect(page.getByTestId("work-toolbar").getByText(/Completed/)).toHaveCount(0);
     const backlog = page.getByRole("region", { name: "Backlog", exact: true });
