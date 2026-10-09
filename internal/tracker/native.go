@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/workpad"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -477,6 +478,7 @@ type NativeDisposition struct {
 }
 
 type NativeRunData struct {
+	ProcessUsage    *procgroup.Usage          `json:"process_usage,omitempty"`
 	TerminalFailure *NativeTerminalFailure    `json:"terminal_failure,omitempty"`
 	Finalization    *NativeFinalization       `json:"finalization,omitempty"`
 	Evidence        []NativeEvidence          `json:"evidence,omitempty"`

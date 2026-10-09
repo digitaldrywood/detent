@@ -39,6 +39,7 @@ type localTransport struct {
 	processGroupID       int
 	workerProcess        procgroup.Identity
 	startedAt            time.Time
+	usageHandler         func(procgroup.Usage)
 	readyAt              time.Time
 	exitedAt             time.Time
 	exitStatus           string
@@ -150,6 +151,7 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 	if err := errors.Join(stdoutWriter.Close(), stderrWriter.Close()); err != nil {
 		terminateErr := procgroup.TerminateTree(cmd, procgroup.GroupID(cmd))
 		waitErr := cmd.Wait()
+		procgroup.RecordUsage(procgroup.UsageHandler(ctx), cmd.ProcessState, processStartedAt)
 		cleanupErr := procgroup.Cleanup(procgroup.GroupID(cmd))
 		return nil, errors.Join(
 			fmt.Errorf("close parent output writers: %w", err),
@@ -166,6 +168,7 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 		cmd:            cmd,
 		processGroupID: procgroup.GroupID(cmd),
 		startedAt:      processStartedAt,
+		usageHandler:   procgroup.UsageHandler(ctx),
 		stdin:          stdin,
 		stdout:         stdout,
 		stderr:         stderr,
@@ -481,6 +484,7 @@ func (t *localTransport) readStderr() {
 
 func (t *localTransport) wait() {
 	err := t.cmd.Wait()
+	procgroup.RecordUsage(t.usageHandler, t.cmd.ProcessState, t.startedAt)
 	t.waitMu.Lock()
 	t.exitedAt = time.Now().UTC()
 	if t.cmd != nil && t.cmd.ProcessState != nil {
@@ -512,6 +516,7 @@ func (t *localTransport) abortStart(cause error) error {
 	closeErr := t.closeStdin()
 	terminateErr := procgroup.TerminateTree(t.cmd, t.processGroupID)
 	waitErr := t.cmd.Wait()
+	procgroup.RecordUsage(t.usageHandler, t.cmd.ProcessState, t.startedAt)
 	cleanupErr := procgroup.Cleanup(t.processGroupID)
 	<-t.readDone
 	stderrErr := <-t.stderrDone

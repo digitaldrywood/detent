@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
+
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -115,4 +117,19 @@ func TestNativeExecutionRecordUsage(t *testing.T) {
 	if len(execution.data.Usage) != 1 {
 		t.Fatalf("usage after a nameless report = %+v, want it unchanged", execution.data.Usage)
 	}
+	first := procgroup.Usage{PeakMemoryBytes: 4096, UserCPUSeconds: 1.25, SystemCPUSeconds: 0.5, WallSeconds: 2}
+	execution.RecordProcessUsage(first)
+	snapshot := execution.data.ProcessUsage
+	if snapshot == nil || *snapshot != first {
+		t.Fatalf("recorded process usage = %+v, want %+v", snapshot, first)
+	}
+	execution.RecordProcessUsage(procgroup.Usage{PeakMemoryBytes: 2048, UserCPUSeconds: 2, SystemCPUSeconds: 0.25, WallSeconds: 3})
+	want := procgroup.Usage{PeakMemoryBytes: 4096, UserCPUSeconds: 3.25, SystemCPUSeconds: 0.75, WallSeconds: 5}
+	if got := execution.data.ProcessUsage; got == nil || *got != want {
+		t.Fatalf("accumulated process usage = %+v, want %+v", got, want)
+	}
+	if *snapshot != first {
+		t.Fatalf("earlier process usage changed to %+v, want %+v", *snapshot, first)
+	}
+
 }
