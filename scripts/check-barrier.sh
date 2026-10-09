@@ -6,30 +6,63 @@ procs=${1:?process budget required}
 started=$SECONDS
 trap 'result=$?; printf "check-barrier finished: exit=%s wall=%ss\n" "$result" "$((SECONDS - started))"' EXIT
 
+checks=(lint vet invariants generated migrations app security nilaway checkland)
+check_command() {
+    case $1 in
+        lint) make lint ;;
+        vet) make vet ;;
+        invariants) make check-invariants ;;
+        generated) make check-generated ;;
+        migrations) make check-migrations ;;
+        app) make check-app ;;
+        security) make security ;;
+        nilaway) make nilaway-changed ;;
+        checkland) python3 -m unittest scripts/check_land_test.py ;;
+        *) return 2 ;;
+    esac
+}
+
 failed=${DETENT_BARRIER_FAILED:-}
-go_items=$(printf '%s\n' "$failed" | python3 scripts/barrier_failures.py select go)
-browser_items=$(printf '%s\n' "$failed" | python3 scripts/barrier_failures.py select browser)
+select_scope() { printf '%s\n' "$failed" | python3 scripts/barrier_failures.py select "$1"; }
+go_items=$(select_scope go)
+race_items=$(select_scope race)
+browser_items=$(select_scope browser)
+check_items=$(select_scope check)
 run_go=1
+run_race=1
 run_browser=1
+run_checks=("${checks[@]}")
 if [ -n "$failed" ]; then
     [ -n "$go_items" ] || run_go=0
+    [ -n "$race_items" ] || run_race=0
     [ -n "$browser_items" ] || run_browser=0
+    run_checks=()
+    if [ -n "$check_items" ]; then
+        IFS=$'\n' read -r -d '' -a run_checks <<<"$check_items" || true
+    fi
 fi
 
-rerun_go() {
-    local item package tests status=0
+rerun_tests() {
+    local items=$1 race=$2 item package tests status=0
     while IFS= read -r item; do
         [ -n "$item" ] || continue
         package=${item%%:*}
         tests=
         [ "$item" = "$package" ] || tests=${item#*:}
-        if [ -n "$tests" ]; then
-            env -u DETENT_API_TOKEN go test -count=1 -timeout=30m -run "^(${tests})\$" "$package" || status=$?
-        else
-            env -u DETENT_API_TOKEN go test -count=1 -timeout=30m "$package" || status=$?
-        fi
-    done <<<"$go_items"
+        local args=(-count=1 -timeout=30m)
+        [ "$race" = 1 ] && args+=(-race -short)
+        [ -n "$tests" ] && args+=(-run "^(${tests})\$")
+        env -u DETENT_API_TOKEN go test "${args[@]}" "$package" || status=$?
+    done <<<"$items"
     return "$status"
+}
+
+run_go_tests() {
+    if [ -n "$failed" ]; then rerun_tests "$go_items" 0; else make -o generate-docs test TEST_PROCS="$procs" TEST_TIMEOUT=30m; fi
+}
+
+run_race_tests() {
+    if [ -n "$failed" ]; then rerun_tests "$race_items" 1; else make -o generate-docs test-race TEST_PROCS="$procs"; fi
 }
 
 run_browser_specs() {
@@ -38,6 +71,18 @@ run_browser_specs() {
         IFS=$'\n' read -r -d '' -a specs <<<"$browser_items" || true
     fi
     node_modules/.bin/playwright test "${specs[@]}"
+}
+
+run_checks_in_order() {
+    local name status=0
+    : > tmp/barrier-checks.failed
+    for name in "$@"; do
+        if ! check_with_evidence "barrier-$name" check_command "$name"; then
+            echo "$name" >> tmp/barrier-checks.failed
+            status=1
+        fi
+    done
+    return "$status"
 }
 
 make assets generate-docs
@@ -52,29 +97,47 @@ fi
 
 go_pid=
 browser_pid=
-if [ "$run_go" = 1 ]; then
-    if [ -n "$failed" ]; then
-        (set -o pipefail; check_with_evidence barrier-go rerun_go 2>&1 | tee tmp/barrier-go.log) &
-    else
-        (set -o pipefail; check_with_evidence barrier-go make -o generate-docs test TEST_PROCS="$procs" TEST_TIMEOUT=30m 2>&1 | tee tmp/barrier-go.log) &
-    fi
+checks_pid=
+if [ "$run_go" = 1 ] || [ "$run_race" = 1 ]; then
+    (
+        set -o pipefail
+        status=0
+        if [ "$run_go" = 1 ]; then
+            check_with_evidence barrier-go run_go_tests 2>&1 | tee tmp/barrier-go.log || status=$?
+        fi
+        if [ "$run_race" = 1 ]; then
+            check_with_evidence barrier-race run_race_tests 2>&1 | tee tmp/barrier-race.log || status=$?
+        fi
+        exit "$status"
+    ) &
     go_pid=$!
 fi
 if [ "$run_browser" = 1 ]; then
     (set -o pipefail; DETENT_BINARY="$PWD/tmp/detent" DETENT_HOSTED_PREVIEW_BINARY="$PWD/tmp/hubserver-preview.test" DETENT_STARTUP_PREVIEW_BINARY="$PWD/tmp/startup-preview.test" check_with_evidence barrier-browser run_browser_specs 2>&1 | tee tmp/barrier-browser.log) &
     browser_pid=$!
 fi
+if [ "${#run_checks[@]}" -gt 0 ]; then
+    (set -o pipefail; run_checks_in_order "${run_checks[@]}" 2>&1 | tee tmp/barrier-checks.log) &
+    checks_pid=$!
+fi
 result=0
 go_result=0
 browser_result=0
+checks_result=0
 if [ -n "$go_pid" ]; then wait "$go_pid" || go_result=$?; fi
 if [ -n "$browser_pid" ]; then wait "$browser_pid" || browser_result=$?; fi
+if [ -n "$checks_pid" ]; then wait "$checks_pid" || checks_result=$?; fi
 if [ "$go_result" != 0 ]; then
     result=$go_result
-    printf 'detent-barrier-failed: go %s\n' "$(python3 scripts/barrier_failures.py extract go tmp/barrier-go.log | tr '\n' ' ')"
+    [ -f tmp/barrier-go.log ] && printf 'detent-barrier-failed: go %s\n' "$(python3 scripts/barrier_failures.py extract go tmp/barrier-go.log | tr '\n' ' ')"
+    [ -f tmp/barrier-race.log ] && printf 'detent-barrier-failed: race %s\n' "$(python3 scripts/barrier_failures.py extract go tmp/barrier-race.log | tr '\n' ' ')"
 fi
 if [ "$browser_result" != 0 ]; then
     result=$browser_result
     printf 'detent-barrier-failed: browser %s\n' "$(python3 scripts/barrier_failures.py extract browser tmp/barrier-browser.log | tr '\n' ' ')"
+fi
+if [ "$checks_result" != 0 ]; then
+    result=$checks_result
+    printf 'detent-barrier-failed: check %s\n' "$(tr '\n' ' ' < tmp/barrier-checks.failed)"
 fi
 exit "$result"
