@@ -24,6 +24,27 @@ func (s *Scheduler) WaitCandidateChanges(ctx context.Context, project string, wa
 			return
 		case <-timer.C:
 		}
+		if source.client.heartbeatChangesAvailable() {
+			routing := source.client.client.runner
+			if routing == nil {
+				return
+			}
+			_, changed, err := routing.availabilityState()
+			if err != nil {
+				return
+			}
+			select {
+			case wake <- struct{}{}:
+			default:
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-changed:
+			}
+			timer.Reset(0)
+			continue
+		}
 		started := time.Now()
 		var page struct {
 			Cursor string `json:"cursor"`

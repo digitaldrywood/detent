@@ -517,6 +517,25 @@ Hub restart. The schema migration preserves existing identities and lease histor
 | `DELETE /api/v2/organizations/{org}/runners/{runner}` | Instance admin | Remove the runner from fleet, routing and eligibility; revoke all future authenticated access. Refuses active work with 422; repeat removal returns 204. |
 | `POST /api/v2/organizations/{org}/projects/{project}/machines/{machine}/heartbeat` | Owning runner with `heartbeat` | `display_name`, `capacity`, `version`, optional `os`/`architecture`; enrolled runners update reported capacity/platform and liveness, preserving administrator-owned names and limits |
 
+Hubs advertising `native_heartbeat_changes` accept an optional `change_cursor`
+on enrolled runner heartbeats. Send an empty string for the initial snapshot.
+The routing response adds `changes`: an opaque `cursor`, `reset`, changed
+`items` (`work_item_id`, string `revision`, `last_activity_at`), the project's
+approved `policy_id`, `capabilities_digest`, and a `claimable` queue hint.
+The existing routing response retains its runner update target and claim state.
+The cursor uses the board's project activity sequence and an observation time
+for activity recorded outside collaboration history. Invalid, expired, reset,
+or oversized deltas return `reset: true`; the runner performs a full project
+refresh before acknowledging the returned cursor.
+
+Runners retain the project snapshot and hydrate changed items before advancing
+their acknowledged cursor. Policy and capabilities reads are reused until their
+heartbeat identifiers change. Claims run only with the queue hint or after a
+slot frees, and the Hub continues to enforce policy, capacity, ordering and
+fencing when claiming. The heartbeat feed replaces list refreshes and dispatch
+long polling. Missing heartbeat fields retain the previous polling behavior for
+compatibility with older Hubs.
+
 Removal uses the existing credential revocation transaction. Active leases and
 unfinished attempts prevent removal; drain the runner and let its work finish
 first. Identity and machine records remain available to historical reads. The

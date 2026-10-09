@@ -9,10 +9,12 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
 func TestNativeDispatchWaitReconnects(t *testing.T) {
-	for _, mode := range []string{"changes", "unchanged", "failure", "unsupported", "held", "long request"} {
+	for _, mode := range []string{"changes", "unchanged", "failure", "unsupported", "held", "long request", "heartbeat replaces wait", "heartbeat wakes dispatch"} {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
@@ -68,6 +70,10 @@ func TestNativeDispatchWaitReconnects(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if mode == "heartbeat replaces wait" || mode == "heartbeat wakes dispatch" {
+					native.applyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "heartbeat"})
+					client.runner = &runnerCredentialSource{routing: &runnerauth.RoutingSnapshot{Changes: &runnerauth.HeartbeatChanges{Cursor: "heartbeat"}}}
+				}
 				s := &Scheduler{nativeProjects: map[string]*NativeConnector{"local": {client: native}}}
 				wake := make(chan struct{}, 1)
 				done := make(chan struct{})
@@ -76,6 +82,11 @@ func TestNativeDispatchWaitReconnects(t *testing.T) {
 				first := len(wake)
 				if first > 0 {
 					<-wake
+				}
+				if mode == "heartbeat wakes dispatch" {
+					changes := &runnerauth.HeartbeatChanges{Cursor: "new", Claimable: true}
+					native.applyHeartbeatChanges(changes)
+					client.runner.setRouting(runnerauth.RoutingSnapshot{Changes: changes})
 				}
 				elapsed := 5 * time.Second
 				if mode == "failure" {
@@ -92,8 +103,10 @@ func TestNativeDispatchWaitReconnects(t *testing.T) {
 					wantWake = 0
 				case "failure":
 					wantCalls, wantWake = 7, 0
-				case "unsupported":
+				case "unsupported", "heartbeat replaces wait":
 					wantCalls, wantWake = 0, 0
+				case "heartbeat wakes dispatch":
+					wantCalls, wantWake = 0, 1
 				case "held":
 					wantCalls, wantWake = 2, 0
 				case "long request":

@@ -45,11 +45,20 @@ func (c *Client) ApproveProjectPolicy(ctx context.Context, repository string, ch
 }
 
 func (c *NativeClient) ProjectPolicy(ctx context.Context) (policy.Approval, error) {
+	state := c.heartbeatProject()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.changes != nil && state.approvalSet {
+		return state.approval, state.approvalErr
+	}
 	var approval policy.Approval
 	err := c.client.request(ctx, http.MethodGet, c.base()+"/policy", nil, &approval)
 	var failure *APIError
 	if c.client.runner != nil && (err == nil || errors.As(err, &failure) && failure.Code == "policy_mismatch") {
 		c.client.runner.setApprovedPolicy(c.project, approval.Policy.ID)
+		if state.changes != nil {
+			state.approval, state.approvalErr, state.approvalSet = approval, err, true
+		}
 	}
 	return approval, err
 }
@@ -95,6 +104,11 @@ func (s *Scheduler) CheckProjectPolicyWithSource(ctx context.Context, project, r
 			return fmt.Errorf("check approved repository policy: %w", err)
 		}
 		return descriptor.Match(approval.Policy)
+	}
+	if s.client.runner != nil {
+		if err := s.ensureNativeMachine(ctx, source); err != nil {
+			return err
+		}
 	}
 	approval, err := source.client.ProjectPolicy(ctx)
 	var apiErr *APIError
@@ -202,6 +216,10 @@ func (s *Scheduler) reportObservedPolicy(ctx context.Context, project string, so
 		s.mu.Unlock()
 		return fmt.Errorf("report the resolved repository policy to the Hub: %w", err)
 	}
+	state := source.client.heartbeatProject()
+	state.mu.Lock()
+	state.approvalSet = false
+	state.mu.Unlock()
 	return nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -215,6 +216,7 @@ func recordRunnerEvent(ctx context.Context, tx *sql.Tx, runner, actor, kind stri
 
 func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	var request struct {
+		ChangeCursor         *string                             `json:"change_cursor,omitempty"`
 		Admission            *tracker.NativeAdmissionObservation `json:"admission,omitempty"`
 		SpriteName           string                              `json:"sprite_name,omitempty"`
 		Update               *runnerauth.UpdateObservation       `json:"update,omitempty"`
@@ -260,8 +262,33 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 		published = s.runnerReleasePublished(c.Request().Context(), target, request.OS, request.Architecture)
 	}
 	status := http.StatusNoContent
+	var changeCursor nativeCursor
+	var changeKey []byte
+	var changeReset bool
+	var digest string
 	if scope.credential.Runner.RunnerID != "" {
 		status = http.StatusOK
+		if request.ChangeCursor != nil {
+			params := url.Values{"cursor": {*request.ChangeCursor}}
+			var err error
+			_, changeCursor, changeKey, err = s.readNativePage(c.Request().Context(), scope, c.Request().URL.EscapedPath()+"/changes", params)
+			if err != nil {
+				params.Set("cursor", "")
+				_, changeCursor, changeKey, err = s.readNativePage(c.Request().Context(), scope, c.Request().URL.EscapedPath()+"/changes", params)
+			}
+			if err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			changeReset = *request.ChangeCursor == "" || changeCursor.After == ""
+			capabilities, err := s.readNativeCapabilities(c.Request().Context())
+			if err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			digest, err = capabilitiesDigest(capabilities)
+			if err != nil {
+				return err
+			}
+		}
 	}
 	return s.runnerTransaction(c, status, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		if scope.credential.Runner.RunnerID != "" {
@@ -335,6 +362,12 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			}
 			if err := readRunnerClaimState(ctx, tx, scope, &snapshot, now); err != nil {
 				return nil, err
+			}
+			if request.ChangeCursor != nil {
+				snapshot.Changes, err = readHeartbeatChanges(ctx, tx, scope, changeCursor, changeKey, changeReset, digest, snapshot.ClaimState.PolicyIDs[scope.project], now)
+				if err != nil {
+					return nil, err
+				}
 			}
 			configurationRequest, err := s.runnerProjectConfiguration(ctx, tx, scope, request.ProjectConfiguration, now)
 			if err != nil {

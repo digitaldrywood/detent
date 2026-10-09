@@ -47,7 +47,7 @@ const capabilitiesTTL = 30 * time.Second
 func (c *Client) cachedCapabilities(ctx context.Context) (nativeCapabilities, error) {
 	c.capabilitiesMu.Lock()
 	defer c.capabilitiesMu.Unlock()
-	if !c.capabilitiesAt.IsZero() && time.Since(c.capabilitiesAt) < capabilitiesTTL {
+	if !c.capabilitiesAt.IsZero() && (c.capabilitiesDigest != "" || time.Since(c.capabilitiesAt) < capabilitiesTTL) {
 		return c.capabilities, nil
 	}
 	var capabilities nativeCapabilities
@@ -297,6 +297,7 @@ func (c *NativeClient) Release(ctx context.Context, lease tracker.NativeLease, r
 	err := c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/release", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: reason}, nil)
 	if (err == nil || claimLost(err)) && c.client.runner != nil {
 		c.client.runner.claimSlot(lease, false)
+		c.slotFreed()
 	}
 	return err
 }

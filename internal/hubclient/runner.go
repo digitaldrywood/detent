@@ -330,6 +330,17 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 }
 
 func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, capacity int, refresh bool) error {
+	var changeCursor *string
+	if c.client.runner != nil {
+		supported, err := c.HubFeature(ctx, tracker.NativeHeartbeatChangesCapability)
+		if err != nil {
+			return err
+		}
+		if supported {
+			cursor := c.changeCursor()
+			changeCursor = &cursor
+		}
+	}
 	capabilities, isolation := machine.workspaceReport()
 	problems := machine.Problems
 	var rejected bool
@@ -358,12 +369,16 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
 		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
-	}{machine.Admission, runnerSpriteName(machine.Hostname), machine.Update, machine.CapacityConfig, machine.ProjectConfiguration, machine.LocalChecks, problems, 2, rejected, machine.BackendIsolation, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.CheckoutRepository}
+		ChangeCursor          *string                        `json:"change_cursor,omitempty"`
+	}{machine.Admission, runnerSpriteName(machine.Hostname), machine.Update, machine.CapacityConfig, machine.ProjectConfiguration, machine.LocalChecks, problems, 2, rejected, machine.BackendIsolation, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.CheckoutRepository, changeCursor}
 	if c.client.runner == nil {
 		return c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, nil)
 	}
 	var snapshot runnerauth.RoutingSnapshot
 	if err := c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, &snapshot); err != nil {
+		c.client.capabilitiesMu.Lock()
+		c.client.capabilitiesDigest, c.client.capabilitiesAt = "", time.Time{}
+		c.client.capabilitiesMu.Unlock()
 		return err
 	}
 	snapshot.Routing = snapshot.Routing.Normalized()
@@ -378,6 +393,7 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 		c.client.runner.rejectSettings(true)
 		return errors.Join(ErrUnavailable, err)
 	}
+	c.applyHeartbeatChanges(snapshot.Changes)
 	c.client.runner.setRouting(snapshot)
 	if err := runnerauth.SaveRoutingCache(c.client.runner.path, snapshot); err != nil {
 		c.client.runner.rejectSettings(true)
@@ -409,6 +425,11 @@ func (r *runnerCredentialSource) setRouting(snapshot runnerauth.RoutingSnapshot)
 	r.routingMu.Lock()
 	defer r.routingMu.Unlock()
 	previous := r.routing
+	changes := snapshot.Changes
+	modeChanged := previous != nil && (previous.Changes == nil) != (changes == nil)
+	if modeChanged || changes != nil && (changes.Reset || len(changes.Items) > 0 || changes.Claimable || previous == nil || previous.Changes == nil || changes.Claimable != previous.Changes.Claimable) {
+		r.notifyClaimChange()
+	}
 	if snapshot.ClaimState != nil {
 		state := *snapshot.ClaimState
 		state.Slots = slices.Clone(state.Slots)
