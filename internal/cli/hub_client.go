@@ -140,6 +140,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
 		PrepareProject:        prepareProject,
 		RefreshProjects:       projects.refresh,
+		RunnerSetupDeclared:   projects.runnerSetupDeclared,
 		CapacityConfiguration: capacityConfiguration,
 		LocalChecks:           localChecks,
 		GitHubIntake:          github.FetchIssueSnapshot,

@@ -69,6 +69,16 @@ func TestProjectSetupFailurePrecedesNativeClaim(t *testing.T) {
 		}
 		return nil
 	}
+	h.scheduler.runnerSetupDeclared = func(ctx context.Context, name string) *bool {
+		if name != "local" {
+			return nil
+		}
+		workflow, err := project.LoadWorkflowContext(ctx, selected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return new(workflow.Config.Hooks.RunnerSetup != "")
+	}
 	h.scheduler.localChecks = map[string]runnerauth.LocalChecks{
 		"local": {Checkout: "passed", Doctor: "passed", Provider: "passed"},
 		"other": {Checkout: "passed", Doctor: "passed", Provider: "passed"},
@@ -88,7 +98,7 @@ func TestProjectSetupFailurePrecedesNativeClaim(t *testing.T) {
 	if hash, err := localStore.ProjectRunnerSetupHash(t.Context(), "runner-one", selected.ID); err != nil || hash != "" {
 		t.Fatalf("failed setup hash = %q, error = %v", hash, err)
 	}
-	if h.scheduler.localChecks["local"].Setup != "failed" {
+	if h.scheduler.localChecks["local"].Setup != "failed" || h.scheduler.localChecks["local"].RunnerSetupDeclared == nil || !*h.scheduler.localChecks["local"].RunnerSetupDeclared {
 		t.Fatal("failed project setup was not reported")
 	}
 	if err := h.scheduler.PrepareProject(t.Context(), "other"); err != nil || !h.scheduler.localChecks["other"].Passed() {
@@ -121,4 +131,23 @@ func TestProjectSetupFailurePrecedesNativeClaim(t *testing.T) {
 	if err != nil || changed == "" || changed == hash {
 		t.Fatalf("changed native setup hash = %q, previous = %q, error = %v", changed, hash, err)
 	}
+	for _, declared := range []bool{false, true} {
+		body := "---\ntracker:\n  kind: memory\n"
+		if declared {
+			body += "hooks:\n  runner_setup: setup.sh\n  shell: sh\n"
+		}
+		body += "---\nRun work.\n"
+		if err := os.WriteFile(selected.Workflow, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.scheduler.PrepareProject(t.Context(), "local"); err != nil {
+			t.Fatal(err)
+		}
+		checks := h.scheduler.localChecks["local"]
+		if checks.RunnerSetupDeclared == nil || *checks.RunnerSetupDeclared != declared || checks.Setup != "passed" {
+			t.Fatalf("changed declaration was not reported: %+v", checks)
+		}
+		assertRuns(4)
+	}
+
 }

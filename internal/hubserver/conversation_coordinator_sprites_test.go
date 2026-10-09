@@ -22,7 +22,7 @@ func TestCoordinatorSpriteIntakeInstructions(t *testing.T) {
 		})
 	}
 	previous := -1
-	for _, step := range []string{"Start with get_sprite_pool", "1. Which project?", "2. Token setup:", "3. How many runners?", "4. Any extra bootstrap steps", "5. Once project, token, bounds and extra steps are resolved"} {
+	for _, step := range []string{"Start with get_sprite_pool", "1. Token setup:", "2. How many runners?", "3. Once token and bounds are resolved"} {
 		index := strings.Index(intake, step)
 		if index <= previous {
 			t.Fatalf("missing or out-of-order intake step %q", step)
@@ -34,11 +34,11 @@ func TestCoordinatorSpriteIntakeInstructions(t *testing.T) {
 		want []string
 	}{
 		{"read instead of asking", []string{"token presence/validation", "current floor/ceiling", "bootstrap_configured", "connected_runners", "provider_readiness", "never ask the user for information this read provides", "If already valid, skip token setup"}},
-		{"one unanswered question", []string{"never repeat an answered question", "one at a time", "accepted with one word", "this conversation's project as the default", "default 1/1", "Default: none"}},
+		{"one unanswered question", []string{"never repeat an answered question", "one at a time", "accepted with one word", "default 1/1"}},
 		{"missing token waits", []string{"use set_sprites_token", "wait for the user to save it before continuing", "Read get_sprite_pool again"}},
 		{"bounds explain cost", []string{"minimum retained runner capacity", "even without queued work", "ceiling caps growth", "Do not invent prices"}},
-		{"combined answer preserves setup", []string{"no extra steps, 2 and 2", "use min_runners 2, max_runners 2 and omit bootstrap", "preserve the saved bootstrap", "call set_sprite_pool exactly once", "wait for the client's approval/submission result"}},
-		{"safe observed next action", []string{"no tokens, provider API keys or private credentials in chat or bootstrap", "After the successful approval result, read get_sprite_pool and get_sprite_bootstrap_log", "observed state in plain language", "one next action", "Do not infer Git access from connection alone"}},
+		{"combined answer preserves setup", []string{"Omit bootstrap to preserve the saved bootstrap", "call set_sprite_pool exactly once", "wait for the client's approval/submission result"}},
+		{"safe observed next action", []string{"No tokens, provider API keys or private credentials in chat or bootstrap", "After the successful approval result, read get_sprite_pool and get_sprite_bootstrap_log", "observed state in plain language", "one next action", "Do not infer Git access from connection alone"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			for _, want := range test.want {
@@ -79,7 +79,8 @@ func TestCoordinatorSpriteArguments(t *testing.T) {
 		{"zero idle explicit", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"idle_seconds":0}`, false},
 		{"idle too small", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"idle_seconds":29}`, false},
 		{"idle too large", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"idle_seconds":86401}`, false},
-		{"empty bootstrap", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"bootstrap":"  "}`, false},
+		{"empty bootstrap", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"bootstrap":""}`, true},
+		{"whitespace bootstrap", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"bootstrap":"  "}`, true},
 		{"bootstrap too large", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"bootstrap":"` + strings.Repeat("x", 12001) + `"}`, false},
 		{"null field", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"bootstrap":null}`, false},
 		{"unknown field", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"approve":true}`, false},
