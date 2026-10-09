@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -19,7 +18,7 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 	if request.Limit < 0 || request.Limit > 100 {
 		return s.nativeAPIError(c, nativeInvalid("Candidate limit must be between 1 and 100"))
 	}
-	return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
+	return s.runnerReadTransaction(c, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		scope := nativeRequestScope(c)
 		if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
 			return nil, err
