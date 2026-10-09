@@ -121,7 +121,7 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 					t.Fatalf("heartbeat discarded repository provenance: %+v", setup.ObservedPolicies)
 				}
 			}
-			readHealth(true)
+			readHealth(false)
 			readReports(1)
 			omitted := selected
 			if kind == "authored" {

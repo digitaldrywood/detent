@@ -40,8 +40,8 @@ func NewProblem(code string) Problem {
 		p.Message = "The runner's protocol version is unsupported."
 		p.FixHint = "Upgrade the runner to a version compatible with this Hub."
 	case "policy_mismatch":
-		p.Message = "A selected local project policy differs from the policy currently in use."
-		p.FixHint = "Review the selected policy in the project's Integrations settings, approve the intended configuration and apply it through the runner configuration owner."
+		p.Message = "The runner's project policy differs from the Hub's current approval."
+		p.FixHint = "Approve the pending policy in the project's Integrations settings, or update the runner's project files to match the approved policy."
 	}
 	return p
 }
