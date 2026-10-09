@@ -129,12 +129,8 @@ func TestPlatformAuthorization(t *testing.T) {
 		}
 	}
 	for _, event := range platformEvents {
-		want := 2
-		if event == "platform_opened" {
-			want = 14
-		}
-		if got := platformAuditCount(t, f.service, "user_staff", event); got != want {
-			t.Errorf("staff audit %s = %d, want %d", event, got, want)
+		if got := platformAuditCount(t, f.service, "user_staff", event); got != 0 {
+			t.Errorf("routine staff read audit %s = %d, want 0", event, got)
 		}
 		if got := platformAuditCount(t, f.service, "user_alice", event); got != 0 {
 			t.Errorf("customer audit %s = %d, want 0", event, got)
@@ -745,9 +741,12 @@ func TestPlatformAuditTimeline(t *testing.T) {
 			if _, err := f.service.registry.store.db.ExecContext(ctx, "UPDATE platform_members SET role=? WHERE email='staff@example.test'", role); err != nil {
 				t.Fatal(err)
 			}
-			page := read("event=platform_audit_viewed")
-			if len(page.Rows) == 0 || page.Rows[0].Actor != "staff@example.test" {
-				t.Fatalf("view was not audited: %+v", page.Rows)
+			page := read("event=support_requested")
+			if len(page.Rows) != 1 || page.Rows[0].Actor != "staff@example.test" {
+				t.Fatalf("security event filter = %+v", page.Rows)
+			}
+			if page := read("event=platform_audit_viewed"); len(page.Rows) != 0 {
+				t.Fatalf("audit read recorded itself: %+v", page.Rows)
 			}
 		})
 	}
@@ -835,13 +834,8 @@ func TestPlatformUsersSearch(t *testing.T) {
 					}
 				}
 			}
-			var length int
-			var organization, event string
-			if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT query_length,organization_id,event FROM audit WHERE subject='user_staff' ORDER BY id DESC LIMIT 1").Scan(&length, &organization, &event); err != nil {
-				t.Fatal(err)
-			}
-			if length != len(test.query) || organization != "" || event != "platform_users_searched" || strings.Contains(body, "Alpha secret project") {
-				t.Fatalf("audit or content leak: %d %q %q %s", length, organization, event, body)
+			if count := platformAuditCount(t, f.service, "user_staff", "platform_users_searched"); count != 0 || strings.Contains(body, "Alpha secret project") {
+				t.Fatalf("routine search audit=%d or content leak: %s", count, body)
 			}
 		})
 	}
