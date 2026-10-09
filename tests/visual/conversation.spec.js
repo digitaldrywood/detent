@@ -619,6 +619,13 @@ test("keeps runner conversations out of Chat while preserving issue access", asy
 test("lists the chat in the sidebar and filters it from the search box", async ({ page }) => {
   const errors = watchConsole(page);
   await openChat(page);
+  await sendWithKeyboard(page, "Explain the admission gate to me");
+  await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
+  const conversationURL = page.url();
+  const userTurn = page.getByTestId("user-turn").first();
+  await expect(userTurn).toContainText("Explain the admission gate to me");
+  await expect(composer(page)).toBeFocused();
+
   let releaseConversation;
   const conversationReady = new Promise((resolve) => { releaseConversation = resolve; });
   await page.route(/\/api\/v2\/organizations\/[^/]+\/projects\/[^/]+\/conversations\/conv_[^/?]+$/, async (route) => {
@@ -627,10 +634,8 @@ test("lists the chat in the sidebar and filters it from the search box", async (
     await conversationReady;
     await route.fulfill({ response });
   });
-  await sendWithKeyboard(page, "Explain the admission gate to me");
-  await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
-  await expect(page.getByTestId("user-turn").first()).toContainText("Explain the admission gate to me");
-  await expect(composer(page)).toBeFocused();
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page).toHaveURL(conversationURL);
 
   const sidebar = page.getByRole("complementary", { name: "Conversations" });
   const newRow = sidebar
@@ -645,6 +650,7 @@ test("lists the chat in the sidebar and filters it from the search box", async (
   releaseConversation();
   await expect(composer(page)).toBeEditable();
   await expect(search).toBeFocused();
+  await expect(userTurn).toContainText("Explain the admission gate to me");
   const searchRequest = page.waitForRequest((request) => {
     const url = new URL(request.url());
     return request.method() === "GET" && url.pathname.endsWith("/conversations") && url.searchParams.get("q") === "Lease renewal";
@@ -665,6 +671,8 @@ test("lists the chat in the sidebar and filters it from the search box", async (
   await expect(search).toHaveValue("");
   await expect(search).toBeFocused();
   await expect(newRow).toBeVisible();
+  await expect(page).toHaveURL(conversationURL);
+  await expect(userTurn).toContainText("Explain the admission gate to me");
   expect(errors).toEqual([]);
 });
 
