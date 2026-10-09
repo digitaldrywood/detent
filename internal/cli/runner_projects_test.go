@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -291,7 +292,10 @@ func TestRunnerCloudProjects(t *testing.T) {
 					}
 					return resolveRunnerProjects(t.Context(), cfg)
 				}
-				boot, err := resolveBootConfig(t.Context(), path, "", runtimeFlags{}, opts)
+				opts.ghAuthToken = func(context.Context) (string, error) {
+					return "", errors.New("gh auth status failed: exit status 1")
+				}
+				boot, err := resolveBootConfigWithRuntimeDeps(t.Context(), path, "", runtimeFlags{}, opts, bootRuntimeDeps(opts), true)
 				if err != nil {
 					t.Fatal(err)
 				}
