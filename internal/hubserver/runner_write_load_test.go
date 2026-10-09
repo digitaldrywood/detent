@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -286,5 +287,56 @@ func TestRunnerWritesStayBoundedAsTenantsGrow(t *testing.T) {
 				t.Fatalf("requests failed: %v", failures[:min(len(failures), 5)])
 			}
 		})
+	}
+}
+
+func TestRunnerHostSummaryWriteCost(t *testing.T) {
+	if testing.Short() {
+		t.Skip("ten-runner heartbeat write measurement")
+	}
+	f := newWriteLoadFixture(t, 0, 10, 0)
+	now := time.Now().UTC()
+	for _, r := range f.runners {
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 8, "version": "test", "backend_isolation": r.redemption.BackendIsolation}), http.StatusOK)
+	}
+	changes := func() int64 {
+		t.Helper()
+		var count int64
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	measure := func(name string, summary *hostmetrics.Summary) int64 {
+		t.Helper()
+		before := changes()
+		var latencies []time.Duration
+		for round := range 120 {
+			for _, r := range f.runners {
+				body := map[string]any{"capacity": 8, "version": "test", "backend_isolation": r.redemption.BackendIsolation}
+				if summary != nil && round == 0 {
+					body["host_metrics"] = []hostmetrics.Summary{*summary}
+				}
+				started := time.Now()
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, body), http.StatusOK)
+				latencies = append(latencies, time.Since(started))
+			}
+		}
+		writes := changes() - before
+		slices.Sort(latencies)
+		t.Logf("runners=10 mode=%s requests=1200 sqlite_row_writes=%d heartbeat_p50=%s heartbeat_p95=%s", name, writes, latencies[len(latencies)/2], latencies[len(latencies)*95/100])
+		return writes
+	}
+	baseline := measure("before hourly summary", nil)
+	summary := testHostSummary(now.Add(-time.Hour))
+	summary.Partial = false
+	hourly := measure("completed hour", &summary)
+	idle := measure("after acknowledged summary", nil)
+	retry := measure("retry deduplicated", &summary)
+	summary.SegmentID = now
+	summary.Partial = true
+	restart := measure("graceful restart segment", &summary)
+	if hourly-baseline != 10 || restart-baseline != 10 || idle != baseline || retry != baseline {
+		t.Fatalf("writes baseline=%d hourly=%d idle=%d retry=%d restart=%d", baseline, hourly, idle, retry, restart)
 	}
 }

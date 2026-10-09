@@ -28,16 +28,17 @@ import (
 )
 
 type runnerCredentialSource struct {
-	problems         []runnerauth.Problem
-	settingsRejected bool
-	routingMu        sync.Mutex
-	routing          *runnerauth.RoutingSnapshot
-	routingChanged   chan struct{}
-	localPolicies    map[tracker.ProjectID]string
-	heartbeat        nativeMachineHeartbeat
-	heartbeatPath    string
-	mu               sync.Mutex
-	path             string
+	problems             []runnerauth.Problem
+	settingsRejected     bool
+	routingMu            sync.Mutex
+	routing              *runnerauth.RoutingSnapshot
+	routingChanged       chan struct{}
+	localPolicies        map[tracker.ProjectID]string
+	heartbeat            nativeMachineHeartbeat
+	heartbeatPath        string
+	hostMetricsSupported bool
+	mu                   sync.Mutex
+	path                 string
 }
 
 func runnerSpriteName(hostname string) string {
@@ -272,6 +273,17 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 			machine.Skills = nil
 		}
 	}
+	if c.client.runner == nil {
+		machine.HostMetrics = nil
+	} else {
+		supported, err := c.HubFeature(ctx, tracker.NativeHostMetricsCapability)
+		if err != nil {
+			return err
+		}
+		if !supported {
+			machine.HostMetrics = nil
+		}
+	}
 	if machine.ProjectConfiguration != nil {
 		supported, err := c.HubFeature(ctx, tracker.NativeProjectConfigurationCapability)
 		if err != nil {
@@ -410,8 +422,10 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 		c.client.capabilitiesMu.Unlock()
 		return err
 	}
+	metricsSupported := c.hostMetricsSupported()
 	c.client.runner.routingMu.Lock()
 	c.client.runner.heartbeat = request
+	c.client.runner.hostMetricsSupported = metricsSupported
 	c.client.runner.heartbeatPath = c.base() + "/machines/" + url.PathEscape(string(machine.ID)) + "/heartbeat"
 	c.client.runner.routingMu.Unlock()
 	snapshot.Routing = snapshot.Routing.Normalized()
@@ -425,6 +439,9 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 	if err := snapshot.Routing.Validate(); err != nil {
 		c.client.runner.rejectSettings(true)
 		return errors.Join(ErrUnavailable, err)
+	}
+	if machine.HostMetricsAcknowledged != nil && len(machine.HostMetrics) > 0 {
+		*machine.HostMetricsAcknowledged = snapshot.HostMetricsAcknowledged
 	}
 	c.applyHeartbeatChanges(snapshot.Changes)
 	c.client.runner.setRouting(snapshot)
@@ -444,6 +461,7 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 	}
 	if refresh && reported != machine.Capacity {
 		machine.Capacity = reported
+		machine.HostMetrics = nil
 		return c.heartbeatMachine(ctx, machine, capacity, false)
 	}
 
@@ -624,4 +642,10 @@ type nativeMachineHeartbeat struct {
 func machineHeartbeatPayload(machine Machine, problems []runnerauth.Problem, rejected bool) nativeMachineHeartbeat {
 	capabilities, isolation := machine.workspaceReport()
 	return nativeMachineHeartbeat{machine.HostMetrics, machine.Admission, runnerSpriteName(machine.Hostname), machine.Update, machine.CapacityConfig, machine.ProjectConfiguration, machine.LocalChecks, problems, 2, rejected, machine.BackendIsolation, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.Skills, machine.CheckoutRepository, nil}
+}
+
+func (c *NativeClient) hostMetricsSupported() bool {
+	c.client.capabilitiesMu.Lock()
+	defer c.client.capabilitiesMu.Unlock()
+	return slices.Contains(c.client.capabilities.Features, tracker.NativeHostMetricsCapability)
 }

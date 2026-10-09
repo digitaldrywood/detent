@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -187,6 +188,31 @@ func TestHostedFleetVisibility(t *testing.T) {
 			f.api(t, "owner", http.MethodDelete, browserHostedOrganizationBase+"/runners/"+removedID, nil, http.StatusNoContent)
 		} else {
 			activeID = binding.RunnerID
+		}
+	}
+	now := f.service.config.now().UTC()
+	summary := testHostSummary(now)
+	raw, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO runner_host_hours(organization_id,runner_id,hour,summary_json,segment_ids_json) VALUES(?,?,?,?,'[]')", f.service.config.Hosted.OrganizationID, activeID, formatHubTime(summary.Hour), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range []string{"owner", "viewer"} {
+		path := browserHostedOrganizationBase + "/fleet?include=host_metrics&runner_id=" + activeID
+		var history []runnerHostHour
+		browserHostedDecode(t, f.api(t, account, http.MethodGet, path, nil, http.StatusOK), &history)
+		if len(history) != 1 || history[0].MemoryAvailableAverageBytes == nil || *history[0].MemoryAvailableAverageBytes != 200 || history[0].CPUBusyAveragePercent == nil || *history[0].CPUBusyAveragePercent != 40 {
+			t.Fatalf("host history: %+v", history)
+		}
+		for _, runner := range []string{removedID, "runner_other_organization"} {
+			f.api(t, account, http.MethodGet, browserHostedOrganizationBase+"/fleet?include=host_metrics&runner_id="+runner, nil, http.StatusNotFound)
+		}
+		for _, query := range []string{
+			"&from=invalid", "&from=" + url.QueryEscape(now.Format(time.RFC3339)) + "&to=" + url.QueryEscape(now.Add(721*time.Hour).Format(time.RFC3339)),
+		} {
+			f.api(t, account, http.MethodGet, path+query, nil, http.StatusUnprocessableEntity)
 		}
 	}
 	for _, account := range []string{"owner", "viewer"} {
