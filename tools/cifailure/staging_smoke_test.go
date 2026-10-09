@@ -186,12 +186,18 @@ func TestStagingSmokeHostedGapDoesNotHideDecoderFailure(t *testing.T) {
 }
 
 func TestStagingSmokeWriteCycle(t *testing.T) {
-	fixtureReads := strings.Fields(`list_project_conversations get_conversation get_conversation_attachment list_conversation_messages stream_conversation_events list_changes get_change get_change_version change_viewed_files artifact_references get_artifact_reference work_runs get_attempt_diff get_native_run github_scope_timings work_attempt_receipt get_runner_capacity get_runner_update get_project_policy`)
+	operatorReads := []string{operatortool.GetChange, operatortool.GetChangeVersion, operatortool.GetNativeRun}
+	fixtureDetails := strings.Fields(`get_conversation get_conversation_attachment list_conversation_messages stream_conversation_events change_viewed_files get_artifact_reference get_attempt_diff github_scope_timings work_attempt_receipt get_runner_capacity get_runner_update get_runner_routing read_attachment read_attachment_metadata`)
+	fixtureReads := strings.Fields(`list_project_conversations get_conversation get_conversation_attachment list_conversation_messages stream_conversation_events list_changes get_change get_change_version change_viewed_files artifact_references get_artifact_reference work_runs get_attempt_diff get_native_run github_scope_timings work_attempt_receipt get_runner_capacity get_runner_update get_runner_routing get_project_policy`)
 	for _, test := range []struct {
 		name, policyCode, policyMessage string
-		gaps, failure                   bool
+		gaps, failure, emptyFixtures    bool
+		readFailure                     string
 	}{
 		{name: "approved policy"},
+		{name: "unprovisioned fixtures", emptyFixtures: true},
+		{name: "unprovisioned fixtures with real error", emptyFixtures: true, readFailure: operatortool.RunnerFleet, failure: true},
+		{name: "available fixture with real error", readFailure: "get_conversation", failure: true},
 		{name: "fresh project", policyCode: "policy_mismatch", policyMessage: "No approved repository policy"},
 		{name: "hosted gaps", gaps: true},
 		{name: "different policy refusal", policyCode: "policy_mismatch", policyMessage: "Approved policy has changed", failure: true},
@@ -335,6 +341,20 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 				default:
 					t.Fatalf("unexpected tool %s", name)
 				}
+				if test.emptyFixtures {
+					switch name {
+					case operatortool.RunnerFleet, operatortool.WorkItem, "list_project_conversations", operatortool.ListChanges, operatortool.ArtifactReferences, operatortool.WorkRuns:
+						result = map[string]any{}
+					}
+				}
+				if name == operatortool.GetChange || name == operatortool.GetChangeVersion || name == operatortool.GetNativeRun {
+					isError = true
+					result = map[string]any{"message": "operator access is unavailable"}
+				}
+				if name == test.readFailure {
+					isError = true
+					result = map[string]any{"message": "read service failed"}
+				}
 				envelope := map[string]any{"structuredContent": result, "isError": isError}
 				if name == "get_project_policy" && isError {
 					content, err := json.Marshal(result)
@@ -352,20 +372,28 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 			var output bytes.Buffer
 			s := &mcpSmoke{mcp: m, output: &output, fixtures: map[string]any{}, called: map[string]bool{}, prefix: "test"}
 			if err := s.run(t.Context()); test.failure {
-				if err == nil || !strings.Contains(err.Error(), "get_project_policy") {
-					t.Fatalf("unexpected policy verdict: %v", err)
+				failedTool := "get_project_policy"
+				if test.readFailure != "" {
+					failedTool = test.readFailure
+				}
+				if err == nil || !strings.Contains(err.Error(), failedTool) {
+					t.Fatalf("unexpected smoke verdict: %v", err)
 				}
 			} else if err != nil {
 				t.Fatal(err, output.String())
 			}
-			if commentRevision != 2 || integrationRevision != 2 || calls[operatortool.SetDependency] != 2 || calls[operatortool.WorkItem] != 1 || calls[operatortool.GetRunnerRouting] != 1 || !gaps && (!archived || calls[operatortool.RestoreItem] != 1 || calls[operatortool.ArchiveItem] != 2) {
+			if commentRevision != 2 || integrationRevision != 2 || calls[operatortool.SetDependency] != 2 || calls[operatortool.WorkItem] != 1 || !gaps && (!archived || calls[operatortool.RestoreItem] != 1 || calls[operatortool.ArchiveItem] != 2) {
 				t.Fatalf("incomplete cycle: calls=%v comment=%d integration=%d archived=%t", calls, commentRevision, integrationRevision, archived)
 			}
 			if gaps && !strings.Contains(output.String(), "expected hosted gap (#615)") {
 				t.Fatal(output.String())
 			}
 			for _, name := range append(fixtureReads, operatortool.ReadAttachment, operatortool.ReadAttachmentMetadata) {
-				if calls[name] != 1 {
+				if slices.Contains(operatorReads, name) || test.emptyFixtures && slices.Contains(fixtureDetails, name) || test.readFailure == "get_conversation" && name == "get_conversation_attachment" {
+					if calls[name] != 0 || !strings.Contains(output.String(), name+" skipped: ") {
+						t.Fatalf("read %s lacks explicit skip: calls=%d\n%s", name, calls[name], output.String())
+					}
+				} else if calls[name] != 1 {
 					t.Fatalf("fixture read %s called %d times", name, calls[name])
 				}
 			}
