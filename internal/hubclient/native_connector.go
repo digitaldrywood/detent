@@ -442,7 +442,8 @@ func (c *NativeConnector) UpdateIssueState(ctx context.Context, id, state string
 		return nil
 	}
 	request := tracker.Transition{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: expected, State: state, Reason: "worker_progress", ReasonDetail: connector.LaneTransitionReason(ctx)}
-	if strings.ReplaceAll(request.ReasonDetail, " ", "_") == "recorded_blocker_recovery" {
+	reason := strings.ReplaceAll(request.ReasonDetail, " ", "_")
+	if reason == "recorded_blocker_recovery" || reason == "dependency_auto_unblock" {
 		attempts, history, readErr := c.recordedBlockerContext(ctx, issue.WorkItemID)
 		if readErr != nil {
 			return readErr

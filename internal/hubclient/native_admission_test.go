@@ -220,9 +220,13 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 		qualified     bool
 		advancePolicy bool
 		dirty         bool
+		second        bool
+		external      bool
 	}{
-		{name: "reported prerequisite without typed relation"},
+		{name: "reported prerequisite registers dependency hold"},
 		{name: "canonical native reference", qualified: true},
+		{name: "last reported prerequisite releases hold", second: true},
+		{name: "external prerequisite retains hold", external: true, refusal: "external"},
 		{name: "dirty1067 canonical prerequisite retains checkpoint and recovery", qualified: true, dirty: true},
 		{name: "new approved policy recovers historical report", advancePolicy: true},
 		{name: "human action retains hold", refusal: "human"},
@@ -245,6 +249,13 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			prerequisite, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Actual prerequisite", State: "Backlog"})
 			if err != nil {
 				t.Fatal(err)
+			}
+			var second tracker.NativeIssue
+			if test.second {
+				second, err = h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Second prerequisite", State: "Backlog"})
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			issue := h.createInProgress(t, "Reported dependency")
 			var unrelated tracker.NativeIssue
@@ -292,6 +303,12 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			if test.dirty {
 				report = fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '%s'\n    reason: prerequisite must finish\nhuman_action: null\n```", reference)
 			}
+			if test.external {
+				report = strings.Replace(report, reference, "vendor/service#42", 1)
+			}
+			if test.second {
+				report = strings.Replace(report, "human_action:", fmt.Sprintf("  - ref: '#%d'\n    reason: second prerequisite must finish\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\nhuman_action:", second.Number), 1)
+			}
 			if err := execution.(runner.CompletionExecution).PrepareFinish(t.Context(), "succeeded", report, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -311,11 +328,21 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if test.refusal != "relation" && len(blocked.Dependencies) != 0 {
-				t.Fatalf("fixture fabricated typed dependencies: %+v", blocked.Dependencies)
+			wantDependencies := 1
+			if test.refusal == "human" || test.external {
+				wantDependencies = 0
+			} else if test.refusal == "relation" || test.second {
+				wantDependencies = 2
+			}
+			if len(blocked.Dependencies) != wantDependencies {
+				t.Fatalf("reported dependency links = %+v, want %d", blocked.Dependencies, wantDependencies)
 			}
 			hydrated, err := h.connector.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
-			if err != nil || len(hydrated) != 1 || hydrated[0].WorkpadSignal == nil || len(hydrated[0].WithNativeWorkpadAuthority().WorkpadSignal.Blockers) != 1 {
+			wantBlockers := 1
+			if test.second {
+				wantBlockers = 2
+			}
+			if err != nil || len(hydrated) != 1 || hydrated[0].WorkpadSignal == nil || len(hydrated[0].WithNativeWorkpadAuthority().WorkpadSignal.Blockers) != wantBlockers {
 				t.Fatalf("native disposition lost its prerequisite: %+v, %v", hydrated, err)
 			}
 			resolved, err := h.connector.FetchIssueStatesByIdentifiers(t.Context(), []string{string(h.project) + fmt.Sprintf("#%d", prerequisite.Number)})
@@ -401,29 +428,51 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			done := make(chan error, 1)
 			go func() { done <- orch.Run(ctx) }()
 			t.Cleanup(func() { cancel(); <-done })
-			deadline := time.After(10 * time.Second)
-			for {
-				current, err := orch.State(t.Context())
-				if err != nil {
-					t.Fatal(err)
-				}
-				entry := current.Blocked[issue.ID]
-				if len(entry.BlockerEvidence) == 1 && entry.BlockerEvidence[0].Status == "holds" {
-					break
-				}
-				select {
-				case <-started:
-					t.Fatal("native recovery dispatched before prerequisite readiness")
-				case <-deadline:
-					t.Fatalf("native recovery never observed the unmet predicate: %+v", entry)
-				case <-time.After(10 * time.Millisecond):
+			waitHolding := func(want int) {
+				t.Helper()
+				deadline := time.After(10 * time.Second)
+				for {
+					current, err := orch.State(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					entry := current.Blocked[issue.ID]
+					holding := 0
+					for _, evidence := range entry.BlockerEvidence {
+						if evidence.Status == "holds" {
+							holding++
+						}
+					}
+					if len(entry.BlockerEvidence) == wantBlockers && holding == want {
+						if h.state(t, issue.ID) != "Blocked" {
+							t.Fatal("unfinished prerequisite released the dependency hold")
+						}
+						return
+					}
+					select {
+					case <-started:
+						t.Fatal("native recovery dispatched before prerequisite readiness")
+					case <-deadline:
+						t.Fatalf("native recovery never observed the unmet predicate: %+v", entry)
+					case <-time.After(10 * time.Millisecond):
+					}
 				}
 			}
+			waitHolding(wantBlockers)
 			if _, err := h.admin.Transition(t.Context(), prerequisite.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: prerequisite.Revision, State: "Done", Reason: "user_requested"}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := orch.RequestRefresh(t.Context()); err != nil {
 				t.Fatal(err)
+			}
+			if test.second {
+				waitHolding(1)
+				if _, err := h.admin.Transition(t.Context(), second.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: second.Revision, State: "Done", Reason: "user_requested"}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := orch.RequestRefresh(t.Context()); err != nil {
+					t.Fatal(err)
+				}
 			}
 			select {
 			case run := <-started:
@@ -445,7 +494,7 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			}
 			var recovered, claimed int64
 			for _, event := range page.Items {
-				if event.Type == "workflow.transitioned" && strings.ReplaceAll(event.Data.ReasonDetail, " ", "_") == "recorded_blocker_recovery" && event.Data.BlockerAttemptID == attempt.AttemptID {
+				if event.Type == "workflow.transitioned" && strings.ReplaceAll(event.Data.ReasonDetail, " ", "_") == "dependency_auto_unblock" && event.Data.BlockerAttemptID == attempt.AttemptID {
 					recovered = event.AggregateSequence
 				}
 				if event.Type == "scheduler.decision" && event.Data.Decision != nil && event.Data.Decision.Outcome == "claimed" {
