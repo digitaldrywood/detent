@@ -788,7 +788,10 @@ func (r *Runner) verifyMergeFallback(
 		return result, nil
 	}
 	if len(precheck.Findings) > 0 {
-		result.MergeFallbackFindings += "\n" + strings.Join(precheck.Findings, "\n")
+		result.MergeFallbackFindings += "\n" + strings.Join(precheck.Findings[:min(len(precheck.Findings), 50)], "\n")
+		if len(precheck.Findings) > 50 {
+			result.MergeFallbackFindings += fmt.Sprintf("\n%d more findings", len(precheck.Findings)-50)
+		}
 	}
 	converted := mergePrecheckFromWorkspace(precheck)
 	result.MergePrecheck = &converted

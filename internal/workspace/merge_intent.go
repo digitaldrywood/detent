@@ -2,7 +2,6 @@ package workspace
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -25,7 +24,7 @@ func mergeTargetCommitSubjects(ctx context.Context, directory, head, target stri
 	args = append(args, conflicts...)
 	out, err := runGitAt(ctx, directory, args...)
 	if err != nil {
-		return nil, errors.New("read merge target commit subjects")
+		return nil, fmt.Errorf("read merge target commit subjects: %w", err)
 	}
 	if strings.TrimSpace(out) == "" {
 		return nil, nil
@@ -48,7 +47,7 @@ func missingMergeGoDeclarations(ctx context.Context, directory, head, target, pr
 	for _, parent := range []string{target, prHead} {
 		out, err := runGitAt(ctx, directory, "diff", "--name-only", "--no-renames", "-z", parent, head, "--")
 		if err != nil {
-			return nil, errors.New("read merge resolution changed paths")
+			return nil, fmt.Errorf("read merge resolution changed paths: %w", err)
 		}
 		for _, file := range strings.Split(out, "\x00") {
 			if strings.HasSuffix(file, ".go") {
@@ -60,18 +59,27 @@ func missingMergeGoDeclarations(ctx context.Context, directory, head, target, pr
 		return nil, nil
 	}
 	cache := make(map[string]*ast.File)
-	resolved, err := mergeGoDeclarations(ctx, directory, head, packages, cache)
+	resolved, err := mergeGoDeclarations(ctx, directory, head, packages, cache, true)
 	if err != nil {
 		return nil, err
 	}
-	parents := make(map[string]mergeGoDeclaration)
+	base, err := runGitAt(ctx, directory, "merge-base", target, prHead)
+	if err != nil {
+		return nil, fmt.Errorf("read merge base: %w", err)
+	}
+	parents, err := mergeGoDeclarations(ctx, directory, strings.TrimSpace(base), packages, cache, false)
+	if err != nil {
+		return nil, err
+	}
 	for _, parent := range []string{target, prHead} {
-		declarations, err := mergeGoDeclarations(ctx, directory, parent, packages, cache)
+		declarations, err := mergeGoDeclarations(ctx, directory, parent, packages, cache, false)
 		if err != nil {
 			return nil, err
 		}
-		for key, declaration := range declarations {
-			parents[key] = declaration
+		for key := range parents {
+			if _, exists := declarations[key]; !exists {
+				delete(parents, key)
+			}
 		}
 	}
 	symbolCounts := make(map[string]int)
@@ -93,12 +101,13 @@ func missingMergeGoDeclarations(ctx context.Context, directory, head, target, pr
 	return findings, nil
 }
 
-func mergeGoDeclarations(ctx context.Context, directory, revision string, packages map[string]bool, cache map[string]*ast.File) (map[string]mergeGoDeclaration, error) {
+func mergeGoDeclarations(ctx context.Context, directory, revision string, packages map[string]bool, cache map[string]*ast.File, requireParse bool) (map[string]mergeGoDeclaration, error) {
 	out, err := runGitAt(ctx, directory, "ls-tree", "-r", "--format=%(objectname) %(path)", "-z", revision)
 	if err != nil {
-		return nil, errors.New("list merge tree Go files")
+		return nil, fmt.Errorf("list merge tree Go files: %w", err)
 	}
 	declarations := make(map[string]mergeGoDeclaration)
+	initCounts := make(map[string]int)
 	for _, entry := range strings.Split(out, "\x00") {
 		object, file, ok := strings.Cut(entry, " ")
 		if !ok {
@@ -111,15 +120,20 @@ func mergeGoDeclarations(ctx context.Context, directory, revision string, packag
 		if parsed == nil {
 			source, err := runGitAt(ctx, directory, "cat-file", "blob", object)
 			if err != nil {
-				return nil, errors.New("read merge tree Go source")
+				return nil, fmt.Errorf("read merge tree Go source: %w", err)
 			}
-			parsed, err = parser.ParseFile(token.NewFileSet(), "", source, parser.SkipObjectResolution)
+			parsed, err = parser.ParseFile(token.NewFileSet(), "", source, parser.SkipObjectResolution|parser.ParseComments)
+			if parsed != nil && ast.IsGenerated(parsed) {
+				continue
+			}
 			if err != nil {
+				if !requireParse {
+					continue
+				}
 				return nil, fmt.Errorf("%w: cannot parse Go declarations in merge tree", ErrMergeResolutionInvalid)
 			}
 			cache[object] = parsed
 		}
-		initCount := 0
 		for _, node := range parsed.Decls {
 			function, ok := node.(*ast.FuncDecl)
 			if !ok || function.Name.Name == "_" {
@@ -135,8 +149,8 @@ func mergeGoDeclarations(ctx context.Context, directory, revision string, packag
 			}
 			key := path.Dir(file) + ":" + parsed.Name.Name + ":" + kind + ":" + symbol
 			if symbol == "init" {
-				initCount++
-				key += fmt.Sprintf(":%s:%d", file, initCount)
+				initCounts[key]++
+				key += fmt.Sprintf(":%d", initCounts[key])
 			}
 			declarations[key] = mergeGoDeclaration{key: key, symbol: symbol, file: file}
 		}

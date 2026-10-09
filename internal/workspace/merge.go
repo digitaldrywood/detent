@@ -122,7 +122,7 @@ func (l *LocalGit) PrepareMerge(
 		}
 		subjects, subjectErr := mergeTargetCommitSubjects(ctx, normalized.Path, originalHead, targetRef, conflictPaths)
 		if subjectErr != nil {
-			return MergePrepareResult{}, subjectErr
+			subjects = nil
 		}
 		return MergePrepareResult{
 			TargetCommitSubjects: subjects,

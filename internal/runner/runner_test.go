@@ -4432,6 +4432,11 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 	t.Parallel()
 
+	findings := make([]string, 60)
+	for i := range findings {
+		findings[i] = fmt.Sprintf("missing declaration %02d", i+1)
+	}
+
 	tests := []struct {
 		name             string
 		agentOutput      string
@@ -4439,10 +4444,27 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 		verificationErr  error
 		wantOutput       string
 		wantFinding      string
+		unwantedFinding  string
+		wantSummary      string
+		wantFindingCount int
 		wantError        string
 		wantPrepareCalls int
 		wantHeadPushed   bool
 	}{
+		{
+			name:         "findings at the limit",
+			agentOutput:  "DETENT_MERGE_FALLBACK: resolved",
+			verification: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict, Findings: findings[:50]},
+			wantOutput:   RunOutputMergeFallbackRework, wantPrepareCalls: 2,
+			wantFinding: "missing declaration 50", unwantedFinding: "more findings", wantFindingCount: 50,
+		},
+		{
+			name:         "excess findings are summarized",
+			agentOutput:  "DETENT_MERGE_FALLBACK: resolved",
+			verification: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict, Findings: findings},
+			wantOutput:   RunOutputMergeFallbackRework, wantPrepareCalls: 2,
+			wantFinding: "missing declaration 50", unwantedFinding: "missing declaration 51", wantSummary: "10 more findings", wantFindingCount: 50,
+		},
 		{
 			name:         "missing declaration goes to rework with findings",
 			agentOutput:  "DETENT_MERGE_FALLBACK: resolved",
@@ -4563,6 +4585,15 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 			}
 			if tt.wantFinding != "" && !strings.Contains(result.MergeFallbackFindings, tt.wantFinding) {
 				t.Fatalf("missing finding: %q", result.MergeFallbackFindings)
+			}
+			if tt.unwantedFinding != "" && strings.Contains(result.MergeFallbackFindings, tt.unwantedFinding) {
+				t.Fatalf("unexpected finding: %q", result.MergeFallbackFindings)
+			}
+			if tt.wantSummary != "" && !strings.Contains(result.MergeFallbackFindings, tt.wantSummary) {
+				t.Fatalf("missing findings summary: %q", result.MergeFallbackFindings)
+			}
+			if tt.wantFindingCount > 0 && strings.Count(result.MergeFallbackFindings, "missing declaration ") != tt.wantFindingCount {
+				t.Fatalf("findings = %q, want %d declarations", result.MergeFallbackFindings, tt.wantFindingCount)
 			}
 			if workspaceBackend.prepareCalls != tt.wantPrepareCalls {
 				t.Fatalf("PrepareMerge() calls = %d, want %d", workspaceBackend.prepareCalls, tt.wantPrepareCalls)
