@@ -36,6 +36,7 @@ import { WorkList } from "./components/WorkList.tsx";
 import { WorkToolbar } from "./components/WorkToolbar.tsx";
 import { WorkTopBar } from "./components/WorkTopBar.tsx";
 import { useShell } from "../App.tsx";
+import { useWorkSidebarSearch } from "../adapters/sidebarData.tsx";
 import { boardConnectionChip } from "./lib/freshness.ts";
 
 function applyFilters(
@@ -87,7 +88,10 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const http = useWorkHttp();
   const [view, setView] = useViewState(projectId);
   const board = useBoard(projectId, view);
-  const searchRef = React.useRef<HTMLInputElement>(null);
+  const currentView = React.useRef(view);
+  currentView.current = view;
+  const setQuery = React.useCallback((q: string) => setView({ ...currentView.current, q }), [setView]);
+  useWorkSidebarSearch(view.q, setQuery);
   const newIssue = useNewIssue();
   const accountBootstrap = useAccountBootstrap();
   const accountApi = useAccountApi();
@@ -214,26 +218,6 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
     },
     [http, projects, board],
   );
-
-  // `/` focuses the board's own search, the way it focuses the sidebar's in
-  // the chat surfaces — and never while the reader is typing somewhere else.
-  React.useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
-      const target = event.target as HTMLElement | null;
-      if (
-        target !== null &&
-        (target.isContentEditable ||
-          ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
-      )
-        return;
-      event.preventDefault();
-      searchRef.current?.focus();
-      searchRef.current?.select();
-    };
-    globalThis.document?.addEventListener("keydown", onKeyDown);
-    return () => globalThis.document?.removeEventListener("keydown", onKeyDown);
-  }, []);
 
   // One source of truth for both chips: the sidebar footer shows the app's
   // own connection state and so does this one, with the board's own stream as
@@ -372,7 +356,6 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
           assignee: board.assignees,
           priority: board.priorities,
         }}
-        searchRef={searchRef}
       /> : null}
 
       {view.view === "list" ? (

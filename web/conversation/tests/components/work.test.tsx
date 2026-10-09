@@ -30,6 +30,8 @@ import { boardStats, isBlocked, isLive, type Lane, type WorkItemView } from "../
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { ClientContext } from "../../src/app/client.ts";
 import { WorkBoard } from "../../src/app/work/WorkBoard.tsx";
+import { SidebarSearchProvider } from "../../src/app/adapters/sidebarData.tsx";
+import { Input } from "../../src/components/ui/input.tsx";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
 import { DEFAULT_VIEW_STATE, parseViewState, serializeViewState } from "../../src/app/work/lib/viewState.ts";
 import { clearBoardCache } from "../../src/app/work/lib/boardStore.ts";
@@ -849,7 +851,7 @@ async function pagedWork(path = "/work", wrapFetch?: (fetch: ReturnType<typeof w
   const fixture = workPaginationFixture();
   await fixture.control();
   vi.stubGlobal("fetch", wrapFetch?.(fixture.fetch) ?? fixture.fetch);
-  const root = createRootRoute({ component: () => <SidebarProvider><Outlet /></SidebarProvider> });
+  const root = createRootRoute({ component: () => <SidebarProvider><SidebarSearchProvider work><aside className="dc-side"><Input nativeInput type="search" aria-label="Search threads" /></aside><Outlet /></SidebarSearchProvider></SidebarProvider> });
   const all = createRoute({ getParentRoute: () => root, path: "/work", component: () => <WorkBoard projectId={null} /> });
   const project = createRoute({ getParentRoute: () => root, path: "/work/p/$projectId", component: () => {
     const { projectId } = project.useParams();
@@ -1257,7 +1259,7 @@ describe("the filter-first Work surface", () => {
     expect(parseViewState(fixture.router.state.location.searchStr).q).toBe(q);
     expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("q")).toBe(q);
     if (q === "Older title needle") {
-      fireEvent.change(screen.getByTestId("work-search"), { target: { value: "Older title needle b" } });
+      fireEvent.change(screen.getByRole("searchbox", { name: "Search issues" }), { target: { value: "Older title needle b" } });
       await settledWork();
       expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h");
       expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Choose the completed window.");
@@ -1370,7 +1372,7 @@ describe("the filter-first Work surface", () => {
     fireEvent.click(screen.getByTestId("work-list-more"));
     await deferred.waiting;
     const pending = fixture.requests.findLast((request) => request.url.searchParams.has("cursor"))!;
-    if (change === "search") fireEvent.change(screen.getByTestId("work-search"), { target: { value: "older-label" } });
+    if (change === "search") fireEvent.change(screen.getByRole("searchbox", { name: "Search issues" }), { target: { value: "older-label" } });
     else if (change === "archived") fireEvent.click(screen.getByRole("button", { name: "Show archived" }));
     else {
       const view = parseViewState(fixture.router.state.location.searchStr);

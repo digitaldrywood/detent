@@ -10,6 +10,8 @@ import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet
 
 import { ClientContext } from "../src/app/client.ts";
 import { WorkBoard } from "../src/app/work/WorkBoard.tsx";
+import { SidebarSearchProvider } from "../src/app/adapters/sidebarData.tsx";
+import { Input } from "../src/components/ui/input.tsx";
 import { SidebarProvider } from "../src/components/ui/sidebar.tsx";
 import { workPaginationFixture } from "./workPaginationFixture.ts";
 
@@ -35,7 +37,7 @@ async function mount() {
   await fixture.control(globalThis.location.search.includes("backlog") ? { backlogOverflow: true } : { open79: true });
   globalThis.fetch = fixture.fetch as typeof globalThis.fetch;
   Reflect.set(globalThis, "EventSource", undefined);
-  const root = createRootRoute({ component: () => <SidebarProvider className="h-full min-h-0 flex-1 flex-col"><Outlet /></SidebarProvider> });
+  const root = createRootRoute({ component: () => <SidebarProvider className="h-full min-h-0 flex-1 flex-col"><SidebarSearchProvider work><aside className="dc-side"><Input nativeInput type="search" aria-label="Search threads" /></aside><Outlet /></SidebarSearchProvider></SidebarProvider> });
   const work = createRoute({ getParentRoute: () => root, path: "/work", component: () => <WorkBoard projectId={null} /> });
   const router = createRouter({ routeTree: root.addChildren([work]), history: createMemoryHistory({ initialEntries: ["/work"] }) });
   Reflect.set(globalThis, "workFixture", { ...fixture, router });

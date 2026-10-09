@@ -80,6 +80,7 @@ describe("Sprite pool settings", () => {
     pool = { min_runners: 0, max_runners: 0, idle_seconds: 300, bootstrap, revision: 0, members: [] };
     render(<SpritePoolCard projectId="project" canManage />);
     await screen.findByRole("button", { name: "Save pool" });
+    await waitFor(() => expect((screen.getByLabelText("Extra bootstrap (optional)") as HTMLTextAreaElement).value).toBe(bootstrap));
     fireEvent.change(screen.getByLabelText("Maximum runners"), { target: { value: "2" } });
     fireEvent.change(screen.getByLabelText("Minimum runners"), { target: { value: "2" } });
     expect((screen.getByLabelText("Extra bootstrap (optional)") as HTMLTextAreaElement).required).toBe(false);

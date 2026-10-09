@@ -1,8 +1,7 @@
-import { FilterIcon, KanbanIcon, LayoutListIcon, SearchIcon, XIcon } from "lucide-react";
+import { FilterIcon, KanbanIcon, LayoutListIcon } from "lucide-react";
 import React from "react";
 
 import { Button } from "../../../components/ui/button.tsx";
-import { Kbd } from "../../../components/ui/kbd.tsx";
 import {
   Menu,
   MenuCheckboxItem,
@@ -50,7 +49,6 @@ export interface WorkToolbarProps {
   readonly lanes: readonly Lane[];
   readonly facets: ToolbarFacets;
   readonly totals?: Readonly<Record<string, number>>;
-  readonly searchRef?: React.Ref<HTMLInputElement>;
 }
 
 export function WorkToolbar({
@@ -59,7 +57,6 @@ export function WorkToolbar({
   lanes,
   facets,
   totals,
-  searchRef,
 }: WorkToolbarProps): React.ReactElement {
   const filters = activeFilterCount(view.view === "list" ? { ...view, state: [] } : view);
   const boardLanes = React.useMemo(() => lanes.filter((lane) => !lane.terminal), [lanes]);
@@ -73,35 +70,6 @@ export function WorkToolbar({
         data-testid="work-archived" onClick={() => onChange({ ...view, archived: view.archived !== true })}>
         {view.archived === true ? "Archived issues" : "Archived"}
       </Button>
-      <div className="flex h-7 w-40 shrink-0 items-center gap-2 rounded-[var(--control-radius)] border border-input bg-popover px-2 text-muted-foreground text-xs shadow-xs/5 sm:h-6 sm:w-80 dark:bg-input/32">
-        <SearchIcon className="size-3.5 shrink-0" />
-        <input
-          ref={searchRef}
-          type="search"
-          value={view.q}
-          placeholder="Search issues…"
-          aria-label="Search issues"
-          title="Search titles, identifiers and labels across the selected projects."
-          data-testid="work-search"
-          onChange={(event) => onChange({ ...view, q: event.target.value })}
-          className="min-w-0 flex-1 border-0 bg-transparent p-0 text-foreground text-xs outline-none placeholder:text-muted-foreground [&::-webkit-search-cancel-button]:appearance-none"
-        />
-        {view.q.length > 0 ? (
-          <Button
-            size="icon-micro"
-            variant="ghost"
-            aria-label="Clear the search"
-            onClick={() => onChange({ ...view, q: "" })}
-          >
-            <XIcon className="size-3" />
-          </Button>
-        ) : (
-          <Kbd aria-hidden className="shrink-0 bg-transparent">
-            /
-          </Kbd>
-        )}
-      </div>
-
       <Menu>
         <MenuTrigger className={TRIGGER} data-testid="filters-trigger">
           <FilterIcon />

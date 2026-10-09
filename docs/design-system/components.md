@@ -1556,14 +1556,14 @@ The board's header row: title, freshness and primary actions.
 
 ### Work toolbar
 
-The board's search, facet filters and sort.
+The board's facet filters and sort.
 
 - Kind: Composition; status: available; id: `work-toolbar`.
 - Import: `import { WorkToolbar, WorkToolbarProps, ToolbarFacets } from "~/app/work/components/WorkToolbar";`
 - Source: [src/app/work/components/WorkToolbar.tsx](../../web/conversation/src/app/work/components/WorkToolbar.tsx).
 - Variants: none.
 - States: active, open.
-- Keyboard: Search input and facet menus; menus as Menu.
+- Keyboard: Facet menus; menus as Menu.
 - Avoid: Filter controls inside lanes.
 - Related: [Work board](#work-board).
 

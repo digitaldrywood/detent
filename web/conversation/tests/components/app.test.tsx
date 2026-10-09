@@ -6,7 +6,7 @@
 // when a conversation is linked, and the controls that must carry the attempt
 // the strip is showing.
 import { RegistryProvider } from "@effect/atom-react";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -118,6 +118,29 @@ async function control(path: string, body?: unknown): Promise<void> {
 }
 
 describe("the conversation shell", () => {
+  it("switches sidebar search scope without mixing Work and Chat queries", async () => {
+    const { router } = await mountApp({ path: "/work?q=invitation" });
+    const search = await screen.findByRole<HTMLInputElement>("searchbox", { name: "Search issues" });
+    await waitFor(() => expect(search.value).toBe("invitation"));
+    expect(screen.getAllByRole("searchbox")).toHaveLength(1);
+    expect(search.placeholder).toBe("Search issues");
+    expect(screen.queryByRole("listbox", { name: "Thread search results" })).toBeNull();
+    fireEvent.keyDown(document.body, { key: "/" });
+    expect(document.activeElement).toBe(search);
+    fireEvent.change(search, { target: { value: "lease" } });
+    await waitFor(() => expect(new URLSearchParams(router.state.location.searchStr).get("q")).toBe("lease"));
+    await act(async () => { await router.navigate({ to: "/chat" }); });
+    const chat = await screen.findByRole<HTMLInputElement>("combobox", { name: "Search threads" });
+    expect(chat.value).toBe("");
+    expect(chat.placeholder).toBe("Search chats");
+    fireEvent.change(chat, { target: { value: "a chat title" } });
+    expect(screen.getByText("No threads found")).toBeTruthy();
+    await act(async () => { await router.navigate({ to: "/work/p/$projectId", params: { projectId: "proj_alpha" }, search: { q: "checkout" } }); });
+    await waitFor(() => expect(screen.getByRole<HTMLInputElement>("searchbox", { name: "Search issues" }).value).toBe("checkout"));
+    expect(screen.queryByText("No threads found")).toBeNull();
+    expect(screen.queryByRole("listbox", { name: "Thread search results" })).toBeNull();
+  });
+
   it.each([
     ["", "proj_alpha", "alpha"],
     ["proj_stale", "proj_alpha", "alpha"],
