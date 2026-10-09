@@ -97,6 +97,7 @@ export function boardAccountKey(client: BoardAccount): string {
 let account: string | null = null;
 let epoch = 0;
 let mutationVersion = 0;
+const enrichmentReuseMs = 60_000;
 const boards = new Map<string, BoardRead>();
 const metadata = new Map<string, { at: number; read: Promise<NativeProject> }>();
 const confirmed = new Map<string, NativeIssue>();
@@ -193,6 +194,7 @@ export class BoardRead {
   private entries: readonly Loaded[] = [];
   private controller: AbortController | null = null;
   private enrichment: AbortController | null = null;
+  private readonly enrichedAt = new Map<string, { readonly revision: string | null; readonly at: number }>();
   private generation = 0;
   private pending = false;
   private continuation = false;
@@ -516,7 +518,12 @@ export class BoardRead {
     const controller = new AbortController();
     this.enrichment = controller;
     const signal = controller.signal;
-    const issues = enrichable(loaded);
+    const now = Date.now();
+    const issues = enrichable(loaded).filter((issue) => {
+      const prior = this.enrichedAt.get(issue.work_item_id);
+      const item = this.state.items.find((candidate) => candidate.id === issue.work_item_id);
+      return prior === undefined || prior.revision !== issue.revision || now - prior.at >= enrichmentReuseMs || item?.observations === undefined;
+    });
     void pooled(issues, async (issue) => {
       signal.throwIfAborted();
       const [attemptRead, changeRead] = await Promise.allSettled([
@@ -532,6 +539,7 @@ export class BoardRead {
         catch (cause) { if (unauthorized(cause)) throw cause; }
       }
       if (signal.aborted || generation !== this.generation) return;
+      this.enrichedAt.set(issue.work_item_id, { revision: issue.revision, at: Date.now() });
       const attempts: readonly NativeAttempt[] = attemptRead.status === "fulfilled" ? attemptRead.value.items : [];
       const extra = toWorkItemView(issue, "", { attempts, change: change === undefined ? null : toChangeView(change, detail),
         observations: { worker: attemptRead.status === "rejected" ? "unavailable" : attemptRead.value.next_cursor === undefined ? "known" : "partial",

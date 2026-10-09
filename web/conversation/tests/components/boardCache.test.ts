@@ -179,6 +179,24 @@ describe("the Work snapshot ordering", () => {
     expect((stored.at(-1)!.entries as { issues: NativeIssue[] }[])[0]!.issues.find((issue) => issue.work_item_id === native.work_item_id)?.revision).toBe("900");
   });
 
+  it("reuses card details for unchanged revisions across reloads", async () => {
+    vi.spyOn(disk, "updateBoardDisk").mockResolvedValue();
+    vi.spyOn(disk, "readBoardDisk").mockResolvedValue(null);
+    const source = await fixture();
+    const details = () => source.requests.filter(({ url }) => /\/(attempts|changes)$/.test(url.pathname)).length;
+    source.read.reload();
+    await expect.poll(() => source.read.snapshot().resolved).toBe(true);
+    await expect.poll(() => source.read.snapshot().enriched).toBeGreaterThan(0);
+    await expect.poll(details, { interval: 50 }).toBeGreaterThan(0);
+    const first = details();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(details()).toBe(first);
+    source.read.reload();
+    await expect.poll(() => source.read.snapshot().refreshing).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(details()).toBe(first);
+  });
+
   it("normalizes identical queries and separates server filters, archive, account and permissions", async () => {
     const source = await fixture();
     const view = { ...DEFAULT_VIEW_STATE, label: ["b", "a", "a"] };
