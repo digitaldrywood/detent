@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -40,15 +42,19 @@ func (r *Runner) RunLandingBarriers(ctx context.Context, owner LandingBarrierOwn
 	for ctx.Err() == nil {
 		workflow, _, _, _ := r.runtimeSnapshot()
 		cfg := gate.Effective(workflow.Config.Gate)
-		if cfg.LandingMode == gate.LandingRollingBarrier {
-			if release == nil {
-				var err error
-				release, err = backend.AcquireLandingBarrierRunner(ctx)
-				if err != nil {
-					r.logger.Warn("landing barrier runner unavailable", "error", err)
-					return
-				}
+		if cfg.LandingMode == gate.LandingRollingBarrier && release == nil {
+			acquired, err := backend.AcquireLandingBarrierRunner(ctx)
+			switch {
+			case errors.Is(err, instancelock.ErrHeld):
+				r.logger.Info("landing barrier runner held elsewhere; retrying", "error", err)
+			case err != nil:
+				r.logger.Warn("landing barrier runner unavailable", "error", err)
+				return
+			default:
+				release = acquired
 			}
+		}
+		if cfg.LandingMode == gate.LandingRollingBarrier && release != nil {
 			descriptor, err := config.ResolvePolicy(workflow)
 			if err == nil {
 				barrier, started, claimErr := owner.NextLandingBarrier(ctx, r.projectID, backend.LandingRepository(ctx), descriptor.ID, recoverClaim, backend.LandingBarrierHead)

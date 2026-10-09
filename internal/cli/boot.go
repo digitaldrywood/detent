@@ -284,6 +284,12 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			logShutdownBoundaryEnd(logger, "runtime_store_close", closeStarted, nil, "component", "runtime_store")
 		}
 	}()
+	workerGeneration, err := startWorkerGeneration(runCtx, runtimeStore, cfg.Version, time.Now())
+	if err != nil {
+		return err
+	}
+	logger.Info("worker generation started", "worker_generation", workerGeneration, "pid", os.Getpid())
+	defer func() { exitWorkerGeneration(runtimeStore, logger, time.Now()) }()
 
 	if !cfg.Global.Client.Configured() {
 		cfg.Global, err = initializeLocalConfiguration(runCtx, runtimeStore, cfg.Global, logger)
@@ -635,7 +641,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		resourceWorkers.Go(func() {
 			persistBoardSnapshots(runCtx, snapshotHub, boardSnapshotStore, deps.boardSnapshotInterval, logger)
 		})
-		for _, workspaceLane := range newWorkspaceLanes(runCtx, cfg.Global, hubScheduling, logger) {
+		for _, workspaceLane := range newWorkspaceLanes(runCtx, cfg.Global, hubScheduling, workerGeneration, logger) {
 			resourceWorkers.Go(func() { runWorkspaceLane(runCtx, workspaceLane, logger) })
 		}
 		if err := startRunnerProjects(ctx, manager, hubScheduling); err != nil {

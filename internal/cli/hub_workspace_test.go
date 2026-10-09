@@ -52,22 +52,37 @@ func TestWorkspaceLaneEnabled(t *testing.T) {
 
 func TestWorkspaceSessionIDsAreUniqueAndDistinct(t *testing.T) {
 	t.Parallel()
-	next := workspaceSessionIDs("machine_1")
-	seen := map[string]bool{}
-	for range 3 {
-		id, err := next()
-		if err != nil {
-			t.Fatalf("workspaceSessionIDs() error = %v", err)
-		}
-		if seen[id] {
-			t.Fatalf("session id %q was handed out twice", id)
-		}
-		// The hub pins a policy per lease session, so a workspace claim must
-		// never reuse the issue lane's session.
-		if !strings.HasPrefix(id, "machine_1-workspace-") {
-			t.Fatalf("session id %q does not name the workspace lane", id)
-		}
-		seen[id] = true
+	tests := []struct {
+		name        string
+		generations []int64
+	}{
+		{name: "one generation", generations: []int64{1}},
+		{name: "overlapping generations", generations: []int64{1, 2}},
+		{name: "restarted generation counters", generations: []int64{7, 8, 9}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			seen := map[string]bool{}
+			for _, generation := range test.generations {
+				next := workspaceSessionIDs("machine_1", generation)
+				for range 3 {
+					id, err := next()
+					if err != nil {
+						t.Fatalf("workspaceSessionIDs() error = %v", err)
+					}
+					if seen[id] {
+						t.Fatalf("session id %q was handed out twice", id)
+					}
+					// The hub pins a policy per lease session, so a workspace claim must
+					// never reuse the issue lane's session.
+					if !strings.HasPrefix(id, "machine_1-workspace-") {
+						t.Fatalf("session id %q does not name the workspace lane", id)
+					}
+					seen[id] = true
+				}
+			}
+		})
 	}
 }
 
@@ -152,7 +167,7 @@ func TestNewWorkspaceLanes(t *testing.T) {
 			if test.scheduling != nil {
 				scheduling = test.scheduling(t)
 			}
-			lanes := newWorkspaceLanes(t.Context(), cfg, scheduling, slog.New(slog.DiscardHandler))
+			lanes := newWorkspaceLanes(t.Context(), cfg, scheduling, 1, slog.New(slog.DiscardHandler))
 			if len(lanes) != test.want {
 				t.Fatalf("newWorkspaceLanes() returned %d lanes, want %d", len(lanes), test.want)
 			}

@@ -453,9 +453,10 @@ INSERT INTO codex_sessions (
   resumed_from_session_id,
   orphan_recovery_outcome,
   orphan_recovery_fallback_reason,
-  runtime_identity_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json, turn_start_refused
+  runtime_identity_json,
+  owner_generation
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json, turn_start_refused, owner_generation
 `
 
 type CreateCodexSessionParams struct {
@@ -497,6 +498,7 @@ type CreateCodexSessionParams struct {
 	OrphanRecoveryOutcome        sql.NullString `json:"orphan_recovery_outcome"`
 	OrphanRecoveryFallbackReason sql.NullString `json:"orphan_recovery_fallback_reason"`
 	RuntimeIdentityJson          sql.NullString `json:"runtime_identity_json"`
+	OwnerGeneration              sql.NullInt64  `json:"owner_generation"`
 }
 
 func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSessionParams) (CodexSession, error) {
@@ -539,6 +541,7 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		arg.OrphanRecoveryOutcome,
 		arg.OrphanRecoveryFallbackReason,
 		arg.RuntimeIdentityJson,
+		arg.OwnerGeneration,
 	)
 	var i CodexSession
 	err := row.Scan(
@@ -591,6 +594,7 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		&i.WorkerCleanupPath,
 		&i.RuntimeIdentityJson,
 		&i.TurnStartRefused,
+		&i.OwnerGeneration,
 	)
 	return i, err
 }
@@ -1098,9 +1102,10 @@ INSERT INTO work_attempts (
   next_action,
   detent_session_id,
   provider_session_id,
-  runtime_identity_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
+  runtime_identity_json,
+  owner_generation
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation
 `
 
 type CreateWorkAttemptParams struct {
@@ -1134,6 +1139,7 @@ type CreateWorkAttemptParams struct {
 	DetentSessionID        sql.NullInt64  `json:"detent_session_id"`
 	ProviderSessionID      sql.NullString `json:"provider_session_id"`
 	RuntimeIdentityJson    string         `json:"runtime_identity_json"`
+	OwnerGeneration        sql.NullInt64  `json:"owner_generation"`
 }
 
 func (q *Queries) CreateWorkAttempt(ctx context.Context, arg CreateWorkAttemptParams) (WorkAttempt, error) {
@@ -1168,6 +1174,7 @@ func (q *Queries) CreateWorkAttempt(ctx context.Context, arg CreateWorkAttemptPa
 		arg.DetentSessionID,
 		arg.ProviderSessionID,
 		arg.RuntimeIdentityJson,
+		arg.OwnerGeneration,
 	)
 	var i WorkAttempt
 	err := row.Scan(
@@ -1206,6 +1213,7 @@ func (q *Queries) CreateWorkAttempt(ctx context.Context, arg CreateWorkAttemptPa
 		&i.DetentSessionID,
 		&i.ProviderSessionID,
 		&i.RuntimeIdentityJson,
+		&i.OwnerGeneration,
 	)
 	return i, err
 }
@@ -1751,7 +1759,7 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, 
 }
 
 const getCodexSession = `-- name: GetCodexSession :one
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json, turn_start_refused
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json, turn_start_refused, owner_generation
 FROM codex_sessions
 WHERE id = ?
 `
@@ -1809,6 +1817,7 @@ func (q *Queries) GetCodexSession(ctx context.Context, id int64) (CodexSession, 
 		&i.WorkerCleanupPath,
 		&i.RuntimeIdentityJson,
 		&i.TurnStartRefused,
+		&i.OwnerGeneration,
 	)
 	return i, err
 }
@@ -2261,7 +2270,7 @@ func (q *Queries) GetWebSession(ctx context.Context, arg GetWebSessionParams) (G
 }
 
 const getWorkAttempt = `-- name: GetWorkAttempt :one
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation
 FROM work_attempts
 WHERE id = ?
 `
@@ -2305,6 +2314,7 @@ func (q *Queries) GetWorkAttempt(ctx context.Context, id int64) (WorkAttempt, er
 		&i.DetentSessionID,
 		&i.ProviderSessionID,
 		&i.RuntimeIdentityJson,
+		&i.OwnerGeneration,
 	)
 	return i, err
 }
@@ -2977,15 +2987,21 @@ func (q *Queries) ListActiveBudgetOverrides(ctx context.Context, now string) ([]
 }
 
 const listActiveWorkAttempts = `-- name: ListActiveWorkAttempts :many
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation
 FROM work_attempts
 WHERE completed_at IS NULL
   AND (?1 = '' OR project_id = ?1)
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(?2)))
 ORDER BY started_at, id
 `
 
-func (q *Queries) ListActiveWorkAttempts(ctx context.Context, filterProjectID interface{}) ([]WorkAttempt, error) {
-	rows, err := q.db.QueryContext(ctx, listActiveWorkAttempts, filterProjectID)
+type ListActiveWorkAttemptsParams struct {
+	FilterProjectID        interface{} `json:"filter_project_id"`
+	LiveForeignGenerations interface{} `json:"live_foreign_generations"`
+}
+
+func (q *Queries) ListActiveWorkAttempts(ctx context.Context, arg ListActiveWorkAttemptsParams) ([]WorkAttempt, error) {
+	rows, err := q.db.QueryContext(ctx, listActiveWorkAttempts, arg.FilterProjectID, arg.LiveForeignGenerations)
 	if err != nil {
 		return nil, err
 	}
@@ -3029,6 +3045,7 @@ func (q *Queries) ListActiveWorkAttempts(ctx context.Context, filterProjectID in
 			&i.DetentSessionID,
 			&i.ProviderSessionID,
 			&i.RuntimeIdentityJson,
+			&i.OwnerGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -3055,7 +3072,8 @@ SELECT
   CAST(COALESCE(worker_cleanup_root, '') AS TEXT) AS worker_cleanup_root,
   CAST(COALESCE(worker_cleanup_path, '') AS TEXT) AS worker_cleanup_path,
   CAST(COALESCE(final_state, '') AS TEXT) AS final_state,
-  CAST(COALESCE(completed_at, '') AS TEXT) AS completed_at
+  CAST(COALESCE(completed_at, '') AS TEXT) AS completed_at,
+  CAST(COALESCE(owner_generation, 0) AS INTEGER) AS owner_generation
 FROM codex_sessions
 WHERE worker_reaped_at IS NULL
   AND worker_pid > 0
@@ -3074,6 +3092,7 @@ type ListActiveWorkerProcessesRow struct {
 	WorkerCleanupPath string `json:"worker_cleanup_path"`
 	FinalState        string `json:"final_state"`
 	CompletedAt       string `json:"completed_at"`
+	OwnerGeneration   int64  `json:"owner_generation"`
 }
 
 func (q *Queries) ListActiveWorkerProcesses(ctx context.Context) ([]ListActiveWorkerProcessesRow, error) {
@@ -3097,6 +3116,7 @@ func (q *Queries) ListActiveWorkerProcesses(ctx context.Context) ([]ListActiveWo
 			&i.WorkerCleanupPath,
 			&i.FinalState,
 			&i.CompletedAt,
+			&i.OwnerGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -3467,7 +3487,7 @@ func (q *Queries) ListIssueActivityEvents(ctx context.Context, arg ListIssueActi
 }
 
 const listIssueCodexSessions = `-- name: ListIssueCodexSessions :many
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json, turn_start_refused
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json, turn_start_refused, owner_generation
 FROM codex_sessions
 WHERE project_id = ?1
   AND (
@@ -3549,6 +3569,7 @@ func (q *Queries) ListIssueCodexSessions(ctx context.Context, arg ListIssueCodex
 			&i.WorkerCleanupPath,
 			&i.RuntimeIdentityJson,
 			&i.TurnStartRefused,
+			&i.OwnerGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -3646,7 +3667,7 @@ func (q *Queries) ListIssueSchedulerDecisions(ctx context.Context, arg ListIssue
 }
 
 const listIssueWorkAttempts = `-- name: ListIssueWorkAttempts :many
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation
 FROM work_attempts NOT INDEXED
 WHERE work_attempts.project_id = ?1
   AND work_attempts.id IN (
@@ -3725,6 +3746,7 @@ func (q *Queries) ListIssueWorkAttempts(ctx context.Context, arg ListIssueWorkAt
 			&i.DetentSessionID,
 			&i.ProviderSessionID,
 			&i.RuntimeIdentityJson,
+			&i.OwnerGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -3741,13 +3763,19 @@ func (q *Queries) ListIssueWorkAttempts(ctx context.Context, arg ListIssueWorkAt
 
 const listLocalAdmittedIssueIDs = `-- name: ListLocalAdmittedIssueIDs :many
 SELECT DISTINCT issue_id FROM work_attempts
-WHERE project_id = ? AND json_valid(worker_metadata_json)
+WHERE project_id = ?1 AND json_valid(worker_metadata_json)
   AND COALESCE(json_extract(worker_metadata_json, '$.run_mode'), '') != ''
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(?2)))
 ORDER BY issue_id
 `
 
-func (q *Queries) ListLocalAdmittedIssueIDs(ctx context.Context, projectID string) ([]sql.NullString, error) {
-	rows, err := q.db.QueryContext(ctx, listLocalAdmittedIssueIDs, projectID)
+type ListLocalAdmittedIssueIDsParams struct {
+	ProjectID              string      `json:"project_id"`
+	LiveForeignGenerations interface{} `json:"live_foreign_generations"`
+}
+
+func (q *Queries) ListLocalAdmittedIssueIDs(ctx context.Context, arg ListLocalAdmittedIssueIDsParams) ([]sql.NullString, error) {
+	rows, err := q.db.QueryContext(ctx, listLocalAdmittedIssueIDs, arg.ProjectID, arg.LiveForeignGenerations)
 	if err != nil {
 		return nil, err
 	}
@@ -3798,8 +3826,15 @@ WHERE w.project_id = ?1
   AND s.completed_at IS NULL
   AND lower(trim(COALESCE(s.final_state, ''))) = 'running'
   AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != '')
+  AND (s.owner_generation IS NULL OR s.owner_generation NOT IN (SELECT value FROM json_each(?2)))
+  AND (w.owner_generation IS NULL OR w.owner_generation NOT IN (SELECT value FROM json_each(?2)))
 ORDER BY s.started_at DESC, s.id DESC
 `
+
+type ListOrphanedAgentSessionsParams struct {
+	ProjectID              string      `json:"project_id"`
+	LiveForeignGenerations interface{} `json:"live_foreign_generations"`
+}
 
 type ListOrphanedAgentSessionsRow struct {
 	ID                  int64         `json:"id"`
@@ -3823,8 +3858,8 @@ type ListOrphanedAgentSessionsRow struct {
 	StartedAt           string        `json:"started_at"`
 }
 
-func (q *Queries) ListOrphanedAgentSessions(ctx context.Context, projectID string) ([]ListOrphanedAgentSessionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listOrphanedAgentSessions, projectID)
+func (q *Queries) ListOrphanedAgentSessions(ctx context.Context, arg ListOrphanedAgentSessionsParams) ([]ListOrphanedAgentSessionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listOrphanedAgentSessions, arg.ProjectID, arg.LiveForeignGenerations)
 	if err != nil {
 		return nil, err
 	}
@@ -3867,7 +3902,7 @@ func (q *Queries) ListOrphanedAgentSessions(ctx context.Context, projectID strin
 }
 
 const listPendingForgeAvailabilityWaits = `-- name: ListPendingForgeAvailabilityWaits :many
-SELECT waiting.id, waiting.project_id, waiting.issue_id, waiting.identifier, waiting.issue_url, waiting.pr_number, waiting.repo, waiting.worker_type, waiting.worker_host, waiting.lane, waiting.attempt_number, waiting.status, waiting.started_at, waiting.lease_expires_at, waiting.heartbeat_at, waiting.completed_at, waiting.terminal_state, waiting.error_class, waiting.error_message, waiting.phase, waiting.status_message, waiting.current_step, waiting.total_steps, waiting.progress_percent, waiting.current_command, waiting.wait_reason, waiting.github_rate_snapshot_json, waiting.ci_state, waiting.capacity_snapshot_json, waiting.worker_metadata_json, waiting.metrics_json, waiting.next_action, waiting.detent_session_id, waiting.provider_session_id, waiting.runtime_identity_json
+SELECT waiting.id, waiting.project_id, waiting.issue_id, waiting.identifier, waiting.issue_url, waiting.pr_number, waiting.repo, waiting.worker_type, waiting.worker_host, waiting.lane, waiting.attempt_number, waiting.status, waiting.started_at, waiting.lease_expires_at, waiting.heartbeat_at, waiting.completed_at, waiting.terminal_state, waiting.error_class, waiting.error_message, waiting.phase, waiting.status_message, waiting.current_step, waiting.total_steps, waiting.progress_percent, waiting.current_command, waiting.wait_reason, waiting.github_rate_snapshot_json, waiting.ci_state, waiting.capacity_snapshot_json, waiting.worker_metadata_json, waiting.metrics_json, waiting.next_action, waiting.detent_session_id, waiting.provider_session_id, waiting.runtime_identity_json, waiting.owner_generation
 FROM work_attempts AS waiting
 WHERE waiting.project_id = ?1
   AND waiting.completed_at IS NOT NULL
@@ -3948,6 +3983,7 @@ func (q *Queries) ListPendingForgeAvailabilityWaits(ctx context.Context, project
 			&i.DetentSessionID,
 			&i.ProviderSessionID,
 			&i.RuntimeIdentityJson,
+			&i.OwnerGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -3963,16 +3999,22 @@ func (q *Queries) ListPendingForgeAvailabilityWaits(ctx context.Context, project
 }
 
 const listPendingOperatorStops = `-- name: ListPendingOperatorStops :many
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation
 FROM work_attempts
 WHERE project_id = ?1
   AND terminal_state = 'operator_stopped'
   AND phase IN ('operator_stop_pending', 'operator_stop_transition_failed')
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(?2)))
 ORDER BY completed_at, id
 `
 
-func (q *Queries) ListPendingOperatorStops(ctx context.Context, projectID string) ([]WorkAttempt, error) {
-	rows, err := q.db.QueryContext(ctx, listPendingOperatorStops, projectID)
+type ListPendingOperatorStopsParams struct {
+	ProjectID              string      `json:"project_id"`
+	LiveForeignGenerations interface{} `json:"live_foreign_generations"`
+}
+
+func (q *Queries) ListPendingOperatorStops(ctx context.Context, arg ListPendingOperatorStopsParams) ([]WorkAttempt, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingOperatorStops, arg.ProjectID, arg.LiveForeignGenerations)
 	if err != nil {
 		return nil, err
 	}
@@ -4016,6 +4058,7 @@ func (q *Queries) ListPendingOperatorStops(ctx context.Context, projectID string
 			&i.DetentSessionID,
 			&i.ProviderSessionID,
 			&i.RuntimeIdentityJson,
+			&i.OwnerGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -4031,17 +4074,23 @@ func (q *Queries) ListPendingOperatorStops(ctx context.Context, projectID string
 }
 
 const listPendingWorkAttemptCapacityReleases = `-- name: ListPendingWorkAttemptCapacityReleases :many
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation
 FROM work_attempts
 WHERE project_id = ?1
   AND status = 'terminal'
   AND completed_at IS NOT NULL
   AND lower(trim(COALESCE(next_action, ''))) = 'release capacity'
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(?2)))
 ORDER BY completed_at, id
 `
 
-func (q *Queries) ListPendingWorkAttemptCapacityReleases(ctx context.Context, projectID string) ([]WorkAttempt, error) {
-	rows, err := q.db.QueryContext(ctx, listPendingWorkAttemptCapacityReleases, projectID)
+type ListPendingWorkAttemptCapacityReleasesParams struct {
+	ProjectID              string      `json:"project_id"`
+	LiveForeignGenerations interface{} `json:"live_foreign_generations"`
+}
+
+func (q *Queries) ListPendingWorkAttemptCapacityReleases(ctx context.Context, arg ListPendingWorkAttemptCapacityReleasesParams) ([]WorkAttempt, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingWorkAttemptCapacityReleases, arg.ProjectID, arg.LiveForeignGenerations)
 	if err != nil {
 		return nil, err
 	}
@@ -4085,6 +4134,7 @@ func (q *Queries) ListPendingWorkAttemptCapacityReleases(ctx context.Context, pr
 			&i.DetentSessionID,
 			&i.ProviderSessionID,
 			&i.RuntimeIdentityJson,
+			&i.OwnerGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -4100,7 +4150,7 @@ func (q *Queries) ListPendingWorkAttemptCapacityReleases(ctx context.Context, pr
 }
 
 const listRecentCodexSessions = `-- name: ListRecentCodexSessions :many
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json, turn_start_refused
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json, turn_start_refused, owner_generation
 FROM codex_sessions
 ORDER BY completed_at DESC, id DESC
 LIMIT ?
@@ -4165,6 +4215,7 @@ func (q *Queries) ListRecentCodexSessions(ctx context.Context, limit int64) ([]C
 			&i.WorkerCleanupPath,
 			&i.RuntimeIdentityJson,
 			&i.TurnStartRefused,
+			&i.OwnerGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -4286,7 +4337,7 @@ func (q *Queries) ListRecentSchedulerDecisions(ctx context.Context, limit int64)
 }
 
 const listRecentTerminalWorkAttempts = `-- name: ListRecentTerminalWorkAttempts :many
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation
 FROM work_attempts
 WHERE completed_at IS NOT NULL
   AND status = 'terminal'
@@ -4365,6 +4416,7 @@ func (q *Queries) ListRecentTerminalWorkAttempts(ctx context.Context, arg ListRe
 			&i.DetentSessionID,
 			&i.ProviderSessionID,
 			&i.RuntimeIdentityJson,
+			&i.OwnerGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -4786,7 +4838,8 @@ WHERE completed_at IS NULL
        OR id IN (SELECT value FROM json_each(?11)))
   AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
   AND id NOT IN (SELECT value FROM json_each(?12))
-RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(?13)))
+RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation
 `
 
 type TimeoutExpiredWorkAttemptsParams struct {
@@ -4802,6 +4855,7 @@ type TimeoutExpiredWorkAttemptsParams struct {
 	LeaseExpiresAt          sql.NullString `json:"lease_expires_at"`
 	ConfirmedGoneAttemptIds interface{}    `json:"confirmed_gone_attempt_ids"`
 	ExcludeAttemptIds       interface{}    `json:"exclude_attempt_ids"`
+	LiveForeignGenerations  interface{}    `json:"live_foreign_generations"`
 }
 
 func (q *Queries) TimeoutExpiredWorkAttempts(ctx context.Context, arg TimeoutExpiredWorkAttemptsParams) ([]WorkAttempt, error) {
@@ -4818,6 +4872,7 @@ func (q *Queries) TimeoutExpiredWorkAttempts(ctx context.Context, arg TimeoutExp
 		arg.LeaseExpiresAt,
 		arg.ConfirmedGoneAttemptIds,
 		arg.ExcludeAttemptIds,
+		arg.LiveForeignGenerations,
 	)
 	if err != nil {
 		return nil, err
@@ -4862,6 +4917,7 @@ func (q *Queries) TimeoutExpiredWorkAttempts(ctx context.Context, arg TimeoutExp
 			&i.DetentSessionID,
 			&i.ProviderSessionID,
 			&i.RuntimeIdentityJson,
+			&i.OwnerGeneration,
 		); err != nil {
 			return nil, err
 		}

@@ -52,7 +52,7 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 	}
 	o.expireOrphanedWorkAttempts(ctx, state, now)
 
-	active, err := o.workAttempts.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: projectID})
+	active, err := o.workAttempts.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: projectID, ExcludeLiveForeignGenerations: true})
 	if err != nil {
 		if o.logger != nil {
 			o.logger.Warn("deferred completion recovery lookup failed", "project_id", projectID, "error", err)

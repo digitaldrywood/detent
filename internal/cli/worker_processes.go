@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -67,13 +68,26 @@ func reapWorkerProcessesWithCleanup(
 	if err != nil {
 		return err
 	}
+	var liveForeign []int64
+	if generations, ok := processStore.(store.LiveForeignGenerationReader); ok {
+		liveForeign, err = generations.LiveForeignWorkerGenerations(ctx)
+		var unknown *store.WorkerGenerationLivenessError
+		if errors.As(err, &unknown) {
+			unknown.Log(logger)
+		} else if err != nil {
+			return fmt.Errorf("list live worker generations: %w", err)
+		}
+	}
+	processes = slices.DeleteFunc(processes, func(process store.WorkerProcess) bool {
+		return slices.Contains(liveForeign, process.OwnerGeneration)
+	})
 	attemptStore, hasAttempts := processStore.(interface {
 		ListActiveWorkAttempts(context.Context, store.WorkAttemptQuery) ([]store.WorkAttempt, error)
 		TimeoutExpiredWorkAttempts(context.Context, store.WorkAttemptTimeout) ([]store.WorkAttempt, error)
 	})
 	var attempts []store.WorkAttempt
 	if hasAttempts && strings.TrimSpace(reason) == "startup" {
-		attempts, err = attemptStore.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{})
+		attempts, err = attemptStore.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ExcludeLiveForeignGenerations: true})
 		if err != nil {
 			return err
 		}

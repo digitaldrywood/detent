@@ -72,6 +72,7 @@ func (s *sqliteStore) StartWorkAttempt(ctx context.Context, attrs WorkAttemptSta
 		DetentSessionID:        nullPositiveInt64(attrs.DetentSessionID),
 		ProviderSessionID:      nullString(attrs.ProviderSessionID),
 		RuntimeIdentityJson:    runtimeIdentityJSON,
+		OwnerGeneration:        s.ownerGeneration(),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("starting work attempt: %w", err)
@@ -247,7 +248,18 @@ func (s *sqliteStore) UpdateTerminalWorkAttemptWait(ctx context.Context, attrs W
 }
 
 func (s *sqliteStore) ListActiveWorkAttempts(ctx context.Context, query WorkAttemptQuery) ([]WorkAttempt, error) {
-	rows, err := s.queries.ListActiveWorkAttempts(ctx, strings.TrimSpace(query.ProjectID))
+	excluded := emptyGenerations
+	if query.ExcludeLiveForeignGenerations {
+		var err error
+		excluded, err = s.liveForeignGenerationsJSON(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	rows, err := s.queries.ListActiveWorkAttempts(ctx, sqlc.ListActiveWorkAttemptsParams{
+		FilterProjectID:        strings.TrimSpace(query.ProjectID),
+		LiveForeignGenerations: excluded,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing active work attempts: %w", err)
 	}
@@ -298,7 +310,14 @@ func (s *sqliteStore) ListPendingWorkAttemptCapacityReleases(ctx context.Context
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
-	rows, err := s.queries.ListPendingWorkAttemptCapacityReleases(ctx, projectID)
+	excluded, err := s.liveForeignGenerationsJSON(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListPendingWorkAttemptCapacityReleases(ctx, sqlc.ListPendingWorkAttemptCapacityReleasesParams{
+		ProjectID:              projectID,
+		LiveForeignGenerations: excluded,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing pending work attempt capacity releases: %w", err)
 	}
@@ -336,7 +355,14 @@ func (s *sqliteStore) UpdateOperatorStop(ctx context.Context, attrs OperatorStop
 }
 
 func (s *sqliteStore) ListPendingOperatorStops(ctx context.Context, projectID string) ([]WorkAttempt, error) {
-	rows, err := s.queries.ListPendingOperatorStops(ctx, strings.TrimSpace(projectID))
+	excluded, err := s.liveForeignGenerationsJSON(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListPendingOperatorStops(ctx, sqlc.ListPendingOperatorStopsParams{
+		ProjectID:              strings.TrimSpace(projectID),
+		LiveForeignGenerations: excluded,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing pending operator stops: %w", err)
 	}
@@ -372,6 +398,10 @@ func (s *sqliteStore) TimeoutExpiredWorkAttempts(ctx context.Context, attrs Work
 	if err != nil {
 		return nil, fmt.Errorf("encoding processless work attempts: %w", err)
 	}
+	liveForeign, err := s.liveForeignGenerationsJSON(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.queries.TimeoutExpiredWorkAttempts(ctx, sqlc.TimeoutExpiredWorkAttemptsParams{
 		ExcludeAttemptIds:       string(excluded),
 		ConfirmedGoneAttemptIds: string(confirmedGone),
@@ -385,6 +415,7 @@ func (s *sqliteStore) TimeoutExpiredWorkAttempts(ctx context.Context, attrs Work
 		StatusMessage:           nullString(errorMessage),
 		FilterProjectID:         strings.TrimSpace(attrs.ProjectID),
 		LeaseExpiresAt:          sql.NullString{String: now, Valid: true},
+		LiveForeignGenerations:  liveForeign,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("timing out expired work attempts: %w", err)
@@ -690,6 +721,9 @@ func workAttemptFromRow(row sqlc.WorkAttempt) (WorkAttempt, error) {
 	if row.DetentSessionID.Valid {
 		attempt.DetentSessionID = row.DetentSessionID.Int64
 	}
+	if row.OwnerGeneration.Valid {
+		attempt.OwnerGeneration = row.OwnerGeneration.Int64
+	}
 	return attempt, nil
 }
 
@@ -778,9 +812,16 @@ func boolInt64(value bool) int64 {
 }
 
 func (s *sqliteStore) ListLocalAdmittedIssueIDs(ctx context.Context, projectID string) ([]string, error) {
-	rows, err := s.queries.ListLocalAdmittedIssueIDs(ctx, strings.TrimSpace(projectID))
+	excluded, err := s.liveForeignGenerationsJSON(ctx)
 	if err != nil {
 		return nil, err
+	}
+	rows, err := s.queries.ListLocalAdmittedIssueIDs(ctx, sqlc.ListLocalAdmittedIssueIDsParams{
+		ProjectID:              strings.TrimSpace(projectID),
+		LiveForeignGenerations: excluded,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing local admitted issues: %w", err)
 	}
 	ids := make([]string, 0, len(rows))
 	for _, row := range rows {
