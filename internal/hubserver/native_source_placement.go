@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -43,7 +44,7 @@ WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.checkpoi
 	return nativeSourceCheckpoint{}, rows.Err()
 }
 
-func nativeSourceClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID) (bool, string, error) {
+func nativeSourceClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, now time.Time) (bool, string, error) {
 	var item string
 	if err := q.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE id=? AND organization_id=? AND project_id=?", id, scope.organization, scope.project).Scan(&item); err != nil {
 		return false, "", err
@@ -91,11 +92,11 @@ WHERE a.id=? AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, v
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return false, "", err
 			}
-			if err == nil && version.Source.Validate(version.BaseSHA, version.HeadSHA, bundle) == nil {
-				return true, "Verified retained Change source is available", nil
-			}
 			if checkpoint == nil {
 				owner, ownerRunner = sourceOwner, sourceRunner
+			}
+			if err == nil && version.Source.Validate(version.BaseSHA, version.HeadSHA, bundle) == nil {
+				return nativeRetainedSourceClaimAllowed(ctx, q, scope, machine, id, owner, ownerRunner, change.CurrentVersion, now)
 			}
 			if owner == "" {
 				return false, "Preserved source owner is unavailable; locate the exact checkpoint before recovery", nil
@@ -119,4 +120,50 @@ WHERE a.id=? AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, v
 		return false, fmt.Sprintf("Checkpoint %s on source runner %s is %s; restore and verify source before recovery", attempt, owner, checkpoint.Availability), nil
 	}
 	return machine == owner && (ownerRunner == "" || ownerRunner == scope.credential.Runner.RunnerID), fmt.Sprintf("Checkpoint %s is local to source runner %s; wait for that runner to be online, eligible and available, or capture the exact source there before transfer", attempt, owner), nil
+}
+
+func nativeRetainedSourceClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, owner tracker.MachineID, ownerRunner, version string, now time.Time) (bool, string, error) {
+	const available = "Verified retained Change source is available"
+	if machine == "" || machine == owner || ownerRunner == "" || ownerRunner == scope.credential.Runner.RunnerID {
+		return true, available, nil
+	}
+	var destination, routed string
+	if err := q.QueryRowContext(ctx, "SELECT recovery_runner_id,recovery_version_id FROM issues WHERE id=? AND organization_id=? AND project_id=?", id, scope.organization, scope.project).Scan(&destination, &routed); err != nil {
+		return false, "", err
+	}
+	if destination != "" && routed == version {
+		return true, available, nil
+	}
+	eligible, err := nativeSourceOwnerEligible(ctx, q, scope, ownerRunner, now)
+	if err != nil {
+		return false, "", err
+	}
+	if eligible {
+		return false, fmt.Sprintf("Verified retained Change source stays with source runner %s while it is online and eligible; another runner recovers it only when that runner is unavailable or an operator selects a recovery runner", owner), nil
+	}
+	return true, fmt.Sprintf("%s; source runner %s is offline or ineligible", available, owner), nil
+}
+
+func nativeSourceOwnerEligible(ctx context.Context, q nativeQueryer, scope nativeScope, runnerID string, now time.Time) (bool, error) {
+	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	var refusal *nativeError
+	if err != nil && (!errors.As(err, &refusal) || refusal.Code != "policy_mismatch") {
+		return false, err
+	}
+	runners, err := readPlacementRunners(ctx, q, scope, now)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range runners {
+		if r.RunnerID != runnerID {
+			continue
+		}
+		if r.Paused && !r.Pending || len(r.Problems) != 0 || r.State == "draining" || r.Health == "offline" || r.ConnectionHealth == "offline" ||
+			len(r.Exclusions(scope.project, approval.Policy.Requirements, true)) != 0 {
+			return false, nil
+		}
+		availability, err := r.Availability.Evaluate(now)
+		return err == nil && availability.Open, nil
+	}
+	return false, nil
 }
