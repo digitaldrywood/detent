@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -93,9 +94,13 @@ func activeBillingSnapshot(now time.Time) billing.Snapshot {
 	return billing.Snapshot{SubscriptionID: "sub_fixture", PriceID: "price_fixture", Status: "active", InvoiceID: "in_fixture", InvoiceStatus: "paid", InvoiceCreatedAt: now.Add(-time.Hour), PeriodEnd: now.Add(time.Hour)}
 }
 
-func postBillingEvent(t *testing.T, f *browserHostedFixture, id, kind string, signed bool) *httptest.ResponseRecorder {
+func postBillingEvent(t *testing.T, f *browserHostedFixture, id, kind string, signed bool, objects ...string) *httptest.ResponseRecorder {
 	t.Helper()
-	body := fmt.Sprintf(`{"id":%q,"type":%q,"livemode":false,"data":{"object":{"customer":"cus_other","status":"active","private":"card-sentinel"}}}`, id, kind)
+	object := `{"customer":"cus_other","status":"active","private":"card-sentinel"}`
+	if len(objects) > 0 {
+		object = objects[0]
+	}
+	body := fmt.Sprintf(`{"id":%q,"type":%q,"livemode":false,"data":{"object":%s}}`, id, kind, object)
 	stamp := strconv.FormatInt(f.service.config.now().Unix(), 10)
 	mac := hmac.New(sha256.New, f.service.config.Hosted.Billing.WebhookSecret)
 	mac.Write([]byte(stamp + "." + body))
@@ -106,6 +111,132 @@ func postBillingEvent(t *testing.T, f *browserHostedFixture, id, kind string, si
 	w := httptest.NewRecorder()
 	f.service.Handler().ServeHTTP(w, r)
 	return w
+}
+
+type hostedBillingStripeTransport func(*http.Request) (*http.Response, error)
+
+func (transport hostedBillingStripeTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return transport(request)
+}
+
+func TestHostedBillingDiscountedInvoices(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		paid          int64
+		discount      bool
+		failedRenewal bool
+		upgrade       bool
+	}{
+		{name: "100 percent forever without payment method", discount: true},
+		{name: "partial discount", paid: 500, discount: true},
+		{name: "undiscounted", paid: 1000},
+		{name: "failed nonzero renewal", paid: 1000, failedRenewal: true},
+		{name: "product restricted discount then paid upgrade", discount: true, upgrade: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f, _ := newHostedBillingFixture(t)
+			cfg := f.service.config.Hosted.Billing
+			if test.upgrade {
+				growth := f.service.config.Hosted.Plans.Plans[1]
+				growth.ID = "test_growth"
+				f.service.config.Hosted.Plans.Plans = append(f.service.config.Hosted.Plans.Plans, growth)
+				if err := f.service.database.configureHostedPlans(t.Context(), f.service.config.Hosted); err != nil {
+					t.Fatal(err)
+				}
+				cfg.Prices = append(cfg.Prices, HostedBillingPrice{PriceID: "price_growth", Plan: growth.PlanReference})
+			}
+			start := time.Now().UTC().Truncate(time.Second)
+			at := start
+			f.service.config.now = func() time.Time { return at }
+			paid, due := test.paid, test.paid
+			price, status, invoiceStatus, invoice := "price_fixture", "active", "paid", "in_initial"
+			periodEnd := start.Add(time.Hour)
+			discounts, method := `[]`, `"pm_fixture"`
+			if test.discount {
+				discounts = `["di_fixture"]`
+				if test.paid == 0 {
+					method = `null`
+				}
+			}
+			provider, err := billing.NewStripe(billing.StripeConfig{APIKey: "sk_test_fixture_2196", Client: &http.Client{
+				Transport: hostedBillingStripeTransport(func(request *http.Request) (*http.Response, error) {
+					if request.URL.Host != "api.stripe.com" || request.Method != http.MethodGet || request.Header.Get("Stripe-Version") != billing.StripeAPIVersion {
+						t.Errorf("unexpected Stripe request: %s %s", request.Method, request.URL)
+					}
+					var body string
+					switch request.URL.Path {
+					case "/v1/account":
+						body = `{"id":"acct_fixture"}`
+					case "/v1/customers/cus_fixture":
+						body = `{"id":"cus_fixture","livemode":false,"metadata":{"detent_organization_id":"org_browser_preview"},"invoice_settings":{"default_payment_method":` + method + `}}`
+					case "/v1/subscriptions":
+						body = fmt.Sprintf(`{"has_more":false,"data":[{
+							"id":"sub_fixture","customer":"cus_fixture","livemode":false,"status":%q,
+							"metadata":{"detent_organization_id":"org_browser_preview"},"collection_method":"charge_automatically",
+							"discounts":%s,"default_payment_method":%s,
+							"items":{"has_more":false,"data":[{"quantity":1,"current_period_start":%d,"current_period_end":%d,
+							"price":{"id":%q,"livemode":false,"type":"recurring","billing_scheme":"per_unit","recurring":{"usage_type":"licensed"}}}]},
+							"latest_invoice":{"id":%q,"customer":"cus_fixture","livemode":false,"status":%q,
+							"created":%d,"amount_paid":%d,"amount_due":%d,
+							"parent":{"type":"subscription_details","subscription_details":{"subscription":"sub_fixture"}}}
+						}]}`, status, discounts, method, start.Unix(), periodEnd.Unix(), price, invoice, invoiceStatus, at.Unix(), paid, due)
+					case "/v1/invoice_payments":
+						if paid == 0 || invoiceStatus != "paid" || request.URL.Query().Get("invoice") != invoice {
+							t.Error("payment evidence requested for an unpaid or zero invoice, or the wrong invoice")
+						}
+						body = fmt.Sprintf(`{"has_more":false,"data":[{"invoice":%q,"livemode":false,"status":"paid","amount_paid":%d,"payment":{"type":"charge","charge":"ch_fixture"}}]}`, invoice, paid)
+					case "/v1/charges/ch_fixture":
+						body = fmt.Sprintf(`{"id":"ch_fixture","customer":"cus_fixture","livemode":false,"amount":%d,"amount_refunded":0,"disputed":false}`, paid)
+					default:
+						return nil, fmt.Errorf("unexpected Stripe path %s", request.URL.Path)
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+				}),
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Provider = provider
+			for cycle, elapsed := range []time.Duration{0, 30 * time.Minute, 90 * time.Minute, 2 * time.Hour} {
+				at = start.Add(elapsed)
+				wantStatus, wantSource, wantPlan := "active", "subscription", "test_paid"
+				if elapsed >= time.Hour {
+					invoice = "in_renewal"
+					periodEnd = start.Add(30 * 24 * time.Hour)
+					if test.upgrade {
+						price, paid, due, discounts, method = "price_growth", 2000, 2000, `[]`, `"pm_fixture"`
+						wantPlan = "test_growth"
+					}
+					if test.failedRenewal {
+						status, invoiceStatus, paid, due = "past_due", "open", 0, 1000
+						wantStatus = "grace"
+						if elapsed >= 2*time.Hour {
+							wantStatus, wantSource, wantPlan = "payment_failed", "base", "test_free"
+						}
+					}
+				}
+				kind := "invoice.paid"
+				if test.failedRenewal && elapsed >= time.Hour {
+					kind = "invoice.payment_failed"
+				}
+				object := fmt.Sprintf(`{"id":%q,"object":"invoice","customer":"cus_fixture","status":%q,"amount_paid":%d,"amount_due":%d}`, invoice, invoiceStatus, paid, due)
+				requireNativeStatus(t, postBillingEvent(t, f, fmt.Sprintf("evt_cycle_%d", cycle), kind, true, object), http.StatusOK)
+				if err := f.service.billing.reconcile(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				state, err := f.service.database.readHostedBilling(t.Context())
+				if err != nil || state.Status != wantStatus || state.Snapshot.PriceID != price || state.Snapshot.PaymentHold != "" {
+					t.Fatalf("at %s: state=%+v, err=%v", elapsed, state, err)
+				}
+				entitlement, err := f.service.database.hostedPlanUsage(t.Context(), at)
+				if err != nil || entitlement.Source != wantSource || entitlement.EffectiveBase.ID != wantPlan {
+					t.Fatalf("at %s: entitlement=%+v, err=%v", elapsed, entitlement, err)
+				}
+			}
+		})
+	}
 }
 
 func TestHostedBillingLifecycle(t *testing.T) {

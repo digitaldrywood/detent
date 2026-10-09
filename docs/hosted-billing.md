@@ -81,10 +81,18 @@ verifies that the selected price is active and in test mode. Configure the test
 portal to expose invoices, payment updates, cancellation, and only the approved
 subscription prices. Scheduled downgrades take effect when Stripe actually
 changes the subscription price; immediate changes apply at reconciliation.
-Checkout does not enable automatic tax, promotion-code entry, or trials.
+Plan checkout accepts promotion codes managed by the operator in Stripe, including
+coupon product restrictions, redemption limits and expiry. It collects payment
+details only when required, so a 100%-off first invoice completes without a card.
+Undiscounted checkout still collects payment details. AI credit-pack checkout
+does not accept promotion codes and keeps collecting payment as before.
+Checkout does not enable automatic tax or trials.
 Existing Stripe-authorized trials and invoice discounts are evaluated separately
 from complimentary grants. A paid invoice reduced to zero by an authorized
-discount can still support the configured plan.
+discount supports the configured plan without a default payment method.
+Entitlements follow the subscribed price, never the invoice amount. A coupon
+restricted to one product does not discount a plan change to another product;
+the existing Stripe portal collects payment details and bills the new price.
 
 The configured grace is zero to seven days; reconciliation runs every 60 to
 3600 seconds and at startup. These are validation bounds, not public pricing or

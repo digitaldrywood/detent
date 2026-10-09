@@ -42,7 +42,8 @@ func (s *stripeProvider) Checkout(ctx context.Context, request CheckoutRequest) 
 		"mode": {"subscription"}, "customer": {request.CustomerID}, "client_reference_id": {request.OrganizationID},
 		"line_items[0][price]": {request.PriceID}, "line_items[0][quantity]": {"1"},
 		"success_url": {request.ReturnURL + "?checkout=returned"}, "cancel_url": {request.ReturnURL},
-		"expires_at": {strconv.FormatInt(request.ExpiresAt.Unix(), 10)},
+		"expires_at":            {strconv.FormatInt(request.ExpiresAt.Unix(), 10)},
+		"allow_promotion_codes": {"true"}, "payment_method_collection": {"if_required"},
 		"subscription_data[metadata][detent_organization_id]": {request.OrganizationID},
 		"metadata[detent_organization_id]":                    {request.OrganizationID},
 	}

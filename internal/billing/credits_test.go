@@ -1,9 +1,8 @@
 package billing
 
 import (
-	"encoding/json"
 	"fmt"
-	"strings"
+	"net/url"
 	"testing"
 	"time"
 )
@@ -87,9 +86,24 @@ func TestStripeCreditPurchaseAndCharge(t *testing.T) {
 				if form.Get("off_session") != "true" || form.Get("confirm") != "true" || form.Get("payment_method") != "pm_credit" || form.Get("amount") != "500" {
 					t.Fatalf("charge=%v", form)
 				}
-			} else if form.Get("mode") != "payment" || !strings.HasSuffix(form.Get("success_url"), "?credits=returned") || form.Get("payment_intent_data[setup_future_usage]") != "off_session" || form.Get("metadata[detent_credit_key]") != "credit_test" {
-				raw, _ := json.Marshal(form)
-				t.Fatalf("checkout=%s", raw)
+			}
+			if !test.automatic {
+				want := url.Values{
+					"mode": {"payment"}, "customer": {"cus_test"}, "client_reference_id": {"org_test"},
+					"line_items[0][price]": {"price_credit"}, "line_items[0][quantity]": {"1"},
+					"success_url": {"https://cloud.detent.ai/settings/billing?credits=returned"},
+					"cancel_url":  {"https://cloud.detent.ai/settings/billing"}, "expires_at": {"1900000000"},
+					"payment_intent_data[setup_future_usage]": {"off_session"}, "payment_method_types[0]": {"card"},
+					"metadata[detent_organization_id]": {"org_test"}, "metadata[detent_credit_key]": {"credit_test"},
+					"metadata[detent_credit_price]": {"price_credit"}, "metadata[detent_credit_cents]": {"500"},
+					"payment_intent_data[metadata][detent_organization_id]": {"org_test"},
+					"payment_intent_data[metadata][detent_credit_key]":      {"credit_test"},
+					"payment_intent_data[metadata][detent_credit_price]":    {"price_credit"},
+					"payment_intent_data[metadata][detent_credit_cents]":    {"500"},
+				}
+				if form.Encode() != want.Encode() {
+					t.Fatalf("credit checkout parameters changed: got %v, want %v", form, want)
+				}
 			}
 		})
 	}
