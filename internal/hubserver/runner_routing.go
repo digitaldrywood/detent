@@ -529,15 +529,11 @@ func validateRunnerLeaseTx(ctx context.Context, tx *sql.Tx, scope nativeScope, i
 	if scope.credential.Runner.RunnerID == "" {
 		return runnerauth.Runner{Binding: runnerauth.Binding{MachineID: lease.session.Machine.ID}}, nil
 	}
-	approval, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
-	if err != nil {
-		return runnerauth.Runner{}, err
-	}
 	r, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
 	if err != nil {
 		return runnerauth.Runner{}, err
 	}
-	if err := runnerExcluded(r.Exclusions(scope.project, approval.Policy.Requirements, true)); err != nil {
+	if err := runnerExcluded(r.Exclusions(scope.project, policy.Requirements{}, true)); err != nil {
 		return runnerauth.Runner{}, err
 	}
 	return r, nil

@@ -695,20 +695,18 @@ func TestNativeExecutionTransportKeepsCurrentWorker(t *testing.T) {
 	}{
 		{name: "already canceled", interruption: context.Canceled},
 		{name: "already timed out", interruption: context.DeadlineExceeded},
-		{name: "canceled policy request", path: "/policy", interruption: context.Canceled},
-		{name: "timed out policy request", path: "/policy", interruption: context.DeadlineExceeded},
 		{name: "canceled lease request", path: "/validate", interruption: context.Canceled},
 		{name: "timed out lease request", path: "/validate", interruption: context.DeadlineExceeded},
 		{name: "canceled renewal retains expired lease", interruption: context.Canceled, expired: true},
 		{name: "canceled revoked authority", interruption: runner.ErrExecutionAuthorityUnavailable, fatal: true},
 		{name: "transport"},
 		{name: "server", status: http.StatusServiceUnavailable, body: `{"code":"tenant_unavailable"}`},
-		{name: "unauthorized policy", path: "/policy", status: http.StatusUnauthorized, body: `{"code":"unauthorized"}`, fatal: true},
+		{name: "unauthorized lease", path: "/validate", status: http.StatusUnauthorized, body: `{"code":"unauthorized"}`, fatal: true},
 		{name: "revoked lease", path: "/validate", status: http.StatusForbidden, body: `{"code":"forbidden"}`, fatal: true},
-		{name: "malformed unauthorized", path: "/policy", status: http.StatusUnauthorized, body: "unauthorized", fatal: true},
-		{name: "permanent protocol", path: "/policy", status: http.StatusBadRequest, body: `{"code":"invalid_request"}`, fatal: true},
+		{name: "malformed unauthorized", path: "/validate", status: http.StatusUnauthorized, body: "unauthorized", fatal: true},
+		{name: "permanent protocol", path: "/validate", status: http.StatusBadRequest, body: `{"code":"invalid_request"}`, fatal: true},
 		{name: "stale fencing", path: "/validate", status: http.StatusConflict, body: `{"code":"stale_fencing_token"}`, fatal: true},
-		{name: "policy mismatch", path: "/policy", status: http.StatusConflict, body: `{"code":"policy_mismatch"}`, fatal: true},
+		{name: "policy mismatch", path: "/validate", status: http.StatusConflict, body: `{"code":"policy_mismatch"}`, fatal: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

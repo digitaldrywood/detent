@@ -242,10 +242,6 @@ func (e *nativeExecution) Validate(ctx context.Context) error {
 	if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.PolicyID); err != nil {
 		return e.validationError(err)
 	}
-	if e.scheduler.client.runner == nil {
-		_, err := e.claim.source.client.ValidateLease(ctx, e.claim.lease)
-		return e.validationError(err)
-	}
 	return nil
 }
 
