@@ -981,7 +981,14 @@ func TestHostedBrowserPreview(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
 			if name == "Settings runner" && os.Getenv("DETENT_HOSTED_BROWSER_RUNNER_PROBLEMS") != "" {
 				problemRunner, problemCredential = binding, credential
-				heartbeat := map[string]any{"display_name": name, "capacity": 2, "version": "test", "backend_isolation": redemption.BackendIsolation, "problems": []runnerauth.Problem{runnerauth.NewProblem("tier_unavailable")}}
+				problem := runnerauth.NewProblem("backend_missing")
+				problem.Subject = "codex"
+				problem.Message = "not signed in"
+				problem.FixHint = "Sign in on this runner, then wait for its next heartbeat."
+				problem.Check = "codex login status"
+				problem.ErrorOutput = "exit status 1: Not logged in"
+				problem.FixCommand = "codex login --device-auth"
+				heartbeat := map[string]any{"display_name": name, "capacity": 2, "version": "test", "backend_isolation": redemption.BackendIsolation, "problems": []runnerauth.Problem{problem}}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/projects/"+f.project+"/machines/"+string(binding.MachineID)+"/heartbeat", credential, heartbeat), http.StatusOK)
 			}
 		}

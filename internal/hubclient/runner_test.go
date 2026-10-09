@@ -180,11 +180,13 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 			name         string
 			report       isolation.Report
 			wantProblems []string
+			details      []runnerauth.Problem
 		}{
-			{"workflow unavailable", isolation.Report{"native/workflow": {}}, []string{"settings_invalid", "tier_unavailable"}},
-			{"backend unavailable", isolation.Report{"native/codex": {}}, []string{"backend_missing", "tier_unavailable"}},
-			{"empty report", isolation.Report{}, []string{"backend_missing", "tier_unavailable"}},
-			{"partially failed report", isolation.Report{"native/codex": {isolation.NativeTrusted}, "native/claude": {}}, []string{"backend_missing", "tier_unavailable"}},
+			{"workflow unavailable", isolation.Report{"native/workflow": {}}, []string{"settings_invalid", "tier_unavailable"}, nil},
+			{"backend unavailable", isolation.Report{"native/codex": {}}, []string{"backend_missing", "tier_unavailable"}, nil},
+			{"empty report", isolation.Report{}, []string{"backend_missing", "tier_unavailable"}, nil},
+			{"partially failed report", isolation.Report{"native/codex": {isolation.NativeTrusted}, "native/claude": {}}, []string{"backend_missing", "tier_unavailable"}, nil},
+			{"signed out", isolation.Report{"native/codex": {}}, []string{"backend_missing", "tier_unavailable"}, []runnerauth.Problem{{Code: "backend_missing", Subject: "native/codex", Message: "not signed in", Check: "codex login status", ErrorOutput: "Not logged in", FixHint: "Sign in", FixCommand: "codex login --device-auth"}}},
 		} {
 			t.Run(test.name, func(t *testing.T) {
 				now := time.Now()
@@ -209,7 +211,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 						if probes == 1 {
 							problem := runnerauth.NewProblem("tier_unavailable")
 							problem.Message = "backend sandbox probe failed: sandbox tooling is unavailable"
-							return test.report, []runnerauth.Problem{problem}
+							return test.report, append([]runnerauth.Problem{problem}, test.details...)
 						}
 						return machine.BackendIsolation, nil
 					},

@@ -44,6 +44,7 @@ type hostedFleetRunner struct {
 	MachineID          string                                     `json:"machine_id"`
 	DisplayName        string                                     `json:"display_name"`
 	Hostname           string                                     `json:"hostname"`
+	ConnectionHealth   string                                     `json:"connection_health"`
 	Health             string                                     `json:"health"`
 	State              string                                     `json:"state"`
 	OS                 string                                     `json:"os"`
@@ -296,7 +297,7 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 		HostUsed: runner.HostUsed, CapacityLimit: runner.CapacityLimit, ReportedCapacity: runner.ReportedCapacity,
 		ProviderCapacity: runner.ProviderCapacity, LastHeartbeatAt: runner.LastHeartbeatAt, Leases: []hostedFleetLease{},
 		IsolationTier: runner.IsolationTier, BackendIsolation: runner.BackendIsolation, Availability: runner.Availability,
-		Problems: runner.Problems,
+		Problems: runner.Problems, ConnectionHealth: runner.ConnectionHealth,
 	}
 	if view.ProviderCapacity == nil {
 		view.ProviderCapacity = []providercapacity.View{}

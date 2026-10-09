@@ -20,7 +20,7 @@ func TestRunnerProblemsHeartbeat(t *testing.T) {
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 			r.enroll(t)
 			heartbeat := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}}
-			heartbeat["problems"] = []map[string]any{{"project_id": "site", "code": code, "message": "Tooling needs repair", "fix_hint": "Repair the runner tooling"}}
+			heartbeat["problems"] = []map[string]any{{"project_id": "site", "code": code, "message": "Tooling needs repair", "fix_hint": "Repair the runner tooling", "subject": "codex", "check": "codex login status", "error_output": "Not logged in; OPENAI_API_KEY=private-key", "fix_command": "codex login --device-auth"}}
 			post := func() {
 				t.Helper()
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, heartbeat), http.StatusOK)
@@ -29,10 +29,7 @@ func TestRunnerProblemsHeartbeat(t *testing.T) {
 				t.Helper()
 				response := performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", testHubAdminToken, nil)
 				requireNativeStatus(t, response, http.StatusOK)
-				var view struct {
-					Health   string               `json:"health"`
-					Problems []runnerauth.Problem `json:"problems"`
-				}
+				var view runnerauth.Runner
 				decodeHubResponse(t, response, &view)
 				return view.Health, view.Problems
 			}
@@ -40,6 +37,14 @@ func TestRunnerProblemsHeartbeat(t *testing.T) {
 			health, problems := read()
 			if health != "needs_attention" || len(problems) != 1 || problems[0].Code != code || problems[0].ProjectID != "site" || problems[0].FixHint == "" || problems[0].FirstSeen.IsZero() {
 				t.Fatalf("health=%s problems=%+v", health, problems)
+			}
+			if problems[0].Subject != "codex" || problems[0].Check != "codex login status" || problems[0].FixCommand != "codex login --device-auth" || problems[0].ReportedAt.IsZero() || strings.Contains(problems[0].ErrorOutput, "private-key") {
+				t.Fatalf("unsafe or missing details: %+v", problems)
+			}
+			reported := problems[0].ReportedAt
+			_, again := read()
+			if !again[0].ReportedAt.Equal(reported) {
+				t.Fatal("read updated report timestamp")
 			}
 			first := problems[0].FirstSeen
 			post()

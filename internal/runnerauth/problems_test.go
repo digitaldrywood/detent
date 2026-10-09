@@ -81,3 +81,42 @@ func TestValidateReportedProblems(t *testing.T) {
 		}
 	}
 }
+
+func TestProblemDetails(t *testing.T) {
+	for _, test := range []struct{ name, input, forbidden string }{
+		{"API key", "OPENAI_API_KEY=sk-private-key failed", "sk-private-key"},
+		{"JSON", `{"access_token":"private-token", "error":"not signed in"}`, "private-token"},
+		{"header", "Authorization: Bearer private-token\nnot signed in", "private-token"},
+		{"argument", "codex --api-key private-key login status", "private-key"},
+		{"URL", "https://user:private-password@example.test failed", "private-password"},
+		{"bounded", strings.Repeat("error ", 600), ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := SanitizeProblem(Problem{ErrorOutput: test.input, Check: test.input})
+			if len(p.ErrorOutput) > 2000 || len(p.Check) > 2000 {
+				t.Fatal("output was not bounded")
+			}
+			if test.forbidden != "" && strings.Contains(p.ErrorOutput+p.Check, test.forbidden) {
+				t.Fatal("credential was reported")
+			}
+		})
+	}
+	now := time.Now()
+	a := NewProblem("backend_missing")
+	a.Subject = "codex"
+	a.Check = "codex login status"
+	a.ReportedAt = now.Add(-time.Minute)
+	b := a
+	b.Subject = "claude"
+	problems := MergeProblems(nil, []Problem{a, b}, now)
+	if len(problems) != 2 || !problems[0].ReportedAt.Equal(a.ReportedAt) {
+		t.Fatalf("distinct reports lost: %+v", problems)
+	}
+	if err := ValidateReportedProblems(problems); err != nil {
+		t.Fatal(err)
+	}
+	read := MergeProblems(problems, problems, now.Add(time.Hour))
+	if !read[0].ReportedAt.Equal(a.ReportedAt) {
+		t.Fatal("read refreshed report time")
+	}
+}

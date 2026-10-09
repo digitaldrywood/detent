@@ -2,6 +2,7 @@ import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
 import type { FleetRunner } from "../../contracts/account.ts";
+import { RunnerProblems } from "./RunnerProblems.tsx";
 import { cn } from "../../lib/utils.ts";
 import type { RunnerProject } from "./RunnerDetailSheet.tsx";
 
@@ -55,13 +56,6 @@ export function HostCard({
         <span aria-hidden="true" className={cn("mt-1.5 size-2 shrink-0 rounded-full", runnerStatusClasses(runner))} />
         <div className="min-w-0 space-y-1">
           <h3 className="break-words text-sm font-medium">{runner.display_name}</h3>
-          {runner.problems?.map((problem, index) => (
-            <div key={`${problem.code}-${problem.project_id ?? index}`} role="alert" className="space-y-1 break-words text-xs text-warning-foreground">
-              <p className="font-medium">Needs human: {problem.code.replaceAll("_", " ")}</p>
-              <p className="break-all">{problem.message}</p>
-              <p>{problem.fix_hint}</p>
-            </div>
-          ))}
           {updateNeedsHuman ? <p className="text-xs text-warning-foreground">Needs human: reinstall the signed release with <code className="break-all">curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh</code>.</p> : legacyReinstall ? <p className="text-xs text-warning-foreground">One-time manual reinstall required to enable heartbeat updates: <code className="break-all">curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh</code>.</p> : null}
           {updateStatus ? <p className="text-xs text-muted-foreground">{updateStatus} · {runner.update?.desired?.version}</p> : null}
         </div>
@@ -80,6 +74,7 @@ export function HostCard({
         <Button size="xs" variant="outline" aria-label={`Manage ${runner.display_name}`} onClick={onOpen}>Manage</Button>
         {onRemove ? <Button size="xs" variant="outline" aria-label={`Remove runner ${runner.display_name}`} onClick={onRemove}>Remove runner</Button> : null}
       </div>
+      {runner.problems?.length ? <div className="col-span-full min-w-0"><RunnerProblems runner={runner} alert needsHuman /></div> : null}
     </article>
   );
 }

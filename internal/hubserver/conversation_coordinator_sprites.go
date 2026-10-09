@@ -275,6 +275,8 @@ func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeS
 				item["problems"] = r.Problems
 				item["backend_isolation"] = r.BackendIsolation
 				item["connection_health"] = r.ConnectionHealth
+				item["problems"] = r.Problems
+				item["last_heartbeat_at"] = r.LastHeartbeatAt
 				item["health"] = r.Health
 				item["reported_capacity"] = r.ReportedCapacity
 				item["connected"] = r.State == "active" && r.ConnectionHealth == "online"

@@ -2,6 +2,7 @@
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { RunnerProblems } from "../../src/app/fleet/RunnerProblems.tsx";
 import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
 import { spriteBootstrapPin } from "../../src/app/fleet/EnrollRunner.tsx";
 import type { FleetResponse, RunnerRouting } from "../../src/contracts/account.ts";
@@ -451,7 +452,7 @@ describe("runner details", () => {
     fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
     const sheet = screen.getByRole("dialog");
     expect(within(sheet).getAllByRole("alert")).toHaveLength(2);
-    expect(sheet.textContent).toContain("Seen since");
+    expect(sheet.textContent).toContain("Last report");
     fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
     expect(save).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -463,5 +464,21 @@ describe("runner details", () => {
     const row = screen.getByTestId("host-card");
     expect(within(row).getByText("Outside hours")).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("runner problem reports", () => {
+  it.each(["online", "offline"])("labels %s reports with their observation time", (connection_health) => {
+    const reported_at = "2026-09-10T12:00:00Z";
+    const last_heartbeat_at = "2026-09-10T12:01:00Z";
+    const view = render(<RunnerProblems now={NOW} runner={{ ...RUNNER, health: "needs_attention", connection_health, last_heartbeat_at, problems: [{ code: "backend_missing", message: "not signed in", fix_hint: "Sign in", first_seen: reported_at, reported_at, subject: "codex", check: "codex login status", error_output: "Not logged in", fix_command: "codex login --device-auth" }] }} />);
+    expect(screen.getByText("codex: not signed in")).toBeTruthy();
+    expect(screen.getByText("Not logged in")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy codex login --device-auth" })).toBeTruthy();
+    expect(view.container.querySelector(`time[datetime="${reported_at}"]`)).toBeTruthy();
+    expect(view.container.textContent?.includes("Offline since")).toBe(connection_health === "offline");
+    if (connection_health === "offline") expect(view.container.querySelector('time[datetime="2026-09-10T12:03:00.000Z"]')).toBeTruthy();
+    view.rerender(<RunnerProblems runner={{ ...RUNNER, problems: [] }} />);
+    expect(view.container.textContent).toBe("");
   });
 });

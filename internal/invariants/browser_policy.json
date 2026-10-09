@@ -181,7 +181,6 @@
     "tests/visual/providers-runners.spec.js",
     "tests/visual/reports-cost-outcomes.spec.js",
     "tests/visual/reports-digest.spec.js",
-    "tests/visual/runner-problems.spec.js",
     "tests/visual/sheet-model-effort.spec.js",
     "tests/visual/sidebar-findings.spec.js",
     "tests/visual/slack-settings.spec.js",

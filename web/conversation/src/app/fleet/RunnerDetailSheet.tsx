@@ -8,7 +8,8 @@ import { cn } from "../../lib/utils.ts";
 import { PathValue } from "../account/controls.tsx";
 import { RUNNER_UPGRADE_COMMAND } from "../lib/detentUpdates.ts";
 import { AccountError } from "../account/api.ts";
-import { formatLocalTime, formatRelativeTime } from "./format.ts";
+import { RunnerProblems } from "./RunnerProblems.tsx";
+import { formatRelativeTime } from "./format.ts";
 import { parseRunnerWindow, serializeRunnerWindow, type RunnerHours } from "./runnerSchedule.ts";
 import { runnerAccessOptions } from "./runnerAccess.ts";
 
@@ -122,15 +123,10 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
               <p>{runner.claim_refusal_reason}</p><PathValue value={RUNNER_UPGRADE_COMMAND} />
             </div> : null}
             {runner.sprite?.wake_failed || (runner.sprite && !runner.sprite.can_wake) ? <p role="alert" className="text-warning-foreground">{runner.sprite.wake_failed ? "The Hub could not wake this Sprite. Check the Sprite and its project’s Sprites token." : "No Sprites token is set for an accessible project; the Hub cannot wake this Sprite."}</p> : null}
-            {runner.problems?.map((problem, index) => (
-              <div key={`${problem.code}-${index}`} role="alert" className="space-y-2 rounded-lg border border-warning/30 bg-warning/8 p-3">
-                <p className="font-medium">{problem.message}</p><p>{problem.fix_hint}</p>
-                {problem.code === "tier_unavailable" && canEdit ? runnerAccessOptions.filter(({ tier }) => tier !== savedRouting.isolation_tier && Object.keys(runner.backend_isolation ?? {}).length > 0 && Object.values(runner.backend_isolation ?? {}).every((tiers) => tiers.includes(tier))).map(({ tier, label }) => (
-                  <Button key={tier} type="button" variant="outline" size="sm" disabled={saving} onClick={() => void submit(tier)}>Switch to {label}</Button>
-                )) : null}
-                <p className="text-xs text-muted-foreground">Seen since <time dateTime={problem.first_seen}>{formatLocalTime(problem.first_seen)}</time></p>
-              </div>
-            ))}
+            <RunnerProblems runner={runner} now={now} alert />
+            {runner.problems?.some((problem) => problem.code === "tier_unavailable") && canEdit ? runnerAccessOptions.filter(({ tier }) => tier !== savedRouting.isolation_tier && Object.keys(runner.backend_isolation ?? {}).length > 0 && Object.values(runner.backend_isolation ?? {}).every((tiers) => tiers.includes(tier))).map(({ tier, label }) => (
+              <Button key={tier} type="button" variant="outline" size="sm" disabled={saving} onClick={() => void submit(tier)}>Switch to {label}</Button>
+            )) : null}
             <fieldset disabled={saving} className="min-w-0 space-y-7">
               <Section title="Taking work">
                 {canEdit ? (
