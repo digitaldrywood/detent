@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -19,6 +20,10 @@ import (
 // working against a hub that predates the report does.
 type UsageExecution interface {
 	RecordUsage(context.Context, tracker.NativeUsage) error
+}
+
+type ProcessUsageExecution interface {
+	RecordProcessUsage(procgroup.Usage)
 }
 
 // usagePricer prices a turn. It matches (*Runner).usageCostUSD so the hub

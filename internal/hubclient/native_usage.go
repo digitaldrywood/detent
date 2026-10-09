@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -27,6 +28,18 @@ func (e *nativeExecution) RecordUsage(_ context.Context, entry tracker.NativeUsa
 	}
 	e.data.Usage = mergeNativeUsage(e.data.Usage, entry)
 	return nil
+}
+
+func (e *nativeExecution) RecordProcessUsage(usage procgroup.Usage) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if previous := e.data.ProcessUsage; previous != nil {
+		usage.PeakMemoryBytes = max(usage.PeakMemoryBytes, previous.PeakMemoryBytes)
+		usage.UserCPUSeconds += previous.UserCPUSeconds
+		usage.SystemCPUSeconds += previous.SystemCPUSeconds
+		usage.WallSeconds += previous.WallSeconds
+	}
+	e.data.ProcessUsage = &usage
 }
 
 // mergeNativeUsage returns the total with entry added to the row for its

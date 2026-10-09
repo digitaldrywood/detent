@@ -161,7 +161,9 @@ func TestLocalTransportRoundTrip(t *testing.T) {
 		t.Fatalf("NewLocalTransportFactory() error = %v", err)
 	}
 
-	transport, err := factory.NewTransport(context.Background())
+	usage := make(chan procgroup.Usage, 2)
+	ctx := procgroup.WithUsageHandler(context.Background(), func(entry procgroup.Usage) { usage <- entry })
+	transport, err := factory.NewTransport(ctx)
 	if err != nil {
 		t.Fatalf("NewTransport() error = %v", err)
 	}
@@ -170,6 +172,18 @@ func TestLocalTransportRoundTrip(t *testing.T) {
 		defer cancel()
 		if err := transport.Close(closeCtx); err != nil && !errors.Is(err, io.EOF) {
 			t.Fatalf("Close() error = %v", err)
+		}
+		if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+			if len(usage) != 1 {
+				t.Fatalf("resource captures = %d, want one", len(usage))
+			}
+			entry := <-usage
+			if entry.PeakMemoryBytes <= 0 || entry.WallSeconds <= 0 || entry.UserCPUSeconds+entry.SystemCPUSeconds <= 0 {
+				t.Fatalf("process resource usage = %+v", entry)
+			}
+			t.Logf("reaped Codex fixture resource usage: %+v", entry)
+		} else if len(usage) != 0 {
+			t.Fatalf("unsupported platform reported process usage")
 		}
 	})
 

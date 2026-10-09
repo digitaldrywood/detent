@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -33,8 +34,10 @@ func TestAgentBackendRunTurnSuccess(t *testing.T) {
 		CommandFactory: fixtureCommand(t, "success.jsonl", "", 0),
 	})
 
+	usage := make(chan procgroup.Usage, 2)
+	ctx := procgroup.WithUsageHandler(context.Background(), func(entry procgroup.Usage) { usage <- entry })
 	var updates []runner.AgentUpdate
-	result, err := backend.RunTurn(context.Background(), runner.AgentTurnRequest{
+	result, err := backend.RunTurn(ctx, runner.AgentTurnRequest{
 		Workspace: t.TempDir(),
 		Prompt:    "ship it",
 		Model:     "fable",
@@ -48,6 +51,18 @@ func TestAgentBackendRunTurnSuccess(t *testing.T) {
 
 	if result.ReportedCostMicros == nil || *result.ReportedCostMicros != 1000 || result.CostSource != "backend_result" {
 		t.Fatalf("reported result cost = %+v", result)
+	}
+	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+		if len(usage) != 1 {
+			t.Fatalf("resource captures = %d, want one", len(usage))
+		}
+		entry := <-usage
+		if entry.PeakMemoryBytes <= 0 || entry.WallSeconds <= 0 || entry.UserCPUSeconds+entry.SystemCPUSeconds <= 0 {
+			t.Fatalf("process resource usage = %+v", entry)
+		}
+		t.Logf("reaped Claude fixture resource usage: %+v", entry)
+	} else if len(usage) != 0 {
+		t.Fatalf("unsupported platform reported process usage")
 	}
 	wantTypes := []runner.AgentUpdateType{
 		runner.AgentUpdateProcessStarted,

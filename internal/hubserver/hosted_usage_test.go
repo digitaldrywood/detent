@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -273,6 +274,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 	finish := checkpoint
 	finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 3, "succeeded"
 	finish.Data.Handoff = nil
+	finish.Data.ProcessUsage = &procgroup.Usage{PeakMemoryBytes: 2097152, UserCPUSeconds: 1.25, SystemCPUSeconds: 0.25, WallSeconds: 3}
 	finish.Data.Usage = []tracker.NativeUsage{
 		{Provider: "codex", Model: "gpt-6-astra", Input: 3000, CachedInput: 1200, Output: 300, CostEstimate: 0.75, Currency: "USD"},
 		// A model the runner could not price is priced by the hub table:
@@ -280,6 +282,16 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 		{Provider: "claude_code", Model: "claude-opus-5", Input: 200, Output: 50},
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, finish), http.StatusOK)
+	var receipt tracker.NativeRuntimeEvidence
+	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/runtime", worker, nil), &receipt)
+	if receipt.Attempt == nil || receipt.Attempt.ProcessUsage == nil || *receipt.Attempt.ProcessUsage != *finish.Data.ProcessUsage {
+		t.Fatalf("attempt resource receipt = %+v, want %+v", receipt.Attempt, finish.Data.ProcessUsage)
+	}
+	var attempts tracker.Page[tracker.NativeAttempt]
+	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts", worker, nil), &attempts)
+	if len(attempts.Items) != 1 || attempts.Items[0].ProcessUsage == nil || *attempts.Items[0].ProcessUsage != *finish.Data.ProcessUsage {
+		t.Fatalf("attempt usage read = %+v", attempts.Items)
+	}
 	stored = read()
 	if len(stored) != 2 {
 		t.Fatalf("stored usage = %+v, want two rows", stored)
