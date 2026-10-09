@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -16,10 +17,15 @@ func TestRunnerHeartbeatChanges(t *testing.T) {
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.enroll(t)
 	approved := hubTestPolicy()
+	states := nativeFixtureStates()
+	states[0].Transitions = append(states[0].Transitions, "Blocked")
+	approved.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(states, tracker.NativeState{Name: "Blocked", Transitions: []string{"Todo"}})}
+	approved = approved.WithID()
 	approveHubTestPolicy(t, f.service, f.base+"/policy", approved)
 	item := f.create(t, "original")
 	now := time.Now().UTC().Add(time.Second)
 	f.service.config.now = func() time.Time { return now }
+	f.service.database.now = f.service.config.now
 	cursor := ""
 	heartbeat := func() runnerauth.HeartbeatChanges {
 		t.Helper()
@@ -106,10 +112,11 @@ func TestRunnerHeartbeatChanges(t *testing.T) {
 	if before.CapabilitiesDigest == after.CapabilitiesDigest {
 		t.Fatal("Hub deploy did not change the capabilities digest")
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE project_policies SET policy_id=? WHERE scope=?", strings.Repeat("a", 64), string(f.project.OrganizationID)+"/"+string(f.project.ID)); err != nil {
-		t.Fatal(err)
-	}
-	approved.ID = strings.Repeat("a", 64)
+	next := approved
+	next.SourceRevision = strings.Repeat("b", 40)
+	next = next.WithID()
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: approved.ID, Policy: next}), http.StatusOK)
+	approved = next
 	if changes := heartbeat(); changes.PolicyID != approved.ID {
 		t.Fatalf("policy change was not delivered: %+v", changes)
 	}
