@@ -785,19 +785,28 @@ func TestCloudDestinationAuthority(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name, repo, endpoint, project, token string
-		github                               bool
+		github, native                       bool
 	}{
-		{"other repository keeps GitHub", "owner/other", "", "", "", true},
-		{"missing connection", "digitaldrywood/detent", "", scheduledCloudProject, "", false},
-		{"missing key", "digitaldrywood/detent", "https://cloud.detent.build/api/v2/organizations/org/mcp", scheduledCloudProject, "", false},
-		{"wrong project", "digitaldrywood/detent", "https://cloud.detent.build/api/v2/organizations/org/mcp", "prj_other", "private-key", false},
-		{"insecure connection", "digitaldrywood/detent", "http://cloud.detent.build/api/v2/organizations/org/mcp", scheduledCloudProject, "private-key", false},
+		{"other repository keeps GitHub", "owner/other", "", "", "", true, false},
+		{"missing connection", "digitaldrywood/detent", "", scheduledCloudProject, "", false, false},
+		{"missing key", "digitaldrywood/detent", "https://cloud.detent.build/api/v2/organizations/org/mcp", scheduledCloudProject, "", false, false},
+		{"wrong project", "digitaldrywood/detent", "https://cloud.detent.build/api/v2/organizations/org/mcp", "prj_other", "private-key", false, false},
+		{"insecure connection", "digitaldrywood/detent", "http://cloud.detent.build/api/v2/organizations/org/mcp", scheduledCloudProject, "private-key", false, false},
+		{"unscoped connection", "digitaldrywood/detent", "https://cloud.detent.build/mcp", scheduledCloudProject, "private-key", false, false},
+		{"copied connection needs no MCP handshake", "digitaldrywood/detent", "https://cloud.detent.build/organizations/org/mcp", scheduledCloudProject, "private-key", false, true},
+		{"versioned connection needs no MCP handshake", "digitaldrywood/detent", "https://cloud.detent.build/api/v2/organizations/org/mcp", scheduledCloudProject, "private-key", false, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			getenv := func(key string) string {
-				return map[string]string{"GITHUB_REPOSITORY": tt.repo, "DETENT_MCP_URL": tt.endpoint, "DETENT_PROJECT_ID": tt.project, "DETENT_API_KEY": tt.token}[key]
+				return map[string]string{"GITHUB_REPOSITORY": tt.repo, "DETENT_MCP_URL": tt.endpoint, "DETENT_PROJECT_ID": tt.project, "DETENT_API_KEY": tt.token, "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}[key]
 			}
 			destination, err := reportingDestination(t.Context(), getenv)
+			if tt.native {
+				if _, ok := destination.(*cloudDestination); !ok || err != nil {
+					t.Fatalf("native mode = %v %v", destination, err)
+				}
+				return
+			}
 			if tt.github {
 				github, ok := destination.(*githubDestination)
 				if err != nil || !ok {

@@ -105,10 +105,60 @@ func deploySmoke(ctx context.Context, environment string, getenv func(string) st
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	m := &cloudMCP{endpoint: endpoint, token: token, client: &http.Client{Timeout: 30 * time.Second}, diagnostic: true}
-	if err := m.initialize(ctx); err != nil {
+	if err := waitForDeploy(ctx, m, getenv("RELEASE_VERSION"), getenv("RELEASE_COMMIT"), output); err != nil {
 		return err
 	}
 	return (&mcpSmoke{mcp: m, output: output, fixtures: map[string]any{}, called: map[string]bool{}, prefix: environment + "-smoke-" + rand.Text(), knownGaps: smokeKnownGaps[environment]}).run(ctx)
+}
+
+func waitForDeploy(ctx context.Context, m *cloudMCP, version, commit string, output io.Writer) error {
+	if version == "" || commit == "" {
+		return errors.New("MCP deploy smoke requires expected release version and commit")
+	}
+	endpoint, err := url.Parse(m.endpoint)
+	if err != nil {
+		return errors.New("MCP deploy smoke has an invalid endpoint")
+	}
+	endpoint.Path, endpoint.RawPath = "/health", ""
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	for {
+		err := deployedIdentity(ctx, m.client, endpoint.String(), version, commit)
+		if err == nil {
+			m.session, m.version = "", ""
+			err = m.initialize(ctx)
+		}
+		if err == nil && ctx.Err() == nil {
+			fmt.Fprintln(output, "PASS deployed release identity and MCP readiness")
+			return nil
+		}
+		fmt.Fprintln(output, "WAIT deployed release identity and MCP readiness")
+		select {
+		case <-ctx.Done():
+			return errors.Join(errors.New("MCP deploy readiness deadline exceeded"), err, ctx.Err())
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func deployedIdentity(ctx context.Context, client *http.Client, endpoint, version, commit string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return errors.New("deploy identity request could not be constructed")
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return errors.New("deploy identity unavailable")
+	}
+	defer response.Body.Close()
+	var identity struct {
+		Version string `json:"version"`
+		Commit  string `json:"commit"`
+	}
+	if response.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&identity) != nil || strings.TrimPrefix(identity.Version, "v") != strings.TrimPrefix(version, "v") || identity.Commit != commit {
+		return errors.New("deployed release identity does not match")
+	}
+	return nil
 }
 
 type mcpSmoke struct {

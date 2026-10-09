@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -40,14 +39,18 @@ type cloudDestination struct {
 	scannedAll   bool
 }
 
-func reportingDestination(ctx context.Context, getenv func(string) string) (issueDestination, error) {
+func reportingDestination(_ context.Context, getenv func(string) string) (issueDestination, error) {
 	if getenv("GITHUB_REPOSITORY") != "digitaldrywood/detent" {
 		return &githubDestination{command: runGH, repository: getenv("GITHUB_REPOSITORY")}, nil
 	}
-	endpoint, err := url.Parse(getenv("DETENT_MCP_URL"))
-	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || !strings.HasSuffix(endpoint.Path, "/mcp") {
-		return nil, errors.New("scheduled Cloud reporting requires the reviewed organization MCP URL")
+	destination, err := cloudReportingDestination(getenv, &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }})
+	if err != nil {
+		return nil, err
 	}
+	return destination, nil
+}
+
+func cloudReportingDestination(getenv func(string) string, client *http.Client) (*cloudDestination, error) {
 	project, token := getenv("DETENT_PROJECT_ID"), getenv("DETENT_API_KEY")
 	if project != scheduledCloudProject || strings.TrimSpace(token) == "" {
 		return nil, errors.New("scheduled Cloud reporting requires its selected project and scoped API key")
@@ -55,8 +58,8 @@ func reportingDestination(ctx context.Context, getenv func(string) string) (issu
 	if getenv("GITHUB_RUN_ID") == "" || getenv("GITHUB_RUN_ATTEMPT") == "" {
 		return nil, errors.New("scheduled Cloud reporting requires run and attempt identity")
 	}
-	transport := &cloudMCP{endpoint: endpoint.String(), token: token, client: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
-	if err := transport.initialize(ctx); err != nil {
+	transport, err := newCloudREST(getenv("DETENT_MCP_URL"), project, token, client)
+	if err != nil {
 		return nil, err
 	}
 	return &cloudDestination{command: transport.call, project: project, evidence: os.Stdout}, nil
@@ -349,7 +352,7 @@ func boundCloudEvidence(args map[string]any) error {
 	}
 	prefix, evidence, found := strings.Cut(body, "\n\n```text\n")
 	if !ok || !found {
-		return errors.New("scheduled Cloud metadata exceeds the MCP argument byte limit")
+		return errors.New("scheduled Cloud metadata exceeds the reporting argument byte limit")
 	}
 	end := strings.LastIndex(evidence, "\n```\n\nDiagnose this problem")
 	if end < 0 {
@@ -378,7 +381,7 @@ func boundCloudEvidence(args map[string]any) error {
 		return err
 	}
 	if !fits {
-		return errors.New("scheduled Cloud metadata exceeds the MCP argument byte limit")
+		return errors.New("scheduled Cloud metadata exceeds the reporting argument byte limit")
 	}
 	low, high := 0, len(evidence)
 	for low < high {
