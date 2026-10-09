@@ -4440,9 +4440,9 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 		{
 			name:             "gate failure fails resolved attempt",
 			agentOutput:      "DETENT_MERGE_FALLBACK: resolved",
-			verificationErr:  errors.New("merge resolution gate failed: exit status 1"),
+			verificationErr:  errors.New("merge-fallback verification gate failed: exit status 1"),
 			wantOutput:       RunOutputMergeFallbackResolved,
-			wantError:        "merge resolution gate failed",
+			wantError:        "merge-fallback verification gate failed",
 			wantPrepareCalls: 2,
 		},
 		{

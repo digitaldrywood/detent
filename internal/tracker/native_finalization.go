@@ -7,7 +7,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 )
 
@@ -36,6 +38,60 @@ func (p NativePRPublication) Matches(change string, version ChangeVersion) bool 
 }
 
 var nativeFinalizationPrivateText = regexp.MustCompile(`(?i)(?:https?://|file://|[a-z]:[\\/]|~/|/|[a-z0-9_.-]+/)[^\s"'<>]+|[a-z0-9_]*(?:token|secret|password|api_key)[a-z0-9_]*\s*[=:]\s*[^\s,;]+`)
+var nativeGateSecretField = regexp.MustCompile(`(?i)((?:"|')?(?:authorization|token|secret|password|credential|api[_-]?key)(?:"|')?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)`)
+var nativeGateBearer = regexp.MustCompile(`(?i)\bBearer\s+[^\s,;]+`)
+var nativeGateToken = regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b`)
+var nativeGatePrivateCommand = regexp.MustCompile(`(?i)(token|secret|password|credential|api[_-]?key|https?://|file://|(?:^|\s)(?:[a-z]:[\\/]|/|~/))`)
+
+func PublicGateResult(result gate.CommandResult) gate.CommandResult {
+	if nativeGatePrivateCommand.MatchString(result.Command) {
+		result.Command = "[redacted]"
+	} else {
+		result.Command, _ = publicGateOutput(result.Command)
+	}
+	text, truncated := publicGateOutput(result.Output)
+	result.Output = text
+	result.OutputTruncated = result.OutputTruncated || truncated
+	if result.Evidence != nil {
+		evidence := *result.Evidence
+		evidence.Checks = make([]gate.CheckObservation, 0, len(result.Evidence.Checks))
+		for _, check := range result.Evidence.Checks {
+			check.Scope, _ = publicGateOutput(check.Scope)
+			check.Command, _ = publicGateOutput(check.Command)
+			if !(&gate.CommandEvidence{Checks: []gate.CheckObservation{check}}).Valid() {
+				continue
+			}
+			evidence.Checks = append(evidence.Checks, check)
+		}
+		result.Evidence = &evidence
+	}
+	return result
+}
+
+func publicGateOutput(value string) (string, bool) {
+	value = strings.ToValidUTF8(value, "�")
+	value = strings.Map(func(r rune) rune {
+		if r < ' ' && r != '\n' && r != '\r' && r != '\t' {
+			return ' '
+		}
+		return r
+	}, value)
+	value = nativeGateSecretField.ReplaceAllString(value, `${1}[redacted]`)
+	value = nativeGateBearer.ReplaceAllString(value, "Bearer [redacted]")
+	value = nativeGateToken.ReplaceAllString(value, "[redacted]")
+	value = nativeFinalizationPrivateText.ReplaceAllString(value, "[redacted]")
+	const marker = "[earlier output truncated]\n"
+	limit := NativeFinalizationTextLimit
+	if len(value) <= limit {
+		return value, false
+	}
+	suffixLimit := limit - len(marker)
+	start := len(value) - suffixLimit
+	for start < len(value) && !utf8.RuneStart(value[start]) {
+		start++
+	}
+	return marker + value[start:], true
+}
 
 func (f NativeFinalization) Public() NativeFinalization {
 	f.Source = "host_native_change"

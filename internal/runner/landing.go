@@ -159,7 +159,19 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 			}
 			var validation *workspace.ValidationError
 			if errors.As(err, &validation) {
-				return RunResult{FinalState: FinalStateCompleted, Output: RunOutputNativeLandingRefused, NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, GateFailed: true, Refusal: validation.Error()}}, nil
+				receipt := validation.Result
+				if receipt.Stage == "" {
+					receipt.Stage = validation.Stage
+				}
+				if receipt.Output == "" {
+					receipt.Output = validation.Output
+				}
+				receipt = tracker.PublicGateResult(receipt)
+				refusal := validation.Error()
+				if output := strings.TrimSpace(receipt.Output); output != "" {
+					refusal += "\n" + output
+				}
+				return RunResult{FinalState: FinalStateCompleted, Output: RunOutputNativeLandingRefused, NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, GateFailed: true, Gate: &receipt, Refusal: refusal}}, nil
 			}
 			var refusal *workspace.LandRefusal
 			if errors.As(err, &refusal) {
@@ -216,7 +228,9 @@ func validateLandingHead(ctx context.Context, backend workspace.Backend, info wo
 		return options.Validation, err
 	}
 	if receipt.ExitCode != 0 {
-		return &receipt, &workspace.ValidationError{Output: receipt.Output, Err: fmt.Errorf("exit status %d", receipt.ExitCode)}
+		receipt.Stage = gate.StageLanding
+		receipt = tracker.PublicGateResult(receipt)
+		return &receipt, &workspace.ValidationError{Stage: workspace.ValidationStageLanding, Result: receipt, Output: receipt.Output, Err: fmt.Errorf("exit status %d", receipt.ExitCode)}
 	}
 	return &receipt, nil
 }

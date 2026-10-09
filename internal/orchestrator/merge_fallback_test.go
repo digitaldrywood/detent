@@ -20,7 +20,7 @@ func TestMergeFallbackPublicationFailureRecordsFailedAttempt(t *testing.T) {
 		name string
 		err  error
 	}{
-		{name: "gate failure", err: errors.New("verify merge fallback: merge resolution gate failed: exit status 1")},
+		{name: "gate failure", err: errors.New("verify merge fallback: merge-fallback verification gate failed: exit status 1")},
 		{name: "push failure", err: errors.New("verify merge fallback: push validated merge resolution: rejected")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

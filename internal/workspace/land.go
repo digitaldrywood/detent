@@ -823,7 +823,7 @@ func (l *LocalGit) validateLanding(ctx context.Context, info Info, issue Issue, 
 		return result, err
 	}
 	if result.ExitCode != 0 {
-		return result, &ValidationError{Output: result.Output, Err: fmt.Errorf("exit status %d", result.ExitCode)}
+		return result, newValidationError(ValidationStageLanding, result, fmt.Errorf("exit status %d", result.ExitCode))
 	}
 	return result, nil
 }

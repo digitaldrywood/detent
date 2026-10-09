@@ -447,7 +447,12 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 						if runErr != nil {
 							err = runErr
 						} else if receipt.ExitCode != 0 {
-							err = &workspace.ValidationError{Output: receipt.Output, Err: fmt.Errorf("exit status %d", receipt.ExitCode)}
+							receipt.Stage = gate.StageSourceFinalization
+							receipt = tracker.PublicGateResult(receipt)
+							err = &workspace.ValidationError{Stage: workspace.ValidationStageSourceFinalization, Result: receipt, Output: receipt.Output, Err: fmt.Errorf("exit status %d", receipt.ExitCode)}
+							if recordErr := recorder.RecordSourceValidation(ctx, receipt); recordErr != nil {
+								err = errors.Join(err, recordErr)
+							}
 						} else {
 							err = recorder.RecordSourceValidation(ctx, receipt)
 						}
