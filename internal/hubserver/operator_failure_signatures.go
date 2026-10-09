@@ -112,17 +112,17 @@ func failureFromAttempt(a tracker.NativeRunData, status string) (string, string)
 			return "landing refused: " + a.Runtime.Landing.RefusalKind, "merge"
 		}
 	}
-	if status != "failed" && status != "interrupted" {
-		return "", ""
-	}
 	if f := a.TerminalFailure; f != nil && f.Error != "" {
 		return f.Error, nativeFailureClass(*f)
 	}
-	if r := a.Runtime; r != nil && r.Validation != nil && r.Validation.ExitCode != 0 && r.Validation.Stage == gate.StageSourceFinalization {
-		return fmt.Sprintf("source finalization gate failed: exit status %d", r.Validation.ExitCode), "attempt"
-	}
 	if r := a.Runtime; r != nil && r.Landing != nil && r.Landing.GateFailed && r.Landing.Gate != nil {
 		return fmt.Sprintf("landing gate failed: exit status %d", r.Landing.Gate.ExitCode), "merge"
+	}
+	if status != "failed" && status != "interrupted" {
+		return "", ""
+	}
+	if r := a.Runtime; r != nil && r.Validation != nil && r.Validation.ExitCode != 0 && r.Validation.Stage == gate.StageSourceFinalization {
+		return fmt.Sprintf("source finalization gate failed: exit status %d", r.Validation.ExitCode), "attempt"
 	}
 	if f := a.Finalization; f != nil {
 		if f.VersionError != "" {
@@ -154,10 +154,10 @@ func nativeFailureClass(f tracker.NativeTerminalFailure) string {
 
 func readNativeFailures(ctx context.Context, q nativeQueryer, scope nativeScope, item string, w *operatortool.AnalyticsWindow) ([]nativeFailure, bool, error) {
 	query := `WITH failures AS (
-SELECT a.*, CASE WHEN json_extract(data_json,'$.runtime.landing.refusal_kind') IN ('conflict','base_protected') AND coalesce(json_extract(data_json,'$.runtime.landing.landed'),0)=0
+SELECT a.*, CASE WHEN (json_extract(data_json,'$.runtime.landing.refusal_kind') IN ('conflict','base_protected') AND coalesce(json_extract(data_json,'$.runtime.landing.landed'),0)=0) OR coalesce(json_extract(data_json,'$.runtime.landing.gate_failed'),0)=1
 THEN coalesce(nullif(json_extract(data_json,'$.runtime.landing.observed_at'),'0001-01-01T00:00:00Z'),updated_at) ELSE updated_at END AS failed_at
 FROM native_attempts a WHERE organization_id=? AND project_id=?
-AND (status IN ('failed','interrupted') OR json_extract(data_json,'$.runtime.landing.refusal_kind') IN ('conflict','base_protected')))
+AND (status IN ('failed','interrupted') OR json_extract(data_json,'$.runtime.landing.refusal_kind') IN ('conflict','base_protected') OR coalesce(json_extract(data_json,'$.runtime.landing.gate_failed'),0)=1))
 SELECT a.id,a.work_item_id,a.status,a.started_at,a.updated_at,a.failed_at,
 json_object('terminal_failure',json_extract(a.data_json,'$.terminal_failure'),'finalization',json_extract(a.data_json,'$.finalization'),'runtime',json_object('landing',json_extract(a.data_json,'$.runtime.landing'),'validation',json_extract(a.data_json,'$.runtime.validation'))),
 (SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id),
