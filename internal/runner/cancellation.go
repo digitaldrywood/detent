@@ -81,6 +81,17 @@ func preserveCancellation(ctx context.Context, err error, source string) error {
 	return err
 }
 
+func executionCancellation(req RunRequest) error {
+	if req.executionCancellation == nil {
+		return nil
+	}
+	cause := req.executionCancellation()
+	if errors.Is(cause, ErrOperatorStopped) {
+		return cause
+	}
+	return nil
+}
+
 func cancellationAttrs(err error) []any {
 	var cause *CancellationCause
 	if !errors.As(err, &cause) {

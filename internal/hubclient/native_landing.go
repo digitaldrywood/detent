@@ -13,6 +13,9 @@ import (
 // branch: the item's Change Request, its current version, and the merge
 // method of the policy that version was published under.
 func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandingTarget, error) {
+	if err := nativeEffectError(ctx); err != nil {
+		return runner.NativeLandingTarget{}, err
+	}
 	if e.claim.source == nil || e.claim.source.client == nil {
 		return runner.NativeLandingTarget{}, runner.ErrExecutionAuthorityUnavailable
 	}

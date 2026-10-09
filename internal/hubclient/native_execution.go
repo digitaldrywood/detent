@@ -79,8 +79,24 @@ type nativeExecution struct {
 type nativeMutationAuthorityKey struct{}
 
 type nativeMutationAuthority struct {
-	scope string
-	lease tracker.NativeLease
+	scope        string
+	lease        tracker.NativeLease
+	cancellation func() error
+}
+
+func nativeEffectError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return errors.Join(err, context.Cause(ctx))
+	}
+	authority, ok := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
+	if !ok || authority.cancellation == nil {
+		return nil
+	}
+	cause := authority.cancellation()
+	if errors.Is(cause, runner.ErrOperatorStopped) {
+		return cause
+	}
+	return nil
 }
 
 func executionID(prefix, value string) string {
@@ -160,7 +176,7 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	if err := e.Validate(ctx); err != nil {
 		return ctx, func() {}, err
 	}
-	bound := context.WithValue(ctx, nativeMutationAuthorityKey{}, nativeMutationAuthority{scope: e.claim.source.client.base(), lease: e.claim.lease})
+	bound := context.WithValue(ctx, nativeMutationAuthorityKey{}, nativeMutationAuthority{scope: e.claim.source.client.base(), lease: e.claim.lease, cancellation: func() error { return context.Cause(ctx) }})
 	guarded, cancel := context.WithCancelCause(bound)
 	e.mu.Lock()
 	e.cancel = cancel
@@ -406,7 +422,8 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 	}
 	if err := e.prepareFinish(ctx, outcome); err != nil {
 		err = e.executionError(err)
-		if outcome == "succeeded" && e.ownsChangeCompletion() && nativeTransportUnavailable(err) {
+		err = errors.Join(err, nativeEffectError(ctx))
+		if outcome == "succeeded" && e.ownsChangeCompletion() && nativeTransportUnavailable(err) && nativeEffectError(ctx) == nil {
 			if e.change == nil {
 				e.change = &runner.NativeChange{}
 			}
@@ -414,6 +431,9 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 			return nil
 		}
 		e.preparedOutcome = "failed"
+		if errors.Is(err, runner.ErrOperatorStopped) {
+			e.preparedOutcome = "interrupted"
+		}
 		return err
 	}
 	return nil
@@ -436,6 +456,9 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 	// again is safe, because it reuses the item's change.
 	finish := e.data.Sequence + 1
 	if outcome == "succeeded" {
+		if err := nativeEffectError(ctx); err != nil {
+			return err
+		}
 		if e.storedSeq != finish {
 			if err := e.postDiff(ctx, finish); err != nil && e.ownsChangeCompletion() {
 				err = e.executionError(err)
@@ -453,6 +476,9 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 		}
 		if err := e.settle(ctx, outcome, finish); err != nil {
 			err = e.executionError(err)
+			if nativeEffectError(ctx) != nil {
+				return err
+			}
 			if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 				return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 			}
@@ -468,6 +494,7 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 				e.settled = true
 			}
 		}
+		return nativeEffectError(ctx)
 	}
 	return nil
 }
