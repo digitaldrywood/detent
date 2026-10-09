@@ -188,6 +188,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 }
 
 func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps startRunningDependencies) error {
+	startedAt := time.Now().UTC()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -654,6 +655,18 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			}
 			publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, stalenessAcknowledgements, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, providerStatus, defaultSnapshotInterval, deps.snapshotNow, runnerHeartbeat, updateScheduler)
 		})
+		if observer, ok := hubScheduling.(interface {
+			RunHostMetrics(context.Context, string, time.Time)
+		}); ok {
+			root := ""
+			for _, runtimeProject := range manager.Registry().List() {
+				root = runtimeProject.Workflow().Config.Workspace.Root
+				if root != "" {
+					break
+				}
+			}
+			resourceWorkers.Go(func() { observer.RunHostMetrics(runCtx, root, startedAt) })
+		}
 		resourceWorkers.Go(func() { updateScheduler.Run(ctx) })
 		globalWatcherDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, runtimeGitHubToken, applyRuntimeConfig, onGlobalReload, runtimeStore)
 		credentialWatcherDone := startBackendCredentialWatchers(ctx, manager.Registry(), events, logger)

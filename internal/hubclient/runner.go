@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -32,6 +33,8 @@ type runnerCredentialSource struct {
 	routing          *runnerauth.RoutingSnapshot
 	routingChanged   chan struct{}
 	localPolicies    map[tracker.ProjectID]string
+	heartbeat        nativeMachineHeartbeat
+	heartbeatPath    string
 	mu               sync.Mutex
 	path             string
 }
@@ -341,36 +344,13 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 			changeCursor = &cursor
 		}
 	}
-	capabilities, isolation := machine.workspaceReport()
 	problems := machine.Problems
 	var rejected bool
 	if c.client.runner != nil {
 		problems, rejected = c.client.runner.heartbeatProblems(ctx, machine)
 	}
-	request := struct {
-		Admission            *tracker.NativeAdmissionObservation `json:"admission,omitempty"`
-		SpriteName           string                              `json:"sprite_name,omitempty"`
-		Update               *runnerauth.UpdateObservation       `json:"update,omitempty"`
-		CapacityConfig       *runnerauth.CapacityConfig          `json:"capacity_configuration,omitempty"`
-		ProjectConfiguration *runnerauth.ProjectConfiguration    `json:"project_configuration,omitempty"`
-		LocalChecks          *runnerauth.LocalChecks             `json:"local_checks,omitempty"`
-		Problems             []runnerauth.Problem                `json:"problems"`
-		ProtocolMajor        int                                 `json:"protocol_major,omitempty"`
-		SettingsRejected     bool                                `json:"settings_rejected,omitempty"`
-		BackendIsolation     isolationpolicy.Report              `json:"backend_isolation"`
-		ProviderReports      []providercapacity.Report           `json:"provider_reports,omitempty"`
-		DisplayName          string                              `json:"display_name"`
-		Capacity             int                                 `json:"capacity"`
-		Version              string                              `json:"version"`
-		OS                   string                              `json:"os"`
-		Architecture         string                              `json:"architecture"`
-		// The workspace claim gate matches these against a workspace's
-		// requires set and checks the heartbeat that carried them is fresh.
-		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
-		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
-		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
-		ChangeCursor          *string                        `json:"change_cursor,omitempty"`
-	}{machine.Admission, runnerSpriteName(machine.Hostname), machine.Update, machine.CapacityConfig, machine.ProjectConfiguration, machine.LocalChecks, problems, 2, rejected, machine.BackendIsolation, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.CheckoutRepository, changeCursor}
+	request := machineHeartbeatPayload(machine, problems, rejected)
+	request.ChangeCursor = changeCursor
 	if c.client.runner == nil {
 		return c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, nil)
 	}
@@ -381,6 +361,10 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 		c.client.capabilitiesMu.Unlock()
 		return err
 	}
+	c.client.runner.routingMu.Lock()
+	c.client.runner.heartbeat = request
+	c.client.runner.heartbeatPath = c.base() + "/machines/" + url.PathEscape(string(machine.ID)) + "/heartbeat"
+	c.client.runner.routingMu.Unlock()
 	snapshot.Routing = snapshot.Routing.Normalized()
 	identity, err := runnerauth.Load(c.client.runner.path)
 	if err != nil {
@@ -578,4 +562,35 @@ func (c *Client) RunnerIdentity(ctx context.Context) (runnerauth.Identity, error
 		return identity, err
 	}
 	return identity, validateRunnerResponse(file, identity)
+}
+
+type nativeMachineHeartbeat struct {
+	HostMetrics          []hostmetrics.Summary               `json:"host_metrics,omitempty"`
+	Admission            *tracker.NativeAdmissionObservation `json:"admission,omitempty"`
+	SpriteName           string                              `json:"sprite_name,omitempty"`
+	Update               *runnerauth.UpdateObservation       `json:"update,omitempty"`
+	CapacityConfig       *runnerauth.CapacityConfig          `json:"capacity_configuration,omitempty"`
+	ProjectConfiguration *runnerauth.ProjectConfiguration    `json:"project_configuration,omitempty"`
+	LocalChecks          *runnerauth.LocalChecks             `json:"local_checks,omitempty"`
+	Problems             []runnerauth.Problem                `json:"problems"`
+	ProtocolMajor        int                                 `json:"protocol_major,omitempty"`
+	SettingsRejected     bool                                `json:"settings_rejected,omitempty"`
+	BackendIsolation     isolationpolicy.Report              `json:"backend_isolation"`
+	ProviderReports      []providercapacity.Report           `json:"provider_reports,omitempty"`
+	DisplayName          string                              `json:"display_name"`
+	Capacity             int                                 `json:"capacity"`
+	Version              string                              `json:"version"`
+	OS                   string                              `json:"os"`
+	Architecture         string                              `json:"architecture"`
+	// The workspace claim gate matches these against a workspace's
+	// requires set and checks the heartbeat that carried them is fresh.
+	WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
+	WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
+	CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
+	ChangeCursor          *string                        `json:"change_cursor,omitempty"`
+}
+
+func machineHeartbeatPayload(machine Machine, problems []runnerauth.Problem, rejected bool) nativeMachineHeartbeat {
+	capabilities, isolation := machine.workspaceReport()
+	return nativeMachineHeartbeat{machine.HostMetrics, machine.Admission, runnerSpriteName(machine.Hostname), machine.Update, machine.CapacityConfig, machine.ProjectConfiguration, machine.LocalChecks, problems, 2, rejected, machine.BackendIsolation, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.CheckoutRepository, nil}
 }
