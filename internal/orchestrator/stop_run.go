@@ -211,12 +211,12 @@ func (o *Orchestrator) handleStopRunRequest(ctx context.Context, state *State, e
 	delete(state.BudgetRefusals, request.IssueID)
 	state.Running[request.IssueID] = running
 	recordStateEvent(state, telemetry.ActivityEvent{At: event.at, Event: "operator_stop_requested", Message: "operator requested stop for " + issueLabel(running.Issue)})
-	event.reply <- stopRunReply{result: result}
 	if running.stop != nil {
 		running.stop(runpkg.NewCancellationCause(runpkg.ErrOperatorStopped, "operator.stop_run"))
 	} else if running.cancel != nil {
 		running.cancel()
 	}
+	event.reply <- stopRunReply{result: result}
 	pending := o.pendingStops[request.IssueID]
 	o.reapPendingOperatorStop(ctx, state, pending, running)
 }
@@ -306,20 +306,21 @@ func (o *Orchestrator) completeOperatorStopCompletion(ctx context.Context, state
 	delete(state.PriorAttempts, event.IssueID)
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
 	releaseProjectFailureBreakerCanary(state, event.IssueID)
-	if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
-		o.logger.Warn("operator stop claim release failed", "issue_id", event.IssueID, "error", err)
-	}
 	completedAt := event.CompletedAt.UTC()
 	if completedAt.IsZero() {
 		completedAt = o.clockNow().UTC()
 	}
 	o.deferBackendCapacityProbe(state, running, completedAt, runpkg.ErrOperatorStopped)
 	result.CompletedAt = completedAt
-	if err := o.finishOperatorStopTransition(ctx, state, running.Issue, &result); err != nil {
+	transitionErr := o.finishOperatorStopTransition(ctx, state, running.Issue, &result)
+	if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
+		o.logger.Warn("operator stop claim release failed", "issue_id", event.IssueID, "error", err)
+	}
+	if transitionErr != nil {
 		if o.logger != nil {
-			o.logger.Warn("operator stop tracker transition failed", "issue_id", event.IssueID, "destination", result.Destination, "error", err)
+			o.logger.Warn("operator stop tracker transition failed", "issue_id", event.IssueID, "destination", result.Destination, "error", transitionErr)
 		}
-		return result, err
+		return result, transitionErr
 	}
 	return result, nil
 }

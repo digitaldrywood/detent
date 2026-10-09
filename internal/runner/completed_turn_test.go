@@ -19,6 +19,7 @@ type completedExecutionWorkspace struct {
 	finalized       bool
 	validationDelay time.Duration
 	finalizationErr error
+	onValidation    func()
 }
 
 func (w *completedExecutionWorkspace) Head(context.Context, workspace.Info, workspace.Issue) (string, error) {
@@ -26,6 +27,9 @@ func (w *completedExecutionWorkspace) Head(context.Context, workspace.Info, work
 }
 
 func (w *completedExecutionWorkspace) RunReviewCommand(ctx context.Context, _ workspace.Info, issue workspace.Issue, _ string) (gate.CommandResult, error) {
+	if w.onValidation != nil {
+		w.onValidation()
+	}
 	time.Sleep(w.validationDelay)
 	return gate.CommandResult{HeadSHA: issue.PullRequestHeadSHA}, ctx.Err()
 }
@@ -143,6 +147,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 		message           string
 		blocked           bool
 		gateFailure       bool
+		operatorStop      bool
 	}{
 		{name: "active parent", message: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
 		{name: "blocked issue-state Rework avoids failing host gate", blocked: true, gateFailure: true, message: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: prj_6d4919bebd73446798e6cd807feda10e#750\n    owner: orchestrator\n    reason: prerequisite remains Backlog\n    predicate:\n      type: issue_state\n      ref: prj_6d4919bebd73446798e6cd807feda10e#750\n      states: [Done]\nhuman_action: null\n```"},
@@ -157,16 +162,22 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 		{name: "validation uses session budget without a turn limit", validationDelay: 2 * time.Minute, sessionBudget: true},
 		{name: "validation exceeds session budget without a turn limit", validationDelay: 6 * time.Minute, validationTimeout: true, sessionBudget: true},
 		{name: "rolling barrier leaves the gate to the barrier", validationDelay: 6 * time.Minute, rollingBarrier: true},
+		{name: "operator stop during successful long validation", operatorStop: true, validationDelay: 2 * time.Minute},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 				defer cancel()
+				ctx, stopOperator := context.WithCancelCause(ctx)
+				defer stopOperator(context.Canceled)
 				backend := &completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: "native"}, recoveryStates: []workspace.RecoveryState{{HeadSHA: "completed-head", WorkspaceFingerprint: "completed-digest"}}}}}
 				execution := &finalizingTestExecution{}
 				backend.validationDelay = test.validationDelay
 				if test.gateFailure {
 					backend.finalizationErr = &workspace.ValidationError{Err: errors.New("exit status 2"), Output: "bash [redacted] \"4\""}
+				}
+				if test.operatorStop {
+					backend.onValidation = func() { stopOperator(NewCancellationCause(ErrOperatorStopped, "operator.stop_run")) }
 				}
 				agent := &completedTurnBackend{fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: test.message}, {Type: AgentUpdateTurnCompleted, Status: "completed"}}}, afterTurn: func() {
 					if test.expired {
@@ -207,7 +218,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				if backend.finalized && (!execution.operationProviderCompleted || execution.operation != "workspace.finalize_native_work") {
 					t.Fatal("host finalization preceded provider completion observation")
 				}
-				failed := test.revoked || test.validationTimeout || test.gateFailure && !test.blocked
+				failed := test.revoked || test.validationTimeout || test.gateFailure && !test.blocked || test.operatorStop
 				if (completion.Err != nil) != failed || execution.published != (!failed && !test.blocked) || backend.retained != failed || agent.calls != 1 {
 					t.Fatalf("error=%v published=%t retained=%t turns=%d", completion.Err, execution.published, backend.retained, agent.calls)
 				}
@@ -225,6 +236,9 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				}
 				if test.rollingBarrier && execution.validation != nil {
 					t.Fatalf("rolling barrier finalization ran the barrier command: %+v", execution.validation)
+				}
+				if test.operatorStop && (!errors.Is(completion.Err, ErrOperatorStopped) || execution.validation == nil || execution.validation.ExitCode != 0 || execution.finish != "interrupted" || execution.checkpoint == nil || execution.checkpoint.HeadSHA != "completed-head") {
+					t.Fatalf("operator stop lost successful validation or checkpoint: error=%v validation=%+v finish=%s checkpoint=%+v", completion.Err, execution.validation, execution.finish, execution.checkpoint)
 				}
 				if test.validationDelay > 0 && !failed && !test.rollingBarrier && (execution.validation == nil || execution.validation.HeadSHA != "completed-head" || execution.validation.ExitCode != 0) {
 					t.Fatalf("successful finalized-head validation was not published: %+v", execution.validation)

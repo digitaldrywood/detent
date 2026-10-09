@@ -220,6 +220,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if recorder, ok := req.Execution.(ProcessUsageExecution); ok {
 		guarded = procgroup.WithUsageHandler(guarded, recorder.RecordProcessUsage)
 	}
+	req.executionCancellation = func() error { return context.Cause(guarded) }
 	if source, ok := req.Execution.(ToolExecution); ok {
 		tools, handler := source.AgentTools()
 		previous := req.AgentToolHandler
@@ -239,6 +240,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	result, runErr := r.run(guarded, req)
 	if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok && result.TurnStarted {
 		diagnostics.ProviderCompleted(r.now())
+	}
+	if cause := executionCancellation(req); cause != nil {
+		runErr = errors.Join(runErr, cause)
 	}
 	outcome := "succeeded"
 	if runErr != nil || result.FinalState != FinalStateCompleted {
@@ -288,6 +292,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	_, prepared := req.Execution.(CompletionExecution)
+	if cause := executionCancellation(req); cause != nil {
+		runErr = errors.Join(runErr, cause)
+		outcome = "interrupted"
+	}
 	if !req.DeferExecutionFinish || !prepared {
 		finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
 		defer finalCancel()
@@ -392,8 +400,8 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 		backend.AfterRun(afterCtx, info, issue)
 		return nil
 	}
-	var finalizationErr error
-	if req.finalizeNativeWork && ctx.Err() == nil && !req.retainCheckpoint {
+	finalizationErr := executionCancellation(req)
+	if req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
 		if finalizer, ok := backend.(workspace.NativeWorkFinalizer); ok {
 			if err := req.Execution.Validate(ctx); err != nil {
 				finalizationErr = err
@@ -450,6 +458,7 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 		}
 	}
 	var publicationErr error
+	finalizationErr = errors.Join(finalizationErr, executionCancellation(req))
 	deadlineExpired := availabilityStopped(req.Execution, context.Cause(ctx), time.Now())
 	if deadlineExpired {
 		if publisher, ok := backend.(workspace.WorkInProgressPublisher); ok {
@@ -477,7 +486,7 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 		defer cancel()
 	}
 	var artifactErr error
-	if publisher, ok := req.Execution.(ValidationEvidenceExecution); ok && ctx.Err() == nil && req.validationEvidenceSource != nil {
+	if publisher, ok := req.Execution.(ValidationEvidenceExecution); ok && finalizationErr == nil && ctx.Err() == nil && req.validationEvidenceSource != nil {
 		diff, available := req.validationEvidenceSource(artifactCtx)
 		if available {
 			evidence, err := validationScreenshots(info.Path, diff.Files)
@@ -493,7 +502,7 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 			artifactErr = err
 		}
 	}
-	completionErr := errors.Join(finalizationErr, publicationErr, artifactErr)
+	completionErr := errors.Join(finalizationErr, publicationErr, artifactErr, executionCancellation(req))
 
 	if completionErr != nil || checkpoint.WorktreeState != "clean" || ctx.Err() != nil {
 		preserveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
@@ -512,6 +521,7 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	if err := req.Execution.Checkpoint(checkpointCtx, checkpoint); err != nil {
 		return errors.Join(completionErr, err)
 	}
+	completionErr = errors.Join(completionErr, executionCancellation(req))
 	if completionErr != nil || checkpoint.WorktreeState != "clean" || req.retainCheckpoint || ctx.Err() != nil {
 		return errors.Join(completionErr, context.Cause(ctx))
 	}

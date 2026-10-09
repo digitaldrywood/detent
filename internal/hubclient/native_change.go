@@ -37,6 +37,9 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 	if e.settled || outcome != "succeeded" || !e.ownsChangeCompletion() {
 		return nil
 	}
+	if err := nativeEffectError(ctx); err != nil {
+		return err
+	}
 	if e.worktreeState != "clean" && e.worktreeState != "unpushed" {
 		return errors.New("the run's final worktree checkpoint is unavailable")
 	}
@@ -202,9 +205,6 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			return nil
 		}
 		authorize := func(ctx context.Context) error {
-			if err := ctx.Err(); err != nil {
-				return e.executionError(errors.Join(err, context.Cause(ctx)))
-			}
 			if checkpoint := e.data.Handoff; checkpoint != nil && (checkpoint.EffectState == "pending" || checkpoint.EffectState == "ambiguous") && checkpoint.ExternalEffect != "git_push" && checkpoint.ExternalEffect != "pr_create" {
 				return fmt.Errorf("%w: PR publication has an unresolved external effect; preserve source and reconcile its checkpoint before resuming", ErrUnavailable)
 			}
@@ -237,7 +237,16 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			}
 			return e.requireRecoveredSource(current, *e.lastDiff)
 		}
-		if err := authorize(ctx); err != nil {
+		authorizeStart := func(ctx context.Context) error {
+			if err := nativeEffectError(ctx); err != nil {
+				return e.executionError(err)
+			}
+			if err := authorize(ctx); err != nil {
+				return err
+			}
+			return nativeEffectError(ctx)
+		}
+		if err := authorizeStart(ctx); err != nil {
 			return err
 		}
 		if e.publication != nil && e.publication.Matches(change.ChangeID, version) {
@@ -248,7 +257,11 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 		}
 		confirmedPR := workspace.GitHubPublication{}
 		effect := func(ctx context.Context, kind, state string, publication workspace.GitHubPublication) error {
-			if err := authorize(ctx); err != nil {
+			check := authorize
+			if state == "pending" {
+				check = authorizeStart
+			}
+			if err := check(ctx); err != nil {
 				return err
 			}
 			if publication.Repository != version.Repository || publication.HeadSHA != version.HeadSHA || publication.BaseRef == "" || publication.Branch == "" {
@@ -284,9 +297,12 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			if kind == "pr_create" && state == "confirmed" {
 				confirmedPR = publication
 			}
+			if state == "pending" {
+				return nativeEffectError(ctx)
+			}
 			return nil
 		}
-		publication, err := e.publicationSource(ctx, version, workspace.LandOptions{Authorize: authorize, PublicationEffect: effect, External: version.External, SourceIssues: detail.SourceIssues})
+		publication, err := e.publicationSource(ctx, version, workspace.LandOptions{Authorize: authorizeStart, PublicationEffect: effect, External: version.External, SourceIssues: detail.SourceIssues})
 		if err != nil {
 			if e.data.Handoff != nil && e.data.Handoff.EffectState == "ambiguous" {
 				return fmt.Errorf("%w: required GitHub PR has an ambiguous publication response; retain source and reconcile the exact existing PR before another write: %w", ErrUnavailable, err)
@@ -346,6 +362,9 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 	if e.sourceRequired {
 		source, bundle = &e.retainedSource.Source, e.retainedSource.Bundle
 	}
+	if err := nativeEffectError(ctx); err != nil {
+		return "", false, err
+	}
 	version, err := client.PublishChangeVersion(ctx, item, changeID, tracker.PublishChangeVersion{
 		Mutation:          tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":version", LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
 		ExpectedVersionID: detail.Change.CurrentVersion,
@@ -404,6 +423,9 @@ func (e *nativeExecution) openChange(ctx context.Context, diff tracker.AttemptDi
 	}
 	if len(existing) > 0 {
 		return existing[len(existing)-1].ID, nil
+	}
+	if err := nativeEffectError(ctx); err != nil {
+		return "", err
 	}
 	created, err := client.CreateChange(ctx, item, tracker.CreateChange{
 		Mutation: tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":change", LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
