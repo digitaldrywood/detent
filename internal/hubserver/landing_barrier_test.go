@@ -172,13 +172,20 @@ func TestBarrierPrefersTheLargestOnlineRunner(t *testing.T) {
 	now := f.service.config.now()
 	for _, test := range []struct {
 		name    string
+		problem bool
 		offline bool
 		want    string
 	}{
 		{name: "largest online runner owns the barrier", want: large.binding.RunnerID},
+		{name: "a reported problem does not hand the barrier to a smaller runner", problem: true, want: large.binding.RunnerID},
 		{name: "next runner takes over when the largest is offline", offline: true, want: small.binding.RunnerID},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.problem {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET problems_json=? WHERE id=?", `[{"code":"settings_invalid","message":"transient","reported_at":"`+formatHubTime(now)+`"}]`, large.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.offline {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", formatHubTime(now.Add(-time.Hour)), large.binding.RunnerID); err != nil {
 					t.Fatal(err)
