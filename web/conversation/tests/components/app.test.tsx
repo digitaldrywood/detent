@@ -229,6 +229,7 @@ describe("the conversation shell", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "Mock organization" }));
     expect(assign).not.toHaveBeenCalled();
     expect(switches).toEqual([]);
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     fireEvent.click(trigger);
     fireEvent.click(await screen.findByRole("menuitem", { name: "Second mock organization" }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith(shared ? "/organizations/org_second" : "https://second.mock.test/auth/oidc/start"));
@@ -240,6 +241,7 @@ describe("the conversation shell", () => {
     const { router, streamRequests } = await mountApp();
     const composer = await screen.findByLabelText<HTMLElement>("Message", undefined, { timeout: 5_000 });
     await setComposerText(composer, "Keep this chat visible");
+    await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Send message" }).disabled).toBe(false));
     fireEvent.keyDown(composer, { key: "Enter" });
     await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/chat\/c\/conv_/), { timeout: 5_000 });
     await screen.findByTestId("assistant-turn", undefined, { timeout: 5_000 });
@@ -260,6 +262,7 @@ describe("the conversation shell", () => {
     expect(subscriptions()[1]!.searchParams.get("after")).toBe(cursor);
 
     await setComposerText(screen.getByLabelText<HTMLElement>("Message"), "Still connected");
+    await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Send message" }).disabled).toBe(false));
     fireEvent.keyDown(screen.getByLabelText("Message"), { key: "Enter" });
     await waitFor(() => expect(screen.getAllByTestId("user-turn").some((turn) => turn.textContent?.includes("Still connected"))).toBe(true), { timeout: 5_000 });
     await waitFor(() => expect(screen.queryByText(/The live connection dropped\. Reconnecting/)).toBeNull(), { timeout: 5_000 });
@@ -276,6 +279,7 @@ describe("the conversation shell", () => {
     });
 
     await setComposerText(composer, "Please create an issue for the lock renewal");
+    await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Send message" }).disabled).toBe(false));
     fireEvent.keyDown(composer, { key: "Enter" });
 
     // The conversation opened on its own route and the transcript is live.
