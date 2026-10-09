@@ -46,6 +46,33 @@ describe("Sprite bootstrap pin", () => {
 
 describe("runner rows", () => {
   it.each([
+    ["healthy idle", "healthy", "active", false, "", "bg-success", true],
+    ["healthy busy", "healthy", "active", true, "", "bg-success", true],
+    ["online idle", "online", "active", false, "", "bg-success", true],
+    ["online busy", "online", "active", true, "", "bg-success", true],
+    ["paused", "online", "paused", false, "", "bg-muted-foreground", false],
+    ["disabled", "online", "disabled", false, "", "bg-muted-foreground", false],
+    ["draining", "online", "draining", true, "", "bg-muted-foreground", false],
+    ["failed state", "online", "failed", false, "", "bg-error", false],
+    ["failed health", "failed", "active", false, "", "bg-error", false],
+    ["needs attention", "needs_attention", "active", false, "", "bg-warning", false],
+    ["paused with warning", "needs_attention", "disabled", false, "", "bg-muted-foreground", false],
+    ["claim refused", "online", "active", false, "Too old to take work", "bg-warning", false],
+    ["offline", "offline", "active", false, "", "bg-muted-foreground", false],
+    ["outside hours", "outside_hours", "active", false, "", "bg-muted-foreground", false],
+    ["asleep", "asleep", "active", false, "", "bg-muted-foreground", false],
+  ])("renders the status tone and motion-safe live pulse for %s", (_name, health, state, busy, claim_refusal_reason, tone, pulse) => {
+    const runner = { ...RUNNER, health, state, claim_refusal_reason, leases: busy ? RUNNER.leases : [] };
+    renderSection({ ...FLEET, runners: [runner] });
+    const dot = screen.getByTestId("host-card").querySelector('[aria-hidden="true"]')!;
+    expect([...dot.classList].filter((name) => name.startsWith("bg-"))).toEqual([tone]);
+    expect(dot.classList.contains("motion-safe:animate-status-pulse")).toBe(pulse);
+    expect([...dot.classList].filter((name) => name.startsWith("animate-"))).toEqual([]);
+    expect(screen.getByText(`${state} · Limit ${runner.capacity_limit}`)).toBeTruthy();
+    expect(screen.getByText(`${runner.leases.length} of ${runner.host_capacity} slots in use`)).toBeTruthy();
+  });
+
+  it.each([
     ["draining", "Waiting for active work"],
     ["refused", "Update failed"],
     ["restart_requested", "Restart requested"],
