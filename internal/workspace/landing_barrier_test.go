@@ -245,3 +245,53 @@ func TestFetchReviewHeadFallsBackToTheHeadBranch(t *testing.T) {
 		})
 	}
 }
+
+func TestLandingBarrierCulpritRevert(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+	t.Parallel()
+	ctx := t.Context()
+	f := newLandingFixture(t)
+	green := f.remoteMain(t)
+	var commits []string
+	for _, name := range []string{"one", "culprit", "three"} {
+		if err := os.WriteFile(filepath.Join(f.source, name+".txt"), []byte(name+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, f.source, "add", name+".txt")
+		runGit(t, f.source, "-c", "commit.gpgsign=false", "commit", "-m", name)
+		commits = append(commits, strings.TrimSpace(runGit(t, f.source, "rev-parse", "HEAD")))
+	}
+	runGit(t, f.source, "push", "origin", "HEAD:main")
+	path, head, release, err := f.backend.PrepareLandingBarrierRepair(ctx, "barrier", "main")
+	if err != nil || head != commits[2] {
+		t.Fatalf("prepare head=%s error=%v", head, err)
+	}
+	defer func() {
+		if err := release(); err != nil {
+			t.Error(err)
+		}
+	}()
+	listed, err := f.backend.LandingBarrierCommits(ctx, path, green, head)
+	if err != nil || strings.Join(listed, ",") != strings.Join(commits, ",") {
+		t.Fatalf("commits=%v error=%v, want %v", listed, err, commits)
+	}
+	if err := f.backend.CheckoutLandingBarrierCommit(ctx, path, commits[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(path, "culprit.txt")); !os.IsNotExist(err) {
+		t.Fatalf("checkout of %s still has the culprit: %v", commits[0], err)
+	}
+	if err := f.backend.RevertLandingBarrierCommit(ctx, path, head, commits[1]); err != nil {
+		t.Fatal(err)
+	}
+	verified, changed, err := f.backend.VerifyLandingBarrierRepair(ctx, path, head, "test ! -e culprit.txt && test -e three.txt", nil)
+	if err != nil || !changed || verified.ExitCode != 0 {
+		t.Fatalf("revert verification changed=%v result=%+v error=%v", changed, verified, err)
+	}
+	published, err := f.backend.PublishLandingBarrierRepair(ctx, path, "main", head)
+	if err != nil || published == "" || f.remoteMain(t) != published {
+		t.Fatalf("published=%q remote=%s error=%v", published, f.remoteMain(t), err)
+	}
+}
