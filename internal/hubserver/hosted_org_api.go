@@ -15,7 +15,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -69,6 +71,12 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 // CSRF check for bearer callers, so a mixed credential is never accepted.
 func (s *Service) hostedSessionOnly(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
+		if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindKey {
+			if c.Path() == hostedOrganizationBase+"/projects" && c.Request().Method == http.MethodGet {
+				return s.entryKeyProjects(c)
+			}
+			return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "session_required", Message: "This endpoint requires a hosted browser session"})
+		}
 		if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
 			return s.hostedJSONError(c, http.StatusForbidden, "This endpoint authenticates a hosted session")
 		}

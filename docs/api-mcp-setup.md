@@ -76,6 +76,59 @@ defaults to false and includes connections to other localhost services as well
 as temporary test servers; the sandbox tier and host-service grants retain
 their existing owners.
 
+## Account and organization service keys
+
+Personal keys are user-owned and stored in the shared entry authentication store.
+The account API creates and lists them at `/api/cloud/account/api-keys` and
+revokes them with `DELETE /api/cloud/account/api-keys/:key`. These management
+routes require the signed-in account's browser session and same-origin writes.
+The account settings redesign is separate from these APIs.
+
+Creation accepts `name`, `permission` (`read`, `write`, `admin`),
+`access_context` (`global`, `selected`, `project`), `organizations`, and either
+`expires_days` (1–90) or `never_expires: true`. Each organization entry contains
+`organization_id`, `project_access` (`all`, `selected`, `project`) and
+`project_ids`. Selected project access requires at least one ID; project access
+requires exactly one. A global personal key reaches all current and future
+organizations, with all projects by default; explicit organization entries can
+narrow individual organizations. Selected context reaches only the supplied
+organizations. Project context requires exactly one organization and one project.
+The secret is returned only when created.
+
+Use one bearer key with `https://cloud.detent.build/mcp`. Project and organization
+tools accept `organization_id` alongside their existing project selectors.
+`organization_list` lists reachable organizations; discovery returns their tool
+union. Calls recheck the target organization's current role, grants and plan.
+For REST, `GET /api/v2/organizations` lists reachable organizations; select the
+target with `X-Detent-Organization` for `/api/v2/projects` and
+`/api/v2/projects/:project/...`. Explicit `/api/v2/organizations/:organization/...`
+and existing per-org MCP endpoints also accept a key that reaches that org.
+Browser-only settings routes continue to require browser sessions.
+
+Org owners/admins manage service keys at
+`/api/cloud/organizations/:organization/service-keys`, using the same creation
+fields with one organization and selected or project context. Service keys are
+org-owned and remain valid after their creator leaves; permission and project
+context still restrict each call.
+
+Org owners/admins read or set `allow_external_keys` through
+`/api/cloud/organizations/:organization/key-policy` (GET/PUT). It defaults to
+true; disabling it refuses global and multi-org personal keys in that org.
+Reached personal keys appear as read-only metadata through `external-keys`.
+`PUT external-keys/:key/block` with `{}` blocks that key only in this org;
+`{"project_id":"..."}` blocks a single project. The owner's account receives a
+notice through `/api/cloud/account/key-notifications`. Calls and policy/block
+changes are audited in the target org with key and owner identity.
+
+Personal keys intersect their scope with the owner's current provider and local
+membership, role, project grants and entitlement on each call. Membership loss,
+key expiry, revocation and org blocking take effect on the next call. Named
+refusals include `key_organization_denied`, `key_project_denied`,
+`membership_denied`, `key_permission_denied`, `role_denied`,
+`organization_key_policy_denied`, `organization_key_blocked` and `key_inactive`.
+
+## Existing per-organization keys
+
 Sign in to the intended Cloud organization and open **Settings → API & MCP**.
 Existing `/settings/mcp` bookmarks open this same page. Create a named key,
 choose Read, Write or Admin, and choose an expiry (7, 30 or 90 days, or Never). The creation API accepts 1–90
@@ -95,7 +148,7 @@ The same key authenticates direct API requests and MCP. Effective permissions
 are the intersection of its scope/project grants and the issuing user's current
 provider membership, local membership, role and project grants. Removing or
 replacing membership, losing project access, expiry and revocation deny later
-calls, including calls on an already initialized MCP session. An API key cannot
+calls, including calls on an already initialized MCP session. An existing per-org API key cannot
 change organizations or impersonate another user. Runner and worker credentials
 remain separate and cannot connect as operators.
 

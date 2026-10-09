@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
 )
 
 const (
@@ -22,6 +24,7 @@ const (
 	KindBrowser    = "browser"
 	KindMachine    = "machine"
 	KindService    = "service"
+	KindKey        = "key"
 	maxReplayCache = 1 << 16
 	maxHeaderBytes = 8 << 10
 	clockSkew      = 5 * time.Second
@@ -30,29 +33,30 @@ const (
 var ErrInvalid = errors.New("entry assertion is missing, invalid, expired or replayed")
 
 type Claims struct {
-	Issuer               string    `json:"iss"`
-	Audience             string    `json:"aud"`
-	Generation           int64     `json:"gen"`
-	Kind                 string    `json:"kind"`
-	Subject              string    `json:"sub,omitempty"`
-	Email                string    `json:"email,omitempty"`
-	ProviderOrganization string    `json:"provider_org,omitempty"`
-	ProviderSession      string    `json:"provider_session,omitempty"`
-	SessionCreatedAt     time.Time `json:"session_created_at,omitzero"`
-	SessionExpiresAt     time.Time `json:"session_expires_at,omitzero"`
-	SupportActor         string    `json:"support_actor,omitempty"`
-	SupportReason        string    `json:"support_reason,omitempty"`
-	PlatformRole         string    `json:"platform_role,omitempty"`
-	Role                 string    `json:"role,omitempty"`
-	AccessExpiresAt      time.Time `json:"access_expires_at,omitzero"`
-	Binding              string    `json:"binding,omitempty"`
-	CSRF                 string    `json:"csrf,omitempty"`
-	Method               string    `json:"method"`
-	Path                 string    `json:"path"`
-	BodyDigest           string    `json:"body"`
-	IssuedAt             time.Time `json:"iat"`
-	ExpiresAt            time.Time `json:"exp"`
-	ID                   string    `json:"jti"`
+	Key                  *apikey.KeyAuthority `json:"key,omitempty"`
+	Issuer               string               `json:"iss"`
+	Audience             string               `json:"aud"`
+	Generation           int64                `json:"gen"`
+	Kind                 string               `json:"kind"`
+	Subject              string               `json:"sub,omitempty"`
+	Email                string               `json:"email,omitempty"`
+	ProviderOrganization string               `json:"provider_org,omitempty"`
+	ProviderSession      string               `json:"provider_session,omitempty"`
+	SessionCreatedAt     time.Time            `json:"session_created_at,omitzero"`
+	SessionExpiresAt     time.Time            `json:"session_expires_at,omitzero"`
+	SupportActor         string               `json:"support_actor,omitempty"`
+	SupportReason        string               `json:"support_reason,omitempty"`
+	PlatformRole         string               `json:"platform_role,omitempty"`
+	Role                 string               `json:"role,omitempty"`
+	AccessExpiresAt      time.Time            `json:"access_expires_at,omitzero"`
+	Binding              string               `json:"binding,omitempty"`
+	CSRF                 string               `json:"csrf,omitempty"`
+	Method               string               `json:"method"`
+	Path                 string               `json:"path"`
+	BodyDigest           string               `json:"body"`
+	IssuedAt             time.Time            `json:"iat"`
+	ExpiresAt            time.Time            `json:"exp"`
+	ID                   string               `json:"jti"`
 }
 
 func BodyDigest(body []byte) string {
@@ -146,6 +150,9 @@ func (v *Verifier) Verify(value, method, path string, body []byte) (Claims, erro
 }
 
 func validKind(claims Claims) bool {
+	if claims.Key != nil {
+		return claims.Kind == KindKey && claims.Key.Valid() && claims.Subject != "" && claims.ProviderOrganization != "" && validRole(claims.Role) && claims.SupportActor == "" && claims.PlatformRole == "" && claims.Binding == "" && claims.CSRF == "" && claims.ProviderSession == "" && claims.SupportReason == "" && claims.SessionCreatedAt.IsZero() && claims.SessionExpiresAt.IsZero() && claims.AccessExpiresAt.IsZero()
+	}
 	browser := claims.PlatformRole != "" || claims.Subject != "" || claims.Email != "" || claims.ProviderOrganization != "" || claims.ProviderSession != "" || claims.Binding != "" || claims.CSRF != "" || claims.SupportActor != "" || claims.SupportReason != "" || !claims.SessionCreatedAt.IsZero() || !claims.SessionExpiresAt.IsZero() || claims.Role != "" || !claims.AccessExpiresAt.IsZero()
 	if !ValidPlatformRole(claims.PlatformRole) || claims.PlatformRole != "" && (claims.Kind != KindBrowser || claims.SupportActor != "") {
 		return false

@@ -116,10 +116,19 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 		default:
 			return s.nativeAPIError(c, nativeNotFound())
 		}
-		if internal != (claims.Kind == cloudassert.KindService) {
+		keyInternal := claims.Kind == cloudassert.KindKey && (path == "/internal/v1/keys/catalog" || path == "/internal/v1/keys/call")
+		if internal != (claims.Kind == cloudassert.KindService || keyInternal) {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
 		c.Set(hostedSharedClaimsKey, claims)
+		if claims.Kind == cloudassert.KindKey {
+			if claims.Key == nil || bearer {
+				return c.NoContent(http.StatusUnauthorized)
+			}
+			if err := s.auditEntryKey(c, claims); err != nil {
+				return s.internalAPIError(c, "audit_unavailable", "Key audit is unavailable", err)
+			}
+		}
 		return next(c)
 	}
 }
@@ -193,6 +202,10 @@ func (s *Service) hostedSharedCSRFValid(c echo.Context, value string) bool {
 }
 
 func (s *Service) registerHostedSharedRoutes(e *echo.Echo) {
+	e.POST("/internal/v1/keys/catalog", s.entryKeyCatalog, s.operatorAuthority)
+	e.POST("/internal/v1/keys/call", s.entryKeyCall, s.operatorAuthority)
+	e.POST("/internal/v1/keys/admin", s.entryKeyAdmin)
+	e.POST("/internal/v1/keys/audit", s.entryKeyAudit)
 	e.POST("/internal/v1/github/repositories", s.hostedGitHubRepositories)
 	e.POST("/internal/v1/github/receipt", s.hostedGitHubReceipt)
 	e.POST("/internal/v1/github/webhook", s.hostedGitHubWebhook)

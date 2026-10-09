@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
@@ -93,6 +94,7 @@ func (c Config) validate() error {
 }
 
 type Service struct {
+	keyMCP            *mcp.HTTPHandler
 	administration    *operatoradmin.Executor
 	config            Config
 	registry          *Registry
@@ -181,11 +183,11 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	service.routes()
 	service.registerPlatformCredits(ctx)
 	if err := service.routeDevelopTenants(ctx); err != nil {
-		return nil, errors.Join(err, service.Close())
+		return nil, errors.Join(err, service.CloseContext(ctx))
 	}
 	service.startAllocator(ctx)
 	if err := service.initializeGitHubRoutes(ctx); err != nil {
-		return nil, errors.Join(err, service.Close())
+		return nil, errors.Join(err, service.CloseContext(ctx))
 	}
 	service.startBillingWorker(ctx)
 	return service, nil
@@ -200,12 +202,22 @@ func (s *Service) Registry() *Registry {
 }
 
 func (s *Service) Close() error {
+	return s.CloseContext(context.Background())
+}
+
+func (s *Service) CloseContext(ctx context.Context) error {
+	var keyErr error
+	if s.keyMCP != nil {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		keyErr = s.keyMCP.Shutdown(ctx)
+		cancel()
+	}
 	s.closeBillingWorker()
 	var mcpErr error
 	if s.closePlatformMCP != nil {
 		mcpErr = s.closePlatformMCP()
 	}
-	err := errors.Join(mcpErr, s.closeAllocator(), s.registry.Close(), s.auth.store.Close())
+	err := errors.Join(keyErr, mcpErr, s.closeAllocator(), s.registry.Close(), s.auth.store.Close())
 	if s.closeDevelopState != nil {
 		err = errors.Join(err, s.closeDevelopState())
 	}
@@ -218,7 +230,7 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 		return err
 	}
 	defer func() {
-		resultErr = errors.Join(resultErr, service.Close())
+		resultErr = errors.Join(resultErr, service.CloseContext(ctx))
 	}()
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(ctx, "tcp", cfg.ListenAddress)
@@ -261,6 +273,8 @@ func (s *Service) serve(ctx context.Context, listener net.Listener) error {
 
 func (s *Service) routes() {
 	s.registerAdministration()
+	s.registerAccessKeys()
+	s.registerKeyMCP()
 	e := s.echo
 	e.Pre(s.boundary)
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", http.FileServerFS(detent.StaticFS()))))

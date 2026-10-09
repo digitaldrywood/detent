@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/logging"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -636,6 +637,13 @@ func safeToolError(err error) string {
 }
 
 func (s *session) toolFailure(ctx context.Context, version, name string, id json.RawMessage, err error) toolCallResult {
+	var refusal *apikey.Refusal
+	if errors.As(err, &refusal) {
+		payload, encodeErr := json.Marshal(refusal)
+		if encodeErr == nil {
+			return NewToolCallResult(version, payload, true)
+		}
+	}
 	var conflict *operatortool.ConflictError
 	var request *operatortool.RequestError
 	if safeToolError(err) == "Operator tool is unavailable" && !errors.As(err, &conflict) && !errors.As(err, &request) {

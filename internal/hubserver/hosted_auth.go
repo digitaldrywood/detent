@@ -249,7 +249,7 @@ func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 			return next(c)
 		}
 		bearerAPI := (strings.HasPrefix(c.Request().URL.Path, "/api/v2/") || c.Path() == "/mcp") && c.Request().Header.Get(echo.HeaderAuthorization) != ""
-		if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindService {
+		if claims, ok := hostedSharedClaims(c); ok && (claims.Kind == cloudassert.KindService || claims.Kind == cloudassert.KindKey) {
 			return next(c)
 		}
 		if !hostedReadRequest(c) && !bearerAPI && !strings.HasSuffix(c.Path(), "/redeem") && !s.hostedCSRFValid(c) {
@@ -265,6 +265,14 @@ func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 }
 
 func (s *Service) requireHostedProject(ctx context.Context, query nativeQueryer, scope nativeScope, write bool) error {
+	if scope.credential.EntryKey != nil {
+		if !scope.credential.EntryKey.Allows(string(scope.project)) {
+			return &apikey.Refusal{Code: "key_project_denied", Message: "The project is outside this key's access context"}
+		}
+		if scope.credential.EntryKey.Kind == "service" && string(scope.organization) == s.config.Hosted.OrganizationID {
+			return nil
+		}
+	}
 	if scope.credential.Hosted == nil {
 		return nil
 	}
@@ -288,6 +296,14 @@ WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ? AND g.project_id 
 // from this request's entry assertion, whose access token the entry verified,
 // so it is used as is; a dedicated tenant asks the provider.
 func (s *Service) hostedMutationIdentity(ctx context.Context, credential apiCredential) (auth.HostedIdentity, auth.Membership, error) {
+	if credential.EntryKey != nil {
+		membership := auth.Membership{ID: credential.HostedMembership}
+		membership.Role.Slug = credential.HostedRole
+		if !credential.Hosted.ExpiresAt.After(s.config.now()) {
+			return auth.HostedIdentity{}, auth.Membership{}, auth.ErrHostedIdentity
+		}
+		return *credential.Hosted, membership, nil
+	}
 	if credential.HostedKeyScope != "" {
 		membership, err := s.hostedMembership(ctx, credential.Hosted)
 		if err != nil || membership.ID != credential.HostedMembership {
@@ -330,7 +346,21 @@ func (s *Service) recheckHostedAuthority(ctx context.Context, tx *sql.Tx, scope 
 		return auth.ErrHostedIdentity
 	}
 	var count int
-	if scope.credential.HostedKeyScope != "" {
+	if scope.credential.EntryKey != nil {
+		if scope.requireHostedAdmin {
+			required = apikey.ScopeAdmin
+		}
+		if !hostedKeyAllows(scope.credential.HostedKeyScope, required) || !hostedRoleAllows(scope.credential.HostedRole, required) {
+			return auth.ErrHostedIdentity
+		}
+		if scope.credential.EntryKey.Kind == "personal" {
+			var local string
+			err := tx.QueryRowContext(ctx, "SELECT m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.membership_id=? AND m.active=1 AND t.revoked_at IS NULL", identity.Subject, membership.ID).Scan(&local)
+			if err != nil || !auth.ValidOrganizationRole(local) || !hostedRoleAllows(lesserHostedRole(local, membership.Role.Slug), required) {
+				return auth.ErrHostedIdentity
+			}
+		}
+	} else if scope.credential.HostedKeyScope != "" {
 		if scope.requireHostedAdmin {
 			required = apikey.ScopeAdmin
 		}
