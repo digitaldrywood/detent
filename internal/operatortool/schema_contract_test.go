@@ -113,6 +113,7 @@ func TestCatalogDecoderContract(t *testing.T) {
 		{ChangeCatalog(), reflect.TypeFor[ChangeArguments]()},
 		{AdministrationCatalog(), reflect.TypeFor[AdministrationArguments]()},
 		{FleetCatalog(), reflect.TypeFor[FleetArguments]()},
+		{PlatformCreditCatalog(), reflect.TypeFor[PlatformCreditArguments]()},
 	} {
 		for _, definition := range group.catalog {
 			targets[definition.Name] = group.target

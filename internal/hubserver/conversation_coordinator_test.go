@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -1160,6 +1161,7 @@ func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 		revoked     bool
 		free        bool
 		credits     bool
+		adjust      bool
 		balance     int64
 		unavailable bool
 		usage       bool
@@ -1178,6 +1180,7 @@ func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 		{name: "granted unknown", hosted: true, granted: true, model: "unknown-model", wantFailure: "not one of the available choices"},
 		{name: "granted without execution", hosted: true, granted: true, free: true, model: "gpt-6-astra", wantFailure: "Upgrade"},
 		{name: "granted with exhausted credits", hosted: true, granted: true, credits: true, model: "gpt-6-astra", wantFailure: "AI credits are exhausted"},
+		{name: "complimentary credits resume Luna", hosted: true, credits: true, adjust: true, wantModel: genkitbackend.Model, wantEffort: "low"},
 		{name: "granted with purchased credits", hosted: true, granted: true, free: true, credits: true, balance: 1000000, model: "gpt-6-astra", effort: "high", wantModel: "gpt-6-astra", wantEffort: "high"},
 		{name: "granted without model backend", hosted: true, granted: true, unavailable: true, model: "gpt-6-astra", wantFailure: "model backend is unavailable"},
 	} {
@@ -1228,6 +1231,16 @@ func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 			record := f.seed(t, "preferences", func(record *conversationRecord) {
 				record.Preferences = conversation.Preferences{Model: test.model, ReasoningEffort: test.effort, Access: conversation.AccessFull}
 			})
+			if test.adjust {
+				f.say(t, &record, "Before the credit grant")
+				reply := f.waitAssistant(t, record.ID, conversation.DeliveryFailed)
+				if !strings.Contains(reply.Text+string(reply.Data), "AI credits are exhausted") || f.backend.turns() != 0 {
+					t.Fatalf("exhausted reply=%#v backend calls=%d", reply, f.backend.turns())
+				}
+				if _, err := d.adjustAICredits(t.Context(), "staff@example.test", billing.CreditAdjustment{IdempotencyKey: "luna-comp", AmountUSD: "5", Reason: "complimentary pilot"}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			f.say(t, &record, "What changed?")
 			delivery := conversation.DeliveryCompleted
 			if test.wantFailure != "" {

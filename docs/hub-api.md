@@ -228,6 +228,43 @@ DELETE /api/v1/tokens/{id}
 
 Enrollment redemption accepts its separate one-time bearer token, which cannot call other APIs. `/api/v1/webhooks/github` uses GitHub's `X-Hub-Signature-256` HMAC authentication and never accepts a Hub token as a substitute.
 
+## Platform AI credit adjustments
+
+The Cloud entry accepts `POST /api/cloud/platform/organizations/{organization}/ai-credits`
+from a platform entitlement administrator (`admin` or `billing` role) with a
+current account session and its `X-CSRF-Token`, or from a bearer matching the
+existing entitlement-administrator service token. Organization keys, including
+organization-owner keys, cannot call this endpoint.
+
+```json
+{
+  "idempotency_key": "complimentary-pilot-1",
+  "amount_usd": "10.00",
+  "reason": "Complimentary pilot credits"
+}
+```
+
+`amount_usd` is a nonzero signed decimal string with at most six fractional
+digits. Positive amounts grant complimentary credits; negative amounts correct
+the balance and may leave it below zero. `reason` is required and bounded to
+500 bytes. The idempotency key contains 1–128 letters, digits, underscores or
+hyphens. AI credits must already be configured for the organization's active
+billing mode.
+
+The entry sends a signed service request to the tenant Hub's
+`/internal/v1/platform/ai-credits`. The tenant applies the balance and ledger
+row in one transaction on its open database. A successful response contains
+`organization_id` and the current `balance_micros` (one USD equals 1,000,000
+micros). Replaying the same key, amount, actor and trimmed reason returns the
+current balance without applying another adjustment. Reusing the key with
+different values returns `409 idempotency_conflict`; invalid amounts or reasons
+return `422 invalid_request`.
+
+Credit history and billing usage reports retain the `complimentary` kind,
+signed amount, timestamp, actor and reason. Account sessions record the
+administrator's email; the service token records `entitlement-administrator`.
+Stripe purchases, auto-fund and chat usage retain their existing ledger kinds.
+
 ## Scoped runner onboarding
 
 | Credential | Owner and lifetime | Revocation |

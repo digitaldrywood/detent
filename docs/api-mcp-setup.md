@@ -127,6 +127,36 @@ and request payloads are documented in [Hub API](hub-api.md), especially Native
 collaboration and Changes. [Operator capabilities](mcp-capabilities.md) documents the real catalog and
 deployment availability.
 
+## Platform credit administration
+
+Platform administrators use the shared entry's `/api/cloud/platform/mcp`
+endpoint for `platform_adjust_ai_credits`. Authenticate each request with the
+existing entitlement-administrator service bearer token, or with an account
+session authorized by the platform entitlement-administrator check and its
+`X-CSRF-Token`. Organization API keys and organization-owner sessions cannot
+grant credits. The platform endpoint uses the same MCP protocol as the
+organization endpoints and advertises only the platform credit command.
+
+The tool accepts `organization_id`, `idempotency_key`, `amount_usd` and `reason`.
+For example:
+
+```json
+{
+  "organization_id": "org_example",
+  "idempotency_key": "complimentary-pilot-1",
+  "amount_usd": "10.00",
+  "reason": "Complimentary pilot credits"
+}
+```
+
+Use a signed decimal string for `amount_usd`: positive to grant credits,
+negative to correct the balance, with at most six fractional digits. Preserve
+the key, amount and reason when retrying. The result contains the organization's
+current balance in USD micros. The tenant writes the ledger and balance on its
+open database; the command requires no tenant restart or database file access.
+See [Platform AI credit adjustments](hub-api.md#platform-ai-credit-adjustments)
+for the REST equivalent, bounds and audit contract.
+
 ## Direct API agent handoff
 
 Use **Copy API setup prompt** on the same page. It fills in the current

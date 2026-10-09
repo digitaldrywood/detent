@@ -18,6 +18,8 @@ import (
 type aiCreditTransaction struct {
 	AmountMicros int64     `json:"amount_micros"`
 	Kind         string    `json:"kind"`
+	Actor        string    `json:"actor,omitempty"`
+	Reason       string    `json:"reason,omitempty"`
 	At           time.Time `json:"at"`
 }
 
@@ -45,7 +47,7 @@ func (s *Service) readAICredits(ctx context.Context) (*aiCreditView, error) {
 	}
 	view.CanAutoFund = method != ""
 	view.Packs = append(view.Packs, s.config.Hosted.Billing.CreditPacks...)
-	rows, err := d.db.QueryContext(ctx, "SELECT amount_micros,kind,recorded_at FROM ai_credit_transactions WHERE organization_id=? AND mode=? ORDER BY id DESC LIMIT 50", d.hostedOrganization, d.aiCreditMode)
+	rows, err := d.db.QueryContext(ctx, "SELECT amount_micros,kind,actor,reason,recorded_at FROM ai_credit_transactions WHERE organization_id=? AND mode=? ORDER BY id DESC LIMIT 50", d.hostedOrganization, d.aiCreditMode)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +55,7 @@ func (s *Service) readAICredits(ctx context.Context) (*aiCreditView, error) {
 	for rows.Next() {
 		var item aiCreditTransaction
 		var at int64
-		if err := rows.Scan(&item.AmountMicros, &item.Kind, &at); err != nil {
+		if err := rows.Scan(&item.AmountMicros, &item.Kind, &item.Actor, &item.Reason, &at); err != nil {
 			return nil, err
 		}
 		item.At = time.UnixMicro(at).UTC()

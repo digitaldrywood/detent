@@ -122,7 +122,11 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 			data.AICredits.Packs = append(data.AICredits.Packs, templates.HostedBillingPrice{ID: pack.PriceID, Label: fmt.Sprintf("%s · $%.2f USD", pack.Label, float64(pack.USDCents)/100)})
 		}
 		for _, item := range credits.History {
-			data.AICredits.History = append(data.AICredits.History, templates.HostedBillingAudit{Action: item.Kind, Summary: fmt.Sprintf("$%.6f USD", float64(item.AmountMicros)/1000000), At: item.At.Format(time.RFC3339)})
+			summary := fmt.Sprintf("$%.6f USD", float64(item.AmountMicros)/1000000)
+			if item.Kind == "complimentary" {
+				summary += " · " + item.Actor + " · " + item.Reason
+			}
+			data.AICredits.History = append(data.AICredits.History, templates.HostedBillingAudit{Action: item.Kind, Summary: summary, At: item.At.Format(time.RFC3339)})
 		}
 	}
 	data.BillingStatus, data.BillingMessage = hostedBillingMessage(report.State, now)
