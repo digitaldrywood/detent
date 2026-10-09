@@ -190,7 +190,6 @@ func TestTerminalCloseInputHelper(t *testing.T) {
 	}
 	hangups := make(chan os.Signal, 2)
 	signal.Notify(hangups, syscall.SIGHUP)
-	defer signal.Stop(hangups)
 	if _, err := fmt.Fprintln(os.Stdout, "helper-ready"); err != nil {
 		t.Fatal(err)
 	}
