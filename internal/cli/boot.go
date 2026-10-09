@@ -645,6 +645,9 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		for _, workspaceLane := range newWorkspaceLanes(runCtx, cfg.Global, hubScheduling, workerGeneration, logger) {
 			resourceWorkers.Go(func() { runWorkspaceLane(runCtx, workspaceLane, logger) })
 		}
+		if err := startRunnerProjects(ctx, manager, hubScheduling); err != nil {
+			return err
+		}
 		resourceWorkers.Go(func() {
 			var runnerHeartbeat runnerHeartbeatSource
 			if reporter, ok := hubScheduling.(runnerHeartbeatSource); ok {
@@ -652,9 +655,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			}
 			publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, stalenessAcknowledgements, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, providerStatus, defaultSnapshotInterval, deps.snapshotNow, runnerHeartbeat, updateScheduler)
 		})
-		if err := startRunnerProjects(ctx, manager, hubScheduling); err != nil {
-			return err
-		}
 		if observer, ok := hubScheduling.(interface {
 			RunHostMetrics(context.Context, string, time.Time)
 		}); ok {
