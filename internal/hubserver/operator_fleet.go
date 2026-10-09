@@ -299,10 +299,20 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 		return operatortool.Result{}, errHubOperatorUnavailable
 	}
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(call.Arguments, &fields) != nil {
+	if json.Unmarshal(call.Arguments, &fields) != nil || fields == nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
 	delete(fields, "request_id")
+	if call.Name == operatortool.UpdateApply {
+		var change runnerUpdateChange
+		if operatortool.DecodeArguments(r.Change, &change) != nil {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+		fields["change"], err = json.Marshal(change)
+		if err != nil {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+	}
 	encoded, err := json.Marshal(fields)
 	if err != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
@@ -310,6 +320,9 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 	arguments := json.RawMessage(encoded)
 	if prior, found, err := s.operatorChat.RetryResult(ctx, chatpkg.ActionKind(call.Name), r.RequestID, arguments); found || err != nil {
 		if err != nil {
+			if call.Name == operatortool.UpdateApply && errors.Is(err, operatortool.ErrInvalidArguments) {
+				return operatortool.Result{}, &operatortool.ConflictError{Code: "idempotency_conflict", Message: "The request_id was already used with different content"}
+			}
 			return operatortool.Result{}, err
 		}
 		return e.actionResult(ctx, prior)
@@ -362,12 +375,23 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 	return e.actionResult(ctx, action)
 }
 func safeHubOperatorError(err error) error {
+	var conflict *operatortool.ConflictError
+	if errors.As(err, &conflict) {
+		return err
+	}
 	var problem *nativeError
 	if errors.As(err, &problem) && problem.Code == "revision_conflict" {
-		return mutation.ErrConflict
+		message := "Resource has changed; read its current revision before retrying"
+		if problem.publicMessage {
+			message = problem.Message
+		}
+		return &operatortool.ConflictError{Code: problem.Code, Message: message, CurrentRevision: int64(problem.CurrentRevision)}
+	}
+	if errors.As(err, &problem) && problem.Code == "idempotency_conflict" {
+		return &operatortool.ConflictError{Code: problem.Code, Message: "The request_id was already used with different content"}
 	}
 	if errors.Is(err, mutation.ErrConflict) {
-		return mutation.ErrConflict
+		return &operatortool.ConflictError{Code: "idempotency_conflict", Message: "The request_id was already used with different content"}
 	}
 	if errors.Is(err, mutation.ErrUncertain) {
 		return mutation.ErrUncertain
