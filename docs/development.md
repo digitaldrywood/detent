@@ -39,17 +39,24 @@ from the merge base with `origin/develop`, including staged, unstaged and
 untracked changes. Set `CHECK_LAND_BASE` to the actual landing base when it
 differs. A missing base ref fails the target. A fresh worktree builds missing
 embedded conversation assets with Node 24; ignored bundles are never staged.
-The target runs sequentially, stops on a failed stage and prints its exit code
-and elapsed seconds. Budget it at 5–10 minutes on the Mac Studio. Lint and vet
+The target generates docs and checks SQL output once, then overlaps lint, vet,
+build and short tests within `TEST_PROCS`. It prints its exit code and elapsed
+seconds. Lint and vet
 use the scheduled tools; they and short tests stay in the landing gate. If a
 complete run exceeds ten minutes, report stage timings before moving expensive
 integration or race diagnostics to the scheduled suite.
 
-The approved `gate.run: make check-land` remains the source completion gate.
-This project opts into `gate.landing_mode: rolling_barrier`: landing skips the
-command, and a detached base-tip worktree runs it outside the source lock after
-landings. A red result stops repository landing except for its native repair
-issue; a green result reopens landing. Other projects default to `per_landing`,
+Workers run `make check-land` under this repository's validation instructions.
+The Cloud project's approved `gate.run` is the scalar command `make check-barrier`;
+the checked-in `detent.yaml` retains `make check-land`. Runners use the approved
+Cloud policy for the barrier, and policy changes require operator approval.
+This project opts into `gate.landing_mode: rolling_barrier`: the host skips
+command validation after source finalization, during landing and during
+merge-resolution preparation. Signed commit finalization and Change publication
+still occur; this mode does not reuse a worker command receipt for host
+validation. A detached base-tip worktree runs the approved `gate.run` outside
+the source lock after landings. A red result stops repository landing except for
+its native repair issue; a green result reopens landing. Other projects default to `per_landing`,
 where a command failure returns the item to Rework with the output. Focused diagnostics and full scheduled
 suites do not publish a required local commit status. The
 scheduled suite validates pinned integrated develop commits for release tags;

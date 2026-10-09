@@ -1679,11 +1679,19 @@ so concurrent external base writes still depend on the repository's protection
 and serialized landing policy.
 
 Projects can opt into `gate.landing_mode: rolling_barrier` in the approved gate
-policy. Landing and merge-resolution preparation skip the command in this mode;
+policy. `gate.run` remains a scalar command string. In this mode the host skips
+command validation after native source finalization, during landing and during
+merge-resolution preparation. Signed commit finalization and Change publication
+still occur; this mode does not reuse a worker command receipt for host
+validation. For Detent's repository, workers run `make check-land` under the
+repository validation instructions, while the Cloud project's approved
+`gate.run` is `make check-barrier`. Changes to that policy require operator
+approval before runners adopt them. In rolling-barrier mode,
 a rejected plain-Git push refreshes the base and recombines the same reviewed
 head. GitHub protection and required checks still apply. The project runner
 claims one repository barrier through `GET`/`POST /landing-barrier`, snapshots the
-base tip in a detached worktree, releases the source lock, and runs `gate.run`.
+base tip in a detached worktree, releases the source lock, and runs the approved
+`gate.run`.
 Landings continue during this command. The Hub records the checked commit and
 command result in the covered landing receipts. The runner reports the observed
 integration branch head when it claims; the Hub starts a barrier whenever that
