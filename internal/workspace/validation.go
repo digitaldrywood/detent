@@ -38,8 +38,9 @@ func (l *LocalGit) RunReviewCommand(ctx context.Context, info Info, issue Issue,
 	result.HeadSHA = strings.TrimSpace(head)
 	result.TreeSHA = strings.TrimSpace(tree)
 	const maxOutputBytes = 64 * 1024
+	const truncatedOutputMarker = "[earlier output truncated]\n"
 	if len(result.Output) > maxOutputBytes {
-		result.Output = result.Output[:maxOutputBytes]
+		result.Output = truncatedOutputMarker + result.Output[len(result.Output)-maxOutputBytes+len(truncatedOutputMarker):]
 		result.OutputTruncated = true
 	}
 	if err != nil {

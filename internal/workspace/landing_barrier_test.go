@@ -198,3 +198,20 @@ func TestLandingBarrierRepairPublication(t *testing.T) {
 		})
 	}
 }
+
+func TestValidationOutputKeepsTheFailingTail(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+	t.Parallel()
+	f := newLandingFixture(t)
+	issue := f.issue
+	issue.PullRequestHeadSHA = f.head
+	result, err := f.backend.RunReviewCommand(t.Context(), f.info, issue, "head -c 200000 /dev/zero | tr '\\0' x; printf '\\nFAIL tail sentinel\\n'; exit 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OutputTruncated || len(result.Output) > 64*1024 || !strings.HasSuffix(strings.TrimSpace(result.Output), "FAIL tail sentinel") || !strings.HasPrefix(result.Output, "[earlier output truncated]") {
+		t.Fatalf("truncated=%v len=%d tail=%q", result.OutputTruncated, len(result.Output), result.Output[max(0, len(result.Output)-40):])
+	}
+}
