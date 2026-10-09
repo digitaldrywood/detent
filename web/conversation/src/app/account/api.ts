@@ -41,6 +41,7 @@ import { isApiError } from "../../contracts/index.ts";
 import { hubPath } from "../../runtime/basePath.ts";
 import { WorkAttachment } from "../../contracts/workAttachments.ts";
 import { DiagnosticsReport, HealthFindingsRead } from "../../contracts/diagnostics.ts";
+import { ActivityReport, type ActivityFilters } from "../../contracts/activity.ts";
 import { ReportsReport, type ReportsRange } from "../../contracts/reports.ts";
 import { clearBoardCache } from "../work/lib/boardStore.ts";
 
@@ -472,6 +473,13 @@ export function makeAccountApi(options: AccountApiOptions) {
       ),
 
     // --- Fleet, plan and billing --------------------------------------------
+    activity: (filters: ActivityFilters = {}) => {
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(filters)) {
+        if (value !== undefined) params.set(key, String(value));
+      }
+      return send(ActivityReport, "GET", `${base}/activity?${params.toString()}`);
+    },
     fleet: () => send(FleetResponse, "GET", `${base}/fleet`),
     diagnostics: (range: string) => send(DiagnosticsReport, "GET", `${base}/diagnostics?range=${encodeURIComponent(range)}`),
     reports: (project: string, range: ReportsRange) => send(ReportsReport, "GET", `${base}/reports?project=${encodeURIComponent(project)}&range=${encodeURIComponent(range)}`),

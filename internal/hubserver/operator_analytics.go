@@ -41,6 +41,7 @@ type nativeAnalyticsPhase struct {
 	AverageSeconds float64 `json:"average_seconds"`
 }
 type nativeAnalyticsAttempt struct {
+	activityRaw         string
 	UsageRowsObserved   int                              `json:"usage_rows_observed"`
 	Identity            agentidentity.Identity           `json:"identity,omitzero"`
 	Landing             *tracker.NativeLandingReceipt    `json:"landing,omitempty"`
@@ -265,57 +266,25 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 		}
 	}
 	out.Landings = operatortool.OffsetPage(landings, r.RowOffset, r.Limit)
-	rows, err := q.QueryContext(ctx, `SELECT id, work_item_id, status, started_at, updated_at, coalesce(json_extract(data_json,'$.runtime.phases'),'[]'), coalesce(json_extract(data_json,'$.runtime.phases_dropped'),0), coalesce(json_extract(data_json,'$.runtime.activity'),'null'), coalesce(json_extract(data_json,'$.runtime.identity'),'{}'), coalesce(json_extract(data_json,'$.runtime.landing'),'null'), (SELECT count(*) FROM attempt_usage u WHERE u.attempt_id=native_attempts.id AND u.organization_id=native_attempts.organization_id AND u.project_id=native_attempts.project_id AND julianday(u.period)>=julianday(?) AND julianday(u.period)<julianday(?))
-FROM native_attempts WHERE organization_id=? AND project_id=? AND julianday(started_at)<julianday(?) AND julianday(updated_at)>=julianday(?) ORDER BY started_at,id LIMIT ?`, formatHubTime(w.From), formatHubTime(w.To), scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From), maxAnalyticsPopulation+1)
+	population, err := loadNativeAnalyticsAttempts(ctx, q, scope, w, "")
 	if err != nil {
 		return out, err
 	}
-	defer rows.Close()
-	attempts := []nativeAnalyticsAttempt{}
+	attempts := population.Items
+	out.Partial = out.Partial || population.Partial
+	if population.Malformed {
+		out.Unavailable = append(out.Unavailable, "recorded_phases_malformed")
+	}
+	if population.Clipped {
+		out.CostPerOutcome.Clipped = true
+		out.Activity.Partial = true
+		for i := range out.Digest {
+			out.Digest[i].Activity.Partial = true
+		}
+	}
 	phases := map[string]nativeAnalyticsPhase{}
-	for rows.Next() {
-		var a nativeAnalyticsAttempt
-		var from, to, raw, activityRaw, identityRaw, landingRaw string
-		var dropped int
-		if err := rows.Scan(&a.AttemptID, &a.WorkItemID, &a.Status, &from, &to, &raw, &dropped, &activityRaw, &identityRaw, &landingRaw, &a.UsageRowsObserved); err != nil {
-			return out, err
-		}
-		if err := json.Unmarshal([]byte(identityRaw), &a.Identity); err != nil {
-			return out, err
-		}
-		if err := json.Unmarshal([]byte(landingRaw), &a.Landing); err != nil {
-			return out, err
-		}
-		if len(attempts) == maxAnalyticsPopulation {
-			out.Partial = true
-			out.CostPerOutcome.Clipped = true
-			out.Activity.Partial = true
-			for i := range out.Digest {
-				out.Digest[i].Activity.Partial = true
-			}
-			break
-		}
-		a.StartedAt, err = parseTimeValue(from)
-		if err != nil {
-			return out, err
-		}
-		a.ObservedAt, err = parseTimeValue(to)
-		if err != nil {
-			return out, err
-		}
-		if err = json.Unmarshal([]byte(raw), &a.Phases); err != nil {
-			a.Phases = nil
-			out.Partial = true
-			if !slices.Contains(out.Unavailable, "recorded_phases_malformed") {
-				out.Unavailable = append(out.Unavailable, "recorded_phases_malformed")
-			}
-		}
-		if len(a.Phases) == 0 {
-			out.Partial = true
-		}
-		if dropped > 0 {
-			out.Partial = true
-		}
+	for i := range attempts {
+		a := &attempts[i]
 		for _, p := range a.Phases {
 			if p.FinishedAt.IsZero() || !p.FinishedAt.After(p.StartedAt) || p.FinishedAt.Before(w.From) || !p.FinishedAt.Before(w.To) {
 				continue
@@ -330,14 +299,7 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND julianday(star
 		if a.ObservedAt.After(out.SourceAt) {
 			out.SourceAt = a.ObservedAt
 		}
-		projectNativeAnalyticsActivity(&out, &a, activityRaw)
-		attempts = append(attempts, a)
-	}
-	if err := rows.Err(); err != nil {
-		return out, err
-	}
-	if err := rows.Close(); err != nil {
-		return out, err
+		projectNativeAnalyticsActivity(&out, a, a.activityRaw)
 	}
 	out.AttemptsObserved = len(attempts)
 	for _, a := range attempts {
@@ -360,7 +322,7 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND julianday(star
 	if len(phases) == 0 {
 		out.Unavailable = append(out.Unavailable, "recorded_phases")
 	}
-	rows, err = q.QueryContext(ctx, `SELECT coalesce(json_extract(data_json,'$.decision.source'),''), coalesce(json_extract(data_json,'$.decision.reason'),''), recorded_at
+	rows, err := q.QueryContext(ctx, `SELECT coalesce(json_extract(data_json,'$.decision.source'),''), coalesce(json_extract(data_json,'$.decision.reason'),''), recorded_at
 FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND json_extract(data_json,'$.decision.outcome')='skipped'
 AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) ORDER BY recorded_at,id LIMIT ?`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), maxAnalyticsPopulation+1)
 	if err != nil {

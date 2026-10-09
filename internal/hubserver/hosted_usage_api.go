@@ -40,6 +40,7 @@ const defaultUsageRange = "7d"
 // authenticates the hosted session itself, and usageSessionOnly refuses a
 // bearer credential so the route never answers anything but that session.
 func (s *Service) registerHostedUsageRoutes(e *echo.Echo) {
+	e.GET("/api/v2/organizations/:organization/activity", s.hostedActivity, s.operatorAuthority)
 	e.GET("/api/v2/organizations/:organization/usage", s.hostedUsageReport, s.usageSessionOnly)
 	e.GET("/api/v2/organizations/:organization/diagnostics/requests", s.hostedRequestMetrics, s.operatorAuthority)
 	e.GET("/api/v2/organizations/:organization/diagnostics", s.hostedDiagnostics, s.usageSessionOnly, s.operatorAuthority)

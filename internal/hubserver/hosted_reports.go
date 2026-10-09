@@ -357,12 +357,7 @@ func reportsAttemptTotals(attempts []nativeAnalyticsAttempt, usage map[string][]
 			row.Succeeded++
 		}
 		if a.Status == "succeeded" || a.Status == "failed" {
-			var seconds float64
-			for _, phase := range a.Phases {
-				if !phase.FinishedAt.IsZero() {
-					seconds += max(0, phase.FinishedAt.Sub(phase.StartedAt).Seconds())
-				}
-			}
+			seconds := closedAttemptSeconds(a.Phases)
 			if seconds > 0 {
 				durations[key] = append(durations[key], seconds)
 			}
