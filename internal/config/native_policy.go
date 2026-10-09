@@ -130,7 +130,7 @@ func (b nativeBehavior) apply(local Config) Config {
 
 func resolveNativePolicy(workflow Workflow) (policy.Descriptor, error) {
 	if workflow.DefinitionSources != nil {
-		sources, err := nativeAuthoredSources(*workflow.DefinitionSources)
+		sources, err := nativeAuthoredSources(*workflow.DefinitionSources, workflow.Authored.Version)
 		if err != nil {
 			return policy.Descriptor{}, err
 		}

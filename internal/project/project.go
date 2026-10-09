@@ -2205,9 +2205,12 @@ func workflowConfigWithProjectPaths(project globalconfig.Project, workflow workf
 	if workflow.Tracker.Kind == workflowconfig.TrackerLocalSQLite || workflow.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
 		workflow.Tracker.LocalSQLite.Path = projectRelativePath(workdir, workflow.Tracker.LocalSQLite.Path)
 	}
+	workflow.Workspace.Root = projectRelativePath(workdir, workflow.Workspace.Root)
+	workflow.Workspace.SourceRoot = projectRelativePath(workdir, workflow.Workspace.SourceRoot)
+	if workflow.Workspace.Kind == workflowconfig.WorkspaceLocalGit && workflow.Workspace.SourceRoot == "" {
+		workflow.Workspace.SourceRoot = workdir
+	}
 	if workflow.Workspace.Kind == workflowconfig.WorkspaceFilesystem {
-		workflow.Workspace.Root = projectRelativePath(workdir, workflow.Workspace.Root)
-		workflow.Workspace.SourceRoot = projectRelativePath(workdir, workflow.Workspace.SourceRoot)
 		workflow.Workspace.OutputRoot = projectRelativePath(workdir, workflow.Workspace.OutputRoot)
 	}
 	if workflow.Deliverable.Kind == workflowconfig.DeliverableArtifact {

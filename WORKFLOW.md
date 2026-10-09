@@ -71,7 +71,7 @@ For this Detent repository and its selected native Cloud project, reproducible s
 
 ## Isolation Contract
 
-Detent provisions each issue worktree from the runner's isolated source checkout. Never edit the human's primary checkout or another issue workspace. Use the provided worker TMPDIR/TMP/TEMP. Do not use git stash or change shared refs. Do not stop, restart or signal any live Detent service. Tests that need a server use port 0 and an isolated database/config. Detent owns cleanup.
+Detent supplies the provisioned workspace and source checkout locations in the runtime isolation context. Never edit the source checkout, the human's primary checkout or another issue workspace. Use the provided worker TMPDIR/TMP/TEMP. Do not use git stash or change shared refs. Do not stop, restart or signal any live Detent service. Tests that need a server use port 0 and an isolated database/config. Detent owns cleanup.
 
 ## Browser Verification In Workers
 

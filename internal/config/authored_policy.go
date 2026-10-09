@@ -13,16 +13,23 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 )
 
-const PolicyCanonicalizationVersion = 2
+const (
+	PolicyCanonicalizationVersion       = 2
+	NativePolicyCanonicalizationVersion = 3
+)
 
-func nativeAuthoredSources(sources ProjectDefinitionSources) (ProjectDefinitionSources, error) {
+func nativeAuthoredSources(sources ProjectDefinitionSources, version int) (ProjectDefinitionSources, error) {
 	for _, input := range []struct {
 		raw      *[]byte
 		markdown bool
+		present  *bool
 	}{
-		{&sources.Workflow, true}, {&sources.Config, false}, {&sources.LocalWorkflow, true}, {&sources.LocalConfig, false},
+		{&sources.Workflow, true, nil}, {&sources.Config, false, nil}, {&sources.LocalWorkflow, true, &sources.HasLocalWorkflow}, {&sources.LocalConfig, false, &sources.HasLocalConfig},
 	} {
 		if len(*input.raw) == 0 {
+			if version >= 3 && input.present != nil {
+				*input.present = false
+			}
 			continue
 		}
 		raw := *input.raw
@@ -39,6 +46,7 @@ func nativeAuthoredSources(sources ProjectDefinitionSources) (ProjectDefinitionS
 		if err := yaml.Unmarshal(raw, &node); err != nil {
 			return sources, err
 		}
+		empty := len(node.Content) == 0
 		if len(node.Content) > 0 {
 			expanded, err := expandAuthoredAliases(&node, make(map[*yaml.Node]bool))
 			if err != nil {
@@ -54,11 +62,17 @@ func nativeAuthoredSources(sources ProjectDefinitionSources) (ProjectDefinitionS
 			for _, path := range []string{"deliverable.output_root", "deliverable.review_url", "agent.max_concurrent_agents", "agent.max_concurrent_agents_by_state", "agent.rate_window_pacing", "agent.shutdown", "agent.lessons.path", "agent.knowledge.sources", "agent.skills.path", "agent.budget.pricing_path", "budget.pricing_path"} {
 				removeAuthoredPath(root, strings.Split(path, "."))
 			}
+			empty = emptyAuthoredOverlay(root)
 			sortAuthoredMappings(&node)
 			raw, err = yaml.Marshal(&node)
 			if err != nil {
 				return sources, err
 			}
+		}
+		if version >= 3 && input.present != nil && empty && strings.TrimSpace(string(normalizeProjectDefinitionPrompt(document.prompt))) == "" {
+			*input.present = false
+			*input.raw = []byte{}
+			continue
 		}
 		if input.markdown && document.hasFrontmatter {
 			*input.raw = append(append(append([]byte("---\n"), raw...), []byte("---\n")...), []byte(strings.TrimSpace(string(normalizeProjectDefinitionPrompt(document.prompt))))...)
@@ -69,6 +83,18 @@ func nativeAuthoredSources(sources ProjectDefinitionSources) (ProjectDefinitionS
 		}
 	}
 	return sources, nil
+}
+
+func emptyAuthoredOverlay(node *yaml.Node) bool {
+	if node.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		if node.Content[i].Value != "schema" && !emptyAuthoredOverlay(node.Content[i+1]) {
+			return false
+		}
+	}
+	return true
 }
 
 func expandAuthoredAliases(node *yaml.Node, ancestors map[*yaml.Node]bool) (*yaml.Node, error) {
@@ -234,7 +260,7 @@ func authoredProjectDefinitionVersion(sources ProjectDefinitionSources, version 
 	switch version {
 	case 1:
 		value = files
-	case 2:
+	case 2, 3:
 		value = struct{ Files map[string]any }{files}
 	default:
 		return nil, fmt.Errorf("unsupported policy canonicalization version %d", version)

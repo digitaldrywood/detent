@@ -506,6 +506,9 @@ func prependWorkspaceIsolationBlock(prompt string, cfg config.Config, workspaceP
 	block := fmt.Sprintf("## Detent workspace isolation\n\n"+
 		"Detent's worktree `%s` and branch `%s` satisfy isolation. Never require different branch naming or workspace prerequisites.\n"+
 		"Use `TMPDIR`/`TMP`/`TEMP` for all scratch output; Detent cleans it after exit. Never use host-temp siblings.", workspacePath, branch)
+	if sourceRoot := strings.TrimSpace(cfg.Workspace.SourceRoot); sourceRoot != "" {
+		block += fmt.Sprintf("\nDetent provisioned this worktree from the runner's source checkout at `%s`. Work only in the provisioned worktree; do not edit the source checkout.", sourceRoot)
+	}
 
 	return block + "\n\n" + strings.TrimLeft(prompt, " \t\r\n")
 }
@@ -1030,6 +1033,7 @@ func promptAssigns(cfg config.Config, issue connector.Issue, opts PromptOptions)
 			"auto_branch": autoBranch,
 			"kind":        cfg.Workspace.Kind,
 			"path":        opts.WorkspacePath,
+			"source_root": cfg.Workspace.SourceRoot,
 			"branch":      opts.Branch,
 		},
 		"deliverable": deliverableAssigns(cfg.Deliverable),

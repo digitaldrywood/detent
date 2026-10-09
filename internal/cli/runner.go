@@ -119,6 +119,7 @@ func withRunnerFactoryWithIsolation(
 			token = strings.TrimSpace(githubTokenSource[0]())
 		}
 		workflow.Config = workflow.Config.WithRuntimeGitHubToken(token)
+		workflow.Config = project.EffectivePolicyConfig(cfg, workflow.Config)
 
 		run := deps.Runner
 		if run == nil {

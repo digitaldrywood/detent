@@ -150,6 +150,21 @@ configuration/source digests and revisions identify the portable behavior and
 instructions rather than raw host-specific file bytes. Repository compatibility
 policies retain their original file/revision approval semantics.
 
+Native authored policy canonicalization version 3 omits local overlays whose
+filtered configuration contains only the schema marker or no keys and whose
+prompt is empty. Shared commands, permission grants and instructions still
+contribute to identity. Keep host paths out of authored prompt prose; runtime
+isolation context supplies the provisioned workspace and source checkout.
+Templates can use `{{ workspace.path }}` and `{{ workspace.source_root }}`
+without hashing the rendered host paths. Workspace roots resolve relative to
+each runner's project `workdir` in `global.yaml`.
+
+Upgrading to version 3 requires a one-time approval of the portable definition
+through the existing policy approval path. Version 1 and 2 snapshots remain
+verifiable and applicable; existing leases retain their pinned approval. All
+runners must use the same portable definition and canonicalization version
+before reporting one shared policy identity.
+
 For repository-controlled native workflows, enrolled runners compare the loaded
 definition with committed contents and verify ancestry against the configured
 origin's advertised default-branch HEAD. The Hub automatically applies eligible

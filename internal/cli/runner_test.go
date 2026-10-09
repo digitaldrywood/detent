@@ -769,10 +769,19 @@ func TestProjectDependenciesInjectsNonNilRunner(t *testing.T) {
 	}, serviceapi.Connection{}, nil)
 
 	workflowPath := writeWorkflowFile(t)
-	_, err := factory(globalconfig.Project{
+	raw, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = []byte(strings.Replace(string(raw), filepath.Join(filepath.Dir(workflowPath), "workspaces"), ".detent/workspaces", 1))
+	if err := os.WriteFile(workflowPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workdir := t.TempDir()
+	_, err = factory(globalconfig.Project{
 		ID:       "alpha",
 		Workflow: workflowPath,
-		Workdir:  filepath.Dir(workflowPath),
+		Workdir:  workdir,
 		Weight:   1,
 	})
 	if !errors.Is(err, errProjectFactoryStub) {
@@ -787,6 +796,9 @@ func TestProjectDependenciesInjectsNonNilRunner(t *testing.T) {
 	}
 	if run.Runner == nil {
 		t.Fatal("SSH runner has no local runner")
+	}
+	if info, err := os.Stat(filepath.Join(workdir, ".detent", "workspaces")); err != nil || !info.IsDir() {
+		t.Fatalf("runner did not provision its workdir-relative workspace root: %v", err)
 	}
 }
 

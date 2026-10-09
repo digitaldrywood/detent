@@ -1200,11 +1200,19 @@ func TestBuildPromptPrependsWorkspaceIsolationBlock(t *testing.T) {
 		name          string
 		workspacePath string
 		branch        string
+		sourceRoot    string
 	}{
 		{
 			name:          "project scoped issue branch",
 			workspacePath: "/workspaces/detent-digitaldrywood_detent_527-74ece90926d1",
 			branch:        "detent/detent-digitaldrywood_detent_527-74ece90926d1",
+			sourceRoot:    "/runner/source",
+		},
+		{
+			name:          "another host",
+			workspacePath: "/Users/runner/source/.detent/workspaces/issue-527",
+			branch:        "detent/issue-527",
+			sourceRoot:    "/Users/runner/source",
 		},
 	}
 
@@ -1213,7 +1221,8 @@ func TestBuildPromptPrependsWorkspaceIsolationBlock(t *testing.T) {
 			t.Parallel()
 
 			prompt, err := BuildPrompt(config.Workflow{
-				Prompt: "Issue prompt",
+				Prompt: "Issue prompt: {{ workspace.path }} from {{ workspace.source_root }}",
+				Config: config.Config{Workspace: config.Workspace{SourceRoot: tt.sourceRoot}},
 			}, connector.Issue{
 				Identifier: "digitaldrywood/detent#527",
 				Title:      "Prompt isolation",
@@ -1231,7 +1240,8 @@ func TestBuildPromptPrependsWorkspaceIsolationBlock(t *testing.T) {
 				"Never require different branch naming or workspace prerequisites.",
 				"Use `TMPDIR`/`TMP`/`TEMP` for all scratch output",
 				"Never use host-temp siblings",
-				"Issue prompt",
+				"source checkout at `" + tt.sourceRoot + "`",
+				"Issue prompt: " + tt.workspacePath + " from " + tt.sourceRoot,
 			} {
 				if !strings.Contains(prompt, want) {
 					t.Fatalf("prompt missing %q:\n%s", want, prompt)
