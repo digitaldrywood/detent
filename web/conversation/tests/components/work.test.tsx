@@ -24,6 +24,7 @@ import { diffSource, readAttemptDiff, type DiffSource } from "../../src/app/adap
 import { WorkList } from "../../src/app/work/components/WorkList.tsx";
 import { WorkTopBar } from "../../src/app/work/components/WorkTopBar.tsx";
 import { CompletedCounter } from "../../src/app/work/components/CompletedCounter.tsx";
+import { LiveCounter } from "../../src/app/work/components/LiveCounter.tsx";
 import { toAttemptView, toWorkItemView, transitionsFrom } from "../../src/app/work/lib/fromWire.ts";
 import { boardStats, isBlocked, isLive, type Lane, type WorkItemView } from "../../src/app/work/lib/model.ts";
 
@@ -664,6 +665,12 @@ describe("completed counts", () => {
       expect(fallback[key]).toBe(current.totals![key]);
     }
     expect(fallback.running + fallback.waiting + fallback.needAttention + fallback.backlog).toBe(34);
+
+    let filtered!: ReturnType<typeof useBoard>;
+    function FilteredProbe() { filtered = useBoard("proj_alpha", { ...DEFAULT_VIEW_STATE, completedWindow: "all", state: ["In Progress", "Rework"] }); return <div />; }
+    render(<ClientContext.Provider value={fixture.client}><FilteredProbe /></ClientContext.Provider>);
+    await waitFor(() => expect(filtered.resolved).toBe(true));
+    expect(filtered.totals?.running).toBe(2);
   });
 
   it.each([{ loadedCount: 100, total: 143 }, { loadedCount: 108, total: 569 }])("keeps scoped counts while refreshing without global pagination ($loadedCount of $total)", ({ total }) => {
@@ -678,6 +685,18 @@ describe("completed counts", () => {
     expect(counts.textContent).toContain(`${totals.completed} completed · 48h`);
     mounted.rerender(<CompletedCounter {...props} />);
     expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
+  });
+
+  it.each([
+    { count: 6, text: "6 live", pulses: true },
+    { count: 0, text: "0 live", pulses: false },
+    { count: null, text: "— live", pulses: false },
+  ])("shows $text board-wide", ({ count, text, pulses }) => {
+    render(<LiveCounter count={count} loading={false} />);
+    const live = screen.getByTestId("stat-live");
+    expect(live.textContent).toBe(text);
+    expect(live.getAttribute("aria-label")).toBe(text);
+    expect(live.querySelector(".motion-safe\\:animate-status-pulse") !== null).toBe(pulses);
   });
 });
 
