@@ -71,7 +71,7 @@ func startRunnerProjects(ctx context.Context, manager *project.Manager, heartbea
 	var startupErr error
 	health := manager.Registry().Health()
 	for _, selected := range health {
-		if selected.LastError == "" {
+		if selected.LastError == "" || selected.Transient && !selected.RetryStopped {
 			return nil
 		}
 		startupErr = errors.Join(startupErr, fmt.Errorf("project %s: %s", selected.Project.ID, selected.LastError))

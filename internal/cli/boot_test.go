@@ -59,7 +59,7 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 				var response any
 				switch {
 				case r.URL.Path == "/api/v2/capabilities":
-					response = map[string]any{"version": "dev", "protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeRunnerUpdateCapability}}
+					response = map[string]any{"version": "dev", "protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeRunnerUpdateCapability, tracker.NativeProviderCapacityCapability}}
 				case strings.HasSuffix(r.URL.Path, "/runners/"+identity.Identity.RunnerID):
 					response = identity.Identity
 				case strings.HasSuffix(r.URL.Path, "/projects/prj_test"):

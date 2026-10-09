@@ -17,6 +17,8 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/hub"
 )
 
@@ -1217,6 +1219,7 @@ func (m *Manager) recordPendingFailure(
 		At:          m.nowUTC(),
 		NextRetryAt: nextRetryAt,
 		Terminal:    terminal,
+		Transient:   transientStartupError(err),
 	}
 	if pendingErr := m.registry.SetPending(cfg, runtimeErr); pendingErr != nil {
 		m.logger.Warn("record pending project startup failed", "project_id", cfg.ID, "error", pendingErr)
@@ -1225,7 +1228,11 @@ func (m *Manager) recordPendingFailure(
 
 func (m *Manager) retryRuntimeError(err error, delay time.Duration) RuntimeError {
 	at := m.nowUTC()
-	return RuntimeError{Message: err.Error(), At: at, NextRetryAt: at.Add(delay)}
+	return RuntimeError{Message: err.Error(), At: at, NextRetryAt: at.Add(delay), Transient: transientStartupError(err)}
+}
+
+func transientStartupError(err error) bool {
+	return errors.Is(err, githubconnector.ErrTransient) || errors.Is(err, forgeavailability.ErrUnavailable)
 }
 
 func (m *Manager) retryDelay(attempt int) time.Duration {
