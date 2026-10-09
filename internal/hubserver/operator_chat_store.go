@@ -57,6 +57,12 @@ func (store operatorChatStore) Save(ctx context.Context, state chat.SessionState
 }
 
 func (s *Service) resolveOperatorChatAuthority(ctx context.Context, identity operatortool.Identity) (operatortool.Authority, error) {
+	if resolve, ok := ctx.Value(hubOperatorResolverKey{}).(func(context.Context) (apiCredential, error)); ok {
+		current, err := resolve(ctx)
+		if err == nil && current.EntryKey != nil && operatorIdentity(current, identity.OrganizationID) == identity {
+			return s.operatorCurrentAuthority(ctx, current, identity.OrganizationID)
+		}
+	}
 	var credential apiCredential
 	var err error
 	if identity.SessionID == "" {

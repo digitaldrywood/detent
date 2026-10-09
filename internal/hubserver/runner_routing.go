@@ -461,6 +461,12 @@ WHERE t.id = ? AND t.token_hash = ? AND g.organization_id = ? AND g.project_id =
 }
 
 func requireCredentialAuthority(ctx context.Context, tx *sql.Tx, credential apiCredential, now time.Time) error {
+	if credential.EntryKey != nil {
+		if !credential.EntryKey.Valid() || credential.Runner.RunnerID != "" || credential.Hosted == nil || !credential.Hosted.ExpiresAt.After(now) {
+			return runnerUnauthorized()
+		}
+		return nil
+	}
 	var hash, created string
 	var revoked, expires sql.NullString
 	err := tx.QueryRowContext(ctx, "SELECT token_hash, created_at, revoked_at, expires_at FROM api_tokens WHERE id = ?", credential.ID).Scan(&hash, &created, &revoked, &expires)

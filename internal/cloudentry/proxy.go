@@ -3,6 +3,7 @@ package cloudentry
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -279,7 +281,26 @@ func (s *Service) proxy(c echo.Context) error {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "Service is temporarily unavailable"})
 	}
 	verification := "machine"
-	if request.Header.Get(echo.HeaderAuthorization) == "" {
+	if request.Header.Get(echo.HeaderAuthorization) != "" {
+		hash, err := keyBearer(c)
+		if err != nil {
+			return keyError(c, err)
+		}
+		key, err := s.activeAccessKey(ctx, hash)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return keyError(c, err)
+		}
+		if err == nil {
+			claims, err = s.keyClaims(ctx, key, organization, request.Method, request.URL.RequestURI(), body)
+			if err != nil {
+				return keyError(c, err)
+			}
+			if err := s.recordKeyUse(ctx, key.ID, organization.ID); err != nil {
+				return keyError(c, err)
+			}
+			verification = "key"
+		}
+	} else {
 		status, verified, err := s.browserClaims(c, organization, &claims)
 		verification = verified
 		if err != nil {
@@ -326,6 +347,9 @@ func (s *Service) proxy(c echo.Context) error {
 				r.Out.Header.Del(header)
 			}
 			r.Out.Header.Set(cloudassert.Header, assertion)
+			if claims.Kind == cloudassert.KindKey {
+				r.Out.Header.Del(echo.HeaderAuthorization)
+			}
 			r.Out.Body = io.NopCloser(bytes.NewReader(body))
 			r.Out.ContentLength = int64(len(body))
 		},
@@ -432,6 +456,9 @@ func (s *Service) signedCallCSRF(ctx context.Context, organization Organization,
 	}
 	defer response.Body.Close()
 	limit := int64(tenantCallResponseLimit)
+	if claims.Path == "/internal/v1/keys/catalog" || claims.Path == "/internal/v1/keys/call" {
+		limit = mcp.MaxHTTPResponseBytes
+	}
 	if claims.Path == "/internal/v1/diff-bodies/batch" {
 		limit = 6*tracker.MaxDiffPatchBytes + (1 << 20)
 	}

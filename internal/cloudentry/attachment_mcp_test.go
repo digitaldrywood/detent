@@ -19,7 +19,11 @@ import (
 
 func attachmentMCPClient(t *testing.T, browser *browser, token, protocol string) func(string, any) (json.RawMessage, bool) {
 	t.Helper()
-	path := "/organizations/org_alpha/mcp"
+	return entryMCPClient(t, browser, token, protocol, "/organizations/org_alpha/mcp")
+}
+
+func entryMCPClient(t *testing.T, browser *browser, token, protocol, path string) func(string, any) (json.RawMessage, bool) {
+	t.Helper()
 	headers := map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token, "Mcp-Protocol-Version": protocol}
 	if protocol != "2026-07-28" {
 		initialized := attachmentRequest(t, browser, http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"`+protocol+`","capabilities":{},"clientInfo":{"name":"attachment-operations","version":"1"}}}`), headers)

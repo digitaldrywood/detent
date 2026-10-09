@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
 
@@ -51,6 +52,18 @@ func TestVerify(t *testing.T) {
 		ok     bool
 	}{
 		{name: "valid browser", key: key, ok: true},
+		{name: "valid key", key: key, ok: true, mutate: func(c *cloudassert.Claims) {
+			*c = cloudassert.Claims{Issuer: c.Issuer, Audience: c.Audience, Generation: c.Generation, Kind: cloudassert.KindKey, Subject: "user_a", ProviderOrganization: "porg_a", Role: "member", Key: &apikey.KeyAuthority{ID: "key_a", Kind: "personal", Permission: apikey.ScopeWrite, ProjectContext: apikey.ProjectContext{Access: "all"}}, Method: c.Method, Path: c.Path, BodyDigest: c.BodyDigest, IssuedAt: c.IssuedAt, ExpiresAt: c.ExpiresAt, ID: c.ID}
+		}},
+		{name: "browser with key authority", key: key, mutate: func(c *cloudassert.Claims) {
+			c.Key = &apikey.KeyAuthority{ID: "key_a", Kind: "personal", Permission: apikey.ScopeAdmin, ProjectContext: apikey.ProjectContext{Access: "all"}}
+		}},
+		{name: "key with browser authority", key: key, mutate: func(c *cloudassert.Claims) {
+			c.Kind = cloudassert.KindKey
+			c.Key = &apikey.KeyAuthority{ID: "key_a", Kind: "personal", Permission: apikey.ScopeAdmin, ProjectContext: apikey.ProjectContext{Access: "all"}}
+		}},
+		{name: "key missing authority", key: key, mutate: func(c *cloudassert.Claims) { c.Kind = cloudassert.KindKey }},
+
 		{name: "wrong key", key: other},
 		{name: "wrong audience", key: key, mutate: func(c *cloudassert.Claims) { c.Audience = "org_b" }},
 		{name: "wrong issuer", key: key, mutate: func(c *cloudassert.Claims) { c.Issuer = "other" }},

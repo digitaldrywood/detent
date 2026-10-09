@@ -17,6 +17,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent"
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
@@ -598,6 +599,28 @@ func (s *Service) hostedReadableProjects(ctx context.Context, credential apiCred
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.id, p.name, p.profile, p.states_json, g.can_write, g.manage_runner
 FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id
 WHERE p.deleted_at IS NULL AND g.user_id = ? AND p.organization_id = ? ORDER BY p.name, p.id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
+	if credential.EntryKey != nil {
+		if rows != nil {
+			_ = rows.Close()
+		}
+		projects, encodeErr := json.Marshal(credential.EntryKey.Projects)
+		if encodeErr != nil {
+			return nil, encodeErr
+		}
+		blocked, encodeErr := json.Marshal(credential.EntryKey.BlockedProjects)
+		if encodeErr != nil {
+			return nil, encodeErr
+		}
+		kind, owner := credential.EntryKey.Kind, credential.Hosted.Subject
+		rows, err = s.database.reader.QueryContext(ctx, `SELECT p.id,p.name,p.profile,p.states_json,
+CASE WHEN ?='service' THEN 1 ELSE COALESCE((SELECT g.can_write FROM hosted_project_grants g WHERE g.user_id=? AND g.project_id=p.id),0) END,
+CASE WHEN ?='service' THEN 1 ELSE COALESCE((SELECT g.manage_runner FROM hosted_project_grants g WHERE g.user_id=? AND g.project_id=p.id),0) END
+FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=?
+AND (?='service' OR EXISTS (SELECT 1 FROM hosted_project_grants g JOIN hosted_members m ON m.user_id=g.user_id JOIN api_tokens t ON t.id=m.principal_id WHERE g.user_id=? AND g.organization_id=p.organization_id AND g.project_id=p.id AND m.active=1 AND t.revoked_at IS NULL))
+AND (?='all' OR p.id IN (SELECT value FROM json_each(?) WHERE type='text'))
+AND p.id NOT IN (SELECT value FROM json_each(?) WHERE type='text')
+ORDER BY p.name,p.id`, kind, owner, kind, owner, s.config.Hosted.OrganizationID, kind, owner, credential.EntryKey.Access, string(projects), string(blocked))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("list project grants: %w", err)
 	}
@@ -614,6 +637,11 @@ WHERE p.deleted_at IS NULL AND g.user_id = ? AND p.organization_id = ? ORDER BY 
 		// Viewers never write or manage runners regardless of the grant flag
 		// (requireHostedProject, requireHostedAdministration).
 		viewer := credential.HostedRole == "viewer"
+		if credential.EntryKey != nil {
+			project.CanWrite = project.CanWrite && hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeWrite)
+			project.CanManageRunners = project.CanManageRunners && hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeAdmin)
+		}
+
 		project.CanWrite = project.CanWrite && !viewer
 		project.CanManageRunners = project.CanManageRunners && !viewer
 		projects = append(projects, project)

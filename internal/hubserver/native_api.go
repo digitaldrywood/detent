@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -71,6 +72,10 @@ func isNativeConflict(err error) bool {
 }
 
 func (s *Service) nativeAPIError(c echo.Context, err error) error {
+	var refusal *apikey.Refusal
+	if errors.As(err, &refusal) {
+		return c.JSON(http.StatusForbidden, refusal)
+	}
 	if errors.Is(err, operatortool.ErrAccessDenied) {
 		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: err.Error()})
 	}
@@ -309,6 +314,9 @@ func (scope nativeScope) actor() tracker.Actor {
 	kind := "human"
 	if scope.credential.Scope == apiScopeWorker {
 		kind = "runner"
+	}
+	if scope.credential.EntryKey != nil && scope.credential.EntryKey.Kind == "service" {
+		kind = "integration"
 	}
 	return tracker.Actor{Kind: kind, PrincipalID: operatorIdentity(scope.credential, string(scope.organization)).PrincipalID}
 }

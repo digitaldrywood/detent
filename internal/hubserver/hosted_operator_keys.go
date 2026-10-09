@@ -23,6 +23,10 @@ const (
 
 func (credential apiCredential) projectGrantSQL(organization, project string) (string, []any) {
 	live := "EXISTS (SELECT 1 FROM projects live_project WHERE live_project.organization_id=" + organization + " AND live_project.id=" + project + " AND live_project.deleted_at IS NULL)"
+	if credential.EntryKey != nil {
+		condition, args := credential.entryKeyGrantSQL(organization, project)
+		return live + " AND (" + condition + ")", args
+	}
 	if credential.Scope == apiScopeAdmin && !credential.NativeOnly {
 		return live, nil
 	}
