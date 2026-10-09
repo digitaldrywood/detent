@@ -119,6 +119,7 @@ func TestCatalogDecoderContract(t *testing.T) {
 			targets[definition.Name] = group.target
 		}
 	}
+	targets[Activity] = reflect.TypeFor[ActivityRequest]()
 	for _, name := range []string{AnalyticsDashboard, TimeSeries, Reports} {
 		targets[name] = reflect.TypeFor[AnalyticsRequest]()
 	}

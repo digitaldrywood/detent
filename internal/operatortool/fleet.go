@@ -22,6 +22,7 @@ const (
 	Dashboard                = "dashboard"
 	HealthDashboard          = "health_dashboard"
 	DiagnosticsDashboard     = "diagnostics_dashboard"
+	Activity                 = "activity"
 	AnalyticsDashboard       = "analytics_dashboard"
 	TimeSeries               = "time_series"
 	Reports                  = "reports"
@@ -81,6 +82,7 @@ func FleetCatalog() []Definition {
 		add(name, description, `"limit":{"type":"integer","minimum":1,"maximum":200}`, "", true, false)
 	}
 	page := `"limit":{"type":"integer","minimum":1,"maximum":200},"offset":{"type":"integer","minimum":0,"maximum":100000}`
+	add(Activity, "Read all running attempts, bounded recent outcomes and typical stage durations within current project grants. Running work is independent of the recent window; typical durations use the Reports population and combine model and effort.", `"runner_id":`+boundedID+`,"limit":{"type":"integer","minimum":1,"maximum":200},"from":{"type":"string","maxLength":64},"to":{"type":"string","maxLength":64}`, "", true, false)
 	add(AnalyticsDashboard, "Read dashboard analytics attempts and activity within current project grants.", page, "", true, false)
 	add(TimeSeries, "Read bounded bucketed project analytics with source and observation time.", page+`,"window":{"type":"string","maxLength":64},"bucket":{"type":"string","maxLength":64}`, "", true, false)
 	add(Reports, "Read scoped usage, digest, efficiency, rework and escape rates with cause attribution and bounded population. For pending escape classification, use a read-only agent to assess get_change_version landing_quality, quote the incident and frozen contract or criterion evidence, and return a proposed escape assessment; an authorized caller records it through discuss_change. Never infer causality from candidate scheduled comparisons.", page+`,"row_offset":{"type":"integer","minimum":0,"maximum":100000}`+`,"from":{"type":"string","maxLength":64},"to":{"type":"string","maxLength":64},"bucket":{"type":"string","maxLength":64},"tz":{"type":"string","maxLength":128}`, "", true, false)

@@ -1179,6 +1179,37 @@ The discussion retains actor and evidence history. These writes never file
 issues, alter deduplication, reopen work or move workflow state. Existing
 scheduled-suite issue reporting remains the sole failure filing owner.
 
+### Organization attempt activity
+
+`GET /api/v2/organizations/{organization}/activity` and the `activity` MCP read
+serve the same tracker projection under current organization and project grants.
+Optional `project_id` and `runner_id` filters apply to running attempts, finished
+attempts and typical durations. `limit` bounds only finished attempts (default
+100, maximum 200). `from` and `to` accept RFC3339 timestamps or UTC dates, default
+to the last seven days, and must describe at most 90 days ending no later than now.
+
+`running[]` contains every visible attempt with a live lease, regardless of the
+recent window or analytics population cap. Rows identify the item, number, title,
+project, runner and attempt, with role in `stage`, current `phase`, attempt start,
+last recorded phase start in `stage_started_at`, and `stage_elapsed_seconds` at
+`observed_at`. Available links include `session_id`, live `workspace_ids`,
+`change_id` and `pull_request_url`. `finished[]` uses the same identities and
+links, plus `outcome`, `finished_at` and `stage_duration_seconds`. It is ordered
+by finish time descending, then attempt id descending, within `[from,to)`.
+Expired or released running leases project as interrupted, matching per-item
+attempt reads; their finish is the earlier lease release or expiry.
+
+`typical_durations[]` groups the Reports attempt population by project and role,
+combining models and efforts. It includes `count`, `seconds`, `p50_seconds` and
+`p90_seconds`, using the same sum of closed phase intervals for succeeded and
+failed attempts and the same percentile interpolation as Reports. Roles with no
+positive closed duration are omitted. The recent window selects overlapping
+attempts as Reports does; durations are not clipped to the window. Each project
+uses the existing 1,000-attempt analytics population cap. Clipping, missing,
+malformed or dropped phase history sets `partial`; missing timing fields are
+omitted rather than replaced with zero. The read adds no stored state or polling;
+clients refresh through the existing project event stream.
+
 ### Ordered attempts and recovery
 
 The `fenced_run_history` capability extends schema 1 with a positive decimal-string

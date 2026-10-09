@@ -26,13 +26,13 @@ type hubFleetExecutor struct{ service *Service }
 type hubFleetRequest = operatortool.HubFleetArguments
 
 func hubFleetTool(name string) bool {
-	if name == operatortool.AnalyticsDashboard || name == operatortool.TimeSeries || name == operatortool.Reports || name == operatortool.GetUrgentRunnerUpdate || name == operatortool.MarkUrgentRunnerUpdate {
+	if name == operatortool.Activity || name == operatortool.AnalyticsDashboard || name == operatortool.TimeSeries || name == operatortool.Reports || name == operatortool.GetUrgentRunnerUpdate || name == operatortool.MarkUrgentRunnerUpdate {
 		return true
 	}
 	return slices.Contains([]string{operatortool.UpdateApply, operatortool.GetRunnerUpdate, operatortool.InstanceHealth, operatortool.NativeCapabilities, operatortool.OutboxHealth, operatortool.CreateRunnerEnrollment, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.GetRunnerRouting, operatortool.ListRunnerRouting, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerHost, operatortool.GetRunnerCapacity, operatortool.UpdateRunnerCapacity, operatortool.HostedFleet, operatortool.GitHubRequestCounts}, name)
 }
 func hubFleetRequirement(name string) operatortool.Requirement {
-	if name == operatortool.AnalyticsDashboard || name == operatortool.TimeSeries || name == operatortool.Reports || name == operatortool.HostedFleet || name == operatortool.InstanceHealth || name == operatortool.NativeCapabilities || name == operatortool.OutboxHealth {
+	if name == operatortool.Activity || name == operatortool.AnalyticsDashboard || name == operatortool.TimeSeries || name == operatortool.Reports || name == operatortool.HostedFleet || name == operatortool.InstanceHealth || name == operatortool.NativeCapabilities || name == operatortool.OutboxHealth {
 		return operatortool.Requirement{Scope: apikey.ScopeRead}
 	}
 	return operatortool.Requirement{Scope: apikey.ScopeAdmin, ResourceKind: "runners"}
@@ -176,6 +176,9 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 	}
 	if !hubFleetTool(call.Name) {
 		return operatortool.NewAuthorizedExecutor(nil).Execute(ctx, call)
+	}
+	if call.Name == operatortool.Activity {
+		return s.executeActivityRead(ctx, call)
 	}
 	if call.Name == operatortool.AnalyticsDashboard || call.Name == operatortool.TimeSeries || call.Name == operatortool.Reports {
 		return s.executeAnalyticsRead(ctx, call)
@@ -643,7 +646,7 @@ func (e hubFleetExecutor) AuditAction(ctx context.Context, a chatpkg.Action, out
 // dashboard routes. Hosted browsers cannot access the legacy instance APIs.
 func (s *Service) hubFleetReadPermitted(name string, credential apiCredential) bool {
 	switch name {
-	case operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports:
+	case operatortool.Activity, operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports:
 		return s.config.Hosted != nil && s.database != nil
 	case operatortool.InstanceHealth, operatortool.NativeCapabilities:
 		return s.config.Hosted == nil

@@ -20,7 +20,14 @@ export const AttemptDiagnostics = {
   }))),
   runtime: Schema.optional(Schema.Struct({
     phase: Schema.String,
+    phases: Schema.optional(Schema.NullOr(Schema.Array(Schema.Struct({
+      name: Schema.String,
+      started_at: Schema.String,
+      finished_at: Schema.optional(Schema.String),
+    })))),
+    phases_dropped: Schema.optional(Schema.Number),
     identity: Schema.optional(Schema.Struct({
+      role: Schema.optional(Schema.String),
       resolved_model: Schema.optional(IdentityValue),
       requested_model: Schema.optional(IdentityValue),
       reasoning_effort: Schema.optional(IdentityValue),
