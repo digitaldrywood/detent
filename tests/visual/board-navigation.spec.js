@@ -12,6 +12,12 @@ test.beforeAll(async () => {
     "--demo-project",
     "demo-project",
   ]);
+  await expect
+    .poll(async () => (await fetch(`${runtime.url}/health`)).status, { timeout: 30_000 })
+    .toBe(200);
+  await expect
+    .poll(async () => (await (await fetch(`${runtime.url}/projects/demo-project/kanban`)).text()).includes('data-kanban-action="move"'), { timeout: 30_000 })
+    .toBe(true);
 });
 
 test.afterAll(async () => {
