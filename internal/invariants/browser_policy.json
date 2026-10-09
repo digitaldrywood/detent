@@ -109,8 +109,7 @@
     "tests/visual/work-defaults.spec.js",
     "tests/visual/work-list-tabs.spec.js",
     "tests/visual/work-views.spec.js",
-    "tests/visual/work.spec.js",
-    "tests/visual/workflow-revisions.spec.js"
+    "tests/visual/work.spec.js"
   ],
   "waitForTimeout": [],
   "toHaveScreenshot": [
@@ -192,7 +191,6 @@
     "tests/visual/work-defaults.spec.js",
     "tests/visual/work-list-tabs.spec.js",
     "tests/visual/work-views.spec.js",
-    "tests/visual/work.spec.js",
-    "tests/visual/workflow-revisions.spec.js"
+    "tests/visual/work.spec.js"
   ]
 }
