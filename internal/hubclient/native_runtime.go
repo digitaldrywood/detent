@@ -69,6 +69,17 @@ func (c *NativeClient) GitHubTimings(ctx context.Context, item tracker.NativeWor
 }
 
 func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracker.NativeRuntimeObservation) (err error) {
+	e.diagnosticMu.Lock()
+	if observation.LocalAttemptID > 0 {
+		e.diagnostic.LocalAttemptID = observation.LocalAttemptID
+	}
+	if observation.Generation > 0 {
+		e.diagnostic.Generation = observation.Generation
+	}
+	if observation.Phase != "" {
+		e.diagnostic.Stage = observation.Phase
+	}
+	e.diagnosticMu.Unlock()
 	defer func() {
 		if err != nil {
 			err = e.executionError(err)

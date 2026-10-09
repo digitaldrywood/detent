@@ -162,8 +162,26 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		t.Fatal("native execution omitted its read tools")
 	}
 	tools, handler := source.AgentTools()
-	if len(tools) != 12 {
-		t.Fatalf("native tools = %d, want 12", len(tools))
+	if len(tools) != 13 {
+		t.Fatalf("native tools = %d, want 13", len(tools))
+	}
+	diagnosticArgs, err := json.Marshal(map[string]any{"project_id": h.project, "runner_id": file.Identity.RunnerID, "issue_id": issue.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writes := 0
+	nativeTransport := h.scheduler.client.httpClient.Transport
+	h.scheduler.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet {
+			writes++
+		}
+		return nativeTransport.RoundTrip(request)
+	})
+	diagnosticResult, diagnosticErr := handler(t.Context(), runner.AgentToolCall{Name: operatortool.RunnerProjectDiagnostics, Arguments: diagnosticArgs})
+	h.scheduler.client.httpClient.Transport = nativeTransport
+	var diagnosticPage runnerauth.DiagnosticPage
+	if diagnosticErr != nil || !diagnosticResult.Success || json.Unmarshal([]byte(diagnosticResult.Content), &diagnosticPage) != nil || diagnosticPage.ProjectID != string(h.project) || diagnosticPage.RunnerID != file.Identity.RunnerID || writes != 0 {
+		t.Fatalf("worker diagnostic=%s error=%v writes=%d", diagnosticResult.Content, diagnosticErr, writes)
 	}
 	listArgs, err := json.Marshal(map[string]any{"project_id": h.project, "query": "native-search-existing", "limit": 1})
 	if err != nil {

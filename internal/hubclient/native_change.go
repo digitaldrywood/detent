@@ -31,7 +31,9 @@ func (e *nativeExecution) ownsChangeCompletion() bool {
 	return e.ownsIssueCompletion() && e.worktreeState != "dirty" && (e.preparedDisposition == nil || e.preparedDisposition.Status != "blocked")
 }
 
-func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int64) error {
+func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int64) (diagnosticErr error) {
+	done := e.diagnosticOperation("native.settle")
+	defer func() { done(diagnosticErr) }()
 	if e.settled || outcome != "succeeded" || !e.ownsChangeCompletion() {
 		return nil
 	}
@@ -165,7 +167,9 @@ func (e *nativeExecution) SetIntegrationSource(source func(context.Context, trac
 	e.integrationSource = source
 }
 
-func (e *nativeExecution) publishVersion(ctx context.Context, diff tracker.AttemptDiffRequest, change *runner.NativeChange) error {
+func (e *nativeExecution) publishVersion(ctx context.Context, diff tracker.AttemptDiffRequest, change *runner.NativeChange) (diagnosticErr error) {
+	done := e.diagnosticOperation("native.publishVersion")
+	defer func() { done(diagnosticErr) }()
 	id, reviewed, err := e.publishChangeVersion(ctx, change.ChangeID, diff)
 	if err != nil {
 		change.VersionID, change.VersionError, change.VersionCode, change.Reviewed = "", err.Error(), hubErrorCode(err), false

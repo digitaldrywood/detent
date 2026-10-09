@@ -208,6 +208,9 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 		if err := observation.Validate(); err != nil || observation.ProjectID != string(scope.project) {
 			return runnerauth.ProjectConfigurationRequest{}, nativeInvalid("Invalid project configuration observation")
 		}
+		if observation.Diagnostics != nil {
+			observation.Diagnostics.Redact()
+		}
 		observation.ObservedAt = now
 		observation.RunnerID, observation.RunnerRevision = "", 0
 		observation.Pending = false

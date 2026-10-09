@@ -39,32 +39,33 @@ type ProjectConfigurationReceipt struct {
 }
 
 type ProjectConfiguration struct {
-	LocalIntakeEnabled      bool               `json:"local_intake_enabled"`
-	LocalIntakeRemaining    []string           `json:"local_intake_remaining"`
-	LocalIntakeBlocked      []string           `json:"local_intake_blocked"`
-	RunnerID                string             `json:"runner_id,omitempty"`
-	RunnerRevision          int64              `json:"runner_revision,omitempty"`
-	RequestID               string             `json:"request_id,omitempty"`
-	AllowLocalBinding       bool               `json:"allow_local_binding"`
-	LocalBindingPolicy      *policy.Descriptor `json:"local_binding_policy,omitempty"`
-	RestrictedBindingPolicy *policy.Descriptor `json:"restricted_binding_policy,omitempty"`
-	ProjectID               string             `json:"project_id"`
-	Authority               string             `json:"authority"`
-	ConfigRevision          string             `json:"config_revision,omitempty"`
-	Registered              bool               `json:"registered"`
-	RuntimeRegistered       bool               `json:"runtime_registered"`
-	Paused                  bool               `json:"paused"`
-	Draining                bool               `json:"draining"`
-	UnsettledAttempts       int                `json:"unsettled_attempts"`
-	Source                  string             `json:"source"`
-	SelectedPolicy          *policy.Descriptor `json:"selected_policy,omitempty"`
-	EffectivePolicy         *policy.Descriptor `json:"effective_policy,omitempty"`
-	PolicyMismatch          bool               `json:"policy_mismatch"`
-	Pending                 bool               `json:"pending,omitempty"`
-	Saved                   bool               `json:"saved"`
-	Applied                 bool               `json:"applied"`
-	Constraint              string             `json:"constraint,omitempty"`
-	ObservedAt              time.Time          `json:"observed_at"`
+	Diagnostics             *ProjectDiagnostics `json:"diagnostics,omitempty"`
+	LocalIntakeEnabled      bool                `json:"local_intake_enabled"`
+	LocalIntakeRemaining    []string            `json:"local_intake_remaining"`
+	LocalIntakeBlocked      []string            `json:"local_intake_blocked"`
+	RunnerID                string              `json:"runner_id,omitempty"`
+	RunnerRevision          int64               `json:"runner_revision,omitempty"`
+	RequestID               string              `json:"request_id,omitempty"`
+	AllowLocalBinding       bool                `json:"allow_local_binding"`
+	LocalBindingPolicy      *policy.Descriptor  `json:"local_binding_policy,omitempty"`
+	RestrictedBindingPolicy *policy.Descriptor  `json:"restricted_binding_policy,omitempty"`
+	ProjectID               string              `json:"project_id"`
+	Authority               string              `json:"authority"`
+	ConfigRevision          string              `json:"config_revision,omitempty"`
+	Registered              bool                `json:"registered"`
+	RuntimeRegistered       bool                `json:"runtime_registered"`
+	Paused                  bool                `json:"paused"`
+	Draining                bool                `json:"draining"`
+	UnsettledAttempts       int                 `json:"unsettled_attempts"`
+	Source                  string              `json:"source"`
+	SelectedPolicy          *policy.Descriptor  `json:"selected_policy,omitempty"`
+	EffectivePolicy         *policy.Descriptor  `json:"effective_policy,omitempty"`
+	PolicyMismatch          bool                `json:"policy_mismatch"`
+	Pending                 bool                `json:"pending,omitempty"`
+	Saved                   bool                `json:"saved"`
+	Applied                 bool                `json:"applied"`
+	Constraint              string              `json:"constraint,omitempty"`
+	ObservedAt              time.Time           `json:"observed_at"`
 
 	LastOperation *ProjectConfigurationReceipt `json:"last_operation,omitempty"`
 }
@@ -80,6 +81,9 @@ func (c ProjectConfiguration) MarshalJSON() ([]byte, error) {
 }
 
 func (c ProjectConfiguration) Validate() error {
+	if err := c.Diagnostics.Validate(); err != nil {
+		return err
+	}
 	if c.ProjectID == "" || len(c.ProjectID) > 256 || len(c.RequestID) > 128 || c.Authority != "local_global_configuration" || c.UnsettledAttempts < 0 || c.ObservedAt.IsZero() || len(c.Constraint) > 1120 {
 		return errors.New("invalid project configuration evidence")
 	}

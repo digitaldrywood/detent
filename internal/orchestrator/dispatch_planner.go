@@ -307,16 +307,32 @@ func (p dispatchPlanner) plan(
 }
 
 func knownDispatchWait(issue connector.Issue, state *State, dueRetries map[string]Retry, terminalStates []string) bool {
+	return knownDispatchWaitReason(issue, state, dueRetries, terminalStates) != ""
+}
+
+func knownDispatchWaitReason(issue connector.Issue, state *State, dueRetries map[string]Retry, terminalStates []string) string {
 	if _, retryDue := dueRetries[issue.ID]; retryDue {
-		return false
+		return ""
 	}
-	_, running := state.Running[issue.ID]
-	_, deferred := state.deferredCompletions[issue.ID]
-	_, retry := state.Retry[issue.ID]
-	_, claimed := state.Claimed[issue.ID]
-	blocked, parked := state.Blocked[issue.ID]
-	return running || deferred || retry || claimed || (parked && !blockedFromDependency(blocked)) ||
-		(issue.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(issue, terminalStates))
+	if _, running := state.Running[issue.ID]; running {
+		return dispatchSkipAlreadyRunning
+	}
+	if _, deferred := state.deferredCompletions[issue.ID]; deferred {
+		return dispatchSkipCompletionDeferred
+	}
+	if _, retry := state.Retry[issue.ID]; retry {
+		return dispatchSkipRetryPending
+	}
+	if _, claimed := state.Claimed[issue.ID]; claimed {
+		return dispatchSkipAlreadyClaimed
+	}
+	if blocked, parked := state.Blocked[issue.ID]; parked && !blockedFromDependency(blocked) {
+		return dispatchSkipBlocked
+	}
+	if issue.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(issue, terminalStates) {
+		return dispatchSkipBlockedByDependency
+	}
+	return ""
 }
 
 func clearBlockedUnblockerCounts(issues []connector.Issue, blocked map[string]Blocked) {

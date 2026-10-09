@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
@@ -17,12 +18,20 @@ func (s *Server) localProjectTool(ctx context.Context, call operatortool.Call) (
 		return operatortool.Result{}, err
 	}
 	scope := apikey.ScopeAdmin
-	if call.Name == operatortool.LocalProjectConfiguration {
+	if call.Name == operatortool.LocalProjectConfiguration || call.Name == operatortool.RunnerProjectDiagnostics {
 		scope = apikey.ScopeRead
 	}
 	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scope, ProjectID: r.ProjectID})
 	if err != nil {
 		return operatortool.Result{}, err
+	}
+	if call.Name == operatortool.RunnerProjectDiagnostics {
+		view := s.projectConfigOwner.Read(ctx, r.ProjectID)
+		page, err := view.Diagnostics.Page(r.ProjectID, "", r.IssueID, r.AttemptID, r.Cursor, r.Limit, time.Now().UTC())
+		if err != nil {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+		return operatorResult(page)
 	}
 	if s.projectConfigOwner == nil {
 		return operatorResult(project.MissingConfigurationOwner(r.ProjectID))

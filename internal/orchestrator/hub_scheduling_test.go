@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -605,12 +606,13 @@ func TestHubRefillRetainsNewClaims(t *testing.T) {
 func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
-		name     string
-		state    string
-		setup    func(*State, connector.Issue)
-		want     bool
-		native   bool
-		githubPR bool
+		name      string
+		state     string
+		setup     func(*State, connector.Issue)
+		want      bool
+		native    bool
+		githubPR  bool
+		knownWait string
 	}{
 		{name: "ready todo", state: "Todo", want: true},
 		{name: "full project lookahead does not claim coding", state: "Todo", native: true, setup: func(s *State, _ connector.Issue) {
@@ -620,7 +622,7 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 		{name: "merging state full", state: "Merging", native: true, setup: func(s *State, _ connector.Issue) {
 			s.Running["other"] = Running{Issue: dispatchTestIssue("other", "Merging")}
 		}},
-		{name: "future rework retry", state: "Rework", setup: func(s *State, issue connector.Issue) {
+		{name: "future rework retry", state: "Rework", knownWait: dispatchSkipRetryPending, setup: func(s *State, issue connector.Issue) {
 			s.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(time.Hour)}
 		}},
 		{name: "due rework retry remains owned", state: "Rework", setup: func(s *State, issue connector.Issue) {
@@ -629,8 +631,14 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 		{name: "fresh native dependency cleared", state: "Todo", setup: func(s *State, issue connector.Issue) {
 			s.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceDependency, Reason: blockedReasonDependency}
 		}, want: true},
-		{name: "running work never preempted", state: "Merging", setup: func(s *State, issue connector.Issue) {
+		{name: "running work never preempted", state: "Merging", knownWait: dispatchSkipAlreadyRunning, setup: func(s *State, issue connector.Issue) {
 			s.Running[issue.ID] = Running{Issue: issue, cancel: func() { t.Error("preview cancelled running work") }}
+		}},
+		{name: "deferred completion keeps its owner", state: "Todo", knownWait: dispatchSkipCompletionDeferred, setup: func(s *State, issue connector.Issue) {
+			s.deferredCompletions[issue.ID] = deferredCompletion{Running: Running{Issue: issue}}
+		}},
+		{name: "claimed work keeps its owner", state: "Todo", knownWait: dispatchSkipAlreadyClaimed, setup: func(s *State, issue connector.Issue) {
+			s.Claimed[issue.ID] = Claimed{Issue: issue}
 		}},
 		{name: "REST-held native GitHub merging", state: "Merging", native: true, githubPR: true, setup: func(s *State, _ connector.Issue) {
 			s.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
@@ -700,8 +708,29 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 			if test.native && test.githubPR && test.state == "Merging" && stateIn("Merging", source.request.WorkflowStates) {
 				t.Fatal("REST-held native PR landing remained in upstream states")
 			}
+			if waits := source.request.CandidateKnownWait(issue); waits != (test.knownWait != "") {
+				t.Fatalf("known wait=%t, want reason %q", waits, test.knownWait)
+			}
+			if test.knownWait != "" {
+				observed := state.ProjectDiagnostics(nil, now)
+				if len(observed.Admissions) != 1 || observed.Admissions[0].Predicate != test.knownWait || observed.Admissions[0].ObservedAt != now {
+					t.Fatalf("known wait observation=%+v", observed.Admissions)
+				}
+			}
 			if ready := source.request.CandidateReady(t.Context(), issue); ready != test.want {
 				t.Errorf("ready = %t, want %t", ready, test.want)
+			}
+			observed := state.ProjectDiagnostics(nil, time.Now())
+			if len(observed.Admissions) == 0 || observed.Admissions[0].IssueID != issue.ID || observed.Admissions[0].Predicate == "" || ((observed.Admissions[0].Result == "eligible") != test.want) {
+				t.Fatalf("local readiness observation=%+v", observed.Admissions)
+			}
+			if test.want {
+				requirement := providercapacity.Requirement{Role: runpkg.RoleCode, Backend: "codex", Model: "sol"}
+				source.request.CandidateClaimObserved(t.Context(), issue, false, "hub_claim.provider_capacity", &requirement)
+				refusal := state.ProjectDiagnostics(nil, now).Admissions
+				if len(refusal) != 1 || refusal[0].Result != "skipped" || refusal[0].Predicate != "hub_claim.provider_capacity" || refusal[0].ProviderRequirement == nil || *refusal[0].ProviderRequirement != requirement {
+					t.Fatalf("claim refusal lost readiness/model boundary: %+v", refusal)
+				}
 			}
 			if test.want && test.native && test.state == "Merging" {
 				source.request.CandidateAdmitted(issue)

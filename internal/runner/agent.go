@@ -2372,6 +2372,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	} else {
 		r.logWorkerEvent(req.Issue, "worker_command_finished", commandFinishedAttrs...)
 	}
+	if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok {
+		diagnostics.ProviderCompleted(r.now())
+	}
 	afterRunPending = false
 	afterRunCtx := ctx
 	afterRunCancel := func() {}

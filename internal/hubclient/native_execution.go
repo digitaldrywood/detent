@@ -18,11 +18,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type nativeExecution struct {
+	diagnostic        runnerauth.DiagnosticAttempt
+	diagnosticMu      sync.Mutex
 	reconnecting      bool
 	validation        *gate.CommandResult
 	usageStartedAt    time.Time
@@ -380,9 +383,11 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 	return nil
 }
 
-func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessage string, failure *tracker.NativeTerminalFailure) error {
+func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessage string, failure *tracker.NativeTerminalFailure) (err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	done := e.diagnosticOperation("native.prepare_finish")
+	defer func() { done(err) }()
 	if failure != nil {
 		public := failure.Public()
 		e.preparedFailure = &public
@@ -467,9 +472,11 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 	return nil
 }
 
-func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
+func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	done := e.diagnosticOperation("native.finish")
+	defer func() { done(err) }()
 	preparationErr := e.prepareFinish(ctx, outcome)
 	if outcome == "succeeded" && e.change != nil && e.change.Error != "" {
 		return fmt.Errorf("%w: %s", ErrUnavailable, e.change.Error)
@@ -558,7 +565,9 @@ func (e *nativeExecution) captureDiff(ctx context.Context) error {
 // running and its lease is therefore the producer; the generation is the run
 // event sequence the diff belongs to, which is why the post happens before the
 // event and not after it.
-func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) error {
+func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) (diagnosticErr error) {
+	done := e.diagnosticOperation("native.postDiff")
+	defer func() { done(diagnosticErr) }()
 	if err := e.captureDiff(ctx); err != nil {
 		return err
 	}
@@ -611,10 +620,12 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 	return e.flush(ctx)
 }
 
-func (e *nativeExecution) flush(ctx context.Context) error {
+func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	if e.pending == nil {
 		return nil
 	}
+	done := e.diagnosticOperation("append." + e.pending.Type)
+	defer func() { done(err) }()
 	if e.remaining() <= 0 {
 		if err := e.renew(ctx); err != nil {
 			return e.executionError(err)

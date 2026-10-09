@@ -13,6 +13,9 @@ func TestLocalProjectArgumentBoundary(t *testing.T) {
 		valid           bool
 	}{
 		{"read", LocalProjectConfiguration, `{"project_id":"p"}`, true},
+		{"diagnostic read", RunnerProjectDiagnostics, `{"project_id":"p","runner_id":"r","issue_id":"wi_test","limit":3}`, true},
+		{"diagnostic oversized", RunnerProjectDiagnostics, `{"project_id":"p","limit":101}`, false},
+		{"diagnostic write", RunnerProjectDiagnostics, `{"project_id":"p","command":"retry"}`, false},
 		{"drain", "drain_local_project", valid, true},
 		{"resume", "resume_local_project", valid, true},
 		{"detach", "detach_local_project", strings.TrimSuffix(valid, "}") + `,"checkpoint":"` + strings.Repeat("b", 64) + `"}`, true},

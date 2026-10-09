@@ -51,39 +51,60 @@ func TestProviderSchedulerEndToEnd(t *testing.T) {
 
 func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 	t.Parallel()
-	claims := 0
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/v2/capabilities":
-			_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeDispatchWaitCapability}})
-		case "/api/v2/organizations/org_test/projects/prj_test/claims/preview":
-			_, _ = w.Write([]byte(`{"items":[]}`))
-		case "/api/v2/organizations/org_test/projects/prj_test/claims":
-			claims++
-			w.WriteHeader(http.StatusConflict)
-			_, _ = w.Write([]byte(`{"code":"no_claimable_work","message":"No work"}`))
-		default:
-			t.Errorf("unexpected request: %s", r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	})
-	client, err := New(Config{URL: "https://hub.test", TokenSource: func() string { return "test-token" }, HTTPClient: providerHandlerClient(handler)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	native, err := client.Native("org_test", "prj_test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	scheduler := &Scheduler{providerReports: func() ([]providercapacity.Report, error) { return nil, nil }}
-	request := orchestrator.SchedulingRequest{ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
-		t.Error("empty preview should not resolve a model")
-		return providercapacity.Requirement{}, nil
-	}}
-	_, err = scheduler.claimPreviewCandidates(t.Context(), request, &NativeConnector{client: native}, tracker.NativeClaim{}, 1)
-	if !errors.Is(err, ErrNoClaimableWork) || claims != 1 {
-		t.Fatalf("empty preview: claims=%d, error=%v", claims, err)
+	for _, issueID := range []string{"", "wi_test"} {
+		t.Run("preview_"+issueID, func(t *testing.T) {
+			claims := 0
+			observations := 0
+			requirement := providercapacity.Requirement{Role: runner.RoleCode, Backend: "codex", Model: "sol"}
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/api/v2/capabilities":
+					_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeDispatchWaitCapability}})
+				case "/api/v2/organizations/org_test/projects/prj_test/claims/preview":
+					if issueID == "" {
+						_, _ = w.Write([]byte(`{"items":[]}`))
+					} else {
+						_, _ = w.Write([]byte(`{"items":[{"work_item_id":"wi_test","state":"Todo","title":"test"}]}`))
+					}
+				case "/api/v2/organizations/org_test/projects/prj_test/claims":
+					claims++
+					w.WriteHeader(http.StatusConflict)
+					if issueID == "" {
+						_, _ = w.Write([]byte(`{"code":"no_claimable_work","message":"No work"}`))
+					} else {
+						_, _ = w.Write([]byte(`{"code":"provider_capacity","message":"private customer prompt token=secret"}`))
+					}
+				default:
+					t.Errorf("unexpected request: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			})
+			client, err := New(Config{URL: "https://hub.test", TokenSource: func() string { return "test-token" }, HTTPClient: providerHandlerClient(handler)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_test", "prj_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			scheduler := &Scheduler{providerReports: func() ([]providercapacity.Report, error) { return nil, nil }}
+			request := orchestrator.SchedulingRequest{ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
+				if issueID == "" {
+					t.Error("empty preview should not resolve a model")
+				}
+				return requirement, nil
+			}, CandidateClaimObserved: func(_ context.Context, candidate connector.Issue, allowed bool, predicate string, required *providercapacity.Requirement) {
+				observations++
+				if candidate.ID != issueID || allowed || predicate != "hub_claim.provider_capacity" || required == nil || *required != requirement {
+					t.Fatalf("claim observation: issue=%s allowed=%t predicate=%s requirement=%+v", candidate.ID, allowed, predicate, required)
+				}
+			}}
+			_, err = scheduler.claimPreviewCandidates(t.Context(), request, &NativeConnector{client: native}, tracker.NativeClaim{}, 1)
+			if claims != 1 || issueID == "" && (!errors.Is(err, ErrNoClaimableWork) || observations != 0) || issueID != "" && (hubErrorCode(err) != "provider_capacity" || observations != 1) {
+				t.Fatalf("preview: claims=%d observations=%d error=%v", claims, observations, err)
+			}
+		})
 	}
 }
 

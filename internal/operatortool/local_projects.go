@@ -8,9 +8,13 @@ import (
 )
 
 const LocalProjectConfiguration = "local_project_configuration"
+const RunnerProjectDiagnostics = "runner_project_diagnostics"
 
 func localProjectSchema(name string) string {
 	properties := `"runner_id":{"type":"string","minLength":1,"maxLength":256},"project_id":{"type":"string","minLength":1,"maxLength":256}`
+	if name == RunnerProjectDiagnostics {
+		return `{"type":"object","properties":{` + properties + `,"issue_id":{"type":"string","minLength":1,"maxLength":256},"attempt_id":{"type":"string","minLength":1,"maxLength":256},"cursor":{"type":"string","minLength":1,"maxLength":300},"limit":{"type":"integer","minimum":1,"maximum":100}},"required":["project_id"],"additionalProperties":false}`
+	}
 	if name == LocalProjectConfiguration {
 		return `{"type":"object","properties":{` + properties + `},"required":["project_id"],"additionalProperties":false}`
 	}
@@ -37,6 +41,10 @@ func IsLocalProjectTool(name string) bool {
 }
 
 type LocalProjectArguments struct {
+	IssueID                string `json:"issue_id,omitempty"`
+	AttemptID              string `json:"attempt_id,omitempty"`
+	Cursor                 string `json:"cursor,omitempty"`
+	Limit                  int    `json:"limit,omitempty"`
 	RunnerID               string `json:"runner_id,omitempty"`
 	ExpectedRunnerRevision int64  `json:"expected_runner_revision,omitempty"`
 	AllowLocalBinding      *bool  `json:"allow_local_binding,omitempty"`

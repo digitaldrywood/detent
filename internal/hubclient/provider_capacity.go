@@ -80,6 +80,17 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 			if !admitted {
 				continue
 			}
+			if request.CandidateClaimObserved != nil {
+				predicate := "hub_claim.accepted"
+				if err != nil {
+					predicate = "hub_claim." + diagnosticErrorCode(err)
+				}
+				var requirement *providercapacity.Requirement
+				if len(claim.ProviderCandidates) == 1 {
+					requirement = &claim.ProviderCandidates[0].Requirement
+				}
+				request.CandidateClaimObserved(ctx, candidate, err == nil, predicate, requirement)
+			}
 			if err == nil {
 				if providerEnabled && lease.ProviderReservation == nil {
 					return leases, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("hub omitted the required provider reservation"), source.client.Release(context.WithoutCancel(ctx), lease, "failed"))

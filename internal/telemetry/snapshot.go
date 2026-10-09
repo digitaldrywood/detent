@@ -1410,6 +1410,7 @@ type WorkAttempt struct {
 }
 
 type SchedulerDecision struct {
+	RunnerAdmissionJSON    string    `json:"-"`
 	ID                     int64     `json:"id,omitempty"`
 	ProjectID              string    `json:"project_id,omitempty"`
 	IssueID                string    `json:"issue_id,omitempty"`
