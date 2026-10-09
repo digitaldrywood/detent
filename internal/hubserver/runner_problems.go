@@ -32,6 +32,7 @@ func applyRunnerProblems(r *runnerauth.Runner, raw, isolationRaw, configurationR
 	if err := json.Unmarshal([]byte(isolationRaw), &report); err != nil {
 		return err
 	}
+	r.BackendIsolation = report
 	var configurations map[string]runnerauth.ProjectConfiguration
 	if err := json.Unmarshal([]byte(configurationRaw), &configurations); err != nil {
 		return err

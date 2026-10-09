@@ -156,6 +156,7 @@ type registerHub struct {
 	server     *httptest.Server
 	credential atomic.Value
 	identity   atomic.Value
+	tier       atomic.Value
 	redeemed   atomic.Int32
 	projects   map[tracker.ProjectID]string
 	cloneURLs  map[tracker.ProjectID]string
@@ -194,6 +195,11 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 			identity := runnerauth.Identity{Binding: request.Binding, OrganizationID: "org_example", ProjectIDs: ids, Operations: []string{runnerauth.Read}, ExpiresAt: time.Now().Add(runnerauth.CredentialTTL)}
 			hub.credential.Store(request.Credential)
 			hub.identity.Store(identity)
+			tier := request.IsolationTier
+			if tier == "" {
+				tier = "sandbox"
+			}
+			hub.tier.Store(tier)
 			hub.redeemed.Add(1)
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(identity)
@@ -211,6 +217,11 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 		}
 		if strings.HasSuffix(r.URL.Path, "/policy/observed") {
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if identity, ok := hub.identity.Load().(runnerauth.Identity); ok && strings.HasSuffix(r.URL.Path, "/runners/"+identity.RunnerID+"/routing") {
+			tier, _ := hub.tier.Load().(string)
+			_ = json.NewEncoder(w).Encode(runnerauth.Runner{Binding: identity.Binding, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Build host", State: "active", CapacityLimit: 2, ProjectIDs: ids, IsolationTier: tier}.Normalized()})
 			return
 		}
 		for id, name := range projects {
@@ -330,6 +341,45 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 	}
 	if file.Identity.OrganizationID != "org_example" || !strings.Contains(output, file.Identity.RunnerID) {
 		t.Fatalf("identity = %+v", file.Identity)
+	}
+}
+
+func TestHubRunnerRegisterAccessConfiguration(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, selected, want string
+	}{
+		{"legacy default", "", "sandbox"},
+		{"sandbox", "sandbox", "sandbox"},
+		{"full access", "native-trusted", "native-trusted"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_site": "detent.build"})
+			root := t.TempDir()
+			config := filepath.Join(root, "config", "global.yaml")
+			args := []string{"--url", hub.server.URL + "/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", config, "--workspace-root", filepath.Join(root, "work")}
+			if test.selected != "" {
+				args = append(args, "--isolation-tier", test.selected)
+			}
+			starter := func(*cobra.Command, string) error { t.Error("unexpected service start"); return nil }
+			if output, err := runRegisterInTestWorkspace(t, nil, starter, args...); err != nil {
+				t.Fatalf("register: %v\n%s", err, output)
+			}
+			path := filepath.Join(filepath.Dir(config), "identity.json")
+			cached, err := runnerauth.LoadRoutingCache(path)
+			if err != nil || cached.Routing.IsolationTier != test.want || hub.tier.Load() != test.want {
+				t.Fatalf("routing=%+v, Hub tier=%v, err=%v", cached, hub.tier.Load(), err)
+			}
+			before := mustRead(t, config)
+			if output, err := runRegisterInTestWorkspace(t, nil, starter, append(args, "--isolation-tier", "sandbox")...); err != nil {
+				t.Fatalf("retry: %v\n%s", err, output)
+			}
+			cached, err = runnerauth.LoadRoutingCache(path)
+			if err != nil || cached.Routing.IsolationTier != test.want || hub.redeemed.Load() != 1 || mustRead(t, config) != before {
+				t.Fatalf("retry changed existing configuration: %+v, %v", cached, err)
+			}
+		})
 	}
 }
 
@@ -457,6 +507,7 @@ func TestHubRunnerRegisterRejectsBadInput(t *testing.T) {
 	}{
 		{name: "no token", args: append(base, "--config", filepath.Join(root, "a", "global.yaml")), want: "enrollment token is required"},
 		{name: "zero capacity", args: append(base, "--token", "t", "--capacity", "0", "--config", filepath.Join(root, "b", "global.yaml")), want: "--capacity"},
+		{name: "unknown tier", args: append(base, "--token", "t", "--isolation-tier", "root"), want: "--isolation-tier"},
 		{name: "relative config", args: append(base, "--token", "t", "--config", "global.yaml"), want: "absolute"},
 		{name: "config inside a repository", args: append(base, "--token", "t", "--config", filepath.Join(repository, "runner", "global.yaml")), want: "outside repositories"},
 		{name: "no organization", args: []string{"--url", "https://hub.example.test", "--token", "t"}, want: "organization is unknown"},

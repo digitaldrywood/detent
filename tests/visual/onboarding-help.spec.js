@@ -85,6 +85,8 @@ for (const width of [1280, 390]) {
     await enroll.click();
     const dialog = page.getByRole("dialog", { name: "Enroll a runner", exact: true });
     await expect(page.getByText("Reading runners before creating a command…", { exact: true })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Create command", exact: true })).toBeDisabled();
+    await dialog.getByRole("radio", { name: "Sandbox", exact: true }).check();
     await expect(dialog.getByRole("button", { name: "Create command", exact: true })).toBeEnabled();
     await dialog.evaluate((element) => Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished)));
     const capacity = page.getByLabel("Concurrency", { exact: true });

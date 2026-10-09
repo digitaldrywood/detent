@@ -523,17 +523,18 @@ describe("the register command", () => {
     hubUrl: "https://cloud.example.com/organizations/org_1",
     organizationId: "org_1",
     token: "det_enroll_abc",
+    isolationTier: "sandbox" as const,
     name: "",
     capacity: 1,
     service: false,
   };
   it.each([
-    { name: "the minimum", change: {}, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc" },
-    { name: "a plain name", change: { name: "mac-studio" }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc --name mac-studio" },
-    { name: "a name with spaces", change: { name: " Build host " }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc --name 'Build host'" },
-    { name: "capacity and service", change: { capacity: 3, service: true }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc --capacity 3 --service" },
-    { name: "a standalone hub", change: { hubUrl: "https://hub.example.com" }, want: "detent hub runner register --url https://hub.example.com --organization org_1 --token det_enroll_abc" },
-    { name: "a URL naming a longer organization ID", change: { hubUrl: "https://cloud.example.com/organizations/org_1-extra" }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1-extra --organization org_1 --token det_enroll_abc" },
+    { name: "the minimum", change: {}, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc --isolation-tier sandbox" },
+    { name: "a plain name", change: { name: "mac-studio" }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc --name mac-studio --isolation-tier sandbox" },
+    { name: "a name with spaces", change: { name: " Build host " }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc --name 'Build host' --isolation-tier sandbox" },
+    { name: "capacity and service", change: { capacity: 3, service: true }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc --capacity 3 --isolation-tier sandbox --service" },
+    { name: "a standalone hub", change: { hubUrl: "https://hub.example.com" }, want: "detent hub runner register --url https://hub.example.com --organization org_1 --token det_enroll_abc --isolation-tier sandbox" },
+    { name: "a URL naming a longer organization ID", change: { hubUrl: "https://cloud.example.com/organizations/org_1-extra" }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1-extra --organization org_1 --token det_enroll_abc --isolation-tier sandbox" },
   ])("builds it for $name", ({ change, want }) => {
     expect(registerCommand({ ...input, ...change })).toBe(want);
   });

@@ -52,6 +52,7 @@ type Client struct {
 }
 
 type Machine struct {
+	IsolationTier        string                              `json:"-"`
 	ProjectConfiguration *runnerauth.ProjectConfiguration    `json:"-"`
 	Admission            *tracker.NativeAdmissionObservation `json:"-"`
 	Update               *runnerauth.UpdateObservation       `json:"-"`

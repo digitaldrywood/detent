@@ -45,7 +45,11 @@ for (const width of [1440, 390]) {
       await page.getByRole("button", { name: "Add runner", exact: true }).click();
       await page.getByRole("menuitem", { name: "Manual", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: "Enroll a runner", exact: true });
+      await expect(dialog.getByRole("button", { name: "Create command" })).toBeDisabled();
+      await expect(dialog.getByRole("radio", { name: "Sandbox", exact: true })).not.toBeChecked();
+      await expect(dialog.getByRole("radio", { name: "Full access", exact: true })).not.toBeChecked();
       const sprite = location.startsWith("sprite");
+      const access = !sprite && width === 1440 ? "Sandbox" : "Full access";
       if (sprite) {
         await dialog.getByLabel("A Fly Sprite").check();
         await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue(/^detent-[a-z0-9]+$/);
@@ -62,6 +66,8 @@ for (const width of [1440, 390]) {
       }
       const name = sprite ? "build-sprite" : "Build machine";
       await dialog.getByLabel("Name", { exact: true }).fill(name);
+      await dialog.getByRole("radio", { name: access, exact: true }).check();
+      if (!sprite) await page.screenshot({ animations: "disabled", path: require("node:path").join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `runner-access-enroll-${width}.png`) });
       await dialog.getByRole("button", { name: "Create command" }).click();
       const copy = dialog.getByRole("button", { name: "Copy the register command" });
       await expect(copy).toBeVisible();
@@ -82,6 +88,7 @@ for (const width of [1440, 390]) {
       await copy.click();
       const copied = await page.evaluate(() => navigator.clipboard.readText());
       expect(copied).toContain("--token det_enroll_preview");
+      expect(copied).toContain(`--isolation-tier ${access === "Sandbox" ? "sandbox" : "native-trusted"}`);
       expect(copied).toContain(sprite ? "--name build-sprite" : "--name 'Build machine'");
       expect(copied.includes("--service")).toBe(!sprite);
       expect(await dialog.innerHTML()).not.toContain("det_enroll_preview");
@@ -188,7 +195,8 @@ for (const width of [1440, 390]) {
       await page.getByRole("menuitem", { name: "Manual", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Enroll a runner", exact: true });
     await dialog.getByLabel("Name", { exact: true }).fill("New build runner");
-    await dialog.getByRole("button", { name: "Create command" }).click();
+    await dialog.getByRole("radio", { name: "Full access", exact: true }).check();
+      await dialog.getByRole("button", { name: "Create command" }).click();
     const command = await dialog.locator("code").textContent();
     const token = command.match(/--token (\S+)/)[1];
     await page.keyboard.press("Escape");
@@ -208,7 +216,7 @@ for (const width of [1440, 390]) {
   test("runner sheet opens from rows and attention and saves at " + width + "px", async ({ page }) => {
     await page.setViewportSize({ width, height: 844 });
     const runner = {
-      ...fleet.runners[1], revision: 4, capacity_limit: 4,
+      ...fleet.runners[1], revision: 4, capacity_limit: 4, backend_isolation: { codex: ["native-trusted"] },
       routing: {
         display_name: "Build runner", state: "active", capacity_limit: 4,
         project_ids: ["proj_preview", "prj_unknown"],
@@ -248,6 +256,17 @@ for (const width of [1440, 390]) {
     await expect(sheet.getByRole("alert")).toContainText(problem.message);
     await expect(sheet.getByRole("alert")).toContainText(problem.fix_hint);
     await expect(sheet.getByRole("alert")).toContainText("Seen since");
+    await expect(sheet.getByRole("radio", { name: "Sandbox", exact: true })).toBeChecked();
+    await sheet.getByRole("button", { name: "Switch to Full access", exact: true }).click();
+    await expect(sheet).toHaveCount(0);
+    expect(writes[1].isolation_tier).toBe("native-trusted");
+    await page.reload();
+    await page.getByRole("button", { name: "Manage Build runner" }).click();
+    sheet = page.getByRole("dialog", { name: "Build runner" });
+    await expect(sheet.getByRole("radio", { name: "Full access", exact: true })).toBeChecked();
+    await sheet.getByRole("radio", { name: "Full access", exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ animations: "disabled", path: require("node:path").join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `runner-access-sheet-${width}.png`) });
+    await expect(sheet.getByRole("button", { name: "Switch to Full access", exact: true })).toHaveCount(0);
     await expect(sheet.getByRole("checkbox", { name: "Preview project", exact: true })).toBeChecked();
     await expect(sheet.getByRole("checkbox", { name: "prj_unknown", exact: true })).toBeChecked();
     await sheet.getByRole("radio", { name: "Disabled Takes nothing" }).check();
@@ -255,8 +274,9 @@ for (const width of [1440, 390]) {
     await sheet.getByRole("button", { name: "Save runner" }).click();
     await expect(sheet).toHaveCount(0);
     await expect(row).toContainText("disabled · Limit 0");
-    expect(writes.map((write) => [write.state, write.capacity_limit])).toEqual([["draining", 2], ["disabled", 0]]);
-    expect(writes[1].project_ids).toEqual(["proj_preview", "prj_unknown"]);
+    expect(writes.map((write) => [write.state, write.capacity_limit])).toEqual([["draining", 2], ["draining", 2], ["disabled", 0]]);
+    expect(writes[2].isolation_tier).toBe("native-trusted");
+    expect(writes[2].project_ids).toEqual(["proj_preview", "prj_unknown"]);
     expect(writes[1]).not.toHaveProperty("home_project_ids");
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     expect(errors).toEqual([]);
@@ -328,7 +348,8 @@ for (const version of ["operator-landed-3c51987c563b", "dev"]) {
     await dialog.getByLabel("A Fly Sprite").check();
     await expect(dialog.getByRole("link", { name: "Set a Sprites token" })).toHaveAttribute("href", "/settings/integrations?project=proj_preview#sprites");
     await expect(dialog.getByText(/latest tagged release/)).toBeVisible();
-    await dialog.getByRole("button", { name: "Create command" }).click();
+    await dialog.getByRole("radio", { name: "Full access", exact: true }).check();
+      await dialog.getByRole("button", { name: "Create command" }).click();
     const instructions = dialog.getByRole("list", { name: "Sprite setup instructions" });
     await expect(instructions).toContainText("github.com/digitaldrywood/detent/releases/latest");
     await expect(instructions).toContainText('bash sprite-runner-bootstrap.sh --version "$detent_release"');
