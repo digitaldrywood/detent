@@ -131,7 +131,7 @@ type repairingBarrierWorkspace struct {
 
 func (b *repairingBarrierWorkspace) VerifyLandingBarrierRepair(_ context.Context, path, head, command string, failed []string) (gate.CommandResult, bool, error) {
 	b.verified = failed
-	if path != "/repair" || head != b.head || command != "make verify" {
+	if path != "/repair" || head != "" && head != b.head || command != "make verify" {
 		return gate.CommandResult{}, false, errors.New("unexpected repair verification")
 	}
 	return gate.CommandResult{ExitCode: b.verifyExit}, true, nil
@@ -181,7 +181,8 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 	}{
 		{name: "red head is repaired and published", preparedHead: head, reds: 1, wantTurns: 1, wantPublished: 1},
 		{name: "same red head is repaired once", preparedHead: head, reds: 2, wantTurns: 1, wantPublished: 1},
-		{name: "moved base skips the stale repair", preparedHead: strings.Repeat("a", 40), reds: 1, wantTurns: 0, wantPublished: 0},
+		{name: "moved base repairs failures that still fail", preparedHead: strings.Repeat("a", 40), reds: 1, verifyExit: 1, wantTurns: 1, wantPublished: 0},
+		{name: "moved base skips failures fixed upstream", preparedHead: strings.Repeat("a", 40), reds: 1, wantTurns: 0, wantPublished: 0},
 		{name: "unverified repair is not published", preparedHead: head, reds: 1, verifyExit: 1, wantTurns: 1, wantPublished: 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
