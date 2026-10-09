@@ -316,8 +316,14 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	if request.CandidateLimit > 0 {
 		limit = min(limit, request.CandidateLimit)
 	}
-	var leases []tracker.NativeLease
-	if s.providerReports != nil || request.CandidateReady != nil || request.NativeLandingBatch {
+	leases, err := s.reconnectNativeClaims(ctx, request, source, limit)
+	if err != nil {
+		return nil, schedulingError(err)
+	}
+	reconnecting := len(leases) > 0
+	if reconnecting {
+		err = nil
+	} else if s.providerReports != nil || request.CandidateReady != nil || request.NativeLandingBatch {
 		leases, err = s.claimPreviewCandidates(ctx, request, source, claimRequest, limit)
 	} else {
 		for len(leases) < limit {
@@ -340,6 +346,9 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	}
 	release := func(cause error) error {
 		for _, lease := range leases {
+			if reconnecting {
+				continue
+			}
 			cause = errors.Join(cause, source.client.Release(context.WithoutCancel(ctx), lease, "work_item_hydration_failed"))
 		}
 		return schedulingError(cause)
@@ -376,6 +385,82 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	s.mu.Unlock()
 	s.syncLeaseHold(ctx)
 	return issues, nil
+}
+
+func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, limit int) ([]tracker.NativeLease, error) {
+	if s.client.runner == nil {
+		return nil, nil
+	}
+	s.client.runner.routingMu.Lock()
+	var slots []runnerauth.ClaimSlot
+	if snapshot := s.client.runner.routing; snapshot != nil && snapshot.ClaimState != nil {
+		slots = slices.Clone(snapshot.ClaimState.Slots)
+	}
+	s.client.runner.routingMu.Unlock()
+	file, err := runnerauth.Load(s.client.runner.path)
+	if err != nil {
+		return nil, err
+	}
+	pending := false
+	s.mu.Lock()
+	for _, slot := range slots {
+		if slot.RunnerID != file.Identity.RunnerID {
+			continue
+		}
+		known := false
+		for _, claim := range s.nativeClaims {
+			if claim.lease.ID == slot.ID {
+				known = true
+				break
+			}
+		}
+		pending = pending || !known
+	}
+	s.mu.Unlock()
+	if !pending {
+		return nil, nil
+	}
+	var owner runnerauth.Runner
+	path := "/api/v2/organizations/" + string(file.Identity.OrganizationID) + "/runners/" + file.Identity.RunnerID + "/routing"
+	if err := s.client.request(ctx, http.MethodGet, path, nil, &owner); err != nil {
+		return nil, err
+	}
+	var leases []tracker.NativeLease
+	for _, held := range owner.Leases {
+		if held.ProjectID != source.client.project || held.Policy.ID != request.Policy.ID || len(held.Exclusions) != 0 {
+			continue
+		}
+		s.mu.Lock()
+		_, adopted := s.nativeClaims[string(held.WorkItemID)]
+		s.mu.Unlock()
+		if adopted {
+			continue
+		}
+		recovery, err := source.client.Recovery(ctx, held.WorkItemID)
+		if err != nil {
+			return nil, err
+		}
+		for _, attempt := range recovery.Attempts {
+			if attempt.LeaseID == held.ID && attempt.Status != "running" && attempt.Status != "interrupted" {
+				adopted = true
+			}
+		}
+		if adopted {
+			continue
+		}
+		lease, err := source.client.Renew(ctx, tracker.NativeLease{ID: held.ID, FencingToken: held.FencingToken}, int64(s.leaseTTL/time.Second))
+		if nativeLeaseLost(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		leases = append(leases, lease)
+		if len(leases) == limit {
+			break
+		}
+	}
+	return leases, nil
 }
 
 func nativeAdmissionCapacityFull(err error) bool {

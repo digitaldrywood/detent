@@ -317,7 +317,15 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 				finishErr = errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 			}
 		}
-		err = native.source.client.Release(ctx, native.lease, "released")
+		retain := false
+		if native.execution != nil {
+			native.execution.mu.Lock()
+			retain = s.client.runner != nil && (native.execution.data.Outcome == "" || native.execution.data.Outcome == "interrupted")
+			native.execution.mu.Unlock()
+		}
+		if !retain {
+			err = native.source.client.Release(ctx, native.lease, "released")
+		}
 	} else {
 		err = s.client.Release(ctx, lease, reason)
 	}

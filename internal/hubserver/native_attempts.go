@@ -243,17 +243,21 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`, data.AttemptID, scop
 		if err != nil {
 			return false, false, err
 		}
+		reconnecting := (status == "running" || status == "interrupted") && event.Type == "run.observed" && data.Runtime != nil && data.Runtime.LocalAttemptID == 0 && data.Runtime.Generation == 0 && data.Outcome == ""
 		usageCorrection := status != "running" && event.Type == "run.finished" && nativeUsageCorrection(previous, data)
-		if previous.LeaseID != data.LeaseID || previous.RunID != data.RunID || previous.PolicyID != data.PolicyID || previous.Identity == nil || *previous.Identity != *data.Identity || status != "running" && !usageCorrection || data.Sequence != sequence+1 || event.Type == "run.started" {
+		if previous.LeaseID != data.LeaseID || previous.RunID != data.RunID || previous.PolicyID != data.PolicyID || previous.Identity == nil || *previous.Identity != *data.Identity || status != "running" && !usageCorrection && !reconnecting || data.Sequence != sequence+1 || event.Type == "run.started" {
 			return false, false, nativeExecutionConflict("Attempt identity, lifecycle or next sequence does not match")
 		}
-		if previous.Runtime != nil {
+		if previous.Runtime != nil && !reconnecting {
 			if data.Runtime == nil || previous.Runtime.LocalAttemptID != 0 && (data.Runtime.LocalAttemptID != previous.Runtime.LocalAttemptID || data.Runtime.Generation != previous.Runtime.Generation) || data.Runtime.HeartbeatAt.Before(previous.Runtime.HeartbeatAt) {
 				return false, false, nativeExecutionConflict("Runtime attribution or observation order changed during an attempt")
 			}
 		}
 		if event.Type == "run.observed" {
 			publish = nativeRuntimeHistoryChanged(previous.Runtime, data.Runtime)
+		}
+		if reconnecting {
+			status = "running"
 		}
 		if event.Type == "run.finished" && !usageCorrection {
 			if err := publishAttemptEvidence(ctx, tx, scope, item, data, now); err != nil {

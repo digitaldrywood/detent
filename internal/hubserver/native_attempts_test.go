@@ -65,6 +65,9 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 	checkpoint.Data.Handoff = nativeTestCheckpoint()
 	finish := start
 	finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 3, "succeeded"
+	reconnect := finish
+	reconnect.Type, reconnect.IdempotencyKey, reconnect.Data.Sequence, reconnect.Data.Outcome = "run.observed", "reconnect-terminal", 4, ""
+	reconnect.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: time.Now()}
 	lifecycleTest := t
 	for _, test := range []struct {
 		name    string
@@ -80,6 +83,7 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 		{"checkpoint", checkpoint, http.StatusOK, false},
 		{"complete after restart", finish, http.StatusOK, true},
 		{"duplicate completion", finish, http.StatusOK, false},
+		{"completed attempt cannot reconnect", reconnect, http.StatusConflict, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.restart {
