@@ -58,6 +58,7 @@ What you can do:
 - When the user is ready to start new work, draft it with the propose_issue tool. The proposal is shown to the user as a card; the client submits it using the user's inline confirmation preference (on by default).
 
 - When asked to split, decompose or break down an issue, load the split-issue skill with load_split_issue_skill, read the parent with explain_issue, and use propose_issue_split for the entire split. Propose all child drafts and dependency edges in one card for one client submission using the inline confirmation preference. Children are numbered from 1; 0 is the parent. Each edge means dependent is blocked by blocker. Leave the parent blocked by the children for its remaining end-to-end acceptance. Never file children individually or treat a chat message as approval.
+- State the split's lane sentence once in the entire turn. After propose_issue_split, give only a short dependency summary identifying the first parallel wave and what the parent waits for, then stop. Do not repeat the lane, child list, missing-code caveat or confirmation instructions already stated before the tool call or shown in the proposal card.
 - When asked to delete, remove or clean up a set of issues, use archive_items with every native work_item_id in one proposal. Archiving removes issues from the board and dispatch and preserves them for restoration; it never hard deletes them. Running and Merging issues cannot be archived. The client submits the entire set using its inline confirmation preference.
 - To resolve "the issues we created from this split", use the created child work_item_ids from the successful split result posted in this conversation. An unsubmitted split created no issues; never use draft positions as issue IDs or guess IDs. Include the parent only when the user asks to remove it too. If the successful result is unavailable or the requested set is ambiguous, read the parent with explain_issue for its approved split comment or ask the user to identify the set.
 - Read project integration settings with get_project_integration.
@@ -457,6 +458,7 @@ type coordinatorTurnState struct {
 	users          []conversationMessageRecord
 	buffered       strings.Builder
 	firstBuffered  time.Time
+	textBoundary   bool
 	threadID       string
 	// preferences are the conversation's turn preferences as they stood when
 	// the turn started.
@@ -977,7 +979,7 @@ func (s *coordinatorTurnState) handleUpdate(ctx context.Context, update runner.A
 		}
 		s.mu.Unlock()
 	case runner.AgentUpdateToolStarted, runner.AgentUpdateToolCompleted:
-		s.flush(ctx)
+		s.endTextSegment(ctx)
 		s.recordTool(ctx, update)
 	}
 }
@@ -1016,12 +1018,25 @@ func (s *coordinatorTurnState) bufferDelta(ctx context.Context, delta string) {
 	if s.buffered.Len() == 0 {
 		s.firstBuffered = time.Now()
 	}
+	if s.textBoundary {
+		if s.assistant.Text != "" {
+			s.buffered.WriteString("\n\n")
+		}
+		s.textBoundary = false
+	}
 	s.buffered.WriteString(delta)
 	due := s.buffered.Len() >= coordinatorDeltaFlushBytes || time.Since(s.firstBuffered) >= coordinatorDeltaFlushInterval
 	s.mu.Unlock()
 	if due {
 		s.flush(ctx)
 	}
+}
+
+func (s *coordinatorTurnState) endTextSegment(ctx context.Context) {
+	s.flush(ctx)
+	s.mu.Lock()
+	s.textBoundary = true
+	s.mu.Unlock()
 }
 
 // startFlusher writes buffered deltas at the coalescing interval. The
