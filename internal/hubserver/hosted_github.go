@@ -1,7 +1,9 @@
 package hubserver
 
 import (
+	"database/sql"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 )
@@ -29,4 +31,22 @@ WHERE profile = 'native' AND organization_id = ? AND checkout_repository != ''`,
 		return err
 	}
 	return c.JSON(http.StatusOK, repositories)
+}
+
+func (s *Service) hostedGitHubReceipt(c echo.Context) error {
+	var received sql.NullString
+	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT max(last_received_at) FROM github_webhook_inbox").Scan(&received); err != nil {
+		return s.internalAPIError(c, "tenant_unavailable", "GitHub webhook receipt is unavailable", err)
+	}
+	var result struct {
+		ReceivedAt *time.Time `json:"received_at"`
+	}
+	if received.Valid {
+		value, err := time.Parse(time.RFC3339Nano, received.String)
+		if err != nil {
+			return err
+		}
+		result.ReceivedAt = &value
+	}
+	return c.JSON(http.StatusOK, result)
 }

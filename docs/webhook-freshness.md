@@ -24,6 +24,24 @@ can route a public HTTPS hostname to the Hub. Configure relays and reverse
 proxies to preserve the raw request body and GitHub signature headers; modifying
 either causes signature verification to fail.
 
+## Cloud entry startup replay
+
+The shared entry uses `DETENT_HUB_GITHUB_APP_ID` and
+`DETENT_HUB_GITHUB_APP_PRIVATE_KEY` to request App webhook redeliveries once
+per start. Before serving, it snapshots the newest accepted delivery timestamp
+across ready tenant inboxes. After serving begins, it requests redelivery of
+failed `issues` and `issue_comment` deliveries between that receipt and startup.
+It follows delivery pagination, uses the latest attempt per delivery GUID, and
+leaves successful deliveries alone. Tenant inboxes deduplicate redeliveries
+using `X-GitHub-Delivery`.
+
+The pass has a five-minute deadline and logs the number of requests accepted.
+GitHub or tenant receipt read failures are logged without stopping the entry.
+There is no periodic replay. Without an accepted receipt, configured App
+credentials, or webhook verification secret, no historical replay is attempted.
+Deliveries older than the newest accepted receipt or outside GitHub's retained
+history require operator recovery.
+
 ## Hub reconciliation
 
 `detent hub serve` repairs deliveries that never reach the webhook endpoint. It

@@ -194,6 +194,7 @@ func (s *Service) hostedSharedCSRFValid(c echo.Context, value string) bool {
 
 func (s *Service) registerHostedSharedRoutes(e *echo.Echo) {
 	e.POST("/internal/v1/github/repositories", s.hostedGitHubRepositories)
+	e.POST("/internal/v1/github/receipt", s.hostedGitHubReceipt)
 	e.POST("/internal/v1/github/webhook", s.hostedGitHubWebhook)
 	e.POST("/internal/v1/sessions/revoke", s.revokeHostedSharedSessions)
 	e.POST("/internal/v1/invitations/accept", s.acceptHostedSharedInvitation)

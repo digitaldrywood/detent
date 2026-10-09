@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry"
+	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
@@ -270,6 +271,10 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		Platform:            config.Platform,
 		PublicURL:           config.PublicURL, Issuer: config.Assertion.Issuer, SigningKey: key, Provider: provider,
 		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, EntitlementAdministrators: config.EntitlementAdministrators, StateDir: config.StateDirectory, ListenAddress: config.Listen, Logger: slog.Default(), ConfigPath: path,
+	}
+	appID, privateKey := lookupEnv("DETENT_HUB_GITHUB_APP_ID"), lookupEnv("DETENT_HUB_GITHUB_APP_PRIVATE_KEY")
+	if appID != "" && privateKey != "" {
+		result.GitHubApp = &connectorgithub.InstallationTokenConfig{AppID: appID, PrivateKey: privateKey, LookupEnv: lookupEnv}
 	}
 	if config.Attachments != nil {
 		config.Attachments.AccessKeyID = lookupEnv("DETENT_ATTACHMENTS_ACCESS_KEY_ID")

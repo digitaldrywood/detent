@@ -453,3 +453,50 @@ func TestRepositoryInstallationTokenSource(t *testing.T) {
 		})
 	}
 }
+
+func TestAppTokenSource(t *testing.T) {
+	t.Parallel()
+	privateKey := testPrivateKeyPEM(t)
+	for _, test := range []struct {
+		name      string
+		key       string
+		cancelled bool
+		wantError error
+	}{
+		{name: "App JWT without installation or repository", key: privateKey},
+		{name: "invalid key", key: "invalid", wantError: ErrInvalidPrivateKey},
+		{name: "cancelled", key: privateKey, cancelled: true, wantError: context.Canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+			source, err := NewAppTokenSource(InstallationTokenConfig{AppID: "123", PrivateKey: test.key, Now: func() time.Time { return now }, LookupEnv: func(string) string { return "" }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if test.cancelled {
+				cancel()
+			}
+			for range 2 {
+				token, err := source.Token(ctx)
+				if !errors.Is(err, test.wantError) {
+					t.Fatalf("Token error = %v, want %v", err, test.wantError)
+				}
+				if test.wantError != nil {
+					return
+				}
+				segments := strings.Split(token, ".")
+				if len(segments) != 3 {
+					t.Fatalf("JWT segments = %d", len(segments))
+				}
+				claims := decodeJWTSegment(t, segments[1])
+				if claims["iss"] != "123" || claims["exp"] != float64(now.Add(10*time.Minute).Unix()) {
+					t.Fatalf("JWT claims = %v", claims)
+				}
+				now = now.Add(time.Hour)
+			}
+		})
+	}
+}
