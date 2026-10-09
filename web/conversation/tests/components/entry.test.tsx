@@ -59,7 +59,7 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     resume: vi.fn(async () => ({ next: "/organizations/org_b/provisioning" })),
     platformTenant: vi.fn(async () => { throw new Error("Tenant not requested"); }),
     resumePlatformTenant: vi.fn(async () => ({ next: "/platform/tenants" })),
-    platformAccounts: vi.fn(async () => ({ accounts: [], unsearched: [] })),
+    platformUsers: vi.fn(async () => ({ users: [], unsearched: [] })),
     platformOrganizations: vi.fn(async () => ({ email: "", csrf: "", can_support: false, organizations: [], unavailable: [] })),
     platformAllowlist: vi.fn(async () => ({ self_service: false, allowed_emails: [], allowed_domains: [], source: { file: "", keys: [] } })),
     platformMembers: vi.fn(async () => ({ members: [], revision: 1, self: { email: "admin@detent.build", role: "admin" } })),
@@ -291,7 +291,7 @@ describe("entry API", () => {
     const api = makeEntryApi({
       fetch: async (url, init) => {
         calls.push({ url, init });
-        return new Response(JSON.stringify(url.startsWith("/api/cloud/platform/accounts?") ? { accounts: [], unsearched: [] } : url.startsWith("/api") ? { ...listing, platform_role: "admin" } : { next: "/next" }), { status: 200 });
+        return new Response(JSON.stringify(url.startsWith("/api/cloud/platform/users?") ? { users: [], unsearched: [] } : url.startsWith("/api") ? { ...listing, platform_role: "admin" } : { next: "/next" }), { status: 200 });
       },
     });
     expect((await api.organizations()).platform_role).toBe("admin");
@@ -305,8 +305,8 @@ describe("entry API", () => {
     expect(body.get("name")).toBe("Delta");
     expect(body.get("creation_key")).toBe("key_0123456789abcdef");
     expect(body.get("csrf")).toBe("csrf-token");
-    expect(await api.platformAccounts("cory+test@example.test")).toEqual({ accounts: [], unsearched: [] });
-    expect(calls[3]!.url).toBe("/api/cloud/platform/accounts?q=cory%2Btest%40example.test");
+    expect(await api.platformUsers("cory+test@example.test")).toEqual({ users: [], unsearched: [] });
+    expect(calls[3]!.url).toBe("/api/cloud/platform/users?q=cory%2Btest%40example.test");
     expect(calls[3]!.init?.method).toBe("GET");
   });
 
@@ -350,10 +350,13 @@ describe("entry router", () => {
     },
   );
 
-  it("redirects the platform root to tenants", async () => {
-    const router = makeEntryRouter(createMemoryHistory({ initialEntries: ["/platform"] }));
+  it.each([
+    ["/platform", "/platform/tenants"],
+    ["/platform/accounts", "/platform/users"],
+  ])("redirects %s to %s", async (from, to) => {
+    const router = makeEntryRouter(createMemoryHistory({ initialEntries: [from] }));
     await router.load();
-    expect(router.state.location.pathname).toBe("/platform/tenants");
+    expect(router.state.location.pathname).toBe(to);
   });
 
   it("keeps the explicit switch flag when returning to the chooser", async () => {

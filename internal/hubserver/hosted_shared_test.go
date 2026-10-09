@@ -14,7 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
-	"github.com/digitaldrywood/detent/internal/platformaccounts"
+	"github.com/digitaldrywood/detent/internal/platformusers"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -211,7 +211,7 @@ func TestHostedSharedEntryRejectsBypass(t *testing.T) {
 		{"empty segment", hostedSharedRequest{user: &owner, target: "/organizations/org_security//organization"}, http.StatusNotFound},
 		{"duplicate scope parameter", hostedSharedRequest{user: &owner, target: "/organizations/org_security/organization?cursor=a&cursor=b"}, http.StatusNotFound},
 		{"browser assertion on internal route", hostedSharedRequest{user: &owner, method: http.MethodPost, target: "/internal/v1/sessions/revoke", body: `{"bindings":["x"]}`}, http.StatusNotFound},
-		{"browser assertion on account search", hostedSharedRequest{user: &owner, method: http.MethodPost, target: "/internal/v1/platform/accounts", body: `{"q":"owner"}`}, http.StatusNotFound},
+		{"browser assertion on user search", hostedSharedRequest{user: &owner, method: http.MethodPost, target: "/internal/v1/platform/users", body: `{"q":"owner"}`}, http.StatusNotFound},
 		{"service assertion on customer route", hostedSharedRequest{kind: cloudassert.KindService, target: "/organizations/org_security/organization"}, http.StatusNotFound},
 	}
 	for _, test := range tests {
@@ -611,7 +611,7 @@ func TestHostedSharedOwnerBootstrap(t *testing.T) {
 	}
 }
 
-func TestHostedPlatformAccounts(t *testing.T) {
+func TestHostedPlatformUsers(t *testing.T) {
 	t.Parallel()
 	f := newHostedSharedFixture(t)
 	f.member(t, "match", "owner", "")
@@ -649,18 +649,18 @@ func TestHostedPlatformAccounts(t *testing.T) {
 		{"ab", 400, 0, 0},
 	} {
 		t.Run(test.query, func(t *testing.T) {
-			body, err := json.Marshal(platformaccounts.Query{Text: test.query})
+			body, err := json.Marshal(platformusers.Query{Text: test.query})
 			if err != nil {
 				t.Fatal(err)
 			}
-			response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/platform/accounts", body: string(body)})
+			response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/platform/users", body: string(body)})
 			if response.Code != test.status {
 				t.Fatalf("search = %d %s", response.Code, response.Body)
 			}
 			if test.status != 200 {
 				return
 			}
-			var result platformaccounts.TenantResult
+			var result platformusers.TenantResult
 			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 				t.Fatal(err)
 			}
