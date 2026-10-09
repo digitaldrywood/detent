@@ -89,3 +89,16 @@ func TestRunnerProviderReports(t *testing.T) {
 		})
 	}
 }
+
+func writeProviderCapacityFixture(t *testing.T, dir string) string {
+	t.Helper()
+	raw, err := json.Marshal([]providercapacity.Report{{Provider: "openai", Backend: "codex", AccountAlias: "runner", Models: []string{"provider_default"}, Availability: "unknown", ObservedAt: time.Now().UTC()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "provider-capacity.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}

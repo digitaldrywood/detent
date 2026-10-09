@@ -288,6 +288,7 @@ func TestRunnerSetupHeartbeatOwnership(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			cfg.Client.ProviderCapacityFile = writeProviderCapacityFixture(t, root)
 			source, err := newHubScheduling(t.Context(), cfg, "test")
 			if err != nil {
 				t.Fatal(err)
