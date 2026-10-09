@@ -23,11 +23,13 @@ that introduces heartbeat updates if their scheduled updater has stalled. Run
 coordinate with its running service, install the signed release using the
 [installation instructions](../README.md#installation) and restart the service.
 
-GitHub Actions runs the complete suite hourly on a pinned `develop` commit.
-The scheduled workflow uses the default branch's cron. Scheduled and manual
-runs validate the pinned current `develop` commit even if it already has a
-release-provenance tag. It does not run on pull requests. A manual dispatch can
-force exactly one job to fail to verify diagnostic filing.
+GitHub Actions checks the current `develop` SHA hourly on a pinned commit. Each
+new SHA receives the complete suite once across scheduled and manual dispatch
+runs. Preflight skips a SHA with any completed non-cancelled run of `ci.yml`,
+regardless of event or conclusion, so launchd dispatches deduplicate with cron.
+A manual dispatch can set `force: true` to rerun that SHA; selecting `fail_job`
+also forces the suite and can force exactly one job to fail to verify diagnostic
+filing. It does not run on pull requests.
 
 A green run posts a `scheduled-full-ci` commit status, cuts an annotated patch
 version tag on the validated commit, and dispatches the release workflow. The
