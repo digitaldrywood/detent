@@ -475,13 +475,13 @@ export function makeAccountApi(options: AccountApiOptions) {
     fleet: () => send(FleetResponse, "GET", `${base}/fleet`),
     diagnostics: (range: string) => send(DiagnosticsReport, "GET", `${base}/diagnostics?range=${encodeURIComponent(range)}`),
     reports: (project: string, range: ReportsRange) => send(ReportsReport, "GET", `${base}/reports?project=${encodeURIComponent(project)}&range=${encodeURIComponent(range)}`),
-    healthFindings: async (projects: readonly string[]): Promise<HealthFindingsRead> => {
+    healthFindings: async (projects: readonly string[], options: { state?: "open" | "resolved"; since?: string } = {}): Promise<HealthFindingsRead> => {
       const reads = await Promise.all(projects.map(async (project) => {
         const items: HealthFindingsRead["items"][number][] = [];
         let cursor = "";
         let lastTick: string | null = null;
         do {
-          const page = await send(HealthFindingsRead, "GET", `${base}/projects/${encodeURIComponent(project)}/health/findings?state=open${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+          const page = await send(HealthFindingsRead, "GET", `${base}/projects/${encodeURIComponent(project)}/health/findings?state=${options.state ?? "open"}${options.since ? `&since=${encodeURIComponent(options.since)}` : ""}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
           items.push(...page.items);
           lastTick = page.last_tick_at;
           cursor = page.next_cursor ?? "";

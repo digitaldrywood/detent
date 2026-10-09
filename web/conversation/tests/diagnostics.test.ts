@@ -11,7 +11,7 @@ import healthFixture from "../src/contracts/fixtures/health-findings.json";
 import { makeAccountApi } from "../src/app/account/api.ts";
 
 describe("diagnostics read", () => {
-  it("reads granted projects, follows findings cursors, and deduplicates shared findings", async () => {
+  it.each([{}, { state: "resolved" as const, since: "2026-10-07T10:00:00Z" }])("reads granted projects, follows findings cursors, and deduplicates shared findings (%j)", async (options) => {
     const requests: string[] = [];
     const api = makeAccountApi({
       origin: "",
@@ -27,14 +27,15 @@ describe("diagnostics read", () => {
         });
       },
     });
-    const read = await api.healthFindings(["prj_first", "prj_second"]);
+    const read = await api.healthFindings(["prj_first", "prj_second"], options);
     expect(read.items.map((finding) => finding.id)).toEqual(["finding_watch", "finding_attention"]);
     expect(read.last_tick_at).toBe(healthFixture.last_tick_at);
+    const query = options.state === "resolved" ? "state=resolved&since=2026-10-07T10%3A00%3A00Z" : "state=open";
     expect(requests.toSorted()).toEqual([
-      "/api/v2/organizations/org_fixture/projects/prj_first/health/findings?state=open",
-      "/api/v2/organizations/org_fixture/projects/prj_first/health/findings?state=open&cursor=next%2Fpage",
-      "/api/v2/organizations/org_fixture/projects/prj_second/health/findings?state=open",
-      "/api/v2/organizations/org_fixture/projects/prj_second/health/findings?state=open&cursor=next%2Fpage",
+      `/api/v2/organizations/org_fixture/projects/prj_first/health/findings?${query}`,
+      `/api/v2/organizations/org_fixture/projects/prj_first/health/findings?${query}&cursor=next%2Fpage`,
+      `/api/v2/organizations/org_fixture/projects/prj_second/health/findings?${query}`,
+      `/api/v2/organizations/org_fixture/projects/prj_second/health/findings?${query}&cursor=next%2Fpage`,
     ]);
   });
 
