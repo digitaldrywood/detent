@@ -96,7 +96,8 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 		case "resume_local_project":
 			wasPaused = view.Paused
 			if err := o.manager.unpauseLocked(ctx, p.ID(), false); err != nil {
-				view.Constraint = "The selected project could not be resumed through its configuration owner."
+				view = o.observe(ctx, *cfg, revision, request.ProjectID)
+				view.Constraint = "The selected project could not be resumed through its configuration owner. Active or deferred work must settle before resuming a drained project; then read its configuration and retry."
 				return false
 			}
 			resumed = p
@@ -238,7 +239,7 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 				resumed.mu.Unlock()
 				view = o.observe(ctx, *cfg, revision, request.ProjectID)
 				view.Saved = view.Registered
-				view.Applied = view.Constraint == "" && !view.Paused && resumed.Running()
+				view.Applied = view.Constraint == "" && !view.Paused && !view.Draining && resumed.Running()
 				return false
 			}
 			view = o.observe(ctx, *cfg, revision, request.ProjectID)
