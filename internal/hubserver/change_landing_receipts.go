@@ -115,16 +115,18 @@ func withLandingBarrier(ctx context.Context, query nativeQueryer, receipt tracke
 	if !receipt.Landed || receipt.VersionID == "" {
 		return receipt, nil
 	}
-	var raw sql.NullString
-	err := query.QueryRowContext(ctx, "SELECT json_extract(record_json, '$.barrier') FROM landing_barrier_receipts WHERE version_id=?", receipt.VersionID).Scan(&raw)
+	var raw string
+	err := query.QueryRowContext(ctx, "SELECT record_json FROM landing_barrier_receipts WHERE version_id=?", receipt.VersionID).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return receipt, nil
 	}
 	if err != nil {
 		return receipt, err
 	}
-	if raw.Valid {
-		err = json.Unmarshal([]byte(raw.String), &receipt.Barrier)
+	var covered tracker.NativeLandingReceipt
+	if err := json.Unmarshal([]byte(raw), &covered); err != nil {
+		return receipt, err
 	}
-	return receipt, err
+	receipt.Barrier, receipt.BarrierHistory = covered.Barrier, covered.BarrierHistory
+	return receipt, nil
 }

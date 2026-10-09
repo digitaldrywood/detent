@@ -1459,12 +1459,18 @@ head differs from the last checked commit, so ordinary pull request merges
 trigger it as well as native landings. The claim captures the native landing
 receipts since the last green barrier.
 
-A red barrier files or appends a High-priority native repair issue through the
-existing machine-report owner, with command output, the checked commit, the
-commit range since the last green barrier, and the native changes in it. Only that repair issue may land while red;
-a green barrier reopens landing. The worker source completion command remains
-required. Barrier reads and receipts provide diagnostics through the existing
-API and MCP surfaces.
+A red barrier records its failure and starts an agent repair in the barrier
+worktree. The barrier owner commits the staged repair, checks it with the barrier
+command, and pushes only a passing head. A moved base requires rebasing and a
+new check before pushing. Other validated Changes continue to land while red.
+No work item is filed by the barrier. `record` mutations retain command results
+and repair session evidence in the barrier history; `finish` publishes the final
+result and `cancel` releases an interrupted claim without clearing red.
+The read returns the newest 20 history events in chronological order; pass its
+`history_cursor` as `history_before` to read older events. Covered landing
+receipts include the current run's check and repair evidence for MCP reads.
+The worker source completion command remains required. Barrier reads and
+receipts provide diagnostics through the existing API and MCP surfaces.
 
 GitHub's branch protection, required checks, and required reviews decide
 whether the merge succeeds. The runner verifies that the returned merge commit

@@ -2,12 +2,13 @@ package hubclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
 
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -33,7 +34,7 @@ func (s *Scheduler) NextLandingBarrier(ctx context.Context, project, repository,
 		return observed, false, err
 	}
 	head, err := observeHead(ctx, observed.BaseRef)
-	if err != nil || !observed.Running && observed.Result != nil && observed.Result.HeadSHA == head {
+	if err != nil || !observed.Running && !observed.Red && observed.Result != nil && observed.Result.HeadSHA == head {
 		return observed, false, err
 	}
 	key, err := randomSessionID()
@@ -57,13 +58,17 @@ func (s *Scheduler) FinishLandingBarrier(ctx context.Context, project string, ba
 	return err
 }
 
-func (e *nativeExecution) AuthorizeLanding(ctx context.Context, repository string) error {
-	barrier, err := e.claim.source.client.LandingBarrier(ctx, repository)
+func (s *Scheduler) RecordLandingBarrier(ctx context.Context, project string, barrier tracker.LandingBarrier, result *gate.CommandResult, repair *tracker.LandingBarrierRepair) error {
+	source := s.nativeProject(project)
+	if source == nil {
+		return errors.New("landing barrier project is unavailable")
+	}
+	request := tracker.LandingBarrierRequest{Action: "record", Repository: barrier.Repository, ID: barrier.ID, Result: result, Repair: repair}
+	raw, err := json.Marshal(request)
 	if err != nil {
 		return err
 	}
-	if barrier.Red && (barrier.Repair == "" || barrier.Repair != e.claim.lease.WorkItemID) {
-		return runner.ErrLandingBarrierRed
-	}
-	return nil
+	request.IdempotencyKey = barrier.ID + ":record:" + policy.Digest(raw)
+	_, err = source.client.MutateLandingBarrier(ctx, request)
+	return err
 }

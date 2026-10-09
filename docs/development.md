@@ -48,8 +48,9 @@ integration or race diagnostics to the scheduled suite.
 The approved `gate.run: make check-land` remains the source completion gate.
 This project opts into `gate.landing_mode: rolling_barrier`: landing skips the
 command, and a detached base-tip worktree runs it outside the source lock after
-landings. A red result stops repository landing except for its native repair
-issue; a green result reopens landing. Other projects default to `per_landing`,
+landings. A red result starts a repair agent within the barrier run without
+filing work items or stopping other validated landings. The repaired head must
+pass the barrier command before the owner pushes it or records green. Other projects default to `per_landing`,
 where a command failure returns the item to Rework with the output. Focused diagnostics and full scheduled
 suites do not publish a required local commit status. The
 scheduled suite validates pinned integrated develop commits for release tags;

@@ -159,9 +159,10 @@ the clean-squash decision on the new head. GitHub PR landing stays behind its
 project policy opt-in and retains its configured validation and native checks.
 The approved `rolling_barrier` mode skips landing and merge-resolution commands,
 running the configured gate on the base tip outside the source lock after landings.
-Landing continues during validation; a red barrier stops repository landing
-except for its native repair issue. Repair proceeds forward without auto-revert,
-and a green barrier reopens landing. A failed per-landing command returns to
+Landing continues while the barrier is running or red. The barrier owner repairs
+failures within its run without filing work items or freezing other landings.
+Repair proceeds forward without auto-revert and must pass the barrier command
+on its repaired integration head before landing or recording green. A failed per-landing command returns to
 configured Rework with the failing output. The project publishes no local status and sets
 `gate.required_status_checks: []` and `gate.automated_review: "off"`; ordinary
 merge waits for no additional CI producer or scheduled validation, while
@@ -218,9 +219,6 @@ variations. Filing uses the selected tracker's supported owner, preserves
 imported provenance and matches open work before filing: a matching open issue
 receives an occurrence or comment, never a duplicate, and when every match is
 closed the newest one is already handled and nothing is created or changed.
-A newly red rolling landing barrier requires an open repair owner: it reuses an
-open match, or creates a fresh repair when only terminal repairs match, keeping
-that terminal history intact.
 Occurrence evidence identifies runs, attempts, commits and jobs without
 changing problem identity.
 

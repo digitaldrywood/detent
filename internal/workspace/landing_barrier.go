@@ -17,7 +17,12 @@ type LandingBarrierWorkspace interface {
 	AcquireLandingBarrierRunner(context.Context) (func() error, error)
 	LandingRepository(context.Context) string
 	LandingBarrierHead(context.Context, string) (string, error)
-	RunLandingBarrier(context.Context, string, string, string) (gate.CommandResult, error)
+	RunLandingBarrier(context.Context, string, string, string, LandingBarrierCallbacks) (gate.CommandResult, error)
+}
+
+type LandingBarrierCallbacks struct {
+	Record func(context.Context, gate.CommandResult) error
+	Repair func(context.Context, Info, gate.CommandResult) error
 }
 
 func (l *LocalGit) AcquireLandingBarrierRunner(ctx context.Context) (func() error, error) {
@@ -48,7 +53,7 @@ func (l *LocalGit) LandingBarrierHead(ctx context.Context, base string) (string,
 	return head, err
 }
 
-func (l *LocalGit) RunLandingBarrier(ctx context.Context, id, base, command string) (result gate.CommandResult, resultErr error) {
+func (l *LocalGit) RunLandingBarrier(ctx context.Context, id, base, command string, callbacks LandingBarrierCallbacks) (result gate.CommandResult, resultErr error) {
 	digest := sha256.Sum256([]byte(id))
 	key := "barrier-" + hex.EncodeToString(digest[:16])
 	path := filepath.Join(l.root, key)
@@ -104,6 +109,82 @@ func (l *LocalGit) RunLandingBarrier(ctx context.Context, id, base, command stri
 		defer release()
 		resultErr = errors.Join(resultErr, l.removeLandingWorktree(cleanupCtx, l.sourceRoot, path))
 	}()
-	issue.PullRequestHeadSHA = head
-	return l.RunReviewCommand(ctx, info, issue, command)
+	check := func() error {
+		current, err := runGitAt(ctx, path, "rev-parse", "HEAD")
+		if err != nil {
+			return err
+		}
+		issue.PullRequestHeadSHA = strings.TrimSpace(current)
+		result, err = l.RunReviewCommand(ctx, info, issue, command)
+		if err == nil && callbacks.Record != nil {
+			err = callbacks.Record(ctx, result)
+		}
+		return err
+	}
+	if err := check(); err != nil || result.ExitCode == 0 || callbacks.Repair == nil {
+		return result, err
+	}
+	for ctx.Err() == nil {
+		if result.ExitCode != 0 {
+			if err := callbacks.Repair(ctx, info, result); err != nil {
+				return result, err
+			}
+			current, err := runGitAt(ctx, path, "rev-parse", "HEAD")
+			if err != nil {
+				return result, err
+			}
+			if strings.TrimSpace(current) != result.HeadSHA {
+				return result, errors.New("barrier repair agent changed the host-owned head")
+			}
+			staged, err := runGitAt(ctx, path, "diff", "--cached", "--name-only")
+			if err != nil || strings.TrimSpace(staged) == "" {
+				return result, err
+			}
+			if _, err := runGitAt(ctx, path, "commit", "-m", "fix: repair rolling landing barrier"); err != nil {
+				return result, err
+			}
+			if err := check(); err != nil {
+				return result, err
+			}
+			if result.ExitCode != 0 {
+				continue
+			}
+		}
+		release, err := l.acquireSourceOperation(ctx)
+		if err != nil {
+			return result, err
+		}
+		baseRef := "refs/remotes/" + defaultGitRemote + "/" + base
+		next, pushErr := func() (string, error) {
+			defer release()
+			if _, err := l.runGit(ctx, "fetch", defaultGitRemote, "+refs/heads/"+base+":"+baseRef); err != nil {
+				return "", err
+			}
+			next, err := l.runGit(ctx, "rev-parse", baseRef)
+			if err != nil {
+				return "", err
+			}
+			next = strings.TrimSpace(next)
+			if next != head {
+				_, err := runGitAt(ctx, path, "rebase", "--onto", next, head)
+				return next, err
+			}
+			if err := l.VerifyReviewTree(ctx, info, issue); err != nil {
+				return next, err
+			}
+			_, err = runGitAt(ctx, path, "push", "--force-with-lease=refs/heads/"+base+":"+head, defaultGitRemote, result.HeadSHA+":refs/heads/"+base)
+			return next, err
+		}()
+		if pushErr != nil {
+			return result, pushErr
+		}
+		if next == head {
+			return result, nil
+		}
+		head = next
+		if err := check(); err != nil {
+			return result, err
+		}
+	}
+	return result, ctx.Err()
 }

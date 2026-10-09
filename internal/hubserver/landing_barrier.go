@@ -5,8 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,7 +15,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -29,11 +29,17 @@ func readLandingBarrier(ctx context.Context, query nativeQueryer, scope nativeSc
 	if err != nil {
 		return result, err
 	}
-	err = json.Unmarshal([]byte(raw), &result)
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return result, err
+	}
+	if result.ProjectID == scope.project {
+		result.History, result.HistoryCursor, err = readLandingBarrierHistory(ctx, query, scope, repository, 0)
+	}
 	return result, err
 }
 
 func writeLandingBarrier(ctx context.Context, tx *sql.Tx, scope nativeScope, barrier tracker.LandingBarrier) error {
+	barrier.History, barrier.HistoryCursor = nil, 0
 	raw, err := marshalNative(barrier)
 	if err != nil {
 		return err
@@ -43,9 +49,45 @@ ON CONFLICT(organization_id, repository) DO UPDATE SET record_json=excluded.reco
 	return err
 }
 
-func barrierLandingAllowed(ctx context.Context, query nativeQueryer, scope nativeScope, repository string, item tracker.NativeWorkItemID) (bool, error) {
-	barrier, err := readLandingBarrier(ctx, query, scope, repository)
-	return !barrier.Red || barrier.Repair != "" && barrier.Repair == item, err
+func readLandingBarrierHistory(ctx context.Context, query nativeQueryer, scope nativeScope, repository string, before int64) ([]tracker.LandingBarrierEvent, int64, error) {
+	rows, err := query.QueryContext(ctx, `SELECT sequence, record_json FROM landing_barrier_events WHERE organization_id=? AND project_id=? AND repository=? AND (?=0 OR sequence<?) ORDER BY sequence DESC LIMIT 21`, scope.organization, scope.project, repository, before, before)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var events []tracker.LandingBarrierEvent
+	var last, cursor int64
+	for rows.Next() {
+		var sequence int64
+		var raw string
+		if err := rows.Scan(&sequence, &raw); err != nil {
+			return nil, 0, err
+		}
+		if len(events) == 20 {
+			cursor = last
+			break
+		}
+		var event tracker.LandingBarrierEvent
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			return nil, 0, err
+		}
+		events = append(events, event)
+		last = sequence
+	}
+	slices.Reverse(events)
+	return events, cursor, rows.Err()
+}
+
+func recordLandingBarrierEvent(ctx context.Context, tx *sql.Tx, scope nativeScope, barrier *tracker.LandingBarrier, event tracker.LandingBarrierEvent) error {
+	raw, err := marshalNative(event)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO landing_barrier_events (organization_id, project_id, repository, record_json) VALUES (?, ?, ?, ?)`, scope.organization, scope.project, barrier.Repository, raw); err != nil {
+		return err
+	}
+	barrier.History, barrier.HistoryCursor, err = readLandingBarrierHistory(ctx, tx, scope, barrier.Repository, 0)
+	return err
 }
 
 func (s *Service) getLandingBarrier(c echo.Context) error {
@@ -62,6 +104,15 @@ func (s *Service) getLandingBarrier(c echo.Context) error {
 	}
 	if result.ProjectID != nativeRequestScope(c).project {
 		result = tracker.LandingBarrier{Repository: result.Repository, Running: result.Running, Red: result.Red}
+	} else if cursor := c.QueryParam("history_before"); cursor != "" {
+		before, err := strconv.ParseInt(cursor, 10, 64)
+		if err != nil || before <= 0 {
+			return invalidAPIRequest(c, nativeInvalid("Barrier history cursor must be positive"))
+		}
+		result.History, result.HistoryCursor, err = readLandingBarrierHistory(c.Request().Context(), s.database.db, nativeRequestScope(c), result.Repository, before)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
 	}
 	return c.JSON(http.StatusOK, result)
 }
@@ -103,7 +154,7 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 					return barrier, nil
 				}
 				barrier.Started = barrier.Green
-			} else if barrier.Result != nil && barrier.Result.HeadSHA == request.Head {
+			} else if !barrier.Red && barrier.Result != nil && barrier.Result.HeadSHA == request.Head {
 				return barrier, nil
 			}
 			var latest int64
@@ -122,18 +173,50 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 			if len(changes) > 0 {
 				barrier.BaseRef = changes[len(changes)-1].BaseRef
 			}
-		case "finish", "cancel":
+		case "record", "finish", "cancel":
 			if !barrier.Running || barrier.ID != request.ID || barrier.Owner != landingBarrierOwner(scope) {
 				return nil, nativeConflict(0)
+			}
+			if request.Action == "record" {
+				if request.Result == nil && request.Repair == nil {
+					return nil, nativeInvalid("Barrier evidence requires a command result or repair session")
+				}
+				if request.Result != nil {
+					if !validBarrierResult(request.Result, barrier.CommandDigest) {
+						return nil, nativeInvalid("Barrier evidence requires a command result and checked commit")
+					}
+					if request.Result.ExitCode != 0 {
+						barrier.Red = true
+						barrier.Result = request.Result
+					}
+				}
+				if request.Repair != nil && (!validCommitID(request.Repair.HeadSHA) || len(request.Repair.Output) > 64<<10 || len(request.Repair.Error) > 4096 || len(request.Repair.ThreadID) > 512 || len(request.Repair.TurnID) > 512) {
+					return nil, nativeInvalid("Barrier repair evidence is invalid")
+				}
+				if err := recordLandingBarrierEvent(ctx, tx, scope, &barrier, tracker.LandingBarrierEvent{ID: barrier.ID, Owner: barrier.Owner, At: now, Result: request.Result, Repair: request.Repair}); err != nil {
+					return nil, err
+				}
+				if barrier.Result != nil {
+					if err := coverBarrierReceipts(ctx, tx, scope, barrier); err != nil {
+						return nil, err
+					}
+				}
+				if err := writeLandingBarrier(ctx, tx, scope, barrier); err != nil {
+					return nil, err
+				}
+				return barrier, nil
 			}
 			barrier.Running = false
 			if request.Action == "cancel" {
 				barrier.Started = barrier.Green
 			} else {
-				if request.Result == nil || policy.Digest([]byte(request.Result.Command)) != barrier.CommandDigest || request.Result.Command == "" || request.Result.ExitCode < 0 || request.Result.DurationNS < 0 || len(request.Result.Command) > 4096 || len(request.Result.Output) > 64<<10 || !request.Result.Evidence.Valid() || !validCommitID(request.Result.TreeSHA) || !changerequest.ValidHash(request.Result.HeadSHA, 40) && !changerequest.ValidHash(request.Result.HeadSHA, 64) {
+				if !validBarrierResult(request.Result, barrier.CommandDigest) {
 					return nil, nativeInvalid("Barrier completion requires a command result and checked commit")
 				}
 				barrier.Result = request.Result
+				if err := recordLandingBarrierEvent(ctx, tx, scope, &barrier, tracker.LandingBarrierEvent{ID: barrier.ID, Owner: barrier.Owner, At: now, Result: request.Result}); err != nil {
+					return nil, err
+				}
 				barrier.Red = request.Result.ExitCode != 0
 				if err := coverBarrierReceipts(ctx, tx, scope, barrier); err != nil {
 					return nil, err
@@ -144,36 +227,23 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 						return nil, err
 					}
 					barrier.Changes = changes
-					body := barrierReportBody(barrier)
-					origin := issueorigin.Origin{Kind: "doctor", Instance: "landing-barrier", Source: barrier.ID, Fingerprint: issueorigin.Fingerprint("landing-barrier:" + request.Repository)}
-					issue, err := reportNativeMachineOccurrenceTx(ctx, tx, scope, tracker.CreateIssue{Title: "Repair rolling landing barrier for " + request.Repository, Body: issueorigin.Stamp(body, origin), State: "Todo", Priority: new(1)}, now, true)
-					if err != nil {
-						return nil, err
-					}
-					barrier.Repair = issue.WorkItemID
 				} else {
-					if barrier.Repair != "" {
-						issue, _, err := readNativeIssue(ctx, tx, scope, string(barrier.Repair))
-						if err != nil {
-							return nil, err
-						}
-						if _, err := insertNativeComment(ctx, tx, scope, issue, barrierReportBody(barrier), nil, now); err != nil {
-							return nil, err
-						}
-					}
 					barrier.Green = barrier.Started
 					barrier.GreenHead = request.Result.HeadSHA
-					barrier.Repair = ""
 				}
 			}
 		default:
-			return nil, nativeInvalid("Barrier action must be start, finish or cancel")
+			return nil, nativeInvalid("Barrier action must be start, record, finish or cancel")
 		}
 		if err := writeLandingBarrier(ctx, tx, scope, barrier); err != nil {
 			return nil, err
 		}
 		return barrier, nil
 	})
+}
+
+func validBarrierResult(result *gate.CommandResult, digest string) bool {
+	return result != nil && policy.Digest([]byte(result.Command)) == digest && result.Command != "" && result.ExitCode >= 0 && result.DurationNS >= 0 && len(result.Command) <= 4096 && len(result.Output) <= 64<<10 && result.Evidence.Valid() && validCommitID(result.TreeSHA) && validCommitID(result.HeadSHA)
 }
 
 func recordBarrierLanding(ctx context.Context, tx *sql.Tx, scope nativeScope, version tracker.ChangeVersion, change tracker.ChangeRequest, request tracker.LandChangeVersion, now time.Time) error {
@@ -211,7 +281,7 @@ func barrierChanges(ctx context.Context, query nativeQueryer, scope nativeScope,
 		if err := json.Unmarshal([]byte(raw), &receipt); err != nil {
 			return nil, err
 		}
-		receipt.Gate, receipt.Barrier = nil, nil
+		receipt.Gate, receipt.Barrier, receipt.BarrierHistory = nil, nil, nil
 		result = append(result, receipt)
 	}
 	return result, rows.Err()
@@ -222,35 +292,26 @@ func coverBarrierReceipts(ctx context.Context, tx *sql.Tx, scope nativeScope, ba
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE landing_barrier_receipts SET record_json=json_set(record_json, '$.barrier', json(?)) WHERE organization_id=? AND repository=? AND sequence>? AND sequence<=?`, raw, scope.organization, barrier.Repository, barrier.Green, barrier.Started)
+	var events []tracker.LandingBarrierEvent
+	for _, event := range barrier.History {
+		if event.ID == barrier.ID {
+			events = append(events, event)
+		}
+	}
+	history, err := marshalNative(events)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE change_landing_receipts SET record_json=json_set(record_json, '$.barrier', json(?)) WHERE version_id IN (SELECT version_id FROM landing_barrier_receipts WHERE organization_id=? AND repository=? AND sequence>? AND sequence<=?)`, raw, scope.organization, barrier.Repository, barrier.Green, barrier.Started)
+	_, err = tx.ExecContext(ctx, `UPDATE landing_barrier_receipts SET record_json=json_set(record_json, '$.barrier', json(?), '$.barrier_history', json(?)) WHERE organization_id=? AND repository=? AND sequence>? AND sequence<=?`, raw, history, scope.organization, barrier.Repository, barrier.Green, barrier.Started)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE change_landing_receipts SET record_json=json_set(record_json, '$.barrier', json(?), '$.barrier_history', json(?)) WHERE version_id IN (SELECT version_id FROM landing_barrier_receipts WHERE organization_id=? AND repository=? AND sequence>? AND sequence<=?)`, raw, history, scope.organization, barrier.Repository, barrier.Green, barrier.Started)
 	if err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE native_attempts SET data_json=json_set(data_json, '$.runtime.landing', json((SELECT record_json FROM change_landing_receipts WHERE attempt_id=native_attempts.id))) WHERE id IN (SELECT attempt_id FROM change_landing_receipts WHERE version_id IN (SELECT version_id FROM landing_barrier_receipts WHERE organization_id=? AND repository=? AND sequence>? AND sequence<=?))`, scope.organization, barrier.Repository, barrier.Green, barrier.Started)
 	return err
-}
-
-func barrierReportBody(barrier tracker.LandingBarrier) string {
-	result := barrier.Result
-	var body strings.Builder
-	fmt.Fprintf(&body, "Rolling landing barrier on `%s` at `%s` exited %d.\n\nCommand: `%s`\n\n", barrier.Repository, result.HeadSHA, result.ExitCode, result.Command)
-	if barrier.GreenHead != "" {
-		fmt.Fprintf(&body, "Commits since the last green barrier: `%s..%s`\n\n", barrier.GreenHead, result.HeadSHA)
-	}
-	body.WriteString("Changes landed since the last green barrier:\n")
-	for _, receipt := range barrier.Changes {
-		fmt.Fprintf(&body, "- Change %s version %s: `%s`\n", receipt.ChangeID, receipt.VersionID, receipt.MergeSHA)
-	}
-	output := result.Output
-	if len(output) > 40<<10 {
-		output = output[:40<<10] + "\n[output truncated; full output on barrier receipt]"
-	}
-	fmt.Fprintf(&body, "\n```text\n%s\n```\n\nFix forward; only the repair issue may land while this barrier is red.\n\n```detent-agent\nschema: 1\neffort: high\n```", output)
-	return body.String()
 }
 
 func landingBarrierOwner(scope nativeScope) string {

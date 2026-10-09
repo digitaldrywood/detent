@@ -97,7 +97,7 @@ func TestLandingBarrierRunsOutsideSourceLock(t *testing.T) {
 			}, 1)
 			command := "printf x > " + shellQuote(started) + "; read line < " + shellQuote(resume) + "; exit " + string(rune('0'+code))
 			go func() {
-				result, err := f.backend.RunLandingBarrier(ctx, "barrier", "main", command)
+				result, err := f.backend.RunLandingBarrier(ctx, "barrier", "main", command, LandingBarrierCallbacks{})
 				resultCh <- struct {
 					result gate.CommandResult
 					err    error
@@ -127,6 +127,91 @@ func TestLandingBarrierRunsOutsideSourceLock(t *testing.T) {
 				}
 			case <-ctx.Done():
 				t.Fatal("barrier did not finish")
+			}
+		})
+	}
+}
+
+func TestLandingBarrierRepairLanding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("barrier command requires a POSIX shell")
+	}
+	t.Parallel()
+	for _, test := range []struct {
+		name         string
+		moveBase     bool
+		failedRepair bool
+		wantChecks   int
+	}{
+		{"repair passes before landing", false, false, 2},
+		{"moved base reruns barrier", true, false, 3},
+		{"failing repair cannot land", false, true, 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newLandingFixture(t)
+			before := f.remoteMain(t)
+			var checks []gate.CommandResult
+			repairs := 0
+			result, err := f.backend.RunLandingBarrier(t.Context(), "repair", "main", "test -f repair.txt && test \"$(cat repair.txt)\" = repaired", LandingBarrierCallbacks{
+				Record: func(ctx context.Context, result gate.CommandResult) error {
+					checks = append(checks, result)
+					remote, err := runGitAt(ctx, f.remote, "rev-parse", "refs/heads/main")
+					if err != nil {
+						return err
+					}
+					if !test.moveBase && strings.TrimSpace(remote) != before {
+						t.Fatal("repair pushed before barrier validation completed")
+					}
+					return nil
+				},
+				Repair: func(ctx context.Context, info Info, failure gate.CommandResult) error {
+					repairs++
+					if repairs > 1 {
+						return nil
+					}
+					if failure.HeadSHA != before || failure.ExitCode == 0 {
+						t.Fatalf("repair failure=%+v", failure)
+					}
+					content := "repaired"
+					if test.failedRepair {
+						content = "still broken"
+					}
+					if err := os.WriteFile(filepath.Join(info.Path, "repair.txt"), []byte(content), 0o600); err != nil {
+						return err
+					}
+					if _, err := runGitAt(ctx, info.Path, "add", "repair.txt"); err != nil {
+						return err
+					}
+					if test.moveBase {
+						if err := os.WriteFile(filepath.Join(f.source, "parallel.txt"), []byte("parallel landing"), 0o600); err != nil {
+							return err
+						}
+						for _, args := range [][]string{{"add", "parallel.txt"}, {"commit", "-m", "parallel landing"}, {"push", "origin", "main"}} {
+							if _, err := runGitAt(ctx, f.source, args...); err != nil {
+								return err
+							}
+						}
+					}
+					return nil
+				},
+			})
+			if err != nil || len(checks) != test.wantChecks || checks[0].HeadSHA != before || checks[0].ExitCode == 0 {
+				t.Fatalf("result=%+v checks=%+v error=%v", result, checks, err)
+			}
+			if test.failedRepair {
+				if result.ExitCode == 0 || f.remoteMain(t) != before || repairs != 2 {
+					t.Fatalf("failed repair landed: %+v repairs=%d", result, repairs)
+				}
+				return
+			}
+			if result.ExitCode != 0 || result.HeadSHA != f.remoteMain(t) || repairs != 1 {
+				t.Fatalf("unchecked repair landed: %+v repairs=%d", result, repairs)
+			}
+			if test.moveBase && (checks[1].HeadSHA == checks[2].HeadSHA || strings.TrimSpace(runGit(t, f.remote, "show", "main:parallel.txt")) != "parallel landing") {
+				t.Fatalf("moved base evidence=%+v", checks)
 			}
 		})
 	}
