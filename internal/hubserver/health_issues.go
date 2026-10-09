@@ -22,12 +22,11 @@ func healthIssueRequest(f healthFinding) (tracker.CreateIssue, error) {
 		return tracker.CreateIssue{}, err
 	}
 	title := fmt.Sprintf("%s on %s %s", f.Signal, f.Subject.Kind, f.Subject.ID)
-	request := tracker.CreateIssue{Title: "intake: " + title, State: "Backlog"}
-	if f.Class == "instance" {
-		request.Title = "fix(instance): " + title
-		request.State = "Todo"
-		request.Priority = new(1)
-		request.Labels = []string{"infrastructure"}
+	request := tracker.CreateIssue{
+		Title:    "fix(instance): " + title,
+		State:    "Todo",
+		Priority: new(1),
+		Labels:   []string{"infrastructure"},
 	}
 	body := fmt.Sprintf("Finding: `%s`\nClass: %s\nSubject: %s %s\nOpened: %s\nObserved: %s\n\n%s\n\nNext action: %s\n\nEvidence:\n```json\n%s\n```\n\n```detent-agent\nschema: 1\neffort: high\n```", f.ID, f.Class, f.Subject.Kind, f.Subject.ID, formatHubTime(f.OpenedAt), formatHubTime(f.LastSeenAt), f.Summary, f.NextAction, evidence)
 	request.Body = issueorigin.Stamp(body, issueorigin.Origin{Kind: "audit", Instance: "health_detector", Source: f.ID, Fingerprint: f.Fingerprint})
@@ -49,7 +48,7 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
  FROM health_findings f JOIN projects p ON p.organization_id=f.organization_id AND p.profile='native'
  AND (EXISTS(SELECT 1 FROM json_each(f.projects_json) WHERE value=p.id) OR EXISTS(SELECT 1 FROM health_finding_issues WHERE finding_id=f.id AND project_id=p.id))
  LEFT JOIN health_finding_issues l ON l.finding_id=f.id AND l.project_id=p.id
- WHERE f.organization_id=? AND (f.resolved_at IS NULL OR (l.work_item_id IS NOT NULL AND l.reported_resolved_at IS NOT f.resolved_at))
+ WHERE f.organization_id=? AND f.class='instance' AND (f.resolved_at IS NULL OR (l.work_item_id IS NOT NULL AND l.reported_resolved_at IS NOT f.resolved_at))
  ORDER BY f.rowid,p.id LIMIT ?`, organization, healthReadLimit+1)
 	if err != nil {
 		return nil, err
@@ -117,12 +116,12 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 			}
 			valid := false
 			for _, state := range project.States {
-				if state.Name == request.State && !state.Terminal && !state.OperatorOnly && state.Dispatchable == (request.State == "Todo") {
+				if state.Name == request.State && !state.Terminal && !state.OperatorOnly && state.Dispatchable {
 					valid = true
 				}
 			}
 			if !valid {
-				return nil, nativeInvalid("Health reporting requires nondispatchable Backlog or dispatchable Todo")
+				return nil, nativeInvalid("Health reporting requires dispatchable Todo")
 			}
 			issue, err := reportNativeMachineIssueTx(ctx, tx, scope, request, now)
 			if err != nil {
