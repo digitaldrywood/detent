@@ -267,7 +267,7 @@ func preferredBarrierRunner(ctx context.Context, query nativeQueryer, scope nati
 		if err != nil {
 			return "", err
 		}
-		if runner.Health != "online" || runner.State == "disabled" || runner.HostCapacity <= capacity {
+		if runner.ConnectionHealth != "online" || runner.State == "disabled" || runner.HostCapacity <= capacity {
 			continue
 		}
 		preferred, capacity = id, runner.HostCapacity
