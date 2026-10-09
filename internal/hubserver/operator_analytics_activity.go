@@ -3,6 +3,7 @@ package hubserver
 import (
 	"encoding/json"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -166,6 +167,10 @@ func validAnalyticsBreakdown(b workflowmetrics.ActivityBreakdown, elapsed float6
 
 func nativeAnalyticsAttemptPage(attempts []nativeAnalyticsAttempt, offset, limit int) operatortool.ReadPage[nativeAnalyticsAttempt] {
 	page := operatortool.OffsetPage(attempts, offset, limit)
+	page.Items = slices.Clone(page.Items)
+	for i := range page.Items {
+		page.Items[i].Pipeline = nil
+	}
 	size := 2
 	for i, item := range page.Items {
 		raw, err := json.Marshal(item)

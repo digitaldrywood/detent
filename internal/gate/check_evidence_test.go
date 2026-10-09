@@ -95,3 +95,34 @@ func TestCheckEvidenceComparison(t *testing.T) {
 		t.Fatalf("scheduled=%+v", got)
 	}
 }
+
+func TestPipelineCommandReceipts(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name, command, public string
+		exit                  int
+	}{
+		{"passed", "make check-land", "make check-land", 0},
+		{"failed", "make check-land", "make check-land", 1},
+		{"private command", "make check TOKEN=private", "[redacted]", 1},
+		{"private path", "go test /private/customer", "[redacted]", 0},
+		{"content command", "echo customer payload", "[redacted]", 0},
+		{"content argument", "make check NOTE=customer", "[redacted]", 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := CommandResult{Command: tt.command, HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), ExitCode: tt.exit, StartedAt: at, FinishedAt: at.Add(10 * time.Second), DurationNS: 10e9}
+			timing := result.PipelineTiming("finalization")
+			if timing.ReceiptID == "" || timing.Stage != "finalization" || timing.Command != tt.public || timing.Execution != "executed" || timing.ExitCode == nil || *timing.ExitCode != tt.exit || timing.StartedAt != at || timing.FinishedAt != at.Add(10*time.Second) || timing.HeadSHA != result.HeadSHA || timing.TreeSHA != result.TreeSHA {
+				t.Fatalf("receipt=%+v", timing)
+			}
+			if !timing.Valid() || !result.ValidPipeline("finalization") {
+				t.Fatalf("invalid timing: %+v", timing)
+			}
+			reused := result.Reused("landing_validation", at.Add(time.Minute)).PipelineTiming("landing_validation")
+			if reused.Execution != "reused" || reused.ReusedReceiptID != timing.ReceiptID || reused.ReceiptID == timing.ReceiptID || reused.StartedAt != at.Add(time.Minute) || reused.FinishedAt != reused.StartedAt {
+				t.Fatalf("reuse=%+v source=%+v", reused, timing)
+			}
+		})
+	}
+}

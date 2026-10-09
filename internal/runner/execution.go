@@ -51,6 +51,10 @@ type HostDiagnosticsExecution interface {
 	HostOperation(string, time.Time, error, bool)
 }
 
+type PipelineExecution interface {
+	RecordPipelineTiming(gate.PipelineTiming)
+}
+
 type RuntimeExecution interface {
 	ObserveRuntime(context.Context, tracker.NativeRuntimeObservation) error
 }
@@ -444,6 +448,8 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 						validationIssue := issue
 						validationIssue.PullRequestHeadSHA = strings.TrimSpace(head)
 						receipt, runErr := commands.RunReviewCommand(ctx, info, validationIssue, command)
+						receipt.Stage = "finalization"
+						r.recordPipeline(req, receipt.PipelineTiming("finalization"))
 						if runErr != nil {
 							err = runErr
 						} else if receipt.ExitCode != 0 {
@@ -807,4 +813,15 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error
 		result.Verdict = gate.ValidatorVerdictPass
 	}
 	return execution.RecordValidator(ctx, result)
+}
+
+func (r *Runner) recordPipeline(req RunRequest, timing gate.PipelineTiming) {
+	if !timing.Valid() {
+		return
+	}
+	timing = timing.Public()
+	r.logger.Info("pipeline timing", "issue_id", req.Issue.ID, "timing", timing)
+	if recorder, ok := req.Execution.(PipelineExecution); ok {
+		recorder.RecordPipelineTiming(timing)
+	}
 }

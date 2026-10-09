@@ -68,20 +68,22 @@ type NativePhase struct {
 }
 
 type NativeRuntimeObservation struct {
-	Validation     *gate.CommandResult              `json:"validation,omitempty"`
-	Recovery       *NativeRecoveryDecision          `json:"recovery,omitempty"`
-	Completion     *NativeCompletionObservation     `json:"completion,omitempty"`
-	PhasesDropped  int                              `json:"phases_dropped"`
-	LocalAttemptID int64                            `json:"local_attempt_id,omitempty"`
-	Generation     uint64                           `json:"generation,omitempty"`
-	HeartbeatAt    time.Time                        `json:"heartbeat_at"`
-	Phase          string                           `json:"phase"`
-	Phases         []NativePhase                    `json:"phases"`
-	Identity       agentidentity.Identity           `json:"identity,omitzero"`
-	Activity       *workflowmetrics.ActivityProfile `json:"activity,omitempty"`
-	Landing        *NativeLandingReceipt            `json:"landing,omitempty"`
-	REST           *NativeRESTEvidence              `json:"rest,omitempty"`
-	GitHub         *NativeGitHubScope               `json:"github,omitempty"`
+	Pipeline        []gate.PipelineTiming            `json:"pipeline,omitempty"`
+	PipelineDropped int                              `json:"pipeline_dropped,omitempty"`
+	Validation      *gate.CommandResult              `json:"validation,omitempty"`
+	Recovery        *NativeRecoveryDecision          `json:"recovery,omitempty"`
+	Completion      *NativeCompletionObservation     `json:"completion,omitempty"`
+	PhasesDropped   int                              `json:"phases_dropped"`
+	LocalAttemptID  int64                            `json:"local_attempt_id,omitempty"`
+	Generation      uint64                           `json:"generation,omitempty"`
+	HeartbeatAt     time.Time                        `json:"heartbeat_at"`
+	Phase           string                           `json:"phase"`
+	Phases          []NativePhase                    `json:"phases"`
+	Identity        agentidentity.Identity           `json:"identity,omitzero"`
+	Activity        *workflowmetrics.ActivityProfile `json:"activity,omitempty"`
+	Landing         *NativeLandingReceipt            `json:"landing,omitempty"`
+	REST            *NativeRESTEvidence              `json:"rest,omitempty"`
+	GitHub          *NativeGitHubScope               `json:"github,omitempty"`
 }
 
 type NativeRecoveryDecision struct {
@@ -165,27 +167,29 @@ type NativeLandingCIReceipt struct {
 }
 
 type NativeLandingReceipt struct {
-	Path        string                  `json:"path,omitempty"`
-	Packages    []string                `json:"packages,omitempty"`
-	Barrier     *gate.CommandResult     `json:"barrier,omitempty"`
-	Waiting     bool                    `json:"waiting,omitempty"`
-	CI          *NativeLandingCIReceipt `json:"ci,omitempty"`
-	Gate        *gate.CommandResult     `json:"gate,omitempty"`
-	FromState   string                  `json:"from_state,omitempty"`
-	TargetState string                  `json:"target_state,omitempty"`
-	Refusal     string                  `json:"refusal,omitempty"`
-	GateFailed  bool                    `json:"gate_failed,omitempty"`
-	Rebased     bool                    `json:"rebased,omitempty"`
-	ChangeID    string                  `json:"change_id,omitempty"`
-	VersionID   string                  `json:"version_id,omitempty"`
-	HeadSHA     string                  `json:"head_sha,omitempty"`
-	Landed      bool                    `json:"landed"`
-	MergeSHA    string                  `json:"merge_sha,omitempty"`
-	BaseRef     string                  `json:"base_ref,omitempty"`
-	BaseSHA     string                  `json:"base_sha,omitempty"`
-	Method      string                  `json:"method,omitempty"`
-	RefusalKind string                  `json:"refusal_kind,omitempty"`
-	ObservedAt  time.Time               `json:"observed_at"`
+	Pipeline        []gate.PipelineTiming   `json:"pipeline,omitempty"`
+	PipelineDropped int                     `json:"pipeline_dropped,omitempty"`
+	Path            string                  `json:"path,omitempty"`
+	Packages        []string                `json:"packages,omitempty"`
+	Barrier         *gate.CommandResult     `json:"barrier,omitempty"`
+	Waiting         bool                    `json:"waiting,omitempty"`
+	CI              *NativeLandingCIReceipt `json:"ci,omitempty"`
+	Gate            *gate.CommandResult     `json:"gate,omitempty"`
+	FromState       string                  `json:"from_state,omitempty"`
+	TargetState     string                  `json:"target_state,omitempty"`
+	Refusal         string                  `json:"refusal,omitempty"`
+	GateFailed      bool                    `json:"gate_failed,omitempty"`
+	Rebased         bool                    `json:"rebased,omitempty"`
+	ChangeID        string                  `json:"change_id,omitempty"`
+	VersionID       string                  `json:"version_id,omitempty"`
+	HeadSHA         string                  `json:"head_sha,omitempty"`
+	Landed          bool                    `json:"landed"`
+	MergeSHA        string                  `json:"merge_sha,omitempty"`
+	BaseRef         string                  `json:"base_ref,omitempty"`
+	BaseSHA         string                  `json:"base_sha,omitempty"`
+	Method          string                  `json:"method,omitempty"`
+	RefusalKind     string                  `json:"refusal_kind,omitempty"`
+	ObservedAt      time.Time               `json:"observed_at"`
 }
 
 type NativeRESTEvidence struct {

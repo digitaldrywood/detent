@@ -143,8 +143,11 @@ class LandingGateTest(unittest.TestCase):
                 self.assertNotIn("nilaway", result.stdout)
                 self.assertFalse((root / "static/app/conversation/app.js").exists())
                 evidence = [json.loads(line.split(": ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("detent-check-evidence:")]
-                self.assertEqual({item["scope"] for item in evidence}, {"generated", "lint", "vet", "build", "unit-short"} | ({"invariants", "migrations"} if not failure else set()))
-                self.assertEqual(sum(item["exit_code"] != 0 for item in evidence), int(bool(failure)))
+                self.assertEqual({item["scope"] for item in evidence}, {"check-land", "generated", "lint", "vet", "build", "unit-short"} | ({"invariants", "migrations"} if not failure else set()))
+                self.assertEqual(sum(item["exit_code"] != 0 for item in evidence), 2 * int(bool(failure)))
+                overall = next(item for item in evidence if item["scope"] == "check-land")
+                self.assertEqual(overall["command"], "make check-land")
+                self.assertLessEqual(overall["started_at"], overall["finished_at"])
 
 
 if __name__ == "__main__":

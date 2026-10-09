@@ -968,6 +968,21 @@ func TestLocalGitRebasedNativeLanding(t *testing.T) {
 			t.Setenv("PATH", lint+string(os.PathListSeparator)+os.Getenv("PATH"))
 			tree := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^{tree}"))
 			result, err := f.backend.LandChange(t.Context(), f.info, f.issue, LandOptions{LandingMode: mode, Native: true, HeadSHA: head, Method: "squash", TargetBranch: "main", Message: "rebased", ValidationCommand: "exit 73", Validation: &gate.CommandResult{Command: "exit 73", HeadSHA: head, TreeSHA: tree, DurationNS: int64(time.Second)}})
+			if len(result.Pipeline) < 1 {
+				t.Fatalf("missing rebase timing: %+v", result)
+			}
+			found := false
+			for _, timing := range result.Pipeline {
+				if timing.Stage == "rebase" {
+					found = true
+					if timing.StartedAt.IsZero() || timing.FinishedAt.Before(timing.StartedAt) || timing.Outcome != "clean" {
+						t.Fatalf("rebase=%+v", timing)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("missing rebase=%+v", result.Pipeline)
+			}
 			if mode == gate.LandingRollingBarrier {
 				if err != nil || !result.Rebased || result.Path != "rebase_push" || result.Gate.Command != "" || len(result.Packages) != 0 || f.remoteMain(t) != result.MergeSHA {
 					t.Fatalf("rolling rebase outcome = %#v, %v", result, err)

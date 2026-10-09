@@ -14,7 +14,7 @@ check_with_evidence() {
     if [ -n "$(git status --porcelain 2>/dev/null)" ] || [ "$(git rev-parse HEAD 2>/dev/null)" != "$head" ]; then tree=''; fi
     elapsed=$((SECONDS - elapsed))
     finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    command=$*
+    if [ "$scope" = check-land ]; then command="make check-land"; else command=$*; fi
     command=${command//\\/\\\\}
     command=${command//\"/\\\"}
     printf 'detent-check-evidence: {"scope":"%s","command":"%s","head_sha":"%s","tree_sha":"%s","environment":{"os":"%s","architecture":"%s","go_version":"%s"},"exit_code":%s,"started_at":"%s","finished_at":"%s","duration_ns":%s,"duration_resolution_ns":1000000000}\n' "$scope" "$command" "$head" "$tree" "$os" "$arch" "$version" "$result" "$started" "$finished" "$((elapsed * 1000000000))"

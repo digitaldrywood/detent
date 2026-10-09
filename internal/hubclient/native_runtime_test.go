@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -76,6 +77,9 @@ func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
 	h.claim(t, issue.ID)
 	execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
 	at := time.Now().UTC()
+	timing := (gate.CommandResult{Command: "make check-land", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), StartedAt: at, FinishedAt: at.Add(time.Second)}).PipelineTiming("worker_check_land")
+	execution.RecordPipelineTiming(timing)
+	execution.RecordPipelineTiming(timing)
 	profile := workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 42, Generation: 2, SessionID: 43, Stage: "implementation", Status: "running", Coverage: "partial", StartedAt: at, AsOf: at}
 	observation := tracker.NativeRuntimeObservation{Recovery: &tracker.NativeRecoveryDecision{Action: "fresh_checkout", Reason: "session_restart_required"}, LocalAttemptID: 42, Generation: 2, Phase: "implementation", HeartbeatAt: at, Activity: &profile,
 		GitHub: &tracker.NativeGitHubScope{Scope: "native_landing", StartedAt: at, ObservedAt: at}}
@@ -90,6 +94,9 @@ func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
 		evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
 		if err != nil || evidence.Attempt == nil || evidence.Attempt.Sequence != sequence {
 			t.Fatalf("attempt=%+v, err=%v, want sequence=%d", evidence.Attempt, err, sequence)
+		}
+		if timings := evidence.Attempt.Runtime.Pipeline; len(timings) != 1 || timings[0].ReceiptID != timing.ReceiptID || timings[0].Stage != "worker_check_land" {
+			t.Fatalf("buffered timing lost or duplicated: %+v", timings)
 		}
 		if recovery := evidence.Attempt.Runtime.Recovery; recovery == nil || recovery.Action != "fresh_checkout" || recovery.Reason != "session_restart_required" {
 			t.Fatalf("runtime update lost recovery decision: %#v", evidence.Attempt.Runtime)

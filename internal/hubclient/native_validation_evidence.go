@@ -42,6 +42,7 @@ func (e *nativeExecution) RecordSourceValidation(ctx context.Context, result gat
 	if err := e.Validate(ctx); err != nil {
 		return err
 	}
+	e.RecordPipelineTiming(result.PipelineTiming("finalization"))
 	e.validation = &result
 	return e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{Validation: &result})
 }

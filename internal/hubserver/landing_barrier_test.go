@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -88,6 +89,37 @@ func TestRollingLandingBarrier(t *testing.T) {
 			barrier = mutate("red", "finish", barrier.ID, red, "")
 			if !barrier.Red || barrier.Running || barrier.Repair != "" || len(barrier.Changes) != 2 || barrier.Result.Output != red.Output {
 				t.Fatalf("red barrier=%+v", barrier)
+			}
+			repairAt := f.service.config.now()
+			repairResult := *red
+			repairCommand := gate.CommandResult{Command: "make verify", HeadSHA: checked, TreeSHA: red.TreeSHA, ExitCode: 1, StartedAt: repairAt, FinishedAt: repairAt.Add(2 * time.Second)}
+			repairTiming := repairCommand.PipelineTiming("repair")
+			repairResult.Pipeline = &gate.PipelineEvidence{Timings: []gate.PipelineTiming{repairTiming}}
+			for _, key := range []string{"repair-timings", "repair-timings", "repair-timings-retry"} {
+				recorded := mutate(key, "finish", barrier.ID, &repairResult, "")
+				matches := 0
+				for _, timing := range recorded.Result.Pipeline.Timings {
+					if timing.ReceiptID == repairTiming.ReceiptID {
+						matches++
+					}
+				}
+				if matches != 1 || !recorded.Red || recorded.Running || recorded.Green != barrier.Green {
+					t.Fatalf("repair replay changed receipts or state: %+v", recorded)
+				}
+			}
+			window := operatortool.AnalyticsWindow{From: repairAt.Add(-time.Hour), To: repairAt.Add(time.Hour)}
+			timingReport := nativeAnalyticsProject{Window: window}
+			if err := readPipelineBarriers(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, &timingReport); err != nil {
+				t.Fatal(err)
+			}
+			foundRepair := false
+			for _, stage := range summarizePipelineTimings(timingReport.pipelineTimings, window).Stages {
+				if stage.Stage == "repair" {
+					foundRepair = stage.Executed == 1 && stage.Duration.Seconds == 2
+				}
+			}
+			if !foundRepair {
+				t.Fatal("durable barrier history lost repair timing")
 			}
 			var filed int
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE title LIKE '%landing barrier%'").Scan(&filed); err != nil || filed != 0 {

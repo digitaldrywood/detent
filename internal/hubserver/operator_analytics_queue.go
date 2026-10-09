@@ -21,7 +21,7 @@ type nativeAnalyticsCapacityWait struct {
 
 func projectNativeAnalyticsCapacityWait(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
 	queue := nativeAnalyticsCapacityWait{Source: "native_scheduler_decisions", Coverage: "recorded_provider_capacity_wait_to_claim; claimed_in_window; clipped_to_window", Partial: true}
-	rows, err := q.QueryContext(ctx, `SELECT c.data_json,c.recorded_at,
+	rows, err := queryAnalyticsRows(ctx, q, `SELECT c.data_json,c.recorded_at,
 coalesce((SELECT p.data_json FROM collaboration_events p
  WHERE p.organization_id=c.organization_id AND p.project_id=c.project_id AND p.work_item_id=c.work_item_id AND p.sequence<c.sequence
  ORDER BY p.sequence DESC LIMIT 1),'null'),
@@ -40,10 +40,6 @@ ORDER BY c.recorded_at,c.id LIMIT ?`, scope.organization, scope.project, formatH
 	}
 	defer rows.Close()
 	for rows.Next() {
-		if queue.ClaimsObserved == maxAnalyticsPopulation {
-			out.Partial = true
-			break
-		}
 		var claimRaw, claimAt, priorRaw, priorType, priorAt string
 		if err := rows.Scan(&claimRaw, &claimAt, &priorRaw, &priorType, &priorAt); err != nil {
 			return err

@@ -28,6 +28,15 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 	if r == nil {
 		return nil
 	}
+	if len(r.Pipeline) > 1024 || r.PipelineDropped < 0 {
+		return nativeInvalid("Invalid pipeline timing population")
+	}
+	for _, timing := range r.Pipeline {
+		if !timing.Valid() {
+			return nativeInvalid("Invalid pipeline timing")
+		}
+	}
+	r.Pipeline = gate.PublicPipeline(r.Pipeline)
 	if g := r.Validation; g != nil {
 		commandInvalid := (strings.TrimSpace(g.Command) == "") || (len(g.Command) > 4096)
 		failedOutputTooLarge := (g.ExitCode != 0) && (len(g.Output) > tracker.NativeFinalizationTextLimit)
@@ -37,10 +46,12 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 		failedStageInvalid := (g.ExitCode != 0) && (g.Stage != gate.StageSourceFinalization)
 		stageInvalid := (g.Stage != "") && (g.Stage != gate.StageSourceFinalization)
 		headInvalid := (!validCommitID(g.HeadSHA)) || (!validCommitID(g.TreeSHA))
-		evidenceInvalid := !g.Evidence.Valid()
+		evidenceInvalid := !g.Evidence.Valid() || !g.ValidPipeline("finalization")
 		if (commandInvalid) || (failedOutputTooLarge || successfulOutputTooLarge) || (durationInvalid) || (exitCodeInvalid) || (failedStageInvalid || stageInvalid) || (headInvalid) || (evidenceInvalid) {
 			return nativeInvalid("Invalid source validation evidence")
 		}
+	if r.Validation != nil && r.Validation.Pipeline != nil {
+		r.Validation.Pipeline.Timings = gate.PublicPipeline(r.Validation.Pipeline.Timings)
 	}
 	if r.Completion != nil && (r.Completion.ObservedAt.IsZero() || r.Phase != "completed") {
 		return nativeInvalid("Host completion observations require a completed phase and observation time")
@@ -73,6 +84,15 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 		r.Activity = &profile
 	}
 	if l := r.Landing; l != nil {
+		if len(l.Pipeline) > 1024 || l.PipelineDropped < 0 {
+			return nativeInvalid("Invalid landing timing population")
+		}
+		for _, timing := range l.Pipeline {
+			if !timing.Valid() {
+				return nativeInvalid("Invalid landing timing")
+			}
+		}
+		l.Pipeline = gate.PublicPipeline(l.Pipeline)
 		if l.Path != "" && !slices.Contains([]string{"clean_push", "batch_member", "rebase_short_validation", "rebase_push"}, l.Path) || len(l.Packages) > 1024 {
 			return nativeInvalid("Invalid landing validation scope")
 		}
@@ -86,12 +106,15 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 			}
 		}
 		if g := l.Gate; g != nil {
-			if strings.TrimSpace(g.Command) == "" || len(g.Command) > 4096 || len(g.Output) > 64*1024 || g.DurationNS < 0 || g.ExitCode < -1 || !validCommitID(g.HeadSHA) || !validCommitID(g.TreeSHA) || !g.Evidence.Valid() || l.Landed && g.ExitCode != 0 || l.GateFailed && g.ExitCode == 0 {
+			if strings.TrimSpace(g.Command) == "" || len(g.Command) > 4096 || len(g.Output) > 64*1024 || g.DurationNS < 0 || g.ExitCode < -1 || !validCommitID(g.HeadSHA) || !validCommitID(g.TreeSHA) || !g.Evidence.Valid() || !g.ValidPipeline("landing_validation") || l.Landed && g.ExitCode != 0 || l.GateFailed && g.ExitCode == 0 {
 				return nativeInvalid("Invalid landing gate evidence")
 			}
 		}
 		if l.ChangeID != "" && !validNativeID(l.ChangeID, "change") || l.VersionID != "" && (l.ChangeID == "" || !validNativeID(l.VersionID, "version")) || l.HeadSHA != "" && !validCommitID(l.HeadSHA) {
 			return nativeInvalid("Invalid landing identity")
+		}
+		if l.Gate != nil && l.Gate.Pipeline != nil {
+			l.Gate.Pipeline.Timings = gate.PublicPipeline(l.Gate.Pipeline.Timings)
 		}
 		l.Barrier = nil
 		waitingCI := (l.Waiting || l.CI != nil && l.CI.State == "pending") && !l.GateFailed && l.RefusalKind == ""

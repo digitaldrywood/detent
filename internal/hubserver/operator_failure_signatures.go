@@ -174,7 +174,7 @@ FROM failures a WHERE 1=1`
 	}
 	query += " ORDER BY julianday(a.failed_at) DESC,a.id DESC LIMIT ?"
 	args = append(args, maxAnalyticsPopulation+1)
-	rows, err := q.QueryContext(ctx, query, args...)
+	rows, err := queryAnalyticsRows(ctx, q, query, args...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -182,7 +182,7 @@ FROM failures a WHERE 1=1`
 	failures := []nativeFailure{}
 	observed := 0
 	for rows.Next() {
-		if observed == maxAnalyticsPopulation {
+		if w == nil && observed == maxAnalyticsPopulation {
 			return failures, true, rows.Err()
 		}
 		observed++

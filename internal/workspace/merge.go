@@ -452,7 +452,10 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	result.Evidence = validationEnvironment(ctx, cmd)
 	l.logger.Info("validating workspace", "workspace_path", info.Path, "command", command)
 	started := time.Now()
+	result.StartedAt = started.UTC()
+	result.Execution = "executed"
 	output, err := cmd.CombinedOutput()
+	result.FinishedAt = time.Now().UTC()
 	result.DurationNS = time.Since(started).Nanoseconds()
 	result.Output = string(output)
 	result.Evidence.Checks = gate.CheckObservations(result.Output)

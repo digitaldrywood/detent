@@ -2,9 +2,13 @@ package hubclient
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -27,6 +31,7 @@ func (s *Scheduler) NextLandingBarrier(ctx context.Context, project, repository,
 	if source == nil {
 		return tracker.LandingBarrier{}, false, nil
 	}
+	startedAt := time.Now().UTC()
 	observed, err := source.client.LandingBarrier(ctx, repository)
 	if err != nil || observed.ProjectID == "" || observed.Running && !recoverClaim {
 		return observed, false, err
@@ -39,7 +44,7 @@ func (s *Scheduler) NextLandingBarrier(ctx context.Context, project, repository,
 	if err != nil {
 		return observed, false, err
 	}
-	result, err := source.client.MutateLandingBarrier(ctx, tracker.LandingBarrierRequest{Mutation: tracker.Mutation{IdempotencyKey: key}, Action: "start", Repository: repository, PolicyID: policyID, Head: head, Recover: recoverClaim})
+	result, err := source.client.MutateLandingBarrier(ctx, tracker.LandingBarrierRequest{Mutation: tracker.Mutation{IdempotencyKey: key}, ClaimStartedAt: startedAt, Action: "start", Repository: repository, PolicyID: policyID, Head: head, Recover: recoverClaim})
 	return result, err == nil && result.Running && result.ID == key, err
 }
 
@@ -49,10 +54,19 @@ func (s *Scheduler) FinishLandingBarrier(ctx context.Context, project string, ba
 		return errors.New("landing barrier project is unavailable")
 	}
 	action := "finish"
+	key := barrier.ID + ":" + action
 	if result == nil {
 		action = "cancel"
+		key = barrier.ID + ":" + action
+	} else if result.Pipeline != nil && len(result.Pipeline.Timings) > 0 {
+		raw, err := json.Marshal(result.Pipeline)
+		if err != nil {
+			return err
+		}
+		digest := sha256.Sum256(raw)
+		key = barrier.ID + ":repair:" + hex.EncodeToString(digest[:16])
 	}
-	_, err := source.client.MutateLandingBarrier(ctx, tracker.LandingBarrierRequest{Mutation: tracker.Mutation{IdempotencyKey: barrier.ID + ":" + action}, Action: action, Repository: barrier.Repository, ID: barrier.ID, Result: result})
+	_, err := source.client.MutateLandingBarrier(ctx, tracker.LandingBarrierRequest{Mutation: tracker.Mutation{IdempotencyKey: key}, Action: action, Repository: barrier.Repository, ID: barrier.ID, Result: result})
 	return settledBarrierFinish(err)
 }
 

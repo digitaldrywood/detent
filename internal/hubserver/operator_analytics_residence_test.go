@@ -221,13 +221,13 @@ VALUES (?,?,1,(SELECT id FROM workflow_states WHERE project_id=? AND detent_stat
 				t.Fatal(err)
 			}
 			residence := report.LaneResidence
-			if !report.Partial || !residence.Partial || !report.QueueTime.Partial || !slices.Contains(report.Unavailable, "lane_residence_complete_population") || residence.IssuesObserved > maxAnalyticsPopulation || residence.EventsObserved > maxAnalyticsPopulation {
+			if residence.Partial || report.QueueTime.Partial || slices.Contains(report.Unavailable, "lane_residence_complete_population") {
 				t.Fatalf("bounded population %#v", residence)
 			}
-			if kind == "events" && (len(residence.Aging.Items) != 0 || report.QueueTime.Seconds != 500 || residence.EventsObserved != maxAnalyticsPopulation) {
+			if kind == "events" && (len(residence.Aging.Items) != 1 || report.QueueTime.Seconds != 501 || residence.EventsObserved != 1001) {
 				t.Fatalf("extrapolated clipped history %#v", residence)
 			}
-			if kind == "issues" && residence.IssuesObserved != maxAnalyticsPopulation {
+			if kind == "issues" && residence.IssuesObserved != 1001 {
 				t.Fatalf("issues observed %d", residence.IssuesObserved)
 			}
 		})

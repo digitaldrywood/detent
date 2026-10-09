@@ -1,6 +1,12 @@
 set -euo pipefail
 source scripts/check-evidence.sh
 
+if [ "${1:-}" != "--recorded" ]; then
+    check_with_evidence check-land bash "$0" --recorded "$@"
+    exit "$?"
+fi
+shift
+
 base=${1:?base ref required}
 app=${2:?conversation directory required}
 procs=${3:?process budget required}

@@ -303,12 +303,12 @@ LEFT JOIN runner_identities r ON r.id = lr.runner_id AND r.organization_id = u.o
 WHERE u.organization_id = ? AND u.period >= ? AND u.period <= ?
  AND u.project_id IN (SELECT value FROM json_each(?))
 ORDER BY u.period, u.provider, u.model, u.attempt_id LIMIT ?`
-	result, err := database.QueryContext(ctx, query,
+	result, err := queryAnalyticsRows(ctx, database, query,
 		organization, window.From.UTC().Format(usagePeriodLayout), window.To.UTC().Format(usagePeriodLayout), encoded, limit)
 	if err != nil {
 		return nil, fmt.Errorf("read usage: %w", err)
 	}
-	defer func() { _ = result.Close() }()
+	defer result.Close()
 	rows := []usageRow{}
 	for result.Next() {
 		var row usageRow
@@ -325,7 +325,8 @@ ORDER BY u.period, u.provider, u.model, u.attempt_id LIMIT ?`
 		row.BusySeconds = usageBusySeconds(started, updated, window)
 		rows = append(rows, row)
 	}
-	if err := errors.Join(result.Err(), result.Close()); err != nil {
+	result.Close()
+	if err := result.Err(); err != nil {
 		return nil, fmt.Errorf("read usage: %w", err)
 	}
 	return rows, nil

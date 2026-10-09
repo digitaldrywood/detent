@@ -54,6 +54,7 @@ type reportsBucket struct {
 }
 
 type hostedReportsReport struct {
+	Pipeline    pipelineReport         `json:"pipeline"`
 	Requests    *requestMetricsReport  `json:"requests,omitempty"`
 	Analytics   nativeAnalyticsProject `json:"analytics"`
 	Completion  reportsCompletion      `json:"completion"`
@@ -109,7 +110,7 @@ func (s *Service) hostedReports(c echo.Context) error {
 func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyticsReport) (hostedReportsReport, error) {
 	p := analytics.Projects[0]
 	w := analytics.Window
-	out := hostedReportsReport{Analytics: p, Stages: []reportsStage{}, Spend: []reportsSpend{}, Throughput: []reportsBucket{}, Titles: map[string]string{}, Unavailable: append([]string{}, p.Unavailable...)}
+	out := hostedReportsReport{Pipeline: p.Pipeline, Analytics: p, Stages: []reportsStage{}, Spend: []reportsSpend{}, Throughput: []reportsBucket{}, Titles: map[string]string{}, Unavailable: append([]string{}, p.Unavailable...)}
 	diagnostics, err := s.readHostedDiagnostics(ctx, analytics)
 	if err != nil {
 		return out, err
@@ -156,13 +157,9 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 			}
 		}
 	}
-	rows, err := readUsageRows(ctx, s.database.db, analytics.OrganizationID, usageWindow{From: w.From, To: w.To}, []string{p.ProjectID}, maxAnalyticsPopulation+1)
+	rows, err := readUsageRows(ctx, s.database.db, analytics.OrganizationID, usageWindow{From: w.From, To: w.To}, []string{p.ProjectID}, 0)
 	if err != nil {
 		return out, err
-	}
-	if len(rows) > maxAnalyticsPopulation {
-		rows = rows[:maxAnalyticsPopulation]
-		out.Unavailable = append(out.Unavailable, "reports_usage_complete_population")
 	}
 	usage := map[string][]usageRow{}
 	for _, row := range rows {
@@ -175,7 +172,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 		out.Cached += row.CachedInput
 		out.Cost += row.Cost
 	}
-	out.Stages, out.Spend = reportsAttemptTotals(p.Attempts.Items, usage)
+	out.Stages, out.Spend = reportsAttemptTotals(p.allAttempts, usage)
 	policy, err := diagnosticsPolicyValues(ctx, s.database.db, scope)
 	if err != nil {
 		return out, err
@@ -188,7 +185,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 	if policy["Plan gate"] == "" || policy["Validator gate"] == "" {
 		out.Unavailable = append(out.Unavailable, "stage_gate_configuration")
 	}
-	for _, a := range p.Attempts.Items {
+	for _, a := range p.allAttempts {
 		if a.Status == "failed" {
 			if i := nativeAnalyticsBucketIndex(a.ObservedAt, w); i >= 0 {
 				out.Throughput[i].Failed++
@@ -205,7 +202,9 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 		slots := seconds / b.To.Sub(b.From).Seconds()
 		out.Throughput[i].Slots = &slots
 	}
-	rate, available, err := s.reportsFirstTry(ctx, scope, p)
+	firstTryPopulation := p
+	firstTryPopulation.Landings.Items = p.allLandings
+	rate, available, err := s.reportsFirstTry(ctx, scope, firstTryPopulation)
 	if err != nil {
 		return out, err
 	}
@@ -246,7 +245,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 	for i := range out.Spend {
 		out.Spend[i].Title = out.Titles[out.Spend[i].WorkItemID]
 	}
-	if p.Attempts.NextOffset != nil || p.Partial {
+	if p.Partial {
 		out.Unavailable = append(out.Unavailable, "stage_and_issue_spend_complete_population", "failed_attempts_complete_population")
 	}
 	if out.Completion.Partial {

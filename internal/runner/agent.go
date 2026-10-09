@@ -696,7 +696,13 @@ func (r *Runner) prepareMergeFastPath(
 		opts.TargetBranch = strings.TrimSpace(req.Issue.PullRequest.BaseRef)
 		opts.ExpectedRemoteHead = strings.TrimSpace(req.Issue.PullRequest.HeadSHA)
 	}
+	started := r.now()
 	precheck, err := preparer.PrepareMerge(ctx, info, issue, opts)
+	outcome := "clean"
+	if err != nil || precheck.Status != workspace.MergePrepareStatusClean {
+		outcome = "conflict"
+	}
+	r.recordPipeline(req, gate.Interval("rebase", started, r.now(), outcome))
 	if err != nil {
 		return RunResult{}, precheck, false, fmt.Errorf("merge fast-path precheck: %w", err)
 	}
@@ -1966,7 +1972,26 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, err
 		}
 		if preparer, ok := runWorkspace.(workspace.ReworkPreparer); ok {
+			started := r.now()
 			precheck, err := preparer.PrepareRework(ctx, info, workspaceIssue, workspace.MergePrepareOptions{TargetBranch: workspaceIssue.ProgressBaseRef})
+			outcome := "clean"
+			if precheck.Status == workspace.MergePrepareStatusConflict {
+				outcome = "conflict"
+			}
+			if err != nil {
+				outcome = "rework"
+			}
+			r.recordPipeline(req, gate.Interval("rebase", started, r.now(), outcome))
+			if precheck.Status == workspace.MergePrepareStatusConflict {
+				resolutionStarted := r.now()
+				defer func() {
+					outcome := "agent-resolved"
+					if returnErr != nil || returnValue.FinalState != FinalStateCompleted {
+						outcome = "rework"
+					}
+					r.recordPipeline(req, gate.Interval("conflict_resolution", resolutionStarted, r.now(), outcome))
+				}()
+			}
 			if err != nil {
 				return RunResult{}, nativeGitError("prepare native rework", err)
 			}

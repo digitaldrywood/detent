@@ -70,6 +70,9 @@ func (r *Runner) RunLandingBarriers(ctx context.Context, owner LandingBarrierOwn
 				}
 				if started {
 					result, runErr := backend.RunLandingBarrier(ctx, barrier.ID, barrier.BaseRef, cfg.Run)
+					if timing := result.PipelineTiming("barrier"); timing.Valid() {
+						r.logger.Info("pipeline timing", "barrier", barrier.ID, "timing", timing)
+					}
 					var completed *gate.CommandResult
 					if runErr == nil {
 						completed = &result
@@ -85,7 +88,19 @@ func (r *Runner) RunLandingBarriers(ctx context.Context, owner LandingBarrierOwn
 						if currency, ok := owner.(landingBarrierCurrency); ok {
 							current = func() bool { return currency.LandingBarrierCurrent(ctx, r.projectID, barrier.Repository, barrier.ID) }
 						}
-						r.repairLandingBarrier(ctx, backend, barrier, *completed, cfg.Run, current)
+						timings := []gate.PipelineTiming{}
+						repairCtx := gate.WithPipelineRecorder(ctx, "repair", func(timing gate.PipelineTiming) {
+							r.logger.Info("pipeline timing", "barrier", barrier.ID, "timing", timing)
+							timings = append(timings, timing)
+						})
+						r.repairLandingBarrier(repairCtx, backend, barrier, *completed, cfg.Run, current)
+						if len(timings) > 0 {
+							receipt := *completed
+							receipt.Pipeline = &gate.PipelineEvidence{Timings: timings}
+							if !r.finishLandingBarrier(ctx, owner, barrier, &receipt) {
+								return
+							}
+						}
 						continue
 					}
 					if runErr == nil {
