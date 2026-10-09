@@ -2132,7 +2132,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				followups.Enabled = false
 			}
 			turnPrompt = appendFollowupsBlock(turnPrompt, followups)
-			turnPrompt = appendNativeCompletionContract(turnPrompt, followups)
+			turnPrompt = appendNativeCompletionContract(turnPrompt)
 		}
 	}
 	var extraWritableRoots []string
