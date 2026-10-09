@@ -186,8 +186,19 @@ func TestStagingSmokeHostedGapDoesNotHideDecoderFailure(t *testing.T) {
 }
 
 func TestStagingSmokeWriteCycle(t *testing.T) {
-	for _, gaps := range []bool{false, true} {
-		t.Run(map[bool]string{false: "complete", true: "hosted gaps"}[gaps], func(t *testing.T) {
+	fixtureReads := strings.Fields(`list_project_conversations get_conversation get_conversation_attachment list_conversation_messages stream_conversation_events list_changes get_change get_change_version change_viewed_files artifact_references get_artifact_reference work_runs get_attempt_diff get_native_run github_scope_timings work_attempt_receipt get_runner_capacity get_runner_update get_project_policy`)
+	for _, test := range []struct {
+		name, policyCode, policyMessage string
+		gaps, failure                   bool
+	}{
+		{name: "approved policy"},
+		{name: "fresh project", policyCode: "policy_mismatch", policyMessage: "No approved repository policy"},
+		{name: "hosted gaps", gaps: true},
+		{name: "different policy refusal", policyCode: "policy_mismatch", policyMessage: "Approved policy has changed", failure: true},
+		{name: "wrong refusal code", policyCode: "forbidden", policyMessage: "No approved repository policy", failure: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			gaps := test.gaps
 			revision := int64(0)
 			commentRevision := int64(0)
 			integrationRevision := int64(1)
@@ -195,7 +206,7 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 			calls := map[string]int{}
 			m := &cloudMCP{endpoint: "https://example.test/mcp", diagnostic: true, tools: map[string]operatortool.Definition{}}
 			for _, definition := range operatortool.Registry() {
-				if slices.Contains(smokeWrites, definition.Name) || slices.Contains([]string{"list_projects", "get_project_integration", operatortool.WorkList, operatortool.WorkItem, operatortool.RunnerFleet, operatortool.GetRunnerRouting}, definition.Name) {
+				if slices.Contains(smokeWrites, definition.Name) || slices.Contains(fixtureReads, definition.Name) || slices.Contains([]string{"list_projects", "get_project_integration", operatortool.WorkList, operatortool.WorkItem, operatortool.RunnerFleet, operatortool.GetRunnerRouting, operatortool.ReadAttachment, operatortool.ReadAttachmentMetadata}, definition.Name) {
 					if definition.Name == operatortool.SetPriority || gaps && definition.Name == operatortool.ArchiveItem {
 						continue
 					}
@@ -274,11 +285,64 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 					}
 					result["routing"] = map[string]any{}
 				case operatortool.WorkItem:
-					result["data"] = map[string]any{"revision": strconv.FormatInt(revision, 10)}
+					if args["reference"] != "wi_dependency" {
+						t.Fatalf("read transient item: %v", args)
+					}
+					result["data"] = map[string]any{"revision": strconv.FormatInt(revision, 10), "body": "[fixture](/organizations/org_smoke/api/v2/projects/prj_smoke/attachments/att_" + strings.Repeat("a", 32) + ")"}
+				case "list_project_conversations":
+					if args["query"] != "MCP smoke conversation" || args["limit"] != float64(1) {
+						t.Fatalf("unscoped conversation discovery: %v", args)
+					}
+					result["conversations"] = []map[string]any{{"id": "conv_fixture"}}
+				case "get_conversation", "list_conversation_messages", "stream_conversation_events", "get_conversation_attachment":
+					if args["conversation_id"] != "conv_fixture" || name == "get_conversation_attachment" && args["attachment_id"] != "att_conversation" {
+						t.Fatalf("wrong conversation selector: %v", args)
+					}
+					result["messages"] = []map[string]any{{"attachments": []map[string]any{{"id": "att_conversation"}}}}
+				case operatortool.ReadAttachment, operatortool.ReadAttachmentMetadata:
+					if args["attachment_id"] != "att_"+strings.Repeat("a", 32) {
+						t.Fatalf("wrong issue attachment: %v", args)
+					}
+				case operatortool.ListChanges:
+					result["changes"] = []map[string]any{{"change_id": "change_fixture", "current_version_id": "version_fixture"}}
+				case operatortool.GetChange, operatortool.GetChangeVersion, operatortool.ChangeViewedFiles:
+					if args["work_item_id"] != "wi_dependency" || args["change_id"] != "change_fixture" || name != operatortool.GetChange && args["version_id"] != "version_fixture" {
+						t.Fatalf("wrong change selector: %v", args)
+					}
+				case operatortool.ArtifactReferences:
+					result["artifacts"] = []map[string]any{{"artifact_id": "artifact_fixture", "revision": 7}}
+				case operatortool.GetArtifactReference:
+					if args["artifact_id"] != "artifact_fixture" || args["revision"] != float64(7) || args["work_item_id"] != "wi_dependency" {
+						t.Fatalf("wrong artifact revision: %v", args)
+					}
+				case operatortool.WorkRuns:
+					result["data"] = map[string]any{"items": []map[string]any{{"attempt_id": "attempt_fixture", "runner_id": "runner_attempt"}}}
+				case operatortool.GetAttemptDiff, operatortool.GetNativeRun:
+					if args["attempt_id"] != "attempt_fixture" || args["work_item_id"] != "wi_dependency" {
+						t.Fatalf("wrong attempt selector: %v", args)
+					}
+				case operatortool.GitHubScopeTimings, operatortool.WorkAttemptReceipt:
+					if args["native_attempt_id"] != "attempt_fixture" || args["reference"] != "wi_dependency" || name == operatortool.GitHubScopeTimings && args["runner_id"] != "runner_attempt" {
+						t.Fatalf("wrong native receipt selector: %v", args)
+					}
+				case operatortool.GetRunnerCapacity, operatortool.GetRunnerUpdate:
+					if args["runner_id"] != "runner_fixture" {
+						t.Fatalf("wrong runner selector: %v", args)
+					}
+				case "get_project_policy":
+					isError = test.policyCode != ""
+					result = map[string]any{"code": test.policyCode, "message": test.policyMessage}
 				default:
 					t.Fatalf("unexpected tool %s", name)
 				}
 				envelope := map[string]any{"structuredContent": result, "isError": isError}
+				if name == "get_project_policy" && isError {
+					content, err := json.Marshal(result)
+					if err != nil {
+						t.Fatal(err)
+					}
+					envelope = map[string]any{"content": []map[string]string{{"type": "text", "text": string(content)}}, "isError": true}
+				}
 				raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": message.ID, "result": envelope})
 				if err != nil {
 					t.Fatal(err)
@@ -287,7 +351,11 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 			})}
 			var output bytes.Buffer
 			s := &mcpSmoke{mcp: m, output: &output, fixtures: map[string]any{}, called: map[string]bool{}, prefix: "test"}
-			if err := s.run(t.Context()); err != nil {
+			if err := s.run(t.Context()); test.failure {
+				if err == nil || !strings.Contains(err.Error(), "get_project_policy") {
+					t.Fatalf("unexpected policy verdict: %v", err)
+				}
+			} else if err != nil {
 				t.Fatal(err, output.String())
 			}
 			if commentRevision != 2 || integrationRevision != 2 || calls[operatortool.SetDependency] != 2 || calls[operatortool.WorkItem] != 1 || calls[operatortool.GetRunnerRouting] != 1 || !gaps && (!archived || calls[operatortool.RestoreItem] != 1 || calls[operatortool.ArchiveItem] != 2) {
@@ -295,6 +363,11 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 			}
 			if gaps && !strings.Contains(output.String(), "expected hosted gap (#615)") {
 				t.Fatal(output.String())
+			}
+			for _, name := range append(fixtureReads, operatortool.ReadAttachment, operatortool.ReadAttachmentMetadata) {
+				if calls[name] != 1 {
+					t.Fatalf("fixture read %s called %d times", name, calls[name])
+				}
 			}
 		})
 	}
@@ -333,9 +406,9 @@ func TestSmokeVerdictRatchet(t *testing.T) {
 	}{
 		{"new failure blocks", []error{errors.New("file_issue: MCP server error")}, map[string]bool{"file_issue": true}, nil, "file_issue: MCP server error"},
 		{"known gap failing is reported", []error{errors.New("board_session_history: advertised arguments {}; MCP server error")}, map[string]bool{"board_session_history": true}, nil, ""},
-		{"known schema gap failing is reported", []error{errors.New("get_change schema: missing fixture")}, map[string]bool{}, nil, ""},
+		{"missing change fixture blocks", []error{errors.New("get_change schema: missing fixture")}, map[string]bool{}, nil, "get_change schema: missing fixture"},
 		{"known gap passing blocks", nil, map[string]bool{"get_cutover_receipt": true}, nil, "get_cutover_receipt: known gap #724 now passes"},
-		{"known gap not reached is reported", []error{errors.New("get_conversation: advertised conversation_id={}; smoke project lacks a conversation_id fixture")}, map[string]bool{}, nil, ""},
+		{"missing conversation fixture blocks", []error{errors.New("get_conversation: advertised conversation_id={}; smoke project lacks a conversation_id fixture")}, map[string]bool{}, nil, "get_conversation: advertised"},
 		{"hosted gap handled as expected is not a pass", nil, map[string]bool{"order_item": true}, []string{"order_item"}, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

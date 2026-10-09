@@ -438,11 +438,16 @@ The project needs a permitted transition between two nondispatchable,
 nonterminal states. The probe creates one item per deployment and reuses a
 separate dependency fixture. It checks edits, comments, dependencies, movement,
 queue operations, unchanged integration settings, and archive/restore revisions.
-Read tools requiring existing runner, workspace, change, artifact or attempt
-resources need those fixtures in the smoke project, linked to the stable
-`MCP smoke dependency` item where applicable. Discovery reads run before their
-resource detail calls. Unsafe external and operator mutations are explicitly
-skipped.
+Provision the persistent resources using [deployment MCP fixtures](deployment-mcp-fixtures.md)
+once in each environment. The smoke discovers the conversation by title and
+the attachment, change, artifact receipt and attempt through the stable
+`MCP smoke dependency` item. Discovery reads run before their resource detail
+calls; missing fixtures fail the deployment. Unsafe external and operator
+mutations are explicitly skipped. The two GitHub import reads are also skipped
+with a named reason: a native smoke project has no external tracker import.
+`get_project_policy` accepts either an approved policy or the documented
+`policy_mismatch` refusal beginning with `No approved repository policy`;
+other refusals fail the smoke.
 
 Tools that are known to fail are listed in `smokeKnownGaps` in
 `tools/cifailure` with their owning issue. They are reported but do not fail the
