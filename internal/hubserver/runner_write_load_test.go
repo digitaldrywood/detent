@@ -175,7 +175,8 @@ func medianDuration(t *testing.T, values []time.Duration) time.Duration {
 // or with how long the streamed message already is.
 func serialWriteCost(t *testing.T, f *writeLoadFixture, deltas int) (heartbeat, delta time.Duration) {
 	t.Helper()
-	var heartbeats, streamed []time.Duration
+	heartbeats := make([]time.Duration, 0, 30)
+	streamed := make([]time.Duration, 0, 30)
 	for range 30 {
 		started := time.Now()
 		if code := f.heartbeat(t, f.runners[0]); code != http.StatusOK {
