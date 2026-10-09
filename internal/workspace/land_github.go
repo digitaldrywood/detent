@@ -624,6 +624,13 @@ func (l *LocalGit) prepareGitHubLanding(ctx context.Context, info Info, issue Is
 	}
 	validationInfo := info
 	validationInfo.Path = staging
+	validationInfo.Created = true
+	if err := l.runHookUnderSourceLock(ctx, "after_create", l.hooks.AfterCreate, validationInfo, issue); err != nil {
+		return "", gate.CommandResult{}, err
+	}
+	if err := l.runHookUnderSourceLock(ctx, "before_run", l.hooks.BeforeRun, validationInfo, issue); err != nil {
+		return "", gate.CommandResult{}, err
+	}
 	validation, err := l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, head)
 	return head, validation, err
 }

@@ -276,6 +276,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		existingBody        string
 		wantPatch           bool
 		gateFailure         bool
+		preparation         bool
+		preparationFailure  string
+		retryPreparation    bool
 		combinedGateFailure bool
 		baseMovesDuringGate bool
 		advanceParallel     bool
@@ -328,7 +331,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "merged PR attribution is historical", method: "squash", pullState: "merged", sourceIssues: true, existingBody: "Historical attribution"},
 		{name: "source attribution refuses a stale PR head", method: "squash", pullState: "stale", sourceIssues: true, existingBody: "Human attribution", wantRefusal: LandRefusalHeadMoved},
 		{name: "merges the reviewed head", method: "merge"},
-		{name: "red gate never publishes the source or calls the forge", method: "squash", gateFailure: true},
+		{name: "red gate never publishes the source or calls the forge", method: "squash", gateFailure: true, preparation: true},
 		{name: "gate rejects only the combined tree before delivery", method: "squash", projection: "base", combinedGateFailure: true},
 		{name: "base advance during validation refuses merge", method: "squash", baseMovesDuringGate: true},
 		{name: "uses the policy squash method", method: "squash"},
@@ -372,10 +375,15 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "base advancing at refusal is inspected afresh", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, advanceOnMerge: true, wantRefusal: LandRefusalConflict},
 		{name: "earlier head projection cannot prove a conflict", method: "squash", reworked: true, pullState: "stale", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "head", wantDeferred: true},
 		{name: "stale base projection uses current conflicting base", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "base", wantRefusal: LandRefusalConflict},
+		{name: "staging preparation supplies ignored gate prerequisites", method: "squash", external: true, preparation: true},
+		{name: "after_create failure cleans staging before publication", method: "squash", preparation: true, preparationFailure: "after_create"},
+		{name: "before_run failure cleans staging before publication", method: "squash", preparation: true, preparationFailure: "before_run"},
+		{name: "refresh after_create failure preserves reviewed and published source", method: "squash", preparation: true, preparationFailure: "after_create", retryPreparation: true, failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true},
+		{name: "refresh before_run failure preserves reviewed and published source", method: "squash", preparation: true, preparationFailure: "before_run", retryPreparation: true, failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true},
 		{name: "clean conflict retry preserves merge delivery", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retrySuccess: true, wantRetry: true},
 		{name: "clean conflict retry preserves linear rebase delivery", method: "rebase", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retrySuccess: true, wantRetry: true},
 		{name: "conflict rebases cleanly and lands once", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retrySuccess: true, wantRetry: true},
-		{name: "isolated external conflict rebases cleanly", method: "squash", external: true, isolated: true, failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retrySuccess: true, wantRetry: true},
+		{name: "isolated external conflict rebases cleanly", preparation: true, method: "squash", external: true, isolated: true, failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retrySuccess: true, wantRetry: true},
 		{name: "retry refuses a branch moved after source verification", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retryHeadMoved: true},
 		{name: "rebased landing reruns the gate before retry", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retryGateFailure: true},
 		{name: "repeated 405 after a proven base move waits without further rewrites", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", advanceParallel: true, wantDeferred: true, wantRetry: true},
@@ -738,6 +746,56 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					t.Fatalf("landing ownership = %#v", landingInfo)
 				}
 			}
+			verifyPreparation := func() {}
+			if test.preparation {
+				staging := filepath.Join(fixture.backend.root, "landing-"+landingInfo.Key)
+				trace := filepath.Join(t.TempDir(), "preparation-trace")
+				if err := os.WriteFile(filepath.Join(fixture.source, ".git", "info", "exclude"), []byte(".landing-prerequisite/\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				fixture.backend.hooks.AfterCreate = "test \"$PWD\" = " + shellQuote(staging) + " && mkdir .landing-prerequisite && cp feature.txt .landing-prerequisite/feature && git rev-parse HEAD > .landing-prerequisite/head && git rev-parse HEAD^{tree} > .landing-prerequisite/tree && printf 'after_create\\n' >> " + shellQuote(trace)
+				fixture.backend.hooks.BeforeRun = "cmp feature.txt .landing-prerequisite/feature && test \"$(cat .landing-prerequisite/head)\" = \"$(git rev-parse HEAD)\" && printf 'before_run\\n' >> " + shellQuote(trace) + " && touch .landing-prerequisite/ready"
+				if test.preparationFailure != "" {
+					failure := "; printf preparation-failed; exit 23"
+					if test.retryPreparation {
+						failure = "; if test -f parallel.txt; then printf preparation-failed; exit 23; fi"
+					}
+					if test.preparationFailure == "after_create" {
+						fixture.backend.hooks.AfterCreate += failure
+					} else {
+						fixture.backend.hooks.BeforeRun += failure
+					}
+				}
+				opts.ValidationCommand = "test -f .landing-prerequisite/ready && cmp feature.txt .landing-prerequisite/feature && test \"$(cat .landing-prerequisite/head)\" = \"$(git rev-parse HEAD)\" && test \"$(cat .landing-prerequisite/tree)\" = \"$(git rev-parse HEAD^{tree})\" && printf 'gate\\n' >> " + shellQuote(trace) + " && " + opts.ValidationCommand
+				verifyPreparation = func() {
+					if _, err := os.Stat(staging); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("staging preparation left worktree: %v", err)
+					}
+					if got := runGit(t, fixture.source, "worktree", "list", "--porcelain"); strings.Contains(got, staging) {
+						t.Fatalf("staging worktree registration survived: %s", got)
+					}
+					if _, err := os.Stat(filepath.Join(landingInfo.Path, ".landing-prerequisite")); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("preparation touched reviewed source: %v", err)
+					}
+					if got := strings.TrimSpace(runGit(t, landingInfo.Path, "rev-parse", "HEAD")); got != fixture.head {
+						t.Fatalf("preparation moved reviewed head: %s", got)
+					}
+					want := "after_create\nbefore_run\ngate\n"
+					switch test.preparationFailure {
+					case "after_create":
+						want = "after_create\n"
+					case "before_run":
+						want = "after_create\nbefore_run\n"
+					}
+					if test.retryPreparation || test.retrySuccess {
+						want = "after_create\nbefore_run\ngate\n" + want
+					}
+					got, err := os.ReadFile(trace)
+					if err != nil || string(got) != want {
+						t.Fatalf("preparation/gate order = %q, %v; want %q", got, err, want)
+					}
+				}
+			}
 			if test.prepareOnly {
 				authorityCalls := 0
 				authorityErr := errors.New("publication authority lost; resume under the current source owner")
@@ -844,6 +902,27 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				opts.GitHubClient = newClient(false)
 			}
 			result, err := fixture.backend.LandChangeViaGitHub(context.Background(), landingInfo, landingIssue, opts)
+			verifyPreparation()
+			if test.preparationFailure != "" {
+				var hook *HookError
+				var validation *ValidationError
+				var refusal *LandRefusal
+				wantMerges := 0
+				if test.retryPreparation {
+					wantMerges = 1
+				}
+				if !errors.As(err, &hook) || hook.Hook != test.preparationFailure || hook.ExitCode != 23 || !strings.Contains(hook.Output, "preparation-failed") || errors.As(err, &validation) || errors.As(err, &refusal) || mergeCalls != wantMerges || result.MergeSHA != "" || fixture.remoteMain(t) != base {
+					t.Fatalf("preparation failure lost instance ownership or merged: result=%#v err=%v calls=%d", result, err, mergeCalls)
+				}
+				if test.retryPreparation {
+					if got := strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch)); got != fixture.head {
+						t.Fatalf("failed refresh published combined head: %s", got)
+					}
+				} else if result.Gate.Command != "" || len(methods) != 0 {
+					t.Fatalf("failed preparation ran gate or published: gate=%#v requests=%v", result.Gate, methods)
+				}
+				return
+			}
 			if test.baseMovesDuringGate {
 				var refusal *LandRefusal
 				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalBaseMoved || refusal.BaseSHA != fixture.head || slices.Contains(methods, http.MethodPut) || result.Gate.ExitCode != 0 || result.Gate.Command != opts.ValidationCommand {
