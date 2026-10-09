@@ -168,7 +168,18 @@ function EditablePlugin({ editable }: { editable: boolean }): null {
 function AutoFocusPlugin({ autoFocus, focusRequest }: { autoFocus: boolean; focusRequest?: number | undefined }): null {
   const [editor] = useLexicalComposerContext();
   React.useEffect(() => {
-    if (autoFocus) editor.focus();
+    if (!autoFocus) return;
+    const root = editor.getRootElement();
+    if (root === null) return;
+    const active = root.ownerDocument.activeElement;
+    if (
+      focusRequest !== undefined ||
+      active === null ||
+      !active.matches("input, textarea, select, [contenteditable='true']") ||
+      hasEditorFocus(editor)
+    ) {
+      editor.focus();
+    }
   }, [autoFocus, editor, focusRequest]);
   return null;
 }

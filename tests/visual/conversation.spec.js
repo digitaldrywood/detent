@@ -619,6 +619,14 @@ test("keeps runner conversations out of Chat while preserving issue access", asy
 test("lists the chat in the sidebar and filters it from the search box", async ({ page }) => {
   const errors = watchConsole(page);
   await openChat(page);
+  let releaseConversation;
+  const conversationReady = new Promise((resolve) => { releaseConversation = resolve; });
+  await page.route(/\/api\/v2\/organizations\/[^/]+\/projects\/[^/]+\/conversations\/conv_[^/?]+$/, async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const response = await route.fetch();
+    await conversationReady;
+    await route.fulfill({ response });
+  });
   await sendWithKeyboard(page, "Explain the admission gate to me");
   await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
   await expect(page.getByTestId("user-turn").first()).toContainText("Explain the admission gate to me");
@@ -633,7 +641,19 @@ test("lists the chat in the sidebar and filters it from the search box", async (
   const search = sidebar.getByRole("combobox", { name: "Search threads" });
   await search.focus();
   await expect(search).toBeFocused();
+  await expect(page.getByText("Opening conversation…", { exact: true })).toBeVisible();
+  releaseConversation();
+  await expect(composer(page)).toBeEditable();
+  await expect(search).toBeFocused();
+  const searchRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return request.method() === "GET" && url.pathname.endsWith("/conversations") && url.searchParams.get("q") === "Lease renewal";
+  });
   await page.keyboard.type("Lease renewal");
+  await expect(search).toHaveValue("Lease renewal");
+  await expect(search).toBeFocused();
+  await expectComposerText(page, "");
+  await searchRequest;
 
   const results = sidebar.getByRole("listbox", { name: "Thread search results" });
   await expect(results.getByText(/Lease renewal under load/)).toBeVisible();
@@ -642,6 +662,8 @@ test("lists the chat in the sidebar and filters it from the search box", async (
   // Clearing the query brings the whole list back.
   await page.keyboard.press("ControlOrMeta+a");
   await page.keyboard.press("Backspace");
+  await expect(search).toHaveValue("");
+  await expect(search).toBeFocused();
   await expect(newRow).toBeVisible();
   expect(errors).toEqual([]);
 });

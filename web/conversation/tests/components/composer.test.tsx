@@ -124,6 +124,20 @@ describe("Composer", () => {
     expect(composerCaret(textarea)).toEqual({ offset: 5, collapsed: true });
   });
 
+  it.each([
+    { field: true, focusRequest: undefined, caret: null },
+    { field: true, focusRequest: 1, caret: { offset: 5, collapsed: true } },
+    { field: false, focusRequest: undefined, caret: { offset: 5, collapsed: true } },
+  ])("preserves editing focus and navigation autofocus ($field, $focusRequest)", async ({ field, focusRequest, caret }) => {
+    render(field ? <input aria-label="Search threads" /> : <div tabIndex={0} aria-label="Open a surface" />);
+    const opener = screen.getByLabelText(field ? "Search threads" : "Open a surface", { exact: true });
+    opener.focus();
+    const { textarea } = setup({ autoFocus: true, focusRequest });
+    await act(async () => {});
+    if (caret === null) expect(document.activeElement).toBe(opener);
+    expect(composerCaret(textarea)).toEqual(caret);
+  });
+
   it("does not send while an IME composition is active", async () => {
     const { onSend, textarea } = setup();
     await focusComposer(textarea);
