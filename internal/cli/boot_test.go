@@ -107,7 +107,7 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg.Global.Path = filepath.Join(root, "global.yaml")
-			cfg.Global.Client = globalconfig.HubClient{URL: hub.URL, IdentityFile: filepath.Join(root, "private", "runner.json"), OrganizationID: "org_test", NativeProjects: map[string]string{"test": "prj_test"}}
+			cfg.Global.Client = globalconfig.HubClient{URL: hub.URL, IdentityFile: filepath.Join(root, "private", "runner.json"), OrganizationID: "org_test", NativeProjects: map[string]string{"test": "prj_test"}, ProviderCapacityFile: writeProviderCapacityFixture(t, root)}
 			if missingCheckout {
 				cfg.Global.Projects = []globalconfig.Project{{ID: "test", Workdir: filepath.Join(root, "missing"), Workflow: filepath.Join(root, "missing", "WORKFLOW.md"), Weight: 1, Priority: 3}}
 			}
