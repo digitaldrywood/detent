@@ -122,6 +122,7 @@ type Finding struct {
 }
 
 type CommandResult struct {
+	Stage           string           `json:"stage,omitempty"`
 	Evidence        *CommandEvidence `json:"evidence,omitempty"`
 	DurationNS      int64            `json:"duration_ns,omitempty"`
 	Command         string           `json:"command"`
@@ -131,6 +132,12 @@ type CommandResult struct {
 	Output          string           `json:"output"`
 	OutputTruncated bool             `json:"output_truncated,omitempty"`
 }
+
+const (
+	StageSourceFinalization        = "source_finalization"
+	StageMergeFallbackVerification = "merge_fallback_verification"
+	StageLanding                   = "landing"
+)
 
 type ValidatorResult struct {
 	CriteriaEvidence []CriterionEvidence `json:"criteria_evidence,omitempty"`

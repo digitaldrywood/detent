@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -27,7 +28,7 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 	if r == nil {
 		return nil
 	}
-	if g := r.Validation; g != nil && (strings.TrimSpace(g.Command) == "" || len(g.Command) > 4096 || len(g.Output) > 64*1024 || g.DurationNS <= 0 || g.ExitCode != 0 || !validCommitID(g.HeadSHA) || !validCommitID(g.TreeSHA) || !g.Evidence.Valid()) {
+	if g := r.Validation; g != nil && (strings.TrimSpace(g.Command) == "" || len(g.Command) > 4096 || len(g.Output) > 64*1024 || g.ExitCode != 0 && len(g.Output) > tracker.NativeFinalizationTextLimit || g.DurationNS <= 0 || g.ExitCode < 0 || g.ExitCode > 255 || g.ExitCode != 0 && g.Stage != gate.StageSourceFinalization || g.Stage != "" && g.Stage != gate.StageSourceFinalization || !validCommitID(g.HeadSHA) || !validCommitID(g.TreeSHA) || !g.Evidence.Valid()) {
 		return nativeInvalid("Invalid source validation evidence")
 	}
 	if r.Completion != nil && (r.Completion.ObservedAt.IsZero() || r.Phase != "completed") {

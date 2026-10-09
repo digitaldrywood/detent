@@ -661,7 +661,7 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 					t.Fatalf("failed landing gate lost receipt: %#v", result)
 				}
 				var validation *ValidationError
-				if !errors.As(err, &validation) || !strings.Contains(validation.Output, "lint-failure-sentinel") || f.remoteMain(t) != before || strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD")) != f.head {
+				if !errors.As(err, &validation) || !errors.Is(err, validation.Err) || validation.Result.Stage != gate.StageLanding || validation.Result.Command != opts.ValidationCommand || validation.Result.ExitCode == 0 || validation.Result.DurationNS <= 0 || !strings.Contains(err.Error(), "landing gate failed") || !strings.Contains(validation.Output, "lint-failure-sentinel") || f.remoteMain(t) != before || strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD")) != f.head {
 					t.Fatalf("failed gate changed source or base: %v", err)
 				}
 				return

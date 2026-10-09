@@ -3157,7 +3157,7 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 		{name: "rolling resolved head skips the gate", mode: gate.LandingRollingBarrier, gate: "exit 19", wantPushed: true},
 		{name: "resolved committed head", wantPushed: true},
 		{name: "already pushed head", before: "push"},
-		{name: "gate failure", gate: "git detent-invalid-gate", wantError: "gate failed"},
+		{name: "gate failure", gate: "git detent-invalid-gate", wantError: "merge-fallback verification gate failed"},
 		{name: "push failure", before: "reject push", wantError: "push validated merge resolution"},
 		{name: "dirty resolution", before: "dirty", wantError: "not source-clean"},
 		{name: "stale target", before: "base", wantError: "does not contain"},

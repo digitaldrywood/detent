@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -113,6 +115,15 @@ func failureFromAttempt(a tracker.NativeRunData, status string) (string, string)
 	if status != "failed" && status != "interrupted" {
 		return "", ""
 	}
+	if f := a.TerminalFailure; f != nil && nativeFailureClass(*f) == "infrastructure" && f.Error != "" {
+		return f.Error, "infrastructure"
+	}
+	if r := a.Runtime; r != nil && r.Validation != nil && r.Validation.ExitCode != 0 && r.Validation.Stage == gate.StageSourceFinalization {
+		return fmt.Sprintf("source finalization gate failed: exit status %d", r.Validation.ExitCode), "attempt"
+	}
+	if r := a.Runtime; r != nil && r.Landing != nil && r.Landing.GateFailed && r.Landing.Gate != nil {
+		return fmt.Sprintf("landing gate failed: exit status %d", r.Landing.Gate.ExitCode), "merge"
+	}
 	if f := a.TerminalFailure; f != nil && f.Error != "" {
 		return f.Error, nativeFailureClass(*f)
 	}
@@ -151,7 +162,7 @@ THEN coalesce(nullif(json_extract(data_json,'$.runtime.landing.observed_at'),'00
 FROM native_attempts a WHERE organization_id=? AND project_id=?
 AND (status IN ('failed','interrupted') OR json_extract(data_json,'$.runtime.landing.refusal_kind') IN ('conflict','base_protected')))
 SELECT a.id,a.work_item_id,a.status,a.started_at,a.updated_at,a.failed_at,
-json_object('terminal_failure',json_extract(a.data_json,'$.terminal_failure'),'finalization',json_extract(a.data_json,'$.finalization'),'runtime',json_object('landing',json_extract(a.data_json,'$.runtime.landing'))),
+json_object('terminal_failure',json_extract(a.data_json,'$.terminal_failure'),'finalization',json_extract(a.data_json,'$.finalization'),'runtime',json_object('landing',json_extract(a.data_json,'$.runtime.landing'),'validation',json_extract(a.data_json,'$.runtime.validation'))),
 (SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id),
 (SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id)
 FROM failures a WHERE 1=1`

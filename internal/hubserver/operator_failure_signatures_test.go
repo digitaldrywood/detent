@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -154,6 +155,7 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 	}{
 		{"recorded error", "failed", "count <n> failed", "attempt", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "count 123 failed\nprivate details"}}},
 		{"execution error precedes finalization", "failed", "provider failed", "infrastructure", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "provider failed", ErrorClass: "protocol"}, Finalization: &tracker.NativeFinalization{Error: "publish failed"}}},
+		{"source finalization gate", "failed", "source finalization gate failed: exit status 1", "attempt", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Phase: "completed", Validation: &gate.CommandResult{Stage: gate.StageSourceFinalization, Command: "go test ./internal/example", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), ExitCode: 1, DurationNS: 1}}}},
 		{"workspace", "failed", "workspace hook failed", "infrastructure", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "workspace hook failed", ErrorClass: "workspace_hook"}}},
 		{"protocol", "interrupted", "provider request failed", "infrastructure", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "provider request failed", ErrorClass: "protocol"}}},
 		{"historical metadata", "failed", "codex turn/start input_too_large: provider error", "attempt", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Provider: "codex", Operation: "turn/start", ProviderCode: "input_too_large", Summary: "provider error"}}},
@@ -165,6 +167,11 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 		{"missing error", "failed", "attempt failed: recorded error unavailable", "attempt", tracker.NativeRunData{}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.data.Runtime != nil && test.data.Runtime.Validation != nil {
+				if err := validateNativeRuntime(test.data.Runtime); err != nil {
+					t.Fatalf("source gate failure receipt rejected: %v", err)
+				}
+			}
 			raw, err := json.Marshal(test.data)
 			if err != nil {
 				t.Fatal(err)

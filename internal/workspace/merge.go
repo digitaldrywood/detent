@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const defaultGitRemote = "origin"
@@ -413,7 +414,7 @@ func (l *LocalGit) validateMergeResolution(ctx context.Context, info Info, issue
 		return err
 	}
 	if result.ExitCode != 0 {
-		return &ValidationError{Output: result.Output, Err: fmt.Errorf("exit status %d", result.ExitCode)}
+		return newValidationError(ValidationStageMergeFallbackVerification, result, fmt.Errorf("exit status %d", result.ExitCode))
 	}
 	return nil
 }
@@ -504,11 +505,34 @@ func rejectMergeHistory(ctx context.Context, path, remoteHead string, cause erro
 }
 
 type ValidationError struct {
-	Output string
-	Err    error
+	Stage  string             `json:"stage"`
+	Result gate.CommandResult `json:"result"`
+	Output string             `json:"output"`
+	Err    error              `json:"-"`
+}
+
+const (
+	ValidationStageSourceFinalization        = gate.StageSourceFinalization
+	ValidationStageMergeFallbackVerification = gate.StageMergeFallbackVerification
+	ValidationStageLanding                   = gate.StageLanding
+)
+
+func newValidationError(stage string, result gate.CommandResult, err error) *ValidationError {
+	result.Stage = stage
+	result = tracker.PublicGateResult(result)
+	return &ValidationError{Stage: stage, Result: result, Output: result.Output, Err: err}
 }
 
 func (e *ValidationError) Error() string {
-	return fmt.Sprintf("merge resolution gate failed: %v: %s", e.Err, e.Output)
+	stage := "merge-fallback verification"
+	switch e.Stage {
+	case ValidationStageSourceFinalization:
+		stage = "source finalization"
+	case ValidationStageLanding:
+		stage = "landing"
+	case ValidationStageMergeFallbackVerification:
+		stage = "merge-fallback verification"
+	}
+	return fmt.Sprintf("%s gate failed: %v", stage, e.Err)
 }
 func (e *ValidationError) Unwrap() error { return e.Err }

@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -16,22 +17,25 @@ import (
 
 type completedExecutionWorkspace struct {
 	retainedExecutionWorkspace
-	finalized       bool
-	validationDelay time.Duration
-	finalizationErr error
-	onValidation    func()
+	finalized        bool
+	validationDelay  time.Duration
+	validationExit   int
+	validationOutput string
+	finalizationErr  error
+	onValidation     func()
 }
 
 func (w *completedExecutionWorkspace) Head(context.Context, workspace.Info, workspace.Issue) (string, error) {
 	return "completed-head", nil
 }
 
-func (w *completedExecutionWorkspace) RunReviewCommand(ctx context.Context, _ workspace.Info, issue workspace.Issue, _ string) (gate.CommandResult, error) {
+func (w *completedExecutionWorkspace) RunReviewCommand(ctx context.Context, _ workspace.Info, issue workspace.Issue, command string) (gate.CommandResult, error) {
 	if w.onValidation != nil {
 		w.onValidation()
 	}
 	time.Sleep(w.validationDelay)
-	return gate.CommandResult{HeadSHA: issue.PullRequestHeadSHA}, ctx.Err()
+	started := time.Now()
+	return gate.CommandResult{Command: command, HeadSHA: issue.PullRequestHeadSHA, TreeSHA: strings.Repeat("a", 40), ExitCode: w.validationExit, DurationNS: int64(time.Second), Evidence: &gate.CommandEvidence{Checks: []gate.CheckObservation{{Scope: "internal/example", Command: "go test ./internal/example", HeadSHA: issue.PullRequestHeadSHA, TreeSHA: strings.Repeat("a", 40), ExitCode: w.validationExit, StartedAt: started, FinishedAt: started.Add(time.Second), DurationNS: int64(time.Second)}}}, Output: w.validationOutput}, ctx.Err()
 }
 
 func (w *completedExecutionWorkspace) FinalizeNativeWork(ctx context.Context, _ workspace.Info, _ workspace.Issue, validate func(context.Context) error) (string, error) {
@@ -174,7 +178,8 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				execution := &finalizingTestExecution{}
 				backend.validationDelay = test.validationDelay
 				if test.gateFailure {
-					backend.finalizationErr = &workspace.ValidationError{Err: errors.New("exit status 2"), Output: "bash [redacted] \"4\""}
+					backend.validationExit = 2
+					backend.validationOutput = strings.Repeat("earlier test output\n", 5000) + "TestFailure: failing test output with token=private-secret"
 				}
 				if test.operatorStop {
 					backend.onValidation = func() { stopOperator(NewCancellationCause(ErrOperatorStopped, "operator.stop_run")) }
@@ -221,6 +226,12 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				failed := test.revoked || test.validationTimeout || test.gateFailure && !test.blocked || test.operatorStop
 				if (completion.Err != nil) != failed || execution.published != (!failed && !test.blocked) || backend.retained != failed || agent.calls != 1 {
 					t.Fatalf("error=%v published=%t retained=%t turns=%d", completion.Err, execution.published, backend.retained, agent.calls)
+				}
+				if test.gateFailure && !test.blocked && !strings.Contains(completion.Err.Error(), "source finalization gate failed") {
+					t.Fatalf("gate failure lost its stage: %v", completion.Err)
+				}
+				if test.gateFailure && !test.blocked && (execution.validation == nil || execution.validation.Stage != gate.StageSourceFinalization || execution.validation.Command != "make check" || execution.validation.ExitCode != 2 || execution.validation.DurationNS != int64(time.Second) || execution.validation.Evidence == nil || len(execution.validation.Evidence.Checks) != 1 || execution.validation.Evidence.Checks[0].Scope != "internal/example" || execution.validation.Evidence.Checks[0].Command != "go test ./internal/example" || execution.validation.Evidence.Checks[0].ExitCode != 2 || execution.validation.Evidence.Checks[0].DurationNS != int64(time.Second) || len(execution.validation.Output) > tracker.NativeFinalizationTextLimit || !execution.validation.OutputTruncated || !strings.Contains(execution.validation.Output, "TestFailure") || strings.Contains(execution.validation.Output, "private-secret")) {
+					t.Fatalf("source gate receipt lost safe check details: %+v", execution.validation)
 				}
 				if !failed && (execution.finish != "succeeded" || execution.checkpoint == nil || execution.checkpoint.HeadSHA != "completed-head" || completion.Result.FinalState != FinalStateCompleted || backend.afterRunErr != nil) {
 					t.Fatalf("completion=%+v checkpoint=%+v finish=%s cleanup=%v", completion, execution.checkpoint, execution.finish, backend.afterRunErr)
