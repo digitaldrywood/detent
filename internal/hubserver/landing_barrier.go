@@ -227,21 +227,9 @@ func landingBarrierOwner(scope nativeScope) string {
 	return scope.credential.ID
 }
 
-func preferredBarrierRunner(ctx context.Context, query nativeQueryer, scope nativeScope, now time.Time) (preferred string, err error) {
-	rows, err := query.QueryContext(ctx, `SELECT DISTINCT r.id FROM runner_identities r JOIN token_grants g ON g.token_id = r.token_id WHERE r.organization_id = ? AND g.project_id = ? ORDER BY r.id`, scope.organization, scope.project)
+func preferredBarrierRunner(ctx context.Context, query nativeQueryer, scope nativeScope, now time.Time) (string, error) {
+	ids, err := nativePageIDs(ctx, query, `SELECT DISTINCT r.id FROM runner_identities r JOIN token_grants g ON g.token_id = r.token_id WHERE r.organization_id = ? AND g.project_id = ? ORDER BY r.id`, scope.organization, scope.project)
 	if err != nil {
-		return "", err
-	}
-	defer func() { err = errors.Join(err, rows.Close()) }()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return "", err
-		}
-		ids = append(ids, id)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return "", err
 	}
 	preferred, capacity := "", -1
