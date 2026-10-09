@@ -28,8 +28,19 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 	if r == nil {
 		return nil
 	}
-	if g := r.Validation; g != nil && (strings.TrimSpace(g.Command) == "" || len(g.Command) > 4096 || len(g.Output) > 64*1024 || g.ExitCode != 0 && len(g.Output) > tracker.NativeFinalizationTextLimit || g.DurationNS <= 0 || g.ExitCode < 0 || g.ExitCode > 255 || g.ExitCode != 0 && g.Stage != gate.StageSourceFinalization || g.Stage != "" && g.Stage != gate.StageSourceFinalization || !validCommitID(g.HeadSHA) || !validCommitID(g.TreeSHA) || !g.Evidence.Valid()) {
-		return nativeInvalid("Invalid source validation evidence")
+	if g := r.Validation; g != nil {
+		commandInvalid := (strings.TrimSpace(g.Command) == "") || (len(g.Command) > 4096)
+		failedOutputTooLarge := (g.ExitCode != 0) && (len(g.Output) > tracker.NativeFinalizationTextLimit)
+		successfulOutputTooLarge := (g.ExitCode == 0) && (len(g.Output) > 64*1024)
+		durationInvalid := g.DurationNS <= 0
+		exitCodeInvalid := (g.ExitCode < 0) || (g.ExitCode > 255)
+		failedStageInvalid := (g.ExitCode != 0) && (g.Stage != gate.StageSourceFinalization)
+		stageInvalid := (g.Stage != "") && (g.Stage != gate.StageSourceFinalization)
+		headInvalid := (!validCommitID(g.HeadSHA)) || (!validCommitID(g.TreeSHA))
+		evidenceInvalid := !g.Evidence.Valid()
+		if (commandInvalid) || (failedOutputTooLarge || successfulOutputTooLarge) || (durationInvalid) || (exitCodeInvalid) || (failedStageInvalid || stageInvalid) || (headInvalid) || (evidenceInvalid) {
+			return nativeInvalid("Invalid source validation evidence")
+		}
 	}
 	if r.Completion != nil && (r.Completion.ObservedAt.IsZero() || r.Phase != "completed") {
 		return nativeInvalid("Host completion observations require a completed phase and observation time")

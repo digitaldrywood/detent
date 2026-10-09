@@ -115,17 +115,14 @@ func failureFromAttempt(a tracker.NativeRunData, status string) (string, string)
 	if status != "failed" && status != "interrupted" {
 		return "", ""
 	}
-	if f := a.TerminalFailure; f != nil && nativeFailureClass(*f) == "infrastructure" && f.Error != "" {
-		return f.Error, "infrastructure"
+	if f := a.TerminalFailure; f != nil && f.Error != "" {
+		return f.Error, nativeFailureClass(*f)
 	}
 	if r := a.Runtime; r != nil && r.Validation != nil && r.Validation.ExitCode != 0 && r.Validation.Stage == gate.StageSourceFinalization {
 		return fmt.Sprintf("source finalization gate failed: exit status %d", r.Validation.ExitCode), "attempt"
 	}
 	if r := a.Runtime; r != nil && r.Landing != nil && r.Landing.GateFailed && r.Landing.Gate != nil {
 		return fmt.Sprintf("landing gate failed: exit status %d", r.Landing.Gate.ExitCode), "merge"
-	}
-	if f := a.TerminalFailure; f != nil && f.Error != "" {
-		return f.Error, nativeFailureClass(*f)
 	}
 	if f := a.Finalization; f != nil {
 		if f.VersionError != "" {

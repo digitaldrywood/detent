@@ -454,7 +454,6 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 								err = errors.Join(err, recordErr)
 							}
 						} else {
-							receipt.Stage = gate.StageSourceFinalization
 							err = recorder.RecordSourceValidation(ctx, receipt)
 						}
 					}

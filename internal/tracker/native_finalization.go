@@ -46,10 +46,25 @@ var nativeGatePrivateCommand = regexp.MustCompile(`(?i)(token|secret|password|cr
 func PublicGateResult(result gate.CommandResult) gate.CommandResult {
 	if nativeGatePrivateCommand.MatchString(result.Command) {
 		result.Command = "[redacted]"
+	} else {
+		result.Command, _ = publicGateOutput(result.Command)
 	}
 	text, truncated := publicGateOutput(result.Output)
 	result.Output = text
 	result.OutputTruncated = result.OutputTruncated || truncated
+	if result.Evidence != nil {
+		evidence := *result.Evidence
+		evidence.Checks = make([]gate.CheckObservation, 0, len(result.Evidence.Checks))
+		for _, check := range result.Evidence.Checks {
+			check.Scope, _ = publicGateOutput(check.Scope)
+			check.Command, _ = publicGateOutput(check.Command)
+			if !(&gate.CommandEvidence{Checks: []gate.CheckObservation{check}}).Valid() {
+				continue
+			}
+			evidence.Checks = append(evidence.Checks, check)
+		}
+		result.Evidence = &evidence
+	}
 	return result
 }
 

@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -35,7 +36,7 @@ func (w *completedExecutionWorkspace) RunReviewCommand(ctx context.Context, _ wo
 	}
 	time.Sleep(w.validationDelay)
 	started := time.Now()
-	return gate.CommandResult{Command: command, HeadSHA: issue.PullRequestHeadSHA, TreeSHA: strings.Repeat("a", 40), ExitCode: w.validationExit, DurationNS: int64(time.Second), Evidence: &gate.CommandEvidence{Checks: []gate.CheckObservation{{Scope: "internal/example", Command: "go test ./internal/example", HeadSHA: issue.PullRequestHeadSHA, TreeSHA: strings.Repeat("a", 40), ExitCode: w.validationExit, StartedAt: started, FinishedAt: started.Add(time.Second), DurationNS: int64(time.Second)}}}, Output: w.validationOutput}, ctx.Err()
+	return gate.CommandResult{Command: command, HeadSHA: issue.PullRequestHeadSHA, TreeSHA: strings.Repeat("a", 40), ExitCode: w.validationExit, DurationNS: int64(time.Second), Evidence: &gate.CommandEvidence{Checks: []gate.CheckObservation{{Scope: "internalexample", Command: "go test internalexample", HeadSHA: strings.Repeat("c", 40), TreeSHA: strings.Repeat("a", 40), ExitCode: w.validationExit, StartedAt: started, FinishedAt: started.Add(time.Second), DurationNS: int64(time.Second)}}}, Output: w.validationOutput}, ctx.Err()
 }
 
 func (w *completedExecutionWorkspace) FinalizeNativeWork(ctx context.Context, _ workspace.Info, _ workspace.Issue, validate func(context.Context) error) (string, error) {
@@ -152,12 +153,21 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 		blocked           bool
 		gateFailure       bool
 		operatorStop      bool
+		wantReceipt       bool
+		wantReceiptStage  string
+		wantReceiptExit   int
+		wantCheckScope    string
+		wantCheckCommand  string
+		wantOutputText    string
+		wantOutputClean   string
+		wantOutputCut     bool
+		legacyReceiptJSON bool
 	}{
 		{name: "active parent", message: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
 		{name: "blocked issue-state Rework avoids failing host gate", blocked: true, gateFailure: true, message: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: prj_6d4919bebd73446798e6cd807feda10e#750\n    owner: orchestrator\n    reason: prerequisite remains Backlog\n    predicate:\n      type: issue_state\n      ref: prj_6d4919bebd73446798e6cd807feda10e#750\n      states: [Done]\nhuman_action: null\n```"},
 		{name: "blocked instance Rework avoids failing host gate", blocked: true, gateFailure: true, message: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:tool\n    reason: effective host gate lacks a passing current-head receipt\nhuman_action: null\n```"},
-		{name: "complete source still fails the host gate", gateFailure: true, message: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
-		{name: "invalid blocked report still runs the host gate", gateFailure: true, message: "```detent-status\nschema: 99\nstatus: blocked\nblockers: []\nhuman_action: null\n```"},
+		{name: "complete source still fails the host gate", gateFailure: true, wantReceipt: true, wantReceiptStage: gate.StageSourceFinalization, wantReceiptExit: 2, wantCheckScope: "internalexample", wantCheckCommand: "go test internalexample", wantOutputText: "TestFailure", wantOutputClean: "private-secret", wantOutputCut: true, message: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
+		{name: "invalid blocked report still runs the host gate", gateFailure: true, wantReceipt: true, wantReceiptStage: gate.StageSourceFinalization, wantReceiptExit: 2, wantCheckScope: "internalexample", wantCheckCommand: "go test internalexample", wantOutputText: "TestFailure", wantOutputClean: "private-secret", wantOutputCut: true, message: "```detent-status\nschema: 99\nstatus: blocked\nblockers: []\nhuman_action: null\n```"},
 		{name: "expired parent", expired: true},
 		{name: "cancelled parent", cancelled: true},
 		{name: "expired parent with revoked authority", expired: true, revoked: true},
@@ -166,7 +176,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 		{name: "validation uses session budget without a turn limit", validationDelay: 2 * time.Minute, sessionBudget: true},
 		{name: "validation exceeds session budget without a turn limit", validationDelay: 6 * time.Minute, validationTimeout: true, sessionBudget: true},
 		{name: "rolling barrier leaves the gate to the barrier", validationDelay: 6 * time.Minute, rollingBarrier: true},
-		{name: "operator stop during successful long validation", operatorStop: true, validationDelay: 2 * time.Minute},
+		{name: "operator stop during successful long validation", operatorStop: true, validationDelay: 2 * time.Minute, legacyReceiptJSON: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -230,8 +240,39 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				if test.gateFailure && !test.blocked && !strings.Contains(completion.Err.Error(), "source finalization gate failed") {
 					t.Fatalf("gate failure lost its stage: %v", completion.Err)
 				}
-				if test.gateFailure && !test.blocked && (execution.validation == nil || execution.validation.Stage != gate.StageSourceFinalization || execution.validation.Command != "make check" || execution.validation.ExitCode != 2 || execution.validation.DurationNS != int64(time.Second) || execution.validation.Evidence == nil || len(execution.validation.Evidence.Checks) != 1 || execution.validation.Evidence.Checks[0].Scope != "internal/example" || execution.validation.Evidence.Checks[0].Command != "go test ./internal/example" || execution.validation.Evidence.Checks[0].ExitCode != 2 || execution.validation.Evidence.Checks[0].DurationNS != int64(time.Second) || len(execution.validation.Output) > tracker.NativeFinalizationTextLimit || !execution.validation.OutputTruncated || !strings.Contains(execution.validation.Output, "TestFailure") || strings.Contains(execution.validation.Output, "private-secret")) {
-					t.Fatalf("source gate receipt lost safe check details: %+v", execution.validation)
+				if test.wantReceipt {
+					receipt := execution.validation
+					if receipt == nil {
+						t.Fatal("source gate receipt is missing")
+					}
+					if receipt.Stage != test.wantReceiptStage || receipt.Command != "make check" || receipt.ExitCode != test.wantReceiptExit || receipt.DurationNS != int64(time.Second) {
+						t.Fatalf("source gate receipt identity = %+v", receipt)
+					}
+					if receipt.Evidence == nil || len(receipt.Evidence.Checks) != 1 {
+						t.Fatalf("source gate receipt checks = %+v", receipt.Evidence)
+					}
+					check := receipt.Evidence.Checks[0]
+					if check.Scope != test.wantCheckScope || check.Command != test.wantCheckCommand || check.ExitCode != test.wantReceiptExit || check.DurationNS != int64(time.Second) {
+						t.Fatalf("source gate receipt check = %+v", check)
+					}
+					if len(receipt.Output) > tracker.NativeFinalizationTextLimit || receipt.OutputTruncated != test.wantOutputCut || !strings.Contains(receipt.Output, test.wantOutputText) || strings.Contains(receipt.Output, test.wantOutputClean) {
+						t.Fatalf("source gate receipt output = %q, truncated=%t", receipt.Output, receipt.OutputTruncated)
+					}
+				}
+				if test.legacyReceiptJSON {
+					encoded, err := json.Marshal(execution.validation)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var receipt map[string]json.RawMessage
+					if err := json.Unmarshal(encoded, &receipt); err != nil {
+						t.Fatal(err)
+					}
+					for _, key := range []string{"stage", "output_truncated", "output_tail"} {
+						if _, present := receipt[key]; present {
+							t.Fatalf("successful source validation unexpectedly encoded %q: %s", key, encoded)
+						}
+					}
 				}
 				if !failed && (execution.finish != "succeeded" || execution.checkpoint == nil || execution.checkpoint.HeadSHA != "completed-head" || completion.Result.FinalState != FinalStateCompleted || backend.afterRunErr != nil) {
 					t.Fatalf("completion=%+v checkpoint=%+v finish=%s cleanup=%v", completion, execution.checkpoint, execution.finish, backend.afterRunErr)

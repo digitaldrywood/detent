@@ -3151,13 +3151,14 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 		before     string
 		gate       string
 		wantError  string
+		wantStage  string
 		wantPushed bool
 		mode       string
 	}{
 		{name: "rolling resolved head skips the gate", mode: gate.LandingRollingBarrier, gate: "exit 19", wantPushed: true},
 		{name: "resolved committed head", wantPushed: true},
 		{name: "already pushed head", before: "push"},
-		{name: "gate failure", gate: "git detent-invalid-gate", wantError: "merge-fallback verification gate failed"},
+		{name: "gate failure", gate: "git detent-invalid-gate", wantError: "merge-fallback verification gate failed", wantStage: gate.StageMergeFallbackVerification},
 		{name: "push failure", before: "reject push", wantError: "push validated merge resolution"},
 		{name: "dirty resolution", before: "dirty", wantError: "not source-clean"},
 		{name: "stale target", before: "base", wantError: "does not contain"},
@@ -3233,6 +3234,12 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 			if tt.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
 					t.Fatalf("PrepareMerge() = %#v, %v; want error containing %q", result, err, tt.wantError)
+				}
+				if tt.wantStage != "" {
+					var validation *ValidationError
+					if !errors.As(err, &validation) || validation.Stage != tt.wantStage || validation.Error() != tt.wantError+": exit status 1" {
+						t.Fatalf("PrepareMerge() validation = %+v, %v; want stage %q and message %q", validation, err, tt.wantStage, tt.wantError+": exit status 1")
+					}
 				}
 				if tt.gate != "remote" {
 					if got := strings.TrimSpace(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch)); got != remoteBefore {
