@@ -19,7 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -397,8 +396,8 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 		}
 	}
 	e.preparedDisposition = nil
-	if signal, reported := workpad.SignalFromComment(finalMessage, "", ""); e.ownsIssueCompletion() && reported && signal != nil && signal.Invalid == nil {
-		e.preparedDisposition = &tracker.NativeDisposition{Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: signal.ReasonCode, FinalSummary: workpad.FinalSummary(finalMessage), BlockerEvidence: signal.Blockers}
+	if e.ownsIssueCompletion() {
+		e.preparedDisposition = runner.NativeDispositionFromMessage(finalMessage)
 	}
 	if err := e.prepareFinish(ctx, outcome); err != nil {
 		err = e.executionError(err)

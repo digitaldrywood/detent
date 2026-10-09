@@ -18,6 +18,7 @@ type completedExecutionWorkspace struct {
 	retainedExecutionWorkspace
 	finalized       bool
 	validationDelay time.Duration
+	finalizationErr error
 }
 
 func (w *completedExecutionWorkspace) Head(context.Context, workspace.Info, workspace.Issue) (string, error) {
@@ -31,6 +32,9 @@ func (w *completedExecutionWorkspace) RunReviewCommand(ctx context.Context, _ wo
 
 func (w *completedExecutionWorkspace) FinalizeNativeWork(ctx context.Context, _ workspace.Info, _ workspace.Issue, validate func(context.Context) error) (string, error) {
 	w.finalized = true
+	if w.finalizationErr != nil {
+		return "", w.finalizationErr
+	}
 	if _, ok := ctx.Deadline(); !ok {
 		return "", errors.New("finalization has no deadline")
 	}
@@ -46,8 +50,9 @@ func (w *completedExecutionWorkspace) DiffStat(ctx context.Context, info workspa
 
 type finalizingTestExecution struct {
 	artifactExecutionProbe
-	published  bool
-	validation *gate.CommandResult
+	published   bool
+	validation  *gate.CommandResult
+	disposition *tracker.NativeDisposition
 }
 
 func (e *finalizingTestExecution) RecordSourceValidation(ctx context.Context, result gate.CommandResult) error {
@@ -76,11 +81,12 @@ func (e *finalizingTestExecution) Checkpoint(ctx context.Context, checkpoint tra
 	return e.testExecution.Checkpoint(ctx, checkpoint)
 }
 
-func (e *finalizingTestExecution) PrepareFinish(ctx context.Context, outcome, _ string, _ *tracker.NativeTerminalFailure) error {
+func (e *finalizingTestExecution) PrepareFinish(ctx context.Context, outcome, message string, _ *tracker.NativeTerminalFailure) error {
 	if err := e.Validate(ctx); err != nil {
 		return err
 	}
-	if outcome == "succeeded" {
+	e.disposition = NativeDispositionFromMessage(message)
+	if outcome == "succeeded" && (e.disposition == nil || e.disposition.Status != "blocked") {
 		if !e.finalized || e.checkpoint == nil {
 			return errors.New("publication preceded artifact and checkpoint recording")
 		}
@@ -117,8 +123,15 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 		validationTimeout bool
 		sessionBudget     bool
 		rollingBarrier    bool
+		message           string
+		blocked           bool
+		gateFailure       bool
 	}{
-		{name: "active parent"},
+		{name: "active parent", message: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
+		{name: "blocked issue-state Rework avoids failing host gate", blocked: true, gateFailure: true, message: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: prj_6d4919bebd73446798e6cd807feda10e#750\n    owner: orchestrator\n    reason: prerequisite remains Backlog\n    predicate:\n      type: issue_state\n      ref: prj_6d4919bebd73446798e6cd807feda10e#750\n      states: [Done]\nhuman_action: null\n```"},
+		{name: "blocked instance Rework avoids failing host gate", blocked: true, gateFailure: true, message: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:tool\n    reason: effective host gate lacks a passing current-head receipt\nhuman_action: null\n```"},
+		{name: "complete source still fails the host gate", gateFailure: true, message: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
+		{name: "invalid blocked report still runs the host gate", gateFailure: true, message: "```detent-status\nschema: 99\nstatus: blocked\nblockers: []\nhuman_action: null\n```"},
 		{name: "expired parent", expired: true},
 		{name: "cancelled parent", cancelled: true},
 		{name: "expired parent with revoked authority", expired: true, revoked: true},
@@ -135,7 +148,10 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				backend := &completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: "native"}, recoveryStates: []workspace.RecoveryState{{HeadSHA: "completed-head", WorkspaceFingerprint: "completed-digest"}}}}}
 				execution := &finalizingTestExecution{}
 				backend.validationDelay = test.validationDelay
-				agent := &completedTurnBackend{fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateTurnCompleted, Status: "completed"}}}, afterTurn: func() {
+				if test.gateFailure {
+					backend.finalizationErr = &workspace.ValidationError{Err: errors.New("exit status 2"), Output: "bash [redacted] \"4\""}
+				}
+				agent := &completedTurnBackend{fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: test.message}, {Type: AgentUpdateTurnCompleted, Status: "completed"}}}, afterTurn: func() {
 					if test.expired {
 						time.Sleep(time.Second)
 					}
@@ -168,8 +184,8 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 					t.Fatal(err)
 				}
 				completion := supervisor.Run(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModeImplement})
-				failed := test.revoked || test.validationTimeout
-				if (completion.Err != nil) != failed || execution.published == failed || backend.retained != failed || agent.calls != 1 {
+				failed := test.revoked || test.validationTimeout || test.gateFailure && !test.blocked
+				if (completion.Err != nil) != failed || execution.published != (!failed && !test.blocked) || backend.retained != failed || agent.calls != 1 {
 					t.Fatalf("error=%v published=%t retained=%t turns=%d", completion.Err, execution.published, backend.retained, agent.calls)
 				}
 				if !failed && (execution.finish != "succeeded" || execution.checkpoint == nil || execution.checkpoint.HeadSHA != "completed-head" || completion.Result.FinalState != FinalStateCompleted || backend.afterRunErr != nil) {
@@ -177,6 +193,9 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				}
 				if failed && backend.afterRun {
 					t.Fatal("failed finalization cleaned the completed workspace")
+				}
+				if test.blocked && (backend.finalized || backend.afterRun || execution.disposition == nil || execution.disposition.Status != "blocked" || !execution.disposition.Blockers || len(execution.disposition.BlockerEvidence) != 1) {
+					t.Fatalf("blocked completion lost its handoff: finalized=%t cleanup=%t disposition=%+v", backend.finalized, backend.afterRun, execution.disposition)
 				}
 				if test.validationTimeout && (!errors.Is(completion.Err, context.DeadlineExceeded) || execution.validation != nil || execution.finish == "succeeded") {
 					t.Fatalf("timed-out validation was accepted: error=%v receipt=%+v finish=%s", completion.Err, execution.validation, execution.finish)

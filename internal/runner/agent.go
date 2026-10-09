@@ -2389,8 +2389,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		afterRunCtx, afterRunCancel = context.WithTimeoutCause(context.WithoutCancel(ctx), timeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 	}
 	defer afterRunCancel()
-	req.retainCheckpoint = turnErr != nil && (req.Execution != nil || result.Checkpoint != nil)
-	req.finalizeNativeWork = req.Execution != nil && mode == RunModeImplement && turnErr == nil
+	disposition := NativeDispositionFromMessage(result.FinalMessage)
+	blocked := req.Execution != nil && disposition != nil && disposition.Status == "blocked"
+	req.retainCheckpoint = (turnErr != nil || blocked) && (req.Execution != nil || result.Checkpoint != nil)
+	req.finalizeNativeWork = req.Execution != nil && mode == RunModeImplement && turnErr == nil && !blocked
 	if errors.Is(turnErr, ErrWorkerProcessReap) {
 		preserveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 		_, preserveErr := r.PreserveWorkspace(preserveCtx, req.Issue)
