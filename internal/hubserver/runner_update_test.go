@@ -127,6 +127,9 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 		{name: "installed operator build", hub: "v1.2.4", runner: "operator-landed-abcdef123456", supported: true},
 		{name: "unpublished release", hub: "v1.2.4", runner: "1.2.3", supported: true, unpublished: true},
 		{name: "update failed", hub: "v1.2.4", runner: "1.2.3", supported: true, failed: true, want: true},
+		{name: "operator prerelease", hub: "v1.2.4-op.abcdef123456", runner: "1.2.3", supported: true, want: true},
+		{name: "matching operator prerelease", hub: "v1.2.4-op.abcdef123456", runner: "1.2.4-op.abcdef123456", supported: true},
+		{name: "stable release supersedes operator prerelease", hub: "v1.2.4", runner: "1.2.4-op.abcdef123456", supported: true, want: true},
 		{name: "matching release", hub: "v1.2.4", runner: "1.2.4", supported: true},
 		{name: "development Hub", hub: "dev", runner: "1.2.3", supported: true},
 		{name: "missing update owner", hub: "v1.2.4", runner: "1.2.3"},
@@ -178,11 +181,11 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 				}
 			}
 			if !test.unpublished {
-				service.runnerPublishedReleases.Store("v1.2.4/linux/amd64", true)
+				service.runnerPublishedReleases.Store(test.hub+"/linux/amd64", true)
 			}
 			service.config.Version = test.hub
 			snapshot := send()
-			if snapshot.TargetRunnerVersion != "1.2.4" && !test.unpublished && test.hub == "v1.2.4" {
+			if snapshot.TargetRunnerVersion != strings.TrimPrefix(test.hub, "v") && !test.unpublished && strings.HasPrefix(test.hub, "v") {
 				t.Fatalf("heartbeat target = %q", snapshot.TargetRunnerVersion)
 			}
 			if test.unpublished && snapshot.TargetRunnerVersion != "" {
@@ -199,7 +202,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			if !test.want {
 				return
 			}
-			wantVersion := cmp.Or(test.wantVersion, "1.2.4")
+			wantVersion := cmp.Or(test.wantVersion, strings.TrimPrefix(test.hub, "v"))
 			if request.FollowHub == test.manual || !test.manual && (request.Version != wantVersion || request.ExpectedBuildRevision != report.Revision || request.Validate() != nil) {
 				t.Fatalf("request=%+v", request)
 			}
