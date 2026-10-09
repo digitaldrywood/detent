@@ -428,7 +428,7 @@ detent --format json config path`),
 				LogLevel: runtimeStringFlag{Value: logLevel, Set: flagChanged(cmd, "log-level")},
 				Port:     runtimeIntFlag{Value: port, Set: flagChanged(cmd, "port")},
 			}
-			boot, err := resolveBootConfigWithRuntimeDeps(cmd.Context(), configPath, host, flags, opts, bootRuntimeDeps(opts))
+			boot, err := resolveBootConfigWithRuntimeDeps(cmd.Context(), configPath, host, flags, opts, bootRuntimeDeps(opts), true)
 			if err != nil {
 				return err
 			}

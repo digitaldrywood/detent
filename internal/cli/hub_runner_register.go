@@ -473,7 +473,7 @@ func writeRunnerRegistration(cmd *cobra.Command, result runnerRegistration) erro
 			lines = append(lines, fmt.Sprintf("Project %s (%s): %s, %s", project.Name, project.ID, project.Workdir, state))
 		}
 		if result.ServiceRun {
-			lines = append(lines, "Started the "+result.Service+" service.")
+			lines = append(lines, "Started the "+result.Service+" service.", "Service logs: "+filepath.Join(filepath.Dir(result.Config), "logs", "service.out.log")+" and "+filepath.Join(filepath.Dir(result.Config), "logs", "service.err.log"))
 		}
 		for _, step := range result.NextSteps {
 			lines = append(lines, "Next: "+step)

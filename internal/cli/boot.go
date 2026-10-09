@@ -65,7 +65,7 @@ func resolveBootConfig(ctx context.Context, configPath string, host string, flag
 	return resolveBootConfigWithRuntimeDeps(ctx, configPath, host, flags, opts, runtimeDepsFromOptions(opts))
 }
 
-func resolveBootConfigWithRuntimeDeps(ctx context.Context, configPath string, host string, flags runtimeFlags, opts options, deps runtimeDeps) (BootConfig, error) {
+func resolveBootConfigWithRuntimeDeps(ctx context.Context, configPath string, host string, flags runtimeFlags, opts options, deps runtimeDeps, deferProjectValidation ...bool) (BootConfig, error) {
 	resolution, err := resolveConfigPathResolution(configPath, opts)
 	if err != nil {
 		return BootConfig{}, err
@@ -76,10 +76,11 @@ func resolveBootConfigWithRuntimeDeps(ctx context.Context, configPath string, ho
 	if err == nil {
 		workflowPath := firstGlobalWorkflowPath(cfg)
 		runtime, err := resolveRuntimeSettings(ctx, runtimeInput{
-			Config:     &cfg,
-			ConfigPath: resolution,
-			Workflow:   workflowPath,
-			Flags:      flags,
+			Config:                 &cfg,
+			ConfigPath:             resolution,
+			Workflow:               workflowPath,
+			Flags:                  flags,
+			DeferProjectValidation: len(deferProjectValidation) > 0 && deferProjectValidation[0],
 		}, deps)
 		if err != nil {
 			return BootConfig{}, err
@@ -547,13 +548,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 				runtimeConfig: globalConfigState.get,
 				intakeToken:   newRunnerIntakeTokenSource(runtimeGitHubToken.get, refreshGitHubToken),
 				problems: func() []runnerauth.Problem {
-					var problems []runnerauth.Problem
-					if manager != nil {
-						for _, runtimeProject := range manager.Registry().List() {
-							problems = append(problems, runtimeProject.RunnerProblems()...)
-						}
-					}
-					return problems
+					return runnerStartupProblems(manager.Registry())
 				},
 			})
 			if err != nil {
@@ -573,7 +568,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			reporter.SetProjectConfigurationOwner(runnerProjectConfigurationOwner(cfg.Global, globalConfigState.get, owner))
 		}
 		logger.Info("runner setup observations completed", "duration", time.Since(observationsStarted))
-		projectFactory = withRunnerFactoryWithIsolation(ctx, project.Dependencies{
+		projectFactory = withRunnerFactoryWithProjectTokens(ctx, project.Dependencies{
 			Events:             events,
 			Scheduling:         hubScheduling,
 			Logger:             logger,
@@ -592,11 +587,12 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			ScheduleRuns:       runtimeStore,
 			Activity:           activityBroker,
 			GitHubToken:        runtimeGitHubToken.get(),
-			RefreshGitHubToken: refreshGitHubToken,
 			ScheduleOwner:      cfg.Global.InstanceName,
 			ConnectorFactory:   cfg.ConnectorFactory,
 			Runner:             cfg.Runner,
-		}, runtimeStore, nil, serviceConnection, workerCredentials.Token, runnerIsolationPolicy(cfg.Global.Client.IdentityFile), runtimeGitHubToken.get)
+		}, runtimeStore, nil, serviceConnection, workerCredentials.Token, runnerIsolationPolicy(cfg.Global.Client.IdentityFile), func(ctx context.Context, selected globalconfig.Project, workflow workflowconfig.Config) (string, error) {
+			return resolveRunnerProjectGitHubToken(ctx, globalConfigState.get(), selected, workflow, runtimeDeps{})
+		})
 		resourceWorkers.Go(func() {
 			runRuntimeBuildDriftMonitor(runCtx, cfg.Build, deps.buildDriftInterval, readInstalledBuild, logger)
 		})
@@ -616,13 +612,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 				return append([]telemetry.TrackerCondition(nil), snapshot.TrackerUnavailable...)
 			}, time.Now)
 		})
-		resourceWorkers.Go(func() {
-			var runnerHeartbeat runnerHeartbeatSource
-			if reporter, ok := hubScheduling.(runnerHeartbeatSource); ok {
-				runnerHeartbeat = reporter
-			}
-			publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, stalenessAcknowledgements, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, providerStatus, defaultSnapshotInterval, deps.snapshotNow, runnerHeartbeat, updateScheduler)
-		})
 		if healthNotifications.Enabled() {
 			resourceWorkers.Go(func() {
 				healthNotifications.Run(runCtx, snapshotHub, manager.Registry().Health)
@@ -637,9 +626,16 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		for _, workspaceLane := range newWorkspaceLanes(runCtx, cfg.Global, hubScheduling, logger) {
 			resourceWorkers.Go(func() { runWorkspaceLane(runCtx, workspaceLane, logger) })
 		}
-		if err := manager.Start(ctx); err != nil {
+		if err := startRunnerProjects(ctx, manager, hubScheduling); err != nil {
 			return err
 		}
+		resourceWorkers.Go(func() {
+			var runnerHeartbeat runnerHeartbeatSource
+			if reporter, ok := hubScheduling.(runnerHeartbeatSource); ok {
+				runnerHeartbeat = reporter
+			}
+			publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, stalenessAcknowledgements, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, providerStatus, defaultSnapshotInterval, deps.snapshotNow, runnerHeartbeat, updateScheduler)
+		})
 		resourceWorkers.Go(func() { updateScheduler.Run(ctx) })
 		globalWatcherDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, runtimeGitHubToken, applyRuntimeConfig, onGlobalReload, runtimeStore)
 		credentialWatcherDone := startBackendCredentialWatchers(ctx, manager.Registry(), events, logger)

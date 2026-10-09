@@ -35,7 +35,8 @@ func (m *launchdManager) Info() ManagerInfo {
 }
 
 func (m *launchdManager) Definition() Definition {
-	return Definition{Path: m.path, Content: launchdPlist(m.cfg)}
+	stdout, stderr := serviceLogPaths(m.cfg)
+	return Definition{Path: m.path, Content: launchdPlist(m.cfg), StandardOutPath: stdout, StandardErrorPath: stderr}
 }
 
 func (m *launchdManager) Inspect(ctx context.Context) (Inspection, error) {
@@ -125,6 +126,7 @@ func (m *launchdManager) target() string {
 }
 
 func launchdPlist(cfg Config) string {
+	stdout, stderr := serviceLogPaths(cfg)
 	escape := func(value string) string {
 		return html.EscapeString(value)
 	}
@@ -157,6 +159,12 @@ func launchdPlist(cfg Config) string {
 		`    <key>`+ManagerEnvironment+`</key>`,
 		`    <string>`+string(ManagerLaunchd)+`</string>`,
 		`  </dict>`,
+		`  <key>StandardOutPath</key>`,
+		`  <string>`+escape(stdout)+`</string>`,
+		`  <key>StandardErrorPath</key>`,
+		`  <string>`+escape(stderr)+`</string>`,
+		`  <key>ThrottleInterval</key>`,
+		`  <integer>60</integer>`,
 		`  <key>RunAtLoad</key>`,
 		`  <true/>`,
 		`  <key>KeepAlive</key>`,
