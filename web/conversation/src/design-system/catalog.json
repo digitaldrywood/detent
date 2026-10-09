@@ -470,7 +470,7 @@
       "states": [],
       "keyboard": "Not interactive itself; AlertAction holds focusable actions.",
       "use": "A persistent inline message in the place the user must act: a warning above a form, an unavailable state with a corrective action. `surface=\"glass\"` sits over imagery; `variant=\"sidebar\"` is for notices inside the sidebar.",
-      "avoid": "Transient confirmations (use a toast) and status labels (use Badge).",
+      "avoid": "Transient confirmations (use a toast) and status labels (use Badge). Optional features not set up use muted text and one Set up action; follow [Feedback and interaction states](patterns.md#feedback-and-interaction-states).",
       "related": ["toast", "badge", "empty"]
     },
     {
@@ -558,7 +558,7 @@
       },
       "states": [],
       "keyboard": "Not interactive itself; EmptyContent holds focusable actions.",
-      "use": "Explaining why a region has no content and offering the relevant next action. `size=\"compact\"` fits panels and popovers; `hero` is a first-run page.",
+      "use": "Explaining why a region has no content and offering the relevant next action. `size=\"compact\"` fits panels and popovers; `hero` is a first-run page. Optional features not set up stay neutral, with one Set up action and no Needs attention contribution; follow [Feedback and interaction states](patterns.md#feedback-and-interaction-states).",
       "avoid": "Errors and unavailable capabilities that are not simply absence (use Alert).",
       "related": ["alert", "skeleton"]
     },
@@ -1660,7 +1660,7 @@
       "states": ["highlighted", "unavailable", "overridden"],
       "keyboard": "Each row's control keeps its own keyboard behaviour; reset buttons and help are focusable.",
       "use": "Every settings page: SettingsPageContainer, SettingsSection groups and SettingsRow with title, help, description, status and a trailing control.",
-      "avoid": "Cards per setting or bespoke row layouts.",
+      "avoid": "Cards per setting or bespoke row layouts. SettingsWarning is for enabled features with missing requirements or failed checks, never optional features not set up; follow [Feedback and interaction states](patterns.md#feedback-and-interaction-states).",
       "related": ["settings-sidebar-nav", "settings-route", "switch"]
     },
     {

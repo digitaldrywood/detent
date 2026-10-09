@@ -376,7 +376,7 @@ A persistent inline message in the place the user must act: a warning above a fo
 - Variants: `variant`: `default`, `info`, `success`, `warning`, `error`, `sidebar`; `controlAlignment`: `center`, `first-line`; `surface`: `default`, `glass`.
 - States: none of its own.
 - Keyboard: Not interactive itself; AlertAction holds focusable actions.
-- Avoid: Transient confirmations (use a toast) and status labels (use Badge).
+- Avoid: Transient confirmations (use a toast) and status labels (use Badge). Optional features not set up use muted text and one Set up action; follow [Feedback and interaction states](patterns.md#feedback-and-interaction-states).
 - Related: [Toast](#toast), [Badge](#badge), [Empty state](#empty-state).
 
 ### Badge
@@ -433,7 +433,7 @@ A placeholder with the shape of content that is loading, using the shared steppe
 
 ### Empty state
 
-Explaining why a region has no content and offering the relevant next action. `size="compact"` fits panels and popovers; `hero` is a first-run page.
+Explaining why a region has no content and offering the relevant next action. `size="compact"` fits panels and popovers; `hero` is a first-run page. Optional features not set up stay neutral, with one Set up action and no Needs attention contribution; follow [Feedback and interaction states](patterns.md#feedback-and-interaction-states).
 
 - Kind: Primitive; status: available; id: `empty`.
 - Import: `import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyContent, EmptyMedia } from "~/components/ui/empty";`
@@ -1378,7 +1378,7 @@ Every settings page: SettingsPageContainer, SettingsSection groups and SettingsR
 - Variants: none.
 - States: highlighted, unavailable, overridden.
 - Keyboard: Each row's control keeps its own keyboard behaviour; reset buttons and help are focusable.
-- Avoid: Cards per setting or bespoke row layouts.
+- Avoid: Cards per setting or bespoke row layouts. SettingsWarning is for enabled features with missing requirements or failed checks, never optional features not set up; follow [Feedback and interaction states](patterns.md#feedback-and-interaction-states).
 - Related: [Settings sidebar nav](#settings-sidebar-nav), [Settings pages](#settings-pages), [Switch](#switch).
 
 ### Settings sidebar nav
