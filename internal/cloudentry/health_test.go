@@ -24,6 +24,7 @@ func TestTenantServingSupervision(t *testing.T) {
 	}{
 		{name: "migrating longer than the serving window", unavailableFor: 2 * time.Minute, wait: 3 * time.Minute},
 		{name: "never serves within the startup grace", unavailableFor: time.Hour, wait: tenantStartupGrace + 10*time.Second, wantRestart: true},
+		{name: "health request stalls during startup", unavailableFor: time.Hour, wait: tenantStartupGrace + 10*time.Second, stalled: true, wantRestart: true},
 		{name: "listener lost after serving", healthyFor: time.Minute, unavailableFor: time.Minute, wantRestart: true},
 		{name: "health request stalls after serving", healthyFor: time.Minute, unavailableFor: time.Minute, stalled: true, wantRestart: true},
 		{name: "transient failure recovers", unavailableFor: 20 * time.Second},

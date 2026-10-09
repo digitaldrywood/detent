@@ -227,6 +227,9 @@ func (s *Service) recordFailure(ctx context.Context, organization Organization, 
 	case attempts >= s.config.Allocation.RetryLimit:
 		state, code, next = "failed", step+"_failed", ""
 	}
+	if state == "failed" && step == "tenant_start" {
+		cause = errors.Join(cause, s.config.Allocation.Launcher.Stop(organization.ID))
+	}
 	detail := failureDetail(cause)
 	s.config.Logger.Warn("organization provisioning step failed", "organization", organization.ID, "step", step, "attempt", attempts, "retry_limit", s.config.Allocation.RetryLimit, "state", state, "detail", detail)
 	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = ?, attempts = ?, next_attempt_at = ?, error_code = ?, error_detail = ?, updated_at = ? WHERE id = ?",
@@ -294,14 +297,11 @@ func (s *Service) runStep(ctx context.Context, organization *Organization, step 
 				return s.refreshGitHubRoutes(ctx, *organization)
 			}
 			if failure := allocation.Launcher.Failure(organization.ID); failure != nil {
-				return errors.Join(terminalError{code: "tenant_start_failed", detail: failure.Error()}, allocation.Launcher.Stop(organization.ID))
+				return terminalError{code: "tenant_start_failed", detail: failure.Error()}
 			}
 			if time.Now().After(deadline) {
-				slow := detailedError{detail: fmt.Sprintf("the tenant Hub did not become healthy within %s", s.config.tenantStartTimeout), cause: err}
-				if organization.State == "ready" {
-					return slow
-				}
-				return errors.Join(slow, allocation.Launcher.Stop(organization.ID))
+				detail := fmt.Sprintf("the tenant Hub did not become healthy within %s", s.config.tenantStartTimeout)
+				return detailedError{detail: detail, cause: err}
 			}
 			select {
 			case <-ctx.Done():

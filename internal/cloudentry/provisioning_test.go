@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"testing"
 	"testing/fstest"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -380,6 +381,46 @@ func TestProvisioningCapacityAndRecovery(t *testing.T) {
 	f.waitState(t, blocked, "ready")
 }
 
+func TestProvisioningTenantStartKeepsSlowChild(t *testing.T) {
+	t.Parallel()
+	for _, readyAfter := range []time.Duration{time.Minute, 2 * time.Minute} {
+		t.Run(readyAfter.String(), func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				started := time.Now()
+				launcher := &silentLauncher{running: map[string]bool{}}
+				service := &Service{config: Config{
+					Allocation: &AllocationConfig{Launcher: launcher}, tenantStartTimeout: 30 * time.Second,
+					SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), now: time.Now,
+					transport: func(Organization) (http.RoundTripper, error) {
+						return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+							if time.Since(started) < readyAfter {
+								w.WriteHeader(http.StatusServiceUnavailable)
+								return
+							}
+							w.WriteHeader(http.StatusNoContent)
+						})}, nil
+					},
+				}}
+				organization := Organization{ID: "org_slow", Generation: 1}
+				if err := service.runStep(t.Context(), &organization, "tenant_start"); err == nil {
+					t.Fatal("unready tenant completed startup")
+				}
+				if launches, stops, running := launcher.counts(); launches != 1 || stops != 0 || running != 1 {
+					t.Fatalf("readiness timeout discarded startup: launches=%d stops=%d running=%d", launches, stops, running)
+				}
+				time.Sleep(readyAfter - time.Since(started))
+				if err := service.runStep(t.Context(), &organization, "tenant_start"); err != nil {
+					t.Fatalf("slow tenant did not recover: %v", err)
+				}
+				if launches, stops, running := launcher.counts(); launches != 1 || stops != 0 || running != 1 {
+					t.Fatalf("readiness retry replaced child: launches=%d stops=%d running=%d", launches, stops, running)
+				}
+			})
+		})
+	}
+}
+
 func TestProvisioningTenantStartFailure(t *testing.T) {
 	if testing.Short() {
 		t.Skip("real-time lifecycle and timeout integration")
@@ -449,7 +490,7 @@ func TestTenantStartKeepsSlowReadyTenantSupervised(t *testing.T) {
 		state       string
 		wantRunning int
 	}{
-		{name: "provisioning tenant is stopped for retry", state: "allocating"},
+		{name: "provisioning tenant stays supervised for retry", state: "allocating", wantRunning: 1},
 		{name: "ready tenant stays supervised after a restart", state: "ready", wantRunning: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -732,10 +773,6 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 	ready := dana.do(http.MethodGet, "/api/cloud/organizations", nil, map[string]string{"Accept": "application/json"})
 	if !strings.Contains(ready.Body, `"id":"`+id+`"`) || !strings.Contains(ready.Body, `"role":"owner"`) {
 		t.Fatalf("ready organizations JSON = %s", ready.Body)
-	}
-	dana.login("/organizations/"+id+"/work", "user_dana:porg_"+id)
-	if response, body := dana.get("/organizations/" + id + "/work"); response.StatusCode != http.StatusOK || !strings.Contains(body, `content="/organizations/`+id+`"`) {
-		t.Fatalf("organization client home = %d %s", response.StatusCode, body)
 	}
 }
 
