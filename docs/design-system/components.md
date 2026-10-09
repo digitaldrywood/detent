@@ -4,7 +4,7 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 Each contract states what a component is for, how to import it, the variants its source defines, the interaction states it owns, its keyboard behaviour and what to use instead. The source file is the owner of the component's appearance and behaviour; features compose it and do not restyle it. A proposed entry names a component Detent does not have yet; listing one does not authorize building it.
 
-Catalog totals: 136 entries; by kind: 51 primitive, 79 composition, 6 surface; by status: 136 available, 0 proposed, 0 exception.
+Catalog totals: 137 entries; by kind: 52 primitive, 79 composition, 6 surface; by status: 137 available, 0 proposed, 0 exception.
 
 ## Actions
 
@@ -365,6 +365,19 @@ A rich preview of a linked entity, such as a pull request link preview.
 - Related: [Tooltip](#tooltip), [Popover](#popover).
 
 ## Feedback
+
+### Usage meter
+
+Plan allowance consumption with human units, remaining capacity and visible warning text at 80% and limit-reached text at 100%. Supports byte sizes, counts, record counts, duration limits, unlimited and excluded allowances.
+
+- Kind: Primitive; status: available; id: `usage-meter`.
+- Import: `import { UsageMeter, formatUsageValue, usageMeterState, UsageUnit } from "~/components/ui/usage-meter";`
+- Source: [src/components/ui/usage-meter.tsx](../../web/conversation/src/components/ui/usage-meter.tsx).
+- Variants: none.
+- States: normal, warning, limit reached, not included, limit only, unlimited.
+- Keyboard: Static meter with an accessible label, formatted value and description; not focusable.
+- Avoid: Indeterminate loading (use Spinner) and actions (use Button).
+- Related: [Alert](#alert), [Badge](#badge).
 
 ### Alert
 

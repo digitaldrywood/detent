@@ -11,6 +11,9 @@ import {
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
+import { UsageMeter } from "../../components/ui/usage-meter.tsx";
+import { Badge } from "../../components/ui/badge.tsx";
+import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert.tsx";
 import { Kbd } from "../../components/ui/kbd.tsx";
 import {
   Select,
@@ -25,7 +28,7 @@ import {
   WorkspaceBreadcrumbSeparator,
 } from "../../components/WorkspaceBreadcrumb.tsx";
 import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
-import type { BillingReport, PlanReport, ProjectsResponse } from "../../contracts/account.ts";
+import type { BillingReport, BillingUsageReport, PlanReport, ProjectsResponse } from "../../contracts/account.ts";
 import { ControlError } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { PLATFORM } from "../entry/api.ts";
@@ -46,6 +49,10 @@ import {
   type SettingsSectionId,
 } from "./sections.tsx";
 import { CreditSettings } from "./CreditSettings.tsx";
+import { approachingPlanLimits, nextFittingPlan, planUsageRows } from "./planUsage.ts";
+import { formatShortTimestamp } from "../../timestampFormat.ts";
+import { formatCount, formatTokens, formatUsd } from "../usage/usageFormat.ts";
+import { useClientSettings } from "../adapters/settings.ts";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout.tsx";
 import { ProjectRankSettings } from "./ProjectRankSettings.tsx";
 import { SpritesCard } from "../account/SpritesCard.tsx";
@@ -326,40 +333,181 @@ export function planPriceText(plan: PlanReport): string {
 
 export function PlanSettings(): React.ReactElement {
   const api = useAccountApi();
+  const bootstrap = useAccountBootstrap();
   const plan = useResource<PlanReport>(() => api.plan(), [api]);
+  const billing = useResource<BillingUsageReport>(() => api.billingUsage(), [api]);
+  const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
+  const report = plan.error === null ? plan.value : undefined;
+  const usage = billing.error === null ? billing.value : undefined;
+  const rows = report === undefined ? [] : planUsageRows(report);
+  const warnings = report === undefined ? [] : approachingPlanLimits(report);
+  const planName = report?.name || report?.effective_base.id || "current plan";
+  const reset = formatShortTimestamp(report?.window_ends_at ?? "", timestampFormat);
+  const artifactRetention = report?.allowances.artifact_retention_seconds;
+  const comparisons = usage?.comparison_plans.toSorted((a, b) => (a.monthly_usd_cents ?? Infinity) - (b.monthly_usd_cents ?? Infinity)) ?? [];
+  const nextPlan = report === undefined ? undefined : nextFittingPlan(report, comparisons);
+  const canBill = bootstrap?.actor.role === "owner" && bootstrap.support == null;
+  const canCheckout = canBill && usage?.can_checkout === true;
+  const canManage = canBill && usage?.can_manage === true;
+  const canBuy = canBill && usage?.can_buy_credits === true;
+  const purchaseKeys = React.useRef(new Map<string, string>());
+  const checkout = useMutation(async (price: string) => {
+    if (!canCheckout) return;
+    let key = purchaseKeys.current.get(price);
+    if (key === undefined) {
+      key = newKey();
+      purchaseKeys.current.set(price, key);
+    }
+    const result = await api.checkout({ price, key });
+    globalThis.location?.assign(result.url);
+  });
+  const portal = useMutation(async () => {
+    if (!canManage) return;
+    const result = await api.portal({ key: newKey() });
+    globalThis.location?.assign(result.url);
+  });
+  const credits = usage?.ai_credits;
+  const [creditPrice, setCreditPrice] = React.useState("");
+  const selectedCreditPrice = credits?.packs.some((pack) => pack.price_id === creditPrice) ? creditPrice : credits?.packs[0]?.price_id ?? "";
+  const buy = useMutation(async () => {
+    if (!canBuy || selectedCreditPrice === "") return;
+    let key = purchaseKeys.current.get(selectedCreditPrice);
+    if (key === undefined) {
+      key = newKey();
+      purchaseKeys.current.set(selectedCreditPrice, key);
+    }
+    const result = await api.creditCheckout({ price: selectedCreditPrice, key });
+    globalThis.location?.assign(result.url);
+  });
+  const autoPack = credits?.packs.find((pack) => pack.price_id === credits.price_id);
+  const comparePlans = () => {
+    const target = document.getElementById("settings-plan-comparison");
+    target?.scrollIntoView({ block: "start" });
+    target?.focus({ preventScroll: true });
+  };
+  const renewal = usage?.renews_at;
+  const renewalDate = renewal && !renewal.startsWith("0001-") ? new Date(renewal).toLocaleDateString() : null;
+  const period = usage?.chat_usage.range;
 
   return (
     <SettingsPageContainer>
-      <SettingsSection
-        id="settings-plan"
-        title="Plan"
-        icon={<ReceiptTextIcon className="size-3.5" />}
-      >
+      {warnings.length > 0 ? (
+        <Alert variant="warning">
+          <AlertTitle>Approaching your {planName} limits</AlertTitle>
+          <AlertDescription>
+            <p>{warnings.map((row) => row.label).join(", ")} {warnings.length === 1 ? "is" : "are"} approaching or at the limit.
+              {warnings.some((row) => row.name === "unarchived_issues") ? " Archive finished issues to free capacity." : ""}
+              {nextPlan === undefined
+                ? usage === undefined ? " Compare plans when billing usage is available." : " No larger listed plan provides more headroom for all current usage."
+                : ` Move to ${nextPlan.name ?? nextPlan.id} for ${nextPlan.allowances.projects === undefined ? "unlimited" : formatCount(nextPlan.allowances.projects)} projects and ${nextPlan.allowances.unarchived_issues === undefined ? "unlimited" : formatCount(nextPlan.allowances.unarchived_issues)} open issues.`}
+            </p>
+            <div><Button size="sm" onClick={comparePlans}>Compare plans</Button></div>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      <SettingsSection id="settings-plan" title="Plan" icon={<ReceiptTextIcon className="size-3.5" />}>
         {plan.loading && plan.value === undefined ? (
           <SettingsRow title="Loading the plan" />
         ) : plan.error !== null ? (
+          <SettingsRow title="Plan is not available" description={plan.error.isAccessError ? "Plan and usage need owner or admin access." : plan.error.message} />
+        ) : report === undefined ? null : (
           <SettingsRow
-            title="Plan is not available"
-            description={
-              plan.error.isAccessError
-                ? "Plan and usage need owner or admin access."
-                : plan.error.message
-            }
+            title={planName}
+            description="Hosting and model-provider charges are separate."
+            status={<>{planPriceText(report)}{renewalDate === null ? null : ` · Renews ${renewalDate}`}</>}
+            control={canBill ? (
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" disabled={!canManage || portal.pending} onClick={() => void portal.call()}>{portal.pending ? "Opening…" : "Manage billing"}</Button>
+                <Button size="sm" onClick={comparePlans}>Upgrade</Button>
+              </div>
+            ) : null}
           />
-        ) : plan.value === undefined ? null : (
-          <>
-            <SettingsRow
-              title={plan.value.name ?? `${plan.value.effective_base.id} · version ${plan.value.effective_base.version}`}
-              description={
-                plan.value.source === "subscription" ? "Subscription-derived plan" : "Base plan"
-              }
-              status={planPriceText(plan.value)}
-            />
-            <SettingsRow title="Capacity" description="Archived issues remain available. Hosting and model-provider charges are separate.">
-              <AllowanceList rows={allowanceRows(plan.value)} />
-            </SettingsRow>
-          </>
         )}
+      </SettingsSection>
+      {report === undefined ? null : (
+        <SettingsSection id="settings-plan-capacity" title="Capacity" hideTitle>
+          {["Capacity", "Storage", "This hour"].map((group) => (
+            <SettingsRow key={group} title={group} description={group === "Capacity" ? "Counts across the whole organization." : group === "This hour" ? `Resets ${reset || "when the current window ends"}` : undefined}>
+              <div className="grid grid-cols-1 gap-x-8 gap-y-6 py-3 sm:grid-cols-2">
+                {rows.filter((row) => row.group === group).map((row) => (
+                  <UsageMeter
+                    key={row.name}
+                    label={row.label}
+                    used={row.used}
+                    limit={row.limit}
+                    unit={row.unit}
+                    limitOnly={row.limitOnly}
+                    notIncludedOn={row.limit === 0 && row.used === 0 ? planName : undefined}
+                    description={row.name === "artifact_retained_bytes" && artifactRetention !== undefined
+                      ? `${row.description ?? ""} Kept for ${formatCount(artifactRetention / 86400)} days.`
+                      : group === "This hour" ? `Resets ${reset || "when the current window ends"}` : row.description}
+                  />
+                ))}
+                {group === "Storage" && !rows.some((row) => row.name === "artifact_retained_bytes") ? (
+                  <UsageMeter label="Artifact storage" used={report.usage.artifact_retained_bytes ?? 0} limit={0} unit="bytes"
+                    unlimited={report.features?.includes("hosted_artifacts") === true}
+                    notIncludedOn={report.features?.includes("hosted_artifacts") === true ? undefined : planName}
+                    description={artifactRetention === undefined ? "Build outputs and uploads." : `Build outputs and uploads · kept for ${formatCount(artifactRetention / 86400)} days.`} />
+                ) : null}
+              </div>
+            </SettingsRow>
+          ))}
+        </SettingsSection>
+      )}
+      <SettingsSection id="settings-ai-usage" title="AI credits" headerAction={canBuy ? (
+        <Button size="xs" variant="outline" disabled={buy.pending || selectedCreditPrice === ""} onClick={() => void buy.call()}>{buy.pending ? "Opening…" : "Buy credits"}</Button>
+      ) : null}>
+        {billing.loading && billing.value === undefined ? <SettingsRow title="Loading AI credit usage" />
+          : billing.error !== null ? <SettingsRow title="AI usage is not available" description={billing.error.message} control={<Button size="sm" variant="outline" onClick={() => void billing.refresh()}>Try again</Button>} />
+          : usage === undefined ? null : (
+            <>
+              <SettingsRow title="Current period" description={`${period?.from.slice(0, 10)} – ${period?.to.slice(0, 10)}`} />
+              <div className="grid grid-cols-1 sm:grid-cols-3">
+                <SettingsRow title="Balance" status={credits === undefined ? "Credits are not enabled" : formatUsd(credits.balance_micros / 1000000)}
+                  description={credits === undefined ? undefined : credits.auto_enabled
+                    ? `Auto top-up: ${autoPack === undefined ? "selected pack" : formatUsd(autoPack.usd_cents / 100)} below ${formatUsd(credits.threshold_cents / 100)}`
+                    : "Auto top-up: off"} />
+                <SettingsRow title="Spent this period" status={formatUsd(usage.charged_ai_micros / 1000000)} description="Charged AI credits, including the model cost multiplier." />
+                <SettingsRow title="Tokens this period" status={formatTokens(usage.chat_usage.tokens)} description={`${formatTokens(Math.max(0, usage.chat_usage.input - usage.chat_usage.cached_input))} input · ${formatTokens(usage.chat_usage.cached_input)} cached · ${formatTokens(usage.chat_usage.output)} output`} />
+              </div>
+              {canBuy && (credits?.packs.length ?? 0) > 1 ? (
+                <SettingsRow title="Credit pack" control={
+                  <Select value={selectedCreditPrice} onValueChange={(value) => setCreditPrice(String(value))}>
+                    <SelectTrigger size="sm" aria-label="Credit pack"><SelectValue>{credits?.packs.find((pack) => pack.price_id === selectedCreditPrice)?.label}</SelectValue></SelectTrigger>
+                    <SelectPopup>{credits?.packs.map((pack) => <SelectItem key={pack.price_id} value={pack.price_id}>{pack.label} · {formatUsd(pack.usd_cents / 100)}</SelectItem>)}</SelectPopup>
+                  </Select>
+                } />
+              ) : canBuy ? <SettingsRow title="Credit pack" description={`${credits?.packs[0]?.label} · ${formatUsd((credits?.packs[0]?.usd_cents ?? 0) / 100)}`} /> : null}
+              {credits?.failure ? <SettingsRow title="Auto top-up needs attention" description={credits.failure} /> : null}
+              {credits?.in_flight ? <SettingsRow title="Automatic top-up pending" description="Your balance changes after Stripe confirms payment." /> : null}
+              {usage.chat_usage.unpriced_turns > 0 ? <SettingsRow title="Pricing pending" description={`${formatCount(usage.chat_usage.unpriced_turns)} turns are awaiting pricing; charged spend updates once pricing is recorded.`} /> : null}
+            </>
+          )}
+      </SettingsSection>
+      <SettingsSection id="settings-plan-comparison" title="Plans" headerAction={<span className="text-xs text-muted-foreground">Per organization per month</span>}>
+        {billing.loading && billing.value === undefined ? <SettingsRow title="Loading plans" />
+          : billing.error !== null ? <SettingsRow title="Plans are not available" description={billing.error.message} />
+          : comparisons.length === 0 ? <SettingsRow title="No comparison plans are available" /> : (
+            <div className="grid grid-cols-1 sm:grid-cols-3">
+              {comparisons.map((candidate) => {
+                const current = candidate.id === report?.effective_base.id;
+                const label = candidate.name ?? candidate.id;
+                return (
+                  <SettingsRow key={`${candidate.id}-${candidate.version}`} title={<>{label} {current ? <Badge variant="outline" size="sm">Current</Badge> : null}</>}>
+                    <div className="space-y-3 pb-3 text-sm">
+                      <p>{candidate.monthly_usd_cents == null ? "Custom price" : formatUsd(candidate.monthly_usd_cents / 100)}<br />
+                        {candidate.allowances.projects === undefined ? "Unlimited projects" : `${formatCount(candidate.allowances.projects)} projects`}<br />
+                        {candidate.allowances.unarchived_issues === undefined ? "Unlimited open issues" : `${formatCount(candidate.allowances.unarchived_issues)} open issues`}</p>
+                      {!current && canBill ? <Button size="sm" variant={candidate.id === nextPlan?.id ? "default" : "outline"} disabled={!canCheckout || usage?.checkout_pending === true || candidate.price_id === "" || checkout.pending} onClick={() => void checkout.call(candidate.price_id)}>{checkout.pending ? "Opening…" : `Move to ${label}`}</Button> : null}
+                    </div>
+                  </SettingsRow>
+                );
+              })}
+            </div>
+          )}
+        {canBill && usage?.checkout_pending === true ? <SettingsRow title="Checkout in progress" description="Finish the existing checkout, or wait for it to expire before choosing another plan." />
+          : canBill && usage?.can_checkout === false && usage.can_manage ? <SettingsRow title="Subscription changes" description="Manage your existing subscription through Manage billing." /> : null}
+        {checkout.error || portal.error || buy.error ? <SettingsRow title="Billing action failed"><div className="pb-3"><ControlError message={checkout.error?.message ?? portal.error?.message ?? buy.error?.message ?? null} /></div></SettingsRow> : null}
       </SettingsSection>
     </SettingsPageContainer>
   );

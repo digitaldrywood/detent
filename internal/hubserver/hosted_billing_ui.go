@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,14 +18,15 @@ import (
 )
 
 type hostedBillingReport struct {
-	AICredits      *aiCreditView                  `json:"ai_credits,omitempty"`
-	ChatUsage      chatUsageSummary               `json:"chat_usage"`
-	OrganizationID string                         `json:"organization_id"`
-	State          hostedBillingState             `json:"state"`
-	Entitlement    HostedEntitlement              `json:"entitlement"`
-	ReconciledAt   string                         `json:"reconciled_at"`
-	PendingEvents  int64                          `json:"pending_events"`
-	Audit          []templates.HostedBillingAudit `json:"recent_audit"`
+	ChargedAIMicros int64                          `json:"charged_ai_micros"`
+	AICredits       *aiCreditView                  `json:"ai_credits,omitempty"`
+	ChatUsage       chatUsageSummary               `json:"chat_usage"`
+	OrganizationID  string                         `json:"organization_id"`
+	State           hostedBillingState             `json:"state"`
+	Entitlement     HostedEntitlement              `json:"entitlement"`
+	ReconciledAt    string                         `json:"reconciled_at"`
+	PendingEvents   int64                          `json:"pending_events"`
+	Audit           []templates.HostedBillingAudit `json:"recent_audit"`
 }
 
 func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport, error) {
@@ -45,6 +47,11 @@ func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport,
 	if s.database.aiCreditMode != "" {
 		report.AICredits, err = s.readAICredits(ctx)
 		if err != nil {
+			return report, err
+		}
+		window := report.ChatUsage.Range
+		if err := s.database.db.QueryRowContext(ctx, `SELECT coalesce(-sum(amount_micros),0) FROM ai_credit_transactions
+ WHERE organization_id=? AND mode=? AND kind='usage' AND recorded_at>=? AND recorded_at<?`, s.database.hostedOrganization, s.database.aiCreditMode, window.From.UnixMicro(), window.To.UnixMicro()).Scan(&report.ChargedAIMicros); err != nil {
 			return report, err
 		}
 	}
@@ -203,13 +210,35 @@ type hostedBillingPriceView struct {
 
 type hostedBillingView struct {
 	hostedBillingReport
+	ComparisonPlans []hostedComparisonPlan   `json:"comparison_plans"`
 	Prices          []hostedBillingPriceView `json:"prices"`
 	CanCheckout     bool                     `json:"can_checkout"`
 	CanManage       bool                     `json:"can_manage"`
 	CheckoutPending bool                     `json:"checkout_pending"`
 }
 
+type hostedComparisonPlan struct {
+	HostedPlan
+	PriceID string `json:"price_id"`
+}
+
+type hostedBillingUsageView struct {
+	OrganizationID  string                 `json:"organization_id"`
+	RenewsAt        time.Time              `json:"renews_at"`
+	ChatUsage       chatUsageSummary       `json:"chat_usage"`
+	ChargedAIMicros int64                  `json:"charged_ai_micros"`
+	AICredits       *aiCreditView          `json:"ai_credits,omitempty"`
+	ComparisonPlans []hostedComparisonPlan `json:"comparison_plans"`
+	CanCheckout     bool                   `json:"can_checkout"`
+	CanManage       bool                   `json:"can_manage"`
+	CanBuyCredits   bool                   `json:"can_buy_credits"`
+	CheckoutPending bool                   `json:"checkout_pending"`
+}
+
 func (s *Service) hostedBillingJSON(c echo.Context) error {
+	if c.QueryParam("view") == "usage" {
+		return s.hostedBillingUsageJSON(c)
+	}
 	credential, err := s.hostedBillingOwner(c.Request().Context(), c)
 	if err != nil {
 		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Billing requires an organization owner without support impersonation"})
@@ -224,6 +253,35 @@ func (s *Service) hostedBillingJSON(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, view)
+}
+
+func (s *Service) hostedBillingUsageJSON(c echo.Context) error {
+	credential, err := s.hostedAdministrator(c)
+	if err != nil {
+		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Plan and usage require owner or admin access"})
+	}
+	view, err := s.readBillingView(c.Request().Context())
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "billing_unavailable", Message: "Billing usage is temporarily unavailable"})
+	}
+	canBill := credential.HostedRole == "owner" && credential.Hosted.SupportActor == ""
+	if view.AICredits != nil {
+		view.AICredits.History = []aiCreditTransaction{}
+		view.AICredits.CanAutoFund = false
+	}
+	renewsAt := time.Time{}
+	subscription := view.State.Snapshot
+	if (subscription.Status == "active" || subscription.Status == "trialing") && !subscription.CancelAtPeriodEnd && subscription.CancelAt.IsZero() {
+		renewsAt = subscription.PeriodEnd
+	}
+	return c.JSON(http.StatusOK, hostedBillingUsageView{
+		OrganizationID: view.OrganizationID, RenewsAt: renewsAt,
+		ChatUsage: view.ChatUsage, ChargedAIMicros: view.ChargedAIMicros, AICredits: view.AICredits,
+		ComparisonPlans: view.ComparisonPlans, CanCheckout: canBill && view.CanCheckout,
+		CanManage:       canBill && view.CanManage,
+		CanBuyCredits:   canBill && s.config.Hosted.Billing != nil && !s.config.Hosted.Billing.CheckoutDisabled && view.AICredits != nil && len(view.AICredits.Packs) > 0,
+		CheckoutPending: view.CheckoutPending,
+	})
 }
 
 func (s *Service) hostedPriceLabel(ctx context.Context, price HostedBillingPrice) string {
@@ -241,6 +299,28 @@ func (s *Service) readBillingView(ctx context.Context) (hostedBillingView, error
 	}
 
 	view := hostedBillingView{hostedBillingReport: report, Prices: []hostedBillingPriceView{}}
+	view.ComparisonPlans = []hostedComparisonPlan{}
+	if s.database.hostedPlans != nil {
+		for _, configured := range s.database.hostedPlans.Plans {
+			if !slices.Contains([]string{"starter", "growth", "scale"}, configured.ID) {
+				continue
+			}
+			plan, err := readHostedPlan(ctx, s.database.db, configured.PlanReference)
+			if err != nil {
+				return hostedBillingView{}, err
+			}
+			comparison := hostedComparisonPlan{HostedPlan: plan}
+			if cfg := s.config.Hosted.Billing; cfg != nil {
+				for _, price := range cfg.Prices {
+					if price.Plan == plan.PlanReference {
+						comparison.PriceID = price.PriceID
+						break
+					}
+				}
+			}
+			view.ComparisonPlans = append(view.ComparisonPlans, comparison)
+		}
+	}
 	if cfg := s.config.Hosted.Billing; cfg != nil {
 		for _, price := range cfg.Prices {
 			view.Prices = append(view.Prices, hostedBillingPriceView{ID: price.PriceID, Label: s.hostedPriceLabel(ctx, price)})

@@ -49,6 +49,7 @@ export const REGISTRY: Readonly<Record<string, GalleryDoc>> = {
   tooltip: overlays.tooltip,
   "preview-card": overlays.previewCard,
   // Feedback
+  "usage-meter": feedback.usageMeter,
   alert: feedback.alert,
   badge: feedback.badge,
   toast: feedback.toast,
