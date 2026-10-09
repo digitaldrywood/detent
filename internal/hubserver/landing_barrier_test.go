@@ -84,17 +84,12 @@ func TestRollingLandingBarrier(t *testing.T) {
 			second := land("second", secondItem)
 			red := &gate.CommandResult{Command: "make verify", HeadSHA: checked, TreeSHA: strings.Repeat("f", 40), ExitCode: 7, Output: "integration failure sentinel"}
 			barrier = mutate("red", "finish", barrier.ID, red, "")
-			if !barrier.Red || barrier.Running || barrier.Repair == "" || len(barrier.Changes) != 2 {
+			if !barrier.Red || barrier.Running || barrier.Repair != "" || len(barrier.Changes) != 2 || barrier.Result.Output != red.Output {
 				t.Fatalf("red barrier=%+v", barrier)
 			}
-			credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
-			if err != nil {
-				t.Fatal(err)
-			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
-			repair, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(barrier.Repair))
-			if err != nil || repair.State != "Todo" || repair.Priority == nil || *repair.Priority != 1 || !strings.Contains(repair.Body, first.ID) || !strings.Contains(repair.Body, second.ID) || !strings.Contains(repair.Body, red.Output) {
-				t.Fatalf("repair=%+v error=%v", repair, err)
+			var filed int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE title LIKE '%landing barrier%'").Scan(&filed); err != nil || filed != 0 {
+				t.Fatalf("red barrier filed %d issues, err=%v", filed, err)
 			}
 			covered, err := withLandingBarrier(t.Context(), f.service.database.db, tracker.NativeLandingReceipt{Landed: true, VersionID: first.ID})
 			if err != nil || covered.Barrier == nil || covered.Barrier.HeadSHA != red.HeadSHA || covered.Barrier.ExitCode != 7 {
@@ -108,18 +103,13 @@ func TestRollingLandingBarrier(t *testing.T) {
 			if !next.Running || next.ID == barrier.ID || len(next.Changes) != 2 {
 				t.Fatalf("next=%+v", next)
 			}
-			repeated := mutate("red-again", "finish", next.ID, red, "")
-			if repeated.Repair != barrier.Repair {
-				t.Fatalf("duplicate repair=%+v", repeated)
-			}
-			var occurrences int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", barrier.Repair).Scan(&occurrences); err != nil || occurrences != 1 {
-				t.Fatalf("occurrences=%d error=%v", occurrences, err)
+			if repeated := mutate("red-again", "finish", next.ID, red, ""); !repeated.Red || repeated.Repair != "" {
+				t.Fatalf("repeated red=%+v", repeated)
 			}
 			if idle := mutate("idle-red", "start", "", nil, checked); idle.Running {
 				t.Fatal("barrier reran an unchanged head")
 			}
-			land("repair", repair)
+			land("repair", f.create(t, "repair"))
 			next = mutate("repair-start", "start", "", nil, landed)
 			green := *red
 			green.ExitCode, green.Output = 0, "passed"
@@ -141,16 +131,8 @@ func TestRollingLandingBarrier(t *testing.T) {
 			}
 			land("after-green", f.create(t, "after-green"))
 			next = mutate("new-start", "start", "", nil, landed)
-			newRed := mutate("new-red", "finish", next.ID, red, "")
-			if newRed.Repair == "" || newRed.Repair == repair.WorkItemID {
-				t.Fatalf("new red reused terminal repair: %+v", newRed)
-			}
-			if report, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(newRed.Repair)); err != nil || !strings.Contains(report.Body, outOfBand+".."+checked) {
-				t.Fatalf("red report omits commits since the last green head: %+v %v", report, err)
-			}
-			historical, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(repair.WorkItemID))
-			if err != nil || !historical.Terminal {
-				t.Fatalf("terminal repair changed: %+v %v", historical, err)
+			if newRed := mutate("new-red", "finish", next.ID, red, ""); !newRed.Red || newRed.GreenHead != outOfBand || newRed.Repair != "" {
+				t.Fatalf("new red=%+v", newRed)
 			}
 
 		})

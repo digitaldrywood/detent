@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -139,27 +137,11 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 						return nil, err
 					}
 					barrier.Changes = changes
-					body := barrierReportBody(barrier)
-					origin := issueorigin.Origin{Kind: "doctor", Instance: "landing-barrier", Source: barrier.ID, Fingerprint: issueorigin.Fingerprint("landing-barrier:" + request.Repository)}
-					issue, err := reportNativeMachineOccurrenceTx(ctx, tx, scope, tracker.CreateIssue{Title: "Repair rolling landing barrier for " + request.Repository, Body: issueorigin.Stamp(body, origin), State: "Todo", Priority: new(1)}, now, true)
-					if err != nil {
-						return nil, err
-					}
-					barrier.Repair = issue.WorkItemID
 				} else {
-					if barrier.Repair != "" {
-						issue, _, err := readNativeIssue(ctx, tx, scope, string(barrier.Repair))
-						if err != nil {
-							return nil, err
-						}
-						if _, err := insertNativeComment(ctx, tx, scope, issue, barrierReportBody(barrier), nil, now); err != nil {
-							return nil, err
-						}
-					}
 					barrier.Green = barrier.Started
 					barrier.GreenHead = request.Result.HeadSHA
-					barrier.Repair = ""
 				}
+				barrier.Repair = ""
 			}
 		default:
 			return nil, nativeInvalid("Barrier action must be start, finish or cancel")
@@ -227,25 +209,6 @@ func coverBarrierReceipts(ctx context.Context, tx *sql.Tx, scope nativeScope, ba
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE native_attempts SET data_json=json_set(data_json, '$.runtime.landing', json((SELECT record_json FROM change_landing_receipts WHERE attempt_id=native_attempts.id))) WHERE id IN (SELECT attempt_id FROM change_landing_receipts WHERE version_id IN (SELECT version_id FROM landing_barrier_receipts WHERE organization_id=? AND repository=? AND sequence>? AND sequence<=?))`, scope.organization, barrier.Repository, barrier.Green, barrier.Started)
 	return err
-}
-
-func barrierReportBody(barrier tracker.LandingBarrier) string {
-	result := barrier.Result
-	var body strings.Builder
-	fmt.Fprintf(&body, "Rolling landing barrier on `%s` at `%s` exited %d.\n\nCommand: `%s`\n\n", barrier.Repository, result.HeadSHA, result.ExitCode, result.Command)
-	if barrier.GreenHead != "" {
-		fmt.Fprintf(&body, "Commits since the last green barrier: `%s..%s`\n\n", barrier.GreenHead, result.HeadSHA)
-	}
-	body.WriteString("Changes landed since the last green barrier:\n")
-	for _, receipt := range barrier.Changes {
-		fmt.Fprintf(&body, "- Change %s version %s: `%s`\n", receipt.ChangeID, receipt.VersionID, receipt.MergeSHA)
-	}
-	output := result.Output
-	if len(output) > 40<<10 {
-		output = output[:40<<10] + "\n[output truncated; full output on barrier receipt]"
-	}
-	fmt.Fprintf(&body, "\n```text\n%s\n```\n\nFix forward; only the repair issue may land while this barrier is red.\n\n```detent-agent\nschema: 1\neffort: high\n```", output)
-	return body.String()
 }
 
 func landingBarrierOwner(scope nativeScope) string {
