@@ -1,6 +1,7 @@
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
+import { Radio, RadioGroup } from "../../components/ui/radio-group.tsx";
 import { Sheet, SheetClose, SheetDescription, SheetFooter, SheetHeader, SheetPopup, SheetTitle } from "../../components/ui/sheet.tsx";
 import type { FleetRunner, RunnerRouting } from "../../contracts/account.ts";
 import { cn } from "../../lib/utils.ts";
@@ -9,6 +10,7 @@ import { RUNNER_UPGRADE_COMMAND } from "../lib/detentUpdates.ts";
 import { AccountError } from "../account/api.ts";
 import { formatLocalTime, formatRelativeTime } from "./format.ts";
 import { parseRunnerWindow, serializeRunnerWindow, type RunnerHours } from "./runnerSchedule.ts";
+import { runnerAccessOptions } from "./runnerAccess.ts";
 
 export interface RunnerProject {
   readonly id: string;
@@ -19,7 +21,6 @@ const control = "w-full min-w-0 rounded-md border border-border bg-background px
 const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const dayRanges = days.flatMap((from) => days.map((until) => `${from}-${until}`));
 const takingWork = [["active", "Active", "Takes new work"], ["draining", "Draining", "Finishes what it has"], ["disabled", "Disabled", "Takes nothing"]] as const;
-const isolation = [["sandbox", "Sandbox", ""], ["native-trusted", "Full host access", "Only for a machine you trust with every allowed project's code"]] as const;
 
 function Section({ title, children }: { readonly title: string; readonly children: React.ReactNode }): React.ReactElement {
   return <section className="space-y-3"><h3 className="text-sm font-medium">{title}</h3>{children}</section>;
@@ -79,11 +80,10 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
   function changeHours(index: number, next: Partial<RunnerHours>): void {
     setHours((current) => current.map((row, i) => i === index ? { ...row, ...next } : row));
   }
-  async function submit(event: React.FormEvent): Promise<void> {
-    event.preventDefault();
+  async function submit(isolationTier = draft.isolation_tier): Promise<void> {
     if (!canEdit || saving || onSave === undefined) return;
     const next: RunnerRouting = {
-      ...draft, tags: addTags(), host_services: draft.host_services.map((value) => value.trim()).filter(Boolean),
+      ...draft, isolation_tier: isolationTier, tags: addTags(), host_services: draft.host_services.map((value) => value.trim()).filter(Boolean),
       availability: { ...draft.availability, windows: scheduled ? hours.map(serializeRunnerWindow) : [], hard_deadline: scheduled ? draft.availability.hard_deadline : "" },
     };
     setSaving(true);
@@ -116,7 +116,7 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
           <SheetDescription>{runner.hostname}, {runner.os} {runner.architecture}{runner.version ? `, Detent ${runner.version}` : ""}</SheetDescription>
           <p className="text-xs text-muted-foreground">Last check-in <time dateTime={runner.last_heartbeat_at}>{formatRelativeTime(runner.last_heartbeat_at, now)}</time></p>
         </SheetHeader>
-        <form className="flex min-h-0 flex-1 flex-col" onSubmit={(event) => void submit(event)}>
+        <form className="flex min-h-0 flex-1 flex-col" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
           <div className="min-h-0 flex-1 space-y-7 overflow-y-auto p-6 text-sm">
             {runner.claim_refusal_reason ? <div role="alert" data-testid="host-update" className="space-y-2 rounded-lg border border-warning/30 bg-warning/8 p-3">
               <p>{runner.claim_refusal_reason}</p><PathValue value={RUNNER_UPGRADE_COMMAND} />
@@ -125,6 +125,9 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
             {runner.problems?.map((problem, index) => (
               <div key={`${problem.code}-${index}`} role="alert" className="space-y-2 rounded-lg border border-warning/30 bg-warning/8 p-3">
                 <p className="font-medium">{problem.message}</p><p>{problem.fix_hint}</p>
+                {problem.code === "tier_unavailable" && canEdit ? runnerAccessOptions.filter(({ tier }) => tier !== savedRouting.isolation_tier && Object.keys(runner.backend_isolation ?? {}).length > 0 && Object.values(runner.backend_isolation ?? {}).every((tiers) => tiers.includes(tier))).map(({ tier, label }) => (
+                  <Button key={tier} type="button" variant="outline" size="sm" disabled={saving} onClick={() => void submit(tier)}>Switch to {label}</Button>
+                )) : null}
                 <p className="text-xs text-muted-foreground">Seen since <time dateTime={problem.first_seen}>{formatLocalTime(problem.first_seen)}</time></p>
               </div>
             ))}
@@ -205,13 +208,14 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
                 </> : null}
 
               </Section>
-              <Section title="Isolation">
-                {canEdit ? <div className="grid gap-2">{isolation.map(([tier, name, hint]) => (
-                  <label key={tier} className={cn("flex cursor-pointer items-start gap-2 rounded-lg border p-3", draft.isolation_tier === tier ? "border-primary bg-primary/5" : "border-border")}>
-                    <input type="radio" name="isolation" checked={draft.isolation_tier === tier} onChange={() => update({ isolation_tier: tier })} className="mt-1" />
-                    <span><span className="block font-medium">{name}</span>{hint ? <span className="text-xs text-muted-foreground">{hint}</span> : null}</span>
+              <Section title="Agent access">
+                {canEdit ? <RadioGroup aria-label="Agent access" value={draft.isolation_tier} onValueChange={(value) => update({ isolation_tier: String(value) })}>{runnerAccessOptions.map(({ tier, label, hint }) => (
+                  <label key={tier} className="flex cursor-pointer items-start gap-2">
+                    <Radio value={tier} aria-labelledby={`runner-access-${tier}`} aria-describedby={`runner-access-${tier}-hint`} className="mt-1" />
+                    <span><span id={`runner-access-${tier}`} className="block font-medium">{label}</span><span id={`runner-access-${tier}-hint`} className="text-xs text-muted-foreground">{hint}</span></span>
                   </label>
-                ))}</div> : <p>{draft.isolation_tier === "native-trusted" ? "Full host access · Only for a machine you trust with every allowed project's code" : "Sandbox"}</p>}
+                ))}</RadioGroup> : <p>{runnerAccessOptions.find(({ tier }) => tier === draft.isolation_tier)?.label ?? draft.isolation_tier}</p>}
+                <p className="text-xs text-muted-foreground">Changes apply on the runner’s next configuration refresh; no re-enrollment is needed.</p>
                 {canEdit ? <label className="block">Host services the sandbox may reach<textarea className={cn(control, "mt-1")} rows={2} value={draft.host_services.join("\n")} onChange={(event) => update({ host_services: event.target.value.split("\n") })} placeholder="tcp:127.0.0.1:8080" /></label> : <div><p>Host services the sandbox may reach</p>{runner.routing === undefined ? <p className="text-muted-foreground">Host services are not reported.</p> : <ul className="text-muted-foreground">{draft.host_services.map((value) => <li key={value} className="break-all">{value}</li>)}</ul>}</div>}
               </Section>
             </fieldset>

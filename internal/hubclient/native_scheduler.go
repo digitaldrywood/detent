@@ -128,7 +128,9 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		problems = s.problems()
 	}
 	if s.isolationReport != nil {
-		report = s.probeIsolation(ctx)
+		var isolationProblems []runnerauth.Problem
+		report, isolationProblems = s.probeIsolation(ctx)
+		problems = append(problems, isolationProblems...)
 	}
 	if last.IsZero() {
 		var required []string
@@ -250,7 +252,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	return nil
 }
 
-func (s *Scheduler) probeIsolation(ctx context.Context) isolation.Report {
+func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if s.leaseHold != nil {

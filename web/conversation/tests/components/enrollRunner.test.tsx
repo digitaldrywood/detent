@@ -19,6 +19,10 @@ import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
 
 let client: ConversationClient | undefined;
 
+if (typeof globalThis.PointerEvent === "undefined") {
+  globalThis.PointerEvent = globalThis.MouseEvent as unknown as typeof PointerEvent;
+}
+
 afterEach(() => {
   cleanup();
   client?.handles.clear();
@@ -34,7 +38,7 @@ function projectBox(id: string): HTMLElement {
   return box;
 }
 
-async function mountDialog(projectIds?: readonly string[], settings = false, initialRunners: readonly FleetRunner[] = [], initialFleetRead?: Promise<Response>, spritesPresent = false, version = "v1.2.3") {
+async function mountDialog(projectIds?: readonly string[], settings = false, initialRunners: readonly FleetRunner[] = [], initialFleetRead?: Promise<Response>, spritesPresent = false, version = "v1.2.3", selectTier = true) {
   let runners = initialRunners;
   const fleetReads = vi.fn();
   const enrollmentRequests = vi.fn();
@@ -83,7 +87,8 @@ async function mountDialog(projectIds?: readonly string[], settings = false, ini
       )}
     </ClientContext.Provider>,
   );
-  if (!settings && initialFleetRead === undefined) {
+  if (!settings && selectTier) fireEvent.click(await screen.findByRole("radio", { name: "Sandbox" }));
+  if (!settings && initialFleetRead === undefined && selectTier) {
     await waitFor(() => expect((screen.getByRole("button", { name: "Create command" }) as HTMLButtonElement).disabled).toBe(false));
   }
   return { onEnrolled, enrollmentRequests, projects: client.account?.projects ?? [], fleetReads, setRunners: (next: readonly FleetRunner[]) => { runners = next; } };
@@ -181,10 +186,18 @@ describe("the Enroll dialog", () => {
     expect(writeText.mock.calls[0]![0]).not.toContain("--service");
     expect(document.body.innerHTML).not.toContain("det_enroll_secret");
   });
-  it("asks for no host IDs and shows one register command", async () => {
+  it.each([["Sandbox", "sandbox"], ["Full access", "native-trusted"]] as const)("requires an explicit %s selection and carries it into the register command", async (label, tier) => {
     userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
-    const { onEnrolled, enrollmentRequests, projects } = await mountDialog();
+    const { onEnrolled, enrollmentRequests, projects } = await mountDialog(undefined, false, [], undefined, false, "v1.2.3", false);
+    const create = await screen.findByRole("button", { name: "Create command" }) as HTMLButtonElement;
+    expect(create.disabled).toBe(true);
+    expect(screen.getByRole("radio", { name: "Sandbox" }).getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByRole("radio", { name: "Full access" }).getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(create);
+    expect(enrollmentRequests).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("radio", { name: label }));
+    await waitFor(() => expect(create.disabled).toBe(false));
     expect(projects.length).toBeGreaterThan(1);
     expect((screen.getByLabelText("Concurrency") as HTMLInputElement).value).toBe("1");
     expect(screen.getByText(/each with its own workspace and agent/)).toBeDefined();
@@ -202,7 +215,8 @@ describe("the Enroll dialog", () => {
     expect(document.body.innerHTML).not.toContain("det_enroll_");
     fireEvent.click(screen.getByRole("button", { name: "Show token" }));
     const command = code.textContent ?? "";
-    expect(command).toMatch(/^detent hub runner register --url \S+ (--organization org_\w+ )?--token det_enroll_\w+ --name 'Build host' --capacity 2 --service$/);
+    expect(command).toMatch(/^detent hub runner register --url \S+ (--organization org_\w+ )?--token det_enroll_\w+ --name 'Build host' --capacity 2 --isolation-tier (sandbox|native-trusted) --service$/);
+    expect(command).toContain(`--isolation-tier ${tier}`);
     expect(command).not.toMatch(/runner_|machine_|init|enroll --organization/);
     fireEvent.click(screen.getByRole("button", { name: "Hide token" }));
     expect(code.textContent).toContain("detent_••••••••");
@@ -227,6 +241,7 @@ describe("the Enroll dialog", () => {
     await mountDialog(undefined, true);
     await user.click(await screen.findByRole("button", { name: "Add runner" }));
     await user.click(await screen.findByRole("menuitem", { name: "Manual" }));
+    await user.click(screen.getByRole("radio", { name: "Sandbox" }));
     await user.type(screen.getByLabelText("Name"), "Build host");
     await user.click(screen.getByRole("button", { name: "Create command" }));
     const copy = await screen.findByRole("button", { name: "Copy the register command" });
@@ -247,11 +262,13 @@ describe("the Enroll dialog", () => {
 
     await user.click(screen.getByRole("button", { name: "Make a new command" }));
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Build host");
+    expect((screen.getByRole("button", { name: "Create command" }) as HTMLButtonElement).disabled).toBe(true);
     expect(document.body.innerHTML).not.toContain(token);
     expect(document.body.innerHTML).not.toContain("detent hub runner register");
     await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: "Add runner" }));
     await user.click(await screen.findByRole("menuitem", { name: "Manual" }));
+    await user.click(screen.getByRole("radio", { name: "Sandbox" }));
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("");
   });
 
@@ -267,6 +284,7 @@ describe("the Enroll dialog", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Add runner" }));
     await user.click(await screen.findByRole("menuitem", { name: "Manual" }));
+    await user.click(screen.getByRole("radio", { name: "Sandbox" }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: name } });
     vi.useFakeTimers();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Create command" })));

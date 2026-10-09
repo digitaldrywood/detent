@@ -1,16 +1,14 @@
 const { test, expect } = require("@playwright/test");
 const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
-test.describe.configure({ mode: "serial" });
-
 let hub;
 
-test.beforeAll(async () => {
+test.beforeEach(async () => {
   test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
   hub = await startHostedHub("runner-settings", { env: { DETENT_HOSTED_BROWSER_RUNNER: "1" } });
 });
 
-test.afterAll(async () => { await hub?.stop(); });
+test.afterEach(async () => { await hub?.stop(); });
 
 test("runner sheet saves through the fleet and persists routing after reload", async ({ page }) => {
   await page.goto(hub.fixture.accounts.owner);
@@ -24,7 +22,7 @@ test("runner sheet saves through the fleet and persists routing after reload", a
   const allowed = sheet.getByRole("checkbox").first();
   const projectName = await allowed.locator("..").innerText();
   await allowed.uncheck();
-  await sheet.getByRole("radio", { name: /^Full host access/ }).check();
+  await sheet.getByRole("radio", { name: /^Full access/ }).check();
   await sheet.getByLabel("Host services the sandbox may reach").fill("tcp:127.0.0.1:8080");
   await sheet.getByLabel("Availability", { exact: true }).selectOption("hours");
   await sheet.getByRole("combobox", { name: /^Time zone/ }).selectOption("America/Chicago");
@@ -35,7 +33,7 @@ test("runner sheet saves through the fleet and persists routing after reload", a
   await page.reload();
   await page.getByRole("button", { name: "Manage Settings runner" }).click();
   const saved = page.getByRole("dialog", { name: "Settings runner", exact: true });
-  await expect(saved.getByRole("radio", { name: /^Full host access/ })).toBeChecked();
+  await expect(saved.getByRole("radio", { name: /^Full access/ })).toBeChecked();
   await expect(saved.getByRole("checkbox", { name: projectName.trim(), exact: true })).not.toBeChecked();
   await expect(saved.getByRole("spinbutton", { name: "Jobs at once", exact: true })).toHaveValue("1");
   await expect(saved.getByLabel("Host services the sandbox may reach")).toHaveValue("tcp:127.0.0.1:8080");
@@ -53,7 +51,7 @@ test("runner sheet saves through the fleet and persists routing after reload", a
   await page.goto(new URL("/settings/runners", hub.fixture.url).toString());
   await page.getByRole("button", { name: "Manage Settings runner" }).click();
   const readonly = page.getByRole("dialog");
-  await expect(readonly).toContainText("Full host access");
+  await expect(readonly).toContainText("Full access");
   await expect(readonly.locator("input, select, textarea")).toHaveCount(0);
   await expect(readonly.locator('[data-slot="sheet-footer"]')).toHaveCount(0);
 });
@@ -68,6 +66,7 @@ test("runner outside hours stays contextual on its row", async ({ page }) => {
   const end = new Date(later.getTime() + 60 * 60 * 1000);
   const clock = (date) => date.toISOString().slice(11, 16);
   await sheet.getByRole("radio", { name: "Active Takes new work" }).check();
+  await sheet.getByLabel("Availability", { exact: true }).selectOption("hours");
   await sheet.getByRole("combobox", { name: /^Time zone/ }).selectOption("UTC");
   await sheet.getByLabel("Day range 1").selectOption("Mon-Sun");
   await sheet.getByLabel("From 1").fill(clock(later));

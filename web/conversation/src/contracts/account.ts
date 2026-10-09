@@ -612,6 +612,7 @@ export const FleetRunner = Schema.Struct({
   last_heartbeat_at: Schema.String,
   leases: Schema.Array(RunnerLease),
   isolation_tier: Schema.optional(Schema.String),
+  backend_isolation: Schema.optional(Schema.Record(Schema.String, Schema.Array(Schema.String))),
   availability: Schema.optional(RunnerAvailability),
   routing: Schema.optional(RunnerRouting),
   revision: Schema.optional(Schema.Number),

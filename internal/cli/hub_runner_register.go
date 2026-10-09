@@ -17,6 +17,7 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -54,7 +55,7 @@ func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv fu
 }
 
 func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error) *cobra.Command {
-	var hubURL, token, organization, name, configPath, workspaceRoot string
+	var hubURL, token, organization, name, configPath, workspaceRoot, isolationTier string
 	var capacity int
 	var service bool
 	cmd := &cobra.Command{
@@ -76,6 +77,9 @@ func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(stri
 			}
 			if capacity < 1 {
 				return errors.New("--capacity must be at least 1")
+			}
+			if isolationTier != isolation.Sandbox && isolationTier != isolation.NativeTrusted {
+				return errors.New("--isolation-tier must be sandbox or native-trusted")
 			}
 			paths, err := resolveRunnerPaths(configPath, workspaceRoot, privateLocation)
 			if err != nil {
@@ -101,9 +105,29 @@ func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(stri
 					return err
 				}
 			}
-			identity, err := hubclient.EnrollRunner(cmd.Context(), paths.identity, org, token, hubclient.Machine{Hostname: hostname, DisplayName: name, Capacity: capacity, Version: firstNonBlankString(version, "dev"), BackendIsolation: probeRunnerIsolation(cmd.Context(), configuration)})
+			backendReport, _ := probeRunnerIsolation(cmd.Context(), configuration)
+			identity, err := hubclient.EnrollRunner(cmd.Context(), paths.identity, org, token, hubclient.Machine{IsolationTier: isolationTier, Hostname: hostname, DisplayName: name, Capacity: capacity, Version: firstNonBlankString(version, "dev"), BackendIsolation: backendReport})
 			if err != nil {
 				return err
+			}
+			client, err := hubclient.New(hubclient.Config{URL: base, IdentityFile: paths.identity})
+			if err != nil {
+				return err
+			}
+			fleet, err := hubclient.NewFleetClient(client, org, nil)
+			if err != nil {
+				return err
+			}
+			runners, err := fleet.Fleet(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("runner enrolled; read routing configuration: %w", err)
+			}
+			if len(runners.Runners) != 1 {
+				return errors.New("runner enrolled; Hub returned no routing configuration")
+			}
+			routing := runners.Runners[0]
+			if err := runnerauth.SaveRoutingCache(paths.identity, runnerauth.RoutingSnapshot{RunnerID: routing.RunnerID, Revision: routing.Revision, Routing: routing.Routing}); err != nil {
+				return fmt.Errorf("runner enrolled; save routing configuration: %w", err)
 			}
 			projects, err := runnerProjectNames(cmd.Context(), base, paths.identity, identity)
 			if err != nil {
@@ -164,6 +188,7 @@ func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(stri
 	cmd.Flags().StringVar(&organization, "organization", "", "organization ID, when the URL does not name one")
 	cmd.Flags().StringVar(&name, "name", "", "display name shown in the Hub (default: host name)")
 	cmd.Flags().IntVar(&capacity, "capacity", 1, "independent work items this host may run concurrently, each with its own workspace and agent")
+	cmd.Flags().StringVar(&isolationTier, "isolation-tier", isolation.Sandbox, "agent access: sandbox (shared machines) or native-trusted (full access on a dedicated machine)")
 	cmd.Flags().StringVar(&configPath, "config", "", "runner configuration path (default: ~/.config/detent-runner/global.yaml)")
 	cmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "where project checkouts live (default: ~/detent-runner)")
 	cmd.Flags().BoolVar(&service, "service", false, "install and start the runner as a background service ("+runnerServiceName+")")

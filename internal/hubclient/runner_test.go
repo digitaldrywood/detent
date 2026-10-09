@@ -201,15 +201,17 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 						acquired++
 						return func() { held = false; released++ }, nil
 					},
-					IsolationReport: func(context.Context) isolation.Report {
+					IsolationReport: func(context.Context) (isolation.Report, []runnerauth.Problem) {
 						if !held {
 							t.Error("isolation probe ran without keeping the Sprite awake")
 						}
 						probes++
 						if probes == 1 {
-							return test.report
+							problem := runnerauth.NewProblem("tier_unavailable")
+							problem.Message = "backend sandbox probe failed: sandbox tooling is unavailable"
+							return test.report, []runnerauth.Problem{problem}
 						}
-						return machine.BackendIsolation
+						return machine.BackendIsolation, nil
 					},
 				})
 				if err != nil {
@@ -229,6 +231,9 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 					found := false
 					for _, problem := range view.Runners[0].Problems {
 						found = found || problem.Code == code
+						if problem.Code == "tier_unavailable" && problem.Message != "backend sandbox probe failed: sandbox tooling is unavailable" {
+							t.Fatalf("probe reason lost: %+v", problem)
+						}
 					}
 					if !found {
 						t.Fatalf("startup did not report %s", code)
@@ -574,7 +579,7 @@ func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
 	scheduler := &Scheduler{client: client, now: time.Now, heartbeatInterval: time.Second, machine: Machine{ID: "machine", Capacity: 1}, nativeHeartbeats: map[tracker.ProjectID]time.Time{"prj_test": time.Now().Add(-time.Minute)}, leaseHold: func(context.Context) (func(), error) {
 		held.Store(true)
 		return func() { held.Store(false) }, nil
-	}, isolationReport: func(ctx context.Context) isolation.Report {
+	}, isolationReport: func(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
 		if !held.Load() {
 			t.Error("isolation probe ran without keeping the Sprite awake")
 		}
@@ -587,7 +592,7 @@ func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
 		case <-release:
 		case <-ctx.Done():
 		}
-		return isolation.Report{}
+		return isolation.Report{}, nil
 	}}
 	done := make(chan error, 1)
 	go func() { done <- scheduler.ensureNativeMachine(t.Context(), &NativeConnector{client: native}) }()

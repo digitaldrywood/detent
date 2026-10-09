@@ -497,12 +497,13 @@ describe("the first-run wizard", () => {
         hubUrl: url,
         organizationId: bootstrap.organization.id,
         token: enrollment.token,
+        isolationTier: "native-trusted",
         name: "Build host",
         capacity: 2,
         service: true,
       }),
     ).toBe(
-      `detent hub runner register --url ${url} --token ${enrollment.token} --name 'Build host' --capacity 2 --service`,
+      `detent hub runner register --url ${url} --token ${enrollment.token} --name 'Build host' --capacity 2 --isolation-tier native-trusted --service`,
     );
     // Token-first enrollments never collide: a second one for the same
     // projects is a second runner.

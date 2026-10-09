@@ -73,6 +73,7 @@ type HostChange struct {
 }
 
 type Runner struct {
+	BackendIsolation map[string][]string     `json:"backend_isolation,omitempty"`
 	Update           *UpdateObservation      `json:"update,omitempty"`
 	CapacityConfig   *CapacityConfig         `json:"capacity_configuration,omitempty"`
 	Problems         []Problem               `json:"problems"`

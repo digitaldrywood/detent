@@ -610,6 +610,7 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   await dialog.getByLabel("Concurrency", { exact: true }).fill("2");
   await expectNoSeriousAxeViolations(page, "the enrollment dialog");
 
+  await dialog.getByRole("radio", { name: "Full access", exact: true }).check();
   await dialog.getByRole("button", { name: "Create command" }).click();
 
   // One command carries everything the host needs.
@@ -620,7 +621,7 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   await expect(dialog.getByText(/Waiting for Build host to check in/)).toBeVisible();
   await dialog.getByRole("button", { name: "Show token" }).click();
   await expect(
-    dialog.getByText(/^detent hub runner register --url \S+ (--organization \S+ )?--token \S+ --name 'Build host' --capacity 2 --service$/),
+    dialog.getByText(/^detent hub runner register --url \S+ (--organization \S+ )?--token \S+ --name 'Build host' --capacity 2 --isolation-tier native-trusted --service$/),
   ).toBeVisible();
   await expectNoSeriousAxeViolations(page, "the enrollment dialog with its command");
 
@@ -652,6 +653,7 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   await enroll.click();
   await page.getByRole("menuitem", { name: "Manual", exact: true }).click();
   await dialog.getByLabel("Name").fill("Build host");
+  await dialog.getByRole("radio", { name: "Full access", exact: true }).check();
   await dialog.getByRole("button", { name: "Create command" }).click();
   await expect(dialog.locator('[aria-current="step"]')).toHaveText("2. Run the command");
   connected = true;

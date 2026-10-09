@@ -3,6 +3,7 @@ package hubclient
 import (
 	"net"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -11,22 +12,26 @@ import (
 
 func TestIsolationProblems(t *testing.T) {
 	for _, test := range []struct {
-		name, tier string
-		report     isolation.Report
-		want       []string
+		name, tier          string
+		report              isolation.Report
+		want                []string
+		reason, alternative string
 	}{
-		{"healthy", isolation.Sandbox, isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, []string{}},
-		{"native works", isolation.NativeTrusted, isolation.Report{"codex": {isolation.NativeTrusted}}, []string{}},
-		{"sandbox unavailable", isolation.Sandbox, isolation.Report{"codex": {isolation.NativeTrusted}}, []string{"tier_unavailable"}},
-		{"backend missing", isolation.Sandbox, isolation.Report{"codex": {}}, []string{"backend_missing", "tier_unavailable"}},
-		{"no backend", isolation.Sandbox, nil, []string{"backend_missing", "tier_unavailable"}},
-		{"workflow invalid", isolation.Sandbox, isolation.Report{"project/workflow": {}}, []string{"settings_invalid", "tier_unavailable"}},
-		{"workflow backend healthy", isolation.Sandbox, isolation.Report{"project/workflow": {isolation.Sandbox, isolation.NativeTrusted}}, []string{}},
+		{"healthy", isolation.Sandbox, isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, []string{}, "", ""},
+		{"native works", isolation.NativeTrusted, isolation.Report{"codex": {isolation.NativeTrusted}}, []string{}, "", ""},
+		{"sandbox unavailable", isolation.Sandbox, isolation.Report{"codex": {isolation.NativeTrusted}}, []string{"tier_unavailable"}, "Agent access sandbox is unavailable: codex did not report support for this tier.", "Full access"},
+		{"backend missing", isolation.Sandbox, isolation.Report{"codex": {}}, []string{"backend_missing", "tier_unavailable"}, "", ""},
+		{"no backend", isolation.Sandbox, nil, []string{"backend_missing", "tier_unavailable"}, "", ""},
+		{"workflow invalid", isolation.Sandbox, isolation.Report{"project/workflow": {}}, []string{"settings_invalid", "tier_unavailable"}, "", ""},
+		{"workflow backend healthy", isolation.Sandbox, isolation.Report{"project/workflow": {isolation.Sandbox, isolation.NativeTrusted}}, []string{}, "", ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			codes := []string{}
 			for _, problem := range isolationProblems(test.report, test.tier) {
 				codes = append(codes, problem.Code)
+				if problem.Code == "tier_unavailable" && test.reason != "" && (problem.Message != test.reason || !strings.Contains(problem.FixHint, "switch Agent access to "+test.alternative)) {
+					t.Fatalf("tier problem=%+v", problem)
+				}
 			}
 			if !reflect.DeepEqual(codes, test.want) {
 				t.Fatalf("codes=%v want=%v", codes, test.want)

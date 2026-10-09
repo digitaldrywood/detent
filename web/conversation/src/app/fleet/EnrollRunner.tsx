@@ -15,12 +15,14 @@ import {
 } from "../../components/ui/dialog.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
+import { Radio, RadioGroup } from "../../components/ui/radio-group.tsx";
 import type { FleetResponse, FleetRunner } from "../../contracts/account.ts";
 import { ContextHelp } from "../components/ContextHelp.tsx";
 import { ControlError } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useMutation, useResource, type Resource } from "../account/useResource.ts";
 import { SettingsRow } from "../settings/settingsLayout.tsx";
+import { runnerAccessOptions, type RunnerAccessTier } from "./runnerAccess.ts";
 
 /** The operations a runner needs to take issue runs and coordinator turns. */
 const ENROLLMENT_OPERATIONS = ["read", "collaborate", "claim", "heartbeat", "events"] as const;
@@ -81,6 +83,7 @@ export interface RegisterCommandInput {
   readonly name: string;
   readonly capacity: number;
   readonly service: boolean;
+  readonly isolationTier: RunnerAccessTier;
 }
 
 /**
@@ -97,6 +100,7 @@ export function registerCommand(input: RegisterCommandInput): string {
   parts.push("--token", shellArgument(input.token));
   if (input.name.trim() !== "") parts.push("--name", shellArgument(input.name.trim()));
   if (input.capacity !== 1) parts.push("--capacity", String(input.capacity));
+  parts.push("--isolation-tier", input.isolationTier);
   if (input.service) parts.push("--service");
   return parts.join(" ");
 }
@@ -204,6 +208,7 @@ export function EnrollRunnerDialog({
   }, [open, initialName]);
   const [location, setLocation] = React.useState<"machine" | "sprite">("machine");
   const [capacityText, setCapacityText] = React.useState("1");
+  const [isolationTier, setIsolationTier] = React.useState<RunnerAccessTier | null>(null);
   const capacity = parseCapacity(capacityText);
   // A response for a dialog the reader already closed must not come back as
   // the next opening's command.
@@ -244,6 +249,7 @@ export function EnrollRunnerDialog({
     generation.current += 1;
     setName(initialName);
     setCapacityText("1");
+    setIsolationTier(null);
     setService(true);
     setLocation("machine");
     setEnrollment(null);
@@ -279,6 +285,7 @@ export function EnrollRunnerDialog({
   }, [open, enrollment, connected, fleet.refresh]);
 
   const create = useMutation(async (baseline: FleetResponse) => {
+    if (isolationTier === null) throw new Error("Choose agent access before creating a command.");
     const mine = generation.current;
     const existingRunnerIds = baseline.runners.map((runner) => runner.id);
     const created = await api.enrollRunner({
@@ -292,7 +299,7 @@ export function EnrollRunnerDialog({
       name: name.trim() || "Unnamed runner",
     };
     if (generation.current === mine) {
-      const input = { hubUrl, organizationId, token: created.token, name: entry.name, capacity: capacity ?? 1, service: location === "machine" && service };
+      const input = { hubUrl, organizationId, token: created.token, name: entry.name, capacity: capacity ?? 1, isolationTier, service: location === "machine" && service };
       setEnrollment({
         ...entry,
         command: registerCommand(input),
@@ -306,7 +313,7 @@ export function EnrollRunnerDialog({
 
   const nameFits = runnerNameFits(name);
   const spriteNameFits = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name.trim());
-  const ready = fleet.value !== undefined && selected.length > 0 && capacity !== null && nameFits && (location === "machine" || spriteNameFits);
+  const ready = fleet.value !== undefined && selected.length > 0 && capacity !== null && isolationTier !== null && nameFits && (location === "machine" || spriteNameFits);
   const baselinePending = enrollment === null && fleet.value === undefined;
   const step = connected !== null ? 2 : enrollment !== null ? 1 : 0;
 
@@ -348,6 +355,17 @@ export function EnrollRunnerDialog({
             </section>
           ) : enrollment === null ? (
             <>
+              <fieldset className="flex flex-col gap-2 text-[13px]">
+                <legend id="enroll-agent-access" className="pb-1 font-medium">Agent access</legend>
+                <RadioGroup aria-labelledby="enroll-agent-access" value={isolationTier} onValueChange={(value) => setIsolationTier(value as RunnerAccessTier)}>
+                  {runnerAccessOptions.map(({ tier, label, hint }) => (
+                    <label key={tier} className="flex cursor-pointer items-start gap-2">
+                      <Radio value={tier} aria-labelledby={`enroll-access-${tier}`} aria-describedby={`enroll-access-${tier}-hint`} className="mt-1" />
+                      <span><span id={`enroll-access-${tier}`} className="block font-medium">{label}</span><span id={`enroll-access-${tier}-hint`} className="block text-xs text-muted-foreground">{hint}</span></span>
+                    </label>
+                  ))}
+                </RadioGroup>
+              </fieldset>
               <fieldset className="flex flex-col gap-2 text-[13px]">
                 <legend className="pb-1 font-medium">Where will it run?</legend>
                 {([["machine", "A machine I run"], ["sprite", "A Fly Sprite"]] as const).map(([value, label]) => (

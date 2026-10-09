@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -353,6 +354,12 @@ func (s *Service) redeemRunnerEnrollment(c echo.Context) error {
 	if err := request.BackendIsolation.Validate(); err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
+	if request.IsolationTier == "" {
+		request.IsolationTier = isolation.Sandbox
+	}
+	if request.IsolationTier != isolation.Sandbox && request.IsolationTier != isolation.NativeTrusted {
+		return s.nativeAPIError(c, nativeInvalid("Isolation tier must be sandbox or native-trusted"))
+	}
 	return s.runnerTransaction(c, http.StatusCreated, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		var id, operations, created, expires, actor string
 		var binding runnerauth.Binding
@@ -395,6 +402,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, binding.MachineID, request.Hostname, req
 			if _, err := tx.ExecContext(ctx, `UPDATE runner_identities SET tags_json='["sprite"]' WHERE id=? AND EXISTS (SELECT 1 FROM project_sprite_members m WHERE m.enrollment_id=? AND m.organization_id=? AND m.name=?)`, binding.RunnerID, id, identity.OrganizationID, request.SpriteName); err != nil {
 				return nil, err
 			}
+		}
+		settings, err := marshalNative(runnerSettings{IsolationTier: request.IsolationTier})
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET routing_settings_json = ? WHERE id = ?", settings, binding.RunnerID); err != nil {
+			return nil, err
 		}
 		if err := updateRunnerIsolationReport(ctx, tx, nativeScope{organization: identity.OrganizationID, credential: apiCredential{ID: binding.RunnerID, Runner: identity}}, request.BackendIsolation); err != nil {
 			return nil, err

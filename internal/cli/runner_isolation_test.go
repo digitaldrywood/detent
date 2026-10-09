@@ -28,12 +28,15 @@ func TestProbeBackendTiers(t *testing.T) {
 		{"unavailable", false, false, []string{}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got := probeBackendTiers(t.Context(), workflowconfig.AgentBackend{}, isolation.Policy{}, func(_ context.Context, _ workflowconfig.AgentBackend, policy isolation.Policy) error {
+			got, reasons := probeBackendTiers(t.Context(), workflowconfig.AgentBackend{}, isolation.Policy{}, func(_ context.Context, _ workflowconfig.AgentBackend, policy isolation.Policy) error {
 				if policy.Tier == isolation.NativeTrusted && test.native || policy.Tier == isolation.Sandbox && test.sandbox {
 					return nil
 				}
-				return errors.New("probe failed")
+				return errors.New("backend sandbox tooling is unavailable")
 			})
+			if !test.sandbox && reasons[isolation.Sandbox] != "backend sandbox tooling is unavailable" {
+				t.Fatalf("sandbox reason lost: %#v", reasons)
+			}
 			if !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("tiers = %v, want %v", got, test.want)
 			}

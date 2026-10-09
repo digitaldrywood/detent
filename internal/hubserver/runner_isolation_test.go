@@ -8,23 +8,26 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestRunnerIsolationClaims(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		report isolation.Report
-		tier   string
-		want   int
+		name         string
+		report       isolation.Report
+		tier         string
+		want         int
+		requiredTags []string
 	}{
-		{"missing report", nil, "sandbox", http.StatusConflict},
-		{"sandbox", isolation.Report{"codex": {"sandbox", "native-trusted"}}, "sandbox", http.StatusOK},
-		{"native cannot sandbox", isolation.Report{"codex": {"native-trusted"}}, "sandbox", http.StatusConflict},
-		{"trusted", isolation.Report{"codex": {"native-trusted"}}, "native-trusted", http.StatusOK},
-		{"mixed backends", isolation.Report{"codex": {"sandbox"}, "claude": {"native-trusted"}}, "sandbox", http.StatusConflict},
-		{"probe failed", isolation.Report{"codex": {}}, "sandbox", http.StatusConflict},
+		{"missing report", nil, "sandbox", http.StatusConflict, nil},
+		{"sandbox", isolation.Report{"codex": {"sandbox", "native-trusted"}}, "sandbox", http.StatusOK, nil},
+		{"native cannot sandbox", isolation.Report{"codex": {"native-trusted"}}, "sandbox", http.StatusConflict, nil},
+		{"trusted", isolation.Report{"codex": {"native-trusted"}}, "native-trusted", http.StatusOK, nil},
+		{"sandbox project selector excludes trusted runner", isolation.Report{"codex": {"native-trusted"}}, "native-trusted", http.StatusConflict, []string{"sandbox"}},
+		{"mixed backends", isolation.Report{"codex": {"sandbox"}, "claude": {"native-trusted"}}, "sandbox", http.StatusConflict, nil},
+		{"probe failed", isolation.Report{"codex": {}}, "sandbox", http.StatusConflict, nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
@@ -35,9 +38,42 @@ func TestRunnerIsolationClaims(t *testing.T) {
 			settings := map[string]any{"expected_revision": 1, "display_name": "Runner", "state": "active", "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}, "isolation_tier": test.tier}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, settings), http.StatusOK)
 			descriptor := hubTestPolicy()
+			descriptor.Requirements = policy.Requirements{RequiredTags: test.requiredTags}
+			descriptor.ID = ""
+			descriptor = descriptor.WithID()
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "claim", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), test.want)
+		})
+	}
+}
+
+func TestRunnerEnrollmentIsolationSelection(t *testing.T) {
+	for _, test := range []struct {
+		name, selected, want string
+		status               int
+	}{
+		{"legacy", "", "sandbox", http.StatusCreated},
+		{"sandbox", "sandbox", "sandbox", http.StatusCreated},
+		{"full access", "native-trusted", "native-trusted", http.StatusCreated},
+		{"invalid", "root", "", http.StatusUnprocessableEntity},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+			r.redemption.IsolationTier = test.selected
+			response := performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/runner-enrollments/redeem", r.enrollment.Token, r.redemption)
+			requireNativeStatus(t, response, test.status)
+			if test.want == "" {
+				return
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var runner runnerauth.Runner
+			decodeHubResponse(t, response, &runner)
+			if runner.IsolationTier != test.want {
+				t.Fatalf("tier=%q, want %q", runner.IsolationTier, test.want)
+			}
 		})
 	}
 }

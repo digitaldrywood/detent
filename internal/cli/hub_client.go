@@ -145,9 +145,11 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		GitHubIntake:          github.FetchIssueSnapshot,
 		GitHubDiscovery:       github.DiscoverIssues,
 		Problems:              reportProblems,
-		IsolationReport:       func(ctx context.Context) isolation.Report { return probeRunnerIsolation(ctx, cfg) },
-		ProviderReports:       providerReports,
-		OrganizationID:        tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
+		IsolationReport: func(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
+			return probeRunnerIsolation(ctx, cfg)
+		},
+		ProviderReports: providerReports,
+		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
 		CheckoutRepository: func(name string) string { return projects.repository(ctx, name) },
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,

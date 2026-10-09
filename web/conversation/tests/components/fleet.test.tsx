@@ -318,7 +318,7 @@ describe("runner details", () => {
     const sheet = screen.getByRole("dialog");
     expect(sheet.querySelectorAll("input, select, textarea")).toHaveLength(0);
     expect(sheet.querySelector('[data-slot="sheet-footer"]')).toBeNull();
-    for (const name of ["Taking work", "Capacity", "Allowed projects", "Tags", "Schedule", "Isolation", "Running work", "Provider accounts"]) {
+    for (const name of ["Taking work", "Capacity", "Allowed projects", "Tags", "Schedule", "Agent access", "Running work", "Provider accounts"]) {
       expect(within(sheet).getByRole("heading", { name })).toBeTruthy();
     }
     expect(sheet.textContent).toContain("Known project");

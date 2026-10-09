@@ -58,6 +58,7 @@ type hostedFleetRunner struct {
 	LastHeartbeatAt    time.Time                                  `json:"last_heartbeat_at"`
 	Leases             []hostedFleetLease                         `json:"leases"`
 	IsolationTier      string                                     `json:"isolation_tier"`
+	BackendIsolation   map[string][]string                        `json:"backend_isolation"`
 	Availability       runnerauth.Availability                    `json:"availability"`
 	CanEditProjects    bool                                       `json:"can_edit_projects"`
 	Routing            *runnerauth.Routing                        `json:"routing,omitempty"`
@@ -294,7 +295,7 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 		State: runner.State, OS: runner.OS, Architecture: runner.Architecture, Version: version, HostCapacity: runner.HostCapacity,
 		HostUsed: runner.HostUsed, CapacityLimit: runner.CapacityLimit, ReportedCapacity: runner.ReportedCapacity,
 		ProviderCapacity: runner.ProviderCapacity, LastHeartbeatAt: runner.LastHeartbeatAt, Leases: []hostedFleetLease{},
-		IsolationTier: runner.IsolationTier, Availability: runner.Availability,
+		IsolationTier: runner.IsolationTier, BackendIsolation: runner.BackendIsolation, Availability: runner.Availability,
 		Problems: runner.Problems,
 	}
 	if view.ProviderCapacity == nil {

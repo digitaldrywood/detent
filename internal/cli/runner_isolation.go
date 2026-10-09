@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,37 +43,58 @@ func runnerIsolationPolicy(identityPath string) func() (isolation.Policy, error)
 	}
 }
 
-func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config) isolation.Report {
+func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config) (isolation.Report, []runnerauth.Problem) {
 	report := isolation.Report{}
 	var services []string
+	tier := isolation.Sandbox
 	if cfg.Client.IdentityFile != "" {
 		if snapshot, err := runnerauth.LoadRoutingCache(cfg.Client.IdentityFile); err == nil {
 			services = snapshot.Routing.HostServices
+			tier = snapshot.Routing.IsolationTier
 		}
 	}
+	failures := []string{}
 	for _, configured := range cfg.Projects {
 		workflow, err := project.LoadWorkflowContext(ctx, configured)
 		if err != nil {
 			report[configured.ID+"/workflow"] = []string{}
+			failures = append(failures, configured.ID+"/workflow: "+err.Error())
 			continue
 		}
 		for _, backend := range workflow.Config.AgentBackendConfigs() {
 			key := configured.ID + "/" + backend.ID
-			report[key] = probeBackendTiers(ctx, backend, isolation.Policy{WritableRoots: []string{configured.Workdir}, HostServices: services, AllowLocalBinding: workflow.Config.Worker.EffectiveAllowLocalBinding(), ExtraNetworkDomains: workflow.Config.Worker.ExtraNetworkDomains}, probeBackendIsolation)
+			tiers, reasons := probeBackendTiers(ctx, backend, isolation.Policy{WritableRoots: []string{configured.Workdir}, HostServices: services, AllowLocalBinding: workflow.Config.Worker.EffectiveAllowLocalBinding(), ExtraNetworkDomains: workflow.Config.Worker.ExtraNetworkDomains}, probeBackendIsolation)
+			report[key] = tiers
+			if reason := reasons[tier]; reason != "" {
+				failures = append(failures, key+": "+reason)
+			}
 		}
 	}
-	return report
+	if len(failures) == 0 {
+		return report, nil
+	}
+	slices.Sort(failures)
+	problem := runnerauth.NewProblem("tier_unavailable")
+	problem.Message = fmt.Sprintf("Agent access %s is unavailable: %s", tier, strings.Join(failures, "; "))
+	problem.Message = strings.ReplaceAll(problem.Message, "\x00", "")
+	if len(problem.Message) > 1000 {
+		problem.Message = strings.ToValidUTF8(problem.Message[:997], "") + "..."
+	}
+	return report, []runnerauth.Problem{problem}
 }
 
-func probeBackendTiers(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy, probe func(context.Context, workflowconfig.AgentBackend, isolation.Policy) error) []string {
+func probeBackendTiers(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy, probe func(context.Context, workflowconfig.AgentBackend, isolation.Policy) error) ([]string, map[string]string) {
 	tiers := []string{}
+	reasons := map[string]string{}
 	for _, tier := range []string{isolation.NativeTrusted, isolation.Sandbox} {
 		policy.Tier = tier
 		if err := probe(ctx, backend, policy); err == nil {
 			tiers = append(tiers, tier)
+		} else {
+			reasons[tier] = err.Error()
 		}
 	}
-	return tiers
+	return tiers, reasons
 }
 
 var backendVersionPattern = regexp.MustCompile(`(?:^|\s)(\d+)\.(\d+)\.(\d+)(?:\s|$)`)
