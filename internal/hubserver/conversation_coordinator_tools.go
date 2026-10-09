@@ -400,8 +400,8 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
 	rows, err := db.QueryContext(ctx, `SELECT i.native_id, i.project_id, COALESCE(i.number, 0), i.title, COALESCE(ws.detent_state, ''), i.workflow_state_id IS NULL, i.native_updated_at,
  COALESCE((SELECT group_concat(b.native_id, ' ') FROM issue_dependencies d JOIN issues b ON b.id = d.blocker_issue_id LEFT JOIN workflow_states bs ON bs.id = b.workflow_state_id
    WHERE d.dependent_issue_id = i.id AND COALESCE(bs.terminal, 0) = 0
-    AND b.organization_id = i.organization_id AND b.project_id IN (SELECT value FROM json_each(?))), '')
-FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
+    AND b.organization_id = i.organization_id AND b.project_id IN (SELECT value FROM json_each(?))), ''),o.slug,p.slug
+FROM issues i JOIN organizations o ON o.id=i.organization_id JOIN projects p ON p.id=i.project_id LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM json_each(?)) AND COALESCE(ws.terminal, 0) = 0
 ORDER BY i.native_updated_at DESC, i.native_id LIMIT ?`, readableJSON, record.OrganizationID, projectJSON, coordinatorAttentionScan+1)
 	if err != nil {
@@ -413,8 +413,8 @@ ORDER BY i.native_updated_at DESC, i.native_id LIMIT ?`, readableJSON, record.Or
 	for rows.Next() {
 		var item coordinatorAttentionItem
 		var unmapped bool
-		var blockers string
-		if err := rows.Scan(&item.WorkItemID, &item.ProjectID, &item.Number, &item.Title, &item.State, &unmapped, &item.UpdatedAt, &blockers); err != nil {
+		var blockers, orgSlug, projectSlug string
+		if err := rows.Scan(&item.WorkItemID, &item.ProjectID, &item.Number, &item.Title, &item.State, &unmapped, &item.UpdatedAt, &blockers, &orgSlug, &projectSlug); err != nil {
 			return nil, fmt.Errorf("list issues: %w", err)
 		}
 		scanned++
@@ -422,7 +422,7 @@ ORDER BY i.native_updated_at DESC, i.native_id LIMIT ?`, readableJSON, record.Or
 			result.Truncated = true
 			break
 		}
-		item.URL = "/work/i/" + item.WorkItemID
+		item.URL = issueBrowserPath(orgSlug, projectSlug, int(item.Number))
 		item.Title = boundRunes(item.Title, coordinatorToolSummaryRunes)
 		state := strings.ToLower(item.State)
 		var group *[]coordinatorAttentionItem
@@ -583,7 +583,10 @@ WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM json_each(?))
 		return nil, fmt.Errorf("read issue: %w", err)
 	}
 	issue.Body = boundRunes(issue.Body, coordinatorIssueBodyRunes)
-	issue.URL = "/work/i/" + issue.WorkItemID
+	issue.URL, err = readIssueBrowserPath(ctx, t.coordinator.service.server.database.db, issue.WorkItemID)
+	if err != nil {
+		return nil, err
+	}
 	now, err := t.coordinator.service.server.database.currentTime()
 	if err != nil {
 		return nil, err

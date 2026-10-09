@@ -20,7 +20,7 @@ import { ContentSecurity } from "./ContentSecurity.tsx";
 import { isDesignSystemPath, makeRouter } from "./router.tsx";
 import { isLoginPath, LoginCard } from "./routes.account.tsx";
 import "./index.css";
-import { hubPath, withoutBasePath } from "../runtime/basePath.ts";
+import { hubPath, routerBasePath, withoutBasePath } from "../runtime/basePath.ts";
 import { isEntrySurface, makeEntryRouter } from "./entry/router.tsx";
 import { formatPageTitle } from "./pageTitle.ts";
 
@@ -64,7 +64,7 @@ function Failure({ message }: { message: string }): React.ReactElement {
 
 if (
   import.meta.env.DEV &&
-  isDesignSystemPath(withoutBasePath(globalThis.location?.pathname ?? ""))
+  isDesignSystemPath(withoutBasePath(globalThis.location?.pathname ?? "", routerBasePath()))
 ) {
   // The design-system gallery needs no hub: it skips the bootstrap so that
   // `npm run dev` alone serves it. The guard is a literal so the production
@@ -84,7 +84,7 @@ if (
 }
 
 function startOrganizationClient(): void {
-  const pathname = withoutBasePath(globalThis.location?.pathname ?? "");
+  const pathname = withoutBasePath(globalThis.location?.pathname ?? "", routerBasePath());
   const search = globalThis.location?.search ?? "";
   if (isLoginPath(pathname)) {
     document.title = formatPageTitle("Sign in");
@@ -113,7 +113,7 @@ function startOrganizationClient(): void {
       );
     })
     .catch((cause: unknown) => {
-      const pathname = withoutBasePath(globalThis.location?.pathname ?? "");
+      const pathname = withoutBasePath(globalThis.location?.pathname ?? "", routerBasePath());
       const search = globalThis.location?.search ?? "";
       // Support can be opened without organization access. A refused
       // bootstrap there is expected; other routes need one and say so.

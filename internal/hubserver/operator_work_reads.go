@@ -125,7 +125,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		}
 		refs := make([]operatortool.WorkReference, 0, len(changes))
 		for _, change := range changes {
-			refs = append(refs, operatortool.WorkReference{Kind: "change", ID: change.ID, VersionID: change.CurrentVersion, URL: "/projects/" + url.PathEscape(request.ProjectID) + "/issues/" + url.PathEscape(request.Reference) + "/changes/" + url.PathEscape(change.ID)})
+			refs = append(refs, operatortool.WorkReference{Kind: "change", ID: change.ID, VersionID: change.CurrentVersion, URL: item.WebURL + "/changes/" + url.PathEscape(change.ID)})
 		}
 		if request.Cursor != "" {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
@@ -211,6 +211,13 @@ func (s *Service) resolveOperatorNativeReadItem(ctx context.Context, query nativ
 }
 
 func (s *Service) resolveOperatorNativeItem(ctx context.Context, query nativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
+	if strings.Contains(reference, "/") {
+		id, err := s.readableReference(ctx, query, scope, reference)
+		if err != nil {
+			return tracker.NativeIssue{}, err
+		}
+		reference = id
+	}
 	if strings.HasPrefix(reference, "wi_") {
 		item, _, err := readNativeIssue(ctx, query, scope, reference)
 		return s.nativeIssueResponse(item), err

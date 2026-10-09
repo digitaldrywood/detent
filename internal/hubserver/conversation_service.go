@@ -623,20 +623,12 @@ type conversationReferenceResource struct {
 	URL   string                     `json:"url"`
 }
 
-// conversationReferenceURL is the client route a reference opens.
-func conversationReferenceURL(kind conversation.ReferenceKind, id string) string {
-	if kind == conversation.ReferenceConversation {
-		return "/chat/c/" + id
-	}
-	return "/work/i/" + id
-}
-
 func projectReferences(references []conversationMessageReference) []conversationReferenceResource {
 	projected := make([]conversationReferenceResource, 0, len(references))
 	for _, reference := range references {
 		projected = append(projected, conversationReferenceResource{
 			Kind: reference.Kind, ID: reference.ID, Label: reference.Label,
-			URL: conversationReferenceURL(reference.Kind, reference.ID),
+			URL: reference.URL,
 		})
 	}
 	return projected
@@ -957,7 +949,7 @@ func (c *conversationService) resolveConversationReference(ctx context.Context, 
 	if err != nil {
 		return found, false, fmt.Errorf("resolve conversation reference: %w", err)
 	}
-	return conversationMessageReference{Kind: conversation.ReferenceConversation, ID: reference.ConversationID, Label: reference.Text}, true, nil
+	return conversationMessageReference{Kind: conversation.ReferenceConversation, ID: reference.ConversationID, Label: reference.Text, URL: "/chat/c/" + reference.ConversationID}, true, nil
 }
 
 // resolveIssueReference reports the referenced issue; ok is false when the
@@ -983,7 +975,11 @@ WHERE i.organization_id = ? AND lower(p.name) = ? AND i.number = ?`
 	if err != nil {
 		return found, false, fmt.Errorf("resolve issue reference: %w", err)
 	}
-	return conversationMessageReference{Kind: conversation.ReferenceIssue, ID: workItemID, Label: reference.Text}, true, nil
+	path, err := readIssueBrowserPath(ctx, tx, workItemID)
+	if err != nil {
+		return found, false, err
+	}
+	return conversationMessageReference{Kind: conversation.ReferenceIssue, ID: workItemID, Label: reference.Text, URL: path}, true, nil
 }
 
 // updateMessage persists a changed message and its message.updated event.

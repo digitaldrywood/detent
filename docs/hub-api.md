@@ -993,11 +993,16 @@ and email delivery carry this flow finding; it creates no tracker issue.
 
 Every work-item representation returned by create, get, list and update includes
 `web_url`. Hosted Hubs build this absolute link from the configured
-`hosted.public_url`, never from request Host or forwarding headers. Shared Cloud
-links use
-`https://cloud.detent.build/organizations/{organization_id}/work/i/{work_item_id}`;
-dedicated hosted Hubs use `{public_url}/work/i/{work_item_id}`. The link opens the
-existing conversation app route. Non-hosted Hubs have no configured public URL
+`hosted.public_url`, never from request Host or forwarding headers. Hosted
+browser links use
+`{public_url}/{organization_slug}/{project_slug}/issues/{number}`. The project
+board uses the same base without `/issues/{number}`, and changes append
+`/changes/{change_id}`. Earlier organization and project slugs, work-item ID
+URLs and legacy issue routes redirect to the current readable address. Slugs
+are generated from names, unique within their scope, and editable by owners
+and admins in settings; earlier slugs remain reserved. The same links are
+returned by MCP, which accepts readable issue URLs as scoped issue references.
+Non-hosted Hubs have no configured public URL
 or conversation app and return an empty string. Replayed mutations and historical
 work-item versions project the link using the serving Hub's current configuration;
 the URL is not immutable content.

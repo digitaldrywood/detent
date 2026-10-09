@@ -157,6 +157,15 @@ func safeBillingError(err error) error {
 }
 
 func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, err error) {
+	call, err = e.service.normalizeToolReferences(ctx, call)
+	if err != nil {
+		return result, err
+	}
+	defer func() {
+		if err == nil && len(result.Content) > 0 && e.service.config.Hosted != nil {
+			result, err = e.service.canonicalToolResult(ctx, result)
+		}
+	}()
 	if call.Name == operatortool.BoardState || call.Name == operatortool.Dashboard {
 		return nativeOperatorExecutor(e).Execute(ctx, call)
 	}

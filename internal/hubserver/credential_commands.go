@@ -212,5 +212,8 @@ func (s *Service) createNativeOrganizationFor(ctx context.Context, name string) 
 	}
 	organization := nativeOrganization{ID: tracker.OrganizationID(newNativeID("org")), Name: name}
 	_, err := s.database.db.ExecContext(ctx, "INSERT INTO organizations(id,name,created_at) VALUES(?,?,?)", organization.ID, organization.Name, formatHubTime(s.config.now()))
+	if err == nil {
+		err = s.database.db.QueryRowContext(ctx, "SELECT slug FROM organizations WHERE id=?", organization.ID).Scan(&organization.Slug)
+	}
 	return organization, err
 }

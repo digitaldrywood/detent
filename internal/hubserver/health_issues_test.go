@@ -228,6 +228,7 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
+					affected = f.service.nativeIssueResponse(affected)
 					a, _ := json.Marshal(affected)
 					b, _ := json.Marshal(original)
 					if string(a) != string(b) {

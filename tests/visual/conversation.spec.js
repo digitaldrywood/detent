@@ -83,7 +83,7 @@ async function openLinkedConversation(page, account = "owner") {
   await page.goto(`${hub.fixture.chat}/c/${hub.fixture.conversation}`, {
     waitUntil: "domcontentloaded",
   });
-  await expect(page).toHaveURL(new RegExp(`/work/i/${hub.fixture.work_item}`));
+  await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/2(?:\?|$)/);
   await expect(page.getByTestId("conversation-surface")).toBeVisible();
   return page.getByTestId("conversation-surface");
 }
@@ -673,7 +673,7 @@ test("lists the chat in the sidebar and filters it from the search box", async (
 test("sends both linked-conversation paths to the issue page", async ({ page }) => {
   const errors = watchConsole(page);
   await openChat(page, `/issues/${hub.fixture.work_item}`);
-  await expect(page).toHaveURL(new RegExp(`/work/i/${hub.fixture.work_item}$`));
+  await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/2$/);
 
   // The issue is the page: it names itself at level one, and the properties
   // sidebar carries what the old chat header's chips did.
@@ -799,7 +799,7 @@ test("confirms automatic chat linking when creating an issue on a phone", async 
   await expect(form).toBeHidden();
   // Linking moves the reader to the issue page with the chat in the panel
   // (§19.4); everything the link produced is still there, in the panel.
-  await expect(page).toHaveURL(/\/work\/i\//);
+  await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/\d+(?:\?|$)/);
   await expect(page.getByTestId("issue-card").last()).toContainText(
     "Move the renewal behind the acknowledgement",
   );
@@ -919,7 +919,7 @@ test.describe("narrow viewport", () => {
       .filter({ hasText: "Lease renewal under load" })
       .click();
     await expect(sidebar(page)).toHaveCount(0);
-    await expect(page).toHaveURL(new RegExp(`/work/i/${hub.fixture.work_item}`));
+    await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/2(?:\?|$)/);
 
     await expect(page.getByTestId("conversation-surface")).toBeVisible();
     await expect(composer(page)).toBeVisible();
@@ -1430,7 +1430,7 @@ test.describe("decisions.md §10 corrections", () => {
     const work = list.getByTestId("nav-work");
     await work.focus();
     await page.keyboard.press("Enter");
-    await expect(page).toHaveURL(/\/work(\/p\/[^/]+)?$/);
+    await expect(page).toHaveURL(/\/(?:work|local-organization\/browser-collaboration)$/);
     expect(errors).toEqual([]);
   });
 
@@ -1646,6 +1646,7 @@ test.describe("the ported shell's interactions", () => {
   test("carries the header actions on a conversation", async ({ page }) => {
     const errors = watchConsole(page);
     await openLinkedConversation(page);
+    await expect(composer(page)).toBeEditable();
 
     const add = headerActionsTrigger(page);
     await expect(add).toBeVisible();
@@ -1786,7 +1787,7 @@ test.describe("the ported shell's interactions", () => {
     await expect(palette).toHaveCount(0);
     // A linked conversation's destination is its issue page with the chat open
     // in the panel (§19.4) — the same rule the sidebar's rows follow.
-    await expect(page).toHaveURL(new RegExp(`/work/i/${hub.fixture.work_item}`));
+    await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/2(?:\?|$)/);
     await expect(page.getByTestId("conversation-surface")).toBeVisible();
     await expect(page.getByRole("heading", { level: 1 })).toContainText(
       "Renew the lease before the handoff completes",

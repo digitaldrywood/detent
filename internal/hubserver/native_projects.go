@@ -17,6 +17,7 @@ import (
 type nativeOrganization struct {
 	ID    tracker.OrganizationID `json:"organization_id"`
 	Name  string                 `json:"name"`
+	Slug  string                 `json:"slug"`
 	Local bool                   `json:"local"`
 }
 
@@ -58,7 +59,7 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 }
 
 func (s *Service) nativeOrganizations(c echo.Context) error {
-	rows, err := s.database.db.QueryContext(c.Request().Context(), "SELECT id, name, local FROM organizations ORDER BY id")
+	rows, err := s.database.db.QueryContext(c.Request().Context(), "SELECT id, name, slug, local FROM organizations ORDER BY id")
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -66,7 +67,7 @@ func (s *Service) nativeOrganizations(c echo.Context) error {
 	result := tracker.Page[nativeOrganization]{Items: []nativeOrganization{}}
 	for rows.Next() {
 		var organization nativeOrganization
-		if err := rows.Scan(&organization.ID, &organization.Name, &organization.Local); err != nil {
+		if err := rows.Scan(&organization.ID, &organization.Name, &organization.Slug, &organization.Local); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		result.Items = append(result.Items, organization)
@@ -146,6 +147,9 @@ func (s *Service) createNativeProjectOperation(request createNativeProjectReques
 				return nil, err
 			}
 		}
+		if err := tx.QueryRowContext(ctx, "SELECT slug FROM projects WHERE id=?", project.ID).Scan(&project.Slug); err != nil {
+			return nil, err
+		}
 		return project, nil
 	}
 }
@@ -183,7 +187,7 @@ type nativeQueryer interface {
 func readNativeProject(ctx context.Context, query nativeQueryer, scope nativeScope) (tracker.NativeProject, error) {
 	var project tracker.NativeProject
 	var states string
-	if err := query.QueryRowContext(ctx, "SELECT id, organization_id, name, profile, states_json, require_dependencies, workflow_markdown FROM projects WHERE deleted_at IS NULL AND organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&project.ID, &project.OrganizationID, &project.Name, &project.Profile, &states, &project.RequireDependencies, &project.WorkflowMarkdown); err != nil {
+	if err := query.QueryRowContext(ctx, "SELECT id, organization_id, name, slug, profile, states_json, require_dependencies, workflow_markdown FROM projects WHERE deleted_at IS NULL AND organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&project.ID, &project.OrganizationID, &project.Name, &project.Slug, &project.Profile, &states, &project.RequireDependencies, &project.WorkflowMarkdown); err != nil {
 		return project, err
 	}
 	if err := json.Unmarshal([]byte(states), &project.States); err != nil {

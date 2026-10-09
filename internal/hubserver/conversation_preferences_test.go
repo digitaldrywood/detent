@@ -568,8 +568,8 @@ func TestConversationMessageReferences(t *testing.T) {
 		t.Fatalf("references = %#v, want the three resolvable targets", got)
 	}
 	want := []conversationReferenceResource{
-		{Kind: conversation.ReferenceIssue, ID: string(issue.WorkItemID), Label: "#" + strconv.Itoa(issue.Number), URL: "/work/i/" + string(issue.WorkItemID)},
-		{Kind: conversation.ReferenceIssue, ID: string(other.WorkItemID), Label: f.project.Name + "#" + strconv.Itoa(other.Number), URL: "/work/i/" + string(other.WorkItemID)},
+		{Kind: conversation.ReferenceIssue, ID: string(issue.WorkItemID), Label: "#" + strconv.Itoa(issue.Number), URL: "/local-organization/native/issues/" + strconv.Itoa(issue.Number)},
+		{Kind: conversation.ReferenceIssue, ID: string(other.WorkItemID), Label: f.project.Name + "#" + strconv.Itoa(other.Number), URL: "/local-organization/native/issues/" + strconv.Itoa(other.Number)},
 		{Kind: conversation.ReferenceConversation, ID: target.ID, Label: target.ID, URL: "/chat/c/" + target.ID},
 	}
 	for index, reference := range want {

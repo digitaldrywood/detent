@@ -62,7 +62,7 @@ func (s *Service) claims(organization Organization, kind, method, path string, b
 	}
 	now := s.config.now()
 	return cloudassert.Claims{
-		Issuer: s.config.Issuer, Audience: organization.ID, Generation: organization.Generation, Kind: kind,
+		OrganizationSlug: organization.Slug, Issuer: s.config.Issuer, Audience: organization.ID, Generation: organization.Generation, Kind: kind,
 		Method: method, Path: path, BodyDigest: cloudassert.BodyDigest(body), IssuedAt: now, ExpiresAt: now.Add(assertionLifetime), ID: id,
 	}, nil
 }
@@ -308,6 +308,9 @@ func (s *Service) proxy(c echo.Context) error {
 		verification = verified
 		if err != nil {
 			defer s.logProxied(c, organization.ID, verification, started)
+			if c.Get("readable_url") == true {
+				return readableNotFound(c)
+			}
 			return s.browserFailure(c, organization.ID, status)
 		}
 	}

@@ -89,7 +89,7 @@ import { expectedOwner, isActive } from "./lib/execution.ts";
 import { dialogOpen, shortcutFor } from "./lib/shortcuts.ts";
 import { conversationDestination } from "./lib/conversationDestination.ts";
 import { shouldSearchServer } from "./lib/sidebarLogic.ts";
-import { hubPath, withoutBasePath } from "../runtime/basePath.ts";
+import { hubPath, routerBasePath, withoutBasePath } from "../runtime/basePath.ts";
 import { usePageTitle } from "./pageTitle.ts";
 
 function hasLunaCoordinator(choices: PreferenceChoices | undefined): boolean {
@@ -230,21 +230,23 @@ function ShellBody(): React.ReactElement {
   // The Work destination and the Browse group need to know where they are.
   // `useRouterState` is the only source of the current path that stays correct
   // through a redirect; `params` alone cannot tell `/work` from `/work/changes`.
-  const activePath = useRouterState({ select: (state) => withoutBasePath(state.location.pathname) });
+  const context = (useRouterState({ select: (state) => state.matches[state.matches.length - 1]?.context }) ?? {}) as { resolvedProjectId?: string; resolvedWorkItemId?: string };
+  const routePath = useRouterState({ select: (state) => withoutBasePath(state.location.pathname, routerBasePath()) });
+  const activePath = context.resolvedWorkItemId ? `/work/i/${context.resolvedWorkItemId}` : context.resolvedProjectId ? `/work/p/${context.resolvedProjectId}` : routePath;
 
   const [newChatSubjectId, setNewChatSubjectId] = React.useState<string | null>(null);
   React.useEffect(() => {
     if (activePath !== "/chat") {
-      setNewChatSubjectId(params.workItemId ?? null);
+      setNewChatSubjectId(context.resolvedWorkItemId || params.workItemId || null);
     }
-  }, [activePath, params.workItemId]);
+  }, [activePath, params.workItemId, context.resolvedWorkItemId]);
 
   const projects = client.bootstrap.projects;
   const findings = useSidebarFindings(projects);
   const [selectedProjectId, setProjectIdState] = React.useState(
     () => readLastProject() ?? projects[0]?.id ?? "",
   );
-  const projectId = params.projectId ?? (activePath === "/work" ? "" : selectedProjectId);
+  const projectId = params.projectId ?? context.resolvedProjectId ?? (activePath === "/work" ? "" : selectedProjectId);
   React.useEffect(() => {
     setProjectIdState(projectId);
     writeLastProject(projectId);

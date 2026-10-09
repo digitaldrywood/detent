@@ -141,6 +141,7 @@ type conversationMessageRecord struct {
 // only records targets it could resolve, so a row always names something
 // that exists.
 type conversationMessageReference struct {
+	URL   string
 	Kind  conversation.ReferenceKind
 	ID    string
 	Label string
@@ -1149,8 +1150,10 @@ func resolveMessageReferences(ctx context.Context, query nativeQueryer, messages
 	if err != nil {
 		return fmt.Errorf("encode message ids: %w", err)
 	}
-	rows, err := query.QueryContext(ctx, `SELECT message_id, target_kind, target_id, label FROM message_references
-WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY message_id, rowid`, encoded)
+	rows, err := query.QueryContext(ctx, `SELECT r.message_id, r.target_kind, r.target_id, r.label,
+CASE WHEN r.target_kind='issue' THEN '/' || o.slug || '/' || p.slug || '/issues/' || i.number ELSE '/chat/c/' || r.target_id END
+FROM message_references r LEFT JOIN issues i ON r.target_kind='issue' AND i.native_id=r.target_id LEFT JOIN projects p ON p.id=i.project_id LEFT JOIN organizations o ON o.id=i.organization_id
+WHERE r.message_id IN (SELECT value FROM json_each(?)) ORDER BY r.message_id, r.rowid`, encoded)
 	if err != nil {
 		return fmt.Errorf("read message references: %w", err)
 	}
@@ -1159,7 +1162,7 @@ WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY message_id, rowid`
 	for rows.Next() {
 		var messageID string
 		var reference conversationMessageReference
-		if err := rows.Scan(&messageID, &reference.Kind, &reference.ID, &reference.Label); err != nil {
+		if err := rows.Scan(&messageID, &reference.Kind, &reference.ID, &reference.Label, &reference.URL); err != nil {
 			return fmt.Errorf("read message references: %w", err)
 		}
 		byMessage[messageID] = append(byMessage[messageID], reference)
