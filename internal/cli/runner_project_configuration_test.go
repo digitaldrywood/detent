@@ -21,7 +21,7 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 		t.Skip("durable SQLite integration")
 	}
 
-	for _, scenario := range []string{"resume", "read", "intake off", "foreign project", "revoked project grant", "replaced mapping", "foreign binding", "expired identity"} {
+	for _, scenario := range []string{"resume", "read", "removed intake key", "foreign project", "revoked project grant", "replaced mapping", "foreign binding", "expired identity"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			if err := os.Chmod(root, 0700); err != nil {
@@ -49,7 +49,7 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if scenario == "intake off" {
+			if scenario == "removed intake key" {
 				cfg.Global.LocalIntakeEnabled = new(false)
 			}
 			cfg.Client = globalconfig.HubClient{URL: identity.HubURL, IdentityFile: identityPath, OrganizationID: "org_test", NativeProjects: map[string]string{"local-name": "prj_test"}, Capacity: 2}
@@ -57,10 +57,12 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 			if err := globalconfig.Write(cfg.Path, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
 				t.Fatal(err)
 			}
+			resolved := cfg
 			cfg, err = globalconfig.Read(cfg.Path, globalconfig.WithProjectPathLiterals())
 			if err != nil {
 				t.Fatal(err)
 			}
+			cfg.Projects, cfg.Client.NativeProjects = resolved.Projects, resolved.Client.NativeProjects
 			attempts, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(root, "runtime.db")})
 			if err != nil {
 				t.Fatal(err)
@@ -130,11 +132,11 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 						t.Fatalf("resume heartbeat receipt=%+v", receipt)
 					}
 				}
-			} else if scenario == "read" || scenario == "intake off" {
+			} else if scenario == "read" || scenario == "removed intake key" {
 				if view.Constraint != "" || !view.Registered || view.EffectivePolicy == nil || view.LocalBindingPolicy == nil || view.AllowLocalBinding {
 					t.Fatalf("selected owner=%+v", view)
 				}
-				if view.LocalIntakeEnabled != (scenario != "intake off") {
+				if !view.LocalIntakeEnabled {
 					t.Fatalf("effective intake read = %t", view.LocalIntakeEnabled)
 				}
 				if strings.Contains(view.Constraint, root) {

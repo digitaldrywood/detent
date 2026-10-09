@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"time"
 
@@ -455,6 +456,16 @@ func pauseSettledConfiguration(ctx context.Context, p *Project, view ManagedConf
 }
 
 func (o *ConfigurationOwner) mutate(ctx context.Context, mutate func(*globalconfig.Config, string) bool) error {
+	if o.settings == nil && o.selected.Client.IdentityFile != "" {
+		return globalconfig.Mutate(o.selected.Path, func(cfg *globalconfig.Config, revision string) bool {
+			stored := *cfg
+			runtime := o.runtime()
+			cfg.Projects, cfg.Client.NativeProjects = slices.Clone(runtime.Projects), maps.Clone(runtime.Client.NativeProjects)
+			changed := mutate(cfg, revision)
+			cfg.Projects, cfg.Client.NativeProjects = stored.Projects, stored.Client.NativeProjects
+			return changed
+		}, globalconfig.WithProjectPathLiterals())
+	}
 	if o.settings == nil {
 		return globalconfig.Mutate(o.selected.Path, mutate, globalconfig.WithProjectPathLiterals())
 	}
