@@ -32,7 +32,7 @@ jobs:
         if: inputs.version == ''
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.6'
+          go-version: '1.26.9'
           cache: true
       - uses: actions/download-artifact@v8
         if: inputs.version != ''

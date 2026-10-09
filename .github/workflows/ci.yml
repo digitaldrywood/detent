@@ -79,7 +79,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: tmp/tools/golangci-lint
-          key: golangci-lint-${{ runner.os }}-go1.26.6-${{ hashFiles('.golangci-version') }}
+          key: golangci-lint-${{ runner.os }}-go1.26.9-${{ hashFiles('.golangci-version') }}
 
       - name: Cache golangci-lint analysis
         uses: actions/cache@v5
