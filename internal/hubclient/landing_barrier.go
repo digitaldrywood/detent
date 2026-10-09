@@ -7,7 +7,6 @@ import (
 	"net/url"
 
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -55,15 +54,4 @@ func (s *Scheduler) FinishLandingBarrier(ctx context.Context, project string, ba
 	}
 	_, err := source.client.MutateLandingBarrier(ctx, tracker.LandingBarrierRequest{Mutation: tracker.Mutation{IdempotencyKey: barrier.ID + ":" + action}, Action: action, Repository: barrier.Repository, ID: barrier.ID, Result: result})
 	return err
-}
-
-func (e *nativeExecution) AuthorizeLanding(ctx context.Context, repository string) error {
-	barrier, err := e.claim.source.client.LandingBarrier(ctx, repository)
-	if err != nil {
-		return err
-	}
-	if barrier.Red && (barrier.Repair == "" || barrier.Repair != e.claim.lease.WorkItemID) {
-		return runner.ErrLandingBarrierRed
-	}
-	return nil
 }

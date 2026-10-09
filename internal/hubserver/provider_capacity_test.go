@@ -266,6 +266,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 		{name: "changed merging revision falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{0, 1, 2}, order: []string{"Merging", "Todo"}, unavailable: "revision", want: []int{0, 1, 2}, winner: 1},
 		{name: "unreviewed merging falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "review", want: []int{1, 2}, winner: 1},
 		{name: "dependency held merging falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "dependency", want: []int{1, 2}, winner: 1},
+		{name: "red barrier does not hold reviewed merging", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Merging", "Todo"}, unavailable: "red barrier", want: []int{0, 1, 2}},
 		{name: "leased merging leaves next slot for todo", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "lease", want: []int{1, 2}, winner: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -344,6 +345,23 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			}
 			if test.unavailable == "unblocker" {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_dependencies (dependent_issue_id, blocker_issue_id, provenance, created_at, updated_at) SELECT a.id, b.id, 'native', ?, ? FROM issues a, issues b WHERE a.native_id = ? AND b.native_id = ?", testTimestamp, testTimestamp, issues[2].WorkItemID, issues[1].WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.unavailable == "red barrier" {
+				var repository string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT json_extract(record_json, '$.repository') FROM change_versions LIMIT 1").Scan(&repository); err != nil {
+					t.Fatal(err)
+				}
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+				if err := writeLandingBarrier(t.Context(), tx, scope, tracker.LandingBarrier{Repository: repository, ProjectID: f.project.ID, Red: true, Repair: "wi_unrelated"}); err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
 					t.Fatal(err)
 				}
 			}
