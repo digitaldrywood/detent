@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func healthIssueScope(organization tracker.OrganizationID, project tracker.ProjectID) nativeScope {
@@ -33,7 +36,11 @@ func healthIssueRequest(f healthFinding) (tracker.CreateIssue, error) {
 	return request, nil
 }
 
-func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, now time.Time) ([]tracker.NativeIssue, error) {
+func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, now time.Time, projects ...tracker.ProjectID) ([]tracker.NativeIssue, error) {
+	var project tracker.ProjectID
+	if len(projects) > 0 {
+		project = projects[0]
+	}
 	type occurrence struct {
 		finding          healthFinding
 		project          tracker.ProjectID
@@ -48,8 +55,11 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
  FROM health_findings f JOIN projects p ON p.organization_id=f.organization_id AND p.deleted_at IS NULL AND p.profile='native'
  AND (EXISTS(SELECT 1 FROM json_each(f.projects_json) WHERE value=p.id) OR EXISTS(SELECT 1 FROM health_finding_issues WHERE finding_id=f.id AND project_id=p.id))
  LEFT JOIN health_finding_issues l ON l.finding_id=f.id AND l.project_id=p.id
- WHERE f.organization_id=? AND f.class='instance' AND (f.resolved_at IS NULL OR (l.work_item_id IS NOT NULL AND l.reported_resolved_at IS NOT f.resolved_at))
- ORDER BY f.rowid,p.id LIMIT ?`, organization, healthReadLimit+1)
+ WHERE f.organization_id=? AND f.class='instance' AND (?='' OR p.id=?) AND (?='' OR f.resolved_at IS NOT NULL)
+ AND (f.resolved_at IS NULL OR (l.work_item_id IS NOT NULL AND (l.reported_resolved_at IS NOT f.resolved_at
+ OR (f.class='instance' AND EXISTS(SELECT 1 FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id
+ WHERE i.organization_id=f.organization_id AND i.project_id=p.id AND i.native_id=l.work_item_id AND i.archived=0 AND ws.detent_state='Todo')))))
+ ORDER BY f.rowid,p.id LIMIT ?`, organization, project, project, project, healthReadLimit+1)
 	if err != nil {
 		return nil, err
 	}
@@ -90,21 +100,23 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 	}
 	created := []tracker.NativeIssue{}
 	for _, o := range occurrences {
-		if o.item != "" && o.resolved == o.reportedResolved && o.evidence == o.reportedEvidence {
+		if o.item != "" && !o.resolved.Valid && o.resolved == o.reportedResolved && o.evidence == o.reportedEvidence {
 			continue
 		}
 		scope := healthIssueScope(organization, o.project)
+		var reported tracker.NativeIssue
 		if o.resolved.Valid {
 			issue, _, err := readNativeIssue(ctx, tx, scope, string(o.item))
 			if err != nil {
 				return nil, err
 			}
-			if !issue.Terminal {
+			if !issue.Terminal && o.resolved != o.reportedResolved {
 				body := fmt.Sprintf("## Health finding resolved\n\nFinding: `%s`\nResolved: %s", o.finding.ID, o.resolved.String)
 				if _, err := insertNativeComment(ctx, tx, scope, issue, body, nil, now); err != nil {
 					return nil, err
 				}
 			}
+			reported = issue
 		} else {
 			request, err := healthIssueRequest(o.finding)
 			if err != nil {
@@ -128,14 +140,131 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 				return nil, err
 			}
 			o.item = issue.WorkItemID
-			if !issue.PublicationReused {
-				created = append(created, issue)
-			}
+			reported = issue
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO health_finding_issues(finding_id,project_id,work_item_id,reported_evidence_json,reported_resolved_at) VALUES(?,?,?,?,?)
  ON CONFLICT(finding_id,project_id) DO UPDATE SET work_item_id=excluded.work_item_id,reported_evidence_json=excluded.reported_evidence_json,reported_resolved_at=excluded.reported_resolved_at`, o.finding.ID, o.project, o.item, o.evidence, o.resolved); err != nil {
 			return nil, err
 		}
+		resolved := ""
+		if o.resolved.Valid {
+			resolved = o.resolved.String
+		}
+		reported, err = reconcileHealthIssue(ctx, tx, scope, reported, o.finding, resolved, now)
+		if err != nil {
+			return nil, err
+		}
+		if !o.resolved.Valid && !reported.PublicationReused {
+			created = append(created, reported)
+		}
 	}
 	return created, nil
+}
+
+func reconcileHealthIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, finding healthFinding, resolved string, now time.Time) (tracker.NativeIssue, error) {
+	if finding.Class != "instance" || issue.Archived || issue.Terminal || (resolved != "" && issue.State != "Todo") || (resolved == "" && issue.State != "Backlog") {
+		return issue, nil
+	}
+	origin, ok := issueorigin.Parse(issue.Body)
+	if !ok || origin.Kind != "audit" || origin.Instance != "health_detector" || origin.Fingerprint != finding.Fingerprint || issue.Actor != scope.actor() || issue.Provenance != nil || len(issue.Dependencies) != 0 || len(issue.Assignees) != 0 || !slices.Equal(issue.Labels, []string{"infrastructure"}) {
+		return issue, nil
+	}
+	if issue.IssueContract != nil && (issue.IssueContract.HumanAction != "" || issue.IssueContract.ReturnState != "" || len(issue.IssueContract.ConfirmedSections) != 0) {
+		return issue, nil
+	}
+	var owned, protected, unresolved bool
+	err := tx.QueryRowContext(ctx, `SELECT
+ EXISTS(SELECT 1 FROM health_findings f JOIN health_finding_issues l ON l.finding_id=f.id
+ WHERE f.organization_id=? AND f.id=? AND f.fingerprint=? AND f.class='instance' AND l.project_id=? AND l.work_item_id=?),
+ EXISTS(SELECT 1 FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND json_extract(actor_json,'$.kind')='human')
+ OR EXISTS(SELECT 1 FROM native_comments WHERE organization_id=? AND project_id=? AND work_item_id=? AND (json_extract(actor_json,'$.kind')='human' OR json_extract(edited_by_json,'$.kind')='human' OR instr(body,?)>0))
+ OR EXISTS(SELECT 1 FROM conversations c JOIN conversation_questions q ON q.conversation_id=c.id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? AND q.status='pending')
+ OR EXISTS(SELECT 1 FROM leases l JOIN issues i ON i.id=l.issue_id LEFT JOIN native_attempts a ON a.lease_id=l.lease_id WHERE i.organization_id=? AND i.project_id=? AND i.native_id=? AND (l.released_at IS NULL OR a.status='running'))
+ OR EXISTS(SELECT 1 FROM change_issue_links WHERE organization_id=? AND project_id=? AND work_item_id=?),
+ EXISTS(SELECT 1 FROM health_findings f WHERE f.organization_id=? AND f.fingerprint=? AND f.resolved_at IS NULL
+ AND (EXISTS(SELECT 1 FROM json_each(f.projects_json) WHERE value=?) OR EXISTS(SELECT 1 FROM health_finding_issues l WHERE l.finding_id=f.id AND l.project_id=? AND l.work_item_id=?)))`,
+		scope.organization, origin.Source, origin.Fingerprint, scope.project, issue.WorkItemID,
+		scope.organization, scope.project, issue.WorkItemID, scope.organization, scope.project, issue.WorkItemID, "```detent-park",
+		scope.organization, scope.project, issue.WorkItemID, scope.organization, scope.project, issue.WorkItemID,
+		scope.organization, scope.project, issue.WorkItemID, scope.organization, finding.Fingerprint, scope.project, scope.project, issue.WorkItemID).Scan(&owned, &protected, &unresolved)
+	if err != nil || !owned || protected || (resolved != "" && unresolved) || (resolved == "" && !unresolved) {
+		return issue, err
+	}
+	var initial tracker.NativeIssue
+	var raw string
+	err = tx.QueryRowContext(ctx, `SELECT record_json FROM collaboration_versions WHERE organization_id=? AND project_id=? AND record_id=? AND revision=1`, scope.organization, scope.project, issue.WorkItemID).Scan(&raw)
+	if err != nil {
+		return issue, err
+	}
+	if err := json.Unmarshal([]byte(raw), &initial); err != nil {
+		return issue, err
+	}
+	if initial.Actor != scope.actor() || initial.Body != issue.Body || initial.Title != issue.Title {
+		return issue, nil
+	}
+	source, err := readNativeSourceCheckpoint(ctx, tx, scope, string(issue.WorkItemID))
+	if err != nil || source.Checkpoint != nil {
+		return issue, err
+	}
+	var comment string
+	err = tx.QueryRowContext(ctx, `SELECT body FROM native_comments WHERE organization_id=? AND project_id=? AND work_item_id=? AND NOT (json_extract(actor_json,'$.kind')='integration' AND json_extract(actor_json,'$.principal_id')='health_detector') ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, issue.WorkItemID).Scan(&comment)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return issue, err
+	}
+	if strings.Contains(comment, "```detent-park") {
+		return issue, nil
+	}
+	if signal, ok := workpad.SignalFromComment(comment, "", string(scope.project)); ok && (signal.Invalid != nil || signal.Status == workpad.StatusBlocked || signal.HumanAction != "" || len(signal.Blockers) != 0) {
+		return issue, nil
+	}
+	target := "Backlog"
+	if resolved == "" {
+		target = "Todo"
+		var actor, data string
+		err := tx.QueryRowContext(ctx, `SELECT actor_json,data_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned' ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, issue.WorkItemID).Scan(&actor, &data)
+		if errors.Is(err, sql.ErrNoRows) {
+			return issue, nil
+		}
+		if err != nil {
+			return issue, err
+		}
+		var lastActor tracker.Actor
+		var transition tracker.CollaborationData
+		if err := json.Unmarshal([]byte(actor), &lastActor); err != nil {
+			return issue, err
+		}
+		if err := json.Unmarshal([]byte(data), &transition); err != nil {
+			return issue, err
+		}
+		if lastActor != scope.actor() || transition.ToState != "Backlog" || transition.Operation != "health_detector" || transition.Revision != issue.Revision {
+			return issue, nil
+		}
+	}
+	project, err := readNativeProject(ctx, tx, scope)
+	if err != nil {
+		return issue, err
+	}
+	if !slices.ContainsFunc(project.States, func(state tracker.NativeState) bool {
+		return state.Name == target && !state.Terminal && !state.OperatorOnly && state.Dispatchable == (target == "Todo")
+	}) {
+		return issue, nil
+	}
+	if err := validateNativeWorkflowTransition(project.States, issue.State, target, apiScopeWorker); err != nil {
+		return issue, nil
+	}
+	if err := requireNativeEdit(issue, issue.Revision); err != nil {
+		return issue, err
+	}
+	detail, err := json.Marshal(struct {
+		FindingID   string `json:"finding_id"`
+		Fingerprint string `json:"fingerprint"`
+		ObservedAt  string `json:"observed_at"`
+		ResolvedAt  string `json:"resolved_at,omitempty"`
+	}{finding.ID, finding.Fingerprint, formatHubTime(finding.LastSeenAt), resolved})
+	if err != nil {
+		return issue, err
+	}
+	from := issue.State
+	issue.State = target
+	return persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: target, Reason: "worker_progress", Operation: "health_detector", ReasonDetail: string(detail)}, now)
 }
