@@ -5,6 +5,11 @@ on:
     - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
+      force:
+        description: Run the full suite even when this develop SHA has completed CI
+        required: false
+        type: boolean
+        default: false
       fail_job:
         description: Force one job to fail after its normal checks
         required: false
@@ -13,7 +18,6 @@ on:
         options: [none, verify-fast]
 
 permissions:
-  actions: read
   contents: read
 
 concurrency:
@@ -23,6 +27,9 @@ concurrency:
 jobs:
   preflight:
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     outputs:
       should_run: ${{ steps.scope.outputs.should_run }}
       develop_sha: ${{ steps.scope.outputs.develop_sha }}
@@ -35,6 +42,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force || false }}
+          FAIL_JOB: ${{ inputs.fail_job || 'none' }}
         run: |
           set -euo pipefail
           develop_sha="$(git ls-remote origin refs/heads/develop | cut -f1)"
@@ -42,16 +51,20 @@ jobs:
           echo "develop_sha=$develop_sha" >> "$GITHUB_OUTPUT"
           echo "Develop SHA: $develop_sha"
           should_run=true
-          if [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
-            completed_run_count="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=schedule&status=completed&head_sha=$develop_sha&per_page=1" --jq .total_count)"
-            if (( completed_run_count > 0 )); then
-              should_run=false
-              echo "Preflight decision: skip; found $completed_run_count completed scheduled CI run(s) for $develop_sha"
-            else
-              echo "Preflight decision: run; no completed scheduled CI run exists for $develop_sha"
-            fi
+          force="$FORCE"
+          if [[ "$FAIL_JOB" != none ]]; then
+            force=true
+          fi
+          if [[ "$force" == true ]]; then
+            echo "Preflight decision: run; develop_sha=$develop_sha; current_run_id=$GITHUB_RUN_ID; force=true; fail_job=$FAIL_JOB"
           else
-            echo "Preflight decision: run; workflow_dispatch always runs the full suite"
+            prior_run_id="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?status=completed&head_sha=$develop_sha&per_page=100" | jq -r --arg current_run_id "$GITHUB_RUN_ID" '[.[].workflow_runs[] | select((.id | tostring) != $current_run_id and .conclusion != "cancelled")] | first | .id // empty')"
+            if [[ -n "$prior_run_id" ]]; then
+              should_run=false
+              echo "Preflight decision: skip; develop_sha=$develop_sha; prior_run_id=$prior_run_id; current_run_id=$GITHUB_RUN_ID"
+            else
+              echo "Preflight decision: run; develop_sha=$develop_sha; prior_run_id=none; current_run_id=$GITHUB_RUN_ID"
+            fi
           fi
           echo "should_run=$should_run" >> "$GITHUB_OUTPUT"
 

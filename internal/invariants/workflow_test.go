@@ -1,6 +1,7 @@
 package invariants
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -17,7 +18,8 @@ func checkWorkflow(data []byte) error {
 		On          map[string]yaml.Node `yaml:"on"`
 		Permissions map[string]string    `yaml:"permissions"`
 		Jobs        map[string]struct {
-			If string `yaml:"if"`
+			If          string            `yaml:"if"`
+			Permissions map[string]string `yaml:"permissions"`
 		} `yaml:"jobs"`
 	}
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
@@ -26,8 +28,11 @@ func checkWorkflow(data []byte) error {
 	if len(workflow.On) != 2 {
 		return errors.New("INV-5 CI must trigger only on a schedule and manual dispatch")
 	}
-	if workflow.Permissions["actions"] != "read" {
-		return errors.New("INV-5 scheduled preflight must have read-only Actions access")
+	if _, ok := workflow.Permissions["actions"]; ok {
+		return errors.New("INV-5 Actions access must be scoped to preflight")
+	}
+	if permissions := workflow.Jobs["preflight"].Permissions; len(permissions) != 2 || permissions["actions"] != "read" || permissions["contents"] != "read" {
+		return errors.New("INV-5 preflight must have read-only Actions and contents access")
 	}
 	for _, event := range []string{"schedule", "workflow_dispatch"} {
 		if _, ok := workflow.On[event]; !ok {
@@ -40,6 +45,23 @@ func checkWorkflow(data []byte) error {
 	scheduleNode := workflow.On["schedule"]
 	if err := scheduleNode.Decode(&schedule); err != nil || len(schedule) != 1 || schedule[0].Cron != "17 * * * *" {
 		return errors.New("INV-5 CI must run hourly at minute 17")
+	}
+	var dispatch struct {
+		Inputs map[string]struct {
+			Type    string `yaml:"type"`
+			Default any    `yaml:"default"`
+		} `yaml:"inputs"`
+	}
+	dispatchNode := workflow.On["workflow_dispatch"]
+	if err := dispatchNode.Decode(&dispatch); err != nil {
+		return err
+	}
+	force, ok := dispatch.Inputs["force"]
+	if !ok || force.Type != "boolean" || force.Default != false {
+		return errors.New("INV-5 workflow_dispatch must expose force defaulting to false")
+	}
+	if _, ok := dispatch.Inputs["fail_job"]; !ok {
+		return errors.New("INV-5 workflow_dispatch must preserve the fail_job input")
 	}
 	for _, required := range []string{"preflight", "invariants", "lint", "verify-fast", "generated", "app", "verify-race", "test-cover", "security", "browser-visual-shard", "installer-smoke", "goreleaser-snapshot", "finalize"} {
 		if _, ok := workflow.Jobs[required]; !ok {
@@ -87,8 +109,11 @@ func TestRepositoryWorkflow(t *testing.T) {
 	var workflow struct {
 		Jobs map[string]struct {
 			Steps []struct {
-				ID  string `yaml:"id"`
-				Run string `yaml:"run"`
+				ID   string            `yaml:"id"`
+				Name string            `yaml:"name"`
+				If   string            `yaml:"if"`
+				Run  string            `yaml:"run"`
+				Env  map[string]string `yaml:"env"`
 			} `yaml:"steps"`
 		} `yaml:"jobs"`
 	}
@@ -96,22 +121,52 @@ func TestRepositoryWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	var script string
+	var scopeEnv map[string]string
 	for _, step := range workflow.Jobs["preflight"].Steps {
 		if step.ID == "scope" {
 			script = step.Run
+			scopeEnv = step.Env
 		}
 	}
 	if script == "" {
 		t.Fatal("preflight scope script missing")
 	}
+	if scopeEnv["FORCE"] != "${{ inputs.force || false }}" || scopeEnv["FAIL_JOB"] != "${{ inputs.fail_job || 'none' }}" {
+		t.Fatalf("preflight input wiring = %v", scopeEnv)
+	}
+	var failureProbeIf string
+	for _, step := range workflow.Jobs["verify-fast"].Steps {
+		if step.Name == "Force acceptance probe failure" {
+			failureProbeIf = step.If
+		}
+	}
+	if failureProbeIf != "github.event_name == 'workflow_dispatch' && inputs.fail_job == 'verify-fast'" {
+		t.Fatalf("fail_job probe condition = %q", failureProbeIf)
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is required for the preflight fixture")
+	}
+	type priorRun struct {
+		ID         int    `json:"id"`
+		Event      string `json:"event"`
+		Conclusion string `json:"conclusion"`
+	}
 	for _, tt := range []struct {
-		name, event, priorRuns, wantDecision string
-		wantRun                              bool
-		wantGitHubQuery                      bool
+		name, event, currentRunID string
+		force                     bool
+		failJob                   string
+		priorRuns                 []priorRun
+		wantRun                   bool
+		wantGitHubQuery           bool
+		wantPriorRunID            string
 	}{
-		{name: "scheduled SHA already has a completed run", event: "schedule", priorRuns: "1", wantDecision: "skip", wantGitHubQuery: true},
-		{name: "scheduled SHA is new", event: "schedule", priorRuns: "0", wantDecision: "run", wantRun: true, wantGitHubQuery: true},
-		{name: "manual dispatch always runs", event: "workflow_dispatch", wantDecision: "run", wantRun: true},
+		{name: "dispatch on validated SHA skips", event: "workflow_dispatch", currentRunID: "900", priorRuns: []priorRun{{ID: 123, Event: "schedule", Conclusion: "success"}}, wantGitHubQuery: true, wantPriorRunID: "123"},
+		{name: "dispatch with force runs", event: "workflow_dispatch", currentRunID: "900", force: true, priorRuns: []priorRun{{ID: 123, Event: "schedule", Conclusion: "success"}}, wantRun: true},
+		{name: "cancelled prior run does not skip", event: "workflow_dispatch", currentRunID: "900", priorRuns: []priorRun{{ID: 123, Event: "schedule", Conclusion: "cancelled"}}, wantRun: true, wantGitHubQuery: true},
+		{name: "new SHA runs", event: "schedule", currentRunID: "900", wantRun: true, wantGitHubQuery: true},
+		{name: "fail_job implies force", event: "workflow_dispatch", currentRunID: "900", failJob: "verify-fast", priorRuns: []priorRun{{ID: 123, Event: "schedule", Conclusion: "success"}}, wantRun: true},
+		{name: "current run is excluded", event: "workflow_dispatch", currentRunID: "900", priorRuns: []priorRun{{ID: 900, Event: "workflow_dispatch", Conclusion: "success"}}, wantRun: true, wantGitHubQuery: true},
+		{name: "schedule deduplicates against dispatch run", event: "schedule", currentRunID: "900", priorRuns: []priorRun{{ID: 123, Event: "workflow_dispatch", Conclusion: "failure"}}, wantGitHubQuery: true, wantPriorRunID: "123"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -128,17 +183,36 @@ esac
 set -euo pipefail
 printf 'gh %s\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in
-  *'actions/workflows/ci.yml/runs?'*) printf '%s\n' "$FIXTURE_PRIOR_RUNS" ;;
+  *'actions/workflows/ci.yml/runs?'*) cat "$FIXTURE_RUNS_FILE" ;;
   *) exit 1 ;;
 esac
 `
 			if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(gh), 0o755); err != nil {
 				t.Fatal(err)
 			}
+			priorRuns := tt.priorRuns
+			if priorRuns == nil {
+				priorRuns = []priorRun{}
+			}
+			fixture, err := json.Marshal([]struct {
+				WorkflowRuns []priorRun `json:"workflow_runs"`
+			}{{WorkflowRuns: priorRuns}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixturePath := filepath.Join(dir, "runs.json")
+			if err := os.WriteFile(fixturePath, fixture, 0o600); err != nil {
+				t.Fatal(err)
+			}
 			outputPath := filepath.Join(dir, "output")
 			cmd := exec.CommandContext(t.Context(), "bash", "-c", script)
 			logPath := filepath.Join(dir, "calls")
-			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "GITHUB_EVENT_NAME="+tt.event, "GITHUB_OUTPUT="+outputPath, "GITHUB_REPOSITORY=digitaldrywood/detent", "FIXTURE_PRIOR_RUNS="+tt.priorRuns, "FIXTURE_LOG="+logPath)
+			force := map[bool]string{true: "true", false: "false"}[tt.force]
+			failJob := tt.failJob
+			if failJob == "" {
+				failJob = "none"
+			}
+			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "GITHUB_EVENT_NAME="+tt.event, "GITHUB_OUTPUT="+outputPath, "GITHUB_REPOSITORY=digitaldrywood/detent", "GITHUB_RUN_ID="+tt.currentRunID, "FORCE="+force, "FAIL_JOB="+failJob, "FIXTURE_RUNS_FILE="+fixturePath, "FIXTURE_LOG="+logPath)
 			preflightLog, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("preflight: %v: %s", err, preflightLog)
@@ -160,17 +234,24 @@ esac
 			}
 			if tt.wantGitHubQuery {
 				query := string(logs)
-				for _, required := range []string{"event=schedule", "status=completed", "head_sha=0123456789012345678901234567890123456789"} {
+				for _, required := range []string{"status=completed", "head_sha=0123456789012345678901234567890123456789"} {
 					if !strings.Contains(query, required) {
 						t.Fatalf("prior-run query omitted %q: %s", required, query)
 					}
 				}
-				if strings.Contains(query, "conclusion=") {
-					t.Fatalf("prior-run query filtered on conclusion: %s", query)
+				if strings.Contains(query, "event=") {
+					t.Fatalf("prior-run query filtered on event: %s", query)
 				}
 			}
-			if !strings.Contains(string(preflightLog), "Develop SHA: 0123456789012345678901234567890123456789") || !strings.Contains(string(preflightLog), "Preflight decision: "+tt.wantDecision) {
+			if !strings.Contains(string(preflightLog), "Develop SHA: 0123456789012345678901234567890123456789") || !strings.Contains(string(preflightLog), "current_run_id="+tt.currentRunID) {
 				t.Fatalf("preflight log omitted compared SHA or decision: %s", preflightLog)
+			}
+			if tt.wantPriorRunID != "" && !strings.Contains(string(preflightLog), "prior_run_id="+tt.wantPriorRunID) {
+				t.Fatalf("preflight log omitted qualifying prior run id %s: %s", tt.wantPriorRunID, preflightLog)
+			}
+			wantDecision := map[bool]string{true: "run", false: "skip"}[tt.wantRun]
+			if !strings.Contains(string(preflightLog), "Preflight decision: "+wantDecision) {
+				t.Fatalf("preflight log omitted decision %s: %s", wantDecision, preflightLog)
 			}
 			t.Logf("preflight log:\n%s", preflightLog)
 		})
