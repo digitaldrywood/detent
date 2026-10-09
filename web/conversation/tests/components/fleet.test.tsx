@@ -26,7 +26,7 @@ const ROUTING: RunnerRouting = {
   isolation_tier: "sandbox", host_services: ["tcp:127.0.0.1:8080"],
   availability: { timezone: "America/Chicago", windows: ["Mon-Fri 09:00-17:00", "Sat-Sun 00:00-24:00"], hard_deadline: "30m" },
 };
-const RUNNER = { can_edit_projects: true, ...FLEET.runners[0]!, claim_refusal_reason: "", routing: ROUTING, revision: 7 };
+const RUNNER = { can_edit_projects: true, ...FLEET.runners[0]!, editable: true, claim_refusal_reason: "", routing: ROUTING, revision: 7 };
 const PROJECTS = [{ id: "prj_known", name: "Known project" }, { id: "prj_second", name: "Second project" }];
 
 function renderSection(fleet: FleetResponse = FLEET) {
@@ -337,6 +337,18 @@ describe("runner details", () => {
     await waitFor(() => expect(save).toHaveBeenCalledWith(RUNNER, ROUTING));
   });
 
+  it("saves a permitted runner when unrelated projects prevent org-wide editing", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const runner = { ...RUNNER, editable: true, can_edit_projects: false, routing: { ...ROUTING, state: "draining" } };
+    render(<RunnersSectionView fleet={{ ...FLEET, editable: false, runners: [runner] }} projects={PROJECTS} onSaveRouting={save} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    expect((screen.getByRole("checkbox", { name: "Known project" }) as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("radio", { name: "Active Takes new work" }));
+    fireEvent.click(screen.getByRole("button", { name: "Decrease jobs at once" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(runner, expect.objectContaining({ state: "active", capacity_limit: 5, project_ids: ROUTING.project_ids })));
+  });
+
   it("edits allowed projects and lets unknown projects be reselected", async () => {
     const save = vi.fn().mockResolvedValue(undefined);
     render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
@@ -377,8 +389,9 @@ describe("runner details", () => {
     })));
   });
 
-  it.each([false, true])("renders the same sections without controls when editing is unavailable (fleet editable: %s)", (editable) => {
-    render(<RunnersSectionView fleet={{ ...FLEET, editable, runners: [RUNNER] }} projects={PROJECTS} {...(!editable ? { onSaveRouting: vi.fn() } : {})} />);
+  it.each([false, true])("shows routing and missing grants when this runner is read-only (fleet editable: %s)", (editable) => {
+    const reason = 'Project "Second project" lacks a manage_runner grant; ask an owner or admin.';
+    render(<RunnersSectionView fleet={{ ...FLEET, editable, runners: [{ ...RUNNER, editable: false, edit_refusal_reason: reason }] }} projects={PROJECTS} onSaveRouting={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
     const sheet = screen.getByRole("dialog");
     expect(sheet.querySelectorAll("input, select, textarea")).toHaveLength(0);
@@ -386,9 +399,13 @@ describe("runner details", () => {
     for (const name of ["Taking work", "Capacity", "Allowed projects", "Tags", "Schedule", "Agent access", "Running work", "Provider accounts"]) {
       expect(within(sheet).getByRole("heading", { name })).toBeTruthy();
     }
+    expect(within(sheet).getByRole("status").textContent).toContain(reason);
     expect(sheet.textContent).toContain("Known project");
     expect(sheet.textContent).toContain("prj_unknown");
+    expect(sheet.textContent).toContain("linux");
+    expect(sheet.textContent).toContain("tcp:127.0.0.1:8080");
     expect(sheet.textContent).toContain("Sat-Sun 00:00-24:00");
+    expect(sheet.textContent).not.toContain("not reported");
   });
 
   it("shows project checkout failures and the authentication command on the runner sheet", () => {

@@ -364,6 +364,26 @@ machine images or share it across hosts. Multiple logical runners on one host
 share the same machine ID and capacity ceiling through explicit enrollment
 approval. Hardware attestation is not implemented.
 
+### Runner routing authority
+
+Fleet reads include each runner's routing, revision, editability and, when
+editing is refused, the missing authority. Routing remains visible to
+organization viewers; work details remain restricted to readable projects.
+
+Owners and admins can change any runner's routing. Members need `manage_runner`
+on every currently allowed project and every project with an active lease on
+that runner. Adding a project also requires its `manage_runner` grant. These
+checks run again inside the mutation transaction. Unrelated projects do not
+restrict runner routing edits, including taking-work state and capacity.
+Organization-scoped runners can serve every organization project, so editing
+them or switching to organization scope requires grants on every current
+organization project.
+An unassigned runner with no active leases requires an owner or admin.
+Changing allowed projects additionally requires ownership of the runner.
+Organization-wide enrollment, removal and machine routing retain their
+all-project runner-management requirement. Scoped API keys must also cover
+every affected project and allow writes.
+
 ### Register a runner with one command
 
 The Enroll dialog in the organization's runner settings asks for a display name

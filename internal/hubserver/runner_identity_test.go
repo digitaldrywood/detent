@@ -100,7 +100,7 @@ func TestRunnerRemoval(t *testing.T) {
 				}
 			}
 			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
-			fleet, err := f.service.hostedFleetRunners(t.Context(), apiCredential{}, map[tracker.ProjectID]bool{f.project.ID: true}, false)
+			fleet, err := f.service.hostedFleetRunners(t.Context(), apiCredential{}, map[tracker.ProjectID]bool{f.project.ID: true})
 			if err != nil {
 				t.Fatal(err)
 			}

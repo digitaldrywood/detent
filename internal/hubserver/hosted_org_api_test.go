@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -408,6 +409,154 @@ func TestHostedProjectRank(t *testing.T) {
 			}
 			if !slices.Equal(after.ProjectIDs, expected) || after.Revision != revision {
 				t.Fatalf("rank changed incorrectly: %#v", after)
+			}
+		})
+	}
+}
+
+func TestHostedRunnerRoutingAuthority(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, role                                                 string
+		allGrants, shared, unassigned, addProject, running, revoke bool
+		organizationScope, widenScope, narrowScope, runningGranted bool
+		editable                                                   bool
+	}{
+		{name: "owner", role: "owner", shared: true, editable: true},
+		{name: "admin", role: "admin", shared: true, editable: true},
+		{name: "member all grants", role: "member", allGrants: true, shared: true, editable: true},
+		{name: "member unrelated project without grant", role: "member", editable: true},
+		{name: "member missing served project grant", role: "member", shared: true},
+		{name: "viewer", role: "viewer"},
+		{name: "member missing grant for running work", role: "member", running: true},
+		{name: "member grant revoked after fleet read", role: "member", editable: true, revoke: true},
+		{name: "member unassigned runner", role: "member", unassigned: true},
+		{name: "owner unassigned runner", role: "owner", unassigned: true, editable: true},
+		{name: "member cannot add ungranted project", role: "member", addProject: true, editable: true},
+		{name: "member organization scope all grants", role: "member", organizationScope: true, allGrants: true, editable: true},
+		{name: "member organization scope missing grant", role: "member", organizationScope: true},
+		{name: "member organization scope with work on granted project", role: "member", organizationScope: true, running: true, runningGranted: true},
+		{name: "member cannot widen to organization scope", role: "member", widenScope: true, editable: true},
+		{name: "member can widen to organization scope with all grants", role: "member", widenScope: true, allGrants: true, editable: true},
+		{name: "member can narrow organization scope with all grants", role: "member", organizationScope: true, narrowScope: true, allGrants: true, editable: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
+			account := "viewer"
+			if test.role == "owner" {
+				account = "owner"
+			} else if test.role != "viewer" {
+				f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/members/membership_user_browser_viewer/role", map[string]any{"role": test.role}, http.StatusOK)
+			}
+			for _, project := range []string{f.project, f.privateProject} {
+				if project == f.privateProject && !test.allGrants {
+					continue
+				}
+				f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/members/membership_user_browser_viewer/grants", map[string]any{
+					"project_id": project, "write": true, "runner": true, "idempotency_key": "routing-grant-" + project,
+				}, http.StatusOK)
+			}
+			binding := runnerauth.NewBinding()
+			projects := []tracker.ProjectID{tracker.ProjectID(f.project)}
+			if test.shared {
+				projects = append(projects, tracker.ProjectID(f.privateProject))
+			}
+			var enrollment runnerauth.Enrollment
+			browserHostedDecode(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/runner-enrollments", runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: projects, Operations: []string{runnerauth.Read}, TTLSeconds: 60}, http.StatusCreated), &enrollment)
+			credential, err := apikey.GenerateToken()
+			if err != nil {
+				t.Fatal(err)
+			}
+			redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "routing-host", DisplayName: "Scoped runner", Capacity: 2, Version: "test"}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, browserHostedOrganizationBase+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
+			var fleet hostedFleetResponse
+			browserHostedDecode(t, f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/fleet", nil, http.StatusOK), &fleet)
+			change := runnerauth.RoutingChange{ExpectedRevision: fleet.Runners[0].Revision, Routing: *fleet.Runners[0].Routing}
+			change.State = "draining"
+			change.Tags = []string{"build", "mac"}
+			if test.unassigned {
+				change.ProjectIDs = []tracker.ProjectID{}
+			}
+			if test.organizationScope {
+				change.Scope = "organization"
+				change.ProjectIDs = []tracker.ProjectID{}
+			}
+			slices.Sort(change.ProjectIDs)
+			var stored runnerauth.Runner
+			browserHostedDecode(t, f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/runners/"+binding.RunnerID+"/routing", change, http.StatusOK), &stored)
+			if test.running {
+				var issue tracker.NativeIssue
+				runningProject := f.privateProject
+				if test.runningGranted {
+					runningProject = f.project
+				}
+				browserHostedDecode(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/projects/"+runningProject+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "private-running"}, Title: "Running work", State: "Todo"}, http.StatusOK), &issue)
+				now := f.service.config.now()
+				stamp := formatHubTime(now)
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT 'routing-lease',id,?,'routing-session',?,?,?,?,? FROM issues WHERE native_id=?`, binding.MachineID, formatHubTime(now.Add(time.Hour)), stamp, stamp, stamp, stamp, issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO lease_runners(lease_id,runner_id) VALUES('routing-lease',?)", binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.addProject || test.widenScope || test.narrowScope {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_enrollments SET created_by=(SELECT principal_id FROM hosted_members WHERE user_id='user_browser_viewer') WHERE id=?", enrollment.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			browserHostedDecode(t, f.api(t, account, http.MethodGet, browserHostedOrganizationBase+"/fleet", nil, http.StatusOK), &fleet)
+			view := fleet.Runners[0]
+			if view.Editable != test.editable || view.Routing == nil || view.Routing.State != "draining" || !slices.Equal(view.Routing.Tags, []string{"build", "mac"}) || !slices.Equal(view.Routing.ProjectIDs, change.ProjectIDs) {
+				t.Fatalf("fleet runner = %#v, routing = %#v, want editable %v", view, view.Routing, test.editable)
+			}
+			if !test.editable && (!strings.Contains(view.EditRefusalReason, "owner or admin") || !test.unassigned && !strings.Contains(view.EditRefusalReason, "manage_runner")) {
+				t.Fatalf("missing authority explanation: %q", view.EditRefusalReason)
+			}
+			if (test.shared || test.organizationScope) && test.role == "member" && !test.allGrants && !strings.Contains(view.EditRefusalReason, f.privateProject) {
+				t.Fatalf("refusal does not identify missing project grant: %q", view.EditRefusalReason)
+			}
+			if test.role == "member" && !test.allGrants && !test.shared && !test.unassigned && fleet.Editable {
+				t.Fatal("partial member unexpectedly gained organization-wide authority")
+			}
+			change = runnerauth.RoutingChange{ExpectedRevision: view.Revision, Routing: *view.Routing}
+			change.State = "active"
+			change.CapacityLimit = 1
+			status := http.StatusOK
+			if !test.editable {
+				status = http.StatusNotFound
+			}
+			if test.revoke {
+				f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/members/membership_user_browser_viewer/grants", map[string]any{"project_id": f.project, "revoke": true, "idempotency_key": "routing-revoke"}, http.StatusOK)
+				status = http.StatusNotFound
+			}
+			if test.addProject {
+				change.ProjectIDs = append(change.ProjectIDs, tracker.ProjectID(f.privateProject))
+				status = http.StatusForbidden
+			}
+			if test.widenScope {
+				change.Scope = "organization"
+				change.ProjectIDs = []tracker.ProjectID{}
+				if !test.allGrants {
+					status = http.StatusForbidden
+				}
+			}
+			if test.narrowScope {
+				change.Scope = "projects"
+				change.ProjectIDs = []tracker.ProjectID{tracker.ProjectID(f.project)}
+			}
+			f.api(t, account, http.MethodPut, browserHostedOrganizationBase+"/runners/"+binding.RunnerID+"/routing", change, status)
+			browserHostedDecode(t, f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/fleet", nil, http.StatusOK), &fleet)
+			wantState, wantCapacity := "draining", 2
+			if status == http.StatusOK {
+				wantState, wantCapacity = "active", 1
+			}
+			if fleet.Runners[0].Routing.State != wantState || fleet.Runners[0].Routing.CapacityLimit != wantCapacity {
+				t.Fatalf("stored routing after mutation = %#v", fleet.Runners[0].Routing)
+			}
+			if status == http.StatusOK && (fleet.Runners[0].Routing.Scope != change.Scope || !slices.Equal(fleet.Runners[0].Routing.ProjectIDs, change.ProjectIDs)) {
+				t.Fatalf("stored scope after mutation = %#v", fleet.Runners[0].Routing)
 			}
 		})
 	}
