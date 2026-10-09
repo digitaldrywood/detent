@@ -956,7 +956,7 @@ type databaseLockWaitHandler struct {
 func (h databaseLockWaitHandler) Enabled(context.Context, slog.Level) bool { return true }
 
 func (h databaseLockWaitHandler) Handle(ctx context.Context, record slog.Record) error {
-	if record.Message == "hosted service event" {
+	if record.Message == "waiting for previous tenant Hub database ownership" {
 		select {
 		case h.waiting <- struct{}{}:
 		default:
