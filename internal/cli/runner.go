@@ -540,6 +540,7 @@ func publishSnapshots(
 	interval time.Duration,
 	now func() time.Time,
 	runnerHeartbeat runnerHeartbeatSource,
+	heartbeatReady <-chan struct{},
 	updateSources ...autoUpdateStatusSource,
 ) {
 	if registry == nil || snapshotPublisher == nil {
@@ -579,7 +580,14 @@ func publishSnapshots(
 			default:
 			}
 		}
-		if runnerHeartbeat != nil && heartbeatDone == nil && ctx.Err() == nil {
+		if heartbeatReady != nil {
+			select {
+			case <-heartbeatReady:
+				heartbeatReady = nil
+			default:
+			}
+		}
+		if runnerHeartbeat != nil && heartbeatReady == nil && heartbeatDone == nil && ctx.Err() == nil {
 			heartbeatDone = make(chan error, 1)
 			go func(result chan<- error) {
 				result <- runnerHeartbeat.Heartbeat(ctx)
@@ -589,6 +597,8 @@ func publishSnapshots(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-heartbeatReady:
+			heartbeatReady = nil
 		}
 	}
 }

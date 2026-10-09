@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -942,6 +943,7 @@ func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 				nil,
 				5*time.Millisecond,
 				func() time.Time { return now },
+				nil,
 				nil,
 			)
 		}()
@@ -2760,6 +2762,75 @@ func (f runnerHeartbeatFunc) Heartbeat(ctx context.Context) error {
 	return f(ctx)
 }
 
+func TestStartProjectsBeforeHeartbeat(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		startErr       error
+		wantHeartbeats int32
+	}{
+		{name: "heartbeat runs after project start", wantHeartbeats: 1},
+		{name: "failed project start never heartbeats", startErr: errors.New("project start failed")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				heartbeatLock := make(chan struct{}, 1)
+				operationLock := make(chan struct{}, 1)
+				heartbeatHeld := make(chan struct{}, 1)
+				var heartbeats atomic.Int32
+				reporter := runnerHeartbeatFunc(func(context.Context) error {
+					heartbeatLock <- struct{}{}
+					defer func() { <-heartbeatLock }()
+					select {
+					case heartbeatHeld <- struct{}{}:
+					default:
+					}
+					operationLock <- struct{}{}
+					<-operationLock
+					heartbeats.Add(1)
+					return nil
+				})
+				snapshots := hub.New[telemetry.Snapshot]()
+				published := false
+				start := func(context.Context) error {
+					operationLock <- struct{}{}
+					defer func() { <-operationLock }()
+					select {
+					case <-heartbeatHeld:
+					case <-time.After(time.Second):
+					}
+					_, published = snapshots.Latest()
+					select {
+					case heartbeatLock <- struct{}{}:
+						<-heartbeatLock
+					case <-time.After(time.Hour):
+						return errors.New("project start deadlocked on the runner heartbeat")
+					}
+					return tt.startErr
+				}
+				registry := projectpkg.NewRegistry()
+				if err := registry.SetPending(globalconfig.Project{ID: "starting"}, projectpkg.RuntimeError{Message: "starting"}); err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				var workers sync.WaitGroup
+				err := startProjectsBeforeHeartbeat(ctx, &workers, start, func(heartbeatReady <-chan struct{}) {
+					publishSnapshots(ctx, registry, nil, snapshots, nil, nil, nil, "", nil, time.Minute, time.Now, reporter, heartbeatReady)
+				})
+				if !errors.Is(err, tt.startErr) {
+					t.Fatalf("startProjectsBeforeHeartbeat() error = %v, want %v", err, tt.startErr)
+				}
+				synctest.Wait()
+				if !published || heartbeats.Load() != tt.wantHeartbeats {
+					t.Fatalf("snapshot published during start = %t, heartbeats = %d, want %d", published, heartbeats.Load(), tt.wantHeartbeats)
+				}
+				cancel()
+				workers.Wait()
+			})
+		})
+	}
+}
+
 func TestPublishSnapshotsReportsPendingRunner(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		registry := projectpkg.NewRegistry()
@@ -2778,7 +2849,7 @@ func TestPublishSnapshotsReportsPendingRunner(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			publishSnapshots(ctx, registry, nil, snapshots, nil, nil, nil, "", nil, time.Second, time.Now, reporter)
+			publishSnapshots(ctx, registry, nil, snapshots, nil, nil, nil, "", nil, time.Second, time.Now, reporter, nil)
 		}()
 		synctest.Wait()
 		time.Sleep(2 * time.Second)
