@@ -30,3 +30,8 @@ type Summary struct {
 	DiskTotalMinBytes       uint64    `json:"disk_total_min_bytes"`
 	DiskSampleCount         uint64    `json:"disk_sample_count"`
 }
+
+type Acknowledgment struct {
+	Hour      time.Time `json:"hour"`
+	SegmentID time.Time `json:"segment_id"`
+}

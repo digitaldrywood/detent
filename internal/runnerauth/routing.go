@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/activehours"
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -52,6 +53,7 @@ type ClaimState struct {
 }
 
 type RoutingSnapshot struct {
+	HostMetricsAcknowledged     []hostmetrics.Acknowledgment `json:"host_metrics_acknowledged,omitempty"`
 	Changes                     *HeartbeatChanges            `json:"changes,omitempty"`
 	TargetRunnerVersion         string                       `json:"target_runner_version,omitempty"`
 	ClaimState                  *ClaimState                  `json:"claim_state,omitempty"`

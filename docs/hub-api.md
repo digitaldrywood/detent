@@ -604,6 +604,26 @@ their display names and hostnames in `runner_names` for historical run labels.
 returns only `runner_names`, including active and removed identities. Name
 refreshes use this projection without reading Fleet quotas, routing or leases;
 the ordinary `GET /fleet` response retains its full usage contract.
+
+`GET /fleet?include=host_metrics&runner_id={runner}` reads one active runner's
+hourly host history with the same organization membership and runner visibility
+as the fleet. Optional `from` and `to` RFC3339 timestamps select an inclusive
+start and exclusive end, with a positive range of at most 30 days and at most
+720 rows. The default is the last seven days. Expired hours are omitted.
+Responses include metric counts, sums, extrema and averages derived from each
+metric's count; unavailable averages are omitted.
+
+Native Hubs advertise `runner_host_metrics` before runners include optional
+`host_metrics` in a heartbeat. A batch contains at most 24 summaries of at most
+1 KiB each. `host_metrics_acknowledged` identifies processed hours and restart
+segments in the heartbeat response. Each runner/hour stores one aggregate with
+at most 128 segment IDs; repeats do not write or change the aggregate. Once the
+segment limit is reached, additional segments are dropped, logged and
+acknowledged. Malformed or oversized summaries are dropped and logged without
+rejecting the heartbeat. Expired retries are acknowledged without storage, and
+existing native retention maintenance removes hours outside the 720-hour UTC
+window. Shutdown partials use ordinary heartbeat availability and lease rules.
+
 The existing `revoke_runner_identity` MCP operation performs the same removal.
 
 Hub time decides validity, with an inclusive start and exclusive expiry boundary.

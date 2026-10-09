@@ -216,6 +216,7 @@ func recordRunnerEvent(ctx context.Context, tx *sql.Tx, runner, actor, kind stri
 
 func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	var request struct {
+		HostMetrics          json.RawMessage                     `json:"host_metrics,omitempty"`
 		ChangeCursor         *string                             `json:"change_cursor,omitempty"`
 		Admission            *tracker.NativeAdmissionObservation `json:"admission,omitempty"`
 		SpriteName           string                              `json:"sprite_name,omitempty"`
@@ -360,6 +361,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			if err != nil {
 				return nil, err
 			}
+			snapshot.HostMetricsAcknowledged = s.mergeRunnerHostMetrics(ctx, tx, scope, request.HostMetrics, now)
 			if err := readRunnerClaimState(ctx, tx, scope, &snapshot, now); err != nil {
 				return nil, err
 			}

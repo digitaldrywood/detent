@@ -55,6 +55,7 @@ type SchedulerConfig struct {
 
 type Scheduler struct {
 	hostMetrics           *hostmetrics.Collector
+	hostMetricsMu         sync.Mutex
 	refreshProjects       func(context.Context, *Scheduler) error
 	projectsMu            sync.RWMutex
 	projectConfiguration  func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration

@@ -22,6 +22,8 @@ const NativeProtocolMajor = 2
 const NativeDispatchPriorityCapability = "dispatch_priority"
 
 const NativeDispatchWaitCapability = "native_dispatch_wait"
+const NativeHostMetricsCapability = "runner_host_metrics"
+
 const NativeHeartbeatChangesCapability = "native_heartbeat_changes"
 
 const NativeProviderCapacityCapability = "provider_capacity_reservations"

@@ -221,15 +221,11 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	machine.LocalChecks = localChecks
 	machine.Admission = admission
 	machine.CheckoutRepository = repository
-	if s.client.runner != nil && !last.IsZero() {
-		if err := source.client.HeartbeatMachine(ctx, machine); err != nil {
-			return err
-		}
-	} else {
-		if err := source.client.RegisterMachine(ctx, machine); err != nil {
-			return err
-		}
+	if err := s.sendNativeMachineHeartbeat(ctx, source, machine, last.IsZero()); err != nil {
+		return err
 	}
+	machine.HostMetrics = nil
+
 	if projectConfig != nil {
 		if request := s.client.runner.projectConfigurationRequest(); request != nil && request.ProjectID == string(project) && request.RequestID != projectConfig.RequestID {
 			view := projectOwner(ctx, string(project), request)
