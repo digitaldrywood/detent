@@ -43,6 +43,9 @@ func TestINV13BoardCardContent(t *testing.T) {
 			}
 			view.TrackerSummary = "Tracker snapshot · 12m ago"
 			view.AgeFooter = "4h"
+			view.PriorityBadge = "High"
+			view.RuntimeComfyText = "4 attempts · 320k tokens · last turn diagnostic"
+			view.ParkSummary = "2 parked attempts"
 			view.Signals = boardCardSignals(view, tt.card)
 			rendered := renderBoardComponent(t, boardCardView2(view))
 			for _, marker := range []string{"data-board-dispatch-evidence", "data-board-tracker-observation", "data-board-card-facts", "data-board-card-age-footer", "data-board-card-details", "data-board-card-expanded"} {
@@ -71,9 +74,9 @@ func TestINV13BoardCardContent(t *testing.T) {
 			}
 			visible := html.UnescapeString(regexp.MustCompile(`<[^>]+>`).ReplaceAllString(rendered, " "))
 			visible = strings.Join(strings.Fields(visible), " ")
-			wantVisible := strings.TrimSpace("detent #2805 Operator gpt-6-astra low A readable card " + tt.want)
+			wantVisible := strings.Join(strings.Fields("detent #2805 Operator gpt-6-astra low A readable card "+tt.want+" High"), " ")
 			if visible != wantVisible {
-				t.Errorf("card body = %q, want only identity, title and status %q", visible, wantVisible)
+				t.Errorf("card body = %q, want only identity, title, status and priority %q", visible, wantVisible)
 			}
 			if !strings.Contains(html.UnescapeString(rendered), view.ExtraText) {
 				t.Error("hover loses diagnostic")

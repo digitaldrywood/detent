@@ -1582,7 +1582,7 @@ One workflow lane of the board with its cards.
 
 ### Issue card
 
-A board card: identity, title, at most one actionable status line and priority, per INV-13.
+A board card: identity and menu, wrapping title, at most one actionable status line with priority, then the approved compact attempt/update row, per INV-13.
 
 - Kind: Composition; status: available; id: `issue-card`.
 - Import: `import { IssueCard, IssueCardProps, Pill, PullRequestBadge, statusPill, priorityTone } from "~/app/work/components/IssueCard";`

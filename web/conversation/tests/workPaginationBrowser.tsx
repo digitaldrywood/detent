@@ -12,6 +12,38 @@ import { ClientContext } from "../src/app/client.ts";
 import { WorkBoard } from "../src/app/work/WorkBoard.tsx";
 import { SidebarProvider } from "../src/components/ui/sidebar.tsx";
 import { workPaginationFixture } from "./workPaginationFixture.ts";
+import { IssueCard } from "../src/app/work/components/IssueCard.tsx";
+import { toAttemptView, toWorkItemView } from "../src/app/work/lib/fromWire.ts";
+import type { NativeAttempt, NativeIssue } from "../src/contracts/work.ts";
+import itemFixture from "../src/contracts/fixtures/work-item.json";
+import attemptsFixture from "../src/contracts/fixtures/work-attempt-list.json";
+
+function CardFixture() {
+  const [title, setTitle] = React.useState("fix(migrations): canonical activity count helper uses legacy attendance code");
+  const [updated, setUpdated] = React.useState(0);
+  const [opened, setOpened] = React.useState(false);
+  const [moved, setMoved] = React.useState("");
+  const [imported, setImported] = React.useState(false);
+  const now = Date.parse("2026-09-09T12:00:00Z");
+  const item = {
+    ...toWorkItemView(itemFixture as unknown as NativeIssue, "detent"),
+    number: 13, identifier: "#13", title, priority: "High", state: "Human Review", terminal: false, blockedBy: [],
+    updatedAt: "2026-09-09T10:00:00Z", lastActivityAt: new Date(now + updated * 1000).toISOString(),
+    attempt: { ...toAttemptView((attemptsFixture.items as unknown as NativeAttempt[]).slice(0, 1))!,
+      attemptNumber: imported ? 444444 : 4, status: "failed", running: false },
+    sourceProvider: imported ? "github" : null,
+  };
+  return <div className="flex min-h-screen flex-col items-start gap-4 bg-background p-6 text-foreground">
+    <div style={{ width: 320 }} data-testid="card-fixture">
+      <IssueCard item={item} showProject={false} now={now} moves={["Todo", "In Progress"]}
+        onMove={(_, state) => setMoved(state)} onOpen={() => setOpened(true)} />
+    </div>
+    <button onClick={() => setTitle("migration".repeat(32))}>Use unbroken title</button>
+    <button onClick={() => setUpdated((value) => value + 1)}>Refresh card</button>
+    <button onClick={() => setImported(true)}>Use imported metadata</button>
+    <output aria-label="Card action">{opened ? "Opened" : moved}</output>
+  </div>;
+}
 
 function HeaderProbe() {
   const [state, setState] = React.useState({ label: "Live", reload: false });
@@ -29,6 +61,10 @@ function HeaderProbe() {
 async function mount() {
   if (globalThis.location.search.includes("header")) {
     createRoot(document.getElementById("app")!).render(<HeaderProbe />);
+    return;
+  }
+  if (globalThis.location.search.includes("card")) {
+    createRoot(document.getElementById("app")!).render(<CardFixture />);
     return;
   }
   const fixture = workPaginationFixture();

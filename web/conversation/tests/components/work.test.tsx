@@ -89,10 +89,16 @@ const LANES: readonly Lane[] = PROJECT.states.map((state) => ({
 }));
 
 describe("the board card", () => {
-  it("names the issue, its number and its age", () => {
+  it.each([null, 1, 4])("enforces INV-13 identity, status and compact metadata (attempt %s)", (attemptNumber) => {
+    const value = item({
+      priority: "High", blockedBy: [], updatedAt: "2026-09-09T10:00:00Z",
+      attempt: attemptNumber === null ? null : {
+        ...toAttemptView([ATTEMPTS[0]!])!, attemptNumber, status: "failed", running: false,
+      },
+    });
     render(
       <IssueCard
-        item={item()}
+        item={value}
         showProject={false}
         now={NOW}
         onOpen={vi.fn()}
@@ -105,9 +111,19 @@ describe("the board card", () => {
     );
     expect(screen.getByText("#3363")).not.toBeNull();
     expect(screen.getByTestId("issue-age").textContent).toMatch(/^Updated \d/);
-    expect(screen.getByTestId("issue-age").getAttribute("title")).toContain(item().updatedAt);
+    expect(screen.getByTestId("issue-age").getAttribute("title")).toContain(value.updatedAt);
     expect(screen.getByTestId("issue-card").getAttribute("title")).toBeNull();
     expect(screen.getByTestId("issue-card").hasAttribute("data-live")).toBe(false);
+    const statusRow = screen.getByTestId("issue-card-status-row");
+    const expectedStatus = attemptNumber === null ? "High" : "Attempt failedHigh";
+    expect(statusRow.textContent).toBe(expectedStatus);
+    const metadata = screen.getByTestId("issue-card-metadata-row");
+    const expectedMetadata = attemptNumber === 4 ? "Attempt 4Updated 2h" : "Updated 2h";
+    expect(metadata.textContent).toBe(expectedMetadata);
+    expect(metadata.children).toHaveLength(attemptNumber === 4 ? 2 : 1);
+    expect(within(metadata).getByTestId("issue-age")).not.toBeNull();
+    expect(screen.getByTestId("issue-card").textContent).toBe(`parable#3363${value.title}${expectedStatus}${expectedMetadata}`);
+    expect(screen.queryByTestId("worker-strip")).toBeNull();
   });
 
   it("shows the project dot only in the all-projects scope", () => {

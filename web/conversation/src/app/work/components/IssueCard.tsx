@@ -1,4 +1,4 @@
-import { GitPullRequestIcon } from "lucide-react";
+import { Clock3Icon, GitPullRequestIcon, RotateCcwIcon } from "lucide-react";
 import React from "react";
 
 import { Badge } from "../../../components/ui/badge.tsx";
@@ -143,8 +143,9 @@ function IssueAge({ item, now }: { item: WorkItemView; now?: number }): React.Re
   const age = ageLabel(item.updatedAt, clock);
   const sourceContext = sourceDescription(item, clock);
   const updateContext = `${item.sourceProvider === null ? "Updated" : "Native update"}: ${age === "" ? "unavailable" : `${age} ago (${item.updatedAt})`}`;
-  return <span className="ml-auto shrink-0 tabular-nums" data-testid="issue-age"
+  return <span className="ml-auto inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap tabular-nums" data-testid="issue-age"
     title={[updateContext, sourceContext].filter((part) => part !== null).join("\n")}>
+    {age === "" ? null : <Clock3Icon aria-hidden className="size-3.5 shrink-0" />}
     {age === "" ? "" : `${item.sourceProvider === null ? "Updated" : "Native update"} ${age}`}
   </span>;
 }
@@ -182,7 +183,7 @@ export function IssueCard({
       }}
       onDragEnd={onDragEnd}
       className={cn(
-        "relative flex flex-col gap-1.5 rounded-[var(--radius)] border bg-card p-3 shadow-xs transition-colors",
+        "relative flex min-w-0 flex-col gap-1.5 rounded-[var(--radius)] border bg-card p-3 shadow-xs transition-colors",
         live ? "border-success/35 shadow-[0_0_0_1px_--theme(--color-success/8%)]" : "border-border",
         terminal && "bg-muted shadow-none",
         "hover:border-input",
@@ -190,36 +191,39 @@ export function IssueCard({
         moving && !terminal && "animate-pulse",
       )}
     >
-      <div className="flex items-center gap-1.5 text-muted-foreground text-xs">
-        {showProject ? (
-          <>
-            <span
-              aria-hidden
-              data-testid="project-dot"
-              className={cn("size-2 shrink-0 rounded-full", terminal && "bg-muted-foreground")}
-              style={terminal ? undefined : {
-                backgroundColor: `oklch(0.72 0.15 ${projectHue(item.projectId)})`,
-              }}
-            />
-            <span className="min-w-0 truncate">{item.projectName}</span>
-          </>
-        ) : (
-          <span className="inline-flex" title={item.projectName}>
-            <ProjectGlyph
-              className={cn("size-3.5", terminal && "text-muted-foreground grayscale")}
-              projectId={item.projectId}
-              projectName={item.projectName}
-            />
-            <span className="sr-only">{item.projectName}</span>
+      <div className="flex min-w-0 items-start gap-1.5 text-muted-foreground text-xs" data-testid="issue-card-header">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+          {showProject ? (
+            <>
+              <span
+                aria-hidden
+                data-testid="project-dot"
+                className={cn("size-2 shrink-0 rounded-full", terminal && "bg-muted-foreground")}
+                style={terminal ? undefined : {
+                  backgroundColor: `oklch(0.72 0.15 ${projectHue(item.projectId)})`,
+                }}
+              />
+              <span className="min-w-0 truncate">{item.projectName}</span>
+            </>
+          ) : (
+            <span className="inline-flex" title={item.projectName}>
+              <ProjectGlyph
+                className={cn("size-3.5", terminal && "text-muted-foreground grayscale")}
+                projectId={item.projectId}
+                projectName={item.projectName}
+              />
+              <span className="sr-only">{item.projectName}</span>
+            </span>
+          )}
+          {item.sourceProvider === null ? null : <SourceBadge item={item} terminal={terminal} now={now} />}
+          <span className="ml-auto inline-flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
+            <PullRequestBadge item={item} />
+            <span className="shrink-0 font-mono text-[11px] text-muted-foreground/70 tabular-nums">
+              {issueNumber(item.identifier, item.number)}
+            </span>
           </span>
-        )}
-        {item.sourceProvider === null ? null : <SourceBadge item={item} terminal={terminal} now={now} />}
-        <span className="ml-auto inline-flex shrink-0 items-center gap-1.5">
-          <PullRequestBadge item={item} />
-          <span className="shrink-0 font-mono text-[11px] text-muted-foreground/70 tabular-nums">
-            {issueNumber(item.identifier, item.number)}
-          </span>
-        </span>
+        </div>
+        <LaneMenu item={item} lanes={moves} onMove={onMove} />
       </div>
 
       {/* The whole title is the link: a card is a destination, and a reader
@@ -228,7 +232,7 @@ export function IssueCard({
         type="button"
         data-testid="issue-card-open"
         onClick={() => onOpen(item)}
-        className="cursor-pointer rounded-sm text-left text-[13px] text-foreground leading-snug outline-none ring-ring focus-visible:ring-2"
+        className="min-w-0 cursor-pointer rounded-sm text-left text-[13px] text-foreground leading-snug wrap-anywhere outline-none ring-ring focus-visible:ring-2"
       >
         {item.title}
       </button>
@@ -258,7 +262,7 @@ export function IssueCard({
         </div>
       ) : null}
 
-      <div className="mt-0.5 flex min-h-5 items-center gap-1.5 text-[11px] text-muted-foreground">
+      <div className="mt-0.5 flex min-h-5 min-w-0 flex-wrap items-center justify-between gap-1.5 text-[11px] text-muted-foreground" data-testid="issue-card-status-row">
         {status === null ? null : (
           <Pill
             tone={status.tone}
@@ -268,19 +272,20 @@ export function IssueCard({
             {status.label}
           </Pill>
         )}
-        {attempt === null || attempt.attemptNumber === null || attempt.attemptNumber < 2 ? null : (
-          <span>attempt {attempt.attemptNumber}</span>
-        )}
-        <IssueAge item={item} now={now} />
         {item.priority === null ? null : (
-          <Pill tone={priorityTone(item.priority, terminal)} aria-label={`Priority: ${item.priority}`}>
+          <Pill className="ml-auto" tone={priorityTone(item.priority, terminal)} aria-label={`Priority: ${item.priority}`}>
             {item.priority}
           </Pill>
         )}
-        {/* Drag is a pointer gesture and nothing else, so every card carries
-            the same move as a menu. A board a keyboard cannot reorder is a
-            board half the readers cannot use (B.14). */}
-        <LaneMenu item={item} lanes={moves} onMove={onMove} />
+      </div>
+      <div className="mt-0.5 flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-t border-border pt-2 text-[11px] text-muted-foreground" data-testid="issue-card-metadata-row">
+        {attempt === null || attempt.attemptNumber === null || attempt.attemptNumber < 2 ? null : (
+          <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap tabular-nums" data-testid="issue-card-attempt">
+            <RotateCcwIcon aria-hidden className="size-3.5 shrink-0" />
+            Attempt {attempt.attemptNumber}
+          </span>
+        )}
+        <IssueAge item={item} now={now} />
       </div>
     </article>
   );
