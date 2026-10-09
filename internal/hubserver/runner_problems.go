@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -23,7 +25,7 @@ func runnerHubProblems(r runnerauth.Runner, report isolation.Report, protocol in
 	return problems
 }
 
-func applyRunnerProblems(r *runnerauth.Runner, raw, isolationRaw, configurationRaw string, protocol int, rejected bool) error {
+func applyRunnerProblems(r *runnerauth.Runner, raw, isolationRaw string, protocol int, rejected bool) error {
 	var previous []runnerauth.Problem
 	var report isolation.Report
 	if err := json.Unmarshal([]byte(raw), &previous); err != nil {
@@ -33,20 +35,76 @@ func applyRunnerProblems(r *runnerauth.Runner, raw, isolationRaw, configurationR
 		return err
 	}
 	r.BackendIsolation = report
-	var configurations map[string]runnerauth.ProjectConfiguration
-	if err := json.Unmarshal([]byte(configurationRaw), &configurations); err != nil {
-		return err
-	}
 	current := slices.DeleteFunc(slices.Clone(previous), func(p runnerauth.Problem) bool {
 		return p.Code == "settings_rejected" || p.Code == "version_unsupported" || p.Code == "policy_mismatch"
 	})
-	for projectID, configuration := range configurations {
-		if slices.Contains(r.ProjectIDs, tracker.ProjectID(projectID)) && configuration.SelectedPolicyDiffers() {
-			current = append(current, runnerauth.NewProblem("policy_mismatch"))
-			break
-		}
-	}
 	current = append(current, runnerHubProblems(*r, report, protocol, rejected)...)
+	r.Problems = runnerauth.MergeProblems(previous, current, r.LastHeartbeatAt)
+	if len(r.Problems) > 0 && r.Health != "revoked" && r.Health != "expired" {
+		r.Health = "needs_attention"
+	}
+	return nil
+}
+
+func applyRunnerPolicyProblems(ctx context.Context, q policyQuerier, r *runnerauth.Runner) error {
+	var raw, configurationRaw, admissionRaw string
+	if err := q.QueryRowContext(ctx, `SELECT r.problems_json, r.project_configuration_json,
+coalesce(json_extract(m.capabilities_json, '$.native_admission.' || r.id), '{}')
+FROM runner_identities r JOIN machines m ON m.id = r.machine_id WHERE r.id = ? AND r.organization_id = ?`, r.RunnerID, r.OrganizationID).Scan(&raw, &configurationRaw, &admissionRaw); err != nil {
+		return err
+	}
+	var previous []runnerauth.Problem
+	var configurations map[string]runnerauth.ProjectConfiguration
+	var admissions map[string]tracker.NativeAdmissionObservation
+	if err := json.Unmarshal([]byte(raw), &previous); err != nil {
+		return err
+	}
+	if err := json.Unmarshal([]byte(configurationRaw), &configurations); err != nil {
+		return err
+	}
+	if err := json.Unmarshal([]byte(admissionRaw), &admissions); err != nil {
+		return err
+	}
+	current := slices.DeleteFunc(slices.Clone(r.Problems), func(p runnerauth.Problem) bool { return p.Code == "policy_mismatch" })
+	for _, projectID := range r.ProjectIDs {
+		scope := string(r.OrganizationID) + "/" + string(projectID)
+		id := admissions[string(projectID)].Context.PolicyID
+		if effective := configurations[string(projectID)].EffectivePolicy; effective != nil {
+			id = effective.ID
+		}
+		if id == "" {
+			err := q.QueryRowContext(ctx, "SELECT policy_id FROM project_observed_policies WHERE scope = ? AND runner_id = ?", scope, r.RunnerID).Scan(&id)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+		}
+		if id == "" {
+			continue
+		}
+		approved, err := readProjectPolicy(ctx, q, scope)
+		var refusal *nativeError
+		if err != nil && (!errors.As(err, &refusal) || refusal.Code != "policy_mismatch") {
+			return err
+		}
+		matches := false
+		if approved.Policy.ID != "" {
+			matches, err = approvedPolicyRevisionMatches(ctx, q, scope, id, approved.Policy)
+			if err != nil {
+				return err
+			}
+		}
+		if matches {
+			continue
+		}
+		problem := runnerauth.NewProblem("policy_mismatch")
+		problem.ProjectID = string(projectID)
+		approvedID := approved.Policy.ID
+		if approvedID == "" {
+			approvedID = "none"
+		}
+		problem.Message = fmt.Sprintf("Project %s: Hub approved policy %s does not permit runner policy %s.", projectID, approvedID, id)
+		current = append(current, problem)
+	}
 	r.Problems = runnerauth.MergeProblems(previous, current, r.LastHeartbeatAt)
 	if len(r.Problems) > 0 && r.Health != "revoked" && r.Health != "expired" {
 		r.Health = "needs_attention"
@@ -74,6 +132,14 @@ func updateRunnerProblems(ctx context.Context, tx *sql.Tx, scope nativeScope, pr
 		return err
 	}
 	current := append(slices.Clone(problems), runnerHubProblems(r, report, protocol, rejected)...)
+	if err := applyRunnerPolicyProblems(ctx, tx, &r); err != nil {
+		return err
+	}
+	for _, problem := range r.Problems {
+		if problem.Code == "policy_mismatch" {
+			current = append(current, problem)
+		}
+	}
 	encoded, err := json.Marshal(runnerauth.MergeProblems(r.Problems, current, now))
 	if err != nil {
 		return err

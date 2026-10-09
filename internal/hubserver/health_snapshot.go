@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,9 +55,10 @@ func readHealthSnapshot(ctx context.Context, q nativeQueryer, organization track
 				return snapshot, err
 			}
 		}
-		var approved string
-		err = q.QueryRowContext(ctx, "SELECT policy_id FROM project_policies WHERE scope=?", string(organization)+"/"+p.ID).Scan(&approved)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		policyScope := string(organization) + "/" + p.ID
+		approved, err := readProjectPolicy(ctx, q, policyScope)
+		var refusal *nativeError
+		if err != nil && (!errors.As(err, &refusal) || refusal.Code != "policy_mismatch") {
 			return snapshot, err
 		}
 		fallbackReasons := []string{}
@@ -87,8 +87,17 @@ func readHealthSnapshot(ctx context.Context, q nativeQueryer, organization track
 				reason = "runner_capacity_full"
 			}
 			observed, known := r.Admissions[p.ID]
-			if reason == "" && (approved == "" || known && observed.Context.PolicyID != approved) {
-				reason = "policy_mismatch"
+			if reason == "" {
+				matches := approved.Policy.ID != ""
+				if matches && known {
+					matches, err = approvedPolicyRevisionMatches(ctx, q, policyScope, observed.Context.PolicyID, approved.Policy)
+					if err != nil {
+						return snapshot, err
+					}
+				}
+				if !matches {
+					reason = "policy_mismatch"
+				}
 			}
 			if reason == "" {
 				p.FreeSlots += r.FreeSlots

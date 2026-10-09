@@ -596,6 +596,7 @@ export const FleetRunner = Schema.Struct({
   health: Schema.String,
   problems: Schema.optional(Schema.Array(Schema.Struct({
     code: Schema.String,
+    project_id: Schema.optional(Schema.String),
     message: Schema.String,
     fix_hint: Schema.String,
     first_seen: Schema.String,

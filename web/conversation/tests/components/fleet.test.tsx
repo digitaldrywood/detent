@@ -46,6 +46,38 @@ describe("Sprite bootstrap pin", () => {
 });
 
 describe("runner rows", () => {
+  it.each([false, true])("shows policy problems independently of update warnings (%s)", (updateWarning) => {
+    const problem = {
+      code: "policy_mismatch", project_id: "prj_known",
+      message: "Project prj_known: Hub approved policy policy_approved does not permit runner policy policy_runner.",
+      fix_hint: "Approve the pending policy in the project's Integrations settings, or update the runner's project files to match the approved policy.",
+      first_seen: "2026-10-08T15:07:53Z",
+    };
+    const { rerender } = render(<RunnersSectionView fleet={{ ...FLEET, runners: [{ ...RUNNER, problems: [problem], update: updateWarning ? { status: "uncertain", desired: { version: "1.2.4" } } : undefined }] }} now={NOW} />);
+    const card = within(screen.getByTestId("host-card"));
+    expect(card.getByText("Needs human: policy mismatch")).toBeTruthy();
+    expect(card.getByText(problem.message)).toBeTruthy();
+    expect(card.getByText(problem.fix_hint)).toBeTruthy();
+    if (updateWarning) {
+      expect(card.getByText(/Needs human: reinstall/)).toBeTruthy();
+      expect(card.getByText("Update needs attention · 1.2.4")).toBeTruthy();
+    }
+    rerender(<RunnersSectionView fleet={{ ...FLEET, runners: [{ ...RUNNER, problems: [] }] }} now={NOW} />);
+    expect(screen.queryByText(/Needs human:/)).toBeNull();
+  });
+  it("shows every runner problem on the card", () => {
+    const problems = [
+      { code: "backend_missing", message: "Codex is unavailable.", fix_hint: "Install Codex.", first_seen: "2026-10-08T15:07:53Z" },
+      { code: "policy_mismatch", project_id: "prj_known", message: "Known project policy differs.", fix_hint: "Approve the known project policy.", first_seen: "2026-10-08T15:07:53Z" },
+      { code: "policy_mismatch", project_id: "prj_second", message: "Second project policy differs.", fix_hint: "Update the second project's files.", first_seen: "2026-10-08T15:07:53Z" },
+    ];
+    renderSection({ ...FLEET, runners: [{ ...RUNNER, problems }] });
+    const card = within(screen.getByTestId("host-card"));
+    for (const problem of problems) {
+      expect(card.getByText(problem.message)).toBeTruthy();
+      expect(card.getByText(problem.fix_hint)).toBeTruthy();
+    }
+  });
   it.each([
     ["draining", "Waiting for active work"],
     ["refused", "Update failed"],
@@ -161,8 +193,9 @@ describe("runner rows", () => {
     renderSection({ ...FLEET, runners: FLEET.runners.map((runner, index) => index === 0 ? { ...runner, health: "needs_attention", problems: [problem] } : runner) });
     expect(screen.getByRole("link", { name: "Needs attention 1" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: `Manage ${FLEET.runners[0]!.display_name}` }));
-    expect(screen.getByText(problem.message)).toBeTruthy();
-    expect(screen.getByText(problem.fix_hint)).toBeTruthy();
+    const sheet = within(screen.getByRole("dialog"));
+    expect(sheet.getByText(problem.message)).toBeTruthy();
+    expect(sheet.getByText(problem.fix_hint)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     fireEvent.click(screen.getByRole("link", { name: "Needs attention 1" }));
     expect(window.location.search).toBe("?health=needs_attention");

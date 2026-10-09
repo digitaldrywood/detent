@@ -66,7 +66,7 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.T
 		return r, nil, time.Time{}, err
 	}
 	r.Routing = r.Normalized()
-	if err := applyRunnerProblems(&r, problems, isolationRaw, configurationRaw, protocol, rejected); err != nil {
+	if err := applyRunnerProblems(&r, problems, isolationRaw, protocol, rejected); err != nil {
 		return r, nil, time.Time{}, err
 	}
 	if err := json.Unmarshal([]byte(updateRaw), &r.Update); err != nil {
@@ -89,6 +89,9 @@ func readRunner(ctx context.Context, db nativeQueryer, organization tracker.Orga
 func readRunnerWithClock(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, clock func() time.Time) (runnerauth.Runner, error) {
 	r, reports, now, err := scanRunnerIdentity(db.QueryRowContext(ctx, runnerIdentitySelect+" WHERE r.organization_id = ? AND r.id = ?", organization, id), clock)
 	if err != nil {
+		return r, err
+	}
+	if err := applyRunnerPolicyProblems(ctx, db, &r); err != nil {
 		return r, err
 	}
 	if err := applyUrgentRunnerRouting(ctx, db, &r); err != nil {
