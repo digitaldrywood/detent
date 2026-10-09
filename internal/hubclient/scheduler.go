@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -53,6 +54,7 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	hostMetrics           *hostmetrics.Collector
 	refreshProjects       func(context.Context, *Scheduler) error
 	projectsMu            sync.RWMutex
 	projectConfiguration  func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration

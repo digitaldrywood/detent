@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -57,6 +58,7 @@ type Client struct {
 }
 
 type Machine struct {
+	HostMetrics          []hostmetrics.Summary               `json:"-"`
 	IsolationTier        string                              `json:"-"`
 	ProjectConfiguration *runnerauth.ProjectConfiguration    `json:"-"`
 	Admission            *tracker.NativeAdmissionObservation `json:"-"`
