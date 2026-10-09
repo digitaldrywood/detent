@@ -295,6 +295,12 @@ func TestRunnerCloudProjects(t *testing.T) {
 				opts.ghAuthToken = func(context.Context) (string, error) {
 					return "", errors.New("gh auth status failed: exit status 1")
 				}
+				opts.lookupEnv = func(name string) string {
+					if name == "GITHUB_TOKEN" || name == "GH_TOKEN" {
+						return ""
+					}
+					return os.Getenv(name)
+				}
 				boot, err := resolveBootConfigWithRuntimeDeps(t.Context(), path, "", runtimeFlags{}, opts, bootRuntimeDeps(opts), true)
 				if err != nil {
 					t.Fatal(err)
