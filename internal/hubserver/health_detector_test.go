@@ -678,3 +678,18 @@ func TestHealthDetectorTicksAndStops(t *testing.T) {
 		}
 	})
 }
+
+func TestHealthSnapshotReadsWithoutTheWriter(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "health-writer")
+	f.create(t, "candidate")
+	writer, err := f.service.database.db.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if _, err := f.service.readHealthSnapshot(ctx, f.project.OrganizationID, time.Now().UTC()); err != nil {
+		t.Fatalf("health snapshot waited on the held writer: %v", err)
+	}
+}
