@@ -398,6 +398,17 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				selected, _ := manager.Registry().Get("selected")
 				previous := selected.Workflow()
 				otherBefore := owner.Read(t.Context(), "unrelated")
+				attemptID, err := attempts.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "selected", IssueID: "completed", Identifier: "selected#99", WorkerType: "code", AttemptNumber: 1, Lane: "In Progress", StartedAt: time.Now(), WorkerMetadataJSON: `{"change_id":"unpublished-change"}`})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := attempts.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: time.Now(), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalSuccess}); err != nil {
+					t.Fatal(err)
+				}
+				completed, err := attempts.WorkAttempt(t.Context(), attemptID)
+				if err != nil {
+					t.Fatal(err)
+				}
 				if strings.HasSuffix(scenario, "drained") {
 					drained := owner.Apply(t.Context(), "drain_local_project", request)
 					if !drained.Applied || !drained.Draining || drained.UnsettledAttempts != 0 {
@@ -443,6 +454,10 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				}
 				if selected.Workflow().Config.Policy.ID != approved.ID {
 					t.Fatal("reload discarded approved configuration")
+				}
+				retained, err := attempts.WorkAttempt(t.Context(), attemptID)
+				if err != nil || !reflect.DeepEqual(retained, completed) {
+					t.Fatalf("policy adoption changed durable completion: %+v, %v", retained, err)
 				}
 				otherAfter := owner.Read(t.Context(), "unrelated")
 				if otherAfter.EffectivePolicy.ID != otherBefore.EffectivePolicy.ID || otherAfter.Paused != otherBefore.Paused || otherAfter.Draining != otherBefore.Draining {

@@ -160,7 +160,7 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 }
 
 func TestCloudProjectConfigurationOwner(t *testing.T) {
-	for _, scenario := range []string{"resume", "resume drained", "resume stale runner", "resume stale configuration", "resume denied", "resume revoked", "drain", "apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
+	for _, scenario := range []string{"resume", "resume drained", "resume stale runner", "resume stale configuration", "resume denied", "resume revoked", "drain", "apply", "cloud apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "project-configuration")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
@@ -171,6 +171,9 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			candidate = candidate.WithID()
 			approveHubTestPolicy(t, f.service, f.base+"/policy", current)
 			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", ConfigRevision: strings.Repeat("a", 64), Registered: true, RuntimeRegistered: true, Paused: true, Source: "configured_committed_workflow", EffectivePolicy: &current, SelectedPolicy: &current, LocalBindingPolicy: &candidate, ObservedAt: time.Now()}
+			if scenario == "cloud apply" {
+				view.Source = "cloud_workflow"
+			}
 			if scenario == "running apply" || scenario == "resume drained" {
 				view.Paused = false
 			}
@@ -368,7 +371,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				}
 			}
 			snapshot := heartbeat()
-			if scenario != "apply" && scenario != "drained apply" && scenario != "running apply" && scenario != "refused apply" && scenario != "storage exhausted" {
+			if scenario != "apply" && scenario != "cloud apply" && scenario != "drained apply" && scenario != "running apply" && scenario != "refused apply" && scenario != "storage exhausted" {
 				if snapshot.ProjectConfigurationRequest != nil {
 					t.Fatal("revoked or stale request reached runner")
 				}

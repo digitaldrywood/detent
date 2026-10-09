@@ -94,13 +94,18 @@ authorities.
 `request_id`, `expected_config_revision` and `expected_policy_id`. They reuse
 durable operator command receipts; retries reauthorize and return the original
 receipt without repeating the effect. Policy application additionally requires
-the exact approved `policy_id` and `source_revision` from the configured committed
-workflow and settled work. The project is paused through the existing owner
+the exact approved `policy_id` and `source_revision` and settled work. External
+local definitions without trusted repository provenance adopt authored shared
+behavior from the durable Cloud approval, retaining host-only configuration and
+private instructions. Trusted repository definitions remain authoritative;
+commit and approve their intended shared definition at the configured source.
+Read `selected_policy` for the application preview. The project is paused through
+the existing owner
 before policy application, then restored to its prior running, paused or draining
 state. `resume_local_project` clears a saved or runtime pause through the same
 owner and requires runner administration (`manage_runner`) as well as admin scope.
-Ordinary committed policy
-application refuses local overlays. For the existing `worker.allow_local_binding`
+Policy application preserves private overlays without rewriting them. For the
+existing `worker.allow_local_binding`
 field, the owner resolves complete candidate descriptors from the actual
 definition and its overlays. `local_binding_policy` and
 `restricted_binding_policy` can be presented to the existing policy approval
@@ -116,6 +121,10 @@ disambiguates multiple granted runners; Cloud commands also require
 project grants and approved policy are rechecked before delivery. A selected
 request awaiting heartbeat application returns `pending: true`; fresh configuration reads distinguish delivery
 from saved configuration and applied runtime policy.
+Completed commands remain visible in `last_operation`, including refusal
+constraints, after fresh heartbeat observations. Ordinary policy adoption
+reports `applied` without `saved` because local files remain unchanged; Cloud's
+durable approval is used again on reload and restart.
 
 Drain uses the existing project orchestrator to finish current work and reject
 new dispatch. Local intake, routines, backlog admission and retro schedules must

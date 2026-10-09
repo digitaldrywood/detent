@@ -104,6 +104,7 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 		reports      int
 	}{
 		{name: "authored external load retains approved configuration", loadApproved: true, approved: &current, status: http.StatusOK, local: current, reports: 1},
+		{name: "verified authored source preserves supplied definition", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40)}, approved: &current, status: http.StatusOK, local: current, reports: 1},
 		{name: "legacy external load retains approved configuration", loadApproved: true, approved: &legacy, status: http.StatusOK, local: legacy, reports: 1},
 		{name: "verified legacy source preserves supplied definition", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: &legacy, status: http.StatusOK, local: legacy, reports: 1},
 		{name: "canonical version carries feature approval", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40)}, approved: &previous, status: http.StatusOK, local: current, reports: 1},
@@ -188,8 +189,27 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 			for _, layout := range []workflowconfig.ProjectDefinitionLayout{workflowconfig.ProjectDefinitionLegacy, workflowconfig.ProjectDefinitionSplit, workflowconfig.ProjectDefinitionCloud} {
 				workflow := workflowconfig.Workflow{Config: workflowconfig.Default(), Prompt: "Current supplied instructions.", Definition: workflowconfig.ProjectDefinition{Layout: layout}}
 				workflow.Config.Tracker.Kind = workflowconfig.TrackerHubNative
-				if test.name == "authored external load retains approved configuration" {
-					workflow.DefinitionSources = &workflowconfig.ProjectDefinitionSources{Workflow: []byte("Stale supplied instructions.\n"), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n"), HasConfig: true}
+				if strings.Contains(test.name, "authored") && layout != workflowconfig.ProjectDefinitionCloud {
+					sources := workflowconfig.ProjectDefinitionSources{
+						Workflow: []byte("Stale supplied instructions.\n"), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n"), HasConfig: true,
+						LocalConfig: []byte("schema: 1\nworker:\n  github_token: private-token\nworkspace:\n  root: private-worktrees\nhooks:\n  before_run: private-isolation\nagent:\n  max_concurrent_agents: 1\n"), HasLocalConfig: true,
+						LocalWorkflow: []byte("Private machine instructions.\n"), HasLocalWorkflow: true,
+					}
+					if layout == workflowconfig.ProjectDefinitionLegacy {
+						sources.Workflow = []byte("---\ntracker:\n  kind: hub_native\n---\nStale supplied instructions.\n")
+						sources.Config, sources.HasConfig = nil, false
+						sources.LocalWorkflow = append([]byte("---\n"), sources.LocalConfig[len("schema: 1\n"):]...)
+						sources.LocalWorkflow = append(sources.LocalWorkflow, []byte("---\nPrivate machine instructions.\n")...)
+						sources.LocalConfig, sources.HasLocalConfig = nil, false
+					}
+					workflow, err = workflowconfig.ParseProjectDefinition(sources)
+					if err != nil {
+						t.Fatal(err)
+					}
+					original, err := workflowconfig.ResolvePolicy(workflow)
+					if err != nil || original.ID == approved.ID {
+						t.Fatalf("fixture must have a different authored policy: %s, %v", original.ID, err)
+					}
 				}
 				resolved, err := scheduler.ResolveProjectWorkflow(t.Context(), "site", workflow, test.provenance)
 				if test.status == http.StatusServiceUnavailable && layout != workflowconfig.ProjectDefinitionCloud {
@@ -205,6 +225,9 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 					actual, err := workflowconfig.ResolvePolicy(resolved)
 					if err != nil || !reflect.DeepEqual(actual, *approved) {
 						t.Fatalf("legacy load replaced the approved descriptor: %+v %v", actual, err)
+					}
+					if test.name == "authored external load retains approved configuration" && (resolved.Config.Worker.GitHubToken != "private-token" || resolved.Config.Workspace.Root != "private-worktrees" || resolved.Config.Hooks.BeforeRun != "private-isolation" || resolved.Config.Agent.MaxConcurrentAgents != 1 || !strings.HasSuffix(strings.TrimSpace(resolved.Prompt), "Private machine instructions.")) {
+						t.Fatal("approved configuration discarded private overlays")
 					}
 					continue
 				}

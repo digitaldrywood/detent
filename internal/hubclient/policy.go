@@ -174,9 +174,6 @@ func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow work
 	if supplied && approval.Policy.Authored == nil && (approval.Policy.Configuration == nil || workflow.DefinitionSources != nil) {
 		return workflow, nil
 	}
-	if supplied && approval.Policy.Authored != nil && workflow.Authored != nil && workflow.Authored.Digest != approval.Policy.Authored.Digest {
-		return workflow, nil
-	}
 	return workflowconfig.ApplyNativePolicy(workflow, approval.Policy)
 }
 
