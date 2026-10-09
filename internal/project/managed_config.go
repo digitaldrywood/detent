@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"time"
 
@@ -459,7 +460,7 @@ func (o *ConfigurationOwner) mutate(ctx context.Context, mutate func(*globalconf
 		return globalconfig.Mutate(o.selected.Path, func(cfg *globalconfig.Config, revision string) bool {
 			stored := *cfg
 			runtime := o.runtime()
-			cfg.Projects, cfg.Client.NativeProjects = runtime.Projects, runtime.Client.NativeProjects
+			cfg.Projects, cfg.Client.NativeProjects = slices.Clone(runtime.Projects), maps.Clone(runtime.Client.NativeProjects)
 			changed := mutate(cfg, revision)
 			cfg.Projects, cfg.Client.NativeProjects = stored.Projects, stored.Client.NativeProjects
 			return changed
