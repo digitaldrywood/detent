@@ -392,7 +392,11 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	if req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
 		if recorder, ok := req.Execution.(SourceValidationExecution); ok {
 			workflow, _, _, _ := r.runtimeSnapshot()
-			command := gate.Effective(workflow.Config.Gate).Run
+			effectiveGate := gate.Effective(workflow.Config.Gate)
+			command := effectiveGate.Run
+			if effectiveGate.LandingMode == gate.LandingRollingBarrier {
+				command = ""
+			}
 			if command != "" {
 				commands, canRun := backend.(workspace.ReviewCommandRunner)
 				heads, canRead := backend.(workspace.HeadProvider)
