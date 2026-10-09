@@ -361,8 +361,10 @@ func scopeProviderUsage(runners []hostedFleetRunner, reservations []providercapa
 			}
 			switch {
 			case view.State == "exhausted":
-			case view.Used >= view.MaxConcurrent:
+			case view.MaxConcurrent > 0 && view.Used >= view.MaxConcurrent:
 				view.Reason = "Shared provider concurrency is fully reserved; wait for lease release or expiry"
+			case view.MaxConcurrent == 0:
+				view.Reason = "No provider account concurrency limit is configured; runner and host limits apply"
 			case view.State == "unknown":
 				view.Reason = "Quota is unknown or stale; only the declared concurrency bound is available"
 			default:

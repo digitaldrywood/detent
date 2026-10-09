@@ -122,6 +122,9 @@ func TestRunnerEligibility(t *testing.T) {
 		{"provider unknown", func(r *Runner) {
 			r.ProviderCapacity = []providercapacity.View{{Report: providercapacity.Report{MaxConcurrent: 2}, State: "unknown"}}
 		}, policy.Requirements{}, false, ""},
+		{"provider account limit unknown", func(r *Runner) {
+			r.ProviderCapacity = []providercapacity.View{{State: "unknown", Used: 12}}
+		}, policy.Requirements{}, false, ""},
 		{"active provider exhaustion", func(r *Runner) {
 			r.ProviderCapacity = []providercapacity.View{{Report: providercapacity.Report{MaxConcurrent: 2}, State: "exhausted"}}
 		}, policy.Requirements{}, true, ""},

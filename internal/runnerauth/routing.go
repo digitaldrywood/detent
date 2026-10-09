@@ -267,7 +267,7 @@ func (r Runner) Exclusions(project tracker.ProjectID, requirements policy.Requir
 	}
 	if !activeLease && len(r.ProviderCapacity) > 0 {
 		available := slices.ContainsFunc(r.ProviderCapacity, func(view providercapacity.View) bool {
-			return view.State != "exhausted" && view.Used < view.MaxConcurrent
+			return view.Available()
 		})
 		if !available {
 			add("provider_capacity", "All reported provider accounts are exhausted or fully reserved; work stays queued")

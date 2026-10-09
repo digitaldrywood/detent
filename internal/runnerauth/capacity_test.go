@@ -17,6 +17,7 @@ func TestRunnerCapacityEvidence(t *testing.T) {
 		status    string
 	}{
 		{"fully applied", func(*Runner) {}, 6, "applied"},
+		{"default report", func(r *Runner) { r.ProviderCapacity[0].MaxConcurrent = 0; r.ProviderCapacity[0].State = "unknown" }, 6, "applied"},
 		{"external producer bound", func(r *Runner) { r.ProviderCapacity[0].MaxConcurrent = 2 }, 2, "partially_applied"},
 		{"immutable local bound", func(r *Runner) { r.CapacityConfig.Manageable = false; r.CapacityConfig.LocalLimit = 2 }, 2, "partially_applied"},
 		{"reload pending", func(r *Runner) { r.CapacityConfig.RuntimeLimit = 2 }, 2, "partially_applied"},

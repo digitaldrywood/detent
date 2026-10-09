@@ -58,7 +58,7 @@ type Report struct {
 	SharedAccountAlias string        `json:"shared_account_alias,omitempty"`
 	Models             []string      `json:"models"`
 	ModelDetails       []ModelDetail `json:"model_details,omitempty"`
-	MaxConcurrent      int           `json:"max_concurrent"`
+	MaxConcurrent      int           `json:"max_concurrent,omitempty"`
 	Availability       string        `json:"availability"`
 	ObservedAt         time.Time     `json:"observed_at"`
 	ResetAt            time.Time     `json:"reset_at,omitzero"`
@@ -97,8 +97,8 @@ func Validate(reports []Report) error {
 			return errors.New("each backend must identify exactly one local account")
 		}
 		seen[r.Backend] = true
-		if r.MaxConcurrent < 1 || r.MaxConcurrent > 10000 || len(r.Models) == 0 || len(r.Models) > 128 {
-			return errors.New("provider reports need 1 to 128 models and a concurrency limit between 1 and 10000")
+		if r.MaxConcurrent < 0 || r.MaxConcurrent > 10000 || len(r.Models) == 0 || len(r.Models) > 128 {
+			return errors.New("provider reports need 1 to 128 models and an optional concurrency limit between 1 and 10000")
 		}
 		for _, model := range r.Models {
 			if !token.MatchString(model) {
@@ -211,4 +211,8 @@ func (r Report) Supports(requirement Requirement) bool {
 
 func (v View) Summary() string {
 	return fmt.Sprintf("%s / %s · account %s · %s · %d / %d reserved · %s", v.Provider, v.Backend, v.AccountAlias, v.State, v.Used, v.MaxConcurrent, v.Reason)
+}
+
+func (v View) Available() bool {
+	return v.State != "exhausted" && (v.MaxConcurrent == 0 || v.Used < v.MaxConcurrent)
 }

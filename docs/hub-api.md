@@ -1505,8 +1505,12 @@ on a running Hub as a substitute for supported deletion.
 
 ## Provider capacity reports
 
-Enrolled native runners can report provider capacity with an optional global
-client setting. Existing unconfigured runners retain their scheduling behavior.
+Enrolled native runners report provider capacity for their configured backends
+by default. The runner uses its instance name as the local account alias,
+advertises backend model identifiers, and refreshes an unknown availability
+observation on its existing heartbeat within the two-minute freshness window.
+It does not derive an account concurrency limit from its own slots. An explicit
+global client setting takes precedence over these default reports:
 
 ```yaml
 client:
@@ -1563,12 +1567,15 @@ machine sharing an account. `models` must advertise the identifiers selected
 by local routing. An existing unpinned route uses the explicit `provider_default`
 capability; capacity never picks a different model or rewrites effort.
 
-`max_concurrent` is an operator-declared bound on simultaneous reserved runs,
-between 1 and 10000. It is not a token balance or an estimate of transferable
-credits. `availability` is `available`, `exhausted` or `unknown`. Observations at
+`max_concurrent` is an optional operator-declared account bound on simultaneous
+reserved runs, between 1 and 10000. Omitted or zero means no known account limit;
+runner and host limits still apply. Never set it from one machine's slot count:
+adding a smaller runner must not lower the account's capacity. It is not a token
+balance or an estimate of transferable credits. `availability` is `available`,
+`exhausted` or `unknown`. Observations at
 least two minutes old, observations in the future, and reset hints reached at
 equality become `unknown`, never automatically `available`. Unknown quota permits
-dispatch only within the declared concurrency bound and existing local brakes.
+dispatch only within any declared account concurrency bound and existing local brakes.
 An exhausted fresh observation waits for a refreshed report or its reset hint.
 
 Declare the same `provider` and `shared_account_alias` on every machine using the

@@ -314,7 +314,7 @@ ORDER BY m.hostname LIMIT 1`, scope.project, flySpritesToken, scope.organization
 						continue
 					}
 					if slices.ContainsFunc(r.ProviderCapacity, func(view providercapacity.View) bool {
-						return view.State != "exhausted" && view.Used < view.MaxConcurrent && view.Supports(requirement)
+						return view.Available() && view.Supports(requirement)
 					}) {
 						compatible = true
 					}

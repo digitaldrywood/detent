@@ -51,7 +51,7 @@ func TestReportValidation(t *testing.T) {
 		{"backend", func(r *Report) { r.Backend = "two words" }},
 		{"account", func(r *Report) { r.AccountAlias = "email@example.com" }},
 		{"shared account", func(r *Report) { r.SharedAccountAlias = strings.Repeat("a", 65) }},
-		{"zero concurrency", func(r *Report) { r.MaxConcurrent = 0 }},
+		{"negative concurrency", func(r *Report) { r.MaxConcurrent = -1 }},
 		{"oversized concurrency", func(r *Report) { r.MaxConcurrent = 10001 }},
 		{"missing models", func(r *Report) { r.Models = nil }},
 		{"too many models", func(r *Report) { r.Models = make([]string, 129) }},
@@ -195,12 +195,13 @@ func TestLoadReports(t *testing.T) {
 		valid     bool
 	}{
 		{"valid", string(raw), true},
+		{"no account bound", strings.Replace(string(raw), "\"max_concurrent\":2", "\"max_concurrent\":0", 1), true},
 		{"empty", "[]", false},
 		{"null", "null", false},
 		{"syntax", "[", false},
 		{"trailing", string(raw) + " {}", false},
 		{"secret field", strings.Replace(string(raw), "\"provider\":", "\"api_key\":\"private\",\"provider\":", 1), false},
-		{"invalid bound", strings.Replace(string(raw), "\"max_concurrent\":2", "\"max_concurrent\":0", 1), false},
+		{"invalid bound", strings.Replace(string(raw), "\"max_concurrent\":2", "\"max_concurrent\":-1", 1), false},
 		{"oversized", strings.Repeat(" ", 256*1024) + string(raw), false},
 	} {
 		t.Run(test.name, func(t *testing.T) {

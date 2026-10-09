@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -41,6 +42,9 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 	}{
 		{"available", func(*providercapacity.Report, *tracker.NativeClaim) {}, http.StatusOK},
 		{"unknown", func(r *providercapacity.Report, _ *tracker.NativeClaim) { r.Availability = "unknown" }, http.StatusOK},
+		{"default report without account limit", func(r *providercapacity.Report, _ *tracker.NativeClaim) {
+			r.MaxConcurrent, r.Availability = 0, "unknown"
+		}, http.StatusOK},
 		{"stale exhaustion", func(r *providercapacity.Report, _ *tracker.NativeClaim) {
 			r.Availability = "exhausted"
 			r.ObservedAt = r.ObservedAt.Add(-providercapacity.MaxAge)
@@ -79,6 +83,24 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 			claim := providerClaim(r, issue, "work")
 			test.change(&report, &claim)
 			publishCapacity(t, f, r, report)
+			if report.MaxConcurrent == 0 {
+				for range 6 {
+					now = now.Add(30 * time.Second)
+					report.ObservedAt = now
+					config := runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: now}
+					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{
+						"backend_isolation": r.redemption.BackendIsolation, "display_name": "runner", "capacity": 2, "version": "test", "provider_reports": []providercapacity.Report{report}, "capacity_configuration": config,
+					})
+					requireNativeStatus(t, response, http.StatusOK)
+					var view runnerauth.CapacityView
+					response = performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/capacity?backend=codex", testHubAdminToken, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					decodeHubResponse(t, response, &view)
+					if view.Effective == nil || *view.Effective != 2 || view.Status != "applied" {
+						t.Fatalf("refreshed default capacity=%+v", view)
+					}
+				}
+			}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 			requireNativeStatus(t, response, test.want)
 			var count int
@@ -468,12 +490,15 @@ func TestProviderOlderReportsCannotRestoreQuota(t *testing.T) {
 func TestProviderPoolIsolation(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name, provider, shared, authority, availability, leaseEnd string
-		otherOrganization, stale, offline, reserve                bool
-		used, bound, finalBound                                   int
-		state                                                     string
+		name, provider, shared, authority, availability, leaseEnd               string
+		otherOrganization, stale, offline, reserve, unbounded, currentUnbounded bool
+		used, bound, finalBound                                                 int
+		state                                                                   string
 	}{
 		{name: "same pool", reserve: true, used: 1, bound: 2, state: "available"},
+		{name: "default runner preserves account cap and usage", unbounded: true, shared: "unknown", reserve: true, availability: "unknown", used: 1, bound: 4, state: "unknown"},
+		{name: "default report inherits configured account cap", currentUnbounded: true, shared: "unknown", reserve: true, used: 1, bound: 2, state: "unknown"},
+		{name: "default reports use runner limits", currentUnbounded: true, unbounded: true, shared: "unknown", reserve: true, used: 1, bound: 0, state: "unknown"},
 		{name: "explicit independent account", shared: "independent", reserve: true, bound: 4, state: "available"},
 		{name: "unknown sharing", shared: "unknown", reserve: true, used: 1, bound: 2, state: "available"},
 		{name: "other provider", provider: "anthropic", reserve: true, bound: 4, state: "available"},
@@ -513,12 +538,18 @@ func TestProviderPoolIsolation(t *testing.T) {
 			otherRunner.enroll(t)
 			report := capacityReport(now)
 			report.MaxConcurrent = 4
+			if test.currentUnbounded {
+				report.MaxConcurrent, report.Availability = 0, "unknown"
+			}
 			if test.leaseEnd == "release" {
 				report.MaxConcurrent = 2
 			}
 			publishCapacity(t, f, current, report)
 			other := capacityReport(now)
 			other.AccountAlias, other.MaxConcurrent = "older-runner", 2
+			if test.unbounded {
+				other.MaxConcurrent = 0
+			}
 			if test.stale {
 				other.ObservedAt = now.Add(-48 * time.Hour)
 			}

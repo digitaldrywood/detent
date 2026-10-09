@@ -537,7 +537,7 @@ export const ProviderCapacity = Schema.Struct({
   account_alias: Schema.String,
   shared_account_alias: Schema.optional(Schema.String),
   models: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
-  max_concurrent: Schema.Number,
+  max_concurrent: Schema.optional(Schema.Number),
   availability: Schema.String,
   observed_at: Schema.String,
   reset_at: Schema.optional(Schema.String),

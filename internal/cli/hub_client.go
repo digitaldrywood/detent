@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
@@ -90,10 +91,8 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		checkouts[selected.ID] = selected
 	}
 	var providerReports func() ([]providercapacity.Report, error)
-	if clientConfig.ProviderCapacityFile != "" {
-		providerReports = func() ([]providercapacity.Report, error) {
-			return providercapacity.Load(clientConfig.ProviderCapacityFile)
-		}
+	if clientConfig.ProviderCapacityFile != "" || clientConfig.IdentityFile != "" {
+		providerReports = runnerProviderReports(ctx, cfg, firstNonBlankString(cfg.InstanceName, cfg.Global.Identity.Name, machineID), time.Now, runnerProviderModels)
 	}
 	var setupOptions hubSchedulingOptions
 	if len(options) > 0 {
@@ -168,7 +167,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 			WorkspaceCapabilities: workspaceLaneCapabilities(context.Background(), cfg),
 			WorkspaceIsolation:    workspacerunner.DefaultSupport().TerminalIsolation(),
 		},
-		HeartbeatInterval: clientConfig.HeartbeatInterval(),
+		HeartbeatInterval: min(clientConfig.HeartbeatInterval(), providercapacity.MaxAge/2),
 		LeaseTTL:          clientConfig.LeaseTTL(),
 	})
 }
