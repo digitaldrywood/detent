@@ -118,3 +118,84 @@ func TestLandingBarrierPublication(t *testing.T) {
 		})
 	}
 }
+
+type repairingBarrierWorkspace struct {
+	barrierWorkspace
+	head      string
+	prepared  int
+	published int
+	released  int
+}
+
+func (b *repairingBarrierWorkspace) PrepareLandingBarrierRepair(context.Context, string, string) (string, string, func() error, error) {
+	b.prepared++
+	return "/repair", b.head, func() error { b.released++; return nil }, nil
+}
+
+func (b *repairingBarrierWorkspace) PublishLandingBarrierRepair(_ context.Context, path, _, head string) (string, error) {
+	b.published++
+	if path != "/repair" || head != b.head {
+		return "", errors.New("unexpected repair workspace")
+	}
+	return strings.Repeat("f", 40), nil
+}
+
+type repeatingBarrierOwner struct {
+	cancel context.CancelFunc
+	reds   int
+	claims int
+}
+
+func (o *repeatingBarrierOwner) NextLandingBarrier(context.Context, string, string, string, bool, func(context.Context, string) (string, error)) (tracker.LandingBarrier, bool, error) {
+	o.claims++
+	if o.claims > o.reds {
+		o.cancel()
+		return tracker.LandingBarrier{}, false, nil
+	}
+	return tracker.LandingBarrier{ID: "barrier", Repository: "https://github.com/example/repo", BaseRef: "main"}, true, nil
+}
+
+func (o *repeatingBarrierOwner) FinishLandingBarrier(context.Context, string, tracker.LandingBarrier, *gate.CommandResult) error {
+	return nil
+}
+
+func TestRedLandingBarrierRepairsItself(t *testing.T) {
+	head := strings.Repeat("e", 40)
+	for _, test := range []struct {
+		name          string
+		preparedHead  string
+		reds          int
+		wantTurns     int
+		wantPublished int
+	}{
+		{name: "red head is repaired and published", preparedHead: head, reds: 1, wantTurns: 1, wantPublished: 1},
+		{name: "same red head is repaired once", preparedHead: head, reds: 2, wantTurns: 1, wantPublished: 1},
+		{name: "moved base skips the stale repair", preparedHead: strings.Repeat("a", 40), reds: 1, wantTurns: 0, wantPublished: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				backend := &repairingBarrierWorkspace{barrierWorkspace: barrierWorkspace{result: gate.CommandResult{Command: "make verify", HeadSHA: head, ExitCode: 7, Output: "barrier failure sentinel"}}, head: test.preparedHead}
+				owner := &repeatingBarrierOwner{cancel: cancel, reds: test.reds}
+				cfg := config.Default()
+				cfg.Gate.LandingMode, cfg.Gate.Run = gate.LandingRollingBarrier, "make verify"
+				cfg = cfg.ForNativeTracker()
+				workflow := config.Workflow{Config: cfg, SourceHash: policy.Digest([]byte("source")), Definition: config.ProjectDefinition{Revision: strings.Repeat("a", 40)}}
+				router, err := NewRouter([]Route{{Name: "code", Role: RoleCode, BackendID: "codex", Default: true}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				agent := &fakeCodexClient{}
+				r := &Runner{workspace: backend, projectID: "project", workflow: workflow, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), agentRuntime: agentRuntime{backends: map[string]AgentBackend{"codex": agent}, router: router}}
+				r.RunLandingBarriers(ctx, owner)
+				if agent.calls != test.wantTurns || backend.published != test.wantPublished || backend.prepared != backend.released {
+					t.Fatalf("turns=%d published=%d prepared=%d released=%d", agent.calls, backend.published, backend.prepared, backend.released)
+				}
+				if test.wantTurns > 0 && (agent.request.Workspace != "/repair" || !strings.Contains(agent.request.Prompt, "barrier failure sentinel") || !strings.Contains(agent.request.Prompt, head)) {
+					t.Fatalf("repair request=%+v", agent.request)
+				}
+			})
+		})
+	}
+}

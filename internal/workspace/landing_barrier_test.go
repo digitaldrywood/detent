@@ -131,3 +131,70 @@ func TestLandingBarrierRunsOutsideSourceLock(t *testing.T) {
 		})
 	}
 }
+
+func TestLandingBarrierRepairPublication(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		edit      bool
+		commit    bool
+		moveBase  bool
+		published bool
+		wantErr   bool
+	}{
+		{name: "no change publishes nothing"},
+		{name: "committed repair fast-forwards the base", edit: true, commit: true, published: true},
+		{name: "uncommitted repair is refused", edit: true, wantErr: true},
+		{name: "moved base refuses the stale repair", edit: true, commit: true, moveBase: true, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			f := newLandingFixture(t)
+			before := f.remoteMain(t)
+			path, head, release, err := f.backend.PrepareLandingBarrierRepair(ctx, "barrier", "main")
+			if err != nil || head != before {
+				t.Fatalf("prepare head=%s want=%s error=%v", head, before, err)
+			}
+			defer func() {
+				if err := release(); err != nil {
+					t.Error(err)
+				}
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Errorf("repair worktree left at %s: %v", path, err)
+				}
+			}()
+			if test.edit {
+				if err := os.WriteFile(filepath.Join(path, "README.md"), []byte("repaired\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.commit {
+				runGit(t, path, "-c", "commit.gpgsign=false", "commit", "-am", "fix: repair barrier")
+			}
+			if test.moveBase {
+				if err := os.WriteFile(filepath.Join(f.source, "moved.txt"), []byte("moved\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, f.source, "add", "moved.txt")
+				runGit(t, f.source, "commit", "-m", "moved base")
+				runGit(t, f.source, "push", "origin", "HEAD:main")
+			}
+			moved := f.remoteMain(t)
+			published, err := f.backend.PublishLandingBarrierRepair(ctx, path, "main", head)
+			if (err != nil) != test.wantErr || (published != "") != test.published {
+				t.Fatalf("published=%q error=%v", published, err)
+			}
+			want := moved
+			if test.published {
+				want = published
+			}
+			if got := f.remoteMain(t); got != want {
+				t.Fatalf("remote main=%s want=%s", got, want)
+			}
+		})
+	}
+}
