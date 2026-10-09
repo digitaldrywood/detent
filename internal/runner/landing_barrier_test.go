@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -174,6 +175,10 @@ type repairingBarrierWorkspace struct {
 	released   int
 	verifyExit int
 	verified   []string
+	commits    []string
+	firstBad   int
+	current    string
+	reverted   string
 }
 
 func (b *repairingBarrierWorkspace) VerifyLandingBarrierRepair(_ context.Context, path, head, command string, failed []string) (gate.CommandResult, bool, error) {
@@ -181,7 +186,33 @@ func (b *repairingBarrierWorkspace) VerifyLandingBarrierRepair(_ context.Context
 	if path != "/repair" || head != "" && head != b.head || command != "make verify" {
 		return gate.CommandResult{}, false, errors.New("unexpected repair verification")
 	}
+	if head == "" && b.commits != nil {
+		if slices.Index(b.commits, b.current) >= b.firstBad {
+			return gate.CommandResult{ExitCode: 1}, true, nil
+		}
+		return gate.CommandResult{}, true, nil
+	}
+	if b.reverted != "" {
+		return gate.CommandResult{}, true, nil
+	}
 	return gate.CommandResult{ExitCode: b.verifyExit}, true, nil
+}
+
+func (b *repairingBarrierWorkspace) LandingBarrierCommits(context.Context, string, string, string) ([]string, error) {
+	return b.commits, nil
+}
+
+func (b *repairingBarrierWorkspace) CheckoutLandingBarrierCommit(_ context.Context, _ string, commit string) error {
+	b.current = commit
+	return nil
+}
+
+func (b *repairingBarrierWorkspace) RevertLandingBarrierCommit(_ context.Context, _ string, head, commit string) error {
+	if head != b.head {
+		return errors.New("revert from unexpected head")
+	}
+	b.reverted = commit
+	return nil
 }
 
 func (b *repairingBarrierWorkspace) PrepareLandingBarrierRepair(context.Context, string, string) (string, string, func() error, error) {
@@ -201,6 +232,7 @@ type repeatingBarrierOwner struct {
 	cancel context.CancelFunc
 	reds   int
 	claims int
+	green  string
 }
 
 func (o *repeatingBarrierOwner) NextLandingBarrier(context.Context, string, string, string, bool, func(context.Context, string) (string, error)) (tracker.LandingBarrier, bool, error) {
@@ -209,7 +241,7 @@ func (o *repeatingBarrierOwner) NextLandingBarrier(context.Context, string, stri
 		o.cancel()
 		return tracker.LandingBarrier{}, false, nil
 	}
-	return tracker.LandingBarrier{ID: "barrier", Repository: "https://github.com/example/repo", BaseRef: "main"}, true, nil
+	return tracker.LandingBarrier{ID: "barrier", Repository: "https://github.com/example/repo", BaseRef: "main", GreenHead: o.green}, true, nil
 }
 
 func (o *repeatingBarrierOwner) FinishLandingBarrier(context.Context, string, tracker.LandingBarrier, *gate.CommandResult) error {
@@ -223,9 +255,15 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 		preparedHead  string
 		reds          int
 		verifyExit    int
+		green         string
+		commits       []string
+		firstBad      int
 		wantTurns     int
 		wantPublished int
+		wantReverted  string
 	}{
+		{name: "unverified repair falls back to reverting the culprit", preparedHead: head, reds: 1, verifyExit: 1, green: "g0", commits: []string{"c1", "c2", "c3", "c4", head}, firstBad: 2, wantTurns: 1, wantPublished: 1, wantReverted: "c3"},
+		{name: "first commit after green is the culprit", preparedHead: head, reds: 1, verifyExit: 1, green: "g0", commits: []string{"c1", head}, firstBad: 0, wantTurns: 1, wantPublished: 1, wantReverted: "c1"},
 		{name: "red head is repaired and published", preparedHead: head, reds: 1, wantTurns: 1, wantPublished: 1},
 		{name: "same red head is repaired once", preparedHead: head, reds: 2, wantTurns: 1, wantPublished: 1},
 		{name: "moved base repairs failures that still fail", preparedHead: strings.Repeat("a", 40), reds: 1, verifyExit: 1, wantTurns: 1, wantPublished: 0},
@@ -237,8 +275,8 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				failedLine := "detent-barrier-failed: go example.com/pkg:TestBroken"
-				backend := &repairingBarrierWorkspace{barrierWorkspace: barrierWorkspace{result: gate.CommandResult{Command: "make verify", HeadSHA: head, ExitCode: 7, Output: "barrier failure sentinel\n" + failedLine + "\ndetent-barrier-failed: browser \n"}}, head: test.preparedHead, verifyExit: test.verifyExit}
-				owner := &repeatingBarrierOwner{cancel: cancel, reds: test.reds}
+				backend := &repairingBarrierWorkspace{barrierWorkspace: barrierWorkspace{result: gate.CommandResult{Command: "make verify", HeadSHA: head, ExitCode: 7, Output: "barrier failure sentinel\n" + failedLine + "\ndetent-barrier-failed: browser \n"}}, head: test.preparedHead, verifyExit: test.verifyExit, commits: test.commits, firstBad: test.firstBad}
+				owner := &repeatingBarrierOwner{cancel: cancel, reds: test.reds, green: test.green}
 				cfg := config.Default()
 				cfg.Gate.LandingMode, cfg.Gate.Run = gate.LandingRollingBarrier, "make verify"
 				cfg = cfg.ForNativeTracker()
@@ -250,6 +288,12 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 				agent := &fakeCodexClient{}
 				r := &Runner{workspace: backend, projectID: "project", workflow: workflow, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), agentRuntime: agentRuntime{backends: map[string]AgentBackend{"codex": agent}, router: router}}
 				r.RunLandingBarriers(ctx, owner)
+				if backend.reverted != test.wantReverted {
+					t.Fatalf("reverted=%q want %q", backend.reverted, test.wantReverted)
+				}
+				if test.wantReverted != "" && !strings.Contains(agent.request.Prompt, test.wantReverted) {
+					t.Fatalf("repair prompt omits culprit %q", test.wantReverted)
+				}
 				if agent.calls != test.wantTurns || backend.published != test.wantPublished || backend.prepared != backend.released {
 					t.Fatalf("turns=%d published=%d prepared=%d released=%d", agent.calls, backend.published, backend.prepared, backend.released)
 				}

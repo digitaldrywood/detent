@@ -173,33 +173,79 @@ func (r *Runner) repairLandingBarrier(ctx context.Context, backend workspace.Lan
 			r.logger.Warn("landing barrier repair scratch cleanup failed", "error", err)
 		}
 	}()
+	culprit := r.landingBarrierCulprit(ctx, repairer, path, barrier.GreenHead, head, command, failed)
 	turnCtx, cancel := context.WithTimeout(ctx, barrierRepairDuration)
 	defer cancel()
-	r.logger.Info("landing barrier repair started", "head", head, "backend", selection.BackendID)
-	if _, err := agent.RunTurn(turnCtx, AgentTurnRequest{Workspace: path, TempDir: scratch, Prompt: barrierRepairPrompt(result, failed), MaxDuration: barrierRepairDuration}, nil); err != nil {
+	r.logger.Info("landing barrier repair started", "head", head, "culprit", culprit, "backend", selection.BackendID)
+	if _, err := agent.RunTurn(turnCtx, AgentTurnRequest{Workspace: path, TempDir: scratch, Prompt: barrierRepairPrompt(result, failed, culprit), MaxDuration: barrierRepairDuration}, nil); err != nil {
 		r.logger.Warn("landing barrier repair turn failed", "head", head, "error", err)
 	}
+	if r.publishVerifiedBarrierRepair(ctx, repairer, path, barrier.BaseRef, head, command, failed, "repair") || culprit == "" {
+		return
+	}
+	if err := repairer.RevertLandingBarrierCommit(ctx, path, head, culprit); err != nil {
+		r.logger.Warn("landing barrier culprit revert failed", "head", head, "culprit", culprit, "error", err)
+		return
+	}
+	r.publishVerifiedBarrierRepair(ctx, repairer, path, barrier.BaseRef, head, command, failed, "revert")
+}
+
+func (r *Runner) publishVerifiedBarrierRepair(ctx context.Context, repairer workspace.LandingBarrierRepairWorkspace, path, base, head, command string, failed []string, kind string) bool {
 	verified, changed, err := repairer.VerifyLandingBarrierRepair(ctx, path, head, command, failed)
 	switch {
 	case err != nil:
-		r.logger.Warn("landing barrier repair verification failed", "head", head, "error", err)
-		return
+		r.logger.Warn("landing barrier "+kind+" verification failed", "head", head, "error", err)
+		return false
 	case !changed:
-		r.logger.Info("landing barrier repair made no change", "head", head)
-		return
+		r.logger.Info("landing barrier "+kind+" made no change", "head", head)
+		return false
 	case verified.ExitCode != 0:
-		r.logger.Warn("landing barrier repair did not fix the failing checks", "head", head, "exit_code", verified.ExitCode, "failed", failed)
-		return
+		r.logger.Warn("landing barrier "+kind+" did not fix the failing checks", "head", head, "exit_code", verified.ExitCode, "failed", failed)
+		return false
 	}
-	published, err := repairer.PublishLandingBarrierRepair(ctx, path, barrier.BaseRef, head)
-	switch {
-	case err != nil:
-		r.logger.Warn("landing barrier repair publication failed", "head", head, "error", err)
-	case published == "":
-		r.logger.Info("landing barrier repair made no change", "head", head)
-	default:
-		r.logger.Info("landing barrier repair published", "head", head, "repair", published)
+	published, err := repairer.PublishLandingBarrierRepair(ctx, path, base, head)
+	if err != nil {
+		r.logger.Warn("landing barrier "+kind+" publication failed", "head", head, "error", err)
+		return false
 	}
+	r.logger.Info("landing barrier "+kind+" published", "head", head, kind, published)
+	return published != ""
+}
+
+func (r *Runner) landingBarrierCulprit(ctx context.Context, repairer workspace.LandingBarrierRepairWorkspace, path, green, head, command string, failed []string) string {
+	if green == "" || len(failed) == 0 {
+		return ""
+	}
+	commits, err := repairer.LandingBarrierCommits(ctx, path, green, head)
+	if err != nil || len(commits) == 0 {
+		r.logger.Warn("landing barrier culprit search unavailable", "green", green, "head", head, "error", err)
+		return ""
+	}
+	defer func() {
+		if err := repairer.CheckoutLandingBarrierCommit(ctx, path, head); err != nil {
+			r.logger.Warn("landing barrier culprit search cleanup failed", "head", head, "error", err)
+		}
+	}()
+	low, high := 0, len(commits)-1
+	for low < high {
+		mid := (low + high) / 2
+		if err := repairer.CheckoutLandingBarrierCommit(ctx, path, commits[mid]); err != nil {
+			r.logger.Warn("landing barrier culprit search failed", "commit", commits[mid], "error", err)
+			return ""
+		}
+		checked, _, err := repairer.VerifyLandingBarrierRepair(ctx, path, "", command, failed)
+		if err != nil {
+			r.logger.Warn("landing barrier culprit search failed", "commit", commits[mid], "error", err)
+			return ""
+		}
+		if checked.ExitCode != 0 {
+			high = mid
+		} else {
+			low = mid + 1
+		}
+	}
+	r.logger.Info("landing barrier culprit found", "culprit", commits[low], "green", green, "head", head, "searched", len(commits))
+	return commits[low]
 }
 
 func barrierFailures(output string) []string {
@@ -213,7 +259,7 @@ func barrierFailures(output string) []string {
 	return failed
 }
 
-func barrierRepairPrompt(result gate.CommandResult, failed []string) string {
+func barrierRepairPrompt(result gate.CommandResult, failed []string, culprit string) string {
 	output := result.Output
 	if len(output) > barrierRepairOutputBytes {
 		output = output[len(output)-barrierRepairOutputBytes:]
@@ -221,6 +267,9 @@ func barrierRepairPrompt(result gate.CommandResult, failed []string) string {
 	rerun := "Re-run the failing checks to confirm they pass."
 	if len(failed) > 0 {
 		rerun = fmt.Sprintf("Only these checks failed:\n%s\n\nWhile iterating, re-run only them with: %s='<the lines above>' %s\nDo not run the full command; the runner re-runs exactly these failures before publishing your commit.", strings.Join(failed, "\n"), workspace.LandingBarrierFailedEnv, result.Command)
+	}
+	if culprit != "" {
+		rerun += fmt.Sprintf("\n\nThe failures first appear in commit %s; inspect it with git show %s. Fix forward on the current checkout; if no correct fix exists, make no commit and the runner reverts that commit instead.", culprit, culprit)
 	}
 	return fmt.Sprintf(`The integration barrier command failed on commit %s of this repository.
 

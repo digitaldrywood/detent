@@ -81,6 +81,33 @@ type LandingBarrierRepairWorkspace interface {
 	PrepareLandingBarrierRepair(ctx context.Context, id, base string) (path, head string, release func() error, err error)
 	VerifyLandingBarrierRepair(ctx context.Context, path, head, command string, failed []string) (result gate.CommandResult, changed bool, err error)
 	PublishLandingBarrierRepair(ctx context.Context, path, base, head string) (string, error)
+	LandingBarrierCommits(ctx context.Context, path, from, to string) ([]string, error)
+	CheckoutLandingBarrierCommit(ctx context.Context, path, commit string) error
+	RevertLandingBarrierCommit(ctx context.Context, path, head, commit string) error
+}
+
+func (l *LocalGit) LandingBarrierCommits(ctx context.Context, path, from, to string) ([]string, error) {
+	out, err := runGitAt(ctx, path, "rev-list", "--first-parent", "--reverse", from+".."+to)
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(out), nil
+}
+
+func (l *LocalGit) CheckoutLandingBarrierCommit(ctx context.Context, path, commit string) error {
+	_, err := runGitAt(ctx, path, "checkout", "--detach", "--force", commit)
+	return err
+}
+
+func (l *LocalGit) RevertLandingBarrierCommit(ctx context.Context, path, head, commit string) error {
+	if err := l.CheckoutLandingBarrierCommit(ctx, path, head); err != nil {
+		return err
+	}
+	if _, err := runGitAt(ctx, path, "revert", "--no-edit", commit); err != nil {
+		_, abortErr := runGitAt(ctx, path, "revert", "--abort")
+		return errors.Join(fmt.Errorf("revert %s: %w", commit, err), abortErr)
+	}
+	return nil
 }
 
 const LandingBarrierFailedEnv = "DETENT_BARRIER_FAILED"
