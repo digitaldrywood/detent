@@ -173,3 +173,52 @@ func TestBarrierPrefersTheLargestOnlineRunner(t *testing.T) {
 		})
 	}
 }
+
+func TestBarrierStartIsRefusedToSmallerRunner(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "barrier-pin")
+	descriptor := hubTestPolicy()
+	descriptor.Gates.LandingMode = gate.LandingRollingBarrier
+	descriptor.Gates.LandingCommandDigest = policy.Digest([]byte("make verify"))
+	descriptor = descriptor.WithID()
+	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+	repository := "https://github.com/example/repo"
+	item := f.create(t, "landed")
+	base := f.base + "/work-items/" + string(item.WorkItemID) + "/changes"
+	response := performHubAPIRequest(t, f.service, http.MethodPost, base, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: "landed"})
+	requireNativeStatus(t, response, http.StatusOK)
+	var change tracker.ChangeRequest
+	decodeHubResponse(t, response, &change)
+	input := changeTestInput()
+	input.PolicyID, input.Repository = descriptor.ID, repository
+	response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/"+change.ID+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "version"}, ChangeVersionInput: input})
+	requireNativeStatus(t, response, http.StatusOK)
+	var version tracker.ChangeVersion
+	decodeHubResponse(t, response, &version)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/"+change.ID+"/versions/"+version.ID+"/landing", f.token, tracker.LandChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "landing"}, MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: "squash"}), http.StatusOK)
+	large := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+	large.redemption.Capacity = 8
+	large.enroll(t)
+	small := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+	small.redemption.Hostname, small.redemption.Capacity = "laptop", 4
+	small.enroll(t)
+	for _, test := range []struct {
+		name    string
+		runner  runnerFixture
+		started bool
+	}{
+		{name: "smaller runner is refused", runner: small},
+		{name: "largest runner starts", runner: large, started: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			key := "start-" + test.runner.binding.RunnerID
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/landing-barrier", test.runner.redemption.Credential, tracker.LandingBarrierRequest{Mutation: tracker.Mutation{IdempotencyKey: key}, Repository: repository, PolicyID: descriptor.ID, Action: "start", Head: strings.Repeat("e", 40)})
+			requireNativeStatus(t, response, http.StatusOK)
+			var barrier tracker.LandingBarrier
+			decodeHubResponse(t, response, &barrier)
+			if started := barrier.Running && barrier.ID == key; started != test.started {
+				t.Fatalf("started=%v barrier=%+v", started, barrier)
+			}
+		})
+	}
+}

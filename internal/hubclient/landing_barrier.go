@@ -53,5 +53,13 @@ func (s *Scheduler) FinishLandingBarrier(ctx context.Context, project string, ba
 		action = "cancel"
 	}
 	_, err := source.client.MutateLandingBarrier(ctx, tracker.LandingBarrierRequest{Mutation: tracker.Mutation{IdempotencyKey: barrier.ID + ":" + action}, Action: action, Repository: barrier.Repository, ID: barrier.ID, Result: result})
+	return settledBarrierFinish(err)
+}
+
+func settledBarrierFinish(err error) error {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict {
+		return nil
+	}
 	return err
 }
