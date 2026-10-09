@@ -101,21 +101,16 @@ if [ "$run_browser" = 1 ]; then
 fi
 
 go_pid=
+race_pid=
 browser_pid=
 checks_pid=
-if [ "$run_go" = 1 ] || [ "$run_race" = 1 ]; then
-    (
-        set -o pipefail
-        status=0
-        if [ "$run_go" = 1 ]; then
-            check_with_evidence barrier-go run_go_tests 2>&1 | tee tmp/barrier-go.log || status=$?
-        fi
-        if [ "$run_race" = 1 ]; then
-            check_with_evidence barrier-race run_race_tests 2>&1 | tee tmp/barrier-race.log || status=$?
-        fi
-        exit "$status"
-    ) &
+if [ "$run_go" = 1 ]; then
+    (set -o pipefail; check_with_evidence barrier-go run_go_tests 2>&1 | tee tmp/barrier-go.log) &
     go_pid=$!
+fi
+if [ "$run_race" = 1 ]; then
+    (set -o pipefail; check_with_evidence barrier-race run_race_tests 2>&1 | tee tmp/barrier-race.log) &
+    race_pid=$!
 fi
 if [ "$run_browser" = 1 ]; then
     (set -o pipefail; DETENT_BINARY="$PWD/tmp/detent" DETENT_HOSTED_PREVIEW_BINARY="$PWD/tmp/hubserver-preview.test" DETENT_STARTUP_PREVIEW_BINARY="$PWD/tmp/startup-preview.test" check_with_evidence barrier-browser run_browser_specs 2>&1 | tee tmp/barrier-browser.log) &
@@ -125,23 +120,63 @@ if [ "${#run_checks[@]}" -gt 0 ]; then
     (set -o pipefail; run_checks_in_order "${run_checks[@]}" 2>&1 | tee tmp/barrier-checks.log) &
     checks_pid=$!
 fi
+
+kill_tree() {
+    local child
+    for child in $(pgrep -P "$1" 2>/dev/null); do
+        kill_tree "$child"
+    done
+    kill "$1" 2>/dev/null || true
+}
+
 result=0
 go_result=0
+race_result=0
 browser_result=0
 checks_result=0
-if [ -n "$go_pid" ]; then wait "$go_pid" || go_result=$?; fi
-if [ -n "$browser_pid" ]; then wait "$browser_pid" || browser_result=$?; fi
-if [ -n "$checks_pid" ]; then wait "$checks_pid" || checks_result=$?; fi
-if [ "$go_result" != 0 ]; then
+stopped=
+pending="$go_pid $race_pid $browser_pid $checks_pid"
+while [ -n "${pending// /}" ]; do
+    remaining=
+    for pid in $pending; do
+        if kill -0 "$pid" 2>/dev/null; then
+            remaining="$remaining $pid"
+            continue
+        fi
+        status=0
+        wait "$pid" || status=$?
+        case $pid in
+            "$go_pid") go_result=$status ;;
+            "$race_pid") race_result=$status ;;
+            "$browser_pid") browser_result=$status ;;
+            "$checks_pid") checks_result=$status ;;
+        esac
+        if [ "$status" != 0 ] && [ -z "$stopped" ]; then
+            stopped=$pid
+        fi
+    done
+    pending=$remaining
+    if [ -n "$stopped" ] && [ -n "${pending// /}" ]; then
+        printf 'check-barrier: a check group failed; stopping the remaining groups\n'
+        for pid in $pending; do kill_tree "$pid"; done
+        for pid in $pending; do wait "$pid" 2>/dev/null || true; done
+        pending=
+    fi
+    [ -z "${pending// /}" ] || sleep 2
+done
+if [ "$go_result" != 0 ] && [ "$stopped" = "$go_pid" ]; then
     result=$go_result
-    [ -f tmp/barrier-go.log ] && printf 'detent-barrier-failed: go %s\n' "$(python3 scripts/barrier_failures.py extract go tmp/barrier-go.log | tr '\n' ' ')"
-    [ -f tmp/barrier-race.log ] && printf 'detent-barrier-failed: race %s\n' "$(python3 scripts/barrier_failures.py extract go tmp/barrier-race.log | tr '\n' ' ')"
+    printf 'detent-barrier-failed: go %s\n' "$(python3 scripts/barrier_failures.py extract go tmp/barrier-go.log | tr '\n' ' ')"
 fi
-if [ "$browser_result" != 0 ]; then
+if [ "$race_result" != 0 ] && [ "$stopped" = "$race_pid" ]; then
+    result=$race_result
+    printf 'detent-barrier-failed: race %s\n' "$(python3 scripts/barrier_failures.py extract go tmp/barrier-race.log | tr '\n' ' ')"
+fi
+if [ "$browser_result" != 0 ] && [ "$stopped" = "$browser_pid" ]; then
     result=$browser_result
     printf 'detent-barrier-failed: browser %s\n' "$(python3 scripts/barrier_failures.py extract browser tmp/barrier-browser.log | tr '\n' ' ')"
 fi
-if [ "$checks_result" != 0 ]; then
+if [ "$checks_result" != 0 ] && [ "$stopped" = "$checks_pid" ]; then
     result=$checks_result
     printf 'detent-barrier-failed: check %s\n' "$(tr '\n' ' ' < tmp/barrier-checks.failed)"
 fi
