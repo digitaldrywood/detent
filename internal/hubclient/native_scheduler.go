@@ -276,7 +276,16 @@ func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []run
 			defer release()
 		}
 	}
-	return s.isolationReport(probeCtx)
+	report, problems := s.isolationReport(probeCtx)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if probeCtx.Err() != nil && s.lastIsolation != nil {
+		return s.lastIsolation, problems
+	}
+	if probeCtx.Err() == nil {
+		s.lastIsolation = report
+	}
+	return report, problems
 }
 
 func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector) ([]connector.Issue, error) {
