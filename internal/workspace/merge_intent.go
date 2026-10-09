@@ -107,7 +107,7 @@ func mergeGoDeclarations(ctx context.Context, directory, revision string, packag
 		return nil, fmt.Errorf("list merge tree Go files: %w", err)
 	}
 	declarations := make(map[string]mergeGoDeclaration)
-	initCounts := make(map[string]int)
+	declarationCounts := make(map[string]int)
 	for _, entry := range strings.Split(out, "\x00") {
 		object, file, ok := strings.Cut(entry, " ")
 		if !ok {
@@ -148,9 +148,9 @@ func mergeGoDeclarations(ctx context.Context, directory, revision string, packag
 				kind = "test"
 			}
 			key := path.Dir(file) + ":" + parsed.Name.Name + ":" + kind + ":" + symbol
-			if symbol == "init" {
-				initCounts[key]++
-				key += fmt.Sprintf(":%d", initCounts[key])
+			declarationCounts[key]++
+			if declarationCounts[key] > 1 {
+				key += fmt.Sprintf(":%d", declarationCounts[key])
 			}
 			declarations[key] = mergeGoDeclaration{key: key, symbol: symbol, file: file}
 		}
@@ -202,6 +202,12 @@ func mergeIntentInstructions(description string) string {
 			continue
 		}
 		if fence == "" {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t") || (!mergeRemovalInstruction.MatchString(line) && !mergeRenameInstruction.MatchString(line)) {
+				return ""
+			}
 			lines = append(lines, line)
 		}
 	}

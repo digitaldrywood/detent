@@ -3218,12 +3218,25 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 		moveFile         bool
 		deleteFile       bool
 		wantMissingCount int
+		baseFiles        map[string]string
 		prFiles          map[string]string
 		targetFiles      map[string]string
 		resolvedFiles    map[string]string
 		gitFailure       string
 		mergeCleanly     bool
 	}{
+		{name: "drops a platform function variant", goFile: "watch_linux.go", baseGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", baseFiles: map[string]string{"watch_windows.go": "//go:build windows\n\npackage example\nfunc Watch() {}\n"}, resolvedGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", resolvedFiles: map[string]string{"watch_windows.go": ""}, wantMissing: "Watch"},
+		{name: "drops a platform receiver variant", goFile: "watch_linux.go", baseGo: "//go:build linux\n\npackage example\ntype Watcher struct{}\nfunc (w *Watcher) Watch() {}\n", baseFiles: map[string]string{"watch_windows.go": "//go:build windows\n\npackage example\ntype Watcher struct{}\nfunc (w *Watcher) Watch() {}\n"}, resolvedGo: "//go:build linux\n\npackage example\ntype Watcher struct{}\nfunc (w *Watcher) Watch() {}\n", resolvedFiles: map[string]string{"watch_windows.go": ""}, wantMissing: "Watcher.Watch"},
+		{name: "platform file rename preserves variants", goFile: "watch_linux.go", baseGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", baseFiles: map[string]string{"watch_windows.go": "//go:build windows\n\npackage example\nfunc Watch() {}\n"}, resolvedGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", moveFile: true, wantPushed: true},
+		{name: "PR intentionally deletes a platform variant", goFile: "watch_linux.go", baseGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", baseFiles: map[string]string{"watch_windows.go": "//go:build windows\n\npackage example\nfunc Watch() {}\n"}, prFiles: map[string]string{"watch_windows.go": ""}, resolvedGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", mergeCleanly: true, wantPushed: true},
+		{name: "do not removal bullet", resolvedGo: "package example\nfunc PR() {}\n", description: "Do not:\n- Remove `Target`.", wantMissing: "Target"},
+		{name: "out of scope removal bullet", resolvedGo: "package example\nfunc PR() {}\n", description: "## Out of scope\n- Remove `Target`.", wantMissing: "Target"},
+		{name: "do not rename bullet", resolvedGo: "package example\nfunc PR() {}\nfunc Renamed() {}\n", description: "Do not:\n- Rename `Target` to `Renamed`.", wantMissing: "Target"},
+		{name: "out of scope bare instruction", resolvedGo: "package example\nfunc PR() {}\n", description: "Out of scope:\nRemove `Target`.", wantMissing: "Target"},
+		{name: "nested context cannot authorize removal", resolvedGo: "package example\nfunc PR() {}\n", description: "## Out of scope\n### Acceptance criteria\n- Remove `Target`.", wantMissing: "Target"},
+		{name: "standalone removal bullet", resolvedGo: "package example\nfunc PR() {}\n", description: "- Remove `Target`.", wantPushed: true},
+		{name: "later context makes removal ambiguous", resolvedGo: "package example\nfunc PR() {}\n", description: "Remove `Target`.\nDo not remove `Target`.", wantMissing: "Target"},
+		{name: "indented example cannot authorize removal", resolvedGo: "package example\nfunc PR() {}\n", description: "    Remove `Target`.", wantMissing: "Target"},
 		{name: "PR deletes a file", mergeCleanly: true, prFiles: map[string]string{"example.go": ""}, deleteFile: true, resolvedGo: "deleted", wantPushed: true},
 		{name: "target deletes a file", mergeCleanly: true, targetFiles: map[string]string{"example.go": ""}, deleteFile: true, resolvedGo: "deleted", wantPushed: true},
 		{name: "PR deletes a function", mergeCleanly: true, prGo: "package example\nfunc Target() {}\n", resolvedGo: "package example\nfunc Target() {}\n", wantPushed: true},
@@ -3259,8 +3272,8 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 		{name: "drops target test", goFile: "example_test.go", baseGo: "package example\nimport \"testing\"\nfunc PR() {}\nfunc TestTarget(t *testing.T) {}\n", resolvedGo: "package example\nfunc PR() {}\n", wantMissing: "TestTarget"},
 		{name: "rename without replacement", resolvedGo: "package example\nfunc Target() {}\n", description: "Rename `PR` to `Renamed`.", wantMissing: "PR"},
 		{name: "conditional removal is ambiguous", resolvedGo: "package example\nfunc PR() {}\n", description: "Remove `Target` if unused.", wantMissing: "Target"},
-		{name: "shorter fence cannot authorize removal", resolvedGo: "package example\nfunc PR() {}\n", description: "Example:\n````\n```\nRemove `Target`.\n````", wantMissing: "Target"},
-		{name: "removal mentioned as an example", resolvedGo: "package example\nfunc PR() {}\n", description: "Example:\n```\nRemove `Target`.\n```", wantMissing: "Target"},
+		{name: "shorter fence cannot authorize removal", resolvedGo: "package example\nfunc PR() {}\n", description: "````\n```\nRemove `Target`.\n````", wantMissing: "Target"},
+		{name: "removal mentioned as an example", resolvedGo: "package example\nfunc PR() {}\n", description: "```\nRemove `Target`.\n```", wantMissing: "Target"},
 		{name: "rolling resolved head skips the gate", mode: gate.LandingRollingBarrier, gate: "exit 19", wantPushed: true},
 		{name: "resolved committed head", wantPushed: true},
 		{name: "already pushed head", before: "push"},
@@ -3317,6 +3330,7 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 			source := initSourceRepo(t)
 			if tt.resolvedGo != "" {
 				writeGoFiles(source, map[string]string{goFile: baseGo})
+				writeGoFiles(source, tt.baseFiles)
 				runGit(t, source, "commit", "-m", "base behavior")
 			}
 			remote := initBareRemote(t)
