@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -70,7 +71,7 @@ func (r *Runner) RunLandingBarriers(ctx context.Context, owner LandingBarrierOwn
 					}
 					if completed != nil && completed.ExitCode != 0 && !repaired[completed.HeadSHA] {
 						repaired[completed.HeadSHA] = true
-						r.repairLandingBarrier(ctx, backend, barrier, *completed)
+						r.repairLandingBarrier(ctx, backend, barrier, *completed, cfg.Run)
 						continue
 					}
 					if runErr == nil {
@@ -115,9 +116,10 @@ func (r *Runner) finishLandingBarrier(ctx context.Context, owner LandingBarrierO
 const (
 	barrierRepairDuration    = 45 * time.Minute
 	barrierRepairOutputBytes = 24 << 10
+	barrierFailedPrefix      = "detent-barrier-failed:"
 )
 
-func (r *Runner) repairLandingBarrier(ctx context.Context, backend workspace.LandingBarrierWorkspace, barrier tracker.LandingBarrier, result gate.CommandResult) {
+func (r *Runner) repairLandingBarrier(ctx context.Context, backend workspace.LandingBarrierWorkspace, barrier tracker.LandingBarrier, result gate.CommandResult, command string) {
 	repairer, ok := backend.(workspace.LandingBarrierRepairWorkspace)
 	if !ok {
 		return
@@ -156,8 +158,21 @@ func (r *Runner) repairLandingBarrier(ctx context.Context, backend workspace.Lan
 	turnCtx, cancel := context.WithTimeout(ctx, barrierRepairDuration)
 	defer cancel()
 	r.logger.Info("landing barrier repair started", "head", head, "backend", selection.BackendID)
-	if _, err := agent.RunTurn(turnCtx, AgentTurnRequest{Workspace: path, TempDir: scratch, Prompt: barrierRepairPrompt(result), MaxDuration: barrierRepairDuration}, nil); err != nil {
+	failed := barrierFailures(result.Output)
+	if _, err := agent.RunTurn(turnCtx, AgentTurnRequest{Workspace: path, TempDir: scratch, Prompt: barrierRepairPrompt(result, failed), MaxDuration: barrierRepairDuration}, nil); err != nil {
 		r.logger.Warn("landing barrier repair turn failed", "head", head, "error", err)
+	}
+	verified, changed, err := repairer.VerifyLandingBarrierRepair(ctx, path, head, command, failed)
+	switch {
+	case err != nil:
+		r.logger.Warn("landing barrier repair verification failed", "head", head, "error", err)
+		return
+	case !changed:
+		r.logger.Info("landing barrier repair made no change", "head", head)
+		return
+	case verified.ExitCode != 0:
+		r.logger.Warn("landing barrier repair did not fix the failing checks", "head", head, "exit_code", verified.ExitCode, "failed", failed)
+		return
 	}
 	published, err := repairer.PublishLandingBarrierRepair(ctx, path, barrier.BaseRef, head)
 	switch {
@@ -170,18 +185,33 @@ func (r *Runner) repairLandingBarrier(ctx context.Context, backend workspace.Lan
 	}
 }
 
-func barrierRepairPrompt(result gate.CommandResult) string {
+func barrierFailures(output string) []string {
+	var failed []string
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, barrierFailedPrefix) && len(strings.Fields(line)) > 2 {
+			failed = append(failed, line)
+		}
+	}
+	return failed
+}
+
+func barrierRepairPrompt(result gate.CommandResult, failed []string) string {
 	output := result.Output
 	if len(output) > barrierRepairOutputBytes {
 		output = output[len(output)-barrierRepairOutputBytes:]
+	}
+	rerun := "Re-run the failing checks to confirm they pass."
+	if len(failed) > 0 {
+		rerun = fmt.Sprintf("Only these checks failed:\n%s\n\nWhile iterating, re-run only them with: %s='<the lines above>' %s\nDo not run the full command; the runner re-runs exactly these failures before publishing your commit.", strings.Join(failed, "\n"), workspace.LandingBarrierFailedEnv, result.Command)
 	}
 	return fmt.Sprintf(`The integration barrier command failed on commit %s of this repository.
 
 Command: %s
 Exit code: %d
 
-Fix the cause of the failures with the smallest correct change to this checkout. Re-run the failing checks to confirm they pass. Commit the fix with a conventional commit message. Do not push, do not change unrelated code, and do not weaken or skip a check to make it pass. If the failure comes from the environment rather than the code, make no commit.
+Fix the cause of the failures with the smallest correct change to this checkout. %s Commit the fix with a conventional commit message. Do not push, do not change unrelated code, and do not weaken or skip a check to make it pass. If the failure comes from the environment rather than the code, make no commit.
 
 Failing output (tail):
-%s`, result.HeadSHA, result.Command, result.ExitCode, output)
+%s`, result.HeadSHA, result.Command, result.ExitCode, rerun, output)
 }

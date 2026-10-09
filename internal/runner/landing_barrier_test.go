@@ -121,10 +121,20 @@ func TestLandingBarrierPublication(t *testing.T) {
 
 type repairingBarrierWorkspace struct {
 	barrierWorkspace
-	head      string
-	prepared  int
-	published int
-	released  int
+	head       string
+	prepared   int
+	published  int
+	released   int
+	verifyExit int
+	verified   []string
+}
+
+func (b *repairingBarrierWorkspace) VerifyLandingBarrierRepair(_ context.Context, path, head, command string, failed []string) (gate.CommandResult, bool, error) {
+	b.verified = failed
+	if path != "/repair" || head != b.head || command != "make verify" {
+		return gate.CommandResult{}, false, errors.New("unexpected repair verification")
+	}
+	return gate.CommandResult{ExitCode: b.verifyExit}, true, nil
 }
 
 func (b *repairingBarrierWorkspace) PrepareLandingBarrierRepair(context.Context, string, string) (string, string, func() error, error) {
@@ -165,18 +175,21 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 		name          string
 		preparedHead  string
 		reds          int
+		verifyExit    int
 		wantTurns     int
 		wantPublished int
 	}{
 		{name: "red head is repaired and published", preparedHead: head, reds: 1, wantTurns: 1, wantPublished: 1},
 		{name: "same red head is repaired once", preparedHead: head, reds: 2, wantTurns: 1, wantPublished: 1},
 		{name: "moved base skips the stale repair", preparedHead: strings.Repeat("a", 40), reds: 1, wantTurns: 0, wantPublished: 0},
+		{name: "unverified repair is not published", preparedHead: head, reds: 1, verifyExit: 1, wantTurns: 1, wantPublished: 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
-				backend := &repairingBarrierWorkspace{barrierWorkspace: barrierWorkspace{result: gate.CommandResult{Command: "make verify", HeadSHA: head, ExitCode: 7, Output: "barrier failure sentinel"}}, head: test.preparedHead}
+				failedLine := "detent-barrier-failed: go example.com/pkg:TestBroken"
+				backend := &repairingBarrierWorkspace{barrierWorkspace: barrierWorkspace{result: gate.CommandResult{Command: "make verify", HeadSHA: head, ExitCode: 7, Output: "barrier failure sentinel\n" + failedLine + "\ndetent-barrier-failed: browser \n"}}, head: test.preparedHead, verifyExit: test.verifyExit}
 				owner := &repeatingBarrierOwner{cancel: cancel, reds: test.reds}
 				cfg := config.Default()
 				cfg.Gate.LandingMode, cfg.Gate.Run = gate.LandingRollingBarrier, "make verify"
@@ -192,8 +205,11 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 				if agent.calls != test.wantTurns || backend.published != test.wantPublished || backend.prepared != backend.released {
 					t.Fatalf("turns=%d published=%d prepared=%d released=%d", agent.calls, backend.published, backend.prepared, backend.released)
 				}
-				if test.wantTurns > 0 && (agent.request.Workspace != "/repair" || !strings.Contains(agent.request.Prompt, "barrier failure sentinel") || !strings.Contains(agent.request.Prompt, head)) {
+				if test.wantTurns > 0 && (agent.request.Workspace != "/repair" || !strings.Contains(agent.request.Prompt, "barrier failure sentinel") || !strings.Contains(agent.request.Prompt, head) || !strings.Contains(agent.request.Prompt, "re-run only them")) {
 					t.Fatalf("repair request=%+v", agent.request)
+				}
+				if test.wantTurns > 0 && (len(backend.verified) != 1 || backend.verified[0] != failedLine) {
+					t.Fatalf("verified failures=%q, want only %q", backend.verified, failedLine)
 				}
 			})
 		})

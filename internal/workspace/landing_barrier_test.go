@@ -184,6 +184,12 @@ func TestLandingBarrierRepairPublication(t *testing.T) {
 				runGit(t, f.source, "push", "origin", "HEAD:main")
 			}
 			moved := f.remoteMain(t)
+			if !test.wantErr {
+				verified, changed, err := f.backend.VerifyLandingBarrierRepair(ctx, path, head, `test "$DETENT_BARRIER_FAILED" = "detent-barrier-failed: go example.com/pkg"`, []string{"detent-barrier-failed: go example.com/pkg"})
+				if err != nil || changed != test.commit || changed && verified.ExitCode != 0 {
+					t.Fatalf("verify changed=%v result=%+v error=%v", changed, verified, err)
+				}
+			}
 			published, err := f.backend.PublishLandingBarrierRepair(ctx, path, "main", head)
 			if (err != nil) != test.wantErr || (published != "") != test.published {
 				t.Fatalf("published=%q error=%v", published, err)

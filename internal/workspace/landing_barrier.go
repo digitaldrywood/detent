@@ -79,7 +79,31 @@ func (l *LocalGit) RunLandingBarrier(ctx context.Context, id, base, command stri
 
 type LandingBarrierRepairWorkspace interface {
 	PrepareLandingBarrierRepair(ctx context.Context, id, base string) (path, head string, release func() error, err error)
+	VerifyLandingBarrierRepair(ctx context.Context, path, head, command string, failed []string) (result gate.CommandResult, changed bool, err error)
 	PublishLandingBarrierRepair(ctx context.Context, path, base, head string) (string, error)
+}
+
+const LandingBarrierFailedEnv = "DETENT_BARRIER_FAILED"
+
+func (l *LocalGit) VerifyLandingBarrierRepair(ctx context.Context, path, head, command string, failed []string) (gate.CommandResult, bool, error) {
+	repaired, err := runGitAt(ctx, path, "rev-parse", "HEAD")
+	if err != nil {
+		return gate.CommandResult{}, false, err
+	}
+	repaired = strings.TrimSpace(repaired)
+	if repaired == head {
+		return gate.CommandResult{}, false, nil
+	}
+	if len(failed) > 0 {
+		command = "export " + LandingBarrierFailedEnv + "=" + shellQuoteArg(strings.Join(failed, "\n")) + "; " + command
+	}
+	key := filepath.Base(path)
+	result, err := l.RunReviewCommand(ctx, Info{Path: path, Key: key}, Issue{ID: key, Identifier: key, PullRequestHeadSHA: repaired}, command)
+	return result, true, err
+}
+
+func shellQuoteArg(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func (l *LocalGit) PrepareLandingBarrierRepair(ctx context.Context, id, base string) (string, string, func() error, error) {
