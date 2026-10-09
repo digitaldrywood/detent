@@ -37,6 +37,7 @@ import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
 import { DEFAULT_VIEW_STATE, parseViewState, serializeViewState } from "../../src/app/work/lib/viewState.ts";
 import { clearBoardCache } from "../../src/app/work/lib/boardStore.ts";
 import { useBoard, useNow } from "../../src/app/work/lib/useWork.ts";
+import { boardConnectionChip } from "../../src/app/work/lib/freshness.ts";
 import { resetRunnerNamesForTests } from "../../src/app/work/lib/runnerNames.ts";
 import { workPaginationFixture } from "../workPaginationFixture.ts";
 import { plainSearchOptions } from "../../src/app/lib/searchParams.ts";
@@ -992,15 +993,21 @@ describe("the Work clock render boundary", () => {
 });
 
 describe("the cached Work read", () => {
-  it("shows a cold spinner, then core cards while optional details remain pending", async () => {
+  it("keeps live counts consistent while initial and refreshed attempts remain pending", async () => {
     let releaseBase!: () => void;
     let releaseDetails!: () => void;
-    const base = new Promise<void>((resolve) => { releaseBase = resolve; });
-    const details = new Promise<void>((resolve) => { releaseDetails = resolve; });
-    await pagedWork("/work", (fetch) => async (input, init) => {
+    let base = new Promise<void>((resolve) => { releaseBase = resolve; });
+    let details = new Promise<void>((resolve) => { releaseDetails = resolve; });
+    let revision = "1";
+    const fixture = await pagedWork("/work", (fetch) => async (input, init) => {
       if (String(input).includes("/work-items?") || /\/projects\/[^/]+$/.test(String(input))) await base;
       if (/\/(attempts|changes)(\?|$)/.test(String(input))) await details;
-      return fetch(input, init);
+      const response = await fetch(input, init);
+      if (!String(input).includes("/work-items?")) return response;
+      const body = await response.json();
+      body.items = body.items.map((issue: NativeIssue) => ({ ...issue, revision }));
+      if (body.work) body.work.items = body.work.items.map((issue: NativeIssue) => ({ ...issue, revision }));
+      return Response.json(body);
     });
     const spinner = await screen.findByText("Loading work…");
     expect(spinner.getAttribute("role")).toBe("status");
@@ -1012,7 +1019,34 @@ describe("the cached Work read", () => {
     await settledWork();
     expect(screen.getByText("Observed later-page worker")).not.toBeNull();
     expect(screen.queryByText("Loading work…")).toBeNull();
+    expect(screen.getByTestId("stat-live").textContent).toBe("0 live");
+    expect(screen.queryByText("Running")).toBeNull();
     await act(async () => { releaseDetails(); });
+    await waitFor(() => expect(screen.getByTestId("stat-live").textContent).toBe("1 live"));
+    expect(within(screen.getByRole("region", { name: "In Progress" })).getByText("1 live")).not.toBeNull();
+    expect(screen.getAllByText("Running")).toHaveLength(1);
+    revision = "2";
+    base = new Promise<void>((resolve) => { releaseBase = resolve; });
+    details = new Promise<void>((resolve) => { releaseDetails = resolve; });
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    await screen.findByText("Updating");
+    expect(screen.getByTestId("stat-live").textContent).toBe("1 live");
+    expect(screen.getAllByText("Running")).toHaveLength(1);
+    await act(async () => { releaseBase(); });
+    await waitFor(() => expect(screen.queryByText("Updating")).toBeNull());
+    expect(screen.getByTestId("stat-live").textContent).toBe("0 live");
+    expect(screen.queryByText("Running")).toBeNull();
+    await act(async () => { releaseDetails(); });
+    await waitFor(() => expect(screen.getByTestId("stat-live").textContent).toBe("1 live"));
+    expect(within(screen.getByRole("region", { name: "In Progress" })).getByText("1 live")).not.toBeNull();
+    expect(screen.getAllByText("Running")).toHaveLength(1);
+    for (const [query, count] of [["state=Todo", 0], ["state=In+Progress", 1], ["lanes=Todo", 0]] as const) {
+      await act(async () => { await fixture.router.navigate({ to: `/work?${query}` }); });
+      await settledWork();
+      await waitFor(() => expect(screen.getByTestId("stat-live").textContent).toBe(`${count} live`));
+      expect(screen.queryAllByText("Running")).toHaveLength(count);
+      expect(screen.queryAllByText("1 live")).toHaveLength(count);
+    }
   });
 
   it("shares concurrent base reads and shows memory cards on the first return render", async () => {
@@ -1067,13 +1101,22 @@ describe("the cached Work read", () => {
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
     await waitFor(() => expect(current.resolved).toBe(true));
     const stamp = current.asOf;
+    act(() => sources.forEach((source) => source.dispatchEvent(new Event("open"))));
+    const chip = () => boardConnectionChip({ app: { tone: "dc-ok", label: "Live", detail: null, tooltip: "Fixture" },
+      streaming: current.live, loading: current.loading, refreshing: current.refreshing, cached: current.cached,
+      asOf: current.asOf, onReload: current.reload });
     hold = true;
     act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: "40" })));
     act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: "41" })));
     await waitFor(() => expect(current.refreshing).toBe(true));
     expect(current.asOf).toBe(stamp);
     expect(current.loading).toBe(false);
+    expect(chip().label).toBe("Updating");
     await act(async () => { release(); });
+    await waitFor(() => expect(current.refreshing).toBe(false));
+    expect(current.cached).toBe(false);
+    expect(current.live).toBe(true);
+    expect(chip().label).toBe("Live");
   });
 });
 

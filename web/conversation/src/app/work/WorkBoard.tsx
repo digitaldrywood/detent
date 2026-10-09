@@ -265,7 +265,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
       title={scopeName}
       completed={noProjects ? null : (
         <div className="flex shrink-0 items-center gap-1">
-          <LiveCounter count={board.resolved ? board.totals?.running ?? stats.running : null} loading={board.loading} />
+          <LiveCounter count={board.resolved ? stats.running : null} loading={board.loading} />
           <CompletedCounter
             count={board.totals?.completed ?? (view.completedWindow === "all" ? stats.completed : null)}
             completedWindow={view.completedWindow}

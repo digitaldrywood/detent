@@ -6,6 +6,7 @@ import { boardAccountKey, clearBoardCache, confirmWorkItem, getBoardRead, reject
 import { DEFAULT_VIEW_STATE } from "../../src/app/work/lib/viewState.ts";
 import { makeWorkHttp } from "../../src/app/work/lib/workHttp.ts";
 import type { NativeIssue } from "../../src/contracts/work.ts";
+import { isLive } from "../../src/app/work/lib/model.ts";
 import { workPaginationFixture } from "../workPaginationFixture.ts";
 
 afterEach(() => { clearBoardCache(); vi.restoreAllMocks(); });
@@ -179,22 +180,48 @@ describe("the Work snapshot ordering", () => {
     expect((stored.at(-1)!.entries as { issues: NativeIssue[] }[])[0]!.issues.find((issue) => issue.work_item_id === native.work_item_id)?.revision).toBe("900");
   });
 
-  it("reuses card details for unchanged revisions across reloads", async () => {
+  it("settles reads before delayed attempts and reuses unchanged details across reloads", async () => {
     vi.spyOn(disk, "updateBoardDisk").mockResolvedValue();
     vi.spyOn(disk, "readBoardDisk").mockResolvedValue(null);
     const source = await fixture();
-    const details = () => source.requests.filter(({ url }) => /\/(attempts|changes)$/.test(url.pathname)).length;
-    source.read.reload();
-    await expect.poll(() => source.read.snapshot().resolved).toBe(true);
-    await expect.poll(() => source.read.snapshot().enriched).toBeGreaterThan(0);
-    await expect.poll(details, { interval: 50 }).toBeGreaterThan(0);
-    const first = details();
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(details()).toBe(first);
-    source.read.reload();
-    await expect.poll(() => source.read.snapshot().refreshing).toBe(false);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(details()).toBe(first);
+    let details = deferred<void>();
+    let revision = "1";
+    const http = makeWorkHttp({ ...source.client.http, fetch: async (...args) => {
+      if (/\/(attempts|changes)(\?|$)/.test(String(args[0]))) await details.promise;
+      const response = await source.fetch(...args);
+      if (!String(args[0]).includes("/work-items?")) return response;
+      const body = await response.json();
+      body.items = body.items.map((issue: NativeIssue) => ({ ...issue, revision }));
+      if (body.work) body.work.items = body.work.items.map((issue: NativeIssue) => ({ ...issue, revision }));
+      return Response.json(body);
+    } });
+    const read = getBoardRead(source.client, http, null, DEFAULT_VIEW_STATE);
+    const requests = () => source.requests.filter(({ url }) => /\/(attempts|changes)$/.test(url.pathname)).length;
+    read.reload();
+    await expect.poll(() => read.snapshot().resolved).toBe(true);
+    expect(read.snapshot().refreshing).toBe(false);
+    expect(read.snapshot().totals?.running).toBe(1);
+    expect(read.snapshot().items.filter((item) => isLive(item))).toHaveLength(0);
+    const count = read.snapshot().items.filter((item) => !item.terminal).length;
+    details.resolve();
+    await expect.poll(() => read.snapshot().enriched).toBe(count);
+    expect(read.snapshot().items.filter((item) => isLive(item))).toHaveLength(1);
+    const first = requests();
+    read.reload();
+    await expect.poll(() => read.snapshot().refreshing).toBe(false);
+    expect(read.snapshot().items.filter((item) => isLive(item))).toHaveLength(1);
+    expect(requests()).toBe(first);
+    revision = "2";
+    details = deferred<void>();
+    read.reload();
+    await expect.poll(() => read.snapshot().refreshing).toBe(false);
+    expect(read.snapshot().cached).toBe(false);
+    expect(read.snapshot().totals?.running).toBe(1);
+    expect(read.snapshot().items.filter((item) => isLive(item))).toHaveLength(0);
+    details.resolve();
+    await expect.poll(() => read.snapshot().enriched).toBe(count);
+    expect(read.snapshot().items.filter((item) => isLive(item))).toHaveLength(1);
+    expect(requests()).toBe(first * 2);
   });
 
   it("normalizes identical queries and separates server filters, archive, account and permissions", async () => {
