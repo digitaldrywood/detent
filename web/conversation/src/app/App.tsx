@@ -37,7 +37,7 @@ import {
   latestControl,
   unsettledControls,
 } from "../runtime/state/conversationState.ts";
-import { accountKey, newCommandKey, readLastProject, useClient, writeLastProject } from "./client.ts";
+import { accountKey, newCommandKey, readLastChatProject, readLastProject, useClient, writeLastProject } from "./client.ts";
 import { Button } from "../components/ui/button.tsx";
 import { Composer, type ComposerProps } from "./components/Composer.tsx";
 import { ComposerContextAttachment } from "./components/ComposerContextAttachment.tsx";
@@ -464,7 +464,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
     return () => { cancelled = true; };
   }, [http, subjectId, projectId]);
   const writableProjects = client.bootstrap.projects.filter((candidate) => candidate.can_write);
-  const rememberedProjectId = shell.projectId || readLastProject();
+  const rememberedProjectId = shell.projectId || readLastChatProject();
   const active = subject?.project_id ?? projectId
     ?? writableProjects.find((candidate) => candidate.id === rememberedProjectId)?.id
     ?? writableProjects[0]?.id ?? "";

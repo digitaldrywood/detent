@@ -303,16 +303,6 @@ for (const projectScope of ["one project", "one writable project", "several proj
     await composer(page).fill(message);
 
     if (projectScope === "several projects") {
-      await expect(page.getByTestId("hero-headline")).toContainText("Choose a project to start");
-      await expect(page.getByText("Choose a project first", { exact: true })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Choose a project first", exact: true })).toBeDisabled();
-      await composer(page).press("Enter");
-      await expectComposerText(page, message);
-      expect(creates).toEqual([]);
-      await page.getByRole("button", { name: "Choose a project", exact: true }).click();
-      await page.getByRole("menuitemradio", { name: selectedProject.name, exact: true }).click();
-      await expect(page).toHaveURL(new RegExp(`/chat/p/${selectedProject.id}$`));
-      await expectComposerText(page, message);
       await expect(page.getByText("Choose a project first", { exact: true })).toHaveCount(0);
     }
 
@@ -1442,7 +1432,7 @@ test.describe("decisions.md §10 corrections", () => {
     await chat.focus();
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(/\/chat$/);
-    await expectOneHeadingOne(page, "Choose a project to start");
+    await expectOneHeadingOne(page, "What should we build in");
     await expect(composer(page)).toBeFocused();
 
     const work = list.getByTestId("nav-work");

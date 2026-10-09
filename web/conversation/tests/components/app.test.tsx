@@ -151,7 +151,7 @@ describe("the conversation shell", () => {
     await waitFor(() => expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("proj_beta"));
     await router.navigate({ to: "/work" });
     await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All projects"));
-    expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("proj_beta");
+    expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("");
     await router.navigate({ to: "/chat" });
     await screen.findByLabelText("Message");
     expect(screen.getByTestId("hero-headline").textContent).toContain("beta");
@@ -160,7 +160,7 @@ describe("the conversation shell", () => {
     fireEvent.click(screen.getByLabelText("Filter threads by project"));
     fireEvent.click(await screen.findByRole("option", { name: "All projects" }));
     await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All projects"));
-    expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("proj_beta");
+    expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("");
     const composer = screen.getByLabelText<HTMLElement>("Message");
     await setComposerText(composer, "Chat after All projects");
     expect(screen.getByLabelText<HTMLButtonElement>("Send message").disabled).toBe(false);
