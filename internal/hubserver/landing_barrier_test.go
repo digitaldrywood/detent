@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -172,13 +173,20 @@ func TestBarrierPrefersTheLargestOnlineRunner(t *testing.T) {
 	now := f.service.config.now()
 	for _, test := range []struct {
 		name    string
+		problem bool
 		offline bool
 		want    string
 	}{
 		{name: "largest online runner owns the barrier", want: large.binding.RunnerID},
+		{name: "a reported problem does not hand the barrier to a smaller runner", problem: true, want: large.binding.RunnerID},
 		{name: "next runner takes over when the largest is offline", offline: true, want: small.binding.RunnerID},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.problem {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET problems_json=? WHERE id=?", `[{"code":"settings_invalid","message":"transient","reported_at":"`+formatHubTime(now)+`"}]`, large.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.offline {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", formatHubTime(now.Add(-time.Hour)), large.binding.RunnerID); err != nil {
 					t.Fatal(err)
@@ -282,6 +290,20 @@ func TestLargestRunnerTakesOverSmallerRunnersBarrier(t *testing.T) {
 	large := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	large.redemption.Capacity = 8
 	large.enroll(t)
+	observe := func(r runnerFixture) tracker.LandingBarrier {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/landing-barrier?repository="+url.QueryEscape(repository), r.redemption.Credential, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var barrier tracker.LandingBarrier
+		decodeHubResponse(t, response, &barrier)
+		return barrier
+	}
+	if seen := observe(large); seen.Running {
+		t.Fatalf("preferred runner sees the smaller runner's barrier as running, so it never asks to take over: %+v", seen)
+	}
+	if seen := observe(small); !seen.Running {
+		t.Fatalf("owner no longer sees its running barrier: %+v", seen)
+	}
 	if taken := start(large, "large-start"); !taken.Running || taken.ID != "large-start" || taken.Owner != large.binding.RunnerID {
 		t.Fatalf("largest runner did not take over: %+v", taken)
 	}

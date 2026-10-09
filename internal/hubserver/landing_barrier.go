@@ -47,11 +47,19 @@ func (s *Service) getLandingBarrier(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if result.Running {
-		available, err := landingBarrierOwnerAvailable(c.Request().Context(), s.database.db, nativeRequestScope(c), result, s.config.now(), false)
+		scope := nativeRequestScope(c)
+		available, err := landingBarrierOwnerAvailable(c.Request().Context(), s.database.db, scope, result, s.config.now(), false)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		result.Running = !available
+		if requester := landingBarrierOwner(scope); result.Running && strings.HasPrefix(requester, "runner_") && result.Owner != requester {
+			preferred, err := preferredBarrierRunner(c.Request().Context(), s.database.db, scope, s.config.now())
+			if err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			result.Running = preferred != requester
+		}
 	}
 	if result.ProjectID != nativeRequestScope(c).project {
 		result = tracker.LandingBarrier{Repository: result.Repository, Running: result.Running, Red: result.Red}
@@ -267,7 +275,7 @@ func preferredBarrierRunner(ctx context.Context, query nativeQueryer, scope nati
 		if err != nil {
 			return "", err
 		}
-		if runner.Health != "online" || runner.State == "disabled" || runner.HostCapacity <= capacity {
+		if runner.ConnectionHealth != "online" || runner.State == "disabled" || runner.HostCapacity <= capacity {
 			continue
 		}
 		preferred, capacity = id, runner.HostCapacity
