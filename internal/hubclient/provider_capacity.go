@@ -116,6 +116,9 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 			if len(leases) > 0 {
 				return leases, nil
 			}
+			if page.Next != 0 && (waiting == nil || errors.Is(waiting, ErrNoClaimableWork)) {
+				return leases, nil
+			}
 			if waiting != nil {
 				return leases, waiting
 			}
