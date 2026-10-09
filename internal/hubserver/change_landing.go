@@ -331,10 +331,6 @@ func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nati
 	if err != nil {
 		return false, true, err
 	}
-	allowed, err := barrierLandingAllowed(ctx, query, *scope, version.Repository, tracker.NativeWorkItemID(item))
-	if err != nil || !allowed {
-		return false, true, err
-	}
 	if version.External != nil || version.AttemptID == "" {
 		return true, true, nil
 	}

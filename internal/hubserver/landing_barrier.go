@@ -43,11 +43,6 @@ ON CONFLICT(organization_id, repository) DO UPDATE SET record_json=excluded.reco
 	return err
 }
 
-func barrierLandingAllowed(ctx context.Context, query nativeQueryer, scope nativeScope, repository string, item tracker.NativeWorkItemID) (bool, error) {
-	barrier, err := readLandingBarrier(ctx, query, scope, repository)
-	return !barrier.Red || barrier.Repair != "" && barrier.Repair == item, err
-}
-
 func (s *Service) getLandingBarrier(c echo.Context) error {
 	result, err := readLandingBarrier(c.Request().Context(), s.database.db, nativeRequestScope(c), c.QueryParam("repository"))
 	if err != nil {

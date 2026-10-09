@@ -2,7 +2,6 @@ package runner
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -11,15 +10,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-var ErrLandingBarrierRed = errors.New("the rolling landing barrier is red; waiting for its repair")
-
 type LandingBarrierOwner interface {
 	NextLandingBarrier(context.Context, string, string, string, bool, func(context.Context, string) (string, error)) (tracker.LandingBarrier, bool, error)
 	FinishLandingBarrier(context.Context, string, tracker.LandingBarrier, *gate.CommandResult) error
-}
-
-type LandingBarrierAuthorization interface {
-	AuthorizeLanding(context.Context, string) error
 }
 
 func (r *Runner) RunLandingBarriers(ctx context.Context, owner LandingBarrierOwner) {

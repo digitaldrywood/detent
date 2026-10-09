@@ -92,18 +92,6 @@ func TestRollingLandingBarrier(t *testing.T) {
 				t.Fatal(err)
 			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
-			for _, test := range []struct {
-				name    string
-				item    tracker.NativeWorkItemID
-				allowed bool
-			}{{"ordinary", secondItem.WorkItemID, false}, {"repair", barrier.Repair, true}} {
-				t.Run(test.name, func(t *testing.T) {
-					allowed, err := barrierLandingAllowed(t.Context(), f.service.database.db, scope, repository, test.item)
-					if err != nil || allowed != test.allowed {
-						t.Fatalf("allowed=%v error=%v", allowed, err)
-					}
-				})
-			}
 			repair, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(barrier.Repair))
 			if err != nil || repair.State != "Todo" || repair.Priority == nil || *repair.Priority != 1 || !strings.Contains(repair.Body, first.ID) || !strings.Contains(repair.Body, second.ID) || !strings.Contains(repair.Body, red.Output) {
 				t.Fatalf("repair=%+v error=%v", repair, err)
@@ -138,9 +126,6 @@ func TestRollingLandingBarrier(t *testing.T) {
 			finished := mutate("green", "finish", next.ID, &green, "")
 			if finished.Red || finished.Running || finished.Repair != "" {
 				t.Fatalf("green=%+v", finished)
-			}
-			if allowed, err := barrierLandingAllowed(t.Context(), f.service.database.db, scope, repository, secondItem.WorkItemID); err != nil || !allowed {
-				t.Fatalf("green did not reopen: %v %v", allowed, err)
 			}
 			if idle := mutate("idle-green", "start", "", nil, checked); idle.Running {
 				t.Fatal("barrier reran an unchanged head")

@@ -68,13 +68,6 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	if effectiveGate.CITriggerLabelStaggerSeconds != nil {
 		options.CITriggerLabelStagger = time.Duration(*effectiveGate.CITriggerLabelStaggerSeconds) * time.Second
 	}
-	if effectiveGate.LandingMode == gate.LandingRollingBarrier {
-		authorization, ok := landing.(LandingBarrierAuthorization)
-		if !ok {
-			return RunResult{}, errors.New("rolling landing requires native barrier authority")
-		}
-		options.Authorize = func(ctx context.Context) error { return authorization.AuthorizeLanding(ctx, target.Repository) }
-	}
 	var result workspace.LandResult
 	defer func() {
 		if runResult.NativeLanding != nil {
@@ -161,11 +154,6 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	}
 	if err != nil {
 		if result.MergeSHA == "" {
-			if errors.Is(err, ErrLandingBarrierRed) {
-				waiting := r.refusedLanding(req, target, "", err.Error())
-				waiting.NativeLanding.Waiting = true
-				return waiting, nil
-			}
 			if IsCapacityError(err) || errors.Is(err, github.ErrRateLimited) || errors.Is(err, forgeavailability.ErrUnavailable) {
 				return RunResult{WorkspaceBranch: info.Branch, NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA}}, err
 			}
