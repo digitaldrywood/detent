@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestMatches(t *testing.T) {
@@ -15,6 +16,7 @@ func TestMatches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Identity(self) error = %v", err)
 	}
+	time.Sleep(20 * time.Millisecond)
 	exited := exec.Command("sleep", "30")
 	if err := exited.Start(); err != nil {
 		t.Fatal(err)
