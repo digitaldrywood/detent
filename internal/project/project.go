@@ -85,6 +85,7 @@ type RuntimeError struct {
 	At          time.Time
 	NextRetryAt time.Time
 	Terminal    bool
+	Transient   bool
 }
 
 type WorkflowSourceStatus struct {
@@ -2315,6 +2316,7 @@ func (p *Project) recordRuntimeErrorState(err error, at time.Time, nextRetryAt t
 		At:          at.UTC(),
 		NextRetryAt: nextRetryAt.UTC(),
 		Terminal:    terminal,
+		Transient:   transientStartupError(err),
 	}
 }
 

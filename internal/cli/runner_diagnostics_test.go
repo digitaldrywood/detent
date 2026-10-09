@@ -236,7 +236,7 @@ func TestRunnerSetupHeartbeatOwnership(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
 				case r.URL.Path == "/api/v2/capabilities":
-					features := []string{"native_issues", "scoped_collaboration", "repository_policy"}
+					features := []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeProviderCapacityCapability}
 					if supported {
 						features = append(features, tracker.NativeLocalChecksCapability)
 					}
