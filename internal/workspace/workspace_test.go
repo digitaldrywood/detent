@@ -3484,18 +3484,26 @@ exit %d
 	}
 }
 
-func TestGitCommonDirCompletesWhenDescendantRetainsOutput(t *testing.T) {
+func TestGitQueriesCompleteWhenDescendantRetainsOutput(t *testing.T) {
 	if testing.Short() {
 		t.Skip("process lifecycle integration")
 	}
 
 	skipWindows(t)
 	for _, tt := range []struct {
-		name  string
-		probe func(context.Context, string) (string, error)
+		name     string
+		probe    func(context.Context, string) (string, error)
+		exitCode int
 	}{
 		{name: "source common dir", probe: gitCommonDir},
 		{name: "workspace common dir", probe: gitCommonDirWithinRoot},
+		{name: "remote listing", probe: func(ctx context.Context, dir string) (string, error) {
+			output, err := (&LocalGit{sourceRoot: dir}).gitRemotes(ctx)
+			return strings.TrimSpace(output), err
+		}},
+		{name: "failed remote listing", exitCode: 23, probe: func(ctx context.Context, dir string) (string, error) {
+			return (&LocalGit{sourceRoot: dir}).gitRemotes(ctx)
+		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -3507,10 +3515,11 @@ func TestGitCommonDirCompletesWhenDescendantRetainsOutput(t *testing.T) {
 			}
 			defer release.Close()
 			donePath := filepath.Join(dir, "done")
-			script := `#!/bin/sh
+			script := fmt.Sprintf(`#!/bin/sh
 ( read -r release < "$DETENT_PIPE_RELEASE"; printf done > "$DETENT_PIPE_DONE" ) &
-printf '%s\n' "$DETENT_COMMON_DIR"
-`
+printf '%%s\n' "$DETENT_COMMON_DIR"
+exit %d
+`, tt.exitCode)
 			if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -3518,8 +3527,10 @@ printf '%s\n' "$DETENT_COMMON_DIR"
 			t.Setenv("DETENT_PIPE_RELEASE", fifoPath)
 			t.Setenv("DETENT_PIPE_DONE", donePath)
 			t.Setenv("DETENT_COMMON_DIR", dir)
+			scratchDir := t.TempDir()
+			t.Setenv("TMPDIR", scratchDir)
 
-			commonDir, commandErr := tt.probe(t.Context(), dir)
+			output, commandErr := tt.probe(t.Context(), dir)
 			if _, err := release.WriteString("release\n"); err != nil {
 				t.Fatal(err)
 			}
@@ -3536,15 +3547,27 @@ printf '%s\n' "$DETENT_COMMON_DIR"
 				case <-ticker.C:
 				}
 			}
-			if commandErr != nil {
-				t.Fatalf("common dir probe error = %v, want successful identity after Git exits", commandErr)
+			if tt.exitCode != 0 {
+				var gitErr *CommandError
+				if !errors.As(commandErr, &gitErr) || gitErr.ExitCode != tt.exitCode {
+					t.Fatalf("git query error = %v, want exit code %d", commandErr, tt.exitCode)
+				}
+				if output != "" {
+					t.Fatalf("failed query output = %q, want empty", output)
+				}
+				output = strings.TrimSpace(gitErr.Output)
+			} else if commandErr != nil {
+				t.Fatalf("git query error = %v, want successful output after Git exits", commandErr)
 			}
 			canonicalDir, err := filepath.EvalSymlinks(dir)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if commonDir != canonicalDir {
-				t.Fatalf("common dir probe = %q, want %q", commonDir, canonicalDir)
+			if output != canonicalDir {
+				t.Fatalf("git query = %q, want %q", output, canonicalDir)
+			}
+			if entries, err := os.ReadDir(scratchDir); err != nil || len(entries) != 0 {
+				t.Fatalf("query scratch remains: %v, %v", entries, err)
 			}
 		})
 	}

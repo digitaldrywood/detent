@@ -1121,7 +1121,7 @@ func withCommandOutput(err error) error {
 
 // newBranchStartRef restores published work before considering a new branch base.
 func (l *LocalGit) newBranchStartRef(ctx context.Context, branch string) (string, error) {
-	remotes, err := l.runGit(ctx, "remote")
+	remotes, err := l.gitRemotes(ctx)
 	if err != nil {
 		return "", fmt.Errorf("list git remotes: %w", err)
 	}
@@ -1142,7 +1142,7 @@ func (l *LocalGit) newBranchStartRef(ctx context.Context, branch string) (string
 }
 
 func (l *LocalGit) newBranchBaseRef(ctx context.Context) (string, error) {
-	remotes, err := l.runGit(ctx, "remote")
+	remotes, err := l.gitRemotes(ctx)
 	if err != nil {
 		return "", fmt.Errorf("list git remotes: %w", err)
 	}
@@ -1160,6 +1160,10 @@ func (l *LocalGit) newBranchBaseRef(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("fetch remote default branch %s: %w", remoteRef, err)
 	}
 	return remoteRef, nil
+}
+
+func (l *LocalGit) gitRemotes(ctx context.Context) (string, error) {
+	return runGitAtWithEnvCapture(ctx, l.sourceRoot, nil, true, "remote")
 }
 
 func stringListContains(list string, want string) bool {
