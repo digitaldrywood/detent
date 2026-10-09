@@ -56,6 +56,15 @@ func (s *Scheduler) FinishLandingBarrier(ctx context.Context, project string, ba
 	return settledBarrierFinish(err)
 }
 
+func (s *Scheduler) LandingBarrierCurrent(ctx context.Context, project, repository, id string) bool {
+	source := s.nativeProject(project)
+	if source == nil {
+		return true
+	}
+	observed, err := source.client.LandingBarrier(ctx, repository)
+	return err != nil || observed.ID == id
+}
+
 func settledBarrierFinish(err error) error {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict {
