@@ -129,7 +129,11 @@ for (const width of [1440, 390]) {
     await expect(groups.nth(1).locator('[data-slot-state="unavailable"]')).toHaveCount(4);
     const buildRunner = page.getByTestId("host-card").filter({ has: page.getByRole("heading", { name: "Build runner", exact: true }) });
     await expect(buildRunner.getByText("Needs attention", { exact: true })).toBeVisible();
-    await expect(page.getByRole("alert")).toHaveCount(0);
+    const buildAlert = buildRunner.getByRole("alert");
+    await expect(buildAlert).toContainText("Needs human: tier unavailable");
+    await expect(buildAlert).toContainText(problem.message);
+    await expect(buildAlert).toContainText(problem.fix_hint);
+    await expect(page.getByRole("alert")).toHaveCount(fleet.runners.length);
     await page.getByRole("button", { name: "Manage Build runner" }).click();
     await expect(page.getByRole("dialog").getByRole("alert")).toContainText(problem.message);
     await expect(page.getByRole("dialog").getByRole("alert")).toContainText(problem.fix_hint);
@@ -147,7 +151,7 @@ for (const width of [1440, 390]) {
     await expect(poolDialog.getByLabel("Minimum runners", { exact: true })).toHaveValue(String(spritePool.min_runners));
     await expect(poolDialog.getByLabel("Maximum runners", { exact: true })).toHaveValue(String(spritePool.max_runners));
     await expect(poolDialog.getByLabel("Idle seconds", { exact: true })).toHaveValue(String(spritePool.idle_seconds));
-    await expect(poolDialog.getByLabel(/^Customer bootstrap/)).toHaveValue(spritePool.bootstrap);
+    await expect(poolDialog.getByLabel(/^Extra bootstrap/)).toHaveValue(spritePool.bootstrap);
     await poolDialog.getByText("Last bootstrap log", { exact: true }).click();
     await expect(poolDialog.getByText(spritePool.members[0].bootstrap_log, { exact: true })).toBeVisible();
     await page.keyboard.press("Escape");
@@ -187,7 +191,7 @@ for (const width of [1440, 390]) {
     await expect(page.getByTestId("host-card")).toHaveCount(3);
     await page.getByRole("button", { name: "Manage Michael's MacBook Pro" }).click();
     const details = page.getByRole("dialog", { name: "Michael's MacBook Pro" });
-    await expect(details.getByRole("heading", { name: "Isolation", exact: true })).toBeVisible();
+    await expect(details.getByRole("heading", { name: "Agent access", exact: true })).toBeVisible();
     await expect(details).toContainText("Sandbox");
     await expect(details).toContainText("michael@threefold.solutions");
     await page.keyboard.press("Escape");
