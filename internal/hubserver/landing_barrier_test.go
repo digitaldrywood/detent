@@ -4,9 +4,11 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -135,6 +137,39 @@ func TestRollingLandingBarrier(t *testing.T) {
 				t.Fatalf("new red=%+v", newRed)
 			}
 
+		})
+	}
+}
+
+func TestBarrierPrefersTheLargestOnlineRunner(t *testing.T) {
+	t.Parallel()
+	f := newDefaultNativeFixture(t, Config{})
+	large := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+	large.redemption.Capacity = 8
+	large.enroll(t)
+	small := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+	small.redemption.Hostname, small.redemption.Capacity = "laptop", 4
+	small.enroll(t)
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	now := f.service.config.now()
+	for _, test := range []struct {
+		name    string
+		offline bool
+		want    string
+	}{
+		{name: "largest online runner owns the barrier", want: large.binding.RunnerID},
+		{name: "next runner takes over when the largest is offline", offline: true, want: small.binding.RunnerID},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.offline {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", formatHubTime(now.Add(-time.Hour)), large.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := preferredBarrierRunner(t.Context(), f.service.database.db, scope, now)
+			if err != nil || got != test.want {
+				t.Fatalf("preferred=%q error=%v, want %q", got, err, test.want)
+			}
 		})
 	}
 }
