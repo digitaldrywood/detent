@@ -116,6 +116,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 		validationDelay   time.Duration
 		validationTimeout bool
 		sessionBudget     bool
+		rollingBarrier    bool
 	}{
 		{name: "active parent"},
 		{name: "expired parent", expired: true},
@@ -125,6 +126,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 		{name: "validation exceeds work budget", validationDelay: 6 * time.Minute, validationTimeout: true},
 		{name: "validation uses session budget without a turn limit", validationDelay: 2 * time.Minute, sessionBudget: true},
 		{name: "validation exceeds session budget without a turn limit", validationDelay: 6 * time.Minute, validationTimeout: true, sessionBudget: true},
+		{name: "rolling barrier leaves the gate to the barrier", validationDelay: 6 * time.Minute, rollingBarrier: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -152,6 +154,9 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 						cfg.Agent.MaxSessionDurationMS = cfg.Agent.MaxTurnDurationMS
 						cfg.Agent.MaxTurnDurationMS = 0
 					}
+					if test.rollingBarrier {
+						cfg.Gate.LandingMode = gate.LandingRollingBarrier
+					}
 				}
 				r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
 				if err != nil {
@@ -176,7 +181,10 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				if test.validationTimeout && (!errors.Is(completion.Err, context.DeadlineExceeded) || execution.validation != nil || execution.finish == "succeeded") {
 					t.Fatalf("timed-out validation was accepted: error=%v receipt=%+v finish=%s", completion.Err, execution.validation, execution.finish)
 				}
-				if test.validationDelay > 0 && !failed && (execution.validation == nil || execution.validation.HeadSHA != "completed-head" || execution.validation.ExitCode != 0) {
+				if test.rollingBarrier && execution.validation != nil {
+					t.Fatalf("rolling barrier finalization ran the barrier command: %+v", execution.validation)
+				}
+				if test.validationDelay > 0 && !failed && !test.rollingBarrier && (execution.validation == nil || execution.validation.HeadSHA != "completed-head" || execution.validation.ExitCode != 0) {
 					t.Fatalf("successful finalized-head validation was not published: %+v", execution.validation)
 				}
 
