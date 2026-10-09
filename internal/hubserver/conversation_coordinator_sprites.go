@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -23,7 +24,7 @@ func coordinatorSpriteTools() []runner.AgentTool {
 	return []runner.AgentTool{
 		coordinatorTool("get_sprite_pool", "Read this project's Sprites token metadata, pool bounds, bootstrap state, runner_setup_declared (null means unknown) and runner connection/provider readiness. Enrollment alone is not readiness.", empty),
 		coordinatorTool("set_sprites_token", "Get the secure Sprites connector link for setting or replacing this project's write-only organization token. The user enters the token there, never in chat or tool arguments.", empty),
-		coordinatorTool("set_sprite_pool", "Preview pool floor/ceiling and optional customer bootstrap steps. Preserve existing bootstrap when omitted. Never include credentials in bootstrap; use customer-owned login/setup. Requires current owner/admin authority; the client controls confirmation; saving starts the existing pool lifecycle.", `{"type":"object","required":["min_runners","max_runners"],"properties":{"min_runners":{"type":"integer","minimum":0,"maximum":100},"max_runners":{"type":"integer","minimum":0,"maximum":100},"idle_seconds":{"type":"integer","minimum":30,"maximum":86400},"bootstrap":{"type":"string","maxLength":12000}},"additionalProperties":false}`),
+		coordinatorTool("set_sprite_pool", "Preview pool isolation tier, floor/ceiling and optional customer bootstrap steps. Preserve existing bootstrap when omitted. Never include credentials in bootstrap; use customer-owned login/setup. Requires current owner/admin authority; the client controls confirmation; saving starts the existing pool lifecycle.", `{"type":"object","required":["min_runners","max_runners"],"properties":{"min_runners":{"type":"integer","minimum":0,"maximum":100},"max_runners":{"type":"integer","minimum":0,"maximum":100},"idle_seconds":{"type":"integer","minimum":30,"maximum":86400},"bootstrap":{"type":"string","maxLength":12000},"isolation_tier":{"type":"string","enum":["sandbox","native-trusted"]}},"additionalProperties":false}`),
 		coordinatorTool("scale_up_sprite_pool", "Preview a scale-up or retry through the existing pool lifecycle, within the saved floor and ceiling. Set a floor of one for the first runner on an empty project. Requires current owner/admin authority; the client controls confirmation.", empty),
 		coordinatorTool("get_sprite_bootstrap_log", "Read the last Sprite bootstrap progress log tail, including failed/deleted members, and retry guidance. Logs contain known progress only.", empty),
 	}
@@ -38,10 +39,11 @@ func coordinatorSpriteMutation(name string) bool {
 }
 
 type coordinatorSpriteArguments struct {
-	MinRunners  *int    `json:"min_runners,omitempty"`
-	MaxRunners  *int    `json:"max_runners,omitempty"`
-	IdleSeconds *int    `json:"idle_seconds,omitempty"`
-	Bootstrap   *string `json:"bootstrap,omitempty"`
+	IsolationTier *string `json:"isolation_tier,omitempty"`
+	MinRunners    *int    `json:"min_runners,omitempty"`
+	MaxRunners    *int    `json:"max_runners,omitempty"`
+	IdleSeconds   *int    `json:"idle_seconds,omitempty"`
+	Bootstrap     *string `json:"bootstrap,omitempty"`
 }
 
 type coordinatorSpriteChange struct {
@@ -50,6 +52,9 @@ type coordinatorSpriteChange struct {
 }
 
 func (args coordinatorSpriteArguments) apply(settings *spritePoolSettings) {
+	if args.IsolationTier != nil {
+		settings.IsolationTier = *args.IsolationTier
+	}
 	if args.MinRunners != nil {
 		settings.MinRunners = *args.MinRunners
 	}
@@ -84,7 +89,7 @@ func decodeCoordinatorSpriteArguments(name string, raw json.RawMessage) (coordin
 		}
 		return args, nil
 	}
-	if args.MinRunners == nil || args.MaxRunners == nil || *args.MinRunners < 0 || *args.MaxRunners < *args.MinRunners || *args.MaxRunners > 100 || args.IdleSeconds != nil && (*args.IdleSeconds < 30 || *args.IdleSeconds > 86400) || args.Bootstrap != nil && len(*args.Bootstrap) > 12000 {
+	if args.IsolationTier != nil && !slices.Contains([]string{isolation.Sandbox, isolation.NativeTrusted}, *args.IsolationTier) || args.MinRunners == nil || args.MaxRunners == nil || *args.MinRunners < 0 || *args.MaxRunners < *args.MinRunners || *args.MaxRunners > 100 || args.IdleSeconds != nil && (*args.IdleSeconds < 30 || *args.IdleSeconds > 86400) || args.Bootstrap != nil && len(*args.Bootstrap) > 12000 {
 		return args, operatortool.ErrInvalidArguments
 	}
 	return args, nil
@@ -150,7 +155,7 @@ func (t *coordinatorToolset) spriteTool(ctx context.Context, record conversation
 	if err != nil {
 		return nil, err
 	}
-	action := chat.Action{ConversationID: record.ID, Kind: chat.ActionKind(call.Name), ProjectID: string(record.ProjectID), Title: strings.ReplaceAll(call.Name, "_", " "), Description: fmt.Sprintf("Sprite pool floor %d, ceiling %d, idle threshold %d seconds (revision %d). Customer setup runs inside new Sprites; Fly usage is billed to your organization.", settings.MinRunners, settings.MaxRunners, settings.IdleSeconds, settings.Revision), Arguments: raw, Material: true}
+	action := chat.Action{ConversationID: record.ID, Kind: chat.ActionKind(call.Name), ProjectID: string(record.ProjectID), Title: strings.ReplaceAll(call.Name, "_", " "), Description: fmt.Sprintf("Sprite pool access %s, floor %d, ceiling %d, idle threshold %d seconds (revision %d). Customer setup runs inside new Sprites; Fly usage is billed to your organization.", settings.IsolationTier, settings.MinRunners, settings.MaxRunners, settings.IdleSeconds, settings.Revision), Arguments: raw, Material: true}
 	return t.submitCoordinatorAction(ctx, record, call, action)
 }
 
@@ -266,6 +271,9 @@ func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeS
 				return nil, err
 			}
 			if slices.Contains(r.ProjectIDs, scope.project) {
+				item["isolation_tier"] = r.IsolationTier
+				item["problems"] = r.Problems
+				item["backend_isolation"] = r.BackendIsolation
 				item["connection_health"] = r.ConnectionHealth
 				item["health"] = r.Health
 				item["reported_capacity"] = r.ReportedCapacity
@@ -288,7 +296,7 @@ func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeS
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"runner_setup_declared": declared, "token": secret, "token_validation": validation, "connector_url": connector, "min_runners": view.MinRunners, "max_runners": view.MaxRunners, "idle_seconds": view.IdleSeconds, "revision": view.Revision, "bootstrap_configured": strings.TrimSpace(view.Bootstrap) != "", "connected_runners": connected, "members": members, "login_guide": "https://github.com/digitaldrywood/detent/blob/develop/docs/sprite-runners.md#6-sign-in-to-your-agents"}, nil
+	return map[string]any{"runner_setup_declared": declared, "token": secret, "token_validation": validation, "connector_url": connector, "isolation_tier": view.IsolationTier, "min_runners": view.MinRunners, "max_runners": view.MaxRunners, "idle_seconds": view.IdleSeconds, "revision": view.Revision, "bootstrap_configured": strings.TrimSpace(view.Bootstrap) != "", "connected_runners": connected, "members": members, "login_guide": "https://github.com/digitaldrywood/detent/blob/develop/docs/sprite-runners.md#6-sign-in-to-your-agents"}, nil
 }
 
 func (s *Service) projectRunnerSetupDeclaration(ctx context.Context, scope nativeScope) (*bool, error) {

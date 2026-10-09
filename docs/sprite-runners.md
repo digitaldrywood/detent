@@ -126,7 +126,20 @@ token in the next step registers a runner with Detent.
 ## 4. Enroll a runner in the Hub
 
 Open **Settings > Runners > Enroll a runner**. Under **Where will it run?**,
-select **A Fly Sprite**.
+select **A Fly Sprite**. Each Sprite is a dedicated VM: full access
+(`native-trusted`) inside it is the default, and sandbox is available as an
+alternative. Full access lets agents use the VM's files, credentials and
+network; sandbox restricts their access. The enrollment access choice is passed
+to `detent hub runner register --isolation-tier`.
+
+For **Add runner > AI assisted**, Luna asks the access question once and includes
+`isolation_tier` in the approved Sprite pool settings. The saved choice applies
+to newly provisioned pool members. Changing an existing runner uses a separate
+`set_runner_tier` preview: an organization owner or admin must approve it, even
+when ordinary chat confirmations are off. No re-enrollment is needed. Ask Luna
+why a runner is not working to read its tier and problems; `tier_unavailable`
+means its backends do not support the selected tier. Projects requiring sandbox
+cannot use full-access runners.
 
 1. Enter the Sprite name as the runner's **Name**. Use lowercase letters,
    numbers, and hyphens, at most 63 characters, starting and ending with a

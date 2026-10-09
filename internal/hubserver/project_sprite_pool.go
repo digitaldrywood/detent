@@ -11,17 +11,19 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type spritePoolSettings struct {
-	Placement   *policy.Placement `json:"placement,omitempty"`
-	MinRunners  int               `json:"min_runners"`
-	MaxRunners  int               `json:"max_runners"`
-	IdleSeconds int               `json:"idle_seconds"`
-	Bootstrap   string            `json:"bootstrap"`
-	Revision    int64             `json:"revision"`
+	IsolationTier string            `json:"isolation_tier"`
+	Placement     *policy.Placement `json:"placement,omitempty"`
+	MinRunners    int               `json:"min_runners"`
+	MaxRunners    int               `json:"max_runners"`
+	IdleSeconds   int               `json:"idle_seconds"`
+	Bootstrap     string            `json:"bootstrap"`
+	Revision      int64             `json:"revision"`
 }
 
 type spritePoolMember struct {
@@ -89,9 +91,9 @@ func (s *Service) getSpritePool(c echo.Context) error {
 }
 
 func (s *Service) readSpritePool(ctx context.Context, scope nativeScope) (spritePoolView, error) {
-	view := spritePoolView{spritePoolSettings: spritePoolSettings{IdleSeconds: 300, Placement: &policy.Placement{Mode: "blended"}}, Members: []spritePoolMember{}}
+	view := spritePoolView{spritePoolSettings: spritePoolSettings{IsolationTier: isolation.NativeTrusted, IdleSeconds: 300, Placement: &policy.Placement{Mode: "blended"}}, Members: []spritePoolMember{}}
 	var placement string
-	err := s.database.db.QueryRowContext(ctx, `SELECT min_runners,max_runners,idle_seconds,bootstrap,revision,placement_json FROM project_sprite_pools WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&view.MinRunners, &view.MaxRunners, &view.IdleSeconds, &view.Bootstrap, &view.Revision, &placement)
+	err := s.database.db.QueryRowContext(ctx, `SELECT min_runners,max_runners,idle_seconds,bootstrap,revision,placement_json,isolation_tier FROM project_sprite_pools WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&view.MinRunners, &view.MaxRunners, &view.IdleSeconds, &view.Bootstrap, &view.Revision, &placement, &view.IsolationTier)
 	if errors.Is(err, sql.ErrNoRows) {
 		return view, nil
 	}
@@ -130,19 +132,24 @@ func (s *Service) setSpritePool(c echo.Context) error {
 	}
 	var input struct {
 		spritePoolSettings
-		Bootstrap *string `json:"bootstrap"`
+		Bootstrap     *string `json:"bootstrap"`
+		IsolationTier *string `json:"isolation_tier"`
 	}
 	if err := decodeAPIJSON(c, &input); err != nil {
 		return invalidAPIRequest(c, err)
 	}
 	settings := input.spritePoolSettings
+	view, err := s.readSpritePool(c.Request().Context(), scope)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	settings.IsolationTier = view.IsolationTier
+	if input.IsolationTier != nil {
+		settings.IsolationTier = *input.IsolationTier
+	}
 	if input.Bootstrap != nil {
 		settings.Bootstrap = *input.Bootstrap
 	} else {
-		view, err := s.readSpritePool(c.Request().Context(), scope)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
 		settings.Bootstrap = view.Bootstrap
 	}
 	if err := s.updateSpritePool(c.Request().Context(), scope, settings); err != nil {
@@ -153,6 +160,12 @@ func (s *Service) setSpritePool(c echo.Context) error {
 }
 
 func validateSpritePoolSettings(settings *spritePoolSettings) error {
+	if settings.IsolationTier == "" {
+		settings.IsolationTier = isolation.NativeTrusted
+	}
+	if settings.IsolationTier != isolation.Sandbox && settings.IsolationTier != isolation.NativeTrusted {
+		return nativeInvalid("Sprite pool access must be sandbox or native-trusted")
+	}
 	if settings.Placement != nil {
 		resolved := settings.Placement.Resolved()
 		if err := resolved.Validate(); err != nil {
@@ -204,7 +217,7 @@ func (s *Service) updateSpritePool(ctx context.Context, scope nativeScope, setti
 			}
 			currentPlacement = string(raw)
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO project_sprite_pools(organization_id,project_id,min_runners,max_runners,idle_seconds,bootstrap,configured_by,placement_json,revision) VALUES(?,?,?,?,?,?,?,?,1) ON CONFLICT(organization_id,project_id) DO UPDATE SET min_runners=excluded.min_runners,max_runners=excluded.max_runners,idle_seconds=excluded.idle_seconds,bootstrap=excluded.bootstrap,configured_by=excluded.configured_by,placement_json=excluded.placement_json,revision=project_sprite_pools.revision+1`, scope.organization, scope.project, settings.MinRunners, settings.MaxRunners, settings.IdleSeconds, settings.Bootstrap, actor, currentPlacement)
+		_, err = tx.ExecContext(ctx, `INSERT INTO project_sprite_pools(organization_id,project_id,min_runners,max_runners,idle_seconds,bootstrap,configured_by,placement_json,isolation_tier,revision) VALUES(?,?,?,?,?,?,?,?,?,1) ON CONFLICT(organization_id,project_id) DO UPDATE SET min_runners=excluded.min_runners,max_runners=excluded.max_runners,idle_seconds=excluded.idle_seconds,bootstrap=excluded.bootstrap,configured_by=excluded.configured_by,placement_json=excluded.placement_json,isolation_tier=excluded.isolation_tier,revision=project_sprite_pools.revision+1`, scope.organization, scope.project, settings.MinRunners, settings.MaxRunners, settings.IdleSeconds, settings.Bootstrap, actor, currentPlacement, settings.IsolationTier)
 		return err
 	})
 }

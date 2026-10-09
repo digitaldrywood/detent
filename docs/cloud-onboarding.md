@@ -44,6 +44,29 @@ from `review.human`.
 The hosted hostname migration is tracked in the [Cloud domain runbook](cloud-domain-migration.md).
 Its provisioning results and pending browser cutover are recorded there.
 
+## Runner access through Luna
+
+In **Add runner > AI assisted**, an own-machine request such as “add a runner
+on my laptop” asks once whether agents should run in the sandbox or with full
+access. Sandbox is the default for a shared machine; `native-trusted` is
+available for a dedicated machine. Sandbox restricts agent access, while full
+access lets agents use the machine's files, credentials and network. Luna
+carries the answer into the enrollment `isolation_tier` field and the
+`detent hub runner register --isolation-tier` command. Obtain enrollment tokens
+through the secure enrollment dialog, never through chat.
+
+Fly Sprites are dedicated VMs. Luna defaults to full access inside each VM and
+lets you select sandbox when configuring the pool. See [Sprite runners](sprite-runners.md).
+
+For an existing runner, Luna reads its selected tier, backend support and
+current problems. `tier_unavailable` means its agent backends do not support
+the selected tier. An organization owner or admin can approve Luna's preview
+to switch to a supported tier without enrolling again. Approval is always
+required for runner access changes, even with ordinary chat confirmation off;
+non-admin members cannot make this change. Projects requiring sandbox remain
+ineligible for a `native-trusted` runner. Luna reads the runner again after the
+change to verify the tier and identify any remaining problem.
+
 ## Organization provisioning and recovery
 
 Implemented by `detent cloud serve` when its configuration has an `allocation`

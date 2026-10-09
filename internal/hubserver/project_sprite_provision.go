@@ -206,7 +206,7 @@ func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, me
 	if readErr != nil || response.StatusCode != http.StatusCreated || json.Unmarshal(data, &created) != nil || created.Name != member.Name {
 		return errSpritesValidation
 	}
-	command := "detent hub runner register --url " + spriteShellQuote(s.config.Hosted.PublicURL) + " --organization " + spriteShellQuote(string(scope.organization)) + " --name " + spriteShellQuote(member.Name) + " --capacity 1 --token " + spriteShellQuote(enrollment.Token)
+	command := "detent hub runner register --url " + spriteShellQuote(s.config.Hosted.PublicURL) + " --organization " + spriteShellQuote(string(scope.organization)) + " --name " + spriteShellQuote(member.Name) + " --capacity 1 --isolation-tier " + spriteShellQuote(settings.IsolationTier) + " --token " + spriteShellQuote(enrollment.Token)
 	script := fmt.Sprintf(`set -euo pipefail
 set +x
 export DETENT_PROJECT_ID=%s

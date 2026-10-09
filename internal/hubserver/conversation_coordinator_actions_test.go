@@ -38,7 +38,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 			outcomes = append(outcomes, "no runner grant", "runner grant revoked", "grantless project")
 		}
 		if tool == "set_sprite_pool" {
-			outcomes = append(outcomes, "intake preview")
+			outcomes = append(outcomes, "intake preview", "sandbox access", "full access", "preserve access")
 		}
 		for _, outcome := range outcomes {
 			t.Run(tool+"/"+outcome, func(t *testing.T) {
@@ -250,6 +250,17 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}, "edges": []chat.IssueSplitEdge{{Dependent: 2, Blocker: 1}}}
 				case "set_sprite_pool":
 					arguments = map[string]any{"min_runners": 0, "max_runners": 0}
+					if outcome == "sandbox access" {
+						arguments["isolation_tier"] = "sandbox"
+					}
+					if outcome == "full access" {
+						arguments["isolation_tier"] = "native-trusted"
+					}
+					if outcome == "preserve access" {
+						if _, err := db.ExecContext(t.Context(), "UPDATE project_sprite_pools SET isolation_tier='sandbox' WHERE project_id=?", f.project); err != nil {
+							t.Fatal(err)
+						}
+					}
 					if outcome == "intake preview" {
 						arguments = map[string]any{"min_runners": 2, "max_runners": 2}
 					}
@@ -502,7 +513,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 				}
 				response = f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
-				changed := outcome == "execute" || outcome == "execute with manual import" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "runner grant revoked" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
+				changed := outcome == "sandbox access" || outcome == "full access" || outcome == "preserve access" || outcome == "execute" || outcome == "execute with manual import" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "runner grant revoked" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
 				if changed {
 					requireNativeStatus(t, response, http.StatusOK)
 				} else if response.Code < 400 {
@@ -510,6 +521,16 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				}
 				f.service.spriteWakeWork.Wait()
 				assertCoordinatorEffect(t, f, id, tool, changed)
+				if outcome == "sandbox access" || outcome == "full access" || outcome == "preserve access" {
+					want := "sandbox"
+					if outcome == "full access" {
+						want = "native-trusted"
+					}
+					var got string
+					if err := db.QueryRowContext(t.Context(), "SELECT isolation_tier FROM project_sprite_pools WHERE project_id=?", f.project).Scan(&got); err != nil || got != want {
+						t.Fatalf("saved tier=%q want=%q err=%v", got, want, err)
+					}
+				}
 				if tool == "update_project_integration" {
 					wantIntake := "disabled"
 					if outcome == "execute with manual import" {
