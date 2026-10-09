@@ -80,6 +80,13 @@ source/workflow invariant tests and migration checks; the full behavioral
 invariant manifest and baseline-aware NilAway audit run in the hourly suite.
 Plain `go test ./...` outside `make` has no cap.
 
+Ordinary `make test`, `make test-fast`, and `make check-land` reuse Go's native
+test-result cache for unchanged packages and tracked inputs. Filesystem
+diagnostics in tests use temporary directories or explicit fixtures rather than
+walking host toolchain caches. The rolling barrier runs the full Go suite fresh;
+race and coverage targets also use `-count=1`, preserving fresh scheduled evidence.
+Build and module caches retain their native locations.
+
 Scheduled Windows portability runs the Hub suite through
 `make test-hub-portability`, reusing the same three exhaustive, disjoint
 partitions as the race targets with four parallel tests and a ten-minute budget

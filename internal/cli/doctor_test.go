@@ -3530,40 +3530,51 @@ func TestCheckDoctorInstanceIdentity(t *testing.T) {
 }
 
 func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
-	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		populated bool
+	}{
+		{"missing repo", false},
+		{"populated repo", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			if tt.populated {
+				if err := os.MkdirAll(filepath.Join(home, "repo", "workdir"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			workflow := validDoctorWorkflow("~/repo")
+			var gotPath string
+			checks := checkDoctorProjects(context.Background(), globalconfig.Config{
+				Projects: []globalconfig.Project{{ID: "alpha", Workflow: "WORKFLOW.md"}},
+			}, doctorDeps{
+				loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+					return workflowconfig.Workflow{Config: workflow}, nil
+				},
+				gitWorkTree: func(_ context.Context, path string) error {
+					gotPath = path
+					return nil
+				},
+			}, RuntimeSecret{}, false)
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skipf("UserHomeDir() error = %v", err)
-	}
-
-	workflow := validDoctorWorkflow("~/repo")
-	var gotPath string
-	checks := checkDoctorProjects(context.Background(), globalconfig.Config{
-		Projects: []globalconfig.Project{{ID: "alpha", Workflow: "WORKFLOW.md"}},
-	}, doctorDeps{
-		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
-			return workflowconfig.Workflow{Config: workflow}, nil
-		},
-		gitWorkTree: func(_ context.Context, path string) error {
-			gotPath = path
-			return nil
-		},
-	}, RuntimeSecret{}, false)
-
-	wantPath := filepath.Join(home, "repo")
-	if gotPath != wantPath {
-		t.Fatalf("git path = %q, want %q", gotPath, wantPath)
-	}
-	var sourceRepo doctorCheck
-	for _, check := range checks {
-		if check.Name == "Project alpha source repo" {
-			sourceRepo = check
-			break
-		}
-	}
-	if sourceRepo.Status != doctorOK {
-		t.Fatalf("checks = %#v, want source repo OK", checks)
+			wantPath := filepath.Join(home, "repo")
+			if gotPath != wantPath {
+				t.Fatalf("git path = %q, want %q", gotPath, wantPath)
+			}
+			var sourceRepo doctorCheck
+			for _, check := range checks {
+				if check.Name == "Project alpha source repo" {
+					sourceRepo = check
+					break
+				}
+			}
+			if sourceRepo.Status != doctorOK {
+				t.Fatalf("checks = %#v, want source repo OK", checks)
+			}
+		})
 	}
 }
 

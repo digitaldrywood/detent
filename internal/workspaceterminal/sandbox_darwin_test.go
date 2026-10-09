@@ -14,6 +14,7 @@ import (
 )
 
 func TestSandboxRootAuthority(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

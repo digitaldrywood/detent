@@ -42,10 +42,8 @@ GOSEC_DETERMINISM_RUNS ?= 8
 TEST_PROCS ?= 4
 GOMAXPROCS ?= $(TEST_PROCS)
 export GOMAXPROCS
-# Filesystem diagnostics can record millions of cache inputs (#2735).
-# Run gate tests afresh; -count=1 preserves native build and module caches.
 TEST_TIMEOUT ?= 10m
-GO_TEST := env -u DETENT_API_TOKEN go test -count=1 -p $(TEST_PROCS) -timeout=$(TEST_TIMEOUT)
+GO_TEST := env -u DETENT_API_TOKEN go test -p $(TEST_PROCS) -timeout=$(TEST_TIMEOUT)
 GOLANGCI_LINT_VERSION_FILE := .golangci-version
 GOLANGCI_LINT_VERSION := $(shell cat $(GOLANGCI_LINT_VERSION_FILE))
 GOLANGCI_LINT_TOOLCHAIN := $(shell awk '/^toolchain / { print $$2 }' go.mod)
@@ -162,7 +160,7 @@ test-fast: generate-docs
 	$(GO_TEST) -short -timeout=60s ./...
 
 test-race: generate-docs
-	$(GO_TEST) -short -race -timeout=10m ./...
+	$(GO_TEST) -short -race -timeout=10m ./... -count=1
 
 # COVER_SHARD=i/n runs one balanced slice; shard 1 also owns workspace and web.
 COVER_SHARD ?= 1/1
@@ -174,10 +172,10 @@ test-cover:
 		bash scripts/test-workspace.sh -coverprofile tmp/workspace-cover.raw.out -output tmp/workspace-cover-evidence; \
 	fi
 	@packages="$$(bash scripts/cover-packages.sh $(COVER_SHARD))" && \
-	$(GO_TEST) -coverprofile=tmp/rest-cover.raw.out $$packages
+	$(GO_TEST) -coverprofile=tmp/rest-cover.raw.out $$packages -count=1
 	# Keep the web timing check isolated and coverage profiles disjoint.
 	@if [ "$(firstword $(subst /, ,$(COVER_SHARD)))" = 1 ]; then \
-		$(GO_TEST) -coverprofile=tmp/web-cover.raw.out ./internal/web && \
+		$(GO_TEST) -coverprofile=tmp/web-cover.raw.out ./internal/web -count=1 && \
 		go run ./tools/covermerge tmp/workspace-cover.raw.out tmp/rest-cover.raw.out tmp/web-cover.raw.out > $(COVERPROFILE_RAW); \
 	else \
 		cp tmp/rest-cover.raw.out $(COVERPROFILE_RAW); \

@@ -46,7 +46,11 @@ func TestReleaseDeployBindsBinaryAndRestrictedSSH(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			command := exec.CommandContext(t.Context(), "bash", "scripts/deploy-release.sh", test.environment, commit, test.version)
+			script, err := os.ReadFile(filepath.Join(root, "scripts", "deploy-release.sh"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			command := exec.CommandContext(t.Context(), "bash", "-c", string(script), "scripts/deploy-release.sh", test.environment, commit, test.version)
 			command.Dir = root
 			command.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "TMPDIR="+dir, "SSH_KEY=fixture-key", "KNOWN_HOSTS=fixture-host-key", "FIXTURE_LOG="+filepath.Join(dir, "calls"), "FIXTURE_SSH_FAILURE="+map[bool]string{true: "true", false: "false"}[test.sshFailure])
 			output, err := command.CombinedOutput()
