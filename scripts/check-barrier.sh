@@ -63,8 +63,13 @@ run_go_tests() {
     if [ -n "$failed" ]; then
         rerun_tests "$go_items" 0
     else
-        make -o generate-docs test TEST_PROCS="$procs" TEST_TIMEOUT=30m \
-            GO_TEST="env -u DETENT_API_TOKEN go test -count=1 -p $procs -timeout=30m"
+        local packages workspace status=0
+        WORKSPACE_TEST_SHARDS=4 bash scripts/test-workspace.sh &
+        workspace=$!
+        packages=$(go list ./... | grep -v -e '/internal/workspace$' -e '/internal/web$')
+        env -u DETENT_API_TOKEN go test -count=1 -p "$procs" -timeout=30m $packages || status=$?
+        wait "$workspace" || status=1
+        return "$status"
     fi
 }
 
@@ -172,6 +177,12 @@ while [ -n "${pending// /}" ]; do
     fi
     [ -z "${pending// /}" ] || sleep 2
 done
+if [ -z "$stopped" ] && [ "$run_go" = 1 ] && [ -z "$failed" ]; then
+    if ! (set -o pipefail; check_with_evidence barrier-web env -u DETENT_API_TOKEN go test -count=1 ./internal/web 2>&1 | tee -a tmp/barrier-go.log); then
+        go_result=1
+        stopped=$go_pid
+    fi
+fi
 if [ "$go_result" != 0 ] && [ "$stopped" = "$go_pid" ]; then
     result=$go_result
     printf 'detent-barrier-failed: go %s\n' "$(python3 scripts/barrier_failures.py extract go tmp/barrier-go.log | tr '\n' ' ')"

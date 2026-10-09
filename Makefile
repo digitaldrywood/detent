@@ -149,12 +149,10 @@ build: assets generate-docs
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY_PATH) $(CMD_PACKAGE)
 
 test: generate-docs
-	@bash scripts/test-workspace.sh & workspace=$$!; \
-	packages="$$(go list ./...)" && \
+	bash scripts/test-workspace.sh
+	@packages="$$(go list ./...)" && \
 	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/workspace" && $$0 != "github.com/digitaldrywood/detent/internal/web"')" && \
-	$(GO_TEST) $$packages; status=$$?; \
-	wait $$workspace || status=1; \
-	exit $$status
+	$(GO_TEST) $$packages
 	# Measure the 500ms request budget without competing package tests or builds.
 	$(GO_TEST) ./internal/web
 

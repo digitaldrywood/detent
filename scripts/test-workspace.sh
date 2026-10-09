@@ -10,7 +10,7 @@ gate() {
     env -u DETENT_API_TOKEN go run ./tools/testgate -timeout 15m "$@" ./internal/workspace
 }
 
-shards=${WORKSPACE_TEST_SHARDS:-4}
+shards=${WORKSPACE_TEST_SHARDS:-1}
 tests=
 if [ "$#" -eq 0 ] && [ "$shards" -gt 1 ]; then
     tests=$(sed -nE 's/^func ((Test|Fuzz)[A-Za-z0-9_]*)\(.*/\1/p' internal/workspace/*_test.go 2>/dev/null | sort -u || true)
