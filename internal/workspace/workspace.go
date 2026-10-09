@@ -509,6 +509,41 @@ func newSourceOperationLock() *sourceOperationLock {
 	return lock
 }
 
+func ResolveRetainedRoot(ctx context.Context, sourceRoot, fallback string) (string, error) {
+	output, err := runGitAt(ctx, sourceRoot, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return "", withCommandOutput(err)
+	}
+
+	var root string
+	for _, entry := range strings.Split(output, "\x00\x00") {
+		var workdir, branch string
+		for _, field := range strings.Split(entry, "\x00") {
+			if value, ok := strings.CutPrefix(field, "worktree "); ok {
+				workdir = value
+			}
+			if value, ok := strings.CutPrefix(field, "branch refs/heads/"); ok {
+				branch = value
+			}
+		}
+		if !strings.HasPrefix(branch, autoBranchPrefix) || workdir == "" || filepath.Clean(workdir) == sourceRoot {
+			continue
+		}
+		if filepath.Base(workdir) != strings.TrimPrefix(branch, autoBranchPrefix) {
+			continue
+		}
+		candidate := filepath.Dir(filepath.Clean(workdir))
+		if root != "" && root != candidate {
+			return "", fmt.Errorf("retained worktrees for %s have different workspace roots", sourceRoot)
+		}
+		root = candidate
+	}
+	if root == "" {
+		return fallback, nil
+	}
+	return root, nil
+}
+
 func sourceOperationLockFor(sourceRoot string) *sourceOperationLock {
 	key := filepath.Clean(sourceRoot)
 	sourceOperationLocks.Lock()

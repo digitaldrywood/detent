@@ -91,25 +91,47 @@ func (c *Client) RevokeRunner(ctx context.Context, organization tracker.Organiza
 }
 
 func (c *Client) runnerToken(ctx context.Context) (token string, resultErr error) {
+	file, err := c.runnerCredential(ctx, false)
+	return file.Credential, err
+}
+
+func (c *Client) runnerCredential(ctx context.Context, refreshIdentity bool) (result runnerauth.File, resultErr error) {
 	c.runner.mu.Lock()
 	defer c.runner.mu.Unlock()
 	lock, err := instancelock.Acquire(c.runner.path + ".lock")
 	if err != nil {
-		return "", err
+		return result, err
 	}
 	defer func() { resultErr = errors.Join(resultErr, lock.Close()) }()
 	file, err := runnerauth.Load(c.runner.path)
 	if err != nil {
-		return "", err
+		return result, err
 	}
 	if file.HubURL != strings.TrimRight(c.baseURL.String(), "/") {
-		return "", errors.New("runner identity belongs to a different Hub")
+		return result, errors.New("runner identity belongs to a different Hub")
 	}
 	file, err = c.prepareRunnerCredential(ctx, c.runner.path, file, false)
 	if err != nil {
-		return "", err
+		return result, err
 	}
-	return file.Credential, nil
+	if refreshIdentity {
+		base, err := runnerOrganizationPath(file.Identity.OrganizationID)
+		if err != nil {
+			return result, err
+		}
+		var identity runnerauth.Identity
+		if err := c.runnerRequest(ctx, file.Credential, http.MethodGet, base+"/runners/"+file.Identity.RunnerID, nil, &identity); err != nil {
+			return result, err
+		}
+		if err := validateRunnerResponse(file, identity); err != nil {
+			return result, err
+		}
+		file.Identity = identity
+		if err := runnerauth.Save(c.runner.path, file); err != nil {
+			return result, err
+		}
+	}
+	return file, nil
 }
 
 func (c *Client) prepareRunnerCredential(ctx context.Context, path string, file runnerauth.File, forceRenew bool) (runnerauth.File, error) {
@@ -202,6 +224,14 @@ func EnrollRunner(ctx context.Context, path string, organization tracker.Organiz
 	}
 	file.Identity = identity
 	return identity, runnerauth.Save(path, file)
+}
+
+func (c *Client) RunnerIdentity(ctx context.Context) (runnerauth.Identity, error) {
+	if c.runner == nil {
+		return runnerauth.Identity{}, errors.New("runner identity requires enrolled credentials")
+	}
+	file, err := c.runnerCredential(ctx, true)
+	return file.Identity, err
 }
 
 func RefreshRunner(ctx context.Context, path string, rotate bool) (identity runnerauth.Identity, resultErr error) {
@@ -552,25 +582,6 @@ func (r *runnerCredentialSource) setApprovedPolicy(project tracker.ProjectID, id
 	state.PolicyIDs[project] = id
 	r.routing.ClaimState = &state
 	r.notifyClaimChange()
-}
-
-func (c *Client) RunnerIdentity(ctx context.Context) (runnerauth.Identity, error) {
-	var identity runnerauth.Identity
-	if c.runner == nil {
-		return identity, errors.New("enrolled runner identity is required")
-	}
-	file, err := runnerauth.Load(c.runner.path)
-	if err != nil {
-		return identity, err
-	}
-	base, err := runnerOrganizationPath(file.Identity.OrganizationID)
-	if err != nil {
-		return identity, err
-	}
-	if err := c.request(ctx, http.MethodGet, base+"/runners/"+file.Identity.RunnerID, nil, &identity); err != nil {
-		return identity, err
-	}
-	return identity, validateRunnerResponse(file, identity)
 }
 
 type nativeMachineHeartbeat struct {

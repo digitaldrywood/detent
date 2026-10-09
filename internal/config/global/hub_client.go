@@ -104,8 +104,8 @@ func (c HubClient) Validate() []string {
 		if c.TokenEnvironment != "" {
 			problems = append(problems, "client.identity_file and client.token_env are mutually exclusive")
 		}
-		if len(c.NativeProjects) == 0 {
-			problems = append(problems, "client.identity_file requires explicit native_projects")
+		if !strings.HasPrefix(c.OrganizationID, "org_") {
+			problems = append(problems, "client.organization_id is required for an enrolled runner")
 		}
 	}
 	if len(c.NativeProjects) > 0 && !strings.HasPrefix(c.OrganizationID, "org_") {

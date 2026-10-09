@@ -3777,7 +3777,7 @@ func TestCheckDoctorConfigWithProjectScopeValidatesOnlySelectedPaths(t *testing.
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			resolution, global, scope, scopeCheck, check := checkDoctorConfig(configPath, tt.projectID, opts)
+			resolution, global, scope, scopeCheck, check := checkDoctorConfig(t.Context(), configPath, tt.projectID, opts)
 			if resolution.Path != configPath || resolution.Rule != globalconfig.PathRuleFlag {
 				t.Fatalf("resolution = %#v, want explicit config path %q", resolution, configPath)
 			}

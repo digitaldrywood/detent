@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
+	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -81,7 +84,7 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 		return nil
 	}
 	p.lastRefresh = time.Now()
-	if p.cfg.Client.IdentityFile == "" || len(p.cfg.Client.NativeProjects) == 0 {
+	if p.cfg.Client.IdentityFile == "" {
 		return nil
 	}
 	for _, id := range p.cfg.Client.NativeProjects {
@@ -104,32 +107,9 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 	}
 	needsApply := p.syncRuntimeLocked()
 	before := p.cfg
-	p.cfg.Client.NativeProjects = maps.Clone(p.cfg.Client.NativeProjects)
-	p.cfg.Projects = slices.Clone(p.cfg.Projects)
-	root := filepath.Dir(p.cfg.Client.IdentityFile)
-	if len(p.cfg.Projects) > 0 {
-		root = filepath.Dir(p.cfg.Projects[0].Workdir)
-	}
-	for _, id := range identity.ProjectIDs {
-		if slices.Contains(slices.Collect(maps.Values(p.cfg.Client.NativeProjects)), string(id)) {
-			continue
-		}
-		native, err := p.client.Native(identity.OrganizationID, id)
-		if err != nil {
-			return err
-		}
-		definition, err := native.Project(ctx)
-		if err != nil {
-			p.logger.Warn("read assigned runner project failed", "project_id", id, "error", err)
-			continue
-		}
-		name := runnerProjectSlug(definition.Name, id)
-		if p.cfg.Client.NativeProjects[name] != "" || slices.ContainsFunc(p.cfg.Projects, func(selected globalconfig.Project) bool { return selected.ID == name }) {
-			name = runnerProjectSlug(definition.Name+"-"+string(id), id)
-		}
-		workdir := filepath.Join(root, name)
-		p.cfg.Client.NativeProjects[name] = string(id)
-		p.cfg.Projects = append(p.cfg.Projects, globalconfig.Project{ID: name, Workdir: workdir, Workflow: filepath.Join(workdir, "WORKFLOW.md"), Weight: 1, Priority: 3})
+	p.cfg, err = runnerProjectsForIdentity(ctx, p.cfg, p.client, identity, false)
+	if err != nil {
+		return err
 	}
 	changed := needsApply || !reflect.DeepEqual(before, p.cfg)
 	for _, selected := range p.cfg.Projects {
@@ -236,4 +216,116 @@ func (p *runnerProjects) syncRuntimeLocked() bool {
 	changed := !reflect.DeepEqual(p.runtime(), current)
 	p.cfg = current
 	return changed
+}
+
+func resolveRunnerProjects(ctx context.Context, cfg globalconfig.Config) (globalconfig.Config, error) {
+	if cfg.Client.IdentityFile == "" || cfg.WorkspaceRoot == "" {
+		return cfg, nil
+	}
+	settings := cfg.Client.Normalized()
+	client, err := hubclient.New(hubclient.Config{URL: settings.URL, IdentityFile: settings.IdentityFile, HTTPClient: &http.Client{Timeout: settings.RequestTimeout()}})
+	if err != nil {
+		return cfg, err
+	}
+	identity, err := client.RunnerIdentity(ctx)
+	if err != nil {
+		return cfg, fmt.Errorf("read runner's allowed projects: %w", err)
+	}
+	return runnerProjectsForIdentity(ctx, cfg, client, identity, true)
+}
+
+func runnerProjectsForIdentity(ctx context.Context, cfg globalconfig.Config, client *hubclient.Client, identity runnerauth.Identity, prepare bool) (globalconfig.Config, error) {
+	if string(identity.OrganizationID) != cfg.Client.OrganizationID {
+		return cfg, errors.New("runner organization does not match enrolled identity")
+	}
+	previous := cfg.Projects
+	cfg.Projects = []globalconfig.Project{}
+	cfg.Client.NativeProjects = map[string]string{}
+	ids := slices.Clone(identity.ProjectIDs)
+	slices.Sort(ids)
+	for _, id := range ids {
+		name := string(id)
+		cfg.Client.NativeProjects[name] = string(id)
+		native, err := client.Native(identity.OrganizationID, id)
+		if err != nil {
+			return cfg, err
+		}
+		remote, err := native.Project(ctx)
+		if err != nil {
+			slog.Error("runner project setup failed", "runner_id", identity.RunnerID, "project_id", id, "attribution", "instance", "error", err)
+			continue
+		}
+		if remote.ID != id || remote.OrganizationID != identity.OrganizationID {
+			return cfg, errors.New("hub returned an unexpected project identity")
+		}
+		repository := remote.Repository
+		if repository == "" {
+			repository, _ = doctorGitHubRepositoryFromRemoteURL(remote.CloneURL)
+		}
+		locations := slices.Concat(cfg.RunnerCheckouts, previous)
+		workdir, retainedName, err := runnerProjectCheckout(ctx, cfg.WorkspaceRoot, name, repository, locations)
+		if err != nil {
+			slog.Error("runner project setup failed", "runner_id", identity.RunnerID, "project_id", id, "attribution", "instance", "error", err)
+			continue
+		}
+		if retainedName != "" && cfg.Client.NativeProjects[retainedName] == "" {
+			delete(cfg.Client.NativeProjects, name)
+			name = retainedName
+			cfg.Client.NativeProjects[name] = string(id)
+		}
+		selected := globalconfig.Project{ID: name, Workflow: filepath.Join(workdir, "WORKFLOW.md"), WorkflowRef: "origin/HEAD", Workdir: workdir, Weight: 1, GlobalCache: cfg.Global.Cache.Normalized()}
+		if prepare {
+			cloneURL := remote.CloneURL
+			if cloneURL == "" && repository != "" {
+				cloneURL = "https://github.com/" + repository + ".git"
+			}
+			if err := prepareRunnerCheckout(ctx, selected, cloneURL); err != nil {
+				slog.Error("runner project setup failed", "runner_id", identity.RunnerID, "project_id", id, "attribution", "instance", "error", err)
+				continue
+			}
+		}
+		cfg.Projects = append(cfg.Projects, selected)
+	}
+	return cfg, ctx.Err()
+}
+
+func runnerProjectCheckout(ctx context.Context, root, name, repository string, retained []globalconfig.Project) (string, string, error) {
+	target := filepath.Join(root, name)
+	entries, err := os.ReadDir(root)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", "", err
+	}
+	candidates := make(map[string]string)
+	for _, entry := range entries {
+		candidates[filepath.Join(root, entry.Name())] = entry.Name()
+	}
+	for _, selected := range retained {
+		candidates[selected.Workdir] = selected.ID
+	}
+	var matches []string
+	for candidate := range candidates {
+		if _, err := os.Stat(filepath.Join(candidate, ".git")); err != nil {
+			continue
+		}
+		cmd := exec.CommandContext(ctx, "git", "config", "--get", "remote.origin.url")
+		cmd.Dir = candidate
+		remote, err := cmd.Output()
+		if err != nil {
+			continue
+		}
+		linked, _ := doctorGitHubRepositoryFromRemoteURL(strings.TrimSpace(string(remote)))
+		if repository != "" && strings.EqualFold(linked, repository) {
+			matches = append(matches, candidate)
+		}
+	}
+	if len(matches) > 1 {
+		return "", "", fmt.Errorf("multiple runner checkouts for %s require selecting the retained source", repository)
+	}
+	if len(matches) == 1 {
+		return matches[0], candidates[matches[0]], nil
+	}
+	if _, err := os.Stat(filepath.Join(target, ".git")); err == nil {
+		return "", "", fmt.Errorf("runner checkout %s does not match Cloud repository %s", target, repository)
+	}
+	return target, "", nil
 }

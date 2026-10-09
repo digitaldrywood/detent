@@ -284,7 +284,7 @@ Default locations are:
 | --- | --- |
 | Runner configuration | `~/.config/detent-runner/global.yaml` |
 | Private runner identity | `~/.config/detent-runner/identity.json` |
-| Project checkouts | `~/detent-runner/PROJECT_NAME` |
+| Project checkouts | `~/detent-runner/PROJECT_ID` |
 | Service launcher | `~/.local/lib/detent-sprite-runner/start` |
 
 Keep the paths printed by registration if you selected custom paths. The
@@ -358,12 +358,13 @@ requires:
 ```sh
 git config --global user.name 'YOUR_NAME'
 git config --global user.email 'YOUR_EMAIL'
-git clone REPOSITORY_URL "$HOME/detent-runner/PROJECT_NAME"
+git ls-remote REPOSITORY_URL HEAD
 ```
 
-Use the exact checkout directory printed by registration, not an inferred
-repository name. Each checkout must contain the project's `detent.yaml` and
-`WORKFLOW.md`. Declare its build and test dependencies in `hooks.runner_setup`
+The runner clones allowed repositories under its configured `workspace_root`
+and reuses existing matching checkouts there. It reads `detent.yaml` and
+`WORKFLOW.md` from the repository's current default branch. Declare build and
+test dependencies in `hooks.runner_setup`
 and configure the agent routes it uses; see
 [Cloud onboarding](cloud-onboarding.md#repository-configuration-and-policy).
 Repeat for every enrolled project.

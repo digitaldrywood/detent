@@ -16,6 +16,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 var (
@@ -285,6 +286,12 @@ func (s workflowGitRefSource) loadSource(ctx context.Context, includeLocal bool)
 	if err != nil {
 		return workflowconfig.Workflow{}, revision, err
 	}
+	if s.ref == "origin/HEAD" && workflow.Config.Workspace.Kind == workspace.KindLocalGit && workflow.Config.Workspace.Root == filepath.Join(os.TempDir(), "detent_workspaces") {
+		workflow.Config.Workspace.Root, err = workspace.ResolveRetainedRoot(ctx, s.sourceRoot, workflow.Config.Workspace.Root)
+		if err != nil {
+			return workflowconfig.Workflow{}, revision, err
+		}
+	}
 	workflow.Definition.Revision = revision
 	return workflow, revision, nil
 }
@@ -350,6 +357,23 @@ func (s workflowGitRefSource) localConfigPath() string {
 }
 
 func (s workflowGitRefSource) revision(ctx context.Context) (string, error) {
+	if s.ref == "origin/HEAD" {
+		remote, err := runWorkflowGit(ctx, s.sourceRoot, "ls-remote", "--exit-code", "origin", "HEAD")
+		if err != nil {
+			return "", fmt.Errorf("resolve remote default workflow: %w", err)
+		}
+		fields := strings.Fields(string(remote))
+		if len(fields) != 2 || fields[1] != "HEAD" || (len(fields[0]) != 40 && len(fields[0]) != 64) || strings.Trim(fields[0], "0123456789abcdef") != "" {
+			return "", errors.New("remote returned an invalid default branch revision")
+		}
+		revision := fields[0]
+		if _, err := runWorkflowGit(ctx, s.sourceRoot, "cat-file", "-e", revision+"^{commit}"); err != nil {
+			if _, err := runWorkflowGit(ctx, s.sourceRoot, "fetch", "--no-write-fetch-head", "--no-tags", "origin", revision); err != nil {
+				return "", fmt.Errorf("fetch remote default workflow: %w", err)
+			}
+		}
+		return revision, nil
+	}
 	output, err := runWorkflowGit(ctx, s.sourceRoot, "rev-parse", "--verify", s.ref+"^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("resolve workflow ref %s: %w", s.ref, err)

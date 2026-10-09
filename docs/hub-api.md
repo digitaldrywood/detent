@@ -374,17 +374,22 @@ detent hub runner register --url https://cloud.detent.build/organizations/org_ex
    capacity, version, OS and architecture, and the host credential, which the
    Hub stores only as a SHA-256 hash. No provider or repository credential is
    read or sent.
-3. Reads the names of the granted projects and writes `global.yaml` once: the
-   `client:` block (`hub_url`, `identity_file`, `organization_id`,
-   `native_projects`, `display_name`, `capacity`), `service_name:
-   detent.runner`, and one `projects:` entry per project whose `workdir` is the
-   project's checkout under `--workspace-root` (default `~/detent-runner/NAME`).
-   An existing `global.yaml` is left untouched; checkout checks use its
-   configured projects and `workdir` paths instead of `--workspace-root`.
+3. Writes machine-only `global.yaml` once: the `client:` block (`hub_url`,
+   `identity_file`, `organization_id`, `display_name`, `capacity`),
+   `service_name: detent.runner`, and `workspace_root` (default `~/detent-runner`).
+   Existing configuration files are left untouched. Cloud owns the project list;
+   local `projects`, workflow paths, weights, priorities, scheduling and
+   fair-share settings are ignored with compatibility warnings for one release.
 4. With `--service`, installs and starts the `detent.runner` background service
-   (launchd `com.digitaldrywood.detent.runner`, systemd `detent.runner.service`).
-   If a project's checkout is missing, it prints the clone step and the
-   `detent start --config ... --yes` command to run afterwards instead.
+   (launchd `com.digitaldrywood.detent.runner`, systemd `detent.runner.service`),
+   separate from a local board's `detent` service on the same host. At startup,
+   the runner reads its current allowed projects from Cloud, clones missing
+   linked repositories into `workspace_root/PROJECT_ID` using host Git
+   authentication, and loads `detent.yaml` and `WORKFLOW.md` from the repository's
+   current default branch. Existing matching checkouts under `workspace_root`
+   keep their directory and runtime project names so retained work can resume.
+   Project setup failures retain Cloud grants and do not prevent valid projects
+   from starting.
 
 `detent start` and `detent status` default to the runner service when the
 configuration has a `client.hub_url`, including older configurations without
@@ -396,11 +401,11 @@ The token appears in the command because it is single-use and expires within 15
 minutes; once redeemed it grants nothing. To keep it out of shell history,
 omit `--token` and set `DETENT_RUNNER_ENROLLMENT_TOKEN` instead. A self-hosted
 Hub whose URL does not include `/organizations/ORG` needs `--organization`.
-Projects listed in `client.native_projects` use the Hub in place of the
-GitHub tracker their committed `detent.yaml` names, so the checkout needs no
-local override. `register` starts the service only once every checkout has its
-`WORKFLOW.md`, and refuses an existing identity or configuration that belongs
-to another Hub, organization or project set rather than reusing it.
+Cloud-allowed projects use the Hub in place of the GitHub tracker their
+committed `detent.yaml` names, so the checkout needs no local override.
+`register` refuses an existing identity or configuration belonging to another
+Hub or organization. Model selection comes from organization/project settings
+in the Hub; local `global.agents.model_selection` is ignored.
 
 `init` and `enroll` below remain for scripted setups that bind the IDs before
 the token exists.
@@ -446,14 +451,13 @@ once. The steps below bind the IDs up front instead.
      hub_url: https://hub.example.com
      identity_file: /private/host-config/detent/runner/identity.json
      organization_id: org_example
-     native_projects:
-       example: prj_example
      display_name: Build host
    ```
 
-   Substitute the real private path and organization/project IDs. `identity_file`
+   Set `workspace_root` to the checkout directory. Substitute the real private
+   path and organization ID. `identity_file`
    and `token_env` are mutually exclusive. An optional `machine_id` must exactly
-   match the enrolled ID. Every configured native project must be in the grant.
+   match the enrolled ID. Cloud supplies the current allowed-project grants; no local mapping is needed.
    The host retains its existing local model login/API-key configuration.
 
 | Operation grant | Permitted native operations |
@@ -1782,8 +1786,6 @@ client:
   hub_url: https://hub.example.com
   identity_file: /absolute/private/runner/identity.json
   organization_id: org_example
-  native_projects:
-    application: prj_example
   provider_capacity_file: /absolute/private/runner/provider-capacity.json
 ```
 

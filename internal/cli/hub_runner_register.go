@@ -5,11 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -28,22 +26,14 @@ const runnerServiceName = "detent.runner"
 type runnerServiceStarter func(cmd *cobra.Command, configPath string) error
 
 type runnerRegistration struct {
-	RunnerID   string                  `json:"runner_id"`
-	MachineID  tracker.MachineID       `json:"machine_id"`
-	Config     string                  `json:"config"`
-	Identity   string                  `json:"identity_file"`
-	Created    bool                    `json:"config_created"`
-	Projects   []runnerRegisteredCheck `json:"projects"`
-	Service    string                  `json:"service,omitempty"`
-	NextSteps  []string                `json:"next_steps,omitempty"`
-	ServiceRun bool                    `json:"service_started"`
-}
-
-type runnerRegisteredCheck struct {
-	Name     string            `json:"name"`
-	ID       tracker.ProjectID `json:"id"`
-	Workdir  string            `json:"workdir"`
-	Checkout bool              `json:"checkout"`
+	RunnerID   string            `json:"runner_id"`
+	MachineID  tracker.MachineID `json:"machine_id"`
+	Config     string            `json:"config"`
+	Identity   string            `json:"identity_file"`
+	Created    bool              `json:"config_created"`
+	Service    string            `json:"service,omitempty"`
+	NextSteps  []string          `json:"next_steps,omitempty"`
+	ServiceRun bool              `json:"service_started"`
 }
 
 func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, startService runnerServiceStarter) *cobra.Command {
@@ -100,7 +90,7 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 			}
 			name = strings.TrimSpace(firstNonBlankString(name, hostname))
 			if _, err := os.Lstat(paths.config); err == nil {
-				if err := existingRunnerConfigMatches(paths.config, runnerConfig(base, org, name, capacity, paths, nil), false); err != nil {
+				if err := existingRunnerConfigMatches(paths.config, runnerConfig(base, org, name, capacity, paths)); err != nil {
 					return err
 				}
 			}
@@ -138,37 +128,21 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 			if err := runnerauth.SaveRoutingCache(paths.identity, runnerauth.RoutingSnapshot{RunnerID: routing.RunnerID, Revision: routing.Revision, Routing: routing.Routing}); err != nil {
 				return fmt.Errorf("runner enrolled; save routing configuration: %w", err)
 			}
-			projects, err := runnerProjectNames(cmd.Context(), base, paths.identity, identity)
-			if err != nil {
-				return err
-			}
 			result := runnerRegistration{RunnerID: identity.RunnerID, MachineID: identity.MachineID, Config: paths.config, Identity: paths.identity}
-			for _, project := range projects {
-				workdir := filepath.Join(paths.workspaces, project.Name)
-				result.Projects = append(result.Projects, runnerRegisteredCheck{Name: project.Name, ID: project.ID, Workdir: workdir, Checkout: runnerCheckoutReady(cmd.Context(), globalconfig.Project{Workdir: workdir})})
-			}
-			config := runnerConfig(base, org, name, capacity, paths, result.Projects)
+			config := runnerConfig(base, org, name, capacity, paths)
 			result.Created, err = writeRunnerConfig(paths.config, config)
 			if err != nil {
 				return err
 			}
 			if !result.Created {
-				if err := existingRunnerConfigMatches(paths.config, config, true); err != nil {
+				if err := existingRunnerConfigMatches(paths.config, config); err != nil {
 					return err
-				}
-				configuration, err = readRunnerSetupConfig(paths.config)
-				if err != nil {
-					return err
-				}
-				result.Projects = nil
-				for _, project := range configuration.Projects {
-					result.Projects = append(result.Projects, runnerRegisteredCheck{
-						Name: project.ID, ID: tracker.ProjectID(configuration.Client.NativeProjects[project.ID]),
-						Workdir: project.Workdir, Checkout: runnerCheckoutReady(cmd.Context(), project),
-					})
 				}
 			}
 			loaded, err := readRunnerSetupConfig(paths.config)
+			if err == nil {
+				loaded, err = runnerProjectsForIdentity(cmd.Context(), loaded, client, identity, false)
+			}
 			if err == nil {
 				err = report(cmd.Context(), loaded, version)
 			}
@@ -277,9 +251,7 @@ func runnerCheckoutReady(ctx context.Context, selected globalconfig.Project) boo
 	return err == nil
 }
 
-// existingRunnerConfigMatches refuses to keep a configuration written for a
-// different Hub, organization, identity or project set.
-func existingRunnerConfigMatches(path string, want runnerConfigFile, projects bool) error {
+func existingRunnerConfigMatches(path string, want runnerConfigFile) error {
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -298,14 +270,6 @@ func existingRunnerConfigMatches(path string, want runnerConfigFile, projects bo
 		return mismatch("client.organization_id")
 	case have.Client.IdentityFile != want.Client.IdentityFile:
 		return mismatch("client.identity_file")
-	}
-	if !projects {
-		return nil
-	}
-	for name, id := range have.Client.NativeProjects {
-		if !slices.Contains(slices.Collect(maps.Values(want.Client.NativeProjects)), id) {
-			return mismatch("client.native_projects entry " + name)
-		}
 	}
 	return nil
 }
@@ -364,93 +328,31 @@ func resolveRunnerPaths(configPath, workspaceRoot string, privateLocation func(s
 	return runnerPaths{config: filepath.Clean(configPath), identity: identity, workspaces: filepath.Clean(workspaceRoot)}, nil
 }
 
-type runnerProject struct {
-	Name string
-	ID   tracker.ProjectID
-}
-
-func runnerProjectNames(ctx context.Context, base, identityPath string, identity runnerauth.Identity) ([]runnerProject, error) {
-	client, err := hubclient.New(hubclient.Config{URL: base, IdentityFile: identityPath})
-	if err != nil {
-		return nil, err
-	}
-	projects := make([]runnerProject, 0, len(identity.ProjectIDs))
-	used := map[string]bool{}
-	for _, id := range identity.ProjectIDs {
-		native, err := client.Native(identity.OrganizationID, id)
-		if err != nil {
-			return nil, err
-		}
-		project, err := native.Project(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("read project %s: %w", id, err)
-		}
-		name := runnerProjectSlug(project.Name, id)
-		if used[name] {
-			name = runnerProjectSlug(project.Name+"-"+string(id), id)
-		}
-		used[name] = true
-		projects = append(projects, runnerProject{Name: name, ID: id})
-	}
-	return projects, nil
-}
-
-// runnerProjectSlug is the local project ID and checkout directory name.
-func runnerProjectSlug(name string, id tracker.ProjectID) string {
-	var b strings.Builder
-	dash := false
-	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '_':
-			b.WriteRune(r)
-			dash = false
-		case !dash && b.Len() > 0:
-			b.WriteByte('-')
-			dash = true
-		}
-	}
-	slug := strings.Trim(b.String(), "-.")
-	if slug == "" {
-		return string(id)
-	}
-	return slug
-}
-
 type runnerConfigFile struct {
-	APIVersion   string              `yaml:"apiVersion"`
-	Kind         string              `yaml:"kind"`
-	InstanceName string              `yaml:"instance_name"`
-	ServiceName  string              `yaml:"service_name"`
-	Port         int                 `yaml:"port"`
-	GitHubToken  string              `yaml:"github_token"`
-	Client       runnerConfigClient  `yaml:"client"`
-	Global       runnerConfigGlobal  `yaml:"global"`
-	Projects     []runnerConfigEntry `yaml:"projects"`
+	APIVersion    string             `yaml:"apiVersion"`
+	Kind          string             `yaml:"kind"`
+	InstanceName  string             `yaml:"instance_name"`
+	ServiceName   string             `yaml:"service_name"`
+	GitHubToken   string             `yaml:"github_token"`
+	Port          int                `yaml:"port"`
+	Client        runnerConfigClient `yaml:"client"`
+	Global        runnerConfigGlobal `yaml:"global"`
+	WorkspaceRoot string             `yaml:"workspace_root"`
 }
 
 type runnerConfigClient struct {
-	HubURL         string            `yaml:"hub_url"`
-	IdentityFile   string            `yaml:"identity_file"`
-	OrganizationID string            `yaml:"organization_id"`
-	NativeProjects map[string]string `yaml:"native_projects"`
-	DisplayName    string            `yaml:"display_name"`
-	Capacity       int               `yaml:"capacity"`
+	HubURL         string `yaml:"hub_url"`
+	IdentityFile   string `yaml:"identity_file"`
+	OrganizationID string `yaml:"organization_id"`
+	DisplayName    string `yaml:"display_name"`
+	Capacity       int    `yaml:"capacity"`
 }
 
 type runnerConfigGlobal struct {
-	MaxConcurrentAgents int    `yaml:"max_concurrent_agents"`
-	Scheduling          string `yaml:"scheduling"`
+	MaxConcurrentAgents int `yaml:"max_concurrent_agents"`
 }
 
-type runnerConfigEntry struct {
-	ID       string `yaml:"id"`
-	Workflow string `yaml:"workflow"`
-	Workdir  string `yaml:"workdir"`
-	Weight   int    `yaml:"weight"`
-	Priority int    `yaml:"priority"`
-}
-
-func runnerConfig(base string, org tracker.OrganizationID, name string, capacity int, paths runnerPaths, projects []runnerRegisteredCheck) runnerConfigFile {
+func runnerConfig(base string, org tracker.OrganizationID, name string, capacity int, paths runnerPaths) runnerConfigFile {
 	config := runnerConfigFile{
 		APIVersion:   "detent/v1",
 		Kind:         "GlobalConfig",
@@ -461,16 +363,11 @@ func runnerConfig(base string, org tracker.OrganizationID, name string, capacity
 			HubURL:         base,
 			IdentityFile:   paths.identity,
 			OrganizationID: string(org),
-			NativeProjects: map[string]string{},
 			DisplayName:    name,
 			Capacity:       capacity,
 		},
-		Global:   runnerConfigGlobal{MaxConcurrentAgents: capacity, Scheduling: "weighted"},
-		Projects: []runnerConfigEntry{},
-	}
-	for _, project := range projects {
-		config.Client.NativeProjects[project.Name] = string(project.ID)
-		config.Projects = append(config.Projects, runnerConfigEntry{ID: project.Name, Workflow: filepath.Join(project.Workdir, "WORKFLOW.md"), Workdir: project.Workdir, Weight: 1, Priority: 3})
+		Global:        runnerConfigGlobal{MaxConcurrentAgents: capacity},
+		WorkspaceRoot: paths.workspaces,
 	}
 	return config
 }
@@ -500,7 +397,7 @@ func writeRunnerConfig(path string, config runnerConfigFile) (created bool, resu
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
-	header := "# Detent runner configuration written by `detent hub runner register`.\n# The Hub assigns work for the projects below; each workdir is that project's repository checkout.\n"
+	header := "# Detent runner configuration written by `detent hub runner register`.\n# Machine settings only. The Hub supplies allowed projects; the runner clones their repositories into workspace_root.\n"
 	_, writeErr := temporary.Write(append([]byte(header), body...))
 	if err := errors.Join(writeErr, temporary.Chmod(0o600), temporary.Sync(), temporary.Close()); err != nil {
 		return false, err
@@ -529,13 +426,6 @@ func writeRunnerRegistration(cmd *cobra.Command, result runnerRegistration) erro
 			lines = append(lines, "Wrote "+result.Config)
 		} else {
 			lines = append(lines, "Kept the existing "+result.Config)
-		}
-		for _, project := range result.Projects {
-			state := "checkout found"
-			if !project.Checkout {
-				state = "no checkout yet"
-			}
-			lines = append(lines, fmt.Sprintf("Project %s (%s): %s, %s", project.Name, project.ID, project.Workdir, state))
 		}
 		if result.ServiceRun {
 			lines = append(lines, "Started the "+result.Service+" service.", "Service logs: "+filepath.Join(filepath.Dir(result.Config), "logs", "service.out.log")+" and "+filepath.Join(filepath.Dir(result.Config), "logs", "service.err.log"))

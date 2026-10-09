@@ -145,77 +145,6 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 	}
 }
 
-func TestReadRunnerSetupConfigMissingCheckout(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name              string
-		homePaths         bool
-		invalidWeight     bool
-		workflowDirectory bool
-		workdirFile       bool
-		wantError         string
-	}{
-		{name: "absent checkout"},
-		{name: "absent home-relative paths", homePaths: true},
-		{name: "invalid config with absent checkout", invalidWeight: true, wantError: "weight: must be a positive integer"},
-		{name: "workflow is a directory", workflowDirectory: true, wantError: "workflow: path does not exist"},
-		{name: "workdir is a file", workdirFile: true, wantError: "workdir: path does not exist"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			root := t.TempDir()
-			paths := runnerPaths{config: filepath.Join(root, "global.yaml"), identity: filepath.Join(root, "identity.json"), workspaces: filepath.Join(root, "missing")}
-			workdir := filepath.Join(paths.workspaces, "orders")
-			workflow := filepath.Join(workdir, "WORKFLOW.md")
-			config := runnerConfig("http://127.0.0.1:1", "org_test", "host", 1, paths, []runnerRegisteredCheck{{Name: "orders", ID: "prj_orders", Workdir: workdir}})
-			if test.homePaths {
-				home, err := os.UserHomeDir()
-				if err != nil {
-					t.Fatal(err)
-				}
-				relative, err := filepath.Rel(home, workdir)
-				if err != nil {
-					t.Fatal(err)
-				}
-				config.Projects[0].Workdir = "~/" + relative
-				config.Projects[0].Workflow = "~/" + filepath.Join(relative, "WORKFLOW.md")
-			}
-			if test.invalidWeight {
-				config.Projects[0].Weight = 0
-			}
-			if test.workflowDirectory {
-				if err := os.MkdirAll(workflow, 0o700); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if test.workdirFile {
-				if err := os.MkdirAll(paths.workspaces, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(workdir, nil, 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err := writeRunnerConfig(paths.config, config); err != nil {
-				t.Fatal(err)
-			}
-			cfg, err := readRunnerSetupConfig(paths.config)
-			if test.wantError != "" {
-				if err == nil || !strings.Contains(err.Error(), test.wantError) {
-					t.Fatalf("error = %v, want %q", err, test.wantError)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cfg.Path != paths.config || len(cfg.Projects) != 1 || cfg.Client.NativeProjects["orders"] != "prj_orders" || cfg.Projects[0].Workdir != workdir || cfg.Projects[0].Workflow != workflow || cfg.Global.Cache.MaxAge == 0 {
-				t.Fatalf("config=%+v", cfg)
-			}
-		})
-	}
-}
-
 // Catch a separate startup heartbeat bypassing negotiation or dropping the
 // startup observations before the scheduler's first enrolled heartbeat.
 func TestRunnerSetupHeartbeatOwnership(t *testing.T) {
@@ -280,7 +209,7 @@ func TestRunnerSetupHeartbeatOwnership(t *testing.T) {
 			if err := runnerauth.SaveRoutingCache(paths.identity, snapshot); err != nil {
 				t.Fatal(err)
 			}
-			config := runnerConfig(server.URL, "org_test", "Runner", 1, paths, []runnerRegisteredCheck{{Name: "native", ID: "prj_test", Workdir: filepath.Join(paths.workspaces, "missing")}})
+			config := runnerConfig(server.URL, "org_test", "Runner", 1, paths)
 			if _, err := writeRunnerConfig(paths.config, config); err != nil {
 				t.Fatal(err)
 			}
@@ -289,6 +218,8 @@ func TestRunnerSetupHeartbeatOwnership(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg.Client.ProviderCapacityFile = writeProviderCapacityFixture(t, root)
+			cfg.Client.NativeProjects = map[string]string{"native": "prj_test"}
+			cfg.Projects = []globalconfig.Project{{ID: "native", Workflow: filepath.Join(paths.workspaces, "missing", "WORKFLOW.md"), Workdir: filepath.Join(paths.workspaces, "missing"), Weight: 1}}
 			source, err := newHubScheduling(t.Context(), cfg, "test")
 			if err != nil {
 				t.Fatal(err)

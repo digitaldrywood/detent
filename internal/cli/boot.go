@@ -48,6 +48,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tmuxstatus"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/tui"
 	"github.com/digitaldrywood/detent/internal/web"
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
@@ -75,6 +76,10 @@ func resolveBootConfigWithRuntimeDeps(ctx context.Context, configPath string, ho
 
 	cfg, err := opts.read(path)
 	if err == nil {
+		cfg, err = resolveRunnerProjects(ctx, cfg)
+		if err != nil {
+			return BootConfig{}, err
+		}
 		workflowPath := firstGlobalWorkflowPath(cfg)
 		runtime, err := resolveRuntimeSettings(ctx, runtimeInput{
 			Config:                 &cfg,
@@ -509,6 +514,13 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	}
 	reloadLogLevel := runtimeLogLevelForReload(cfg)
 	applyRuntimeConfig := func(reloaded globalconfig.Config) error {
+		if source, ok := hubScheduling.(interface {
+			SetNativeProjects(tracker.OrganizationID, map[string]tracker.ProjectID, map[string]runnerauth.LocalChecks) error
+		}); ok {
+			if err := source.SetNativeProjects(tracker.OrganizationID(reloaded.Client.OrganizationID), nativeProjectsFromConfig(reloaded.Client.NativeProjects), nil); err != nil {
+				return err
+			}
+		}
 		return applyGlobalRuntimeConfig(globalDispatchGate, reloadLogLevel, reloaded)
 	}
 	startProjects := func(ctx context.Context) error {

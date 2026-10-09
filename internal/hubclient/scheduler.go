@@ -631,6 +631,11 @@ func (s *Scheduler) nativeProjectSnapshot() map[string]*NativeConnector {
 func (s *Scheduler) SetNativeProjects(organization tracker.OrganizationID, projects map[string]tracker.ProjectID, checks map[string]runnerauth.LocalChecks) error {
 	s.projectsMu.Lock()
 	defer s.projectsMu.Unlock()
+	for name := range s.nativeProjects {
+		if _, allowed := projects[name]; !allowed {
+			delete(s.nativeProjects, name)
+		}
+	}
 	for name, id := range projects {
 		if current := s.nativeProjects[name]; current != nil && current.client.project == id {
 			continue

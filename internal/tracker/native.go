@@ -404,6 +404,7 @@ type NativeState = policy.State
 
 type NativeProject struct {
 	CloneURL            string          `json:"clone_url,omitempty"`
+	Repository          string          `json:"repository,omitempty"`
 	ModelSelection      json.RawMessage `json:"model_selection,omitempty"`
 	WorkflowMarkdown    string          `json:"workflow_markdown,omitempty"`
 	ID                  ProjectID       `json:"project_id"`

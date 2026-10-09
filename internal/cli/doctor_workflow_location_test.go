@@ -37,7 +37,7 @@ projects:
 		t.Fatalf("write global config: %v", err)
 	}
 
-	_, cfg, _, _, configCheck := checkDoctorConfig(configPath, "", defaultOptions())
+	_, cfg, _, _, configCheck := checkDoctorConfig(t.Context(), configPath, "", defaultOptions())
 	if configCheck.Status != doctorOK || cfg == nil {
 		t.Fatalf("checkDoctorConfig() = (%#v, %#v), want parsed config", cfg, configCheck)
 	}
