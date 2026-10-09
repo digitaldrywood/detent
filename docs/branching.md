@@ -75,9 +75,12 @@ existing operator tag or publish signed artifacts from a workstation.
 
 ## Promotion
 
-The scheduled GitHub Actions workflow validates one pinned `develop` SHA every
-hour, even if that commit already carries a release-provenance tag. A green run
-posts release evidence. It creates a new annotated patch tag and dispatches
+The scheduled GitHub Actions workflow checks the pinned `develop` SHA hourly.
+Each new SHA receives a full suite once across scheduled and manual dispatch
+runs. Preflight skips a SHA with any completed non-cancelled run of `ci.yml`,
+regardless of event or conclusion. Manual dispatch can set `force: true` to run
+again; selecting a non-`none` `fail_job` also forces a run. A green full-suite
+run posts release evidence. It creates a new annotated patch tag and dispatches
 release only when that SHA has no validated release tag. No new tag means no
 release deployment that hour. The release workflow serializes the staging and
 production sequence. It does not merge `develop` to `main`.

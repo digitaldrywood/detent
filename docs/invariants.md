@@ -172,13 +172,16 @@ validation lock. Other projects retain their configured policies.
 Landing checks repository source and workflow invariants; the full behavioral
 invariant manifest runs only in the scheduled suite.
 Full integration, race, coverage, fuzz, NilAway and generated-output validation
-run in the scheduled suite, which pins the current `develop` SHA and runs every
-job on it regardless of existing tags. Only the successful full-suite finalizer
-publishes `scheduled-full-ci`, creates an annotated validated patch tag and
-dispatches release; release deploys staging, runs its smoke, then deploys
-production and runs its smoke, and a failed smoke stops promotion. An already
-validated commit receives no new stable tag or deploy. Operator-landed Cloud
-deploys may dispatch the existing release workflow on a pinned develop commit:
+run in the scheduled suite, which pins the current `develop` SHA. Each new SHA
+receives one full suite across scheduled and manual dispatch runs. Preflight
+skips a SHA that has a completed non-cancelled run of this workflow, regardless
+of event or conclusion; manual dispatch with `force: true` runs it again, and
+any non-`none` `fail_job` selection implies force. Only the successful full-suite
+finalizer publishes `scheduled-full-ci`, creates an annotated validated patch
+tag and dispatches release; release deploys staging, runs its smoke, then
+deploys production and runs its smoke, and a failed smoke stops promotion. An
+already validated commit receives no new stable tag or deploy. Operator-landed
+Cloud deploys may dispatch the existing release workflow on a pinned develop commit:
 its successful `make check-land` Actions check is authenticated by the existing
 provenance owner, and the workflow publishes a signed next-patch `op.<sha12>`
 prerelease before deploying the same version and binary through staging and
