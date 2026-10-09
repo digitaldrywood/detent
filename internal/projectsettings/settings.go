@@ -30,11 +30,23 @@ type RankChange struct {
 }
 
 func ReadRank(ctx context.Context, db Queryer, organization tracker.OrganizationID) (Rank, error) {
+	return readRank(ctx, db, organization, false)
+}
+
+func ReadActiveRank(ctx context.Context, db Queryer, organization tracker.OrganizationID) (Rank, error) {
+	return readRank(ctx, db, organization, true)
+}
+
+func readRank(ctx context.Context, db Queryer, organization tracker.OrganizationID, activeOnly bool) (Rank, error) {
 	value := Rank{ProjectIDs: []tracker.ProjectID{}}
 	if err := db.QueryRowContext(ctx, "SELECT scheduling_revision FROM organizations WHERE id = ?", organization).Scan(&value.Revision); err != nil {
 		return value, err
 	}
-	rows, err := db.QueryContext(ctx, "SELECT id FROM projects WHERE organization_id = ? ORDER BY scheduling_rank, created_at, id", organization)
+	query := "SELECT id FROM projects WHERE organization_id = ?"
+	if activeOnly {
+		query += " AND deleted_at IS NULL"
+	}
+	rows, err := db.QueryContext(ctx, query+" ORDER BY scheduling_rank, created_at, id", organization)
 	if err != nil {
 		return value, err
 	}
@@ -50,7 +62,15 @@ func ReadRank(ctx context.Context, db Queryer, organization tracker.Organization
 }
 
 func UpdateRank(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, change RankChange) (Rank, error) {
-	current, err := ReadRank(ctx, tx, organization)
+	return updateRank(ctx, tx, organization, change, false)
+}
+
+func UpdateActiveRank(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, change RankChange) (Rank, error) {
+	return updateRank(ctx, tx, organization, change, true)
+}
+
+func updateRank(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, change RankChange, activeOnly bool) (Rank, error) {
+	current, err := readRank(ctx, tx, organization, activeOnly)
 	if err != nil {
 		return current, err
 	}
@@ -78,7 +98,7 @@ func UpdateRank(ctx context.Context, tx *sql.Tx, organization tracker.Organizati
 	if _, err := tx.ExecContext(ctx, "UPDATE organizations SET scheduling_revision = scheduling_revision + 1 WHERE id = ?", organization); err != nil {
 		return current, err
 	}
-	return ReadRank(ctx, tx, organization)
+	return readRank(ctx, tx, organization, activeOnly)
 }
 
 type ModelSelection struct {

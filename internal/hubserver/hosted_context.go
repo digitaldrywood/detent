@@ -249,6 +249,6 @@ func (s *Service) appAllRunnerGrants(ctx context.Context, credential apiCredenti
 	condition, args := credential.projectGrantSQL("p.organization_id", "p.id")
 	args = append([]any{s.config.Hosted.OrganizationID}, args...)
 	var missing int
-	err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM projects p WHERE p.organization_id = ? AND NOT ("+condition+")", args...).Scan(&missing)
+	err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id = ? AND NOT ("+condition+")", args...).Scan(&missing)
 	return err == nil && missing == 0
 }

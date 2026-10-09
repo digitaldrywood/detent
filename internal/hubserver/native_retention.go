@@ -23,7 +23,7 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 	entered := "julianday(" + nativeTerminalEnteredAt + ")"
 	rows, err := tx.QueryContext(ctx, `SELECT i.organization_id, i.project_id, i.native_id, `+period+`
 FROM issues i JOIN projects p ON p.id=i.project_id AND p.organization_id=i.organization_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
-WHERE p.profile='native' AND i.archived=0 AND ws.terminal=1 AND `+period+` IS NOT NULL
+WHERE p.deleted_at IS NULL AND p.profile='native' AND i.archived=0 AND ws.terminal=1 AND `+period+` IS NOT NULL
 AND max(`+entered+`, COALESCE(julianday(`+restored+`), `+entered+`)) < julianday(?) - (`+period+`)
 AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.issue_id=i.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?))
 AND NOT EXISTS (SELECT 1 FROM change_issue_links l JOIN change_requests c ON c.id=l.change_id

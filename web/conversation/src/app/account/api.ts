@@ -292,6 +292,8 @@ export function makeAccountApi(options: AccountApiOptions) {
       send(ProjectSecretStatus, "DELETE", `${project(projectId)}/secrets/fly_sprites_token`),
     integration: (projectId: string) =>
       send(ProjectIntegration, "GET", `${project(projectId)}/integration`),
+    deleteProject: (input: { projectId: string; name: string; key: string }) =>
+      send(null, "DELETE", project(input.projectId), { idempotency_key: input.key, confirm_name: input.name }),
     /**
      * `expected_revision` is the revision the screen was showing, sent back as
      * the string the hub marshalled. In hosted mode a `409` carries no current

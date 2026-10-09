@@ -6,6 +6,8 @@ import { SpritePoolCard } from "./SpritePoolCard.tsx";
 import { WorkflowRevisions } from "./WorkflowRevisions.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
+import { AlertDialog, AlertDialogTrigger, AlertDialogPopup, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogClose } from "../../components/ui/alert-dialog.tsx";
+import { hubPath } from "../../runtime/basePath.ts";
 import { Textarea } from "../../components/ui/textarea.tsx";
 import type { ObservedPolicy, PolicyApproval, ProjectIntegration } from "../../contracts/account.ts";
 import {
@@ -88,6 +90,44 @@ export function saveMessage(error: AccountError | null): string | null {
 }
 
 const ARCHIVE_OPTIONS = [7, 14, 30, 60, 90].map((days) => ({ value: String(days), label: `After ${days} days` })).concat({ value: "never", label: "Never" });
+
+export function ProjectDeletionSettings({ projectName, pending, error, onDelete, onDismiss }: {
+  readonly projectName: string;
+  readonly pending: boolean;
+  readonly error: string | null;
+  readonly onDelete: () => void;
+  readonly onDismiss: () => void;
+}): React.ReactElement {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <SettingsSection title="Delete project">
+      <SettingsRow title="Delete project" description="Remove this project from Detent Cloud. Active work must finish or be cancelled first."
+        control={
+          <AlertDialog open={open} onOpenChange={(next) => {
+            if (pending) return;
+            setOpen(next);
+            onDismiss();
+          }}>
+            <AlertDialogTrigger render={<Button size="sm" variant="destructive-outline" />}>Delete project</AlertDialogTrigger>
+            <AlertDialogPopup>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete {projectName}?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This removes {projectName} from Cloud and deletes its secrets and access grants. Issues, runs, Changes, conversations and stored artifacts are retained for audit but become inaccessible. Its name remains reserved, and retained storage still counts toward usage. The GitHub repository, its issues and PRs, other projects and shared runners are preserved. Finish or cancel active work, close workspaces, finish imports and GitHub writes, and remove provisioned Sprite pool members first. This cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <ControlError message={error} />
+              <AlertDialogFooter>
+                <AlertDialogClose disabled={pending} render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+                <Button variant="destructive" disabled={pending} onClick={onDelete}>{pending ? "Deleting…" : "Delete project"}</Button>
+              </AlertDialogFooter>
+            </AlertDialogPopup>
+          </AlertDialog>
+        }
+      />
+    </SettingsSection>
+  );
+}
 
 export function WorkflowSettings({
   integration,
@@ -302,6 +342,7 @@ export function ProjectSettingsView({
   header,
   sprites,
   workflow,
+  deletion,
 }: {
   readonly projectName: string;
   readonly integration: ProjectIntegration;
@@ -328,6 +369,7 @@ export function ProjectSettingsView({
   readonly header?: React.ReactNode;
   readonly sprites?: React.ReactNode;
   readonly workflow?: React.ReactNode;
+  readonly deletion?: React.ReactNode;
 }): React.ReactElement {
   const unbound = (integration.repository ?? "").length === 0;
   const repository = integration.checkout_repository || integration.repository || "";
@@ -542,6 +584,7 @@ export function ProjectSettingsView({
         />
         {sprites}
       </SettingsSection>
+      {deletion}
     </SettingsPageContainer>
   );
 }
@@ -560,6 +603,11 @@ export function ProjectSettingsRoute({
   const bootstrap = useAccountBootstrap();
   const project = bootstrap?.projects.find((candidate) => candidate.id === projectId) ?? null;
   const canManage = bootstrap?.actor.can_manage ?? false;
+  const remove = useMutation(async () => {
+    if (project === null) return;
+    await api.deleteProject({ projectId, name: project.name, key: newKey() });
+    globalThis.location.assign(hubPath("/organization"));
+  });
 
   const integration = useResource<ProjectIntegration>(
     () => api.integration(projectId),
@@ -739,6 +787,7 @@ export function ProjectSettingsRoute({
       saveError={saveMessage(save.error)}
       approveError={approve.error?.message ?? null}
       header={header}
+      deletion={canManage && project?.can_write === true ? <ProjectDeletionSettings key={projectId} projectName={project.name} pending={remove.pending} error={remove.error?.message ?? null} onDelete={() => void remove.call()} onDismiss={remove.clearError} /> : null}
       onOpenFleet={() => onNavigate?.("/settings/runners")}
       intakeHref={`/projects/${projectId}/setup`}
       onOpenSetup={onNavigate ? () => onNavigate(`/projects/${projectId}/setup`) : undefined}

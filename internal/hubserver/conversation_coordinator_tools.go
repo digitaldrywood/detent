@@ -250,7 +250,7 @@ WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ?`
 		query = "SELECT project_id FROM token_grants WHERE token_id = ? AND organization_id = ?"
 		args = []any{record.OwnerPrincipalID, record.OrganizationID}
 		if apiScope(scope) == apiScopeAdmin && !nativeOnly {
-			query = "SELECT id FROM projects WHERE organization_id = ?"
+			query = "SELECT id FROM projects WHERE deleted_at IS NULL AND organization_id = ?"
 			args = []any{record.OrganizationID}
 		}
 	}

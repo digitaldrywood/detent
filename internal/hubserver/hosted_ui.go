@@ -173,7 +173,7 @@ func (s *Service) hostedPageData(c echo.Context, credential apiCredential, data 
 	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT name FROM organizations WHERE id = ?", s.config.Hosted.OrganizationID).Scan(&data.OrganizationName); err != nil {
 		return err
 	}
-	rows, err := s.database.db.QueryContext(c.Request().Context(), `SELECT p.id,p.name,g.manage_runner FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id WHERE g.user_id = ? AND p.organization_id = ? ORDER BY p.id`, identity.Subject, s.config.Hosted.OrganizationID)
+	rows, err := s.database.db.QueryContext(c.Request().Context(), `SELECT p.id,p.name,g.manage_runner FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id WHERE p.deleted_at IS NULL AND g.user_id = ? AND p.organization_id = ? ORDER BY p.id`, identity.Subject, s.config.Hosted.OrganizationID)
 	if err != nil {
 		return err
 	}

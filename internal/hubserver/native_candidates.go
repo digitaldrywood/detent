@@ -110,7 +110,7 @@ LEFT JOIN queue_entries q ON q.id = (
 		` THEN 0 ELSE 1 END, candidate.scope, candidate.id LIMIT 1)
 WHERE i.organization_id = `,
 		bind(query.NativeScope.organization),
-		` AND p.profile = 'native'
+		` AND p.deleted_at IS NULL AND p.profile = 'native'
  AND i.archived = 0 AND ws.terminal = 0 AND ws.dispatchable = 1 AND lower(trim(ws.detent_state)) <> 'cancelled'
  AND NOT EXISTS (SELECT 1 FROM github_imports g WHERE g.work_item_id = i.native_id AND g.intake_pending = 1)
  AND (`,

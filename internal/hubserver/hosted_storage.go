@@ -101,7 +101,7 @@ func (d *database) hostedMetadata(ctx context.Context) (HostedMetadata, error) {
 	err := d.db.QueryRowContext(ctx, `
 SELECT h.organization_id, h.provider_id,
        (SELECT count(*) FROM hosted_members WHERE active = 1),
-       (SELECT count(*) FROM projects WHERE organization_id = h.organization_id),
+       (SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id = h.organization_id),
        (SELECT count(*) FROM runner_identities WHERE organization_id = h.organization_id AND removed_at IS NULL),
        (SELECT count(*) FROM collaboration_events WHERE organization_id = h.organization_id),
        (SELECT activity FROM (

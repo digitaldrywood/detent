@@ -150,7 +150,7 @@ func readHealthCandidates(ctx context.Context, q nativeQueryer, scope nativeScop
 }
 
 func readHealthProjects(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID) ([]healthProject, error) {
-	rows, err := q.QueryContext(ctx, "SELECT id FROM projects WHERE organization_id=? AND profile='native' ORDER BY id LIMIT ?", organization, healthProjectLimit+1)
+	rows, err := q.QueryContext(ctx, "SELECT id FROM projects WHERE deleted_at IS NULL AND organization_id=? AND profile='native' ORDER BY id LIMIT ?", organization, healthProjectLimit+1)
 	if err != nil {
 		return nil, err
 	}

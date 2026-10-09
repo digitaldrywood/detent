@@ -239,7 +239,7 @@ func (s *Service) createRunnerEnrollmentCommand(ctx context.Context, scope nativ
 func (s *Service) createRunnerEnrollmentInTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request runnerauth.EnrollmentRequest, now time.Time) (runnerauth.Enrollment, error) {
 	for i, project := range request.ProjectIDs {
 		var count int
-		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE organization_id = ? AND id = ?", string(scope.organization), project).Scan(&count); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id = ? AND id = ?", string(scope.organization), project).Scan(&count); err != nil {
 			return runnerauth.Enrollment{}, err
 		}
 		if count != 1 || slices.Contains(request.ProjectIDs[:i], project) {

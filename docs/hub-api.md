@@ -34,6 +34,31 @@ safe to repeat. Explicit URL parameters override the saved preference without
 writing it; user changes save after a debounce. Browser storage caches only
 confirmed Hub values under an account, organization, and view scope key.
 
+## Project deletion
+
+Cloud owners and admins with a write grant on the selected project can call
+`DELETE /api/v2/organizations/{organization}/projects/{project}` with
+`idempotency_key` and `confirm_name` matching the current project name. The
+existing project settings screen requires a named confirmation before sending
+the request. Cancellation sends no mutation. Deleted project URLs and API
+references return not found, including for previously granted credentials.
+
+Deletion is an atomic tombstone, with no restore action. Project secrets and
+project access grants (member, API token, runner and unconsumed enrollment)
+are deleted. Issues, comments, runs, Changes, conversations, artifacts and
+attachment bytes, and audit and billing history are retained in storage but
+are no longer accessible through the project. The deleted project's name
+remains reserved. Retained storage remains subject to existing accounting.
+The connected GitHub repository, its issues and PRs, other projects,
+organization settings and shared runners are unchanged.
+
+Deletion is refused until live work leases, running attempts, open workspaces,
+queued or running scripts, unfinished conversation turns or messages, pending
+imports and GitHub writes have finished or been cancelled through their existing
+lifecycle. Provisioned Sprite pool members must be removed through the existing
+pool lifecycle first. No work is implicitly stopped by deletion. Once deleted,
+the project cannot accept new work, runner grants or repository intake.
+
 ## Project Sprite pools
 
 Hosted projects expose `GET` and `PUT`

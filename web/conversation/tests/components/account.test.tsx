@@ -35,7 +35,7 @@ import { firstUnreadyStep, orderedSteps, parsePolicyDescriptor, Stepper } from "
 import { hubUrlNamesOrganization, parseCapacity, runnerNameFits, registerCommand, runnerHubUrl, shellArgument } from "../../src/app/fleet/EnrollRunner.tsx";
 import { EntrySignIn } from "../../src/app/entry/EntryScreens.tsx";
 import { AccountError } from "../../src/app/account/api.ts";
-import { noApprovedPolicy, saveMessage, WorkflowSettings } from "../../src/app/account/ProjectSettings.tsx";
+import { noApprovedPolicy, saveMessage, WorkflowSettings, ProjectDeletionSettings } from "../../src/app/account/ProjectSettings.tsx";
 import { allowanceRows, allowanceLabel } from "../../src/app/settings/Settings.tsx";
 import approval from "../../src/contracts/fixtures/account-policy.json";
 import { WorkflowRevisions } from "../../src/app/account/WorkflowRevisions.tsx";
@@ -474,6 +474,28 @@ describe("the wizard stepper", () => {
 });
 
 describe("the project settings", () => {
+  it("confirms the named deletion, cancels without a mutation, and keeps contextual failure feedback", async () => {
+    const user = userEvent.setup();
+    const onDelete = vi.fn();
+    const onDismiss = vi.fn();
+    const view = render(<ProjectDeletionSettings projectName="Retired project" pending={false} error={null} onDelete={onDelete} onDismiss={onDismiss} />);
+    await user.click(screen.getByRole("button", { name: "Delete project" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Delete Retired project?" });
+    expect(within(dialog).getByText(/deletes its secrets and access grants/)).toBeTruthy();
+    expect(within(dialog).getByText(/stored artifacts are retained/)).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(onDelete).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Delete project" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete project" }));
+    expect(onDelete).toHaveBeenCalledOnce();
+    view.rerender(<ProjectDeletionSettings projectName="Retired project" pending error={null} onDelete={onDelete} onDismiss={onDismiss} />);
+    expect((screen.getByRole("button", { name: "Deleting…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+    view.rerender(<ProjectDeletionSettings projectName="Retired project" pending={false} error="Finish active work first" onDelete={onDelete} onDismiss={onDismiss} />);
+    expect(within(screen.getByRole("alertdialog")).getByText("Finish active work first")).toBeTruthy();
+  });
+
   it("shows the saved workflow and submits a reviewed edit without allowing viewer edits", () => {
     const integration = {
       profile: "native", revision: "2", intake: "disabled", projection: "disabled", repository_enabled: false,

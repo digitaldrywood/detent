@@ -182,7 +182,7 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 		return hostedFleetResponse{}, err
 	}
 	var projects int
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE organization_id = ?", s.config.Hosted.OrganizationID).Scan(&projects); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id = ?", s.config.Hosted.OrganizationID).Scan(&projects); err != nil {
 		return hostedFleetResponse{}, err
 	}
 	if len(readable) < projects {

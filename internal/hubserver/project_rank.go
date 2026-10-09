@@ -18,7 +18,7 @@ type organizationProjectRank = projectsettings.Rank
 type projectRankChange = projectsettings.RankChange
 
 func readOrganizationProjectRank(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID) (organizationProjectRank, error) {
-	return projectsettings.ReadRank(ctx, db, organization)
+	return projectsettings.ReadActiveRank(ctx, db, organization)
 }
 
 func (s *Service) hostedProjectRank(c echo.Context) error {
@@ -52,7 +52,7 @@ func (s *Service) updateHostedProjectRank(c echo.Context) error {
 func (s *Service) updateOrganizationProjectRankCommand(ctx context.Context, credential apiCredential, change projectRankChange) (any, error) {
 	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}
 	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, _ time.Time) (any, error) {
-		value, err := projectsettings.UpdateRank(ctx, tx, scope.organization, change)
+		value, err := projectsettings.UpdateActiveRank(ctx, tx, scope.organization, change)
 		if errors.Is(err, projectsettings.ErrConflict) {
 			return nil, nativeConflict(tracker.Revision(value.Revision))
 		}

@@ -183,7 +183,7 @@ type nativeQueryer interface {
 func readNativeProject(ctx context.Context, query nativeQueryer, scope nativeScope) (tracker.NativeProject, error) {
 	var project tracker.NativeProject
 	var states string
-	if err := query.QueryRowContext(ctx, "SELECT id, organization_id, name, profile, states_json, require_dependencies, workflow_markdown FROM projects WHERE organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&project.ID, &project.OrganizationID, &project.Name, &project.Profile, &states, &project.RequireDependencies, &project.WorkflowMarkdown); err != nil {
+	if err := query.QueryRowContext(ctx, "SELECT id, organization_id, name, profile, states_json, require_dependencies, workflow_markdown FROM projects WHERE deleted_at IS NULL AND organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&project.ID, &project.OrganizationID, &project.Name, &project.Profile, &states, &project.RequireDependencies, &project.WorkflowMarkdown); err != nil {
 		return project, err
 	}
 	if err := json.Unmarshal([]byte(states), &project.States); err != nil {

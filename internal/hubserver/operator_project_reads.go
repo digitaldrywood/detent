@@ -211,7 +211,7 @@ func (s *Service) operatorProjectList(ctx context.Context, scope nativeScope, r 
 		}
 		slices.Sort(ids)
 	} else {
-		rows, err := s.database.db.QueryContext(ctx, "SELECT id FROM projects WHERE organization_id=? ORDER BY id", scope.organization)
+		rows, err := s.database.db.QueryContext(ctx, "SELECT id FROM projects WHERE deleted_at IS NULL AND organization_id=? ORDER BY id", scope.organization)
 		if err != nil {
 			return operatorProjectPage{}, err
 		}

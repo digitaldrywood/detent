@@ -45,7 +45,7 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT f.id,f.fingerprint,f.signal,f.class,f.subject_json,f.opened_at,f.last_seen_at,f.resolved_at,f.summary,f.next_action,f.evidence_json,
  p.id,COALESCE(l.work_item_id,''),COALESCE(l.reported_evidence_json,''),l.reported_resolved_at
- FROM health_findings f JOIN projects p ON p.organization_id=f.organization_id AND p.profile='native'
+ FROM health_findings f JOIN projects p ON p.organization_id=f.organization_id AND p.deleted_at IS NULL AND p.profile='native'
  AND (EXISTS(SELECT 1 FROM json_each(f.projects_json) WHERE value=p.id) OR EXISTS(SELECT 1 FROM health_finding_issues WHERE finding_id=f.id AND project_id=p.id))
  LEFT JOIN health_finding_issues l ON l.finding_id=f.id AND l.project_id=p.id
  WHERE f.organization_id=? AND f.class='instance' AND (f.resolved_at IS NULL OR (l.work_item_id IS NOT NULL AND l.reported_resolved_at IS NOT f.resolved_at))
