@@ -2193,9 +2193,7 @@ func runGitAtWithEnvCapture(ctx context.Context, dir string, env []string, fileO
 	var output []byte
 	var err error
 	if fileOutput {
-		// A completed identity query must not depend on an inherited output pipe
-		// closing within WaitDelay under heavy subprocess load.
-		file, createErr := os.CreateTemp("", "detent-git-common-dir-*")
+		file, createErr := os.CreateTemp("", "detent-git-output-*")
 		if createErr != nil {
 			return "", fmt.Errorf("create git output file: %w", createErr)
 		}
