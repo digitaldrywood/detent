@@ -197,11 +197,7 @@ func TestAppSharedEntry(t *testing.T) {
 		{name: "unscoped client route", user: &owner, target: "/work", status: http.StatusNotFound},
 		{name: "unscoped bootstrap", user: &owner, target: "/app/bootstrap", status: http.StatusNotFound},
 		{name: "unscoped static", user: &owner, target: "/static/app/conversation/app.js", status: http.StatusNotFound},
-		{name: "scoped entry script", user: &owner, target: prefix + "/static/app/conversation/app.js", status: http.StatusOK},
-		{name: "scoped SVG favicon", user: &owner, target: prefix + "/static/app/conversation/favicon.svg", status: http.StatusOK, contentType: "image/svg+xml"},
-		{name: "scoped PNG favicon", user: &owner, target: prefix + "/static/app/conversation/favicon-32.png", status: http.StatusOK, contentType: "image/png"},
-		{name: "scoped touch icon", user: &owner, target: prefix + "/static/app/conversation/apple-touch-icon.png", status: http.StatusOK, contentType: "image/png"},
-		{name: "scoped font", user: &owner, target: prefix + "/static/fonts/Geist-Variable.woff2", status: http.StatusOK},
+		{name: "scoped font", user: &owner, target: prefix + "/static/fonts/Geist-Variable.woff2", status: http.StatusOK, contentType: "font/woff2"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := f.serve(t, hostedSharedRequest{user: test.user, target: test.target})

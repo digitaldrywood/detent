@@ -516,7 +516,7 @@ func browserHostedStatus(t *testing.T, response *httptest.ResponseRecorder, stat
 }
 
 func TestHostedBrowserHTTPPages(t *testing.T) {
-	t.Parallel()
+	useAppClientFS(t, appClientBundle())
 	f := newBrowserHostedFixture(t, true)
 	tests := []struct {
 		name, account, path, contains, excludes string
