@@ -45,7 +45,7 @@ func buildSourceRepoSeed(ctx context.Context, dir string) error {
 		return err
 	}
 	for _, args := range [][]string{
-		{"init", "-b", "main"},
+		{"init", "--template=", "-b", "main"},
 		{"config", "core.autocrlf", "false"},
 		{"config", "user.name", "Test User"},
 		{"config", "user.email", "test@example.com"},
@@ -59,7 +59,12 @@ func buildSourceRepoSeed(ctx context.Context, dir string) error {
 			return fmt.Errorf("git %v: %w\n%s", args, err, output)
 		}
 	}
-	return nil
+	for _, name := range []string{"hooks", "info"} {
+		if err := os.MkdirAll(filepath.Join(dir, ".git", name), 0o700); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(filepath.Join(dir, ".git", "info", "exclude"), nil, 0o600)
 }
 
 func TestSourceRepoFixturesAreIndependent(t *testing.T) {

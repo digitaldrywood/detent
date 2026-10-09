@@ -38,7 +38,6 @@ type landingFixture struct {
 func newLandingFixture(t *testing.T) landingFixture {
 	t.Helper()
 	source := initSourceRepo(t)
-	runGit(t, source, "config", "commit.gpgsign", "false")
 	remote := initBareRemote(t)
 	runGit(t, source, "remote", "add", "origin", remote)
 	runGit(t, source, "push", "-u", "origin", "main")

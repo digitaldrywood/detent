@@ -27,9 +27,6 @@ func TestMain(m *testing.M) {
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}
-	if err := flag.Set("test.parallel", "8"); err != nil {
-		panic(err)
-	}
 	os.Exit(runWorkspaceTests(m))
 }
 
@@ -2952,7 +2949,10 @@ func initBareRemote(t *testing.T) string {
 	t.Helper()
 
 	dir := filepath.Join(t.TempDir(), "origin.git")
-	runCommand(t, t.TempDir(), "git", "init", "--bare", "-b", "main", dir)
+	runCommand(t, t.TempDir(), "git", "init", "--bare", "--template=", "-b", "main", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "hooks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	return dir
 }
 
