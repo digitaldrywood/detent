@@ -221,3 +221,27 @@ func TestValidationOutputKeepsTheFailingTail(t *testing.T) {
 		t.Fatalf("truncated=%v len=%d tail=%q", result.OutputTruncated, len(result.Output), result.Output[max(0, len(result.Output)-40):])
 	}
 }
+
+func TestFetchReviewHeadFallsBackToTheHeadBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+	t.Parallel()
+	f := newLandingFixture(t)
+	runGit(t, f.info.Path, "push", "origin", "HEAD:refs/heads/review-branch")
+	for _, test := range []struct {
+		name    string
+		branch  string
+		wantErr bool
+	}{
+		{name: "missing pull ref uses the head branch", branch: "review-branch"},
+		{name: "missing pull ref and branch fails", branch: "absent-branch", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			head, err := fetchReviewHead(t.Context(), f.source, "", Issue{PullRequestNumber: 4681, PullRequestBranch: test.branch, PullRequestHeadSHA: f.head})
+			if (err != nil) != test.wantErr || !test.wantErr && head != f.head {
+				t.Fatalf("head=%q error=%v, want %s", head, err, f.head)
+			}
+		})
+	}
+}
