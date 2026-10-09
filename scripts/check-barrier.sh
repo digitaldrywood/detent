@@ -12,10 +12,11 @@ node_modules/.bin/playwright install chromium
 make build
 mkdir -p tmp
 go test -c -o tmp/hubserver-preview.test ./internal/hubserver
+go test -c -o tmp/startup-preview.test ./internal/cli
 
 (check_with_evidence barrier-go make -o generate-docs test TEST_PROCS="$procs" TEST_TIMEOUT=30m) &
 go_pid=$!
-(DETENT_BINARY="$PWD/tmp/detent" DETENT_HOSTED_PREVIEW_BINARY="$PWD/tmp/hubserver-preview.test" check_with_evidence barrier-browser node_modules/.bin/playwright test) &
+(DETENT_BINARY="$PWD/tmp/detent" DETENT_HOSTED_PREVIEW_BINARY="$PWD/tmp/hubserver-preview.test" DETENT_STARTUP_PREVIEW_BINARY="$PWD/tmp/startup-preview.test" check_with_evidence barrier-browser node_modules/.bin/playwright test) &
 browser_pid=$!
 result=0
 wait "$go_pid" || result=$?
