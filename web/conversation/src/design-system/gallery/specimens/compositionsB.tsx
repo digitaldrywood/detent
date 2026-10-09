@@ -6,7 +6,7 @@
 // answer from fixtures; nothing here reaches the network. A component that
 // can only exist against the live hub is listed with the reason instead.
 import * as Schema from "effect/Schema";
-import { FileTextIcon, PanelRightOpenIcon } from "lucide-react";
+import { ChevronDownIcon, FileTextIcon, PanelRightOpenIcon, PlusIcon, SparklesIcon } from "lucide-react";
 import React from "react";
 
 import accountFixture from "../../../contracts/fixtures/account-bootstrap.json";
@@ -53,12 +53,14 @@ import { ExpandableText } from "../../../app/settings/ExpandableText.tsx";
 import { RedactedSensitiveText } from "../../../components/settings/RedactedSensitiveText.tsx";
 import { SettingsRow, SettingsSection } from "../../../app/settings/settingsLayout.tsx";
 import { SidebarProvider } from "../../../components/ui/sidebar.tsx";
-import { Button } from "../../../components/ui/button.tsx";
+import { Button, SplitButton } from "../../../components/ui/button.tsx";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../../../components/ui/menu.tsx";
 import { UsageProviderChart } from "../../../app/usage/UsageProviderChart.tsx";
 import { providersWithUsage } from "../../../app/usage/usageProviders.ts";
 import type { DailyTotals, MergedUsage } from "../../../app/usage/adapter.ts";
 import { UsageLimitsSection } from "../../../app/usage/UsageLimits.tsx";
 import { LimitWindows } from "../../../components/usage/UsageLimits.tsx";
+import { CompletedCounter } from "../../../app/work/components/CompletedCounter.tsx";
 import { WorkTopBar } from "../../../app/work/components/WorkTopBar.tsx";
 import { WorkToolbar } from "../../../app/work/components/WorkToolbar.tsx";
 import { WorkList } from "../../../app/work/components/WorkList.tsx";
@@ -890,24 +892,32 @@ const ACTIVITY_ROWS = mergeActivity({
   viewerPrincipalId: "tok_7b21",
 });
 
+function WorkTopBarSpecimen({ title, connection }: { title: string; connection: ConnectionChip }) {
+  const [completedWindow, setCompletedWindow] = React.useState<WorkViewState["completedWindow"]>("48h");
+  return <WorkTopBar context="Work" title={title} connection={connection}
+    completed={<CompletedCounter count={146} completedWindow={completedWindow} onCompletedWindowChange={setCompletedWindow} loading={false} />}
+    actions={<Button size="sm" className="hidden md:inline-flex"><PlusIcon />New issue</Button>}
+    mobileActions={<SplitButton className="md:hidden" aria-label="Work actions">
+      <Button><SparklesIcon />Ask</Button>
+      <Menu>
+        <MenuTrigger render={<Button size="icon" aria-label="More work actions" />}><ChevronDownIcon /></MenuTrigger>
+        <MenuPopup align="end"><MenuItem><PlusIcon />New issue</MenuItem></MenuPopup>
+      </Menu>
+    </SplitButton>}
+  />;
+}
+
 const work: Record<string, GalleryDoc> = {
   "work-top-bar": {
     meta: { name: "Work top bar", kind: "composition", group: "Work", source: "src/app/work/components/WorkTopBar.tsx" },
     specimens: [
       {
         id: "states",
-        title: "Live, and reconnecting with an action",
+        title: "Live, and not streaming with Reload",
         render: () => (
           <div className="flex flex-col gap-4">
-            <WorkTopBar context="Work" title="detent" meta="24 issues" connection={CONNECTED} />
-            <WorkTopBar
-              context="detent"
-              title={LONG_LABEL}
-              identifier="#3363"
-              connection={STALE}
-              showConnectionDetailOnMobile
-              actions={<Button size="xs">New issue</Button>}
-            />
+            <WorkTopBarSpecimen title="All projects" connection={{ ...CONNECTED, detail: "1:04 PM" }} />
+            <WorkTopBarSpecimen title="detent" connection={{ ...STALE, label: "Not streaming", detail: "data as of 12:49 PM", action: { label: "Reload", onClick: noop } }} />
           </div>
         ),
       },

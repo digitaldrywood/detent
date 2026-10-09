@@ -60,7 +60,7 @@ export function FreshnessChip({
         />
         {chip.label}
         {chip.detail === null ? null : (
-          <span className={cn("text-muted-foreground", !showDetailOnMobile && "hidden sm:inline")}>
+          <span className={cn("text-muted-foreground tabular-nums", !showDetailOnMobile && "hidden sm:inline")}>
             · {chip.detail}
           </span>
         )}
@@ -78,6 +78,7 @@ export interface WorkTopBarProps {
   /** The current segment. It is the route's one `h1` (B.14). */
   readonly title: string;
   readonly meta?: string | null;
+  readonly completed?: React.ReactNode;
   /** Rendered before the identifier in the current segment, e.g. `#3363`. */
   readonly identifier?: string | null;
   readonly connection: ConnectionChip;
@@ -87,52 +88,61 @@ export interface WorkTopBarProps {
 }
 
 export function WorkTopBar(props: WorkTopBarProps): React.ReactElement {
+  const board = props.completed !== undefined;
+  const reload = props.connection.action == null ? null : (
+    <Button variant="ghost" size="sm" onClick={props.connection.action.onClick}>
+      {props.connection.action.label}
+    </Button>
+  );
   return (
     <header
       data-work-header
       className={cn(
         "@container/header-actions flex h-[var(--workspace-topbar-height)] shrink-0 items-center gap-2 border-border border-b px-3 sm:gap-3 sm:px-4",
+        board && "h-auto min-h-[var(--workspace-topbar-height)] flex-wrap gap-y-2 py-2 sm:h-[var(--workspace-topbar-height)] sm:flex-nowrap sm:py-0",
         COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
       )}
     >
-
-      <WorkspaceBreadcrumb
-        ariaLabel="Breadcrumb"
-        className="min-w-0 flex-1 overflow-clip [overflow-clip-margin:2px]"
-      >
-        <WorkspaceBreadcrumbItem className="hidden shrink sm:flex">
-          <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
-            <ProjectGlyph className="size-3.5 shrink-0" projectName={props.context} />
-            <span className="max-w-40 truncate">{props.context}</span>
-          </span>
-        </WorkspaceBreadcrumbItem>
-        <WorkspaceBreadcrumbSeparator className="hidden sm:flex" />
-        <WorkspaceBreadcrumbItem current className="min-w-10 flex-1">
-          <h1 className="flex min-w-0 items-baseline gap-1.5 truncate font-medium text-sm">
-            {props.identifier == null ? null : (
-              <span className="shrink-0 font-mono text-muted-foreground text-xs tabular-nums">
-                {props.identifier}
-              </span>
-            )}
-            <span className="min-w-0 truncate">{props.title}</span>
-          </h1>
-        </WorkspaceBreadcrumbItem>
-        {props.meta == null ? null : (
-          <WorkspaceBreadcrumbItem className="hidden shrink-0 @2xl/header-actions:flex">
-            <span className="text-muted-foreground text-xs">{props.meta}</span>
+      <div className={cn("min-w-0 flex-1", board && "flex basis-full items-center gap-2 sm:basis-auto sm:gap-3")}>
+        <WorkspaceBreadcrumb
+          ariaLabel="Breadcrumb"
+          className={cn("min-w-0 flex-1 overflow-clip [overflow-clip-margin:2px]", board && "flex-initial")}
+        >
+          <WorkspaceBreadcrumbItem className="hidden shrink sm:flex">
+            <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
+              <ProjectGlyph className="size-3.5 shrink-0" projectName={props.context} />
+              <span className="max-w-40 truncate">{props.context}</span>
+            </span>
           </WorkspaceBreadcrumbItem>
-        )}
-      </WorkspaceBreadcrumb>
+          <WorkspaceBreadcrumbSeparator className="hidden sm:flex" />
+          <WorkspaceBreadcrumbItem current className="min-w-10 flex-1">
+            <h1 className="flex min-w-0 items-baseline gap-1.5 truncate font-medium text-sm">
+              {props.identifier == null ? null : (
+                <span className="shrink-0 font-mono text-muted-foreground text-xs tabular-nums">
+                  {props.identifier}
+                </span>
+              )}
+              <span className="min-w-0 truncate">{props.title}</span>
+            </h1>
+          </WorkspaceBreadcrumbItem>
+          {props.meta == null ? null : (
+            <WorkspaceBreadcrumbItem className="hidden shrink-0 @2xl/header-actions:flex">
+              <span className="text-muted-foreground text-xs">{props.meta}</span>
+            </WorkspaceBreadcrumbItem>
+          )}
+        </WorkspaceBreadcrumb>
+        {props.completed}
+      </div>
 
-      <div className="flex shrink-0 items-center justify-end gap-1.5 @3xl/header-actions:gap-2">
-        {props.actions}
-        <FreshnessChip chip={props.connection} showDetailOnMobile={props.showConnectionDetailOnMobile} />
+      <div className={cn("flex shrink-0 items-center justify-end gap-1.5 @3xl/header-actions:gap-2", board && "min-w-0 basis-full sm:basis-auto")}>
+        {board ? null : props.actions}
+        <div className={cn("flex items-center gap-1.5 @3xl/header-actions:gap-2", board && "min-w-0 flex-wrap justify-end")}>
+          {board ? reload : null}
+          <FreshnessChip chip={props.connection} showDetailOnMobile={props.showConnectionDetailOnMobile} />
+        </div>
+        {board ? props.actions : null}
         {props.mobileActions}
-        {props.connection.action == null ? null : (
-          <Button variant="ghost" size="sm" onClick={props.connection.action.onClick}>
-            {props.connection.action.label}
-          </Button>
-        )}
+        {board ? null : reload}
       </div>
     </header>
   );

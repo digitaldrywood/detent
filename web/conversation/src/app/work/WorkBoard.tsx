@@ -16,7 +16,6 @@ import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useResource } from "../account/useResource.ts";
 import { useClient } from "../client.ts";
 import { usePageTitle } from "../pageTitle.ts";
-import { boardScopeMeta } from "./lib/format.ts";
 import { transitionsFrom } from "./lib/fromWire.ts";
 import { boardStats, sortItems, type WorkItemView } from "./lib/model.ts";
 import { moveItem, useBoard, useWorkHttp } from "./lib/useWork.ts";
@@ -31,7 +30,7 @@ import {
   useNewIssueScope,
 } from "./NewIssue.tsx";
 import { NEW_CHAT_KEYSHORTCUTS, NEW_ISSUE_KEYSHORTCUTS } from "../lib/shortcuts.ts";
-import { StatsRow } from "./components/StatsRow.tsx";
+import { CompletedCounter } from "./components/CompletedCounter.tsx";
 import { toastManager } from "../../components/ui/toast.tsx";
 import { WorkList } from "./components/WorkList.tsx";
 import { WorkToolbar } from "./components/WorkToolbar.tsx";
@@ -279,7 +278,12 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
     <WorkTopBar
       context="Work"
       title={scopeName}
-      meta={board.resolved ? boardScopeMeta(projectId, client.bootstrap.projects.length, items.length) : undefined}
+      completed={noProjects ? null : <CompletedCounter
+        count={board.totals?.completed ?? (view.completedWindow === "all" ? stats.completed : null)}
+        completedWindow={view.completedWindow}
+        onCompletedWindowChange={(completedWindow) => setView({ ...view, completedWindow })}
+        loading={board.loading}
+      />}
       connection={chip}
       actions={noProjects ? null : (
         <Button
@@ -369,14 +373,6 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
           priority: board.priorities,
         }}
         searchRef={searchRef}
-      /> : null}
-
-      {board.resolved ? <StatsRow
-        stats={stats}
-        completedWindow={view.completedWindow}
-        onCompletedWindowChange={(completedWindow) => setView({ ...view, completedWindow })}
-        totals={board.totals}
-        loading={board.loading}
       /> : null}
 
       {view.view === "list" ? (

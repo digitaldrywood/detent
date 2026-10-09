@@ -19,7 +19,7 @@ async function openWork(page, route, instance = hub) {
   await resetSavedWorkViews(page);
   await page.goto(new URL(route, instance.fixture.url).toString());
   await expect(page.getByTestId("work-board")).toBeVisible();
-  await expect(page.getByTestId("work-stats")).toHaveAttribute("aria-busy", "false");
+  await expect(page.getByTestId("stat-completed")).toBeVisible();
 }
 
 const active = ["Backlog", "Todo", "In Progress", "Rework", "Merging", "Blocked", "Human Review", "Triage"];
@@ -33,34 +33,20 @@ for (const scope of ["all", "project"]) {
     await expect(page.getByTestId("lane-count-Merging")).toHaveText("0");
     await expect(page.getByTestId("lane-body-Merging")).toContainText("Nothing is in merging.");
     const copies = scope === "all" ? 2 : 1;
-    const totals = await page.evaluate(async (projectId) => {
-      const bootstrap = await (await fetch("/chat/bootstrap")).json();
-      const projects = projectId === null ? bootstrap.projects.map((project) => project.id) : [projectId];
-      const counts = await Promise.all(projects.map(async (id) => {
-        const base = `${bootstrap.api_base}/projects/${id}`;
-        const [project, page] = await Promise.all([fetch(base).then((response) => response.json()), fetch(`${base}/work-items?include=work`).then((response) => response.json())]);
-        return page.work.lanes.reduce((counts, lane) => {
-          const state = project.states.find((state) => state.name === lane.state);
-          if (state?.terminal) return counts;
-          counts.open += lane.total;
-          counts.running += lane.running;
-          if (lane.state === "Backlog") counts.backlog += lane.total - lane.running;
-          else if (state?.dispatchable) counts.waiting += lane.total - lane.running;
-          else counts.attention += lane.total - lane.running;
-          return counts;
-        }, { running: 0, waiting: 0, attention: 0, backlog: 0, open: 0 });
-      }));
-      return counts.reduce((totals, count) => Object.fromEntries(Object.keys(totals).map((key) => [key, totals[key] + count[key]])), { running: 0, waiting: 0, attention: 0, backlog: 0, open: 0 });
-    }, scope === "all" ? null : hub.fixture.project_id);
-    expect(totals.running + totals.waiting + totals.attention + totals.backlog).toBe(totals.open);
-    expect(totals.backlog).toBe(130 * copies);
-    await expect(page.getByTestId("stat-running")).toHaveText(`${totals.running} running`);
-    await expect(page.getByTestId("stat-waiting")).toHaveText(`${totals.waiting} waiting`);
-    await expect(page.getByTestId("stat-need-attention")).toHaveText(`${totals.attention} need attention`);
-    await expect(page.getByTestId("stat-backlog")).toHaveText(`${totals.backlog} backlog`);
-    expect(await page.getByTestId("work-stats").locator('[data-testid^="stat-"]').evaluateAll((counters) => counters.map((counter) => counter.dataset.testid))).toEqual(["stat-running", "stat-waiting", "stat-need-attention", "stat-backlog", "stat-completed"]);
+    await expect(page.getByTestId("work-stats")).toHaveCount(0);
+    for (const counter of ["running", "waiting", "need-attention", "backlog"]) {
+      await expect(page.getByTestId(`stat-${counter}`)).toHaveCount(0);
+    }
+    const heading = page.getByRole("heading", { level: 1 });
+    const completed = page.getByRole("button", { name: /completed ·/ });
+    expect(await heading.evaluate((title) => title.closest("header")?.textContent)).not.toMatch(/\d+ (projects|issues)/);
+    expect(await completed.evaluate((counter) => Boolean(counter.closest("header")?.querySelector("h1")?.compareDocumentPosition(counter) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+    const titleBox = await heading.boundingBox();
+    const counterBox = await completed.boundingBox();
+    expect(counterBox.x).toBeGreaterThan(titleBox.x + titleBox.width);
+    expect(counterBox.x - titleBox.x - titleBox.width).toBeLessThanOrEqual(16);
+    expect(counterBox.y).toBeLessThan(titleBox.y + titleBox.height);
     await expect(page.getByTestId("work-toolbar").getByText(/Completed/)).toHaveCount(0);
-    const waiting = await page.getByTestId("stat-waiting").innerText();
     const backlog = page.getByRole("region", { name: "Backlog", exact: true });
     expect(await backlog.evaluate((lane) => lane.getBoundingClientRect().width)).toBe(44);
     await expect(page.getByTestId("lane-body-Backlog")).toHaveCount(0);
@@ -76,7 +62,6 @@ for (const scope of ["all", "project"]) {
         document.documentElement.dataset.theme = theme;
         document.documentElement.classList.toggle("dark", theme === "dark");
       }, theme);
-      await expect(page.getByTestId("work-stats")).toHaveScreenshot(`stats-row-${scope}-${theme}.png`);
       await expect(page.getByTestId("work-board")).toHaveScreenshot(`active-board-${scope}-${theme}.png`, { mask: [page.getByTestId("issue-age")] });
     }
     await page.getByTestId("lanes-trigger").click();
@@ -93,7 +78,6 @@ for (const scope of ["all", "project"]) {
     await expect(page.getByTestId("lane-collapse-Backlog")).toHaveAttribute("aria-label", "Collapse Backlog");
     expect(await backlog.evaluate((lane) => lane.getBoundingClientRect().width)).toBe(300);
     await expect(page).toHaveURL(/collapsed=/);
-    await expect(page.getByTestId("stat-waiting")).toHaveText(waiting);
     await collapsedSaved;
     await page.reload();
     await expect(page.getByTestId("lane-body-Backlog")).toBeVisible();
@@ -129,6 +113,9 @@ for (const scope of ["all", "project"]) {
     const route = scope === "all" ? "/work" : `/work/p/${hub.fixture.project_id}`;
     await openWork(page, route);
     const copies = scope === "all" ? 2 : 1;
+    await page.getByRole("button", { name: "New issue", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "New issue" })).toBeVisible();
+    await page.getByRole("dialog", { name: "New issue" }).getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(page.getByTestId("stat-completed")).toHaveText(`${2 * copies} completed · 48h`);
     for (const [window, count] of [["7d", 3], ["14d", 3], ["all", 4]]) {
       const saved = page.waitForResponse((response) => response.url().endsWith("/work-view-preference") && response.request().method() === "PUT" && new URLSearchParams(response.request().postDataJSON().query).get("completed") === window);

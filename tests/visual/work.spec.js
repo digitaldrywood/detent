@@ -130,10 +130,10 @@ test.describe("the work board", () => {
     const card = page.getByRole("button", { name: "Review the invitation flow", exact: true });
     await expect(card).toBeVisible();
 
-    await expect(page.getByTestId("work-stats")).toBeVisible();
-    await expect(page.getByTestId("work-stats")).toHaveCount(1);
+    await expect(page.getByTestId("stat-completed")).toBeVisible();
+    await expect(page.getByTestId("work-stats")).toHaveCount(0);
     await expect(page.getByTestId("work-toolbar")).toHaveCount(1);
-    await expect(page.getByTestId("work-stats").getByRole("button", { name: /^Load / })).toHaveCount(0);
+
     await expect(page.getByTestId("stat-coverage")).toHaveCount(0);
 
     // The fixture seeds no running attempt and no pull request, so neither a
@@ -145,30 +145,26 @@ test.describe("the work board", () => {
     await scan(page, "board");
   });
 
-  test("keeps one toolbar and one counts row at desktop and phone widths", async ({ page }) => {
+  test("keeps one toolbar and the completed counter in the header at desktop and phone widths", async ({ page }) => {
     await openWork(page, `/work/p/${hub.fixture.project_id}`);
-    for (const width of [1440, 390]) {
+    for (const width of [1440, 390, 320]) {
       await page.setViewportSize({ width, height: 900 });
-      const toolbar = page.getByTestId("work-toolbar");
-      const counts = page.getByTestId("work-stats");
-      await expect(toolbar).toHaveCount(1);
-      await expect(counts).toHaveCount(1);
-      await expect(counts).toHaveAttribute("aria-busy", "false");
-      const layout = await page.evaluate(() => {
-        const toolbar = document.querySelector('[data-testid="work-toolbar"]');
-        const counts = document.querySelector('[data-testid="work-stats"]');
-        return {
-          toolbarWrap: getComputedStyle(toolbar).flexWrap,
-          gap: Math.round(counts.getBoundingClientRect().top - toolbar.getBoundingClientRect().bottom),
-          next: counts.nextElementSibling?.textContent,
-          unchecked: document.querySelector('[data-testid="issue-card"]')?.getAttribute("title"),
-        };
-      });
-      expect(layout.toolbarWrap).toBe("nowrap");
-      expect(layout.gap).toBe(0);
-      expect(layout.next).not.toContain("Search and filters cover");
-      expect(layout.unchecked).toBeNull();
+      const header = page;
+      await expect(page.getByTestId("work-toolbar")).toHaveCount(1);
+      await expect(page.getByTestId("work-stats")).toHaveCount(0);
+      await expect(header.getByRole("button", { name: /completed ·/ })).toBeVisible();
       await expect(page.getByTestId("connection-chip")).toHaveCount(1);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      if (width < 768) {
+        const chip = await page.getByTestId("connection-chip").boundingBox();
+        const ask = await header.getByRole("button", { name: "Ask", exact: true }).boundingBox();
+        const menu = await header.getByRole("button", { name: "More work actions", exact: true }).boundingBox();
+        expect(chip.x + chip.width).toBeLessThanOrEqual(ask.x);
+        expect(menu.x).toBeGreaterThan(ask.x);
+        await header.getByRole("button", { name: "More work actions", exact: true }).click();
+        await expect(page.getByRole("menuitem", { name: /New issue/ })).toBeVisible();
+        await page.keyboard.press("Escape");
+      }
     }
   });
 
