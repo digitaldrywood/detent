@@ -27,15 +27,15 @@ type nativeClaim struct {
 }
 
 func (s *Scheduler) ConnectorForProject(project string) (connector.Connector, bool) {
-	source, ok := s.nativeProjects[project]
-	if !ok {
+	source := s.nativeProject(project)
+	if source == nil {
 		return nil, false
 	}
 	return source, true
 }
 
 func (s *Scheduler) ObserveNativeAdmission(project string, current tracker.NativeAdmissionContext) {
-	if s.client.runner == nil || s.nativeProjects[project] == nil {
+	if s.client.runner == nil || s.nativeProject(project) == nil {
 		return
 	}
 	s.client.runner.routingMu.Lock()
@@ -62,10 +62,13 @@ func (s *Scheduler) Heartbeat(ctx context.Context) error {
 		return nil
 	}
 	var result error
+	if s.refreshProjects != nil {
+		result = s.refreshProjects(ctx, s)
+	}
 	s.mu.Lock()
 	projectOwner := s.projectConfiguration
 	s.mu.Unlock()
-	for _, source := range s.nativeProjects {
+	for _, source := range s.nativeProjectSnapshot() {
 		result = errors.Join(result, s.heartbeatNativeMachine(ctx, source, projectOwner))
 	}
 	return result
@@ -150,7 +153,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	var localChecks *runnerauth.LocalChecks
 	var repository *string
 	var admission *tracker.NativeAdmissionObservation
-	for name, candidate := range s.nativeProjects {
+	for name, candidate := range s.nativeProjectSnapshot() {
 		if candidate != source {
 			continue
 		}
@@ -457,8 +460,8 @@ func (s *Scheduler) NativeClient(project string) (*NativeClient, bool) {
 	if s == nil {
 		return nil, false
 	}
-	source, ok := s.nativeProjects[project]
-	if !ok || source == nil || source.client == nil {
+	source := s.nativeProject(project)
+	if source == nil || source.client == nil {
 		return nil, false
 	}
 	return source.client, true

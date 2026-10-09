@@ -57,7 +57,7 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 	if !strings.HasPrefix(issue.ID, "wi_") {
 		return orchestrator.Claimed{}, nil
 	}
-	source := s.nativeProjects[request.ProjectID]
+	source := s.nativeProject(request.ProjectID)
 	if source == nil {
 		return orchestrator.Claimed{}, runner.ErrExecutionAuthorityUnavailable
 	}

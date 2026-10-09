@@ -267,6 +267,17 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 			machine.LocalChecks = nil
 		}
 	}
+	if machine.LocalChecks != nil && (machine.LocalChecks.CheckoutMessage != "" || machine.LocalChecks.CheckoutFix != "") {
+		supported, err := c.HubFeature(ctx, tracker.NativeProjectCheckoutCapability)
+		if err != nil {
+			return err
+		}
+		if !supported {
+			checks := *machine.LocalChecks
+			checks.CheckoutMessage, checks.CheckoutFix = "", ""
+			machine.LocalChecks = &checks
+		}
+	}
 	if machine.LocalChecks != nil && machine.LocalChecks.Setup != "" {
 		supported, err := c.HubFeature(ctx, tracker.NativeRunnerSetupCapability)
 		if err != nil {
@@ -516,4 +527,23 @@ func (r *runnerCredentialSource) setApprovedPolicy(project tracker.ProjectID, id
 	state.PolicyIDs[project] = id
 	r.routing.ClaimState = &state
 	r.notifyClaimChange()
+}
+
+func (c *Client) RunnerIdentity(ctx context.Context) (runnerauth.Identity, error) {
+	var identity runnerauth.Identity
+	if c.runner == nil {
+		return identity, errors.New("enrolled runner identity is required")
+	}
+	file, err := runnerauth.Load(c.runner.path)
+	if err != nil {
+		return identity, err
+	}
+	base, err := runnerOrganizationPath(file.Identity.OrganizationID)
+	if err != nil {
+		return identity, err
+	}
+	if err := c.request(ctx, http.MethodGet, base+"/runners/"+file.Identity.RunnerID, nil, &identity); err != nil {
+		return identity, err
+	}
+	return identity, validateRunnerResponse(file, identity)
 }

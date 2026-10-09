@@ -129,7 +129,7 @@ func syncLatestGlobalConfig(ctx context.Context, path string, reloader *globalCo
 }
 
 func readGlobalConfig(path string) (globalconfig.Config, error) {
-	return globalconfig.Read(path)
+	return readRunnerRuntimeConfig(path)
 }
 
 func waitGlobalConfigWatcher(done <-chan struct{}) {

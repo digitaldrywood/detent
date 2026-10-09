@@ -69,7 +69,7 @@ func (c *NativeClient) reportPolicyObservation(ctx context.Context, observation 
 }
 
 func (s *Scheduler) ProjectWorkflowMarkdown(ctx context.Context, project string) (string, error) {
-	source := s.nativeProjects[project]
+	source := s.nativeProject(project)
 	if source == nil {
 		return "", nil
 	}
@@ -82,13 +82,13 @@ func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository 
 }
 
 func (s *Scheduler) CheckProjectPolicyWithSource(ctx context.Context, project, repository string, descriptor policy.Descriptor, provenance *policy.RepositorySource) error {
-	if source := s.nativeProjects[project]; source != nil && s.client.runner != nil {
+	if source := s.nativeProject(project); source != nil && s.client.runner != nil {
 		s.client.runner.setLocalPolicy(source.client.project, descriptor.ID)
 	}
 	if err := descriptor.Validate(); err != nil {
 		return &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()}
 	}
-	source := s.nativeProjects[project]
+	source := s.nativeProject(project)
 	if source == nil {
 		approval, err := s.client.ProjectPolicy(ctx, repository)
 		if err != nil {
@@ -130,7 +130,7 @@ func (s *Scheduler) CheckProjectPolicyWithSource(ctx context.Context, project, r
 }
 
 func (s *Scheduler) ResolveProjectWorkflow(ctx context.Context, project string, workflow workflowconfig.Workflow, provenance *policy.RepositorySource) (workflowconfig.Workflow, error) {
-	source := s.nativeProjects[project]
+	source := s.nativeProject(project)
 	if source == nil {
 		return workflow, nil
 	}

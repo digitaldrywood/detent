@@ -30,6 +30,7 @@ const NativeProjectConfigurationCapability = "runner_project_configuration"
 
 const NativeRunnerCapacityCapability = "runner_capacity_configuration"
 const NativeLocalChecksCapability = "runner_local_checks"
+const NativeProjectCheckoutCapability = "runner_project_checkout"
 const NativeRunnerSetupCapability = "runner_project_setup"
 
 // NativeWorkspaceCapability is declared by a runner's workspace lane on its
@@ -397,6 +398,7 @@ type NativeWorkLane struct {
 type NativeState = policy.State
 
 type NativeProject struct {
+	CloneURL            string          `json:"clone_url,omitempty"`
 	ModelSelection      json.RawMessage `json:"model_selection,omitempty"`
 	WorkflowMarkdown    string          `json:"workflow_markdown,omitempty"`
 	ID                  ProjectID       `json:"project_id"`

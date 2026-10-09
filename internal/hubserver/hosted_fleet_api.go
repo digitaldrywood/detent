@@ -28,33 +28,40 @@ type hostedFleetLease struct {
 	ExpiresAt  time.Time                `json:"expires_at"`
 }
 
+type hostedRunnerCheckout struct {
+	Status     string `json:"status"`
+	Message    string `json:"message,omitempty"`
+	FixCommand string `json:"fix_command,omitempty"`
+}
+
 type hostedFleetRunner struct {
-	Sprite             *hostedFleetSprite       `json:"sprite,omitempty"`
-	Update             runnerauth.UpdateView    `json:"update"`
-	Capacity           *runnerauth.CapacityView `json:"capacity_configuration,omitempty"`
-	Problems           []runnerauth.Problem     `json:"problems"`
-	ID                 string                   `json:"id"`
-	MachineID          string                   `json:"machine_id"`
-	DisplayName        string                   `json:"display_name"`
-	Hostname           string                   `json:"hostname"`
-	Health             string                   `json:"health"`
-	State              string                   `json:"state"`
-	OS                 string                   `json:"os"`
-	Architecture       string                   `json:"architecture"`
-	ClaimRefusalReason string                   `json:"claim_refusal_reason"`
-	Version            string                   `json:"version"`
-	HostCapacity       int                      `json:"host_capacity"`
-	HostUsed           int                      `json:"host_used"`
-	CapacityLimit      int                      `json:"capacity_limit"`
-	ReportedCapacity   int                      `json:"reported_capacity"`
-	ProviderCapacity   []providercapacity.View  `json:"provider_capacity"`
-	LastHeartbeatAt    time.Time                `json:"last_heartbeat_at"`
-	Leases             []hostedFleetLease       `json:"leases"`
-	IsolationTier      string                   `json:"isolation_tier"`
-	Availability       runnerauth.Availability  `json:"availability"`
-	CanEditProjects    bool                     `json:"can_edit_projects"`
-	Routing            *runnerauth.Routing      `json:"routing,omitempty"`
-	Revision           int64                    `json:"revision,omitempty"`
+	ProjectCheckouts   map[tracker.ProjectID]hostedRunnerCheckout `json:"project_checkouts,omitempty"`
+	Sprite             *hostedFleetSprite                         `json:"sprite,omitempty"`
+	Update             runnerauth.UpdateView                      `json:"update"`
+	Capacity           *runnerauth.CapacityView                   `json:"capacity_configuration,omitempty"`
+	Problems           []runnerauth.Problem                       `json:"problems"`
+	ID                 string                                     `json:"id"`
+	MachineID          string                                     `json:"machine_id"`
+	DisplayName        string                                     `json:"display_name"`
+	Hostname           string                                     `json:"hostname"`
+	Health             string                                     `json:"health"`
+	State              string                                     `json:"state"`
+	OS                 string                                     `json:"os"`
+	Architecture       string                                     `json:"architecture"`
+	ClaimRefusalReason string                                     `json:"claim_refusal_reason"`
+	Version            string                                     `json:"version"`
+	HostCapacity       int                                        `json:"host_capacity"`
+	HostUsed           int                                        `json:"host_used"`
+	CapacityLimit      int                                        `json:"capacity_limit"`
+	ReportedCapacity   int                                        `json:"reported_capacity"`
+	ProviderCapacity   []providercapacity.View                    `json:"provider_capacity"`
+	LastHeartbeatAt    time.Time                                  `json:"last_heartbeat_at"`
+	Leases             []hostedFleetLease                         `json:"leases"`
+	IsolationTier      string                                     `json:"isolation_tier"`
+	Availability       runnerauth.Availability                    `json:"availability"`
+	CanEditProjects    bool                                       `json:"can_edit_projects"`
+	Routing            *runnerauth.Routing                        `json:"routing,omitempty"`
+	Revision           int64                                      `json:"revision,omitempty"`
 }
 
 type hostedFleetSprite struct {
@@ -198,17 +205,17 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 
 func (s *Service) hostedFleetRunners(ctx context.Context, credential apiCredential, visible map[tracker.ProjectID]bool, editable bool) ([]hostedFleetRunner, error) {
 	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, '') FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, ''), r.local_checks_json FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
 WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.id`, organization)
 	if err != nil {
 		return nil, fmt.Errorf("list runners: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	type listed struct{ id, version string }
+	type listed struct{ id, version, checks string }
 	runners := []listed{}
 	for rows.Next() {
 		var entry listed
-		if err := rows.Scan(&entry.id, &entry.version); err != nil {
+		if err := rows.Scan(&entry.id, &entry.version, &entry.checks); err != nil {
 			return nil, fmt.Errorf("scan runner: %w", err)
 		}
 		runners = append(runners, entry)
@@ -225,6 +232,25 @@ WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.
 			return nil, fmt.Errorf("read runner %s: %w", entry.id, err)
 		}
 		view := hostedFleetRunnerView(runner, entry.version, visible, s.config.now())
+		var checks map[tracker.ProjectID]runnerauth.LocalChecks
+		if err := json.Unmarshal([]byte(entry.checks), &checks); err != nil {
+			return nil, err
+		}
+		view.ProjectCheckouts = make(map[tracker.ProjectID]hostedRunnerCheckout)
+		for id, check := range checks {
+			if !visible[id] || !slices.Contains(runner.ProjectIDs, id) {
+				continue
+			}
+			status := "preparing"
+			if check.Checkout == "failed" {
+				status = "missing"
+			} else if check.Setup == "failed" {
+				status = "setup_failed"
+			} else if check.Checkout == "passed" && check.Setup == "passed" {
+				status = "ready"
+			}
+			view.ProjectCheckouts[id] = hostedRunnerCheckout{Status: status, Message: check.CheckoutMessage, FixCommand: check.CheckoutFix}
+		}
 		view.ClaimRefusalReason = runnerClaimRefusal(minimumRunnerVersion(s.config.Version), entry.version)
 		if err := s.hostedFleetSprite(ctx, spriteContext, credential, &view, runner, visible); err != nil {
 			return nil, err

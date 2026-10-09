@@ -24,7 +24,7 @@ func (c *NativeClient) MutateLandingBarrier(ctx context.Context, request tracker
 }
 
 func (s *Scheduler) NextLandingBarrier(ctx context.Context, project, repository, policyID string, recoverClaim bool, observeHead func(context.Context, string) (string, error)) (tracker.LandingBarrier, bool, error) {
-	source := s.nativeProjects[project]
+	source := s.nativeProject(project)
 	if source == nil {
 		return tracker.LandingBarrier{}, false, nil
 	}
@@ -45,7 +45,7 @@ func (s *Scheduler) NextLandingBarrier(ctx context.Context, project, repository,
 }
 
 func (s *Scheduler) FinishLandingBarrier(ctx context.Context, project string, barrier tracker.LandingBarrier, result *gate.CommandResult) error {
-	source := s.nativeProjects[project]
+	source := s.nativeProject(project)
 	if source == nil {
 		return errors.New("landing barrier project is unavailable")
 	}

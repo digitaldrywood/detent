@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -105,6 +106,13 @@ func withRunnerFactoryWithIsolation(
 ) project.Factory {
 	var hostCache atomic.Pointer[toolcache.Report]
 	return func(cfg globalconfig.Project) (*project.Project, error) {
+		if preparation, ok := deps.Scheduling.(interface {
+			PrepareProject(context.Context, string) error
+		}); ok {
+			if err := preparation.PrepareProject(ctx, cfg.ID); err != nil {
+				return nil, errors.Join(project.ErrProjectDefinition, connector.NewRetryableError(err.Error()))
+			}
+		}
 		workflow, err := project.LoadWorkflowContext(ctx, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("load project workflow %s: %w", cfg.ID, err)

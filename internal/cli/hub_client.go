@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -25,6 +24,7 @@ import (
 )
 
 type hubSchedulingOptions struct {
+	applyProjects func(context.Context, globalconfig.Config) error
 	setupStore    store.ProjectRunnerSetupStore
 	logger        *slog.Logger
 	runtimeConfig func() globalconfig.Config
@@ -100,24 +100,11 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		setupOptions = options[0]
 	}
 	setup := project.NewRunnerSetup(runnerID, setupOptions.setupStore, setupOptions.logger)
-	prepareProject := func(ctx context.Context, name string) error {
-		selected, ok := checkouts[name]
-		if setupOptions.runtimeConfig != nil {
-			for _, current := range project.ManagerConfigFromGlobal(setupOptions.runtimeConfig()).Projects {
-				if current.ID == name {
-					selected, ok = current, true
-					break
-				}
-			}
-		}
-		if !ok {
-			return fmt.Errorf("runner project checkout %s is unavailable", name)
-		}
-		if id := nativeProjects[name]; id != "" {
-			selected.ID = string(id)
-		}
-		return setup.Prepare(ctx, selected)
+	projects := &runnerProjects{client: client, cfg: cfg, setup: setup, logger: setupOptions.logger, checks: make(map[string]runnerauth.LocalChecks), apply: setupOptions.applyProjects, runtime: setupOptions.runtimeConfig}
+	if projects.logger == nil {
+		projects.logger = slog.Default()
 	}
+	prepareProject := projects.prepare
 	setupResults := make(map[string]string, len(checkouts))
 	for name := range checkouts {
 		setupResults[name] = "passed"
@@ -132,6 +119,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	for name, checks := range localChecks {
 		checks.Setup = setupResults[name]
 		localChecks[name] = checks
+		projects.checks[name] = checks
 	}
 	tokenSource := githubconnector.StaticTokenSource("")
 	if len(options) > 0 && options[0].intakeToken != nil {
@@ -151,6 +139,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
 		PrepareProject:        prepareProject,
+		RefreshProjects:       projects.refresh,
 		CapacityConfiguration: capacityConfiguration,
 		LocalChecks:           localChecks,
 		GitHubIntake:          github.FetchIssueSnapshot,
@@ -159,9 +148,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		IsolationReport:       func(ctx context.Context) isolation.Report { return probeRunnerIsolation(ctx, cfg) },
 		ProviderReports:       providerReports,
 		OrganizationID:        tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
-		CheckoutRepository: func(project string) string {
-			return runnerCheckoutRepository(ctx, checkouts[project])
-		},
+		CheckoutRepository: func(name string) string { return projects.repository(ctx, name) },
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,
 			Capabilities: hubMachineCapabilities(cfg), Capacity: capacity, Version: strings.TrimSpace(version),

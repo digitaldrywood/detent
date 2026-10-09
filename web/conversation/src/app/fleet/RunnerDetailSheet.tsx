@@ -155,10 +155,16 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
               <Section title="Allowed projects">
                 <div className="divide-y divide-border/50 rounded-lg border border-border/60">
                   {choices.filter((project) => canEdit || draft.project_ids.includes(project.id)).map((project) => (
-                    <div key={project.id} className="flex min-w-0 items-center justify-between gap-3 p-3">
+                    <div key={project.id} className="min-w-0 space-y-2 p-3">
                       {canEdit ? <>
                         <label className="flex min-w-0 items-center gap-2"><input type="checkbox" disabled={runner.can_edit_projects !== true} checked={draft.project_ids.includes(project.id)} onChange={(event) => toggleProject(project.id, event.target.checked)} /><span className="break-all">{project.name}</span></label>
                       </> : <><span className="break-all">{project.name}</span></>}
+                      {runner.project_checkouts?.[project.id] ? <div className="space-y-1 text-xs text-muted-foreground">
+                        <p>{({ ready: "Checkout ready", missing: "Checkout unavailable", setup_failed: "Checkout setup failed", preparing: "Preparing checkout" } as Record<string, string>)[runner.project_checkouts[project.id]!.status] ?? "Preparing checkout"}</p>
+                        {runner.project_checkouts[project.id]!.message ? <p className="break-words">{runner.project_checkouts[project.id]!.message}</p> : null}
+                        {runner.project_checkouts[project.id]!.fix_command ? <PathValue value={runner.project_checkouts[project.id]!.fix_command!} /> : null}
+                        {runner.project_checkouts[project.id]!.status === "missing" ? <p>The runner retries automatically after repository access is fixed.</p> : null}
+                      </div> : null}
                     </div>
                   ))}
                 </div>

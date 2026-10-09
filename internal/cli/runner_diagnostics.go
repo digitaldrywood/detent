@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"slices"
@@ -22,7 +23,7 @@ import (
 // authentication probe. Raw details never cross the runner/Hub boundary.
 func collectRunnerLocalChecks(ctx context.Context, cfg globalconfig.Config, name string, diagnose func(context.Context, doctorConfig) doctorReport, auth func(context.Context, workflowconfig.AgentBackend) bool) runnerauth.LocalChecks {
 	checks := runnerauth.LocalChecks{Checkout: "failed", Doctor: "pending", Provider: "pending"}
-	resolved, workflow, _, err := resolveRunnerSetupPolicy(ctx, cfg.Path, name)
+	resolved, workflow, _, err := resolveRunnerProjectPolicy(ctx, cfg, name)
 	if err != nil || !runnerCheckoutReady(ctx, project.ManagerConfigFromGlobal(resolved).Projects[0]) {
 		return checks
 	}
@@ -170,6 +171,19 @@ func resolveRunnerSetupPolicy(ctx context.Context, path, name string) (globalcon
 	if err != nil {
 		return cfg, workflowconfig.Workflow{}, policy.Descriptor{}, err
 	}
+	return resolveRunnerProjectPolicy(ctx, cfg, name)
+}
+
+func resolveRunnerProjectPolicy(ctx context.Context, cfg globalconfig.Config, name string) (globalconfig.Config, workflowconfig.Workflow, policy.Descriptor, error) {
+	for _, selected := range cfg.Projects {
+		if selected.ID == name {
+			cfg.Projects = []globalconfig.Project{selected}
+			break
+		}
+	}
+	if len(cfg.Projects) != 1 || cfg.Projects[0].ID != name {
+		return cfg, workflowconfig.Workflow{}, policy.Descriptor{}, errors.New("runner project is unavailable")
+	}
 	selected := project.ManagerConfigFromGlobal(cfg).Projects[0]
 	workflow, err := project.LoadWorkflowContext(ctx, selected)
 	if err != nil {
@@ -177,4 +191,14 @@ func resolveRunnerSetupPolicy(ctx context.Context, path, name string) (globalcon
 	}
 	descriptor, err := project.ResolvePolicy(selected, workflow)
 	return cfg, workflow, descriptor, err
+}
+
+func runnerProjectLocalChecks(ctx context.Context, cfg globalconfig.Config, name string) runnerauth.LocalChecks {
+	return collectRunnerLocalChecks(ctx, cfg, name, func(ctx context.Context, doctor doctorConfig) doctorReport {
+		opts := options{readDoctorProject: func(string, string) (globalconfig.Config, []string, error) {
+			resolved, _, _, err := resolveRunnerProjectPolicy(ctx, cfg, name)
+			return resolved, nil, err
+		}}
+		return runDoctorStartupPreflight(ctx, doctor, opts, doctorDeps{})
+	}, probeRunnerProviderAuth)
 }

@@ -533,8 +533,12 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 				return err
 			}
 		}
-		if err := backfillRuntimeSessionProjects(ctx, cfg.Global.Projects, runtimeStore, func(cfg globalconfig.Project) (workflowconfig.Workflow, error) {
-			return project.LoadWorkflowContext(ctx, cfg)
+		if err := backfillRuntimeSessionProjects(ctx, cfg.Global.Projects, runtimeStore, func(selected globalconfig.Project) (workflowconfig.Workflow, error) {
+			workflow, err := project.LoadWorkflowContext(ctx, selected)
+			if cfg.Global.Client.IdentityFile != "" && errors.Is(err, os.ErrNotExist) {
+				err = errors.Join(project.ErrProjectDefinition, err)
+			}
+			return workflow, err
 		}); err != nil {
 			return err
 		}
@@ -542,6 +546,13 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		logger.Info("runner setup observations started")
 		if cfg.Global.Client.Configured() {
 			hubScheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
+				applyProjects: func(ctx context.Context, current globalconfig.Config) error {
+					if _, err := manager.Reconcile(ctx, managerConfigWithRuntimeGitHubToken(current, runtimeGitHubToken.get())); err != nil {
+						return err
+					}
+					onGlobalReload(current)
+					return nil
+				},
 				setupStore:    runtimeStore,
 				logger:        logger,
 				runtimeConfig: globalConfigState.get,
@@ -1600,6 +1611,9 @@ func bootWorkflow(ctx context.Context, cfg BootConfig) (workflowconfig.Workflow,
 	firstProject := firstGlobalProject(cfg.Global)
 	if strings.TrimSpace(firstProject.Workflow) != "" {
 		workflow, err := loadRuntimeProjectWorkflow(ctx, firstProject, runtimeDeps{}.withDefaults())
+		if cfg.Global.Client.IdentityFile != "" && errors.Is(err, os.ErrNotExist) {
+			return workflowconfig.Workflow{}, false, nil
+		}
 		if err != nil {
 			return workflowconfig.Workflow{}, false, fmt.Errorf("load boot workflow: %w", err)
 		}
