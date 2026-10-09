@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -62,6 +63,16 @@ func runnerStartupProblems(registry *project.Registry) []runnerauth.Problem {
 		problems = append(problems, problem)
 	}
 	return problems
+}
+
+func startProjectsBeforeHeartbeat(ctx context.Context, workers *sync.WaitGroup, start func(context.Context) error, publish func(heartbeatReady <-chan struct{})) error {
+	heartbeatReady := make(chan struct{})
+	workers.Go(func() { publish(heartbeatReady) })
+	if err := start(ctx); err != nil {
+		return err
+	}
+	close(heartbeatReady)
+	return nil
 }
 
 func startRunnerProjects(ctx context.Context, manager *project.Manager, heartbeat any) error {
