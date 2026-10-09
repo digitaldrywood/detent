@@ -390,6 +390,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			if test.unavailable == "lease" {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issues[0], "running")), http.StatusOK)
 			}
+			f.service.tokenUseWork.Wait()
 			var writesBefore, writesAfter int64
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&writesBefore); err != nil {
 				t.Fatal(err)
@@ -402,6 +403,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&writesAfter); err != nil || writesAfter != writesBefore {
 				t.Fatalf("candidate previews wrote %d rows, err=%v", writesAfter-writesBefore, err)
 			}
+			t.Logf("candidate preview total_changes delta=%d", writesAfter-writesBefore)
 			var page tracker.NativeCapacityPage
 			decodeHubResponse(t, response, &page)
 			if len(page.Items) != len(test.want) {
