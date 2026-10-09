@@ -45,7 +45,7 @@ func (s *Service) stopHealthDetector() {
 func (s *Service) evaluateTenantHealth(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	rows, err := s.database.db.QueryContext(ctx, "SELECT id FROM organizations ORDER BY id LIMIT ?", healthReadLimit+1)
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT id FROM organizations ORDER BY id LIMIT ?", healthReadLimit+1)
 	if err != nil {
 		return err
 	}
@@ -72,12 +72,7 @@ func (s *Service) evaluateTenantHealth(ctx context.Context) error {
 }
 
 func (s *Service) evaluateOrganizationHealth(ctx context.Context, organization tracker.OrganizationID, now time.Time) error {
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	snapshot, err := readHealthSnapshot(ctx, tx, organization, now)
+	snapshot, err := s.readHealthSnapshot(ctx, organization, now)
 	if err != nil {
 		return err
 	}
@@ -89,11 +84,25 @@ func (s *Service) evaluateOrganizationHealth(ctx context.Context, organization t
 	if err != nil {
 		return err
 	}
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO health_detector_ticks(organization_id,last_tick_at,baseline_unavailable_json) VALUES(?,?,?)
  ON CONFLICT(organization_id) DO UPDATE SET baseline_unavailable_json=excluded.baseline_unavailable_json`, organization, formatHubTime(now), string(raw)); err != nil {
 		return err
 	}
 	return s.commitHealthEvaluation(ctx, tx, organization, now, evaluateHealth(now, snapshot))
+}
+
+func (s *Service) readHealthSnapshot(ctx context.Context, organization tracker.OrganizationID, now time.Time) (healthSnapshot, error) {
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return healthSnapshot{}, err
+	}
+	defer tx.Rollback()
+	return readHealthSnapshot(ctx, tx, organization, now)
 }
 
 func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, now time.Time, findings []healthFinding) ([]string, error) {
