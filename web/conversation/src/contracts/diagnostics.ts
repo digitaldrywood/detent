@@ -85,6 +85,7 @@ export const DiagnosticFinding = Schema.Struct({
   severity: Schema.Literals(["attention", "watch"]),
   class: Schema.Literals(["instance", "flow", "capacity", "cost", "human"]),
   when: Schema.String,
+  resolved_at: Schema.optional(Schema.NullOr(Schema.String)),
   summary: Schema.String,
   next_action: Schema.String,
   subject: Schema.Struct({
@@ -129,6 +130,7 @@ export function findingsFromRead(
     severity: finding.severity,
     class: finding.class,
     when: finding.opened_at,
+    resolved_at: finding.resolved_at,
     summary: finding.summary,
     next_action: finding.next_action,
     subject:

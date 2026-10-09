@@ -23,6 +23,8 @@ import {
 } from "../../contracts/diagnostics.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { usePageTitle } from "../pageTitle.ts";
+import { subscribeProjectEvents } from "../work/lib/projectEvents.ts";
+import { useWorkHttp } from "../work/lib/useWork.ts";
 import { CapacityChart } from "./CapacityChart.tsx";
 
 const WINDOWS = [
@@ -73,6 +75,7 @@ export function DiagnosticsRoute(): React.ReactElement {
   usePageTitle("Diagnostics");
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
+  const http = useWorkHttp();
   const [range, setRange] = useState<Window>("24h");
   const [revision, setRevision] = useState(0);
   const [state, setState] = useState<{
@@ -100,30 +103,90 @@ export function DiagnosticsRoute(): React.ReactElement {
       pending: true,
       error: null,
     });
+    const projects = (bootstrap?.projects ?? [])
+      .filter((project) => project.profile === "native")
+      .map((project) => project.id);
+    let request = 0;
+    let tick: string | null = null;
+    let since: string | undefined;
+    const refreshFindings = async (live: boolean) => {
+      const version = ++request;
+      try {
+        const [open, resolved] = await Promise.all([
+          api.healthFindings(projects),
+          live ? api.healthFindings(projects, { state: "resolved", since }) : null,
+        ]);
+        if (!current || request !== version) return;
+        since ??= open.last_tick_at ?? undefined;
+        tick = open.last_tick_at;
+        setState((previous) => {
+          const findings =
+            open.last_tick_at === null ? null : findingsFromRead(open);
+          const updates = new Map(
+            [
+              ...(resolved === null ? [] : findingsFromRead(resolved)),
+              ...(findings ?? []),
+            ].map((finding) => [finding.id, finding]),
+          );
+          const retained = live
+            ? (previous.findings ?? []).map(
+                (finding) => updates.get(finding.id) ?? finding,
+              )
+            : [];
+          const ids = new Set(retained.map((finding) => finding.id));
+          return {
+            ...previous,
+            findings:
+              findings === null
+                ? null
+                : [
+                    ...retained,
+                    ...findings.filter((finding) => !ids.has(finding.id)),
+                  ],
+            detectorTick: open.last_tick_at,
+          };
+        });
+      } catch {
+        return;
+      }
+    };
     void Promise.allSettled([
       api.diagnostics(range),
       api.fleet(),
-      api.healthFindings((bootstrap?.projects ?? []).filter((project) => project.profile === "native").map((project) => project.id)),
-    ]).then(([report, fleet, health]) => {
+      refreshFindings(false),
+    ]).then(([report, fleet]) => {
       if (!current) return;
-      setState({
+      setState((previous) => ({
+        ...previous,
         report: report.status === "fulfilled" ? report.value : null,
         runners: fleet.status === "fulfilled" ? fleet.value.runners : null,
-        findings:
-          health.status === "fulfilled" && health.value.last_tick_at !== null ? findingsFromRead(health.value) : null,
-        detectorTick:
-          health.status === "fulfilled" ? health.value.last_tick_at : null,
         pending: false,
         error:
           report.status === "rejected"
             ? "Diagnostics are temporarily unavailable."
             : null,
-      });
+      }));
     });
+    const refreshLive = () => {
+      if (document.visibilityState === "visible") void refreshFindings(true);
+    };
+    const unsubscribe =
+      projects[0] === undefined
+        ? undefined
+        : subscribeProjectEvents(http, projects[0], {
+            "health.findings": ((event: MessageEvent<string>) => {
+              if (tick === event.data) return;
+              refreshLive();
+            }) as EventListener,
+            open: refreshLive,
+          });
+    document.addEventListener("visibilitychange", refreshLive);
     return () => {
       current = false;
+      unsubscribe?.();
+      document.removeEventListener("visibilitychange", refreshLive);
     };
-  }, [api, bootstrap?.projects, range, revision]);
+  }, [api, http, bootstrap?.projects, range, revision]);
   return (
     <DiagnosticsView
       {...state}
@@ -308,7 +371,12 @@ export function DiagnosticsView({
                       : `${report.busy_percent.toFixed(1)}% busy in window`
                   }
                 />
-                <Metric label="Open findings" value={count(findings?.length)} />
+                <Metric
+                  label="Open findings"
+                  value={count(
+                    findings?.filter((finding) => finding.resolved_at == null).length,
+                  )}
+                />
                 <Metric
                   label="Stalled in lane"
                   value={count(report?.stalled)}
@@ -337,13 +405,13 @@ export function DiagnosticsView({
                       return (
                         <article
                           key={finding.id}
-                          className="grid min-w-0 gap-2 py-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto]"
+                          className={`grid min-w-0 gap-2 py-3 transition-opacity motion-reduce:transition-none sm:grid-cols-[8rem_minmax(0,1fr)_auto] ${finding.resolved_at ? "opacity-60" : "opacity-100"}`}
                         >
                           <time
-                            dateTime={finding.when}
+                            dateTime={finding.resolved_at ?? finding.when}
                             className="text-xs text-muted-foreground"
                           >
-                            {timestamp(finding.when)}
+                            {timestamp(finding.resolved_at ?? finding.when)}
                           </time>
                           <div className="min-w-0 space-y-1">
                             {destination ? (
@@ -365,12 +433,14 @@ export function DiagnosticsView({
                           <div className="flex items-start gap-1.5">
                             <Badge
                               variant={
-                                finding.severity === "attention"
-                                  ? "warning"
-                                  : "info"
+                                finding.resolved_at
+                                  ? "secondary"
+                                  : finding.severity === "attention"
+                                    ? "warning"
+                                    : "info"
                               }
                             >
-                              {finding.severity}
+                              {finding.resolved_at ? "Resolved" : finding.severity}
                             </Badge>
                             <Badge variant="secondary">{finding.class}</Badge>
                           </div>
