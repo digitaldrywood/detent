@@ -254,8 +254,8 @@ func accountClientRoutes(source string) []string {
 			key = strings.ReplaceAll(key, "${project(input.projectId)}", "${base}/projects/:project")
 			key = strings.ReplaceAll(key, "${base}", hostedOrganizationBase)
 			key = accountClientParameter.ReplaceAllString(key, ":param")
-			if !strings.Contains(key, "${") {
-				key, _, _ = strings.Cut(key, "?")
+			if path, _, ok := strings.Cut(key, "?"); ok && !strings.Contains(path, "${") {
+				key = path
 			}
 			routes = append(routes, key)
 		}
@@ -298,6 +298,11 @@ func TestAccountClientRoutes(t *testing.T) {
 		{
 			name:   "health findings conditional cursor query",
 			source: "send(HealthFindingsRead, \"GET\", `${base}/projects/${encodeURIComponent(project)}/health/findings?state=open${cursor ? `&cursor=${encodeURIComponent(cursor)}` : \"\"}`)",
+			want:   []string{"GET " + hostedOrganizationBase + "/projects/:param/health/findings"},
+		},
+		{
+			name:   "health findings defaulted state query",
+			source: "send(HealthFindingsRead, \"GET\", `${base}/projects/${encodeURIComponent(project)}/health/findings?state=${options.state ?? \"open\"}`)",
 			want:   []string{"GET " + hostedOrganizationBase + "/projects/:param/health/findings"},
 		},
 		{
