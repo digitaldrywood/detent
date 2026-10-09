@@ -87,6 +87,15 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 			if !changerequest.ValidHash(request.Head, 40) && !changerequest.ValidHash(request.Head, 64) {
 				return nil, nativeInvalid("Barrier start requires the observed integration branch head")
 			}
+			if requester := scope.credential.Runner.RunnerID; requester != "" && !(request.Recover && barrier.Running && barrier.Owner == requester) {
+				preferred, err := preferredBarrierRunner(ctx, tx, scope, now)
+				if err != nil {
+					return nil, err
+				}
+				if preferred != "" && preferred != requester {
+					return barrier, nil
+				}
+			}
 			if barrier.Running {
 				available, err := landingBarrierOwnerAvailable(ctx, tx, scope, barrier, now, request.Recover)
 				if err != nil {
@@ -216,6 +225,36 @@ func landingBarrierOwner(scope nativeScope) string {
 		return scope.credential.Runner.RunnerID
 	}
 	return scope.credential.ID
+}
+
+func preferredBarrierRunner(ctx context.Context, query nativeQueryer, scope nativeScope, now time.Time) (string, error) {
+	rows, err := query.QueryContext(ctx, `SELECT DISTINCT r.id FROM runner_identities r JOIN token_grants g ON g.token_id = r.token_id WHERE r.organization_id = ? AND g.project_id = ? ORDER BY r.id`, scope.organization, scope.project)
+	if err != nil {
+		return "", err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return "", errors.Join(err, rows.Close())
+		}
+		ids = append(ids, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return "", err
+	}
+	preferred, capacity := "", -1
+	for _, id := range ids {
+		runner, err := readRunner(ctx, query, scope.organization, id, now)
+		if err != nil {
+			return "", err
+		}
+		if runner.Health != "online" || runner.State == "disabled" || runner.HostCapacity <= capacity {
+			continue
+		}
+		preferred, capacity = id, runner.HostCapacity
+	}
+	return preferred, nil
 }
 
 func landingBarrierOwnerAvailable(ctx context.Context, query nativeQueryer, scope nativeScope, barrier tracker.LandingBarrier, now time.Time, recoverClaim bool) (bool, error) {
