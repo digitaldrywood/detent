@@ -161,6 +161,14 @@ func (m *cloudMCP) call(ctx context.Context, name string, args map[string]any, r
 			if encodeErr != nil {
 				return errors.New("MCP server error could not be decoded")
 			}
+			content := response.StructuredContent
+			if len(content) == 0 && len(response.Content) == 1 && response.Content[0].Type == "text" {
+				content = []byte(response.Content[0].Text)
+			}
+			var refusal operatortool.RequestError
+			if json.Unmarshal([]byte(m.redact(content)), &refusal) == nil && refusal.Code != "" {
+				return fmt.Errorf("MCP server error: %s: %w", m.redact(raw), &refusal)
+			}
 			return fmt.Errorf("MCP server error: %s", m.redact(raw))
 		}
 		return fmt.Errorf("scheduled Cloud %s denied or unavailable; retained evidence requires retry", name)
