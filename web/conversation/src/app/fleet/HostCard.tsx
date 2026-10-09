@@ -5,9 +5,12 @@ import type { FleetRunner } from "../../contracts/account.ts";
 import { cn } from "../../lib/utils.ts";
 import type { RunnerProject } from "./RunnerDetailSheet.tsx";
 
-function healthTone(health: string): string {
-  if (health === "healthy" || health === "online") return "bg-success";
-  if (health === "needs_attention") return "bg-warning";
+function runnerStatusClasses(runner: FleetRunner): string {
+  if (runner.state === "failed") return "bg-error";
+  if (runner.state !== "active") return "bg-muted-foreground";
+  if (runner.health === "failed") return "bg-error";
+  if (runner.health === "needs_attention" || runner.claim_refusal_reason) return "bg-warning";
+  if (runner.health === "healthy" || runner.health === "online") return "bg-success motion-safe:animate-status-pulse";
   return "bg-muted-foreground";
 }
 
@@ -49,7 +52,7 @@ export function HostCard({
       className="grid min-w-0 gap-4 px-4 py-4 focus-visible:outline-2 focus-visible:outline-ring @[48rem]/runner-list:grid-cols-[minmax(0,1.2fr)_6rem_minmax(0,1fr)_7rem_minmax(0,1fr)_11rem] @[48rem]/runner-list:items-start"
     >
       <div className="flex min-w-0 items-start gap-2.5">
-        <span aria-hidden="true" className={cn("mt-1.5 size-2 shrink-0 rounded-full", healthTone(runner.health))} />
+        <span aria-hidden="true" className={cn("mt-1.5 size-2 shrink-0 rounded-full", runnerStatusClasses(runner))} />
         <div className="min-w-0 space-y-1">
           <h3 className="break-words text-sm font-medium">{runner.display_name}</h3>
           {runner.problems?.map((problem, index) => (
