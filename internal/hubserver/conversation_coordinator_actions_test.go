@@ -76,6 +76,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				}
 				response := f.request(t, u, http.MethodPost, f.base+"/work-items", map[string]any{"idempotency_key": "luna-issue", "title": "Original issue", "body": nativeContractTestBody, "state": "Todo", "labels": []string{"original"}})
 				requireNativeStatus(t, response, http.StatusOK)
+				if coordinatorSpriteMutation(tool) {
+					f.service.spriteWakeWork.Wait()
+				}
 				var issue tracker.NativeIssue
 				decodeHubResponse(t, response, &issue)
 				id := issue.WorkItemID
