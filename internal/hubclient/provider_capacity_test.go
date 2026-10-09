@@ -189,7 +189,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if _, err := other.ApproveProjectPolicy(t.Context(), policy.Change{Policy: descriptor}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := other.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "other-unsupported"}, Title: "higher priority unsupported project", Body: "```detent-agent\nschema: 1\nmodel: astra\n```", State: "Todo", Priority: new(1)}); err != nil {
+	if _, err := other.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "other-unsupported"}, Title: "higher priority unsupported project", Body: "```detent-agent\nschema: 1\nmodel: astra\n```" + issueContractTestSections, State: "Todo", Priority: new(1)}); err != nil {
 		t.Fatal(err)
 	}
 	if unavailable == "known waits" {

@@ -47,7 +47,7 @@ func TestNativeMutationRetryAfterResponseLoss(t *testing.T) {
 	}
 	ctx := mutation.WithContext(t.Context(), metadata)
 	drop.Store(true)
-	draft := connector.IssueDraft{Title: "issue", Body: "sensitive-body-sentinel"}
+	draft := connector.IssueDraft{Title: "issue", Body: "sensitive-body-sentinel" + issueContractTestSections}
 	if _, err := source.CreateIssue(ctx, draft); err == nil {
 		t.Fatal("response loss not injected")
 	}
