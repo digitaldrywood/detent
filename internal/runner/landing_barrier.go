@@ -22,6 +22,10 @@ type LandingBarrierOwner interface {
 	FinishLandingBarrier(context.Context, string, tracker.LandingBarrier, *gate.CommandResult) error
 }
 
+type landingBarrierCurrency interface {
+	LandingBarrierCurrent(context.Context, string, string, string) bool
+}
+
 func (r *Runner) RunLandingBarriers(ctx context.Context, owner LandingBarrierOwner) {
 	backend, ok := r.workspace.(workspace.LandingBarrierWorkspace)
 	if !ok {
@@ -77,7 +81,11 @@ func (r *Runner) RunLandingBarriers(ctx context.Context, owner LandingBarrierOwn
 					}
 					if completed != nil && completed.ExitCode != 0 && !repaired[completed.HeadSHA] {
 						repaired[completed.HeadSHA] = true
-						r.repairLandingBarrier(ctx, backend, barrier, *completed, cfg.Run)
+						current := func() bool { return true }
+						if currency, ok := owner.(landingBarrierCurrency); ok {
+							current = func() bool { return currency.LandingBarrierCurrent(ctx, r.projectID, barrier.Repository, barrier.ID) }
+						}
+						r.repairLandingBarrier(ctx, backend, barrier, *completed, cfg.Run, current)
 						continue
 					}
 					if runErr == nil {
@@ -125,7 +133,7 @@ const (
 	barrierFailedPrefix      = "detent-barrier-failed:"
 )
 
-func (r *Runner) repairLandingBarrier(ctx context.Context, backend workspace.LandingBarrierWorkspace, barrier tracker.LandingBarrier, result gate.CommandResult, command string) {
+func (r *Runner) repairLandingBarrier(ctx context.Context, backend workspace.LandingBarrierWorkspace, barrier tracker.LandingBarrier, result gate.CommandResult, command string, current func() bool) {
 	repairer, ok := backend.(workspace.LandingBarrierRepairWorkspace)
 	if !ok {
 		return
@@ -173,14 +181,27 @@ func (r *Runner) repairLandingBarrier(ctx context.Context, backend workspace.Lan
 			r.logger.Warn("landing barrier repair scratch cleanup failed", "error", err)
 		}
 	}()
-	culprit := r.landingBarrierCulprit(ctx, repairer, path, barrier.GreenHead, head, command, failed)
+	superseded := func() bool {
+		if current() {
+			return false
+		}
+		r.logger.Info("landing barrier repair superseded by a newer barrier", "head", head, "barrier", barrier.ID)
+		return true
+	}
+	if superseded() {
+		return
+	}
+	culprit := r.landingBarrierCulprit(ctx, repairer, path, barrier.GreenHead, head, command, failed, superseded)
+	if superseded() {
+		return
+	}
 	turnCtx, cancel := context.WithTimeout(ctx, barrierRepairDuration)
 	defer cancel()
 	r.logger.Info("landing barrier repair started", "head", head, "culprit", culprit, "backend", selection.BackendID)
 	if _, err := agent.RunTurn(turnCtx, AgentTurnRequest{Workspace: path, TempDir: scratch, Prompt: barrierRepairPrompt(result, failed, culprit), MaxDuration: barrierRepairDuration}, nil); err != nil {
 		r.logger.Warn("landing barrier repair turn failed", "head", head, "error", err)
 	}
-	if r.publishVerifiedBarrierRepair(ctx, repairer, path, barrier.BaseRef, head, command, failed, "repair") || culprit == "" {
+	if r.publishVerifiedBarrierRepair(ctx, repairer, path, barrier.BaseRef, head, command, failed, "repair") || culprit == "" || superseded() {
 		return
 	}
 	if err := repairer.RevertLandingBarrierCommit(ctx, path, head, culprit); err != nil {
@@ -212,7 +233,7 @@ func (r *Runner) publishVerifiedBarrierRepair(ctx context.Context, repairer work
 	return published != ""
 }
 
-func (r *Runner) landingBarrierCulprit(ctx context.Context, repairer workspace.LandingBarrierRepairWorkspace, path, green, head, command string, failed []string) string {
+func (r *Runner) landingBarrierCulprit(ctx context.Context, repairer workspace.LandingBarrierRepairWorkspace, path, green, head, command string, failed []string, superseded func() bool) string {
 	if green == "" || len(failed) == 0 {
 		return ""
 	}
@@ -228,6 +249,9 @@ func (r *Runner) landingBarrierCulprit(ctx context.Context, repairer workspace.L
 	}()
 	low, high := 0, len(commits)-1
 	for low < high {
+		if superseded() {
+			return ""
+		}
 		mid := (low + high) / 2
 		if err := repairer.CheckoutLandingBarrierCommit(ctx, path, commits[mid]); err != nil {
 			r.logger.Warn("landing barrier culprit search failed", "commit", commits[mid], "error", err)

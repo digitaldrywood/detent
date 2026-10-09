@@ -229,10 +229,15 @@ func (b *repairingBarrierWorkspace) PublishLandingBarrierRepair(_ context.Contex
 }
 
 type repeatingBarrierOwner struct {
-	cancel context.CancelFunc
-	reds   int
-	claims int
-	green  string
+	cancel     context.CancelFunc
+	reds       int
+	claims     int
+	green      string
+	superseded bool
+}
+
+func (o *repeatingBarrierOwner) LandingBarrierCurrent(context.Context, string, string, string) bool {
+	return !o.superseded
 }
 
 func (o *repeatingBarrierOwner) NextLandingBarrier(context.Context, string, string, string, bool, func(context.Context, string) (string, error)) (tracker.LandingBarrier, bool, error) {
@@ -261,7 +266,9 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 		wantTurns     int
 		wantPublished int
 		wantReverted  string
+		superseded    bool
 	}{
+		{name: "superseded barrier stops the culprit search and repair", preparedHead: head, reds: 1, verifyExit: 1, green: "g0", commits: []string{"c1", "c2", "c3", "c4", head}, firstBad: 2, superseded: true},
 		{name: "unverified repair falls back to reverting the culprit", preparedHead: head, reds: 1, verifyExit: 1, green: "g0", commits: []string{"c1", "c2", "c3", "c4", head}, firstBad: 2, wantTurns: 1, wantPublished: 1, wantReverted: "c3"},
 		{name: "first commit after green is the culprit", preparedHead: head, reds: 1, verifyExit: 1, green: "g0", commits: []string{"c1", head}, firstBad: 0, wantTurns: 1, wantPublished: 1, wantReverted: "c1"},
 		{name: "red head is repaired and published", preparedHead: head, reds: 1, wantTurns: 1, wantPublished: 1},
@@ -276,7 +283,7 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 				defer cancel()
 				failedLine := "detent-barrier-failed: go example.com/pkg:TestBroken"
 				backend := &repairingBarrierWorkspace{barrierWorkspace: barrierWorkspace{result: gate.CommandResult{Command: "make verify", HeadSHA: head, ExitCode: 7, Output: "barrier failure sentinel\n" + failedLine + "\ndetent-barrier-failed: browser \n"}}, head: test.preparedHead, verifyExit: test.verifyExit, commits: test.commits, firstBad: test.firstBad}
-				owner := &repeatingBarrierOwner{cancel: cancel, reds: test.reds, green: test.green}
+				owner := &repeatingBarrierOwner{cancel: cancel, reds: test.reds, green: test.green, superseded: test.superseded}
 				cfg := config.Default()
 				cfg.Gate.LandingMode, cfg.Gate.Run = gate.LandingRollingBarrier, "make verify"
 				cfg = cfg.ForNativeTracker()
