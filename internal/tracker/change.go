@@ -33,14 +33,15 @@ func (c ChangeRequest) CurrentLanding() *ChangeLanding {
 // ChangeLanding records that a reviewed version reached the base branch: the
 // commit the runner pushed there, the branch, and the merge method it used.
 type ChangeLanding struct {
-	Rebased   bool      `json:"rebased,omitempty"`
-	VersionID string    `json:"version_id"`
-	HeadSHA   string    `json:"head_sha"`
-	MergeSHA  string    `json:"merge_sha"`
-	BaseRef   string    `json:"base_ref"`
-	Method    string    `json:"method"`
-	Actor     Actor     `json:"actor"`
-	LandedAt  time.Time `json:"landed_at"`
+	Quality   *LandingQualitySnapshot `json:"quality,omitempty"`
+	Rebased   bool                    `json:"rebased,omitempty"`
+	VersionID string                  `json:"version_id"`
+	HeadSHA   string                  `json:"head_sha"`
+	MergeSHA  string                  `json:"merge_sha"`
+	BaseRef   string                  `json:"base_ref"`
+	Method    string                  `json:"method"`
+	Actor     Actor                   `json:"actor"`
+	LandedAt  time.Time               `json:"landed_at"`
 }
 
 // LandChangeVersion is the runner's report that it landed a reviewed version
@@ -111,6 +112,7 @@ type ChangeCheckExpectation struct {
 }
 
 type ChangeVersion struct {
+	LandingQuality *LandingQualitySnapshot `json:"landing_quality,omitempty"`
 	ChangeVersionInput
 	Landing      *NativeLandingReceipt    `json:"landing,omitempty"`
 	ID           string                   `json:"version_id"`
@@ -204,15 +206,17 @@ type ChangeCheck struct {
 }
 
 type ChangeDiscussion struct {
-	ID         string      `json:"comment_id"`
-	VersionID  string      `json:"version_id,omitempty"`
-	Body       string      `json:"body"`
-	Actor      Actor       `json:"actor"`
-	Provenance *Provenance `json:"provenance,omitempty"`
-	CreatedAt  time.Time   `json:"created_at"`
+	Escape     *QualityEscape `json:"escape,omitempty"`
+	ID         string         `json:"comment_id"`
+	VersionID  string         `json:"version_id,omitempty"`
+	Body       string         `json:"body"`
+	Actor      Actor          `json:"actor"`
+	Provenance *Provenance    `json:"provenance,omitempty"`
+	CreatedAt  time.Time      `json:"created_at"`
 }
 
 type DiscussChange struct {
+	Escape *QualityEscape `json:"escape,omitempty"`
 	Mutation
 	VersionID  string      `json:"version_id,omitempty"`
 	Body       string      `json:"body"`

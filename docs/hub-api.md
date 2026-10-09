@@ -1056,6 +1056,76 @@ infrastructure class; provider response bodies and continuation lines remain
 omitted. Historical discarded error text cannot be recovered; stored provider
 metadata and finalizer errors remain readable fallbacks.
 
+### Rework and escape rates
+
+Native `reports`, `analytics_dashboard` and `time_series` expose `quality` per
+project; Cloud Reports uses the same project read. Windows are half-open and
+population reads are bounded to 1,000 records per source. Clipping sets
+`quality.partial`, lists `quality_complete_population`, and leaves percentages
+null. A zero denominator also yields null rather than a measured zero.
+
+`rework_percent` counts unique work items returned before landing by a review
+request or a Rework transition, divided by unique items worked in the window.
+Worked items include recorded Code/Rework attempts, working/review/landing
+transitions, returned items and landings. Multiple returns on one item count
+once. `escape_percent` counts unique versions landed in the window with a
+non-infrastructure escape detected by the window end, divided by versions
+landed in that window. Buckets use landing cohorts for the rate and detection
+time for escape counts and causes. An escape of an earlier landing remains in
+occurrence and cause counts without changing the current landing cohort.
+
+Each landing freezes the issue revision and body, required missing sections,
+acceptance criteria and the last approved validator review's criterion evidence.
+Snapshots are retained per version across later publications and issue edits.
+`get_change_version` returns `landing_quality`. Historical landings without a
+snapshot remain readable but require a human override for contract attribution.
+
+Reopening Done detects an escape against the latest preceding landing. Its
+workflow event ID is the occurrence identity. Until classified, it remains in
+counts with `pending_classification`; no cause is inferred from timing or from
+an absent historical snapshot. Reverts and attributed scheduled failures are
+registered by an evidence assessment through the existing Change discussion
+command (`POST .../changes/:change/discussion`, MCP `discuss_change`). Supply
+`version_id`, `body`, and an `escape` object:
+
+```json
+{
+  "occurrence_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "kind": "revert",
+  "observed_at": "2026-10-07T12:00:00Z",
+  "cause": "missing_criterion",
+  "evidence_reference": "revert commit eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "evidence_quote": "This reverts commit dddddddddddddddddddddddddddddddddddddddd",
+  "basis_quote": "Accept valid input"
+}
+```
+
+A read-only agent reads the occurrence and its immutable version context and
+returns an assessment. An authorized caller records that assessment; the
+classifier needs no source, issue, workflow or filing write authority.
+`underspecified_issue` quotes weak contract text or
+`Missing required section: <section>` from the snapshot. `missing_criterion`
+quotes a complete contract whose criteria did not cover the failure and leaves
+`criterion` empty. `validator_miss` names the exact covered `criterion` and
+quotes its evidence reference or behavioral assertion in `basis_quote`.
+`infrastructure` requires `instance_id`; its occurrence is attributed to the
+instance, omits the work-item attribution, and does not affect the change escape
+rate. Every recorded assessment requires the incident evidence reference and
+quote. Pending classifications remain explicit.
+
+A revert's occurrence identity is its revert commit SHA and its quote names the
+landed commit. A scheduled failure's identity is the existing scheduled evidence
+occurrence key and its reference is the run URL. It must quote an existing red
+scheduled-suite report; candidate inclusion or the pinned head alone is not
+causal attribution. A reopen assessment references the actual workflow event.
+Occurrence kind, detection time and source reference are stable across
+assessments. Repeated assessments count once; the latest assessment wins.
+A human browser-session caller can set `human_override: true` to replace the
+cause, and a subsequent agent assessment cannot replace that override.
+The discussion retains actor and evidence history. These writes never file
+issues, alter deduplication, reopen work or move workflow state. Existing
+scheduled-suite issue reporting remains the sole failure filing owner.
+
 ### Ordered attempts and recovery
 
 The `fenced_run_history` capability extends schema 1 with a positive decimal-string

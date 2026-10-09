@@ -162,6 +162,11 @@ func (s *Service) discussChangeCommand(ctx context.Context, tx *sql.Tx, scope na
 			return nil, err
 		}
 	}
+	if request.Escape != nil {
+		if err := validateQualityEscape(ctx, tx, scope, change, request, now); err != nil {
+			return nil, err
+		}
+	}
 	if err := validateNativeProvenance(scope, request.Provenance); err != nil {
 		return nil, err
 	}
@@ -179,6 +184,6 @@ func (s *Service) discussChangeCommand(ctx context.Context, tx *sql.Tx, scope na
 			return nil, err
 		}
 	}
-	comment := tracker.ChangeDiscussion{ID: newNativeID("cmt"), VersionID: request.VersionID, Body: request.Body, Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now}
+	comment := tracker.ChangeDiscussion{Escape: request.Escape, ID: newNativeID("cmt"), VersionID: request.VersionID, Body: request.Body, Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now}
 	return comment, insertChangeEvidence(ctx, tx, change.ID, comment.VersionID, "discussion", sourceKey, comment)
 }

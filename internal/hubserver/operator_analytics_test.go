@@ -126,6 +126,9 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 					if project.ProjectID != string(f.project) {
 						continue
 					}
+					if project.Quality.WorkedItems != 1 || project.Quality.ReworkedItems != 0 || project.Quality.ReworkPercent == nil || *project.Quality.ReworkPercent != 0 || project.Quality.EscapePercent != nil {
+						t.Fatalf("MCP quality scope and null denominator %s", raw)
+					}
 					if project.LaneResidence.SystemTotal.Seconds != 360 || project.QueueTime.Seconds != 240 || len(project.LaneResidence.Issues.Items) != 1 || len(project.LaneResidence.Aging.Items) != 1 {
 						t.Fatalf("MCP residence %s", raw)
 					}

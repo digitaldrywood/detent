@@ -436,6 +436,7 @@ export function ReportsView({
                   </>
                 )}
               </Section>
+              <QualityMetrics quality={p.quality} />
               <Section
                 title="Throughput"
                 partial={unavailable("failed_attempts_complete_population")}
@@ -1100,5 +1101,63 @@ function StageTable({
         ))}
       </TableBody>
     </Table>
+  );
+}
+
+const QUALITY_CAUSES = [
+  ["underspecified_issue", "Underspecified issue"],
+  ["missing_criterion", "Missing criterion"],
+  ["validator_miss", "Validator miss"],
+  ["infrastructure", "Infrastructure"],
+] as const;
+
+export function QualityMetrics({ quality }: {
+  quality: ReportsReport["analytics"]["quality"];
+}): React.ReactElement {
+  return (
+    <Section title="Rework and escapes" partial={quality?.partial}>
+      {quality === undefined ? <Missing /> : <>
+        <div className="grid grid-cols-2 gap-4">
+          <Metric label="Rework rate" value={percent(quality.rework_percent)}
+            detail={`${formatCount(quality.reworked_items)} of ${formatCount(quality.worked_items)} worked items returned before landing`} />
+          <Metric label="Escape rate" value={percent(quality.escape_percent)}
+            detail={`${formatCount(quality.escaped_versions)} of ${formatCount(quality.landed_versions)} versions landed in this window`} />
+        </div>
+        <Missing>
+          Escape rate follows the landing cohort through the end of this window.
+          Cause counts follow detection time, including earlier landings.
+          Infrastructure is attributed to the instance and excluded from the escape rate.
+        </Missing>
+        {quality.pending_classification > 0 && <Missing>
+          {formatCount(quality.pending_classification)} escapes await cause classification and are included in the escape rate.
+        </Missing>}
+        <Table>
+          <TableHeader><TableRow>
+            <TableHead>Window start</TableHead>
+            <TableHead className="text-right">Rework rate</TableHead>
+            <TableHead className="text-right">Escape rate</TableHead>
+            {QUALITY_CAUSES.map(([key, label]) => <TableHead key={key} className="text-right">{label}</TableHead>)}
+            <TableHead className="text-right">Awaiting classification</TableHead>
+          </TableRow></TableHeader>
+          <TableBody>
+            {quality.buckets.filter((bucket) => bucket.worked_items > 0 || bucket.landed_versions > 0 || bucket.escapes > 0).map((bucket) => <TableRow key={bucket.from}>
+              <TableCell>{at(bucket.from)}</TableCell>
+              <TableCell className="text-right tabular-nums">{percent(bucket.rework_percent)}</TableCell>
+              <TableCell className="text-right tabular-nums">{percent(bucket.escape_percent)}</TableCell>
+              {QUALITY_CAUSES.map(([key]) => <TableCell key={key} className="text-right tabular-nums">{formatCount(bucket.causes[key] ?? 0)}</TableCell>)}
+              <TableCell className="text-right tabular-nums">{formatCount(bucket.pending_classification)}</TableCell>
+            </TableRow>)}
+            <TableRow>
+              <TableCell>Total in window</TableCell>
+              <TableCell className="text-right tabular-nums">{percent(quality.rework_percent)}</TableCell>
+              <TableCell className="text-right tabular-nums">{percent(quality.escape_percent)}</TableCell>
+              {QUALITY_CAUSES.map(([key]) => <TableCell key={key} className="text-right tabular-nums">{formatCount(quality.causes[key] ?? 0)}</TableCell>)}
+              <TableCell className="text-right tabular-nums">{formatCount(quality.pending_classification)}</TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
+        {quality.escapes === 0 && <Missing>No recorded escapes in this window.</Missing>}
+      </>}
+    </Section>
   );
 }

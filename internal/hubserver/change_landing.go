@@ -241,7 +241,18 @@ func (s *Service) landChange(c echo.Context) error {
 		if detail.Summary.Status != "reviewed" {
 			return nil, &nativeError{Code: "not_reviewed", Message: "Only a reviewed current version lands: " + strings.Join(detail.Summary.Messages, " "), status: 409}
 		}
-		change.Landed = &tracker.ChangeLanding{VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: request.MergeSHA, BaseRef: request.BaseRef, Method: request.Method, Actor: scope.actor(), LandedAt: now, Rebased: request.Rebased}
+		quality, err := readLandingQualitySnapshot(ctx, tx, scope, change, version, now)
+		if err != nil {
+			return nil, err
+		}
+		change.Landed = &tracker.ChangeLanding{Quality: quality, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: request.MergeSHA, BaseRef: request.BaseRef, Method: request.Method, Actor: scope.actor(), LandedAt: now, Rebased: request.Rebased}
+		qualityRaw, err := marshalNative(change.Landed)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO quality_landings (version_id,record_json) VALUES (?,?)", version.ID, qualityRaw); err != nil {
+			return nil, err
+		}
 		if err := recordBarrierLanding(ctx, tx, scope, version, change, request, now); err != nil {
 			return nil, err
 		}

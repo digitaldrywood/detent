@@ -173,6 +173,13 @@ func readChangeVersion(ctx context.Context, query nativeQueryer, changeID, versi
 	if err := resolveVersionPublication(ctx, query, changeID, &version); err != nil {
 		return version, err
 	}
+	quality, err := readQualityLanding(ctx, query, tracker.ChangeRequest{ID: changeID}, version.ID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return version, err
+	}
+	if quality != nil {
+		version.LandingQuality = quality.Quality
+	}
 	receipt, err := readVersionLanding(ctx, query, version.ID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return version, nil

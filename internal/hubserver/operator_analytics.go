@@ -67,6 +67,7 @@ type nativeAnalyticsOutcome struct {
 	Clipped            bool     `json:"clipped"`
 }
 type nativeAnalyticsProject struct {
+	Quality              analyticsQuality                              `json:"quality"`
 	FailureSignatures    operatortool.ReadPage[nativeFailureSignature] `json:"failure_signatures"`
 	LaneResidence        operatortool.AnalyticsResidence               `json:"lane_residence"`
 	ProviderCapacityWait nativeAnalyticsCapacityWait                   `json:"provider_capacity_wait"`
@@ -406,6 +407,10 @@ AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)
 	if err := projectNativeAnalyticsResidence(ctx, q, scope, r, &out); err != nil {
 		return out, err
 	}
+	out.Quality, err = readAnalyticsQuality(ctx, q, scope, r, w)
+	if err != nil {
+		return out, err
+	}
 	return out, nil
 }
 
@@ -430,6 +435,7 @@ ORDER BY json_extract(c.record_json,'$.landed.landed_at'),c.id LIMIT ?`, scope.o
 		if err := json.Unmarshal([]byte(raw), &landing.Landing); err != nil {
 			return nil, err
 		}
+		landing.Landing.Quality = nil
 		out = append(out, landing)
 	}
 	return out, rows.Err()

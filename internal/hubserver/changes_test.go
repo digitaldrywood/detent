@@ -458,6 +458,14 @@ func TestChangeLanding(t *testing.T) {
 		t.Fatalf("landed change = %#v", landed.Landed)
 	}
 
+	if landed.Landed.Quality == nil || landed.Landed.Quality.IssueBody != f.issue.Body || landed.Landed.Quality.IssueRevision != f.issue.Revision {
+		t.Fatalf("landing must freeze the contract: %+v", landed.Landed.Quality)
+	}
+	stored, err := readQualityLanding(t.Context(), f.service.database.db, landed, first.ID)
+	if err != nil || stored == nil || stored.Quality == nil || stored.Quality.IssueBody != landed.Landed.Quality.IssueBody {
+		t.Fatalf("persistent landing context = %+v, %v", stored, err)
+	}
+
 	projected, _, err := readNativeIssueProjection(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID), true)
 	if err != nil {
 		t.Fatal(err)
