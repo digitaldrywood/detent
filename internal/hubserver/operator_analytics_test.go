@@ -327,10 +327,10 @@ func TestNativeAnalyticsCostPerOutcome(t *testing.T) {
 		{name: "complete aligned population", usageRows: 2, landings: 2, populationObserved: 2, costPerShipped: 4, tokensPerShipped: 120},
 		{name: "multiple rows from one attempt", usageRows: 2, landings: 2, sharedAttempt: true, populationObserved: 1, costPerShipped: 4, tokensPerShipped: 120},
 		{name: "partial hour attribution", usageRows: 2, landings: 2, partialHour: true, populationObserved: 2, costPerShipped: 4, tokensPerShipped: 120},
-		{name: "usage population beyond one page", usageRows: maxAnalyticsPopulation + 1, landings: 2, populationObserved: 1001, costPerShipped: 2002, tokensPerShipped: 60060},
-		{name: "partial hour population beyond one page", usageRows: maxAnalyticsPopulation + 1, landings: 2, partialHour: true, populationObserved: 1001, costPerShipped: 2002, tokensPerShipped: 60060},
+		{name: "usage population beyond one page", usageRows: maxAnalyticsPopulation + 1, landings: 2, clipped: true, populationObserved: 1000, costPerShipped: 2000, tokensPerShipped: 60000},
+		{name: "partial hour population beyond one page", usageRows: maxAnalyticsPopulation + 1, landings: 2, partialHour: true, clipped: true, populationObserved: 1000, costPerShipped: 2000, tokensPerShipped: 60000},
 		{name: "exclusive end does not clip population", usageRows: maxAnalyticsPopulation + 1, landings: 2, usageAtWindowEnd: true, populationObserved: maxAnalyticsPopulation, costPerShipped: 2000, tokensPerShipped: 60000},
-		{name: "landing population beyond one page", usageRows: maxAnalyticsPopulation + 1, landings: maxAnalyticsPopulation + 1, populationObserved: 1001, costPerShipped: 4, tokensPerShipped: 120},
+		{name: "landing population beyond one page", usageRows: maxAnalyticsPopulation + 1, landings: maxAnalyticsPopulation + 1, clipped: true, populationObserved: 1000, costPerShipped: 4, tokensPerShipped: 120},
 		{name: "missing recorded usage", landings: 2},
 		{name: "no shipped outcomes", usageRows: 2, populationObserved: 2},
 	} {
@@ -393,8 +393,25 @@ VALUES (?,'org_security',?,?,json_object('landed',json_object('version_id',?,'he
 				t.Fatalf("projects = %#v", report.Projects)
 			}
 			project := report.Projects[0]
+			if project.PopulationLimit != 1000 || (test.clipped && !project.Partial) {
+				t.Fatalf("population contract: %+v", project)
+			}
+			if test.usageRows > 1000 && !test.usageAtWindowEnd {
+				cursor := project.PopulationCursors["usage"]
+				if cursor == "" {
+					t.Fatal("missing continuation cursor")
+				}
+				next, err := f.service.readAnalyticsReport(ctx, apiCredential{Hosted: user.identity.Hosted}, operatortool.AnalyticsRequest{ProjectID: string(f.project), Limit: 1, PopulationCursor: cursor}, w)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tail := next.Projects[0]
+				if tail.UsageRowsObserved != 1 || !tail.Partial || !tail.CostPerOutcome.Clipped || tail.PopulationCursors["usage"] != "" {
+					t.Fatalf("continuation: %+v", tail)
+				}
+			}
 			outcome := project.CostPerOutcome
-			if outcome.Shipped != test.landings || outcome.PopulationObserved != test.populationObserved || outcome.Clipped != test.clipped {
+			if outcome.Shipped != min(test.landings, maxAnalyticsPopulation) || outcome.PopulationObserved != test.populationObserved || outcome.Clipped != test.clipped {
 				t.Fatalf("outcome coverage = %#v", outcome)
 			}
 			if test.clipped {
@@ -633,7 +650,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.DecisionsObserved != 1002 || len(report.SkipReasons) != 2 || report.SkipReasons[1].Count != 1001 {
+	if report.DecisionsObserved != 1000 || len(report.SkipReasons) != 2 || report.SkipReasons[1].Count != 999 {
 		t.Fatalf("bounded history %#v", report)
 	}
 	for _, test := range []struct {

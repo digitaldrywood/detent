@@ -66,7 +66,7 @@ type qualityDiscussion struct {
 }
 
 func readQualityLandings(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) ([]nativeAnalyticsLanding, error) {
-	rows, err := queryAnalyticsRows(ctx, q, `WITH landed AS (
+	rows, err := queryAnalyticsPopulation(ctx, q, "quality_landings", `WITH landed AS (
 SELECT c.id,c.work_item_id,v.id AS version_id,l.record_json AS landing FROM quality_landings l JOIN change_versions v ON v.id=l.version_id JOIN change_requests c ON c.id=v.change_id WHERE c.organization_id=? AND c.project_id=?
 UNION ALL SELECT c.id,c.work_item_id,v.id,json_extract(c.record_json,'$.landed') FROM change_requests c JOIN change_versions v ON v.change_id=c.id AND v.id=json_extract(c.record_json,'$.landed.version_id')
 WHERE c.organization_id=? AND c.project_id=? AND NOT EXISTS (SELECT 1 FROM quality_landings l WHERE l.version_id=v.id) AND json_extract(c.record_json,'$.landed.head_sha')=json_extract(v.record_json,'$.head_sha') AND length(json_extract(c.record_json,'$.landed.merge_sha')) IN (40,64)
@@ -74,7 +74,7 @@ WHERE c.organization_id=? AND c.project_id=? AND NOT EXISTS (SELECT 1 FROM quali
 SELECT id,work_item_id,landing FROM landed l WHERE julianday(json_extract(landing,'$.landed_at'))<julianday(?) AND (
 julianday(json_extract(landing,'$.landed_at'))>=julianday(?) OR EXISTS (SELECT 1 FROM collaboration_events e WHERE e.organization_id=? AND e.project_id=? AND e.work_item_id=l.work_item_id AND e.type='workflow.transitioned' AND lower(json_extract(e.data_json,'$.from_state'))='done' AND julianday(e.recorded_at)>=julianday(?) AND julianday(e.recorded_at)<julianday(?))
 OR EXISTS (SELECT 1 FROM change_evidence e WHERE e.change_id=l.id AND e.version_id=l.version_id AND e.kind='discussion' AND julianday(json_extract(e.record_json,'$.escape.observed_at'))>=julianday(?) AND julianday(json_extract(e.record_json,'$.escape.observed_at'))<julianday(?)))
-ORDER BY json_extract(landing,'$.landed_at'),id,version_id LIMIT ?`, scope.organization, scope.project, scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From), scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), formatHubTime(w.From), formatHubTime(w.To), maxAnalyticsPopulation+1)
+ORDER BY json_extract(landing,'$.landed_at'),id,version_id LIMIT ? OFFSET ?`, scope.organization, scope.project, scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From), scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), formatHubTime(w.From), formatHubTime(w.To))
 	if err != nil {
 		return nil, err
 	}
@@ -99,10 +99,11 @@ func readAnalyticsQuality(ctx context.Context, q nativeQueryer, scope nativeScop
 	if err != nil {
 		return analyticsQuality{}, err
 	}
-	partial := false
-	rows, err := queryAnalyticsRows(ctx, q, `SELECT id,work_item_id,type,recorded_at,data_json,coalesce((SELECT terminal FROM workflow_states ws WHERE ws.project_id=collaboration_events.project_id AND ws.detent_state=json_extract(data_json,'$.to_state')),0) FROM collaboration_events
+	partial := len(landings) > maxAnalyticsPopulation || analyticsPopulationOffset(ctx, "quality_landings") > 0 || analyticsPopulationOffset(ctx, "quality_events") > 0 || analyticsPopulationOffset(ctx, "quality_evidence") > 0 || analyticsPopulationOffset(ctx, "quality_worked") > 0
+	landings = landings[:min(len(landings), maxAnalyticsPopulation)]
+	rows, err := queryAnalyticsPopulation(ctx, q, "quality_events", `SELECT id,work_item_id,type,recorded_at,data_json,coalesce((SELECT terminal FROM workflow_states ws WHERE ws.project_id=collaboration_events.project_id AND ws.detent_state=json_extract(data_json,'$.to_state')),0) FROM collaboration_events
 WHERE organization_id=? AND project_id=? AND type='workflow.transitioned'
-AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) ORDER BY recorded_at,sequence,id LIMIT ?`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), maxAnalyticsPopulation+1)
+AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) ORDER BY recorded_at,sequence,id LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To))
 	if err != nil {
 		return analyticsQuality{}, err
 	}
@@ -133,20 +134,28 @@ AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)
 	if err := rows.Err(); err != nil {
 		return analyticsQuality{}, err
 	}
-	rows, err = queryAnalyticsRows(ctx, q, `SELECT e.change_id,e.kind,e.record_json,c.work_item_id FROM change_evidence e JOIN change_requests c ON c.id=e.change_id
+	partial = partial || len(events) > maxAnalyticsPopulation
+	events = events[:min(len(events), maxAnalyticsPopulation)]
+	rows, err = queryAnalyticsPopulation(ctx, q, "quality_evidence", `SELECT e.change_id,e.kind,e.record_json,c.work_item_id FROM change_evidence e JOIN change_requests c ON c.id=e.change_id
 WHERE c.organization_id=? AND c.project_id=? AND ((e.kind='review' AND json_extract(e.record_json,'$.decision')='changes_requested' AND julianday(json_extract(e.record_json,'$.created_at'))>=julianday(?) AND julianday(json_extract(e.record_json,'$.created_at'))<julianday(?) AND NOT EXISTS (SELECT 1 FROM change_versions current JOIN change_versions newer ON newer.change_id=current.change_id AND newer.number>current.number WHERE current.id=e.version_id AND julianday(json_extract(newer.record_json,'$.created_at'))<=julianday(json_extract(e.record_json,'$.created_at'))))
 OR (e.kind='discussion' AND json_extract(e.record_json,'$.escape') IS NOT NULL AND julianday(json_extract(e.record_json,'$.escape.observed_at'))>=julianday(?) AND julianday(json_extract(e.record_json,'$.escape.observed_at'))<julianday(?)))
-ORDER BY e.sequence LIMIT ?`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), formatHubTime(w.From), formatHubTime(w.To), maxAnalyticsPopulation+1)
+ORDER BY e.sequence LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), formatHubTime(w.From), formatHubTime(w.To))
 	if err != nil {
 		return analyticsQuality{}, err
 	}
 	defer rows.Close()
 	discussions := []qualityDiscussion{}
+	count := 0
 	for rows.Next() {
 		var id, kind, raw, item string
 		if err := rows.Scan(&id, &kind, &raw, &item); err != nil {
 			rows.Close()
 			return analyticsQuality{}, err
+		}
+		count++
+		if count > maxAnalyticsPopulation {
+			partial = true
+			break
 		}
 		if kind == "discussion" {
 			var discussion qualityDiscussion
@@ -173,16 +182,22 @@ ORDER BY e.sequence LIMIT ?`, scope.organization, scope.project, formatHubTime(w
 	if err := rows.Err(); err != nil {
 		return analyticsQuality{}, err
 	}
-	rows, err = queryAnalyticsRows(ctx, q, `SELECT work_item_id,started_at FROM native_attempts WHERE organization_id=? AND project_id=? AND coalesce(json_extract(data_json,'$.runtime.identity.role'),json_extract(data_json,'$.identity.role')) IN ('code','rework') AND julianday(started_at)>=julianday(?) AND julianday(started_at)<julianday(?) ORDER BY started_at,id LIMIT ?`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), maxAnalyticsPopulation+1)
+	rows, err = queryAnalyticsPopulation(ctx, q, "quality_worked", `SELECT work_item_id,started_at FROM native_attempts WHERE organization_id=? AND project_id=? AND coalesce(json_extract(data_json,'$.runtime.identity.role'),json_extract(data_json,'$.identity.role')) IN ('code','rework') AND julianday(started_at)>=julianday(?) AND julianday(started_at)<julianday(?) ORDER BY started_at,id LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To))
 	if err != nil {
 		return analyticsQuality{}, err
 	}
 	defer rows.Close()
+	count = 0
 	for rows.Next() {
 		var item, at string
 		if err := rows.Scan(&item, &at); err != nil {
 			rows.Close()
 			return analyticsQuality{}, err
+		}
+		count++
+		if count > maxAnalyticsPopulation {
+			partial = true
+			break
 		}
 		when, err := parseTimeValue(at)
 		if err != nil {

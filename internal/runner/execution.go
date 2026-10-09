@@ -448,7 +448,9 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 						validationIssue := issue
 						validationIssue.PullRequestHeadSHA = strings.TrimSpace(head)
 						receipt, runErr := commands.RunReviewCommand(ctx, info, validationIssue, command)
-						receipt.Stage = "finalization"
+						if !receipt.StartedAt.IsZero() {
+							receipt.TimingStage = "finalization"
+						}
 						r.recordPipeline(req, receipt.PipelineTiming("finalization"))
 						if runErr != nil {
 							err = runErr

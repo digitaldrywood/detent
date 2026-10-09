@@ -90,7 +90,7 @@ func (s *Service) readActivityReport(ctx context.Context, credential apiCredenti
 	defer tx.Rollback()
 	for _, id := range projects {
 		scope := nativeScope{organization: tracker.OrganizationID(out.OrganizationID), project: tracker.ProjectID(id), credential: credential}
-		population, err := loadNativeAnalyticsAttempts(ctx, tx, scope, w, r.RunnerID, false)
+		population, err := loadNativeAnalyticsAttempts(ctx, tx, scope, w, r.RunnerID)
 		if err != nil {
 			return out, err
 		}

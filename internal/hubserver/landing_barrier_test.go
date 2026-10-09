@@ -90,37 +90,6 @@ func TestRollingLandingBarrier(t *testing.T) {
 			if !barrier.Red || barrier.Running || barrier.Repair != "" || len(barrier.Changes) != 2 || barrier.Result.Output != red.Output {
 				t.Fatalf("red barrier=%+v", barrier)
 			}
-			repairAt := f.service.config.now()
-			repairResult := *red
-			repairCommand := gate.CommandResult{Command: "make verify", HeadSHA: checked, TreeSHA: red.TreeSHA, ExitCode: 1, StartedAt: repairAt, FinishedAt: repairAt.Add(2 * time.Second)}
-			repairTiming := repairCommand.PipelineTiming("repair")
-			repairResult.Pipeline = &gate.PipelineEvidence{Timings: []gate.PipelineTiming{repairTiming}}
-			for _, key := range []string{"repair-timings", "repair-timings", "repair-timings-retry"} {
-				recorded := mutate(key, "finish", barrier.ID, &repairResult, "")
-				matches := 0
-				for _, timing := range recorded.Result.Pipeline.Timings {
-					if timing.ReceiptID == repairTiming.ReceiptID {
-						matches++
-					}
-				}
-				if matches != 1 || !recorded.Red || recorded.Running || recorded.Green != barrier.Green {
-					t.Fatalf("repair replay changed receipts or state: %+v", recorded)
-				}
-			}
-			window := operatortool.AnalyticsWindow{From: repairAt.Add(-time.Hour), To: repairAt.Add(time.Hour)}
-			timingReport := nativeAnalyticsProject{Window: window}
-			if err := readPipelineBarriers(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, &timingReport); err != nil {
-				t.Fatal(err)
-			}
-			foundRepair := false
-			for _, stage := range summarizePipelineTimings(timingReport.pipelineTimings, window).Stages {
-				if stage.Stage == "repair" {
-					foundRepair = stage.Executed == 1 && stage.Duration.Seconds == 2
-				}
-			}
-			if !foundRepair {
-				t.Fatal("durable barrier history lost repair timing")
-			}
 			var filed int
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE title LIKE '%landing barrier%'").Scan(&filed); err != nil || filed != 0 {
 				t.Fatalf("red barrier filed %d issues, err=%v", filed, err)
@@ -147,6 +116,9 @@ func TestRollingLandingBarrier(t *testing.T) {
 			next = mutate("repair-start", "start", "", nil, landed)
 			green := *red
 			green.ExitCode, green.Output = 0, "passed"
+			repairAt := f.service.config.now()
+			repairCommand := gate.CommandResult{Command: "make verify", HeadSHA: checked, TreeSHA: red.TreeSHA, ExitCode: 0, StartedAt: repairAt, FinishedAt: repairAt.Add(2 * time.Second)}
+			green.Pipeline = &gate.PipelineEvidence{Timings: []gate.PipelineTiming{repairCommand.PipelineTiming("repair")}}
 			finished := mutate("green", "finish", next.ID, &green, "")
 			if finished.Red || finished.Running || finished.Repair != "" {
 				t.Fatalf("green=%+v", finished)
@@ -162,6 +134,20 @@ func TestRollingLandingBarrier(t *testing.T) {
 			mergedGreen.HeadSHA = outOfBand
 			if finished := mutate("out-of-band-green", "finish", merged.ID, &mergedGreen, ""); finished.Red || finished.GreenHead != outOfBand {
 				t.Fatalf("out-of-band green=%+v", finished)
+			}
+			window := operatortool.AnalyticsWindow{From: repairAt.Add(-time.Hour), To: repairAt.Add(time.Hour)}
+			timingReport := nativeAnalyticsProject{Window: window}
+			if err := readPipelineBarriers(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, &timingReport); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, stage := range summarizePipelineTimings(timingReport.pipelineTimings, window).Stages {
+				if stage.Stage == "repair" {
+					found = stage.Executed == 1 && stage.Duration.Seconds == 2
+				}
+			}
+			if !found {
+				t.Fatal("normal barrier completion lost or duplicated repair timing")
 			}
 			land("after-green", f.create(t, "after-green"))
 			next = mutate("new-start", "start", "", nil, landed)

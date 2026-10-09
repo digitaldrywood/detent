@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -357,4 +358,10 @@ func (e *sshNativeExecution) RecordValidator(ctx context.Context, result gate.Va
 
 func (e *sshNativeExecution) RecordSourceValidation(ctx context.Context, result gate.CommandResult) error {
 	return e.peer.Call(ctx, "execution.RecordSourceValidation", nil, result)
+}
+
+func (e *sshNativeExecution) RecordPipelineTiming(timing gate.PipelineTiming) {
+	if err := e.peer.Call(e.peer.Context(), "execution.RecordPipelineTiming", nil, timing); err != nil {
+		slog.Warn("SSH pipeline timing unavailable", "error", err)
+	}
 }

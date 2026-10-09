@@ -221,13 +221,28 @@ VALUES (?,?,1,(SELECT id FROM workflow_states WHERE project_id=? AND detent_stat
 				t.Fatal(err)
 			}
 			residence := report.LaneResidence
-			if residence.Partial || report.QueueTime.Partial || slices.Contains(report.Unavailable, "lane_residence_complete_population") {
+			population := "residence_" + kind
+			cursor := report.PopulationCursors[population]
+			if cursor == "" {
+				t.Fatal("missing residence continuation")
+			}
+			next, err := readNativeAnalytics(t.Context(), tx, scope, operatortool.AnalyticsRequest{Limit: 1, PopulationCursor: cursor}, window)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !next.Partial || !next.LaneResidence.Partial || next.PopulationCursors[population] != "" {
+				t.Fatalf("residence continuation: %+v", next.LaneResidence)
+			}
+			if kind == "events" && (next.LaneResidence.EventsObserved != 1 || next.QueueTime.Seconds != 0) || kind == "issues" && next.LaneResidence.IssuesObserved != 1 {
+				t.Fatalf("continuation populations: %+v", next.LaneResidence)
+			}
+			if !residence.Partial || !report.QueueTime.Partial || !slices.Contains(report.Unavailable, "lane_residence_complete_population") {
 				t.Fatalf("bounded population %#v", residence)
 			}
-			if kind == "events" && (len(residence.Aging.Items) != 1 || report.QueueTime.Seconds != 501 || residence.EventsObserved != 1001) {
+			if kind == "events" && (len(residence.Aging.Items) != 0 || report.QueueTime.Seconds != 500 || residence.EventsObserved != 1000) {
 				t.Fatalf("extrapolated clipped history %#v", residence)
 			}
-			if kind == "issues" && residence.IssuesObserved != 1001 {
+			if kind == "issues" && residence.IssuesObserved != 1000 {
 				t.Fatalf("issues observed %d", residence.IssuesObserved)
 			}
 		})

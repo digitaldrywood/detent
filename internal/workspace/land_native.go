@@ -164,7 +164,8 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 					out[i].Err = err
 					result.Path = "batch_member"
 					result.Pipeline = append(result.Pipeline, gate.Interval("conflict_resolution", integrationStarted, time.Now(), "conflict"))
-					out[i].Result = result
+					out[i].Result.Path = result.Path
+					out[i].Result.Pipeline = result.Pipeline
 					continue
 				}
 				rebaseStarted := time.Now()
@@ -191,8 +192,8 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 					err = scopeErr
 				} else {
 					result.Gate, err = l.validateLanding(ctx, validationInfo, request.Issue, command, merged)
-					result.Gate.Stage = "landing_validation"
 					if !result.Gate.StartedAt.IsZero() {
+						result.Gate.TimingStage = "landing_validation"
 						result.Pipeline = append(result.Pipeline, result.Gate.PipelineTiming("landing_validation"))
 					}
 				}

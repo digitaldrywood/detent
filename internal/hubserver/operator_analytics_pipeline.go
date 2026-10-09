@@ -130,12 +130,18 @@ func residencePipelineTimings(timeline analyticsResidenceTimeline, attempts []na
 }
 
 func readPipelineBarriers(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
-	rows, err := queryAnalyticsRows(ctx, q, `SELECT response_json FROM native_commands WHERE organization_id=? AND operation LIKE '%/landing-barrier' AND json_extract(response_json,'$.project_id')=? AND julianday(created_at)>=julianday(?) AND julianday(created_at)<julianday(?) ORDER BY created_at,actor_id,command_key LIMIT ?`, scope.organization, scope.project, formatHubTime(out.Window.From), formatHubTime(out.Window.To), maxAnalyticsPopulation+1)
+	rows, err := queryAnalyticsPopulation(ctx, q, "barriers", `SELECT response_json FROM native_commands WHERE organization_id=? AND operation LIKE '%/landing-barrier' AND json_extract(response_json,'$.project_id')=? AND julianday(created_at)>=julianday(?) AND julianday(created_at)<julianday(?) ORDER BY created_at,actor_id,command_key LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(out.Window.From), formatHubTime(out.Window.To))
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	observed := 0
 	for rows.Next() {
+		if observed == maxAnalyticsPopulation {
+			out.Pipeline.Partial = true
+			break
+		}
+		observed++
 		var raw string
 		if err := rows.Scan(&raw); err != nil {
 			return err

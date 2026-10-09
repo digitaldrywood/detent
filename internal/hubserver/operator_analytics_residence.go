@@ -137,7 +137,7 @@ JOIN projects p ON p.id=ws.project_id WHERE p.organization_id=? AND p.id=? LIMIT
 	if err := rows.Err(); err != nil {
 		return nil, nil, false, err
 	}
-	rows, err = queryAnalyticsRows(ctx, q, `SELECT i.native_id,i.created_at,coalesce(
+	rows, err = queryAnalyticsPopulation(ctx, q, "residence_issues", `SELECT i.native_id,i.created_at,coalesce(
 (SELECT json_extract(e.data_json,'$.from_state') FROM collaboration_events e
  WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned'
  ORDER BY e.sequence LIMIT 1),CASE WHEN EXISTS (
@@ -146,14 +146,18 @@ JOIN projects p ON p.id=ws.project_id WHERE p.organization_id=? AND p.id=? LIMIT
 FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id
 WHERE i.organization_id=? AND i.project_id=? AND julianday(i.created_at)<julianday(?)
 AND (coalesce(ws.terminal,0)=0 OR julianday(i.updated_at)>=julianday(?))
-ORDER BY i.native_id LIMIT ?`, scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From), maxAnalyticsPopulation+1)
+ORDER BY i.native_id LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From))
 	if err != nil {
 		return nil, nil, false, err
 	}
 	defer rows.Close()
 	issues := []analyticsResidenceIssue{}
-	clipped := false
+	clipped := analyticsPopulationOffset(ctx, "residence_issues") > 0 || analyticsPopulationOffset(ctx, "residence_events") > 0
 	for rows.Next() {
+		if len(issues) == maxAnalyticsPopulation {
+			clipped = true
+			break
+		}
 		var issue analyticsResidenceIssue
 		var created string
 		if err := rows.Scan(&issue.id, &created, &issue.initial); err != nil {
@@ -164,6 +168,10 @@ ORDER BY i.native_id LIMIT ?`, scope.organization, scope.project, formatHubTime(
 		if err != nil {
 			rows.Close()
 			return nil, nil, false, err
+		}
+		issue.partial = analyticsPopulationOffset(ctx, "residence_events") > 0
+		if issue.partial {
+			issue.initial = ""
 		}
 		issues = append(issues, issue)
 	}
@@ -191,22 +199,30 @@ ORDER BY i.native_id LIMIT ?`, scope.organization, scope.project, formatHubTime(
 	for i, issue := range issues {
 		byID[issue.id] = i
 	}
-	args = append(args, maxAnalyticsPopulation+1)
-	rows, err = queryAnalyticsRows(ctx, q, `SELECT work_item_id,type,recorded_at,data_json FROM collaboration_events
+	rows, err = queryAnalyticsPopulation(ctx, q, "residence_events", `SELECT work_item_id,type,recorded_at,data_json FROM collaboration_events
 WHERE organization_id=? AND project_id=? AND julianday(recorded_at)<julianday(?)
 AND work_item_id IN (SELECT value FROM json_each(?))
 AND (type='workflow.transitioned' OR (type='scheduler.decision' AND json_extract(data_json,'$.decision.source')='native_claim' AND json_extract(data_json,'$.decision.outcome')='claimed'))
-ORDER BY work_item_id,sequence LIMIT ?`, args...)
+ORDER BY work_item_id,sequence LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, nil, false, err
 	}
 	defer rows.Close()
+	observed := 0
 	for rows.Next() {
 		var id, at, raw string
 		var event analyticsResidenceEvent
 		if err := rows.Scan(&id, &event.kind, &at, &raw); err != nil {
 			return nil, nil, false, err
 		}
+		if observed == maxAnalyticsPopulation {
+			clipped = true
+			for i := byID[id]; i < len(issues); i++ {
+				issues[i].partial = true
+			}
+			break
+		}
+		observed++
 		event.at, err = parseTimeValue(at)
 		if err != nil {
 			return nil, nil, false, err

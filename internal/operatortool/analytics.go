@@ -6,15 +6,16 @@ import (
 )
 
 type AnalyticsRequest struct {
-	ProjectID string `json:"project_id,omitempty"`
-	Limit     int    `json:"limit,omitempty"`
-	Offset    int    `json:"offset,omitempty"`
-	RowOffset int    `json:"row_offset,omitempty"`
-	Window    string `json:"window,omitempty"`
-	Bucket    string `json:"bucket,omitempty"`
-	From      string `json:"from,omitempty"`
-	To        string `json:"to,omitempty"`
-	Timezone  string `json:"tz,omitempty"`
+	PopulationCursor string `json:"population_cursor,omitempty"`
+	ProjectID        string `json:"project_id,omitempty"`
+	Limit            int    `json:"limit,omitempty"`
+	Offset           int    `json:"offset,omitempty"`
+	RowOffset        int    `json:"row_offset,omitempty"`
+	Window           string `json:"window,omitempty"`
+	Bucket           string `json:"bucket,omitempty"`
+	From             string `json:"from,omitempty"`
+	To               string `json:"to,omitempty"`
+	Timezone         string `json:"tz,omitempty"`
 }
 
 type AnalyticsWindow struct {

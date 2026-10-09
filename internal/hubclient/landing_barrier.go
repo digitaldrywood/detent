@@ -2,9 +2,6 @@ package hubclient
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -58,13 +55,6 @@ func (s *Scheduler) FinishLandingBarrier(ctx context.Context, project string, ba
 	if result == nil {
 		action = "cancel"
 		key = barrier.ID + ":" + action
-	} else if result.Pipeline != nil && len(result.Pipeline.Timings) > 0 {
-		raw, err := json.Marshal(result.Pipeline)
-		if err != nil {
-			return err
-		}
-		digest := sha256.Sum256(raw)
-		key = barrier.ID + ":repair:" + hex.EncodeToString(digest[:16])
 	}
 	_, err := source.client.MutateLandingBarrier(ctx, tracker.LandingBarrierRequest{Mutation: tracker.Mutation{IdempotencyKey: key}, Action: action, Repository: barrier.Repository, ID: barrier.ID, Result: result})
 	return settledBarrierFinish(err)

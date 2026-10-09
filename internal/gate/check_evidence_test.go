@@ -102,16 +102,28 @@ func TestPipelineCommandReceipts(t *testing.T) {
 	for _, tt := range []struct {
 		name, command, public string
 		exit                  int
+		missingTimes          bool
 	}{
-		{"passed", "make check-land", "make check-land", 0},
-		{"failed", "make check-land", "make check-land", 1},
-		{"private command", "make check TOKEN=private", "[redacted]", 1},
-		{"private path", "go test /private/customer", "[redacted]", 0},
-		{"content command", "echo customer payload", "[redacted]", 0},
-		{"content argument", "make check NOTE=customer", "[redacted]", 0},
+		{"unstarted timing", "make check-land", "", 0, true},
+		{"passed", "make check-land", "make check-land", 0, false},
+		{"failed", "make check-land", "make check-land", 1, false},
+		{"private command", "make check TOKEN=private", "[redacted]", 1, false},
+		{"private path", "go test /private/customer", "[redacted]", 0, false},
+		{"content command", "echo customer payload", "[redacted]", 0, false},
+		{"content argument", "make check NOTE=customer", "[redacted]", 0, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			result := CommandResult{Command: tt.command, HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), ExitCode: tt.exit, StartedAt: at, FinishedAt: at.Add(10 * time.Second), DurationNS: 10e9}
+			if tt.missingTimes {
+				result.StartedAt, result.FinishedAt, result.TimingStage = time.Time{}, time.Time{}, "finalization"
+				if result.ValidPipeline("finalization") {
+					t.Fatal("unstarted timing stage accepted")
+				}
+				return
+			}
+			if tt.exit != 0 {
+				result.Stage = StageSourceFinalization
+			}
 			timing := result.PipelineTiming("finalization")
 			if timing.ReceiptID == "" || timing.Stage != "finalization" || timing.Command != tt.public || timing.Execution != "executed" || timing.ExitCode == nil || *timing.ExitCode != tt.exit || timing.StartedAt != at || timing.FinishedAt != at.Add(10*time.Second) || timing.HeadSHA != result.HeadSHA || timing.TreeSHA != result.TreeSHA {
 				t.Fatalf("receipt=%+v", timing)
@@ -119,7 +131,11 @@ func TestPipelineCommandReceipts(t *testing.T) {
 			if !timing.Valid() || !result.ValidPipeline("finalization") {
 				t.Fatalf("invalid timing: %+v", timing)
 			}
-			reused := result.Reused("landing_validation", at.Add(time.Minute)).PipelineTiming("landing_validation")
+			reusedResult := result.Reused("landing_validation", at.Add(time.Minute))
+			if reusedResult.Stage != result.Stage {
+				t.Fatalf("reuse changed failure stage: %+v", reusedResult)
+			}
+			reused := reusedResult.PipelineTiming("landing_validation")
 			if reused.Execution != "reused" || reused.ReusedReceiptID != timing.ReceiptID || reused.ReceiptID == timing.ReceiptID || reused.StartedAt != at.Add(time.Minute) || reused.FinishedAt != reused.StartedAt {
 				t.Fatalf("reuse=%+v source=%+v", reused, timing)
 			}

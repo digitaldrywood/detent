@@ -134,27 +134,6 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 				barrier.BaseRef = changes[len(changes)-1].BaseRef
 			}
 		case "finish", "cancel":
-			if request.Action == "finish" && !barrier.Running && barrier.ID == request.ID && barrier.Owner == landingBarrierOwner(scope) && request.Result != nil && request.Result.Pipeline != nil {
-				if barrier.Result == nil || request.Result.HeadSHA != barrier.Result.HeadSHA || request.Result.Command != barrier.Result.Command || request.Result.ExitCode != barrier.Result.ExitCode || len(request.Result.Pipeline.Timings) > 1024 || request.Result.Pipeline.Dropped < 0 {
-					return nil, nativeInvalid("Repair timings must identify the completed barrier receipt")
-				}
-				for _, timing := range request.Result.Pipeline.Timings {
-					if timing.Stage != "repair" || !timing.Valid() {
-						return nil, nativeInvalid("Invalid repair timing")
-					}
-				}
-				if barrier.Result.Pipeline == nil {
-					barrier.Result.Pipeline = &gate.PipelineEvidence{}
-				}
-				barrier.Result.Pipeline.Timings, barrier.Result.Pipeline.Dropped = gate.MergePipeline(barrier.Result.Pipeline.Timings, request.Result.Pipeline.Timings, max(barrier.Result.Pipeline.Dropped, request.Result.Pipeline.Dropped))
-				if err := coverBarrierReceipts(ctx, tx, scope, barrier); err != nil {
-					return nil, err
-				}
-				if err := writeLandingBarrier(ctx, tx, scope, barrier); err != nil {
-					return nil, err
-				}
-				return barrier, nil
-			}
 			if !barrier.Running || barrier.ID != request.ID || barrier.Owner != landingBarrierOwner(scope) {
 				return nil, nativeConflict(0)
 			}
@@ -176,12 +155,14 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 					}
 					request.Result.Pipeline.Timings = gate.PublicPipeline(request.Result.Pipeline.Timings)
 				}
-				request.Result.Stage = "barrier"
+				if !request.Result.StartedAt.IsZero() {
+					request.Result.TimingStage = "barrier"
+				}
 				if request.Result.Pipeline == nil {
 					request.Result.Pipeline = &gate.PipelineEvidence{}
 				}
 				if !barrier.ReadyAt.IsZero() {
-					request.Result.Pipeline.Timings = append(request.Result.Pipeline.Timings, gate.Interval("barrier_claim", barrier.ReadyAt, barrier.ClaimedAt, ""))
+					request.Result.Pipeline.Timings, request.Result.Pipeline.Dropped = gate.MergePipeline(request.Result.Pipeline.Timings, []gate.PipelineTiming{gate.Interval("barrier_claim", barrier.ReadyAt, barrier.ClaimedAt, "")}, request.Result.Pipeline.Dropped)
 				}
 				barrier.Result = request.Result
 				barrier.Red = request.Result.ExitCode != 0

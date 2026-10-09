@@ -24,7 +24,7 @@ func WithPipelineRecorder(ctx context.Context, stage string, record func(Pipelin
 
 func ObservePipelineCommand(ctx context.Context, result *CommandResult) {
 	if recorder, ok := ctx.Value(pipelineRecorderKey{}).(pipelineRecorder); ok && !result.StartedAt.IsZero() {
-		result.Stage = recorder.stage
+		result.TimingStage = recorder.stage
 		recorder.record(result.PipelineTiming(recorder.stage))
 	}
 }
@@ -37,6 +37,8 @@ type PipelineEvidence struct {
 	Timings []PipelineTiming `json:"timings"`
 	Dropped int              `json:"dropped,omitempty"`
 }
+
+func (p *PipelineEvidence) IsZero() bool { return p == nil || len(p.Timings) == 0 && p.Dropped == 0 }
 
 type PipelineTiming struct {
 	ReceiptID       string    `json:"receipt_id"`
@@ -57,12 +59,12 @@ func (p *PipelineEvidence) Valid() bool {
 }
 
 func (r CommandResult) ValidPipeline(stage string) bool {
-	return r.Pipeline.Valid() && (r.StartedAt.IsZero() && r.FinishedAt.IsZero() || r.PipelineTiming(stage).Valid())
+	return r.Pipeline.Valid() && (r.StartedAt.IsZero() && r.FinishedAt.IsZero() && r.TimingStage == "" || r.PipelineTiming(stage).Valid())
 }
 
 func (r CommandResult) PipelineTiming(stage string) PipelineTiming {
-	if r.Stage != "" {
-		stage = r.Stage
+	if r.TimingStage != "" {
+		stage = r.TimingStage
 	}
 	execution := r.Execution
 	if execution == "" {
@@ -76,8 +78,8 @@ func (r CommandResult) PipelineTiming(stage string) PipelineTiming {
 }
 
 func (r CommandResult) Reused(stage string, at time.Time) CommandResult {
-	source := r.PipelineTiming(r.Stage)
-	r.Stage, r.Execution, r.ReusedReceiptID = stage, "reused", source.ReceiptID
+	source := r.PipelineTiming(r.TimingStage)
+	r.TimingStage, r.Execution, r.ReusedReceiptID = stage, "reused", source.ReceiptID
 	r.StartedAt, r.FinishedAt, r.ReceiptID = at, at, ""
 	r.ReceiptID = r.PipelineTiming(stage).ReceiptID
 	return r

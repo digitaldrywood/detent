@@ -75,7 +75,9 @@ func (l *LocalGit) RunLandingBarrier(ctx context.Context, id, base, command stri
 	}()
 	issue.PullRequestHeadSHA = head
 	result, resultErr = l.RunReviewCommand(ctx, info, issue, command)
-	result.Stage = "barrier"
+	if !result.StartedAt.IsZero() {
+		result.TimingStage = "barrier"
+	}
 	return result, resultErr
 }
 

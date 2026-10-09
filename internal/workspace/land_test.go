@@ -890,6 +890,20 @@ func TestLocalGitNativeLanding(t *testing.T) {
 					continue
 				}
 				if i == test.conflict || i == test.invalid || i == test.skip {
+					if i == test.conflict && test.count > 1 {
+						if outcome.Result.BaseBefore != "" || outcome.Result.BaseRef != "" || outcome.Result.Method != "" || outcome.Result.Gate.Command != "" || outcome.Result.Path != "batch_member" {
+							t.Fatalf("conflict replaced untouched result fields: %+v", outcome.Result)
+						}
+						found := false
+						for _, timing := range outcome.Result.Pipeline {
+							if timing.Stage == "conflict_resolution" && timing.Outcome == "conflict" {
+								found = true
+							}
+						}
+						if !found {
+							t.Fatal("missing conflict timing")
+						}
+					}
 					if outcome.Err == nil || outcome.Result.MergeSHA != "" {
 						t.Fatalf("member %d was not refused: %#v", i, outcome)
 					}

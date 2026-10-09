@@ -698,7 +698,7 @@ func BenchmarkActivityInstructionSnapshot(b *testing.B) {
 func TestWorkerPipelineEvidenceChunks(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
-	check := gate.CheckObservation{Scope: "check-land", Command: "make check-land", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), StartedAt: at, FinishedAt: at.Add(time.Second), DurationNS: 1e9}
+	check := gate.CheckObservation{Scope: "lint", Command: "make lint", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), StartedAt: at, FinishedAt: at.Add(time.Second), DurationNS: 1e9}
 	raw, err := json.Marshal(check)
 	if err != nil {
 		t.Fatal(err)
@@ -709,7 +709,10 @@ func TestWorkerPipelineEvidenceChunks(t *testing.T) {
 		chunks   []string
 		count    int
 		complete bool
+		command  string
 	}{
+		{name: "unit suite command is redacted", chunks: []string{strings.Replace(strings.Replace(line, `"scope":"lint"`, `"scope":"unit-short"`, 1), "make lint", "env -u DETENT_API_TOKEN go test -short ./...", 1)}, count: 1, command: "[redacted]"},
+		{name: "private command timing is redacted", chunks: []string{strings.Replace(line, "make lint", "make check TOKEN=private", 1)}, count: 1, command: "[redacted]"},
 		{name: "one output", chunks: []string{line}, count: 1},
 		{name: "split record", chunks: []string{line[:30], line[30:100], line[100:]}, count: 1},
 		{name: "dirty checkout timing", chunks: []string{strings.ReplaceAll(line, check.TreeSHA, "")}, count: 1},
@@ -719,6 +722,10 @@ func TestWorkerPipelineEvidenceChunks(t *testing.T) {
 		{name: "final record without newline", chunks: []string{strings.TrimSuffix(line, "\n")}, count: 1, complete: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			wantCommand := check.Command
+			if tt.command != "" {
+				wantCommand = tt.command
+			}
 			recorder := &activityRecorder{queue: make(chan activityObservation, 16), wake: make(chan struct{}, 1)}
 			for _, chunk := range tt.chunks {
 				kind := AgentUpdateToolOutput
@@ -735,7 +742,7 @@ func TestWorkerPipelineEvidenceChunks(t *testing.T) {
 			for observation := range recorder.queue {
 				for _, got := range observation.update.Checks {
 					count++
-					if got.Command != check.Command || got.HeadSHA != check.HeadSHA || got.TreeSHA != check.TreeSHA && tt.name != "dirty checkout timing" || got.ExitCode != 0 || !got.StartedAt.Equal(at) {
+					if got.Command != wantCommand || got.HeadSHA != check.HeadSHA || got.TreeSHA != check.TreeSHA && tt.name != "dirty checkout timing" || got.ExitCode != 0 || !got.StartedAt.Equal(at) {
 						t.Fatalf("check=%+v", got)
 					}
 				}

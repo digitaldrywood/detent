@@ -346,7 +346,7 @@ func TestActivityPopulationCap(t *testing.T) {
 		}
 	}
 	started := time.Now()
-	population, err := loadNativeAnalyticsAttempts(t.Context(), tx, scope, operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now}, "", false)
+	population, err := loadNativeAnalyticsAttempts(t.Context(), tx, scope, operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

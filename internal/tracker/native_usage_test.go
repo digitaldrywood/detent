@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
@@ -128,5 +129,41 @@ func TestNativeUsageTotals(t *testing.T) {
 	odd := NativeUsage{Input: 100, CachedInput: 400}
 	if got := odd.UncachedInput(); got != 0 {
 		t.Fatalf("UncachedInput() = %d, want 0", got)
+	}
+}
+
+func TestEmptyPipelinePayloads(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name  string
+		value any
+	}{
+		{"receipt", NativeLandingReceipt{Gate: &gate.CommandResult{Pipeline: &gate.PipelineEvidence{}}}},
+		{"observation", NativeRuntimeObservation{Validation: &gate.CommandResult{Pipeline: &gate.PipelineEvidence{}}}},
+		{"barrier claim", LandingBarrierRequest{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := json.Marshal(tt.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var check func(map[string]any)
+			check = func(value map[string]any) {
+				for key, v := range value {
+					switch key {
+					case "timing_stage", "pipeline", "pipeline_dropped", "claim_started_at", "receipt_id", "stage", "execution", "reused_receipt_id", "started_at", "finished_at":
+						t.Fatalf("empty timing payload includes %s: %s", key, raw)
+					}
+					if nested, ok := v.(map[string]any); ok {
+						check(nested)
+					}
+				}
+			}
+			var value map[string]any
+			if err := json.Unmarshal(raw, &value); err != nil {
+				t.Fatal(err)
+			}
+			check(value)
+		})
 	}
 }

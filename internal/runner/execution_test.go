@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -76,10 +77,15 @@ func (e *testExecution) ObserveRuntime(_ context.Context, observation tracker.Na
 
 type readToolTestExecution struct {
 	testExecution
+	pipeline          []gate.PipelineTiming
 	reads             int
 	evidenceSource    func(context.Context, string) (ValidationEvidence, error)
 	completionBody    string
 	completionFailure *tracker.NativeTerminalFailure
+}
+
+func (e *readToolTestExecution) RecordPipelineTiming(timing gate.PipelineTiming) {
+	e.pipeline = append(e.pipeline, timing)
 }
 
 func (e *readToolTestExecution) SetEvidenceSource(source func(context.Context, string) (ValidationEvidence, error)) {

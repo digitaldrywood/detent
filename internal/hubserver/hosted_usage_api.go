@@ -302,9 +302,9 @@ LEFT JOIN lease_runners lr ON lr.lease_id = a.lease_id
 LEFT JOIN runner_identities r ON r.id = lr.runner_id AND r.organization_id = u.organization_id
 WHERE u.organization_id = ? AND u.period >= ? AND u.period <= ?
  AND u.project_id IN (SELECT value FROM json_each(?))
-ORDER BY u.period, u.provider, u.model, u.attempt_id LIMIT ?`
+ORDER BY u.period, u.provider, u.model, u.attempt_id LIMIT ? OFFSET ?`
 	result, err := queryAnalyticsRows(ctx, database, query,
-		organization, window.From.UTC().Format(usagePeriodLayout), window.To.UTC().Format(usagePeriodLayout), encoded, limit)
+		organization, window.From.UTC().Format(usagePeriodLayout), window.To.UTC().Format(usagePeriodLayout), encoded, limit, analyticsPopulationOffset(ctx, "usage"))
 	if err != nil {
 		return nil, fmt.Errorf("read usage: %w", err)
 	}
@@ -324,6 +324,11 @@ ORDER BY u.period, u.provider, u.model, u.attempt_id LIMIT ?`
 		row.Period = parsed.UTC()
 		row.BusySeconds = usageBusySeconds(started, updated, window)
 		rows = append(rows, row)
+		if len(rows) > maxAnalyticsPopulation && limit == maxAnalyticsPopulation+1 && row.Period.Before(window.To) {
+			if paging, ok := ctx.Value(analyticsPagingKey{}).(*analyticsPaging); ok {
+				paging.next["usage"] = fmt.Sprintf("usage:%d:0", analyticsPopulationOffset(ctx, "usage")+maxAnalyticsPopulation)
+			}
+		}
 	}
 	result.Close()
 	if err := result.Err(); err != nil {

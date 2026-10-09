@@ -94,7 +94,7 @@ func (r *activityRecorder) observe(update AgentUpdate, at time.Time, head string
 				output = r.checkTails[key]
 			}
 			checks = gate.CheckTimings(output)
-			checks = slices.DeleteFunc(checks, func(check gate.CheckObservation) bool { return check.Scope != "check-land" })
+			checks = slices.DeleteFunc(checks, func(check gate.CheckObservation) bool { return !workerCheckScope(check.Scope) })
 			delete(r.checkTails, key)
 		} else {
 			clear(r.checkTails)
@@ -878,5 +878,13 @@ func (r *activityRecorder) checkObservations(update AgentUpdate) []gate.CheckObs
 	tail := output[last+1:]
 	r.checkTails[key] = strings.Clone(tail[max(0, len(tail)-4096):])
 	checks := gate.CheckTimings(output[:last])
-	return slices.DeleteFunc(checks, func(check gate.CheckObservation) bool { return check.Scope != "check-land" })
+	return slices.DeleteFunc(checks, func(check gate.CheckObservation) bool { return !workerCheckScope(check.Scope) })
+}
+
+func workerCheckScope(scope string) bool {
+	switch scope {
+	case "check-land", "app", "generated", "lint", "vet", "build", "unit-short", "nilaway", "scripts", "invariants", "migrations":
+		return true
+	}
+	return false
 }

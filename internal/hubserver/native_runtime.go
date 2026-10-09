@@ -50,6 +50,7 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 		if (commandInvalid) || (failedOutputTooLarge || successfulOutputTooLarge) || (durationInvalid) || (exitCodeInvalid) || (failedStageInvalid || stageInvalid) || (headInvalid) || (evidenceInvalid) {
 			return nativeInvalid("Invalid source validation evidence")
 		}
+	}
 	if r.Validation != nil && r.Validation.Pipeline != nil {
 		r.Validation.Pipeline.Timings = gate.PublicPipeline(r.Validation.Pipeline.Timings)
 	}

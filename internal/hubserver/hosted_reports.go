@@ -157,10 +157,11 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 			}
 		}
 	}
-	rows, err := readUsageRows(ctx, s.database.db, analytics.OrganizationID, usageWindow{From: w.From, To: w.To}, []string{p.ProjectID}, 0)
+	rows, err := readUsageRows(ctx, s.database.db, analytics.OrganizationID, usageWindow{From: w.From, To: w.To}, []string{p.ProjectID}, maxAnalyticsPopulation+1)
 	if err != nil {
 		return out, err
 	}
+	rows = rows[:min(len(rows), maxAnalyticsPopulation)]
 	usage := map[string][]usageRow{}
 	for _, row := range rows {
 		if !row.Period.Before(w.To) {
