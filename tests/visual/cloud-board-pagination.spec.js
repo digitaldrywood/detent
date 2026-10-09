@@ -53,3 +53,46 @@ test("continues Backlog inside its scroll body and retains the server count", as
   await expect(page.getByText(/Load more/)).toHaveCount(0);
   await expect(page.getByText("Observed later-page worker", { exact: true })).toBeVisible();
 });
+
+
+test("Work primary action stays pinned across every connection state", async ({ page }) => {
+  await page.goto(`${fixtureUrl}?header`);
+  const action = page.getByRole("button", { name: "New issue", exact: true });
+  await expect(action).toBeVisible();
+  const baseline = await action.boundingBox();
+  for (const width of [1440, 900]) {
+    await page.setViewportSize({ width, height: 844 });
+    const box = await action.boundingBox();
+    for (const label of ["Loading", "Live", "Updating", "Cached", "Reconnecting", "Not streaming"]) {
+      for (const reload of [false, true]) {
+        await page.evaluate((state) => window.setHeaderState(state), { label, reload });
+        await expect(page.getByRole("status")).toContainText(label);
+        await expect(page.getByRole("button", { name: "Reload", exact: true })).toHaveCount(reload ? 1 : 0);
+        expect(await action.boundingBox()).toEqual(box);
+        const chip = await page.getByRole("status").boundingBox();
+        expect(chip.x + chip.width).toBeLessThan(box.x);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      }
+    }
+  }
+  expect(baseline).not.toBeNull();
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    const ask = page.getByRole("button", { name: "Ask", exact: true });
+    const menu = page.getByRole("button", { name: "More work actions", exact: true });
+    await expect(ask).toBeVisible();
+    for (const label of ["Loading", "Live", "Updating", "Cached", "Reconnecting", "Not streaming"]) {
+      for (const reload of [false, true]) {
+        await page.evaluate((state) => window.setHeaderState(state), { label, reload });
+        await expect(page.getByRole("status")).toContainText(label);
+        const chip = await page.getByRole("status").boundingBox();
+        const askBox = await ask.boundingBox();
+        const menuBox = await menu.boundingBox();
+        expect(chip.x + chip.width).toBeLessThanOrEqual(askBox.x);
+        expect(menuBox.x).toBeGreaterThan(askBox.x);
+        expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(width);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      }
+    }
+  }
+});

@@ -83,18 +83,3 @@ export function issueNumber(identifier: string | null | undefined, number?: numb
   const match = identifier.match(/#?(\d+)\s*$/);
   return match === null ? identifier : `#${match[1]}`;
 }
-
-/**
- * The board header's scope count. The all-projects scope counts the projects
- * the bootstrap lists, not the projects that have issues loaded, so a project
- * with no issues yet still counts.
- */
-export function boardScopeMeta(
-  projectId: string | null,
-  projectCount: number,
-  issueCount: number,
-): string {
-  return projectId === null
-    ? `${projectCount} project${projectCount === 1 ? "" : "s"}`
-    : `${issueCount} issue${issueCount === 1 ? "" : "s"}`;
-}

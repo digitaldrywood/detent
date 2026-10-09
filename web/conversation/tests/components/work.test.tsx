@@ -22,7 +22,8 @@ import { IssueCard } from "../../src/app/work/components/IssueCard.tsx";
 import { DiffSurface } from "../../src/app/components/surfaces/DiffSurface.tsx";
 import { diffSource, readAttemptDiff, type DiffSource } from "../../src/app/adapters/surfaces.ts";
 import { WorkList } from "../../src/app/work/components/WorkList.tsx";
-import { StatsRow } from "../../src/app/work/components/StatsRow.tsx";
+import { WorkTopBar } from "../../src/app/work/components/WorkTopBar.tsx";
+import { CompletedCounter } from "../../src/app/work/components/CompletedCounter.tsx";
 import { toAttemptView, toWorkItemView, transitionsFrom } from "../../src/app/work/lib/fromWire.ts";
 import { boardStats, isBlocked, isLive, type Lane, type WorkItemView } from "../../src/app/work/lib/model.ts";
 
@@ -548,8 +549,23 @@ describe("the list view", () => {
   });
 });
 
-describe("the stats row", () => {
-  it("partitions loaded work by dispatchable lanes and renders five ordered counters", () => {
+it("preserves meta, actions and Reload order for non-board top bars", () => {
+  const reload = vi.fn();
+  render(<WorkTopBar context="Work" title="Changes" meta="24 changes"
+    connection={{ tone: "dc-warn", label: "Reconnecting", detail: "data as of 1:04 PM", tooltip: "Trying again", action: { label: "Reload", onClick: reload } }}
+    actions={<button>Review changes</button>} />);
+  expect(screen.getByText("24 changes")).not.toBeNull();
+  const action = screen.getByRole("button", { name: "Review changes" });
+  const chip = screen.getByTestId("connection-chip");
+  const reloadButton = screen.getByRole("button", { name: "Reload" });
+  expect(action.compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(chip.compareDocumentPosition(reloadButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  fireEvent.click(reloadButton);
+  expect(reload).toHaveBeenCalledOnce();
+});
+
+describe("completed counts", () => {
+  it("partitions loaded work by dispatchable lanes and includes custom terminal states", () => {
     const items = [
       item({ id: "a", state: "Todo", blockedBy: [] }),
       item({ id: "b", state: "In Progress", blockedBy: [], attempt: toAttemptView(ATTEMPTS) }),
@@ -574,15 +590,9 @@ describe("the stats row", () => {
     const stats = boardStats(items, lanes);
     expect(stats.completed).toBe(4);
     expect(stats.importedClosed).toBe(2);
-    render(<StatsRow stats={stats} completedWindow="all" onCompletedWindowChange={vi.fn()} loading={false} />);
-    expect(screen.getByTestId("stat-running").textContent).toBe("2 running");
-    expect(screen.getByTestId("stat-waiting").textContent).toBe("5 waiting");
-    expect(screen.getByTestId("stat-need-attention").textContent).toBe("2 need attention");
-    expect(screen.getByTestId("stat-backlog").textContent).toBe("1 backlog");
+    render(<CompletedCounter count={stats.completed} completedWindow="all" onCompletedWindowChange={vi.fn()} loading={false} />);
     expect(stats.running + stats.waiting + stats.needAttention + stats.backlog).toBe(stats.open);
     expect(stats.open).toBe(10);
-    expect(within(screen.getByTestId("work-stats")).getAllByTestId(/^stat-/).map((counter) => counter.dataset.testid)).toEqual(["stat-running", "stat-waiting", "stat-need-attention", "stat-backlog", "stat-completed"]);
-    expect(screen.getByTestId("stat-waiting").getAttribute("title")).toBe("Items in dispatchable lanes with no live worker. Dependencies, human ownership or capacity may hold them.");
     expect(screen.getByTestId("stat-completed").textContent).toBe("4 completed · All time");
     expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("including cancelled and custom terminal states");
     expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
@@ -642,17 +652,15 @@ describe("the stats row", () => {
 
   it.each([{ loadedCount: 100, total: 143 }, { loadedCount: 108, total: 569 }])("keeps scoped counts while refreshing without global pagination ($loadedCount of $total)", ({ total }) => {
     const totals = { lanes: {}, running: 2, waiting: 3, needAttention: 5, backlog: 7, open: 17, completed: total - 17, total, asOf: "2026-10-02T17:17:00Z", truncated: true };
-    const stats = boardStats([item({ state: "Done", sourceProvider: "github" })], LANES);
-    const props = { stats, totals, loading: false, onCompletedWindowChange: vi.fn() };
-    const mounted = render(<StatsRow {...props} />);
-    const counts = screen.getByTestId("work-stats");
-    expect(counts.textContent).toContain(`2 running·3 waiting·5 need attention·7 backlog·${totals.completed} completed · 48h`);
+    const props = { count: totals.completed, loading: false, onCompletedWindowChange: vi.fn() };
+    const mounted = render(<CompletedCounter {...props} />);
+    const counts = screen.getByTestId("stat-completed");
+    expect(counts.textContent).toContain(`${totals.completed} completed · 48h`);
     expect(within(counts).queryByRole("button", { name: /^Load / })).toBeNull();
-    mounted.rerender(<StatsRow {...props} loading />);
-    expect(counts.getAttribute("aria-busy")).toBe("true");
-    expect(screen.getByTestId("stat-waiting").parentElement!.className).toContain("opacity-50");
-    expect(screen.getByTestId("stat-waiting").textContent).toBe("3 waiting");
-    mounted.rerender(<StatsRow {...props} />);
+    mounted.rerender(<CompletedCounter {...props} loading />);
+    expect(counts.closest("[aria-busy]")?.getAttribute("aria-busy")).toBe("true");
+    expect(counts.textContent).toContain(`${totals.completed} completed · 48h`);
+    mounted.rerender(<CompletedCounter {...props} />);
     expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
   });
 });
@@ -854,7 +862,7 @@ async function pagedWork(path = "/work", wrapFetch?: (fetch: ReturnType<typeof w
 }
 
 async function settledWork() {
-  await waitFor(() => expect(screen.getByTestId("work-stats").getAttribute("aria-busy")).toBe("false"));
+  await waitFor(() => expect(screen.getByTestId("stat-completed").closest("[aria-busy]")?.getAttribute("aria-busy")).toBe("false"));
 }
 
 describe("the archive period hint", () => {
@@ -1208,11 +1216,9 @@ describe("the filter-first Work surface", () => {
     await settledWork();
     expect(screen.getByText("Observed later-page worker")).not.toBeNull();
     expect(screen.getAllByTestId("connection-chip")).toHaveLength(1);
-    expect(screen.getByTestId("stat-running").textContent).toBe("1 running");
     expect(screen.getByTestId("lane-count-Todo").textContent).toBe("8");
     expect(screen.getByTestId("lane-count-In Progress").textContent).toBe("2");
     expect(screen.queryByTestId("lane-count-Done")).toBeNull();
-    expect(within(screen.getByTestId("work-stats")).getByRole("button", { name: /^131 completed/ })).not.toBeNull();
     expect(screen.queryByRole("button", { name: /^Load more/ })).toBeNull();
     expect(router.state.location.searchStr).toBe("");
     const before = requests.length;
@@ -1386,7 +1392,7 @@ describe("the filter-first Work surface", () => {
     expect(await screen.findByTestId("work-error")).not.toBeNull();
     expect(screen.queryByTestId("issue-card")).toBeNull();
     expect(screen.queryByTestId("work-list-row")).toBeNull();
-    expect(screen.queryByTestId("stat-running")).toBeNull();
+    expect(screen.getByTestId("stat-completed").textContent).toBe("— completed · 48h");
   });
 
   it("finishes a slow first read and retains usable work during continuous activity", async () => {
@@ -1432,7 +1438,6 @@ describe("the filter-first Work surface", () => {
       await act(() => new Promise((resolve) => setTimeout(resolve, 450)));
       expect(continuation.signal?.aborted).toBe(false);
       expect(screen.getAllByText("Queue item 1")).toHaveLength(2);
-      expect(screen.getByTestId("stat-running").textContent).toBe("1 running");
     }
     await act(async () => { refreshing.release(); });
     await settledWork();
