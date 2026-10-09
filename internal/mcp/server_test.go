@@ -248,6 +248,7 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 		{"read fault", &operatortool.ReadUnavailableError{Err: errors.New("database fault sentinel")}, "Operator tool is unavailable"},
 		{"argument validation", nativeMoveArgumentError(), `{"code":"invalid_request","message":"expected_revision: is required"}`},
 		{"request", &operatortool.RequestError{Code: "invalid_request", Message: "Read get_project_integration"}, `{"code":"invalid_request","message":"Read get_project_integration"}`},
+		{"oversized Change record", operatortool.ChangeRecordTooLarge(), `{"code":"change_record_too_large","message":"A Change record with its required evidence envelope exceeds the 262144-byte result budget. Inspect the exact version or artifact through its scoped read; the record requires an operator repair. No evidence was reported as passing."}`},
 		{"revision", &operatortool.ConflictError{Code: "revision_conflict", CurrentRevision: 4}, `{"code":"revision_conflict","current_revision":"4"}`},
 		{"policy mismatch", &operatortool.ConflictError{Code: "policy_mismatch", Message: "Approved policy changed; inspect the current policy and supply its expected_policy_id"}, `{"code":"policy_mismatch","message":"Approved policy changed; inspect the current policy and supply its expected_policy_id"}`},
 		{"stale", &operatortool.ConflictError{Code: "stale_execution", Details: &operatortool.ConflictDetails{}}, `{"code":"stale_execution","details":{"expected_attempt_id":null,"current_attempt_id":null}}`},

@@ -118,26 +118,17 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 			return result, fmt.Errorf("begin snapshot: %w", err)
 		}
 		defer tx.Rollback()
-		detail, err := readChangeDetail(ctx, tx, scope, args.ItemID, args.ChangeID, s.config.now())
+		if name == operatortool.GetChange {
+			result, err = readBoundedChange(ctx, tx, scope, args, result)
+		} else {
+			if _, err = readChange(ctx, tx, scope, args.ItemID, args.ChangeID); err == nil {
+				var version tracker.ChangeVersion
+				version, err = readChangeVersion(ctx, tx, args.ChangeID, args.VersionID)
+				result.Version = &version
+			}
+		}
 		if err != nil {
 			return result, fmt.Errorf("load detail: %w", err)
-		}
-		if name == operatortool.GetChange {
-			result.Detail = &detail
-			result.ValidationAudit, err = readValidationAudit(ctx, tx, scope, "", "", args.ChangeID, "")
-			if err != nil {
-				return result, fmt.Errorf("load validation audit: %w", err)
-			}
-		} else {
-			for _, v := range detail.Versions {
-				if v.ID == args.VersionID {
-					result.Version = &v
-					break
-				}
-			}
-			if result.Version == nil {
-				return result, operatortool.ErrAccessDenied
-			}
 		}
 		if err := tx.Commit(); err != nil {
 			return result, fmt.Errorf("finish snapshot: %w", err)

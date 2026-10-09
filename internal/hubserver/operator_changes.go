@@ -149,7 +149,7 @@ func (s *Service) hubChangeAuthority(ctx context.Context, name string, raw json.
 	if name == operatortool.ArtifactAccess {
 		readName = operatortool.GetArtifactReference
 	}
-	if args.ItemID == "" {
+	if args.ItemID == "" || d.Annotations.ReadOnly {
 		return ctx, app, nil
 	}
 	value, err := app.ReadChange(ctx, readName, args)
@@ -240,7 +240,7 @@ func hubSafeChangeError(err error) error {
 		}
 	}
 	if errors.Is(err, operatortool.ErrInvalidArguments) {
-		return operatortool.ErrInvalidArguments
+		return err
 	}
 	return fmt.Errorf("%w: %w", operatortool.ErrServiceUnavailable, err)
 }
