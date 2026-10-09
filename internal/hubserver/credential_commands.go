@@ -178,6 +178,13 @@ func (s *Service) grantNativeTokenFor(ctx context.Context, id, organization, pro
 	if runnerCount != 0 {
 		return nativeInvalid("Runner grants are fixed at enrollment")
 	}
+	var projectCount int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE organization_id=? AND id=? AND deleted_at IS NULL", organization, project).Scan(&projectCount); err != nil {
+		return err
+	}
+	if projectCount != 1 {
+		return nativeNotFound()
+	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES(?,?,?) ON CONFLICT DO NOTHING", id, organization, project); err != nil {
 		return err
 	}

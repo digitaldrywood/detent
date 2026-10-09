@@ -70,7 +70,7 @@ func (s *Service) platformTenantRunners(c echo.Context) error {
 }
 
 func (s *Service) platformTenantProjects(c echo.Context) error {
-	rows, err := s.database.db.QueryContext(c.Request().Context(), "SELECT id,name FROM projects WHERE organization_id = ? ORDER BY name, id", s.config.Hosted.OrganizationID)
+	rows, err := s.database.db.QueryContext(c.Request().Context(), "SELECT id,name FROM projects WHERE deleted_at IS NULL AND organization_id = ? ORDER BY name, id", s.config.Hosted.OrganizationID)
 	if err != nil {
 		return s.internalAPIError(c, "projects_unavailable", "Projects are unavailable", err)
 	}

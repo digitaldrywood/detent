@@ -22,14 +22,15 @@ const (
 )
 
 func (credential apiCredential) projectGrantSQL(organization, project string) (string, []any) {
+	live := "EXISTS (SELECT 1 FROM projects live_project WHERE live_project.organization_id=" + organization + " AND live_project.id=" + project + " AND live_project.deleted_at IS NULL)"
 	if credential.Scope == apiScopeAdmin && !credential.NativeOnly {
-		return "1=1", nil
+		return live, nil
 	}
 	principal := credential.ID
 	if credential.Hosted != nil && credential.HostedKeyScope != "" && credential.HostedProjectAccess == hostedProjectsAll {
 		principal = credential.HostedPrincipal
 	}
-	condition := "EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=? AND g.organization_id=" + organization + " AND g.project_id=" + project + ")"
+	condition := live + " AND EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=? AND g.organization_id=" + organization + " AND g.project_id=" + project + ")"
 	args := []any{principal}
 	if credential.Hosted != nil && credential.HostedKeyScope != "" && credential.HostedProjectAccess == hostedProjectsSelected {
 		condition += " AND EXISTS (SELECT 1 FROM token_grants u WHERE u.token_id=? AND u.organization_id=" + organization + " AND u.project_id=" + project + ")"

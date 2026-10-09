@@ -88,6 +88,17 @@ func (s *Service) appShell(c echo.Context) error {
 		if _, _, err := s.hostedSession(c.Request().Context(), c); err != nil {
 			return c.Redirect(http.StatusSeeOther, s.hostedSignInPath())
 		}
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(parts) >= 2 && parts[0] == "projects" {
+			credential, _, err := s.hostedCredential(c.Request().Context(), c)
+			if err != nil {
+				return s.nativeAPIError(c, nativeNotFound())
+			}
+			scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(parts[1]), credential: credential}
+			if err := s.database.authorizeNativeProject(c.Request().Context(), scope); err != nil {
+				return s.nativeAPIError(c, err)
+			}
+		}
 	}
 	content, err := fs.ReadFile(conversationClientFS, conversationClientShell)
 	if err != nil {
@@ -586,7 +597,7 @@ func (s *Service) hostedReadableProjects(ctx context.Context, credential apiCred
 	projects := []appBootstrapProject{}
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.id, p.name, p.profile, p.states_json, g.can_write, g.manage_runner
 FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id
-WHERE g.user_id = ? AND p.organization_id = ? ORDER BY p.name, p.id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
+WHERE p.deleted_at IS NULL AND g.user_id = ? AND p.organization_id = ? ORDER BY p.name, p.id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
 	if err != nil {
 		return nil, fmt.Errorf("list project grants: %w", err)
 	}

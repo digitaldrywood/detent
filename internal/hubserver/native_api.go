@@ -135,6 +135,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST("/api/v2/organizations", s.createNativeOrganization, admin)
 	if s.config.Hosted != nil {
 		e.POST("/api/v2/organizations/:organization/projects", s.createHostedProjectJSON, admin)
+		e.DELETE(nativeBase, s.deleteCloudProject, s.requireOnboardingAdmin())
 	} else {
 		e.POST("/api/v2/organizations/:organization/projects", s.createNativeProject, admin)
 	}

@@ -307,7 +307,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 		}
 		for _, project := range change.ProjectIDs {
 			var count int
-			if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE organization_id = ? AND id = ?", organization, project).Scan(&count); err != nil {
+			if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id = ? AND id = ?", organization, project).Scan(&count); err != nil {
 				return nil, err
 			}
 			if count != 1 {

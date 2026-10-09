@@ -59,7 +59,7 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 
 func (s *Service) hostedAllUsageGrants(ctx context.Context, credential apiCredential) bool {
 	var missing int
-	err := s.database.db.QueryRowContext(ctx, `SELECT count(*) FROM projects p WHERE p.organization_id=? AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.project_id=p.id AND g.user_id=?)`, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&missing)
+	err := s.database.db.QueryRowContext(ctx, `SELECT count(*) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=? AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.project_id=p.id AND g.user_id=?)`, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&missing)
 	return err == nil && missing == 0
 }
 
@@ -75,7 +75,7 @@ func (s *Service) requireHostedRunnerAdministration(ctx context.Context, query n
 		return nil
 	}
 	var project, name string
-	err := query.QueryRowContext(ctx, `SELECT p.id,p.name FROM projects p WHERE p.organization_id=? AND NOT EXISTS
+	err := query.QueryRowContext(ctx, `SELECT p.id,p.name FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=? AND NOT EXISTS
 (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=p.organization_id AND g.project_id=p.id AND g.user_id=? AND g.manage_runner=1)
 ORDER BY p.name,p.id LIMIT 1`, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&project, &name)
 	if err == nil {
@@ -85,7 +85,7 @@ ORDER BY p.name,p.id LIMIT 1`, s.config.Hosted.OrganizationID, credential.Hosted
 		return operatortool.ErrAccessDenied
 	}
 	var exists bool
-	if err := query.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM projects WHERE organization_id=?)", s.config.Hosted.OrganizationID).Scan(&exists); err != nil || !exists {
+	if err := query.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM projects WHERE deleted_at IS NULL AND organization_id=?)", s.config.Hosted.OrganizationID).Scan(&exists); err != nil || !exists {
 		return operatortool.ErrAccessDenied
 	}
 	return nil
@@ -324,7 +324,7 @@ func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, crede
 	if err != nil {
 		return "", err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled,scheduling_rank) VALUES (?,?,?,'native',?,?,0,(SELECT COALESCE(max(scheduling_rank),-1)+1 FROM projects WHERE organization_id=?))", project, s.config.Hosted.OrganizationID, name, encoded, now, s.config.Hosted.OrganizationID); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled,scheduling_rank) VALUES (?,?,?,'native',?,?,0,(SELECT COALESCE(max(scheduling_rank),-1)+1 FROM projects WHERE deleted_at IS NULL AND organization_id=?))", project, s.config.Hosted.OrganizationID, name, encoded, now, s.config.Hosted.OrganizationID); err != nil {
 		return "", err
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE organizations SET scheduling_revision = scheduling_revision + 1 WHERE id = ?", s.config.Hosted.OrganizationID); err != nil {

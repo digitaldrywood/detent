@@ -150,7 +150,7 @@ func applyNativeIssueWebhook(ctx context.Context, tx *sql.Tx, delivery storedWeb
 	}
 	fullName := webhookRepositoryFullName(payload.Repository)
 	rows, err := tx.QueryContext(ctx, `SELECT p.organization_id, p.id FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id
- WHERE p.profile = 'native' AND (lower(r.github_owner || '/' || r.github_name) = lower(?) OR lower(p.checkout_repository) = lower(?))`, fullName, fullName)
+ WHERE p.deleted_at IS NULL AND p.profile = 'native' AND (lower(r.github_owner || '/' || r.github_name) = lower(?) OR lower(p.checkout_repository) = lower(?))`, fullName, fullName)
 	if err != nil {
 		return webhookProcessResult{}, false, err
 	}

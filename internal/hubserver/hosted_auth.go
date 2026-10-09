@@ -368,7 +368,7 @@ WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > ju
 			condition, args := scope.credential.projectGrantSQL("p.organization_id", "p.id")
 			args = append(args, scope.organization)
 			var projects, granted int
-			err := tx.QueryRowContext(ctx, "SELECT count(*), COALESCE(sum("+condition+"),0) FROM projects p WHERE p.organization_id=?", args...).Scan(&projects, &granted)
+			err := tx.QueryRowContext(ctx, "SELECT count(*), COALESCE(sum("+condition+"),0) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=?", args...).Scan(&projects, &granted)
 			if err != nil || projects == 0 || projects != granted {
 				return auth.ErrHostedIdentity
 			}
