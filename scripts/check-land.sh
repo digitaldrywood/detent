@@ -38,7 +38,7 @@ for ((offset = 0; offset < ${#stages[@]}; offset += workers)); do
                 lint) check_with_evidence lint make lint TEST_PROCS="$budget" ;;
                 vet) check_with_evidence vet make vet TEST_PROCS="$budget" ;;
                 build) check_with_evidence build go build -p "$budget" ./... ;;
-                unit-short) check_with_evidence unit-short env -u DETENT_API_TOKEN go test -short -count=1 -p "$budget" -timeout=10m ./... ;;
+                unit-short) check_with_evidence unit-short env -u DETENT_API_TOKEN go test -short -p "$budget" -timeout=10m ./... ;;
             esac
         ) &
         pids+=("$!")
@@ -72,7 +72,7 @@ if [ "${#script_tests[@]}" -gt 0 ]; then
     check_with_evidence scripts python3 -m unittest "${script_tests[@]}"
 fi
 
-check_with_evidence invariants env -u DETENT_API_TOKEN go test -count=1 -p "$procs" -timeout=60s ./internal/invariants
+check_with_evidence invariants env -u DETENT_API_TOKEN go test -p "$procs" -timeout=60s ./internal/invariants
 check_with_evidence migrations make check-migrations
 if [ "$app_changed" = false ]; then
     printf 'Conversation sources unchanged; skipping check-app.\n'

@@ -58,7 +58,12 @@ rerun_tests() {
 }
 
 run_go_tests() {
-    if [ -n "$failed" ]; then rerun_tests "$go_items" 0; else make -o generate-docs test TEST_PROCS="$procs" TEST_TIMEOUT=30m; fi
+    if [ -n "$failed" ]; then
+        rerun_tests "$go_items" 0
+    else
+        make -o generate-docs test TEST_PROCS="$procs" TEST_TIMEOUT=30m \
+            GO_TEST="env -u DETENT_API_TOKEN go test -count=1 -p $procs -timeout=30m"
+    fi
 }
 
 run_race_tests() {
