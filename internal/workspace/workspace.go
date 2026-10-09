@@ -2046,7 +2046,13 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 		return err
 	}
 	defer release()
+	return l.runHookUnderSourceLock(ctx, name, command, info, issue)
+}
 
+func (l *LocalGit) runHookUnderSourceLock(ctx context.Context, name string, command string, info Info, issue Issue) error {
+	if strings.TrimSpace(command) == "" {
+		return nil
+	}
 	timeout := l.hooks.Timeout
 	if timeout == 0 {
 		timeout = defaultHookTimeout
