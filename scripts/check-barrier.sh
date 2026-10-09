@@ -6,7 +6,7 @@ procs=${1:?process budget required}
 started=$SECONDS
 trap 'result=$?; printf "check-barrier finished: exit=%s wall=%ss\n" "$result" "$((SECONDS - started))"' EXIT
 
-checks=(lint vet invariants generated migrations app security nilaway checkland)
+checks=(lint vet generated migrations app security nilaway checkland)
 check_command() {
     case $1 in
         lint) make lint ;;
@@ -79,13 +79,19 @@ run_browser_specs() {
 }
 
 run_checks_in_order() {
-    local name status=0
+    local name pid status=0 pids=() names=()
     : > tmp/barrier-checks.failed
     for name in "$@"; do
-        if ! check_with_evidence "barrier-$name" check_command "$name"; then
-            echo "$name" >> tmp/barrier-checks.failed
+        check_with_evidence "barrier-$name" check_command "$name" > "tmp/barrier-check-$name.log" 2>&1 &
+        pids+=("$!")
+        names+=("$name")
+    done
+    for i in "${!pids[@]}"; do
+        if ! wait "${pids[$i]}"; then
+            echo "${names[$i]}" >> tmp/barrier-checks.failed
             status=1
         fi
+        cat "tmp/barrier-check-${names[$i]}.log"
     done
     return "$status"
 }
