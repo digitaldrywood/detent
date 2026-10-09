@@ -766,6 +766,31 @@ export const AICredits = Schema.Struct({
 });
 export type AICredits = typeof AICredits.Type;
 
+export const ComparisonPlan = Schema.Struct({
+  id: Schema.String,
+  version: Schema.Number,
+  name: Schema.optional(Schema.String),
+  monthly_usd_cents: Schema.optional(Schema.NullOr(Schema.Number)),
+  allowances: Schema.Record(Schema.String, Schema.Number),
+  features: Schema.Array(Schema.String),
+  price_id: Schema.String,
+});
+export type ComparisonPlan = typeof ComparisonPlan.Type;
+
+export const BillingUsageReport = Schema.Struct({
+  organization_id: Schema.String,
+  renews_at: Schema.String,
+  chat_usage: ChatUsage,
+  charged_ai_micros: Schema.Number,
+  ai_credits: Schema.optional(AICredits),
+  comparison_plans: Schema.Array(ComparisonPlan),
+  can_checkout: Schema.Boolean,
+  can_manage: Schema.Boolean,
+  can_buy_credits: Schema.Boolean,
+  checkout_pending: Schema.Boolean,
+});
+export type BillingUsageReport = typeof BillingUsageReport.Type;
+
 /**
  * `GET /billing`: `hubserver.hostedBillingReport` plus `prices`. The report
  * alone cannot render the screen — the hosted Templ page read the configured
@@ -773,6 +798,8 @@ export type AICredits = typeof AICredits.Type;
  * "checkout buttons per configured price" needs the list on the payload.
  */
 export const BillingReport = Schema.Struct({
+  charged_ai_micros: Schema.optional(Schema.Number),
+  comparison_plans: Schema.optional(Schema.Array(ComparisonPlan)),
   ai_credits: Schema.optional(AICredits),
   chat_usage: Schema.optional(ChatUsage),
   organization_id: Schema.String,

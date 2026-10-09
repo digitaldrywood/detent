@@ -15,6 +15,7 @@ import {
   CreatedOperatorAPIKey,
   OperatorAPIKeys,
   BillingReport,
+  BillingUsageReport,
   CheckoutResponse,
   CreateOrganizationResponse,
   FleetResponse,
@@ -499,6 +500,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     fleetNames: () => send(FleetNamesResponse, "GET", `${base}/fleet?include=names`),
     plan: () => send(PlanReport, "GET", `${base}/plan`),
     billing: () => send(BillingReport, "GET", `${base}/billing`),
+    billingUsage: () => send(BillingUsageReport, "GET", `${base}/billing?view=usage`),
     checkout: (input: { price: string; key: string }) =>
       send(CheckoutResponse, "POST", `${base}/billing/checkout`, {
         price: input.price,

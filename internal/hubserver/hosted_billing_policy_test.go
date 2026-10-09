@@ -387,6 +387,12 @@ func TestHostedBillingRejectsAdminAndSupportOwner(t *testing.T) {
 				}
 			}
 			requireNativeStatus(t, f.page(t, "owner", "/organization/billing"), http.StatusForbidden)
+			requireNativeStatus(t, f.billingAPI(t, "owner", http.MethodGet, "/billing", ""), http.StatusForbidden)
+			usage := f.billingAPI(t, "owner", http.MethodGet, "/billing?view=usage", "")
+			requireNativeStatus(t, usage, http.StatusOK)
+			if !strings.Contains(usage.Body.String(), `"can_checkout":false`) || !strings.Contains(usage.Body.String(), `"can_manage":false`) || !strings.Contains(usage.Body.String(), `"can_buy_credits":false`) || strings.Contains(usage.Body.String(), `"state"`) || strings.Contains(usage.Body.String(), `"recent_audit"`) {
+				t.Fatalf("read-only billing usage exposed billing authority: %s", usage.Body.String())
+			}
 			for _, path := range []string{"/organization/billing/checkout", "/organization/billing/portal"} {
 				requireNativeStatus(t, f.form(t, "owner", path, url.Values{"price": {"price_fixture"}}), http.StatusForbidden)
 			}

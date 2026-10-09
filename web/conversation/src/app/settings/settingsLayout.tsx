@@ -313,7 +313,7 @@ export function SettingsRow({
         className,
       )}
     >
-      <div className="flex flex-col gap-3 sm:grid sm:grid-cols-[minmax(0,1fr)_minmax(10rem,auto)] sm:items-center sm:gap-8">
+      <div className={cn("flex flex-col gap-3", renderedControl && "sm:grid sm:grid-cols-[minmax(0,1fr)_minmax(10rem,auto)] sm:items-center sm:gap-8")}>
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex min-h-5 items-center gap-1.5">
             <h3 className="text-sm font-medium tracking-[-0.005em] text-foreground">{title}</h3>

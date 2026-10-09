@@ -455,6 +455,36 @@
       "related": ["tooltip", "popover"]
     },
     {
+      "id": "usage-meter",
+      "name": "Usage meter",
+      "kind": "primitive",
+      "group": "Feedback",
+      "status": "available",
+      "source": "src/components/ui/usage-meter.tsx",
+      "exports": [
+        "UsageMeter",
+        "formatUsageValue",
+        "usageMeterState",
+        "UsageUnit"
+      ],
+      "variants": {},
+      "states": [
+        "normal",
+        "warning",
+        "limit reached",
+        "not included",
+        "limit only",
+        "unlimited"
+      ],
+      "keyboard": "Static meter with an accessible label, formatted value and description; not focusable.",
+      "use": "Plan allowance consumption with human units, remaining capacity and visible warning text at 80% and limit-reached text at 100%. Supports byte sizes, counts, record counts, duration limits, unlimited and excluded allowances.",
+      "avoid": "Indeterminate loading (use Spinner) and actions (use Button).",
+      "related": [
+        "alert",
+        "badge"
+      ]
+    },
+    {
       "id": "alert",
       "name": "Alert",
       "kind": "primitive",

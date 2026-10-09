@@ -10,6 +10,9 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as Schema from "effect/Schema";
 
+import { UsageMeter, formatUsageValue } from "../../src/components/ui/usage-meter.tsx";
+import { approachingPlanLimits, nextFittingPlan } from "../../src/app/settings/planUsage.ts";
+import type { BillingUsageReport, PlanReport } from "../../src/contracts/account.ts";
 import { SettingsSidebarNav } from "../../src/components/settings/SettingsSidebarNav.tsx";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
 import { ClientContext } from "../../src/app/client.ts";
@@ -33,7 +36,7 @@ import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
 import type { FleetResponse } from "../../src/contracts/account.ts";
 import { AccountBootstrap } from "../../src/contracts/account.ts";
 import accountFixture from "../../src/contracts/fixtures/account-bootstrap.json";
-import { GeneralSettings, SettingsRoute } from "../../src/app/settings/Settings.tsx";
+import { GeneralSettings, PlanSettings, SettingsRoute } from "../../src/app/settings/Settings.tsx";
 import { organizationMCPEndpoint } from "../../src/app/settings/MCPSettings.tsx";
 import { applyHubPaths, resetHubPaths } from "../../src/runtime/basePath.ts";
 
@@ -65,7 +68,7 @@ describe("which sections an actor gets", () => {
       "Providers & runners",
       "Integrations",
       "API & MCP",
-      "Plan",
+      "Plan & usage",
       "Billing",
       "Keybindings",
       "SnapShots",
@@ -78,13 +81,13 @@ describe("which sections an actor gets", () => {
 
   it("hides plan and billing from somebody who could only be refused them", () => {
     const items = settingsNavItems({ canManage: false, supporting: false });
-    expect(labelsFor(items)).not.toContain("Plan");
+    expect(labelsFor(items)).not.toContain("Plan & usage");
     expect(labelsFor(items)).not.toContain("Billing");
   });
 
   it("closes billing during a support session, and leaves the plan open", () => {
     const items = settingsNavItems({ canManage: true, supporting: true });
-    expect(labelsFor(items)).toContain("Plan");
+    expect(labelsFor(items)).toContain("Plan & usage");
     expect(labelsFor(items)).not.toContain("Billing");
   });
 
@@ -400,7 +403,7 @@ describe("the settings navigation in the sidebar", () => {
       "Providers & runners",
       "Integrations",
       "API & MCP",
-      "Plan",
+      "Plan & usage",
       "Billing",
       "Keybindings",
       "SnapShots",
@@ -458,7 +461,7 @@ describe("the settings navigation in the sidebar", () => {
       },
     });
     await waitFor(() => expect(screen.getByRole("button", { name: "General" })).toBeTruthy());
-    expect(screen.queryByRole("button", { name: "Plan" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Plan & usage" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Billing" })).toBeNull();
   });
 
@@ -544,7 +547,7 @@ describe("the page container", () => {
       path: "/",
       component: () => (
         <SettingsPageContainer>
-          <SettingsSection title="Plan">
+          <SettingsSection title="Plan & usage">
             <SettingsRow title="pilot_free" />
           </SettingsSection>
         </SettingsPageContainer>
@@ -555,7 +558,202 @@ describe("the page container", () => {
       history: createMemoryHistory({ initialEntries: ["/"] }),
     });
     render(<RouterProvider router={router as never} />);
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Plan" })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Plan & usage" })).toBeTruthy());
     expect(screen.getByText("pilot_free")).toBeTruthy();
+  });
+});
+
+
+const usageFixture: BillingUsageReport = {
+  organization_id: "org_a",
+  renews_at: "2026-11-08T00:00:00Z",
+  charged_ai_micros: 31600000,
+  chat_usage: {
+    range: { from: "2026-10-08T00:00:00Z", to: "2026-11-08T00:00:00Z" },
+    input: 4500000, cached_input: 600000, output: 300000, reasoning_output: 0,
+    tokens: 4800000, turns: 20, unpriced_turns: 0, cost_usd: 21.07,
+  },
+  ai_credits: {
+    balance_micros: 18400000, auto_enabled: true, threshold_cents: 500, price_id: "credit_25",
+    failure: "", in_flight: false, can_auto_fund: false, history: [],
+    packs: [{ price_id: "credit_25", label: "$25 credit pack", usd_cents: 2500 }],
+  },
+  comparison_plans: [
+    { id: "starter", version: 1, name: "Starter", monthly_usd_cents: 4900, features: ["hosted_artifacts"], allowances: { projects: 5, unarchived_issues: 2000, collaboration_bytes: 1073741824 }, price_id: "price_starter" },
+    { id: "growth", version: 1, name: "Growth", monthly_usd_cents: 14900, features: ["hosted_artifacts"], allowances: { projects: 25, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "price_growth" },
+    { id: "scale", version: 1, name: "Scale", monthly_usd_cents: 39900, features: ["hosted_artifacts"], allowances: { projects: 100, unarchived_issues: 50000, collaboration_bytes: 1073741824 }, price_id: "price_scale" },
+  ],
+  can_checkout: true, can_manage: true, can_buy_credits: true, checkout_pending: false,
+};
+
+const planFixture: PlanReport = {
+  organization_id: "org_a", name: "Starter", monthly_usd_cents: 4900,
+  base: { id: "starter", version: 1 }, effective_base: { id: "starter", version: 1 },
+  source: "subscription", revision: 1, features: ["hosted_artifacts"],
+  allowances: { projects: 5, unarchived_issues: 2000, collaboration_bytes: 1073741824, history_records: 2000000, api_mutations: 20000, ingested_events: 20000 },
+  usage: { projects: 4, unarchived_issues: 1742, collaboration_bytes: 431227904, history_records: 1240000, api_mutations: 3120, ingested_events: 20000 },
+  window_ends_at: "2026-10-09T14:00:00Z",
+};
+
+function mockPlanUsage(usage: BillingUsageReport = usageFixture, plan: PlanReport = planFixture) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const path = String(input);
+    if (path.includes("/billing?view=usage")) return new Response(JSON.stringify(usage));
+    if (path.endsWith("/plan")) return new Response(JSON.stringify(plan));
+    return new Response(JSON.stringify({ url: "https://checkout.stripe.com/test" }));
+  });
+}
+
+describe("plan usage meters", () => {
+  it.each([
+    [79, false],
+    [80, true],
+    [100, true],
+  ])("renders the page alert only when capacity or storage reaches 80%% (%s)", async (used, warning) => {
+    const account = OWNER_ACCOUNT.account;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => new Response(JSON.stringify(String(input).includes("/billing?") ? usageFixture : {
+      organization_id: account.organization.id,
+      name: "Starter",
+      monthly_usd_cents: 4900,
+      base: { id: "starter", version: 1 },
+      effective_base: { id: "starter", version: 1 },
+      source: "base",
+      revision: 1,
+      features: ["hosted_artifacts"],
+      allowances: { projects: 100, collaboration_bytes: 1073741824, history_records: 2000000, api_mutations: 20000, ingested_events: 20000 },
+      usage: { projects: used, collaboration_bytes: 431227904, history_records: 1240000, api_mutations: 20000, ingested_events: 20000 },
+      window_ends_at: "2026-10-09T14:00:00Z",
+    })));
+    renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
+    await screen.findByRole("meter", { name: "Projects" });
+    expect(screen.getByRole("meter", { name: "Workspace data" }).getAttribute("aria-valuetext")).toBe("411.25 MB of 1 GB");
+    expect(screen.getByRole("meter", { name: "History" }).getAttribute("aria-valuetext")).toBe("1.24M records of 2M records");
+    const alert = screen.queryByRole("alert");
+    expect(alert !== null).toBe(warning);
+    if (alert !== null) {
+      expect(alert.textContent).toContain("Projects");
+      expect(alert.textContent).not.toContain("API writes");
+      expect(alert.textContent).not.toContain("Events received");
+    }
+    const detailId = screen.getByRole("meter", { name: "API writes" }).getAttribute("aria-describedby")!;
+    expect(document.getElementById(detailId)?.textContent).toContain("Resets");
+    expect(document.getElementById(detailId)?.textContent).not.toContain("when the current window ends");
+  });
+
+  it.each([
+    [431227904, "bytes", "411.25 MB"],
+    [1073741824, "bytes", "1 GB"],
+    [0, "bytes", "0 B"],
+    [1024, "bytes", "1 KB"],
+    [1742, "count", "1,742"],
+    [1240000, "records", "1.24M records"],
+    [2592000, "seconds", "30 days"],
+  ] as const)("formats %s as human %s", (value, unit, expected) => {
+    expect(formatUsageValue(value, unit)).toBe(expected);
+  });
+
+  it.each([
+    [79, "Within limit"],
+    [80, "Approaching limit"],
+    [99, "Approaching limit"],
+    [100, "Limit reached"],
+    [120, "Limit reached"],
+  ])("labels the threshold at %s percent", (used, expected) => {
+    render(<UsageMeter label="Projects" used={Number(used)} limit={100} />);
+    const meter = screen.getByRole("meter", { name: "Projects" });
+    expect(meter.getAttribute("aria-valuenow")).toBe(String(Math.min(Number(used), 100)));
+    expect(meter.getAttribute("aria-valuetext")).toBe(`${used} of 100`);
+    expect(screen.getByText(new RegExp(String(expected)))).toBeTruthy();
+  });
+
+  it("labels an excluded allowance without a reached-limit warning", () => {
+    render(<UsageMeter label="Artifact storage" used={0} limit={0} unit="bytes" notIncludedOn="Free" />);
+    expect(screen.getByRole("meter", { name: "Artifact storage" }).getAttribute("aria-valuetext")).toBe("Not included on Free");
+    expect(screen.queryByText(/Limit reached/)).toBeNull();
+  });
+
+  it.each([
+    [79, 100, 0],
+    [80, 100, 1],
+    [100, 100, 1],
+    [0, 0, 0],
+    [1, 0, 1],
+  ])("only selects capacity or storage at the warning threshold (%s/%s)", (used, limit, count) => {
+    const plan = {
+      allowances: { projects: limit, api_mutations: 100, artifact_retention_seconds: 2592000 },
+      usage: { projects: used, api_mutations: 100, artifact_retention_seconds: 2592000 },
+    } as unknown as PlanReport;
+    const warnings = approachingPlanLimits(plan);
+    expect(warnings).toHaveLength(count);
+    if (count > 0) expect(warnings[0]?.label).toBe("Projects");
+  });
+});
+
+
+describe("plan billing usage", () => {
+  it.each(["owner", "admin", "member", "support"])("shows usage and restricts purchases for %s", async (role) => {
+    mockPlanUsage();
+    const account = OWNER_ACCOUNT.account;
+    renderSidebarNav("/settings/plan", { ...OWNER_ACCOUNT, account: {
+      ...account, actor: { ...account.actor, role: role === "support" ? "owner" : role },
+      support: role === "support" ? { actor: "support@example.test" } : null,
+    } }, <PlanSettings />);
+    await screen.findByText("$31.60");
+    expect(screen.getByText("$18.40")).toBeTruthy();
+    expect(screen.getByText("4.80M")).toBeTruthy();
+    expect(screen.getByText("3.90M input · 600K cached · 300K output")).toBeTruthy();
+    expect(screen.getByText("Auto top-up: $25.00 below $5.00")).toBeTruthy();
+    expect(screen.getByText("2026-10-08 – 2026-11-08")).toBeTruthy();
+    for (const name of ["Upgrade", "Manage billing", "Buy credits", "Move to Growth", "Move to Scale"]) {
+      expect(screen.queryByRole("button", { name }) !== null).toBe(role === "owner");
+    }
+    expect(screen.getByText("Current")).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("Move to Growth for 25 projects and 10,000 open issues");
+    expect(screen.getByRole("alert").textContent).toContain("Open issues");
+    expect(screen.getByRole("alert").textContent).not.toContain("Events received");
+  });
+
+  it.each([
+    ["Move to Growth", "/billing/checkout", "price_growth"],
+    ["Buy credits", "/billing/credits/checkout", "credit_25"],
+    ["Manage billing", "/billing/portal", undefined],
+  ])("opens the existing hosted flow for %s", async (name, endpoint, price) => {
+    const fetch = mockPlanUsage();
+    const assign = vi.fn();
+    vi.stubGlobal("location", { assign, search: "" });
+    renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
+    fireEvent.click(await screen.findByRole("button", { name }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.stripe.com/test"));
+    const call = fetch.mock.calls.find(([input]) => String(input).endsWith(endpoint));
+    expect(call).toBeDefined();
+    const request = call?.[1] as RequestInit;
+    expect(request.method).toBe("POST");
+    const body = JSON.parse(String(request.body));
+    expect(body.price).toBe(price);
+    expect(body.idempotency_key).toBeTruthy();
+  });
+
+  it.each([
+    { can_checkout: false, checkout_pending: false },
+    { can_checkout: true, checkout_pending: true },
+  ])("preserves the existing checkout restriction (%j)", async (restriction) => {
+    mockPlanUsage({ ...usageFixture, ...restriction });
+    renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
+    const button = await screen.findByRole("button", { name: "Move to Growth" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("moves keyboard focus to the plan comparison", async () => {
+    mockPlanUsage();
+    const scroll = vi.fn();
+    vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(scroll);
+    renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "Compare plans" }));
+    expect(document.activeElement?.id).toBe("settings-plan-comparison");
+    expect(scroll).toHaveBeenCalled();
+  });
+
+  it("does not recommend a tier whose storage has the same limit", () => {
+    expect(nextFittingPlan({ ...planFixture, usage: { ...planFixture.usage, collaboration_bytes: 1000000000 } }, usageFixture.comparison_plans)).toBeUndefined();
   });
 });
