@@ -83,6 +83,7 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 // handle runs one tool call. Errors are returned to the model as
 // {"error": ...} and logged; they never end the turn.
 func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
+	t.state.endTextSegment(ctx)
 	result, err := t.execute(ctx, call)
 	if err != nil {
 		if coordinatorSpriteTool(call.Name) || call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) {

@@ -1023,37 +1023,101 @@ func TestConversationCoordinatorProposeIssue(t *testing.T) {
 
 func TestConversationCoordinatorToolMessagesFromUpdates(t *testing.T) {
 	t.Parallel()
-	f := newCoordinatorFixture(t, "toolmessages")
-	f.backend.setRun(func(_ context.Context, _ int, _ runner.AgentToolHandler, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
-		for _, update := range []runner.AgentUpdate{
-			{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-early"},
-			{Type: runner.AgentUpdateToolStarted, ItemID: "item-1", Tool: "shell", Command: "git status " + strings.Repeat("x", 1000)},
-			{Type: runner.AgentUpdateToolCompleted, ItemID: "item-1", Tool: "shell", Status: "completed"},
-			{Type: runner.AgentUpdateMessageDelta, Delta: "done"},
-		} {
-			if err := onUpdate(update); err != nil {
-				return runner.AgentTurnResult{}, err
+	for _, test := range []struct {
+		name        string
+		before      string
+		after       []string
+		toolUpdates bool
+		toolCalls   int
+		want        string
+	}{
+		{name: "tool updates before text", after: []string{"done"}, toolUpdates: true, want: "done"},
+		{name: "text around tool updates", before: "Checking.", after: []string{"All ", "done."}, toolUpdates: true, want: "Checking.\n\nAll done."},
+		{name: "text around Luna tool call", before: "All 6 children will be created in Blocked, matching #32.", after: []string{"Children 1 and 2 can run in parallel. ", "The parent waits for all children."}, toolCalls: 1, want: "All 6 children will be created in Blocked, matching #32.\n\nChildren 1 and 2 can run in parallel. The parent waits for all children."},
+		{name: "consecutive tool calls", before: "Checking.", after: []string{"Done."}, toolCalls: 2, want: "Checking.\n\nDone."},
+		{name: "tool call without preceding text", after: []string{"Done."}, toolCalls: 1, want: "Done."},
+		{name: "tool call without following text", before: "Checking.", toolCalls: 1, want: "Checking."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCoordinatorFixture(t, "toolmessages")
+			f.backend.setRun(func(ctx context.Context, _ int, handle runner.AgentToolHandler, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+				updates := []runner.AgentUpdate{
+					{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-early"},
+					{Type: runner.AgentUpdateMessageDelta, Delta: test.before},
+				}
+				if test.toolUpdates {
+					updates = append(updates,
+						runner.AgentUpdate{Type: runner.AgentUpdateToolStarted, ItemID: "item-1", Tool: "shell", Command: "git status " + strings.Repeat("x", 1000)},
+						runner.AgentUpdate{Type: runner.AgentUpdateToolCompleted, ItemID: "item-1", Tool: "shell", Status: "completed"},
+					)
+				}
+				for _, update := range updates {
+					if err := onUpdate(update); err != nil {
+						return runner.AgentTurnResult{}, err
+					}
+				}
+				for range test.toolCalls {
+					result, err := handle(ctx, runner.AgentToolCall{Name: "load_split_issue_skill", Arguments: json.RawMessage(`{}`)})
+					if err != nil {
+						return runner.AgentTurnResult{}, err
+					}
+					if !result.Success {
+						return runner.AgentTurnResult{}, errors.New(result.Content)
+					}
+				}
+				for _, delta := range test.after {
+					if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: delta}); err != nil {
+						return runner.AgentTurnResult{}, err
+					}
+				}
+				return runner.AgentTurnResult{ThreadID: "thread-early"}, nil
+			})
+			record := f.seed(t, "tools", nil)
+			f.say(t, &record, "check")
+			assistant := f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
+			if assistant.Text != test.want {
+				t.Fatalf("assistant text = %q, want %q", assistant.Text, test.want)
 			}
-		}
-		return runner.AgentTurnResult{ThreadID: "thread-early"}, nil
-	})
-	record := f.seed(t, "tools", nil)
-	f.say(t, &record, "check")
-	f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
-	var tools []conversationMessageRecord
-	for _, message := range f.messages(t, record.ID) {
-		if message.Kind == conversation.MessageTool {
-			tools = append(tools, message)
-		}
-	}
-	if len(tools) != 1 || tools[0].Role != conversation.RoleSystem || tools[0].Delivery != conversation.DeliveryCompleted || !strings.Contains(tools[0].Text, "shell") {
-		t.Fatalf("tool messages = %#v, want one completed system tool message", tools)
-	}
-	if len([]rune(tools[0].Text)) > 500 {
-		t.Fatalf("tool summary length = %d, want at most 500 runes", len([]rune(tools[0].Text)))
-	}
-	if got := f.conversation(t, record.ID).ProviderThreadID; got != "thread-early" {
-		t.Fatalf("thread id = %q, want persisted from the turn update", got)
+			var streamed strings.Builder
+			for _, event := range f.events(t, record.ID) {
+				if event.Type != conversation.EventMessageDelta {
+					continue
+				}
+				var body struct {
+					MessageID string `json:"message_id"`
+					Text      string `json:"text"`
+				}
+				if err := json.Unmarshal(event.Data, &body); err != nil {
+					t.Fatal(err)
+				}
+				if body.MessageID == assistant.ID {
+					streamed.WriteString(body.Text)
+				}
+			}
+			if streamed.String() != test.want {
+				t.Fatalf("streamed text = %q, want %q", streamed.String(), test.want)
+			}
+			var tools []conversationMessageRecord
+			for _, message := range f.messages(t, record.ID) {
+				if message.Kind == conversation.MessageTool {
+					tools = append(tools, message)
+				}
+			}
+			if test.toolUpdates {
+				if len(tools) != 1 || tools[0].Role != conversation.RoleSystem || tools[0].Delivery != conversation.DeliveryCompleted || !strings.Contains(tools[0].Text, "shell") {
+					t.Fatalf("tool messages = %#v, want one completed system tool message", tools)
+				}
+				if len([]rune(tools[0].Text)) > 500 {
+					t.Fatalf("tool summary length = %d, want at most 500 runes", len([]rune(tools[0].Text)))
+				}
+			} else if len(tools) != 0 {
+				t.Fatalf("tool messages = %#v, want none without tool updates", tools)
+			}
+			if got := f.conversation(t, record.ID).ProviderThreadID; got != "thread-early" {
+				t.Fatalf("thread id = %q, want persisted from the turn update", got)
+			}
+		})
 	}
 }
 
