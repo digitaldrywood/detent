@@ -20,11 +20,12 @@ import (
 )
 
 type sqliteStore struct {
-	laneWriteMu sync.Mutex
-	db          *sql.DB
-	queries     *sqlc.Queries
-	path        string
-	generation  atomic.Int64
+	laneWriteMu  sync.Mutex
+	db           *sql.DB
+	queries      *sqlc.Queries
+	path         string
+	generation   atomic.Int64
+	matchProcess func(int, string) (bool, error)
 }
 
 var _ Store = (*sqliteStore)(nil)

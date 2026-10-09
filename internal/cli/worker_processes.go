@@ -71,7 +71,10 @@ func reapWorkerProcessesWithCleanup(
 	var liveForeign []int64
 	if generations, ok := processStore.(store.LiveForeignGenerationReader); ok {
 		liveForeign, err = generations.LiveForeignWorkerGenerations(ctx)
-		if err != nil {
+		var unknown *store.WorkerGenerationLivenessError
+		if errors.As(err, &unknown) {
+			unknown.Log(logger)
+		} else if err != nil {
 			return fmt.Errorf("list live worker generations: %w", err)
 		}
 	}

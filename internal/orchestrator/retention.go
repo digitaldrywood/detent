@@ -96,8 +96,14 @@ func (o *Orchestrator) liveForeignWorkspaceIssues(ctx context.Context) ([]worksp
 		return nil, nil
 	}
 	foreign, err := generations.LiveForeignWorkerGenerations(ctx)
-	if err != nil || len(foreign) == 0 {
+	var unknown *store.WorkerGenerationLivenessError
+	if errors.As(err, &unknown) {
+		unknown.Log(o.logger)
+	} else if err != nil {
 		return nil, err
+	}
+	if len(foreign) == 0 {
+		return nil, nil
 	}
 	attempts, err := o.workAttempts.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: o.cfg.Project.ID})
 	if err != nil {

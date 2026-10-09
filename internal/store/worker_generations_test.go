@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -441,24 +442,132 @@ func TestSQLiteWriteTransactionsBeginImmediate(t *testing.T) {
 
 func TestMigrationLockSerializesAcrossOpens(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "detent.db.migrate.lock")
-	release, err := lockMigrations(t.Context(), path)
-	if err != nil {
-		t.Fatalf("lockMigrations() error = %v", err)
+	tests := []struct {
+		name      string
+		holder    func(string) string
+		contender func(string) string
+	}{
+		{name: "plain paths", holder: plainPath, contender: plainPath},
+		{name: "plain path and uri alias", holder: plainPath, contender: func(path string) string { return "file:" + path + "?mode=rwc" }},
+		{name: "uri and plain path", holder: func(path string) string { return "file://localhost" + path }, contender: plainPath},
+		{name: "plain path with query", holder: plainPath, contender: func(path string) string { return path + "?_pragma=foreign_keys(1)" }},
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 150*time.Millisecond)
-	defer cancel()
-	if _, err := lockMigrations(ctx, path); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("second lockMigrations() error = %v, want deadline exceeded while held", err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "detent.db")
+			holderLock := migrationLockPath(test.holder(path))
+			if holderLock != path+".migrate.lock" || migrationLockPath(test.contender(path)) != holderLock {
+				t.Fatalf("lock paths holder=%q contender=%q, want %q", holderLock, migrationLockPath(test.contender(path)), path+".migrate.lock")
+			}
+			release, err := lockMigrations(t.Context(), holderLock)
+			if err != nil {
+				t.Fatalf("lockMigrations() error = %v", err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 150*time.Millisecond)
+			defer cancel()
+			if blocked, err := Open(ctx, Config{Path: test.contender(path)}); !errors.Is(err, context.DeadlineExceeded) {
+				if blocked != nil {
+					_ = blocked.Close()
+				}
+				t.Fatalf("Open() while migrations locked error = %v, want deadline exceeded", err)
+			}
+			if err := release(); err != nil {
+				t.Fatalf("release() error = %v", err)
+			}
+			opened, err := Open(t.Context(), Config{Path: test.contender(path)})
+			if err != nil {
+				t.Fatalf("Open() after release error = %v", err)
+			}
+			if err := opened.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
-	if err := release(); err != nil {
-		t.Fatalf("release() error = %v", err)
+}
+
+func plainPath(path string) string { return path }
+
+func TestMigrationLockPathSkipsOnlyMemoryDatabases(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		path string
+		want string
+	}{
+		{path: ":memory:"},
+		{path: ""},
+		{path: "file::memory:"},
+		{path: "file::memory:?cache=shared"},
+		{path: "file:shared?mode=memory&cache=shared"},
+		{path: "/data/detent.db", want: "/data/detent.db.migrate.lock"},
+		{path: "file:/data/detent.db?mode=rwc", want: "/data/detent.db.migrate.lock"},
+		{path: "file:///data/detent.db", want: "/data/detent.db.migrate.lock"},
+		{path: "file:/data/my%20detent.db", want: "/data/my detent.db.migrate.lock"},
+		{path: "file:detent.db", want: "detent.db.migrate.lock"},
+	} {
+		if got := migrationLockPath(test.path); got != test.want {
+			t.Errorf("migrationLockPath(%q) = %q, want %q", test.path, got, test.want)
+		}
 	}
-	again, err := lockMigrations(t.Context(), path)
-	if err != nil {
-		t.Fatalf("lockMigrations() after release error = %v", err)
-	}
-	if err := again(); err != nil {
-		t.Fatalf("release() error = %v", err)
+}
+
+func TestUnknownGenerationLivenessIsSurfacedThenRecovered(t *testing.T) {
+	t.Parallel()
+	deadPID, deadStart := exitedProcess(t)
+	for _, test := range []struct {
+		name  string
+		pid   int
+		start string
+	}{
+		{name: "process gone", pid: deadPID, start: deadStart},
+		{name: "identity mismatch", pid: os.Getpid(), start: deadStart},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := newGenerationDatabase(t)
+			now := time.Now().UTC().Truncate(time.Second)
+			foreign := openGenerationStore(t, path, 0)
+			foreignGeneration := registerGeneration(t, foreign, test.pid, test.start)
+			if _, err := foreign.StartWorkAttempt(t.Context(), WorkAttemptStart{
+				ProjectID: "detent", IssueID: "foreign", WorkerType: "implement",
+				StartedAt: now.Add(-time.Hour), LeaseExpiresAt: now.Add(-time.Minute),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			current := openGenerationStore(t, path, 0)
+			inspectErr := errors.New("process table unavailable")
+			current.matchProcess = func(int, string) (bool, error) { return false, inspectErr }
+			registerGeneration(t, current, os.Getpid(), selfProcessStart(t))
+
+			foreignLive, err := current.LiveForeignWorkerGenerations(t.Context())
+			var unknown *WorkerGenerationLivenessError
+			if !errors.As(err, &unknown) || !errors.Is(err, inspectErr) {
+				t.Fatalf("LiveForeignWorkerGenerations() error = %v, want unknown liveness", err)
+			}
+			if !slices.Equal(foreignLive, []int64{foreignGeneration}) || len(unknown.Unknown) != 1 || unknown.Unknown[0].Generation != foreignGeneration || unknown.Unknown[0].PID != test.pid {
+				t.Fatalf("live=%v unknown=%+v, want generation %d pid %d treated live", foreignLive, unknown.Unknown, foreignGeneration, test.pid)
+			}
+			var logs strings.Builder
+			unknown.Log(slog.New(slog.NewTextHandler(&logs, nil)))
+			for _, want := range []string{"worker_generation=" + strconv.FormatInt(foreignGeneration, 10), "pid=" + strconv.Itoa(test.pid), "process table unavailable"} {
+				if !strings.Contains(logs.String(), want) {
+					t.Fatalf("liveness log missing %q: %s", want, logs.String())
+				}
+			}
+			skipped, err := current.TimeoutExpiredWorkAttempts(t.Context(), WorkAttemptTimeout{ProjectID: "detent", Now: now})
+			if err != nil || len(skipped) != 0 {
+				t.Fatalf("timeout with unknown liveness = %+v, %v; want foreign row skipped", skipped, err)
+			}
+
+			current.matchProcess = nil
+			foreignLive, err = current.LiveForeignWorkerGenerations(t.Context())
+			if err != nil || len(foreignLive) != 0 {
+				t.Fatalf("after inspection succeeds live=%v err=%v, want dead", foreignLive, err)
+			}
+			recovered, err := current.TimeoutExpiredWorkAttempts(t.Context(), WorkAttemptTimeout{ProjectID: "detent", Now: now})
+			if err != nil || len(recovered) != 1 || recovered[0].IssueID != "foreign" {
+				t.Fatalf("timeout after inspection = %+v, %v; want foreign row recovered", recovered, err)
+			}
+		})
 	}
 }

@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -34,10 +37,42 @@ func runMigrations(ctx context.Context, db *sql.DB, lockPath string) (err error)
 }
 
 func migrationLockPath(path string) string {
-	if path == "" || path == ":memory:" || strings.HasPrefix(path, "file:") || strings.Contains(path, "?") {
+	filename, ok := sqliteFilename(path)
+	if !ok {
 		return ""
 	}
-	return path + ".migrate.lock"
+	return filename + ".migrate.lock"
+}
+
+func sqliteFilename(path string) (string, bool) {
+	if !strings.HasPrefix(path, "file:") {
+		filename, _, _ := strings.Cut(path, "?")
+		if filename == "" || filename == ":memory:" {
+			return "", false
+		}
+		return filename, true
+	}
+	uri, err := url.Parse(path)
+	if err != nil || uri.Scheme != "file" || uri.Query().Get("mode") == "memory" {
+		return "", false
+	}
+	filename := uri.Path
+	if uri.Opaque != "" {
+		filename, err = url.PathUnescape(uri.Opaque)
+		if err != nil {
+			return "", false
+		}
+	}
+	if filename == "" || filename == ":memory:" {
+		return "", false
+	}
+	if uri.Host != "" && !strings.EqualFold(uri.Host, "localhost") {
+		filename = "//" + uri.Host + "/" + strings.TrimPrefix(filename, "/")
+	}
+	if runtime.GOOS == "windows" && len(filename) >= 3 && filename[0] == '/' && filename[2] == ':' {
+		filename = filename[1:]
+	}
+	return filepath.FromSlash(filename), true
 }
 
 func sqliteDSN(path string) string {
