@@ -182,6 +182,12 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 			return nil, err
 		}
 		if publish {
+			if request.Type == "run.finished" && request.Data.Outcome == "succeeded" && request.Data.Sequence > 0 {
+				issue, err = recordNativeDependencyBlockers(ctx, tx, scope, issue, request.Data.Disposition, now)
+				if err != nil {
+					return nil, err
+				}
+			}
 			data := tracker.CollaborationData{Run: &request.Data}
 			if request.Type == "run.finished" {
 				data.Revision = issue.Revision

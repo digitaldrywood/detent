@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -651,6 +652,36 @@ func cloneBool(value *bool) *bool {
 	}
 	cloned := *value
 	return &cloned
+}
+
+func IssueDependencyRefs(signal *Signal, project string) []string {
+	if signal == nil || signal.Invalid != nil || signal.Status != StatusBlocked || signal.HumanAction != "" || signal.ReasonCode != "" || len(signal.Blockers) == 0 {
+		return nil
+	}
+	var refs []string
+	for _, blocker := range signal.Blockers {
+		predicate := blocker.Predicate
+		if blocker.Owner != BlockerOwnerOrchestrator || blocker.Unverifiable || predicate == nil || predicate.Type != PredicateIssueState {
+			return nil
+		}
+		for _, state := range predicate.States {
+			if !strings.EqualFold(strings.TrimSpace(state), "open") {
+				return nil
+			}
+		}
+		reference := predicate.Identifier
+		if reference == "" {
+			reference = blocker.Ref
+		}
+		ref, err := ParseRef(reference, project)
+		if err != nil || !strings.HasPrefix(ref, project+"#") {
+			return nil
+		}
+		if !slices.Contains(refs, ref) {
+			refs = append(refs, ref)
+		}
+	}
+	return refs
 }
 
 func ParseRef(ref string, repo string) (string, error) {

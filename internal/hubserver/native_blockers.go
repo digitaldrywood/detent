@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"time"
@@ -61,6 +62,35 @@ func resolveNativeBlockerReference(ctx context.Context, q nativeQueryer, scope n
 	return issue, err
 }
 
+func recordNativeDependencyBlockers(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, disposition *tracker.NativeDisposition, now time.Time) (tracker.NativeIssue, error) {
+	if disposition == nil || disposition.HumanAction {
+		return issue, nil
+	}
+	refs := workpad.IssueDependencyRefs(&workpad.Signal{Status: disposition.Status, ReasonCode: disposition.ReasonCode, Blockers: disposition.BlockerEvidence}, string(scope.project))
+	dependencies := make([]tracker.NativeWorkItemID, 0, len(refs))
+	for _, ref := range refs {
+		dependency, err := resolveNativeBlockerReference(ctx, tx, scope, ref)
+		if errors.Is(err, sql.ErrNoRows) || dependency.WorkItemID == issue.WorkItemID {
+			return issue, nil
+		}
+		if err != nil {
+			return issue, err
+		}
+		dependencies = append(dependencies, dependency.WorkItemID)
+	}
+	for _, id := range dependencies {
+		if slices.Contains(issue.Dependencies, id) {
+			continue
+		}
+		updated, err := changeNativeDependencyTx(ctx, tx, scope, string(issue.WorkItemID), tracker.DependencyMutation{ExpectedRevision: issue.Revision, RelatedWorkItemID: id, Operation: "add"}, now)
+		if err != nil {
+			return issue, err
+		}
+		issue = updated
+	}
+	return issue, nil
+}
+
 func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, request tracker.Transition, now time.Time) error {
 	var latest string
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ? ORDER BY fencing_token DESC LIMIT 1`, scope.organization, scope.project, issue.WorkItemID).Scan(&latest); err != nil {
@@ -107,7 +137,8 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 	}
 	_, prior, valid := tracker.RecordedNativeBlockers(issue, []tracker.NativeAttempt{attempt}, history)
 	disposition := attempt.Disposition
-	if !valid || prior != request.State || disposition.HumanAction || disposition.ReasonCode != "" || !disposition.Blockers || len(disposition.BlockerEvidence) == 0 || strings.ReplaceAll(request.ReasonDetail, " ", "_") != "recorded_blocker_recovery" {
+	reason := strings.ReplaceAll(request.ReasonDetail, " ", "_")
+	if !valid || prior != request.State || disposition.HumanAction || disposition.ReasonCode != "" || !disposition.Blockers || len(disposition.BlockerEvidence) == 0 || reason != "recorded_blocker_recovery" && reason != "dependency_auto_unblock" {
 		return nativeInvalid("Recorded blockers do not authorize recovery")
 	}
 	project, err := readNativeProject(ctx, tx, scope)

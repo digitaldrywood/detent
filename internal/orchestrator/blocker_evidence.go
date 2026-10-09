@@ -687,6 +687,14 @@ func (o *Orchestrator) applyRecordedBlockerRecovery(
 	if prior := issue.Metadata["hub_disposition_return_state"]; prior != "" {
 		targetState = prior
 	}
+	if len(workpad.IssueDependencyRefs(issue.WorkpadSignal, dependencyIssueRepo(issue.Identifier))) > 0 && len(dependencies) > 0 {
+		cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
+		if !dependencyBlockersReady(dependencies, cfg, o.cfg.TerminalStates) {
+			return false
+		}
+		signature := dependencyAutoUnblockBlockerSignature(dependencies, cfg, o.cfg.TerminalStates)
+		return o.applyDependencyAutoUnblock(ctx, state, issue, dependencies, signature, targetState, now)
+	}
 	if entry, ok := o.latestWorkflowLaneEntry(ctx, issue); ok && entry.Metadata.BlockedRecovery == nil {
 		if park, found := o.currentBlockedRecoveryPark(ctx, state, issue); found && park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason {
 			targetState = park.TargetState
