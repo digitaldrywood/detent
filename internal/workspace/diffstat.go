@@ -119,7 +119,12 @@ func fetchReviewHead(ctx context.Context, path, fallbackBranch string, issue Iss
 		remote = "https://github.com/" + repository + ".git"
 	}
 	if _, err := runGitAt(ctx, path, "fetch", "--no-write-fetch-head", remote, "+"+sourceRef+":"+remoteRef); err != nil {
-		return "", fmt.Errorf("fetch review head: %w", err)
+		if issue.PullRequestNumber == 0 || branch == "" {
+			return "", fmt.Errorf("fetch review head: %w", err)
+		}
+		if _, branchErr := runGitAt(ctx, path, "fetch", "--no-write-fetch-head", remote, "+refs/heads/"+branch+":"+remoteRef); branchErr != nil {
+			return "", fmt.Errorf("fetch review head: %w", errors.Join(err, branchErr))
+		}
 	}
 	remoteHead, err := runGitAt(ctx, path, "rev-parse", "--verify", remoteRef)
 	if err != nil {
