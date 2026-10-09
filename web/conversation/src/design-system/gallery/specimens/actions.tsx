@@ -86,6 +86,7 @@ const TOGGLE_VARIANTS = keysOf<ToggleVariant>({
   ghost: true,
   segmented: true,
   pill: true,
+  "pill-outline": true,
 });
 
 const TOGGLE_SIZES = keysOf<ToggleSize>({

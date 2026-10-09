@@ -4,7 +4,7 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 One row per catalogued element. The [component contracts](components.md) hold the full contract for each. Status *available* means the component ships in Detent; *proposed* means it is planned and has no source yet; *exception* means a deliberate, documented departure from the shared contract.
 
-Totals: 136 entries; by kind: 51 primitive, 79 composition, 6 surface; by status: 136 available, 0 proposed, 0 exception.
+Totals: 139 entries; by kind: 51 primitive, 81 composition, 7 surface; by status: 139 available, 0 proposed, 0 exception.
 
 | Element | Group | Kind | Status | Source |
 | --- | --- | --- | --- | --- |
@@ -41,6 +41,8 @@ Totals: 136 entries; by kind: 51 primitive, 79 composition, 6 surface; by status
 | [Spinner](components.md#spinner) | Feedback | primitive | available | `src/components/ui/spinner.tsx` |
 | [Skeleton](components.md#skeleton) | Feedback | primitive | available | `src/components/ui/skeleton.tsx` |
 | [Empty state](components.md#empty-state) | Feedback | primitive | available | `src/components/ui/empty.tsx` |
+| [Runner status dot](components.md#runner-status-dot) | Feedback | composition | available | `src/components/RunnerStatusDot.tsx` |
+| [Stage progress](components.md#stage-progress) | Feedback | composition | available | `src/components/StageProgress.tsx` |
 | [Sidebar primitive](components.md#sidebar-primitive) | Navigation | primitive | available | `src/components/ui/sidebar.tsx` |
 | [Scroll area](components.md#scroll-area) | Structure | primitive | available | `src/components/ui/scroll-area.tsx` |
 | [Separator](components.md#separator) | Structure | primitive | available | `src/components/ui/separator.tsx` |
@@ -73,6 +75,7 @@ Totals: 136 entries; by kind: 51 primitive, 79 composition, 6 surface; by status
 | [Open in picker](components.md#open-in-picker) | Workspace | composition | available | `src/components/chat/OpenInPicker.tsx` |
 | [Project scripts control](components.md#project-scripts-control) | Workspace | composition | available | `src/components/ProjectScriptsControl.tsx` |
 | [Sidebar update pill](components.md#sidebar-update-pill) | Workspace | composition | available | `src/components/sidebar/SidebarUpdatePill.tsx` |
+| [Activity page](components.md#activity-page) | Workspace | surface | available | `src/app/activity/ActivityPage.tsx` |
 | [Chat header](components.md#chat-header) | Conversation | composition | available | `src/components/chat/ChatHeader.tsx` |
 | [Conversation timeline](components.md#conversation-timeline) | Conversation | composition | available | `src/app/components/Timeline.tsx` |
 | [Messages timeline](components.md#messages-timeline) | Conversation | composition | available | `src/components/chat/MessagesTimeline.tsx` |
@@ -147,7 +150,7 @@ Totals: 136 entries; by kind: 51 primitive, 79 composition, 6 surface; by status
 
 ## Internal modules
 
-Every module under `src/components` is part of an entry or listed here: 148 of 159 are catalogued (as an entry's source or one of its files) and 11 are internal.
+Every module under `src/components` is part of an entry or listed here: 150 of 161 are catalogued (as an entry's source or one of its files) and 11 are internal.
 
 | Module | Why it is not a catalogued component |
 | --- | --- |
