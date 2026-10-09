@@ -112,6 +112,9 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 				if err := json.Unmarshal(raw, &report); err != nil {
 					t.Fatal(err)
 				}
+				if report.Requests != nil {
+					t.Fatalf("member received tenant-wide traffic: %s", raw)
+				}
 				want := 1
 				if grant == "both" {
 					want = 2
@@ -191,6 +194,19 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 				t.Fatalf("revoked grant %s", response.Body.String())
 			}
 		}
+	}
+
+	m := f.service.requestMetrics
+	m.record(now.Add(-time.Minute), "GET /items/:item", "runner", "runner_report", 200, 10*time.Millisecond)
+	if err := m.flush(t.Context(), now); err != nil {
+		t.Fatal(err)
+	}
+	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
+	f.grant(t, owner, false, false)
+	response, raw := call(owner, operatortool.Reports, map[string]any{})
+	var report nativeAnalyticsReport
+	if err := json.Unmarshal(raw, &report); err != nil || response.Code != http.StatusOK || report.Requests == nil || len(report.Requests.Callers) != 1 || report.Requests.Callers[0].Caller != "runner_report" {
+		t.Fatalf("admin MCP traffic: %s err=%v", response.Body.String(), err)
 	}
 }
 

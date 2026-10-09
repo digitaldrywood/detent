@@ -1030,6 +1030,40 @@ bound and return unavailable on overflow. Native efficiency aggregates and
 unrecorded runtime data remain explicitly unavailable. Hub schema 59 preserves
 prior event history and refuses rollback when new event types would be lost.
 
+Tenant administrators read request traffic at
+`GET /api/v2/organizations/{organization}/diagnostics/requests`. The existing
+Diagnostics and Reports API responses and MCP `reports` response also include
+`requests` for administrators. Project-selected keys and other members do not
+receive tenant-wide traffic data. Admin keys with `all` project access can read
+the API and MCP report.
+
+The report covers the last completed hour, with UTC minute boundaries in
+`from` and `to`. `top_callers` and `top_routes` each return up to 20 rows sorted
+by descending `count`. Caller rows identify `caller_kind` (`runner`, `browser`,
+`mcp`, `ci`, or `anonymous`) and `caller_id`; route rows identify HTTP method
+and Echo route template, with IDs and query strings removed. Each row includes
+`count`, `sum_ms`, `p50_ms`, `p95_ms`, and `max_ms`. Percentiles are nearest-rank
+estimates from merged power-of-two microsecond histograms, bounded by the
+observed maximum; they are not averages of minute percentiles.
+
+Each tenant Hub aggregates requests in memory and flushes every minute to
+`<tenant-database-path>.metrics.sqlite`, using a separate SQLite connection and
+Goose schema. Minute rows retain caller, route, status class and latency for
+14 days. Neither the shared entry nor the host aggregates tenant metrics.
+
+Authenticated runners use a UTC-minute request budget of
+`120 + 60 * effective capacity`, where effective capacity is the minimum of
+the host capacity, runner reported capacity, and runner capacity limit. This
+replaces the hosted `api_mutations` allowance for those runner requests; other
+callers retain the existing allowance. Excess requests return `429` with code
+`runner_request_budget` and `Retry-After` seconds until the next minute. The
+existing health detector opens an instance finding for the runner, including
+its top routes. Claims, lease renewal/release, machine heartbeats and runner
+credential renewal are exempt. Hub clients share the response backoff across
+ordinary requests and downloads, honor seconds and HTTP-date `Retry-After`,
+and allow exempt traffic through during backoff. Mutations are never replayed
+automatically.
+
 Native `analytics_dashboard`, `time_series` and `reports` return a paged
 `failure_signatures` read model per project. It groups recorded terminal errors
 and landing refusals (`conflict`, `base_protected`) within the half-open report

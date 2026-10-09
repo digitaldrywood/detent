@@ -90,6 +90,7 @@ type nativeAnalyticsProject struct {
 	Unavailable          []string                                      `json:"unavailable"`
 }
 type nativeAnalyticsReport struct {
+	Requests       *requestMetricsReport        `json:"requests,omitempty"`
 	OrganizationID string                       `json:"organization_id"`
 	Projects       []nativeAnalyticsProject     `json:"projects"`
 	ObservedAt     time.Time                    `json:"observed_at"`
@@ -116,6 +117,15 @@ func (s *Service) executeAnalyticsRead(ctx context.Context, call operatortool.Ca
 	report, err := s.readAnalyticsReport(ctx, credential, r, w)
 	if err != nil {
 		return operatortool.Result{}, errHubOperatorUnavailable
+	}
+	if call.Name == operatortool.Reports {
+		requests, visible, err := s.adminRequestMetrics(ctx)
+		if err != nil {
+			return operatortool.Result{}, errHubOperatorUnavailable
+		}
+		if visible {
+			report.Requests = &requests
+		}
 	}
 	return hubOperatorResult(report)
 }

@@ -38,17 +38,19 @@ type Config struct {
 }
 
 type Client struct {
-	reads             *nativeReadCache
-	capabilitiesAt    time.Time
-	capabilities      nativeCapabilities
-	capabilitiesMu    sync.Mutex
-	artifactServiceID string
-	artifactBytes     int64
-	nativeLeases      sync.Map
-	runner            *runnerCredentialSource
-	baseURL           *url.URL
-	tokenSource       func() string
-	httpClient        *http.Client
+	requestBudgetMu    sync.Mutex
+	requestBudgetUntil time.Time
+	reads              *nativeReadCache
+	capabilitiesAt     time.Time
+	capabilities       nativeCapabilities
+	capabilitiesMu     sync.Mutex
+	artifactServiceID  string
+	artifactBytes      int64
+	nativeLeases       sync.Map
+	runner             *runnerCredentialSource
+	baseURL            *url.URL
+	tokenSource        func() string
+	httpClient         *http.Client
 }
 
 type Machine struct {
@@ -236,6 +238,9 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := c.waitRequestBudget(ctx, method, path); err != nil {
+		return err
+	}
 	if method != http.MethodGet {
 		c.reads.forget(path)
 		defer c.reads.forget(path)
@@ -284,6 +289,7 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
+	c.observeRequestBudget(response)
 	defer response.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
@@ -377,6 +383,9 @@ func (c *Client) download(ctx context.Context, target string, limit int64) ([]by
 	if !strings.HasPrefix(target, "/") || strings.HasPrefix(target, "//") {
 		return nil, "", fmt.Errorf("hub download target %q is not a Hub path", target)
 	}
+	if err := c.waitRequestBudget(ctx, http.MethodGet, target); err != nil {
+		return nil, "", err
+	}
 	endpoint := *c.baseURL
 	requestPath, requestQuery, _ := strings.Cut(target, "?")
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + requestPath
@@ -394,6 +403,7 @@ func (c *Client) download(ctx context.Context, target string, limit int64) ([]by
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
+	c.observeRequestBudget(response)
 	defer response.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {

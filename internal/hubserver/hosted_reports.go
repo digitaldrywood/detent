@@ -54,6 +54,7 @@ type reportsBucket struct {
 }
 
 type hostedReportsReport struct {
+	Requests    *requestMetricsReport  `json:"requests,omitempty"`
 	Analytics   nativeAnalyticsProject `json:"analytics"`
 	Completion  reportsCompletion      `json:"completion"`
 	Previous    reportsCompletion      `json:"previous"`
@@ -113,6 +114,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 	if err != nil {
 		return out, err
 	}
+	out.Requests = diagnostics.Requests
 	out.Coverage = diagnostics.Coverage
 	for i, source := range out.Coverage {
 		key := map[string]string{
