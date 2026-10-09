@@ -710,7 +710,7 @@ test("answers the search and new-chat keyboard shortcuts", async ({ page }) => {
   const errors = watchConsole(page);
   await openLinkedConversation(page);
 
-  const search = sidebar(page).getByRole("combobox", { name: "Search threads" });
+  const search = sidebar(page).getByRole("searchbox", { name: "Search issues" });
   await expect(search).toBeVisible();
 
   // `/` while the reader is typing is a slash, not a shortcut.
