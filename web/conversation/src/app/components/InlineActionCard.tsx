@@ -8,6 +8,7 @@ export function InlineActionCard({ proposal, text }: {
   text: string;
 }): React.ReactElement {
   const client = useClient();
+  const requiresApproval = proposal.action.kind === "set_runner_tier" || proposal.action.kind === "set_sprite_pool";
   const preferenceKey = `detent:chat-confirmation:${client.bootstrap.actor.principal_id}`;
   const resultKey = `${preferenceKey}:${String(proposal.action.request_id)}`;
   const [confirm, setConfirm] = React.useState(() => {
@@ -36,7 +37,7 @@ export function InlineActionCard({ proposal, text }: {
       setStatus("failed");
     } finally { submitting.current = false; }
   }, [client, proposal, resultKey, status]);
-  React.useEffect(() => { if (!confirm && status === "proposed") void execute(); }, [confirm, status, execute]);
+  React.useEffect(() => { if (!requiresApproval && !confirm && status === "proposed") void execute(); }, [requiresApproval, confirm, status, execute]);
   const argumentsValue = proposal.action.arguments;
   const children = typeof argumentsValue === "object" && argumentsValue !== null && "children" in argumentsValue ? argumentsValue.children : undefined;
   const change = typeof argumentsValue === "object" && argumentsValue !== null
@@ -50,11 +51,11 @@ export function InlineActionCard({ proposal, text }: {
     <p className="text-sm">{text}</p>
     <OperatorActionPreview action={proposal.action} />
     <details><summary className="text-xs cursor-pointer">Proposed change</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(change, null, 2)}</pre></details>
-    <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={confirm} onChange={(event) => {
+    {requiresApproval ? null : <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={confirm} onChange={(event) => {
       const enabled = event.target.checked;
       setConfirm(enabled);
       try { localStorage.setItem(preferenceKey, enabled ? "on" : "off"); } catch { }
-    }} />Ask me to confirm chat changes</label>
+    }} />Ask me to confirm chat changes</label>}
     {error === "" ? null : <p role="alert" className="text-xs">{error}</p>}
     {status === "proposed" ? <div className="flex justify-end gap-2">
       <Button variant="outline" size="sm" onClick={() => {

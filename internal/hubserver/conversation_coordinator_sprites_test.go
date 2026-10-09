@@ -22,7 +22,7 @@ func TestCoordinatorSpriteIntakeInstructions(t *testing.T) {
 		})
 	}
 	previous := -1
-	for _, step := range []string{"Start with get_sprite_pool", "1. Token setup:", "2. How many runners?", "3. Once token and bounds are resolved"} {
+	for _, step := range []string{"Start with get_sprite_pool", "1. Token setup:", "2. How many runners?", "3. Access:", "4. Once token, bounds and access are resolved"} {
 		index := strings.Index(intake, step)
 		if index <= previous {
 			t.Fatalf("missing or out-of-order intake step %q", step)
@@ -56,6 +56,10 @@ func TestCoordinatorSpriteArguments(t *testing.T) {
 		name, tool, arguments string
 		valid                 bool
 	}{
+		{"sandbox", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":"sandbox"}`, true},
+		{"full access", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":"native-trusted"}`, true},
+		{"invalid access", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":"user"}`, false},
+		{"null access", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":null}`, false},
 		{"status", "get_sprite_pool", `{}`, true},
 		{"connector", "set_sprites_token", `{}`, true},
 		{"log", "get_sprite_bootstrap_log", `{}`, true},

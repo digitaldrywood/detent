@@ -154,7 +154,11 @@ func (r *Runner) repairLandingBarrier(ctx context.Context, backend workspace.Lan
 		r.logger.Warn("landing barrier repair preparation failed", "error", err)
 		return
 	}
-	defer os.RemoveAll(scratch)
+	defer func() {
+		if err := os.RemoveAll(scratch); err != nil {
+			r.logger.Warn("landing barrier repair scratch cleanup failed", "error", err)
+		}
+	}()
 	turnCtx, cancel := context.WithTimeout(ctx, barrierRepairDuration)
 	defer cancel()
 	r.logger.Info("landing barrier repair started", "head", head, "backend", selection.BackendID)

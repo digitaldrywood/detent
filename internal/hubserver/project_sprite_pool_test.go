@@ -211,7 +211,15 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 			t.Error(err)
 			return
 		}
-		redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: name, SpriteName: name, DisplayName: name, Capacity: 1, Version: "fixture"}
+		registration := strings.ReplaceAll(string(script), `'"'"'`, "'")
+		tier := "native-trusted"
+		if strings.Contains(registration, "--isolation-tier 'sandbox'") {
+			tier = "sandbox"
+		}
+		if !strings.Contains(registration, "--isolation-tier '"+tier+"'") {
+			t.Error("registration must carry pool access tier")
+		}
+		redemption := runnerauth.Redemption{IsolationTier: tier, Binding: binding, Credential: credential, Hostname: name, SpriteName: name, DisplayName: name, Capacity: 1, Version: "fixture"}
 		response := performHubAPIRequest(t, provider.f.service, http.MethodPost, "/api/v2/organizations/"+string(provider.f.project.OrganizationID)+"/runner-enrollments/redeem", provider.token, redemption)
 		if response.Code != http.StatusCreated {
 			t.Errorf("bootstrap enrollment = %d: %s", response.Code, response.Body.String())
@@ -292,18 +300,25 @@ func TestSpritePoolLifecycle(t *testing.T) {
 		heartbeat                                bool
 		setup                                    *bool
 		emptyBootstrap                           bool
+		tier                                     string
 	}{
-		{"two independent connected members then idle deletion", "", 2, 2, 2, false, nil, false},
-		{"project heartbeat triggers idle cleanup", "", 2, 2, 2, true, nil, false},
-		{"bootstrap failure deletes only its member", "bootstrap", 1, 1, 0, false, nil, false},
-		{"checkpoint failure deletes enrolled member", "checkpoint", 1, 1, 1, false, nil, false},
-		{"billing failure is retained for onboarding", "billing", 1, 1, 0, false, nil, false},
-		{"token rejection is retained for onboarding", "invalid token", 1, 1, 0, false, nil, false},
-		{"empty bootstrap with declared setup", "", 2, 2, 2, false, new(true), true},
-		{"empty bootstrap without setup", "", 2, 2, 2, false, new(false), true},
+		{"sandbox pool", "", 2, 2, 2, false, nil, false, "sandbox"},
+		{"two independent connected members then idle deletion", "", 2, 2, 2, false, nil, false, ""},
+		{"project heartbeat triggers idle cleanup", "", 2, 2, 2, true, nil, false, ""},
+		{"bootstrap failure deletes only its member", "bootstrap", 1, 1, 0, false, nil, false, ""},
+		{"checkpoint failure deletes enrolled member", "checkpoint", 1, 1, 1, false, nil, false, ""},
+		{"billing failure is retained for onboarding", "billing", 1, 1, 0, false, nil, false, ""},
+		{"token rejection is retained for onboarding", "invalid token", 1, 1, 0, false, nil, false, ""},
+		{"empty bootstrap with declared setup", "", 2, 2, 2, false, new(true), true, ""},
+		{"empty bootstrap without setup", "", 2, 2, 2, false, new(false), true, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, scope, provider := newSpritePoolFixture(t, test.failure)
+			if test.tier != "" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE project_sprite_pools SET isolation_tier=? WHERE project_id=?", test.tier, scope.project); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.emptyBootstrap {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE project_sprite_pools SET bootstrap='' WHERE project_id=?", scope.project); err != nil {
 					t.Fatal(err)
@@ -329,6 +344,12 @@ func TestSpritePoolLifecycle(t *testing.T) {
 				}
 				if test.failure == "" && (member.State != "enrolled" || member.RunnerID == "") {
 					t.Fatalf("successful member = %+v", member)
+				}
+				if test.failure == "" {
+					r, err := readRunnerWithClock(t.Context(), f.service.database.db, scope.organization, member.RunnerID, f.service.config.now)
+					if err != nil || r.IsolationTier != view.IsolationTier {
+						t.Fatalf("provisioned tier=%q pool=%q err=%v", r.IsolationTier, view.IsolationTier, err)
+					}
 				}
 				if test.failure == "billing" && !strings.Contains(member.BootstrapLog, "billing enabled") || test.failure == "invalid token" && !strings.Contains(member.BootstrapLog, "replace it through") {
 					t.Fatalf("missing safe failure guidance: %s", member.BootstrapLog)
