@@ -629,7 +629,10 @@ test.describe("the issue page", () => {
     await openWork(page, `/work/i/${hub.fixture.work_item}`);
     await page.getByRole("heading", { level: 1 }).click();
     await page.keyboard.press("l");
-    await expect(page.getByTestId("label-picker")).toBeVisible();
+    const picker = page.getByTestId("label-picker");
+    await expect(picker).toBeVisible();
+    await expect(picker).toHaveCSS("opacity", "1");
+    await expect(picker.getByRole("combobox")).toBeFocused();
     await scan(page, "label picker");
   });
 
@@ -662,19 +665,28 @@ test.describe("the issue page", () => {
     await openWork(page, `/work/i/${hub.fixture.work_item}`);
     const name = `flaky-${Date.now()}`;
 
-    await page.getByTestId("add-label").click();
+    await page.getByRole("heading", { level: 1 }).click();
+    await page.keyboard.press("l");
     const picker = page.getByTestId("label-picker");
-    await picker.getByPlaceholder("Change or add labels…").fill(name);
+    const search = picker.getByRole("combobox");
+    await expect(search).toBeFocused();
+    await search.fill(name);
     // A project with no catalogue offers to make the first label rather than
     // showing an empty list.
-    await picker.getByTestId("create-label").click();
+    const create = picker.getByRole("option", { name: `Create label "${name}"` });
+    await expect(create).toBeVisible();
+    await page.keyboard.press("ArrowDown");
+    await expect(search).toHaveAttribute("aria-activedescendant", await create.getAttribute("id"));
+    await page.keyboard.press("Enter");
     await expect(page.getByTestId("issue-labels").getByTestId(`label-${name}`)).toBeVisible();
     // The picker stays open after a label is attached, as Linear's does:
     // labels are a set, and closing after each one would make three labels
     // three round trips through the trigger.
     await expect(picker).toBeVisible();
+    await expect(page.getByRole("button", { name: "Add label", exact: true })).toBeEnabled();
     await page.keyboard.press("Escape");
     await expect(picker).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Add label", exact: true })).toBeFocused();
 
     // It is in the project's catalogue now, with a dot of its own.
     await page.getByTestId("add-label").click();
