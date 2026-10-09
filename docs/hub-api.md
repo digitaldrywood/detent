@@ -637,10 +637,12 @@ refreshes use this projection without reading Fleet quotas, routing or leases;
 the ordinary `GET /fleet` response retains its full usage contract.
 
 `GET /fleet?include=host_metrics&runner_id={runner}` reads one active runner's
-hourly host history with the same organization membership and runner visibility
-as the fleet. Optional `from` and `to` RFC3339 timestamps select an inclusive
-start and exclusive end, with a positive range of at most 30 days and at most
-720 rows. The default is the last seven days. Expired hours are omitted.
+hourly host history for organization members whose credential can read every
+active project in the organization. Project-restricted credentials receive
+`404` because machine-wide metrics cannot be scoped to visible project activity.
+Removed and other-organization runners also receive `404`. Optional `from` and
+`to` RFC3339 timestamps select an inclusive start and exclusive end, with a
+positive range of at most 30 days and at most 720 rows. The default is the last seven days. Expired hours are omitted.
 Responses include metric counts, sums, extrema and averages derived from each
 metric's count; unavailable averages are omitted.
 
