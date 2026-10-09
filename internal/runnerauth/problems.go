@@ -8,6 +8,7 @@ import (
 )
 
 type Problem struct {
+	ProjectID string    `json:"project_id,omitempty"`
 	Code      string    `json:"code"`
 	Message   string    `json:"message"`
 	FixHint   string    `json:"fix_hint"`
@@ -46,14 +47,14 @@ func NewProblem(code string) Problem {
 }
 
 func ValidateReportedProblems(problems []Problem) error {
-	if len(problems) > 5 {
+	if len(problems) > 100 {
 		return errors.New("too many runner problems")
 	}
 	for i, problem := range problems {
-		if !slices.Contains([]string{"tier_unavailable", "backend_missing", "host_service_unreachable", "settings_invalid", "keep_awake_failed"}, problem.Code) || slices.ContainsFunc(problems[:i], func(p Problem) bool { return p.Code == problem.Code }) {
+		if !slices.Contains([]string{"tier_unavailable", "backend_missing", "host_service_unreachable", "settings_invalid", "keep_awake_failed"}, problem.Code) || slices.ContainsFunc(problems[:i], func(p Problem) bool { return p.Code == problem.Code && p.ProjectID == problem.ProjectID }) {
 			return errors.New("invalid or duplicate runner problem code")
 		}
-		if strings.TrimSpace(problem.Message) == "" || strings.TrimSpace(problem.FixHint) == "" || len(problem.Message) > 1000 || len(problem.FixHint) > 1000 || strings.ContainsAny(problem.Message+problem.FixHint, "\x00") {
+		if strings.TrimSpace(problem.Message) == "" || strings.TrimSpace(problem.FixHint) == "" || len(problem.ProjectID) > 200 || len(problem.Message) > 1000 || len(problem.FixHint) > 1000 || strings.ContainsAny(problem.ProjectID+problem.Message+problem.FixHint, "\x00") {
 			return errors.New("runner problems require a bounded message and fix hint")
 		}
 	}
@@ -63,18 +64,23 @@ func ValidateReportedProblems(problems []Problem) error {
 func MergeProblems(previous, current []Problem, now time.Time) []Problem {
 	result := make([]Problem, 0, len(current))
 	for _, problem := range current {
-		if slices.ContainsFunc(result, func(p Problem) bool { return p.Code == problem.Code }) {
+		if slices.ContainsFunc(result, func(p Problem) bool { return p.Code == problem.Code && p.ProjectID == problem.ProjectID }) {
 			continue
 		}
 		problem.FirstSeen = now
 		for _, old := range previous {
-			if old.Code == problem.Code && !old.FirstSeen.IsZero() {
+			if old.Code == problem.Code && old.ProjectID == problem.ProjectID && !old.FirstSeen.IsZero() {
 				problem.FirstSeen = old.FirstSeen
 				break
 			}
 		}
 		result = append(result, problem)
 	}
-	slices.SortFunc(result, func(a, b Problem) int { return strings.Compare(a.Code, b.Code) })
+	slices.SortFunc(result, func(a, b Problem) int {
+		if order := strings.Compare(a.Code, b.Code); order != 0 {
+			return order
+		}
+		return strings.Compare(a.ProjectID, b.ProjectID)
+	})
 	return result
 }

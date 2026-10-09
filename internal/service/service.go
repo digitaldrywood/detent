@@ -88,8 +88,10 @@ type Inspection struct {
 }
 
 type Definition struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
+	Path              string `json:"path"`
+	Content           string `json:"content"`
+	StandardOutPath   string `json:"standard_out_path,omitempty"`
+	StandardErrorPath string `json:"standard_error_path,omitempty"`
 }
 
 type Manager interface {

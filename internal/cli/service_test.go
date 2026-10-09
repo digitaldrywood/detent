@@ -80,8 +80,10 @@ func TestStartCommandYesInstallsWithoutPrompt(t *testing.T) {
 		Manager: servicepkg.ManagerInfo{Name: servicepkg.ManagerLaunchd, Scope: "user", Unit: "com.digitaldrywood.detent"},
 		State:   servicepkg.StateRunning,
 		Definition: &servicepkg.Definition{
-			Path:    "/Users/name/Library/LaunchAgents/com.digitaldrywood.detent.plist",
-			Content: "<plist/>\n",
+			Path:              "/Users/name/Library/LaunchAgents/com.digitaldrywood.detent.plist",
+			Content:           "<plist/>\n",
+			StandardOutPath:   "/Users/name/.config/detent-runner/logs/service.out.log",
+			StandardErrorPath: "/Users/name/.config/detent-runner/logs/service.err.log",
 		},
 	}}}
 	cmd := NewRootCommand(t.Context(), WithServiceFactory(serviceFactoryFor(runner)))
@@ -95,6 +97,9 @@ func TestStartCommandYesInstallsWithoutPrompt(t *testing.T) {
 	}
 	if len(runner.startOptions) != 1 || !runner.startOptions[0].Install {
 		t.Fatalf("start options = %#v", runner.startOptions)
+	}
+	if !strings.Contains(stdout.String(), "Service logs: /Users/name/.config/detent-runner/logs/service.out.log and /Users/name/.config/detent-runner/logs/service.err.log") {
+		t.Fatalf("service log paths missing: %s", stdout.String())
 	}
 	if strings.Contains(stdout.String(), "[y/N]") {
 		t.Fatalf("output contains prompt:\n%s", stdout.String())

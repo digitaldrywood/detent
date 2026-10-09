@@ -549,6 +549,11 @@ func confirmServiceInstall(cmd *cobra.Command, result servicepkg.StartResult) (b
 }
 
 func writeStartText(out io.Writer, result servicepkg.StartResult) error {
+	if result.Definition != nil && result.Definition.StandardOutPath != "" {
+		if _, err := fmt.Fprintf(out, "Service logs: %s and %s\n", result.Definition.StandardOutPath, result.Definition.StandardErrorPath); err != nil {
+			return err
+		}
+	}
 	switch result.Action {
 	case servicepkg.ActionInstalled:
 		if result.Definition != nil {

@@ -104,6 +104,25 @@ func withRunnerFactoryWithIsolation(
 	isolationPolicy func() (isolation.Policy, error),
 	githubTokenSource ...func() string,
 ) project.Factory {
+	return withRunnerFactoryWithProjectTokens(ctx, deps, sessionStore, load, serviceConnection, serviceTokenSource, isolationPolicy, func(_ context.Context, _ globalconfig.Project, _ workflowconfig.Config) (string, error) {
+		token := deps.GitHubToken
+		if len(githubTokenSource) > 0 && githubTokenSource[0] != nil {
+			token = githubTokenSource[0]()
+		}
+		return strings.TrimSpace(token), nil
+	})
+}
+
+func withRunnerFactoryWithProjectTokens(
+	ctx context.Context,
+	deps project.Dependencies,
+	sessionStore runnerpkg.SessionStore,
+	load func(project.Dependencies) (*project.Project, error),
+	serviceConnection serviceapi.Connection,
+	serviceTokenSource func(string) string,
+	isolationPolicy func() (isolation.Policy, error),
+	tokenSource func(context.Context, globalconfig.Project, workflowconfig.Config) (string, error),
+) project.Factory {
 	var hostCache atomic.Pointer[toolcache.Report]
 	return func(cfg globalconfig.Project) (*project.Project, error) {
 		if preparation, ok := deps.Scheduling.(interface {
@@ -122,9 +141,10 @@ func withRunnerFactoryWithIsolation(
 			workflow.Config.Identity.Normalize()
 		}
 		workflow.Config = project.WithMappedNativeTracker(workflow.Config, deps.Scheduling, project.ID(cfg.ID))
-		token := strings.TrimSpace(deps.GitHubToken)
-		if len(githubTokenSource) > 0 && githubTokenSource[0] != nil {
-			token = strings.TrimSpace(githubTokenSource[0]())
+		credentialConfig := workflow.Config
+		token, err := tokenSource(ctx, cfg, credentialConfig)
+		if err != nil {
+			return nil, fmt.Errorf("%w: project %s: %w", project.ErrConnectorCreation, cfg.ID, connector.NewRetryableError(err.Error()))
 		}
 		workflow.Config = workflow.Config.WithRuntimeGitHubToken(token)
 
@@ -163,6 +183,11 @@ func withRunnerFactoryWithIsolation(
 			}
 		}
 		projectDeps.GitHubToken = token
+		if projectDeps.RefreshGitHubToken == nil {
+			projectDeps.RefreshGitHubToken = func(ctx context.Context) (string, error) {
+				return tokenSource(ctx, cfg, credentialConfig)
+			}
+		}
 
 		if load != nil {
 			return load(projectDeps)

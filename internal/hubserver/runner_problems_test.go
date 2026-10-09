@@ -3,7 +3,6 @@ package hubserver
 import (
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -17,35 +16,25 @@ func TestRunnerProblemsHeartbeat(t *testing.T) {
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 			r.enroll(t)
 			heartbeat := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}}
-			heartbeat["problems"] = []map[string]any{{"code": code, "message": "Tooling needs repair", "fix_hint": "Repair the runner tooling"}}
+			heartbeat["problems"] = []map[string]any{{"project_id": "site", "code": code, "message": "Tooling needs repair", "fix_hint": "Repair the runner tooling"}}
 			post := func() {
 				t.Helper()
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, heartbeat), http.StatusOK)
 			}
-			read := func() (string, []struct {
-				Code      string    `json:"code"`
-				Message   string    `json:"message"`
-				FixHint   string    `json:"fix_hint"`
-				FirstSeen time.Time `json:"first_seen"`
-			}) {
+			read := func() (string, []runnerauth.Problem) {
 				t.Helper()
 				response := performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", testHubAdminToken, nil)
 				requireNativeStatus(t, response, http.StatusOK)
 				var view struct {
-					Health   string `json:"health"`
-					Problems []struct {
-						Code      string    `json:"code"`
-						Message   string    `json:"message"`
-						FixHint   string    `json:"fix_hint"`
-						FirstSeen time.Time `json:"first_seen"`
-					} `json:"problems"`
+					Health   string               `json:"health"`
+					Problems []runnerauth.Problem `json:"problems"`
 				}
 				decodeHubResponse(t, response, &view)
 				return view.Health, view.Problems
 			}
 			post()
 			health, problems := read()
-			if health != "needs_attention" || len(problems) != 1 || problems[0].Code != code || problems[0].FixHint == "" || problems[0].FirstSeen.IsZero() {
+			if health != "needs_attention" || len(problems) != 1 || problems[0].Code != code || problems[0].ProjectID != "site" || problems[0].FixHint == "" || problems[0].FirstSeen.IsZero() {
 				t.Fatalf("health=%s problems=%+v", health, problems)
 			}
 			first := problems[0].FirstSeen

@@ -317,16 +317,23 @@ func TestResolveRuntimeSettingsGitHubTokenPrecedence(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		env         map[string]string
-		cfg         globalconfig.Config
-		workflow    workflowconfig.Config
-		ghToken     string
-		wantToken   string
-		wantSource  string
-		wantVia     string
-		wantGhCalls int
+		name          string
+		env           map[string]string
+		cfg           globalconfig.Config
+		workflow      workflowconfig.Config
+		ghToken       string
+		wantToken     string
+		wantSource    string
+		wantVia       string
+		wantGhCalls   int
+		deferProjects bool
 	}{
+		{
+			name:          "runner startup defers gh authentication to projects",
+			cfg:           githubRuntimeConfig("gh"),
+			workflow:      workflowconfig.Config{Tracker: workflowconfig.Tracker{Kind: "github"}},
+			deferProjects: true,
+		},
 		{
 			name: "environment wins before config and tracker",
 			env: map[string]string{
@@ -376,7 +383,8 @@ func TestResolveRuntimeSettingsGitHubTokenPrecedence(t *testing.T) {
 
 			ghCalls := 0
 			got, err := resolveRuntimeSettings(context.Background(), runtimeInput{
-				Config: &tt.cfg,
+				Config:                 &tt.cfg,
+				DeferProjectValidation: tt.deferProjects,
 			}, runtimeDeps{
 				lookupEnv: mapLookup(tt.env),
 				ghAuthToken: func(context.Context) (string, error) {
@@ -987,6 +995,28 @@ func TestGlobalGitHubTokenDefaultsWorkerCredential(t *testing.T) {
 			effective := doctorWorkflowConfigWithRuntimeGitHubToken(cfg, runtimeGlobalGitHubToken(token))
 			if effective.Worker.GitHubToken != tc.want {
 				t.Fatal("effective worker credential does not match expected source")
+			}
+		})
+	}
+}
+
+func TestGHAuthFailureOmitsCommandOutput(t *testing.T) {
+	for _, stage := range []string{"status", "token"} {
+		t.Run(stage, func(t *testing.T) {
+			dir := t.TempDir()
+			name := "gh"
+			body := "#!/bin/sh\nif [ \"$2\" = \"" + stage + "\" ]; then printf private-token; printf private-token >&2; exit 1; fi\n"
+			if runtime.GOOS == "windows" {
+				name = "gh.bat"
+				body = "@echo off\r\nif \"%2\"==\"" + stage + "\" (\r\n echo private-token\r\n echo private-token 1>&2\r\n exit /b 1\r\n)\r\n"
+			}
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			token, err := runGHAuthToken(t.Context(), nil)
+			if err == nil || token != "" || strings.Contains(err.Error(), "private-token") || !strings.Contains(err.Error(), "gh auth "+stage+" failed") {
+				t.Fatalf("authentication failure leaked output or lost its stage: %v", err)
 			}
 		})
 	}

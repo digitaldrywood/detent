@@ -17,6 +17,7 @@ func TestSystemdUnitIncludesRuntimeAndShutdownSettings(t *testing.T) {
 		BinaryPath: "/opt/Detent Release/detent",
 		Arguments:  []string{"--config", "/home/user/.config/detent/global.yaml", "--port", "4100", "--headless"},
 		Path:       `/home/user/bin:/usr/bin:%h/bin`,
+		ConfigPath: "/home/user/.config/detent-runner/global.yaml",
 	})
 	for _, want := range []string{
 		`ExecStart="/opt/Detent Release/detent" "--config" "/home/user/.config/detent/global.yaml" "--port" "4100" "--headless"`,
@@ -25,6 +26,9 @@ func TestSystemdUnitIncludesRuntimeAndShutdownSettings(t *testing.T) {
 		"Wants=network-online.target",
 		`Environment="DETENT_SERVICE_MANAGER=systemd"`,
 		"Restart=on-failure",
+		"RestartSec=60",
+		`StandardOutput="append:/home/user/.config/detent-runner/logs/service.out.log"`,
+		`StandardError="append:/home/user/.config/detent-runner/logs/service.err.log"`,
 		"KillMode=mixed",
 		"TimeoutStopSec=infinity",
 		"WantedBy=default.target",
@@ -150,7 +154,7 @@ func TestSystemdInstallWritesEnablesAndStarts(t *testing.T) {
 	cfg := normalizeConfig(Config{
 		UserSystemdPath: path,
 		BinaryPath:      "/usr/local/bin/detent",
-		ConfigPath:      "/home/user/.config/detent/global.yaml",
+		ConfigPath:      filepath.Join(t.TempDir(), "global.yaml"),
 		RunCommand: func(_ context.Context, name string, args ...string) (string, error) {
 			commands = append(commands, append([]string{name}, args...))
 			return "", nil
@@ -163,6 +167,11 @@ func TestSystemdInstallWritesEnablesAndStarts(t *testing.T) {
 	}
 	if definition.Path != path {
 		t.Fatalf("definition path = %q, want %q", definition.Path, path)
+	}
+	for _, logPath := range []string{definition.StandardOutPath, definition.StandardErrorPath} {
+		if !regularFile(logPath) {
+			t.Fatalf("service log missing: %s", logPath)
+		}
 	}
 	if err := manager.Start(t.Context()); err != nil {
 		t.Fatalf("Start() error = %v", err)

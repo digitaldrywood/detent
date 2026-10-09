@@ -124,6 +124,23 @@ launchd agent keeps a synced copy current:
 On Linux, a systemd user timer calling the same command is equivalent.
 
 
+## Runner service logs
+
+`detent start` and runner registration install launchd or systemd services with
+stdout and stderr appended to `logs/service.out.log` and `logs/service.err.log`
+beside the runner's global config. With the default runner config, these are
+`~/.config/detent-runner/logs/service.out.log` and
+`~/.config/detent-runner/logs/service.err.log`. Installation prints both paths.
+Failed service starts are throttled to one restart per minute by the service
+manager.
+
+Startup validation is project-specific. A project with unusable tracker
+credentials reports its error and repair command through runner problems while
+other projects continue serving work. Credential failures use the existing
+project retry path, so repairing GitHub CLI authentication allows the project
+to start without restarting the runner. If every configured project fails,
+the runner reports its problems to the Hub before exiting non-zero.
+
 ## Codex disk retention
 
 Detent retains seven days of Codex feedback log rows in the `.detent-worker`
