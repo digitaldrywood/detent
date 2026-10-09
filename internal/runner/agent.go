@@ -691,7 +691,7 @@ func (r *Runner) prepareMergeFastPath(
 	}
 	// With a local status to post, the clean path runs the gate on the head
 	// it pushes, so the status names a head Detent validated itself.
-	opts := workspace.MergePrepareOptions{LandingMode: gateConfig.LandingMode, ValidationCommand: gateConfig.Run, ValidateHead: gateConfig.LocalStatus != ""}
+	opts := workspace.MergePrepareOptions{IssueDescription: req.Issue.Description, LandingMode: gateConfig.LandingMode, ValidationCommand: gateConfig.Run, ValidateHead: gateConfig.LocalStatus != ""}
 	if req.Issue.PullRequest != nil {
 		opts.TargetBranch = strings.TrimSpace(req.Issue.PullRequest.BaseRef)
 		opts.ExpectedRemoteHead = strings.TrimSpace(req.Issue.PullRequest.HeadSHA)
@@ -731,12 +731,13 @@ func (r *Runner) prepareMergeFastPath(
 
 func mergePrecheckFromWorkspace(precheck workspace.MergePrepareResult) MergePrecheck {
 	return MergePrecheck{
-		ConflictPaths: append([]string(nil), precheck.ConflictPaths...),
-		Status:        string(precheck.Status),
-		Message:       precheck.Message,
-		DiffStats:     diffStatsFromWorkspace(precheck.DiffStat),
-		HeadChanged:   precheck.HeadChanged,
-		HeadSHA:       precheck.HeadSHA,
+		ConflictPaths:        append([]string(nil), precheck.ConflictPaths...),
+		TargetCommitSubjects: append([]string(nil), precheck.TargetCommitSubjects...),
+		Status:               string(precheck.Status),
+		Message:              precheck.Message,
+		DiffStats:            diffStatsFromWorkspace(precheck.DiffStat),
+		HeadChanged:          precheck.HeadChanged,
+		HeadSHA:              precheck.HeadSHA,
 	}
 }
 
@@ -786,6 +787,9 @@ func (r *Runner) verifyMergeFallback(
 		result.MergeFallbackFindings += "\nDeterministic validation failed: " + err.Error()
 		return result, nil
 	}
+	if len(precheck.Findings) > 0 {
+		result.MergeFallbackFindings += "\n" + strings.Join(precheck.Findings, "\n")
+	}
 	converted := mergePrecheckFromWorkspace(precheck)
 	result.MergePrecheck = &converted
 	if precheck.Status != workspace.MergePrepareStatusClean || strings.TrimSpace(precheck.HeadSHA) == "" {
@@ -820,6 +824,7 @@ func cloneMergePrecheck(precheck *MergePrecheck) *MergePrecheck {
 	}
 	cloned := *precheck
 	cloned.ConflictPaths = append([]string(nil), precheck.ConflictPaths...)
+	cloned.TargetCommitSubjects = append([]string(nil), precheck.TargetCommitSubjects...)
 	return &cloned
 }
 
@@ -1771,20 +1776,21 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	promptOptions := PromptOptions{
-		Attempt:              &attempt,
-		WorkAttemptID:        req.WorkAttemptID,
-		Generation:           req.Generation,
-		PlanOnly:             mode == RunModePlan,
-		MergeFallback:        mergeFallback,
-		MergePrecheckStatus:  mergePrecheck.Status,
-		MergePrecheckMessage: mergePrecheck.Message,
-		WorkspacePath:        info.Path,
-		Branch:               info.Branch,
-		DispatchSourceState:  req.DispatchSourceState,
-		DispatchTargetState:  req.DispatchTargetState,
-		AvailableSkills:      availableSkills,
-		PriorAttempt:         req.PriorAttempt,
-		RecoveryState:        promptRecoveryState,
+		Attempt:                   &attempt,
+		WorkAttemptID:             req.WorkAttemptID,
+		Generation:                req.Generation,
+		PlanOnly:                  mode == RunModePlan,
+		MergeFallback:             mergeFallback,
+		MergePrecheckStatus:       mergePrecheck.Status,
+		MergePrecheckMessage:      mergePrecheck.Message,
+		MergeTargetCommitSubjects: mergePrecheck.TargetCommitSubjects,
+		WorkspacePath:             info.Path,
+		Branch:                    info.Branch,
+		DispatchSourceState:       req.DispatchSourceState,
+		DispatchTargetState:       req.DispatchTargetState,
+		AvailableSkills:           availableSkills,
+		PriorAttempt:              req.PriorAttempt,
+		RecoveryState:             promptRecoveryState,
 	}
 	role := runRole(req.Mode, req.Issue)
 	routeRole := agentRuntime.effectiveRunRole(role)
@@ -1801,6 +1807,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	modelProvider, serviceTier, configuredEffort := agentTurnIdentityOptions(backendConfig)
 	baseModel := effectiveModel("", selection.Model, agentRuntime.defaultModelForRole(role))
 	baseEnvironment := r.withGoBudget(info.Path, workerServiceEnvironment(mode, r.serviceConnection, info, workspaceIssue))
+	if mergeFallback {
+		baseEnvironment.Variables["GIT_CONFIG_PARAMETERS"] = strings.TrimSpace(r.lookupEnv("GIT_CONFIG_PARAMETERS") + " 'merge.conflictStyle'='zdiff3'")
+	}
 	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
 		Workspace:   info.Path,
 		Environment: baseEnvironment,
@@ -2326,6 +2335,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		result, turnErr = r.verifyMergeFallback(context.WithoutCancel(ctx), runWorkspace, info, workspaceIssue, workspace.MergePrepareOptions{
 			TargetBranch:       targetBranch,
 			VerifyResolution:   true,
+			IssueDescription:   req.Issue.Description,
 			LandingMode:        gate.Effective(workflow.Config.Gate).LandingMode,
 			ValidationCommand:  gate.Effective(workflow.Config.Gate).Run,
 			ExpectedRemoteHead: expectedRemoteHead,

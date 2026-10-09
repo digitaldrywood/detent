@@ -120,10 +120,15 @@ func (l *LocalGit) PrepareMerge(
 				abortErr,
 			)
 		}
+		subjects, subjectErr := mergeTargetCommitSubjects(ctx, normalized.Path, originalHead, targetRef, conflictPaths)
+		if subjectErr != nil {
+			return MergePrepareResult{}, subjectErr
+		}
 		return MergePrepareResult{
-			ConflictPaths: conflictPaths,
-			Status:        MergePrepareStatusConflict,
-			Message:       commandErrorOutput(err),
+			TargetCommitSubjects: subjects,
+			ConflictPaths:        conflictPaths,
+			Status:               MergePrepareStatusConflict,
+			Message:              commandErrorOutput(err),
 		}, nil
 	}
 
@@ -332,6 +337,17 @@ func (l *LocalGit) prepareResolvedMerge(ctx context.Context, info Info, issue Is
 			return rejectMergeHistory(ctx, info.Path, remoteHead, err)
 		}
 		return MergePrepareResult{}, err
+	}
+	prHead := strings.TrimSpace(opts.ExpectedRemoteHead)
+	if prHead == "" {
+		prHead = remoteHead
+	}
+	findings, err := missingMergeGoDeclarations(ctx, info.Path, head, base, prHead, opts.IssueDescription)
+	if err != nil {
+		return MergePrepareResult{}, err
+	}
+	if len(findings) > 0 {
+		return MergePrepareResult{Status: MergePrepareStatusConflict, Message: "merge resolution removes unexplained Go declarations", Findings: findings}, nil
 	}
 	if err := l.validateMergeResolution(ctx, info, issue, opts.ValidationCommand); err != nil {
 		return MergePrepareResult{}, err

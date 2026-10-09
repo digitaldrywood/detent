@@ -921,68 +921,96 @@ func TestLocalGitPrepareMergeAbortsConflictingRebase(t *testing.T) {
 	}
 
 	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		commits int
+	}{
+		{name: "target intent", commits: 1},
+		{name: "bounded target history", commits: 42},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
 
-	source := initSourceRepo(t)
-	remote := initBareRemote(t)
-	runGit(t, source, "remote", "add", "origin", remote)
-	runGit(t, source, "push", "-u", "origin", "main")
+			root := filepath.Join(t.TempDir(), "workspaces")
+			backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+				Root:       root,
+				SourceRoot: source,
+				AutoBranch: true,
+			})
+			if err != nil {
+				t.Fatalf("NewBackend() error = %v", err)
+			}
+			preparer, ok := backend.(MergePreparer)
+			if !ok {
+				t.Fatal("backend does not implement MergePreparer")
+			}
+			issue := Issue{Identifier: "DD-CONFLICT"}
+			info, err := backend.Create(context.Background(), issue)
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("feature\n"), 0o600); err != nil {
+				t.Fatalf("write feature README: %v", err)
+			}
+			runGit(t, info.Path, "add", "README.md")
+			runGit(t, info.Path, "commit", "-m", "feature conflict")
 
-	root := filepath.Join(t.TempDir(), "workspaces")
-	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
-		Root:       root,
-		SourceRoot: source,
-		AutoBranch: true,
-	})
-	if err != nil {
-		t.Fatalf("NewBackend() error = %v", err)
-	}
-	preparer, ok := backend.(MergePreparer)
-	if !ok {
-		t.Fatal("backend does not implement MergePreparer")
-	}
-	issue := Issue{Identifier: "DD-CONFLICT"}
-	info, err := backend.Create(context.Background(), issue)
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("feature\n"), 0o600); err != nil {
-		t.Fatalf("write feature README: %v", err)
-	}
-	runGit(t, info.Path, "add", "README.md")
-	runGit(t, info.Path, "commit", "-m", "feature conflict")
+			if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("main\n"), 0o600); err != nil {
+				t.Fatalf("write main README: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(source, "other.txt"), []byte("unrelated"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, source, "add", "other.txt")
+			runGit(t, source, "commit", "-m", "unrelated target behavior")
+			runGit(t, source, "add", "README.md")
+			runGit(t, source, "commit", "-m", "main conflict")
+			for n := 1; n < tt.commits; n++ {
+				if err := os.WriteFile(filepath.Join(source, "README.md"), []byte(fmt.Sprintf("target %d\n", n)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, source, "add", "README.md")
+				runGit(t, source, "commit", "-m", fmt.Sprintf("target conflict %d", n))
+			}
+			runGit(t, source, "push", "origin", "main")
 
-	if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("main\n"), 0o600); err != nil {
-		t.Fatalf("write main README: %v", err)
-	}
-	runGit(t, source, "add", "README.md")
-	runGit(t, source, "commit", "-m", "main conflict")
-	runGit(t, source, "push", "origin", "main")
-
-	result, err := preparer.PrepareMerge(context.Background(), info, issue, MergePrepareOptions{})
-	if err != nil {
-		t.Fatalf("PrepareMerge() error = %v", err)
-	}
-	if result.Status != MergePrepareStatusConflict {
-		t.Fatalf("PrepareMerge() status = %q, want conflict", result.Status)
-	}
-	if len(result.ConflictPaths) != 1 || result.ConflictPaths[0] != "README.md" {
-		t.Fatalf("conflict paths = %v, want README.md", result.ConflictPaths)
-	}
-	if got := strings.TrimSpace(runGit(t, info.Path, "status", "--short")); got != "" {
-		t.Fatalf("status after aborted rebase = %q, want clean", got)
-	}
-	if got := strings.TrimSpace(runGit(t, info.Path, "branch", "--show-current")); got != info.Branch {
-		t.Fatalf("branch after aborted rebase = %q, want %q", got, info.Branch)
-	}
-	if got := readFile(t, filepath.Join(info.Path, "README.md")); got != "feature\n" {
-		t.Fatalf("README after aborted rebase = %q, want feature branch content", got)
-	}
-	inProgress, err := rebaseInProgress(context.Background(), info.Path)
-	if err != nil {
-		t.Fatalf("rebaseInProgress() error = %v", err)
-	}
-	if inProgress {
-		t.Fatal("rebase still in progress after PrepareMerge conflict")
+			result, err := preparer.PrepareMerge(context.Background(), info, issue, MergePrepareOptions{})
+			if err != nil {
+				t.Fatalf("PrepareMerge() error = %v", err)
+			}
+			if result.Status != MergePrepareStatusConflict {
+				t.Fatalf("PrepareMerge() status = %q, want conflict", result.Status)
+			}
+			if tt.commits == 1 && !slices.Equal(result.TargetCommitSubjects, []string{"main conflict"}) {
+				t.Fatalf("target commit subjects = %v", result.TargetCommitSubjects)
+			}
+			if tt.commits > 40 && (len(result.TargetCommitSubjects) != 41 || result.TargetCommitSubjects[0] != "target conflict 41" || result.TargetCommitSubjects[40] != "[additional target commits truncated]") {
+				t.Fatalf("target commit truncation = %v", result.TargetCommitSubjects)
+			}
+			if len(result.ConflictPaths) != 1 || result.ConflictPaths[0] != "README.md" {
+				t.Fatalf("conflict paths = %v, want README.md", result.ConflictPaths)
+			}
+			if got := strings.TrimSpace(runGit(t, info.Path, "status", "--short")); got != "" {
+				t.Fatalf("status after aborted rebase = %q, want clean", got)
+			}
+			if got := strings.TrimSpace(runGit(t, info.Path, "branch", "--show-current")); got != info.Branch {
+				t.Fatalf("branch after aborted rebase = %q, want %q", got, info.Branch)
+			}
+			if got := readFile(t, filepath.Join(info.Path, "README.md")); got != "feature\n" {
+				t.Fatalf("README after aborted rebase = %q, want feature branch content", got)
+			}
+			inProgress, err := rebaseInProgress(context.Background(), info.Path)
+			if err != nil {
+				t.Fatalf("rebaseInProgress() error = %v", err)
+			}
+			if inProgress {
+				t.Fatal("rebase still in progress after PrepareMerge conflict")
+			}
+		})
 	}
 }
 
@@ -3147,14 +3175,38 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		before     string
-		gate       string
-		wantError  string
-		wantStage  string
-		wantPushed bool
-		mode       string
+		name             string
+		before           string
+		gate             string
+		wantError        string
+		wantStage        string
+		wantPushed       bool
+		mode             string
+		resolvedGo       string
+		description      string
+		wantMissing      string
+		prGo             string
+		targetGo         string
+		goFile           string
+		moveFile         bool
+		deleteFile       bool
+		wantMissingCount int
 	}{
+		{name: "file rename preserves both parents", moveFile: true, resolvedGo: "package example\nfunc PR() {}\nfunc Target() {}\n", wantPushed: true},
+		{name: "deleted file loses both parents", deleteFile: true, resolvedGo: "deleted", wantMissing: "PR", wantMissingCount: 2},
+		{name: "invalid Go resolution", resolvedGo: "package example\nCUSTOMER_PRIVATE_CONTENT", wantError: "cannot parse Go declarations"},
+		{name: "drops PR function", resolvedGo: "package example\nfunc Target() {}\n", wantMissing: "PR"},
+		{name: "drops target function", resolvedGo: "package example\nfunc PR() {}\n", wantMissing: "Target"},
+		{name: "preserves both parents", resolvedGo: "package example\nfunc PR() {}\nfunc Target() {}\n", wantPushed: true},
+		{name: "renames a function", resolvedGo: "package example\nfunc Renamed() {}\nfunc Target() {}\n", description: "Rename `PR` to `Renamed`.", wantPushed: true},
+		{name: "authorized removal", resolvedGo: "package example\nfunc PR() {}\n", description: "Remove `Target`.", wantPushed: true},
+		{name: "negated removal", resolvedGo: "package example\nfunc PR() {}\n", description: "Do not remove `Target`.", wantMissing: "Target"},
+		{name: "drops generic receiver method", targetGo: "package example\ntype Widget[T any] struct{}\nfunc (w *Widget[T]) Save() {}\n", resolvedGo: "package example\nfunc PR() {}\ntype Widget[T any] struct{}\n", wantMissing: "Widget.Save"},
+		{name: "drops target test", goFile: "example_test.go", targetGo: "package example\nimport \"testing\"\nfunc TestTarget(t *testing.T) {}\n", resolvedGo: "package example\nfunc PR() {}\n", wantMissing: "TestTarget"},
+		{name: "rename without replacement", resolvedGo: "package example\nfunc Target() {}\n", description: "Rename `PR` to `Renamed`.", wantMissing: "PR"},
+		{name: "conditional removal is ambiguous", resolvedGo: "package example\nfunc PR() {}\n", description: "Remove `Target` if unused.", wantMissing: "Target"},
+		{name: "shorter fence cannot authorize removal", resolvedGo: "package example\nfunc PR() {}\n", description: "Example:\n````\n```\nRemove `Target`.\n````", wantMissing: "Target"},
+		{name: "removal mentioned as an example", resolvedGo: "package example\nfunc PR() {}\n", description: "Example:\n```\nRemove `Target`.\n```", wantMissing: "Target"},
 		{name: "rolling resolved head skips the gate", mode: gate.LandingRollingBarrier, gate: "exit 19", wantPushed: true},
 		{name: "resolved committed head", wantPushed: true},
 		{name: "already pushed head", before: "push"},
@@ -3172,6 +3224,18 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			goFile := tt.goFile
+			if goFile == "" {
+				goFile = "example.go"
+			}
+			prGo := tt.prGo
+			if prGo == "" {
+				prGo = "package example\nfunc PR() {}\n"
+			}
+			targetGo := tt.targetGo
+			if targetGo == "" {
+				targetGo = "package example\nfunc Target() {}\n"
+			}
 			source := initSourceRepo(t)
 			remote := initBareRemote(t)
 			runGit(t, source, "remote", "add", "origin", remote)
@@ -3187,8 +3251,36 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if tt.resolvedGo != "" {
+				if err := os.WriteFile(filepath.Join(info.Path, goFile), []byte(prGo), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, info.Path, "add", goFile)
+				runGit(t, info.Path, "commit", "-m", "PR behavior")
+				if err := os.WriteFile(filepath.Join(source, goFile), []byte(targetGo), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, source, "add", goFile)
+				runGit(t, source, "commit", "-m", "target behavior")
+				runGit(t, source, "push", "origin", "main")
+			}
 			runGit(t, info.Path, "push", "origin", "HEAD:"+info.Branch)
 			expectedRemote := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			if tt.resolvedGo != "" {
+				runGit(t, info.Path, "merge", "-s", "ours", "--no-edit", "main")
+				if tt.deleteFile {
+					runGit(t, info.Path, "rm", goFile)
+				} else {
+					if tt.moveFile {
+						runGit(t, info.Path, "mv", goFile, "renamed.go")
+						goFile = "renamed.go"
+					}
+					if err := os.WriteFile(filepath.Join(info.Path, goFile), []byte(tt.resolvedGo), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					runGit(t, info.Path, "add", goFile)
+				}
+			}
 			runGit(t, info.Path, "commit", "--allow-empty", "-m", "resolved")
 			head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 			mutateRemote := func(branch string) {
@@ -3229,9 +3321,31 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 				}
 			}
 			result, err := backend.(MergePreparer).PrepareMerge(t.Context(), info, issue, MergePrepareOptions{
-				LandingMode: tt.mode, TargetBranch: "main", VerifyResolution: true, ValidationCommand: command, ExpectedRemoteHead: expectedRemote,
+				LandingMode: tt.mode, TargetBranch: "main", VerifyResolution: true, ValidationCommand: command, ExpectedRemoteHead: expectedRemote, IssueDescription: tt.description,
 			})
+			if tt.wantMissing != "" {
+				count := tt.wantMissingCount
+				if count == 0 {
+					count = 1
+				}
+				if len(result.Findings) != count {
+					t.Fatalf("missing declarations = %v, want %d", result.Findings, count)
+				}
+				if err != nil || result.Status != MergePrepareStatusConflict || !strings.Contains(strings.Join(result.Findings, "\n"), tt.wantMissing) {
+					t.Fatalf("missing declaration verification = %#v, %v", result, err)
+				}
+				if got := strings.TrimSpace(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch)); got != remoteBefore {
+					t.Fatal("published a lossy resolution")
+				}
+				if out, _ := runGitAt(t.Context(), info.Path, "config", "--get", "detent.validation"); out != "" {
+					t.Fatal("ran gate before refusing loss")
+				}
+				return
+			}
 			if tt.wantError != "" {
+				if err != nil && strings.Contains(err.Error(), "CUSTOMER_PRIVATE_CONTENT") {
+					t.Fatal("error exposed customer content")
+				}
 				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
 					t.Fatalf("PrepareMerge() = %#v, %v; want error containing %q", result, err, tt.wantError)
 				}
