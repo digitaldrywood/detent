@@ -142,7 +142,7 @@ func TestHostedChangePolicyJourney(t *testing.T) {
 			}
 			approve.IdempotencyKey = "stale-expected"
 			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/change-review-policy", approve), http.StatusConflict)
-			response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Publish a Change", State: "Todo"})
+			response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Publish a Change", Body: nativeContractTestBody, State: "Todo"})
 			requireNativeStatus(t, response, http.StatusOK)
 			var issue tracker.NativeIssue
 			decodeHubResponse(t, response, &issue)

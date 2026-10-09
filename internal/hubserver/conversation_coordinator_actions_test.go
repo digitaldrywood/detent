@@ -74,7 +74,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if outcome == "number resolution" {
 					seedArchiveIssues(t, f.service, nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}, 18, "Todo")
 				}
-				response := f.request(t, u, http.MethodPost, f.base+"/work-items", map[string]any{"idempotency_key": "luna-issue", "title": "Original issue", "body": "Original body", "state": "Todo", "labels": []string{"original"}})
+				response := f.request(t, u, http.MethodPost, f.base+"/work-items", map[string]any{"idempotency_key": "luna-issue", "title": "Original issue", "body": nativeContractTestBody, "state": "Todo", "labels": []string{"original"}})
 				requireNativeStatus(t, response, http.StatusOK)
 				var issue tracker.NativeIssue
 				decodeHubResponse(t, response, &issue)
@@ -624,7 +624,7 @@ func assertCoordinatorEffect(t *testing.T, f hostedSecurityFixture, id tracker.N
 	case operatortool.EditItem:
 		issue, _, readErr := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project}, string(id))
 		err, actual = readErr, issue.Title == "Edited by Luna" && issue.Body == "" && issue.Priority != nil && *issue.Priority == 2 && len(issue.Labels) == 1 && issue.Labels[0] == "approved"
-		if !changed && (issue.Title != "Original issue" || issue.Body != "Original body" || issue.Priority != nil || len(issue.Labels) != 1 || issue.Labels[0] != "original") {
+		if !changed && (issue.Title != "Original issue" || issue.Body != nativeContractTestBody || issue.Priority != nil || len(issue.Labels) != 1 || issue.Labels[0] != "original") {
 			t.Fatalf("unapproved edit changed the issue: %+v", issue)
 		}
 	case operatortool.AddComment:

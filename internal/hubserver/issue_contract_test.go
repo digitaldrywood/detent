@@ -13,6 +13,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const nativeContractTestBody = "## Acceptance criteria\nThe change works.\n## Must not break\nExisting behavior.\n## How we know it worked\nThe focused tests pass."
+
 func TestNativeIssueContract(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
@@ -25,9 +27,11 @@ func TestNativeIssueContract(t *testing.T) {
 		machine   bool
 		claimable bool
 		custom    bool
+		refused   bool
 	}{
-		{name: "missing"},
-		{name: "partial", body: "## Acceptance criteria\nFix endpoint."},
+		{name: "missing", refused: true},
+		{name: "partial", body: "## Acceptance criteria\nFix endpoint.", refused: true},
+		{name: "machine missing", machine: true},
 		{name: "human", body: complete, claimable: true},
 		{name: "machine", body: complete, machine: true},
 		{name: "custom authored contract", body: "## Result\nThe endpoint works.", claimable: true, custom: true},
@@ -59,6 +63,10 @@ func TestNativeIssueContract(t *testing.T) {
 				body = issueorigin.Stamp(body, issueorigin.Origin{Kind: "worker", Fingerprint: "endpoint"})
 			}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create"}, Title: "Fix endpoint", Body: body, State: "Todo"})
+			if test.refused {
+				requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+				return
+			}
 			requireNativeStatus(t, response, http.StatusOK)
 			var issue tracker.NativeIssue
 			issue = tracker.NativeIssue{}
@@ -107,7 +115,7 @@ func TestNativeIssueContract(t *testing.T) {
 
 			fixed := complete
 			if test.machine {
-				fixed = body
+				fixed = issueorigin.Stamp(complete, issueorigin.Origin{Kind: "worker", Fingerprint: "endpoint"})
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "confirm"}, ExpectedRevision: issue.Revision, Body: &fixed})
 			requireNativeStatus(t, response, http.StatusOK)
