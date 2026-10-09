@@ -369,12 +369,9 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 		if err != nil {
 			machine.Capacity = 0
 		} else {
-			status, err := availability.Evaluate(time.Now())
+			machine.Capacity, err = availability.Capacity(time.Now(), capacity)
 			if err != nil {
 				return err
-			}
-			if !status.Open {
-				machine.Capacity = 0
 			}
 		}
 	}
@@ -434,13 +431,9 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 	} else {
 		c.client.runner.rejectSettings(false)
 	}
-	status, err := snapshot.Routing.Availability.Evaluate(time.Now())
+	reported, err := snapshot.Routing.Availability.Capacity(time.Now(), capacity)
 	if err != nil {
 		return err
-	}
-	reported := capacity
-	if !status.Open {
-		reported = 0
 	}
 	if refresh && reported != machine.Capacity {
 		machine.Capacity = reported
@@ -455,6 +448,7 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 
 func (r *runnerCredentialSource) setRouting(snapshot runnerauth.RoutingSnapshot) {
 	snapshot.Routing.Availability.Windows = slices.Clone(snapshot.Routing.Availability.Windows)
+	snapshot.Routing.Availability.WindowSlots = maps.Clone(snapshot.Routing.Availability.WindowSlots)
 	r.routingMu.Lock()
 	defer r.routingMu.Unlock()
 	previous := r.routing
@@ -478,7 +472,7 @@ func (r *runnerCredentialSource) setRouting(snapshot runnerauth.RoutingSnapshot)
 		maps.Copy(policies, snapshot.ClaimState.PolicyIDs)
 		snapshot.ClaimState.PolicyIDs = policies
 	}
-	if previous != nil && (previous.Routing.State != snapshot.Routing.State || !reflect.DeepEqual(previous.ClaimState, snapshot.ClaimState) || previous.Routing.Availability.Timezone != snapshot.Routing.Availability.Timezone || previous.Routing.Availability.HardDeadline != snapshot.Routing.Availability.HardDeadline || !slices.Equal(previous.Routing.Availability.Windows, snapshot.Routing.Availability.Windows)) {
+	if previous != nil && (previous.Routing.State != snapshot.Routing.State || !reflect.DeepEqual(previous.ClaimState, snapshot.ClaimState) || previous.Routing.Availability.Timezone != snapshot.Routing.Availability.Timezone || previous.Routing.Availability.HardDeadline != snapshot.Routing.Availability.HardDeadline || !slices.Equal(previous.Routing.Availability.Windows, snapshot.Routing.Availability.Windows) || !maps.Equal(previous.Routing.Availability.WindowSlots, snapshot.Routing.Availability.WindowSlots)) {
 		r.notifyClaimChange()
 	}
 	r.routing = &snapshot

@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/skills"
@@ -532,6 +533,48 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err := native.Release(t.Context(), retained, "cancelled"); err != nil {
 		t.Fatal(err)
 	}
+	for _, test := range []struct {
+		name                               string
+		slots, cloud, host, reported, want int
+	}{
+		{"window limit", 2, 8, 8, 8, 2},
+		{"cloud limit", 6, 1, 8, 8, 1},
+		{"host limit", 6, 8, 1, 8, 1},
+		{"reported limit", 6, 8, 8, 1, 1},
+		{"zero window limit", 0, 8, 8, 8, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fleet, err := fleetAdmin.Fleet(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			current := fleet.Runners[0]
+			routing := current.Routing
+			routing.CapacityLimit = test.cloud
+			routing.Availability = runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}, WindowSlots: map[string]int{"Mon-Sun 00:00-24:00": test.slots}}
+			if err := fleetAdmin.UpdateRunner(t.Context(), current.RunnerID, runnerauth.RoutingChange{ExpectedRevision: current.Revision, Routing: routing}); err != nil {
+				t.Fatal(err)
+			}
+			if err := fleetAdmin.UpdateHost(t.Context(), machine.ID, runnerauth.HostChange{ExpectedRevision: current.HostRevision, DisplayName: current.HostDisplayName, Capacity: test.host}); err != nil {
+				t.Fatal(err)
+			}
+			report := machine
+			report.Capacity = test.reported
+			now := time.Now().UTC()
+			report.CapacityConfig = &runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: now}
+			report.ProviderReports = []providercapacity.Report{{Provider: "openai", Backend: "codex", AccountAlias: "capacity-test", Models: []string{"sol"}, MaxConcurrent: 8, Availability: "available", ObservedAt: now}}
+			if err := native.HeartbeatMachine(t.Context(), report); err != nil {
+				t.Fatal(err)
+			}
+			var capacity runnerauth.CapacityView
+			if err := admin.request(t.Context(), http.MethodGet, "/api/v2/organizations/"+string(organization)+"/runners/"+current.RunnerID+"/capacity?backend=codex", nil, &capacity); err != nil {
+				t.Fatal(err)
+			}
+			if capacity.Effective == nil || *capacity.Effective != test.want {
+				t.Fatalf("effective capacity = %+v, want %d", capacity, test.want)
+			}
+		})
+	}
 	if err := admin.RevokeRunner(t.Context(), organization, identity.Binding); err != nil {
 		t.Fatal(err)
 	}
@@ -849,6 +892,40 @@ func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 	}
 	if capacities[len(capacities)-1] != 3 {
 		t.Fatalf("reopened capacities = %v", capacities)
+	}
+	for _, test := range []struct {
+		name  string
+		slots map[string]int
+		want  int
+	}{
+		{"counted", map[string]int{"Mon-Sun 00:00-24:00": 2}, 2},
+		{"lower count", map[string]int{"Mon-Sun 00:00-24:00": 1}, 1},
+		{"above reported", map[string]int{"Mon-Sun 00:00-24:00": 6}, 3},
+		{"zero count", map[string]int{"Mon-Sun 00:00-24:00": 0}, 0},
+		{"uncounted", nil, 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot.Revision++
+			snapshot.Routing.Availability = runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}, WindowSlots: test.slots}
+			if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
+				t.Fatal(err)
+			}
+			if capacities[len(capacities)-1] != test.want {
+				t.Fatalf("capacities = %v, want latest %d", capacities, test.want)
+			}
+			capacities = nil
+			if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
+				t.Fatal(err)
+			}
+			if len(capacities) != 1 || capacities[0] != test.want {
+				t.Fatalf("cached capacities = %v, want [%d]", capacities, test.want)
+			}
+			if test.want == 0 {
+				if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); !errors.Is(err, ErrNoClaimableWork) || claims != 0 {
+					t.Fatalf("zero-count claim = %v, calls = %d", err, claims)
+				}
+			}
+		})
 	}
 	if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); err != nil || claims != 1 {
 		t.Fatalf("open claim = %v, calls = %d", err, claims)

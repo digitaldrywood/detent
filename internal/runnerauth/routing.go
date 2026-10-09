@@ -3,6 +3,7 @@ package runnerauth
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"path"
 	"slices"
@@ -36,9 +37,10 @@ type Routing struct {
 }
 
 type Availability struct {
-	Timezone     string   `json:"timezone"`
-	Windows      []string `json:"windows"`
-	HardDeadline string   `json:"hard_deadline"`
+	Timezone     string         `json:"timezone"`
+	Windows      []string       `json:"windows"`
+	WindowSlots  map[string]int `json:"window_slots,omitempty"`
+	HardDeadline string         `json:"hard_deadline"`
 }
 
 type ClaimSlot struct {
@@ -176,6 +178,7 @@ func (r Routing) Normalized() Routing {
 	config := (activehours.Config{Timezone: r.Availability.Timezone, Windows: r.Availability.Windows}).Normalize()
 	r.Availability.Timezone = config.Timezone
 	r.Availability.Windows = config.Windows
+	r.Availability.WindowSlots = maps.Clone(r.Availability.WindowSlots)
 	r.Availability.HardDeadline = strings.TrimSpace(r.Availability.HardDeadline)
 	return r
 }
@@ -233,6 +236,11 @@ func (r Routing) Validate() error {
 	config := activehours.Config{Timezone: r.Availability.Timezone, Windows: r.Availability.Windows}
 	if problems := config.ValidateNonOverlapping("availability"); len(problems) > 0 {
 		return errors.New(strings.Join(problems, "; "))
+	}
+	for window, slots := range r.Availability.WindowSlots {
+		if !slices.Contains(r.Availability.Windows, window) || slots < 0 || slots > 10000 {
+			return errors.New("availability.window_slots must name an existing window with a count between 0 and 10000")
+		}
 	}
 	if r.Availability.HardDeadline != "" {
 		deadline, err := time.ParseDuration(r.Availability.HardDeadline)
@@ -308,6 +316,27 @@ func (r Runner) Exclusions(project tracker.ProjectID, requirements policy.Requir
 
 func (a Availability) Evaluate(now time.Time) (activehours.Status, error) {
 	return activehours.Evaluate(activehours.Config{Timezone: a.Timezone, Windows: a.Windows}, now, time.Time{})
+}
+
+func (a Availability) Capacity(now time.Time, capacity int) (int, error) {
+	status, err := a.Evaluate(now)
+	if err != nil || !status.Open {
+		return 0, err
+	}
+	for _, window := range a.Windows {
+		slots, counted := a.WindowSlots[window]
+		if !counted {
+			continue
+		}
+		status, err := activehours.Evaluate(activehours.Config{Timezone: a.Timezone, Windows: []string{window}}, now, time.Time{})
+		if err != nil {
+			return 0, err
+		}
+		if status.Open {
+			capacity = min(capacity, slots)
+		}
+	}
+	return capacity, nil
 }
 
 func (a Availability) Deadline(started time.Time) (time.Time, error) {

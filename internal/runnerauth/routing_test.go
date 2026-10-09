@@ -1,6 +1,7 @@
 package runnerauth
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
@@ -63,6 +64,24 @@ func TestRoutingSettingsValidation(t *testing.T) {
 		{"valid window", func(r *Routing) {
 			r.Availability = Availability{Timezone: "America/Chicago", Windows: []string{"Mon-Fri 09:00-17:00"}}
 		}, true},
+		{"counted window", func(r *Routing) {
+			r.Availability = Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}, WindowSlots: map[string]int{"Mon-Fri 09:00-17:00": 2}}
+		}, true},
+		{"zero window slots", func(r *Routing) {
+			r.Availability = Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}, WindowSlots: map[string]int{"Mon-Fri 09:00-17:00": 0}}
+		}, true},
+		{"negative window slots", func(r *Routing) {
+			r.Availability = Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}, WindowSlots: map[string]int{"Mon-Fri 09:00-17:00": -1}}
+		}, false},
+		{"excessive window slots", func(r *Routing) {
+			r.Availability = Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}, WindowSlots: map[string]int{"Mon-Fri 09:00-17:00": 10001}}
+		}, false},
+		{"count for absent window", func(r *Routing) {
+			r.Availability = Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}, WindowSlots: map[string]int{"Mon-Sun 22:00-07:00": 2}}
+		}, false},
+		{"count without windows", func(r *Routing) {
+			r.Availability.WindowSlots = map[string]int{"Mon-Fri 09:00-17:00": 2}
+		}, false},
 		{"unknown timezone", func(r *Routing) {
 			r.Availability = Availability{Timezone: "Nowhere/Unknown", Windows: []string{"Mon-Fri 09:00-17:00"}}
 		}, false},
@@ -158,14 +177,26 @@ func TestRunnerAvailability(t *testing.T) {
 		name, zone, window, now string
 		open                    bool
 		deadline                string
+		slots                   map[string]int
+		otherWindows            []string
+		capacity, wantCapacity  int
 	}{
-		{"empty", "", "", "2026-09-29T12:00:00Z", true, ""},
-		{"timezone", "America/Chicago", "Mon-Fri 09:00-17:00", "2026-09-29T15:00:00Z", true, "2026-09-29T22:30:00Z"},
-		{"closed", "America/Chicago", "Mon-Fri 09:00-17:00", "2026-09-29T22:00:00Z", false, "2026-09-29T22:30:00Z"},
-		{"overnight", "Asia/Tokyo", "Mon-Fri 22:00-06:00", "2026-09-29T18:00:00Z", true, "2026-09-29T21:30:00Z"},
-		{"spring DST", "America/Chicago", "Sat-Sat 22:00-06:00", "2026-03-08T07:30:00Z", true, "2026-03-08T11:30:00Z"},
-		{"fall DST", "America/Chicago", "Sat-Sat 22:00-06:00", "2026-11-01T06:30:00Z", true, "2026-11-01T12:30:00Z"},
-		{"continuous", "UTC", "Mon-Sun 00:00-24:00", "2026-09-29T12:00:00Z", true, ""},
+		{name: "empty", now: "2026-09-29T12:00:00Z", open: true, capacity: 6, wantCapacity: 6},
+		{name: "timezone", zone: "America/Chicago", window: "Mon-Fri 09:00-17:00", now: "2026-09-29T15:00:00Z", open: true, deadline: "2026-09-29T22:30:00Z", capacity: 6, wantCapacity: 6},
+		{name: "closed", zone: "America/Chicago", window: "Mon-Fri 09:00-17:00", now: "2026-09-29T22:00:00Z", deadline: "2026-09-29T22:30:00Z", capacity: 6},
+		{name: "overnight", zone: "Asia/Tokyo", window: "Mon-Fri 22:00-06:00", now: "2026-09-29T18:00:00Z", open: true, deadline: "2026-09-29T21:30:00Z", capacity: 6, wantCapacity: 6},
+		{name: "spring DST", zone: "America/Chicago", window: "Sat-Sat 22:00-06:00", now: "2026-03-08T07:30:00Z", open: true, deadline: "2026-03-08T11:30:00Z", slots: map[string]int{"Sat-Sat 22:00-06:00": 2}, capacity: 6, wantCapacity: 2},
+		{name: "fall DST", zone: "America/Chicago", window: "Sat-Sat 22:00-06:00", now: "2026-11-01T06:30:00Z", open: true, deadline: "2026-11-01T12:30:00Z", slots: map[string]int{"Sat-Sat 22:00-06:00": 2}, capacity: 6, wantCapacity: 2},
+		{name: "continuous", zone: "UTC", window: "Mon-Sun 00:00-24:00", now: "2026-09-29T12:00:00Z", open: true, capacity: 6, wantCapacity: 6},
+		{name: "counted continuous", zone: "UTC", window: "Mon-Sun 00:00-24:00", now: "2026-09-29T12:00:00Z", open: true, slots: map[string]int{"Mon-Sun 00:00-24:00": 2}, capacity: 6, wantCapacity: 2},
+		{name: "count above limit", zone: "UTC", window: "Mon-Sun 00:00-24:00", now: "2026-09-29T12:00:00Z", open: true, slots: map[string]int{"Mon-Sun 00:00-24:00": 6}, capacity: 1, wantCapacity: 1},
+		{name: "paused capacity", zone: "UTC", window: "Mon-Sun 00:00-24:00", now: "2026-09-29T12:00:00Z", open: true, slots: map[string]int{"Mon-Sun 00:00-24:00": 6}},
+		{name: "zero count", zone: "UTC", window: "Mon-Sun 00:00-24:00", now: "2026-09-29T12:00:00Z", open: true, slots: map[string]int{"Mon-Sun 00:00-24:00": 0}, capacity: 6},
+		{name: "counted closed", zone: "UTC", window: "Mon-Fri 09:00-17:00", now: "2026-09-29T17:00:00Z", deadline: "2026-09-29T17:30:00Z", slots: map[string]int{"Mon-Fri 09:00-17:00": 2}, capacity: 6},
+		{name: "counted opening", zone: "UTC", window: "Mon-Fri 09:00-17:00", now: "2026-09-29T09:00:00Z", open: true, deadline: "2026-09-29T17:30:00Z", slots: map[string]int{"Mon-Fri 09:00-17:00": 2}, capacity: 6, wantCapacity: 2},
+		{name: "night opening", zone: "America/Chicago", window: "Mon-Sun 22:00-07:00", otherWindows: []string{"Mon-Sun 07:00-22:00"}, now: "2026-09-30T03:00:00Z", open: true, slots: map[string]int{"Mon-Sun 22:00-07:00": 6, "Mon-Sun 07:00-22:00": 2}, capacity: 8, wantCapacity: 6},
+		{name: "day opening", zone: "America/Chicago", window: "Mon-Sun 22:00-07:00", otherWindows: []string{"Mon-Sun 07:00-22:00"}, now: "2026-09-30T12:00:00Z", open: true, slots: map[string]int{"Mon-Sun 22:00-07:00": 6, "Mon-Sun 07:00-22:00": 2}, capacity: 8, wantCapacity: 2},
+		{name: "uncounted day", zone: "America/Chicago", window: "Mon-Sun 22:00-07:00", otherWindows: []string{"Mon-Sun 07:00-22:00"}, now: "2026-09-30T12:00:00Z", open: true, slots: map[string]int{"Mon-Sun 22:00-07:00": 6}, capacity: 8, wantCapacity: 8},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -173,10 +204,26 @@ func TestRunnerAvailability(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			a := Availability{Timezone: tt.zone}
+			a := Availability{Timezone: tt.zone, WindowSlots: tt.slots}
 			if tt.window != "" {
-				a.Windows = []string{tt.window}
+				a.Windows = append([]string{tt.window}, tt.otherWindows...)
 				a.HardDeadline = "30m"
+			}
+			raw, err := json.Marshal(a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var legacy struct {
+				Timezone     string   `json:"timezone"`
+				Windows      []string `json:"windows"`
+				HardDeadline string   `json:"hard_deadline"`
+			}
+			if err := json.Unmarshal(raw, &legacy); err != nil {
+				t.Fatalf("legacy runner cannot decode availability: %v", err)
+			}
+			legacyStatus, err := (Availability{Timezone: legacy.Timezone, Windows: legacy.Windows, HardDeadline: legacy.HardDeadline}).Evaluate(now)
+			if err != nil || legacyStatus.Open != tt.open {
+				t.Fatalf("legacy availability = %+v, %v, want open %t", legacyStatus, err, tt.open)
 			}
 			status, err := a.Evaluate(now)
 			if err != nil {
@@ -184,6 +231,10 @@ func TestRunnerAvailability(t *testing.T) {
 			}
 			if status.Open != tt.open {
 				t.Fatalf("open = %t, want %t", status.Open, tt.open)
+			}
+			capacity, err := a.Capacity(now, tt.capacity)
+			if err != nil || capacity != tt.wantCapacity {
+				t.Fatalf("capacity = %d, %v, want %d", capacity, err, tt.wantCapacity)
 			}
 			deadline, err := a.Deadline(now)
 			if err != nil {

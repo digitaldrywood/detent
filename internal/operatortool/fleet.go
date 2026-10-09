@@ -106,7 +106,7 @@ func FleetCatalog() []Definition {
 	add(AcknowledgeWarnings, "Acknowledge active staleness warnings for this project.", `"warning_ids":`+boundedList, `"project_id","warning_ids"`, false, false)
 	add(RecoverAttempt, "Perform an existing recovery action on an exact attempt; requires current authority.", `"attempt_id":{"type":"integer","minimum":1},"action":{"type":"string","maxLength":256,"enum":["inspect","abandon","retry_fresh","retry_resume","cleanup_workspace"]},"reason":{"type":"string","maxLength":280}`, `"project_id","attempt_id","action"`, false, true)
 	// Nested changes have the same fields and validation as the runner application.
-	routing := `{"type":"object","required":["expected_revision","display_name","state","capacity_limit","project_ids"],"properties":{"expected_revision":{"type":"integer","minimum":1},"display_name":` + boundedID + `,"tags":{"type":"array","maxItems":100,"items":` + boundedID + `},"state":{"type":"string","maxLength":256,"enum":["active","draining","disabled"]},"capacity_limit":{"type":"integer","minimum":0,"maximum":10000},"scope":{"type":"string","enum":["projects","organization"]},"project_ids":` + strings.Replace(boundedList, `"minItems":1`, `"minItems":0`, 1) + `,"project_ranks":{"type":"object","additionalProperties":{"type":"integer","minimum":0,"maximum":2147483647}},"isolation_tier":` + boundedID + `,"host_services":{"type":"array","maxItems":100,"items":` + boundedID + `},"availability":{"type":"object","properties":{"timezone":{"type":"string","maxLength":256},"windows":{"type":"array","maxItems":100,"items":` + boundedID + `},"hard_deadline":{"type":"string","maxLength":256}},"additionalProperties":false}},"additionalProperties":false}`
+	routing := `{"type":"object","required":["expected_revision","display_name","state","capacity_limit","project_ids"],"properties":{"expected_revision":{"type":"integer","minimum":1},"display_name":` + boundedID + `,"tags":{"type":"array","maxItems":100,"items":` + boundedID + `},"state":{"type":"string","maxLength":256,"enum":["active","draining","disabled"]},"capacity_limit":{"type":"integer","minimum":0,"maximum":10000},"scope":{"type":"string","maxLength":256,"enum":["projects","organization"]},"project_ids":` + strings.Replace(boundedList, `"minItems":1`, `"minItems":0`, 1) + `,"project_ranks":{"type":"object","additionalProperties":{"type":"integer","minimum":0,"maximum":2147483647}},"isolation_tier":` + boundedID + `,"host_services":{"type":"array","maxItems":100,"items":` + boundedID + `},"availability":{"type":"object","properties":{"timezone":{"type":"string","maxLength":256},"windows":{"type":"array","maxItems":100,"items":` + boundedID + `},"window_slots":{"type":"object","maxProperties":64,"propertyNames":` + boundedID + `,"additionalProperties":{"type":"integer","minimum":0,"maximum":10000}},"hard_deadline":{"type":"string","maxLength":256}},"additionalProperties":false}},"additionalProperties":false}`
 	host := `{"type":"object","required":["expected_revision","display_name","capacity"],"properties":{"expected_revision":{"type":"integer","minimum":1},"display_name":` + boundedID + `,"capacity":{"type":"integer","minimum":0,"maximum":10000}},"additionalProperties":false}`
 	for _, name := range []string{UpdateFleetRunner, UpdateRunnerRouting} {
 		add(name, "Update exact runner settings and grants at the expected revision. Changes execute directly with current administration authority.", `"runner_id":`+boundedID+`,"change":`+routing, `"runner_id","change"`, false, true)
@@ -166,24 +166,27 @@ func RoutingRequiresApproval(before, after runnerauth.Routing) bool {
 }
 
 type fleetSchema struct {
-	Type       string                 `json:"type"`
-	Properties map[string]fleetSchema `json:"properties"`
-	Required   []string               `json:"required"`
-	Items      *fleetSchema           `json:"items"`
-	Enum       []string               `json:"enum"`
-	MinLength  int                    `json:"minLength"`
-	MaxLength  int                    `json:"maxLength"`
-	MinItems   int                    `json:"minItems"`
-	MaxItems   int                    `json:"maxItems"`
-	Minimum    *float64               `json:"minimum"`
-	Maximum    *float64               `json:"maximum"`
+	AdditionalProperties json.RawMessage        `json:"additionalProperties"`
+	PropertyNames        *fleetSchema           `json:"propertyNames"`
+	MaxProperties        int                    `json:"maxProperties"`
+	Type                 string                 `json:"type"`
+	Properties           map[string]fleetSchema `json:"properties"`
+	Required             []string               `json:"required"`
+	Items                *fleetSchema           `json:"items"`
+	Enum                 []string               `json:"enum"`
+	MinLength            int                    `json:"minLength"`
+	MaxLength            int                    `json:"maxLength"`
+	MinItems             int                    `json:"minItems"`
+	MaxItems             int                    `json:"maxItems"`
+	Minimum              *float64               `json:"minimum"`
+	Maximum              *float64               `json:"maximum"`
 }
 
 func (s fleetSchema) accepts(value any) bool {
 	switch s.Type {
 	case "object":
 		object, ok := value.(map[string]any)
-		if !ok {
+		if !ok || s.MaxProperties > 0 && len(object) > s.MaxProperties {
 			return false
 		}
 		for _, required := range s.Required {
@@ -192,8 +195,14 @@ func (s fleetSchema) accepts(value any) bool {
 			}
 		}
 		for key, v := range object {
+			if s.PropertyNames != nil && !s.PropertyNames.accepts(key) {
+				return false
+			}
 			child, ok := s.Properties[key]
-			if !ok || !child.accepts(v) {
+			if !ok && json.Unmarshal(s.AdditionalProperties, &child) != nil {
+				return false
+			}
+			if !child.accepts(v) {
 				return false
 			}
 		}
