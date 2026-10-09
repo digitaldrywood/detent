@@ -1099,8 +1099,9 @@ func TestHostedSecurityLogsExcludeCustomerContent(t *testing.T) {
 	})
 	const sentinel = "private-content-bearer-sentinel"
 	service.echo.GET("/security/error", func(c echo.Context) error {
-		service.config.Logger.Error(sentinel, "credential", sentinel, "error", errors.New(sentinel))
-		return service.nativeAPIError(c, errors.New(sentinel))
+		failure := fmt.Errorf("load work item: token=%s: %w", sentinel, errors.New("bearer "+sentinel))
+		service.config.Logger.Error("security probe failed", "title", sentinel, "body", sentinel, "api_token", sentinel, "error", failure)
+		return service.nativeAPIError(c, failure)
 	})
 	response := httptest.NewRecorder()
 	service.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/security/error", nil))
@@ -1110,6 +1111,9 @@ func TestHostedSecurityLogsExcludeCustomerContent(t *testing.T) {
 	}
 	if logs.Len() == 0 {
 		t.Fatal("test produced no log records")
+	}
+	if !strings.Contains(logs.String(), "security probe failed") || !strings.Contains(logs.String(), "load work item") {
+		t.Fatalf("hosted logs dropped the error diagnostics: %s", logs.String())
 	}
 	if strings.Contains(logs.String(), sentinel) || strings.Contains(response.Body.String(), sentinel) {
 		t.Fatal("hosted logs or errors exposed customer content")
