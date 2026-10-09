@@ -305,7 +305,7 @@ Receipt:
 | `POST /conversations/:conversation/archive` / `unarchive` | | 200 conversation |
 | `PATCH /conversations/:conversation` | `{title}` | 200 conversation |
 
-On main: there are no `archive` or `unarchive` routes (section 14 replaced archive with Settled), `PATCH` accepts a title, preferences or both, and the list takes `settled=true|false` rather than `include_archived`. Main also mounts `GET /work-items/:item/references` and the attachment routes of section 17.1 beside these (`internal/hubserver/conversation_api.go`).
+The conversation API supports `POST /conversations/:conversation/archive` (200 conversation) and `DELETE /conversations/:conversation` (204). Archive persists the independent `archived` boolean, excludes the conversation from project and organization lists and search, and preserves history and scoped reads. Delete removes the conversation, messages, attachments and their bytes, questions, commands, events, starts, turn batches and references; subsequent scoped reads return 404. Linked work items, projects, runners and usage accounting remain intact. Both operations require live actor authority and conversation write access inside the transaction and return 409 `stale_execution` during a live turn or while a runner owns nonterminal execution. Confirmations remain client-owned. `PATCH` accepts a title, preferences or both, and the list takes `settled=true|false` rather than `include_archived`. Main also mounts `GET /work-items/:item/references` and the attachment routes of section 17.1 beside these (`internal/hubserver/conversation_api.go`).
 
 Command envelope:
 
@@ -1014,8 +1014,8 @@ On main: the list accepts the `state`, `label`, `assignee` and `priority` filter
   defaults (first dispatchable state, default priority, dispatch later) and
   the user can change them. `dispatch: "now"` places the issue in the first
   dispatchable state; `later` in Backlog when the project has one.
-- **Settled (13.9).** Archive endpoints and the `archived` status are
-  removed. Conversations are `active` or `settled`; a conversation settles
+- **Settled (13.9).** Conversations are `active` or `settled`; archiving is an
+  independent `archived` boolean and does not change this status. A conversation settles
   automatically when its execution is terminal or idle for the project's
   settle window (default 24 hours) and unsettles on new activity; the list
   endpoint accepts `settled=true|false` and the sidebar groups Settled as T3

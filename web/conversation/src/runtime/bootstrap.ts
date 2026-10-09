@@ -618,6 +618,18 @@ export function makeClient(options: ClientOptions) {
       title?: string;
       firstMessage?: { key: string; text: string };
     }) => http.createConversation(input).pipe(Effect.result),
+    archiveConversation: (input: { projectId: string; conversationId: string }) =>
+      http.archiveConversation(input).pipe(
+        Effect.tap((conversation) => Effect.sync(() => conversationBus.publish(conversation))),
+        Effect.andThen(cache.removeThread(HUB_ENVIRONMENT_ID, input.conversationId)),
+        Effect.result,
+      ),
+    deleteConversation: (input: { projectId: string; conversationId: string }) =>
+      http.deleteConversation(input).pipe(
+        Effect.tap(() => Effect.sync(() => conversationBus.remove(input.conversationId))),
+        Effect.andThen(cache.removeThread(HUB_ENVIRONMENT_ID, input.conversationId)),
+        Effect.result,
+      ),
     loadOlder: (input: { projectId: string; conversationId: string }) =>
       Effect.suspend(() => {
         const handle = handles.get(keyOf(input.projectId, input.conversationId));
@@ -688,6 +700,8 @@ export function makeClient(options: ClientOptions) {
     createConversation: runtime.fn(effects.createConversation),
     loadOlder: runtime.fn(effects.loadOlder),
     refreshList: runtime.fn(effects.refreshList),
+    archiveConversation: runtime.fn(effects.archiveConversation),
+    deleteConversation: runtime.fn(effects.deleteConversation),
     searchConversations: runtime.fn(effects.searchConversations),
     link: runtime.fn(effects.link),
   };

@@ -1,3 +1,4 @@
+import { conversationBus } from "../runtime/state/conversationList.ts";
 // Application shell and route surfaces.
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
@@ -252,6 +253,11 @@ function ShellBody(): React.ReactElement {
   // (`state/entities.ts` `useThreadShells`).
   const query = useSidebarSearchQuery();
   const [serverResults, setServerResults] = React.useState<readonly Conversation[]>([]);
+  React.useEffect(() => conversationBus.subscribe((update) => {
+    if ("removed" in update || update.archived) {
+      setServerResults((current) => current.filter((conversation) => conversation.id !== update.id));
+    }
+  }), []);
   const [asOf, setAsOf] = React.useState<number | null>(null);
 
   const setProjectId = React.useCallback((id: string) => {

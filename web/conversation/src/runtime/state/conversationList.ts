@@ -12,7 +12,8 @@ import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
 
-type Listener = (conversation: Conversation) => void;
+type ConversationUpdate = Conversation | { readonly id: string; readonly removed: true };
+type Listener = (conversation: ConversationUpdate) => void;
 
 /** In-process fan-out from open conversation streams to the sidebar list. */
 class ConversationBus {
@@ -20,6 +21,10 @@ class ConversationBus {
 
   publish(conversation: Conversation): void {
     for (const listener of [...this.listeners]) listener(conversation);
+  }
+
+  remove(id: string): void {
+    for (const listener of [...this.listeners]) listener({ id, removed: true });
   }
 
   subscribe(listener: Listener): () => void {
@@ -52,7 +57,7 @@ function sortByActivity(conversations: readonly Conversation[]): readonly Conver
     return Number.isNaN(parsed) ? 0 : parsed;
   };
   return conversations
-    .filter((conversation) => conversation.origin !== "worker")
+    .filter((conversation) => conversation.origin !== "worker" && !conversation.archived)
     .toSorted((left, right) => at(right) - at(left) || left.id.localeCompare(right.id));
 }
 
@@ -129,18 +134,22 @@ export const makeConversationListState = Effect.fn("ConversationList.make")(func
 
   // Events from any open conversation stream keep the sidebar honest without
   // a poll and without an organization-wide stream this milestone does not have.
-  const updates = yield* Queue.unbounded<Conversation>();
+  const updates = yield* Queue.unbounded<ConversationUpdate>();
   const unsubscribe = conversationBus.subscribe((conversation) => {
     Queue.offerUnsafe(updates, conversation);
   });
   yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
   yield* Stream.fromQueue(updates).pipe(
-    Stream.runForEach((conversation) =>
-      SubscriptionRef.update(state, (current) => ({
+    Stream.runForEach((conversation) => Effect.gen(function* () {
+      yield* SubscriptionRef.update(state, (current) => ({
         ...current,
-        conversations: mergeConversation(current.conversations, conversation),
-      })),
-    ),
+        conversations: "removed" in conversation
+          ? current.conversations.filter((candidate) => candidate.id !== conversation.id)
+          : mergeConversation(current.conversations, conversation),
+      }));
+      const current = yield* SubscriptionRef.get(state);
+      yield* cache.saveShell(environmentId, current.conversations).pipe(Effect.ignore);
+    })),
     Effect.forkScoped,
   );
 

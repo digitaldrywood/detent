@@ -563,6 +563,7 @@ type conversationResource struct {
 	Visibility     conversation.Visibility `json:"visibility"`
 	Origin         string                  `json:"origin"`
 	Status         conversation.Status     `json:"status"`
+	Archived       bool                    `json:"archived"`
 	// Preferences are the conversation's turn preferences; each field is
 	// "auto" or an explicit value (decisions section 14).
 	Preferences       conversation.Preferences      `json:"preferences"`
@@ -769,6 +770,7 @@ func projectConversation(record conversationRecord) conversationResource {
 		Visibility:        record.Visibility,
 		Origin:            record.Origin,
 		Status:            record.Status,
+		Archived:          record.Archived,
 		Preferences:       record.Preferences.Normalized(),
 		SubjectWorkItemID: conversationOptional(record.SubjectWorkItemID),
 		WorkItemID:        conversationOptional(record.WorkItemID),
