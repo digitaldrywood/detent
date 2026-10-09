@@ -517,8 +517,9 @@ func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			source := &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("b", 40)}
 			check := func() error {
-				resolved, err := scheduler.ResolveProjectWorkflow(t.Context(), "selected", local, nil)
+				resolved, err := scheduler.ResolveProjectWorkflow(t.Context(), "selected", local, source)
 				if err != nil {
 					return err
 				}
@@ -526,7 +527,7 @@ func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				return scheduler.CheckProjectPolicy(t.Context(), "selected", "", descriptor)
+				return scheduler.CheckProjectPolicyWithSource(t.Context(), "selected", "", descriptor, source)
 			}
 			if err := check(); err == nil {
 				t.Fatal("runner loaded an unapproved policy")
