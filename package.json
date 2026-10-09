@@ -3,8 +3,7 @@
   "private": true,
   "scripts": {
     "css": "tailwindcss -i static/css/input.css -o static/css/output.css --minify",
-    "test:visual": "playwright test",
-    "test:visual:update": "playwright test --update-snapshots"
+    "test:visual": "playwright test"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.10.0",

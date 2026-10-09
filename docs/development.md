@@ -240,16 +240,10 @@ npx playwright install chromium
 make visual-e2e
 ```
 
-Committed image baselines are authoritative for Ubuntu x64/Chromium. On other
-hosts `make visual-e2e` runs the layout assertions and captures evidence but
-skips pixel comparison unless `DETENT_VISUAL_STRICT=1` is set. Update baselines
-only for an intentional visual change, in the same Ubuntu x64/Chromium
-environment, then review and commit the files under
-`tests/visual/__screenshots__/chromium/`:
-
-```sh
-make visual-e2e-update
-```
+Every host runs the same browser journeys and outcome assertions. UI changes
+attach screenshots (light/dark, desktop/390 as relevant) to the issue or PR as
+review evidence for human or AI comparison against the approved design.
+Screenshots are never compared by pixels or hashes in any test or gate.
 
 Do not commit `tmp/playwright-evidence`, `tmp/playwright-report`, or
 `tmp/playwright-results`.

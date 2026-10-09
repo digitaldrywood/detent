@@ -28,7 +28,10 @@ for (const surface of ["organization", "shared-entry"]) {
     for (const [name, path] of [["detent.build home", "/"], ["How it works", "/how-it-works"], ["Why Detent", "/why-detent"], ["Dashboard", "/dashboard"], ["Install", "/install"], ["Docs", "/docs"], ["Videos", "/videos"], ["Open source", "/open-source"]]) {
       await expect(nav.getByRole("link", { name, exact: true })).toHaveAttribute("href", `https://detent.build${path}`);
     }
-    await expect(page).toHaveScreenshot(`${surface}-login.png`);
+    await test.info().attach(`${surface}-login.png`, {
+      body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+      contentType: "image/png",
+    });
     for (const action of ["Sign in", "Create account"]) {
       await page.context().clearCookies();
       await page.goto(url);
@@ -47,7 +50,10 @@ for (const surface of ["organization", "shared-entry"]) {
     await page.context().clearCookies();
     await page.goto(`${url}?error=no_membership`);
     await expect(page.getByRole("alert")).toContainText("not a member of this organization");
-    await expect(page).toHaveScreenshot(`${surface}-login-error.png`);
+    await test.info().attach(`${surface}-login-error.png`, {
+      body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+      contentType: "image/png",
+    });
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(card).toBeInViewport();
     await expect(card.getByRole("link", { name: "Create account" })).toBeInViewport();

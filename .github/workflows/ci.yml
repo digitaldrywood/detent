@@ -345,7 +345,7 @@ jobs:
           go test -c -o tmp/hubserver-preview.test ./internal/hubserver
           go test -c -o tmp/startup-preview.test ./internal/cli
 
-      - name: Run full browser visual gate
+      - name: Run full browser journeys
         env:
           DETENT_BINARY: ${{ github.workspace }}/tmp/detent
           DETENT_HOSTED_PREVIEW_BINARY: ${{ github.workspace }}/tmp/hubserver-preview.test

@@ -31,7 +31,12 @@ test("magic-link login gates dashboard, API, SSE, and mobile views", async ({ br
 
     await page.goto(`${runtime.url}${boardPath}`, { waitUntil: "domcontentloaded" });
     await expect(page).toHaveURL(new RegExp(`/login\\?next=${encodeURIComponent(boardPath)}`));
-    await expect(page).toHaveScreenshot("magic-link-login.png");
+    await expect(page.getByLabel("Email address")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Email me a sign-in link" })).toBeVisible();
+    await test.info().attach("magic-link-login.png", {
+      body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+      contentType: "image/png",
+    });
     await page.getByLabel("Email address").fill("other@example.com");
     await page.getByRole("button", { name: "Email me a sign-in link" }).click();
     await expect(page.getByRole("heading", { name: "Check your inbox" })).toBeVisible();

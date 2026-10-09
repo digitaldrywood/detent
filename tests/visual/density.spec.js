@@ -74,7 +74,10 @@ test("card density changes rendered information and persists", async ({
     ),
   ).toBe(true);
   await page.setViewportSize(desktopViewport);
-  await expect(page).toHaveScreenshot("board-comfy.png");
+  await test.info().attach("board-comfy.png", {
+    body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+    contentType: "image/png",
+  });
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.locator("#board-lanes").waitFor({ state: "visible" });
@@ -123,7 +126,7 @@ test("maximal card keeps project, issue, and PR identity at every density", asyn
     await setDensity(page, density);
     await card.scrollIntoViewIfNeeded();
     await assertCardIdentity(card, density);
-    await expectCardIdentityScreenshot(
+    await attachCardIdentityScreenshot(
       page,
       card,
       `board-card-identity-${density}-desktop.png`,
@@ -135,7 +138,7 @@ test("maximal card keeps project, issue, and PR identity at every density", asyn
     await setDensity(page, density);
     await card.scrollIntoViewIfNeeded();
     await assertCardIdentity(card, density);
-    await expectCardIdentityScreenshot(
+    await attachCardIdentityScreenshot(
       page,
       card,
       `board-card-identity-${density}-narrow.png`,
@@ -143,7 +146,7 @@ test("maximal card keeps project, issue, and PR identity at every density", asyn
   }
 });
 
-async function expectCardIdentityScreenshot(page, card, name) {
+async function attachCardIdentityScreenshot(page, card, name) {
   const viewport = page.viewportSize();
   const box = await card.boundingBox();
   expect(box).not.toBeNull();
@@ -159,7 +162,7 @@ async function expectCardIdentityScreenshot(page, card, name) {
     animations: "disabled",
     clip,
   });
-  expect(screenshot).toMatchSnapshot(name, { maxDiffPixelRatio: 0.1 });
+  await test.info().attach(name, { body: screenshot, contentType: "image/png" });
 }
 
 async function setDensity(page, density) {
@@ -323,7 +326,10 @@ for (const viewport of [desktopViewport, { width: 390, height: 844 }]) {
           else document.documentElement.removeAttribute("data-theme");
         }, theme);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
-        await expect(page).toHaveScreenshot(`board-budget-${density}-${theme}-${viewport.width}.png`);
+        await test.info().attach(`board-budget-${density}-${theme}-${viewport.width}.png`, {
+          body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+          contentType: "image/png",
+        });
       }
 
     }

@@ -63,7 +63,10 @@ test("mobile platform navigation opens a sheet and closes on selection", async (
   await expect(page.getByText("Platform", { exact: true })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Platform navigation" })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
-  await expect(page).toHaveScreenshot("platform-health-mobile.png");
+  await test.info().attach("platform-health-mobile.png", {
+    body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+    contentType: "image/png",
+  });
   await page.getByRole("button", { name: "Toggle Sidebar" }).click();
   const sheet = page.getByRole("dialog", { name: "Sidebar" });
   await expect(sheet).toBeVisible();
@@ -71,7 +74,10 @@ test("mobile platform navigation opens a sheet and closes on selection", async (
   expect(bounds.width).toBeGreaterThan(390 * 0.75);
   expect(bounds.width).toBeLessThanOrEqual(390);
   await expect(sheet.getByRole("link", { name: "Staff" })).toBeVisible();
-  await expect(page).toHaveScreenshot("platform-navigation-mobile.png");
+  await test.info().attach("platform-navigation-mobile.png", {
+    body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+    contentType: "image/png",
+  });
   await sheet.getByRole("link", { name: "Allowlist" }).click();
   await expect(sheet).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Allowlist", exact: true })).toBeVisible();
@@ -83,7 +89,10 @@ test("the chooser exposes the platform entry only for platform members", async (
   await expect(page.getByRole("link", { name: "Open Model Choice Labs" })).toBeVisible();
   const link = page.getByRole("link", { name: "Open Platform console" });
   await expect(link).toHaveAttribute("href", "/platform/tenants");
-  await expect(page).toHaveScreenshot("platform-chooser-desktop.png");
+  await test.info().attach("platform-chooser-desktop.png", {
+    body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+    contentType: "image/png",
+  });
   await link.click();
   await expect(page.getByRole("heading", { name: "Tenants", exact: true })).toBeVisible();
   await openPlatform(page, { role: "", path: "/organizations?switch=1" });

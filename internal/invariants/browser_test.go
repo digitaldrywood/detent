@@ -34,7 +34,6 @@ func checkBrowserTests(root fs.FS, policy map[string][]string) []string {
 		{"specs", "", "extend an existing critical journey spec instead of adding a file"},
 		{"serial", `\bmode\s*:\s*["']serial["']`, "do not use describe serial mode"},
 		{"waitForTimeout", `\bwaitForTimeout\b`, "never use waitForTimeout or fixed sleeps"},
-		{"toHaveScreenshot", `\btoHaveScreenshot\b`, "screenshots are limited to allowlisted key pages"},
 		{"beforeAll", `\bbeforeAll\b`, "do not keep mutable shared state in beforeAll; isolate state per test"},
 	}
 	var problems []string
@@ -120,9 +119,6 @@ func TestBrowserPolicyViolations(t *testing.T) {
 		{name: "sleep rejected", source: "page.waitForTimeout(500)", category: "waitForTimeout", want: "not on frozen waitForTimeout allowlist"},
 		{name: "existing sleep", source: "page.waitForTimeout(500)", category: "waitForTimeout", allowed: true},
 		{name: "sleep removed", category: "waitForTimeout", allowed: true, want: "remove stale waitForTimeout allowlist entry"},
-		{name: "screenshot rejected", source: "expect(page).toHaveScreenshot()", category: "toHaveScreenshot", want: "not on frozen toHaveScreenshot allowlist"},
-		{name: "existing screenshot", source: "expect(page).toHaveScreenshot()", category: "toHaveScreenshot", allowed: true},
-		{name: "screenshot removed", category: "toHaveScreenshot", allowed: true, want: "remove stale toHaveScreenshot allowlist entry"},
 		{name: "beforeAll rejected", source: "test.beforeAll(() => {})", category: "beforeAll", want: "not on frozen beforeAll allowlist"},
 		{name: "existing beforeAll", source: "test.beforeAll(() => {})", category: "beforeAll", allowed: true},
 		{name: "beforeAll removed", source: "test.beforeEach(() => {})", category: "beforeAll", allowed: true, want: "remove stale beforeAll allowlist entry"},

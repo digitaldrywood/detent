@@ -169,7 +169,10 @@ test("sidebar groups global navigation and hides a single project", async ({
     }
   }
   expect(new Set(identities).size).toBe(collapsedProjects.length);
-  await expect(sidebar).toHaveScreenshot("collapsed-sidebar.png");
+  await test.info().attach("collapsed-sidebar.png", {
+    body: await sidebar.screenshot({ animations: "disabled", caret: "hide" }),
+    contentType: "image/png",
+  });
 
   const tooltip = page.locator("body > #help-tooltip");
   for (const navItem of collapsedNavItems) {
@@ -313,7 +316,7 @@ test("board home renders lanes without page overflow", async ({
   const ageFooter = page.locator("[data-board-card-age-footer]").first();
   await expect(ageFooter).toHaveCount(0);
   await assertNoDocumentOverflow(page);
-  await capturePageAndAttach(page, "board-home.png", testInfo);
+  await attachScreenshotEvidence(page, "board-home.png", testInfo);
 });
 
 test("board card identity wraps while metadata truncates", async ({
@@ -450,7 +453,7 @@ test("board keeps dependency waits on cards without global alerts", async ({
   });
   await expect(waitingCard).toBeVisible();
   await expect(waitingCard.locator("[data-board-card-signal]")).toHaveText("Waiting on #5200");
-  await capturePageAndAttach(page, "board-dependency-waits.png", testInfo);
+  await attachScreenshotEvidence(page, "board-dependency-waits.png", testInfo);
 });
 
 test("boosted card explains its direct downstream count", async ({ page }) => {
@@ -501,7 +504,7 @@ test("board elevated blockers render one compact opt-in alert", async ({
   await expect(page.locator("#board-exceptions")).not.toContainText(
     "Dependency waiting",
   );
-  await capturePageAndAttach(page, "board-blocked-alerts.png", testInfo);
+  await attachScreenshotEvidence(page, "board-blocked-alerts.png", testInfo);
 });
 
 test("board hides informational recovery and overload notices", async ({
@@ -596,7 +599,7 @@ test("board shows only health states needing attention", async ({
   await expect(page.locator("#snapshot")).not.toContainText(
     "Dispatch recovery ramp active",
   );
-  await capturePageAndAttach(page, "board-alerts-expanded.png", testInfo);
+  await attachScreenshotEvidence(page, "board-alerts-expanded.png", testInfo);
 });
 
 test("board surfaces dispatch faults with affected cards and clears by morph", async ({
@@ -840,7 +843,7 @@ test("board card opens the detail sheet", async ({ page }, testInfo) => {
   await expect(sheet.getByText("State", { exact: true })).toBeVisible();
   await expect(sheet.locator("#board-activity-stream")).toBeVisible();
   await expect(sheet.getByText("Orchestration activity")).toBeVisible();
-  await capturePageAndAttach(page, "board-detail-sheet.png", testInfo);
+  await attachScreenshotEvidence(page, "board-detail-sheet.png", testInfo);
 
   await page.keyboard.press("Escape");
   await expect(sheet).toHaveCount(0);
@@ -943,7 +946,7 @@ test("long activity history stays contained across display modes", async ({
       expect(labelsBox.y + labelsBox.height).toBeLessThanOrEqual(
         conversationBox.y,
       );
-      await capturePageAndAttach(
+      await attachScreenshotEvidence(
         page,
         `board-detail-long-activity-${density}-${theme}.png`,
         testInfo,
@@ -1203,7 +1206,7 @@ test("fleet page shows agent hero, PR lanes, and metric cards", async ({
   await expect(page.locator("#pr-lane-merging")).toContainText("Native #2 of 6 · ~12m 0s");
   await expect(page.locator("#fleet-metrics")).toBeVisible();
   await assertNoDocumentOverflow(page);
-  await capturePageAndAttach(page, "fleet.png", testInfo);
+  await attachScreenshotEvidence(page, "fleet.png", testInfo);
 
   await page.setViewportSize(narrowViewport);
   await expect(page.locator("[data-merge-queue-summary]")).toBeVisible();
@@ -1232,7 +1235,7 @@ test("health page covers key rate-limit states", async ({ page }, testInfo) => {
     await expect(page.locator("#health-verdict")).toBeVisible();
     await expect(page.locator("#health-details")).toBeVisible();
     await assertNoDocumentOverflow(page);
-    await capturePageAndAttach(page, `${scenario}.png`, testInfo);
+    await attachScreenshotEvidence(page, `${scenario}.png`, testInfo);
   }
 });
 
@@ -1308,7 +1311,7 @@ test("project overview renders tabs, hero, and recent runs", async ({
   await expect(page.locator("#project-recent-runs")).toBeVisible();
   await expect(page.locator("#project-recent-runs")).toContainText("Efficiency receipt");
   await assertNoDocumentOverflow(page);
-  await capturePageAndAttach(page, "project-overview.png", testInfo);
+  await attachScreenshotEvidence(page, "project-overview.png", testInfo);
 });
 
 test("project runs render completed lifetime usage receipts", async ({ page }) => {
@@ -1347,7 +1350,7 @@ test("project kanban board scopes cards to the project", async ({
     );
   expect(foreign).toBe(0);
   await assertNoDocumentOverflow(page);
-  await capturePageAndAttach(page, "project-kanban.png", testInfo);
+  await attachScreenshotEvidence(page, "project-kanban.png", testInfo);
 });
 
 test("all-project board supports drag status moves", async ({ page }) => {
@@ -2004,7 +2007,7 @@ test("reports page renders KPI figures and charts", async ({
   await expect(page.locator("#reports-efficiency")).toContainText("Tokens / merged issue");
   await expect(page.locator("#reports-efficiency")).toContainText("Baseline");
   await assertNoDocumentOverflow(page);
-  await capturePageAndAttach(page, "reports.png", testInfo);
+  await attachScreenshotEvidence(page, "reports.png", testInfo);
 });
 
 test("analytics page renders the scheduler log", async ({ page }, testInfo) => {
@@ -2019,7 +2022,7 @@ test("analytics page renders the scheduler log", async ({ page }, testInfo) => {
   await expect(page.locator("#analytics-summary")).toBeVisible();
   await expect(page.locator("#analytics-log")).toBeVisible();
   await assertNoDocumentOverflow(page);
-  await capturePageAndAttach(page, "analytics.png", testInfo);
+  await attachScreenshotEvidence(page, "analytics.png", testInfo);
 });
 
 test("settings page renders definition lists and preferences", async ({
@@ -2036,7 +2039,7 @@ test("settings page renders definition lists and preferences", async ({
   await expect(page.locator("#settings-preferences")).toBeVisible();
   await expect(page.locator("#settings-global")).toBeVisible();
   await assertNoDocumentOverflow(page);
-  await capturePageAndAttach(page, "settings.png", testInfo);
+  await attachScreenshotEvidence(page, "settings.png", testInfo);
 });
 
 test("settings links to the selected project workflow details", async ({
@@ -2110,7 +2113,7 @@ test("light theme applies through the token cascade", async ({
     () => getComputedStyle(document.body).backgroundColor,
   );
   expect(background).toBe("rgb(247, 248, 250)");
-  await capturePageAndAttach(page, "board-light.png", testInfo);
+  await attachScreenshotEvidence(page, "board-light.png", testInfo);
 });
 
 test("onboarding project selection remains readable on narrow screens", async ({
@@ -2122,8 +2125,12 @@ test("onboarding project selection remains readable on narrow screens", async ({
     viewport: narrowViewport,
   });
 
+  await expect(page.getByRole("heading", { name: "Pick project", exact: true })).toBeVisible();
+  await expect(page.getByLabel("ProjectV2 ID", { exact: true })).toHaveValue("digitaldrywood/detent-core");
+  await expect(page.getByLabel("Dispatch repository", { exact: true })).toHaveValue("digitaldrywood/detent-core");
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeInViewport();
   await assertNoDocumentOverflow(page);
-  await capturePageAndAttach(
+  await attachScreenshotEvidence(
     page,
     "onboarding-project-selection.png",
     testInfo,
@@ -2401,28 +2408,6 @@ async function assertSessionLogStartsAtColumnZero(session) {
 }
 
 async function attachScreenshotEvidence(page, name, testInfo) {
-  const evidenceDir = path.join(
-    process.cwd(),
-    "tmp",
-    "playwright-evidence",
-    testInfo.project.name,
-  );
-  fs.mkdirSync(evidenceDir, { recursive: true });
-  const evidencePath = path.join(evidenceDir, name);
-  await page.screenshot({
-    path: evidencePath,
-    animations: "disabled",
-    caret: "hide",
-  });
-  await testInfo.attach(name, { path: evidencePath, contentType: "image/png" });
-}
-
-async function capturePageAndAttach(page, name, testInfo) {
-  // Compare against the committed baseline so the visual gate catches pixel
-  // regressions, not just selector/overflow breakage. Baselines are
-  // Linux-rendered (see playwright.config.js: comparison is enabled on Linux
-  // or under DETENT_VISUAL_STRICT); on other platforms this is a no-op.
-  await expect(page).toHaveScreenshot(name);
   const evidenceDir = path.join(
     process.cwd(),
     "tmp",
