@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -79,9 +80,19 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 }
 
 func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeConnector, projectOwner func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration) error {
-	s.nativeHeartbeatMu.Lock()
-	defer s.nativeHeartbeatMu.Unlock()
 	project := source.client.project
+	s.mu.Lock()
+	if s.nativeHeartbeatMu == nil {
+		s.nativeHeartbeatMu = make(map[tracker.ProjectID]*sync.Mutex)
+	}
+	heartbeat := s.nativeHeartbeatMu[project]
+	if heartbeat == nil {
+		heartbeat = &sync.Mutex{}
+		s.nativeHeartbeatMu[project] = heartbeat
+	}
+	s.mu.Unlock()
+	heartbeat.Lock()
+	defer heartbeat.Unlock()
 	s.mu.Lock()
 	last := s.nativeHeartbeats[project]
 	owner := s.updateOwner
