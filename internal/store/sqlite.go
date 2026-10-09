@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -23,6 +24,7 @@ type sqliteStore struct {
 	db          *sql.DB
 	queries     *sqlc.Queries
 	path        string
+	generation  atomic.Int64
 }
 
 var _ Store = (*sqliteStore)(nil)
@@ -35,7 +37,7 @@ func openSQLite(ctx context.Context, cfg Config) (*sqliteStore, error) {
 		return nil, fmt.Errorf("creating sqlite directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", cfg.Path)
+	db, err := sql.Open("sqlite", sqliteDSN(cfg.Path))
 	if err != nil {
 		return nil, fmt.Errorf("opening sqlite database: %w", err)
 	}
@@ -45,7 +47,7 @@ func openSQLite(ctx context.Context, cfg Config) (*sqliteStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := runMigrations(ctx, db); err != nil {
+	if err := runMigrations(ctx, db, migrationLockPath(cfg.Path)); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -253,6 +255,7 @@ func (s *sqliteStore) StartSession(ctx context.Context, attrs SessionStart) (int
 		ResumedFromSessionID:         nullPositiveInt64(attrs.ResumedFromSessionID),
 		OrphanRecoveryOutcome:        nullString(attrs.OrphanRecoveryOutcome),
 		OrphanRecoveryFallbackReason: nullString(attrs.OrphanRecoveryFallbackReason),
+		OwnerGeneration:              s.ownerGeneration(),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("starting codex session: %w", err)
@@ -327,8 +330,9 @@ func (s *sqliteStore) ListActiveWorkerProcesses(ctx context.Context) ([]WorkerPr
 				GroupID:   int(row.WorkerPgid),
 				StartedAt: startedAt,
 			},
-			CleanupRoot: strings.TrimSpace(row.WorkerCleanupRoot),
-			CleanupPath: strings.TrimSpace(row.WorkerCleanupPath),
+			CleanupRoot:     strings.TrimSpace(row.WorkerCleanupRoot),
+			CleanupPath:     strings.TrimSpace(row.WorkerCleanupPath),
+			OwnerGeneration: row.OwnerGeneration,
 		})
 	}
 	return processes, nil
@@ -542,7 +546,14 @@ func (s *sqliteStore) ListOrphanedAgentSessions(ctx context.Context, projectID s
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
-	rows, err := s.queries.ListOrphanedAgentSessions(ctx, projectID)
+	excluded, err := s.liveForeignGenerationsJSON(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListOrphanedAgentSessions(ctx, sqlc.ListOrphanedAgentSessionsParams{
+		ProjectID:              projectID,
+		LiveForeignGenerations: excluded,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing orphaned agent sessions: %w", err)
 	}

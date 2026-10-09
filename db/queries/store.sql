@@ -68,8 +68,9 @@ INSERT INTO codex_sessions (
   resumed_from_session_id,
   orphan_recovery_outcome,
   orphan_recovery_fallback_reason,
-  runtime_identity_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  runtime_identity_json,
+  owner_generation
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: BackfillSessionProjectID :execrows
@@ -162,7 +163,8 @@ SELECT
   CAST(COALESCE(worker_cleanup_root, '') AS TEXT) AS worker_cleanup_root,
   CAST(COALESCE(worker_cleanup_path, '') AS TEXT) AS worker_cleanup_path,
   CAST(COALESCE(final_state, '') AS TEXT) AS final_state,
-  CAST(COALESCE(completed_at, '') AS TEXT) AS completed_at
+  CAST(COALESCE(completed_at, '') AS TEXT) AS completed_at,
+  CAST(COALESCE(owner_generation, 0) AS INTEGER) AS owner_generation
 FROM codex_sessions
 WHERE worker_reaped_at IS NULL
   AND worker_pid > 0
@@ -213,6 +215,8 @@ WHERE w.project_id = sqlc.arg(project_id)
   AND s.completed_at IS NULL
   AND lower(trim(COALESCE(s.final_state, ''))) = 'running'
   AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != '')
+  AND (s.owner_generation IS NULL OR s.owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
+  AND (w.owner_generation IS NULL OR w.owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
 ORDER BY s.started_at DESC, s.id DESC;
 
 -- name: MarkCodexSessionOrphaned :execrows
@@ -858,8 +862,9 @@ INSERT INTO work_attempts (
   next_action,
   detent_session_id,
   provider_session_id,
-  runtime_identity_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  runtime_identity_json,
+  owner_generation
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetWorkAttempt :one
@@ -934,6 +939,7 @@ SELECT *
 FROM work_attempts
 WHERE completed_at IS NULL
   AND (sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id))
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
 ORDER BY started_at, id;
 
 -- name: ListRecentTerminalWorkAttempts :many
@@ -1019,6 +1025,7 @@ WHERE project_id = sqlc.arg(project_id)
   AND status = 'terminal'
   AND completed_at IS NOT NULL
   AND lower(trim(COALESCE(next_action, ''))) = 'release capacity'
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
 ORDER BY completed_at, id;
 
 -- name: ClearWorkAttemptCapacityRelease :exec
@@ -1044,6 +1051,7 @@ FROM work_attempts
 WHERE project_id = sqlc.arg(project_id)
   AND terminal_state = 'operator_stopped'
   AND phase IN ('operator_stop_pending', 'operator_stop_transition_failed')
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
 ORDER BY completed_at, id;
 
 -- name: TimeoutExpiredWorkAttempts :many
@@ -1062,6 +1070,7 @@ WHERE completed_at IS NULL
        OR id IN (SELECT value FROM json_each(sqlc.arg(confirmed_gone_attempt_ids))))
   AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
   AND id NOT IN (SELECT value FROM json_each(sqlc.arg(exclude_attempt_ids)))
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
 RETURNING *;
 
 -- name: CreateSchedulerDecision :one
@@ -1765,6 +1774,7 @@ SELECT reason, CAST(recorded_at AS TEXT) AS recorded_at FROM (
 
 -- name: ListLocalAdmittedIssueIDs :many
 SELECT DISTINCT issue_id FROM work_attempts
-WHERE project_id = ? AND json_valid(worker_metadata_json)
+WHERE project_id = sqlc.arg(project_id) AND json_valid(worker_metadata_json)
   AND COALESCE(json_extract(worker_metadata_json, '$.run_mode'), '') != ''
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
 ORDER BY issue_id;

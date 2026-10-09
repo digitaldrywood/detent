@@ -205,6 +205,7 @@ type CodexSession struct {
 	WorkerCleanupPath            sql.NullString `json:"worker_cleanup_path"`
 	RuntimeIdentityJson          sql.NullString `json:"runtime_identity_json"`
 	TurnStartRefused             int64          `json:"turn_start_refused"`
+	OwnerGeneration              sql.NullInt64  `json:"owner_generation"`
 }
 
 type DetentRun struct {
@@ -601,6 +602,18 @@ type WorkAttempt struct {
 	DetentSessionID        sql.NullInt64  `json:"detent_session_id"`
 	ProviderSessionID      sql.NullString `json:"provider_session_id"`
 	RuntimeIdentityJson    string         `json:"runtime_identity_json"`
+	OwnerGeneration        sql.NullInt64  `json:"owner_generation"`
+}
+
+type WorkerGeneration struct {
+	Gen          int64          `json:"gen"`
+	Pid          int64          `json:"pid"`
+	ProcessStart string         `json:"process_start"`
+	Version      string         `json:"version"`
+	State        string         `json:"state"`
+	StartedAt    string         `json:"started_at"`
+	UpdatedAt    string         `json:"updated_at"`
+	ExitedAt     sql.NullString `json:"exited_at"`
 }
 
 type WorkflowHistoryRevision struct {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -18,13 +19,23 @@ import (
 
 type barrierWorkspace struct {
 	workspace.Backend
-	result   gate.CommandResult
-	err      error
-	runs     int
-	released bool
+	result      gate.CommandResult
+	err         error
+	acquireErrs []error
+	acquires    int
+	runs        int
+	released    bool
 }
 
 func (b *barrierWorkspace) AcquireLandingBarrierRunner(context.Context) (func() error, error) {
+	b.acquires++
+	if len(b.acquireErrs) > 0 {
+		err := b.acquireErrs[0]
+		b.acquireErrs = b.acquireErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	return func() error { b.released = true; return nil }, nil
 }
 func (b *barrierWorkspace) LandingRepository(context.Context) string {
@@ -113,6 +124,42 @@ func TestLandingBarrierPublication(t *testing.T) {
 					if result == nil || result.ExitCode != test.code || result.Command != "make verify" {
 						t.Fatalf("result=%+v", result)
 					}
+				}
+			})
+		})
+	}
+}
+
+func TestLandingBarrierRunnerLockRetry(t *testing.T) {
+	held := &instancelock.HeldError{Path: "detent-landing-barrier.lock"}
+	for _, test := range []struct {
+		name         string
+		acquireErrs  []error
+		wantAcquires int
+		wantRuns     int
+		wantClaims   int
+	}{
+		{name: "free lock", wantAcquires: 1, wantRuns: 1, wantClaims: 1},
+		{name: "held lock retries then proceeds", acquireErrs: []error{held, held}, wantAcquires: 3, wantRuns: 1, wantClaims: 1},
+		{name: "unavailable lock stops", acquireErrs: []error{errors.New("git common dir unavailable")}, wantAcquires: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				backend := &barrierWorkspace{result: gate.CommandResult{Command: "make verify"}, acquireErrs: test.acquireErrs}
+				owner := &barrierOwner{cancel: cancel}
+				cfg := config.Default()
+				cfg.Gate.LandingMode, cfg.Gate.Run = gate.LandingRollingBarrier, "make verify"
+				cfg = cfg.ForNativeTracker()
+				workflow := config.Workflow{Config: cfg, SourceHash: policy.Digest([]byte("source")), Definition: config.ProjectDefinition{Revision: strings.Repeat("a", 40)}}
+				r := &Runner{workspace: backend, projectID: "project", workflow: workflow, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+				r.RunLandingBarriers(ctx, owner)
+				if backend.acquires != test.wantAcquires || backend.runs != test.wantRuns || owner.claims != test.wantClaims {
+					t.Fatalf("acquires=%d runs=%d claims=%d, want %d/%d/%d", backend.acquires, backend.runs, owner.claims, test.wantAcquires, test.wantRuns, test.wantClaims)
+				}
+				if backend.released != (test.wantRuns > 0) {
+					t.Fatalf("released=%v after %d runs", backend.released, backend.runs)
 				}
 			})
 		})

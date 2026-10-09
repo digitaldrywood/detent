@@ -80,6 +80,7 @@ type Store interface {
 	efficiency.Recorder
 	efficiency.Reader
 	APIKeyStore
+	WorkerGenerationStore
 	Queries() *sqlc.Queries
 	Close() error
 }
@@ -491,8 +492,9 @@ type WorkerProcess struct {
 	FinalState  string
 	CompletedAt time.Time
 	WorkerProcessIdentity
-	CleanupRoot string
-	CleanupPath string
+	CleanupRoot     string
+	CleanupPath     string
+	OwnerGeneration int64
 }
 
 type WorkerProcessReap struct {
@@ -715,6 +717,7 @@ type WorkAttempt struct {
 	DetentSessionID        int64
 	ProviderSessionID      string
 	RuntimeIdentity        agentidentity.Identity
+	OwnerGeneration        int64
 }
 
 type WorkAttemptStart struct {
@@ -806,7 +809,8 @@ type WorkAttemptTerminalWaitUpdate struct {
 }
 
 type WorkAttemptQuery struct {
-	ProjectID string
+	ProjectID                     string
+	ExcludeLiveForeignGenerations bool
 }
 
 type WorkAttemptHistoryQuery struct {

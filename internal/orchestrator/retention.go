@@ -3,12 +3,15 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -22,6 +25,12 @@ func (o *Orchestrator) sweepRetention(ctx context.Context, state *State, now tim
 	for _, issue := range active {
 		request.Active = append(request.Active, workspace.Issue{ProjectID: o.cfg.Project.ID, ID: issue.ID, Identifier: issue.Identifier})
 	}
+	foreign, err := o.liveForeignWorkspaceIssues(ctx)
+	if err != nil {
+		o.logger.Warn("workspace retention skipped; live worker generation lookup failed", "project_id", o.cfg.Project.ID, "error", err)
+		return
+	}
+	request.Active = append(request.Active, foreign...)
 	request.Completed = func(ctx context.Context, owned []workspace.Issue) (map[string]time.Time, error) {
 		completed := map[string]time.Time{}
 		var ids []string
@@ -79,6 +88,28 @@ func (o *Orchestrator) sweepRetention(ctx context.Context, state *State, now tim
 	if err != nil {
 		o.warnRetentionFailure(err)
 	}
+}
+
+func (o *Orchestrator) liveForeignWorkspaceIssues(ctx context.Context) ([]workspace.Issue, error) {
+	generations, ok := o.workAttempts.(store.LiveForeignGenerationReader)
+	if !ok {
+		return nil, nil
+	}
+	foreign, err := generations.LiveForeignWorkerGenerations(ctx)
+	if err != nil || len(foreign) == 0 {
+		return nil, err
+	}
+	attempts, err := o.workAttempts.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: o.cfg.Project.ID})
+	if err != nil {
+		return nil, fmt.Errorf("list live worker generation attempts: %w", err)
+	}
+	var issues []workspace.Issue
+	for _, attempt := range attempts {
+		if slices.Contains(foreign, attempt.OwnerGeneration) {
+			issues = append(issues, workspace.Issue{ProjectID: o.cfg.Project.ID, ID: attempt.IssueID, Identifier: attempt.Identifier})
+		}
+	}
+	return issues, nil
 }
 
 func (o *Orchestrator) warnRetentionFailure(err error) {
