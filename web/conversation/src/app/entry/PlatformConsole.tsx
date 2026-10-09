@@ -142,7 +142,7 @@ export function PlatformHealthPanel({ value }: { readonly value: PlatformHealth 
 
 const PLATFORM_SECTIONS = [
   { id: "tenants", title: "Tenants", icon: Building2 },
-  { id: "accounts", title: "Accounts", icon: UserSearch },
+  { id: "users", title: "Users", icon: UserSearch },
   { id: "staff", title: "Staff", icon: Users },
   { id: "audit", title: "Audit", icon: ScrollText },
   { id: "health", title: "Health", icon: Activity },

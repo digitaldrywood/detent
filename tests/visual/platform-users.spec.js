@@ -1,27 +1,27 @@
 const { test, expect } = require("@playwright/test");
 const { platformPreview } = require("./platform-preview");
 const fixture = require("./platform-preview-data.json");
-const accounts = require("./platform-accounts-data.json");
+const users = require("./platform-users-data.json");
 
 const origin = "https://platform.detent.test";
 let html;
 test.beforeAll(async () => { html = await platformPreview(); });
 
 for (const width of [1440, 390]) {
-  test(`accounts explicit search and results at ${width}px`, async ({ page }) => {
+  test(`users explicit search and results at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: width === 390 ? 844 : 1100 });
     await page.route(origin + "/**", (route) => route.fulfill({ contentType: "text/html", body: html }));
     const session = { ...fixture.account, platform_role: "viewer" };
     await page.route("**/api/cloud/session", (route) => route.fulfill({ json: session }));
     await page.route("**/api/cloud/organizations", (route) => route.fulfill({ json: session }));
     const queries = [];
-    await page.route("**/api/cloud/platform/accounts?*", async (route) => {
+    await page.route("**/api/cloud/platform/users?*", async (route) => {
       const query = new URL(route.request().url()).searchParams.get("q");
       queries.push(query);
-      await route.fulfill({ json: query === "missing" ? { accounts: [], unsearched: accounts.unsearched } : accounts });
+      await route.fulfill({ json: query === "missing" ? { users: [], unsearched: users.unsearched } : users });
     });
-    await page.goto(origin + "/platform/accounts");
-    await expect(page.getByRole("heading", { name: "Accounts", exact: true })).toBeVisible();
+    await page.goto(origin + "/platform/users");
+    await expect(page.getByRole("heading", { name: "Users", exact: true })).toBeVisible();
     const input = page.getByRole("searchbox", { name: "Search by email" });
     const search = page.getByRole("button", { name: "Search", exact: true });
     await input.fill("ab");
@@ -47,7 +47,7 @@ for (const width of [1440, 390]) {
     }
     await input.fill("missing");
     await search.click();
-    await expect(page.getByText("No accounts match")).toBeVisible();
+    await expect(page.getByText("No users match")).toBeVisible();
     await expect(member).toHaveCount(0);
     await expect(page.getByText("Not searched: Slow Tenant")).toBeVisible();
     expect(queries).toEqual(["example.test", "missing"]);

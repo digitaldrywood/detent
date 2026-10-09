@@ -26,7 +26,7 @@ test("desktop platform shell redirects to tenants and keeps chrome across pages"
   await expect(page.getByRole("heading", { name: "Tenants", exact: true })).toBeVisible();
   await expect(page.getByText("Platform", { exact: true })).toBeVisible();
   const nav = page.getByRole("navigation", { name: "Platform navigation" });
-  await expect(nav.getByRole("link")).toHaveText(["Tenants", "Accounts", "Staff", "Audit", "Health", "Allowlist"]);
+  await expect(nav.getByRole("link")).toHaveText(["Tenants", "Users", "Staff", "Audit", "Health", "Allowlist"]);
   await expect(nav.getByRole("link", { name: "Tenants" })).toHaveAttribute("data-active", "true");
   await expect(page.getByRole("table", { name: "Tenants", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Open organization" }).click();
@@ -49,7 +49,7 @@ for (const role of ["support", "billing", "viewer"]) {
   test(`${role} has readable sections and no organization menu without memberships`, async ({ page }) => {
     await openPlatform(page, { role, organizations: [] });
     const nav = page.getByRole("navigation", { name: "Platform navigation" });
-    await expect(nav.getByRole("link")).toHaveText(["Tenants", "Accounts", "Audit", "Health", "Allowlist"]);
+    await expect(nav.getByRole("link")).toHaveText(["Tenants", "Users", "Audit", "Health", "Allowlist"]);
     await expect(nav.getByRole("link", { name: "Staff" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Open organization" })).toHaveCount(0);
     await expect(page.locator('[data-slot="sidebar-footer"]').getByText(role[0].toUpperCase() + role.slice(1), { exact: true })).toBeVisible();

@@ -15,7 +15,7 @@ import {
 import { formatBytes } from "../../src/app/entry/PlatformConsole.tsx";
 import { makeEntryRouter } from "../../src/app/entry/router.tsx";
 import { STALE_PLAN_MESSAGE } from "../../src/app/entry/ComplimentaryPlans.tsx";
-import accountResults from "../../../../tests/visual/platform-accounts-data.json";
+import userResults from "../../../../tests/visual/platform-users-data.json";
 
 const assign = vi.fn();
 
@@ -104,7 +104,7 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
       entitlements: await api.platformEntitlements(id),
     })),
     resumePlatformTenant: vi.fn(async () => ({ next: "/platform/tenants" })),
-    platformAccounts: vi.fn(async () => ({ accounts: [], unsearched: [] })),
+    platformUsers: vi.fn(async () => ({ users: [], unsearched: [] })),
     platformOrganizations: vi.fn(async () => organizations),
     platformAllowlist: vi.fn(async () => allowlist),
     platformMembers: vi.fn(async () => ({ members: [], revision: 1, self: { email: "admin@detent.build", role: "admin" } })),
@@ -129,10 +129,10 @@ function renderPlatform(api: EntryApi, path = "/platform/tenants") {
 }
 
 describe("platform console", () => {
-  it("searches accounts only on submit and renders memberships, invitations and incomplete tenants", async () => {
-    let resolve: ((value: typeof accountResults) => void) | undefined;
-    const search = vi.fn(() => new Promise<typeof accountResults>((done) => { resolve = done; }));
-    renderPlatform(fakeApi({ platformAccounts: search }), "/platform/accounts");
+  it("searches users only on submit and renders memberships, invitations and incomplete tenants", async () => {
+    let resolve: ((value: typeof userResults) => void) | undefined;
+    const search = vi.fn(() => new Promise<typeof userResults>((done) => { resolve = done; }));
+    renderPlatform(fakeApi({ platformUsers: search }), "/platform/users");
     const input = await screen.findByRole("searchbox", { name: "Search by email" });
     const button = screen.getByRole("button", { name: "Search" }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
@@ -144,20 +144,20 @@ describe("platform console", () => {
     expect(search).not.toHaveBeenCalled();
     fireEvent.submit(input.closest("form")!);
     expect(search).toHaveBeenCalledWith("example.test");
-    expect(screen.getByRole("status", { name: "Searching accounts" })).toBeTruthy();
+    expect(screen.getByRole("status", { name: "Searching users" })).toBeTruthy();
     expect((screen.getByRole("button", { name: "Searching…" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.submit(input.closest("form")!);
     expect(search).toHaveBeenCalledTimes(1);
-    resolve!(accountResults);
-    const account = await screen.findByRole("region", { name: "michael@example.test" });
-    expect(account.textContent).toContain("user_01HX_michael");
-    expect(account.textContent).toContain("2026-10-06 14:02Z");
-    expect(within(account).getByText("support")).toBeTruthy();
-    const rows = within(account).getAllByRole("row");
+    resolve!(userResults);
+    const user = await screen.findByRole("region", { name: "michael@example.test" });
+    expect(user.textContent).toContain("user_01HX_michael");
+    expect(user.textContent).toContain("2026-10-06 14:02Z");
+    expect(within(user).getByText("support")).toBeTruthy();
+    const rows = within(user).getAllByRole("row");
     expect(rows.map((row) => row.textContent)).toEqual([
       "OrganizationRoleJoinedTenant", "Parableowner2026-09-28Open tenant →", "Drywood Creekmember2026-10-01Open tenant →", "Example Coinvitedexpires 2026-10-13Open tenant →",
     ]);
-    expect(within(account).getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual([
+    expect(within(user).getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual([
       "/platform/tenants?tenant=org_parable", "/platform/tenants?tenant=org_drywood", "/platform/tenants?tenant=org_example",
     ]);
     expect(screen.getByText("No organization membership")).toBeTruthy();
@@ -165,18 +165,18 @@ describe("platform console", () => {
     fireEvent.change(input, { target: { value: "missing" } });
     fireEvent.submit(input.closest("form")!);
     expect(screen.queryByRole("region", { name: "michael@example.test" })).toBeNull();
-    resolve!({ accounts: [], unsearched: [] });
-    expect(await screen.findByText("No accounts match")).toBeTruthy();
+    resolve!({ users: [], unsearched: [] });
+    expect(await screen.findByText("No users match")).toBeTruthy();
   });
 
-  it.each([401, 403, 503])("handles account search failure %s", async (status) => {
-    const api = fakeApi({ platformAccounts: vi.fn(async () => { throw new AccountError({ status, code: "refused", message: "Search refused" }); }) });
-    renderPlatform(api, "/platform/accounts");
+  it.each([401, 403, 503])("handles user search failure %s", async (status) => {
+    const api = fakeApi({ platformUsers: vi.fn(async () => { throw new AccountError({ status, code: "refused", message: "Search refused" }); }) });
+    renderPlatform(api, "/platform/users");
     const input = await screen.findByRole("searchbox");
     fireEvent.change(input, { target: { value: "member" } });
     fireEvent.submit(input.closest("form")!);
     expect((await screen.findByRole("alert")).textContent).toContain("Search refused");
-    expect(screen.queryByText("No accounts match")).toBeNull();
+    expect(screen.queryByText("No users match")).toBeNull();
     if (status === 401) expect(assign).toHaveBeenCalledWith(SIGN_IN_PLATFORM);
     expect((screen.getByRole("button", { name: "Search" }) as HTMLButtonElement).disabled).toBe(false);
   });
@@ -186,7 +186,7 @@ describe("platform console", () => {
     const nav = await screen.findByRole("navigation", { name: "Platform navigation" });
     await screen.findByRole("heading", { name: "Tenants", level: 1 });
     expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual(
-      role === "admin" ? ["Tenants", "Accounts", "Staff", "Audit", "Health", "Allowlist"] : ["Tenants", "Accounts", "Audit", "Health", "Allowlist"],
+      role === "admin" ? ["Tenants", "Users", "Staff", "Audit", "Health", "Allowlist"] : ["Tenants", "Users", "Audit", "Health", "Allowlist"],
     );
     expect(within(nav).getByRole("link", { name: "Tenants" }).getAttribute("data-active")).toBe("true");
     expect(screen.getByText("Platform")).toBeTruthy();

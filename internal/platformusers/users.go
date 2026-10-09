@@ -1,4 +1,4 @@
-package platformaccounts
+package platformusers
 
 import (
 	"errors"
@@ -39,7 +39,7 @@ type Invitation struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
-type Account struct {
+type User struct {
 	Email        string       `json:"email"`
 	Subject      string       `json:"subject"`
 	PlatformRole string       `json:"platform_role"`
@@ -49,7 +49,7 @@ type Account struct {
 }
 
 type Result struct {
-	Accounts   []Account      `json:"accounts"`
+	Users      []User         `json:"users"`
 	Unsearched []Organization `json:"unsearched"`
 }
 

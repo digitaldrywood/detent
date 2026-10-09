@@ -10,23 +10,23 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
-	"github.com/digitaldrywood/detent/internal/platformaccounts"
+	"github.com/digitaldrywood/detent/internal/platformusers"
 )
 
-func (s *Service) hostedPlatformAccounts(c echo.Context) error {
+func (s *Service) hostedPlatformUsers(c echo.Context) error {
 	if claims, ok := hostedSharedClaims(c); !ok || claims.Kind != cloudassert.KindService {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	var input platformaccounts.Query
+	var input platformusers.Query
 	if err := decodeAPIJSON(c, &input); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	query, err := platformaccounts.Parse(input.Text)
+	query, err := platformusers.Parse(input.Text)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, apiErrorResponse{Code: "invalid_query", Message: "Enter at least three characters"})
 	}
 	ctx := c.Request().Context()
-	result := platformaccounts.TenantResult{Members: []platformaccounts.TenantMember{}, Invitations: []platformaccounts.TenantInvitation{}}
+	result := platformusers.TenantResult{Members: []platformusers.TenantMember{}, Invitations: []platformusers.TenantInvitation{}}
 	rows, err := s.database.db.QueryContext(ctx, `SELECT email,user_id,role,created_at FROM hosted_members
 WHERE active=1 AND CASE WHEN ? THEN lower(email)=? ELSE instr(lower(email),?)>0 END ORDER BY lower(email),user_id`, query.Exact, query.Text, query.Text)
 	if err != nil {
@@ -34,7 +34,7 @@ WHERE active=1 AND CASE WHEN ? THEN lower(email)=? ELSE instr(lower(email),?)>0 
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var member platformaccounts.TenantMember
+		var member platformusers.TenantMember
 		if err := rows.Scan(&member.Email, &member.Subject, &member.Role, &member.JoinedAt); err != nil {
 			return err
 		}
@@ -52,7 +52,7 @@ WHERE organization_id=? AND accepted_user_id='' AND CASE WHEN ? THEN lower(email
 	defer rows.Close()
 	for rows.Next() {
 		var id string
-		var invitation platformaccounts.TenantInvitation
+		var invitation platformusers.TenantInvitation
 		if err := rows.Scan(&id, &invitation.Email, &invitation.ExpiresAt); err != nil {
 			return err
 		}
@@ -86,7 +86,7 @@ WHERE organization_id=? AND accepted_user_id='' AND CASE WHEN ? THEN lower(email
 		ordered = append(ordered, email)
 	}
 	sort.Strings(ordered)
-	for _, email := range ordered[min(len(ordered), platformaccounts.Limit):] {
+	for _, email := range ordered[min(len(ordered), platformusers.Limit):] {
 		delete(emails, email)
 	}
 	members := result.Members[:0]

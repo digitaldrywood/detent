@@ -21,18 +21,18 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/platformaccounts"
+	"github.com/digitaldrywood/detent/internal/platformusers"
 )
 
-var platformRoutes = []string{"/platform", "/platform/tenants", "/platform/accounts", "/platform/staff", "/platform/audit", "/platform/health", "/platform/allowlist", "/api/cloud/platform/organizations", "/api/cloud/platform/allowlist", "/api/cloud/platform/health", "/api/cloud/platform/audit", "/api/cloud/platform/accounts?q=alice"}
+var platformRoutes = []string{"/platform", "/platform/tenants", "/platform/users", "/platform/staff", "/platform/audit", "/platform/health", "/platform/allowlist", "/api/cloud/platform/organizations", "/api/cloud/platform/allowlist", "/api/cloud/platform/health", "/api/cloud/platform/audit", "/api/cloud/platform/users?q=alice"}
 
 var platformEvents = map[string]string{
-	"/api/cloud/platform/accounts?q=alice": "platform_accounts_searched",
-	"/platform":                            "platform_opened",
-	"/api/cloud/platform/organizations":    "platform_organizations_viewed",
-	"/api/cloud/platform/allowlist":        "platform_allowlist_viewed",
-	"/api/cloud/platform/health":           "platform_health_viewed",
-	"/api/cloud/platform/audit":            "platform_audit_viewed",
+	"/api/cloud/platform/users?q=alice": "platform_users_searched",
+	"/platform":                         "platform_opened",
+	"/api/cloud/platform/organizations": "platform_organizations_viewed",
+	"/api/cloud/platform/allowlist":     "platform_allowlist_viewed",
+	"/api/cloud/platform/health":        "platform_health_viewed",
+	"/api/cloud/platform/audit":         "platform_audit_viewed",
 }
 
 func withClientShell(s *Service) {
@@ -759,7 +759,7 @@ func (timedOutPlatformTransport) RoundTrip(*http.Request) (*http.Response, error
 	return nil, context.DeadlineExceeded
 }
 
-func TestPlatformAccountsSearch(t *testing.T) {
+func TestPlatformUsersSearch(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
 	f.provider.users["user_staff"] = "staff@example.test"
@@ -808,27 +808,27 @@ func TestPlatformAccountsSearch(t *testing.T) {
 		{"empty", "", 400, 0, -1, -1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			response, body := staff.get("/api/cloud/platform/accounts?" + url.Values{"q": {test.query}}.Encode())
+			response, body := staff.get("/api/cloud/platform/users?" + url.Values{"q": {test.query}}.Encode())
 			if response.StatusCode != test.status {
 				t.Fatalf("search = %d %s", response.StatusCode, body)
 			}
 			if test.status != 200 {
 				return
 			}
-			var result platformaccounts.Result
+			var result platformusers.Result
 			decodeJSON(t, body, &result)
-			if len(result.Accounts) != test.count || len(result.Unsearched) != 0 {
+			if len(result.Users) != test.count || len(result.Unsearched) != 0 {
 				t.Fatalf("result = %+v", result)
 			}
 			if test.count > 0 && test.memberships >= 0 {
-				for _, account := range result.Accounts {
-					if len(account.Memberships) != test.memberships || len(account.Invitations) != test.invitations || account.Subject == "" {
-						t.Fatalf("account = %+v", account)
+				for _, user := range result.Users {
+					if len(user.Memberships) != test.memberships || len(user.Invitations) != test.invitations || user.Subject == "" {
+						t.Fatalf("user = %+v", user)
 					}
-					if account.Email == "carol@example.test" && account.LastSignInAt != formatTime(now) {
-						t.Fatalf("last sign in = %q", account.LastSignInAt)
+					if user.Email == "carol@example.test" && user.LastSignInAt != formatTime(now) {
+						t.Fatalf("last sign in = %q", user.LastSignInAt)
 					}
-					for _, membership := range account.Memberships {
+					for _, membership := range user.Memberships {
 						if membership.Name == "" || membership.JoinedAt == "" || membership.Role != "owner" {
 							t.Fatalf("membership = %+v", membership)
 						}
@@ -840,7 +840,7 @@ func TestPlatformAccountsSearch(t *testing.T) {
 			if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT query_length,organization_id,event FROM audit WHERE subject='user_staff' ORDER BY id DESC LIMIT 1").Scan(&length, &organization, &event); err != nil {
 				t.Fatal(err)
 			}
-			if length != len(test.query) || organization != "" || event != "platform_accounts_searched" || strings.Contains(body, "Alpha secret project") {
+			if length != len(test.query) || organization != "" || event != "platform_users_searched" || strings.Contains(body, "Alpha secret project") {
 				t.Fatalf("audit or content leak: %d %q %q %s", length, organization, event, body)
 			}
 		})
@@ -850,10 +850,10 @@ func TestPlatformAccountsSearch(t *testing.T) {
 			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform_members SET role=? WHERE email='staff@example.test'", role); err != nil {
 				t.Fatal(err)
 			}
-			response, body := staff.get("/api/cloud/platform/accounts?q=staff")
-			var result platformaccounts.Result
+			response, body := staff.get("/api/cloud/platform/users?q=staff")
+			var result platformusers.Result
 			decodeJSON(t, body, &result)
-			if response.StatusCode != 200 || len(result.Accounts) != 1 || result.Accounts[0].PlatformRole != role {
+			if response.StatusCode != 200 || len(result.Users) != 1 || result.Users[0].PlatformRole != role {
 				t.Fatalf("role result = %d %s", response.StatusCode, body)
 			}
 		})
@@ -865,10 +865,10 @@ func TestPlatformAccountsSearch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_, body = staff.get("/api/cloud/platform/accounts?q=cap")
-	var capped platformaccounts.Result
+	_, body = staff.get("/api/cloud/platform/users?q=cap")
+	var capped platformusers.Result
 	decodeJSON(t, body, &capped)
-	if len(capped.Accounts) != 50 || capped.Accounts[49].Email != "cap49@example.test" {
+	if len(capped.Users) != 50 || capped.Users[49].Email != "cap49@example.test" {
 		t.Fatalf("cap = %+v", capped)
 	}
 	original := f.service.config.transport
@@ -878,10 +878,10 @@ func TestPlatformAccountsSearch(t *testing.T) {
 		}
 		return original(org)
 	}
-	_, body = staff.get("/api/cloud/platform/accounts?q=alice")
-	var partial platformaccounts.Result
+	_, body = staff.get("/api/cloud/platform/users?q=alice")
+	var partial platformusers.Result
 	decodeJSON(t, body, &partial)
-	if len(partial.Accounts) != 1 || len(partial.Accounts[0].Memberships) != 1 || len(partial.Unsearched) != 1 || partial.Unsearched[0].ID != "org_beta" {
+	if len(partial.Users) != 1 || len(partial.Users[0].Memberships) != 1 || len(partial.Unsearched) != 1 || partial.Unsearched[0].ID != "org_beta" {
 		t.Fatalf("partial = %+v", partial)
 	}
 }

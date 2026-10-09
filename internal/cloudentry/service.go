@@ -270,7 +270,7 @@ func (s *Service) routes() {
 	e.POST("/api/cloud/platform/organizations/:organization/resume", s.resumePlatformProvisioning)
 	e.GET("/api/cloud/platform/allowlist", s.platformAllowlistJSON)
 	e.GET("/api/cloud/platform/health", s.platformHealthJSON)
-	e.GET("/api/cloud/platform/accounts", s.platformAccountsJSON)
+	e.GET("/api/cloud/platform/users", s.platformUsersJSON)
 	e.GET("/api/cloud/platform/audit", s.platformAuditJSON)
 	e.GET("/api/cloud/platform/organizations/:organization/entitlements", s.platformEntitlementsJSON)
 	e.POST("/api/cloud/platform/organizations/:organization/entitlements", s.changePlatformEntitlement)
