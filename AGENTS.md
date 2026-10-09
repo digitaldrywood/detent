@@ -131,9 +131,16 @@ completion contract owns tracker publication and grants workers no extra writes.
 ## Validation
 
 Run `make check-land` before reporting source work complete and fix every
-failure in the same run. Do not hand back a red gate. Native landing reuses the
-successful receipt for the reviewed head and tree: clean squashes join one
-ordered staging batch and push without another gate or GitHub API call. After
+failure in the same run. Do not hand back a red gate. Workers run `make check-land`
+under this repository's validation instructions. The Cloud project's approved
+`gate.run` is `make check-barrier`, with `gate.landing_mode: rolling_barrier`.
+In this mode the host skips command validation after source finalization and
+during landing and merge-resolution preparation. The barrier runs the approved
+`gate.run` on the integrated base tip outside the source lock after landings.
+This mode does not reuse a worker command receipt for host validation.
+Signed commit finalization and Change publication still occur. Clean squashes
+join one ordered staging batch and push without a per-landing gate or GitHub
+API call. After
 a rebase, validate the build, short Go tests for touched packages, and lint of
 touched files; a failed command returns the item to Rework with its output.
 GitHub pull-request landing retains its configured target and checks.
@@ -148,9 +155,11 @@ relative to the merge base:
 - A changed `scripts/` file: its own `scripts/*_test.py`. A changed `Makefile`
   runs `scripts/check_land_test.py`.
 
-Playwright browser tests, race, full Go tests, coverage, fuzz, the
-repository-wide NilAway audit and full integration run in the rolling landing
-barrier (`make check-barrier`) and the scheduled suite.
+Playwright browser tests, race, full Go tests, security checks and full
+integration run in the rolling landing barrier (`make check-barrier`) and the
+scheduled suite. The barrier includes changed-package NilAway; the
+repository-wide NilAway audit, coverage and extended fuzzing run in the
+scheduled suite.
 No local commit status or additional CI producer is required. Every target
 shares the host through `TEST_PROCS` (default 4); see
 [docs/development.md](docs/development.md).
