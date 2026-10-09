@@ -1,4 +1,4 @@
-import { CheckIcon, ChevronUpIcon, PlusIcon, SettingsIcon } from "lucide-react";
+import { Building2Icon, CheckIcon, ChevronUpIcon, PlusIcon, SettingsIcon } from "lucide-react";
 import { useContext, useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
@@ -6,6 +6,7 @@ import { ClientContext } from "../../app/client";
 import { useAccountApi } from "../../app/account/context";
 import { newKey } from "../../app/account/idempotency";
 import { useMutation } from "../../app/account/useResource";
+import { PLATFORM } from "../../app/entry/api";
 import {
   behindSharedEntry,
   ENTRY_CREATE_ORGANIZATION,
@@ -43,6 +44,7 @@ export function WorkspacePicker({
   onSelect,
   onManage,
   addHref,
+  platformHref,
   pending = false,
   error = null,
 }: {
@@ -51,6 +53,7 @@ export function WorkspacePicker({
   readonly onSelect: (id: string) => void;
   readonly onManage: () => void;
   readonly addHref: string;
+  readonly platformHref?: string;
   readonly pending?: boolean;
   readonly error?: string | null;
 }) {
@@ -166,6 +169,12 @@ export function WorkspacePicker({
             <SettingsIcon aria-hidden className="size-3.5" />
             Manage current workspace
           </MenuItem>
+          {platformHref ? (
+            <MenuItem className="min-h-8 text-xs sm:min-h-8 sm:text-xs" render={<a href={platformHref} />}>
+              <Building2Icon aria-hidden className="size-3.5" />
+              Platform console
+            </MenuItem>
+          ) : null}
         </MenuPopup>
       </Menu>
     </SidebarMenuItem>
@@ -196,6 +205,7 @@ function AccountWorkspacePicker({ account }: { readonly account: AccountBootstra
       pending={switchTo.pending}
       error={switchTo.error?.message ?? null}
       addHref={behindSharedEntry() ? ENTRY_CREATE_ORGANIZATION : "/organization"}
+      platformHref={account.actor.platform_role ? PLATFORM : undefined}
       onManage={() => {
         if (isMobile) setOpenMobile(false);
         void navigate({ to: "/settings/$section", params: { section: "organization" } });
