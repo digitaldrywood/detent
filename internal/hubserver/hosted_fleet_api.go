@@ -420,6 +420,17 @@ func (s *Service) readHostedRunnerHostHistory(ctx context.Context, credential ap
 	if runnerID == "" {
 		return nil, nativeInvalid("Runner ID is required for host history")
 	}
+	readable, err := s.hostedReadableProjects(ctx, credential)
+	if err != nil {
+		return nil, err
+	}
+	var projects int
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id = ?", s.config.Hosted.OrganizationID).Scan(&projects); err != nil {
+		return nil, err
+	}
+	if len(readable) < projects {
+		return nil, nativeNotFound()
+	}
 	fleet, err := s.readHostedFleet(ctx, credential)
 	if err != nil {
 		return nil, err
