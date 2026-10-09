@@ -79,6 +79,8 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 }
 
 func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeConnector, projectOwner func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration) error {
+	s.nativeHeartbeatMu.Lock()
+	defer s.nativeHeartbeatMu.Unlock()
 	project := source.client.project
 	s.mu.Lock()
 	last := s.nativeHeartbeats[project]
@@ -270,13 +272,13 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	if err := s.PrepareProject(ctx, request.ProjectID); err != nil {
 		return nil, errors.Join(orchestrator.ErrSchedulingUnavailable, err)
 	}
+	if err := s.ensureNativeMachine(ctx, source); err != nil {
+		return nil, schedulingError(err)
+	}
 	if len(request.DispatchPriorityByState) != 0 || len(request.DispatchPriorityByLabel) != 0 || request.PrioritizeUnblockers {
 		if err := source.client.Negotiate(ctx, tracker.NativeDispatchPriorityCapability); err != nil {
 			return nil, schedulingError(err)
 		}
-	}
-	if err := s.ensureNativeMachine(ctx, source); err != nil {
-		return nil, schedulingError(err)
 	}
 	if s.client.runner != nil {
 		s.client.runner.routingMu.Lock()
@@ -328,6 +330,8 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	reconnecting := len(leases) > 0
 	if reconnecting {
 		err = nil
+	} else if !source.client.claimHint() {
+		return nil, nil
 	} else if s.providerReports != nil || request.CandidateReady != nil || request.NativeLandingBatch {
 		leases, err = s.claimPreviewCandidates(ctx, request, source, claimRequest, limit)
 	} else {
@@ -346,7 +350,11 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 			leases = append(leases, lease)
 		}
 	}
-	if errors.Is(err, ErrNoClaimableWork) || nativeAdmissionCapacityFull(err) {
+	if errors.Is(err, ErrNoClaimableWork) {
+		source.client.claimsExhausted()
+		err = nil
+	}
+	if nativeAdmissionCapacityFull(err) {
 		err = nil
 	}
 	release := func(cause error) error {
@@ -524,6 +532,7 @@ func (s *Scheduler) nativeClaimError(issueID string, token tracker.FencingToken,
 	if nativeAuthorityLost(err) || lostAuthority {
 		s.mu.Lock()
 		if current, ok := s.nativeClaims[issueID]; ok && current.lease.FencingToken == token {
+			current.source.client.slotFreed()
 			delete(s.claims, issueID)
 			delete(s.nativeClaims, issueID)
 			delete(s.claimPolicies, issueID)

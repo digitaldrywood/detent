@@ -49,7 +49,7 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 		features = append(features, tracker.NativeWorkspaceCapability)
 	}
 	features = append(features, tracker.NativeRunnerSetupCapability, tracker.NativeProjectCheckoutCapability, tracker.NativeRunnerSetupDeclarationCapability)
-	features = append(features, tracker.NativeDispatchPriorityCapability, tracker.NativeDispatchWaitCapability)
+	features = append(features, tracker.NativeDispatchPriorityCapability, tracker.NativeDispatchWaitCapability, tracker.NativeHeartbeatChangesCapability)
 	return nativeCapabilitiesResponse{
 		ServerID: serverID, Version: s.config.Version, MinimumRunnerVersion: minimumRunnerVersion(s.config.Version),
 		ProtocolMajors: []int{1, 2}, EventSchemas: []int{1}, Features: features,

@@ -52,6 +52,7 @@ type ClaimState struct {
 }
 
 type RoutingSnapshot struct {
+	Changes                     *HeartbeatChanges            `json:"changes,omitempty"`
 	TargetRunnerVersion         string                       `json:"target_runner_version,omitempty"`
 	ClaimState                  *ClaimState                  `json:"claim_state,omitempty"`
 	ProjectConfigurationRequest *ProjectConfigurationRequest `json:"project_configuration_request,omitempty"`
@@ -59,6 +60,21 @@ type RoutingSnapshot struct {
 	RunnerID                    string                       `json:"runner_id"`
 	Revision                    int64                        `json:"revision"`
 	Routing                     Routing                      `json:"routing"`
+}
+
+type HeartbeatChanges struct {
+	Cursor             string          `json:"cursor"`
+	Reset              bool            `json:"reset"`
+	Items              []HeartbeatItem `json:"items"`
+	PolicyID           string          `json:"policy_id"`
+	CapabilitiesDigest string          `json:"capabilities_digest"`
+	Claimable          bool            `json:"claimable"`
+}
+
+type HeartbeatItem struct {
+	ID             tracker.NativeWorkItemID `json:"work_item_id"`
+	Revision       tracker.Revision         `json:"revision,string"`
+	LastActivityAt time.Time                `json:"last_activity_at"`
 }
 
 type RoutingChange struct {

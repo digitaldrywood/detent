@@ -40,6 +40,9 @@ type Config struct {
 type Client struct {
 	requestBudgetMu    sync.Mutex
 	requestBudgetUntil time.Time
+	heartbeatProjects  map[string]*heartbeatProject
+	heartbeatMu        sync.Mutex
+	capabilitiesDigest string
 	reads              *nativeReadCache
 	capabilitiesAt     time.Time
 	capabilities       nativeCapabilities
@@ -244,6 +247,8 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	if method != http.MethodGet {
 		c.reads.forget(path)
 		defer c.reads.forget(path)
+		c.forgetHeartbeatItems(path)
+		defer c.forgetHeartbeatItems(path)
 	}
 	httpClient := c.httpClient
 	if timeout > 0 {

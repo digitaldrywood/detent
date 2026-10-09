@@ -80,6 +80,7 @@ type Scheduler struct {
 	now                   func() time.Time
 	sessionID             func() (string, error)
 	mu                    sync.Mutex
+	nativeHeartbeatMu     sync.Mutex
 	registered            bool
 	lastHeartbeat         time.Time
 	claims                map[string]tracker.Lease
