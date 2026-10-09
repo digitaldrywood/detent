@@ -1900,7 +1900,7 @@
       "variants": {},
       "states": ["hover", "focus-visible", "busy", "terminal"],
       "keyboard": "The card is a link to the issue page; its pills are labelled for assistive technology.",
-      "use": "A board card: identity, title, at most one actionable status line and priority, per INV-13.",
+      "use": "A board card: identity and menu, wrapping title, at most one actionable status line with priority, then the approved compact attempt/update row, per INV-13.",
       "avoid": "Any additional metric, badge, banner or diagnostic on the card (INV-13).",
       "related": ["board-lane", "work-list"]
     },

@@ -366,19 +366,26 @@ host caches, scratch and the shared Go admission budget.
 
 A board card renders exactly the identity row (project, issue and PR references,
 origin, model and configured effort), the title, at most one status line and
-existing priority controls. Compact may hide effort before model; Cozy and
-Comfy retain effort. The status line contains at most 48 Unicode characters
-and names the wait in actionable words.
+existing priority controls. The approved Cloud split footer places status and
+priority above a divider, then a compact muted row containing only attempt
+count and relative update time with small icons. Its menu stays inside the
+identity header, and titles wrap without a fixed height budget. Compact may
+hide effort before model; Cozy and Comfy retain effort. The status line
+contains at most 48 Unicode characters and names the wait in actionable words.
 
-Scheduler evidence, tracker ages, timestamps, token and attempt counts,
-fact grids and diagnostic text are not card content. Existing observations
-belong in the detail sheet and hover titles, subject to INV-15. Adding card
-body content or lengthening the status line changes this rule.
+Scheduler evidence, tracker ages, absolute timestamps, token counts, fact grids
+and diagnostic text are not card content. Attempt count and relative update
+time are permitted only in the approved compact metadata row. Existing
+observations belong in the detail sheet and hover titles, subject to INV-15.
+Adding card body content or lengthening the status line changes this rule.
 
 **Enforcement:** `TestINV13BoardCardContent`,
 `TestINV13SheetObservations`, and `TestBoardCardSignalBudget` in
-`internal/web/templates`; browser review checks one-line status and effort
-visibility across densities.
+`internal/web/templates`, plus the board-card content contract in
+`web/conversation/tests/components/work.test.tsx`. The existing Cloud board
+browser fixture checks split-footer containment and grouping at
+240/260/320/400 CSS pixels across densities and themes; browser review checks
+one-line status and effort visibility across densities.
 
 ## INV-14 — Workers never wait on a human question
 
