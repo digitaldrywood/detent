@@ -1420,8 +1420,8 @@ describe("the filter-first Work surface", () => {
     expect(alphaReads[1]!.url.searchParams.has("cursor")).toBe(true);
     expect(screen.queryByTestId("work-list-more")).toBeNull();
     expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h");
-    expect(refreshed.filter((request) => request.url.pathname.endsWith("/attempts"))).toHaveLength(24);
-    expect(refreshed.filter((request) => request.url.pathname.endsWith("/changes"))).toHaveLength(24);
+    expect(refreshed.filter((request) => request.url.pathname.endsWith("/attempts"))).toHaveLength(17);
+    expect(refreshed.filter((request) => request.url.pathname.endsWith("/changes"))).toHaveLength(17);
     expect(screen.getByText("Observed later-page worker")).not.toBeNull();
   });
 });
