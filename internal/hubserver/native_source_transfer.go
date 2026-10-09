@@ -69,7 +69,7 @@ func readSourceRecoveryView(ctx context.Context, q nativeQueryer, scope nativeSc
 		return view, id, err
 	}
 	view.Quiesced = view.Quiesced && unquiesced == 0 && !uncertainEffect && !issue.Archived && !issue.Terminal
-	allowed, reason, err := nativeSourceClaimAllowed(ctx, q, scope, "", id)
+	allowed, reason, err := nativeSourceClaimAllowed(ctx, q, scope, "", id, time.Time{})
 	if err != nil {
 		return view, id, err
 	}

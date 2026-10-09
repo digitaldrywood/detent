@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -106,12 +108,85 @@ func TestNativeSourcePlacement(t *testing.T) {
 				machine tracker.MachineID
 				allowed bool
 			}{{"source-machine", test.owner}, {"destination-machine", test.destination}} {
-				allowed, reason, err := nativeSourceClaimAllowed(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, candidate.machine, id)
+				allowed, reason, err := nativeSourceClaimAllowed(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, candidate.machine, id, time.Now())
 				if err != nil || allowed != candidate.allowed {
 					t.Fatalf("%s allowed=%v reason=%q error=%v", candidate.machine, allowed, reason, err)
 				}
 				if !allowed && !strings.Contains(reason, "source runner source-machine") {
 					t.Fatalf("refusal lost source owner: %q", reason)
+				}
+			}
+		})
+	}
+}
+
+func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, state, otherReason string
+		source, ownerOffline     bool
+		otherAllowed             bool
+	}{
+		{name: "local-only checkpoint is claimed by its owner and refused elsewhere", state: "dirty", otherReason: "is local to source runner"},
+		{name: "local-only checkpoint waits for an offline owner", state: "unpushed", ownerOffline: true, otherReason: "is local to source runner"},
+		{name: "verified durable source stays with an online owner", state: "unpushed", source: true, otherReason: "stays with source runner"},
+		{name: "verified durable source moves when the owner is offline", state: "unpushed", source: true, ownerOffline: true, otherAllowed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Now().UTC()
+			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}))
+			owner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
+			other := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
+			owner.enroll(t)
+			other.enroll(t)
+			claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: f.issue.WorkItemID, MachineID: owner.binding.MachineID, SessionID: "source", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", owner.redemption.Credential, claim)
+			requireNativeStatus(t, response, http.StatusOK)
+			var lease tracker.NativeLease
+			decodeHubResponse(t, response, &lease)
+			path := f.base + "/work-items/" + string(f.issue.WorkItemID)
+			event := nativeStartedEvent(lease)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", owner.redemption.Credential, event), http.StatusOK)
+			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "checkpoint", 2
+			event.Data.Handoff = nativeTestCheckpoint()
+			event.Data.Handoff.WorktreeState, event.Data.Handoff.HeadSHA = test.state, changeTestInput().HeadSHA
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", owner.redemption.Credential, event), http.StatusOK)
+			if test.source {
+				input := changeTestInput()
+				input.AttemptID, input.RunID = event.Data.AttemptID, event.Data.RunID
+				bundle := []byte("retained source fixture")
+				input.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source"}, ChangeVersionInput: input, SourceBundle: bundle}), http.StatusOK)
+			}
+			finish := event
+			finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome, finish.Data.Handoff = "run.finished", "finished", 3, "succeeded", nil
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", owner.redemption.Credential, finish), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+			at := now
+			if test.ownerOffline {
+				at = now.Add(runnerauth.HeartbeatTimeout + time.Minute)
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", formatHubTime(at), other.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			_, id, err := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, candidate := range []struct {
+				runner  runnerFixture
+				allowed bool
+				reason  string
+			}{{owner, true, ""}, {other, test.otherAllowed, test.otherReason}} {
+				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Runner: candidate.runner.identity}}
+				allowed, reason, err := placementClaimAllowed(t.Context(), f.service.database.db, scope, candidate.runner.binding.MachineID, id, at, nil)
+				if err != nil || allowed != candidate.allowed {
+					t.Fatalf("%s allowed=%v reason=%q error=%v", candidate.runner.binding.RunnerID, allowed, reason, err)
+				}
+				if !allowed && !strings.Contains(reason, candidate.reason+" "+string(owner.binding.MachineID)) {
+					t.Fatalf("refusal lost the waiting owner: %q", reason)
 				}
 			}
 		})

@@ -1350,7 +1350,11 @@ Recovery placement uses the latest source-bearing checkpoint's enrolled runner
 and lease provenance. A later clean startup does not replace that checkpoint.
 Local-only or pending dirty source stays pinned to its owner. A retained Change
 bundle allows another eligible runner only after its bounded bytes and digests
-match the checkpoint, or an immutable version proves the same base and raw diff.
+match the checkpoint, or an immutable version proves the same base and raw diff,
+and only while the owner runner is offline, draining, revoked, removed or
+otherwise ineligible for the project, or an operator selected that runner. While
+the owner is online and eligible, other runners refuse the claim and the
+explanation names the owner the item waits for.
 Missing source produces a recovery blocker rather than Human Review readiness.
 
 `GET /work-items/{item}/source-recovery` reports the source runner, checkpoint,
