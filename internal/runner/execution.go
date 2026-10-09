@@ -661,7 +661,8 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 		(!agentResumeStateEmpty(state) || state.DetentSessionID == 0 && checkpoint.ExternalEffect == "none" && checkpoint.EffectState == "none") {
 		return "fresh_checkout", "session_restart_required"
 	}
-	if interrupted && !operatorFresh {
+	sameIdentity := previous.Identity != nil && *previous.Identity == identity
+	if interrupted && !operatorFresh && !(checkpointMatches && sameIdentity) {
 		return "manual_recovery", "session_restart_required"
 	}
 	return "fresh_checkout", "session_restart_required"

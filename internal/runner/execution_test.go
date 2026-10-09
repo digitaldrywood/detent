@@ -977,9 +977,15 @@ func TestNativeRecoveryDecision(t *testing.T) {
 			r.Attempts[0].Checkpoint.WorktreeState = "clean"
 			*local, *available = nil, false
 		}, "fresh_checkout", "session_restart_required", nil},
-		{"interrupted provider activity without session identity", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, available *bool) {
+		{"interrupted provider activity restarts on its matching local worktree", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, available *bool) {
 			r.Attempts[0].Status = "interrupted"
 			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "provider_turn", "pending"
+			*available = false
+		}, "fresh_checkout", "session_restart_required", nil},
+		{"interrupted provider activity without a verified local worktree", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, available *bool) {
+			r.Attempts[0].Status = "interrupted"
+			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "provider_turn", "pending"
+			r.Attempts[0].Checkpoint.WorkspaceDigest = ""
 			*available = false
 		}, "manual_recovery", "session_restart_required", nil},
 		{"policy changed", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
