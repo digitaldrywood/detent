@@ -110,7 +110,7 @@ func (s *Service) observeProjectPolicy(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if credential.Runner.RunnerID != "" {
-		if err := s.database.applyObservedDefaultBranchPolicy(c.Request().Context(), scope, reporter, observation); err != nil {
+		if err := s.database.applyObservedDefaultBranchPolicy(c.Request().Context(), scope, observation); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}

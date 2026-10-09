@@ -12,7 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 )
 
-func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope, runner string, observation policy.Observation) (resultErr error) {
+func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope string, observation policy.Observation) (resultErr error) {
 	source := observation.Source
 	descriptor := observation.Descriptor
 	if strings.HasPrefix(scope, "repository:") {
@@ -36,6 +36,9 @@ func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope, 
 	}
 	current := approval.Policy.ID
 	carryover := current != "" && descriptor.SameAuthoredInputs(approval.Policy)
+	if current != "" && !carryover {
+		return tx.Commit()
+	}
 	if descriptor.Workflow != nil {
 		if source == nil || !validCommitID(source.Commit) || !validCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" || source.Commit != descriptor.Workflow.Revision {
 			return tx.Commit()
@@ -62,7 +65,11 @@ func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope, 
 		return tx.Commit()
 	}
 	if current != descriptor.ID {
-		if _, err := d.approvePolicyInTx(ctx, tx, scope, runner, policy.Change{ExpectedID: current, Policy: descriptor}); err != nil {
+		actor := approval.ApprovedBy
+		if actor == "" || strings.HasPrefix(actor, "runner_") {
+			actor = "repository-default-branch"
+		}
+		if _, err := d.approvePolicyInTx(ctx, tx, scope, actor, policy.Change{ExpectedID: current, Policy: descriptor}); err != nil {
 			return err
 		}
 	}

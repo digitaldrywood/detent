@@ -52,7 +52,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 		if r.URL.Host != "runner-hub.example.test" {
 			return nil, errors.New("unexpected runner Hub destination")
 		}
-		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/policy") {
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/leases/") && strings.HasSuffix(r.URL.Path, "/renew") {
 			if status := policyStatus.Load(); status != 0 {
 				if status < 0 {
 					return nil, errors.New("policy transport unavailable")
@@ -641,6 +641,8 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(policy.Approval{Policy: approved})
 		case strings.HasSuffix(r.URL.Path, "/policy/observed"):
 			w.WriteHeader(http.StatusNoContent)
+		case strings.HasSuffix(r.URL.Path, "/validate"):
+			_ = json.NewEncoder(w).Encode(runnerauth.Runner{})
 		case strings.HasSuffix(r.URL.Path, "/renew"):
 			var mutation tracker.NativeLeaseMutation
 			if err := json.NewDecoder(r.Body).Decode(&mutation); err != nil {

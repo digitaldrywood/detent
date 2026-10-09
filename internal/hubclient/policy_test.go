@@ -107,12 +107,12 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 		{name: "legacy external load retains approved configuration", loadApproved: true, approved: &legacy, status: http.StatusOK, local: legacy, reports: 1},
 		{name: "verified legacy source preserves supplied definition", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: &legacy, status: http.StatusOK, local: legacy, reports: 1},
 		{name: "canonical version carries feature approval", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40)}, approved: &previous, status: http.StatusOK, local: current, reports: 1},
-		{name: "canonical version without source remains pending", approved: &previous, status: http.StatusOK, local: current, wantError: true, wantLost: true, reports: 1},
+		{name: "canonical version without source remains pending", approved: &previous, status: http.StatusOK, local: current, wantError: true, reports: 1},
 		{name: "older canonical runner remains approved", approved: &current, status: http.StatusOK, local: previous, reports: 1},
 		{name: "default branch applies immediately", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, status: http.StatusConflict, local: clientTestPolicy(), reports: 1},
-		{name: "default branch replaces old policy immediately", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, reports: 1},
+		{name: "different default branch policy waits for administrator", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, wantError: true, reports: 1},
 		{name: "nothing approved", status: http.StatusConflict, local: clientTestPolicy(), wantError: true, wantLost: true, reports: 1},
-		{name: "approved policy differs", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, wantError: true, wantLost: true, reports: 1},
+		{name: "runner B approval preserves runner A heartbeat", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, wantError: true, reports: 1},
 		{name: "invalid approved descriptor", approved: ptr(policy.Descriptor{}), status: http.StatusOK, local: clientTestPolicy(), wantError: true, wantLost: true},
 		{name: "approved policy matches", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: clientTestPolicy(), reports: 1},
 		{name: "hub unavailable", status: http.StatusServiceUnavailable, local: clientTestPolicy(), wantError: true, reports: 0},
@@ -149,6 +149,18 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 					default:
 						_ = json.NewEncoder(w).Encode(map[string]string{"code": "unavailable", "message": "down"})
 					}
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/renew"):
+					if test.status == http.StatusServiceUnavailable {
+						w.WriteHeader(http.StatusServiceUnavailable)
+						_ = json.NewEncoder(w).Encode(map[string]string{"code": "unavailable", "message": "down"})
+					} else if test.wantLost {
+						w.WriteHeader(http.StatusConflict)
+						_ = json.NewEncoder(w).Encode(map[string]string{"code": "policy_mismatch", "message": "Pinned approval revoked"})
+					} else {
+						_ = json.NewEncoder(w).Encode(tracker.NativeLease{WorkItemID: tracker.NativeWorkItemID("wi_" + strings.Repeat("a", 32)), PolicyID: test.local.ID, FencingToken: 1})
+					}
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/validate"):
+					_ = json.NewEncoder(w).Encode(map[string]any{})
 				default:
 					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 				}
@@ -221,6 +233,7 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 				scheduler.nativeClaims[id] = nativeClaim{source: scheduler.nativeProjects["site"], lease: lease}
 				scheduler.claims[id] = nativeTrackerLease(lease)
 				scheduler.claimPolicies[id] = claimPolicy{project: "site", descriptor: test.local}
+				scheduler.nativeHeartbeats["prj_site"] = scheduler.now()
 				_, err := scheduler.RenewClaim(t.Context(), id, time.Now())
 				if errors.Is(err, orchestrator.ErrSchedulingClaimLost) != test.wantLost {
 					t.Fatalf("heartbeat authority loss = %v, want %v", err, test.wantLost)

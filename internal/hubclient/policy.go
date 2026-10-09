@@ -228,6 +228,9 @@ func (s *Scheduler) checkClaimPolicyApproval(ctx context.Context, issueID, pinne
 	if !ok || pinnedID != pinned.descriptor.ID {
 		return &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: "claim has no matching pinned repository policy; release it and request a new claim"}
 	}
+	if s.nativeProjects[pinned.project] != nil {
+		return pinned.descriptor.Validate()
+	}
 	return s.CheckProjectPolicy(ctx, pinned.project, pinned.repository, pinned.descriptor)
 }
 
@@ -239,10 +242,13 @@ func (s *Scheduler) checkClaimRunner(ctx context.Context, issueID, pinnedID stri
 	if !ok || pinnedID != pinned.descriptor.ID {
 		return &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: "claim has no matching pinned repository policy; release it and request a new claim"}
 	}
-	if native && s.client.runner != nil {
+	if native {
 		r, err := claim.source.client.ValidateLease(ctx, claim.lease)
 		if err != nil {
 			return err
+		}
+		if s.client.runner == nil {
+			return nil
 		}
 		file, err := runnerauth.Load(s.client.runner.path)
 		if err != nil {
