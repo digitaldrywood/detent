@@ -128,6 +128,13 @@ repository holds product source and normative documentation, never shared logs
 or notebooks; no repository file is append-only by convention. The current
 completion contract owns tracker publication and grants workers no extra writes.
 
+Follow [INV-17](docs/invariants.md#inv-17--runners-are-stateless-like-github-actions-runners):
+a runner depends only on its install configuration (Hub URL, identity, capacity,
+workspace root). Every job starts in a fresh workspace from an exact commit or a
+Hub-stored source bundle, and work that must survive is published to the Hub.
+Never add machine-local state that later jobs depend on, configuration discovered
+by scanning the machine, or routing by where earlier work ran.
+
 ## Validation
 
 Run `make check-land` before reporting source work complete and fix every
