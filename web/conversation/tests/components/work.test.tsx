@@ -649,6 +649,12 @@ describe("completed counts", () => {
       expect(fallback[key]).toBe(current.totals![key]);
     }
     expect(fallback.running + fallback.waiting + fallback.needAttention + fallback.backlog).toBe(34);
+
+    let filtered!: ReturnType<typeof useBoard>;
+    function FilteredProbe() { filtered = useBoard("proj_alpha", { ...DEFAULT_VIEW_STATE, completedWindow: "all", state: ["In Progress", "Rework"] }); return <div />; }
+    render(<ClientContext.Provider value={fixture.client}><FilteredProbe /></ClientContext.Provider>);
+    await waitFor(() => expect(filtered.resolved).toBe(true));
+    expect(filtered.totals?.running).toBe(2);
   });
 
   it.each([{ loadedCount: 100, total: 143 }, { loadedCount: 108, total: 569 }])("keeps scoped counts while refreshing without global pagination ($loadedCount of $total)", ({ total }) => {

@@ -464,7 +464,7 @@ export class BoardRead {
           total += lane.total;
           if (state?.terminal) closed += lane.total;
           else {
-            running += lane.running;
+            if (this.view.state.length === 0 || this.view.state.includes(lane.state)) running += lane.running;
             const idle = lane.total - lane.running;
             if (lane.state.toLowerCase() === "backlog") backlog += idle;
             else if (state?.dispatchable) waiting += idle;
