@@ -189,6 +189,15 @@ func (s *Service) completeLogin(c echo.Context) error {
 		if callback.Reason != "" {
 			return s.loginDenied(c, http.StatusForbidden, "This account cannot open the selected organization", callback)
 		}
+	} else if identity.Hosted.OrganizationID != "" && transaction.InvitationToken == "" && !s.platformIdentity(ctx, identity.Email, *identity.Hosted) {
+		organization, err = s.registry.ByProvider(ctx, identity.Hosted.OrganizationID)
+		if err != nil && !errors.Is(err, ErrOrganizationNotFound) {
+			callback.Reason, callback.Err = "organization_unavailable", err
+			return s.loginDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", callback)
+		}
+		if err != nil || organization.State != "ready" {
+			organization = Organization{}
+		}
 	}
 	s.mutationMu.Lock()
 	session, err := s.establishSession(c, identity)
@@ -197,7 +206,7 @@ func (s *Service) completeLogin(c echo.Context) error {
 		callback.Reason = "session_store_failed"
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", callback)
 	}
-	if transaction.Organization != "" {
+	if organization.ID != "" {
 		authorized, stale, err := s.auth.authorize(ctx, session, organization.ID, *identity.Hosted, identity.Tokens, identity.Email)
 		if err != nil {
 			callback.Reason = "authorization_failed"
@@ -234,10 +243,10 @@ func (s *Service) completeLogin(c echo.Context) error {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?"+url.Values{"organization": {invited.ID}, "return": {s.organizationHome(invited.ID)}}.Encode())
 	}
 	switch {
+	case organization.ID != "" && (transaction.ReturnPath == "" || transaction.ReturnPath == "/organizations"):
+		return c.Redirect(http.StatusSeeOther, s.organizationHome(organization.ID))
 	case transaction.ReturnPath != "":
 		return c.Redirect(http.StatusSeeOther, transaction.ReturnPath)
-	case transaction.Organization != "":
-		return c.Redirect(http.StatusSeeOther, s.organizationHome(transaction.Organization))
 	default:
 		return c.Redirect(http.StatusSeeOther, s.landing(ctx, identity.Email, *identity.Hosted))
 	}

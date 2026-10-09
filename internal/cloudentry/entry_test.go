@@ -842,6 +842,53 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
 	alice := newBrowser(t, f.service.Handler())
+	if _, err := f.service.Registry().Register(t.Context(), Organization{ID: "org_disabled", ProviderID: "porg_disabled", Name: "Disabled", State: "disabled", Endpoint: testSocketEndpoint("disabled.sock"), Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name, query, selected, authorized, location string
+		status                                      int
+		fallback                                    bool
+	}{
+		{name: "selected alpha", selected: "porg_alpha", authorized: "org_alpha", location: "/organizations/org_alpha/work", status: http.StatusSeeOther},
+		{name: "selected beta", selected: "porg_beta", authorized: "org_beta", location: "/organizations/org_beta/work", status: http.StatusSeeOther},
+		{name: "chooser return alpha", query: "return=/organizations", selected: "porg_alpha", authorized: "org_alpha", location: "/organizations/org_alpha/work", status: http.StatusSeeOther},
+		{name: "chooser return beta", query: "return=/organizations", selected: "porg_beta", authorized: "org_beta", location: "/organizations/org_beta/work", status: http.StatusSeeOther},
+		{name: "deep link", query: "organization=org_beta&return=/organizations/org_beta/organization", selected: "porg_beta", authorized: "org_beta", location: "/organizations/org_beta/organization", status: http.StatusSeeOther},
+		{name: "mismatch", query: "organization=org_alpha&return=/organizations/org_alpha/work", selected: "porg_beta", status: http.StatusForbidden},
+		{name: "no selection", location: "/organizations", status: http.StatusSeeOther},
+		{name: "unknown selection", selected: "porg_unknown", location: "/organizations", status: http.StatusSeeOther},
+		{name: "unready selection", selected: "porg_disabled", location: "/organizations", status: http.StatusSeeOther},
+		{name: "server rendered fallback", selected: "porg_beta", authorized: "org_beta", location: "/organizations/org_beta/organization", status: http.StatusSeeOther, fallback: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.selected == "porg_unknown" || tt.selected == "porg_disabled" {
+				f.provider.member("user_alice", tt.selected, "owner")
+				t.Cleanup(func() { f.provider.removeMember("user_alice", tt.selected) })
+			}
+			f.service.config.clientFS = fstest.MapFS{}
+			if !tt.fallback {
+				f.service.config.clientFS = fstest.MapFS{entryClientShell: {Data: []byte(`<html><head></head><body><div id="root"></div></body></html>`)}}
+			}
+			b := newBrowser(t, f.service.Handler())
+			start, _ := b.get("/auth/oidc/start?" + tt.query)
+			response, _ := b.get("/auth/oidc/callback?" + url.Values{"code": {"user_alice:" + tt.selected}, "state": {stateOf(t, start)}}.Encode())
+			if response.StatusCode != tt.status || response.Header.Get("Location") != tt.location {
+				t.Fatalf("callback = %d %q, want %d %q", response.StatusCode, response.Header.Get("Location"), tt.status, tt.location)
+			}
+			for _, organization := range []string{"org_alpha", "org_beta"} {
+				response, _ := b.get("/organizations/" + organization + "/organization")
+				if organization == tt.authorized {
+					if response.StatusCode != http.StatusOK {
+						t.Fatalf("first selected tenant request = %d: %s", response.StatusCode, response.Body)
+					}
+				} else if response.StatusCode != http.StatusSeeOther || !strings.HasPrefix(response.Header.Get("Location"), "/auth/oidc/start?organization="+organization) {
+					t.Fatalf("unselected tenant %s = %d: %s", organization, response.StatusCode, response.Body)
+				}
+			}
+		})
+	}
+	f.service.config.clientFS = fstest.MapFS{}
 	for _, tt := range []struct{ name, query, organization, screenHint string }{
 		{name: "sign in"},
 		{name: "create account", query: "screen_hint=sign-up", screenHint: "sign-up"},
