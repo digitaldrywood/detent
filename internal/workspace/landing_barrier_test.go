@@ -254,7 +254,7 @@ func TestLandingBarrierCulpritRevert(t *testing.T) {
 	ctx := t.Context()
 	f := newLandingFixture(t)
 	green := f.remoteMain(t)
-	var commits []string
+	commits := make([]string, 0, 3)
 	for _, name := range []string{"one", "culprit", "three"} {
 		if err := os.WriteFile(filepath.Join(f.source, name+".txt"), []byte(name+"\n"), 0o600); err != nil {
 			t.Fatal(err)
