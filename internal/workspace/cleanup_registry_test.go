@@ -201,10 +201,11 @@ func TestLocalGitReconcileResiduals(t *testing.T) {
 				}
 			}
 			t.Cleanup(func() { restoreWritableTree(t, info.Path) })
-			if tt.activeProcess {
-				backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) {
+			backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) {
+				if tt.activeProcess {
 					return []int{os.Getpid() + 1000}, nil
 				}
+				return nil, nil
 			}
 			var active []Issue
 			if tt.active {
