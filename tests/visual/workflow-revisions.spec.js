@@ -103,7 +103,7 @@ test("selecting a project offers its exact runner policy and approval records th
   expect(setup.observed_policies).toHaveLength(1);
   const candidate = setup.observed_policies[0];
   expect(candidate.conflict).toBe(false);
-  expect(candidate.policy.authored.version).toBe(2);
+  expect(candidate.policy.authored.version).toBe(3);
   expect(candidate.policy.authored.files["detent.yaml"]).toContain("lanes:");
   expect(candidate.policy.configuration.behavior).toBeNull();
   await approvePendingRevision(page, workflow, selectedProject, setup);
