@@ -96,7 +96,7 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 	}
 }
 
-func TestNativePostIntegrationHandoffRequiresConfiguredOwner(t *testing.T) {
+func TestNativeAcceptanceIsNeverDelegated(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name              string
@@ -113,9 +113,15 @@ func TestNativePostIntegrationHandoffRequiresConfiguredOwner(t *testing.T) {
 				t.Fatal(err)
 			}
 			permitted := test.enabled && !test.planOnly
-			for _, text := range []string{"## Out-of-scope discoveries", "delegation exists only after the tool succeeds", "A future finalized head, Change version or PR remains pending host evidence", "explicit instruction to keep the original issue open until live acceptance overrides this permission"} {
-				if strings.Contains(prompt, text) != permitted {
-					t.Errorf("%q presence does not match configured permission", text)
+			if strings.Contains(prompt, "## Out-of-scope discoveries") != permitted {
+				t.Error("out-of-scope discoveries presence does not match configured permission")
+			}
+			if permitted && !strings.Contains(prompt, "Never file validation, gate, barrier, timeout, flaky-test or host-load failures") {
+				t.Error("follow-ups permit filing validation failures")
+			}
+			for _, text := range []string{"post-integration handoff", "delegation exists only after the tool succeeds", "create or reuse its Backlog owner"} {
+				if strings.Contains(prompt, text) {
+					t.Errorf("prompt still permits delegating acceptance: %q", text)
 				}
 			}
 			for _, text := range []string{"Keep this issue open until its two-Sprite live acceptance passes.", "Report unfinished acceptance as in_progress or blocked", "source readiness alone does not permit complete", "unchanged inspection", "Missing or invalid acceptance on unchanged work"} {
@@ -156,10 +162,8 @@ func TestNativeOrphanHandoffPreservesPlanOnly(t *testing.T) {
 			if !strings.Contains(prompt, "## Native completion contract") {
 				t.Fatal("native orphan lost current completion ownership")
 			}
-			for _, text := range []string{"## Out-of-scope discoveries", "delegation exists only after the tool succeeds"} {
-				if strings.Contains(prompt, text) != !planOnly {
-					t.Errorf("resumed plan-only permission differs for %q", text)
-				}
+			if strings.Contains(prompt, "## Out-of-scope discoveries") != !planOnly {
+				t.Error("resumed plan-only permission differs for out-of-scope discoveries")
 			}
 		})
 	}
