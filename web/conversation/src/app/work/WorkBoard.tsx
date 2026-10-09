@@ -31,6 +31,7 @@ import {
 } from "./NewIssue.tsx";
 import { NEW_CHAT_KEYSHORTCUTS, NEW_ISSUE_KEYSHORTCUTS } from "../lib/shortcuts.ts";
 import { CompletedCounter } from "./components/CompletedCounter.tsx";
+import { LiveCounter } from "./components/LiveCounter.tsx";
 import { toastManager } from "../../components/ui/toast.tsx";
 import { WorkList } from "./components/WorkList.tsx";
 import { WorkToolbar } from "./components/WorkToolbar.tsx";
@@ -278,12 +279,17 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
     <WorkTopBar
       context="Work"
       title={scopeName}
-      completed={noProjects ? null : <CompletedCounter
-        count={board.totals?.completed ?? (view.completedWindow === "all" ? stats.completed : null)}
-        completedWindow={view.completedWindow}
-        onCompletedWindowChange={(completedWindow) => setView({ ...view, completedWindow })}
-        loading={board.loading}
-      />}
+      completed={noProjects ? null : (
+        <div className="flex shrink-0 items-center gap-1">
+          <LiveCounter count={board.resolved ? board.totals?.running ?? stats.running : null} loading={board.loading} />
+          <CompletedCounter
+            count={board.totals?.completed ?? (view.completedWindow === "all" ? stats.completed : null)}
+            completedWindow={view.completedWindow}
+            onCompletedWindowChange={(completedWindow) => setView({ ...view, completedWindow })}
+            loading={board.loading}
+          />
+        </div>
+      )}
       connection={chip}
       actions={noProjects ? null : (
         <Button
