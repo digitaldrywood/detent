@@ -259,7 +259,8 @@ for (const width of [1440, 390]) {
     sheet = page.getByRole("dialog", { name: "Build runner" });
     await expect(sheet.getByRole("alert")).toContainText(problem.message);
     await expect(sheet.getByRole("alert")).toContainText(problem.fix_hint);
-    await expect(sheet.getByRole("alert")).toContainText("Seen since");
+    await expect(sheet.getByRole("alert")).toContainText("Offline since");
+    await expect(sheet.getByRole("alert")).toContainText("last report");
     await expect(sheet.getByRole("radio", { name: "Sandbox", exact: true })).toBeChecked();
     await sheet.getByRole("button", { name: "Switch to Full access", exact: true }).click();
     await expect(sheet).toHaveCount(0);
