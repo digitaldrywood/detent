@@ -72,6 +72,7 @@ func TestReadIssueContext(t *testing.T) {
 		{name: "complete paginated history"},
 		{name: "current authority denial", fail: WorkHistory, want: ErrAccessDenied, failure: ErrAccessDenied},
 		{name: "unavailable history", fail: WorkHistory, failure: ErrReadUnavailable},
+		{name: "wrapped unavailable history stays opaque", fail: WorkHistory, failure: &ReadUnavailableError{Err: errors.New("private fault sentinel")}},
 		{name: "oversized history read", fail: WorkHistory, failure: ErrResultTooLarge},
 		{name: "bounded aggregate history", largeHistory: true},
 		{name: "malformed read", malformed: true},
@@ -105,7 +106,11 @@ func TestReadIssueContext(t *testing.T) {
 					t.Fatalf("invalid bounded context: bytes=%d references=%d err=%v", len(encoded), len(result.References), err)
 				}
 				if test.fail != "" {
-					if limit.Error != test.failure.Error() || len(result.History) != 0 {
+					expected := ErrReadUnavailable.Error()
+					if errors.Is(test.failure, ErrResultTooLarge) {
+						expected = ErrResultTooLarge.Error()
+					}
+					if limit.Error != expected || len(result.History) != 0 || strings.Contains(string(encoded), "private fault sentinel") {
 						t.Fatalf("failed read presented as complete: %+v", result)
 					}
 				} else {

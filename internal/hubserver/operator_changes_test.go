@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/logging"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -180,6 +181,7 @@ func TestOperatorChangePublication(t *testing.T) {
 			if json.Unmarshal(replayed.Content, &result) != nil || result.Version.ID != version.ID || result.Detail.Change.CurrentVersion == version.ID || !bytes.Equal(originalReceipt, result.Receipt) || len(f.detail(t).Versions) != 2 {
 				t.Fatal("historical replay lost original receipt or live current version")
 			}
+
 			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id=(SELECT id FROM api_tokens WHERE token_hash=?)", operatortool.ConnectionIdentity(ctx).CredentialID); err != nil {
 				t.Fatal(err)
 			}
@@ -463,6 +465,55 @@ func TestOperatorChangeCommands(t *testing.T) {
 	if _, err := executor.Execute(ctx, changeToolCall(operatortool.CreateChange, createArgs)); err == nil {
 		t.Fatal("cross-project Change linkage succeeded")
 	}
+	t.Run("hosted get_change failure logs once", func(t *testing.T) {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER change_versions_immutable"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_versions SET record_json=? WHERE id=?", `["tenant content sentinel"]`, version.ID); err != nil {
+			t.Fatal(err)
+		}
+		var logs hostedLogBuffer
+		f.service.config.Logger = slog.New(hostedLogHandler{output: logging.NewHandler(&logs, slog.LevelInfo, false, logging.SourceSetting{})})
+		for _, transport := range []string{"stdio", "http"} {
+			t.Run(transport, func(t *testing.T) {
+				before := logs.String()
+				call := hostedContextProtocol(t, f.service, ctx, transport)
+				reply := call("tools/call", operatortool.GetChange, map[string]any{"project_id": base.ProjectID, "work_item_id": base.ItemID, "change_id": base.ChangeID})
+				logged := strings.TrimPrefix(logs.String(), before)
+				if strings.Count(logged, "\n") != 1 || strings.Count(logged, `"error":`) != 1 {
+					t.Fatalf("expected one fault log: %s", logged)
+				}
+				var record map[string]any
+				if err := json.Unmarshal([]byte(logged), &record); err != nil {
+					t.Fatal(err)
+				}
+				if record["msg"] != "operator tool failed" || record["tool"] != operatortool.GetChange || record["error_class"] != "*json.UnmarshalTypeError" || record["organization_id"] != string(f.project.OrganizationID) {
+					t.Fatal(logged)
+				}
+				trail, _ := record["error"].(string)
+				if !strings.Contains(trail, "get change:") || !strings.Contains(trail, "load detail: load versions: decode snapshot: json: cannot unmarshal array") {
+					t.Fatal(logged)
+				}
+				source, ok := record["source"].(map[string]any)
+				if !ok || !strings.HasSuffix(source["file"].(string), "internal/mcp/server.go") || source["line"].(float64) <= 0 {
+					t.Fatal(logged)
+				}
+				var result struct {
+					IsError bool `json:"isError"`
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				}
+				if err := json.Unmarshal(reply.Result, &result); err != nil {
+					t.Fatal(err)
+				}
+				want := "Operator tool is unavailable (reason_code service_unavailable, correlation_id " + record["correlation_id"].(string) + ")"
+				if !result.IsError || len(result.Content) != 1 || result.Content[0].Text != want || strings.Contains(logged+string(reply.Result), "tenant content sentinel") {
+					t.Fatalf("log=%s reply=%s", logged, reply.Result)
+				}
+			})
+		}
+	})
 	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id=(SELECT id FROM api_tokens WHERE token_hash=?)", operatortool.ConnectionIdentity(ctx).CredentialID); err != nil {
 		t.Fatal(err)
 	}

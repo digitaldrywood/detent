@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -49,7 +51,12 @@ func (a hubChangeApplication) result(scope nativeScope, args operatortool.Change
 	return result
 }
 
-func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args operatortool.ChangeArguments) (operatortool.ChangeResult, error) {
+func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args operatortool.ChangeArguments) (value operatortool.ChangeResult, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			resultErr = fmt.Errorf("%s: %w", strings.ReplaceAll(name, "_", " "), resultErr)
+		}
+	}()
 	scope, err := a.authorized(ctx, args, false)
 	if err != nil {
 		return operatortool.ChangeResult{}, err
@@ -108,18 +115,18 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 	case operatortool.GetChange, operatortool.GetChangeVersion:
 		tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 		if err != nil {
-			return result, err
+			return result, fmt.Errorf("begin snapshot: %w", err)
 		}
 		defer tx.Rollback()
 		detail, err := readChangeDetail(ctx, tx, scope, args.ItemID, args.ChangeID, s.config.now())
 		if err != nil {
-			return result, err
+			return result, fmt.Errorf("load detail: %w", err)
 		}
 		if name == operatortool.GetChange {
 			result.Detail = &detail
 			result.ValidationAudit, err = readValidationAudit(ctx, tx, scope, "", "", args.ChangeID, "")
 			if err != nil {
-				return result, err
+				return result, fmt.Errorf("load validation audit: %w", err)
 			}
 		} else {
 			for _, v := range detail.Versions {
@@ -132,7 +139,10 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 				return result, operatortool.ErrAccessDenied
 			}
 		}
-		return result, tx.Commit()
+		if err := tx.Commit(); err != nil {
+			return result, fmt.Errorf("finish snapshot: %w", err)
+		}
+		return result, nil
 	case operatortool.GetChangeReviewPolicy:
 		policy, err := readChangePolicy(ctx, s.database.db, scope)
 		result.Policy = &policy

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -136,7 +137,12 @@ func hubFleetReceiptProjection(name string, raw json.RawMessage) (json.RawMessag
 	return projected, nil
 }
 
-func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			resultErr = fmt.Errorf("%s: %w", strings.ReplaceAll(call.Name, "_", " "), resultErr)
+		}
+	}()
 	s := e.service
 	if call.Name == operatortool.ConnectionInfo {
 		if operatortool.DecodeArguments(call.Arguments, &struct{}{}) != nil {
@@ -366,7 +372,7 @@ func safeHubOperatorError(err error) error {
 	if errors.Is(err, operatortool.ErrAccessDenied) {
 		return err
 	}
-	return errHubOperatorUnavailable
+	return fmt.Errorf("%w: %w", errHubOperatorUnavailable, err)
 }
 func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments json.RawMessage) (chatpkg.Action, error) {
 	var r hubFleetRequest

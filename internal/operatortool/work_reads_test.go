@@ -102,7 +102,7 @@ func TestWorkReadDirectAuthorityAndSafeFailure(t *testing.T) {
 		{name: "authorized empty", project: "project", org: "org"},
 		{name: "foreign project", project: "other", org: "org", denied: true},
 		{name: "foreign organization", project: "project", org: "other", denied: true},
-		{name: "provider detail opaque", project: "project", org: "org", failure: errors.New("secret provider URL and token")},
+		{name: "provider failure keeps step trail", project: "project", org: "org", failure: errors.New("database fault")},
 		{name: "oversized read", project: "project", org: "org", oversized: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -129,10 +129,10 @@ func TestWorkReadDirectAuthorityAndSafeFailure(t *testing.T) {
 					t.Fatalf("err=%v calls=%d", err, probe.calls)
 				}
 			case test.failure != nil || test.oversized:
-				if !errors.Is(err, ErrReadUnavailable) || strings.Contains(err.Error(), "secret") {
+				if !errors.Is(err, ErrReadUnavailable) {
 					t.Fatal(err)
 				}
-				if test.failure != nil && !errors.Is(err, test.failure) {
+				if test.failure != nil && (!errors.Is(err, test.failure) || err.Error() != "read work: load snapshot: database fault") {
 					t.Fatalf("lost underlying read failure: %v", err)
 				}
 			default:

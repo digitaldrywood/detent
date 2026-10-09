@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/logging"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -638,44 +639,15 @@ func (s *session) toolFailure(ctx context.Context, version, name string, id json
 	var conflict *operatortool.ConflictError
 	var request *operatortool.RequestError
 	if safeToolError(err) == "Operator tool is unavailable" && !errors.As(err, &conflict) && !errors.As(err, &request) {
-		cause := err
-		var unavailable *operatortool.ReadUnavailableError
-		if errors.As(err, &unavailable) {
-			cause = unavailable.Err
-		}
 		correlation := uuid.NewString()
-		s.logger.ErrorContext(ctx, "operator tool failed", "tool", name, "correlation_id", correlation, "error_class", ErrorClass(cause), "request_id", string(id), "error", cause)
-		return NewToolCallResult(version, json.RawMessage("Operator tool is unavailable (correlation_id "+correlation+")"), true)
+		identity := operatortool.ConnectionIdentity(ctx)
+		s.logger.ErrorContext(ctx, "operator tool failed", "tool", name, "correlation_id", correlation, "organization_id", identity.OrganizationID, "principal_id", identity.PrincipalID, "request_id", string(id), "error", fmt.Errorf("%s: %w", strings.ReplaceAll(name, "_", " "), err), "error_class", ErrorClass(err))
+		return NewToolCallResult(version, json.RawMessage("Operator tool is unavailable (reason_code service_unavailable, correlation_id "+correlation+")"), true)
 	}
 	return failedToolCallResult(version, err)
 }
 
-func ErrorClass(err error) string {
-	switch {
-	case err == nil:
-		return "none"
-	case errors.Is(err, context.DeadlineExceeded):
-		return "deadline_exceeded"
-	case errors.Is(err, context.Canceled):
-		return "canceled"
-	}
-	var coded interface{ Code() int }
-	if errors.As(err, &coded) {
-		return "sqlite_" + strconv.Itoa(coded.Code())
-	}
-	for {
-		next := errors.Unwrap(err)
-		if joined, ok := err.(interface{ Unwrap() []error }); ok {
-			if causes := joined.Unwrap(); len(causes) > 0 {
-				next = causes[len(causes)-1]
-			}
-		}
-		if next == nil {
-			return fmt.Sprintf("%T", err)
-		}
-		err = next
-	}
-}
+func ErrorClass(err error) string { return logging.ErrorClass(err) }
 
 func failedToolCallResult(protocolVersion string, err error) toolCallResult {
 	var conflict *operatortool.ConflictError

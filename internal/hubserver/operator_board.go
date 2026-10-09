@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -66,13 +67,13 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 		scope.project = tracker.ProjectID(request.ProjectID)
 		project, err := readNativeProject(ctx, s.database.db, scope)
 		if err != nil {
-			return operatortool.Result{}, safeWorkReadError(err)
+			return operatortool.Result{}, safeWorkReadError(fmt.Errorf("load project: %w", err))
 		}
 		projects.Projects = append(projects.Projects, project)
 	} else {
 		projects, err = s.operatorProjectList(ctx, scope, operatortool.ProjectReadRequest{Limit: request.Limit})
 		if err != nil {
-			return operatortool.Result{}, safeWorkReadError(err)
+			return operatortool.Result{}, safeWorkReadError(fmt.Errorf("list projects: %w", err))
 		}
 	}
 	result := nativeBoardResult{GeneratedAt: s.config.now(), Freshness: explain.SourceAvailable, Projects: []nativeBoardProject{}, Truncated: projects.NextCursor != "", Unavailable: []string{"aggregate_dispatch_readiness"}, EligibilityTool: operatortool.ExplainItem}
@@ -98,7 +99,7 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 		params := (operatortool.WorkReadRequest{Limit: remaining, State: request.State, Include: []string{"work"}}).NativeWorkQuery()
 		page, err := s.readIssues(projectCtx, projectScope, params)
 		if err != nil {
-			return operatortool.Result{}, safeWorkReadError(err)
+			return operatortool.Result{}, safeWorkReadError(fmt.Errorf("read board snapshot: %w", err))
 		}
 		counts := nativeBoardInventory(project, page.Work.Lanes)
 		result.Projects = append(result.Projects, nativeBoardProject{Project: project, Counts: counts, Board: operatortool.NativeWorkPageView(string(project.ID), page)})

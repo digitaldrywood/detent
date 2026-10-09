@@ -295,7 +295,7 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 					if entry.Tool != "fleet_health" || entry.CorrelationID == "" || entry.ErrorClass != "*errors.errorString" || entry.RequestID != "2" || !strings.Contains(entry.Error, cause.Error()) {
 						t.Fatalf("fault log=%s", logs.Bytes())
 					}
-					if want := test.want + " (correlation_id " + entry.CorrelationID + ")"; result.Content[0].Text != want {
+					if want := test.want + " (reason_code service_unavailable, correlation_id " + entry.CorrelationID + ")"; result.Content[0].Text != want {
 						t.Fatalf("tool error text = %q, want %q", result.Content[0].Text, want)
 					}
 				} else if result.Content[0].Text != test.want {
