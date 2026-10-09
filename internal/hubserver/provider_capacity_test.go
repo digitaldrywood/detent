@@ -288,7 +288,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 		{name: "changed merging revision falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{0, 1, 2}, order: []string{"Merging", "Todo"}, unavailable: "revision", want: []int{0, 1, 2}, winner: 1},
 		{name: "unreviewed merging falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "review", want: []int{1, 2}, winner: 1},
 		{name: "dependency held merging falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "dependency", want: []int{1, 2}, winner: 1},
-		{name: "red barrier does not hold reviewed merging", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Merging", "Todo"}, unavailable: "red barrier", want: []int{0, 1, 2}},
+		{name: "red barrier holds reviewed merging", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Merging", "Todo"}, unavailable: "red barrier", want: []int{1, 2}, winner: 1},
 		{name: "leased merging leaves next slot for todo", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "lease", want: []int{1, 2}, winner: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {

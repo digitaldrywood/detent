@@ -1,4 +1,6 @@
 set -euo pipefail
+GOTOOLCHAIN=$(awk '$1 == "toolchain" {print $2}' go.mod)
+export GOTOOLCHAIN=${GOTOOLCHAIN:-auto}
 source scripts/check-evidence.sh
 
 base=${1:?base ref required}

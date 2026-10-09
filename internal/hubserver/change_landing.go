@@ -342,6 +342,10 @@ func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nati
 	if err != nil {
 		return false, true, err
 	}
+	barrier, err := readLandingBarrier(ctx, query, *scope, version.Repository)
+	if err != nil || barrier.Red {
+		return false, true, err
+	}
 	if version.External != nil || version.AttemptID == "" {
 		return true, true, nil
 	}
