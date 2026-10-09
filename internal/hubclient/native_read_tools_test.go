@@ -61,7 +61,7 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selected, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Runner admission context", Body: "private-admission-body", State: "Todo", Labels: []string{"selected-label"}})
+	selected, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Runner admission context", Body: "private-admission-body" + issueContractTestSections, State: "Todo", Labels: []string{"selected-label"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if err := owner.ObserveRuntime(t.Context(), observation); err != nil {
 		t.Fatal(err)
 	}
-	other, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Another item", State: "Todo"})
+	other, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Another item", Body: issueContractTestSections, State: "Todo"})
 	if err != nil {
 		t.Fatal(err)
 	}

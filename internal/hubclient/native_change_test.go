@@ -1584,7 +1584,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				var linked struct {
 					Issue tracker.NativeIssue `json:"issue"`
 				}
-				if err := h.admin.client.request(t.Context(), http.MethodPost, h.admin.base()+"/conversations/"+created.Conversation.ID+"/link", map[string]any{"key": "link", "share_history": true, "issue": map[string]any{"title": "Update the README", "description": "Interactive work"}}, &linked); err != nil {
+				if err := h.admin.client.request(t.Context(), http.MethodPost, h.admin.base()+"/conversations/"+created.Conversation.ID+"/link", map[string]any{"key": "link", "share_history": true, "issue": map[string]any{"title": "Update the README", "description": "Interactive work" + issueContractTestSections}}, &linked); err != nil {
 					t.Fatal(err)
 				}
 				issue = connector.Issue{ID: string(linked.Issue.WorkItemID), Identifier: "native#1", Title: linked.Issue.Title}
