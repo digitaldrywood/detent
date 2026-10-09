@@ -47,6 +47,12 @@ func TestFleetArgumentBoundary(t *testing.T) {
 		{"unknown nested field", UpdateRunnerHost, `{"request_id":"r","machine_id":"m","change":{"expected_revision":1,"display_name":"h","capacity":1,"confirm":true}}`, false},
 		{"empty routing timezone readback", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":56,"display_name":"Mac runner","state":"draining","capacity_limit":8,"project_ids":["p1","p2"],"availability":{"timezone":"","windows":[],"hard_deadline":""}}}`, true},
 		{"configured routing timezone", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":56,"display_name":"Mac runner","state":"draining","capacity_limit":8,"project_ids":["p1","p2"],"availability":{"timezone":"America/Chicago","windows":["Mon-Fri 09:00-17:00"],"hard_deadline":"1h"}}}`, true},
+		{"window slots", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":56,"display_name":"Mac runner","state":"active","capacity_limit":8,"scope":"projects","project_ids":["p1"],"project_ranks":{"p1":1},"availability":{"timezone":"UTC","windows":["Mon-Sun 00:00-24:00"],"window_slots":{"Mon-Sun 00:00-24:00":2}}}}`, true},
+		{"zero window slots", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":56,"display_name":"Mac runner","state":"active","capacity_limit":8,"project_ids":["p1"],"availability":{"timezone":"UTC","windows":["Mon-Sun 00:00-24:00"],"window_slots":{"Mon-Sun 00:00-24:00":0}}}}`, true},
+		{"negative window slots", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":56,"display_name":"Mac runner","state":"active","capacity_limit":8,"project_ids":["p1"],"availability":{"timezone":"UTC","windows":["Mon-Sun 00:00-24:00"],"window_slots":{"Mon-Sun 00:00-24:00":-1}}}}`, false},
+		{"excessive window slots", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":56,"display_name":"Mac runner","state":"active","capacity_limit":8,"project_ids":["p1"],"availability":{"timezone":"UTC","windows":["Mon-Sun 00:00-24:00"],"window_slots":{"Mon-Sun 00:00-24:00":10001}}}}`, false},
+		{"fractional window slots", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":56,"display_name":"Mac runner","state":"active","capacity_limit":8,"project_ids":["p1"],"availability":{"timezone":"UTC","windows":["Mon-Sun 00:00-24:00"],"window_slots":{"Mon-Sun 00:00-24:00":1.5}}}}`, false},
+		{"string window slots", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":56,"display_name":"Mac runner","state":"active","capacity_limit":8,"project_ids":["p1"],"availability":{"timezone":"UTC","windows":["Mon-Sun 00:00-24:00"],"window_slots":{"Mon-Sun 00:00-24:00":"2"}}}}`, false},
 		{"routing timezone bounded", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":56,"display_name":"Mac runner","state":"draining","capacity_limit":8,"project_ids":["p1","p2"],"availability":{"timezone":"` + strings.Repeat("x", 257) + `","windows":[],"hard_deadline":""}}}`, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -72,6 +78,7 @@ func TestRoutingApprovalClassification(t *testing.T) {
 		{"disable", func(r *runnerauth.Routing) { r.State = "disabled" }, true},
 		{"isolation", func(r *runnerauth.Routing) { r.IsolationTier = "native-trusted" }, true},
 		{"schedule", func(r *runnerauth.Routing) { r.Availability.HardDeadline = "1h" }, true},
+		{"window count", func(r *runnerauth.Routing) { r.Availability.WindowSlots = map[string]int{"Mon-Sun 00:00-24:00": 2} }, true},
 		{"host services", func(r *runnerauth.Routing) { r.HostServices = []string{"tcp:127.0.0.1:8080"} }, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
