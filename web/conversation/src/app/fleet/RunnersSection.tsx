@@ -37,32 +37,33 @@ export function summarizeProviders(runners: readonly FleetRunner[]): readonly Pr
     string,
     {
       provider: string;
-      accounts: Set<string>;
-      used: number;
-      max: number;
+      accounts: Map<string, { used: number; max: number }>;
       availability: Set<string>;
       status: Set<string>;
       models: Set<string>;
     }
   >();
   const capacities: ProviderCapacity[] = runners.flatMap((runner) => [...runner.provider_capacity]);
+  const sharedProviders = new Set(capacities.filter((capacity) => !capacity.shared_account_alias).map((capacity) => capacity.provider));
   for (const capacity of capacities) {
     let row = rows.get(capacity.provider);
     if (row === undefined) {
       row = {
         provider: capacity.provider,
-        accounts: new Set(),
-        used: 0,
-        max: 0,
+        accounts: new Map(),
         availability: new Set(),
         status: new Set(),
         models: new Set(),
       };
       rows.set(capacity.provider, row);
     }
-    row.accounts.add(capacity.account_alias);
-    row.used += capacity.used;
-    row.max += capacity.max_concurrent ?? 0;
+    const account = sharedProviders.has(capacity.provider) ? "" : capacity.shared_account_alias ?? "";
+    const pool = row.accounts.get(account);
+    const max = capacity.max_concurrent ?? 0;
+    row.accounts.set(account, {
+      used: Math.max(pool?.used ?? 0, capacity.used),
+      max: pool?.max && max ? Math.min(pool.max, max) : pool?.max || max,
+    });
     row.availability.add(capacity.availability);
     row.status.add(capacity.reset_at ? "Rate limited until " + formatLocalTime(capacity.reset_at)
       : [capacity.availability, capacity.state].filter(Boolean).map((value) => value.replaceAll("_", " ")).join(" · "));
@@ -71,8 +72,8 @@ export function summarizeProviders(runners: readonly FleetRunner[]): readonly Pr
   return [...rows.values()].map((row) => ({
     provider: row.provider,
     accounts: row.accounts.size,
-    used: row.used,
-    max: row.max,
+    used: [...row.accounts.values()].reduce((sum, pool) => sum + pool.used, 0),
+    max: [...row.accounts.values()].reduce((sum, pool) => sum + pool.max, 0),
     availability: [...row.availability],
     status: [...row.status],
     models: [...row.models],

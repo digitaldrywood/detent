@@ -28,7 +28,7 @@ import {
 } from "../../src/app/settings/settingsLayout.tsx";
 import { ITEM_ROW_CLASSNAME } from "../../src/app/settings/itemRows.ts";
 import { ExpandableText } from "../../src/app/settings/ExpandableText.tsx";
-import { summarizeProviders } from "../../src/app/fleet/RunnersSection.tsx";
+import { ProviderSummary, summarizeProviders } from "../../src/app/fleet/RunnersSection.tsx";
 import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
 import type { FleetResponse } from "../../src/contracts/account.ts";
 import { AccountBootstrap } from "../../src/contracts/account.ts";
@@ -521,6 +521,84 @@ describe("the rows a section is built from", () => {
 });
 
 describe("the providers & runners section", () => {
+  it.each([
+    {
+      name: "two runners with default shared accounts",
+      reports: [{ account_alias: "mac-studio" }, { account_alias: "mac-mini" }],
+      expected: { accounts: 1, used: 4, max: 12 },
+    },
+    {
+      name: "two runners with the same explicit shared account",
+      reports: [{ shared_account_alias: "team", account_alias: "mac-studio" }, { shared_account_alias: "team", account_alias: "mac-mini" }],
+      expected: { accounts: 1, used: 4, max: 12 },
+    },
+    {
+      name: "two distinct accounts with the same local alias",
+      reports: [{ shared_account_alias: "team-a", used: 2 }, { shared_account_alias: "team-b", used: 3, max_concurrent: 6 }],
+      expected: { accounts: 2, used: 5, max: 18 },
+    },
+    {
+      name: "one runner",
+      reports: [{}],
+      expected: { accounts: 1, used: 4, max: 12 },
+    },
+    {
+      name: "an empty alias joining explicit accounts",
+      reports: [{ shared_account_alias: "team-a", used: 2 }, { shared_account_alias: "", used: 7 }, { shared_account_alias: "team-b", used: 5 }],
+      expected: { accounts: 1, used: 7, max: 12 },
+    },
+    {
+      name: "an omitted alias joining explicit accounts",
+      reports: [{ shared_account_alias: "team-a", used: 2 }, { used: 7 }, { shared_account_alias: "team-b", used: 5 }],
+      expected: { accounts: 1, used: 7, max: 12 },
+    },
+    {
+      name: "multiple backends on the same provider pool",
+      reports: [{ shared_account_alias: "team" }, { shared_account_alias: "team", backend: "other" }],
+      expected: { accounts: 1, used: 4, max: 12 },
+    },
+    {
+      name: "the lowest reported shared pool cap",
+      reports: [{ max_concurrent: 12 }, { max_concurrent: 6 }],
+      expected: { accounts: 1, used: 4, max: 6 },
+    },
+    {
+      name: "a shared pool without an account limit",
+      reports: [{ max_concurrent: undefined }, { max_concurrent: 0 }],
+      expected: { accounts: 1, used: 4, max: 0 },
+    },
+    {
+      name: "a bounded shared pool alongside a missing limit",
+      reports: [{ max_concurrent: undefined }, { max_concurrent: 12 }],
+      expected: { accounts: 1, used: 4, max: 12 },
+    },
+    {
+      name: "a bounded shared pool alongside a zero limit",
+      reports: [{ max_concurrent: 0 }, { max_concurrent: 12 }],
+      expected: { accounts: 1, used: 4, max: 12 },
+    },
+  ])("counts pools for $name", ({ reports, expected }) => {
+    const runners = reports.map((report, index) => ({
+      ...FLEET.runners[0]!,
+      id: `runner-${index}`,
+      provider_capacity: [{
+        provider: "openai", backend: "codex", account_alias: "local",
+        models: ["gpt-6.1-sol"], max_concurrent: 12, used: 4,
+        availability: "unknown", state: "unknown", observed_at: "2026-10-08T17:13:00Z",
+        ...report,
+      }],
+    }));
+    expect(summarizeProviders(runners)).toEqual([expect.objectContaining({ provider: "openai", ...expected })]);
+    expect(summarizeProviders([...runners].reverse())).toEqual([expect.objectContaining({ provider: "openai", ...expected })]);
+    render(<ProviderSummary runners={runners} />);
+    const row = within(screen.getByRole("row", { name: /openai/ }));
+    expect(row.getByRole("cell", { name: String(expected.accounts) })).toBeTruthy();
+    expect(row.getByText(`${expected.used}/${expected.max}`)).toBeTruthy();
+    const progress = row.getByRole("progressbar", { name: "openai in use" });
+    expect(progress.getAttribute("aria-valuenow")).toBe(String(expected.used));
+    expect(progress.getAttribute("aria-valuemax")).toBe(String(expected.max));
+  });
+
   it("folds every runner's capacity onto one row per provider", () => {
     const rows = summarizeProviders(FLEET.runners);
     expect(rows.map((row) => row.provider).toSorted()).toEqual(["claude", "codex"]);
