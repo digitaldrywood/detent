@@ -29,16 +29,50 @@ func addHealthBacklog(t *testing.T, f nativeFixture) {
 
 func TestHealthFindingIssueLifecycle(t *testing.T) {
 	t.Parallel()
-	for _, class := range []string{"instance", "flow", "capacity", "cost", "human"} {
-		t.Run(class, func(t *testing.T) {
+	for _, test := range []struct {
+		name, class string
+		linked      bool
+	}{
+		{name: "instance", class: "instance"},
+		{name: "flow", class: "flow"},
+		{name: "capacity", class: "capacity"},
+		{name: "cost", class: "cost"},
+		{name: "human", class: "human"},
+		{name: "flow with existing issue", class: "flow", linked: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "health-issues")
-			addHealthBacklog(t, f)
 			original := f.create(t, "affected-item")
 			now := time.Date(2026, 10, 6, 18, 30, 0, 0, time.UTC)
-			finding := newHealthFinding("retry_storm", class, "work_item", string(original.WorkItemID), "Repeated failures.", "Inspect the protocol signature.", []string{string(f.project.ID)}, healthEvidence{AttemptIDs: []string{"attempt_one"}, Signatures: []string{"protocol failure"}, Counts: map[string]int{"attempts": 3}})
+			finding := newHealthFinding("retry_storm", test.class, "work_item", string(original.WorkItemID), "Repeated failures.", "Inspect the protocol signature.", []string{string(f.project.ID)}, healthEvidence{AttemptIDs: []string{"attempt_one"}, Signatures: []string{"protocol failure"}, Counts: map[string]int{"attempts": 3}})
 			var owner tracker.NativeIssue
 			var firstFinding string
+			if test.linked {
+				addHealthBacklog(t, f)
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if _, err := writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, []healthFinding{finding}); err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.QueryRowContext(t.Context(), "SELECT id FROM health_findings").Scan(&firstFinding); err != nil {
+					t.Fatal(err)
+				}
+				body := issueorigin.Stamp("Legacy flow finding", issueorigin.Origin{Kind: "audit", Instance: "health_detector", Source: firstFinding, Fingerprint: finding.Fingerprint})
+				owner, err = createNativeIssueTx(t.Context(), tx, healthIssueScope(f.project.OrganizationID, f.project.ID), tracker.CreateIssue{Title: "intake: legacy flow finding", Body: body, State: "Backlog"}, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO health_finding_issues(finding_id,project_id,work_item_id,reported_evidence_json) SELECT id,?,?,evidence_json FROM health_findings`, f.project.ID, owner.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			}
 			for _, step := range []struct {
 				name                      string
 				offset                    time.Duration
@@ -57,7 +91,7 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 				{name: "terminal resolution stays handled", offset: 69 * time.Minute, comments: 5},
 			} {
 				t.Run(step.name, func(t *testing.T) {
-					if step.terminal {
+					if step.terminal && owner.WorkItemID != "" {
 						if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Done') WHERE native_id=?", f.project.ID, owner.WorkItemID); err != nil {
 							t.Fatal(err)
 						}
@@ -79,6 +113,29 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 						t.Fatal("missing finding")
 					}
 					read := page.Items[len(page.Items)-1]
+					if read.Class != test.class || (read.ResolvedAt == nil) != step.active {
+						t.Fatalf("finding state = %+v", read)
+					}
+					if test.class != "instance" {
+						wantIssues, wantLinks := 1, 0
+						if test.linked {
+							wantIssues++
+							if read.ID == firstFinding {
+								wantLinks = 1
+								if len(read.Issues) != 1 || read.Issues[0].WorkItemID != owner.WorkItemID {
+									t.Fatalf("legacy link changed: %+v", read.Issues)
+								}
+							}
+						}
+						var issues, comments int
+						if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM issues WHERE project_id=?), (SELECT count(*) FROM native_comments)`, f.project.ID).Scan(&issues, &comments); err != nil {
+							t.Fatal(err)
+						}
+						if issues != wantIssues || comments != 0 || len(read.Issues) != wantLinks {
+							t.Fatalf("non-instance reporting: issues=%d comments=%d links=%d want %d/0/%d", issues, comments, len(read.Issues), wantIssues, wantLinks)
+						}
+						return
+					}
 					if read.FiledBy != "health_detector" || len(read.Issues) != 1 || read.Issues[0].ProjectID != f.project.ID {
 						t.Fatalf("finding issue link = %+v", read)
 					}
@@ -89,16 +146,10 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 					}
 					if owner.WorkItemID == "" {
 						owner, firstFinding = issue, read.ID
-						wantState := "Backlog"
-						if class == "instance" {
-							wantState = "Todo"
-							if issue.Priority == nil || *issue.Priority != 1 || !slices.Equal(issue.Labels, []string{"infrastructure"}) || !strings.HasPrefix(issue.Title, "fix(instance): retry_storm on work_item ") {
-								t.Fatalf("instance routing = %+v", issue)
-							}
-						} else if issue.Priority != nil || len(issue.Labels) != 0 {
-							t.Fatalf("intake priority/labels = %+v", issue)
+						if issue.Priority == nil || *issue.Priority != 1 || !slices.Equal(issue.Labels, []string{"infrastructure"}) || !strings.HasPrefix(issue.Title, "fix(instance): retry_storm on work_item ") {
+							t.Fatalf("instance routing = %+v", issue)
 						}
-						if issue.State != wantState || issue.Actor != (tracker.Actor{Kind: "integration", PrincipalID: "health_detector"}) {
+						if issue.State != "Todo" || issue.Actor != (tracker.Actor{Kind: "integration", PrincipalID: "health_detector"}) {
 							t.Fatalf("state/attribution = %+v", issue)
 						}
 						origin, ok := issueorigin.Parse(issue.Body)
@@ -232,11 +283,8 @@ func TestHealthFindingIssueScope(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "health-shared-runner")
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "health-shared-other")
-	for _, project := range []nativeFixture{f, other} {
-		addHealthBacklog(t, project)
-	}
 	now := time.Date(2026, 10, 6, 18, 30, 0, 0, time.UTC)
-	finding := newHealthFinding("capacity_starvation", "capacity", "runner", "shared_runner", "Runner is full.", "Inspect slots.", []string{string(f.project.ID), string(other.project.ID)}, healthEvidence{Counts: map[string]int{"queue_depth": 12}, Queues: map[string]healthQueueEvidence{string(f.project.ID): {QueueDepth: 5}, string(other.project.ID): {QueueDepth: 7}}})
+	finding := newHealthFinding("runner_heartbeat_gap", "instance", "runner", "shared_runner", "Missing heartbeat.", "Inspect runner.", []string{string(f.project.ID), string(other.project.ID)}, healthEvidence{Counts: map[string]int{"queue_depth": 12}, Queues: map[string]healthQueueEvidence{string(f.project.ID): {QueueDepth: 5}, string(other.project.ID): {QueueDepth: 7}}})
 	applyTestHealth(t, f, now, []healthFinding{finding})
 	for _, test := range []struct {
 		fixture nativeFixture
