@@ -28,7 +28,7 @@ func (e *nativeExecution) ownsIssueCompletion() bool {
 }
 
 func (e *nativeExecution) ownsChangeCompletion() bool {
-	return e.ownsIssueCompletion() && e.worktreeState != "dirty"
+	return e.ownsIssueCompletion() && e.worktreeState != "dirty" && (e.preparedDisposition == nil || e.preparedDisposition.Status != "blocked")
 }
 
 func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int64) error {

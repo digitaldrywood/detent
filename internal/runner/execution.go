@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -67,6 +68,14 @@ type LandingRuntimeExecution interface {
 // the terminal event only after those effects have completed.
 type CompletionExecution interface {
 	PrepareFinish(context.Context, string, string, *tracker.NativeTerminalFailure) error
+}
+
+func NativeDispositionFromMessage(message string) *tracker.NativeDisposition {
+	signal, reported := workpad.SignalFromComment(message, "", "")
+	if !reported || signal == nil || signal.Invalid != nil {
+		return nil
+	}
+	return &tracker.NativeDisposition{Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: signal.ReasonCode, FinalSummary: workpad.FinalSummary(message), BlockerEvidence: signal.Blockers}
 }
 
 type AvailabilityExecution interface {
