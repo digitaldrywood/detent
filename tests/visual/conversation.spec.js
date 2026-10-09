@@ -627,6 +627,8 @@ test("lists the chat in the sidebar and filters it from the search box", async (
     .getByTestId("sidebar-row-card")
     .filter({ hasText: "Explain the admission gate" });
   await expect(newRow).toBeVisible();
+  await expect(page.getByTestId("user-turn").last()).toContainText("Explain the admission gate to me");
+  await expect(composer(page)).toBeFocused();
 
   const search = sidebar.getByRole("combobox", { name: "Search threads" });
   await search.focus();
