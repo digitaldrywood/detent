@@ -8,11 +8,13 @@ import { useAccountApi, useAccountBootstrap } from "./context.ts";
 import { ControlError } from "./controls.tsx";
 import { useResource } from "./useResource.ts";
 
-export function SpritePoolCard({ projectId, projectName, canManage, compact = false }: {
+export function SpritePoolCard({ projectId, projectName, canManage, compact = false, attentionOnly = false, onAttentionChange }: {
   readonly projectId: string;
   readonly projectName?: string;
   readonly canManage: boolean;
   readonly compact?: boolean;
+  readonly attentionOnly?: boolean;
+  readonly onAttentionChange?: (projectId: string, needsAttention: boolean) => void;
 }): React.ReactElement {
   const api = useAccountApi();
   const account = useAccountBootstrap();
@@ -47,6 +49,13 @@ export function SpritePoolCard({ projectId, projectName, canManage, compact = fa
   }
 
   const title = projectName === undefined ? "Sprite pool" : `Sprite pool · ${projectName}`;
+  const turnedOn = pool.value !== undefined && (pool.value.max_runners > 0 || pool.value.members.some((member) => member.state !== "deleted"));
+  const notSetUp = pool.value !== undefined && !turnedOn;
+  const needsAttention = turnedOn && !token.loading && (token.error !== null || token.value?.present === false);
+  const integrationsUrl = `${account?.base_path ?? ""}/settings/integrations?project=${encodeURIComponent(projectId)}#sprites`;
+  React.useEffect(() => {
+    if (compact) onAttentionChange?.(projectId, needsAttention);
+  }, [compact, projectId, needsAttention, onAttentionChange]);
   const status = pool.value === undefined ? (pool.error === null ? "Loading…" : "Could not load the pool.") : `${pool.value.members.filter((member) => member.state !== "deleted").length} members`;
   const content = <div className="w-full space-y-4 py-4">
       {canManage && pool.value !== undefined ? <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void save(); }}>
@@ -70,15 +79,18 @@ export function SpritePoolCard({ projectId, projectName, canManage, compact = fa
       </div>)}
     </div>;
   if (!compact) return <SettingsRow title={title} description="The Hub creates fresh runners as queued work needs them and deletes idle members above the minimum. Set the maximum to zero to disable provisioning." status={status}>{content}</SettingsRow>;
+  if (attentionOnly && !needsAttention) return <></>;
   return <div className="px-4" data-testid="sprite-pool-row">
     <Dialog>
       <SettingsRow title={title}
-        description={pool.value === undefined ? status : `Floor ${pool.value.min_runners} · Ceiling ${pool.value.max_runners} · Idle ${pool.value.idle_seconds}s · ${status}`}
-        control={<DialogTrigger render={<Button size="xs" variant="outline">{canManage ? "Configure pool" : "View pool"}<span className="sr-only"> {projectName}</span></Button>} />}
+        description={notSetUp ? "Not set up. Sprites start runners for this project when work is queued." : pool.value === undefined ? status : `Floor ${pool.value.min_runners} · Ceiling ${pool.value.max_runners} · Idle ${pool.value.idle_seconds}s · ${status}`}
+        control={notSetUp && token.value?.present !== true
+          ? <Button size="xs" variant="outline" render={<a href={integrationsUrl} />}>Set up Sprites<span className="sr-only"> {projectName}</span></Button>
+          : <DialogTrigger render={<Button size="xs" variant="outline">{notSetUp ? "Set up Sprites" : canManage ? "Configure pool" : "View pool"}<span className="sr-only"> {projectName}</span></Button>} />}
       >
-        {token.loading ? <p className="pb-3 text-xs text-muted-foreground">Checking Sprites token…</p> : token.value?.present !== true ? <p className="pb-3 text-xs text-warning-foreground">
-          {token.value?.present === false ? "No Sprites token is set" : "Could not check the Sprites token"} for {projectName}.{" "}
-          <a className="underline underline-offset-4" href={`${account?.base_path ?? ""}/settings/integrations?project=${encodeURIComponent(projectId)}#sprites`}>Set a Sprites token</a>
+        {turnedOn && token.loading ? <p className="pb-3 text-xs text-muted-foreground">Checking Sprites token…</p> : needsAttention ? <p className="pb-3 text-xs text-warning-foreground">
+          {token.error !== null ? `Could not check the Sprites token for ${projectName}.` : `No Sprites token is set for ${projectName}, so the Hub cannot start Sprites.`}{" "}
+          <a className="underline underline-offset-4" href={integrationsUrl}>{token.error !== null ? "Review the token" : "Set a Sprites token"}</a>
         </p> : null}
       </SettingsRow>
       <DialogPopup className="sm:max-w-xl">

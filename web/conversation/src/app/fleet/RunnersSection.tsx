@@ -172,11 +172,12 @@ function Capacity({ runners, onOpen }: { readonly runners: readonly FleetRunner[
 }
 
 export function RunnersSectionView({
-  fleet, now, organizationName = "this organization", onEnroll, enrollments = [], onSaveRouting, projects = [], onReloadRunner, onRemoveRunner, onAssist, spritePools,
+  fleet, now, organizationName = "this organization", onEnroll, enrollments = [], onSaveRouting, projects = [], onReloadRunner, onRemoveRunner, onAssist, spritePools, spritePoolAttentionCount = 0,
 }: {
   readonly fleet: FleetResponse;
   readonly onAssist?: () => void;
-  readonly spritePools?: React.ReactNode;
+  readonly spritePools?: (attentionOnly: boolean) => React.ReactNode;
+  readonly spritePoolAttentionCount?: number;
   readonly projects?: readonly RunnerProject[];
   readonly onReloadRunner?: () => Promise<void>;
   readonly now?: number;
@@ -187,7 +188,7 @@ export function RunnersSectionView({
   readonly onRemoveRunner?: (runner: FleetRunner) => Promise<void>;
 }): React.ReactElement {
   const [attentionOnly, setAttentionOnly] = React.useState(() => new URLSearchParams(window.location.search).get("health") === "needs_attention");
-  const attentionCount = fleet.runners.filter((runner) => runner.health === "needs_attention").length;
+  const attentionCount = fleet.runners.filter((runner) => runner.health === "needs_attention").length + spritePoolAttentionCount;
   const runners = attentionOnly ? fleet.runners.filter((runner) => runner.health === "needs_attention") : fleet.runners;
   function filterUrl(only: boolean): string {
     const url = new URL(window.location.href);
@@ -278,12 +279,12 @@ export function RunnersSectionView({
                 {runners.map((runner) => <HostCard key={runner.id} runner={runner} projects={projects} onOpen={() => openRunner(runner)} {...(fleet.editable !== false && onRemoveRunner ? { onRemove: () => { setRemoveError(null); setRunnerToRemove(runner); } } : {})} />)}
                 {runners.length === 0 ? <p className="px-4 py-6 text-[13px] text-muted-foreground">No runners need attention.</p> : null}
               </div>
-              {spritePools}
+              {spritePools?.(attentionOnly)}
             </div>
           </SettingsSection>
         </>
       )}
-      {fleet.runners.length === 0 ? spritePools : null}
+      {fleet.runners.length === 0 ? spritePools?.(false) : null}
       {enrollments.length === 0 ? null : (
         <SettingsSection id="settings-enrollments" title="Waiting to connect" icon={<ServerIcon className="size-3.5" />} headerAction={<span className="text-xs text-muted-foreground">Created in this session</span>}>
           <PendingEnrollments enrollments={enrollments} onRenew={onEnroll} />
@@ -307,6 +308,10 @@ export function RunnersSettings(): React.ReactElement {
   const client = useClient();
   const navigate = useNavigate();
   const [assistOpen, setAssistOpen] = React.useState(false);
+  const [poolAttention, setPoolAttention] = React.useState<Readonly<Record<string, boolean>>>({});
+  const onPoolAttentionChange = React.useCallback((projectId: string, needsAttention: boolean) => {
+    setPoolAttention((current) => current[projectId] === needsAttention ? current : { ...current, [projectId]: needsAttention });
+  }, []);
   const writableProjects = bootstrap?.projects.filter((project) => project.can_write) ?? [];
   const [assistProject, setAssistProject] = React.useState(() => writableProjects.find((project) => project.id === readLastProject())?.id ?? writableProjects[0]?.id ?? "");
   function assist(projectId: string): void {
@@ -362,7 +367,8 @@ export function RunnersSettings(): React.ReactElement {
           organizationName={bootstrap?.organization.name}
           projects={bootstrap?.projects ?? []}
           onReloadRunner={reloadRunner}
-          spritePools={bootstrap?.projects.map((project) => <SpritePoolCard key={project.id} compact projectId={project.id} projectName={project.name} canManage={bootstrap.actor.can_manage && project.can_write} />)}
+          spritePoolAttentionCount={bootstrap?.projects.filter((project) => poolAttention[project.id]).length ?? 0}
+          spritePools={(attentionOnly) => bootstrap?.projects.map((project) => <SpritePoolCard key={project.id} compact projectId={project.id} projectName={project.name} canManage={bootstrap.actor.can_manage && project.can_write} attentionOnly={attentionOnly} onAttentionChange={onPoolAttentionChange} />)}
           {...(canEnroll && writableProjects.length > 0 ? { onAssist: () => {
             if (writableProjects.length === 1) assist(writableProjects[0]!.id);
             else setAssistOpen(true);

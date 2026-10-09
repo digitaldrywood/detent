@@ -210,13 +210,17 @@ State is shown by one mapping, `ThreadStatusIndicators` with `resolveThreadStatu
 | Disabled | Disabled opacity | Prevent action; keep any existing explanation |
 | Loading | `Spinner` or `Skeleton` | Preserve layout; expose loading without announcing every frame |
 | Empty | `Empty` | Explain absence and offer the relevant action |
+| Not set up | Muted text and one Set up action | An optional feature nobody turned on; never counts toward Needs attention |
 | Validation error | Error foreground and field association | Keep the input and correction visible |
 | Unavailable | Unavailable composition or `Alert` | Distinguish lack of capability from a failed attempt |
 | Success | Success variant | Pair colour with a label or icon |
-| Warning | Warning variant | State the consequence and the corrective action |
+| Warning | Warning variant | A feature is turned on and a required piece is missing or its check failed; say what will not happen and link the fix |
+| Error | Error variant | Something configured and working is now broken |
 | Destructive confirmation | `AlertDialog` | Clear destructive action and cancel path |
 
 Not every queued, idle or unavailable state is an error, and a selected item is not a success. Use a toast for transient feedback and an inline `Alert` when the user must act in place. Keep feedback text short and state the action or result, not the implementation.
+
+Warning and error states appear only when something is misconfigured or broken, never because an optional feature was not set up. A not-set-up state says it is not set up in muted text and offers one Set up action, with no warning or error tokens and no `role="alert"`. It never counts toward Needs attention. For a Sprite pool, turned on means a ceiling above zero or any member that is not deleted.
 
 ```tsx
 <div className="flex items-center gap-2">

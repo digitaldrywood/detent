@@ -17,11 +17,11 @@ const fleet = {
 
 test.beforeAll(async () => { html = await providersRunnersPreview(); });
 
-async function openFleet(page, data = fleet, search = "", spritesPresent = false) {
+async function openFleet(page, data = fleet, search = "", spritesPresent = false, pool = spritePool) {
   await page.clock.setFixedTime(new Date("2026-09-10T12:09:31Z"));
   await page.route(origin + "/**", (route) => {
     if (new URL(route.request().url()).pathname.endsWith("/sprite-pool")) {
-      return route.fulfill({ json: spritePool });
+      return route.fulfill({ json: pool });
     }
     if (new URL(route.request().url()).pathname.endsWith("/secrets/fly_sprites_token")) {
       return route.fulfill({ json: { kind: "fly_sprites_token", present: spritesPresent } });
@@ -97,7 +97,7 @@ for (const width of [1440, 390]) {
   }
   test(`sleeping Sprite has no warning at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 1100 });
-    await openFleet(page, { ...fleet, runners: [{ ...fleetFixture.runners[1], state: "active", reported_capacity: 2, health: "asleep", problems: [], claim_refusal_reason: "", sprite: { name: "build-sprite", status: "warm", can_wake: true, wake_failed: false } }] });
+    await openFleet(page, { ...fleet, runners: [{ ...fleetFixture.runners[1], state: "active", reported_capacity: 2, health: "asleep", problems: [], claim_refusal_reason: "", sprite: { name: "build-sprite", status: "warm", can_wake: true, wake_failed: false } }] }, "", true);
     await expect(page.getByText("Asleep, wakes on new work")).toBeVisible();
     await expect(page.getByRole("alert")).toHaveCount(0);
     await expect(page.getByText(/slots can't take work/)).toHaveCount(0);
@@ -161,12 +161,12 @@ for (const width of [1440, 390]) {
     await page.getByText("Fleet capacity and providers", { exact: true }).click();
     await expect(page.locator("[data-settings-page-scroll] > div")).toHaveScreenshot("providers-runners-" + width + ".png");
     await page.setViewportSize({ width, height: 1100 });
-    await page.getByRole("link", { name: "Needs attention 1" }).click();
+    await page.getByRole("link", { name: "Needs attention 2" }).click();
     await expect(page).toHaveURL(/health=needs_attention/);
     await expect(page.getByTestId("host-card")).toHaveCount(1);
     await expect(groups).toHaveCount(3);
     await page.reload();
-    await expect(page.getByRole("link", { name: "Needs attention 1" })).toHaveAttribute("aria-current", "true");
+    await expect(page.getByRole("link", { name: "Needs attention 2" })).toHaveAttribute("aria-current", "true");
     await expect(page.getByTestId("host-card")).toHaveCount(1);
     await page.getByText("Fleet capacity and providers", { exact: true }).click();
     await page.getByRole("button", { name: "Open Michael's MacBook Pro", exact: true }).click();
@@ -174,7 +174,7 @@ for (const width of [1440, 390]) {
     await expect(page.getByRole("dialog", { name: "Michael's MacBook Pro" })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page).not.toHaveURL(/health=needs_attention/);
-    await page.getByRole("link", { name: "Needs attention 1" }).click();
+    await page.getByRole("link", { name: "Needs attention 2" }).click();
     await page.getByRole("link", { name: "All 3" }).click();
     await expect(page).not.toHaveURL(/health=needs_attention/);
     await expect(page.getByTestId("host-card")).toHaveCount(3);
@@ -285,7 +285,7 @@ test("the attention link preserves unrelated search parameters", async ({ page }
   await expect(page.getByTestId("host-card")).toHaveCount(1);
   await page.getByRole("link", { name: "All 3" }).click();
   await expect(page).toHaveURL(/source=capacity$/);
-  await page.getByRole("link", { name: "Needs attention 1" }).click();
+  await page.getByRole("link", { name: "Needs attention 2" }).click();
   await expect(page).toHaveURL(/source=capacity&health=needs_attention$/);
 });
 
@@ -337,7 +337,15 @@ for (const version of ["operator-landed-3c51987c563b", "dev"]) {
 }
 
 test("Sprite pool row saves its limits without exposing setup fields on the list", async ({ page }) => {
-  await openFleet(page);
+  await openFleet(page, fleet, "", false, { ...spritePool, min_runners: 0, max_runners: 0, members: [] });
+  const row = page.getByTestId("sprite-pool-row");
+  await expect(row).toContainText("Not set up. Sprites start runners for this project when work is queued.");
+  await expect(row.getByRole("link", { name: "Set up Sprites Preview project" })).toHaveAttribute("href", "/settings/integrations?project=proj_preview#sprites");
+  await expect(row.getByRole("link", { name: "Set a Sprites token" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Needs attention 1" })).toBeVisible();
+  await page.getByRole("link", { name: "Needs attention 1" }).click();
+  await expect(row).toHaveCount(0);
+  await page.getByRole("link", { name: "All 3" }).click();
   let saved;
   await page.route("**/sprite-pool", async (route) => {
     if (route.request().method() === "PUT") {
@@ -345,7 +353,9 @@ test("Sprite pool row saves its limits without exposing setup fields on the list
       await route.fulfill({ json: { ...spritePool, ...saved, revision: spritePool.revision + 1 } });
     } else await route.fulfill({ json: spritePool });
   });
-  const row = page.getByTestId("sprite-pool-row");
+  await page.reload();
+  await expect(row).toContainText("No Sprites token is set for Preview project, so the Hub cannot start Sprites.");
+  await expect(page.getByRole("link", { name: "Needs attention 2" })).toBeVisible();
   await expect(row.getByRole("link", { name: "Set a Sprites token" })).toHaveAttribute("href", "/settings/integrations?project=proj_preview#sprites");
   await row.getByRole("button", { name: /Configure pool/ }).click();
   const dialog = page.getByRole("dialog", { name: "Sprite pool · Preview project" });
