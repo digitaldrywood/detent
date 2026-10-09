@@ -16,14 +16,26 @@ type hostedLogHandler struct {
 
 var hostedErrorClass = regexp.MustCompile(`^[A-Za-z0-9_.*]{1,80}$`)
 
+var hostedRouteTemplate = regexp.MustCompile(`^/[A-Za-z0-9_/:.*-]{0,200}$`)
+
+var hostedTimingMessages = map[string]bool{"hub request timing": true, "hub writer waits": true}
+
+var hostedTimingCounters = map[string]bool{"status": true, "duration_ms": true, "writer_hold_ms": true, "writer_txs": true,
+	"waits": true, "wait_ms": true, "in_use": true, "interval_s": true}
+
 func (h hostedLogHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.output.Enabled(ctx, level)
 }
 
 func (h hostedLogHandler) Handle(ctx context.Context, record slog.Record) error {
-	redacted := slog.NewRecord(record.Time, record.Level, "hosted service event", 0)
+	timing := hostedTimingMessages[record.Message]
+	message := "hosted service event"
+	if timing {
+		message = record.Message
+	}
+	redacted := slog.NewRecord(record.Time, record.Level, message, 0)
 	record.Attrs(func(attr slog.Attr) bool {
-		if hostedDiagnosticAttr(attr) {
+		if hostedDiagnosticAttr(attr) || timing && hostedTimingAttr(attr) {
 			redacted.AddAttrs(attr)
 		}
 		return true
@@ -46,6 +58,17 @@ func hostedDiagnosticAttr(attr slog.Attr) bool {
 		return known
 	}
 	return false
+}
+
+func hostedTimingAttr(attr slog.Attr) bool {
+	switch attr.Key {
+	case "method":
+		return attr.Value.Kind() == slog.KindString && hostedErrorClass.MatchString(attr.Value.String())
+	case "route":
+		return attr.Value.Kind() == slog.KindString && hostedRouteTemplate.MatchString(attr.Value.String())
+	}
+	kind := attr.Value.Kind()
+	return hostedTimingCounters[attr.Key] && (kind == slog.KindInt64 || kind == slog.KindUint64)
 }
 
 func (h hostedLogHandler) WithAttrs([]slog.Attr) slog.Handler {

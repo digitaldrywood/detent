@@ -165,3 +165,37 @@ func TestHostedLoginLogsStayRedactedOutsideDenials(t *testing.T) {
 		})
 	}
 }
+
+func TestHostedLogsKeepWriterTiming(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		message string
+		attrs   []any
+		want    map[string]any
+	}{
+		{"request timing kept", "hub request timing", []any{"method", "POST", "route", "/api/v2/organizations/:organization/projects/:project/leases/:lease/renew", "status", 200, "duration_ms", int64(5200), "writer_hold_ms", int64(4900), "writer_txs", int64(2)},
+			map[string]any{"msg": "hub request timing", "method": "POST", "route": "/api/v2/organizations/:organization/projects/:project/leases/:lease/renew", "status": float64(200), "duration_ms": float64(5200), "writer_hold_ms": float64(4900), "writer_txs": float64(2)}},
+		{"writer waits kept", "hub writer waits", []any{"waits", int64(40), "wait_ms", int64(9000), "in_use", 1, "interval_s", int64(60)},
+			map[string]any{"msg": "hub writer waits", "waits": float64(40), "wait_ms": float64(9000), "in_use": float64(1), "interval_s": float64(60)}},
+		{"tenant content dropped from timing", "hub request timing", []any{"route", "/work/tenant title sentinel", "method", "tenant method sentinel", "secret", "attribute-sentinel", "duration_ms", "9"},
+			map[string]any{"msg": "hub request timing"}},
+		{"other messages stay redacted", "lease renewed", []any{"duration_ms", int64(10), "route", "/api/v2/x"},
+			map[string]any{"msg": "hosted service event"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var output hostedLogBuffer
+			logger := slog.New(hostedLogHandler{output: slog.NewJSONHandler(&output, nil)})
+			logger.Info(tt.message, tt.attrs...)
+			var record map[string]any
+			if err := json.Unmarshal([]byte(output.String()), &record); err != nil {
+				t.Fatalf("log = %s: %v", output.String(), err)
+			}
+			delete(record, "time")
+			delete(record, "level")
+			if !reflect.DeepEqual(record, tt.want) {
+				t.Fatalf("record = %v, want %v", record, tt.want)
+			}
+		})
+	}
+}
