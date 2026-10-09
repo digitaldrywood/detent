@@ -149,7 +149,7 @@ func (e *nativeExecution) validateProviderStart(identity tracker.NativeExecution
 	}
 	for _, report := range reports {
 		if report.Supports(required) && report.Provider == reservation.Report.Provider && report.AccountAlias == reservation.Report.AccountAlias && report.SharedAccountAlias == reservation.Report.SharedAccountAlias {
-			if report.State(e.scheduler.now()) == "exhausted" || report.MaxConcurrent < reservation.Report.MaxConcurrent {
+			if report.State(e.scheduler.now()) == "exhausted" || report.MaxConcurrent > 0 && (reservation.Report.MaxConcurrent == 0 || report.MaxConcurrent < reservation.Report.MaxConcurrent) {
 				return errors.Join(runner.ErrExecutionAuthorityUnavailable, errors.New("provider capacity decreased after dispatch; release and wait"))
 			}
 			return nil

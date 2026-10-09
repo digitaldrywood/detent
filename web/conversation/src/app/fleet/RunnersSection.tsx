@@ -62,7 +62,7 @@ export function summarizeProviders(runners: readonly FleetRunner[]): readonly Pr
     }
     row.accounts.add(capacity.account_alias);
     row.used += capacity.used;
-    row.max += capacity.max_concurrent;
+    row.max += capacity.max_concurrent ?? 0;
     row.availability.add(capacity.availability);
     row.status.add(capacity.reset_at ? "Rate limited until " + formatLocalTime(capacity.reset_at)
       : [capacity.availability, capacity.state].filter(Boolean).map((value) => value.replaceAll("_", " ")).join(" · "));
@@ -131,7 +131,7 @@ function Capacity({ runners, onOpen }: { readonly runners: readonly FleetRunner[
     const capacity = runner.host_capacity;
     const available = group.reduce((count, entry) => {
       if (entry.state !== "active" || (entry.health !== "online" && entry.health !== "asleep") || entry.claim_refusal_reason) return count;
-      if (entry.provider_capacity.length > 0 && !entry.provider_capacity.some((provider) => provider.state !== "exhausted" && provider.used < provider.max_concurrent)) return count;
+      if (entry.provider_capacity.length > 0 && !entry.provider_capacity.some((provider) => provider.state !== "exhausted" && (provider.max_concurrent === undefined || provider.max_concurrent === 0 || provider.used < provider.max_concurrent))) return count;
       return count + Math.max(0, Math.min(entry.capacity_limit, entry.reported_capacity) - entry.leases.length);
     }, 0);
     const free = Math.min(Math.max(0, capacity - used), available);

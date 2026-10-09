@@ -175,7 +175,7 @@ func (snapshot providerCapacitySnapshot) view(report providercapacity.Report, no
 		if !sharedProviderAccount(report, other) {
 			continue
 		}
-		view.MaxConcurrent = min(view.MaxConcurrent, other.MaxConcurrent)
+		view.MaxConcurrent = providerConcurrencyLimit(view.MaxConcurrent, other.MaxConcurrent)
 		if other.State(now) == "exhausted" {
 			view.State = "exhausted"
 			if other.ResetAt.After(view.ResetAt) {
@@ -191,19 +191,31 @@ func (snapshot providerCapacitySnapshot) view(report providercapacity.Report, no
 			if !slices.ContainsFunc(freshReports, func(current providercapacity.Report) bool {
 				return current.Provider == reservation.Report.Provider && current.Backend == reservation.Report.Backend && current.AccountAlias == reservation.Report.AccountAlias && current.SharedAccountAlias == reservation.Report.SharedAccountAlias && current.Supports(reservation.Requirement)
 			}) {
-				view.MaxConcurrent = min(view.MaxConcurrent, reservation.Report.MaxConcurrent)
+				view.MaxConcurrent = providerConcurrencyLimit(view.MaxConcurrent, reservation.Report.MaxConcurrent)
 			}
 		}
 	}
 	switch {
 	case view.State == "exhausted":
 		view.Reason = "Provider account is exhausted; wait for a fresh observation or reset hint"
-	case view.Used >= view.MaxConcurrent:
+	case view.MaxConcurrent > 0 && view.Used >= view.MaxConcurrent:
 		view.Reason = "Shared provider concurrency is fully reserved; wait for lease release or expiry"
+	case view.MaxConcurrent == 0:
+		view.Reason = "No provider account concurrency limit is configured; runner and host limits apply"
 	case view.State == "unknown":
 		view.Reason = "Quota is unknown or stale; only the declared concurrency bound is available"
 	}
 	return view
+}
+
+func providerConcurrencyLimit(a, b int) int {
+	if a == 0 {
+		return b
+	}
+	if b == 0 {
+		return a
+	}
+	return min(a, b)
 }
 
 func selectProviderCapacity(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, id tracker.WorkItemID, now time.Time) (providercapacity.Reservation, bool, error) {
@@ -244,7 +256,7 @@ func selectProviderCapacity(ctx context.Context, tx *sql.Tx, query claimCandidat
 			if group, exists := snapshot.groups[query.LandingBatchGroup]; exists && candidate.Requirement.Backend == "git" && candidate.Requirement.Role == "merge" && sharedProviderAccount(report, group) {
 				view.Used--
 			}
-			if view.State == "exhausted" || view.Used >= view.MaxConcurrent {
+			if !view.Available() {
 				return providercapacity.Reservation{}, false, providerWait("provider_capacity", view.Reason)
 			}
 			return providercapacity.Reservation{Requirement: candidate.Requirement, Report: report, Reason: view.Reason}, true, nil
@@ -299,7 +311,7 @@ func validateProviderAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope,
 		if err != nil {
 			return err
 		}
-		if view.State == "exhausted" || view.Used > view.MaxConcurrent {
+		if view.State == "exhausted" || view.MaxConcurrent > 0 && view.Used > view.MaxConcurrent {
 			return providerWait("provider_capacity", "Provider capacity changed after reservation; release the lease and wait")
 		}
 		return nil

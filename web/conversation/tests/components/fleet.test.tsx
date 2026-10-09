@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
 import { spriteBootstrapPin } from "../../src/app/fleet/EnrollRunner.tsx";
 import type { FleetResponse, RunnerRouting } from "../../src/contracts/account.ts";
+import { decodeFleet } from "../../src/contracts/account.ts";
 import { AccountError, makeAccountApi } from "../../src/app/account/api.ts";
 import { ClientContext } from "../../src/app/client.ts";
 import { resetRunnerNamesForTests, runnerDisplay, useRunnerNames } from "../../src/app/work/lib/runnerNames.ts";
@@ -214,8 +215,11 @@ describe("shared host capacity", () => {
     ["claim refused", { claim_refusal_reason: "Too old to take work" }, 0],
     ["reported limit", { reported_capacity: 3 }, 2],
     ["routing limit", { capacity_limit: 2 }, 1],
+    ["default provider report", { provider_capacity: [{ ...FLEET.runners[0]!.provider_capacity[0]!, max_concurrent: undefined, state: "unknown", used: 12 }] }, 7],
+    ["zero account limit", { provider_capacity: [{ ...FLEET.runners[0]!.provider_capacity[0]!, max_concurrent: 0, state: "unknown" }] }, 7],
+    ["bounded provider full", { provider_capacity: [{ ...FLEET.runners[0]!.provider_capacity[0]!, max_concurrent: 2, used: 2 }] }, 0],
   ])("preserves running work and limits free slots for %s", (_name, values, free) => {
-    renderSection({ ...FLEET, runners: [{ ...active, ...values }] });
+    renderSection(decodeFleet({ ...FLEET, runners: [{ ...active, ...values }] }));
     const host = screen.getByTestId("runner-capacity");
     expect(screen.getByText("1 of 8 slots running work")).toBeTruthy();
     expect(host.querySelectorAll('[data-slot-state="running"]')).toHaveLength(1);

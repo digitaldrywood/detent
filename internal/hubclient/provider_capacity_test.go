@@ -500,7 +500,8 @@ func TestLocalProviderRevalidation(t *testing.T) {
 		{"account change", func(r *providercapacity.Report) { r.AccountAlias = "other" }, "sol", false},
 		{"shared pool change", func(r *providercapacity.Report) { r.SharedAccountAlias = "other" }, "sol", false},
 		{"model changed", func(*providercapacity.Report) {}, "astra", false},
-		{"invalid report", func(r *providercapacity.Report) { r.MaxConcurrent = 0 }, "sol", false},
+		{"removed account limit", func(r *providercapacity.Report) { r.MaxConcurrent = 0 }, "sol", true},
+		{"invalid report", func(r *providercapacity.Report) { r.MaxConcurrent = -1 }, "sol", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			current := report

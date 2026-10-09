@@ -116,17 +116,23 @@ func (r Runner) CapacityView(backend string, now time.Time) CapacityView {
 		owner := "provider:" + provider.Backend + ":" + provider.AccountAlias
 		if now.Before(provider.ObservedAt) || !now.Before(provider.ObservedAt.Add(providercapacity.MaxAge)) {
 			unknownProvider = true
-			add(owner, nil, "Provider report is stale; refresh its configured producer. Detent cannot manage an external producer.", provider.ObservedAt)
+			add(owner, nil, "Provider report is stale; wait for the runner or its configured producer to refresh it.", provider.ObservedAt)
 			continue
 		}
 		limit := provider.MaxConcurrent
-		add(owner, &limit, "The configured external provider-capacity producer is unmanaged. Change its concurrency setting and let its normal refresh publish evidence; editing the report is ineffective.", provider.ObservedAt)
+		if limit == 0 {
+			add(owner, nil, "No provider account concurrency limit is configured; runner and host limits apply.", provider.ObservedAt)
+		} else {
+			add(owner, &limit, "The configured external provider-capacity producer is unmanaged. Change its concurrency setting and let its normal refresh publish evidence; editing the report is ineffective.", provider.ObservedAt)
+		}
 		view.Limits[len(view.Limits)-1].Availability = provider.State
 		if provider.State == "exhausted" {
 			view.Limits[len(view.Limits)-1].Constraint = "Provider account is exhausted; wait for a fresh observation or reset hint."
 			limit = 0
 		}
-		effective = min(effective, limit)
+		if limit > 0 || provider.State == "exhausted" {
+			effective = min(effective, limit)
+		}
 	}
 	if !knownProvider || unknownProvider || matchingProviders > 1 {
 		add("provider", nil, "Select a backend with a single fresh provider report; a combined account or provider ceiling is unknown.", time.Time{})

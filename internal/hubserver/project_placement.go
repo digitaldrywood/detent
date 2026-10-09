@@ -151,10 +151,13 @@ func (c *placementCapacity) available(r placementRunner, project tracker.Project
 		if view.State == "exhausted" || provider.Model != "" && !view.Supports(provider) {
 			continue
 		}
-		remaining := view.MaxConcurrent - view.Used
-		for _, account := range c.accounts {
-			if sharedProviderAccount(account, view.Report) {
-				remaining--
+		remaining := free
+		if view.MaxConcurrent > 0 {
+			remaining = view.MaxConcurrent - view.Used
+			for _, account := range c.accounts {
+				if sharedProviderAccount(account, view.Report) {
+					remaining--
+				}
 			}
 		}
 		if remaining > providerFree {
@@ -417,15 +420,18 @@ func readPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeSco
 			if view.State == "exhausted" {
 				continue
 			}
-			remaining := view.MaxConcurrent - view.Used
-			for _, prior := range spriteCapacity.accounts {
-				if sharedProviderAccount(prior, view.Report) {
-					remaining--
+			remaining := result.SpriteTarget
+			if view.MaxConcurrent > 0 {
+				remaining = view.MaxConcurrent - view.Used
+				for _, prior := range spriteCapacity.accounts {
+					if sharedProviderAccount(prior, view.Report) {
+						remaining--
+					}
 				}
-			}
-			for _, prior := range providerSlots.accounts {
-				if sharedProviderAccount(prior, view.Report) {
-					remaining--
+				for _, prior := range providerSlots.accounts {
+					if sharedProviderAccount(prior, view.Report) {
+						remaining--
+					}
 				}
 			}
 			for range max(remaining, 0) {
