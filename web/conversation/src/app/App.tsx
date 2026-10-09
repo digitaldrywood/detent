@@ -457,9 +457,11 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
     }
     return () => { cancelled = true; };
   }, [http, subjectId, projectId]);
-  const requestedProjectId = subject?.project_id ?? projectId ?? shell.projectId;
   const writableProjects = client.bootstrap.projects.filter((candidate) => candidate.can_write);
-  const active = requestedProjectId || (writableProjects.length === 1 ? writableProjects[0]!.id : "");
+  const rememberedProjectId = shell.projectId || readLastProject();
+  const active = subject?.project_id ?? projectId
+    ?? writableProjects.find((candidate) => candidate.id === rememberedProjectId)?.id
+    ?? writableProjects[0]?.id ?? "";
   const project = client.bootstrap.projects.find((candidate) => candidate.id === active);
   usePageTitle("Chat", projectId === undefined ? undefined : project?.name);
   // No runner able to take coordinator turns is enrolled here. The message is

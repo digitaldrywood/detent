@@ -17,13 +17,14 @@ import { LAST_PROJECT_STORAGE_KEY } from "../runtime/state/drafts.ts";
 
 export function readLastProject(): string | null {
   try {
-    return globalThis.localStorage?.getItem(LAST_PROJECT_STORAGE_KEY) ?? null;
+    return globalThis.localStorage?.getItem(LAST_PROJECT_STORAGE_KEY) || null;
   } catch {
     return null;
   }
 }
 
 export function writeLastProject(projectId: string): void {
+  if (projectId === "") return;
   try {
     globalThis.localStorage?.setItem(LAST_PROJECT_STORAGE_KEY, projectId);
   } catch {

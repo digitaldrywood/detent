@@ -11,7 +11,8 @@ import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { startMockHub, type CoordinatorMode, type MockHub } from "../../dev/mock-hub.ts";
-import { ClientContext } from "../../src/app/client.ts";
+import { ClientContext, LAST_PROJECT_STORAGE_KEY } from "../../src/app/client.ts";
+import type { Bootstrap } from "../../src/contracts/index.ts";
 import { makeRouter } from "../../src/app/router.tsx";
 import { setComposerText } from "./composerInput.ts";
 import { loadBootstrap, makeClient, type ConversationClient } from "../../src/runtime/bootstrap.ts";
@@ -53,6 +54,8 @@ const sameRealmFetch: typeof globalThis.fetch = (input, init) => {
 };
 
 interface MountOptions {
+  readonly bootstrap?: (bootstrap: Bootstrap) => Bootstrap;
+  readonly storedProject?: string;
   readonly coordinator?: CoordinatorMode;
   /** Flipped on the hub after any setup, before the client boots (§10.11). */
   readonly readOnly?: boolean;
@@ -77,7 +80,8 @@ async function mountApp(options: MountOptions | CoordinatorMode = {}) {
       body: JSON.stringify({ mode: "read_only" }),
     });
   }
-  const bootstrap = await loadBootstrap(hub.url);
+  const loaded = await loadBootstrap(hub.url);
+  const bootstrap = settings.bootstrap?.(loaded) ?? loaded;
   const streamRequests: URL[] = [];
   const streamFetch: typeof globalThis.fetch = (input, init) => {
     streamRequests.push(new URL(input instanceof Request ? input.url : String(input)));
@@ -89,6 +93,9 @@ async function mountApp(options: MountOptions | CoordinatorMode = {}) {
     transport: fetchEventStreamTransport(streamFetch),
     heartbeatTimeoutMs: 20_000,
   });
+  if (settings.storedProject !== undefined) {
+    globalThis.localStorage.setItem(LAST_PROJECT_STORAGE_KEY, settings.storedProject);
+  }
   const path =
     typeof settings.path === "function" ? settings.path() : (settings.path ?? "/chat");
   const router = makeRouter(createMemoryHistory({ initialEntries: [path] }));
@@ -111,6 +118,71 @@ async function control(path: string, body?: unknown): Promise<void> {
 }
 
 describe("the conversation shell", () => {
+  it.each([
+    ["", "proj_alpha", "alpha"],
+    ["proj_stale", "proj_alpha", "alpha"],
+    ["proj_readonly", "proj_alpha", "alpha"],
+    ["proj_beta", "proj_beta", "beta"],
+  ])("starts a writable chat with stored project %j", async (stored, expectedId, expectedName) => {
+    const { router, hub } = await mountApp({
+      storedProject: stored,
+      bootstrap: (bootstrap) => ({
+        ...bootstrap,
+        projects: [...bootstrap.projects].sort((a, b) => Number(a.can_write) - Number(b.can_write)),
+      }),
+    });
+    const composer = await screen.findByLabelText<HTMLElement>("Message");
+    expect(screen.getByTestId("hero-headline").textContent).toContain(expectedName);
+    expect(screen.queryByText("Project unknown")).toBeNull();
+    expect(screen.queryByText("Choose a project first")).toBeNull();
+    await setComposerText(composer, "Start a writable chat");
+    expect(screen.getByLabelText<HTMLButtonElement>("Send message").disabled).toBe(false);
+    fireEvent.keyDown(composer, { key: "Enter" });
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/chat\/c\/conv_/));
+    const conversationId = router.state.location.pathname.replace("/chat/c/", "");
+    const response = await fetch(`${hub.url}/api/v2/organizations/org_mock/projects/${expectedId}/conversations/${conversationId}`);
+    expect(response.status).toBe(200);
+    expect((await response.json()).conversation.project_id).toBe(expectedId);
+  });
+
+  it("remembers the last real project through Work and All projects", async () => {
+    const { router } = await mountApp({ path: "/chat/p/proj_beta" });
+    await screen.findByLabelText("Message");
+    await waitFor(() => expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("proj_beta"));
+    await router.navigate({ to: "/work" });
+    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All projects"));
+    expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("proj_beta");
+    await router.navigate({ to: "/chat" });
+    await screen.findByLabelText("Message");
+    expect(screen.getByTestId("hero-headline").textContent).toContain("beta");
+    await router.navigate({ to: "/chat/p/$projectId", params: { projectId: "proj_beta" } });
+    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("beta"));
+    fireEvent.click(screen.getByLabelText("Filter threads by project"));
+    fireEvent.click(await screen.findByRole("option", { name: "All projects" }));
+    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All projects"));
+    expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("proj_beta");
+    const composer = screen.getByLabelText<HTMLElement>("Message");
+    await setComposerText(composer, "Chat after All projects");
+    expect(screen.getByLabelText<HTMLButtonElement>("Send message").disabled).toBe(false);
+    expect(screen.getByTestId("hero-headline").textContent).toContain("beta");
+  });
+
+  it.each([
+    ["proj_alpha", "alpha", false],
+    ["proj_readonly", "readonly", true],
+  ])("keeps the explicit chat project %s", async (projectId, projectName, readOnly) => {
+    await mountApp({ path: `/chat/p/${projectId}`, storedProject: "proj_beta" });
+    const composer = await screen.findByLabelText<HTMLElement>("Message");
+    expect(screen.getByTestId("hero-headline").textContent).toContain(projectName);
+    await setComposerText(composer, "Use the explicit project");
+    if (readOnly) {
+      expect(screen.getByText("Read-only project")).toBeTruthy();
+      expect(screen.queryByLabelText("Send message")).toBeNull();
+    } else {
+      expect(screen.getByLabelText<HTMLButtonElement>("Send message").disabled).toBe(false);
+    }
+  });
+
   it.each([false, true])("switches the footer workspace through the authenticated owner (shared entry: %s)", async (shared) => {
     const assign = vi.fn();
     vi.stubGlobal("location", { assign, pathname: "/work", search: "", hash: "" });
