@@ -1421,7 +1421,13 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 	}{
 		{name: "held publication reconciles lost create through new Runner lease", publication: "lost_create", rework: true, formal: true},
 		{name: "held publication reconciles lost push through new Runner lease", publication: "lost_push", rework: true, formal: true},
-		{name: "held publication preserves validator review identity on new Runner lease", publication: "lost_create", rework: true, formal: true, validator: "pass"},
+		{name: "held publication requires validator session authority on new Runner lease", publication: "lost_create", rework: true, formal: true, validator: "pass"},
+		{name: "confirmed publication retries pending validator on unchanged source", publication: "confirmed", rework: true, validator: "wait"},
+		{name: "confirmed publication retries validator rework after prerequisite repair", publication: "confirmed", rework: true, validator: "rework"},
+		{name: "confirmed publication reuses applicable passing native verdict", publication: "confirmed", rework: true, validator: "pass"},
+		{name: "confirmed publication preserves human hold during validator recovery", publication: "confirmed", rework: true, formal: true, validator: "rework"},
+		{name: "held publication refuses stale validator policy", publication: "lost_create", publicationFault: "policy", rework: true, formal: true, validator: "pass"},
+		{name: "held publication refuses stale validator head", publication: "lost_create", publicationFault: "changed_head", rework: true, formal: true, validator: "pass"},
 		{name: "held publication reconciles staged work through new Runner lease", publication: "lost_create", rework: true, formal: true, staged: true},
 		{name: "held publication refuses replaced version on new Runner lease", publication: "lost_create", publicationFault: "version", rework: true, formal: true},
 		{name: "held publication refuses foreign source admission", publication: "lost_create", publicationFault: "foreign_source", rework: true, formal: true},
@@ -1480,6 +1486,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "Rework scoped read failure releases claim before dispatch", rework: true, failDetail: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			genuinePublication := test.publication != "" && test.validator != "" && test.publicationFault == ""
 			review := "In Review"
 			states := []tracker.NativeState{
 				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
@@ -1608,7 +1615,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			}
 			var expected *tracker.ChangeDetail
 			var candidate connector.Issue
-			if test.rework {
+			if test.rework && !genuinePublication {
 				info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier})
 				if err != nil {
 					t.Fatal(err)
@@ -1853,7 +1860,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				nativeChangeGit(t, source, "config", "commit.gpgsign", "true")
 				nativeChangeGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-signer"))
 			}
-			provider := &committingAgent{dependencyOnly: test.dependencyOnly, failedCheck: test.failedCheck, commit: test.commit, dirty: test.dirty, staged: test.staged, validator: test.validator, lowScore: test.lowScore, complete: test.absorbed, hold: test.hold, inProgress: test.lateConflict}
+			provider := &committingAgent{dependencyOnly: test.dependencyOnly, failedCheck: test.failedCheck, commit: test.commit, dirty: test.dirty, staged: test.staged || genuinePublication, validator: test.validator, lowScore: test.lowScore, complete: test.absorbed, hold: test.hold, inProgress: test.lateConflict}
 			var targetHead string
 			if test.advanceTarget {
 				provider.duringTurn = func() {
@@ -1879,6 +1886,14 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				t.Cleanup(func() { _ = runtimeStore.Close() })
 			}
 			validationCommand := "true"
+			prerequisite := ""
+			if test.publication == "confirmed" {
+				validationCommand = "test -f CHANGE.md"
+				if test.validator == "rework" {
+					prerequisite = filepath.Join(t.TempDir(), "validator-ready")
+					provider.validatorCommand = "test -f '" + strings.ReplaceAll(prerequisite, "'", "'\\''") + "'"
+				}
+			}
 			if test.dependencyOnly {
 				validationCommand = `PATH="$PWD/.test-bin:$PATH" make check-fast`
 				candidate.Description = "Remove the unused direct @radix-ui/themes dependency. Required validation: frontend pnpm build, frontend pnpm check, root make check-fast."
@@ -1920,7 +1935,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					body := "[]"
 					switch request.Method {
 					case http.MethodGet:
-						if !publicationRetry && (forgeCreates > 0 || test.publication == "lost_push" && !losePush) {
+						if test.publication != "confirmed" && !publicationRetry && (forgeCreates > 0 || test.publication == "lost_push" && !losePush) {
 							return nil, fmt.Errorf("%w: forge observation unavailable after lost reply", ErrUnavailable)
 						}
 						if publicationRetry && test.publicationFault == "unavailable_forge" {
@@ -1961,7 +1976,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 							t.Fatal(err)
 						}
 						forgePull = fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/native-change"}},"base":{"ref":"main","repo":{"full_name":"example/native-change"}}}`, strings.TrimSpace(string(headOutput)), strings.TrimSpace(string(branchOutput)))
-						if forgeCreates == 1 && test.publication != "lost_push" {
+						if forgeCreates == 1 && test.publication == "lost_create" {
 							return nil, errors.New("create reply lost after forge accepted PR")
 						}
 						body = forgePull
@@ -1983,11 +1998,64 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			result, err := agent.Run(runCtx, runner.RunRequest{Execution: runExecution, DeferExecutionFinish: test.failVersion, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
 			if test.publication != "" {
 				owner := execution.(*nativeExecution)
+				if genuinePublication {
+					current, readErr := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), owner.change.ChangeID)
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					for _, version := range current.Versions {
+						if version.ID != current.Change.CurrentVersion {
+							continue
+						}
+						for _, check := range version.Checks {
+							if _, err := publicationCI.SubmitChangeCheck(t.Context(), tracker.NativeWorkItemID(issue.ID), current.Change.ID, version.ID, tracker.SubmitChangeCheck{Mutation: nativeMutationKey(), ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: check.CheckRunID, HeadSHA: version.HeadSHA, RunID: version.RunID, PolicyID: version.PolicyID, ConfigDigest: version.Policy.ConfigDigest, WorkflowID: check.WorkflowID, WorkflowSHA256: check.WorkflowSHA256, Source: check.Source, Conclusion: "success", CompletedAt: version.CreatedAt, Evidence: []tracker.ChangeArtifact{{Kind: "test", URI: "s3://fixture/test", SHA256: policy.Digest([]byte("test receipt")), Availability: "available"}}}}); err != nil {
+								t.Fatal(err)
+							}
+						}
+					}
+					current, readErr = h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), current.Change.ID)
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					if test.formal {
+						if _, err := h.admin.ReviewChange(t.Context(), tracker.NativeWorkItemID(issue.ID), current.Change.ID, current.Change.CurrentVersion, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "changes_requested", Body: "Preserve human hold"}); err != nil {
+							t.Fatal(err)
+						}
+						current, readErr = h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), current.Change.ID)
+						if readErr != nil {
+							t.Fatal(readErr)
+						}
+					}
+					expected = &current
+					provider.staged = false
+				}
 				wantEffect, wantState, wantCreates := "pr_create", "ambiguous", 1
 				if test.publication == "lost_push" {
 					wantEffect, wantState, wantCreates = "git_push", "pending", 0
 				}
-				if err == nil || owner.data.Handoff == nil || owner.data.Handoff.ExternalEffect != wantEffect || owner.data.Handoff.EffectState != wantState || forgeCreates != wantCreates {
+				if test.publication == "confirmed" {
+					if err != nil || owner.publication == nil || owner.data.Handoff == nil || forgeCreates != 1 || result.NativeChange == nil || result.NativeChange.Validator == nil {
+						t.Fatalf("initial confirmed publication lost native validation: change=%+v error=%v", result.NativeChange, err)
+					}
+					current, readErr := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
+					if readErr != nil || current.Change.CurrentVersion != expected.Change.CurrentVersion || result.NativeChange.Validator.Verdict != test.validator {
+						t.Fatalf("initial validator did not retain immutable source: detail=%+v error=%v", current, readErr)
+					}
+					if test.validator != "pass" && (current.Summary.Status != "needs_evidence" || result.NativeChange.Reviewed) {
+						t.Fatal("confirmed publication alone yielded readiness")
+					}
+					if prerequisite != "" {
+						commands := result.NativeChange.Validator.Commands
+						if len(commands) != 2 || commands[1].ExitCode == 0 {
+							t.Fatalf("validator rework lacks failed prerequisite command: %+v", commands)
+						}
+						if err := os.WriteFile(prerequisite, []byte("ready"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					expected = &current
+					provider.validator = "pass"
+				} else if err == nil || owner.data.Handoff == nil || owner.data.Handoff.ExternalEffect != wantEffect || owner.data.Handoff.EffectState != wantState || forgeCreates != wantCreates {
 					t.Fatalf("first Runner attempt did not preserve lost create: effect=%+v creates=%d error=%v", owner.data.Handoff, forgeCreates, err)
 				}
 				if test.staged {
@@ -1999,6 +2067,11 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				}
 				oldCheckpoint := *owner.data.Handoff
 				oldPublicationHead = oldCheckpoint.HeadSHA
+				treeOutput, readErr := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "rev-parse", "HEAD^{tree}").Output()
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				oldPublicationTree := strings.TrimSpace(string(treeOutput))
 				branchOutput, readErr := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "symbolic-ref", "--short", "HEAD").Output()
 				if readErr != nil {
 					t.Fatal(readErr)
@@ -2020,6 +2093,18 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				}
 
 				oldAttempt, oldLease := owner.data.AttemptID, owner.claim.lease
+				if genuinePublication {
+					currentIssue, readErr := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					for _, state := range []string{"Human Review", "Rework"} {
+						currentIssue, readErr = h.admin.Transition(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: state, Reason: "user_requested"})
+						if readErr != nil {
+							t.Fatal(readErr)
+						}
+					}
+				}
 				if err := h.native.Release(t.Context(), oldLease, "released"); err != nil {
 					t.Fatal(err)
 				}
@@ -2083,6 +2168,18 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				prBefore := forgePull
 				callsBefore := provider.calls
 				result, err = agent.Run(t.Context(), runner.RunRequest{Execution: &nativePublicationFixtureExecution{nativeExecution: owner, forge: forge, losePush: &losePush}, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+				result.NativeChange = owner.NativeChange()
+				if genuinePublication && test.publication != "confirmed" {
+					var refusal *APIError
+					if !errors.As(err, &refusal) || refusal.Status != http.StatusUnprocessableEntity || !strings.Contains(refusal.Message, "session separate from the implementing session") || provider.calls != callsBefore+1 || owner.publication == nil || forgeCreates != 1 {
+						t.Fatalf("publication-only retry bypassed validator session authority: calls=%d error=%v", provider.calls-callsBefore, err)
+					}
+					detail, readErr := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
+					if readErr != nil || !reflect.DeepEqual(detail.Reviews, expected.Reviews) || detail.Change.CurrentVersion != expected.Change.CurrentVersion || detail.Summary.Status == "reviewed" {
+						t.Fatalf("publication-only retry manufactured validator readiness: detail=%+v error=%v", detail, readErr)
+					}
+					return
+				}
 				if test.publicationFault != "" {
 					if err == nil && (result.NativeChange == nil || result.NativeChange.VersionError == "" && result.NativeChange.Error == "") || owner.publication != nil || forgeCreates != wantCreates || forgePull != prBefore || provider.calls != callsBefore {
 						t.Fatalf("unresolved publication was accepted or rewrote forge/source: fault=%s creates=%d publication=%v provider_calls=%d error=%v", test.publicationFault, forgeCreates, owner.publication != nil, provider.calls-callsBefore, err)
@@ -2091,8 +2188,20 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					if readErr != nil || string(remoteBefore) != string(remoteAfter) {
 						t.Fatal("refused reconciliation modified bare remote")
 					}
-				} else if provider.calls != callsBefore {
-					t.Fatal("publication-only reconciliation invoked another provider turn")
+				} else {
+					wantCalls := callsBefore
+					if test.publication == "confirmed" {
+						wantCalls++
+					}
+					if test.validator != "" && expected.Summary.Status != "reviewed" {
+						wantCalls++
+						if result.NativeChange == nil || result.NativeChange.Validator == nil || result.NativeChange.Validator.Verdict != "pass" {
+							t.Fatalf("publication recovery skipped the pending native validator: change=%+v error=%v", result.NativeChange, err)
+						}
+					}
+					if provider.calls != wantCalls {
+						t.Fatalf("publication recovery provider calls = %d, want %d", provider.calls, wantCalls)
+					}
 				}
 
 				if test.publicationFault == "" && (err != nil || result.NativeChange == nil || owner.publication == nil || forgeCreates != 1) {
@@ -2109,6 +2218,27 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				}
 				for i := range detail.Versions {
 					detail.Versions[i].External = nil
+					expected.Versions[i].External = nil
+				}
+				if test.validator != "" && test.publicationFault == "" && expected.Summary.Status != "reviewed" {
+					if len(detail.Reviews) != len(expected.Reviews)+1 || detail.Reviews[len(detail.Reviews)-1].Validator == nil || detail.Reviews[len(detail.Reviews)-1].VersionID != expected.Change.CurrentVersion {
+						t.Fatal("publication recovery lost the fresh current-version validator decision")
+					}
+					verdict := detail.Reviews[len(detail.Reviews)-1].Validator
+					if verdict.HeadSHA != oldPublicationHead || verdict.VersionID != expected.Change.CurrentVersion {
+						t.Fatal("validator recovery reused stale source or provider identity")
+					}
+					for _, previous := range expected.Reviews {
+						if previous.Validator != nil && previous.Validator.SessionID == verdict.SessionID {
+							t.Fatal("validator recovery reused a previous validator session")
+						}
+					}
+					for _, command := range verdict.Commands {
+						if command.ExitCode != 0 || command.HeadSHA != oldPublicationHead || command.TreeSHA != oldPublicationTree {
+							t.Fatalf("repaired validation lacks actual current source evidence: %+v", command)
+						}
+					}
+					detail.Reviews = detail.Reviews[:len(expected.Reviews)]
 				}
 				if detail.Change.CurrentVersion != expected.Change.CurrentVersion || !reflect.DeepEqual(detail.Versions, expected.Versions) || !reflect.DeepEqual(detail.Reviews, expected.Reviews) || !reflect.DeepEqual(detail.Checks, expected.Checks) || detail.Change.Landed != nil {
 					t.Fatal("held retry changed version, reviews, checks or landing identity")
@@ -2124,7 +2254,11 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatal("reconciled PR absent from existing issue/PR reads")
 				}
 				target, err := execution.(runner.LandingExecution).LandingTarget(t.Context())
-				if !errors.Is(err, runner.ErrLandingNotReviewed) || target.External == nil || target.External.URL != visible.Change.URL {
+				if !test.formal && test.publication == "confirmed" {
+					if err != nil || !result.NativeChange.Reviewed || target.VersionID != expected.Change.CurrentVersion {
+						t.Fatalf("fresh applicable native decision did not establish readiness: target=%+v error=%v", target, err)
+					}
+				} else if !errors.Is(err, runner.ErrLandingNotReviewed) || target.External == nil || target.External.URL != visible.Change.URL {
 					t.Fatal("publication cleared human hold or lost landing PR identity")
 				}
 				return
@@ -2665,25 +2799,36 @@ func nativeDiffHas(files []tracker.AttemptDiffFile, path string) bool {
 // committingAgent is a fake provider: it completes one turn, committing a
 // file in the worktree first when commit is set.
 type committingAgent struct {
-	dependencyOnly bool
-	failedCheck    bool
-	complete       bool
-	inProgress     bool
-	hold           bool
-	lowScore       bool
-	validator      string
-	commit         bool
-	dirty          bool
-	staged         bool
-	prompt         string
-	workspace      string
-	calls          int
-	bound          bool
-	duringTurn     func()
-	afterTurn      func()
+	validatorCommand string
+	dependencyOnly   bool
+	failedCheck      bool
+	complete         bool
+	inProgress       bool
+	hold             bool
+	lowScore         bool
+	validator        string
+	commit           bool
+	dirty            bool
+	staged           bool
+	prompt           string
+	workspace        string
+	calls            int
+	bound            bool
+	duringTurn       func()
+	afterTurn        func()
 }
 
 func (a *committingAgent) RunTurnWithTools(ctx context.Context, request runner.AgentTurnRequest, tools []runner.AgentTool, handler runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if a.validatorCommand != "" && strings.Contains(request.Prompt, "Detent validator-agent") {
+		arguments, err := json.Marshal(map[string]string{"command": a.validatorCommand})
+		if err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+		result, err := handler(ctx, runner.AgentToolCall{Name: "detent_run_validation", Arguments: arguments})
+		if err != nil || strings.Contains(result.Content, `"exit_code":0`) != (a.validator == "pass") {
+			return runner.AgentTurnResult{}, errors.Join(fmt.Errorf("unexpected prerequisite evidence: %+v", result), err)
+		}
+	}
 	if a.dependencyOnly && strings.Contains(request.Prompt, "Detent validator-agent") {
 		if !request.ReadOnly || !request.SupplementalTools || !strings.Contains(request.Prompt, "make check-fast passed") {
 			return runner.AgentTurnResult{}, errors.New("native review lacks configured command evidence")
