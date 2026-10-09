@@ -49,10 +49,27 @@ func (w *completedExecutionWorkspace) DiffStat(ctx context.Context, info workspa
 }
 
 type finalizingTestExecution struct {
+	providerCompletedAt        time.Time
+	operation                  string
+	operationPending           bool
+	operationError             error
+	operationProviderCompleted bool
 	artifactExecutionProbe
 	published   bool
 	validation  *gate.CommandResult
 	disposition *tracker.NativeDisposition
+}
+
+func (e *finalizingTestExecution) ProviderCompleted(at time.Time) {
+	if e.providerCompletedAt.IsZero() {
+		e.providerCompletedAt = at
+	}
+}
+func (e *finalizingTestExecution) HostOperation(operation string, _ time.Time, err error, pending bool) {
+	e.operation = operation
+	e.operationPending = pending
+	e.operationError = err
+	e.operationProviderCompleted = !e.providerCompletedAt.IsZero()
 }
 
 func (e *finalizingTestExecution) RecordSourceValidation(ctx context.Context, result gate.CommandResult) error {
@@ -184,6 +201,12 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 					t.Fatal(err)
 				}
 				completion := supervisor.Run(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModeImplement})
+				if execution.providerCompletedAt.IsZero() {
+					t.Fatal("provider completion was not recorded before finalization")
+				}
+				if backend.finalized && (!execution.operationProviderCompleted || execution.operation != "workspace.finalize_native_work") {
+					t.Fatal("host finalization preceded provider completion observation")
+				}
 				failed := test.revoked || test.validationTimeout || test.gateFailure && !test.blocked
 				if (completion.Err != nil) != failed || execution.published != (!failed && !test.blocked) || backend.retained != failed || agent.calls != 1 {
 					t.Fatalf("error=%v published=%t retained=%t turns=%d", completion.Err, execution.published, backend.retained, agent.calls)

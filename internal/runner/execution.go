@@ -46,6 +46,11 @@ type SourceValidationExecution interface {
 	RecordSourceValidation(context.Context, gate.CommandResult) error
 }
 
+type HostDiagnosticsExecution interface {
+	ProviderCompleted(time.Time)
+	HostOperation(string, time.Time, error, bool)
+}
+
 type RuntimeExecution interface {
 	ObserveRuntime(context.Context, tracker.NativeRuntimeObservation) error
 }
@@ -232,6 +237,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	result, runErr := r.run(guarded, req)
+	if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok && result.TurnStarted {
+		diagnostics.ProviderCompleted(r.now())
+	}
 	outcome := "succeeded"
 	if runErr != nil || result.FinalState != FinalStateCompleted {
 		outcome = "failed"
@@ -390,7 +398,13 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 			if err := req.Execution.Validate(ctx); err != nil {
 				finalizationErr = err
 			} else {
+				if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok {
+					diagnostics.HostOperation("workspace.finalize_native_work", r.now(), nil, true)
+				}
 				base, err := finalizer.FinalizeNativeWork(ctx, info, issue, req.Execution.Validate)
+				if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok {
+					diagnostics.HostOperation("workspace.finalize_native_work", r.now(), err, err != nil)
+				}
 				if err != nil {
 					finalizationErr = nativeGitError("finalize native work", err)
 				} else if base != "" {

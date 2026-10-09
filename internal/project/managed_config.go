@@ -9,6 +9,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -350,12 +351,14 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 		view.Constraint = "The selected local configuration cannot be read or validated."
 		return view
 	}
+	var diagnosticState orchestrator.State
 	if orch := p.Orchestrator(); orch != nil && p.Running() {
 		state, err := orch.State(ctx)
 		if err != nil {
 			view.Constraint = "The selected runtime work state is unavailable."
 			return view
 		}
+		diagnosticState = state
 		view.Draining, view.UnsettledAttempts = state.Draining, state.UnsettledWork()
 		view.LocalIntakeEnabled = state.LocalIntake.Enabled
 		view.LocalIntakeRemaining = state.LocalIntake.Remaining
@@ -369,6 +372,10 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 	if err != nil {
 		view.Constraint = "The durable local attempt handoff could not be read."
 		return view
+	}
+	view.Diagnostics = diagnosticState.ProjectDiagnostics(attempts, time.Now().UTC())
+	if !p.Running() {
+		view.Diagnostics.Unavailable["runtime"] = "stopped"
 	}
 	view.UnsettledAttempts = max(view.UnsettledAttempts, len(attempts))
 	return view

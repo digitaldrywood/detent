@@ -82,6 +82,9 @@ func exerciseNativeExecution(t *testing.T, scheduler *Scheduler, native *NativeC
 		{"finish", func() error { return execution.Finish(guarded, "succeeded") }},
 	} {
 		t.Run("lost "+test.name+" acknowledgment", func(t *testing.T) {
+			if test.name == "finish" {
+				execution.(*nativeExecution).ProviderCompleted(scheduler.now())
+			}
 			transport.drop.Store(true)
 			err := test.operation()
 			if test.name == "checkpoint" {
@@ -90,6 +93,17 @@ func exerciseNativeExecution(t *testing.T, scheduler *Scheduler, native *NativeC
 				}
 			} else if err == nil {
 				t.Fatal("acknowledgment loss was not injected")
+			}
+			if test.name == "finish" {
+				owner := execution.(*nativeExecution)
+				pending, sequence := owner.pending, owner.data.Sequence
+				claims := scheduler.projectDiagnosticClaims(owner.claim.source)
+				if len(claims) != 1 || claims[0].HostOperation != "append.run.finished" || !claims[0].OperationPending || claims[0].ProviderCompletedAt.IsZero() || claims[0].LatestError == "" {
+					t.Fatalf("completion diagnostic=%+v", claims)
+				}
+				if owner.pending != pending || owner.data.Sequence != sequence {
+					t.Fatal("diagnostic advanced completion")
+				}
 			}
 			if err := test.operation(); err != nil {
 				t.Fatal(err)

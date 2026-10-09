@@ -191,6 +191,7 @@ type SchedulingRequest struct {
 	CandidateKnownWait      func(connector.Issue) bool
 	CandidateAdmitted       func(connector.Issue)
 	CandidateAdmission      func(connector.Issue) (func(), bool)
+	CandidateClaimObserved  func(context.Context, connector.Issue, bool, string, *providercapacity.Requirement)
 	CandidateLimit          int
 	AdmissionLimit          int
 	ProviderRequirement     func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error)

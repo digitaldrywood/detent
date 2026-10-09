@@ -706,7 +706,15 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 			if o.now != nil {
 				now = o.now()
 			}
-			return !o.localIntakeAllows(state, issue) || knownDispatchWait(issue, state, dueRetriesByIssue(state, now), o.cfg.TerminalStates)
+			if !o.localIntakeAllows(state, issue) {
+				o.recordLocalAdmission(ctx, state, issue, now, false, dispatchSkipBlocked, "local_intake_disabled", nil)
+				return true
+			}
+			if reason := knownDispatchWaitReason(issue, state, dueRetriesByIssue(state, now), o.cfg.TerminalStates); reason != "" {
+				o.recordLocalAdmission(ctx, state, issue, now, false, reason, reason, nil)
+				return true
+			}
+			return false
 		}
 		var admitted []connector.Issue
 		request.CandidateAdmitted = func(issue connector.Issue) {
@@ -720,17 +728,30 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 			o.dispatchStartMu.Lock()
 			if !o.localIntakeAllows(state, issue) {
 				o.dispatchStartMu.Unlock()
+				o.recordLocalAdmission(ctx, state, issue, time.Now(), false, dispatchSkipBlocked, "local_intake_disabled", nil)
 				return nil, false
 			}
 			return o.dispatchStartMu.Unlock, true
 		}
-		request.CandidateReady = func(ctx context.Context, issue connector.Issue) bool {
-			if !o.localIntakeAllows(state, issue) {
-				return false
-			}
+		request.CandidateClaimObserved = func(ctx context.Context, issue connector.Issue, allowed bool, predicate string, requirement *providercapacity.Requirement) {
 			now := time.Now()
 			if o.now != nil {
 				now = o.now()
+			}
+			o.recordLocalAdmission(ctx, state, issue, now, allowed, "", predicate, requirement)
+		}
+		request.CandidateReady = func(ctx context.Context, issue connector.Issue) (ready bool) {
+			now := time.Now()
+			if o.now != nil {
+				now = o.now()
+			}
+			var observedReason, observedPredicate string
+			defer func() {
+				o.recordLocalAdmission(ctx, state, issue, now, ready, observedReason, observedPredicate, nil)
+			}()
+			if !o.localIntakeAllows(state, issue) {
+				observedReason, observedPredicate = dispatchSkipBlocked, "local_intake_disabled"
+				return false
 			}
 			if o.issueContractApplies(issue) && strings.EqualFold(issue.State, firstNonBlank(o.cfg.AdmissionTargetState, "Todo")) {
 				allowed, err := o.enforceIssueContract(ctx, state, issue, issue.State, now)
@@ -738,11 +759,13 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 					o.logger.Warn("issue contract placement failed", "issue_id", issue.ID, "error", err)
 				}
 				if err != nil || !allowed {
+					observedReason, observedPredicate = dispatchSkipBlocked, "issue_contract"
 					return false
 				}
 			}
 
 			if state.MemoryPressure.DispatchHeld || state.IOPressure.DispatchHeld || state.CPUPressure.DispatchHeld {
+				observedReason, observedPredicate = dispatchSkipLocalSlotUnavailable, "host_pressure"
 				// The dispatch stage would refuse this candidate under the host
 				// pressure hold, so a Hub lease taken now would only be released
 				// again this tick.
@@ -768,17 +791,31 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 			}
 			if retry, ok := preview.Retry[issue.ID]; ok {
 				if retry.DueAt.After(now) {
+					observedReason, observedPredicate = dispatchSkipRetryPending, "retry_not_due"
 					return false
 				}
-				_, ready, _ := planner.retryAction(&preview, issue, retry, now)
+				_, ready, reason := planner.retryAction(&preview, issue, retry, now)
+				observedReason, observedPredicate = reason, reason
 				return ready
 			}
-			return planner.dispatchable(issue, &preview, now)
+			decision := planner.dispatchableIssueDecision(issue, &preview, false, now, "")
+			observedReason, observedPredicate = decision.reason, decision.reason
+			return decision.dispatchable
 		}
 
 		if resolver := o.providerCapacity; resolver != nil {
 			request.ProviderRequirement = func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
-				return resolver.DispatchCapacity(ctx, runpkg.RunRequest{Issue: issue, Mode: o.dispatchMode(ctx, state, issue), SelectorContext: o.selectorContext(), ProviderReports: reports})
+				requirement, err := resolver.DispatchCapacity(ctx, runpkg.RunRequest{Issue: issue, Mode: o.dispatchMode(ctx, state, issue), SelectorContext: o.selectorContext(), ProviderReports: reports})
+				predicate := "provider_requirement_resolved"
+				if err != nil {
+					predicate = "provider_requirement_refused"
+				}
+				var observed *providercapacity.Requirement
+				if err == nil {
+					observed = &requirement
+				}
+				o.recordLocalAdmission(ctx, state, issue, time.Now(), err == nil, dispatchSkipBlocked, predicate, observed)
+				return requirement, err
 			}
 		}
 		return o.scheduling.FetchCandidateIssues(ctx, request)

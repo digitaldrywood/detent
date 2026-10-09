@@ -17,6 +17,36 @@ Cloud members get one scoped key for direct API and MCP access from
 private credential handling, agent prompts and the browser approval contract.
 Cloud keys do not authorize compatibility, worker, runner or instance-admin routes.
 
+## Runner project diagnostics
+
+`GET /api/v2/organizations/{organization}/projects/{project}/runner-diagnostics`
+and the `runner_project_diagnostics` operator/worker MCP tool read the same
+project-scoped service. Optional selectors are `runner_id`, `issue_id`,
+`attempt_id`, `cursor` and `limit` (1–100). Select a runner when multiple enrolled
+owners report the project. The cursor belongs to one observation; restart paging
+when a newer heartbeat replaces it.
+
+The existing project-configuration heartbeat carries at most 256 reconciled
+attempt records and 256 latest issue admission observations. `truncated` describes
+that source bound; `next_cursor` describes page continuation. Counts retain the
+runtime unsettled count and separate Running, Claimed, deferred, durable-active
+and native-claim memberships. Local attempt IDs establish attempt deduplication;
+claim-only issue identities do not establish an attempt relationship.
+
+Provider completion is recorded before host finalization. Pending host operations,
+redacted error classifications, deferred retry timing and lease renewal are separate
+fields. Admission predicates describe recorded callback/planner decisions and their
+observation times, never a new diagnostic evaluation. Unknown error text is omitted
+in full, including customer content, URLs, paths and credentials. The read neither
+renews nor releases a lease, retries completion, nor changes scheduler/tracker state.
+
+Responses preserve runner and runtime observation times, Hub receipt time, current
+running build evidence and field-level unavailability. Historical update receipts
+never supply the running build. Offline, stale and older-runner observations remain
+explicit; an unreported decision is not an observed refusal. The normal release
+owner deploys the supported service and reporting runner builds before live
+operator acceptance. This API does not install a build or recover an attempt.
+
 ## Work view preferences
 
 Hosted sessions expose `GET`, `PUT`, and `DELETE` at

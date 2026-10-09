@@ -89,6 +89,12 @@ credentials or private configuration values. A Cloud project, runner source
 association and the runner's local project registration remain separate
 authorities.
 
+`runner_project_diagnostics` reads bounded project/runner runtime and durable
+identities, pending host completion operations and recorded local admission
+predicates. It supports issue/attempt filters and observation-bound cursors;
+stale, offline, older-runner and unrecorded fields remain explicit. The same
+scoped service is available to enrolled workers and account operators.
+
 `apply_local_project_policy`, `resume_local_project`, `drain_local_project` and
 `detach_local_project` require current admin scope for the exact project, current application authority,
 `request_id`, `expected_config_revision` and `expected_policy_id`. They reuse

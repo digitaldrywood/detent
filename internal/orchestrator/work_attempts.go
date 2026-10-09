@@ -873,6 +873,7 @@ func telemetrySchedulerDecision(decision store.SchedulerDecision) telemetry.Sche
 		IssueURL:               decision.IssueURL,
 		PRNumber:               cloneInt64Pointer(decision.PRNumber),
 		Repo:                   decision.Repo,
+		RunnerAdmissionJSON:    decision.MetadataJSON,
 		Lane:                   decision.Lane,
 		QueuePosition:          decision.QueuePosition,
 		Result:                 string(decision.Result),

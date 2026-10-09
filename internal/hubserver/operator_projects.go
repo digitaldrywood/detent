@@ -112,6 +112,9 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 				e.AuditAction(ctx, chatpkg.Action{Mutation: metadata}, outcome)
 			}()
 		}
+		if call.Name == operatortool.RunnerProjectDiagnostics {
+			return e.runnerProjectDiagnostics(ctx, r)
+		}
 		return e.localProjectConfiguration(ctx, call.Name, r)
 	}
 	if d.Meta.Toolset != "projects" {

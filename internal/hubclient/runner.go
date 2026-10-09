@@ -241,6 +241,15 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 			machine.ProjectConfiguration = nil
 		}
 	}
+	if machine.ProjectConfiguration != nil && machine.ProjectConfiguration.Diagnostics != nil {
+		supported, err := c.HubFeature(ctx, tracker.NativeProjectDiagnosticsCapability)
+		if err != nil {
+			return err
+		}
+		if !supported {
+			machine.ProjectConfiguration.Diagnostics = nil
+		}
+	}
 	if machine.Update != nil {
 		supported, err := c.HubFeature(ctx, tracker.NativeRunnerUpdateCapability)
 		if err != nil {

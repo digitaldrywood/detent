@@ -78,6 +78,7 @@ func definition(name string, description string, schema string) Definition {
 
 func LocalProjectCatalog() []Definition {
 	result := []Definition{
+		definition(RunnerProjectDiagnostics, "Read bounded runner/project attempt identities and observed local admission decisions through the existing runtime and durable owners. Select runner_id when multiple runners report; issue_id or attempt_id narrows records. Lease renewal is not provider activity. Stale, offline, older-runner and unrecorded fields remain explicit. This read performs no recovery or retry.", localProjectSchema(RunnerProjectDiagnostics)),
 		definition(LocalProjectConfiguration, "Read the selected configuration revision, effective localhost permission and complete policy candidates through the local or enrolled runner owner. policy_mismatch means selected_policy differs from effective_policy. Pass the entire selected_policy object unchanged as approve_project_policy input.policy; omitted fields can invalidate its identity. Provenance is redacted; a stopped owner is explicit.", localProjectSchema(LocalProjectConfiguration)),
 		definition("apply_local_project_policy", "Apply an approved exact policy to a settled project through its configuration owner, restoring its prior running, paused or draining state. The optional existing allow_local_binding setting includes other localhost services. Cloud requires runner_id and expected_runner_revision. Requires current administrator authority.", localProjectSchema("apply_local_project_policy")),
 		definition("resume_local_project", "Resume the selected paused project through its existing configuration owner. Cloud requires runner_id and expected_runner_revision. Requires current administrator scope and runner administration (manage_runner).", localProjectSchema("resume_local_project")),
@@ -86,7 +87,7 @@ func LocalProjectCatalog() []Definition {
 	}
 	for i := range result {
 		result[i].Meta = ToolMetadata{Toolset: "local_projects"}
-		if result[i].Name != LocalProjectConfiguration {
+		if result[i].Name != LocalProjectConfiguration && result[i].Name != RunnerProjectDiagnostics {
 			result[i].Annotations = Annotations{Destructive: true, Idempotent: true, OpenWorld: true}
 		}
 	}

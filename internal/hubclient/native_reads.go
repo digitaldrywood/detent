@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -98,6 +99,7 @@ func (e *nativeExecution) AgentTools() ([]runner.AgentTool, runner.AgentToolHand
 	var tools []runner.AgentTool
 	definitions := append(operatortool.WorkReadCatalog(), operatortool.ChangeCatalog()...)
 	definitions = append(definitions, operatortool.AttachmentCatalog()...)
+	definitions = append(definitions, operatortool.LocalProjectCatalog()...)
 	for _, definition := range definitions {
 		switch definition.Name {
 		case operatortool.WorkList:
@@ -114,12 +116,19 @@ func (e *nativeExecution) AgentTools() ([]runner.AgentTool, runner.AgentToolHand
 			}
 			definition.Description += " reference must be a canonical native work-item ID beginning with wi_; numbers, titles and URLs are not supported. Use cursor, not offset, for paging."
 			tools = append(tools, runner.AgentTool{Name: definition.Name, Description: definition.Description, InputSchema: definition.InputSchema})
-		case operatortool.ListChanges, operatortool.GetChange, operatortool.ReadAttachmentMetadata, operatortool.ReadAttachment:
+		case operatortool.RunnerProjectDiagnostics, operatortool.ListChanges, operatortool.GetChange, operatortool.ReadAttachmentMetadata, operatortool.ReadAttachment:
 			tools = append(tools, runner.AgentTool{Name: definition.Name, Description: definition.Description, InputSchema: definition.InputSchema})
 		}
 	}
 	tools = append(tools, evidenceTool())
 	return tools, func(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
+		if call.Name == operatortool.RunnerProjectDiagnostics {
+			result, err := e.claim.source.client.readAgentTool(ctx, call, e.scheduler.now())
+			if err != nil {
+				return runner.AgentToolResult{}, err
+			}
+			return runner.AgentToolResult{Content: string(result.Content), Success: true}, nil
+		}
 		if err := e.Validate(ctx); err != nil {
 			return runner.AgentToolResult{Content: "Native execution authority is unavailable"}, err
 		}
@@ -138,6 +147,33 @@ func (c *NativeClient) readAgentTool(ctx context.Context, call runner.AgentToolC
 	var value any
 	var err error
 	switch call.Name {
+	case operatortool.RunnerProjectDiagnostics:
+		request, decodeErr := operatortool.DecodeLocalProjectArguments(call.Name, call.Arguments, true)
+		if decodeErr != nil {
+			return operatortool.Result{}, decodeErr
+		}
+		if request.ProjectID != string(c.project) {
+			return operatortool.Result{}, operatortool.ErrAccessDenied
+		}
+		supported, featureErr := c.HubFeature(ctx, tracker.NativeProjectDiagnosticsCapability)
+		if featureErr != nil {
+			return operatortool.Result{}, featureErr
+		}
+		page, pageErr := (*runnerauth.ProjectDiagnostics)(nil).Page(request.ProjectID, request.RunnerID, request.IssueID, request.AttemptID, request.Cursor, request.Limit, now)
+		if pageErr != nil {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+		if !supported {
+			page.Unavailable["service"] = "older_hub"
+			value = page
+			break
+		}
+		params := url.Values{"runner_id": {request.RunnerID}, "issue_id": {request.IssueID}, "attempt_id": {request.AttemptID}, "cursor": {request.Cursor}}
+		if request.Limit > 0 {
+			params.Set("limit", strconv.Itoa(request.Limit))
+		}
+		err = c.client.request(ctx, http.MethodGet, c.base()+"/runner-diagnostics?"+params.Encode(), nil, &page)
+		value = page
 	case operatortool.WorkList:
 		request, decodeErr := operatortool.DecodeWorkRead(call.Name, call.Arguments)
 		if decodeErr != nil {

@@ -120,6 +120,9 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		}
 		if supported {
 			view := projectOwner(ctx, string(project), nil)
+			if err := s.enrichProjectDiagnostics(ctx, source, &view, update); err != nil {
+				return err
+			}
 			projectConfig = &view
 		}
 	}
@@ -230,6 +233,9 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	if projectConfig != nil {
 		if request := s.client.runner.projectConfigurationRequest(); request != nil && request.ProjectID == string(project) && request.RequestID != projectConfig.RequestID {
 			view := projectOwner(ctx, string(project), request)
+			if err := s.enrichProjectDiagnostics(ctx, source, &view, update); err != nil {
+				return err
+			}
 			machine.ProjectConfiguration = &view
 			if err := source.client.HeartbeatMachine(ctx, machine); err != nil {
 				return err
