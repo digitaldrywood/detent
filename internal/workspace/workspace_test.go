@@ -1236,6 +1236,41 @@ func TestRunGitAtWithEnvCancellationReturnsPromptly(t *testing.T) {
 	}
 }
 
+type hookCancellationContext struct {
+	value func(any) any
+	done  chan struct{}
+	once  sync.Once
+	err   error
+}
+
+func (ctx *hookCancellationContext) Deadline() (time.Time, bool) {
+	return time.Time{}, false
+}
+
+func (ctx *hookCancellationContext) Value(key any) any {
+	return ctx.value(key)
+}
+
+func (ctx *hookCancellationContext) Done() <-chan struct{} {
+	return ctx.done
+}
+
+func (ctx *hookCancellationContext) Err() error {
+	select {
+	case <-ctx.done:
+		return ctx.err
+	default:
+		return nil
+	}
+}
+
+func (ctx *hookCancellationContext) cancel(err error) {
+	ctx.once.Do(func() {
+		ctx.err = err
+		close(ctx.done)
+	})
+}
+
 func TestHookCancellationReapsDescendants(t *testing.T) {
 	if testing.Short() {
 		t.Skip("process lifecycle integration")
@@ -1270,15 +1305,27 @@ func TestHookCancellationReapsDescendants(t *testing.T) {
 					if resist {
 						trap = "trap '' TERM; "
 					}
+					slowStartup := kind == KindFilesystem && timeout && !resist
+					startup := ""
+					var startupControl *os.File
+					if slowStartup {
+						controlPath := filepath.Join(workspacePath, "startup.control")
+						runCommand(t, workspacePath, "mkfifo", controlPath)
+						startupControl, err = os.OpenFile(controlPath, os.O_RDWR, 0)
+						if err != nil {
+							t.Fatal(err)
+						}
+						t.Cleanup(func() { _ = startupControl.Close() })
+						startup = ": > startup.started; read -r start < startup.control; "
+					}
 					grandchild := trap + "echo $$ > grandchild.pid; printf 'hook stdout\n'; printf 'hook stderr\n' >&2; : > grandchild.ready; " +
 						"while [ ! -f release ]; do sleep 0.02; done; " +
 						"printf late > completed; printf late > " + shellQuote(filepath.Join(workspacePath, "completed"))
 					child := trap + "echo $$ > child.pid; sh -c " + shellQuote(grandchild) + "; wait"
-					command := trap + "echo $$ > shell.pid; sh -c " + shellQuote(child) + "; wait"
-					hooks := Hooks{Timeout: time.Minute}
+					command := trap + "echo $$ > shell.pid; " + startup + "sh -c " + shellQuote(child) + "; wait"
+					hooks := Hooks{Timeout: testenv.SubprocessWaitTimeout}
 					wantErr := context.Canceled
 					if timeout {
-						hooks.Timeout = time.Second
 						wantErr = context.DeadlineExceeded
 					}
 					logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -1286,17 +1333,43 @@ func TestHookCancellationReapsDescendants(t *testing.T) {
 					if kind == KindFilesystem {
 						run = (&Filesystem{root: root, hooks: hooks, logger: logger}).runHook
 					}
-					ctx, cancel := context.WithCancel(t.Context())
-					t.Cleanup(cancel)
+					ctx := &hookCancellationContext{value: context.WithoutCancel(t.Context()).Value, done: make(chan struct{})}
 					done := make(chan error, 1)
+					joined := make(chan struct{})
+					t.Cleanup(func() {
+						ctx.cancel(context.Canceled)
+						select {
+						case <-joined:
+						case <-time.After(testenv.SubprocessWaitTimeout):
+							t.Error("hook fixture did not join during cleanup")
+						}
+					})
 					go func() {
+						defer close(joined)
 						done <- run(ctx, "before_run", command, Info{Path: workspacePath, Key: "DD-HOOK"}, Issue{Identifier: "DD-HOOK"})
 					}()
-					waitForFile(t, filepath.Join(workspacePath, "grandchild.ready"), 10*time.Second)
+					if slowStartup {
+						waitForFile(t, filepath.Join(workspacePath, "startup.started"), testenv.SubprocessWaitTimeout)
+						startupCtx, stop := context.WithTimeout(t.Context(), time.Second)
+						defer stop()
+						<-startupCtx.Done()
+						if _, err := os.Stat(filepath.Join(workspacePath, "grandchild.ready")); !errors.Is(err, os.ErrNotExist) {
+							t.Fatalf("readiness before startup release: %v", err)
+						}
+						select {
+						case err := <-done:
+							t.Fatalf("hook returned before startup release: %v", err)
+						default:
+						}
+						if _, err := startupControl.WriteString("start\n"); err != nil {
+							t.Fatal(err)
+						}
+					}
+					waitForFile(t, filepath.Join(workspacePath, "grandchild.ready"), testenv.SubprocessWaitTimeout)
 					identities := make([]procgroup.Identity, 0, 3)
 					for _, role := range []string{"shell", "child", "grandchild"} {
 						pidPath := filepath.Join(workspacePath, role+".pid")
-						waitForFile(t, pidPath, 10*time.Second)
+						waitForFile(t, pidPath, testenv.SubprocessWaitTimeout)
 						pid, err := strconv.Atoi(strings.TrimSpace(readFile(t, pidPath)))
 						if err != nil {
 							t.Fatal(err)
@@ -1313,10 +1386,18 @@ func TestHookCancellationReapsDescendants(t *testing.T) {
 						identities = append(identities, identity)
 					}
 					started := time.Now()
-					if !timeout {
-						cancel()
+					if timeout {
+						timeoutCtx, stop := context.WithTimeout(t.Context(), time.Second)
+						defer stop()
+						stopCancellation := context.AfterFunc(timeoutCtx, func() { ctx.cancel(timeoutCtx.Err()) })
+						t.Cleanup(func() { stopCancellation() })
+					} else {
+						ctx.cancel(context.Canceled)
 					}
 					err = waitForError(t, done, 5*time.Second)
+					if timeout && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+						t.Fatalf("readiness-armed timeout did not fire: %v", ctx.Err())
+					}
 					if elapsed := time.Since(started); elapsed > 3*time.Second {
 						t.Fatalf("hook shutdown took %s", elapsed)
 					}
