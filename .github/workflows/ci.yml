@@ -13,6 +13,7 @@ on:
         options: [none, verify-fast]
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -32,12 +33,27 @@ jobs:
           fetch-depth: 0
       - id: scope
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           develop_sha="$(git ls-remote origin refs/heads/develop | cut -f1)"
           test -n "$develop_sha"
           echo "develop_sha=$develop_sha" >> "$GITHUB_OUTPUT"
-          echo should_run=true >> "$GITHUB_OUTPUT"
+          echo "Develop SHA: $develop_sha"
+          should_run=true
+          if [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
+            completed_run_count="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=schedule&status=completed&head_sha=$develop_sha&per_page=1" --jq .total_count)"
+            if (( completed_run_count > 0 )); then
+              should_run=false
+              echo "Preflight decision: skip; found $completed_run_count completed scheduled CI run(s) for $develop_sha"
+            else
+              echo "Preflight decision: run; no completed scheduled CI run exists for $develop_sha"
+            fi
+          else
+            echo "Preflight decision: run; workflow_dispatch always runs the full suite"
+          fi
+          echo "should_run=$should_run" >> "$GITHUB_OUTPUT"
 
   invariants:
     needs: preflight

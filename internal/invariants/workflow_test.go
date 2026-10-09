@@ -14,8 +14,9 @@ import (
 
 func checkWorkflow(data []byte) error {
 	var workflow struct {
-		On   map[string]yaml.Node `yaml:"on"`
-		Jobs map[string]struct {
+		On          map[string]yaml.Node `yaml:"on"`
+		Permissions map[string]string    `yaml:"permissions"`
+		Jobs        map[string]struct {
 			If string `yaml:"if"`
 		} `yaml:"jobs"`
 	}
@@ -24,6 +25,9 @@ func checkWorkflow(data []byte) error {
 	}
 	if len(workflow.On) != 2 {
 		return errors.New("INV-5 CI must trigger only on a schedule and manual dispatch")
+	}
+	if workflow.Permissions["actions"] != "read" {
+		return errors.New("INV-5 scheduled preflight must have read-only Actions access")
 	}
 	for _, event := range []string{"schedule", "workflow_dispatch"} {
 		if _, ok := workflow.On[event]; !ok {
@@ -100,33 +104,75 @@ func TestRepositoryWorkflow(t *testing.T) {
 	if script == "" {
 		t.Fatal("preflight scope script missing")
 	}
-	for _, event := range []string{"schedule", "workflow_dispatch"} {
-		t.Run(event+" with emergency provenance tag", func(t *testing.T) {
+	for _, tt := range []struct {
+		name, event, priorRuns, wantDecision string
+		wantRun                              bool
+		wantGitHubQuery                      bool
+	}{
+		{name: "scheduled SHA already has a completed run", event: "schedule", priorRuns: "1", wantDecision: "skip", wantGitHubQuery: true},
+		{name: "scheduled SHA is new", event: "schedule", priorRuns: "0", wantDecision: "run", wantRun: true, wantGitHubQuery: true},
+		{name: "manual dispatch always runs", event: "workflow_dispatch", wantDecision: "run", wantRun: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			git := `#!/usr/bin/env bash
 case "$1" in
   ls-remote) printf '%s\trefs/heads/develop\n' 0123456789012345678901234567890123456789 ;;
-  tag) printf 'v0.1.0\n' ;;
-  for-each-ref) printf '<!-- detent-release-provenance:{"checks":[]} -->\n' ;;
   *) exit 1 ;;
 esac
 `
 			if err := os.WriteFile(filepath.Join(dir, "git"), []byte(git), 0o755); err != nil {
 				t.Fatal(err)
 			}
+			gh := `#!/usr/bin/env bash
+set -euo pipefail
+printf 'gh %s\n' "$*" >> "$FIXTURE_LOG"
+case "$*" in
+  *'actions/workflows/ci.yml/runs?'*) printf '%s\n' "$FIXTURE_PRIOR_RUNS" ;;
+  *) exit 1 ;;
+esac
+`
+			if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(gh), 0o755); err != nil {
+				t.Fatal(err)
+			}
 			outputPath := filepath.Join(dir, "output")
 			cmd := exec.CommandContext(t.Context(), "bash", "-c", script)
-			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "GITHUB_EVENT_NAME="+event, "GITHUB_OUTPUT="+outputPath)
-			if output, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("preflight: %v: %s", err, output)
+			logPath := filepath.Join(dir, "calls")
+			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "GITHUB_EVENT_NAME="+tt.event, "GITHUB_OUTPUT="+outputPath, "GITHUB_REPOSITORY=digitaldrywood/detent", "FIXTURE_PRIOR_RUNS="+tt.priorRuns, "FIXTURE_LOG="+logPath)
+			preflightLog, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("preflight: %v: %s", err, preflightLog)
 			}
 			output, err := os.ReadFile(outputPath)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(output) != "develop_sha=0123456789012345678901234567890123456789\nshould_run=true\n" {
-				t.Fatalf("preflight output = %q, want pinned SHA and validation enabled", output)
+			wantShouldRun := map[bool]string{true: "true", false: "false"}[tt.wantRun]
+			if string(output) != "develop_sha=0123456789012345678901234567890123456789\nshould_run="+wantShouldRun+"\n" {
+				t.Fatalf("preflight output = %q, want pinned SHA and should_run=%s; log: %s", output, wantShouldRun, preflightLog)
 			}
+			logs, err := os.ReadFile(logPath)
+			if err != nil && tt.wantGitHubQuery {
+				t.Fatal(err)
+			}
+			if tt.wantGitHubQuery != (err == nil) {
+				t.Fatalf("GitHub prior-run query presence = %t, want %t", err == nil, tt.wantGitHubQuery)
+			}
+			if tt.wantGitHubQuery {
+				query := string(logs)
+				for _, required := range []string{"event=schedule", "status=completed", "head_sha=0123456789012345678901234567890123456789"} {
+					if !strings.Contains(query, required) {
+						t.Fatalf("prior-run query omitted %q: %s", required, query)
+					}
+				}
+				if strings.Contains(query, "conclusion=") {
+					t.Fatalf("prior-run query filtered on conclusion: %s", query)
+				}
+			}
+			if !strings.Contains(string(preflightLog), "Develop SHA: 0123456789012345678901234567890123456789") || !strings.Contains(string(preflightLog), "Preflight decision: "+tt.wantDecision) {
+				t.Fatalf("preflight log omitted compared SHA or decision: %s", preflightLog)
+			}
+			t.Logf("preflight log:\n%s", preflightLog)
 		})
 	}
 }
@@ -196,6 +242,8 @@ func TestWorkflowViolations(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tt := range []struct{ name, old, replacement string }{
+		{"actions read permission dropped", "  actions: read\n", ""},
+		{"finalizer treats a preflight skip as a run", "if: always() && (needs.preflight.outputs.should_run == 'true' || needs.preflight.result == 'failure')", "if: always()"},
 		{"pull request trigger", "  workflow_dispatch:\n", "  pull_request:\n  workflow_dispatch:\n"},
 		{"schedule dropped", "  schedule:\n    - cron: '17 * * * *'\n", ""},
 		{"slow schedule", "cron: '17 * * * *'", "cron: '17 0 * * *'"},
