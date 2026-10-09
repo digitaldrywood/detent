@@ -4,16 +4,8 @@ import { Button } from "../../components/ui/button.tsx";
 import type { FleetRunner } from "../../contracts/account.ts";
 import { RunnerProblems } from "./RunnerProblems.tsx";
 import { cn } from "../../lib/utils.ts";
+import { RunnerStatusDot } from "../../components/RunnerStatusDot.tsx";
 import type { RunnerProject } from "./RunnerDetailSheet.tsx";
-
-function runnerStatusClasses(runner: FleetRunner): string {
-  if (runner.state === "failed") return "bg-error";
-  if (runner.state !== "active") return "bg-muted-foreground";
-  if (runner.health === "failed") return "bg-error";
-  if (runner.health === "needs_attention" || runner.claim_refusal_reason) return "bg-warning";
-  if (runner.health === "healthy" || runner.health === "online") return "bg-success motion-safe:animate-status-pulse";
-  return "bg-muted-foreground";
-}
 
 export function HostCard({
   runner,
@@ -53,7 +45,7 @@ export function HostCard({
       className="grid min-w-0 gap-4 px-4 py-4 focus-visible:outline-2 focus-visible:outline-ring @[48rem]/runner-list:grid-cols-[minmax(0,1.2fr)_6rem_minmax(0,1fr)_7rem_minmax(0,1fr)_11rem] @[48rem]/runner-list:items-start"
     >
       <div className="flex min-w-0 items-start gap-2.5">
-        <span aria-hidden="true" className={cn("mt-1.5 size-2 shrink-0 rounded-full", runnerStatusClasses(runner))} />
+        <RunnerStatusDot runner={runner} className="mt-1.5" />
         <div className="min-w-0 space-y-1">
           <h3 className="break-words text-sm font-medium">{runner.display_name}</h3>
           {updateNeedsHuman ? <p className="text-xs text-warning-foreground">Needs human: reinstall the signed release with <code className="break-all">curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh</code>.</p> : legacyReinstall ? <p className="text-xs text-warning-foreground">One-time manual reinstall required to enable heartbeat updates: <code className="break-all">curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh</code>.</p> : null}

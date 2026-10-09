@@ -29,12 +29,12 @@
       "source": "src/components/ui/toggle.tsx",
       "exports": ["Toggle", "toggleVariants"],
       "variants": {
-        "variant": ["default", "ghost", "outline", "segmented", "pill"],
+        "variant": ["default", "ghost", "outline", "segmented", "pill", "pill-outline"],
         "size": ["compact", "default", "lg", "segmented", "sm", "xs"]
       },
       "states": ["hover", "focus-visible", "pressed", "disabled"],
       "keyboard": "Tab focuses; Enter and Space flip the pressed state, exposed as aria-pressed.",
-      "use": "A two-state control whose state is visible on the control itself, such as a formatting or view toggle. `variant=\"pill\"` is a rounded filter chip.",
+      "use": "A two-state control whose state is visible on the control itself, such as a formatting or view toggle. `variant=\"pill\"` is a rounded filter chip; `pill-outline` adds a quiet border and surface for dense runner strips.",
       "avoid": "Settings that persist a preference (use Switch) or a choice among peers (use ToggleGroup).",
       "related": ["toggle-group", "switch", "button"]
     },
@@ -2151,6 +2151,84 @@
       "use": "A small site icon that tries each source in turn and falls back to a given node when none loads.",
       "avoid": "Project marks (use Project favicon) and avatars (use PullRequestActorAvatar).",
       "related": ["project-favicon", "right-panel-tabs"]
+    },
+    {
+      "id": "runner-status-dot",
+      "name": "Runner status dot",
+      "source": "src/components/RunnerStatusDot.tsx",
+      "exports": [
+        "RunnerStatusDot"
+      ],
+      "states": [
+        "healthy",
+        "paused",
+        "failed",
+        "needs attention",
+        "offline"
+      ],
+      "use": "Runner health beside a runner name in Fleet and Activity; healthy active runners pulse green, inactive runners remain neutral.",
+      "avoid": "Work stage or job outcome; use StageProgress for stage timing.",
+      "kind": "composition",
+      "group": "Feedback",
+      "status": "available",
+      "variants": {},
+      "keyboard": "Static status image; the surrounding control owns keyboard behavior.",
+      "related": []
+    },
+    {
+      "id": "stage-progress",
+      "name": "Stage progress",
+      "source": "src/components/StageProgress.tsx",
+      "exports": [
+        "StageProgress"
+      ],
+      "states": [
+        "working",
+        "success",
+        "warning",
+        "error",
+        "muted"
+      ],
+      "use": "A compact ordered stage bar with a current step, progress, accessible name and timing tooltip. The caller supplies the stage and speed from server timing.",
+      "avoid": "Runner health, throughput charts or estimates computed from client history.",
+      "kind": "composition",
+      "group": "Feedback",
+      "status": "available",
+      "variants": {},
+      "keyboard": "Tab focuses the timing bar and opens its tooltip.",
+      "related": []
+    },
+    {
+      "id": "activity-page",
+      "name": "Activity page",
+      "kind": "surface",
+      "group": "Workspace",
+      "status": "available",
+      "source": "src/app/activity/ActivityPage.tsx",
+      "exports": [
+        "ActivityRoute",
+        "ActivityView"
+      ],
+      "variants": {},
+      "states": [
+        "loading",
+        "empty",
+        "unavailable",
+        "no matching jobs",
+        "running",
+        "finished",
+        "grouped",
+        "filtered"
+      ],
+      "keyboard": "Tab reaches compact filters, runner chips, issue links, time toggles and stage tooltips; Select and Toggle own their keyboard behavior.",
+      "use": "Read-only organization activity: runners, running attempts, recent finishes and timing against server-provided typical durations.",
+      "avoid": "Historical reports, diagnostic evidence or runner controls; use their existing surfaces.",
+      "related": [
+        "runner-status-dot",
+        "stage-progress",
+        "workspace-page-header",
+        "workspace-page-container"
+      ]
     }
   ],
   "internal": [

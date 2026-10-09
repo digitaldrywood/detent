@@ -50,7 +50,7 @@ interface BrowseRow {
 }
 
 const BROWSE_ROWS: readonly BrowseRow[] = [
-  { id: "activity", label: "Activity", icon: <ActivityIcon />, to: null },
+  { id: "activity", label: "Activity", icon: <ActivityIcon />, to: "/activity" },
   { id: "diagnostics", label: "Diagnostics", icon: <StethoscopeIcon />, to: "/diagnostics" },
   { id: "reports", label: "Reports", icon: <ChartNoAxesColumnIcon />, to: "/reports" },
   { id: "library", label: "Library", icon: <BookOpenIcon />, to: null },

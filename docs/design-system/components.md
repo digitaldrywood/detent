@@ -4,7 +4,7 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 Each contract states what a component is for, how to import it, the variants its source defines, the interaction states it owns, its keyboard behaviour and what to use instead. The source file is the owner of the component's appearance and behaviour; features compose it and do not restyle it. A proposed entry names a component Detent does not have yet; listing one does not authorize building it.
 
-Catalog totals: 136 entries; by kind: 51 primitive, 79 composition, 6 surface; by status: 136 available, 0 proposed, 0 exception.
+Catalog totals: 139 entries; by kind: 51 primitive, 81 composition, 7 surface; by status: 139 available, 0 proposed, 0 exception.
 
 ## Actions
 
@@ -23,12 +23,12 @@ Every clickable action: form submission, toolbar and composer actions, icon-only
 
 ### Toggle
 
-A two-state control whose state is visible on the control itself, such as a formatting or view toggle. `variant="pill"` is a rounded filter chip.
+A two-state control whose state is visible on the control itself, such as a formatting or view toggle. `variant="pill"` is a rounded filter chip; `pill-outline` adds a quiet border and surface for dense runner strips.
 
 - Kind: Primitive; status: available; id: `toggle`.
 - Import: `import { Toggle, toggleVariants } from "~/components/ui/toggle";`
 - Source: [src/components/ui/toggle.tsx](../../web/conversation/src/components/ui/toggle.tsx).
-- Variants: `variant`: `default`, `ghost`, `outline`, `segmented`, `pill`; `size`: `compact`, `default`, `lg`, `segmented`, `sm`, `xs`.
+- Variants: `variant`: `default`, `ghost`, `outline`, `segmented`, `pill`, `pill-outline`; `size`: `compact`, `default`, `lg`, `segmented`, `sm`, `xs`.
 - States: hover, focus-visible, pressed, disabled.
 - Keyboard: Tab focuses; Enter and Space flip the pressed state, exposed as aria-pressed.
 - Avoid: Settings that persist a preference (use Switch) or a choice among peers (use ToggleGroup).
@@ -443,6 +443,30 @@ Explaining why a region has no content and offering the relevant next action. `s
 - Keyboard: Not interactive itself; EmptyContent holds focusable actions.
 - Avoid: Errors and unavailable capabilities that are not simply absence (use Alert).
 - Related: [Alert](#alert), [Skeleton](#skeleton).
+
+### Runner status dot
+
+Runner health beside a runner name in Fleet and Activity; healthy active runners pulse green, inactive runners remain neutral.
+
+- Kind: Composition; status: available; id: `runner-status-dot`.
+- Import: `import { RunnerStatusDot } from "~/components/RunnerStatusDot";`
+- Source: [src/components/RunnerStatusDot.tsx](../../web/conversation/src/components/RunnerStatusDot.tsx).
+- Variants: none.
+- States: healthy, paused, failed, needs attention, offline.
+- Keyboard: Static status image; the surrounding control owns keyboard behavior.
+- Avoid: Work stage or job outcome; use StageProgress for stage timing.
+
+### Stage progress
+
+A compact ordered stage bar with a current step, progress, accessible name and timing tooltip. The caller supplies the stage and speed from server timing.
+
+- Kind: Composition; status: available; id: `stage-progress`.
+- Import: `import { StageProgress } from "~/components/StageProgress";`
+- Source: [src/components/StageProgress.tsx](../../web/conversation/src/components/StageProgress.tsx).
+- Variants: none.
+- States: working, success, warning, error, muted.
+- Keyboard: Tab focuses the timing bar and opens its tooltip.
+- Avoid: Runner health, throughput charts or estimates computed from client history.
 
 ## Navigation
 
@@ -867,6 +891,19 @@ The runner update control in the sidebar footer, for readers who manage runners;
 - Keyboard: A focusable button with the status as its accessible name; Enter or Space checks for updates or opens the runner settings.
 - Avoid: Announcing other updates with it; SidebarProviderUpdatePill and SidebarUpdateArchitectureWarning render nothing here, so use a toast or a composer notice instead.
 - Related: [Sidebar chrome](#sidebar-chrome), [Refresh icon](#refresh-icon).
+
+### Activity page
+
+Read-only organization activity: runners, running attempts, recent finishes and timing against server-provided typical durations.
+
+- Kind: Surface; status: available; id: `activity-page`.
+- Import: `import { ActivityRoute, ActivityView } from "~/app/activity/ActivityPage";`
+- Source: [src/app/activity/ActivityPage.tsx](../../web/conversation/src/app/activity/ActivityPage.tsx).
+- Variants: none.
+- States: loading, empty, unavailable, no matching jobs, running, finished, grouped, filtered.
+- Keyboard: Tab reaches compact filters, runner chips, issue links, time toggles and stage tooltips; Select and Toggle own their keyboard behavior.
+- Avoid: Historical reports, diagnostic evidence or runner controls; use their existing surfaces.
+- Related: [Runner status dot](#runner-status-dot), [Stage progress](#stage-progress), [Workspace page header](#workspace-page-header), [Workspace page container](#workspace-page-container).
 
 ## Conversation
 
