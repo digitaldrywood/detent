@@ -147,6 +147,7 @@ func withRunnerFactoryWithProjectTokens(
 			return nil, fmt.Errorf("%w: project %s: %w", project.ErrConnectorCreation, cfg.ID, connector.NewRetryableError(err.Error()))
 		}
 		workflow.Config = workflow.Config.WithRuntimeGitHubToken(token)
+		workflow.Config = project.EffectivePolicyConfig(cfg, workflow.Config)
 
 		run := deps.Runner
 		if run == nil {

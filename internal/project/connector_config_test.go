@@ -179,6 +179,53 @@ func TestWorkflowConfigWithProjectPathsResolvesArtifactWorkflowPaths(t *testing.
 	}
 }
 
+func TestWorkflowConfigWithProjectPathsResolvesGitWorkspaces(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		sourceRoot string
+	}{
+		{"workdir fallback", ""},
+		{"relative source", "source"},
+		{"explicit workdir", "."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+				Workflow:  []byte("Work in the provisioned workspace."),
+				Config:    []byte("schema: 1\ntracker:\n  kind: hub_native\nworkspace:\n  root: .detent/workspaces\n  source_root: " + test.sourceRoot + "\n"),
+				HasConfig: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			approved, err := workflowconfig.ResolvePolicy(workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, workdir := range []string{"/host/runner-one", "/host/runner-two", "/another-host/runner"} {
+				local := workflow
+				local.Config = workflowConfigWithProjectIdentity(globalconfig.Project{Workdir: workdir}, workflow.Config)
+				root := filepath.Join(workdir, ".detent", "workspaces")
+				source := filepath.Join(workdir, test.sourceRoot)
+				if local.Config.Workspace.Root != root || local.Config.Workspace.SourceRoot != source {
+					t.Fatalf("workspace paths = %+v, want %q and %q", local.Config.Workspace, root, source)
+				}
+				applied, err := workflowconfig.ApplyNativePolicy(local, approved)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if applied.Config.Workspace.Root != root || applied.Config.Workspace.SourceRoot != source {
+					t.Fatal("approved policy replaced runner paths")
+				}
+				actual, err := workflowconfig.ResolvePolicy(applied)
+				if err != nil || actual.ID != approved.ID {
+					t.Fatalf("runner workdir changed policy: %+v, %v", actual, err)
+				}
+			}
+		})
+	}
+}
+
 func TestProjectOrchestratorConfigIncludesHostPressure(t *testing.T) {
 	t.Parallel()
 

@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -121,7 +122,7 @@ func TestRunnerPolicyAuthoredDefinition(t *testing.T) {
 	t.Parallel()
 	for _, tracker := range []string{"memory", "hub_native"} {
 		t.Run(tracker, func(t *testing.T) {
-			sources := ProjectDefinitionSources{Workflow: []byte("Run the work.\n"), Config: []byte("schema: 1\ntracker:\n  kind: " + tracker + "\ngate:\n  run: echo 1\n"), HasConfig: true}
+			sources := ProjectDefinitionSources{Workflow: []byte("Run the work in {{ workspace.path }} from {{ workspace.source_root }}.\n"), Config: []byte("schema: 1\ntracker:\n  kind: " + tracker + "\ngate:\n  run: echo 1\n"), HasConfig: true}
 			load := func(sources ProjectDefinitionSources) policy.Descriptor {
 				t.Helper()
 				workflow, err := ParseProjectDefinition(sources)
@@ -147,6 +148,47 @@ func TestRunnerPolicyAuthoredDefinition(t *testing.T) {
 				match  bool
 			}{
 				{"same files", func(*ProjectDefinitionSources) {}, true},
+				{"host paths with portable prompt", func(s *ProjectDefinitionSources) {
+					s.WorkflowPath = "/another/runner/WORKFLOW.md"
+					s.ConfigPath = "/another/runner/detent.yaml"
+					s.Config = append([]byte(string(s.Config)), []byte("workspace:\n  root: /another/runner/workspaces\n  source_root: /another/runner/source\n")...)
+				}, tracker == "hub_native"},
+				{"empty local config", func(s *ProjectDefinitionSources) {
+					s.HasLocalConfig = true
+					s.LocalConfig = []byte("schema: 1\n")
+				}, tracker == "hub_native"},
+				{"empty local config containers", func(s *ProjectDefinitionSources) {
+					s.HasLocalConfig = true
+					s.LocalConfig = []byte("schema: 1\nworker: {}\nagent: {}\nserver: {kanban: {}}\n")
+				}, tracker == "hub_native"},
+				{"explicit local clearing", func(s *ProjectDefinitionSources) {
+					s.HasLocalConfig = true
+					s.LocalConfig = []byte("schema: 1\ngate:\n  required_status_checks: []\n")
+				}, false},
+				{"host-only local config", func(s *ProjectDefinitionSources) {
+					s.HasLocalConfig = true
+					s.LocalConfig = []byte("schema: 1\nworkspace:\n  root: /host/workspaces\n  source_root: /host/source\nworker:\n  ssh_hosts: [local]\nagent:\n  max_concurrent_agents: 7\n")
+				}, tracker == "hub_native"},
+				{"empty local workflow", func(s *ProjectDefinitionSources) {
+					s.HasLocalWorkflow = true
+					s.LocalWorkflow = []byte(" \n")
+				}, tracker == "hub_native"},
+				{"local binding grant", func(s *ProjectDefinitionSources) {
+					s.HasLocalConfig = true
+					s.LocalConfig = []byte("schema: 1\nworker:\n  allow_local_binding: true\n")
+				}, false},
+				{"local binding refusal", func(s *ProjectDefinitionSources) {
+					s.HasLocalConfig = true
+					s.LocalConfig = []byte("schema: 1\nworker:\n  allow_local_binding: false\n")
+				}, false},
+				{"worker network grant", func(s *ProjectDefinitionSources) {
+					s.HasLocalConfig = true
+					s.LocalConfig = []byte("schema: 1\nworker:\n  extra_network_domains: [example.com]\n")
+				}, false},
+				{"local gate command", func(s *ProjectDefinitionSources) {
+					s.HasLocalConfig = true
+					s.LocalConfig = []byte("schema: 1\ngate:\n  run: echo 2\n")
+				}, false},
 				{"key order and whitespace", func(s *ProjectDefinitionSources) {
 					s.Config = []byte("gate: {run: echo 1}\ntracker: {kind: " + tracker + "}\nschema: 1\n\n")
 				}, true},
@@ -385,6 +427,35 @@ func TestNativeSharedPolicy(t *testing.T) {
 	if err := ValidateSharedPolicy(approved); err != nil {
 		t.Fatal(err)
 	}
+	for _, version := range []int{1, 2} {
+		t.Run(fmt.Sprintf("approved version %d with host overlay", version), func(t *testing.T) {
+			previous := pro
+			sources := *pro.DefinitionSources
+			sources.HasLocalWorkflow = true
+			sources.LocalWorkflow = []byte("---\nworkspace:\n  root: /previous/workspaces\n---\n")
+			previous.DefinitionSources = &sources
+			previous.Authored = &policy.Authored{Version: version}
+			descriptor, err := ResolvePolicy(previous)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, present := descriptor.Authored.Files["WORKFLOW.local.md"]; !present {
+				t.Fatal("previous approval lost its authored overlay")
+			}
+			resolved, err := ResolveSharedPolicy(descriptor)
+			if err != nil || resolved.ID != descriptor.ID {
+				t.Fatalf("previous approval changed: %+v, %v", resolved, err)
+			}
+			applied, err := ApplyNativePolicy(air, descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual, err := ResolvePolicy(applied)
+			if err != nil || actual.Match(descriptor) != nil {
+				t.Fatalf("previous approval no longer matches: %+v, %v", actual, err)
+			}
+		})
+	}
 	if !approved.Gates.PlanEnabled || !approved.Gates.Validator || !approved.Gates.AutoPromote {
 		t.Fatalf("combined gates missing: %+v", approved.Gates)
 	}
@@ -394,6 +465,17 @@ func TestNativeSharedPolicy(t *testing.T) {
 		match  bool
 	}{
 		{"other host", func(w *Workflow) { *w = air }, true},
+		{"host-only local workflow", func(w *Workflow) {
+			sources := *w.DefinitionSources
+			sources.HasLocalWorkflow = true
+			sources.LocalWorkflow = []byte("---\nworkspace:\n  root: /host/workspaces\nworker:\n  ssh_hosts: [local]\n---\n")
+			w.DefinitionSources = &sources
+		}, true},
+		{"path-only runtime prompt", func(w *Workflow) {
+			w.Config.Workspace.Root = "/another/host/workspaces"
+			w.Config.Workspace.SourceRoot = "/another/host/source"
+			w.Prompt = "Run the work in /another/host/workspaces from /another/host/source."
+		}, true},
 		{"machine instructions", func(w *Workflow) {
 			sources := *w.DefinitionSources
 			sources.HasLocalWorkflow = true

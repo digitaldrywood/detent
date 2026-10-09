@@ -145,6 +145,9 @@ func ParseProjectDefinition(sources ProjectDefinitionSources) (workflow Workflow
 	defer func() {
 		if resultErr == nil {
 			workflow.Authored = &policy.Authored{Version: PolicyCanonicalizationVersion}
+			if workflow.Config.Tracker.Kind == TrackerHubNative {
+				workflow.Authored.Version = NativePolicyCanonicalizationVersion
+			}
 			workflow.DefinitionSources = &sources
 		}
 	}()

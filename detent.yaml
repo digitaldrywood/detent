@@ -1,4 +1,7 @@
 schema: 1
+workspace:
+  root: .detent/workspaces
+  source_root: .
 hooks:
   runner_setup: scripts/runner-setup.sh
   shell: bash
