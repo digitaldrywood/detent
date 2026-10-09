@@ -45,7 +45,10 @@ type ReadUnavailableError struct {
 }
 
 func (e *ReadUnavailableError) Error() string {
-	return ErrReadUnavailable.Error()
+	if e.Err == nil {
+		return ErrReadUnavailable.Error()
+	}
+	return "read work: " + e.Err.Error()
 }
 
 func (e *ReadUnavailableError) Unwrap() error {
@@ -370,7 +373,7 @@ func (e *Executor) readWork(ctx context.Context, call Call) (Result, error) {
 		if errors.Is(err, ErrAccessDenied) || errors.Is(err, ErrInvalidArguments) || errors.Is(err, explain.ErrNotFound) || errors.Is(err, ErrProjectScopeRequired) || errors.As(err, &unavailable) || errors.As(err, &ambiguous) {
 			return Result{}, err
 		}
-		return Result{}, &ReadUnavailableError{Err: err}
+		return Result{}, &ReadUnavailableError{Err: fmt.Errorf("load snapshot: %w", err)}
 	}
 	if len(result.Content) > MaxResultBytes {
 		return Result{}, fmt.Errorf("%w: result exceeds size limit", ErrReadUnavailable)

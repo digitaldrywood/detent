@@ -38,7 +38,11 @@ func ReadIssueContext(ctx context.Context, reader WorkReader, request WorkReadRe
 				if !errors.Is(err, ErrReadUnavailable) && !errors.Is(err, ErrResultTooLarge) {
 					return result, fmt.Errorf("read %s: %w", section, err)
 				}
-				result.Limits[section] = IssueContextLimit{Cursor: pageRequest.Cursor, Offset: pageRequest.Offset, Error: err.Error()}
+				publicError := ErrReadUnavailable.Error()
+				if errors.Is(err, ErrResultTooLarge) {
+					publicError = ErrResultTooLarge.Error()
+				}
+				result.Limits[section] = IssueContextLimit{Cursor: pageRequest.Cursor, Offset: pageRequest.Offset, Error: publicError}
 				break
 			}
 			var envelope struct {

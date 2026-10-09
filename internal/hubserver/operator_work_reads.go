@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -21,7 +22,12 @@ type operatorWorkReads struct {
 	scope   nativeScope
 }
 
-func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request operatortool.WorkReadRequest) (operatortool.Result, error) {
+func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request operatortool.WorkReadRequest) (result operatortool.Result, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			resultErr = fmt.Errorf("%s: %w", strings.ReplaceAll(name, "_", " "), resultErr)
+		}
+	}()
 	s := r.service
 	scope := r.scope
 	scope.project = tracker.ProjectID(request.ProjectID)

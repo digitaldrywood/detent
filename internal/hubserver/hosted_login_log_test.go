@@ -2,7 +2,9 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/logging"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -128,39 +131,46 @@ func TestHostedLoginLogsStayRedactedOutsideDenials(t *testing.T) {
 	t.Parallel()
 	var output hostedLogBuffer
 	cfg := hostedLoginConfig(t, newHostedLoginProvider(), true)
-	cfg.Logger = slog.New(slog.NewJSONHandler(&output, nil))
+	cfg.Logger = slog.New(logging.NewHandler(&output, slog.LevelInfo, false, logging.SourceSetting{}))
 	s := openTestService(t, cfg)
-	s.config.Logger.Warn("tenant content sentinel", "secret", "attribute-sentinel", "at", time.Now())
+	s.config.Logger.Warn("hosted diagnostic", "title", "tenant content sentinel", "secret", "attribute-sentinel", "at", time.Now())
 	logged := output.String()
-	if strings.Contains(logged, "tenant content sentinel") || strings.Contains(logged, "attribute-sentinel") || !strings.Contains(logged, "hosted service event") {
-		t.Fatalf("hosted service log was not redacted:\n%s", logged)
+	if strings.Contains(logged, "tenant content sentinel") || strings.Contains(logged, "attribute-sentinel") || !strings.Contains(logged, "hosted diagnostic") || !strings.Contains(logged, `"source":`) {
+		t.Fatalf("hosted service log was not redacted: %s", logged)
 	}
 
+	failure := fmt.Errorf("get change: load version: %w", &json.UnmarshalTypeError{Value: "array", Type: reflect.TypeFor[string]()})
 	for _, tt := range []struct {
 		name  string
 		attrs []any
 		want  map[string]any
 	}{
-		{"diagnostic fields kept", []any{"tool", operatortool.FileIssue, "correlation_id", "6f1c1c55-6c0d-4b8e-9a43-0d6c2b7a9e10", "error_class", "sqlite_5", "error", "tenant-error-sentinel"}, map[string]any{"tool": operatortool.FileIssue, "correlation_id": "6f1c1c55-6c0d-4b8e-9a43-0d6c2b7a9e10", "error_class": "sqlite_5"}},
+		{"diagnostic fields kept", []any{"tool", operatortool.GetChange, "correlation_id", "6f1c1c55-6c0d-4b8e-9a43-0d6c2b7a9e10", "err", failure, "organization_id", "org_test", "project_id", "prj_test", "issue_id", "wi_test", "duration", 3}, map[string]any{"tool": operatortool.GetChange, "correlation_id": "6f1c1c55-6c0d-4b8e-9a43-0d6c2b7a9e10", "error": failure.Error(), "error_class": "*json.UnmarshalTypeError", "organization_id": "org_test", "project_id": "prj_test", "issue_id": "wi_test", "duration": float64(3)}},
 		{"unknown tool dropped", []any{"tool", "tenant-tool-sentinel", "error_class", "sqlite_5"}, map[string]any{"error_class": "sqlite_5"}},
 		{"free text class dropped", []any{"error_class", "tenant error sentinel", "correlation_id", "tenant-correlation-sentinel"}, map[string]any{}},
+		{"content and secrets dropped", []any{"issue_title", "tenant content sentinel", "body", "tenant content sentinel", "comment", "tenant content sentinel", "prompt", "tenant content sentinel", "conversation_text", "tenant content sentinel", "token", "secret-sentinel", "error", fmt.Errorf("load version: token=secret-sentinel: %w", context.DeadlineExceeded)}, map[string]any{"error": "load version: [redacted] context deadline exceeded", "error_class": "deadline_exceeded"}},
+		{"nested content dropped", []any{slog.Group("resource", "id", "wi_test", "body", "tenant content sentinel"), "audit", map[string]any{"project_id": "prj_test", "title": "tenant content sentinel", "token": "secret-sentinel"}}, map[string]any{"resource": map[string]any{"id": "wi_test"}, "audit": map[string]any{"project_id": "prj_test"}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var output hostedLogBuffer
-			logger := slog.New(hostedLogHandler{output: slog.NewJSONHandler(&output, nil)})
+			logger := slog.New(hostedLogHandler{output: logging.NewHandler(&output, slog.LevelInfo, false, logging.SourceSetting{})}).With("title", "tenant content sentinel", "secret", "attribute-sentinel", "component", "operator")
 			logger.Error("operator tool failed", tt.attrs...)
 			var record map[string]any
 			if err := json.Unmarshal([]byte(output.String()), &record); err != nil {
-				t.Fatalf("log = %s: %v", output.String(), err)
+				t.Fatal(err)
 			}
-			delete(record, "time")
-			delete(record, "level")
-			if record["msg"] != "hosted service event" {
-				t.Fatalf("msg = %v", record["msg"])
+			source, ok := record["source"].(map[string]any)
+			if !ok || !strings.HasSuffix(source["file"].(string), "hosted_login_log_test.go") || source["line"].(float64) <= 0 {
+				t.Fatal(output.String())
 			}
-			delete(record, "msg")
-			if !reflect.DeepEqual(record, tt.want) {
-				t.Fatalf("attrs = %v, want %v", record, tt.want)
+			if record["msg"] != "operator tool failed" || record["component"] != "operator" {
+				t.Fatal(output.String())
+			}
+			for _, key := range []string{"time", "level", "msg", "source", "component"} {
+				delete(record, key)
+			}
+			if !reflect.DeepEqual(record, tt.want) || strings.Contains(output.String(), "sentinel") {
+				t.Fatalf("attrs=%v want=%v: %s", record, tt.want, output.String())
 			}
 		})
 	}
@@ -180,8 +190,8 @@ func TestHostedLogsKeepWriterTiming(t *testing.T) {
 			map[string]any{"msg": "hub writer waits", "waits": float64(40), "wait_ms": float64(9000), "in_use": float64(1), "interval_s": float64(60)}},
 		{"tenant content dropped from timing", "hub request timing", []any{"route", "/work/tenant title sentinel", "method", "tenant method sentinel", "secret", "attribute-sentinel", "duration_ms", "9"},
 			map[string]any{"msg": "hub request timing"}},
-		{"other messages stay redacted", "lease renewed", []any{"duration_ms", int64(10), "route", "/api/v2/x"},
-			map[string]any{"msg": "hosted service event"}},
+		{"other messages keep safe diagnostics", "lease renewed", []any{"duration_ms", int64(10), "route", "/api/v2/x"},
+			map[string]any{"msg": "lease renewed", "duration_ms": float64(10), "route": "/api/v2/x"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var output hostedLogBuffer

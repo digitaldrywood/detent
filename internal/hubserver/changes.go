@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -155,23 +156,26 @@ func readChange(ctx context.Context, query nativeQueryer, scope nativeScope, ite
 	err := query.QueryRowContext(ctx, `SELECT c.record_json FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
 WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? AND c.id = ?`, scope.organization, scope.project, item, id).Scan(&raw)
 	if err != nil {
-		return change, err
+		return change, fmt.Errorf("read snapshot: %w", err)
 	}
 	err = json.Unmarshal([]byte(raw), &change)
-	return change, err
+	if err != nil {
+		return change, fmt.Errorf("decode snapshot: %w", err)
+	}
+	return change, nil
 }
 
 func readChangeVersion(ctx context.Context, query nativeQueryer, changeID, versionID string) (tracker.ChangeVersion, error) {
 	var version tracker.ChangeVersion
 	var raw string
 	if err := query.QueryRowContext(ctx, "SELECT record_json FROM change_versions WHERE change_id = ? AND id = ?", changeID, versionID).Scan(&raw); err != nil {
-		return version, err
+		return version, fmt.Errorf("read version snapshot: %w", err)
 	}
 	if err := json.Unmarshal([]byte(raw), &version); err != nil {
-		return version, err
+		return version, fmt.Errorf("decode version snapshot: %w", err)
 	}
 	if err := resolveVersionPublication(ctx, query, changeID, &version); err != nil {
-		return version, err
+		return version, fmt.Errorf("resolve publication: %w", err)
 	}
 	quality, err := readQualityLanding(ctx, query, tracker.ChangeRequest{ID: changeID}, version.ID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -187,7 +191,10 @@ func readChangeVersion(ctx context.Context, query nativeQueryer, changeID, versi
 	if err == nil {
 		version.Landing = &receipt
 	}
-	return version, err
+	if err != nil {
+		return version, fmt.Errorf("read landing: %w", err)
+	}
+	return version, nil
 }
 
 func resolveVersionPublication(ctx context.Context, query nativeQueryer, changeID string, version *tracker.ChangeVersion) error {
@@ -219,7 +226,7 @@ ORDER BY a.fencing_token DESC LIMIT 1`, changeID, version.ID, version.ID).Scan(&
 func changeRows[T any](ctx context.Context, query nativeQueryer, statement string, args ...any) ([]T, error) {
 	rows, err := query.QueryContext(ctx, statement, args...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query snapshot: %w", err)
 	}
 	defer rows.Close()
 	result := []T{}
@@ -227,14 +234,17 @@ func changeRows[T any](ctx context.Context, query nativeQueryer, statement strin
 		var raw string
 		var item T
 		if err := rows.Scan(&raw); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan snapshot: %w", err)
 		}
 		if err := json.Unmarshal([]byte(raw), &item); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("decode snapshot: %w", err)
 		}
 		result = append(result, item)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read snapshot rows: %w", err)
+	}
+	return result, nil
 }
 
 func (s *Service) listChanges(c echo.Context) error {
@@ -293,11 +303,11 @@ func readChangeDetailView(ctx context.Context, query nativeQueryer, scope native
 	var err error
 	result.Change, err = readChange(ctx, query, scope, item, id)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("load change: %w", err)
 	}
 	result.SourceIssues, err = readChangeSourceIssues(ctx, query, scope, id)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("load source issues: %w", err)
 	}
 	versionFilter, evidenceFilter := "", ""
 	args := []any{id}
@@ -308,50 +318,53 @@ func readChangeDetailView(ctx context.Context, query nativeQueryer, scope native
 	}
 	result.Versions, err = changeRows[tracker.ChangeVersion](ctx, query, "SELECT record_json FROM change_versions WHERE change_id = ?"+versionFilter+" ORDER BY number", args...)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("load versions: %w", err)
 	}
 	for i := range result.Versions {
 		if err := resolveVersionPublication(ctx, query, id, &result.Versions[i]); err != nil {
-			return result, err
+			return result, fmt.Errorf("resolve publication: %w", err)
 		}
 		receipt, err := readVersionLanding(ctx, query, result.Versions[i].ID)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
-			return result, err
+			return result, fmt.Errorf("load landing: %w", err)
 		}
 		result.Versions[i].Landing = &receipt
 	}
 	result.Reviews, err = changeRows[tracker.ChangeReview](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'review'"+evidenceFilter+" ORDER BY sequence", args...)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("load reviews: %w", err)
 	}
 	result.Checks, err = changeRows[tracker.ChangeCheck](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'check'"+evidenceFilter+" ORDER BY sequence", args...)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("load checks: %w", err)
 	}
 	if current {
 		evidenceFilter = " AND (version_id = ? OR version_id IS NULL OR version_id = '')"
 	}
 	result.Discussion, err = changeRows[tracker.ChangeDiscussion](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'discussion'"+evidenceFilter+" ORDER BY sequence", args...)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("load discussion: %w", err)
 	}
 	var staleApproval bool
 	if current {
 		err = query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_evidence WHERE change_id = ? AND kind = 'review'
 AND json_extract(record_json, '$.decision') = 'approved' AND json_extract(record_json, '$.validator') IS NULL AND version_id != ?)`, id, result.Change.CurrentVersion).Scan(&staleApproval)
 		if err != nil {
-			return result, err
+			return result, fmt.Errorf("load stale approval: %w", err)
 		}
 	}
 	result.Summary, err = readChangeSummary(ctx, query, scope, result, now, staleApproval)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("load summary: %w", err)
 	}
 	err = loadChangeExternal(ctx, query, scope, &result)
-	return result, err
+	if err != nil {
+		return result, fmt.Errorf("load external evidence: %w", err)
+	}
+	return result, nil
 }
 
 func readCurrentChangeDetail(ctx context.Context, query nativeQueryer, scope nativeScope, change tracker.ChangeRequest, now time.Time) (tracker.ChangeDetail, error) {

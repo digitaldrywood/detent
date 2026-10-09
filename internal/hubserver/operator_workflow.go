@@ -159,6 +159,9 @@ func (e nativeOperatorExecutor) executeWorkflowTransition(ctx context.Context, a
 func workflowExecutionFailure(err error) (chat.ActionExecution, error) {
 	safe := hubSafeChangeError(err)
 	message := safe.Error()
+	if errors.Is(safe, operatortool.ErrServiceUnavailable) {
+		message = operatortool.ErrServiceUnavailable.Error()
+	}
 	var failure *nativeError
 	if errors.As(err, &failure) {
 		switch {

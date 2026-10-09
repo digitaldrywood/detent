@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -104,7 +105,7 @@ func (e hubOperatorExecutor) Execute(ctx context.Context, call operatortool.Call
 	if definition.Annotations.ReadOnly {
 		value, err := app.ReadChange(ctx, call.Name, args)
 		if err != nil {
-			return result, hubSafeChangeError(err)
+			return result, hubSafeChangeError(fmt.Errorf("read change: %w", err))
 		}
 		return operatortool.BoundedChangeResult(value)
 	}
@@ -153,7 +154,7 @@ func (s *Service) hubChangeAuthority(ctx context.Context, name string, raw json.
 	}
 	value, err := app.ReadChange(ctx, readName, args)
 	if err != nil {
-		return ctx, nil, hubSafeChangeError(err)
+		return ctx, nil, hubSafeChangeError(fmt.Errorf("resolve change authority: %w", err))
 	}
 	if name == operatortool.ArtifactAccess {
 		matched := false
@@ -241,5 +242,5 @@ func hubSafeChangeError(err error) error {
 	if errors.Is(err, operatortool.ErrInvalidArguments) {
 		return operatortool.ErrInvalidArguments
 	}
-	return operatortool.ErrServiceUnavailable
+	return fmt.Errorf("%w: %w", operatortool.ErrServiceUnavailable, err)
 }

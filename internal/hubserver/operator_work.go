@@ -70,7 +70,12 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	return definitions, nil
 }
 
-func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			resultErr = fmt.Errorf("%s: %w", strings.ReplaceAll(call.Name, "_", " "), resultErr)
+		}
+	}()
 	if call.Name == operatortool.BoardState || call.Name == operatortool.Dashboard {
 		return e.service.executeBoardRead(ctx, call)
 	}
@@ -244,7 +249,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		return operatortool.Result{}, operatortool.ErrSnapshotUnavailable
 	}
 	if err != nil {
-		return operatortool.Result{}, safeNativeWorkError(err)
+		return operatortool.Result{}, safeNativeWorkError(fmt.Errorf("execute work command: %w", err))
 	}
 	outcome = "succeeded"
 	metadata.RetryIdentity, metadata.InputHash = "", ""

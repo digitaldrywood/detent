@@ -33,6 +33,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/healthnotify"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/instancelock"
+	"github.com/digitaldrywood/detent/internal/logging"
 	"github.com/digitaldrywood/detent/internal/notify"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -1399,10 +1400,7 @@ func redirectDefaultLoggerWithRotation(path string, level string, rotation logRo
 	previous := slog.Default()
 	parsedLevel := parseSlogLevel(level)
 	logLevel := resolveRuntimeLogLevel(parsedLevel, levels)
-	slog.SetDefault(slog.New(slog.NewJSONHandler(file, &slog.HandlerOptions{
-		Level:     logLevel,
-		AddSource: runtimeLogAddSource(parsedLevel),
-	})))
+	slog.SetDefault(slog.New(logging.NewHandler(file, logLevel, false, logging.SourceFromEnv(os.Getenv))))
 
 	return func() {
 		slog.SetDefault(previous)
@@ -1876,32 +1874,6 @@ func parseSlogLevel(level string) slog.Level {
 		return slog.LevelError
 	default:
 		return slog.LevelInfo
-	}
-}
-
-func runtimeLogAddSource(level slog.Level) bool {
-	value, ok := lookupLogSourceEnv("LOG_ADD_SOURCE", "DETENT_LOG_ADD_SOURCE")
-	if ok {
-		return parseRuntimeLogBool(value)
-	}
-	return level == slog.LevelDebug
-}
-
-func lookupLogSourceEnv(keys ...string) (string, bool) {
-	for _, key := range keys {
-		if value, ok := os.LookupEnv(key); ok && strings.TrimSpace(value) != "" {
-			return value, true
-		}
-	}
-	return "", false
-}
-
-func parseRuntimeLogBool(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "t", "true", "y", "yes", "on":
-		return true
-	default:
-		return false
 	}
 }
 

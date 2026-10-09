@@ -7,7 +7,8 @@
 - Keep application code feature-packaged under `internal/` as the system grows.
 - Prefer constructor dependency injection over global state or wire/fx.
 - Use interfaces and factories only at backend/plugin boundaries where they remove real coupling.
-- Use `log/slog` for logging.
+- Use `log/slog` for logging. Wrap returned errors with `%w` and a short step name; log once at the handling edge with the `error` attribute, never log and return the same error.
+- Error messages never embed customer content (titles, bodies, prompts, secrets).
 - Use Echo for HTTP, sqlc with goose migrations for persistence, and `modernc.org/sqlite` for SQLite.
 - Use Templ, HTMX, and Tailwind v4 for server-rendered UI.
 - For Cloud UI work, follow the [Detent design system](docs/design-system/README.md) and its [component contracts](docs/design-system/components.md); it is the source of truth for tokens, components and patterns. Reuse existing components and semantic tokens within the authorized UI scope. `make check-app` runs the design token and catalog checks.

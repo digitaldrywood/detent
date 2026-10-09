@@ -484,6 +484,7 @@ func TestRedirectDefaultLoggerWritesToFile(t *testing.T) {
 	}
 
 	slog.Info("dashboard log message", "mode", "tui")
+	slog.Warn("runner failure", "err", fmt.Errorf("run: %w", os.ErrPermission))
 	restore()
 
 	raw, err := os.ReadFile(path)
@@ -491,7 +492,7 @@ func TestRedirectDefaultLoggerWritesToFile(t *testing.T) {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
 	logs := string(raw)
-	for _, want := range []string{`"msg":"dashboard log message"`, `"mode":"tui"`} {
+	for _, want := range []string{`"msg":"dashboard log message"`, `"mode":"tui"`, `"source":`, `"error":"run: permission denied"`, `"error_class":"*errors.errorString"`} {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("log file missing %q:\n%s", want, logs)
 		}

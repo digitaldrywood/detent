@@ -3,8 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -59,7 +62,15 @@ func TestServeLoggerLevel(t *testing.T) {
 			if !logger.Enabled(context.Background(), tt.want) || logger.Enabled(context.Background(), tt.want-1) {
 				t.Fatalf("logger level does not match %v", tt.want)
 			}
-			logger.Log(context.Background(), tt.want, "serve logger probe")
+			logger.Error("serve logger probe", "err", fmt.Errorf("serve: %w", &json.UnmarshalTypeError{Value: "array", Type: reflect.TypeFor[string]()}))
+			var record map[string]any
+			if err := json.Unmarshal(output.Bytes(), &record); err != nil {
+				t.Fatal(err)
+			}
+			if record["source"] == nil || record["error_class"] != "*json.UnmarshalTypeError" || record["error"] != "serve: json: cannot unmarshal array into Go value of type string" {
+				t.Fatal(output.String())
+			}
+
 			if !strings.HasPrefix(output.String(), "{") || !strings.Contains(output.String(), `"msg":"serve logger probe"`) {
 				t.Fatalf("logger did not write JSON to the output: %q", output.String())
 			}

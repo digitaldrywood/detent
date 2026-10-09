@@ -115,7 +115,7 @@ func TestOperatorNativeWorkReadErrors(t *testing.T) {
 								if entry.Tool != tool || entry.CorrelationID == "" || !strings.Contains(entry.Error, "cannot unmarshal array") {
 									t.Fatalf("lost fault context: %s", logs.Bytes())
 								}
-								if want := test.want + " (correlation_id " + entry.CorrelationID + ")"; result.Content[0].Text != want {
+								if want := test.want + " (reason_code service_unavailable, correlation_id " + entry.CorrelationID + ")"; result.Content[0].Text != want {
 									t.Fatalf("tool error text = %q, want %q", result.Content[0].Text, want)
 								}
 							} else if logs.Len() != 0 {
