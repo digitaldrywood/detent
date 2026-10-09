@@ -28,8 +28,7 @@ type nativeClaim struct {
 
 func (s *Scheduler) ConnectorForProject(project string) (connector.Connector, bool) {
 	source := s.nativeProject(project)
-	ok := source != nil
-	if !ok {
+	if source == nil {
 		return nil, false
 	}
 	return source, true
