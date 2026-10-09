@@ -1037,17 +1037,9 @@ func (s *conversationStore) normalizeAfterRestart(ctx context.Context, now time.
 		id        string
 		revision  int64
 		execution conversation.Execution
-		worker    bool
 	}
 	pending, err := func() ([]inFlight, error) {
-		rows, err := tx.QueryContext(ctx, `SELECT c.id, c.revision, c.execution_json, EXISTS (
- SELECT 1 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id JOIN issues i ON i.id = l.issue_id
- WHERE a.id = json_extract(c.execution_json, '$.attempt_id') AND a.status = 'running'
- AND a.organization_id = c.organization_id AND a.project_id = c.project_id AND a.work_item_id = c.work_item_id
- AND a.run_id = json_extract(c.execution_json, '$.run_id')
- AND a.lease_id = json_extract(c.execution_json, '$.lease_id') AND a.fencing_token = json_extract(c.execution_json, '$.fencing_token')
- AND i.organization_id = c.organization_id AND i.project_id = c.project_id AND i.native_id = c.work_item_id
-) FROM conversations c WHERE json_extract(c.execution_json, '$.status') IN ('starting', 'running', 'waiting_input', 'interrupting')`)
+		rows, err := tx.QueryContext(ctx, "SELECT id, revision, execution_json FROM conversations WHERE work_item_id IS NULL AND json_extract(execution_json, '$.status') IN ('starting', 'running', 'waiting_input', 'interrupting')")
 		if err != nil {
 			return nil, fmt.Errorf("list in-flight conversations: %w", err)
 		}
@@ -1056,7 +1048,7 @@ func (s *conversationStore) normalizeAfterRestart(ctx context.Context, now time.
 		for rows.Next() {
 			var item inFlight
 			var encoded string
-			if err := rows.Scan(&item.id, &item.revision, &encoded, &item.worker); err != nil {
+			if err := rows.Scan(&item.id, &item.revision, &encoded); err != nil {
 				return nil, fmt.Errorf("scan in-flight conversation: %w", err)
 			}
 			if err := json.Unmarshal([]byte(encoded), &item.execution); err != nil {
@@ -1072,18 +1064,7 @@ func (s *conversationStore) normalizeAfterRestart(ctx context.Context, now time.
 	if err != nil {
 		return summary, err
 	}
-	var liveWorkers []any
 	for _, item := range pending {
-		if item.worker {
-			lease, found, err := readLeaseByID(ctx, tx, tracker.LeaseID(item.execution.Owner.LeaseID))
-			if err != nil {
-				return summary, err
-			}
-			if found && requireCurrentLease(lease, tracker.FencingToken(item.execution.Owner.FencingToken), now) == nil {
-				liveWorkers = append(liveWorkers, item.id)
-				continue
-			}
-		}
 		execution := conversation.NormalizeExecutionValue(item.execution)
 		execution.UpdatedAt = now.UTC()
 		encoded, err := marshalNative(execution)
@@ -1100,10 +1081,6 @@ func (s *conversationStore) normalizeAfterRestart(ctx context.Context, now time.
 		}
 		summary.Conversations += changed
 	}
-	workerFilter := ""
-	if len(liveWorkers) > 0 {
-		workerFilter = " AND conversation_id NOT IN (" + strings.TrimSuffix(strings.Repeat("?,", len(liveWorkers)), ",") + ")"
-	}
 	for _, statement := range []struct {
 		query string
 		args  []any
@@ -1114,7 +1091,7 @@ func (s *conversationStore) normalizeAfterRestart(ctx context.Context, now time.
 		{query: "UPDATE conversation_questions SET status = ?, updated_at = ? WHERE status = ?", args: []any{conversation.QuestionUnknown, stamp, conversation.QuestionSending}, count: &summary.Questions},
 		{query: "UPDATE conversation_commands SET receipt_json = json_set(receipt_json, '$.status', ?, '$.updated_at', ?), updated_at = ? WHERE json_extract(receipt_json, '$.status') IN (?, ?, ?)", args: []any{conversation.DeliveryUnknown, formatHubTime(now), stamp, conversation.DeliverySending, conversation.DeliverySent, conversation.DeliveryResponding}, count: &summary.Receipts},
 	} {
-		result, err := tx.ExecContext(ctx, statement.query+workerFilter, append(statement.args, liveWorkers...)...)
+		result, err := tx.ExecContext(ctx, statement.query+" AND conversation_id IN (SELECT id FROM conversations WHERE work_item_id IS NULL)", statement.args...)
 		if err != nil {
 			return summary, fmt.Errorf("normalize conversation state: %w", err)
 		}

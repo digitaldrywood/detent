@@ -1044,7 +1044,7 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 		f.claim(t)
 		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-3"}), http.StatusAccepted)
-		if _, err := f.chat.store.normalizeAfterRestart(t.Context(), f.service.config.now()); err != nil {
+		if err := f.chat.start(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		if record := f.load(t); record.Execution.Status != conversation.ExecutionRunning {

@@ -708,8 +708,14 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 				if _, err := f.service.database.db.ExecContext(t.Context(), test.query, f.lease.ID); err != nil {
 					t.Fatal(err)
 				}
+				if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if execution := f.load(t).Execution; execution.Status != conversation.ExecutionInterrupted {
+					t.Fatalf("reconciliation retained lost owner: %#v", execution)
+				}
 				f.restart(t)
-				if execution := f.load(t).Execution; execution.Status != conversation.ExecutionUnknown || execution.Capabilities != (conversation.Capabilities{}) {
+				if execution := f.load(t).Execution; execution.Status != conversation.ExecutionInterrupted || execution.Capabilities != (conversation.Capabilities{}) {
 					t.Fatalf("lost owner remained live after restart: %#v", execution)
 				}
 				requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")

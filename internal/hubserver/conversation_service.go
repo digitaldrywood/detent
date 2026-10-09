@@ -184,6 +184,9 @@ func (c *conversationService) start(ctx context.Context) error {
 	c.logger.Info("conversation.restart_normalized",
 		"conversations", summary.Conversations, "messages", summary.Messages,
 		"questions", summary.Questions, "receipts", summary.Receipts)
+	if err := c.reconcileExecutions(ctx); err != nil {
+		return err
+	}
 	return c.wakePending(ctx)
 }
 
