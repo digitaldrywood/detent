@@ -1652,7 +1652,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		var refusal *workspace.LandRefusal
 		if nativeLanding && errors.As(err, &refusal) {
-			return r.refusedLanding(req, landingTarget, refusal.Kind, refusal.Reason), nil
+			result := r.refusedLanding(req, landingTarget, refusal.Kind, refusal.Reason)
+			var command *workspace.CommandError
+			result.NativeLanding.GateFailed = errors.As(err, &command)
+			return result, nil
 		}
 		if heldErr, held := workspaceBranchHeldError(err, req.Issue); held {
 			return RunResult{}, heldErr

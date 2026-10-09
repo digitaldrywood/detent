@@ -87,7 +87,7 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 			if !changerequest.ValidHash(request.Head, 40) && !changerequest.ValidHash(request.Head, 64) {
 				return nil, nativeInvalid("Barrier start requires the observed integration branch head")
 			}
-			if requester := scope.credential.Runner.RunnerID; requester != "" && !(request.Recover && barrier.Running && barrier.Owner == requester) {
+			if requester := scope.credential.Runner.RunnerID; requester != "" && (!request.Recover || !barrier.Running || barrier.Owner != requester) {
 				preferred, err := preferredBarrierRunner(ctx, tx, scope, now)
 				if err != nil {
 					return nil, err
@@ -232,6 +232,7 @@ func preferredBarrierRunner(ctx context.Context, query nativeQueryer, scope nati
 	if err != nil {
 		return "", err
 	}
+	defer rows.Close()
 	var ids []string
 	for rows.Next() {
 		var id string

@@ -122,6 +122,7 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 		{name: "preserve moved source branch", external: true, change: "branch"},
 		{name: "preserve another active source worktree", external: true, change: "held"},
 		{name: "refuse moved fetched PR head", external: true, change: "remote", refusal: LandRefusalHeadMoved},
+		{name: "refuse missing PR ref with published branch", external: true, change: "missing-ref", refusal: LandRefusalMissingHead},
 		{name: "refuse cross-project source", external: true, change: "repository", refusal: LandRefusalProtected},
 		{name: "refuse cross-org external reference", external: true, change: "external", refusal: LandRefusalProtected},
 	} {
@@ -181,6 +182,8 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 				options.External.URL = "https://github.com/another/repo/pull/7"
 			case "remote":
 				runGit(t, fixture.remote, "update-ref", "refs/pull/7/head", fixture.remoteMain(t))
+			case "missing-ref":
+				runGit(t, fixture.remote, "update-ref", "-d", "refs/pull/7/head")
 			case "branch", "held":
 				runGit(t, receiver, "branch", branch, "main")
 				if test.change == "held" {
@@ -276,6 +279,12 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 				var refusal *LandRefusal
 				if !errors.As(err, &refusal) || refusal.Kind != test.refusal {
 					t.Fatalf("Create() error = %v, want %s", err, test.refusal)
+				}
+				if test.change == "missing-ref" {
+					var command *CommandError
+					if !errors.As(err, &command) || command.ExitCode != 128 || !strings.Contains(refusal.Reason, "fatal: couldn't find remote ref refs/pull/7/head") {
+						t.Fatalf("Create() error = %v, want missing-ref command failure", err)
+					}
 				}
 			} else {
 				if err != nil {

@@ -130,6 +130,7 @@ func TestRunnerResolvesLandingBeforeWorkspace(t *testing.T) {
 		{name: "unreviewed source", github: true, targetErr: ErrLandingNotReviewed},
 		{name: "current policy disables PR landing"},
 		{name: "hydration refusal", github: true, created: true, createErr: &workspace.LandRefusal{Kind: workspace.LandRefusalHeadMoved, Reason: "external PR moved"}},
+		{name: "missing PR ref returns failed command through landing refusal", github: true, created: true, createErr: errors.Join(&workspace.CommandError{Command: "git", ExitCode: 128, Output: "fatal: couldn't find remote ref refs/pull/4681/head", Err: errors.New("exit status 128")}, &workspace.LandRefusal{Kind: workspace.LandRefusalMissingHead, Reason: "fetch review head from origin ref refs/pull/4681/head: fatal: couldn't find remote ref refs/pull/4681/head"})},
 		{name: "hydration quota retains reviewed identity and metrics", github: true, created: true, quota: true},
 		{name: "hydration 429 retains Retry-After and healthy primary reset", github: true, created: true, quota: true, status: http.StatusTooManyRequests},
 	} {
@@ -189,6 +190,13 @@ func TestRunnerResolvesLandingBeforeWorkspace(t *testing.T) {
 				}
 			} else if err != nil || result.Output != RunOutputNativeLandingRefused || result.NativeLanding == nil || result.NativeLanding.Landed {
 				t.Fatalf("run result = %#v, error = %v", result, err)
+			}
+			if refusal != nil {
+				var command *workspace.CommandError
+				failedCommand := errors.As(test.createErr, &command)
+				if result.NativeLanding.RefusalKind != refusal.Kind || result.NativeLanding.Refusal != refusal.Reason || result.NativeLanding.GateFailed != failedCommand || execution.finish != "succeeded" {
+					t.Fatalf("landing refusal = %#v, execution outcome = %q", result.NativeLanding, execution.finish)
+				}
 			}
 		})
 	}

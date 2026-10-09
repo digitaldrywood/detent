@@ -79,12 +79,14 @@ func TestLocalGitSeedReviewHead(t *testing.T) {
 	}
 
 	for _, tt := range []struct {
-		name    string
-		advance bool
-		dirty   bool
-		wantErr bool
+		name       string
+		advance    bool
+		dirty      bool
+		missingRef bool
+		wantErr    bool
 	}{
 		{name: "stable head"},
+		{name: "missing PR ref with published branch", missingRef: true, wantErr: true},
 		{name: "matching head with dirty review workspace", dirty: true, wantErr: true},
 		{name: "head changes before checkout", advance: true},
 		{name: "dirty review workspace", advance: true, dirty: true, wantErr: true},
@@ -123,9 +125,20 @@ func TestLocalGitSeedReviewHead(t *testing.T) {
 				}
 			}
 			issue.PullRequestHeadSHA = wanted
+			if tt.missingRef {
+				issue.PullRequestNumber = 4681
+				issue.PullRequestBranch = info.Branch
+			}
 			err = backend.SeedReviewHead(t.Context(), info, issue)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("SeedReviewHead() error = %v, want error %t", err, tt.wantErr)
+			}
+			if tt.missingRef {
+				var refusal *LandRefusal
+				var command *CommandError
+				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalMissingHead || !errors.As(err, &command) || command.ExitCode != 128 || !strings.Contains(refusal.Reason, "origin ref refs/pull/4681/head") || !strings.Contains(refusal.Reason, "fatal: couldn't find remote ref refs/pull/4681/head") {
+					t.Fatalf("missing PR ref error = %v, want refusal with Git stderr", err)
+				}
 			}
 			head, err := backend.Head(t.Context(), info, issue)
 			if err != nil {
