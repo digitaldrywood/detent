@@ -44,7 +44,8 @@ GOMAXPROCS ?= $(TEST_PROCS)
 export GOMAXPROCS
 # Filesystem diagnostics can record millions of cache inputs (#2735).
 # Run gate tests afresh; -count=1 preserves native build and module caches.
-GO_TEST := env -u DETENT_API_TOKEN go test -count=1 -p $(TEST_PROCS)
+TEST_TIMEOUT ?= 10m
+GO_TEST := env -u DETENT_API_TOKEN go test -count=1 -p $(TEST_PROCS) -timeout=$(TEST_TIMEOUT)
 GOLANGCI_LINT_VERSION_FILE := .golangci-version
 GOLANGCI_LINT_VERSION := $(shell cat $(GOLANGCI_LINT_VERSION_FILE))
 GOLANGCI_LINT_TOOLCHAIN := $(shell awk '/^toolchain / { print $$2 }' go.mod)
