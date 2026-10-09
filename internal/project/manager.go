@@ -705,7 +705,23 @@ func (m *Manager) unpauseLocked(ctx context.Context, id ID, draining bool) error
 		return ErrProjectNotFound
 	}
 	if !project.Paused() {
-		return nil
+		orch := project.Orchestrator()
+		if draining || orch == nil || !project.Running() {
+			return nil
+		}
+		state, err := orch.State(ctx)
+		if err != nil {
+			return err
+		}
+		if !state.Draining {
+			return nil
+		}
+		if err := project.requireSettledAttempts(ctx); err != nil {
+			return err
+		}
+		if err := pauseSettledConfiguration(ctx, project, ManagedConfigView{UnsettledAttempts: state.UnsettledWork()}); err != nil {
+			return err
+		}
 	}
 	if m.running {
 		if err := m.waitBeforeSpawn(ctx); err != nil {

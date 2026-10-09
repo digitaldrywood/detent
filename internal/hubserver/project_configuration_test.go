@@ -160,7 +160,7 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 }
 
 func TestCloudProjectConfigurationOwner(t *testing.T) {
-	for _, scenario := range []string{"resume", "resume stale runner", "resume stale configuration", "resume denied", "resume revoked", "drain", "apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
+	for _, scenario := range []string{"resume", "resume drained", "resume stale runner", "resume stale configuration", "resume denied", "resume revoked", "drain", "apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "project-configuration")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
@@ -171,7 +171,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			candidate = candidate.WithID()
 			approveHubTestPolicy(t, f.service, f.base+"/policy", current)
 			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", ConfigRevision: strings.Repeat("a", 64), Registered: true, RuntimeRegistered: true, Paused: true, Source: "configured_committed_workflow", EffectivePolicy: &current, SelectedPolicy: &current, LocalBindingPolicy: &candidate, ObservedAt: time.Now()}
-			if scenario == "running apply" {
+			if scenario == "running apply" || scenario == "resume drained" {
 				view.Paused = false
 			}
 			if scenario == "drained apply" {
@@ -233,6 +233,30 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			if observed.RunnerID != r.binding.RunnerID || observed.ConfigRevision != view.ConfigRevision || observed.AllowLocalBinding || observed.LocalBindingPolicy == nil || observed.LocalBindingPolicy.ID != candidate.ID {
 				t.Fatalf("configuration=%s", result.Content)
 			}
+			if scenario == "drain" || scenario == "resume drained" {
+				args := operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: observed.RunnerID, ExpectedRunnerRevision: observed.RunnerRevision, RequestID: "drain", ExpectedConfigRevision: observed.ConfigRevision, ExpectedPolicyID: current.ID}
+				result, err := call("drain_local_project", args)
+				if err != nil || !strings.Contains(string(result.Content), `"pending":true`) {
+					t.Fatalf("drain queued=%s %v", result.Content, err)
+				}
+				request := heartbeat().ProjectConfigurationRequest
+				if request == nil || request.Operation != "drain_local_project" || request.RequestID != args.RequestID {
+					t.Fatalf("drain delivery=%+v", request)
+				}
+				view.RequestID, view.Saved, view.Applied, view.Draining = args.RequestID, true, true, true
+				if heartbeat().ProjectConfigurationRequest != nil {
+					t.Fatal("acknowledged drain repeated")
+				}
+				if scenario == "drain" {
+					return
+				}
+				view.RequestID = ""
+				heartbeat()
+				result, err = call(operatortool.LocalProjectConfiguration, operatortool.LocalProjectArguments{ProjectID: view.ProjectID})
+				if err != nil || json.Unmarshal(result.Content, &observed) != nil || observed.Paused || !observed.Draining || observed.UnsettledAttempts != 0 {
+					t.Fatalf("drain readback=%s %v", result.Content, err)
+				}
+			}
 			if strings.HasPrefix(scenario, "resume") {
 				args := operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: observed.RunnerID, ExpectedRunnerRevision: observed.RunnerRevision, RequestID: "resume", ExpectedConfigRevision: observed.ConfigRevision, ExpectedPolicyID: current.ID}
 				if scenario == "resume stale runner" {
@@ -273,35 +297,19 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				if request == nil || request.Operation != "resume_local_project" || request.RequestID != args.RequestID {
 					t.Fatalf("resume delivery=%+v", request)
 				}
-				view.RequestID, view.Saved, view.Applied, view.Paused = args.RequestID, true, true, false
+				view.RequestID, view.Saved, view.Applied, view.Paused, view.Draining = args.RequestID, true, true, false, false
 				if heartbeat().ProjectConfigurationRequest != nil {
 					t.Fatal("acknowledged resume repeated")
 				}
 				result, err = call("resume_local_project", args)
-				if err != nil || !strings.Contains(string(result.Content), `"applied":true`) || !strings.Contains(string(result.Content), `"paused":false`) {
+				if err != nil || !strings.Contains(string(result.Content), `"applied":true`) || !strings.Contains(string(result.Content), `"paused":false`) || !strings.Contains(string(result.Content), `"draining":false`) {
 					t.Fatalf("resume receipt=%s %v", result.Content, err)
 				}
 				view.RequestID = ""
 				heartbeat()
 				result, err = call(operatortool.LocalProjectConfiguration, operatortool.LocalProjectArguments{ProjectID: view.ProjectID})
-				if err != nil || json.Unmarshal(result.Content, &observed) != nil || observed.Paused || observed.LastOperation == nil || observed.LastOperation.Operation != "resume_local_project" || !observed.LastOperation.Applied {
+				if err != nil || json.Unmarshal(result.Content, &observed) != nil || observed.Paused || observed.Draining || observed.LastOperation == nil || observed.LastOperation.Operation != "resume_local_project" || !observed.LastOperation.Applied {
 					t.Fatalf("resume readback=%s %v", result.Content, err)
-				}
-				return
-			}
-			if scenario == "drain" {
-				args := operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: observed.RunnerID, ExpectedRunnerRevision: observed.RunnerRevision, RequestID: "drain", ExpectedConfigRevision: observed.ConfigRevision, ExpectedPolicyID: current.ID}
-				result, err := call("drain_local_project", args)
-				if err != nil || !strings.Contains(string(result.Content), `"pending":true`) {
-					t.Fatalf("drain queued=%s %v", result.Content, err)
-				}
-				request := heartbeat().ProjectConfigurationRequest
-				if request == nil || request.Operation != "drain_local_project" || request.RequestID != args.RequestID {
-					t.Fatalf("drain delivery=%+v", request)
-				}
-				view.RequestID, view.Saved, view.Applied, view.Draining = args.RequestID, true, true, true
-				if heartbeat().ProjectConfigurationRequest != nil {
-					t.Fatal("acknowledged drain repeated")
 				}
 				return
 			}
