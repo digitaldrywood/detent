@@ -71,7 +71,37 @@ type InstallationRepository struct {
 	FullName string
 }
 
+type appTokenSource struct {
+	source *InstallationTokenSource
+}
+
+func NewAppTokenSource(cfg InstallationTokenConfig) (TokenSource, error) {
+	source, err := newAppTokenSource(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return appTokenSource{source: source}, nil
+}
+
+func (s appTokenSource) Token(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return s.source.jwt(s.source.now())
+}
+
 func NewInstallationTokenSource(cfg InstallationTokenConfig) (*InstallationTokenSource, error) {
+	source, err := newAppTokenSource(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if source.installationID == "" && source.repository == "" {
+		return nil, ErrMissingAppConfig
+	}
+	return source, nil
+}
+
+func newAppTokenSource(cfg InstallationTokenConfig) (*InstallationTokenSource, error) {
 	lookupEnv := cfg.LookupEnv
 	if lookupEnv == nil {
 		lookupEnv = os.Getenv
@@ -91,7 +121,7 @@ func NewInstallationTokenSource(cfg InstallationTokenConfig) (*InstallationToken
 	if err != nil {
 		return nil, err
 	}
-	if appID == "" || installationID == "" && cfg.Repository == "" || privateKey == "" {
+	if appID == "" || privateKey == "" {
 		return nil, ErrMissingAppConfig
 	}
 

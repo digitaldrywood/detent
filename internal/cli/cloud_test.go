@@ -89,7 +89,7 @@ func TestReadCloudConfig(t *testing.T) {
 		wantError  bool
 	}{
 		{name: "valid", body: base, env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}},
-		{name: "product App webhook", body: base, env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "DETENT_HUB_GITHUB_WEBHOOK_SECRET": "webhook-secret"}},
+		{name: "product App webhook", body: base, env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "DETENT_HUB_GITHUB_WEBHOOK_SECRET": "webhook-secret", "DETENT_HUB_GITHUB_APP_ID": "123", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY": "app-key"}},
 		{name: "missing signing key", body: base, env: map[string]string{"WORKOS_API_KEY": "sk_test"}, wantError: true},
 		{name: "literal secret rejected", body: base + "signing_key: " + seed + "\n", env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}, wantError: true},
 		{name: "attachment secret in YAML rejected", body: base + "attachments:\n  endpoint: https://nyc3.digitaloceanspaces.com\n  region: nyc3\n  bucket: private\n  access_key_id: forbidden\n", env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}, wantError: true},
@@ -110,6 +110,9 @@ func TestReadCloudConfig(t *testing.T) {
 			}
 			if err == nil && string(config.GitHubWebhookSecret) != test.env["DETENT_HUB_GITHUB_WEBHOOK_SECRET"] {
 				t.Fatal("entry webhook secret was not read from the environment")
+			}
+			if err == nil && test.env["DETENT_HUB_GITHUB_APP_ID"] != "" && (config.GitHubApp == nil || config.GitHubApp.AppID != "123" || config.GitHubApp.PrivateKey != "app-key") {
+				t.Fatal("entry App credentials were not read from the environment")
 			}
 			if err != nil && strings.Contains(err.Error(), seed) {
 				t.Fatal("error exposes the signing key")

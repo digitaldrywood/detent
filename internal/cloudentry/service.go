@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
@@ -52,6 +53,7 @@ type Config struct {
 	ConfigPath                string
 	Attachments               *attachment.Config
 	GitHubWebhookSecret       []byte
+	GitHubApp                 *github.InstallationTokenConfig
 
 	now                 func() time.Time
 	generateToken       func() (string, error)
@@ -223,14 +225,29 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 	if err != nil {
 		return fmt.Errorf("listen for shared entry requests: %w", err)
 	}
-	service.config.Logger.Info("shared entry serving", "address", listener.Addr().String())
+	return service.serve(ctx, listener)
+}
+
+func (s *Service) serve(ctx context.Context, listener net.Listener) error {
+	since, before := s.githubReplayWindow(ctx)
+	s.config.Logger.Info("shared entry serving", "address", listener.Addr().String())
 	result := make(chan error, 1)
 	go func() {
-		err := service.echo.Server.Serve(listener)
+		err := s.echo.Server.Serve(listener)
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}
 		result <- err
+	}()
+	replayCtx, cancelReplay := context.WithTimeout(ctx, 5*time.Minute)
+	replayDone := make(chan struct{})
+	go func() {
+		defer close(replayDone)
+		s.replayGitHubDeliveries(replayCtx, since, before)
+	}()
+	defer func() {
+		cancelReplay()
+		<-replayDone
 	}()
 	select {
 	case err := <-result:
@@ -238,7 +255,7 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 	case <-ctx.Done():
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return errors.Join(service.echo.Shutdown(shutdown), <-result)
+		return errors.Join(s.echo.Shutdown(shutdown), <-result)
 	}
 }
 

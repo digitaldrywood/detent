@@ -2,15 +2,21 @@ package cloudentry
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
@@ -157,6 +163,20 @@ func TestSharedEntryGitHubWebhookRouting(t *testing.T) {
  "repository":{"node_id":"R_repo","name":"orders","full_name":"acme/orders","owner":{"login":"acme"}},
  "issue":{"node_id":"I_report","number":12,"title":"Hosted report","body":"Report body","html_url":"https://github.com/acme/orders/issues/12","state":"open","user":{"login":"reporter"},"labels":[],"assignees":[],"created_at":"2026-10-06T12:00:00Z","updated_at":"2026-10-06T12:00:00Z"}
 }`
+			organization, err := service.registry.Organization(t.Context(), "org_alpha")
+			if err != nil {
+				t.Fatal(err)
+			}
+			status, raw, err := service.serviceCall(t.Context(), organization, "/internal/v1/github/receipt", struct{}{}, nil)
+			var emptyReceipt struct {
+				ReceivedAt *time.Time `json:"received_at"`
+			}
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("empty inbox receipt = %d, %s: %v", status, raw, err)
+			}
+			if err := json.Unmarshal(raw, &emptyReceipt); err != nil || emptyReceipt.ReceivedAt != nil {
+				t.Fatalf("empty inbox receipt = %s: %v", raw, err)
+			}
 			attempts := 1
 			if test.redelivery {
 				attempts = 2
@@ -177,7 +197,36 @@ func TestSharedEntryGitHubWebhookRouting(t *testing.T) {
 					request.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 				}
 				response := httptest.NewRecorder()
-				service.Handler().ServeHTTP(response, request)
+				if test.redelivery && attempt == 1 {
+					key, err := rsa.GenerateKey(rand.Reader, 2048)
+					if err != nil {
+						t.Fatal(err)
+					}
+					service.config.GitHubApp = &github.InstallationTokenConfig{
+						AppID: "123", PrivateKey: string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})),
+						Endpoint: "https://replay.example.test/graphql",
+						HTTPClient: &http.Client{Transport: handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							if r.Method == http.MethodGet {
+								if err := json.NewEncoder(w).Encode([]githubDelivery{{ID: 1, GUID: "hosted-delivery", DeliveredAt: time.Now(), StatusCode: 503, Event: "issues"}}); err != nil {
+									t.Error(err)
+								}
+								return
+							}
+							service.Handler().ServeHTTP(response, request)
+							w.WriteHeader(http.StatusAccepted)
+						})}},
+					}
+					since, _ := service.githubReplayWindow(t.Context())
+					if since.IsZero() {
+						t.Fatal("accepted tenant inbox receipt was unavailable")
+					}
+					count, err := service.requestGitHubRedeliveries(t.Context(), since, time.Now().Add(time.Minute))
+					if err != nil || count != 1 {
+						t.Fatalf("redelivery requests = %d: %v", count, err)
+					}
+				} else {
+					service.Handler().ServeHTTP(response, request)
+				}
 				if response.Code != test.wantStatus {
 					t.Fatalf("status = %d, want %d: %s", response.Code, test.wantStatus, response.Body)
 				}
