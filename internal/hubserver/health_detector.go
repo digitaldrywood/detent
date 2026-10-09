@@ -45,6 +45,11 @@ func (s *Service) stopHealthDetector() {
 func (s *Service) evaluateTenantHealth(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
+	if s.requestMetrics != nil {
+		if err := s.requestMetrics.flush(ctx, s.config.now()); err != nil {
+			s.config.Logger.Warn("flush tenant request metrics", "error", err)
+		}
+	}
 	rows, err := s.database.reader.QueryContext(ctx, "SELECT id FROM organizations ORDER BY id LIMIT ?", healthReadLimit+1)
 	if err != nil {
 		return err
@@ -93,7 +98,11 @@ func (s *Service) evaluateOrganizationHealth(ctx context.Context, organization t
  ON CONFLICT(organization_id) DO UPDATE SET baseline_unavailable_json=excluded.baseline_unavailable_json`, organization, formatHubTime(now), string(raw)); err != nil {
 		return err
 	}
-	return s.commitHealthEvaluation(ctx, tx, organization, now, evaluateHealth(now, snapshot))
+	findings := evaluateHealth(now, snapshot)
+	if s.requestMetrics != nil && organization == s.requestMetrics.organization {
+		findings = append(findings, s.requestMetrics.findings(now)...)
+	}
+	return s.commitHealthEvaluation(ctx, tx, organization, now, findings)
 }
 
 func (s *Service) readHealthSnapshot(ctx context.Context, organization tracker.OrganizationID, now time.Time) (healthSnapshot, error) {

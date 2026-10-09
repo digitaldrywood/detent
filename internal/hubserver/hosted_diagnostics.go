@@ -31,6 +31,7 @@ type diagnosticsCapacity struct {
 }
 
 type diagnosticsReport struct {
+	Requests      *requestMetricsReport      `json:"requests,omitempty"`
 	From          time.Time                  `json:"from"`
 	To            time.Time                  `json:"to"`
 	Partial       bool                       `json:"partial"`
@@ -90,6 +91,13 @@ func (s *Service) readHostedDiagnostics(ctx context.Context, analytics nativeAna
 	for at := w.From; at.Before(w.To); at = at.Add(time.Hour) {
 		zero := 0
 		out.Capacity = append(out.Capacity, diagnosticsCapacity{Hour: at, Todo: &zero})
+	}
+	requests, visible, err := s.adminRequestMetrics(ctx)
+	if err != nil {
+		return out, err
+	}
+	if visible {
+		out.Requests = &requests
 	}
 	var transitions, attempts, usage, receipts, receiptTotal, queue, claims, ready, skipped, identity int
 	refusals := map[string]int{}

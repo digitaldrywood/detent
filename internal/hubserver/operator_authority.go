@@ -125,6 +125,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			request.Host = public.Host
 		}
 		c.SetRequest(request)
+		c.Set("hub_api_credential", credential)
 		return next(c)
 	}
 }

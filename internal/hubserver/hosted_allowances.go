@@ -148,6 +148,9 @@ func (d *database) checkHostedConsumptionGrowth(ctx context.Context, tx *sql.Tx,
 	}{
 		{"api_mutations", 1}, {"ingested_events", max(int64(0), after["events_total"]-before["events_total"])},
 	} {
+		if sample.name == "api_mutations" && ctx.Value(runnerRequestBudgetContext{}) == true {
+			continue
+		}
 		if !completion && sample.amount > 0 && sample.amount > entitlement.Allowances[sample.name]-after[sample.name] {
 			return &hostedLimitError{Resource: sample.name, Allowance: entitlement.Allowances[sample.name], Consumption: after[sample.name]}
 		}
@@ -164,6 +167,9 @@ func (d *database) checkHostedClaim(ctx context.Context, tx *sql.Tx, now time.Ti
 	}
 	if err := d.requireHostedFeature(ctx, tx, "native_execution", now); err != nil {
 		return err
+	}
+	if ctx.Value(runnerRequestBudgetContext{}) == true {
+		return nil
 	}
 	entitlement, err := d.hostedEntitlement(ctx, tx, now)
 	if err != nil {

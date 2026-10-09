@@ -116,10 +116,17 @@ func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCred
 	if err != nil {
 		return apiCredential{}, http.StatusUnauthorized, auth.ErrInvalidSession
 	}
+	var credential apiCredential
+	var status int
 	if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindBrowser {
-		return s.hostedSharedCredential(ctx, session, hash, claims.Role)
+		credential, status, err = s.hostedSharedCredential(ctx, session, hash, claims.Role)
+	} else {
+		credential, status, err = s.hostedSessionCredential(ctx, session, hash)
 	}
-	return s.hostedSessionCredential(ctx, session, hash)
+	if err == nil {
+		c.Set("hub_api_credential", credential)
+	}
+	return credential, status, err
 }
 
 // hostedSharedCredential builds a browser credential from the shared entry's

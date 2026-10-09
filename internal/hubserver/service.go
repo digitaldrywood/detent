@@ -37,6 +37,7 @@ type Service struct {
 	writerStatsAt           atomic.Int64
 	writerWaits             atomic.Int64
 	writerWaited            atomic.Int64
+	requestMetrics          *tenantRequestMetrics
 	runnerPublishedReleases sync.Map
 	tokenUse                sync.Map
 	tokenUseWork            sync.WaitGroup
@@ -172,12 +173,31 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 			return nil, errors.Join(err, database.Close())
 		}
 	}
+	e.Use(service.measureRequests)
 	service.registerRoutes(e)
 	if service.conversations != nil {
 		if err := service.conversations.start(ctx); err != nil {
 			workerCancel()
 			reconcileCancel()
 			return nil, errors.Join(err, database.Close())
+		}
+	}
+	if cfg.Hosted != nil && !cfg.CredentialMaintenance {
+		service.requestMetrics, err = openRequestMetrics(ctx, database.path+".metrics.sqlite", tracker.OrganizationID(cfg.Hosted.OrganizationID))
+		if err != nil {
+			workerCancel()
+			reconcileCancel()
+			if service.conversations != nil {
+				service.conversations.stop()
+			}
+			if service.workspaces != nil {
+				service.workspaces.StopContext(ctx)
+			}
+			var mcpErr error
+			if service.mcpHTTP != nil {
+				mcpErr = service.mcpHTTP.Shutdown(ctx)
+			}
+			return nil, errors.Join(err, mcpErr, database.Close())
 		}
 	}
 	if cfg.CredentialMaintenance {
@@ -419,7 +439,11 @@ func (s *Service) CloseContext(ctx context.Context) error {
 			s.workspaces.StopContext(ctx)
 		}
 		s.tokenUseWork.Wait()
-		s.closeErr = errors.Join(mcpErr, httpErr, webhookErr, reconcileErr, s.database.Close())
+		var metricsErr error
+		if s.requestMetrics != nil {
+			metricsErr = errors.Join(s.requestMetrics.flush(ctx, s.config.now()), s.requestMetrics.db.Close())
+		}
+		s.closeErr = errors.Join(mcpErr, httpErr, webhookErr, reconcileErr, metricsErr, s.database.Close())
 	})
 	return s.closeErr
 }

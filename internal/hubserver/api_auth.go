@@ -141,6 +141,9 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 			for _, scope := range allowed {
 				if credential.Scope == scope || credential.Scope == apiScopeAdmin {
 					c.Set("hub_api_credential", credential)
+					if err := s.admitRunnerRequest(c, credential); err != nil || c.Response().Committed {
+						return err
+					}
 					return next(c)
 				}
 			}
