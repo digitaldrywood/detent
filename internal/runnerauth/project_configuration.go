@@ -90,7 +90,7 @@ func (c ProjectConfiguration) Validate() error {
 		}
 	}
 	switch c.Source {
-	case "unavailable", "configured_committed_workflow", "configured_local_workflow_read_only":
+	case "unavailable", "configured_committed_workflow", "configured_local_workflow_read_only", "cloud_workflow":
 	default:
 		return errors.New("invalid project configuration source")
 	}

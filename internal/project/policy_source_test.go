@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/policy"
 )
 
 func TestRepositoryPolicySource(t *testing.T) {
@@ -106,6 +108,14 @@ func TestRepositoryPolicySource(t *testing.T) {
 			if (source != nil) != test.wantSource {
 				t.Fatalf("source = %+v, want present %v", source, test.wantSource)
 			}
+			scheduling := &managedRepositoryScheduling{}
+			p := &Project{cfg: cfg, policyScheduling: scheduling}
+			if _, err := p.loadManagedWorkflow(t.Context(), ""); err != nil {
+				t.Fatal(err)
+			}
+			if (scheduling.source != nil) != test.wantSource {
+				t.Fatalf("managed application lost repository authority: %+v", scheduling.source)
+			}
 			if source != nil {
 				if source.Repository != "acme/orders" || source.Commit != resolved.Definition.Revision || source.DefaultBranch != "develop" || source.DefaultBranchHead == "" || source.DefaultBranchReachable != test.wantReachable {
 					t.Fatalf("repository provenance = %+v, want reachable %v", source, test.wantReachable)
@@ -119,4 +129,14 @@ func TestRepositoryPolicySource(t *testing.T) {
 			}
 		})
 	}
+}
+
+type managedRepositoryScheduling struct {
+	policyTestScheduling
+	source *policy.RepositorySource
+}
+
+func (s *managedRepositoryScheduling) ResolveProjectWorkflow(_ context.Context, _ string, workflow workflowconfig.Workflow, source *policy.RepositorySource) (workflowconfig.Workflow, error) {
+	s.source = source
+	return workflow, nil
 }

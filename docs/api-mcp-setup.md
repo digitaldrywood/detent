@@ -19,7 +19,7 @@ including human ownership, dependencies and registered-runner conditions.
 On an enrolled runner host, discover the `local_projects` toolset on the
 runner's authenticated `/mcp` connection. `local_project_configuration` reads the actual
 local revision and redacted selected/effective policy. Its admin commands apply
-an approved committed policy, drain current work or detach one settled migrated
+an approved policy, drain current work or detach one settled migrated
 project. They use the existing operator command API and authority and receipt owner;
 see [managed local project configuration](mcp-capabilities.md#managed-local-project-configuration-native-94)
 for exact revision, policy and handoff requirements. Cloud also reaches the
@@ -45,6 +45,20 @@ returned field, including `authored`, `profile`, `configuration`, `workflow` and
 `gates.human_review` when present. Reconstructing a subset can invalidate the
 identity digest. Authorized approval executes directly; approval and runner
 application are separate operations.
+
+For an external local definition without trusted repository provenance, the
+approved authored Cloud descriptor supplies shared behavior. Private overlays
+remain on the host and do not prevent adoption. Read `selected_policy` as the
+preview, then apply its exact approved policy ID and source revision after work
+settles. Application preserves host execution settings and the prior pause or
+drain state; it does not rewrite definition files or runner routing. The durable
+Cloud approval supplies the same shared behavior on subsequent reloads and
+restarts. `applied: true` confirms runtime adoption; `saved: false` means no local
+configuration file was changed. Cloud readback retains the completed receipt,
+including refusal constraints, in `last_operation` after later heartbeats.
+Trusted repository definitions retain their repository authority: commit the
+intended shared files at the configured source revision and approve that
+descriptor. An authored `source_revision` digest is not a Git commit.
 
 For the existing `worker.allow_local_binding` setting, read the effective
 `allow_local_binding` and the complete `local_binding_policy` or

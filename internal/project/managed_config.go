@@ -317,7 +317,9 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 		if source, ok := p.policyScheduling.(interface {
 			ResolveProjectWorkflow(context.Context, string, workflowconfig.Workflow, *policy.RepositorySource) (workflowconfig.Workflow, error)
 		}); ok && selected.Config.Tracker.Kind == workflowconfig.TrackerHubNative && selected.Definition.Layout != workflowconfig.ProjectDefinitionCloud {
-			resolved, err := source.ResolveProjectWorkflow(ctx, current.ID, selected, nil)
+			var provenance *policy.RepositorySource
+			selected, provenance = repositoryPolicySource(ctx, current, selected)
+			resolved, err := source.ResolveProjectWorkflow(ctx, current.ID, selected, provenance)
 			if err != nil {
 				view.Constraint = "The approved shared project configuration cannot be loaded; retry through the existing policy owner."
 				return view
@@ -383,7 +385,9 @@ func (p *Project) loadManagedWorkflow(ctx context.Context, revision string) (wor
 	if source, ok := p.policyScheduling.(interface {
 		ResolveProjectWorkflow(context.Context, string, workflowconfig.Workflow, *policy.RepositorySource) (workflowconfig.Workflow, error)
 	}); ok && workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative && workflow.Definition.Layout != workflowconfig.ProjectDefinitionCloud {
-		workflow, err = source.ResolveProjectWorkflow(ctx, cfg.ID, workflow, nil)
+		var provenance *policy.RepositorySource
+		workflow, provenance = repositoryPolicySource(ctx, cfg, workflow)
+		workflow, err = source.ResolveProjectWorkflow(ctx, cfg.ID, workflow, provenance)
 		if err != nil {
 			p.logger.WarnContext(ctx, "load managed approved policy", "project_id", cfg.ID, "error", err)
 			return workflowconfig.Workflow{}, errors.New("the approved shared project configuration cannot be loaded; retry through the existing policy owner")
