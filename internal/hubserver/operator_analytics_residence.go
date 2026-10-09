@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -68,6 +67,7 @@ func projectNativeAnalyticsResidence(ctx context.Context, q nativeQueryer, scope
 		timeline := buildAnalyticsResidenceTimeline(issue, states, out.Window.To)
 		clipped = clipped || timeline.issue.partial
 		timelines = append(timelines, timeline)
+		out.pipelineTimings = append(out.pipelineTimings, residencePipelineTimings(timeline, out.allAttempts)...)
 	}
 	var items []operatortool.AnalyticsIssueResidence
 	residence.AnalyticsResidenceSummary, items = summarizeAnalyticsResidence(timelines, states, out.Window.From, out.Window.To)
@@ -115,7 +115,7 @@ func projectNativeAnalyticsResidence(ctx context.Context, q nativeQueryer, scope
 
 func readAnalyticsResidenceHistory(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) (map[string]tracker.NativeState, []analyticsResidenceIssue, bool, error) {
 	states := map[string]tracker.NativeState{}
-	rows, err := q.QueryContext(ctx, `SELECT ws.detent_state,ws.terminal,ws.dispatchable FROM workflow_states ws
+	rows, err := queryAnalyticsRows(ctx, q, `SELECT ws.detent_state,ws.terminal,ws.dispatchable FROM workflow_states ws
 JOIN projects p ON p.id=ws.project_id WHERE p.organization_id=? AND p.id=? LIMIT 50`, scope.organization, scope.project)
 	if err != nil {
 		return nil, nil, false, err
@@ -133,10 +133,11 @@ JOIN projects p ON p.id=ws.project_id WHERE p.organization_id=? AND p.id=? LIMIT
 		rows.Close()
 		return nil, nil, false, err
 	}
-	if err := rows.Close(); err != nil {
+	rows.Close()
+	if err := rows.Err(); err != nil {
 		return nil, nil, false, err
 	}
-	rows, err = q.QueryContext(ctx, `SELECT i.native_id,i.created_at,coalesce(
+	rows, err = queryAnalyticsPopulation(ctx, q, "residence_issues", `SELECT i.native_id,i.created_at,coalesce(
 (SELECT json_extract(e.data_json,'$.from_state') FROM collaboration_events e
  WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned'
  ORDER BY e.sequence LIMIT 1),CASE WHEN EXISTS (
@@ -145,13 +146,13 @@ JOIN projects p ON p.id=ws.project_id WHERE p.organization_id=? AND p.id=? LIMIT
 FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id
 WHERE i.organization_id=? AND i.project_id=? AND julianday(i.created_at)<julianday(?)
 AND (coalesce(ws.terminal,0)=0 OR julianday(i.updated_at)>=julianday(?))
-ORDER BY i.native_id LIMIT ?`, scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From), maxAnalyticsPopulation+1)
+ORDER BY i.native_id LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From))
 	if err != nil {
 		return nil, nil, false, err
 	}
 	defer rows.Close()
 	issues := []analyticsResidenceIssue{}
-	clipped := false
+	clipped := analyticsPopulationOffset(ctx, "residence_issues") > 0 || analyticsPopulationOffset(ctx, "residence_events") > 0
 	for rows.Next() {
 		if len(issues) == maxAnalyticsPopulation {
 			clipped = true
@@ -168,30 +169,41 @@ ORDER BY i.native_id LIMIT ?`, scope.organization, scope.project, formatHubTime(
 			rows.Close()
 			return nil, nil, false, err
 		}
+		issue.partial = analyticsPopulationOffset(ctx, "residence_events") > 0
+		if issue.partial {
+			issue.initial = ""
+		}
 		issues = append(issues, issue)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
 		return nil, nil, false, err
 	}
-	if err := rows.Close(); err != nil {
+	rows.Close()
+	if err := rows.Err(); err != nil {
 		return nil, nil, false, err
 	}
 	if len(issues) == 0 {
 		return states, issues, clipped, nil
 	}
-	args := []any{scope.organization, scope.project, formatHubTime(w.To)}
+	ids := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		ids = append(ids, issue.id)
+	}
+	encodedIDs, err := marshalNative(ids)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	args := []any{scope.organization, scope.project, formatHubTime(w.To), encodedIDs}
 	byID := make(map[string]int, len(issues))
 	for i, issue := range issues {
 		byID[issue.id] = i
-		args = append(args, issue.id)
 	}
-	args = append(args, maxAnalyticsPopulation+1)
-	rows, err = q.QueryContext(ctx, `SELECT work_item_id,type,recorded_at,data_json FROM collaboration_events
+	rows, err = queryAnalyticsPopulation(ctx, q, "residence_events", `SELECT work_item_id,type,recorded_at,data_json FROM collaboration_events
 WHERE organization_id=? AND project_id=? AND julianday(recorded_at)<julianday(?)
-AND work_item_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(issues)), ",")+`)
+AND work_item_id IN (SELECT value FROM json_each(?))
 AND (type='workflow.transitioned' OR (type='scheduler.decision' AND json_extract(data_json,'$.decision.source')='native_claim' AND json_extract(data_json,'$.decision.outcome')='claimed'))
-ORDER BY work_item_id,sequence LIMIT ?`, args...)
+ORDER BY work_item_id,sequence LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, nil, false, err
 	}

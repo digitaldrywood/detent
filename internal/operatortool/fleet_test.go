@@ -30,6 +30,8 @@ func TestFleetArgumentBoundary(t *testing.T) {
 		{"capacity request", UpdateRunnerCapacity, `{"request_id":"r","runner_id":"r","change":{"expected_revision":1,"expected_config_revision":"` + strings.Repeat("a", 64) + `","capacity":6,"backend":"codex"}}`, true},
 		{"capacity overflow", UpdateRunnerCapacity, `{"request_id":"r","runner_id":"r","change":{"expected_revision":1,"expected_config_revision":"` + strings.Repeat("a", 64) + `","capacity":10001}}`, false},
 		{"capacity raw path", UpdateRunnerCapacity, `{"request_id":"r","runner_id":"r","change":{"expected_revision":1,"expected_config_revision":"` + strings.Repeat("a", 64) + `","capacity":6,"path":"/etc/config"}}`, false},
+		{"report population cursor", Reports, `{"population_cursor":"attempts:1000:0"}`, true},
+		{"report cursor bounded", Reports, `{"population_cursor":"` + strings.Repeat("x", 129) + `"}`, false},
 		{"bounded read", RunnerFleet, `{"limit":200,"offset":0}`, true},
 		{"limit overflow", RunnerFleet, `{"limit":201}`, false},
 		{"negative offset", RunnerFleet, `{"offset":-1}`, false},

@@ -3,10 +3,12 @@ package hubserver
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -22,7 +24,14 @@ func TestReportsCompletionPopulation(t *testing.T) {
 	}{{10, "Backlog", "Todo"}, {15, "Todo", "In Progress"}, {18, "In Progress", "Blocked"}, {22, "Blocked", "Merging"}, {25, "Merging", "Done"}} {
 		events = append(events, analyticsResidenceEvent{at: at(step.hour), kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: step.from, ToState: step.to}})
 	}
+	last := events[len(events)-1]
+	events[len(events)-1] = analyticsResidenceEvent{at: at(23), kind: "scheduler.decision"}
+	events = append(events, last)
 	timeline := buildAnalyticsResidenceTimeline(analyticsResidenceIssue{id: "done", created: base, initial: "Backlog", events: events}, states, at(48))
+	timings := residencePipelineTimings(timeline, []nativeAnalyticsAttempt{{WorkItemID: "done", Landing: &tracker.NativeLandingReceipt{Landed: true, ObservedAt: at(24)}}})
+	if len(timings) != 2 || !timings[0].Valid() || timings[0].Stage != "merging_queue" || timings[0].StartedAt != at(22) || timings[0].FinishedAt != at(23) || timings[1].Stage != "merging_to_landed" || timings[1].FinishedAt != at(24) {
+		t.Fatalf("workflow timestamps not derivable: %+v", timings)
+	}
 	open := buildAnalyticsResidenceTimeline(analyticsResidenceIssue{id: "open", created: base, initial: "Todo"}, states, at(48))
 	for _, tt := range []struct {
 		name                  string
@@ -105,3 +114,51 @@ func TestReportsFirstTryHistory(t *testing.T) {
 }
 
 func reportsPercent(value float64) *float64 { return &value }
+
+func TestReportsPipelineTiming(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	window := operatortool.AnalyticsWindow{From: at, To: at.Add(time.Hour), Bucket: time.Hour}
+	for _, tt := range []struct {
+		name              string
+		events            []gate.PipelineTiming
+		count             int
+		seconds, p50, p90 float64
+		reused            int
+		partial           bool
+		missingIdentity   bool
+	}{
+		{name: "executed totals and quantiles", events: []gate.PipelineTiming{{ReceiptID: "first", Stage: "finalization", Execution: "executed", StartedAt: at, FinishedAt: at.Add(10 * time.Second)}, {ReceiptID: "second", Stage: "finalization", Execution: "executed", StartedAt: at, FinishedAt: at.Add(30 * time.Second)}}, count: 2, seconds: 40, p50: 20, p90: 28},
+		{name: "duplicate receipts counted once", events: []gate.PipelineTiming{{ReceiptID: "same", Stage: "barrier", Execution: "executed", StartedAt: at, FinishedAt: at.Add(10 * time.Second)}, {ReceiptID: "same", Stage: "barrier", Execution: "executed", StartedAt: at, FinishedAt: at.Add(10 * time.Second)}}, count: 1, seconds: 10, p50: 10, p90: 10},
+		{name: "reuse has no executed duration", events: []gate.PipelineTiming{{ReceiptID: "reuse", Stage: "landing_validation", Execution: "reused", ReusedReceiptID: "source", StartedAt: at, FinishedAt: at}}, count: 0, reused: 1},
+		{name: "interval clipped to window", events: []gate.PipelineTiming{{ReceiptID: "clip", Stage: "rebase", Outcome: "clean", StartedAt: at.Add(-10 * time.Second), FinishedAt: at.Add(10 * time.Second)}}, count: 1, seconds: 10, p50: 10, p90: 10},
+		{name: "exclusive window end", events: []gate.PipelineTiming{{ReceiptID: "later", Stage: "repair", Execution: "executed", StartedAt: window.To, FinishedAt: window.To.Add(time.Second)}}},
+		{name: "dirty checkout still contributes elapsed timing", events: []gate.PipelineTiming{{ReceiptID: "dirty", Stage: "worker_check_land", Execution: "executed", StartedAt: at, FinishedAt: at.Add(10 * time.Second)}}, count: 1, seconds: 10, p50: 10, p90: 10, partial: true, missingIdentity: true},
+		{name: "historical receipt missing timestamps", events: []gate.PipelineTiming{{ReceiptID: "old", Stage: "finalization", Execution: "executed"}}, partial: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if !tt.missingIdentity {
+				for i := range tt.events {
+					tt.events[i].HeadSHA, tt.events[i].TreeSHA = strings.Repeat("a", 40), strings.Repeat("b", 40)
+				}
+			}
+			got := summarizePipelineTimings(tt.events, window)
+			if got.Partial != tt.partial {
+				t.Fatalf("partial=%v", got.Partial)
+			}
+			if tt.count+tt.reused == 0 {
+				if len(got.Stages) != 0 {
+					t.Fatalf("stages=%+v", got.Stages)
+				}
+				return
+			}
+			if len(got.Stages) != 1 {
+				t.Fatalf("stages=%+v", got.Stages)
+			}
+			stage := got.Stages[0]
+			if stage.Duration.Count != tt.count || stage.Duration.Seconds != tt.seconds || stage.Duration.P50Seconds != tt.p50 || stage.Duration.P90Seconds != tt.p90 || stage.Reused != tt.reused {
+				t.Fatalf("stage=%+v", stage)
+			}
+		})
+	}
+}

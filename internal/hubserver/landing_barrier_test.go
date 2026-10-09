@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -115,6 +116,9 @@ func TestRollingLandingBarrier(t *testing.T) {
 			next = mutate("repair-start", "start", "", nil, landed)
 			green := *red
 			green.ExitCode, green.Output = 0, "passed"
+			repairAt := f.service.config.now()
+			repairCommand := gate.CommandResult{Command: "make verify", HeadSHA: checked, TreeSHA: red.TreeSHA, ExitCode: 0, StartedAt: repairAt, FinishedAt: repairAt.Add(2 * time.Second)}
+			green.Pipeline = &gate.PipelineEvidence{Timings: []gate.PipelineTiming{repairCommand.PipelineTiming("repair")}}
 			finished := mutate("green", "finish", next.ID, &green, "")
 			if finished.Red || finished.Running || finished.Repair != "" {
 				t.Fatalf("green=%+v", finished)
@@ -130,6 +134,20 @@ func TestRollingLandingBarrier(t *testing.T) {
 			mergedGreen.HeadSHA = outOfBand
 			if finished := mutate("out-of-band-green", "finish", merged.ID, &mergedGreen, ""); finished.Red || finished.GreenHead != outOfBand {
 				t.Fatalf("out-of-band green=%+v", finished)
+			}
+			window := operatortool.AnalyticsWindow{From: repairAt.Add(-time.Hour), To: repairAt.Add(time.Hour)}
+			timingReport := nativeAnalyticsProject{Window: window}
+			if err := readPipelineBarriers(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, &timingReport); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, stage := range summarizePipelineTimings(timingReport.pipelineTimings, window).Stages {
+				if stage.Stage == "repair" {
+					found = stage.Executed == 1 && stage.Duration.Seconds == 2
+				}
+			}
+			if !found {
+				t.Fatal("normal barrier completion lost or duplicated repair timing")
 			}
 			land("after-green", f.create(t, "after-green"))
 			next = mutate("new-start", "start", "", nil, landed)

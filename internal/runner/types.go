@@ -849,23 +849,25 @@ type NativeLandingTarget struct {
 // commit the base branch advanced to; a refused one carries the refusal kind
 // and the reason, and the base branch is unchanged.
 type NativeLanding struct {
-	Path        string
-	Packages    []string
-	Waiting     bool
-	CI          *tracker.NativeLandingCIReceipt
-	Gate        *gate.CommandResult
-	Rebased     bool
-	GateFailed  bool
-	ChangeID    string
-	VersionID   string
-	HeadSHA     string
-	Landed      bool
-	MergeSHA    string
-	BaseRef     string
-	BaseSHA     string
-	Method      string
-	RefusalKind string
-	Refusal     string
+	Pipeline        []gate.PipelineTiming `json:"pipeline,omitempty"`
+	PipelineDropped int                   `json:"pipeline_dropped,omitempty"`
+	Path            string
+	Packages        []string
+	Waiting         bool
+	CI              *tracker.NativeLandingCIReceipt
+	Gate            *gate.CommandResult
+	Rebased         bool
+	GateFailed      bool
+	ChangeID        string
+	VersionID       string
+	HeadSHA         string
+	Landed          bool
+	MergeSHA        string
+	BaseRef         string
+	BaseSHA         string
+	Method          string
+	RefusalKind     string
+	Refusal         string
 }
 
 // NativeChange describes a successful hub-native work run's change. A hub

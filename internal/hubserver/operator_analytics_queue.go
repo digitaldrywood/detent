@@ -21,7 +21,7 @@ type nativeAnalyticsCapacityWait struct {
 
 func projectNativeAnalyticsCapacityWait(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
 	queue := nativeAnalyticsCapacityWait{Source: "native_scheduler_decisions", Coverage: "recorded_provider_capacity_wait_to_claim; claimed_in_window; clipped_to_window", Partial: true}
-	rows, err := q.QueryContext(ctx, `SELECT c.data_json,c.recorded_at,
+	rows, err := queryAnalyticsPopulation(ctx, q, "capacity", `SELECT c.data_json,c.recorded_at,
 coalesce((SELECT p.data_json FROM collaboration_events p
  WHERE p.organization_id=c.organization_id AND p.project_id=c.project_id AND p.work_item_id=c.work_item_id AND p.sequence<c.sequence
  ORDER BY p.sequence DESC LIMIT 1),'null'),
@@ -34,7 +34,7 @@ coalesce((SELECT p.recorded_at FROM collaboration_events p
 FROM collaboration_events c WHERE c.organization_id=? AND c.project_id=? AND c.type='scheduler.decision'
 AND json_extract(c.data_json,'$.decision.source')='native_claim' AND json_extract(c.data_json,'$.decision.outcome')='claimed'
 AND julianday(c.recorded_at)>=julianday(?) AND julianday(c.recorded_at)<julianday(?)
-ORDER BY c.recorded_at,c.id LIMIT ?`, scope.organization, scope.project, formatHubTime(out.Window.From), formatHubTime(out.Window.To), maxAnalyticsPopulation+1)
+ORDER BY c.recorded_at,c.id LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(out.Window.From), formatHubTime(out.Window.To))
 	if err != nil {
 		return err
 	}

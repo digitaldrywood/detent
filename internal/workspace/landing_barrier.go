@@ -74,7 +74,11 @@ func (l *LocalGit) RunLandingBarrier(ctx context.Context, id, base, command stri
 		resultErr = errors.Join(resultErr, l.removeLandingWorktree(cleanupCtx, l.sourceRoot, path))
 	}()
 	issue.PullRequestHeadSHA = head
-	return l.RunReviewCommand(ctx, info, issue, command)
+	result, resultErr = l.RunReviewCommand(ctx, info, issue, command)
+	if !result.StartedAt.IsZero() {
+		result.TimingStage = "barrier"
+	}
+	return result, resultErr
 }
 
 type LandingBarrierRepairWorkspace interface {

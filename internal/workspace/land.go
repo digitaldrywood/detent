@@ -101,6 +101,8 @@ type LandOptions struct {
 }
 
 type LandResult struct {
+	Pipeline            []gate.PipelineTiming           `json:"pipeline,omitempty"`
+	PipelineDropped     int                             `json:"pipeline_dropped,omitempty"`
 	Path                string                          `json:"path,omitempty"`
 	Packages            []string                        `json:"packages,omitempty"`
 	CI                  *tracker.NativeLandingCIReceipt `json:"ci,omitempty"`

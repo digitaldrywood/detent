@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 )
@@ -144,16 +145,36 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 				out[i].Err = fmt.Errorf("unsupported merge method %q", method)
 				continue
 			}
+			integrationStarted := time.Now()
 			merged, err := combine(ctx, staging, method, request.Options.HeadSHA, stageHead, request.Options.Message)
-			result := LandResult{BaseBefore: stageHead, BaseRef: target, Method: method, Path: "clean_push"}
+			result := LandResult{BaseBefore: stageHead, BaseRef: target, Method: method, Path: "clean_push", Pipeline: out[i].Result.Pipeline, PipelineDropped: out[i].Result.PipelineDropped}
+			if receipt := request.Options.Validation; receipt != nil && request.Options.ValidationCommand != "" {
+				result.Pipeline = append(result.Pipeline, receipt.Reused("landing_validation", time.Now().UTC()).PipelineTiming("landing_validation"))
+			}
+			if method == "rebase" {
+				outcome := "clean"
+				if err != nil {
+					outcome = "conflict"
+				}
+				result.Pipeline = append(result.Pipeline, gate.Interval("rebase", integrationStarted, time.Now(), outcome))
+			}
 			var conflict *LandRefusal
 			if errors.As(err, &conflict) && conflict.Kind == LandRefusalConflict {
 				if len(requests) > 1 && !request.Options.RebaseRequired {
 					out[i].Err = err
-					out[i].Result.Path = "batch_member"
+					result.Path = "batch_member"
+					result.Pipeline = append(result.Pipeline, gate.Interval("conflict_resolution", integrationStarted, time.Now(), "conflict"))
+					out[i].Result.Path = result.Path
+					out[i].Result.Pipeline = result.Pipeline
 					continue
 				}
+				rebaseStarted := time.Now()
 				merged, err = rebaseLanding(ctx, staging, request.Options.HeadSHA, stageHead, request.Options.Message)
+				outcome := "clean"
+				if err != nil {
+					outcome = "conflict"
+				}
+				result.Pipeline = append(result.Pipeline, gate.Interval("rebase", rebaseStarted, time.Now(), outcome))
 				result.Rebased, result.Path = true, "rebase_short_validation"
 			}
 			if method == "rebase" && err == nil {
@@ -171,6 +192,10 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 					err = scopeErr
 				} else {
 					result.Gate, err = l.validateLanding(ctx, validationInfo, request.Issue, command, merged)
+					if !result.Gate.StartedAt.IsZero() {
+						result.Gate.TimingStage = "landing_validation"
+						result.Pipeline = append(result.Pipeline, result.Gate.PipelineTiming("landing_validation"))
+					}
 				}
 			}
 			if err != nil {

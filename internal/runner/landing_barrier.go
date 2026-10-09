@@ -41,6 +41,7 @@ func (r *Runner) RunLandingBarriers(ctx context.Context, owner LandingBarrierOwn
 	}()
 	recoverClaim := true
 	repaired := map[string]bool{}
+	repairEvidence := gate.PipelineEvidence{}
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for ctx.Err() == nil {
@@ -70,8 +71,19 @@ func (r *Runner) RunLandingBarriers(ctx context.Context, owner LandingBarrierOwn
 				}
 				if started {
 					result, runErr := backend.RunLandingBarrier(ctx, barrier.ID, barrier.BaseRef, cfg.Run)
+					if timing := result.PipelineTiming("barrier"); timing.Valid() {
+						r.logger.Info("pipeline timing", "barrier", barrier.ID, "timing", timing)
+					}
 					var completed *gate.CommandResult
 					if runErr == nil {
+						if !repairEvidence.IsZero() {
+							pipeline := gate.PipelineEvidence{}
+							if result.Pipeline != nil {
+								pipeline = *result.Pipeline
+							}
+							pipeline.Timings, pipeline.Dropped = gate.MergePipeline(pipeline.Timings, repairEvidence.Timings, max(pipeline.Dropped, repairEvidence.Dropped))
+							result.Pipeline = &pipeline
+						}
 						completed = &result
 					} else {
 						r.logger.Warn("landing barrier instance failure", "error", runErr)
@@ -79,13 +91,20 @@ func (r *Runner) RunLandingBarriers(ctx context.Context, owner LandingBarrierOwn
 					if !r.finishLandingBarrier(ctx, owner, barrier, completed) {
 						return
 					}
+					if completed != nil {
+						repairEvidence = gate.PipelineEvidence{}
+					}
 					if completed != nil && completed.ExitCode != 0 && !repaired[completed.HeadSHA] {
 						repaired[completed.HeadSHA] = true
 						current := func() bool { return true }
 						if currency, ok := owner.(landingBarrierCurrency); ok {
 							current = func() bool { return currency.LandingBarrierCurrent(ctx, r.projectID, barrier.Repository, barrier.ID) }
 						}
-						r.repairLandingBarrier(ctx, backend, barrier, *completed, cfg.Run, current)
+						repairCtx := gate.WithPipelineRecorder(ctx, "repair", func(timing gate.PipelineTiming) {
+							r.logger.Info("pipeline timing", "barrier", barrier.ID, "timing", timing)
+							repairEvidence.Timings, repairEvidence.Dropped = gate.MergePipeline(repairEvidence.Timings, []gate.PipelineTiming{timing}, repairEvidence.Dropped)
+						})
+						r.repairLandingBarrier(repairCtx, backend, barrier, *completed, cfg.Run, current)
 						continue
 					}
 					if runErr == nil {

@@ -217,6 +217,9 @@ func TestValidationOutputKeepsTheFailingTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if result.StartedAt.IsZero() || !result.FinishedAt.After(result.StartedAt) || result.Execution != "executed" || result.ReceiptID == "" || result.ExitCode != 1 {
+		t.Fatalf("command receipt=%+v", result)
+	}
 	if !result.OutputTruncated || len(result.Output) > 64*1024 || !strings.HasSuffix(strings.TrimSpace(result.Output), "FAIL tail sentinel") || !strings.HasPrefix(result.Output, "[earlier output truncated]") {
 		t.Fatalf("truncated=%v len=%d tail=%q", result.OutputTruncated, len(result.Output), result.Output[max(0, len(result.Output)-40):])
 	}

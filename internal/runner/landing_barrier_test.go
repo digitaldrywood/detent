@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -181,7 +182,15 @@ type repairingBarrierWorkspace struct {
 	reverted   string
 }
 
-func (b *repairingBarrierWorkspace) VerifyLandingBarrierRepair(_ context.Context, path, head, command string, failed []string) (gate.CommandResult, bool, error) {
+func (b *repairingBarrierWorkspace) VerifyLandingBarrierRepair(ctx context.Context, path, head, command string, failed []string) (result gate.CommandResult, changed bool, err error) {
+	start := time.Now()
+	defer func() {
+		result.Command = command
+		result.HeadSHA = b.head
+		result.StartedAt = start
+		result.FinishedAt = time.Now()
+		gate.ObservePipelineCommand(ctx, &result)
+	}()
 	b.verified = failed
 	if path != "/repair" || head != "" && head != b.head || command != "make verify" {
 		return gate.CommandResult{}, false, errors.New("unexpected repair verification")
@@ -232,6 +241,8 @@ type repeatingBarrierOwner struct {
 	cancel     context.CancelFunc
 	reds       int
 	claims     int
+	finishes   int
+	receipts   []gate.CommandResult
 	green      string
 	superseded bool
 }
@@ -249,7 +260,11 @@ func (o *repeatingBarrierOwner) NextLandingBarrier(context.Context, string, stri
 	return tracker.LandingBarrier{ID: "barrier", Repository: "https://github.com/example/repo", BaseRef: "main", GreenHead: o.green}, true, nil
 }
 
-func (o *repeatingBarrierOwner) FinishLandingBarrier(context.Context, string, tracker.LandingBarrier, *gate.CommandResult) error {
+func (o *repeatingBarrierOwner) FinishLandingBarrier(_ context.Context, _ string, _ tracker.LandingBarrier, result *gate.CommandResult) error {
+	if result != nil {
+		o.receipts = append(o.receipts, *result)
+	}
+	o.finishes++
 	return nil
 }
 
@@ -295,6 +310,12 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 				agent := &fakeCodexClient{}
 				r := &Runner{workspace: backend, projectID: "project", workflow: workflow, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), agentRuntime: agentRuntime{backends: map[string]AgentBackend{"codex": agent}, router: router}}
 				r.RunLandingBarriers(ctx, owner)
+				if test.reds > 1 && (len(owner.receipts) != test.reds || owner.receipts[1].Pipeline == nil || len(owner.receipts[1].Pipeline.Timings) == 0 || owner.receipts[1].Pipeline.Timings[0].Stage != "repair") {
+					t.Fatal("next existing barrier receipt lost repair timing")
+				}
+				if owner.finishes != test.reds {
+					t.Fatalf("finishes=%d want=%d", owner.finishes, test.reds)
+				}
 				if backend.reverted != test.wantReverted {
 					t.Fatalf("reverted=%q want %q", backend.reverted, test.wantReverted)
 				}

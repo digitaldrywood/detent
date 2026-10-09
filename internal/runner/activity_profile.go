@@ -11,11 +11,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -35,6 +37,7 @@ type activityProfileStore interface {
 // Keep queued observations small: AgentUpdate also contains runtime identity,
 // token accounting and provider diagnostics that profiling never consumes.
 type activityUpdate struct {
+	Checks                                      []gate.CheckObservation
 	Type                                        AgentUpdateType
 	ItemID, TurnID, ThreadID, ProviderSessionID string
 	Tool, Command, Delta, Status                string
@@ -54,10 +57,12 @@ type activityObservation struct {
 }
 
 type activityRecorder struct {
-	queue   chan activityObservation
-	wake    chan struct{}
-	dropped atomic.Uint64
-	done    chan struct{}
+	mu         sync.Mutex
+	checkTails map[string]string
+	queue      chan activityObservation
+	wake       chan struct{}
+	dropped    atomic.Uint64
+	done       chan struct{}
 }
 
 // observe never waits for persistence, file reads, classification or queries.
@@ -71,6 +76,7 @@ func (r *activityRecorder) observe(update AgentUpdate, at time.Time, head string
 		r.dropped.Add(1)
 		return
 	}
+	var checks []gate.CheckObservation
 	var delta string
 	switch update.Type {
 	case AgentUpdateToolStarted:
@@ -80,7 +86,22 @@ func (r *activityRecorder) observe(update AgentUpdate, at time.Time, head string
 		}
 		delta = update.Delta
 	case AgentUpdateToolCompleted, AgentUpdateTurnStarted, AgentUpdateTurnCompleted:
+		r.mu.Lock()
+		if update.Type == AgentUpdateToolCompleted {
+			key := update.ThreadID + "\x00" + update.TurnID + "\x00" + update.ItemID
+			output := update.Delta
+			if output == "" {
+				output = r.checkTails[key]
+			}
+			checks = gate.CheckTimings(output)
+			checks = slices.DeleteFunc(checks, func(check gate.CheckObservation) bool { return !workerCheckScope(check.Scope) })
+			delete(r.checkTails, key)
+		} else {
+			clear(r.checkTails)
+		}
+		r.mu.Unlock()
 	case AgentUpdateToolOutput:
+		checks = r.checkObservations(update)
 		if update.Tool != "tool_result" {
 			text := update.Delta
 			if len(text) > 1024 {
@@ -92,13 +113,15 @@ func (r *activityRecorder) observe(update AgentUpdate, at time.Time, head string
 			case "validating":
 				delta = "validation_acquired"
 			default:
-				return
+				if len(checks) == 0 {
+					return
+				}
 			}
 		}
 	default:
 		return
 	}
-	observation := activityObservation{at: at, head: head, headAt: headAt, update: activityUpdate{Type: update.Type, ItemID: update.ItemID, TurnID: update.TurnID, ThreadID: update.ThreadID, ProviderSessionID: update.ProviderSessionID, Tool: update.Tool, Delta: delta, Status: update.Status, ExitCode: update.ExitCode}}
+	observation := activityObservation{at: at, head: head, headAt: headAt, update: activityUpdate{Checks: checks, Type: update.Type, ItemID: update.ItemID, TurnID: update.TurnID, ThreadID: update.ThreadID, ProviderSessionID: update.ProviderSessionID, Tool: update.Tool, Delta: delta, Status: update.Status, ExitCode: update.ExitCode}}
 	if update.Type == AgentUpdateToolStarted {
 		observation.update.Command = update.Command
 	}
@@ -262,6 +285,14 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 						profile.SummarizeThrough(profile.FinishedAt)
 						persist()
 						return
+					}
+					for _, check := range observation.update.Checks {
+						result := gate.CommandResult{Command: check.Command, HeadSHA: check.HeadSHA, TreeSHA: check.TreeSHA, ExitCode: check.ExitCode, StartedAt: check.StartedAt, FinishedAt: check.FinishedAt}
+						timing := result.PipelineTiming("worker_check_land")
+						r.recordPipeline(request, timing)
+						if len(profile.Spans) < activitySpanLimit && !slices.ContainsFunc(profile.Spans, func(span workflowmetrics.ActivitySpan) bool { return span.ID == timing.ReceiptID }) {
+							profile.Spans = append(profile.Spans, workflowmetrics.ActivitySpan{ID: timing.ReceiptID, ParentID: activityHash(observation.update.ThreadID + "\x00" + observation.update.TurnID + "\x00" + observation.update.ItemID), Kind: "local_validation", Evidence: "make_validation", StartedAt: check.StartedAt, FinishedAt: check.FinishedAt, Outcome: "completed", Attribution: "observed", Repeat: 1})
+						}
 					}
 					if observation.update.Type == AgentUpdateToolStarted && len(profile.Spans) >= activitySpanLimit {
 						compactActivitySpans(&profile, open)
@@ -826,4 +857,34 @@ func snapshotActivityReads(profile *workflowmetrics.ActivityProfile, sources *[]
 			*sources = append(*sources, next)
 		}
 	}
+}
+
+func (r *activityRecorder) checkObservations(update AgentUpdate) []gate.CheckObservation {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.checkTails == nil {
+		r.checkTails = make(map[string]string)
+	}
+	key := update.ThreadID + "\x00" + update.TurnID + "\x00" + update.ItemID
+	if len(r.checkTails) >= 32 && r.checkTails[key] == "" {
+		return nil
+	}
+	output := r.checkTails[key] + update.Delta
+	last := strings.LastIndex(output, "\n")
+	if last < 0 {
+		r.checkTails[key] = strings.Clone(output[max(0, len(output)-4096):])
+		return nil
+	}
+	tail := output[last+1:]
+	r.checkTails[key] = strings.Clone(tail[max(0, len(tail)-4096):])
+	checks := gate.CheckTimings(output[:last])
+	return slices.DeleteFunc(checks, func(check gate.CheckObservation) bool { return !workerCheckScope(check.Scope) })
+}
+
+func workerCheckScope(scope string) bool {
+	switch scope {
+	case "check-land", "app", "generated", "lint", "vet", "build", "unit-short", "nilaway", "scripts", "invariants", "migrations":
+		return true
+	}
+	return false
 }

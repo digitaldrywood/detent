@@ -72,13 +72,21 @@ func (e CheckEnvironment) Known() bool {
 }
 
 func validCheck(c CheckObservation) bool {
-	if !evidenceSHA.MatchString(c.HeadSHA) || !evidenceSHA.MatchString(c.TreeSHA) || !c.Environment.Valid() || c.ExitCode < 0 || c.ExitCode > 255 || c.StartedAt.IsZero() || c.FinishedAt.Before(c.StartedAt) || c.DurationNS < 0 || c.DurationResolutionNS < 0 {
+	return evidenceSHA.MatchString(c.HeadSHA) && evidenceSHA.MatchString(c.TreeSHA) && validCheckTiming(c) && validCheckCommand(c.Command)
+}
+
+func validCheckTiming(c CheckObservation) bool {
+	if (c.HeadSHA != "" && !evidenceSHA.MatchString(c.HeadSHA)) || (c.TreeSHA != "" && !evidenceSHA.MatchString(c.TreeSHA)) || !c.Environment.Valid() || c.ExitCode < 0 || c.ExitCode > 255 || c.StartedAt.IsZero() || c.FinishedAt.Before(c.StartedAt) || c.DurationNS < 0 || c.DurationResolutionNS < 0 {
 		return false
 	}
-	if !checkScope.MatchString(c.Scope) || !publicCommand.MatchString(c.Command) || privateCommandArgument.MatchString(c.Command) {
+	return checkScope.MatchString(c.Scope) && strings.TrimSpace(c.Command) != "" && len(c.Command) <= 4096
+}
+
+func validCheckCommand(command string) bool {
+	if !publicCommand.MatchString(command) || privateCommandArgument.MatchString(command) {
 		return false
 	}
-	for _, argument := range strings.Fields(c.Command) {
+	for _, argument := range strings.Fields(command) {
 		if strings.HasPrefix(argument, "/") || strings.Contains(argument, ":/") || strings.Contains(argument, "=/") || strings.Contains(argument, "../") {
 			return false
 		}
@@ -87,6 +95,18 @@ func validCheck(c CheckObservation) bool {
 }
 
 func CheckObservations(output string) []CheckObservation {
+	return checkObservations(output, validCheck)
+}
+
+func CheckTimings(output string) []CheckObservation {
+	checks := checkObservations(output, validCheckTiming)
+	for i := range checks {
+		checks[i].Command = (PipelineTiming{Command: checks[i].Command}).Public().Command
+	}
+	return checks
+}
+
+func checkObservations(output string, valid func(CheckObservation) bool) []CheckObservation {
 	checks := []CheckObservation{}
 	for _, line := range strings.Split(output, "\n") {
 		prefix, raw, ok := strings.Cut(line, CheckEvidencePrefix)
@@ -99,7 +119,7 @@ func CheckObservations(output string) []CheckObservation {
 			}
 		}
 		var check CheckObservation
-		if json.Unmarshal([]byte(raw), &check) == nil && validCheck(check) && len(checks) < 32 {
+		if json.Unmarshal([]byte(raw), &check) == nil && valid(check) && len(checks) < 32 {
 			checks = append(checks, check)
 		}
 	}

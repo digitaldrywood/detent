@@ -122,6 +122,13 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 			barrier.ID = request.IdempotencyKey
 			barrier.Owner = landingBarrierOwner(scope)
 			barrier.Started, barrier.Running = latest, true
+			barrier.ClaimStartedAt, barrier.ClaimedAt = request.ClaimStartedAt, now
+			barrier.ReadyAt = time.Time{}
+			for _, change := range changes {
+				if !change.ObservedAt.IsZero() && (barrier.ReadyAt.IsZero() || change.ObservedAt.Before(barrier.ReadyAt)) {
+					barrier.ReadyAt = change.ObservedAt
+				}
+			}
 			barrier.Changes = changes
 			if len(changes) > 0 {
 				barrier.BaseRef = changes[len(changes)-1].BaseRef
@@ -134,8 +141,28 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 			if request.Action == "cancel" {
 				barrier.Started = barrier.Green
 			} else {
-				if request.Result == nil || policy.Digest([]byte(request.Result.Command)) != barrier.CommandDigest || request.Result.Command == "" || request.Result.ExitCode < 0 || request.Result.DurationNS < 0 || len(request.Result.Command) > 4096 || len(request.Result.Output) > 64<<10 || !request.Result.Evidence.Valid() || !validCommitID(request.Result.TreeSHA) || !changerequest.ValidHash(request.Result.HeadSHA, 40) && !changerequest.ValidHash(request.Result.HeadSHA, 64) {
+				if request.Result == nil || policy.Digest([]byte(request.Result.Command)) != barrier.CommandDigest || request.Result.Command == "" || request.Result.ExitCode < 0 || request.Result.DurationNS < 0 || len(request.Result.Command) > 4096 || len(request.Result.Output) > 64<<10 || !request.Result.Evidence.Valid() || !request.Result.ValidPipeline("barrier") || !validCommitID(request.Result.TreeSHA) || !changerequest.ValidHash(request.Result.HeadSHA, 40) && !changerequest.ValidHash(request.Result.HeadSHA, 64) {
 					return nil, nativeInvalid("Barrier completion requires a command result and checked commit")
+				}
+				if request.Result.Pipeline != nil {
+					if len(request.Result.Pipeline.Timings) > 1024 || request.Result.Pipeline.Dropped < 0 {
+						return nil, nativeInvalid("Invalid barrier timing population")
+					}
+					for _, timing := range request.Result.Pipeline.Timings {
+						if !timing.Valid() {
+							return nil, nativeInvalid("Invalid barrier timing")
+						}
+					}
+					request.Result.Pipeline.Timings = gate.PublicPipeline(request.Result.Pipeline.Timings)
+				}
+				if !request.Result.StartedAt.IsZero() {
+					request.Result.TimingStage = "barrier"
+				}
+				if request.Result.Pipeline == nil {
+					request.Result.Pipeline = &gate.PipelineEvidence{}
+				}
+				if !barrier.ReadyAt.IsZero() {
+					request.Result.Pipeline.Timings, request.Result.Pipeline.Dropped = gate.MergePipeline(request.Result.Pipeline.Timings, []gate.PipelineTiming{gate.Interval("barrier_claim", barrier.ReadyAt, barrier.ClaimedAt, "")}, request.Result.Pipeline.Dropped)
 				}
 				barrier.Result = request.Result
 				barrier.Red = request.Result.ExitCode != 0

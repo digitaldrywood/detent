@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -95,7 +96,7 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 	}}}
 	callbacks := (&Runner{}).SSHRunCallbacks(RunRequest{Execution: publicationOwner})
 	callbacks.handle = func(ctx context.Context, method string, args []json.RawMessage) (any, error) {
-		if method == "execution.PrepareFinish" {
+		if method == "execution.PrepareFinish" || method == "execution.RecordPipelineTiming" {
 			return callback(ctx, method, args)
 		}
 		if method != "echo" {
@@ -154,6 +155,21 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 		t.Fatalf("SSH completion dropped provider failure: %+v", got)
 	}
 	remoteExecution := &sshNativeExecution{sshExecution: &sshExecution{peer: remote}, sources: sources}
+	for _, stage := range []string{"worker_check_land", "rebase", "conflict_resolution"} {
+		t.Run("pipeline/"+stage, func(t *testing.T) {
+			start := time.Now().UTC()
+			timing := gate.Interval(stage, start, start.Add(time.Second), "clean")
+			recorder, ok := any(remoteExecution).(PipelineExecution)
+			if !ok {
+				t.Fatal("SSH execution does not forward pipeline evidence")
+			}
+			before := len(execution.pipeline)
+			recorder.RecordPipelineTiming(timing)
+			if len(execution.pipeline) != before+1 || execution.pipeline[before] != timing {
+				t.Fatalf("SSH pipeline evidence: %+v", execution.pipeline)
+			}
+		})
+	}
 	version := tracker.ChangeVersion{ID: "version", ChangeVersionInput: tracker.ChangeVersionInput{Repository: "https://github.com/example/repo", HeadSHA: strings.Repeat("a", 40), PolicyID: "policy"}}
 	identity := workspace.GitHubPublication{Repository: version.Repository, HeadSHA: version.HeadSHA, Branch: "detent/rework", BaseRef: "develop"}
 	remoteExecution.setPublicationIdentity(func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error) {

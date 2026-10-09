@@ -12,7 +12,8 @@ type ReviewCommandRunner interface {
 	RunReviewCommand(context.Context, Info, Issue, string) (gate.CommandResult, error)
 }
 
-func (l *LocalGit) RunReviewCommand(ctx context.Context, info Info, issue Issue, command string) (gate.CommandResult, error) {
+func (l *LocalGit) RunReviewCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {
+	defer func() { gate.ObservePipelineCommand(ctx, &result) }()
 	if strings.TrimSpace(command) == "" || strings.TrimSpace(issue.PullRequestHeadSHA) == "" {
 		return gate.CommandResult{}, errors.New("review command requires a command and immutable head")
 	}
@@ -34,9 +35,10 @@ func (l *LocalGit) RunReviewCommand(ctx context.Context, info Info, issue Issue,
 	if err != nil {
 		return gate.CommandResult{}, err
 	}
-	result, err := l.runValidationCommand(ctx, normalized, issue, command)
+	result, err = l.runValidationCommand(ctx, normalized, issue, command)
 	result.HeadSHA = strings.TrimSpace(head)
 	result.TreeSHA = strings.TrimSpace(tree)
+	result.ReceiptID = result.PipelineTiming("").ReceiptID
 	const maxOutputBytes = 64 * 1024
 	const truncatedOutputMarker = "[earlier output truncated]\n"
 	if len(result.Output) > maxOutputBytes {

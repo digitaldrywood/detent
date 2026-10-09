@@ -131,6 +131,11 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 					return nil, nil
 				}
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)
+			case "RecordPipelineTiming":
+				if _, ok := request.Execution.(PipelineExecution); !ok {
+					return nil, nil
+				}
+				return invokeSSHMethod(ctx, request.Execution, name, arguments)
 			case "ValidatorVersion":
 				if _, ok := request.Execution.(NativeValidatorExecution); !ok {
 					return NativeValidation{}, nil

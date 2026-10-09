@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -376,16 +377,22 @@ func TestActivityRecorderSkipsUnchangedCheckpoints(t *testing.T) {
 		if len(probe.profiles) != 1 || len(execution.observations) != 1 {
 			t.Fatalf("idle writes: local=%d native=%d", len(probe.profiles), len(execution.observations))
 		}
+		gateAt := time.Now()
+		check, err := json.Marshal(gate.CheckObservation{Scope: "check-land", Command: "make check-land", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), StartedAt: gateAt, FinishedAt: gateAt.Add(5 * time.Second), DurationNS: 5e9})
+		if err != nil {
+			t.Fatal(err)
+		}
 		for _, test := range []struct {
 			name   string
 			update AgentUpdate
 			writes int
 		}{
 			{"tool started", AgentUpdate{Type: AgentUpdateToolStarted, ItemID: "tool", Tool: "Bash", Command: "go test ./foo"}, 2},
-			{"unchanged turn", AgentUpdate{Type: AgentUpdateTurnStarted}, 2},
-			{"tool completed", AgentUpdate{Type: AgentUpdateToolCompleted, ItemID: "tool", Status: "completed"}, 3},
-			{"dropped input", AgentUpdate{Type: AgentUpdateToolStarted, ItemID: strings.Repeat("x", 513)}, 4},
-			{"terminal turn", AgentUpdate{Type: AgentUpdateTurnCompleted, Status: "completed"}, 5},
+			{"whole gate receipt", AgentUpdate{Type: AgentUpdateToolOutput, ItemID: "tool", Delta: gate.CheckEvidencePrefix + string(check) + "\n"}, 3},
+			{"unchanged turn", AgentUpdate{Type: AgentUpdateTurnStarted}, 3},
+			{"tool completed", AgentUpdate{Type: AgentUpdateToolCompleted, ItemID: "tool", Status: "completed"}, 4},
+			{"dropped input", AgentUpdate{Type: AgentUpdateToolStarted, ItemID: strings.Repeat("x", 513)}, 5},
+			{"terminal turn", AgentUpdate{Type: AgentUpdateTurnCompleted, Status: "completed"}, 6},
 		} {
 			recorder.observe(test.update, time.Now(), "", time.Time{})
 			time.Sleep(5 * time.Second)
@@ -395,7 +402,7 @@ func TestActivityRecorderSkipsUnchangedCheckpoints(t *testing.T) {
 			}
 		}
 		recorder.finish()
-		if len(probe.profiles) != 6 || len(execution.observations) != 6 {
+		if len(probe.profiles) != 7 || len(execution.observations) != 7 {
 			t.Fatalf("final writes: local=%d native=%d", len(probe.profiles), len(execution.observations))
 		}
 		var final workflowmetrics.ActivityProfile
@@ -404,7 +411,10 @@ func TestActivityRecorderSkipsUnchangedCheckpoints(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if final.Status != "completed" || final.FinishedAt.IsZero() || final.Dropped != 1 || len(final.Spans) != 1 || final.Spans[0].Outcome != "completed" || final.Spans[0].FinishedAt.IsZero() || final.Spans[0].StartedAt.IsZero() {
+		if final.Summary == nil || final.Summary.Breakdown.ByKind["local_validation"] != 15 || final.Summary.Breakdown.ConcurrentSeconds != 0 {
+			t.Fatalf("gate receipt attribution missing or double counted: %+v", final.Summary)
+		}
+		if final.Status != "completed" || final.FinishedAt.IsZero() || final.Dropped != 1 || len(final.Spans) != 2 || final.Spans[0].Outcome != "completed" || final.Spans[0].FinishedAt.IsZero() || final.Spans[0].StartedAt.IsZero() {
 			t.Fatalf("final evidence=%+v", final)
 		}
 	})
@@ -682,5 +692,64 @@ func BenchmarkActivityInstructionSnapshot(b *testing.B) {
 		snapshots := 0
 		observation := activityObservation{update: activityUpdate{NativeActions: []NativeCommandAction{{Type: "read", Path: "AGENTS.md"}}}}
 		snapshotActivityReads(&profile, &sources, &snapshots, workspace, &observation)
+	}
+}
+
+func TestWorkerPipelineEvidenceChunks(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	check := gate.CheckObservation{Scope: "lint", Command: "make lint", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), StartedAt: at, FinishedAt: at.Add(time.Second), DurationNS: 1e9}
+	raw, err := json.Marshal(check)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := gate.CheckEvidencePrefix + string(raw) + "\n"
+	for _, tt := range []struct {
+		name     string
+		chunks   []string
+		count    int
+		complete bool
+		command  string
+	}{
+		{name: "unit suite command is redacted", chunks: []string{strings.Replace(strings.Replace(line, `"scope":"lint"`, `"scope":"unit-short"`, 1), "make lint", "env -u DETENT_API_TOKEN go test -short ./...", 1)}, count: 1, command: "[redacted]"},
+		{name: "private command timing is redacted", chunks: []string{strings.Replace(line, "make lint", "make check TOKEN=private", 1)}, count: 1, command: "[redacted]"},
+		{name: "one output", chunks: []string{line}, count: 1},
+		{name: "split record", chunks: []string{line[:30], line[30:100], line[100:]}, count: 1},
+		{name: "dirty checkout timing", chunks: []string{strings.ReplaceAll(line, check.TreeSHA, "")}, count: 1},
+		{name: "private output", chunks: []string{"customer-secret\n"}},
+		{name: "invalid evidence", chunks: []string{gate.CheckEvidencePrefix + "{}\n"}},
+		{name: "completed output", chunks: []string{line}, count: 1},
+		{name: "final record without newline", chunks: []string{strings.TrimSuffix(line, "\n")}, count: 1, complete: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			wantCommand := check.Command
+			if tt.command != "" {
+				wantCommand = tt.command
+			}
+			recorder := &activityRecorder{queue: make(chan activityObservation, 16), wake: make(chan struct{}, 1)}
+			for _, chunk := range tt.chunks {
+				kind := AgentUpdateToolOutput
+				if tt.name == "completed output" {
+					kind = AgentUpdateToolCompleted
+				}
+				recorder.observe(AgentUpdate{Type: kind, ItemID: "check", Delta: chunk}, at, "", time.Time{})
+			}
+			if tt.complete {
+				recorder.observe(AgentUpdate{Type: AgentUpdateToolCompleted, ItemID: "check"}, at, "", time.Time{})
+			}
+			close(recorder.queue)
+			count := 0
+			for observation := range recorder.queue {
+				for _, got := range observation.update.Checks {
+					count++
+					if got.Command != wantCommand || got.HeadSHA != check.HeadSHA || got.TreeSHA != check.TreeSHA && tt.name != "dirty checkout timing" || got.ExitCode != 0 || !got.StartedAt.Equal(at) {
+						t.Fatalf("check=%+v", got)
+					}
+				}
+			}
+			if count != tt.count {
+				t.Fatalf("count=%d want=%d", count, tt.count)
+			}
+		})
 	}
 }

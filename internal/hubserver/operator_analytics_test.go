@@ -16,6 +16,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -243,7 +244,22 @@ func TestNativeAnalyticsUnavailableServices(t *testing.T) {
 			sources[i] = workflowmetrics.InstructionRef{Name: "AGENTS.md (effective)", Hash: strings.Repeat("a", 64), PathRef: strings.Repeat("b", 64), Version: strings.Repeat("c", 64), ObservedAt: time.Now().UTC()}
 		}
 		for i := range attempts {
-			attempts[i] = nativeAnalyticsAttempt{Activity: &workflowmetrics.ActivityProfile{Sources: sources}}
+			attempts[i] = nativeAnalyticsAttempt{Activity: &workflowmetrics.ActivityProfile{Sources: sources}, Pipeline: make([]gate.PipelineTiming, 1024)}
+		}
+		timings := make([]gate.PipelineTiming, 200)
+		for i := range timings {
+			timings[i] = (gate.CommandResult{Command: "make " + strings.Repeat("v", 3000), StartedAt: time.Now().UTC(), FinishedAt: time.Now().UTC(), HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40)}).PipelineTiming("finalization")
+		}
+		for offset := 0; offset < len(timings); {
+			page := pipelineTimingPage(timings, offset, 200)
+			raw, err := json.Marshal(page.Items)
+			if err != nil || len(raw) > operatortool.WorkListPageBytes || len(page.Items) == 0 || page.Offset != offset {
+				t.Fatalf("timing page offset=%d size=%d err=%v", offset, len(raw), err)
+			}
+			offset += len(page.Items)
+			if offset < len(timings) && (page.NextOffset == nil || *page.NextOffset != offset) || offset == len(timings) && page.NextOffset != nil {
+				t.Fatalf("lost timing continuation %#v", page)
+			}
 		}
 		offset := 0
 		for offset < len(attempts) {
@@ -311,10 +327,10 @@ func TestNativeAnalyticsCostPerOutcome(t *testing.T) {
 		{name: "complete aligned population", usageRows: 2, landings: 2, populationObserved: 2, costPerShipped: 4, tokensPerShipped: 120},
 		{name: "multiple rows from one attempt", usageRows: 2, landings: 2, sharedAttempt: true, populationObserved: 1, costPerShipped: 4, tokensPerShipped: 120},
 		{name: "partial hour attribution", usageRows: 2, landings: 2, partialHour: true, populationObserved: 2, costPerShipped: 4, tokensPerShipped: 120},
-		{name: "clipped usage population", usageRows: maxAnalyticsPopulation + 1, landings: 2, clipped: true, populationObserved: maxAnalyticsPopulation, costPerShipped: 2000, tokensPerShipped: 60000},
-		{name: "clipped partial hour population", usageRows: maxAnalyticsPopulation + 1, landings: 2, partialHour: true, clipped: true, populationObserved: maxAnalyticsPopulation, costPerShipped: 2000, tokensPerShipped: 60000},
+		{name: "usage population beyond one page", usageRows: maxAnalyticsPopulation + 1, landings: 2, clipped: true, populationObserved: 1000, costPerShipped: 2000, tokensPerShipped: 60000},
+		{name: "partial hour population beyond one page", usageRows: maxAnalyticsPopulation + 1, landings: 2, partialHour: true, clipped: true, populationObserved: 1000, costPerShipped: 2000, tokensPerShipped: 60000},
 		{name: "exclusive end does not clip population", usageRows: maxAnalyticsPopulation + 1, landings: 2, usageAtWindowEnd: true, populationObserved: maxAnalyticsPopulation, costPerShipped: 2000, tokensPerShipped: 60000},
-		{name: "clipped landing population", usageRows: 2, landings: maxAnalyticsPopulation + 1, clipped: true, populationObserved: 2, costPerShipped: 0.008, tokensPerShipped: 0.24},
+		{name: "landing population beyond one page", usageRows: maxAnalyticsPopulation + 1, landings: maxAnalyticsPopulation + 1, clipped: true, populationObserved: 1000, costPerShipped: 4, tokensPerShipped: 120},
 		{name: "missing recorded usage", landings: 2},
 		{name: "no shipped outcomes", usageRows: 2, populationObserved: 2},
 	} {
@@ -377,6 +393,23 @@ VALUES (?,'org_security',?,?,json_object('landed',json_object('version_id',?,'he
 				t.Fatalf("projects = %#v", report.Projects)
 			}
 			project := report.Projects[0]
+			if project.PopulationLimit != 1000 || (test.clipped && !project.Partial) {
+				t.Fatalf("population contract: %+v", project)
+			}
+			if test.usageRows > 1000 && !test.usageAtWindowEnd {
+				cursor := project.PopulationCursors["usage"]
+				if cursor == "" {
+					t.Fatal("missing continuation cursor")
+				}
+				next, err := f.service.readAnalyticsReport(ctx, apiCredential{Hosted: user.identity.Hosted}, operatortool.AnalyticsRequest{ProjectID: string(f.project), Limit: 1, PopulationCursor: cursor}, w)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tail := next.Projects[0]
+				if tail.UsageRowsObserved != 1 || !tail.Partial || !tail.CostPerOutcome.Clipped || tail.PopulationCursors["usage"] != "" {
+					t.Fatalf("continuation: %+v", tail)
+				}
+			}
 			outcome := project.CostPerOutcome
 			if outcome.Shipped != min(test.landings, maxAnalyticsPopulation) || outcome.PopulationObserved != test.populationObserved || outcome.Clipped != test.clipped {
 				t.Fatalf("outcome coverage = %#v", outcome)
@@ -441,6 +474,8 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	clock = now
 	start.Type, start.IdempotencyKey, start.Data.Sequence = "run.observed", "analytics-runtime", 2
 	start.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "merging", HeartbeatAt: now, Phases: []tracker.NativePhase{{Name: "planning", StartedAt: now.Add(-10 * time.Minute), FinishedAt: now.Add(-5 * time.Minute)}}}
+	commandTiming := (gate.CommandResult{Command: "make check-land", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), StartedAt: now.Add(-4 * time.Minute), FinishedAt: now.Add(-3 * time.Minute), ExitCode: 1}).PipelineTiming("worker_check_land")
+	start.Data.Runtime.Pipeline = []gate.PipelineTiming{commandTiming, gate.Interval("rebase", now.Add(-2*time.Minute), now.Add(-time.Minute), "conflict")}
 	start.Data.Runtime.LocalAttemptID, start.Data.Runtime.Generation = 1, 1
 	start.Data.Runtime.Identity = agentidentity.RuntimeUpdate("merge-model", "openai", "high", "", now)
 	start.Data.Runtime.Identity.Role, start.Data.Runtime.Identity.BackendKind = "merge", "codex"
@@ -463,6 +498,9 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	report, err := readNativeAnalytics(t.Context(), f.service.database.db, scope, operatortool.AnalyticsRequest{Limit: 1}, w)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(report.Pipeline.Stages) != 2 || len(report.PipelineReceipts.Items) != 1 || report.PipelineReceipts.NextOffset == nil || *report.PipelineReceipts.NextOffset != 1 || report.Pipeline.Stages[1].Duration.Seconds != 60 || report.Pipeline.Stages[1].Executed != 1 {
+		t.Fatalf("persisted pipeline timing or pagination missing: %+v", report.Pipeline)
 	}
 	if report.CostPerOutcome.Shipped != 0 || len(report.Efficiency) != 1 || report.Efficiency[0].Seconds != 300 || len(report.Attempts.Items) != 1 {
 		t.Fatalf("runtime %#v", report)
@@ -612,7 +650,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.Partial || report.DecisionsObserved != maxAnalyticsPopulation || len(report.SkipReasons) != 2 || report.SkipReasons[1].Count != maxAnalyticsPopulation-1 {
+	if report.DecisionsObserved != 1000 || len(report.SkipReasons) != 2 || report.SkipReasons[1].Count != 999 {
 		t.Fatalf("bounded history %#v", report)
 	}
 	for _, test := range []struct {

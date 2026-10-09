@@ -74,6 +74,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 			if result.Gate.Command == "" && options.Validation != nil && options.Validation != target.Validation {
 				result.Gate = *options.Validation
 			}
+			runResult.NativeLanding.Pipeline, runResult.NativeLanding.PipelineDropped = result.Pipeline, result.PipelineDropped
 			runResult.NativeLanding.Path, runResult.NativeLanding.Packages = result.Path, result.Packages
 			runResult.NativeLanding.CI = result.CI
 			runResult.NativeLanding.Rebased = result.Rebased
@@ -111,7 +112,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 			}()
 		}
 		result, err = githubLander.LandChangeViaGitHub(ctx, info, issue, options)
-	} else if options.Validation, err = validateLandingHead(ctx, backend, info, issue, options); err == nil {
+	} else if options.Validation, err = validateLandingHead(gate.WithPipelineRecorder(ctx, "landing_validation", func(timing gate.PipelineTiming) { r.recordPipeline(req, timing) }), backend, info, issue, options); err == nil {
 		batchLander, batched := backend.(workspace.BatchLander)
 		remoteBatch, remoteBatched := req.Execution.(BatchLandingExecution)
 		remoteBatched = remoteBatched && remoteBatch.BatchLandingEnabled()
@@ -151,6 +152,12 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		waiting := r.refusedLanding(req, target, "", "waiting for required CI on "+result.CI.HeadSHA)
 		waiting.WorkspaceBranch = info.Branch
 		return waiting, nil
+	}
+	for _, timing := range result.Pipeline {
+		r.recordPipeline(req, timing)
+	}
+	if result.Gate.Command != "" {
+		r.recordPipeline(req, result.Gate.PipelineTiming("landing_validation"))
 	}
 	if err != nil {
 		if result.MergeSHA == "" {
@@ -192,7 +199,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_native_landing_warning",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "merge_sha", result.MergeSHA, "error", err.Error())
 	}
-	landed := NativeLanding{Path: result.Path, Packages: result.Packages, CI: result.CI, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, BaseSHA: result.BaseBefore, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
+	landed := NativeLanding{Pipeline: result.Pipeline, PipelineDropped: result.PipelineDropped, Path: result.Path, Packages: result.Packages, CI: result.CI, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, BaseSHA: result.BaseBefore, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
 	if result.Gate.Command != "" {
 		landed.Gate = &result.Gate
 	}

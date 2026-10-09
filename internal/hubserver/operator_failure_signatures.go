@@ -172,9 +172,8 @@ FROM failures a WHERE 1=1`
 		query += " AND julianday(a.failed_at)>=julianday(?) AND julianday(a.failed_at)<julianday(?)"
 		args = append(args, formatHubTime(w.From), formatHubTime(w.To))
 	}
-	query += " ORDER BY julianday(a.failed_at) DESC,a.id DESC LIMIT ?"
-	args = append(args, maxAnalyticsPopulation+1)
-	rows, err := q.QueryContext(ctx, query, args...)
+	query += " ORDER BY julianday(a.failed_at) DESC,a.id DESC LIMIT ? OFFSET ?"
+	rows, err := queryAnalyticsPopulation(ctx, q, "failures", query, args...)
 	if err != nil {
 		return nil, false, err
 	}
