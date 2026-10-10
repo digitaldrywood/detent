@@ -154,8 +154,14 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
                 <p className="text-xs text-muted-foreground">The runner reports room for {runner.reported_capacity}. The lower of the two wins, and runners on the same machine share its slots. 0 stops new work.</p>
               </Section>
               <Section title="Allowed projects">
-                {canEdit ? <NativeSelect aria-label="Runner scope" disabled={runner.can_edit_projects !== true} value={draft.scope ?? "projects"} onValueChange={(value) => update({ scope: value as "organization" | "projects", project_ids: value === "organization" ? [] : draft.project_ids })} options={[{ value: "organization", label: "All projects" }, { value: "projects", label: "Selected projects" }]} /> : null}
-                {draft.scope === "organization" ? <p>All current and future projects</p> : <>
+                {canEdit ? <NativeSelect aria-label="Runner scope" disabled={runner.can_edit_projects !== true && !(runner.can_convert_scope === true && savedRouting.scope !== "organization")} value={draft.scope ?? "projects"} onValueChange={(value) => update({ scope: value as "organization" | "projects", project_ids: value === "organization" ? [] : draft.project_ids })} options={[{ value: "organization", label: "All projects" }, { value: "projects", label: "Selected projects" }]} /> : null}
+                {draft.scope === "organization" ? <div className="space-y-2">
+                  <p>All current and future projects</p>
+                  <p className="text-xs text-muted-foreground">Conversion keeps this runner’s identity, provider logins and running work. Project rank overrides are kept. Each additional repository policy needs approval before it can run here.</p>
+                  {choices.filter((project) => savedRouting.scope === "organization" || !savedRouting.project_ids.includes(project.id)).map((project) => <p key={project.id} className="text-xs">
+                    <a className="text-primary underline underline-offset-2" href={`/projects/${encodeURIComponent(project.id)}/settings`}>Review policy for {project.name}</a>
+                  </p>)}
+                </div> : <>
                 <div className="divide-y divide-border/50 rounded-lg border border-border/60">
                   {choices.filter((project) => canEdit || draft.project_ids.includes(project.id)).map((project) => (
                     <div key={project.id} className="min-w-0 space-y-2 p-3">

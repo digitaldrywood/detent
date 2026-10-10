@@ -29,6 +29,9 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 		{"read unavailable tier", "member", "get_runners", "", true, false, 0},
 		{"organization runner read", "member", "get_runners", "", true, false, 0},
 		{"organization runner admin full access", "admin", "set_runner_tier", isolation.NativeTrusted, true, true, http.StatusOK},
+		{"admin converts another owner's runner", "admin", "convert_runner_scope", "", true, true, http.StatusOK},
+		{"unapproved conversion", "owner", "convert_runner_scope", "", true, false, 0},
+		{"member cannot convert", "member", "convert_runner_scope", "", false, false, 0},
 		{"admin full access", "admin", "set_runner_tier", isolation.NativeTrusted, true, true, http.StatusOK},
 		{"owner sandbox", "owner", "set_runner_tier", isolation.Sandbox, true, true, http.StatusOK},
 		{"unapproved preview", "owner", "set_runner_tier", isolation.NativeTrusted, true, false, 0},
@@ -104,6 +107,9 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 			}
 			tools := newCoordinatorToolset(c, &coordinatorTurnState{coordinator: c, conversationID: created.Conversation.ID, users: []conversationMessageRecord{message}})
 			args := map[string]any{}
+			if test.tool == "convert_runner_scope" {
+				args["runner_id"] = r.binding.RunnerID
+			}
 			if test.tool == "set_runner_tier" {
 				args["runner_id"], args["isolation_tier"] = r.binding.RunnerID, test.tier
 			}
@@ -139,7 +145,7 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 							Action chat.Action `json:"action"`
 						} `json:"operator_action"`
 					}
-					if json.Unmarshal(m.Data, &data) == nil && data.Proposal.Action.Kind == "set_runner_tier" {
+					if json.Unmarshal(m.Data, &data) == nil && string(data.Proposal.Action.Kind) == test.tool {
 						action = data.Proposal.Action
 					}
 				}
@@ -166,7 +172,7 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := before.IsolationTier
-			if test.execute && test.status == http.StatusOK {
+			if test.execute && test.status == http.StatusOK && test.tool == "set_runner_tier" {
 				want = test.tier
 			}
 			if after.IsolationTier != want {
@@ -174,6 +180,10 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 			}
 			expected := before.Routing
 			expected.IsolationTier = want
+			if test.execute && test.status == http.StatusOK && test.tool == "convert_runner_scope" {
+				expected.Scope = "organization"
+				expected.ProjectIDs = []tracker.ProjectID{}
+			}
 			if !reflect.DeepEqual(after.Routing, expected) {
 				t.Fatalf("routing changed beyond tier: before=%+v after=%+v", expected, after.Routing)
 			}

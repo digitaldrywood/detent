@@ -65,6 +65,7 @@ type hostedFleetRunner struct {
 	Availability       runnerauth.Availability                    `json:"availability"`
 	Editable           bool                                       `json:"editable"`
 	EditRefusalReason  string                                     `json:"edit_refusal_reason,omitempty"`
+	CanConvertScope    bool                                       `json:"can_convert_scope"`
 	CanEditProjects    bool                                       `json:"can_edit_projects"`
 	Routing            *runnerauth.Routing                        `json:"routing,omitempty"`
 	Revision           int64                                      `json:"revision,omitempty"`
@@ -281,6 +282,7 @@ WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.
 				return nil, err
 			}
 			view.CanEditProjects = owned
+			view.CanConvertScope = owned || canManageProjectSecrets(credential)
 			capacity, err := s.runnerCapacityView(ctx, s.database.reader, runner, "", s.config.now())
 			if err != nil {
 				return nil, err

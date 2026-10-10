@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -20,6 +22,7 @@ import (
 func coordinatorRunnerTools() []runner.AgentTool {
 	return []runner.AgentTool{
 		coordinatorTool("get_runners", "Read runners assigned to this project, including selected isolation tier, backend tier support and current problems. Supply runner_id for one runner; otherwise returns a bounded page.", `{"type":"object","properties":{"runner_id":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":50},"offset":{"type":"integer","minimum":0}},"additionalProperties":false}`),
+		coordinatorTool("convert_runner_scope", "Preview converting an existing runner to all current and future organization projects without reinstalling. Organization owner/admin only; requires user approval. Existing ranks, identity, provider logins and active sessions are kept; each new repository policy still needs approval.", `{"type":"object","required":["runner_id"],"properties":{"runner_id":{"type":"string"}},"additionalProperties":false}`),
 		coordinatorTool("set_runner_tier", "Preview changing a runner's access tier without re-enrollment. Organization owner/admin only. The user must approve this preview even when ordinary chat confirmation is disabled.", `{"type":"object","required":["runner_id","isolation_tier"],"properties":{"runner_id":{"type":"string"},"isolation_tier":{"type":"string","enum":["sandbox","native-trusted"]}},"additionalProperties":false}`),
 	}
 }
@@ -33,7 +36,8 @@ type coordinatorRunnerArguments struct {
 
 type coordinatorRunnerChange struct {
 	RunnerID         string `json:"runner_id"`
-	IsolationTier    string `json:"isolation_tier"`
+	IsolationTier    string `json:"isolation_tier,omitempty"`
+	Scope            string `json:"scope,omitempty"`
 	ExpectedRevision int64  `json:"expected_revision"`
 }
 
@@ -54,8 +58,9 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 	if decodeCoordinatorArguments(call.Arguments, &args) != nil || args.Limit < 0 || args.Limit > 50 || args.Offset < 0 {
 		return nil, operatortool.ErrInvalidArguments
 	}
-	manage := call.Name == "set_runner_tier"
-	if manage && (args.RunnerID == "" || !slices.Contains([]string{isolation.Sandbox, isolation.NativeTrusted}, args.IsolationTier) || args.Limit != 0 || args.Offset != 0) || !manage && args.IsolationTier != "" {
+	convert := call.Name == "convert_runner_scope"
+	manage := call.Name == "set_runner_tier" || convert
+	if manage && (args.RunnerID == "" || (!convert && !slices.Contains([]string{isolation.Sandbox, isolation.NativeTrusted}, args.IsolationTier) || convert && args.IsolationTier != "") || args.Limit != 0 || args.Offset != 0) || !manage && args.IsolationTier != "" {
 		return nil, operatortool.ErrInvalidArguments
 	}
 	ctx, err := t.actionContext(ctx, record)
@@ -75,17 +80,40 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 	if err != nil {
 		return nil, err
 	}
+	if !manage {
+		scope.project = record.ProjectID
+	}
 	if manage {
 		r, err := s.coordinatorRunner(ctx, scope, args.RunnerID)
 		if err != nil {
 			return nil, err
 		}
-		raw, err := json.Marshal(coordinatorRunnerChange{RunnerID: r.RunnerID, IsolationTier: args.IsolationTier, ExpectedRevision: r.Revision})
+		change := coordinatorRunnerChange{RunnerID: r.RunnerID, IsolationTier: args.IsolationTier, ExpectedRevision: r.Revision}
+		if convert {
+			change.Scope = "organization"
+		}
+		raw, err := json.Marshal(change)
 		if err != nil {
 			return nil, err
 		}
 		description := fmt.Sprintf("Change %s from %s to %s. Sandbox restricts agent access; full access lets agents use this machine's files, credentials and network. Projects requiring sandbox remain ineligible for full-access runners.", r.DisplayName, r.IsolationTier, args.IsolationTier)
-		return t.submitCoordinatorAction(ctx, record, call, chat.Action{Kind: chat.ActionKind(call.Name), Title: "Change runner access", Description: description, ProjectID: string(record.ProjectID), Arguments: raw, Material: true})
+		title := "Change runner access"
+		if convert {
+			title = "Convert runner to all projects"
+			description = fmt.Sprintf("Convert %s to all organization projects without reinstalling or interrupting active work. Rank overrides and provider logins are kept. Additional repository policies require approval before work can run here.", r.DisplayName)
+			projects, err := t.readableProjects(ctx, record)
+			if err != nil {
+				return nil, err
+			}
+			details := []string{description}
+			for _, project := range projects {
+				if r.Scope != "organization" && !slices.Contains(r.ProjectIDs, project) {
+					details = append(details, fmt.Sprintf("Review project %s: /projects/%s/settings", project, url.PathEscape(string(project))))
+				}
+			}
+			description = strings.Join(details, "\n")
+		}
+		return t.submitCoordinatorAction(ctx, record, call, chat.Action{Kind: chat.ActionKind(call.Name), Title: title, Description: description, ProjectID: string(record.ProjectID), Arguments: raw, Material: true})
 	}
 	ids := []string{args.RunnerID}
 	if args.RunnerID == "" {
@@ -119,7 +147,7 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 			return nil, err
 		}
 		problems := slices.DeleteFunc(slices.Clone(r.Problems), func(p runnerauth.Problem) bool { return p.ProjectID != "" && p.ProjectID != string(scope.project) })
-		views = append(views, map[string]any{"runner_id": r.RunnerID, "display_name": r.DisplayName, "revision": r.Revision, "isolation_tier": r.IsolationTier, "backend_isolation": r.BackendIsolation, "problems": problems, "health": r.Health, "connection_health": r.ConnectionHealth})
+		views = append(views, map[string]any{"runner_id": r.RunnerID, "display_name": r.DisplayName, "revision": r.Revision, "scope": r.Scope, "isolation_tier": r.IsolationTier, "backend_isolation": r.BackendIsolation, "problems": problems, "health": r.Health, "connection_health": r.ConnectionHealth})
 	}
 	return map[string]any{"runners": views}, nil
 }
@@ -130,7 +158,7 @@ func (s *Service) executeCoordinatorRunnerAction(ctx context.Context, action cha
 		return chat.ActionExecution{}, err
 	}
 	var change coordinatorRunnerChange
-	if decodeCoordinatorArguments(action.Arguments, &change) != nil || change.RunnerID == "" || !slices.Contains([]string{isolation.Sandbox, isolation.NativeTrusted}, change.IsolationTier) {
+	if decodeCoordinatorArguments(action.Arguments, &change) != nil || change.RunnerID == "" || (string(action.Kind) == "convert_runner_scope" && (change.Scope != "organization" || change.IsolationTier != "") || string(action.Kind) == "set_runner_tier" && (!slices.Contains([]string{isolation.Sandbox, isolation.NativeTrusted}, change.IsolationTier) || change.Scope != "")) {
 		return chat.ActionExecution{}, operatortool.ErrInvalidArguments
 	}
 	r, err := s.coordinatorRunner(ctx, scope, change.RunnerID)
@@ -143,8 +171,16 @@ func (s *Service) executeCoordinatorRunnerAction(ctx context.Context, action cha
 	routing := r.Routing
 	routing.ProjectRanks = r.ProjectRankOverrides
 	request := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: change.ExpectedRevision, Routing: routing}, IsolationTier: &change.IsolationTier}
+	if string(action.Kind) == "convert_runner_scope" {
+		request.IsolationTier = nil
+		request.Scope = "organization"
+		request.ProjectIDs = nil
+	}
 	if _, err := s.updateRunnerRoutingCommand(ctx, scope, r.RunnerID, request); err != nil {
 		return chat.ActionExecution{}, err
+	}
+	if string(action.Kind) == "convert_runner_scope" {
+		return chat.ActionExecution{Message: "Runner converted in place to all organization projects. Additional repository policies still require approval in project settings; no policies were approved by this conversion.", ResourceID: r.RunnerID}, nil
 	}
 	return chat.ActionExecution{Message: "Runner access updated without re-enrollment. Read get_runners to verify its tier and remaining problems.", ResourceID: r.RunnerID}, nil
 }
