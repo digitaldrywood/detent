@@ -205,10 +205,8 @@ func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue I
 		return info, false, nil
 	}
 	if info.Branch != "" {
-		if holder, held, err := l.branchWorktreePath(ctx, info.Branch, info.Path); err != nil {
+		if err := l.releaseBranchHolders(ctx, info.Branch, info.Path); err != nil {
 			return info, false, err
-		} else if held {
-			return info, false, &BranchHeldError{Branch: info.Branch, Path: holder}
 		}
 	}
 	if opts.External != nil {

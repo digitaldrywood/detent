@@ -1449,6 +1449,7 @@ func TestNativeEpilogueStageContexts(t *testing.T) {
 		{name: "expired authority retains source without checkpoint", authorityErr: ErrExecutionAuthorityUnavailable, wantErr: ErrExecutionAuthorityUnavailable},
 		{name: "source fence refusal", finalErr: workspace.ErrMergeResolutionInvalid, wantErr: workspace.ErrMergeResolutionInvalid},
 		{name: "ownership failure is instance owned", preserveDelay: 2 * time.Second, wantErr: ErrWorkspacePreparation},
+		{name: "absent issue workspace has nothing to preserve", preserveErr: workspace.ErrMissingWorkspace},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -1496,10 +1497,11 @@ func TestNativeEpilogueStageContexts(t *testing.T) {
 					}
 				}
 				preserved := test.preserveErr == nil && test.preserveDelay == 0
-				if !errors.Is(err, test.wantErr) || backend.afterRun || backend.retained != preserved {
+				absent := errors.Is(test.preserveErr, workspace.ErrMissingWorkspace)
+				if !errors.Is(err, test.wantErr) || backend.afterRun || backend.retained != preserved || absent && errors.Is(err, ErrWorkspacePreparation) {
 					t.Fatalf("error=%v retained=%t cleaned=%t", err, backend.retained, backend.afterRun)
 				}
-				if test.authorityErr != nil || !preserved {
+				if test.authorityErr != nil || !preserved && !absent {
 					if execution.checkpoint != nil {
 						t.Fatal("refused ownership or authority wrote checkpoint")
 					}

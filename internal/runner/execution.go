@@ -521,7 +521,7 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 		preserveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 		_, err := r.PreserveWorkspace(preserveCtx, req.Issue)
 		cancel()
-		if err != nil {
+		if err != nil && !errors.Is(err, workspace.ErrMissingWorkspace) {
 			r.logger.Warn("preserve native workspace failed", "issue_id", req.Issue.ID, "error", err)
 			return errors.Join(completionErr, ErrWorkspacePreparation, ErrNativeRecoveryRequired, err)
 		}

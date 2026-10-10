@@ -703,10 +703,8 @@ func (l *LocalGit) createWorktree(ctx context.Context, path string, branch strin
 			return false, err
 		}
 		defer release()
-		if holder, held, err := l.branchWorktreePath(ctx, branch, path); err != nil {
+		if err := l.releaseBranchHolders(ctx, branch, path); err != nil {
 			return false, err
-		} else if held {
-			return false, &BranchHeldError{Branch: branch, Path: holder}
 		}
 		base, err := l.newBranchStartRef(ctx, branch)
 		if err != nil {
@@ -1074,10 +1072,8 @@ func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch 
 			return err
 		}
 		if exists {
-			if holder, held, holdErr := l.branchWorktreePath(ctx, branch, path); holdErr != nil {
-				return holdErr
-			} else if held {
-				return &BranchHeldError{Branch: branch, Path: holder}
+			if err := l.releaseBranchHolders(ctx, branch, path); err != nil {
+				return err
 			}
 			_, err = l.runGit(ctx, "worktree", "add", path, branch)
 			return err
@@ -1114,6 +1110,69 @@ func (l *LocalGit) branchWorktreePath(ctx context.Context, branch string, target
 		}
 	}
 	return "", false, nil
+}
+
+func (l *LocalGit) releaseBranchHolders(ctx context.Context, branch string, targetPath string) error {
+	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
+		return fmt.Errorf("prune worktrees before releasing %s: %w", branch, withCommandOutput(err))
+	}
+	output, err := l.runGit(ctx, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return withCommandOutput(err)
+	}
+	wantRef := "refs/heads/" + strings.TrimSpace(branch)
+	targetPath = filepath.Clean(targetPath)
+	type holder struct {
+		path     string
+		rebasing bool
+		attached bool
+	}
+	var holders []*holder
+	var current *holder
+	for _, field := range strings.Split(output, "\x00") {
+		switch {
+		case strings.HasPrefix(field, "worktree "):
+			current = &holder{path: filepath.Clean(strings.TrimPrefix(field, "worktree "))}
+			if current.path == targetPath {
+				current = nil
+				continue
+			}
+			current.rebasing = worktreeRebasingRef(ctx, current.path) == wantRef
+			holders = append(holders, current)
+		case strings.HasPrefix(field, "branch ") && current != nil:
+			current.attached = strings.TrimSpace(strings.TrimPrefix(field, "branch ")) == wantRef
+		}
+	}
+	for _, h := range holders {
+		if h.rebasing {
+			if _, err := runGitAt(ctx, h.path, "rebase", "--quit"); err != nil {
+				return fmt.Errorf("release %s from interrupted rebase at %s: %w", branch, h.path, withCommandOutput(err))
+			}
+		}
+		if h.attached {
+			if _, err := runGitAt(ctx, h.path, "checkout", "--detach", "--quiet"); err != nil {
+				return fmt.Errorf("release %s from worktree %s: %w", branch, h.path, withCommandOutput(err))
+			}
+		}
+	}
+	return nil
+}
+
+func worktreeRebasingRef(ctx context.Context, path string) string {
+	for _, state := range []string{"rebase-merge/head-name", "rebase-apply/head-name"} {
+		location, err := runGitAt(ctx, path, "rev-parse", "--git-path", state)
+		if err != nil {
+			return ""
+		}
+		location = strings.TrimSpace(location)
+		if !filepath.IsAbs(location) {
+			location = filepath.Join(path, location)
+		}
+		if raw, err := os.ReadFile(location); err == nil {
+			return strings.TrimSpace(string(raw))
+		}
+	}
+	return ""
 }
 
 func (l *LocalGit) addWorktreeWithPrune(ctx context.Context, add func() error) error {

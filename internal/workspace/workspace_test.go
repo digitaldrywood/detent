@@ -437,75 +437,6 @@ func TestLocalGitCreatePrunesMissingRegisteredWorktree(t *testing.T) {
 	}
 }
 
-func TestLocalGitCreateClassifiesOccupiedBranch(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
-	t.Parallel()
-
-	source := initSourceRepo(t)
-	root := filepath.Join(t.TempDir(), "workspaces")
-	backend, err := NewLocalGit(LocalGitOptions{
-		Root:       root,
-		SourceRoot: source,
-		AutoBranch: true,
-	})
-	if err != nil {
-		t.Fatalf("NewLocalGit() error = %v", err)
-	}
-	occupiedPath := filepath.Join(t.TempDir(), "occupied-worktree")
-	runGit(t, source, "worktree", "add", "-b", "detent/dd-conflict", occupiedPath, "HEAD")
-
-	_, err = backend.Create(context.Background(), Issue{Identifier: "DD-CONFLICT"})
-	if err == nil {
-		t.Fatal("Create() error = nil, want occupied branch error")
-	}
-	var heldErr *BranchHeldError
-	if !errors.As(err, &heldErr) {
-		t.Fatalf("Create() error = %T, want *BranchHeldError", err)
-	}
-	if heldErr.Branch != "detent/dd-conflict" {
-		t.Fatalf("BranchHeldError branch = %q, want detent/dd-conflict", heldErr.Branch)
-	}
-	requireSameFile(t, heldErr.Path, occupiedPath)
-}
-
-func TestLocalGitFreshCreateReportsRebasingHolder(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
-	t.Parallel()
-
-	source := initSourceRepo(t)
-	root := filepath.Join(t.TempDir(), "workspaces")
-	backend, err := NewLocalGit(LocalGitOptions{
-		Root:       root,
-		SourceRoot: source,
-		AutoBranch: true,
-	})
-	if err != nil {
-		t.Fatalf("NewLocalGit() error = %v", err)
-	}
-	holder := filepath.Join(t.TempDir(), "rebasing-worktree")
-	runGit(t, source, "worktree", "add", "-b", "detent/dd-rebase", holder, "HEAD")
-	if err := os.WriteFile(filepath.Join(holder, "rebase.txt"), []byte("one\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, holder, "add", "rebase.txt")
-	runGit(t, holder, "commit", "-m", "rebase fixture")
-	runGit(t, holder, "-c", "sequence.editor=sed -i.bak s/^pick/edit/", "rebase", "-i", "HEAD~1")
-
-	_, err = backend.Create(context.Background(), Issue{Identifier: "DD-REBASE", FreshCheckout: true})
-	if err == nil {
-		t.Fatal("Create() error = nil, want rebasing holder error")
-	}
-	if !strings.Contains(err.Error(), "cannot force update the branch") {
-		t.Fatalf("Create() error = %q, want git's explanation", err)
-	}
-}
-
 func TestRunWorktreeAddWithPrune(t *testing.T) {
 	t.Parallel()
 
@@ -2424,7 +2355,7 @@ func TestLocalGitCreateQuarantinesFailedCreationState(t *testing.T) {
 	}
 }
 
-func TestLocalGitBranchHeldByWorktree(t *testing.T) {
+func TestLocalGitCreateReleasesStaleBranchHolders(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
@@ -2432,73 +2363,64 @@ func TestLocalGitBranchHeldByWorktree(t *testing.T) {
 	skipWindows(t)
 
 	tests := []struct {
-		name               string
-		releaseBeforeRetry bool
-		wantCreated        bool
+		name      string
+		fresh     bool
+		rebasing  bool
+		vanished  bool
+		wantFiles bool
 	}{
-		{name: "held branch is classified"},
-		{name: "released branch creates workspace", releaseBeforeRetry: true, wantCreated: true},
+		{name: "attached holder from an earlier layout", wantFiles: true},
+		{name: "attached holder before a fresh checkout", fresh: true, wantFiles: true},
+		{name: "holder stopped mid-rebase", fresh: true, rebasing: true, wantFiles: true},
+		{name: "holder directory deleted", fresh: true, vanished: true},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			source := initSourceRepo(t)
 			root := filepath.Join(t.TempDir(), "workspaces")
-			holder := filepath.Join(t.TempDir(), "review-pr")
-			branch := "detent/reviewer-held"
-			runGit(t, source, "worktree", "add", "-b", branch, holder)
-
 			backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatalf("NewLocalGit() error = %v", err)
 			}
-			issue := Issue{Identifier: "DD-HELD", BranchName: branch}
+			branch := "detent/dd-stale"
+			holder := filepath.Join(t.TempDir(), "old-layout", "dd-stale")
+			runGit(t, source, "worktree", "add", "-b", branch, holder, "HEAD")
+			if err := os.WriteFile(filepath.Join(holder, "kept.txt"), []byte("kept\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, holder, "add", "kept.txt")
+			runGit(t, holder, "commit", "-m", "earlier attempt")
+			if tt.rebasing {
+				runGit(t, holder, "-c", "sequence.editor=sed -i.bak s/^pick/edit/", "rebase", "-i", "HEAD~1")
+			}
+			if tt.vanished {
+				if err := os.RemoveAll(holder); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-			_, err = backend.Create(t.Context(), issue)
-			var heldErr *BranchHeldError
-			if !errors.As(err, &heldErr) {
-				t.Fatalf("Create() error = %v, want BranchHeldError", err)
+			info, err := backend.Create(t.Context(), Issue{Identifier: "DD-STALE", BranchName: branch, FreshCheckout: tt.fresh})
+			if err != nil {
+				t.Fatalf("Create() error = %v, want the stale holder released", err)
 			}
-			if heldErr.Branch != branch {
-				t.Fatalf("BranchHeldError branch = %q, want %q", heldErr.Branch, branch)
+			if got := strings.TrimSpace(runGit(t, info.Path, "branch", "--show-current")); got != branch {
+				t.Fatalf("new worktree branch = %q, want %q", got, branch)
 			}
-			requireSameFile(t, heldErr.Path, holder)
-			hold, held, err := backend.BranchHold(t.Context(), issue)
-			if err != nil || !held || hold.Branch != branch {
-				t.Fatalf("BranchHold() = %#v, %v, %v", hold, held, err)
-			}
-			requireSameFile(t, hold.Path, holder)
-
-			if !tt.releaseBeforeRetry {
+			if !tt.wantFiles {
 				return
 			}
-			runGit(t, source, "worktree", "remove", holder)
-			if hold, held, err = backend.BranchHold(t.Context(), issue); err != nil || held {
-				t.Fatalf("BranchHold() after release = %#v, %v, %v", hold, held, err)
+			if got := readFile(t, filepath.Join(holder, "kept.txt")); got != "kept\n" {
+				t.Fatalf("holder kept.txt = %q, want the earlier attempt's files kept", got)
 			}
-			info, err := backend.Create(t.Context(), issue)
-			if err != nil {
-				t.Fatalf("Create() after release error = %v", err)
+			if got := strings.TrimSpace(runGit(t, holder, "branch", "--show-current")); got != "" {
+				t.Fatalf("holder branch = %q, want detached", got)
 			}
-			if info.Created != tt.wantCreated || info.Branch != branch {
-				t.Fatalf("Create() after release = %#v, want Created=%v branch=%q", info, tt.wantCreated, branch)
+			if _, err := os.Stat(filepath.Join(source, ".git", "worktrees", filepath.Base(holder), "rebase-merge")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("holder rebase state stat error = %v, want removed", err)
 			}
 		})
-	}
-}
-
-func requireSameFile(t *testing.T, got string, want string) {
-	t.Helper()
-	gotInfo, err := os.Stat(got)
-	if err != nil {
-		t.Fatalf("stat %q: %v", got, err)
-	}
-	wantInfo, err := os.Stat(want)
-	if err != nil {
-		t.Fatalf("stat %q: %v", want, err)
-	}
-	if !os.SameFile(gotInfo, wantInfo) {
-		t.Fatalf("path %q does not identify %q", got, want)
 	}
 }
 
