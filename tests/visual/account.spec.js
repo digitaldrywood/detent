@@ -621,15 +621,14 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   const copy = dialog.getByRole("button", { name: "Copy the register command" });
   await expect(copy).toBeVisible({ timeout: 15_000 });
   await expect(dialog.locator('[aria-current="step"]')).toHaveText("2. Run the command");
-  await expect(dialog.locator("code")).toContainText("detent_••••••••");
+  await expect(dialog).toContainText("detent_••••••••");
   await expect(dialog.getByText(/Waiting for Build host to check in/)).toBeVisible();
   await dialog.getByRole("button", { name: "Show token" }).click();
-  await expect(
-    dialog.getByText(/^detent hub runner register --url \S+ (--organization \S+ )?--token \S+ --name 'Build host' --capacity 2 --isolation-tier native-trusted --service$/),
-  ).toBeVisible();
+  const registerCommand = dialog.getByText(/^detent hub runner register --url \S+ (--organization \S+ )?--token \S+ --name 'Build host' --capacity 2 --isolation-tier native-trusted --service$/);
+  await expect(registerCommand).toBeVisible();
   await expectNoSeriousAxeViolations(page, "the enrollment dialog with its command");
 
-  const command = await dialog.locator("code").textContent();
+  const command = await registerCommand.textContent();
   const token = command.match(/--token (\S+)/)[1];
   await dialog.getByRole("button", { name: "Hide token" }).click();
   expect(await dialog.innerHTML()).not.toContain(token);

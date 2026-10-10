@@ -15,6 +15,8 @@ import { useResource } from "../account/useResource.ts";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
 import {
   EnrollRunnerDialog,
+  INSTALL_DETENT_COMMAND,
+  BREW_INSTALL_DETENT_COMMAND,
   PendingEnrollments,
   type PendingEnrollment,
 } from "./EnrollRunner.tsx";
@@ -320,7 +322,7 @@ export function RunnersSettings(): React.ReactElement {
     const chatProjectId = projectId || writableProjects.find((project) => project.id === (shell?.projectId || readLastChatProject()))?.id || writableProjects[0]?.id || "";
     const scope = { accountKey: accountKey(client), projectId: chatProjectId, conversationId: "new" };
     shell?.setProjectId(chatProjectId);
-    const request = `Help me add a runner for ${projectId ? "this project only" : "all current and future projects in this organization"}. Ask whether I want a Fly Sprite or a machine I run, then walk me through enrollment, the register command, provider login and the first connection.${projectId ? "" : " Configure one organization Sprite pool if I choose Sprites."}`;
+    const request = `Help me add a runner for ${projectId ? "this project only" : "all current and future projects in this organization"}. Ask whether I want a Fly Sprite or a machine I run, then walk me through enrollment, the register command, provider login and the first connection.${projectId ? "" : " Configure one organization Sprite pool if I choose Sprites."} For a machine I run, help me install Detent before creating the enrollment token: ${INSTALL_DETENT_COMMAND}. On macOS also offer ${BREW_INSTALL_DETENT_COMMAND}. Check the Hub's minimum runner version and help me update an older installation before registering.`;
     const existing = client.drafts.readDraft(scope);
     client.drafts.writeDraft(scope, existing.trim() ? `${existing}\n\n${request}` : request);
     setAssistOpen(false);

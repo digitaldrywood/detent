@@ -108,6 +108,17 @@ export function registerCommand(input: RegisterCommandInput): string {
 
 export const MAX_RUNNER_CAPACITY = 16;
 
+export const INSTALL_DETENT_COMMAND = "curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh";
+export const BREW_INSTALL_DETENT_COMMAND = "brew install digitaldrywood/tap/detent";
+
+export function runnerInstallPlatform(): "macos" | "linux" {
+  return /linux/i.test(`${globalThis.navigator?.platform ?? ""} ${globalThis.navigator?.userAgent ?? ""}`) ? "linux" : "macos";
+}
+
+export function installAndRegisterCommand(command: string): string {
+  return `${INSTALL_DETENT_COMMAND} && export PATH="$HOME/.local/bin:/usr/local/bin:$PATH" && ${command}`;
+}
+
 export function spriteBootstrapPin(version: string): { ref: string; release: string | null } {
   if (/^v?\d+\.\d+\.\d+$/.test(version)) {
     const release = `v${version.replace(/^v/, "")}`;
@@ -208,6 +219,7 @@ export function EnrollRunnerDialog({
     if (open) setName(initialName);
   }, [open, initialName]);
   const [location, setLocation] = React.useState<"machine" | "sprite">("machine");
+  const [platform, setPlatform] = React.useState(runnerInstallPlatform);
   const [capacityText, setCapacityText] = React.useState("1");
   const [isolationTier, setIsolationTier] = React.useState<RunnerAccessTier | null>(null);
   const capacity = parseCapacity(capacityText);
@@ -256,6 +268,7 @@ export function EnrollRunnerDialog({
     setIsolationTier(null);
     setService(true);
     setLocation("machine");
+    setPlatform(runnerInstallPlatform());
     setEnrollment(null);
     setShowToken(false);
     setConnected(null);
@@ -322,6 +335,28 @@ export function EnrollRunnerDialog({
   const ready = fleet.value !== undefined && (scope === "organization" || selected.length > 0) && capacity !== null && isolationTier !== null && nameFits && (location === "machine" || spriteNameFits);
   const baselinePending = enrollment === null && fleet.value === undefined;
   const step = connected !== null ? 2 : enrollment !== null ? 1 : 0;
+  const minimumVersion = fleet.value?.minimum_runner_version ?? "";
+  const installInstructions = <div className="flex flex-col gap-2">
+    <h3 className="text-[13px] font-medium">Install Detent</h3>
+    <fieldset className="flex flex-col gap-2 text-[13px]">
+      <legend className="pb-1 font-medium">Operating system</legend>
+      <div className="flex gap-4">
+        {([["macos", "macOS"], ["linux", "Linux"]] as const).map(([value, label]) => (
+          <label key={value} className="flex items-center gap-2">
+            <input type="radio" name="runner-platform" value={value} checked={platform === value} onChange={() => setPlatform(value)} />
+            {label}
+          </label>
+        ))}
+      </div>
+    </fieldset>
+    <p className="text-xs text-muted-foreground">Installs the latest release for {platform === "macos" ? "macOS" : "Linux"}, automatically detecting amd64 or arm64.</p>
+    <CopyableCommand value={INSTALL_DETENT_COMMAND} label="the install command" />
+    {platform === "macos" ? <>
+      <p className="text-xs text-muted-foreground">Or install with Homebrew:</p>
+      <CopyableCommand value={BREW_INSTALL_DETENT_COMMAND} label="the Homebrew command" />
+    </> : null}
+    {minimumVersion ? <p className="text-xs text-muted-foreground">This Hub requires Detent {minimumVersion} or newer. Check with <code>detent version</code>; if yours is older, update with <code>detent update --yes --from-release</code>{platform === "macos" ? <> or <code>brew upgrade digitaldrywood/tap/detent</code> for Homebrew</> : null} before registering.</p> : null}
+  </div>;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -384,6 +419,7 @@ export function EnrollRunnerDialog({
                   </label>
                 ))}
               </fieldset>
+              {location === "machine" ? installInstructions : null}
               {location === "sprite" ? <>
                 <p className="text-xs text-muted-foreground">The Sprite gets the same name as this runner. Use lowercase letters, numbers and hyphens.</p>
                 {!spriteNameFits ? <p className="text-xs text-destructive-foreground">Enter a lowercase Sprite name, up to 63 characters, starting and ending with a letter or number.</p> : null}
@@ -531,9 +567,17 @@ export function EnrollRunnerDialog({
                   </ol>
                 </>
               ) : <>
+              {installInstructions}
               <h3 id="enroll-run-command" className="text-[13px] font-medium">
                 Run this on the machine that will take the work.
               </h3>
+              <p className="text-xs text-muted-foreground">Fresh machine? Install and register with one paste:</p>
+              <CopyableCommand
+                value={installAndRegisterCommand(enrollment.command)}
+                displayValue={installAndRegisterCommand(showToken ? enrollment.command : enrollment.maskedCommand)}
+                label="the install and register command"
+              />
+              <p className="text-xs text-muted-foreground">Already installed? Register only:</p>
               <CopyableCommand
                 value={enrollment.command}
                 displayValue={showToken ? enrollment.command : enrollment.maskedCommand}
