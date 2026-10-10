@@ -70,7 +70,7 @@ func applyLinkedWebhook(t *testing.T, f nativeFixture, action, event string, sna
 	if _, err := applyWebhook(ctx, tx, storedWebhook{EventType: event, Action: action, DeliveryID: action, Payload: raw}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := f.service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
 }

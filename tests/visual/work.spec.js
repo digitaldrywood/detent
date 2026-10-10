@@ -89,18 +89,22 @@ test.describe("the work board", () => {
       { number: 5, state: "Done", priority: 3, last_activity_at: "2026-10-05T12:00:00Z", closed_at: "2026-10-05T12:00:00Z" },
       { number: 6, state: "Done", priority: 1, last_activity_at: "2026-10-04T12:00:00Z", closed_at: "2026-10-04T12:00:00Z" },
     ];
+    const issues = entries.map((entry) => ({ ...fixture, ...entry,
+      project_id: hub.fixture.project_id,
+      work_item_id: `wi_sort_${entry.number}`, title: `Sort fixture ${entry.number}`,
+      terminal: entry.state === "Done", blockers: [],
+      updated_at: "2026-10-02T12:00:00Z",
+    }));
     await page.route("**/projects/*/work-items?**", async (route) => {
-      await route.fulfill({ json: {
-        items: entries.map((entry) => ({ ...fixture, ...entry,
-          project_id: hub.fixture.project_id,
-          work_item_id: `wi_sort_${entry.number}`, title: `Sort fixture ${entry.number}`,
-          terminal: entry.state === "Done", blockers: [],
-          updated_at: "2026-10-02T12:00:00Z",
-        })),
-      } });
+      const params = new URL(route.request().url()).searchParams;
+      const states = params.getAll("state");
+      const items = issues.filter((issue) => (states.length === 0 || states.includes(issue.state))
+        && (!params.has("open") || issue.terminal === (params.get("open") === "false")));
+      await route.fulfill({ json: { items, sequence: 0, total: items.length } });
     });
-    await page.route("**/work-items/wi_sort_*/attempts?**", (route) => route.fulfill({ json: { items: [] } }));
-    await page.route("**/work-items/wi_sort_*/changes", (route) => route.fulfill({ json: { items: [] } }));
+    await page.route("**/projects/*/events?**", (route) => route.fulfill({
+      contentType: "text/event-stream", body: 'event: activity\ndata: {"sequence":0,"deltas":[]}\n\n',
+    }));
     await openWork(page, `/work/p/${hub.fixture.project_id}`);
     const todo = page.locator('[data-testid="board-lane"][data-lane="Todo"]');
     await expect(todo.getByTestId("issue-card-open")).toHaveText(["Sort fixture 3", "Sort fixture 1", "Sort fixture 2"]);
@@ -242,17 +246,15 @@ test.describe("the work board", () => {
   });
 
   test("moves an issue between lanes from the keyboard", async ({ page }) => {
-    // The project stream is replaced by one that answers every connection with
-    // a single, higher activity sequence and a one-second retry (longer than the
-    // board's 400 ms tick coalescing), so the board keeps reconnecting and
-    // reloading on its own while the move is held below.
     let sequence = 1_000_000;
-    await page.route("**/projects/*/events", (route) => {
+    let ticks = 0;
+    await page.route("**/projects/*/events?**", (route) => {
+      ticks += 1;
       sequence += 1;
       return route.fulfill({
         status: 200,
         headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-store" },
-        body: `retry: 1000\nevent: activity\ndata: ${sequence}\n\n`,
+        body: `retry: 1000\nevent: activity\ndata: ${JSON.stringify({ sequence, deltas: [] })}\n\n`,
       });
     });
     await openWork(page, `/work/p/${hub.fixture.project_id}`);
@@ -274,9 +276,6 @@ test.describe("the work board", () => {
     expect(await items.count()).toBeGreaterThan(0);
     const target = await items.first().innerText();
 
-    // The board is optimistic: the hub's answer is held back on the wire for
-    // a while, and the card must already be in the new lane before it comes,
-    // and must not snap back when the activity tick reloads the board.
     let released;
     const held = new Promise((resolve) => {
       released = resolve;
@@ -285,18 +284,20 @@ test.describe("the work board", () => {
       await held;
       await route.continue();
     });
-    const isBoardReload = (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname.endsWith("/work-items");
+    const reads = [];
+    page.on("request", (request) => {
+      if (request.method() === "GET" && /\/work-items(?:[?]|\/[^/]+\/(?:attempts|changes))/.test(request.url())) {
+        reads.push(request.url());
+      }
+    });
+    const ticksBeforeMove = ticks;
     await page.keyboard.press("Enter");
     const lane = page.locator(`[data-testid="board-lane"][data-lane="${target}"]`);
     await expect(
       lane.getByRole("button", { name: "Review the invitation flow", exact: true }),
     ).toBeVisible({ timeout: 1_000 });
-    // A reload the activity stream asked for, answered while the hub still
-    // holds the old lane: the card has to survive it.
-    await page.waitForResponse(isBoardReload, { timeout: 10_000 });
-    await page.waitForResponse(isBoardReload, { timeout: 10_000 });
+    await expect.poll(() => ticks).toBeGreaterThan(ticksBeforeMove + 1);
+    expect(reads).toEqual([]);
     await expect(
       lane.getByRole("button", { name: "Review the invitation flow", exact: true }),
     ).toBeVisible();
