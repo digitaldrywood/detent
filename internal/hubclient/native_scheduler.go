@@ -90,14 +90,27 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		heartbeat = &sync.Mutex{}
 		s.nativeHeartbeatMu[project] = heartbeat
 	}
+	now := s.now()
+	previous := s.nativeHeartbeats[project]
 	s.mu.Unlock()
+	var ownerView *runnerauth.ProjectConfiguration
+	if projectOwner != nil && (previous.IsZero() || !now.Before(previous.Add(s.heartbeatInterval))) {
+		supported, err := source.client.HubFeature(ctx, tracker.NativeProjectConfigurationCapability)
+		if err != nil {
+			return err
+		}
+		if supported {
+			view := projectOwner(ctx, string(project), nil)
+			ownerView = &view
+		}
+	}
 	heartbeat.Lock()
 	defer heartbeat.Unlock()
 	s.mu.Lock()
 	last := s.nativeHeartbeats[project]
 	owner := s.updateOwner
 	s.mu.Unlock()
-	if !last.IsZero() && s.now().Before(last.Add(s.heartbeatInterval)) {
+	if !last.IsZero() && now.Before(last.Add(s.heartbeatInterval)) {
 		return nil
 	}
 	var update *runnerauth.UpdateObservation
@@ -113,18 +126,12 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		}
 	}
 	var projectConfig *runnerauth.ProjectConfiguration
-	if projectOwner != nil {
-		supported, err := source.client.HubFeature(ctx, tracker.NativeProjectConfigurationCapability)
-		if err != nil {
+	if ownerView != nil {
+		view := *ownerView
+		if err := s.enrichProjectDiagnostics(ctx, source, &view, update); err != nil {
 			return err
 		}
-		if supported {
-			view := projectOwner(ctx, string(project), nil)
-			if err := s.enrichProjectDiagnostics(ctx, source, &view, update); err != nil {
-				return err
-			}
-			projectConfig = &view
-		}
+		projectConfig = &view
 	}
 	var capacityConfig *runnerauth.CapacityConfig
 	var capacitySupported bool

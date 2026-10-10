@@ -179,6 +179,16 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 				if project != "prj_test" {
 					t.Errorf("foreign owner project: %s", project)
 				}
+				if desired == nil {
+					scheduler.mu.Lock()
+					heartbeat := scheduler.nativeHeartbeatMu["prj_test"]
+					scheduler.mu.Unlock()
+					if heartbeat != nil && !heartbeat.TryLock() {
+						t.Error("configuration owner read while the project heartbeat lock is held")
+					} else if heartbeat != nil {
+						heartbeat.Unlock()
+					}
+				}
 				if desired != nil {
 					if desired.RequestID != projectRequest.RequestID {
 						t.Error("cached request applied without authenticated heartbeat")
