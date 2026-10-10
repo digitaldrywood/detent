@@ -299,6 +299,7 @@ func TestRunnerHostSummaryWriteCost(t *testing.T) {
 	for _, r := range f.runners {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 8, "version": "test", "backend_isolation": r.redemption.BackendIsolation}), http.StatusOK)
 	}
+	f.service.tokenUseWork.Wait()
 	changes := func() int64 {
 		t.Helper()
 		var count int64
