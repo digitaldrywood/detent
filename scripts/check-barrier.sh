@@ -19,7 +19,7 @@ check_command() {
         app) make check-app ;;
         security) make security ;;
         nilaway) make nilaway-changed ;;
-        checkland) python3 -m unittest scripts/check_land_test.py ;;
+        checkland) python3 -m unittest scripts/check_land_test.py scripts/barrier_failures_test.py ;;
         *) return 2 ;;
     esac
 }
