@@ -231,7 +231,8 @@ Run focused diagnostics with an explicit timeout.
 						arguments, err := json.Marshal(map[string]any{
 							"request_id": policyCase.name, "runner_id": r.binding.RunnerID,
 							"change": map[string]any{"expected_revision": full.Revision, "display_name": full.DisplayName, "tags": full.Tags,
-								"state": "draining", "capacity_limit": full.CapacityLimit, "project_ids": full.ProjectIDs},
+								"state": "draining", "capacity_limit": full.CapacityLimit, "project_ids": full.ProjectIDs,
+								"availability": runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}, WindowSlots: map[string]int{"Mon-Sun 00:00-24:00": 2}}},
 						})
 						if err != nil {
 							t.Fatal(err)
@@ -269,8 +270,24 @@ Run focused diagnostics with an explicit timeout.
 							t.Fatal(err)
 						}
 						current, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
-						if err != nil || committed.Revision != full.Revision+1 || committed.State != "draining" || committed.Used != 8 || committed.HostUsed != 8 || len(committed.Leases) != 8 || !reflect.DeepEqual(current, committed) {
+						if err != nil || committed.Availability.WindowSlots["Mon-Sun 00:00-24:00"] != 2 || committed.Revision != full.Revision+1 || committed.State != "draining" || committed.Used != 8 || committed.HostUsed != 8 || len(committed.Leases) != 8 || !reflect.DeepEqual(current, committed) {
 							t.Fatalf("routing mutation receipt did not describe the committed revision: %v", err)
+						}
+						listed, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.ListRunnerRouting, Arguments: json.RawMessage(`{}`)})
+						if err != nil {
+							t.Fatal(err)
+						}
+						var routingList struct {
+							Data struct {
+								Runners []runnerauth.Runner `json:"runners"`
+							} `json:"data"`
+						}
+						if err := json.Unmarshal(listed.Content, &routingList); err != nil {
+							t.Fatal(err)
+						}
+						index := slices.IndexFunc(routingList.Data.Runners, func(runner runnerauth.Runner) bool { return runner.RunnerID == r.binding.RunnerID })
+						if index < 0 || routingList.Data.Runners[index].Revision != committed.Revision || routingList.Data.Runners[index].Availability.WindowSlots["Mon-Sun 00:00-24:00"] != 2 {
+							t.Fatal("list_runner_routing lost window count or committed revision")
 						}
 						want := committed
 						want.Leases = slices.Clone(committed.Leases)

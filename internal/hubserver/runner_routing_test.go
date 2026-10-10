@@ -295,27 +295,28 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 	change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{
 		DisplayName: "Build runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID},
 		IsolationTier: "native-trusted", HostServices: []string{"tcp:127.0.0.1:8080"},
-		Availability: runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}, HardDeadline: "30m"},
+		Availability: runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}, WindowSlots: map[string]int{"Mon-Fri 09:00-17:00": 1}, HardDeadline: "30m"},
 	}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, change), http.StatusOK)
 	var stored runnerauth.Runner
 	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", r.redemption.Credential, nil), &stored)
-	if stored.IsolationTier != "native-trusted" || stored.Availability.HardDeadline != "30m" || len(stored.HostServices) != 1 {
+	if stored.Revision != 2 || stored.Availability.WindowSlots["Mon-Fri 09:00-17:00"] != 1 || stored.IsolationTier != "native-trusted" || stored.Availability.HardDeadline != "30m" || len(stored.HostServices) != 1 {
 		t.Fatalf("stored settings = %#v", stored.Routing)
 	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, change), http.StatusConflict)
 	response := performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/projects/"+string(f.project.ID)+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential,
 		map[string]any{"display_name": "Build runner", "capacity": 2, "version": "test", "os": "linux", "architecture": "arm64"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var snapshot runnerauth.RoutingSnapshot
 	decodeHubResponse(t, response, &snapshot)
-	if snapshot.RunnerID != r.binding.RunnerID || snapshot.Revision != stored.Revision || snapshot.Routing.IsolationTier != "native-trusted" || snapshot.Routing.Availability.HardDeadline != "30m" {
+	if !maps.Equal(snapshot.Routing.Availability.WindowSlots, change.Availability.WindowSlots) || snapshot.RunnerID != r.binding.RunnerID || snapshot.Revision != stored.Revision || snapshot.Routing.IsolationTier != "native-trusted" || snapshot.Routing.Availability.HardDeadline != "30m" {
 		t.Fatalf("heartbeat routing = %#v", snapshot)
 	}
 	legacy := runnerauth.RoutingChange{ExpectedRevision: stored.Revision, Routing: runnerauth.Routing{DisplayName: "Renamed", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}}}
 	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, legacy)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &stored)
-	if stored.DisplayName != "Renamed" || stored.IsolationTier != "native-trusted" {
+	if !maps.Equal(stored.Availability.WindowSlots, change.Availability.WindowSlots) || stored.DisplayName != "Renamed" || stored.IsolationTier != "native-trusted" {
 		t.Fatalf("legacy routing update lost settings: %#v", stored.Routing)
 	}
 	partial := map[string]any{"expected_revision": stored.Revision, "display_name": "Renamed", "tags": stored.Tags, "state": stored.State,
@@ -338,8 +339,9 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 	partial["availability"] = runnerauth.Availability{Windows: []string{}}
 	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, partial)
 	requireNativeStatus(t, response, http.StatusOK)
+	stored = runnerauth.Runner{}
 	decodeHubResponse(t, response, &stored)
-	if stored.IsolationTier != "sandbox" || len(stored.Availability.Windows) != 0 || stored.Availability.HardDeadline != "" {
+	if len(stored.Availability.WindowSlots) != 0 || stored.IsolationTier != "sandbox" || len(stored.Availability.Windows) != 0 || stored.Availability.HardDeadline != "" {
 		t.Fatalf("explicit availability clear lost settings: %#v", stored.Routing)
 	}
 	disabled := runnerauth.RoutingChange{ExpectedRevision: stored.Revision, Routing: stored.Routing}

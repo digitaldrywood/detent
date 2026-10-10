@@ -559,6 +559,22 @@ another computer to simulate a shared host.
 | `PUT /api/v2/organizations/{org}/machines/{machine}/routing` | Instance administrator: `expected_revision`, `display_name`, `capacity`. Capacity is shared by all bound runners. |
 | `POST /api/v2/organizations/{org}/projects/{project}/leases/{lease}/validate` | Owning runner: `fencing_token`. Revalidates authority, selectors and pinned policy within one transaction. The customer scheduler checks the returned binding against its private local identity before adopting or renewing work. |
 
+Runner availability uses `timezone`, string `windows`, optional `window_slots`,
+and `hard_deadline`. `window_slots` maps an exact normalized window string to a
+slot count from 0 to 10000; every key must name a window in `windows`. For example:
+
+```json
+{"timezone":"America/Chicago","windows":["Mon-Sun 22:00-07:00","Mon-Sun 07:00-22:00"],"window_slots":{"Mon-Sun 22:00-07:00":6,"Mon-Sun 07:00-22:00":2},"hard_deadline":""}
+```
+
+Enrolled runners cap their reported capacity at the active window's count.
+Uncounted windows retain their existing capacity, and capacity outside all windows
+is zero. Runner, host and reported-capacity limits still apply, so a window count
+can only lower capacity. Timezone and hard-deadline behavior are unchanged.
+The routing API and `update_runner_routing` / `list_runner_routing` carry these
+settings with the existing revision checks. Routing without counts omits
+`window_slots`; older runners ignore it and retain on/off availability.
+
 The Fleet page links to runner list/detail and project eligibility. Project views,
 including Runs, link to the same eligibility details. Runner detail includes active
 run policy, selectors, lease expiry and contextual authority exclusions. The configured

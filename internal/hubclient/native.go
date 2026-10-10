@@ -264,11 +264,11 @@ func (c *NativeClient) Claim(ctx context.Context, request tracker.NativeClaim) (
 		if err != nil {
 			return result, err
 		}
-		status, err := availability.Evaluate(time.Now())
+		capacity, err := availability.Capacity(time.Now(), 1)
 		if err != nil {
 			return result, err
 		}
-		if !status.Open {
+		if capacity == 0 {
 			return result, ErrNoClaimableWork
 		}
 	}
