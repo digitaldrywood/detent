@@ -74,6 +74,7 @@ function OrganizationKeyControls() {
   const account = useAccountBootstrap();
   useRelativeTimeTick(60_000);
   const [keys, setKeys] = React.useState<readonly AccessKey[]>([]);
+  const [nextCursor, setNextCursor] = React.useState("");
   const [policy, setPolicy] = React.useState<PersonalKeyPolicy>("allowed");
   const [draft, setDraft] = React.useState<PersonalKeyPolicy>("allowed");
   const [loaded, setLoaded] = React.useState(false);
@@ -89,6 +90,7 @@ function OrganizationKeyControls() {
     ]);
     if (currentApi.current !== api) return;
     setKeys(listed.keys);
+    setNextCursor(listed.next_cursor ?? "");
     setPolicy(value.personal_keys);
     setDraft(value.personal_keys);
     setLoaded(true);
@@ -97,6 +99,7 @@ function OrganizationKeyControls() {
     let current = true;
     setLoaded(false);
     setKeys([]);
+    setNextCursor("");
     setRevoke(null);
     setError(null);
     load().catch(() => {
@@ -122,6 +125,24 @@ function OrganizationKeyControls() {
         setError(
           "Could not save the change or refresh the list. Reload to check the current organization access.",
         );
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function loadMore() {
+    setBusy(true);
+    setError(null);
+    try {
+      const listed = await api.memberKeys(nextCursor);
+      if (currentApi.current !== api) return;
+      setKeys((current) => [
+        ...current,
+        ...listed.keys.filter((key) => !current.some((item) => item.id === key.id)),
+      ]);
+      setNextCursor(listed.next_cursor ?? "");
+    } catch {
+      if (currentApi.current === api)
+        setError("Could not load more member keys. Try again.");
     } finally {
       setBusy(false);
     }
@@ -244,6 +265,21 @@ function OrganizationKeyControls() {
                 }
               />
             ))}
+            {nextCursor && (
+              <SettingsRow
+                title="More member keys"
+                control={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => void loadMore()}
+                  >
+                    Load more member keys
+                  </Button>
+                }
+              />
+            )}
           </SettingsSection>
         </>
       )}

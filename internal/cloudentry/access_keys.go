@@ -549,23 +549,45 @@ func (s *Service) organizationKeys(c echo.Context) error {
 	if err != nil {
 		return keyError(c, err)
 	}
-	keys, err := s.listAccessKeys(c.Request().Context(), "SELECT id FROM access_keys WHERE kind='personal' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?) ORDER BY created_at DESC,id", formatTime(s.config.now()))
+	ctx := c.Request().Context()
+	cursor := c.QueryParam("cursor")
+	if len(cursor) > 256 {
+		return c.NoContent(http.StatusBadRequest)
+	}
+	memberships, err := s.config.Provider.Memberships(ctx, "", org.ProviderID)
 	if err != nil {
 		return keyError(c, err)
 	}
+	owners := []string{}
+	for _, member := range memberships {
+		if member.OrganizationID == org.ProviderID && member.Status == "active" && auth.ValidOrganizationRole(member.Role.Slug) {
+			owners = append(owners, member.UserID)
+		}
+	}
+	encoded, err := json.Marshal(owners)
+	if err != nil {
+		return keyError(c, err)
+	}
+	keys, err := s.listAccessKeys(ctx, `SELECT id FROM access_keys INDEXED BY access_keys_owner
+		WHERE owner_subject IN (SELECT value FROM json_each(?)) AND kind='personal'
+		AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?) AND id>?
+		AND (access_context='global' OR EXISTS (SELECT 1 FROM json_each(organizations_json) WHERE json_extract(value,'$.organization_id')=?))
+		ORDER BY id LIMIT 51`, string(encoded), formatTime(s.config.now()), cursor, org.ID)
+	if err != nil {
+		return keyError(c, err)
+	}
+	nextCursor := ""
+	if len(keys) > 50 {
+		keys = keys[:50]
+		nextCursor = keys[len(keys)-1].ID
+	}
+	reachCache := map[keyReachOwner]keyReach{}
 	result := []keyView{}
 	for _, key := range keys {
 		if _, reaches := key.projectContext(org.ID); !reaches {
 			continue
 		}
-		if _, err := s.keyMembership(c.Request().Context(), key.Owner, org); err != nil {
-			var refusal *apikey.Refusal
-			if errors.As(err, &refusal) {
-				continue
-			}
-			return keyError(c, err)
-		}
-		view, err := s.describeKey(c.Request().Context(), key, []Organization{org})
+		view, err := s.describeKeyWithReachCache(ctx, key, []Organization{org}, reachCache)
 		if err != nil {
 			return keyError(c, err)
 		}
@@ -578,8 +600,9 @@ func (s *Service) organizationKeys(c echo.Context) error {
 		result = append(result, view)
 	}
 	return c.JSON(http.StatusOK, struct {
-		Keys []keyView `json:"keys"`
-	}{result})
+		Keys       []keyView `json:"keys"`
+		NextCursor string    `json:"next_cursor,omitempty"`
+	}{result, nextCursor})
 }
 
 func (s *Service) blockOrganizationKey(c echo.Context) error {

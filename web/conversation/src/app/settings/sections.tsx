@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 
 import type { ComponentType } from "react";
+import { basePath } from "../../runtime/basePath.ts";
 
 export interface SettingsNavItem {
   readonly id: string;
@@ -98,7 +99,7 @@ export function settingsNavItems({
 }): readonly SettingsNavItem[] {
   const items: SettingsNavItem[] = [
     { id: "general", label: SETTINGS_SECTION_LABELS.general, icon: Settings2Icon },
-    { id: "api-keys", label: SETTINGS_SECTION_LABELS["api-keys"], icon: KeyRoundIcon },
+    ...(basePath() ? [{ id: "api-keys", label: SETTINGS_SECTION_LABELS["api-keys"], icon: KeyRoundIcon }] : []),
     { id: "organization", label: SETTINGS_SECTION_LABELS.organization, icon: UsersIcon },
 
     { id: "appearance", label: "Appearance", icon: PaletteIcon, disabled: true, reason: WHY_DISABLED },
