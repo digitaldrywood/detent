@@ -367,6 +367,10 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 	if err != nil {
 		return tracker.Lease{}, fmt.Errorf("begin hub claim next: %w", err)
 	}
+	commit := tx.Commit
+	if !mode.preflight {
+		commit = func() error { return d.commit(ctx, tx) }
+	}
 	defer func() {
 		if resultErr != nil {
 			if rollbackErr := tx.Rollback(); !errors.Is(rollbackErr, sql.ErrTxDone) {
@@ -390,7 +394,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 	if query.RequirePolicy {
 		policyScope, err = validateClaimPolicy(ctx, tx, query, request.MachineID)
 		if err != nil {
-			return tracker.Lease{}, recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_claim_policy", err, now)
+			return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_claim_policy", err, now)
 		}
 	}
 	if existing, found, err := readLeaseBySession(ctx, tx, request.SessionID); err != nil {
@@ -419,7 +423,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		if err := checkMonthlyLease(ctx, tx, existing, now); err != nil {
 			return tracker.Lease{}, err
 		}
-		if err := tx.Commit(); err != nil {
+		if err := commit(); err != nil {
 			return tracker.Lease{}, fmt.Errorf("commit idempotent hub claim next: %w", err)
 		}
 		return leaseFromRecord(existing), nil
@@ -429,7 +433,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		return tracker.Lease{}, err
 	}
 	if err := runnerVersionError(query.MinimumRunnerVersion, version); err != nil {
-		return tracker.Lease{}, recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_runner_routing", err, now)
+		return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_runner_routing", err, now)
 	}
 	if request.WorkItemID > 0 {
 		if err := requireWorkItem(ctx, tx, request.WorkItemID); err != nil {
@@ -448,7 +452,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 	if capacity <= 0 {
 		if query.NativeScope != nil {
 			refusal := &nativeError{Code: "host_capacity", Message: "Shared host capacity is full or paused", status: http.StatusConflict}
-			recorded := recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_host_capacity", refusal, now)
+			recorded := d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_host_capacity", refusal, now)
 			if query.NativeScope.credential.Runner.RunnerID != "" || !errors.Is(recorded, refusal) {
 				return tracker.Lease{}, recorded
 			}
@@ -457,11 +461,11 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 	}
 	if query.NativeScope != nil && query.NativeScope.credential.Runner.RunnerID != "" {
 		if err := validateRunnerDispatch(ctx, tx, *query.NativeScope, now); err != nil {
-			return tracker.Lease{}, recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_runner_routing", err, now)
+			return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_runner_routing", err, now)
 		}
 		if !query.WorkspaceLane {
 			if err := validateRunnerIsolation(ctx, tx, *query.NativeScope, now); err != nil {
-				return tracker.Lease{}, recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_runner_routing", err, now)
+				return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_runner_routing", err, now)
 			}
 		}
 	}
@@ -485,7 +489,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			return tracker.Lease{}, err
 		}
 		if revision != mode.hint.revision {
-			if err := tx.Commit(); err != nil {
+			if err := commit(); err != nil {
 				return tracker.Lease{}, err
 			}
 			return tracker.Lease{}, errClaimHintStale
@@ -497,7 +501,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			return tracker.Lease{}, err
 		}
 		if restricted && selectedID == 0 {
-			if err := tx.Commit(); err != nil {
+			if err := commit(); err != nil {
 				return tracker.Lease{}, err
 			}
 			return tracker.Lease{}, ErrNoClaimableWork
@@ -518,7 +522,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		}
 	}
 	if len(ids) == 0 && request.WorkItemID > 0 {
-		return tracker.Lease{}, recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_claim_eligibility", ErrNoClaimableWork, now)
+		return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_claim_eligibility", ErrNoClaimableWork, now)
 	}
 	// Workspace items are gated per candidate rather than per credential
 	// (decisions section 18.1): eligibility depends on the surfaces the
@@ -656,12 +660,12 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", Reason: "The scheduler granted a fenced lease"}, now); err != nil {
 			return tracker.Lease{}, err
 		}
-		if err := tx.Commit(); err != nil {
+		if err := commit(); err != nil {
 			return tracker.Lease{}, fmt.Errorf("commit hub claim next: %w", err)
 		}
 		return lease, nil
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commit(); err != nil {
 		return tracker.Lease{}, fmt.Errorf("commit idle hub claim: %w", err)
 	}
 	if mode.hint != nil {

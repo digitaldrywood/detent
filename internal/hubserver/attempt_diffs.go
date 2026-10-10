@@ -464,7 +464,7 @@ func (s *Service) hubTransact(ctx context.Context, fn func(tx *sql.Tx, now time.
 	if err := fn(tx, now); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.database.commit(ctx, tx); err != nil {
 		return fmt.Errorf("commit hub transaction: %w", err)
 	}
 	return nil

@@ -782,7 +782,7 @@ func (f *browserHostedFixture) seedConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := f.service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
 	f.workerChat, f.workerItem = worker.ID, worker.WorkItemID
@@ -1259,7 +1259,7 @@ func (f *browserHostedFixture) seedBoardDefaults(t *testing.T) {
 		if err := applyNativeProjectStates(t.Context(), tx, scope, states, now); err != nil {
 			t.Fatal(err)
 		}
-		if err := tx.Commit(); err != nil {
+		if err := f.service.database.commit(t.Context(), tx); err != nil {
 			t.Fatal(err)
 		}
 		seedArchiveIssues(t, f.service, scope, 130, "Backlog")
@@ -1277,7 +1277,7 @@ func (f *browserHostedFixture) seedBoardDefaults(t *testing.T) {
 			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: seed.state}, now.Add(-seed.age)); err != nil {
 				t.Fatal(err)
 			}
-			if err := tx.Commit(); err != nil {
+			if err := f.service.database.commit(t.Context(), tx); err != nil {
 				t.Fatal(err)
 			}
 		}

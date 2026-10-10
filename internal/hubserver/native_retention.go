@@ -76,7 +76,7 @@ ORDER BY i.id LIMIT 200`, formatHubTime(now), formatHubTime(now))
 	if err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.database.commit(ctx, tx); err != nil {
 		return err
 	}
 	if s.conversations != nil {

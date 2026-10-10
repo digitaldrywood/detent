@@ -402,7 +402,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		return nil, err
 	}
 	if found {
-		if err := tx.Commit(); err != nil {
+		if err := s.database.commit(ctx, tx); err != nil {
 			return nil, err
 		}
 		return json.RawMessage(response), nil
@@ -461,7 +461,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	} else if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion, metrics...); err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.database.commit(ctx, tx); err != nil {
 		return nil, err
 	}
 	s.notifyNativeDispatch(ctx, scope, input)

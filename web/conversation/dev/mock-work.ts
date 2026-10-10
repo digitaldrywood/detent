@@ -1355,7 +1355,8 @@ export function createWorkMock(options: {
         const label = url.searchParams.getAll("label");
         const assignee = url.searchParams.getAll("assignee");
         const priority = url.searchParams.getAll("priority");
-        const limit = Math.min(Number(url.searchParams.get("limit") ?? "50"), 200);
+        const boardIncluded = url.searchParams.get("include") === "board";
+        const limit = Math.min(Number(url.searchParams.get("limit") ?? "50"), boardIncluded ? 2000 : 200);
         const q = url.searchParams.get("q")?.trim().toLowerCase() ?? "";
         const cursorScope = JSON.stringify([projectId, state, label, assignee, priority, q, url.searchParams.get("archived"), completedWindow, url.searchParams.get("open"), url.searchParams.get("sort")]);
         let after = Number(url.searchParams.get("cursor") ?? "0");
@@ -1369,10 +1370,8 @@ export function createWorkMock(options: {
             return true;
           }
         }
-        const filtered = scoped
+        const baseFiltered = scoped
           .filter(() => url.searchParams.get("archived") !== "true")
-          .filter((issue) => !url.searchParams.has("open") || issue.terminal === (url.searchParams.get("open") === "false"))
-          .filter((issue) => state.length === 0 || state.includes(issue.state))
           .filter((issue) => label.length === 0 || label.some((value) => issue.labels.includes(value)))
           .filter((issue) => assignee.length === 0 || assignee.some((value) => issue.assignees.includes(value)))
           .filter((issue) => priority.length === 0 || priority.includes(String(issue.priority ?? "")))
@@ -1380,14 +1379,18 @@ export function createWorkMock(options: {
             || `${project(projectId)?.name}#${issue.number}`.toLowerCase().includes(q)
             || `${projectId}#${issue.number}`.toLowerCase().includes(q)
             || issue.labels.some((value) => value.toLowerCase().includes(q)));
+        const filtered = baseFiltered
+          .filter((issue) => !url.searchParams.has("open") || issue.terminal === (url.searchParams.get("open") === "false"))
+          .filter((issue) => state.length === 0 || state.includes(issue.state));
         const ordered = filtered.toSorted((a, b) => url.searchParams.get("sort") === "closed"
           ? Date.parse(terminalEntries.get(b.work_item_id) ?? "1970-01-01") - Date.parse(terminalEntries.get(a.work_item_id) ?? "1970-01-01") || a.number - b.number
           : a.number - b.number);
         const matching = after === 0 ? ordered : ordered.slice(ordered.findIndex((issue) => issue.number === after) + 1);
         const page = matching.slice(0, limit);
         const last = page.at(-1);
-        const workIncluded = url.searchParams.get("include") === "work";
-        const open = filtered.filter((issue) => !issue.terminal).toSorted((a, b) =>
+        const workIncluded = boardIncluded || url.searchParams.get("include") === "work";
+        const workFiltered = boardIncluded ? baseFiltered : filtered;
+        const open = workFiltered.filter((issue) => !issue.terminal).toSorted((a, b) =>
           Number(running().includes(b)) - Number(running().includes(a))
           || Number(STATES.find((state) => state.name === b.state)?.dispatchable ?? false)
             - Number(STATES.find((state) => state.name === a.state)?.dispatchable ?? false)
@@ -1395,13 +1398,20 @@ export function createWorkMock(options: {
         json(response, 200, {
           total: filtered.length,
           items: workIncluded ? page.map((issue) => ({ ...issue, closed_at: issue.terminal ? terminalEntries.get(issue.work_item_id) : undefined, body: "" })) : page,
+          ...(boardIncluded ? { sequence: 0, cards: page.map((issue) => {
+            const detail = changeDetail(issue) as { change: { change_id: string; title: string }; summary: { status: string }; versions: { external?: unknown }[] } | null;
+            return { issue: { ...issue, closed_at: issue.terminal ? terminalEntries.get(issue.work_item_id) : undefined, body: "" },
+              attempt: attemptsFor(issue).length === 0 ? null : { ...attemptsFor(issue).at(-1)!, count: attemptsFor(issue).length },
+              change: detail === null ? null : { change_id: detail.change.change_id, title: detail.change.title,
+                status: detail.summary.status, external: detail.versions.at(-1)?.external } };
+          }) } : {}),
           ...(workIncluded ? { work: {
-            completed: filtered.filter((issue) => issue.terminal && (completedWindow === "all"
+            completed: workFiltered.filter((issue) => issue.terminal && (completedWindow === "all"
               || Date.parse(terminalEntries.get(issue.work_item_id) ?? "") >= now - hours[completedWindow]! * 3_600_000)).length,
             items: open.slice(0, limit).map((issue) => ({ ...issue, closed_at: issue.terminal ? terminalEntries.get(issue.work_item_id) : undefined, body: "" })),
-            lanes: [...new Set(filtered.map((issue) => issue.state))].map((state) => ({
-              state, total: filtered.filter((issue) => issue.state === state).length,
-              running: filtered.filter((issue) => issue.state === state && running().includes(issue)).length,
+            lanes: [...new Set(workFiltered.map((issue) => issue.state))].map((state) => ({
+              state, total: workFiltered.filter((issue) => issue.state === state).length,
+              running: workFiltered.filter((issue) => issue.state === state && running().includes(issue)).length,
             })),
             truncated: open.length > limit, as_of: new Date(now).toISOString(),
           } } : {}),

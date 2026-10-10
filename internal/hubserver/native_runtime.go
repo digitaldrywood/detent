@@ -448,7 +448,7 @@ func recordNativeSchedulingDecision(ctx context.Context, tx *sql.Tx, scope *nati
 	return recordNativeSchedulingOutcome(ctx, tx, scope, id, decision, now)
 }
 
-func recordNativeClaimRefusal(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, id tracker.WorkItemID, source string, refusal error, now time.Time) error {
+func (d *database) recordNativeClaimRefusal(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, id tracker.WorkItemID, source string, refusal error, now time.Time) error {
 	var failure *nativeError
 	if errors.Is(refusal, ErrNoClaimableWork) {
 		failure = &nativeError{Code: "no_claimable_work", status: http.StatusConflict}
@@ -472,7 +472,7 @@ func recordNativeClaimRefusal(ctx context.Context, tx *sql.Tx, query claimCandid
 			return err
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := d.commit(ctx, tx); err != nil {
 		return err
 	}
 	return refusal

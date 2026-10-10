@@ -38,7 +38,22 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", otherWorker, machine), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/machines/register", testHubAdminToken, machine), http.StatusNotFound)
 	request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: "native-machine", SessionID: "native-session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
+	beforeRefusal, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request), http.StatusConflict)
+	afterRefusal, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, beforeRefusal.Sequence)
+	if err != nil || afterRefusal.Gap || len(afterRefusal.Deltas) != 1 {
+		t.Fatalf("claim refusal frame=%#v err=%v", afterRefusal, err)
+	}
+	card := afterRefusal.Deltas[0].Current
+	if card == nil || card.Issue.WorkItemID != issue.WorkItemID || !card.Issue.LastActivityAt.Equal(now) {
+		t.Fatalf("claim refusal did not refresh card activity: %#v", card)
+	}
+
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(blocker.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "unblock"}, ExpectedRevision: 1, State: "Done", Reason: "user_requested"}), http.StatusOK)
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request)
 	requireNativeStatus(t, response, http.StatusOK)
