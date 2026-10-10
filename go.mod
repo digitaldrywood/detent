@@ -4,6 +4,12 @@ go 1.26.0
 
 toolchain go1.26.9
 
+ignore (
+	./node_modules
+	./tmp
+	./web/conversation/node_modules
+)
+
 require (
 	charm.land/bubbles/v2 v2.1.1
 	charm.land/bubbletea/v2 v2.0.8
