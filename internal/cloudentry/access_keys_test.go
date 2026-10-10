@@ -93,6 +93,86 @@ func TestAccessKeyCrossOrganizationMCP(t *testing.T) {
 	}
 }
 
+func TestOrganizationKeyDiscoveryPagination(t *testing.T) {
+	f := newEntryFixture(t)
+	owner := newBrowser(t, f.service.Handler())
+	owner.login("/organizations", "user_alice:")
+	key := createTestAccessKey(t, owner, "global", nil, "")
+	db := f.service.auth.store.db
+	for i := range 55 {
+		id := fmt.Sprintf("key_page_%03d", i)
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO access_keys SELECT ?,?,name,kind,owner_subject,owner_email,permission,access_context,organizations_json,service_organization_id,created_at,expires_at,revoked_at FROM access_keys WHERE id=?`, id, id, key.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.ExecContext(t.Context(), `UPDATE access_keys SET access_context='project',organizations_json='[{"organization_id":"org_beta","project_access":"project","project_ids":["prj_absent"]}]' WHERE id='key_page_000'`); err != nil {
+		t.Fatal(err)
+	}
+	transport := f.service.config.transport
+	serviceCalls := 0
+	f.service.config.transport = func(org Organization) (http.RoundTripper, error) {
+		serviceCalls++
+		return transport(org)
+	}
+	for _, test := range []struct {
+		name, owner, access, organizations string
+	}{
+		{"unrelated owner", "user_outside", "global", "not-json"},
+		{"other organization", key.Owner, "selected", `[{"organization_id":"org_alpha","project_access":"all","project_ids":[]}]`},
+	} {
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO access_keys SELECT ?,?,name,kind,?,?,permission,?,?,service_organization_id,created_at,expires_at,revoked_at FROM access_keys WHERE id=?`, test.name, test.name, test.owner, key.OwnerEmail, test.access, test.organizations, key.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seen := map[string]bool{}
+	cursor := ""
+	for page, want := range []int{50, 6} {
+		serviceCalls = 0
+		f.provider.mu.Lock()
+		before := f.provider.membershipLists
+		f.provider.mu.Unlock()
+		response := attachmentRequest(t, owner, http.MethodGet, "/api/cloud/organizations/org_beta/external-keys?cursor="+cursor, nil, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("page %d=%d %s", page, response.Code, response.Body.String())
+		}
+		var listed struct {
+			Keys       []keyView `json:"keys"`
+			NextCursor string    `json:"next_cursor"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &listed); err != nil {
+			t.Fatal(err)
+		}
+		if len(listed.Keys) != want {
+			t.Fatalf("page %d keys=%d want=%d", page, len(listed.Keys), want)
+		}
+		for _, item := range listed.Keys {
+			if seen[item.ID] || len(item.EffectiveReach) != 1 || item.EffectiveReach[0].OrganizationID != "org_beta" {
+				t.Fatalf("duplicate or incorrect reach: %+v", item)
+			}
+			if (len(item.EffectiveReach[0].Projects) == 0) != (item.ID == "key_page_000") {
+				t.Fatalf("owner reach changed by another key scope: %+v", item)
+			}
+			seen[item.ID] = true
+		}
+		f.provider.mu.Lock()
+		lookups := f.provider.membershipLists - before
+		f.provider.mu.Unlock()
+		if lookups > 3 {
+			t.Fatalf("membership lookups=%d for one owner", lookups)
+		}
+		if serviceCalls > 2 {
+			t.Fatalf("service calls=%d for one owner", serviceCalls)
+		}
+		cursor = listed.NextCursor
+		if (cursor != "") != (page == 0) {
+			t.Fatalf("page %d cursor=%q", page, cursor)
+		}
+	}
+	if !seen[key.ID] {
+		t.Fatal("unused global key missing")
+	}
+}
+
 func TestAccessKeyOrganizationControls(t *testing.T) {
 	f := newEntryFixture(t)
 	owner := newBrowser(t, f.service.Handler())

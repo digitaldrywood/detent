@@ -43,7 +43,7 @@ export const CreatedAccessKey = Schema.Struct({
   token: Schema.String,
 });
 export type CreatedAccessKey = typeof CreatedAccessKey.Type;
-export const AccessKeys = Schema.Struct({ keys: Schema.Array(AccessKey) });
+export const AccessKeys = Schema.Struct({ keys: Schema.Array(AccessKey), next_cursor: Schema.optional(Schema.String) });
 export const KeyContext = Schema.Struct({
   organizations: Schema.Array(KeyReach),
   mcp_endpoint: Schema.String,

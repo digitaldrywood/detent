@@ -1598,7 +1598,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		if err != nil {
 			r.logWorkerEvent(req.Issue, "worker_change_source_from_checkpoint_ref", "error", err)
-			err = nil
 		}
 		if recovered.Version.ID != "" {
 			workspaceIssue.Source = &recovered
