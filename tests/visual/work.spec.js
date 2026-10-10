@@ -644,13 +644,19 @@ test.describe("the issue page", () => {
     for (const name of ["Urgent", "High", "Normal", "Low"]) {
       await expect(picker.getByTestId(`priority-menu-${name}`)).toBeVisible();
     }
+    const savedHigh = page.waitForResponse((response) => response.request().method() === "PATCH"
+      && new URL(response.url()).pathname.endsWith(`/work-items/${hub.fixture.work_item}`));
     await picker.getByTestId("priority-menu-High").click();
+    expect((await savedHigh).ok()).toBe(true);
     await expect(properties.getByTestId("issue-priority")).toHaveText("High");
 
     // The removal: what the hub's patch could not express until it learned a
     // three-way priority member.
     await properties.getByTestId("priority-menu").click();
+    const savedNone = page.waitForResponse((response) => response.request().method() === "PATCH"
+      && new URL(response.url()).pathname.endsWith(`/work-items/${hub.fixture.work_item}`));
     await page.getByTestId("priority-picker").getByTestId("priority-menu-none").click();
+    expect((await savedNone).ok()).toBe(true);
     await expect(properties.getByTestId("issue-priority")).toHaveText("No priority");
 
     // It survives a reload, so the hub took the removal rather than the page.
