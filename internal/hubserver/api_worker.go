@@ -730,6 +730,14 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 // succeeded against the item as it stands, for an issue query that aliases the
 // issues table as i.
 //
+// A human-owned answer holds the item until the item changes: a human action,
+// a permission wait, recorded acceptance, a blocker the instance does not own,
+// or a legacy attempt without a disposition. An instance-owned answer (an
+// instance blocker or an instance reason code) holds it for 30 minutes and then
+// lets the next attempt retry, so a dispatchable item never waits forever on
+// an answer no human owns. A forge publication without a disposition never
+// holds: the next attempt continues from the published source.
+//
 // The latest attempt is the one with the highest fencing token. It applies to
 // native projects only: on a github_compatible project the issues row is a
 // projection whose writes never bump revision, so the clause would strand an
@@ -739,11 +747,20 @@ const notAlreadyAnsweredClause = `(p.profile <> 'native' OR lower(trim(ws.detent
    AND answered.project_id = i.project_id
    AND answered.work_item_id = i.native_id
    AND answered.status = 'succeeded'
-   AND (COALESCE(json_extract(answered.data_json, '$.disposition.status'), '') <> 'complete'
-     OR COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 0) <> 0
-     OR COALESCE(json_extract(answered.data_json, '$.disposition.human_action'), 0) <> 0
-     OR COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') <> ''
-     OR COALESCE(json_extract(answered.data_json, '$.runtime.completion.acceptance_recorded'), 0) = 1)
+   AND (COALESCE(json_extract(answered.data_json, '$.disposition.human_action'), 0) <> 0
+     OR COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') = 'permission_wait'
+     OR COALESCE(json_extract(answered.data_json, '$.runtime.completion.acceptance_recorded'), 0) = 1
+     OR (COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 0) <> 0
+       AND (COALESCE(json_array_length(answered.data_json, '$.disposition.blocker_evidence'), 0) = 0
+         OR EXISTS (SELECT 1 FROM json_each(answered.data_json, '$.disposition.blocker_evidence') blocker
+           WHERE COALESCE(json_extract(blocker.value, '$.owner'), '') <> 'instance')))
+     OR json_type(answered.data_json, '$.disposition') IS NULL
+     OR ((COALESCE(json_extract(answered.data_json, '$.disposition.status'), '') <> 'complete'
+         OR COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 0) <> 0
+         OR COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') <> '')
+       AND julianday(answered.updated_at) > julianday('now', '-30 minutes')))
+   AND NOT (json_type(answered.data_json, '$.disposition') IS NULL
+     AND COALESCE(json_extract(answered.checkpoint_json, '$.external_effect'), '') IN ('git_push', 'pr_create'))
    AND NOT (COALESCE(json_extract(answered.data_json, '$.disposition.status'), '') = 'in_progress'
      AND COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 1) = 0
      AND COALESCE(json_extract(answered.data_json, '$.disposition.human_action'), 1) = 0
