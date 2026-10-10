@@ -688,14 +688,14 @@ The sidebar's header (brand, primary actions) and footer (utility menu, update p
 
 ### Sidebar workspace picker
 
-Switching between the workspaces (organizations) the signed-in account belongs to, from the sidebar footer, with links to add a workspace or manage the current one.
+Switching between the workspaces (organizations) the signed-in account belongs to, from the sidebar footer, with a link to add a workspace and a Platform console entry for platform staff.
 
 - Kind: Composition; status: available; id: `sidebar-workspace-picker`.
 - Import: `import { WorkspacePicker, SidebarWorkspacePicker } from "~/components/sidebar/SidebarWorkspacePicker";`
 - Source: [src/components/sidebar/SidebarWorkspacePicker.tsx](../../web/conversation/src/components/sidebar/SidebarWorkspacePicker.tsx).
 - Variants: none.
 - States: open, pending, error, no results.
-- Keyboard: The trigger opens a Menu with focus in the search field; ArrowDown and ArrowUp move from the search field to the first or last workspace; Enter switches; Escape closes and returns focus to the trigger.
+- Keyboard: The trigger opens a Menu with focus in the search field; ArrowDown and ArrowUp move from the search field to the first or last menu item; Enter activates the focused item; Escape closes and returns focus to the trigger.
 - Avoid: Using it to pick a project or another entity; project choice belongs to the sidebar sections and the command palette.
 - Related: [Sidebar chrome](#sidebar-chrome), [Menu](#menu), [Input](#input), [Badge](#badge).
 

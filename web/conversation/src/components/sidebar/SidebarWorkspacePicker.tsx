@@ -1,6 +1,5 @@
-import { Building2Icon, CheckIcon, ChevronUpIcon, PlusIcon, SettingsIcon } from "lucide-react";
+import { Building2Icon, CheckIcon, ChevronUpIcon, PlusIcon } from "lucide-react";
 import { useContext, useEffect, useRef, useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
 
 import { ClientContext } from "../../app/client";
 import { useAccountApi } from "../../app/account/context";
@@ -17,7 +16,7 @@ import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
-import { SidebarMenuButton, SidebarMenuItem, useSidebar } from "../ui/sidebar";
+import { SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
 
 type Workspace = {
   readonly id: string;
@@ -42,7 +41,6 @@ export function WorkspacePicker({
   current,
   organizations,
   onSelect,
-  onManage,
   addHref,
   platformHref,
   pending = false,
@@ -51,7 +49,6 @@ export function WorkspacePicker({
   readonly current: Workspace;
   readonly organizations: readonly Workspace[];
   readonly onSelect: (id: string) => void;
-  readonly onManage: () => void;
   readonly addHref: string;
   readonly platformHref?: string;
   readonly pending?: boolean;
@@ -165,10 +162,6 @@ export function WorkspacePicker({
             <PlusIcon aria-hidden className="size-3.5" />
             Add a workspace
           </MenuItem>
-          <MenuItem className="min-h-8 text-xs sm:min-h-8 sm:text-xs" onClick={onManage}>
-            <SettingsIcon aria-hidden className="size-3.5" />
-            Manage current workspace
-          </MenuItem>
           {platformHref ? (
             <MenuItem className="min-h-8 text-xs sm:min-h-8 sm:text-xs" render={<a href={platformHref} />}>
               <Building2Icon aria-hidden className="size-3.5" />
@@ -184,8 +177,6 @@ export function WorkspacePicker({
 function AccountWorkspacePicker({ account }: { readonly account: AccountBootstrap }) {
   const api = useAccountApi();
   const shared = useSharedOrganizations();
-  const navigate = useNavigate();
-  const { isMobile, setOpenMobile } = useSidebar();
   const switchTo = useMutation(async (organization: string) => {
     const target = shared?.find((candidate) => candidate.id === organization);
     if (target !== undefined) {
@@ -206,10 +197,6 @@ function AccountWorkspacePicker({ account }: { readonly account: AccountBootstra
       error={switchTo.error?.message ?? null}
       addHref={behindSharedEntry() ? ENTRY_CREATE_ORGANIZATION : "/organization"}
       platformHref={account.actor.platform_role ? PLATFORM : undefined}
-      onManage={() => {
-        if (isMobile) setOpenMobile(false);
-        void navigate({ to: "/settings/$section", params: { section: "organization" } });
-      }}
     />
   );
 }
