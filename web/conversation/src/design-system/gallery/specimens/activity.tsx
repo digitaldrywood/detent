@@ -12,7 +12,7 @@ import type { GalleryDoc } from "../specimen.tsx";
 function ActivitySpecimen({
   state = "populated",
 }: {
-  state?: "populated" | "empty" | "loading" | "unavailable";
+  state?: "populated" | "partial" | "empty" | "loading" | "unavailable";
 }) {
   const [project, setProject] = useState("");
   const [now] = useState(Date.now);
@@ -43,24 +43,24 @@ function ActivitySpecimen({
     "macbook-air",
     "ci-linux-2",
   ];
+  const capacities = [3, 2, 2, 1, 1, 1, 1, 2, 1, 1, 2, 1];
+  const usage = [3, 2, 1, 1, 1, 1, 1, 2, 0, 0, 0, 0];
   const runners = names.map((name, index) => ({
     ...base,
     id: `runner_${index}`,
+    machine_id: `machine_${index}`,
     display_name: name,
     state: "active",
-    health: index === 11 ? "offline" : "healthy",
+    health: index === 11 ? "offline" : index === 8 ? "asleep" : "healthy",
     claim_refusal_reason: "",
     leases: Array.from(
-      { length: index === 0 ? 3 : index === 1 ? 2 : index < 8 ? 1 : 0 },
-      () => base.leases[0]!,
+      { length: usage[index]! },
+      (_, slot) => ({ ...base.leases[0]!, lease_id: `lease_${index}_${slot}` }),
     ),
-    capacity_limit:
-      index === 0
-        ? 3
-        : index === 1 || index === 2 || index === 7 || index === 10
-          ? 2
-          : 1,
-    reported_capacity: 3,
+    capacity_limit: capacities[index]!,
+    reported_capacity: capacities[index]!,
+    host_capacity: capacities[index]!,
+    host_used: usage[index]!,
   }));
   const titles = [
     "Prevent card overflow with the approved compact layout",
@@ -147,11 +147,11 @@ function ActivitySpecimen({
         seconds: 600,
         p50_seconds: stage === "code" ? 1200 : 480,
         p90_seconds: stage === "merge" ? 300 : stage === "code" ? 1800 : 1200,
-        partial: false,
+        partial: state === "partial",
       })),
     ),
     population_limit: 1000,
-    partial: false,
+    partial: state === "partial",
   };
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -181,6 +181,12 @@ export const activityPage: GalleryDoc = {
       title: "Twelve runners with running jobs and recent finishes",
       height: 1100,
       render: () => <ActivitySpecimen />,
+    },
+    {
+      id: "partial",
+      title: "Incomplete activity and timing baselines",
+      height: 1100,
+      render: () => <ActivitySpecimen state="partial" />,
     },
     {
       id: "empty",

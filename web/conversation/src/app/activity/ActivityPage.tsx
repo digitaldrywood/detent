@@ -36,6 +36,7 @@ import {
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { StatusDot } from "../account/controls.tsx";
 import { useClientSettings } from "../adapters/settings.ts";
+import { fleetHosts } from "../fleet/capacity.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import { subscribeProjectEvents } from "../work/lib/projectEvents.ts";
 import { useWorkHttp } from "../work/lib/useWork.ts";
@@ -216,9 +217,9 @@ export function ActivityView({
     (row) => runnerCategory(row) === "working",
   ).length;
   const idle = runners.filter((row) => runnerCategory(row) === "idle").length;
-  const online = runners.filter((row) => runnerCategory(row) !== "offline");
-  const used = online.reduce((sum, row) => sum + row.leases.length, 0);
-  const slots = online.reduce((sum, row) => sum + runnerCapacity(row), 0);
+  const hosts = fleetHosts(runners);
+  const used = hosts.reduce((sum, host) => sum + host.used, 0);
+  const slots = hosts.reduce((sum, host) => sum + host.capacity, 0);
   const slowRunners = new Set(
     report?.running
       .filter((row) => timing(row, report, now, false).slow)
@@ -629,6 +630,11 @@ export function ActivityView({
               </div>
             ) : (
               <>
+                {report?.partial ? (
+                  <p className="text-sm text-muted-foreground">
+                    Activity is incomplete; some attempts or timing data may be missing.
+                  </p>
+                ) : null}
                 <section aria-label="Runners" className="space-y-2">
                   <h2 className="text-xs font-normal text-muted-foreground">
                     Runners · {working} working · {idle} idle ·{" "}

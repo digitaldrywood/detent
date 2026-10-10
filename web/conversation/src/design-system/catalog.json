@@ -2164,6 +2164,7 @@
         "paused",
         "failed",
         "needs attention",
+        "asleep",
         "offline"
       ],
       "use": "Runner health beside a runner name in Fleet and Activity; healthy active runners pulse green, inactive runners remain neutral.",

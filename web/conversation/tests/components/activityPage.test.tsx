@@ -272,16 +272,22 @@ describe("Activity stage timing", () => {
       "error",
     ],
     ["cancelled", "plan", 300, true, "cancelled", false, true, 0, "muted"],
+    ["partial slow baseline", "code", 1201, false, "succeeded", false, false, 1, "working", true],
+    ["partial fast baseline", "code", 300, true, "succeeded", false, false, 1, "success", true],
+    ["partial cancelled baseline", "plan", 300, true, "cancelled", false, false, 0, "muted", true],
   ] as const)(
     "handles %s",
-    (_name, stage, seconds, finished, outcome, slow, fast, index, tone) => {
+    (_name, stage, seconds, finished, outcome, slow, fast, index, tone, partial?: boolean) => {
       const row = attempt(1, {
         stage,
         stage_started_at: new Date(NOW - seconds * 1000).toISOString(),
         stage_duration_seconds: seconds,
         ...(finished ? { outcome } : {}),
       });
-      const result = timing(row, report(), NOW, finished);
+      const fixture = report();
+      const result = timing(row, report({
+        typical_durations: fixture.typical_durations.map((baseline) => ({ ...baseline, partial: partial === true })),
+      }), NOW, finished);
       expect({
         slow: result.slow,
         fast: result.fast,
@@ -289,10 +295,13 @@ describe("Activity stage timing", () => {
         tone: result.tone,
       }).toEqual({ slow, fast, index, tone });
       expect(result.label).toContain(`Stage ${index + 1} of 4`);
-      expect(result.description).toContain(
-        "Typical in detent: 10m median, 20m for the slowest 10%.",
-      );
-      if (outcome === "cancelled") expect(result.progress).toBe(0.25);
+      expect(result.description).toContain(partial
+        ? "Typical time in detent is unavailable because the baseline is incomplete."
+        : "Typical in detent: 10m median, 20m for the slowest 10%.");
+      if (partial) {
+        expect(result.label).not.toMatch(/, (slow|fast)/);
+        expect(result.progress).toBe(finished ? outcome === "cancelled" ? 0.5 : 1 : 0);
+      } else if (outcome === "cancelled") expect(result.progress).toBe(0.25);
     },
   );
   it("uses elapsed snapshots when a stage start is missing and never fabricates missing timing", () => {
@@ -317,6 +326,41 @@ describe("Activity stage timing", () => {
     expect(missing.slow).toBe(false);
     expect(missing.progress).toBe(0);
   });
+});
+
+it("discloses incomplete activity and suppresses speed claims from partial baselines", () => {
+  const fixture = report();
+  render(<View initial={report({
+    partial: true,
+    typical_durations: fixture.typical_durations.map((baseline) => ({ ...baseline, partial: true })),
+  })} />);
+  expect(screen.getByText("Activity is incomplete; some attempts or timing data may be missing.")).toBeTruthy();
+  expect(screen.queryByText(/slower than usual/)).toBeNull();
+  expect(screen.queryByText(/ · (slow|fast)$/)).toBeNull();
+  const review = screen.getByRole("img", { name: /Stage 3 of 4, Review, 31m/ });
+  expect(review.getAttribute("aria-label")).toContain("baseline is incomplete");
+  expect(review.getAttribute("aria-label")).not.toContain(", slow");
+  const chip = screen.getByRole("button", { name: "Filter by Alpha" });
+  expect(chip.querySelector(".text-warning-foreground")).toBeNull();
+});
+
+it.each([
+  ["deduplicated leases", 0, 3],
+  ["host usage beyond listed leases", 4, 4],
+])("counts shared host capacity once with %s and keeps sleeping runners idle", (_name, hostUsed, used) => {
+  const lease = runners[0]!.leases[0]!;
+  const shared = { ...runners[0]!, machine_id: "shared", host_capacity: 8, host_used: hostUsed, capacity_limit: 8, reported_capacity: 8 };
+  render(<View hosts={[
+    { ...shared, leases: [lease, { ...lease, lease_id: "second" }] },
+    { ...shared, id: "sibling", display_name: "Sibling", leases: [lease, { ...lease, lease_id: "third" }] },
+    { ...runners[1]!, machine_id: "sleeping", health: "asleep", claim_refusal_reason: "", host_capacity: 2, host_used: 0, capacity_limit: 2, reported_capacity: 2 },
+    { ...runners[2]!, machine_id: "offline", host_capacity: 2, host_used: 0 },
+  ]} />);
+  expect(screen.getByRole("heading", { name: `Runners · 2 working · 1 idle · 1 offline · ${used} of 12 slots in use` })).toBeTruthy();
+  const sleeping = within(screen.getByRole("button", { name: "Filter by Beta" }));
+  expect(sleeping.getByRole("img", { name: "Asleep" })).toBeTruthy();
+  expect(sleeping.queryByText("offline")).toBeNull();
+  expect(sleeping.getByText("0/2")).toBeTruthy();
 });
 
 it("filters projects and runners, toggles runner chips, and retains stable issue, Change, PR and Session destinations", async () => {

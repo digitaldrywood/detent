@@ -452,7 +452,7 @@ Runner health beside a runner name in Fleet and Activity; healthy active runners
 - Import: `import { RunnerStatusDot } from "~/components/RunnerStatusDot";`
 - Source: [src/components/RunnerStatusDot.tsx](../../web/conversation/src/components/RunnerStatusDot.tsx).
 - Variants: none.
-- States: healthy, paused, failed, needs attention, offline.
+- States: healthy, paused, failed, needs attention, asleep, offline.
 - Keyboard: Static status image; the surrounding control owns keyboard behavior.
 - Avoid: Work stage or job outcome; use StageProgress for stage timing.
 

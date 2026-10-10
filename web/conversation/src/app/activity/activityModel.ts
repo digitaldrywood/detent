@@ -12,7 +12,7 @@ export const runnerCapacity = (runner: FleetRunner) =>
   Math.min(runner.capacity_limit, runner.reported_capacity);
 export const runnerCategory = (runner: FleetRunner) =>
   runner.state === "active" &&
-  ["healthy", "online", "needs_attention"].includes(runner.health)
+  ["healthy", "online", "needs_attention", "asleep"].includes(runner.health)
     ? runner.leases.length > 0
       ? "working"
       : "idle"
@@ -58,6 +58,7 @@ export function timing(
   const typical = report.typical_durations.find(
     (row) => row.project_id === attempt.project_id && row.stage === stage.key,
   );
+  const baselineAvailable = typical !== undefined && !typical.partial;
   const seconds = finished
     ? attempt.stage_duration_seconds
     : attempt.stage_started_at
@@ -68,12 +69,12 @@ export function timing(
           Math.max(0, (now - Date.parse(report.observed_at)) / 1000);
   const slow =
     seconds !== undefined &&
-    typical !== undefined &&
+    baselineAvailable &&
     seconds > typical.p90_seconds;
   const fast =
     finished &&
     seconds !== undefined &&
-    typical !== undefined &&
+    baselineAvailable &&
     seconds <= typical.p50_seconds / 2;
   const duration =
     seconds === undefined ? "Time unavailable" : displayDuration(seconds);
@@ -84,7 +85,7 @@ export function timing(
       ? 0
       : finished && !cancelled
         ? 1
-        : typical && typical.p90_seconds > 0
+        : baselineAvailable && typical.p90_seconds > 0
           ? Math.min(cancelled ? 0.75 : 1, seconds / typical.p90_seconds)
           : cancelled
             ? 0.5
@@ -99,9 +100,11 @@ export function timing(
           : finished
             ? "muted"
             : "working";
-  const baseline = typical
-    ? `Typical in ${attempt.project_name}: ${displayDuration(typical.p50_seconds)} median, ${displayDuration(typical.p90_seconds)} for the slowest 10%.`
-    : `Typical time in ${attempt.project_name} is unavailable.`;
+  const baseline = typical?.partial
+    ? `Typical time in ${attempt.project_name} is unavailable because the baseline is incomplete.`
+    : typical
+      ? `Typical in ${attempt.project_name}: ${displayDuration(typical.p50_seconds)} median, ${displayDuration(typical.p90_seconds)} for the slowest 10%.`
+      : `Typical time in ${attempt.project_name} is unavailable.`;
   const description = `${stage.label} for ${duration}. ${baseline}`;
   const label = `${stage.index < 0 ? "Stage unavailable" : `Stage ${stage.index + 1} of 4, ${stage.label}`}, ${duration}${attempt.outcome ? `, ${attempt.outcome}` : ""}${slow ? ", slow" : fast ? ", fast" : ""}. ${baseline}`;
   return {
