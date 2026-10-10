@@ -274,6 +274,9 @@ func runnerProjectsForIdentity(ctx context.Context, cfg globalconfig.Config, cli
 			cfg.Client.NativeProjects[name] = string(id)
 		}
 		selected := globalconfig.Project{ID: name, Workflow: filepath.Join(workdir, "WORKFLOW.md"), WorkflowRef: "origin/HEAD", Workdir: workdir, Weight: 1, GlobalCache: cfg.Global.Cache.Normalized()}
+		if configured, ok := configuredRunnerWorkflow(locations, name, workdir); ok {
+			selected.Workflow, selected.WorkflowRef = configured.Workflow, configured.WorkflowRef
+		}
 		if prepare {
 			cloneURL := remote.CloneURL
 			if cloneURL == "" && repository != "" {
@@ -335,4 +338,13 @@ func canonicalCheckoutPath(path string) string {
 		return resolved
 	}
 	return filepath.Clean(path)
+}
+
+func configuredRunnerWorkflow(locations []globalconfig.Project, name, workdir string) (globalconfig.Project, bool) {
+	for _, location := range locations {
+		if location.ID == name && location.Workflow != "" && canonicalCheckoutPath(location.Workdir) == canonicalCheckoutPath(workdir) {
+			return location, true
+		}
+	}
+	return globalconfig.Project{}, false
 }

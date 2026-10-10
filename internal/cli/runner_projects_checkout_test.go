@@ -59,3 +59,27 @@ func gitClone(t *testing.T, dir string) {
 		}
 	}
 }
+
+func TestConfiguredRunnerWorkflow(t *testing.T) {
+	t.Parallel()
+	workdir := t.TempDir()
+	locations := []globalconfig.Project{
+		{ID: "other", Workdir: workdir, Workflow: "/config/other/WORKFLOW.md"},
+		{ID: "detent", Workdir: workdir, Workflow: "/config/detent/WORKFLOW.md"},
+		{ID: "unset", Workdir: workdir},
+	}
+	for _, test := range []struct {
+		name, project, workdir, want string
+	}{
+		{name: "configured workflow for the same checkout is kept", project: "detent", workdir: workdir, want: "/config/detent/WORKFLOW.md"},
+		{name: "a different checkout uses the repository workflow", project: "detent", workdir: t.TempDir()},
+		{name: "a project without a configured workflow uses the repository workflow", project: "unset", workdir: workdir},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := configuredRunnerWorkflow(locations, test.project, test.workdir)
+			if ok != (test.want != "") || got.Workflow != test.want {
+				t.Fatalf("workflow = %q, %v; want %q", got.Workflow, ok, test.want)
+			}
+		})
+	}
+}
