@@ -406,7 +406,8 @@ func TestSmokeVerdictRatchet(t *testing.T) {
 	}{
 		{"new failure blocks", []error{errors.New("file_issue: MCP server error")}, map[string]bool{"file_issue": true}, nil, "file_issue: MCP server error"},
 		{"known gap failing is reported", []error{errors.New("board_session_history: advertised arguments {}; MCP server error")}, map[string]bool{"board_session_history": true}, nil, ""},
-		{"missing change fixture blocks", []error{errors.New("get_change schema: missing fixture")}, map[string]bool{}, nil, "get_change schema: missing fixture"},
+		{"unprovisioned change fixture is reported", []error{errors.New("get_change: advertised change_id={}; smoke project lacks a change_id fixture")}, map[string]bool{}, nil, ""},
+		{"provisioned change fixture passing blocks", nil, map[string]bool{"get_change": true}, nil, "get_change: known gap #725 fixtures now passes"},
 		{"known gap passing blocks", nil, map[string]bool{"get_cutover_receipt": true}, nil, "get_cutover_receipt: known gap #724 now passes"},
 		{"missing conversation fixture blocks", []error{errors.New("get_conversation: advertised conversation_id={}; smoke project lacks a conversation_id fixture")}, map[string]bool{}, nil, "get_conversation: advertised"},
 		{"hosted gap handled as expected is not a pass", nil, map[string]bool{"order_item": true}, []string{"order_item"}, ""},
@@ -419,6 +420,32 @@ func TestSmokeVerdictRatchet(t *testing.T) {
 			}
 			if tt.blocking != "" && (err == nil || !strings.Contains(err.Error(), tt.blocking)) {
 				t.Fatalf("verdict = %v, want %q", err, tt.blocking)
+			}
+		})
+	}
+}
+
+func TestSmokeRemembersDependencyFixturesOnlyFromDependencyReads(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		tool   string
+		stored bool
+	}{
+		{"board read of another item", "board_state", false},
+		{"dependency change list", operatortool.ListChanges, true},
+		{"dependency runs", operatortool.WorkRuns, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &mcpSmoke{fixtures: map[string]any{}}
+			s.remember(tt.tool, map[string]any{"items": []any{map[string]any{"change_id": "change_other", "attempt_id": "attempt_other", "runner_id": "runner_other"}}})
+			if _, found := s.fixtures["change_id"]; found != tt.stored {
+				t.Fatalf("change_id stored = %v, want %v", found, tt.stored)
+			}
+			if _, found := s.fixtures["native_attempt_id"]; found != tt.stored {
+				t.Fatalf("native_attempt_id stored = %v, want %v", found, tt.stored)
+			}
+			if s.fixtures["runner_id"] != "runner_other" {
+				t.Fatalf("runner_id = %v, want unscoped fixture kept", s.fixtures["runner_id"])
 			}
 		})
 	}

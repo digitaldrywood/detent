@@ -53,13 +53,22 @@ var smokeReadSkips = map[string]string{
 }
 
 var smokeKnownGaps = map[string]map[string]string{
-	"production": {
+	"production": smokeFixtureGaps(map[string]string{
 		operatortool.OrderItem: "#724", operatortool.SetQueuePriority: "#724", "board_session_history": "#724", "get_cutover_receipt": "#724", "get_change_review_policy": "#724",
-	},
-	"staging": {
+	}),
+	"staging": smokeFixtureGaps(map[string]string{
 		operatortool.OrderItem: "#724", operatortool.SetQueuePriority: "#724", "board_session_history": "#724", "get_cutover_receipt": "#724",
 		"update_project_integration": "#724", operatortool.ActionResult: "#724",
-	},
+	}),
+}
+
+var smokeDependencyFixtures = []string{"change_id", "version_id", "native_attempt_id", "attempt_id", "run_id"}
+
+func smokeFixtureGaps(gaps map[string]string) map[string]string {
+	for _, name := range []string{"get_change", "get_change_version", "change_viewed_files", "get_attempt_diff", "get_native_run", "work_attempt_receipt", operatortool.RunnerProjectDiagnostics, operatortool.GitHubScopeTimings} {
+		gaps[name] = "#725 fixtures"
+	}
+	return gaps
 }
 
 var smokeHostedGaps = []string{operatortool.ArchiveItem, operatortool.OrderItem, operatortool.SetQueuePriority}
@@ -219,7 +228,7 @@ func (s *mcpSmoke) call(ctx context.Context, name string, args map[string]any) (
 	}
 	fmt.Fprintf(s.output, "%s ok\n", name)
 	if !strings.Contains(name, "conversation") && name != operatortool.ArtifactLibrary {
-		s.remember(result)
+		s.remember(name, result)
 	}
 	s.rememberRead(name, result)
 	return result, nil
@@ -259,31 +268,37 @@ func (s *mcpSmoke) settle(ctx context.Context, result map[string]any) (map[strin
 	}
 }
 
-func (s *mcpSmoke) remember(value any) {
+func (s *mcpSmoke) remember(tool string, value any) {
+	dependencyRead := tool == operatortool.ListChanges || tool == operatortool.WorkRuns
+	keep := func(key string, text string) {
+		if dependencyRead || !slices.Contains(smokeDependencyFixtures, key) {
+			s.rememberFixture(key, text)
+		}
+	}
 	switch node := value.(type) {
 	case map[string]any:
 		for _, key := range slices.Sorted(maps.Keys(node)) {
 			child := node[key]
 			if text, ok := child.(string); ok && text != "" {
 				if strings.HasSuffix(key, "_id") || key == "sha256" || key == "path" {
-					s.rememberFixture(key, text)
+					keep(key, text)
 				}
 				if key == "id" || key == "attempt_id" {
 					for _, kind := range []string{"runner", "machine", "workspace", "conversation", "attachment", "change", "version", "artifact", "action", "run", "recording"} {
 						if strings.HasPrefix(text, kind+"_") {
-							s.rememberFixture(kind+"_id", text)
+							keep(kind+"_id", text)
 						}
 					}
 					if strings.HasPrefix(text, "attempt_") {
-						s.rememberFixture("native_attempt_id", text)
+						keep("native_attempt_id", text)
 					}
 				}
 			}
-			s.remember(child)
+			s.remember(tool, child)
 		}
 	case []any:
 		for _, child := range node {
-			s.remember(child)
+			s.remember(tool, child)
 		}
 	}
 }
@@ -711,8 +726,11 @@ func (s *mcpSmoke) arguments(tool operatortool.Definition) (map[string]any, erro
 		fixtures["attachment_id"] = fixtures["issue_attachment_id"]
 	case operatortool.GetArtifactReference:
 		fixtures["revision"] = fixtures["artifact_revision"]
-	case operatortool.GitHubScopeTimings:
+	case operatortool.GitHubScopeTimings, operatortool.RunnerProjectDiagnostics:
 		fixtures["runner_id"] = fixtures["attempt_runner_id"]
+		if fixtures["runner_id"] == nil {
+			return nil, fmt.Errorf("%s: smoke project lacks the dependency attempt's runner_id fixture: %w", tool.Name, errSmokeFixture)
+		}
 	}
 	for key := range args {
 		if fixture, found := fixtures[key]; found && fixture != nil && smokeFixtureType(schema.Properties[key], fixture) {
