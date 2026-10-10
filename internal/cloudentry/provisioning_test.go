@@ -5,8 +5,10 @@ package cloudentry
 import (
 	"context"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -61,6 +63,9 @@ func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
 			SharedEntry: &hubserver.HostedSharedEntry{Issuer: spec.Issuer, PublicKeys: []ed25519.PublicKey{public}, Generation: spec.Organization.Generation},
 			Plans:       l.plans,
 		},
+	}
+	if spec.Organization.CheckoutPrice != "" {
+		config.Hosted.Plans = hubserver.CheckoutHostedPlans(config.Hosted.Plans)
 	}
 	if l.billing != nil {
 		config.Hosted.Billing = l.billing()
@@ -202,7 +207,7 @@ func newProvisioningFixtureWith(t *testing.T, maxTenants int, mutate func(*Alloc
 
 func (f *provisioningFixture) open(t *testing.T, maxTenants int, mutate func(*AllocationConfig)) {
 	t.Helper()
-	allocation := &AllocationConfig{TenantRoot: f.roots[0], SocketRoot: f.roots[1], MaxTenants: maxTenants, MaxConcurrent: 2, MaxPerIdentity: 1, RetryLimit: 3, Launcher: f.launcher}
+	allocation := &AllocationConfig{TenantRoot: f.roots[0], SocketRoot: f.roots[1], MaxTenants: maxTenants, MaxConcurrent: 2, RetryLimit: 3, Launcher: f.launcher}
 	if mutate != nil {
 		mutate(allocation)
 	}
@@ -300,8 +305,8 @@ func TestProvisioningSelfServiceJourney(t *testing.T) {
 	if response.StatusCode != http.StatusOK || !strings.Contains(body, "Delta") || !strings.Contains(body, `/organizations/`+id+`/delete`) {
 		t.Fatalf("owner page = %d %s", response.StatusCode, body)
 	}
-	if quota := f.create(t, dana, "Second"); quota.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("second organization status = %d", quota.StatusCode)
+	if quota := f.create(t, dana, "Second"); quota.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("second organization without a paid plan status = %d", quota.StatusCode)
 	}
 	eve := newBrowser(t, f.service.Handler())
 	eve.login("/auth/oidc/start", "user_eve:")
@@ -659,9 +664,9 @@ func TestProvisioningRejectsIneligibleCreators(t *testing.T) {
 		t.Fatalf("ineligible create = %d", response.StatusCode)
 	}
 	for _, config := range []*AllocationConfig{
-		{TenantRoot: "relative", SocketRoot: "/s", MaxTenants: 1, MaxConcurrent: 1, MaxPerIdentity: 1, RetryLimit: 1, Launcher: f.launcher},
-		{TenantRoot: "/t", SocketRoot: "/s", MaxTenants: 0, MaxConcurrent: 1, MaxPerIdentity: 1, RetryLimit: 1, Launcher: f.launcher},
-		{TenantRoot: "/t", SocketRoot: "/s", MaxTenants: 1, MaxConcurrent: 1, MaxPerIdentity: 1, RetryLimit: 1},
+		{TenantRoot: "relative", SocketRoot: "/s", MaxTenants: 1, MaxConcurrent: 1, RetryLimit: 1, Launcher: f.launcher},
+		{TenantRoot: "/t", SocketRoot: "/s", MaxTenants: 0, MaxConcurrent: 1, RetryLimit: 1, Launcher: f.launcher},
+		{TenantRoot: "/t", SocketRoot: "/s", MaxTenants: 1, MaxConcurrent: 1, RetryLimit: 1},
 	} {
 		if err := config.validate(); err == nil {
 			t.Fatalf("invalid allocation accepted: %+v", config)
@@ -703,7 +708,10 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 	}
 
 	t.Parallel()
-	f := newProvisioningFixture(t, 3, func(a *AllocationConfig) { a.MaxPerIdentity = 1 })
+	f := newProvisioningFixture(t, 3, func(a *AllocationConfig) {
+		a.Prices = []hubserver.HostedBillingPrice{{PriceID: "price_starter", Label: "Starter", Plan: hubserver.PlanReference{ID: "starter", Version: 1}}}
+	})
+	f.service.config.Billing = &BillingConfig{}
 	f.service.config.clientFS = fstest.MapFS{"app/conversation/index.html": {Data: []byte(`<html><head><script src="/static/app/conversation/app.js"></script></head><body><div id="root"></div></body></html>`)}}
 	stranger := newBrowser(t, f.service.Handler())
 	if response, body := stranger.get("/"); response.StatusCode != http.StatusOK || !strings.Contains(body, `<meta name="detent-surface" content="entry">`) || !strings.Contains(body, `content=""`) {
@@ -743,19 +751,27 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 	id := result.Organization["id"]
 	for _, path := range []string{"/api/cloud/organizations", "/api/cloud/session"} {
 		var limited struct {
-			CanCreate bool `json:"can_create"`
+			CanCreate      bool `json:"can_create"`
+			FreeSlotUsed   bool `json:"free_slot_used"`
+			CreationPrices []struct {
+				ID    string `json:"id"`
+				Label string `json:"label"`
+			} `json:"creation_prices"`
 		}
 		response := dana.do(http.MethodGet, path, nil, map[string]string{"Accept": "application/json"})
-		if err := json.Unmarshal([]byte(response.Body), &limited); err != nil || limited.CanCreate {
-			t.Fatalf("%s at the organization limit = %s %v", path, response.Body, err)
+		if err := json.Unmarshal([]byte(response.Body), &limited); err != nil || !limited.CanCreate {
+			t.Fatalf("%s with a used Free slot = %s %v", path, response.Body, err)
+		}
+		if path == "/api/cloud/session" && (!limited.FreeSlotUsed || len(limited.CreationPrices) != 1 || limited.CreationPrices[0].ID != "price_starter" || limited.CreationPrices[0].Label != "Starter") {
+			t.Fatalf("creation plans JSON = %s", response.Body)
 		}
 	}
 	if response, body := dana.get("/organizations/" + id + "/provisioning"); response.StatusCode == http.StatusOK && !strings.Contains(body, "detent-surface") {
 		t.Fatalf("provisioning shell = %s", body)
 	}
 	quota := dana.do(http.MethodPost, "/organizations", url.Values{"name": {"Echo"}, "creation_key": {"key_fedcba9876543210"}}, jsonHeaders)
-	if quota.StatusCode != http.StatusTooManyRequests || !strings.Contains(quota.Body, `"code":"quota_reached"`) {
-		t.Fatalf("JSON quota = %d %s", quota.StatusCode, quota.Body)
+	if quota.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(quota.Body, `"code":"paid_plan_required"`) {
+		t.Fatalf("JSON paid plan required = %d %s", quota.StatusCode, quota.Body)
 	}
 	missing := dana.do(http.MethodPost, "/organizations", url.Values{"name": {"Echo"}, "creation_key": {"key_fedcba9876543210"}}, map[string]string{"Accept": "application/json"})
 	if missing.StatusCode != http.StatusForbidden || !strings.Contains(missing.Body, `"code":"invalid_csrf"`) {
@@ -776,48 +792,153 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 	}
 }
 
-func TestCanCreateCountsOrganizationsTheIdentityCreated(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite tenant provisioning integration")
-	}
-
-	t.Parallel()
-	f := newProvisioningFixture(t, 3, func(a *AllocationConfig) { a.MaxPerIdentity = 2 })
-	seed := func(subject string, states ...string) {
-		for i, state := range states {
-			id := "org_" + subject + "_" + state + "_" + strings.Repeat("x", i+1)
-			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO organizations(id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,created_at,updated_at) VALUES (?,'',?,?,'unix:/x.sock',1,1,?,?,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
-				id, id, state, subject, subject+"@example.test"); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	seed("below", "ready")
-	seed("ready", "ready", "ready")
-	seed("pending", "ready", "failed")
-	seed("requested", "requested", "allocating")
-	seed("deleted", "ready", "deleted", "deleted")
+func TestCanCreateOrganizations(t *testing.T) {
 	tests := []struct {
-		name    string
-		service *Service
-		session accountSession
-		want    bool
+		name       string
+		allocation bool
+		session    accountSession
+		want       bool
 	}{
-		{name: "no organizations", service: f.service, session: accountSession{Subject: "none", Email: "none@example.test"}, want: true},
-		{name: "below limit", service: f.service, session: accountSession{Subject: "below", Email: "below@example.test"}, want: true},
-		{name: "at limit with ready", service: f.service, session: accountSession{Subject: "ready", Email: "ready@example.test"}, want: false},
-		{name: "at limit counting pending", service: f.service, session: accountSession{Subject: "pending", Email: "pending@example.test"}, want: false},
-		{name: "at limit with only pending", service: f.service, session: accountSession{Subject: "requested", Email: "requested@example.test"}, want: false},
-		{name: "deleted not counted", service: f.service, session: accountSession{Subject: "deleted", Email: "deleted@example.test"}, want: true},
-		{name: "platform member", service: f.service, session: accountSession{Subject: "staff", Email: "staff@example.test"}, want: true},
-		{name: "support session", service: f.service, session: accountSession{Subject: "below", Email: "below@example.test", Identity: auth.HostedIdentity{SupportActor: "support@example.test"}}, want: false},
-		{name: "no allocation", service: &Service{}, session: accountSession{Subject: "none", Email: "none@example.test"}, want: false},
+		{name: "ordinary account", allocation: true, session: accountSession{Email: "owner@example.test"}, want: true},
+		{name: "platform member", allocation: true, session: accountSession{Email: "staff@example.test"}, want: true},
+		{name: "support session", allocation: true, session: accountSession{Identity: auth.HostedIdentity{SupportActor: "support@example.test"}}},
+		{name: "no allocation"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := test.service.canCreate(t.Context(), test.session)
+			s := &Service{}
+			if test.allocation {
+				s.config.Allocation = &AllocationConfig{}
+			}
+			got, err := s.canCreate(t.Context(), test.session)
 			if err != nil || got != test.want {
 				t.Fatalf("canCreate = %v, %v; want %v", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestOwnerFreeAllowance(t *testing.T) {
+	tests := []struct {
+		name, subject, base, role, price                             string
+		subscribed, grant, expired, featureOnly, deleted, concurrent bool
+		wantPaid                                                     bool
+	}{
+		{name: "first organization", subject: "user_carol", base: "free"},
+		{name: "owned Free requires plan", subject: "user_alice", base: "free", wantPaid: true},
+		{name: "second organization selects paid", subject: "user_alice", base: "free", price: "price_starter"},
+		{name: "upgraded organization frees slot", subject: "user_alice", base: "free", subscribed: true},
+		{name: "complimentary organization", subject: "user_alice", base: "free", grant: true},
+		{name: "expired grant consumes slot", subject: "user_alice", base: "free", grant: true, expired: true, wantPaid: true},
+		{name: "feature grant still consumes slot", subject: "user_alice", base: "free", grant: true, featureOnly: true, wantPaid: true},
+		{name: "legacy pilot", subject: "user_alice", base: "pilot_free"},
+		{name: "invited membership", subject: "user_bob", base: "free"},
+		{name: "deleted organization", subject: "user_alice", base: "free", deleted: true},
+		{name: "platform admin dual role", subject: "user_alice", base: "free", role: "admin"},
+		{name: "entitlement administrator", subject: "user_alice", base: "free", role: "billing"},
+		{name: "concurrent creations", subject: "user_carol", base: "free", concurrent: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newEntryFixture(t)
+			plans := hubserver.CheckoutHostedPlans(nil)
+			db, err := sql.Open("sqlite", storeDSN(f.fixtures["org_alpha"].path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			for _, plan := range plans.Plans {
+				if plan.ID != "free" && plan.ID != "starter" {
+					continue
+				}
+				raw, err := json.Marshal(plan)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.ExecContext(t.Context(), "INSERT INTO hosted_plans(id,version,record_json) VALUES(?,?,?)", plan.ID, plan.Version, string(raw)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_id=?,base_version=1", test.base); err != nil {
+				t.Fatal(err)
+			}
+			if test.subscribed {
+				if _, err := db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET subscription_id='starter',subscription_version=1,subscription_expires_at=?", formatTime(time.Now().Add(time.Hour))); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.grant {
+				grant := hubserver.HostedGrant{ID: "comp_starter", Plan: hubserver.PlanReference{ID: "starter", Version: 1}, Scope: []string{"projects", "native_execution"}, StartsAt: time.Now().Add(-time.Hour)}
+				if test.expired {
+					expiry := time.Now().Add(-time.Minute)
+					grant.ExpiresAt = &expiry
+				}
+				if test.featureOnly {
+					grant.Scope = []string{"model_choice"}
+				}
+				raw, err := json.Marshal(grant)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.ExecContext(t.Context(), "INSERT INTO hosted_complimentary_grants(id,record_json) VALUES(?,?)", grant.ID, string(raw)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.deleted {
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleted' WHERE id='org_alpha'"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			email := f.provider.users[test.subject]
+			if test.role != "" {
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members(email,role,added_by,added_at,updated_at) VALUES(?,?,'test',?,?)", email, test.role, formatTime(time.Now()), formatTime(time.Now())); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.service.config.Allocation = &AllocationConfig{SocketRoot: filepath.Join(t.TempDir(), "s"), Prices: []hubserver.HostedBillingPrice{{PriceID: "price_starter", Label: "Starter", Plan: hubserver.PlanReference{ID: "starter", Version: 1}}}}
+			f.service.config.Billing = &BillingConfig{}
+			session := accountSession{Subject: test.subject, Email: email}
+			attempts := 1
+			if test.concurrent {
+				attempts = 2
+			}
+			start := make(chan struct{})
+			results := make(chan error, attempts)
+			for i := range attempts {
+				go func() {
+					<-start
+					id, err := f.service.createOrganizationFor(t.Context(), session, "New organization", fmt.Sprintf("creation_key_%016d", i), test.price)
+					if err == nil {
+						organization, readErr := f.service.registry.Organization(t.Context(), id)
+						if readErr != nil {
+							err = readErr
+						} else if organization.CheckoutPrice != test.price {
+							err = fmt.Errorf("checkout price = %q, want %q", organization.CheckoutPrice, test.price)
+						}
+					}
+					results <- err
+				}()
+			}
+			close(start)
+			paid, succeeded := 0, 0
+			for range attempts {
+				err := <-results
+				switch {
+				case errors.Is(err, errPaidPlanRequired):
+					paid++
+				case err == nil:
+					succeeded++
+				default:
+					t.Fatal(err)
+				}
+			}
+			wantPaid := 0
+			if test.wantPaid || test.concurrent {
+				wantPaid = 1
+			}
+			if paid != wantPaid || succeeded != attempts-wantPaid {
+				t.Fatalf("created=%d, paid selection required=%d; want %d, %d", succeeded, paid, attempts-wantPaid, wantPaid)
 			}
 		})
 	}

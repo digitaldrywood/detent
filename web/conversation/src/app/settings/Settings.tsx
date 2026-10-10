@@ -377,6 +377,9 @@ export function billingStatusText(
   switch (state.status) {
     case "":
     case "free":
+      if (report.entitlement.effective_base.id === "payment_pending") {
+        return { title: "Payment pending", description: "Complete checkout to activate this organization's paid plan." };
+      }
       return report.entitlement.source === "grant" || report.entitlement.effective_base.id !== "free"
         ? { title: "Complimentary access", description: `Plan ${plan}, granted by Detent.` }
         : { title: "Free plan", description: `Plan ${plan}. No payment details are on file.` };
@@ -458,6 +461,16 @@ export function BillingSettings(): React.ReactElement {
     globalThis.location?.assign(result.url);
     return result;
   });
+  const creationCheckout = React.useRef(false);
+  React.useEffect(() => {
+    const price = new URLSearchParams(globalThis.location?.search ?? "").get("checkout_price");
+    if (
+      creationCheckout.current || billing.value === undefined || !price ||
+      !billing.value.can_checkout || !billing.value.prices.some((option) => option.id === price)
+    ) return;
+    creationCheckout.current = true;
+    void checkout.call(price);
+  }, [billing.value, checkout]);
   const notice = billingReturnNotice(globalThis.location?.search ?? "");
   const status = billing.value === undefined ? null : billingStatusText(billing.value);
   useBillingConfirmation(notice !== null, billing);

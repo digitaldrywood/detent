@@ -93,7 +93,7 @@ func TestDevelopMigrationUsesDisposableReleaseState(t *testing.T) {
 			}
 		})
 	}
-	config := Config{Build: buildinfo.Info{Version: "develop-c6d3f432e"}, Platform: PlatformConfig{BootstrapAdminEmail: "operator@example.test"}, PublicURL: "https://staging.cloud.detent.build", StateDir: state, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), Provider: newFakeProvider(), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: &AllocationConfig{TenantRoot: tenants, SocketRoot: filepath.Join(root, "sockets"), MaxTenants: 2, MaxConcurrent: 1, MaxPerIdentity: 1, RetryLimit: 1}}
+	config := Config{Build: buildinfo.Info{Version: "develop-c6d3f432e"}, Platform: PlatformConfig{BootstrapAdminEmail: "operator@example.test"}, PublicURL: "https://staging.cloud.detent.build", StateDir: state, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), Provider: newFakeProvider(), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: &AllocationConfig{TenantRoot: tenants, SocketRoot: filepath.Join(root, "sockets"), MaxTenants: 2, MaxConcurrent: 1, RetryLimit: 1}}
 	for _, version := range []string{"develop-c6d3f432e", "develop-9a5915f53", "0.117.45"} {
 		config.Build.Version = version
 		allocation := *config.Allocation

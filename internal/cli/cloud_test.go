@@ -230,7 +230,7 @@ func TestCloudAllocationGeneratesTenantConfiguration(t *testing.T) {
 	if config.Attachments == nil || config.Attachments.AccessKeyID != env["DETENT_ATTACHMENTS_ACCESS_KEY_ID"] || config.Attachments.SecretAccessKey != env["DETENT_ATTACHMENTS_SECRET_ACCESS_KEY"] {
 		t.Fatal("entry attachment credentials were not loaded from the environment")
 	}
-	if allocation == nil || allocation.MaxTenants != 4 || allocation.MaxConcurrent != 1 || allocation.MaxPerIdentity != 1 || allocation.RetryLimit != 5 {
+	if allocation == nil || allocation.MaxTenants != 4 || allocation.MaxConcurrent != 1 || allocation.RetryLimit != 5 {
 		t.Fatalf("allocation = %+v", allocation)
 	}
 	launcher, ok := allocation.Launcher.(*cloudentry.ExecLauncher)

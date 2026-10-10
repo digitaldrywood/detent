@@ -246,7 +246,17 @@ func (s *Service) completeLogin(c echo.Context) error {
 	case organization.ID != "" && (transaction.ReturnPath == "" || transaction.ReturnPath == "/organizations"):
 		return c.Redirect(http.StatusSeeOther, s.organizationHome(organization.ID))
 	case transaction.ReturnPath != "":
-		return c.Redirect(http.StatusSeeOther, transaction.ReturnPath)
+		target := transaction.ReturnPath
+		if transaction.Organization != "" && target == "/organizations/"+transaction.Organization+"/organization/billing" {
+			organization, err := s.registry.Organization(ctx, transaction.Organization)
+			if err != nil {
+				return s.loginDenied(c, http.StatusServiceUnavailable, "Organization is temporarily unavailable", callback)
+			}
+			if organization.CreatorSubject == identity.Hosted.Subject && organization.CheckoutPrice != "" {
+				target = s.creationDestination(organization)
+			}
+		}
+		return c.Redirect(http.StatusSeeOther, target)
 	default:
 		return c.Redirect(http.StatusSeeOther, s.landing(ctx, identity.Email, *identity.Hosted))
 	}
@@ -407,7 +417,15 @@ func (s *Service) sessionJSON(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "membership_unavailable", "message": "Organization information is temporarily unavailable"})
 	}
-	return c.JSON(http.StatusOK, map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_create": account.CanCreate, "platform_role": account.PlatformRole})
+	result := map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_create": account.CanCreate, "platform_role": account.PlatformRole}
+	if account.CanCreate {
+		used, prices, err := s.creationPlans(c.Request().Context(), session)
+		if err != nil {
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "plans_unavailable", "message": "Organization plans are temporarily unavailable"})
+		}
+		result["free_slot_used"], result["creation_prices"] = used, prices
+	}
+	return c.JSON(http.StatusOK, result)
 }
 
 func (s *Service) organizationsJSON(c echo.Context) error {
