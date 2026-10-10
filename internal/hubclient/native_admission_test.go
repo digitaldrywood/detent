@@ -225,7 +225,7 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 		instance      bool
 	}{
 		{name: "reported prerequisite registers dependency hold"},
-		{name: "instance-owned blocker recovers without a dependency", instance: true},
+		{name: "instance-owned blocker recovers on any runner without a dependency", instance: true},
 		{name: "canonical native reference", qualified: true},
 		{name: "last reported prerequisite releases hold", second: true},
 		{name: "external prerequisite retains hold", external: true, refusal: "external"},
@@ -383,7 +383,7 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			}
 			request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "too-early", LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}, PolicyID: h.descriptor.ID, BlockerAttemptID: attempt.AttemptID, ExpectedRevision: blocked.Revision, State: prior, Reason: "dependency_ready", ReasonDetail: "recorded_blocker_recovery"}
 			if test.instance {
-				if _, err := h.native.Transition(t.Context(), blocked.WorkItemID, request); err != nil || h.state(t, issue.ID) != prior {
+				if _, err := h.otherWorker(t).Transition(t.Context(), blocked.WorkItemID, request); err != nil || h.state(t, issue.ID) != prior {
 					t.Fatalf("instance-owned blocker recovery = %v, state %s, want %s", err, h.state(t, issue.ID), prior)
 				}
 				return
