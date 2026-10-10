@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -137,6 +138,12 @@ func (e *nativeExecution) AgentTools() ([]runner.AgentTool, runner.AgentToolHand
 		}
 		result, err := e.claim.source.client.readAgentTool(ctx, call, e.scheduler.now())
 		if err != nil {
+			var refusal *operatortool.RequestError
+			if errors.As(err, &refusal) {
+				if encoded, encodeErr := operatortool.EncodeResult(refusal); encodeErr == nil {
+					return runner.AgentToolResult{Content: string(encoded.Content)}, err
+				}
+			}
 			return runner.AgentToolResult{Content: err.Error()}, err
 		}
 		return runner.AgentToolResult{Content: string(result.Content), Success: true}, nil
@@ -273,12 +280,28 @@ func (c *NativeClient) readAgentTool(ctx context.Context, call runner.AgentToolC
 			page := operatortool.OffsetPage(changes, request.Offset, request.Limit)
 			result.Changes, result.NextOffset = page.Items, page.NextOffset
 		} else {
-			var detail tracker.ChangeDetail
-			detail, err = c.Change(ctx, id, request.ChangeID)
-			if err == nil && (detail.Change.ProjectID != c.project || detail.Change.WorkItemID != id || detail.Change.ID != request.ChangeID) {
+			path, pathErr := changePath(id, request.ChangeID, "")
+			if pathErr != nil {
+				return operatortool.Result{}, operatortool.ErrInvalidArguments
+			}
+			params := url.Values{"view": {"bounded"}, "section": {request.Section}, "cursor": {request.Cursor}, "version_id": {request.VersionID}}
+			if request.Limit > 0 {
+				params.Set("limit", strconv.Itoa(request.Limit))
+			}
+			err = c.client.request(ctx, http.MethodGet, c.base()+path+"?"+params.Encode(), nil, &result)
+			var refusal *APIError
+			if errors.As(err, &refusal) && refusal.Code == "change_record_too_large" {
+				return operatortool.Result{}, operatortool.ChangeRecordTooLarge()
+			}
+			if errors.As(err, &refusal) && refusal.Status == http.StatusConflict {
+				return operatortool.Result{}, mutation.ErrConflict
+			}
+			if errors.As(err, &refusal) && refusal.Status == http.StatusUnprocessableEntity {
+				return operatortool.Result{}, operatortool.ErrInvalidArguments
+			}
+			if err == nil && (result.OrganizationID != string(c.organization) || result.ProjectID != string(c.project) || result.WorkItemID != string(id) || result.Detail == nil || result.Detail.Change.ProjectID != c.project || result.Detail.Change.WorkItemID != id || result.Detail.Change.ID != request.ChangeID) {
 				return operatortool.Result{}, operatortool.ErrAccessDenied
 			}
-			result.ChangeID, result.Detail = request.ChangeID, &detail
 		}
 		value = result
 	default:

@@ -53,6 +53,8 @@ func TestChangeArgumentBoundary(t *testing.T) {
 		valid           bool
 	}{
 		{"read", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c"}`, true},
+		{"current evidence page", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","section":"current","limit":2}`, true},
+		{"historical evidence", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","version_id":"version_old","section":"reviews","cursor":"continuation"}`, true},
 		{"operator publication", PublishChangeVersion, publishRaw("", nil), true},
 		{"operator source capture", PublishChangeVersion, sourceRaw("", nil), true},
 		{"source capture is typed", PublishChangeVersion, sourceRaw("source_capture", "attempt"), false},
@@ -75,6 +77,8 @@ func TestChangeArgumentBoundary(t *testing.T) {
 		{"null links", CreateChange, `{"project_id":"prj_p","work_item_id":"wi_i","title":"Change","request_id":"r","linked_issues":null}`, false},
 		{"oversized links", CreateChange, `{"project_id":"prj_p","work_item_id":"wi_i","title":"Change","request_id":"r","linked_issues":[` + strings.TrimSuffix(strings.Repeat(`"wi_related",`, 33), ",") + `]}`, false},
 		{"missing selector", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i"}`, false},
+		{"invalid evidence section", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","section":"everything"}`, false},
+		{"oversized evidence cursor", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","cursor":"` + strings.Repeat("c", 2049) + `"}`, false},
 		{"forged authority", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","yolo":true}`, false},
 		{"wrong tool field", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","request_id":"r"}`, false},
 		{"escape assessment", DiscussChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","version_id":"version_v","body":"assessment","request_id":"r","escape":{"occurrence_id":"revert","kind":"revert","observed_at":"2026-10-07T12:00:00Z","cause":"missing_criterion","evidence_reference":"commit","evidence_quote":"reverted source","basis_quote":"contract"}}`, true},
@@ -101,7 +105,8 @@ func TestChangeArgumentBoundary(t *testing.T) {
 // Catches an oversized application response escaping the shared transport cap.
 func TestChangeResultBound(t *testing.T) {
 	value := ChangeResult{Detail: &tracker.ChangeDetail{Change: tracker.ChangeRequest{Body: strings.Repeat("x", MaxResultBytes)}}}
-	if _, err := BoundedChangeResult(value); !errors.Is(err, ErrServiceUnavailable) {
+	var refusal *RequestError
+	if _, err := BoundedChangeResult(value); !errors.As(err, &refusal) || refusal.Code != "change_record_too_large" || strings.Contains(refusal.Message, "xxx") {
 		t.Fatalf("oversized response: %v", err)
 	}
 }

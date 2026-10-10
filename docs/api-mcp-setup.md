@@ -413,6 +413,22 @@ metadata exceeds the page budget returns the existing safe unavailable error.
 
 ## Native validation evidence
 
+`get_change` defaults to the current immutable version and current review,
+check and discussion records. Its summary always evaluates all stored current
+gate evidence. `read.version_id` identifies the selected evidence version;
+`read.sections` gives explicit completeness and `next_cursor` for versions,
+reviews, checks and discussion. Follow each cursor with `get_change` using
+the same project, work item and Change selectors. A cursor fixes the selected
+version and record boundary and is rejected if the current head changes.
+An omitted record is not passing evidence. `section: "versions"` traverses
+historical versions excluding the selected version already returned by the
+default read; `version_id` selects exact historical evidence. Existing
+`get_change_version` reads remain available. Individually oversized records
+return `change_record_too_large` with scoped inspection and operator repair
+guidance, without returning record content. The result budget remains 256 KiB.
+Native workers use the same projection through the Change HTTP read with
+`view=bounded` and the same section, cursor, version and limit selectors.
+
 Native `work_item`, `work_attempt_receipt` and `get_change` include a bounded
 `validation_audit` projection of recorded local commands and scheduled failure
 occurrences. Scheduled failures retain their existing issue/comment owner;

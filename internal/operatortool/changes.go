@@ -66,6 +66,8 @@ type ChangeArguments struct {
 	SHA256            string                           `json:"sha256,omitempty"`
 	Limit             int                              `json:"limit,omitempty"`
 	Offset            int                              `json:"offset,omitempty"`
+	Cursor            string                           `json:"cursor,omitempty"`
+	Section           string                           `json:"section,omitempty"`
 	Title             string                           `json:"title,omitempty"`
 	Body              string                           `json:"body,omitempty"`
 	Decision          string                           `json:"decision,omitempty"`
@@ -96,6 +98,7 @@ type ChangeResult struct {
 	NextOffset      *int                        `json:"next_offset,omitempty"`
 	Changes         []tracker.ChangeRequest     `json:"changes,omitempty"`
 	Detail          *tracker.ChangeDetail       `json:"detail,omitempty"`
+	Read            *ChangeRead                 `json:"read,omitempty"`
 	Version         *tracker.ChangeVersion      `json:"version,omitempty"`
 	Policy          *tracker.ChangeReviewPolicy `json:"policy,omitempty"`
 	Viewed          []tracker.ChangeViewedFile  `json:"viewed_files,omitempty"`
@@ -107,6 +110,17 @@ type ChangeResult struct {
 	PullRequests    []tracker.PullRequestView   `json:"pull_requests,omitempty"`
 	Library         []ArtifactLibraryRow        `json:"library,omitempty"`
 	Attempt         *tracker.NativeAttempt      `json:"attempt,omitempty"`
+}
+
+type ChangeRead struct {
+	VersionID string                    `json:"version_id"`
+	Complete  bool                      `json:"complete"`
+	Sections  map[string]ChangeReadPage `json:"sections"`
+}
+
+type ChangeReadPage struct {
+	Complete   bool   `json:"complete"`
+	NextCursor string `json:"next_cursor,omitempty"`
 }
 
 // ArtifactLibraryRow is the business data from the existing library read,
@@ -171,6 +185,8 @@ func ChangeCatalog() []Definition {
 	}
 	props["limit"] = json.RawMessage(`{"type":"integer","minimum":1,"maximum":200}`)
 	props["offset"] = json.RawMessage(`{"type":"integer","minimum":0,"maximum":10000}`)
+	props["cursor"] = json.RawMessage(`{"type":"string","minLength":1,"maxLength":2048}`)
+	props["section"] = json.RawMessage(`{"type":"string","enum":["current","versions","reviews","checks","discussion"]}`)
 	props["viewed"] = json.RawMessage(`{"type":"boolean"}`)
 	props["source"] = json.RawMessage(`{"type":"string","enum":["attempt","workspace"]}`)
 	props["binding"] = json.RawMessage(`{"type":"object","required":["service_id","origin","mode","hosted_opt_in","publisher_token_id"],"properties":{"service_id":{"type":"string","minLength":1,"maxLength":256},"origin":{"type":"string","minLength":1,"maxLength":2048},"mode":{"type":"string","enum":["customer","hosted"]},"hosted_opt_in":{"type":"boolean"},"publisher_token_id":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false}`)
@@ -199,7 +215,7 @@ func ChangeCatalog() []Definition {
 		definitions = append(definitions, Definition{Name: name, Description: description, InputSchema: schema, Annotations: Annotations{ReadOnly: read, Destructive: material, Idempotent: true, OpenWorld: name != ArtifactLibrary}, Meta: ToolMetadata{Toolset: "changes_artifacts"}})
 	}
 	add(ListChanges, "List Change Requests linked to an owned work item.", "work_item_id", "limit offset", true, false)
-	add(GetChange, "Read Change Request versions, discussion, reviews, checks, landing evidence and bounded local/scheduled check comparisons.", "work_item_id change_id", "", true, false)
+	add(GetChange, "Read the current immutable Change version, summary and bounded review/check/discussion and landing evidence. read.sections reports completeness and next_cursor; follow each cursor with get_change. Use section versions for historical versions or version_id for exact historical evidence. Summary always describes the current head; omitted evidence is not passing evidence.", "work_item_id change_id", "version_id section cursor limit", true, false)
 	add(GetChangeVersion, "Read one immutable version with code/diff, artifact references and the frozen landing contract and criterion evidence for escape classification.", "work_item_id change_id version_id", "", true, false)
 	add(GetChangeReviewPolicy, "Read the project's approved review policy.", "", "", true, false)
 	add(ChangeViewedFiles, "Read this principal's viewed-file digests for a version.", "work_item_id change_id version_id", "limit offset", true, false)
@@ -253,6 +269,9 @@ func DecodeChangeArguments(name string, raw json.RawMessage) (ChangeArguments, e
 		}
 	}
 	if args.ProjectID == "" || len(args.RequestID) > 128 || strings.TrimSpace(args.RequestID) != args.RequestID || len(args.Title) > 512 || len(args.Body) > 32768 || args.Limit < 0 || args.Limit > 200 || args.Offset < 0 || args.Offset > 10000 {
+		return args, ErrInvalidArguments
+	}
+	if len(args.Cursor) > 2048 || (args.Section != "" && args.Section != "current" && args.Section != "versions" && args.Section != "reviews" && args.Section != "checks" && args.Section != "discussion") {
 		return args, ErrInvalidArguments
 	}
 	if len(args.LinkedIssues) > 32 || string(fields["linked_issues"]) == "null" {
@@ -367,10 +386,17 @@ func ChangeDefinition(name string) (Definition, bool) {
 
 func BoundedChangeResult(value ChangeResult) (Result, error) {
 	raw, err := json.Marshal(value)
-	if err != nil || len(raw) > MaxResultBytes {
+	if err != nil {
 		return Result{}, ErrServiceUnavailable
 	}
+	if len(raw) > MaxResultBytes {
+		return Result{}, ChangeRecordTooLarge()
+	}
 	return Result{Content: raw}, nil
+}
+
+func ChangeRecordTooLarge() error {
+	return &RequestError{Code: "change_record_too_large", Message: "A Change record with its required evidence envelope exceeds the 262144-byte result budget. Inspect the exact version or artifact through its scoped read; the record requires an operator repair. No evidence was reported as passing."}
 }
 
 // ChangeApplication is the deployment's existing application service, bound to

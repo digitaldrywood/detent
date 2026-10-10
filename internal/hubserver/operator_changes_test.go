@@ -7,19 +7,25 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/logging"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -466,12 +472,28 @@ func TestOperatorChangeCommands(t *testing.T) {
 		t.Fatal("cross-project Change linkage succeeded")
 	}
 	t.Run("hosted get_change failure logs once", func(t *testing.T) {
+		var snapshot, trigger string
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT record_json FROM change_versions WHERE id=?", version.ID).Scan(&snapshot); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='change_versions_immutable'").Scan(&trigger); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER change_versions_immutable"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_versions SET record_json=? WHERE id=?", `["tenant content sentinel"]`, version.ID); err != nil {
 			t.Fatal(err)
 		}
+		cleanupCtx := context.WithoutCancel(t.Context())
+		t.Cleanup(func() {
+			if _, err := f.service.database.db.ExecContext(cleanupCtx, "UPDATE change_versions SET record_json=? WHERE id=?", snapshot, version.ID); err != nil {
+				t.Error(err)
+			}
+			if _, err := f.service.database.db.ExecContext(cleanupCtx, trigger); err != nil {
+				t.Error(err)
+			}
+		})
 		var logs hostedLogBuffer
 		f.service.config.Logger = slog.New(hostedLogHandler{output: logging.NewHandler(&logs, slog.LevelInfo, false, logging.SourceSetting{})})
 		for _, transport := range []string{"stdio", "http"} {
@@ -491,7 +513,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 					t.Fatal(logged)
 				}
 				trail, _ := record["error"].(string)
-				if !strings.Contains(trail, "get change:") || !strings.Contains(trail, "load detail: load versions: decode snapshot: json: cannot unmarshal array") {
+				if !strings.Contains(trail, "get change:") || !strings.Contains(trail, "load detail: decode change version [redacted]: json: cannot unmarshal array") {
 					t.Fatal(logged)
 				}
 				source, ok := record["source"].(map[string]any)
@@ -514,6 +536,215 @@ func TestOperatorChangeCommands(t *testing.T) {
 			})
 		}
 	})
+	t.Run("bounded current evidence and immutable history", func(t *testing.T) {
+		ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+		workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{Workflow: []byte(strings.Repeat("résumé 世界\n", 2800)), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: acme/orders\n  lanes:\n    - {name: Todo, role: active}\n    - {name: In Progress, role: active}\n    - {name: Done, role: terminal}\n    - {name: Blocked, role: holding}\nserver:\n  kanban:\n    allowed_transitions:\n      Todo: [In Progress, Done]\n      In Progress: [Todo, Done]\n      Done: [Todo]\n"), HasConfig: true, ConfigPath: "detent.yaml"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		workflow.Definition.Revision = strings.Repeat("a", 40)
+		descriptor, err := workflowconfig.ResolvePolicy(workflow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{Policy: descriptor, ExpectedID: hubTestPolicy().ID}), http.StatusOK)
+		rules := f.rules
+		rules.PolicyID = descriptor.ID
+		response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "large-policy-rules"}, ExpectedID: rules.ID, Policy: rules})
+		requireNativeStatus(t, response, http.StatusOK)
+		var current = version
+		versions := map[string]tracker.ChangeVersion{version.ID: version}
+		for i := range 6 {
+			input := changeTestInput()
+			input.PolicyID = descriptor.ID
+			input.HeadSHA = strings.Repeat(strconv.Itoa(i+1), 40)
+			bundle := []byte("retained admission fixture")
+			input.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "large-version-" + strconv.Itoa(i)}, ExpectedVersionID: current.ID, ChangeVersionInput: input, SourceBundle: bundle})
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &current)
+			versions[current.ID] = current
+		}
+		policyBytes, err := json.Marshal(current.Policy)
+		if err != nil || len(policyBytes) < 48000 || len(policyBytes) > 60000 {
+			t.Fatalf("unrealistic policy bytes=%d: %v", len(policyBytes), err)
+		}
+		insert := func(ctx context.Context, kind, versionID string, record any) {
+			t.Helper()
+			raw, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(ctx, "INSERT INTO change_evidence (change_id,version_id,kind,record_json) VALUES (?,?,?,?)", f.change.ID, versionID, kind, raw); err != nil {
+				t.Fatal(err)
+			}
+		}
+		actor := current.Actor
+		for i := range 9 {
+			id := strconv.Itoa(i)
+			insert(ctx, "review", current.ID, tracker.ChangeReview{ID: "review_" + id, VersionID: current.ID, Decision: "commented", Body: strings.Repeat("é<\n", 5000), Actor: actor, CreatedAt: at, Validator: &gate.ValidatorResult{VersionID: current.ID, HeadSHA: current.HeadSHA, Verdict: "approved", Submitted: true}})
+			insert(ctx, "check", current.ID, tracker.ChangeCheck{VersionID: current.ID, ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: "check_" + id, HeadSHA: current.HeadSHA, Conclusion: "failure", Evidence: []tracker.ChangeArtifact{current.Code}}, Actor: actor, ReceivedAt: at})
+			insert(ctx, "discussion", current.ID, tracker.ChangeDiscussion{ID: "discussion_" + id, VersionID: current.ID, Body: strings.Repeat("世界<\n", 5000), Actor: actor, CreatedAt: at})
+		}
+		full := f.detail(t)
+		for _, stored := range full.Versions {
+			versions[stored.ID] = stored
+		}
+		old, err := json.Marshal(operatortool.ChangeResult{Detail: &full})
+		if err != nil || len(old) <= operatortool.MaxResultBytes {
+			t.Fatalf("old aggregate did not reproduce the failure: bytes=%d %v", len(old), err)
+		}
+		read := func(args operatortool.ChangeArguments) operatortool.ChangeResult {
+			t.Helper()
+			result, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, args))
+			var value operatortool.ChangeResult
+			if err != nil || len(result.Content) > operatortool.MaxResultBytes || !utf8.Valid(result.Content) || json.Unmarshal(result.Content, &value) != nil || value.Read == nil || !reflect.DeepEqual(value.Detail.Summary, full.Summary) {
+				t.Fatalf("bounded read bytes=%d error=%v", len(result.Content), err)
+			}
+			params := url.Values{"view": {"bounded"}, "section": {args.Section}, "cursor": {args.Cursor}, "version_id": {args.VersionID}}
+			if args.Limit > 0 {
+				params.Set("limit", strconv.Itoa(args.Limit))
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.path+"?"+params.Encode(), f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var native operatortool.ChangeResult
+			decodeHubResponse(t, response, &native)
+			if response.Body.Len() > operatortool.MaxResultBytes || !reflect.DeepEqual(native.Detail, value.Detail) || !reflect.DeepEqual(native.Read, value.Read) {
+				t.Fatal("native and hosted projections diverged")
+			}
+			return value
+		}
+		first := read(base)
+		currentBytes, err := json.Marshal(first)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("old_aggregate_bytes=%d current_page_bytes=%d policy_bytes=%d versions=%d", len(old), len(currentBytes), len(policyBytes), len(versions))
+		if first.Read.VersionID != current.ID || first.Read.Complete || len(first.Detail.Versions) != 1 || !reflect.DeepEqual(first.Detail.Versions[0], current) || first.Detail.Summary.NativeReview == "approved" || first.Detail.Summary.Checks == "passed" {
+			t.Fatalf("current identity or readiness lost: %+v", first.Read)
+		}
+		for _, section := range []string{"versions", "reviews", "checks", "discussion"} {
+			seen := map[string]bool{}
+			collect := func(value operatortool.ChangeResult) {
+				t.Helper()
+				var ids []string
+				switch section {
+				case "versions":
+					for _, v := range value.Detail.Versions {
+						if !reflect.DeepEqual(v, versions[v.ID]) {
+							t.Fatal("historical policy/source/artifact identity changed")
+						}
+						ids = append(ids, v.ID)
+					}
+				case "reviews":
+					for _, r := range value.Detail.Reviews {
+						ids = append(ids, r.ID)
+					}
+				case "checks":
+					for _, c := range value.Detail.Checks {
+						ids = append(ids, c.CheckRunID)
+					}
+				case "discussion":
+					for _, d := range value.Detail.Discussion {
+						ids = append(ids, d.ID)
+					}
+				}
+				for _, id := range ids {
+					if seen[id] {
+						t.Fatalf("duplicated %s identity %s", section, id)
+					}
+					seen[id] = true
+				}
+			}
+			collect(first)
+			page := first.Read.Sections[section]
+			for pages := 0; !page.Complete; pages++ {
+				if pages > 20 || page.NextCursor == "" {
+					t.Fatal("continuation failed to progress")
+				}
+				args := base
+				args.Cursor, args.Limit = page.NextCursor, 2
+				value := read(args)
+				collect(value)
+				page = value.Read.Sections[section]
+			}
+			want := 9
+			if section == "versions" {
+				want = len(versions)
+			}
+			if section == "discussion" {
+				want = len(full.Discussion)
+			}
+			if len(seen) != want {
+				t.Fatalf("lost %s identities: got %d want %d", section, len(seen), want)
+			}
+		}
+		args := base
+		args.VersionID = version.ID
+		historical := read(args)
+		if len(historical.Detail.Reviews) != 1 || historical.Detail.Reviews[0].Decision != "approved" || historical.Detail.Reviews[0].VersionID != version.ID {
+			t.Fatal("lost historical approval")
+		}
+		args.Section = "discussion"
+		args.Cursor = first.Read.Sections["reviews"].NextCursor
+		if _, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, args)); !errors.Is(err, operatortool.ErrInvalidArguments) {
+			t.Fatalf("mixed cursor accepted: %v", err)
+		}
+		args = base
+		args.Cursor = first.Read.Sections["versions"].NextCursor
+		args.ProjectID = "prj_foreign"
+		if _, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, args)); !errors.Is(err, operatortool.ErrAccessDenied) {
+			t.Fatalf("foreign cursor accepted: %v", err)
+		}
+		args = base
+		args.VersionID, args.ExpectedRevision, args.Decision, args.Bundle, args.RequestID = version.ID, int64(full.Change.Revision), "approved", &bundle, "old-approval-large-history"
+		if _, err := executor.Execute(ctx, changeToolCall(operatortool.ReviewChange, args)); !errors.Is(err, mutation.ErrConflict) {
+			t.Fatalf("stale approval accepted: %v", err)
+		}
+		insert(ctx, "discussion", current.ID, tracker.ChangeDiscussion{ID: "discussion_oversized", VersionID: current.ID, Body: strings.Repeat("customer-secret", operatortool.MaxResultBytes/7)})
+		args = base
+		args.Section = "discussion"
+		for pages := range 20 {
+			result, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, args))
+			if err != nil {
+				var refusal *operatortool.RequestError
+				if !errors.As(err, &refusal) || refusal.Code != "change_record_too_large" || strings.Contains(refusal.Message, "customer-secret") {
+					t.Fatalf("unsafe oversized refusal: %v", err)
+				}
+				break
+			}
+			var value operatortool.ChangeResult
+			if json.Unmarshal(result.Content, &value) != nil || value.Read.Sections["discussion"].Complete {
+				t.Fatal("oversized evidence silently omitted")
+			}
+			args.Cursor = value.Read.Sections["discussion"].NextCursor
+			if pages == 19 {
+				t.Fatal("oversized evidence retried indefinitely")
+			}
+		}
+		response = performHubAPIRequest(t, f.service, http.MethodGet, f.path+"?view=bounded&section=discussion&cursor="+url.QueryEscape(args.Cursor), f.token, nil)
+		requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+		if !strings.Contains(response.Body.String(), "change_record_too_large") || strings.Contains(response.Body.String(), "customer-secret") {
+			t.Fatal("native oversized refusal leaked record")
+		}
+		args = base
+		args.VersionID = version.ID
+		if _, err := executor.Execute(ctx, changeToolCall(operatortool.GetChangeVersion, args)); err != nil {
+			t.Fatalf("exact historical version blocked by oversized current evidence: %v", err)
+		}
+		input := current.ChangeVersionInput
+		input.HeadSHA, input.Source = strings.Repeat("7", 40), nil
+		response = performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "advance-after-cursor"}, ExpectedVersionID: current.ID, ChangeVersionInput: input})
+		requireNativeStatus(t, response, http.StatusOK)
+		args = base
+		args.Cursor = first.Read.Sections["versions"].NextCursor
+		if _, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, args)); !errors.Is(err, mutation.ErrConflict) {
+			t.Fatalf("cursor crossed current-head change: %v", err)
+		}
+		response = performHubAPIRequest(t, f.service, http.MethodGet, f.path+"?view=bounded&cursor="+url.QueryEscape(args.Cursor), f.token, nil)
+		requireNativeStatus(t, response, http.StatusConflict)
+	})
+
 	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id=(SELECT id FROM api_tokens WHERE token_hash=?)", operatortool.ConnectionIdentity(ctx).CredentialID); err != nil {
 		t.Fatal(err)
 	}

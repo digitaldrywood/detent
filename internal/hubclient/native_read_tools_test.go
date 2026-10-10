@@ -124,6 +124,23 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: version.ID, Body: "Current version finding"}); err != nil {
 		t.Fatal(err)
 	}
+	for i := range 6 {
+		version = h.publish(t, item, change.ID, strings.Repeat(strconv.Itoa(i+1), 40), version.ID)
+	}
+	for range 9 {
+		if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: version.ID, Body: strings.Repeat("é<\n", 5000)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fullChange, err := h.admin.Change(t.Context(), item, change.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullBytes, err := json.Marshal(fullChange)
+	if err != nil || len(fullBytes) <= operatortool.MaxResultBytes {
+		t.Fatalf("native aggregate did not exceed budget: bytes=%d %v", len(fullBytes), err)
+	}
+
 	var foreignProject tracker.NativeProject
 	if err := h.admin.client.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", map[string]any{"name": "foreign", "idempotency_key": "foreign-project", "states": []tracker.NativeState{{Name: "Backlog"}}}, &foreignProject); err != nil {
 		t.Fatal(err)
@@ -234,6 +251,73 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if p := receipt.Data.Attempt.Runtime.Activity; p.SessionID != 0 || p.Summary == nil || len(p.Spans) != 0 || p.Breakdown().ObservedSeconds != 0 || !receipt.Data.Attempt.Runtime.Identity.IsZero() {
 		t.Fatalf("git-only receipt fabricated provider activity: %+v", p)
 	}
+	t.Run("bounded native Change traversal", func(t *testing.T) {
+		seen := map[string]bool{}
+		cursor := ""
+		for pages := range 20 {
+			arguments, err := json.Marshal(operatortool.ChangeArguments{ProjectID: string(h.project), ItemID: string(item), ChangeID: change.ID, Section: "discussion", Cursor: cursor, Limit: 2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := handler(t.Context(), runner.AgentToolCall{Name: operatortool.GetChange, Arguments: arguments})
+			var value operatortool.ChangeResult
+			if err != nil || !result.Success || len(result.Content) > operatortool.MaxResultBytes || json.Unmarshal([]byte(result.Content), &value) != nil || value.Read == nil || value.Read.VersionID != version.ID || len(value.Detail.Discussion) > 2 || value.ValidationAudit == nil || value.Read.Sections["versions"].NextCursor == "" {
+				t.Fatalf("unbounded or incomplete native Change: bytes=%d %v", len(result.Content), err)
+			}
+			for _, discussion := range value.Detail.Discussion {
+				if seen[discussion.ID] || discussion.VersionID != version.ID {
+					t.Fatal("duplicate or foreign-version discussion")
+				}
+				seen[discussion.ID] = true
+			}
+			page := value.Read.Sections["discussion"]
+			if page.Complete {
+				break
+			}
+			if page.NextCursor == "" || page.NextCursor == cursor || pages == 19 {
+				t.Fatal("native Change continuation did not progress")
+			}
+			cursor = page.NextCursor
+		}
+		if len(seen) != 9 {
+			t.Fatalf("lost native evidence identities: %d", len(seen))
+		}
+		if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: version.ID, Body: "late immutable evidence"}); err != nil {
+			t.Fatal(err)
+		}
+		arguments, err := json.Marshal(operatortool.ChangeArguments{ProjectID: string(h.project), ItemID: string(item), ChangeID: change.ID, Section: "discussion", Cursor: cursor, Limit: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := handler(t.Context(), runner.AgentToolCall{Name: operatortool.GetChange, Arguments: arguments})
+		if err != nil || strings.Contains(result.Content, "late immutable evidence") {
+			t.Fatalf("continuation included evidence appended after snapshot: %v", err)
+		}
+		if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: version.ID, Body: strings.Repeat("\x00", 64000)}); err != nil {
+			t.Fatal(err)
+		}
+		cursor = ""
+		for pages := range 20 {
+			arguments, err := json.Marshal(operatortool.ChangeArguments{ProjectID: string(h.project), ItemID: string(item), ChangeID: change.ID, Section: "discussion", Cursor: cursor, Limit: 2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := handler(t.Context(), runner.AgentToolCall{Name: operatortool.GetChange, Arguments: arguments})
+			if err != nil {
+				var refusal operatortool.RequestError
+				if result.Success || json.Unmarshal([]byte(result.Content), &refusal) != nil || refusal.Code != "change_record_too_large" || !strings.Contains(refusal.Message, "operator repair") || strings.Contains(result.Content, `\u0000`) {
+					t.Fatalf("native oversized refusal lost safe guidance: %s %v", result.Content, err)
+				}
+				break
+			}
+			var value operatortool.ChangeResult
+			if json.Unmarshal([]byte(result.Content), &value) != nil || value.Read.Sections["discussion"].Complete || pages == 19 {
+				t.Fatal("oversized native record was silently omitted or retried indefinitely")
+			}
+			cursor = value.Read.Sections["discussion"].NextCursor
+		}
+	})
+
 	at := time.Now().UTC().Add(-2 * time.Second)
 	observation := tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 2, Phase: "merging", HeartbeatAt: at, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 42, Generation: 2, Stage: "merge", Status: "running", Coverage: "partial", StartedAt: at, AsOf: at, Spans: []workflowmetrics.ActivitySpan{{ID: "git", Kind: "implementation", Outcome: "running", StartedAt: at}}}}
 	if err := owner.ObserveRuntime(t.Context(), observation); err != nil {

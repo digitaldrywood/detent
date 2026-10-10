@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -284,6 +287,47 @@ func (s *Service) getChange(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	defer tx.Rollback()
+	if c.QueryParam("view") == "bounded" {
+		args := operatortool.ChangeArguments{ProjectID: string(scope.project), ItemID: c.Param("item"), ChangeID: c.Param("change"), VersionID: c.QueryParam("version_id"), Section: c.QueryParam("section"), Cursor: c.QueryParam("cursor")}
+		if c.QueryParam("limit") != "" {
+			args.Limit, err = strconv.Atoi(c.QueryParam("limit"))
+			if err != nil {
+				return s.nativeAPIError(c, nativeInvalid("limit must be an integer"))
+			}
+		}
+		raw, err := json.Marshal(args)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		args, err = operatortool.DecodeChangeArguments(operatortool.GetChange, raw)
+		if err != nil {
+			return s.nativeAPIError(c, nativeInvalid("invalid Change read selector"))
+		}
+		result := (hubChangeApplication{service: s}).result(scope, args)
+		result, err = readBoundedChange(ctx, tx, scope, args, result)
+		if err != nil {
+			var refusal *operatortool.RequestError
+			if errors.As(err, &refusal) {
+				return c.JSON(http.StatusUnprocessableEntity, refusal)
+			}
+			if errors.Is(err, mutation.ErrConflict) {
+				return s.nativeAPIError(c, nativeConflict(0))
+			}
+			if errors.Is(err, operatortool.ErrInvalidArguments) {
+				return s.nativeAPIError(c, nativeInvalid("invalid Change read cursor"))
+			}
+			return s.nativeAPIError(c, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		bounded, err := operatortool.BoundedChangeResult(result)
+		if err != nil {
+			return c.JSON(http.StatusUnprocessableEntity, err)
+		}
+		return c.Blob(http.StatusOK, "application/json", bounded.Content)
+	}
+
 	result, err := readChangeDetail(ctx, tx, scope, c.Param("item"), c.Param("change"), s.config.now())
 	if err != nil {
 		return s.nativeAPIError(c, err)
