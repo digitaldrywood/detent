@@ -953,7 +953,8 @@ describe("platform audit", () => {
         "Audit denied",
       );
       expect(screen.getByText("Platform")).toBeTruthy();
-      if (status === 401) expect(assign).toHaveBeenCalledWith(SIGN_IN_PLATFORM);
+      if (status === 401)
+        await waitFor(() => expect(assign).toHaveBeenCalledWith(SIGN_IN_PLATFORM));
     },
   );
 

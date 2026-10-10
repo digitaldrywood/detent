@@ -2,11 +2,15 @@ package hubserver
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -192,18 +196,15 @@ func TestHostedAccountContractFixtures(t *testing.T) {
 	}
 }
 
-var accountClientCall = regexp.MustCompile("send\\(\\s*[\\w.]+,\\s*\"([A-Z]+)\",\\s*(?:`((?:\\$\\{(?:[^{}]|\\{[^{}]*\\})*\\}|[^`$])+)`|hubPath\\(\"([^\"]+)\"\\))")
+var accountClientCall = regexp.MustCompile("send\\(\\s*[\\w.]+,\\s*\"([A-Z]+)\",\\s*(?:`((?:\\$\\{(?:[^{}]|\\{[^{}]*\\})*\\}|[^`$])+)`|hubPath\\(\"([^\"]+)\"\\)|\"([^\"]+)\")")
 
 var accountClientParameter = regexp.MustCompile(`\$\{encodeURIComponent\([^}]*\)\}`)
 
-// TestHostedAccountClientRoutesMounted reads every call the client's account
-// API makes and requires a hosted Hub route for it, so a screen cannot ship
-// against an endpoint the Hub never mounted.
 func TestHostedAccountClientRoutesMounted(t *testing.T) {
 	t.Parallel()
 	raw, err := os.ReadFile("../../web/conversation/src/app/account/api.ts")
 	if err != nil {
-		t.Skipf("account client is not available: %v", err)
+		t.Fatalf("read account client: %v", err)
 	}
 	f := newBrowserHostedFixture(t, true)
 	mounted := make(map[string]bool)
@@ -216,6 +217,36 @@ func TestHostedAccountClientRoutesMounted(t *testing.T) {
 		"POST /api/v2/organizations":                                                       true,
 		"POST " + hostedOrganizationBase + "/projects/:project/attachments":                true,
 		"GET " + hostedOrganizationBase + "/projects/:project/attachments/:param/metadata": true,
+	}
+	entry, err := parser.ParseFile(token.NewFileSet(), "../cloudentry/access_keys.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, declaration := range entry.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "registerAccessKeys" {
+			continue
+		}
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok || len(call.Args) < 2 {
+				return true
+			}
+			method, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || !slices.Contains([]string{"GET", "POST", "PUT", "DELETE"}, method.Sel.Name) {
+				return true
+			}
+			path, ok := call.Args[0].(*ast.BasicLit)
+			if !ok || path.Kind != token.STRING {
+				t.Fatal("key route must have a literal path")
+			}
+			value, err := strconv.Unquote(path.Value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mounted[method.Sel.Name+" "+value] = true
+			return true
+		})
 	}
 	callCount := len(accountClientCall.FindAllStringIndex(string(raw), -1))
 	if callCount < 20 {
@@ -237,7 +268,7 @@ func TestHostedAccountClientRoutesMounted(t *testing.T) {
 					return
 				}
 			}
-			t.Fatalf("the account client calls %s, which the hosted Hub does not mount", key)
+			t.Fatalf("the account client calls %s, which neither the tenant Hub nor Cloud entry mounts", key)
 		})
 	}
 }
@@ -249,10 +280,14 @@ func accountClientRoutes(source string) []string {
 		if call[3] != "" {
 			path = call[3]
 		}
+		if call[4] != "" {
+			path = call[4]
+		}
 		for _, key := range accountClientVariants(call[1] + " " + path) {
 			key = strings.ReplaceAll(key, "${project(projectId)}", "${base}/projects/:project")
 			key = strings.ReplaceAll(key, "${project(input.projectId)}", "${base}/projects/:project")
 			key = strings.ReplaceAll(key, "${base}", hostedOrganizationBase)
+			key = strings.ReplaceAll(key, "${cloudOrganization}", "/api/cloud/organizations/:organization")
 			key = accountClientParameter.ReplaceAllString(key, ":param")
 			if path, _, ok := strings.Cut(key, "?"); ok && !strings.Contains(path, "${") {
 				key = path
@@ -309,6 +344,21 @@ func TestAccountClientRoutes(t *testing.T) {
 			name:   "health findings defaulted state query",
 			source: "send(HealthFindingsRead, \"GET\", `${base}/projects/${encodeURIComponent(project)}/health/findings?state=${options.state ?? \"open\"}`)",
 			want:   []string{"GET " + hostedOrganizationBase + "/projects/:param/health/findings"},
+		},
+		{
+			name:   "personal key literal URL",
+			source: `send(AccessKeys, "GET", "/api/cloud/account/api-keys")`,
+			want:   []string{"GET /api/cloud/account/api-keys"},
+		},
+		{
+			name:   "member key cursor",
+			source: "send(AccessKeys, \"GET\", `${cloudOrganization}/external-keys${cursor ? `?cursor=${encodeURIComponent(cursor)}` : \"\"}`)",
+			want:   []string{"GET /api/cloud/organizations/:organization/external-keys"},
+		},
+		{
+			name:   "org key mutation",
+			source: "send(null, \"PUT\", `${cloudOrganization}/external-keys/${encodeURIComponent(id)}/approve`, {})",
+			want:   []string{"PUT /api/cloud/organizations/:organization/external-keys/:param/approve"},
 		},
 		{
 			name:   "hub path",

@@ -7,7 +7,7 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Schema from "effect/Schema";
 
 import { SettingsSidebarNav } from "../../src/components/settings/SettingsSidebarNav.tsx";
@@ -55,10 +55,12 @@ function labelsFor(items: readonly SettingsNavItem[]): readonly string[] {
 }
 
 describe("which sections an actor gets", () => {
+  beforeEach(() => applyHubPaths({ base_path: "/organizations/org_test" }));
   it("gives an owner every Detent section, in the reading order", () => {
     const items = settingsNavItems({ canManage: true, supporting: false });
     expect(labelsFor(items)).toEqual([
       "General",
+      "API keys",
       "Organization",
       "Appearance",
       "Projects",
@@ -117,6 +119,23 @@ describe("which sections an actor gets", () => {
       expect(link?.getAttribute("href")).toBe("/platform/tenants");
     } else {
       expect(link).toBeNull();
+    }
+  });
+
+  it.each(["", "/organizations/org_test"])("limits personal-key navigation to shared Cloud (%s)", async (mount) => {
+    applyHubPaths({ base_path: mount });
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => new Response(JSON.stringify(
+      String(url).endsWith("key-context") ? { organizations: [], mcp_endpoint: "https://cloud.example.test/mcp" } : { keys: [] },
+    )));
+    renderSidebarNav("/settings/api-keys", { ...OWNER_ACCOUNT, bootstrap: { organization: OWNER_ACCOUNT.account.organization } }, <SettingsRoute section="api-keys" />);
+    await screen.findByRole("button", { name: "General" });
+    if (mount) {
+      await screen.findByRole("button", { name: "Create key" });
+      expect(screen.getByRole("button", { name: "API keys" })).toBeTruthy();
+    } else {
+      expect(screen.queryByRole("button", { name: "API keys" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Create key" })).toBeNull();
+      expect(fetch.mock.calls.some(([url]) => String(url).startsWith("/api/cloud/"))).toBe(false);
     }
   });
 
@@ -210,6 +229,13 @@ describe("MCP setup", () => {
       token: "private-api-credential",
     };
     renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_threefold", csrfToken: activeAccount.csrf_token }, account: activeAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    if (mount) {
+      await screen.findByText("Manage your keys in account settings");
+      expect(screen.queryByRole("heading", { name: "Member keys" })).toBeNull();
+      expect(screen.queryByRole("heading", { name: "Personal key policy" })).toBeNull();
+      expect(fetch.mock.calls.some(([url]) => /external-keys|key-policy|service-keys/.test(String(url)))).toBe(false);
+      return;
+    }
     await waitFor(() => expect(screen.getByRole("heading", { name: "API keys" })).toBeTruthy());
     expect(screen.getByRole("button", { name: "API & MCP" }).getAttribute("aria-current")).toBe("true");
     expect(document.body.textContent).not.toContain("private-csrf-credential");
@@ -388,12 +414,124 @@ describe("MCP setup", () => {
   });
 });
 
+describe("personal keys and org controls", () => {
+  beforeEach(() => applyHubPaths({ base_path: "/organizations/org_test" }));
+  const account = OWNER_ACCOUNT.account;
+  const client = { ...OWNER_ACCOUNT, bootstrap: { organization: account.organization } };
+  const reach = { organization_id: account.organization.id, name: account.organization.name, role: "member", status: "allowed", projects: [{ id: account.projects[0]!.id, name: account.projects[0]!.name, can_write: true }], last_used_at: null };
+  const key = { id: "personal1", name: "My agent", kind: "personal", owner: "user1", owner_email: "member@example.test", permission: "write", access_context: "global", organizations: [], created_at: "2026-10-01T12:00:00Z", effective_reach: [reach], last_used_at: null };
+  const context = { organizations: [reach, { ...reach, organization_id: "org_other", name: "Other org", projects: [{ id: "prj_other", name: "Other project", can_write: false }] }], mcp_endpoint: "https://cloud.example.test/mcp" };
+
+  it("creates a selected cross-org key and keeps the secret out of setup prompts", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url).endsWith("key-context")) return new Response(JSON.stringify(context));
+      if (init?.method === "POST") return new Response(JSON.stringify({ ...key, ...JSON.parse(String(init.body)), token: "private-new-key" }), { status: 201 });
+      return new Response(JSON.stringify({ keys: [key] }));
+    });
+    renderSidebarNav("/settings/api-keys", { ...client, account: { ...account, actor: { ...account.actor, can_manage: false, role: "member" } } }, <SettingsRoute section="api-keys" />);
+    await screen.findByRole("button", { name: "Create key" });
+    expect(screen.getByText("Effective reach today")).toBeTruthy();
+    expect(screen.getByText("Never used", { exact: false })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Create key" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Cross-org agent" } });
+    fireEvent.change(screen.getByLabelText("Organization scope"), { target: { value: "selected" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: account.organization.name }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Other org" }));
+    fireEvent.change(screen.getByLabelText(`${account.organization.name} project scope`), { target: { value: "selected" } });
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Create key" })).toHaveProperty("disabled", true);
+    fireEvent.click(screen.getByRole("checkbox", { name: account.projects[0]!.name }));
+    fireEvent.change(screen.getByLabelText("Other org project scope"), { target: { value: "project" } });
+    fireEvent.change(screen.getByLabelText("Project in Other org"), { target: { value: "prj_other" } });
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Create key" }));
+    await screen.findByLabelText("New API key");
+    const post = fetch.mock.calls.find(([, init]) => init?.method === "POST")!;
+    expect(post[0]).toBe("/api/cloud/account/api-keys");
+    expect(JSON.parse(String(post[1]?.body))).toMatchObject({ access_context: "selected", organizations: [{ organization_id: account.organization.id, project_access: "selected", project_ids: [account.projects[0]!.id] }, { organization_id: "org_other", project_access: "project", project_ids: ["prj_other"] }] });
+    expect(screen.getByLabelText("New API key").getAttribute("type")).toBe("password");
+    fireEvent.click(screen.getByRole("button", { name: "Copy MCP prompt" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.lastCall![0]).toContain("https://cloud.example.test/mcp");
+    expect(writeText.mock.lastCall![0]).not.toContain("private-new-key");
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByLabelText("New API key")).toBeNull());
+  });
+
+  it("confirms rotation and revocation through owner-scoped endpoints", async () => {
+    let revoked = false;
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url).endsWith("key-context")) return new Response(JSON.stringify(context));
+      if (String(url).endsWith("/rotate")) return new Response(JSON.stringify({ ...key, token: "replacement-key" }), { status: 201 });
+      if (init?.method === "DELETE") { revoked = true; return new Response(null, { status: 204 }); }
+      return new Response(JSON.stringify({ keys: [{ ...key, ...(revoked ? { revoked_at: "2026-10-09T00:00:00Z" } : {}) }] }));
+    });
+    renderSidebarNav("/settings/api-keys", client, <SettingsRoute section="api-keys" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Rotate My agent" }));
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Rotate key" }));
+    await screen.findByLabelText("New API key");
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Revoke My agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Revoke key" }));
+    await screen.findByText("No active personal keys");
+    expect(fetch.mock.calls.some(([url, init]) => url === "/api/cloud/account/api-keys/personal1/rotate" && init?.method === "POST")).toBe(true);
+    expect(fetch.mock.calls.some(([url, init]) => url === "/api/cloud/account/api-keys/personal1" && init?.method === "DELETE")).toBe(true);
+  });
+
+  it("loads the next member-key page and includes its pending keys", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const path = String(url);
+      if (path.endsWith("key-context")) return new Response(JSON.stringify(context));
+      if (path.endsWith("key-policy")) return new Response(JSON.stringify({ personal_keys: "approval" }));
+      if (path.includes("external-keys?cursor=")) return new Response(JSON.stringify({ keys: [{ ...key, id: "personal2", name: "Next page agent", effective_reach: [{ ...reach, status: "pending" }] }] }));
+      return new Response(JSON.stringify(path.endsWith("service-keys") ? { keys: [] } : { keys: [key], next_cursor: "personal1" }));
+    });
+    renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Load more member keys" }));
+    await screen.findByRole("button", { name: "Approve Next page agent" });
+    expect(screen.getByRole("button", { name: "Revoke My agent for this org" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Revoke Next page agent for this org" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Load more member keys" })).toBeNull();
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith("/external-keys?cursor=personal1"))).toBe(true);
+  });
+
+  it("saves org policy, approves pending keys and revokes only this org", async () => {
+    applyHubPaths({ base_path: `/organizations/${account.organization.id}` });
+    let policy = "approval";
+    let status = "pending";
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const path = String(url);
+      if (path.endsWith("key-context")) return new Response(JSON.stringify(context));
+      if (path.endsWith("key-policy")) { if (init?.method === "PUT") policy = JSON.parse(String(init.body)).personal_keys; return new Response(JSON.stringify({ personal_keys: policy })); }
+      if (path.endsWith("/approve")) { status = "allowed"; return new Response(null, { status: 204 }); }
+      if (path.endsWith("/block")) { status = "blocked"; return new Response(null, { status: 204 }); }
+      return new Response(JSON.stringify({ keys: path.endsWith("service-keys") ? [{ ...key, id: "service1", name: "Org integration", kind: "service", access_context: "selected", organizations: [{ organization_id: account.organization.id, project_access: "all", project_ids: null }] }] : [{ ...key, effective_reach: [{ ...reach, status }] }] }));
+    });
+    renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
+    await screen.findByRole("button", { name: "Revoke Org integration" });
+    fireEvent.click(await screen.findByRole("button", { name: "Approve My agent" }));
+    await screen.findByText("No keys awaiting approval");
+    fireEvent.change(screen.getByLabelText("Personal keys"), { target: { value: "blocked" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
+    await waitFor(() => expect(policy).toBe("blocked"));
+    fireEvent.click(screen.getByRole("button", { name: "Revoke My agent for this org" }));
+    expect(screen.getByText(/The key keeps its access to other organizations/)).toBeTruthy();
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Revoke for this org" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("/external-keys/personal1/block") && init?.method === "PUT")).toBe(true);
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+  });
+});
+
 describe("the settings navigation in the sidebar", () => {
+  beforeEach(() => applyHubPaths({ base_path: "/organizations/org_test" }));
   it("lists every section the actor gets, in the reading order", async () => {
     renderSidebarNav();
     await waitFor(() => expect(screen.getByRole("button", { name: "General" })).toBeTruthy());
     for (const label of [
       "General",
+      "API keys",
       "Organization",
       "Appearance",
       "Projects",

@@ -124,6 +124,13 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			wantCursors: 1,
 		},
 		{
+			name:        "a failed surface reply keeps the finding and reports the error",
+			refusal:     conversation,
+			client:      &reviewThreadClient{failClose: "T1", pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P1 finding"))}},
+			wantReason:  []string{"P1 finding", "mark review conversation as surfaced: mutation refused"},
+			wantCursors: 1,
+		},
+		{
 			name:       "an unreadable thread list keeps the GitHub refusal",
 			refusal:    conversation,
 			client:     &reviewThreadClient{readErr: &github.StatusError{StatusCode: http.StatusBadGateway}},

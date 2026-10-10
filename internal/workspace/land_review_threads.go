@@ -68,8 +68,9 @@ func resolveLandingReviewThreads(ctx context.Context, client GitHubRESTClient, r
 			}
 		}
 		if thread.Bot && !surfacedAt(thread, head) {
-			if err := replyLandingReviewThread(ctx, client, thread.ID, "Detent surfaced this conversation to Rework at "+shortLandingHead(head)+".\n\n<!-- detent:surfaced "+head+" -->"); err != nil {
+			if replyErr := replyLandingReviewThread(ctx, client, thread.ID, "Detent surfaced this conversation to Rework at "+shortLandingHead(head)+".\n\n<!-- detent:surfaced "+head+" -->"); replyErr != nil {
 				thread.Body += "\n(surfacing reply failed; this thread will not be auto-resolved until a later surfacing reply succeeds)"
+				err = errors.Join(err, fmt.Errorf("mark review conversation as surfaced: %w", replyErr))
 			}
 		}
 		remaining = append(remaining, thread)
@@ -80,7 +81,7 @@ func resolveLandingReviewThreads(ctx context.Context, client GitHubRESTClient, r
 		}
 		return nil
 	}
-	return refuse(LandRefusalProtected, landingReviewThreadsReason(remaining, resolved))
+	return errors.Join(refuse(LandRefusalProtected, landingReviewThreadsReason(remaining, resolved)), err)
 }
 
 func surfacedAt(thread landingReviewThread, head string) bool {

@@ -215,3 +215,24 @@ func (s *Service) entryKeyAudit(c echo.Context) error {
 	}
 	return c.NoContent(http.StatusNoContent)
 }
+
+func (s *Service) entryKeyContext(c echo.Context) error {
+	claims, ok := hostedSharedClaims(c)
+	if !ok || claims.Kind != cloudassert.KindService || claims.Subject == "" {
+		return c.NoContent(http.StatusForbidden)
+	}
+	var local string
+	err := s.database.auth().QueryRowContext(c.Request().Context(), "SELECT m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL", claims.Subject).Scan(&local)
+	if err != nil || !auth.ValidOrganizationRole(local) || !auth.ValidOrganizationRole(claims.Role) {
+		return c.NoContent(http.StatusForbidden)
+	}
+	credential := apiCredential{Hosted: &auth.HostedIdentity{Subject: claims.Subject}, HostedRole: lesserHostedRole(local, claims.Role)}
+	projects, err := s.hostedReadableProjects(c.Request().Context(), credential)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, struct {
+		Role     string                `json:"role"`
+		Projects []appBootstrapProject `json:"projects"`
+	}{credential.HostedRole, projects})
+}

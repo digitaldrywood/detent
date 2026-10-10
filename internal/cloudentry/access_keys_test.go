@@ -93,11 +93,150 @@ func TestAccessKeyCrossOrganizationMCP(t *testing.T) {
 	}
 }
 
+func TestOrganizationKeyDiscoveryPagination(t *testing.T) {
+	f := newEntryFixture(t)
+	owner := newBrowser(t, f.service.Handler())
+	owner.login("/organizations", "user_alice:")
+	key := createTestAccessKey(t, owner, "global", nil, "")
+	db := f.service.auth.store.db
+	for i := range 55 {
+		id := fmt.Sprintf("key_page_%03d", i)
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO access_keys SELECT ?,?,name,kind,owner_subject,owner_email,permission,access_context,organizations_json,service_organization_id,created_at,expires_at,revoked_at FROM access_keys WHERE id=?`, id, id, key.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.ExecContext(t.Context(), `UPDATE access_keys SET access_context='project',organizations_json='[{"organization_id":"org_beta","project_access":"project","project_ids":["prj_absent"]}]' WHERE id='key_page_000'`); err != nil {
+		t.Fatal(err)
+	}
+	transport := f.service.config.transport
+	serviceCalls := 0
+	f.service.config.transport = func(org Organization) (http.RoundTripper, error) {
+		serviceCalls++
+		return transport(org)
+	}
+	for _, test := range []struct {
+		name, owner, access, organizations string
+	}{
+		{"unrelated owner", "user_outside", "global", "not-json"},
+		{"other organization", key.Owner, "selected", `[{"organization_id":"org_alpha","project_access":"all","project_ids":[]}]`},
+	} {
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO access_keys SELECT ?,?,name,kind,?,?,permission,?,?,service_organization_id,created_at,expires_at,revoked_at FROM access_keys WHERE id=?`, test.name, test.name, test.owner, key.OwnerEmail, test.access, test.organizations, key.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seen := map[string]bool{}
+	cursor := ""
+	for page, want := range []int{50, 6} {
+		serviceCalls = 0
+		f.provider.mu.Lock()
+		before := f.provider.membershipLists
+		f.provider.mu.Unlock()
+		response := attachmentRequest(t, owner, http.MethodGet, "/api/cloud/organizations/org_beta/external-keys?cursor="+cursor, nil, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("page %d=%d %s", page, response.Code, response.Body.String())
+		}
+		var listed struct {
+			Keys       []keyView `json:"keys"`
+			NextCursor string    `json:"next_cursor"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &listed); err != nil {
+			t.Fatal(err)
+		}
+		if len(listed.Keys) != want {
+			t.Fatalf("page %d keys=%d want=%d", page, len(listed.Keys), want)
+		}
+		for _, item := range listed.Keys {
+			if seen[item.ID] || len(item.EffectiveReach) != 1 || item.EffectiveReach[0].OrganizationID != "org_beta" {
+				t.Fatalf("duplicate or incorrect reach: %+v", item)
+			}
+			if (len(item.EffectiveReach[0].Projects) == 0) != (item.ID == "key_page_000") {
+				t.Fatalf("owner reach changed by another key scope: %+v", item)
+			}
+			seen[item.ID] = true
+		}
+		f.provider.mu.Lock()
+		lookups := f.provider.membershipLists - before
+		f.provider.mu.Unlock()
+		if lookups > 3 {
+			t.Fatalf("membership lookups=%d for one owner", lookups)
+		}
+		if serviceCalls > 2 {
+			t.Fatalf("service calls=%d for one owner", serviceCalls)
+		}
+		cursor = listed.NextCursor
+		if (cursor != "") != (page == 0) {
+			t.Fatalf("page %d cursor=%q", page, cursor)
+		}
+	}
+	if !seen[key.ID] {
+		t.Fatal("unused global key missing")
+	}
+	for _, test := range []struct {
+		name        string
+		removeBeta  bool
+		memberships int
+		services    int
+	}{
+		{name: "account list", memberships: 3, services: 2},
+		{name: "account list after membership removal", removeBeta: true, memberships: 2, services: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			serviceCalls = 0
+			f.provider.mu.Lock()
+			if test.removeBeta {
+				delete(f.provider.memberships, "om_user_alice_porg_beta")
+			}
+			before := f.provider.membershipLists
+			f.provider.mu.Unlock()
+			response := attachmentRequest(t, owner, http.MethodGet, "/api/cloud/account/api-keys", nil, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("account list=%d %s", response.Code, response.Body.String())
+			}
+			var listed struct {
+				Keys []keyView `json:"keys"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &listed); err != nil {
+				t.Fatal(err)
+			}
+			if len(listed.Keys) != 57 {
+				t.Fatalf("account keys=%d want=57", len(listed.Keys))
+			}
+			for _, item := range listed.Keys {
+				want := 1
+				if item.ID == "key_page_000" {
+					want = 0
+				}
+				if !test.removeBeta && item.ID != "other organization" {
+					want++
+				}
+				if item.Owner != key.Owner || len(item.EffectiveReach) != want {
+					t.Fatalf("incorrect account reach: %+v", item)
+				}
+				for _, reach := range item.EffectiveReach {
+					if test.removeBeta && reach.OrganizationID == "org_beta" || (len(reach.Projects) == 0) != (item.ID == "key_page_000") {
+						t.Fatalf("stale or scope-contaminated account reach: %+v", item)
+					}
+				}
+			}
+			f.provider.mu.Lock()
+			lookups := f.provider.membershipLists - before
+			f.provider.mu.Unlock()
+			if lookups != test.memberships || serviceCalls != test.services {
+				t.Fatalf("account membership lookups=%d service calls=%d, want %d and %d", lookups, serviceCalls, test.memberships, test.services)
+			}
+		})
+	}
+}
+
 func TestAccessKeyOrganizationControls(t *testing.T) {
 	f := newEntryFixture(t)
 	owner := newBrowser(t, f.service.Handler())
 	owner.login("/organizations", "user_alice:")
 	key := createTestAccessKey(t, owner, "global", nil, "")
+	unused := attachmentRequest(t, owner, http.MethodGet, "/api/cloud/organizations/org_beta/external-keys", nil, nil)
+	if unused.Code != http.StatusOK || !strings.Contains(unused.Body.String(), key.ID) || !strings.Contains(unused.Body.String(), `"last_used_at":null`) {
+		t.Fatalf("unused key visibility=%d %s", unused.Code, unused.Body.String())
+	}
 	client := newBrowser(t, f.service.Handler())
 	call := entryMCPClient(t, client, key.Token, "2025-11-25", "/mcp")
 	if result, failed := call("list_projects", map[string]any{"organization_id": "org_beta"}); failed {
@@ -121,6 +260,24 @@ func TestAccessKeyOrganizationControls(t *testing.T) {
 	change = attachmentRequest(t, owner, http.MethodPut, "/api/cloud/organizations/org_beta/key-policy", strings.NewReader(`{"allow_external_keys":true}`), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
 	if change.Code != http.StatusOK {
 		t.Fatal(change.Body.String())
+	}
+	change = attachmentRequest(t, owner, http.MethodPut, "/api/cloud/organizations/org_beta/key-policy", strings.NewReader(`{"personal_keys":"approval"}`), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
+	if change.Code != http.StatusOK {
+		t.Fatalf("approval policy=%d %s", change.Code, change.Body.String())
+	}
+	if result, failed := call("list_projects", map[string]any{"organization_id": "org_beta"}); !failed || !strings.Contains(string(result), "organization_key_policy_denied") {
+		t.Fatalf("unapproved key=%s failed=%v", result, failed)
+	}
+	queue := attachmentRequest(t, owner, http.MethodGet, "/api/cloud/organizations/org_beta/external-keys", nil, nil)
+	if queue.Code != http.StatusOK || !strings.Contains(queue.Body.String(), `"status":"pending"`) {
+		t.Fatalf("approval queue=%d %s", queue.Code, queue.Body.String())
+	}
+	approved := attachmentRequest(t, owner, http.MethodPut, "/api/cloud/organizations/org_beta/external-keys/"+key.ID+"/approve", strings.NewReader(`{}`), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
+	if approved.Code != http.StatusNoContent {
+		t.Fatalf("approve=%d %s", approved.Code, approved.Body.String())
+	}
+	if result, failed := call("list_projects", map[string]any{"organization_id": "org_beta"}); failed {
+		t.Fatalf("approved key=%s", result)
 	}
 	blocked := attachmentRequest(t, owner, http.MethodPut, "/api/cloud/organizations/org_beta/external-keys/"+key.ID+"/block", strings.NewReader(`{}`), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
 	if blocked.Code != http.StatusNoContent {
@@ -194,7 +351,12 @@ func TestAccessKeyScopeAndServiceLifetime(t *testing.T) {
 	}
 	service := createTestAccessKey(t, owner, "selected", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "all"}}}, "org_alpha")
 	serviceCall := entryMCPClient(t, client, service.Token, "2025-11-25", "/mcp")
+	response := attachmentRequest(t, owner, http.MethodGet, "/api/cloud/organizations/org_alpha/service-keys", nil, nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), service.ID) || strings.Contains(response.Body.String(), service.Token) {
+		t.Fatalf("service key list=%d %s", response.Code, response.Body.String())
+	}
 	f.provider.mu.Lock()
+	membership := f.provider.memberships["om_user_alice_porg_alpha"]
 	delete(f.provider.memberships, "om_user_alice_porg_alpha")
 	f.provider.mu.Unlock()
 	listed, listFailed := serviceCall("list_projects", map[string]any{"organization_id": "org_alpha"})
@@ -204,6 +366,16 @@ func TestAccessKeyScopeAndServiceLifetime(t *testing.T) {
 	created, failed := serviceCall(operatortool.FileIssue, map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": "service-after-removal", "title": "Service key survives creator departure"})
 	if failed || !strings.Contains(string(created), "Service key survives creator departure") {
 		t.Fatalf("service write=%s failed=%v", created, failed)
+	}
+	f.provider.mu.Lock()
+	f.provider.memberships[membership.ID] = membership
+	f.provider.mu.Unlock()
+	response = attachmentRequest(t, owner, http.MethodDelete, "/api/cloud/organizations/org_alpha/service-keys/"+service.ID, nil, map[string]string{"Origin": testPublicURL})
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("service key revoke=%d %s", response.Code, response.Body.String())
+	}
+	if result, failed := serviceCall("list_projects", map[string]any{"organization_id": "org_alpha"}); !failed || !strings.Contains(string(result), "key_inactive") {
+		t.Fatalf("revoked service key=%s failed=%v", result, failed)
 	}
 }
 
@@ -224,7 +396,7 @@ func TestAccessKeyMembershipAndPolicyMatrix(t *testing.T) {
 							if member {
 								f.provider.member(owner, "porg_alpha", role)
 							}
-							if _, err := f.service.auth.store.db.ExecContext(t.Context(), "INSERT INTO organization_key_policy(organization_id,allow_external_keys) VALUES('org_alpha',?) ON CONFLICT(organization_id) DO UPDATE SET allow_external_keys=excluded.allow_external_keys", allowed); err != nil {
+							if _, err := f.service.auth.store.db.ExecContext(t.Context(), "INSERT INTO organization_key_policy(organization_id,personal_keys) VALUES('org_alpha',CASE WHEN ? THEN 'allowed' ELSE 'blocked' END) ON CONFLICT(organization_id) DO UPDATE SET personal_keys=excluded.personal_keys", allowed); err != nil {
 								t.Fatal(err)
 							}
 							k := accessKey{ID: owner, Owner: owner, Name: "matrix", Kind: kind, Permission: apikey.ScopeWrite, AccessContext: access}
@@ -242,7 +414,7 @@ func TestAccessKeyMembershipAndPolicyMatrix(t *testing.T) {
 							want := ""
 							if kind == "personal" && !member {
 								want = "membership_denied"
-							} else if kind == "personal" && !allowed && access != "project" {
+							} else if kind == "personal" && !allowed {
 								want = "organization_key_policy_denied"
 							}
 							var refusal *apikey.Refusal
@@ -293,6 +465,20 @@ func TestAccessKeyLifecycleAndREST(t *testing.T) {
 	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), key.ID) || strings.Contains(listed.Body.String(), key.Token) {
 		t.Fatalf("account list=%d %s", listed.Code, listed.Body.String())
 	}
+	rotated := attachmentRequest(t, owner, http.MethodPost, "/api/cloud/account/api-keys/"+key.ID+"/rotate", strings.NewReader(`{}`), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
+	var replacement accessKey
+	if rotated.Code != http.StatusCreated || json.Unmarshal(rotated.Body.Bytes(), &replacement) != nil || replacement.ID != key.ID || replacement.Token == key.Token {
+		t.Fatalf("rotate=%d %s", rotated.Code, rotated.Body.String())
+	}
+	response = attachmentRequest(t, client, http.MethodGet, "/api/v2/projects", nil, headers)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("old token still accepted=%d", response.Code)
+	}
+	headers["Authorization"] = "Bearer " + replacement.Token
+	response = attachmentRequest(t, client, http.MethodGet, "/api/v2/projects", nil, headers)
+	if response.Code != http.StatusOK {
+		t.Fatalf("replacement token=%d %s", response.Code, response.Body.String())
+	}
 	revoked := attachmentRequest(t, owner, http.MethodDelete, "/api/cloud/account/api-keys/"+key.ID, nil, nil)
 	if revoked.Code != http.StatusNoContent {
 		t.Fatalf("revoke=%d %s", revoked.Code, revoked.Body.String())
@@ -309,5 +495,37 @@ func TestAccessKeyLifecycleAndREST(t *testing.T) {
 	response = attachmentRequest(t, client, http.MethodGet, "/api/v2/projects", nil, headers)
 	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "key_inactive") {
 		t.Fatalf("expired key=%d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAccessKeyMemberSettingsIsolation(t *testing.T) {
+	f := newEntryFixture(t)
+	owner := newBrowser(t, f.service.Handler())
+	owner.login("/organizations", "user_alice:")
+	other := createTestAccessKey(t, owner, "global", nil, "")
+	member := newBrowser(t, f.service.Handler())
+	member.login("/organizations", "user_bob:")
+	own := createTestAccessKey(t, member, "global", nil, "")
+	listed := attachmentRequest(t, member, http.MethodGet, "/api/cloud/account/api-keys", nil, nil)
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), own.ID) || strings.Contains(listed.Body.String(), other.ID) {
+		t.Fatalf("member keys=%d %s", listed.Code, listed.Body.String())
+	}
+	for _, test := range []struct{ method, path, body string }{
+		{http.MethodGet, "external-keys", ""}, {http.MethodGet, "key-policy", ""}, {http.MethodPut, "key-policy", `{"personal_keys":"blocked"}`},
+		{http.MethodPut, "external-keys/" + other.ID + "/block", `{}`}, {http.MethodPut, "external-keys/" + other.ID + "/approve", `{}`},
+		{http.MethodPost, "service-keys", `{}`}, {http.MethodGet, "service-keys", ""}, {http.MethodDelete, "service-keys/" + other.ID, ""},
+	} {
+		t.Run(test.method+test.path, func(t *testing.T) {
+			response := attachmentRequest(t, member, test.method, "/api/cloud/organizations/org_beta/"+test.path, strings.NewReader(test.body), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("non-admin access=%d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+	for _, test := range []struct{ method, path string }{{http.MethodPost, "/rotate"}, {http.MethodDelete, ""}} {
+		response := attachmentRequest(t, member, test.method, "/api/cloud/account/api-keys/"+other.ID+test.path, strings.NewReader(`{}`), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("other owner's key mutation=%d", response.Code)
+		}
 	}
 }
