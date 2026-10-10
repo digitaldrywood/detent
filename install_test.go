@@ -592,6 +592,7 @@ func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 	}
 
 	tmp := t.TempDir()
+	root = isolatedInstallCheckout(t, root, filepath.Join(tmp, "checkout"))
 	installDir := filepath.Join(tmp, "bin")
 	stateDir := filepath.Join(tmp, "state")
 	env := append(os.Environ(),
@@ -634,6 +635,56 @@ func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 	stop()
 
 	runInstalledSubcommands(t, binary, tmp, serverEnv)
+}
+
+func isolatedInstallCheckout(t *testing.T, source string, checkout string) string {
+	t.Helper()
+
+	clone := exec.CommandContext(t.Context(), "git", "clone", "--shared", "--no-checkout", "--", source, checkout)
+	if output, err := clone.CombinedOutput(); err != nil {
+		t.Fatalf("clone install checkout: %v\n%s", err, output)
+	}
+	files := exec.CommandContext(t.Context(), "git", "ls-files", "-z")
+	files.Dir = source
+	output, err := files.Output()
+	if err != nil {
+		t.Fatalf("list install source: %v", err)
+	}
+	for _, name := range strings.Split(string(output), "\x00") {
+		if name == "" {
+			continue
+		}
+		path := filepath.Join(source, name)
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(checkout, name)
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(link, target); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, content, info.Mode().Perm()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return checkout
 }
 
 func detentArchive(t *testing.T, content string) []byte {
