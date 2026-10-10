@@ -12,6 +12,7 @@ import React from "react";
 
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { showAnchoredCopySuccessToast } from "~/components/ui/anchoredCopyToast";
+import { UsageMeter } from "~/components/ui/usage-meter";
 import { Badge, type badgeVariants } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import {
@@ -422,4 +423,21 @@ export const empty: GalleryDoc = {
       ),
     })),
   ],
+};
+
+export const usageMeter: GalleryDoc = {
+  meta: { name: "Usage meter", kind: "primitive", group: "feedback" },
+  specimens: [{
+    id: "states", title: "Usage and thresholds",
+    render: () => (
+      <div className="grid gap-6">
+        <UsageMeter label="Workspace data" used={431227904} limit={1073741824} unit="bytes" />
+        <UsageMeter label="Projects" used={4} limit={5} />
+        <UsageMeter label="Events received" used={20000} limit={20000} description="Resets at 2:00 PM" />
+        <UsageMeter label="History" used={1240000} limit={2000000} unit="records" />
+        <UsageMeter label="Artifact storage" used={0} limit={0} unit="bytes" notIncludedOn="Free" />
+        <UsageMeter label={LONG_LABEL} used={7} limit={10} />
+      </div>
+    ),
+  }],
 };
