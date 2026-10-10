@@ -148,8 +148,10 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 			return nil, err
 		}
 		return map[string]string{"name": skill.Name, "body": body}, nil
-	case "get_runners", "set_runner_tier":
+	case "get_runners", "set_runner_tier", "convert_runner_scope":
 		return t.runnerTool(ctx, record, call)
+	case "promote_sprites_token":
+		return t.promoteSpritesTokenTool(ctx, record, call)
 	case "get_sprite_pool", "set_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", "get_sprite_bootstrap_log":
 		return t.spriteTool(ctx, record, call)
 	case "read_issue_history":

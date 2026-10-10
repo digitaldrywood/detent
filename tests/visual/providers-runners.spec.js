@@ -421,3 +421,47 @@ test("Sprite pool row saves its limits without exposing setup fields on the list
   await page.keyboard.press("Escape");
   await expect(page.getByLabel("Minimum runners", { exact: true })).toHaveCount(0);
 });
+
+for (const width of [1440, 390]) {
+  test(`admin converts an existing runner to all projects at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const runner = {
+      ...fleet.runners[1], revision: 4, editable: true, can_edit_projects: false, can_convert_scope: true,
+      routing: {
+        scope: "projects", display_name: "Build runner", state: "active", capacity_limit: 4,
+        project_ids: ["proj_preview"], project_ranks: { proj_preview: 2 }, tags: ["linux"],
+        isolation_tier: "native-trusted", host_services: [],
+        availability: { timezone: "UTC", windows: [], hard_deadline: "" },
+      },
+    };
+    let current = { ...fleet, editable: true, runners: [runner] };
+    await openFleet(page, current, "?multipleProjects");
+    await page.unroute("**/fleet");
+    await page.route("**/fleet", (route) => route.fulfill({ json: current }));
+    const writes = [];
+    await page.route("**/runners/*/routing", async (route) => {
+      const change = route.request().postDataJSON();
+      writes.push(change);
+      expect(change.expected_revision).toBe(4);
+      expect(change.scope).toBe("organization");
+      expect(change.project_ids).toEqual([]);
+      expect(change.project_ranks).toBeUndefined();
+      const { expected_revision, ...routing } = change;
+      current = { ...current, runners: [{ ...runner, revision: expected_revision + 1, routing: { ...routing, project_ranks: runner.routing.project_ranks } }] };
+      await route.fulfill({ json: {} });
+    });
+    await page.getByRole("button", { name: "Manage Build runner" }).click();
+    const sheet = page.getByRole("dialog", { name: "Build runner" });
+    await sheet.getByRole("combobox", { name: "Runner scope" }).selectOption("organization");
+    await expect(sheet.getByText("All current and future projects", { exact: true })).toBeVisible();
+    await expect(sheet.getByRole("link", { name: "Review policy for Second project" })).toHaveAttribute("href", "/projects/proj_second/settings");
+    await sheet.getByRole("button", { name: "Save runner" }).click();
+    await expect(sheet).toHaveCount(0);
+    expect(writes).toHaveLength(1);
+    expect(current.runners[0].id).toBe(runner.id);
+    await page.reload();
+    await page.getByRole("button", { name: "Manage Build runner" }).click();
+    await expect(page.getByRole("combobox", { name: "Runner scope" })).toHaveValue("organization");
+    await expect(page.getByRole("link", { name: "Review policy for Second project" })).toBeVisible();
+  });
+}

@@ -176,8 +176,8 @@ func validateSpritePoolSettings(settings *spritePoolSettings) error {
 	if settings.IdleSeconds == 0 {
 		settings.IdleSeconds = 300
 	}
-	if settings.MinRunners < 0 || settings.MaxRunners < settings.MinRunners || settings.MaxRunners > 100 || settings.IdleSeconds < 30 || settings.IdleSeconds > 86400 || len(settings.Bootstrap) > 65536 || settings.Revision < 0 {
-		return nativeInvalid("Sprite pools require 0 <= min_runners <= max_runners <= 100, an idle threshold of 30 to 86400 seconds, optional bootstrap of at most 65536 bytes, and a nonnegative revision")
+	if settings.MinRunners < 0 || settings.MaxRunners < settings.MinRunners || settings.IdleSeconds < 30 || settings.IdleSeconds > 86400 || len(settings.Bootstrap) > 65536 || settings.Revision < 0 {
+		return nativeInvalid("Sprite pools require 0 <= min_runners <= max_runners, an idle threshold of 30 to 86400 seconds, optional bootstrap of at most 65536 bytes, and a nonnegative revision")
 	}
 	return nil
 }

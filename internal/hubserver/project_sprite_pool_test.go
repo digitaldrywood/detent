@@ -672,7 +672,7 @@ func TestSpritePoolSettingsValidation(t *testing.T) {
 		{"bootstrap too large", spritePoolSettings{MaxRunners: 1, Bootstrap: strings.Repeat("x", 65537)}, false},
 		{"negative floor", spritePoolSettings{MinRunners: -1, MaxRunners: 1}, false},
 		{"inverted bounds", spritePoolSettings{MinRunners: 2, MaxRunners: 1}, false},
-		{"ceiling too high", spritePoolSettings{MaxRunners: 101}, false},
+		{"organization ceiling beyond project limit", spritePoolSettings{MaxRunners: 101}, true},
 		{"idle too small", spritePoolSettings{MaxRunners: 1, IdleSeconds: 29}, false},
 		{"idle too large", spritePoolSettings{MaxRunners: 1, IdleSeconds: 86401}, false},
 		{"negative revision", spritePoolSettings{MaxRunners: 1, Revision: -1}, false},
