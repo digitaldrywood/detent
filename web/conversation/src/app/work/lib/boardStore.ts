@@ -41,6 +41,7 @@ const LoadedSchema = Schema.Struct({
   issues: Schema.Array(NativeIssue),
   cards: Schema.optional(Schema.Array(NativeBoardCard)),
   sequence: Schema.optional(Schema.Number),
+  grantVersion: Schema.optional(Schema.String),
   work: Schema.optional(NativeWorkSummary),
   nextCursor: Schema.optional(Schema.String),
   pageCount: Schema.Number,
@@ -277,7 +278,8 @@ export class BoardRead {
       let pageCount = continuing ? previous!.pageCount : 0;
       let work: Loaded["work"];
       const cards: NativeBoardCard[] = continuing ? [...(previous?.cards ?? [])] : [];
-      let sequence: number | undefined;
+      let sequence: number | undefined = continuing ? previous?.sequence : undefined;
+      let grantVersion = continuing ? previous?.grantVersion : undefined;
       do {
         signal.throwIfAborted();
         const page = await this.http.listWorkItems({ ...filters, limit: 100, ...tabQuery(this.view, toLanes(project)),
@@ -286,11 +288,12 @@ export class BoardRead {
         cards.push(...(page.cards ?? []));
         work = page.work;
         sequence = Math.min(sequence ?? Infinity, page.sequence ?? 0);
+        grantVersion ??= page.grant_version;
         cursor = page.next_cursor;
         pageCount++;
       } while (cursor !== undefined && !continuing &&
         (pageCount < (previous?.pageCount ?? 1) || ["active", "backlog"].includes(this.view.tab)));
-      return { project, issues, cards, sequence, work, nextCursor: cursor, pageCount,
+      return { project, issues, cards, sequence, grantVersion, work, nextCursor: cursor, pageCount,
         backlogPageCount: 0, backlogTotal: 0 };
     }
     const states = project.states.filter((state) => !state.terminal &&
@@ -314,6 +317,7 @@ export class BoardRead {
       let pageCount = 0;
       let total = 0;
       let sequence = Infinity;
+      let grantVersion: string | undefined;
       let work: Loaded["work"];
       do {
         const page = await readPage(state.name, cursor);
@@ -321,15 +325,17 @@ export class BoardRead {
         cards.push(...(page.cards ?? []));
         cursor = page.next_cursor;
         sequence = Math.min(sequence, page.sequence ?? 0);
+        grantVersion ??= page.grant_version;
         work = page.work;
         total = page.total ?? total;
         pageCount++;
       } while (cursor !== undefined && pageCount < (state.name === backlog?.name ? previous?.backlogPageCount ?? 1 : 1));
-      return { state: state.name, issues, cards, cursor, pageCount, total, sequence, work };
+      return { state: state.name, issues, cards, cursor, pageCount, total, sequence, grantVersion, work };
     });
     const back = pages.find((page) => page.state === backlog?.name);
     const fallback = pages.length === 0 ? await this.http.listWorkItems({ ...filters, signal, includeBoard: true, limit: 1 }) : undefined;
     return { project, issues: pages.flatMap((page) => page.issues), cards: pages.flatMap((page) => page.cards),
+      grantVersion: pages[0]?.grantVersion ?? fallback?.grant_version,
       work: pages[0]?.work ?? fallback?.work, sequence: pages.length === 0 ? fallback?.sequence ?? 0 : Math.min(...pages.map((page) => page.sequence)),
       pageCount: 1, backlogCursor: back?.cursor, backlogPageCount: back?.pageCount ?? 0, backlogTotal: back?.total ?? 0 };
   }
@@ -342,7 +348,10 @@ export class BoardRead {
 
   applyFrame = (projectId: string, frame: NativeBoardFrame, replay = false): void => {
     if (this.revoked || !this.scope.includes(projectId)) return;
-    if (frame.gap) { this.reload(); return; }
+    if (frame.gap || this.entries.some((entry) => entry.project.project_id === projectId &&
+      entry.grantVersion !== undefined && frame.grant_version !== undefined && entry.grantVersion !== frame.grant_version)) {
+      this.reload(); return;
+    }
     if (this.controller !== null && !replay) {
       this.frames.set(projectId, [...(this.frames.get(projectId) ?? []), frame]);
       return;

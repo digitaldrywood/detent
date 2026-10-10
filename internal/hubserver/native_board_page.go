@@ -190,6 +190,7 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 	if err != nil {
 		return page, err
 	}
+	page.GrantVersion = nativeBoardGrantVersion(grants)
 	singleLane := len(params["state"]) == 1 && params.Get("state") != ""
 	order := "b.lane_rank,b.state,b.priority_rank,b.activity_missing,b.activity_at DESC,b.identifier"
 	if singleLane {

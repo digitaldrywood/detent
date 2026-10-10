@@ -127,7 +127,7 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			name:        "a failed surface reply keeps the finding and reports the error",
 			refusal:     conversation,
 			client:      &reviewThreadClient{failClose: "T1", pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P1 finding"))}},
-			wantReason:  []string{"P1 finding", "mark review conversation as surfaced: mutation refused"},
+			wantReason:  []string{"P1 finding", "surfacing reply failed", "mark review conversation as surfaced: mutation refused"},
 			wantCursors: 1,
 		},
 		{

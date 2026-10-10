@@ -2,7 +2,9 @@ package hubserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -186,6 +188,16 @@ func nativeBoardGrants(ctx context.Context, q nativeQueryer, scope nativeScope) 
 	return grants, err
 }
 
+func nativeBoardGrantVersion(grants map[tracker.ProjectID]bool) string {
+	ids := make([]string, 0, len(grants))
+	for id := range grants {
+		ids = append(ids, string(id))
+	}
+	slices.Sort(ids)
+	digest := sha256.Sum256([]byte(strings.Join(ids, "\x00")))
+	return hex.EncodeToString(digest[:])
+}
+
 func redactNativeBoardCard(card *tracker.NativeBoardCard, grants map[tracker.ProjectID]bool) {
 	if card == nil {
 		return
@@ -200,8 +212,13 @@ func redactNativeBoardCard(card *tracker.NativeBoardCard, grants map[tracker.Pro
 
 func readNativeBoardFrame(ctx context.Context, q nativeQueryer, scope nativeScope, since int64) (tracker.NativeBoardFrame, error) {
 	frame := tracker.NativeBoardFrame{Deltas: []tracker.NativeBoardDelta{}}
+	grants, err := nativeBoardGrants(ctx, q, scope)
+	if err != nil {
+		return frame, err
+	}
+	frame.GrantVersion = nativeBoardGrantVersion(grants)
 	var floor int64
-	err := q.QueryRowContext(ctx, "SELECT sequence,replay_floor FROM native_board_sequences WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&frame.Sequence, &floor)
+	err = q.QueryRowContext(ctx, "SELECT sequence,replay_floor FROM native_board_sequences WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&frame.Sequence, &floor)
 	if errors.Is(err, sql.ErrNoRows) {
 		return frame, nil
 	}
@@ -211,10 +228,6 @@ func readNativeBoardFrame(ctx context.Context, q nativeQueryer, scope nativeScop
 	if since < floor || since > frame.Sequence {
 		frame.Gap = true
 		return frame, nil
-	}
-	grants, err := nativeBoardGrants(ctx, q, scope)
-	if err != nil {
-		return frame, err
 	}
 	rows, err := q.QueryContext(ctx, "SELECT sequence,previous_json,current_json FROM native_board_deltas WHERE organization_id=? AND project_id=? AND sequence>? ORDER BY sequence LIMIT ?", scope.organization, scope.project, since, nativeBoardReplayLimit)
 	if err != nil {

@@ -196,6 +196,7 @@ export type NativeBoardCard = typeof NativeBoardCard.Type;
 
 export const NativeBoardFrame = Schema.Struct({
   sequence: Schema.Number,
+  grant_version: Schema.optional(Schema.String),
   gap: Schema.Boolean,
   deltas: Schema.Array(Schema.Struct({ sequence: Schema.Number,
     previous: Schema.NullOr(NativeBoardCard), current: Schema.NullOr(NativeBoardCard) })),
@@ -210,6 +211,7 @@ export const WorkItemPage = Schema.Struct({
   work: Schema.optional(NativeWorkSummary),
   cards: Schema.optional(Schema.Array(NativeBoardCard)),
   sequence: Schema.optional(Schema.Number),
+  grant_version: Schema.optional(Schema.String),
 });
 export type WorkItemPage = typeof WorkItemPage.Type;
 

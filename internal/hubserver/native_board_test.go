@@ -230,6 +230,18 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	user := f.user(t, "board-viewer", "member", "board@example.test", "write", "")
 	item := f.seedIssue(t, 1)
+	private := f
+	private.project = "prj_board_blocker"
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled) SELECT ?,organization_id,'Board blocker',profile,states_json,created_at,0 FROM projects WHERE id=?", private.project, f.project); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) SELECT ?,source_name,detent_state,terminal,dispatchable,created_at,updated_at FROM workflow_states WHERE project_id=?", private.project, f.project); err != nil {
+		t.Fatal(err)
+	}
+	blocker := private.seedIssue(t, 1)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_dependencies(blocker_issue_id,dependent_issue_id,provenance,created_at,updated_at) SELECT b.id,d.id,'native',?,? FROM issues b,issues d WHERE b.native_id=? AND d.native_id=?", formatHubTime(time.Now()), formatHubTime(time.Now()), blocker, item); err != nil {
+		t.Fatal(err)
+	}
 	if err := f.service.hubTransact(t.Context(), func(*sql.Tx, time.Time) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +265,7 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 		}
 	}
 	initial := readFrame(stream)
-	if initial.Gap || len(initial.Deltas) != 0 || initial.Work == nil {
+	if initial.Gap || len(initial.Deltas) != 0 || initial.Work == nil || initial.GrantVersion == "" || initial.GrantVersion != page.GrantVersion {
 		t.Fatalf("initial=%#v", initial)
 	}
 	for index := range 2 {
@@ -268,6 +280,50 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 		if delta.Current == nil || delta.Current.Issue.WorkItemID != item {
 			t.Fatalf("delta=%#v", delta)
 		}
+	}
+	for readFrame(stream).Sequence != replay.Sequence {
+	}
+	grantVersion := initial.GrantVersion
+	for _, test := range []struct {
+		name  string
+		grant bool
+	}{{"gain", true}, {"lose", false}, {"regain", true}} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.grant {
+				private.grant(t, user, false, false)
+			} else if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id=? AND project_id=?", user.identity.Subject, private.project); err != nil {
+				t.Fatal(err)
+			}
+			var changed tracker.NativeBoardFrame
+			for {
+				changed = readFrame(stream)
+				if changed.GrantVersion != grantVersion {
+					break
+				}
+			}
+			if changed.GrantVersion == "" || changed.Sequence != replay.Sequence || len(changed.Deltas) != 0 {
+				t.Fatalf("grant-only frame=%#v", changed)
+			}
+			grantVersion = changed.GrantVersion
+			response := f.request(t, user, http.MethodGet, f.base+"/work-items?include=board", nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &page)
+			if page.GrantVersion != grantVersion || len(page.Cards) != 1 {
+				t.Fatalf("grant snapshot=%#v", page)
+			}
+			card := page.Cards[0]
+			if test.grant {
+				if len(card.Issue.Blockers) != 1 || card.Issue.Blockers[0].ID != blocker || card.StatusLine != "Blocked · 1" {
+					t.Fatalf("granted blocker=%#v", card)
+				}
+			} else if len(card.Issue.Blockers) != 0 || card.StatusLine != "" {
+				t.Fatalf("revoked blocker=%#v", card)
+			}
+			resumed := readFrame(openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(replay.Sequence, 10)))
+			if resumed.GrantVersion != grantVersion || len(resumed.Deltas) != 0 || resumed.Gap {
+				t.Fatalf("grant reconnect=%#v", resumed)
+			}
+		})
 	}
 	requireNativeStatus(t, f.request(t, user, http.MethodGet, "/projects/prj_ungranted/events?board=true&since=0", nil), http.StatusForbidden)
 }

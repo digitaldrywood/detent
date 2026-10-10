@@ -1139,7 +1139,7 @@ events rather than current admission snapshots.
 
 `GET /work-items?include=board` returns compact `items`, matching `cards`
 (issue, status line, current attempt and change summaries), the durable project
-`sequence`, and `work` totals. Board reads use the maintained card projection,
+`sequence`, viewer-specific `grant_version`, and `work` totals. Board reads use the maintained card projection,
 without reading attempts or Changes per card. Their scope totals ignore lane
 and open/closed selection while respecting search, labels, assignees, priorities
 and archive selection. Board pages accept up to 2000 items and use signed
@@ -1148,13 +1148,16 @@ one initial page per visible lane and pages Backlog on demand.
 
 The hosted project activity stream accepts `board=true&since=<sequence>` for
 board frames. Each JSON `activity` frame has an SSE `id`, `sequence`, `gap`,
-`deltas` (ordered sequence plus previous/current card), and scope `work` totals.
+`deltas` (ordered sequence plus previous/current card), `grant_version`, and scope `work` totals.
 A null current card removes the item from the board. The stream accepts the
 board's search, label, assignee, priority, archive and completed-window filters
 for its totals. `Last-Event-ID` takes precedence over `since` on browser
 reconnects. The Hub retains the latest 2048 card deltas per project; `gap=true`
 means the requested sequence is outside retained history and requires a new
-snapshot. Otherwise reconnect replays missed cards, and unchanged ticks need
+snapshot. A changed `grant_version` also requires a new snapshot: it fingerprints
+the viewer's readable projects, so dependency redactions update even when no
+card changes or the viewer reconnects after grants change. Otherwise reconnect
+replays missed cards, and unchanged ticks need
 no additional browser requests. Workspace and item-scoped streams retain their
 existing activity protocol.
 

@@ -1188,7 +1188,8 @@ describe("the live Work continuation intent", () => {
   });
 
 
-  it.each(["delta-first", "continuation-first"])("keeps a continuation requested with %s activity", async (order) => {
+  it.each(["delta-first", "continuation-first", "replay"].flatMap((order) =>
+    ["edit", "delete"].map((mutation) => ({ order, mutation }))))("replays $mutation with $order continuation activity", async ({ order, mutation }) => {
     const sources: EventTarget[] = [];
     vi.stubGlobal("EventSource", class extends EventTarget {
       readyState = 1;
@@ -1197,7 +1198,11 @@ describe("the live Work continuation intent", () => {
     });
     const fixture = workPaginationFixture();
     await fixture.control();
-    vi.stubGlobal("fetch", fixture.fetch);
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await fixture.fetch(String(input), init);
+      if (!String(input).includes("cursor=")) return response;
+      return Response.json({ ...await response.json(), sequence: 3 });
+    });
     let current!: ReturnType<typeof useBoard>;
     function Probe() { current = useBoard(null, { ...DEFAULT_VIEW_STATE, view: "list", tab: "all" }); return <div />; }
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
@@ -1205,15 +1210,17 @@ describe("the live Work continuation intent", () => {
     const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?include=board&state=Todo");
     const page = await response.json();
     const card = page.cards[0];
-    const emit = () => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: 1, gap: false,
-      deltas: [{ sequence: 1, previous: card, current: { ...card, issue: { ...card.issue, title: "During continuation", revision: "900" } } }] }) }));
+    const emit = () => (order === "replay" ? sources.at(-2)! : sources[0]!).dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: 1, gap: false,
+      deltas: [{ sequence: 1, previous: card, current: mutation === "delete" ? null : { ...card, issue: { ...card.issue, title: "During continuation", revision: "900" } } }] }) }));
     act(() => {
       if (order === "delta-first") emit();
       current.loadMore();
       if (order === "continuation-first") emit();
     });
-    await waitFor(() => expect(current.items).toHaveLength(141));
-    expect(current.items.find((item) => item.id === card.issue.work_item_id)?.title).toBe("During continuation");
+    await waitFor(() => expect(current.refreshing).toBe(false));
+    if (order === "replay") act(emit);
+    await waitFor(() => expect(current.items).toHaveLength(mutation === "delete" ? 140 : 141));
+    expect(current.items.find((item) => item.id === card.issue.work_item_id)?.title).toBe(mutation === "delete" ? undefined : "During continuation");
   });
 
 });
@@ -1506,7 +1513,7 @@ describe("the filter-first Work surface", () => {
     expect(screen.getAllByText("Queue item 1")).toHaveLength(2);
   });
 
-  it("reconnects from the last sequence and reloads only for an unservable gap", async () => {
+  it.each(["gap", "grant change"])("reconnects from the last sequence and reloads for %s", async (invalidation) => {
     const sources: (EventTarget & { readyState: number; url: string })[] = [];
     vi.stubGlobal("EventSource", class extends EventTarget {
       readyState = 1;
@@ -1515,7 +1522,11 @@ describe("the filter-first Work surface", () => {
     });
     const fixture = workPaginationFixture();
     await fixture.control();
-    vi.stubGlobal("fetch", fixture.fetch);
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await fixture.fetch(String(input), init);
+      if (!String(input).includes("/work-items")) return response;
+      return Response.json({ ...await response.json(), grant_version: "original-grants" });
+    });
     let current!: ReturnType<typeof useBoard>;
     function Probe() { current = useBoard("proj_alpha", DEFAULT_VIEW_STATE); return <div />; }
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
@@ -1523,7 +1534,7 @@ describe("the filter-first Work surface", () => {
     const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?include=board&state=Todo");
     const page = await response.json();
     const card = page.cards[0];
-    act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: 40, gap: false, deltas: [] }) })));
+    act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: 40, grant_version: "original-grants", gap: false, deltas: [] }) })));
     const before = fixture.requests.length;
     vi.useFakeTimers();
     act(() => { sources[0]!.readyState = 2; sources[0]!.dispatchEvent(new Event("error")); });
@@ -1534,7 +1545,8 @@ describe("the filter-first Work surface", () => {
       deltas: [{ sequence: 41, previous: card, current: { ...card, issue: { ...card.issue, title: "Missed delta", revision: "900" } } }] }) })));
     expect(current.items.find((item) => item.id === card.issue.work_item_id)?.title).toBe("Missed delta");
     expect(fixture.requests).toHaveLength(before);
-    act(() => sources[1]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: 3000, gap: true, deltas: [] }) })));
+    act(() => sources[1]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: invalidation === "gap" ? 3000 : 41, grant_version: invalidation === "gap" ? "original-grants" : "changed-grants",
+      gap: invalidation === "gap", deltas: [] }) })));
     await waitFor(() => expect(fixture.requests.length).toBeGreaterThan(before));
     await waitFor(() => expect(current.refreshing).toBe(false));
   });
