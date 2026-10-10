@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentoverride"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -499,11 +500,30 @@ func TestConversationHandoffLaterUsesBacklog(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", testHubAdminToken,
 		map[string]any{"organization_id": organization, "project_id": project.ID}), http.StatusNoContent)
 	base := "/api/v2/organizations/" + string(organization) + "/projects/" + string(project.ID)
+	descriptor := hubTestPolicy()
+	descriptor.Workflow = &policy.Workflow{Source: "detent.yaml", States: states}
+	approveHubTestPolicy(t, service, base+"/policy", descriptor.WithID())
 
 	response = performHubAPIRequest(t, service, http.MethodPost, base+"/conversations", token.Token, map[string]any{"key": "create-backlog", "title": "Later"})
 	requireNativeStatus(t, response, http.StatusCreated)
 	var created conversationCreateResponse
 	decodeHubResponse(t, response, &created)
+	response = performHubAPIRequest(t, service, http.MethodPost, base+"/conversations/"+created.Conversation.ID+"/link", token.Token, map[string]any{
+		"key": "link-later", "share_history": true,
+		"issue": map[string]any{"title": "Later", "description": "From the chat"},
+		"next":  map[string]any{"state": "Todo", "dispatch": "later"},
+	})
+	requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
+	if !strings.Contains(response.Body.String(), "Acceptance criteria") || !strings.Contains(response.Body.String(), "File into Backlog") {
+		t.Fatalf("validation error = %s", response.Body.String())
+	}
+	response = performHubAPIRequest(t, service, http.MethodGet, base+"/conversations/"+created.Conversation.ID, token.Token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var unlinked conversationSnapshotResponse
+	decodeHubResponse(t, response, &unlinked)
+	if unlinked.Conversation.WorkItemID != nil || unlinked.Conversation.Visibility != conversation.VisibilityPrivate {
+		t.Fatalf("failed submission changed conversation = %#v", unlinked.Conversation)
+	}
 
 	response = performHubAPIRequest(t, service, http.MethodPost, base+"/conversations/"+created.Conversation.ID+"/link", token.Token, map[string]any{
 		"key": "link-later", "share_history": true,
@@ -518,6 +538,9 @@ func TestConversationHandoffLaterUsesBacklog(t *testing.T) {
 	}
 	if result.Issue.State != "backlog" {
 		t.Fatalf("issue state = %q", result.Issue.State)
+	}
+	if result.Conversation.WorkItemID == nil || *result.Conversation.WorkItemID != string(result.Issue.WorkItemID) || !strings.Contains(result.Issue.Body, "Conversation: "+created.Conversation.ID) {
+		t.Fatalf("Backlog issue lost originating conversation: %#v", result)
 	}
 }
 
