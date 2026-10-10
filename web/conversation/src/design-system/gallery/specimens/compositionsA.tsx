@@ -321,7 +321,6 @@ const sidebarWorkspacePicker: GalleryDoc = {
             current={WORKSPACES[0]}
             organizations={WORKSPACES}
             onSelect={() => undefined}
-            onManage={() => undefined}
             addHref="#"
           />
         </WorkspacePickerFrame>
@@ -337,7 +336,6 @@ const sidebarWorkspacePicker: GalleryDoc = {
             current={WORKSPACES[1]}
             organizations={WORKSPACES}
             onSelect={() => undefined}
-            onManage={() => undefined}
             addHref="#"
             error="You no longer have access to Research Lab."
           />
@@ -354,7 +352,6 @@ const sidebarWorkspacePicker: GalleryDoc = {
             current={WORKSPACES[2]}
             organizations={WORKSPACES}
             onSelect={() => undefined}
-            onManage={() => undefined}
             addHref="#"
             pending
           />
@@ -1234,4 +1231,3 @@ export const COMPOSITIONS_A: Readonly<Record<string, GalleryDoc>> = {
   "file-tag-chip": fileTagChip,
   "proposed-plan-card": proposedPlanCard,
 };
-

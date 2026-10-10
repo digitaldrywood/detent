@@ -69,6 +69,7 @@ describe("the footer workspace picker", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: /Switch workspace/ }));
     await screen.findByRole("menu");
+    expect(screen.queryByRole("menuitem", { name: "Manage current workspace" })).toBeNull();
     const entry = screen.queryByRole("menuitem", { name: "Platform console" });
     if (platform_role) {
       expect(entry?.getAttribute("href")).toBe("/platform/tenants");
@@ -80,13 +81,11 @@ describe("the footer workspace picker", () => {
     } else {
       expect(entry).toBeNull();
       expect(screen.getByRole("menuitem", { name: "Add a workspace" })).toBeTruthy();
-      expect(screen.getByRole("menuitem", { name: "Manage current workspace" })).toBeTruthy();
     }
   });
 
   function mount() {
     const onSelect = vi.fn();
-    const onManage = vi.fn();
     const picker = (error: string | null = null) => (
       <SidebarProvider>
         <ul>
@@ -94,7 +93,6 @@ describe("the footer workspace picker", () => {
             current={current}
             organizations={[current, other]}
             onSelect={onSelect}
-            onManage={onManage}
             addHref="/organizations/new"
             error={error}
           />
@@ -105,7 +103,6 @@ describe("the footer workspace picker", () => {
     const view = render(picker());
     return {
       onSelect,
-      onManage,
       user: userEvent.setup(),
       reportError: (error: string) => view.rerender(picker(error)),
     };
@@ -120,6 +117,9 @@ describe("the footer workspace picker", () => {
     await user.type(input, "  LONG name");
     expect(screen.queryByRole("menuitem", { name: current.name })).toBeNull();
     expect(screen.getByRole("menuitem", { name: other.name }).title).toBe(other.name);
+    await user.keyboard("{ArrowUp}");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Add a workspace" }));
+    await user.click(input);
     await user.keyboard("{ArrowDown}{Enter}");
     expect(onSelect).toHaveBeenCalledExactlyOnceWith(other.id);
     expect(screen.queryByRole("menu", { name: "Workspaces" })).toBeNull();
@@ -146,8 +146,8 @@ describe("the footer workspace picker", () => {
     expect(screen.getByRole("menuitem", { name: current.name }).getAttribute("aria-current")).toBe("true");
   });
 
-  it("dismisses search with Escape or an outside click and retains the organization actions", async () => {
-    const { onManage, user } = mount();
+  it("dismisses search with Escape or an outside click and retains only the add workspace action", async () => {
+    const { user } = mount();
     const trigger = screen.getByRole("button", { name: /Switch workspace/ });
     await user.click(trigger);
     await user.type(await screen.findByRole("searchbox"), "missing");
@@ -157,10 +157,7 @@ describe("the footer workspace picker", () => {
     await user.click(trigger);
     expect((await screen.findByRole("searchbox") as HTMLInputElement).value).toBe("");
     expect(screen.getByRole("menuitem", { name: "Add a workspace" }).getAttribute("href")).toBe("/organizations/new");
-    await user.click(screen.getByRole("menuitem", { name: "Manage current workspace" }));
-    expect(onManage).toHaveBeenCalledOnce();
-    await user.click(trigger);
-    await screen.findByRole("menu");
+    expect(screen.queryByRole("menuitem", { name: "Manage current workspace" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Outside" }));
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
   });

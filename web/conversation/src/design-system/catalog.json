@@ -855,8 +855,8 @@
       "exports": ["WorkspacePicker", "SidebarWorkspacePicker"],
       "variants": {},
       "states": ["open", "pending", "error", "no results"],
-      "keyboard": "The trigger opens a Menu with focus in the search field; ArrowDown and ArrowUp move from the search field to the first or last workspace; Enter switches; Escape closes and returns focus to the trigger.",
-      "use": "Switching between the workspaces (organizations) the signed-in account belongs to, from the sidebar footer, with links to add a workspace or manage the current one.",
+      "keyboard": "The trigger opens a Menu with focus in the search field; ArrowDown and ArrowUp move from the search field to the first or last menu item; Enter activates the focused item; Escape closes and returns focus to the trigger.",
+      "use": "Switching between the workspaces (organizations) the signed-in account belongs to, from the sidebar footer, with a link to add a workspace and a Platform console entry for platform staff.",
       "avoid": "Using it to pick a project or another entity; project choice belongs to the sidebar sections and the command palette.",
       "related": ["sidebar-chrome", "menu", "input", "badge"]
     },
