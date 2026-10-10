@@ -420,7 +420,7 @@ func TestStartupManagerConfigMatchesFirstReload(t *testing.T) {
 			cfg := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
 			cfg.GitHubToken = tt.githubToken
 			token := newRuntimeGitHubTokenState("")
-			startup, err := startupManagerConfig(t.Context(), cfg, token, runtimeGitHubTokenRefresher(newGlobalConfigState(cfg), token))
+			startup, err := startupManagerConfig(t.Context(), cfg, token, runtimeGitHubTokenRefresher(newGlobalConfigState(cfg), token), time.Minute)
 			if err != nil {
 				t.Fatalf("startupManagerConfig() error = %v", err)
 			}
@@ -865,5 +865,26 @@ func reloadTestConfig(path string, maxConcurrentAgents int, projects []globalcon
 			Startup:             map[string]any{"jitter_seconds": 0, "max_spawn_per_second": 1},
 		},
 		Projects: projects,
+	}
+}
+
+func TestStartupManagerConfigBoundsTokenRefresh(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	token := newRuntimeGitHubTokenState("")
+	hanging := func(context.Context) (string, error) {
+		<-release
+		return "", nil
+	}
+	started := time.Now()
+	config, err := startupManagerConfig(t.Context(), globalconfig.Config{}, token, hanging, 50*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("startupManagerConfig() error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("startupManagerConfig() blocked for %s", elapsed)
+	}
+	if config.RuntimeCredentialVersion != runtimeGitHubTokenVersion("") {
+		t.Fatalf("RuntimeCredentialVersion = %q, want the unresolved token version", config.RuntimeCredentialVersion)
 	}
 }
