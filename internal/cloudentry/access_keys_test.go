@@ -296,7 +296,12 @@ func TestAccessKeyScopeAndServiceLifetime(t *testing.T) {
 	}
 	service := createTestAccessKey(t, owner, "selected", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "all"}}}, "org_alpha")
 	serviceCall := entryMCPClient(t, client, service.Token, "2025-11-25", "/mcp")
+	response := attachmentRequest(t, owner, http.MethodGet, "/api/cloud/organizations/org_alpha/service-keys", nil, nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), service.ID) || strings.Contains(response.Body.String(), service.Token) {
+		t.Fatalf("service key list=%d %s", response.Code, response.Body.String())
+	}
 	f.provider.mu.Lock()
+	membership := f.provider.memberships["om_user_alice_porg_alpha"]
 	delete(f.provider.memberships, "om_user_alice_porg_alpha")
 	f.provider.mu.Unlock()
 	listed, listFailed := serviceCall("list_projects", map[string]any{"organization_id": "org_alpha"})
@@ -306,6 +311,16 @@ func TestAccessKeyScopeAndServiceLifetime(t *testing.T) {
 	created, failed := serviceCall(operatortool.FileIssue, map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": "service-after-removal", "title": "Service key survives creator departure"})
 	if failed || !strings.Contains(string(created), "Service key survives creator departure") {
 		t.Fatalf("service write=%s failed=%v", created, failed)
+	}
+	f.provider.mu.Lock()
+	f.provider.memberships[membership.ID] = membership
+	f.provider.mu.Unlock()
+	response = attachmentRequest(t, owner, http.MethodDelete, "/api/cloud/organizations/org_alpha/service-keys/"+service.ID, nil, map[string]string{"Origin": testPublicURL})
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("service key revoke=%d %s", response.Code, response.Body.String())
+	}
+	if result, failed := serviceCall("list_projects", map[string]any{"organization_id": "org_alpha"}); !failed || !strings.Contains(string(result), "key_inactive") {
+		t.Fatalf("revoked service key=%s failed=%v", result, failed)
 	}
 }
 
@@ -443,7 +458,7 @@ func TestAccessKeyMemberSettingsIsolation(t *testing.T) {
 	for _, test := range []struct{ method, path, body string }{
 		{http.MethodGet, "external-keys", ""}, {http.MethodGet, "key-policy", ""}, {http.MethodPut, "key-policy", `{"personal_keys":"blocked"}`},
 		{http.MethodPut, "external-keys/" + other.ID + "/block", `{}`}, {http.MethodPut, "external-keys/" + other.ID + "/approve", `{}`},
-		{http.MethodPost, "service-keys", `{}`}, {http.MethodGet, "service-keys", ""},
+		{http.MethodPost, "service-keys", `{}`}, {http.MethodGet, "service-keys", ""}, {http.MethodDelete, "service-keys/" + other.ID, ""},
 	} {
 		t.Run(test.method+test.path, func(t *testing.T) {
 			response := attachmentRequest(t, member, test.method, "/api/cloud/organizations/org_beta/"+test.path, strings.NewReader(test.body), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})

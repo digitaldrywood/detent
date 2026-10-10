@@ -1,9 +1,18 @@
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 export const KeyOrganization = Schema.Struct({
   organization_id: Schema.String,
   project_access: Schema.Literals(["all", "selected", "project"]),
-  project_ids: Schema.Array(Schema.String),
+  project_ids: Schema.NullOr(Schema.Array(Schema.String)).pipe(
+    Schema.decodeTo(
+      Schema.Array(Schema.String),
+      SchemaTransformation.transform({
+        decode: (projects) => projects ?? [],
+        encode: (projects) => projects,
+      }),
+    ),
+  ),
 });
 export type KeyOrganization = typeof KeyOrganization.Type;
 export const KeyReach = Schema.Struct({

@@ -506,9 +506,10 @@ describe("personal keys and org controls", () => {
       if (path.endsWith("key-policy")) { if (init?.method === "PUT") policy = JSON.parse(String(init.body)).personal_keys; return new Response(JSON.stringify({ personal_keys: policy })); }
       if (path.endsWith("/approve")) { status = "allowed"; return new Response(null, { status: 204 }); }
       if (path.endsWith("/block")) { status = "blocked"; return new Response(null, { status: 204 }); }
-      return new Response(JSON.stringify({ keys: path.endsWith("service-keys") ? [] : [{ ...key, effective_reach: [{ ...reach, status }] }] }));
+      return new Response(JSON.stringify({ keys: path.endsWith("service-keys") ? [{ ...key, id: "service1", name: "Org integration", kind: "service", access_context: "selected", organizations: [{ organization_id: account.organization.id, project_access: "all", project_ids: null }] }] : [{ ...key, effective_reach: [{ ...reach, status }] }] }));
     });
     renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
+    await screen.findByRole("button", { name: "Revoke Org integration" });
     fireEvent.click(await screen.findByRole("button", { name: "Approve My agent" }));
     await screen.findByText("No keys awaiting approval");
     fireEvent.change(screen.getByLabelText("Personal keys"), { target: { value: "blocked" } });
