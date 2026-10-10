@@ -739,9 +739,10 @@ test("answers the search and new-chat keyboard shortcuts", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test("requires the share-history confirmation before it creates a linked issue", async ({
+test("confirms automatic chat linking when creating an issue on a phone", async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   const errors = watchConsole(page);
   await openChat(page);
   await sendWithKeyboard(page, "Move the renewal behind the acknowledgement");
@@ -750,7 +751,8 @@ test("requires the share-history confirmation before it creates a linked issue",
     "Move the renewal behind the acknowledgement",
   );
 
-  await openCreateLinkedIssue(page);
+  await page.getByRole("button", { name: "Conversation scope" }).click();
+  await page.getByRole("menuitem", { name: "Create linked issue" }).click();
 
   const form = page.getByRole("dialog", { name: "Create linked issue" });
   await expect(form).toBeVisible();
@@ -778,24 +780,19 @@ test("requires the share-history confirmation before it creates a linked issue",
   await expect(next.getByLabel("Dispatch")).toBeFocused();
   await page.keyboard.press("Tab");
 
-  const share = form.getByRole("checkbox", {
-    name: "Share this conversation's history with the project",
-  });
-  await expect(share).toBeFocused();
-  await expect(share).not.toBeChecked();
-
-  // Submitting without the confirmation states the rule and puts the reader on
-  // the control that satisfies it.
-  await form.getByRole("button", { name: "Create linked issue" }).focus();
-  await page.keyboard.press("Enter");
-  await expect(form.getByTestId("handoff-local-error")).toContainText(
-    "Linking shares this conversation's full history with the project.",
+  await expect(form.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await expect(form.getByTestId("handoff-audience")).toContainText(
+    "By choosing Create linked issue, you confirm sharing this history.",
   );
-  await expect(share).toBeFocused();
+  await expect(form.getByRole("checkbox")).toHaveCount(0);
+  await form.getByLabel("Objective").fill("   ");
+  await form.getByRole("button", { name: "Create linked issue" }).click();
+  await expect(form.getByRole("alert")).toHaveText(
+    "Enter an objective describing the issue before creating it.",
+  );
+  await expect(form.getByLabel("Objective")).toBeFocused();
+  await form.getByLabel("Objective").fill("Move the renewal behind the acknowledgement");
 
-  // Space ticks the confirmation, and the same submit now completes.
-  await page.keyboard.press("Space");
-  await expect(share).toBeChecked();
   await form.getByRole("button", { name: "Create linked issue" }).focus();
   await page.keyboard.press("Enter");
 

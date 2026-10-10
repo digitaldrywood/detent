@@ -303,9 +303,6 @@ describe("the conversation shell", () => {
     fireEvent.change(within(form).getByLabelText("Priority"), {
       target: { value: "1" },
     });
-    fireEvent.click(
-      screen.getByLabelText("Share this conversation's history with the project"),
-    );
     fireEvent.click(within(form).getByRole("button", { name: "Create linked issue" }));
 
     // Linking moves the reader to the issue: the issue is the page now and the

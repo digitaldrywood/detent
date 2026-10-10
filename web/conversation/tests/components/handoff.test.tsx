@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { HandoffForm } from "../../src/app/components/HandoffForm.tsx";
+import { defaultNext, HandoffForm } from "../../src/app/components/HandoffForm.tsx";
 
 afterEach(cleanup);
 
@@ -29,9 +29,6 @@ function renderForm(overrides: Partial<React.ComponentProps<typeof HandoffForm>>
   return { ...utils, onSubmit, onCancel, onOpenExisting };
 }
 
-const share = () =>
-  screen.getByLabelText<HTMLInputElement>("Share this conversation's history with the project");
-
 const STATES = [
   { name: "Backlog", dispatchable: false },
   { name: "Todo", dispatchable: true },
@@ -41,9 +38,9 @@ const STATES = [
 describe("HandoffForm", () => {
   // §13.8 and §14: creating an issue from a chat asks what happens next, with
   // Detent's own defaults already chosen.
-  it("preselects the first dispatchable lane, the default priority and later", () => {
+  it("preselects Backlog for drafts, the default priority and later", () => {
     renderForm({ states: STATES });
-    expect(screen.getByLabelText<HTMLSelectElement>("Lane").value).toBe("Todo");
+    expect(screen.getByLabelText<HTMLSelectElement>("Lane").value).toBe("Backlog");
     // Unset: the request asks the hub for the project's own default rather
     // than guessing it (§14).
     expect(screen.getByLabelText<HTMLSelectElement>("Priority").value).toBe("");
@@ -54,7 +51,6 @@ describe("HandoffForm", () => {
     const { onSubmit } = renderForm({ states: STATES });
     fireEvent.change(screen.getByLabelText("Lane"), { target: { value: "In progress" } });
     fireEvent.change(screen.getByLabelText("Dispatch"), { target: { value: "now" } });
-    fireEvent.click(share());
     fireEvent.click(screen.getByRole("button", { name: "Create linked issue" }));
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({ next: { state: "In progress", dispatch: "now" } }),
@@ -80,7 +76,8 @@ describe("HandoffForm", () => {
     expect(screen.getByTestId("handoff-message-count").textContent).toBe(
       "All 4 messages in this chat become readable by everyone who can read project alpha.",
     );
-    expect(screen.getByText("Sharing cannot be undone.")).toBeTruthy();
+    expect(screen.getByText(/By choosing Create linked issue, you confirm sharing this history/)).toBeTruthy();
+    expect(screen.getByText("This issue will be linked to this chat")).toBeTruthy();
   });
 
   it("prefills from a proposal when the coordinator made one", () => {
@@ -109,19 +106,31 @@ describe("HandoffForm", () => {
     );
   });
 
-  it("refuses to submit until the share confirmation is ticked", () => {
+  it.each([
+    { field: "Title", value: "   ", error: "Enter a title between 1 and 180 characters." },
+    { field: "Title", value: "x".repeat(181), error: "Enter a title between 1 and 180 characters." },
+    { field: "Objective", value: "   ", error: "Enter an objective describing the issue before creating it." },
+  ])("rejects an invalid $field and focuses the field", ({ field, value, error }) => {
     const { onSubmit } = renderForm();
+    fireEvent.change(screen.getByLabelText(field), { target: { value } });
     fireEvent.click(screen.getByRole("button", { name: "Create linked issue" }));
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(screen.getByTestId("handoff-local-error").textContent).toContain(
-      "Linking shares this conversation's full history with the project.",
-    );
-    expect(document.activeElement).toBe(share());
+    expect(screen.getByRole("alert").textContent).toBe(error);
+    expect(document.activeElement).toBe(screen.getByLabelText(field));
+    expect(screen.getByLabelText<HTMLInputElement>(field).value).toBe(value);
   });
 
-  it("submits share_history true once the box is ticked", () => {
+  it.each([
+    { states: [{ name: "Todo", dispatchable: true }], state: "Todo" },
+    { states: [{ name: "bAcKlOg", dispatchable: false }, { name: "Todo", dispatchable: true }], state: "bAcKlOg" },
+    { states: [{ name: "Backlog", terminal: true }, { name: "Todo", dispatchable: true }], state: "Todo" },
+    { states: [{ name: "Backlog", dispatchable: true }, { name: "Todo", dispatchable: true }], state: "Backlog" },
+  ])("uses a valid project default ($state)", ({ states, state }) => {
+    expect(defaultNext(states)).toEqual({ state, dispatch: "later" });
+  });
+
+  it("automatically links and shares when the disclosed create action is confirmed", () => {
     const { onSubmit } = renderForm();
-    fireEvent.click(share());
     fireEvent.click(screen.getByRole("button", { name: "Create linked issue" }));
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -137,7 +146,6 @@ describe("HandoffForm", () => {
     const { rerender } = renderForm();
     fireEvent.change(screen.getByLabelText("Title"), { target: { value: "A better title" } });
     fireEvent.change(screen.getByLabelText("Objective"), { target: { value: "A clear objective" } });
-    fireEvent.click(share());
     rerender(
       <HandoffForm
         projectId="proj_alpha"
@@ -153,22 +161,23 @@ describe("HandoffForm", () => {
     expect(screen.getByLabelText<HTMLTextAreaElement>("Objective").value).toBe(
       "A clear objective",
     );
-    expect(share().checked).toBe(true);
     expect(screen.getByTestId("handoff-failure").textContent).toContain(
       "The hub could not be reached.",
     );
   });
 
-  // The dialog moves focus once it has opened, so this waits for the move
-  // rather than for the render.
-  it("focuses the confirmation when the hub asks for it", async () => {
+  it("focuses actionable contract errors without losing the objective", async () => {
     renderForm({
       failure: {
-        code: "share_history_required",
-        message: "Linking shares the whole history. Confirm before linking.",
+        code: "workflow_invalid",
+        message: "Add these required issue sections before filing into Todo: Acceptance criteria. File into Backlog to draft it first.",
       },
     });
-    await waitFor(() => expect(document.activeElement).toBe(share()));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("alert")));
+    expect(screen.getByRole("alert").textContent).toContain("Acceptance criteria");
+    expect(screen.getByLabelText<HTMLTextAreaElement>("Objective").value).toBe(
+      "The renewal returns before the handoff completes.",
+    );
   });
 
   it("offers navigation instead of a second issue when already linked", () => {
@@ -189,7 +198,6 @@ describe("HandoffForm", () => {
     unmount();
 
     const { onSubmit } = renderForm({ labels: ["bug", "chore"] });
-    fireEvent.click(share());
     fireEvent.click(screen.getByLabelText("bug"));
     // Priority is the tracker's own rank, 0-3 (§14): "High" is rank 1.
     fireEvent.change(screen.getByLabelText("Priority"), { target: { value: "1" } });

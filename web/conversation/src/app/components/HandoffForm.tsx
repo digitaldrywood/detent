@@ -36,15 +36,12 @@ export interface HandoffState {
   readonly dispatchable?: boolean | undefined;
 }
 
-/**
- * The next step the form opens on: the first dispatchable state and `later` —
- * creating an issue from a chat is a handoff, not a launch, so the reader has
- * to ask for the launch (§13.8). Priority is left unset, which is how the
- * request asks the hub for the project's own default rather than guessing it.
- */
 export function defaultNext(states: readonly HandoffState[] | undefined): HandoffNext {
+  const backlog = (states ?? []).find(
+    (state) => state.name.trim().toLowerCase() === "backlog" && !state.terminal && !state.dispatchable,
+  );
   const dispatchable = (states ?? []).find((state) => state.dispatchable === true);
-  const first = dispatchable ?? (states ?? [])[0];
+  const first = backlog ?? dispatchable ?? (states ?? [])[0];
   return {
     ...(first === undefined ? {} : { state: first.name }),
     dispatch: "later",
@@ -94,20 +91,18 @@ export function HandoffForm(props: HandoffFormProps): React.ReactElement {
   );
   const [labels, setLabels] = React.useState<readonly string[]>([]);
   const [next, setNext] = React.useState<HandoffNext>(() => defaultNext(props.states));
-  const [shareHistory, setShareHistory] = React.useState(false);
   const [localError, setLocalError] = React.useState<string | null>(null);
 
   const titleField = React.useRef<HTMLInputElement>(null);
-  const shareField = React.useRef<HTMLInputElement>(null);
+  const objectiveField = React.useRef<HTMLTextAreaElement>(null);
+  const failureField = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     titleField.current?.focus();
   }, []);
 
-  // `share_history_required` is the hub saying the confirmation is missing,
-  // so the confirmation is where the user is put.
   React.useEffect(() => {
-    if (props.failure?.code === "share_history_required") shareField.current?.focus();
+    if (props.failure !== null) failureField.current?.focus();
   }, [props.failure]);
 
   const alreadyLinked =
@@ -115,16 +110,17 @@ export function HandoffForm(props: HandoffFormProps): React.ReactElement {
       ? (props.failure.existingConversationId ?? null)
       : null;
 
-  const complete = title.trim().length > 0 && description.trim().length > 0;
-
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
-    if (!complete || props.submitting) return;
-    if (!shareHistory) {
-      setLocalError(
-        "Linking shares this conversation's full history with the project. Confirm before linking.",
-      );
-      shareField.current?.focus();
+    if (props.submitting) return;
+    if (title.trim().length === 0 || title.trim().length > TITLE_MAX_LENGTH) {
+      setLocalError(`Enter a title between 1 and ${TITLE_MAX_LENGTH} characters.`);
+      titleField.current?.focus();
+      return;
+    }
+    if (description.trim().length === 0) {
+      setLocalError("Enter an objective describing the issue before creating it.");
+      objectiveField.current?.focus();
       return;
     }
     setLocalError(null);
@@ -149,19 +145,31 @@ export function HandoffForm(props: HandoffFormProps): React.ReactElement {
         aria-label="Create linked issue"
         className="max-w-xl"
         showCloseButton={false}
-        // The share confirmation is where the hub sends the reader back to
-        // when it is missing; anywhere else the title is the first field.
-        initialFocus={props.failure?.code === "share_history_required" ? shareField : titleField}
+        initialFocus={props.failure === null ? titleField : failureField}
       >
         {/* The popup is a flex column and its panel scrolls; the form has to
             be that column itself, or the footer falls out of the card. */}
         <form
           className="flex min-h-0 flex-1 flex-col"
           data-testid="handoff-form"
+          noValidate
           onSubmit={submit}
         >
           <DialogHeader>
             <DialogTitle>Create linked issue</DialogTitle>
+            <div
+              className="flex flex-col gap-1.5 rounded-lg border border-warning/32 bg-warning-surface p-3"
+              data-testid="handoff-audience"
+            >
+              <h3 className="font-medium text-sm">This issue will be linked to this chat</h3>
+              <p className="text-sm" data-testid="handoff-message-count">
+                All {props.messageCount} messages in this chat become readable by everyone who can
+                read project {props.projectName}.
+              </p>
+              <p className="text-muted-foreground text-xs">
+                By choosing Create linked issue, you confirm sharing this history. Sharing cannot be undone.
+              </p>
+            </div>
           </DialogHeader>
 
           <DialogPanel className="flex min-h-0 flex-col gap-4">
@@ -201,12 +209,17 @@ export function HandoffForm(props: HandoffFormProps): React.ReactElement {
               <Label htmlFor="dc-handoff-objective">Objective</Label>
               <textarea
                 id="dc-handoff-objective"
+                ref={objectiveField}
                 className={FIELD_CLASS}
                 required
                 rows={5}
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
               />
+              <p className="text-muted-foreground text-xs">
+                Save a draft in a non-dispatchable lane such as Backlog. Include the project&apos;s
+                required issue sections before filing into a dispatchable lane.
+              </p>
             </div>
 
             {props.labels === undefined || props.labels.length === 0 ? null : (
@@ -313,61 +326,39 @@ export function HandoffForm(props: HandoffFormProps): React.ReactElement {
               </div>
             </fieldset>
 
-            <div
-              className="flex flex-col gap-1.5 rounded-lg border border-warning/32 bg-warning-surface p-3"
-              data-testid="handoff-audience"
-            >
-              <h3 className="font-medium text-sm">Who will be able to read this</h3>
-              <p className="text-sm" data-testid="handoff-message-count">
-                All {props.messageCount} messages in this chat become readable by everyone who can
-                read project {props.projectName}.
-              </p>
-              <p className="text-muted-foreground text-xs">Sharing cannot be undone.</p>
-              <label className="mt-1 flex cursor-pointer items-start gap-2 text-sm">
-                <input
-                  ref={shareField}
-                  type="checkbox"
-                  className="mt-0.5 size-3.5 accent-primary"
-                  checked={shareHistory}
-                  onChange={(event) => {
-                    setShareHistory(event.target.checked);
-                    if (event.target.checked) setLocalError(null);
-                  }}
-                />
-                <span>Share this conversation&apos;s history with the project</span>
-              </label>
-            </div>
-
-            {localError === null ? null : (
-              <div
-                className="rounded-md bg-error-surface px-3 py-2 text-error-foreground text-sm"
-                role="alert"
-                data-testid="handoff-local-error"
-              >
-                {localError}
-              </div>
-            )}
-
-            {props.failure === null ? null : (
-              <div
-                className="flex flex-col gap-2 rounded-md bg-error-surface px-3 py-2 text-error-foreground text-sm"
-                role="alert"
-                data-testid="handoff-failure"
-              >
-                <span>{props.failure.message}</span>
-                {alreadyLinked === null ? null : (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="self-start"
-                    onClick={() => props.onOpenExisting?.(alreadyLinked)}
-                  >
-                    Open the linked conversation
-                  </Button>
-                )}
-              </div>
-            )}
           </DialogPanel>
+
+          {localError === null ? null : (
+            <div
+              className="shrink-0 bg-error-surface px-6 py-2 text-error-foreground text-sm"
+              role="alert"
+              data-testid="handoff-local-error"
+            >
+              {localError}
+            </div>
+          )}
+
+          {props.failure === null ? null : (
+            <div
+              ref={failureField}
+              tabIndex={-1}
+              className="flex shrink-0 flex-col gap-2 bg-error-surface px-6 py-2 text-error-foreground text-sm"
+              role="alert"
+              data-testid="handoff-failure"
+            >
+              <span>{props.failure.message}</span>
+              {alreadyLinked === null ? null : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="self-start"
+                  onClick={() => props.onOpenExisting?.(alreadyLinked)}
+                >
+                  Open the linked conversation
+                </Button>
+              )}
+            </div>
+          )}
 
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={props.onCancel}>
@@ -376,8 +367,8 @@ export function HandoffForm(props: HandoffFormProps): React.ReactElement {
             <Button
               render={<button type="submit" />}
               size="sm"
-              disabled={!complete || props.submitting}
-              aria-disabled={!complete || props.submitting}
+              disabled={props.submitting}
+              aria-disabled={props.submitting}
             >
               {props.submitting ? "Creating the issue" : "Create linked issue"}
             </Button>
