@@ -313,7 +313,10 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	runtimeGitHubToken := newRuntimeGitHubTokenState(runtimeGlobalGitHubToken(cfg.Runtime.GitHubToken))
 	globalConfigState := newGlobalConfigState(cfg.Global)
 	refreshGitHubToken := runtimeGitHubTokenRefresher(globalConfigState, runtimeGitHubToken)
-	managerConfig := managerConfigWithRuntimeGitHubToken(cfg.Global, runtimeGitHubToken.get())
+	managerConfig, err := startupManagerConfig(runCtx, cfg.Global, runtimeGitHubToken, refreshGitHubToken, startupTokenRefreshTimeout)
+	if err != nil {
+		logger.Warn("resolve runtime GitHub token at startup failed", "error", err)
+	}
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	projectIDs := make([]string, 0, len(cfg.Global.Projects))
 	for _, projectConfig := range cfg.Global.Projects {

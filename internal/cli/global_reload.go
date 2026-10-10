@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"strings"
@@ -347,6 +348,25 @@ func withoutRuntimeGitHubTokenEnv(lookupEnv func(string) string) func(string) st
 		}
 		return lookupEnv(key)
 	}
+}
+
+const startupTokenRefreshTimeout = 30 * time.Second
+
+func startupManagerConfig(ctx context.Context, cfg globalconfig.Config, token *runtimeGitHubTokenState, refresh func(context.Context) (string, error), timeout time.Duration) (project.ManagerConfig, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := refresh(ctx)
+		done <- err
+	}()
+	var err error
+	select {
+	case err = <-done:
+	case <-ctx.Done():
+		err = fmt.Errorf("refresh runtime GitHub token: %w", ctx.Err())
+	}
+	return managerConfigWithRuntimeGitHubToken(cfg, token.get()), err
 }
 
 func managerConfigWithRuntimeGitHubToken(cfg globalconfig.Config, token string) project.ManagerConfig {
