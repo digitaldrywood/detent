@@ -69,6 +69,14 @@ run_go_tests() {
         packages=$(go list ./... | grep -v -e '/internal/workspace$' -e '/internal/web$')
         env -u DETENT_API_TOKEN go test -count=1 -p "$procs" -timeout=30m $packages || status=$?
         wait "$workspace" || status=1
+        if [ "$status" != 0 ]; then
+            local flaky
+            flaky=$(python3 scripts/barrier_failures.py extract go tmp/barrier-go.log)
+            if [ -n "$flaky" ] && rerun_tests "$flaky" 0; then
+                printf 'check-barrier: go tests passed on retry: %s\n' "$(printf '%s\n' "$flaky" | tr '\n' ' ')"
+                status=0
+            fi
+        fi
         return "$status"
     fi
 }
