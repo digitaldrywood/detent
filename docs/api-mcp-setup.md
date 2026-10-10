@@ -518,8 +518,8 @@ no external tracker import.
 The operator-only `get_change`, `get_change_version` and `get_native_run` detail
 reads are skipped because they exceed the dedicated project key's authority.
 Available fixture reads run, and tool errors still fail deployment.
-`runner_project_diagnostics` selects a discovered runner explicitly, including
-when multiple runners report the project.
+`runner_project_diagnostics` selects the dependency attempt's runner explicitly,
+including when multiple runners report the project.
 `get_project_policy` accepts either an approved policy or the documented
 `policy_mismatch` refusal beginning with `No approved repository policy`;
 other refusals fail the smoke.

@@ -56,23 +56,16 @@ var smokeReadSkips = map[string]string{
 }
 
 var smokeKnownGaps = map[string]map[string]string{
-	"production": smokeFixtureGaps(map[string]string{
+	"production": {
 		operatortool.OrderItem: "#724", operatortool.SetQueuePriority: "#724", "board_session_history": "#724", "get_cutover_receipt": "#724", "get_change_review_policy": "#724",
-	}),
-	"staging": smokeFixtureGaps(map[string]string{
+	},
+	"staging": {
 		operatortool.OrderItem: "#724", operatortool.SetQueuePriority: "#724", "board_session_history": "#724", "get_cutover_receipt": "#724",
 		"update_project_integration": "#724", operatortool.ActionResult: "#724",
-	}),
+	},
 }
 
 var smokeDependencyFixtures = []string{"change_id", "version_id", "native_attempt_id", "attempt_id", "run_id"}
-
-func smokeFixtureGaps(gaps map[string]string) map[string]string {
-	for _, name := range []string{"get_change", "get_change_version", "change_viewed_files", "get_attempt_diff", "get_native_run", "work_attempt_receipt", operatortool.RunnerProjectDiagnostics, operatortool.GitHubScopeTimings} {
-		gaps[name] = "#725 fixtures"
-	}
-	return gaps
-}
 
 var smokeHostedGaps = []string{operatortool.ArchiveItem, operatortool.OrderItem, operatortool.SetQueuePriority}
 

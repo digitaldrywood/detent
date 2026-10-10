@@ -289,7 +289,7 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 					if args["runner_id"] == nil {
 						isError = true
 						result = map[string]any{"code": "invalid_request", "message": "Multiple runners report this project; select runner_id"}
-					} else if args["runner_id"] != "runner_fixture" {
+					} else if args["runner_id"] != "runner_attempt" {
 						t.Fatalf("wrong diagnostic runner selector: %v", args)
 					}
 				case operatortool.GetRunnerRouting:
@@ -441,20 +441,24 @@ func TestSmokeVerdictRatchet(t *testing.T) {
 	}{
 		{"new failure blocks", []error{errors.New("file_issue: MCP server error")}, map[string]bool{"file_issue": true}, nil, "file_issue: MCP server error"},
 		{"known gap failing is reported", []error{errors.New("board_session_history: advertised arguments {}; MCP server error")}, map[string]bool{"board_session_history": true}, nil, ""},
-		{"unprovisioned change fixture is reported", []error{errors.New("get_change: advertised change_id={}; smoke project lacks a change_id fixture")}, map[string]bool{}, nil, ""},
-		{"provisioned change fixture passing blocks", nil, map[string]bool{"get_change": true}, nil, "get_change: known gap #725 fixtures now passes"},
+		{"fixture read error blocks", []error{errors.New("runner_project_diagnostics: MCP server error")}, map[string]bool{"runner_project_diagnostics": true}, nil, "runner_project_diagnostics: MCP server error"},
+		{"provisioned fixture passing succeeds", nil, map[string]bool{"runner_project_diagnostics": true}, nil, ""},
 		{"known gap passing blocks", nil, map[string]bool{"get_cutover_receipt": true}, nil, "get_cutover_receipt: known gap #724 now passes"},
 		{"missing conversation fixture blocks", []error{errors.New("get_conversation: advertised conversation_id={}; smoke project lacks a conversation_id fixture")}, map[string]bool{}, nil, "get_conversation: advertised"},
 		{"hosted gap handled as expected is not a pass", nil, map[string]bool{"order_item": true}, []string{"order_item"}, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			var output bytes.Buffer
-			err := smokeVerdict(&output, tt.failures, tt.called, tt.gapped, smokeKnownGaps["production"])
-			if tt.blocking == "" && err != nil {
-				t.Fatalf("verdict = %v, want nil", err)
-			}
-			if tt.blocking != "" && (err == nil || !strings.Contains(err.Error(), tt.blocking)) {
-				t.Fatalf("verdict = %v, want %q", err, tt.blocking)
+			for _, environment := range []string{"staging", "production"} {
+				t.Run(environment, func(t *testing.T) {
+					var output bytes.Buffer
+					err := smokeVerdict(&output, tt.failures, tt.called, tt.gapped, smokeKnownGaps[environment])
+					if tt.blocking == "" && err != nil {
+						t.Fatalf("verdict = %v, want nil", err)
+					}
+					if tt.blocking != "" && (err == nil || !strings.Contains(err.Error(), tt.blocking)) {
+						t.Fatalf("verdict = %v, want %q", err, tt.blocking)
+					}
+				})
 			}
 		})
 	}
