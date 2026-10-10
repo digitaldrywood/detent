@@ -15,7 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers(t *testing.T) {
+func TestWorkspacePreparationRetriesIssueWithoutPausingProject(t *testing.T) {
 	t.Parallel()
 
 	const retryLimit = 3
@@ -116,8 +116,8 @@ func TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers(t *t
 				if state.InstantFailures[issue.ID].Count != 2 || state.RepeatedFailures[issue.ID].Count != 2 {
 					t.Fatalf("attempt %d failure breakers = instant %#v repeated %#v, want preserved counts", attempt, state.InstantFailures[issue.ID], state.RepeatedFailures[issue.ID])
 				}
-				if len(state.Retry) != 0 || len(state.Blocked) != 0 || len(tracker.comments) != 0 {
-					t.Fatal("workspace failure retained issue retry accounting")
+				if _, retried := state.Retry[issue.ID]; !retried || len(state.Blocked) != 0 || len(tracker.comments) != 0 {
+					t.Fatal("workspace failure did not retry the issue in its lane")
 				}
 				if len(state.ForgeUnavailable) != 0 {
 					t.Fatalf("workspace failure started forge condition or canary: %#v", state.ForgeUnavailable)
@@ -125,27 +125,15 @@ func TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers(t *t
 				if tt.postTurn && tracker.issues[issue.ID].State != "Rework" {
 					t.Fatal("instance finalization failure changed the issue lane")
 				}
-				if attempt == 1 && !projectFailureBreakerAllowsDispatch(&state, completedAt) {
-					t.Fatal("one Git infrastructure failure excluded other runnable work")
+				if !projectFailureBreakerAllowsDispatch(&state, completedAt) {
+					t.Fatal("Git infrastructure failure excluded other runnable work")
 				}
 				if !allowanceInfrastructureAttempt(store.WorkAttempt{ErrorClass: runnerWorkAttemptErrorClass(tt.err), MetricsJSON: `{"turns":1,"total_tokens":10}`}) {
 					t.Fatal("Git infrastructure consumed the issue allowance")
 				}
 			}
-			if tt.postTurn {
-				if state.FailureBreaker.Active() || !projectFailureBreakerAllowsDispatch(&state, base.Add(3*time.Minute)) {
-					t.Fatal("successful source turns were ignored by the existing instance progress owner")
-				}
-			} else if !state.FailureBreaker.Active() || projectFailureBreakerAllowsDispatch(&state, base.Add(3*time.Minute)) {
-				t.Fatal("instance did not drain after three failures")
-			}
-
-			wantFailures := retryLimit
-			if tt.postTurn {
-				wantFailures = 1
-			}
-			if failures := state.FailureBreaker.Failures[workAttemptErrorWorkspace]; len(failures) != wantFailures {
-				t.Fatalf("FailureBreaker.Failures[%q] = %#v, want %d preserved failures", workAttemptErrorWorkspace, failures, wantFailures)
+			if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
+				t.Fatalf("instance failures reached the project breaker: %#v", state.FailureBreaker)
 			}
 
 		})
@@ -250,21 +238,5 @@ func TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker(t *testing.T) {
 		if got := attempts.completions[len(attempts.completions)-1].TerminalState; got != store.WorkAttemptTerminalCapacity {
 			t.Fatalf("attempt %d terminal state = %q, want capacity", attempt, got)
 		}
-	}
-}
-
-func TestWorkspaceBreakerHonorsFailureCooldown(t *testing.T) {
-	t.Parallel()
-	base := time.Date(2026, 9, 24, 15, 35, 0, 0, time.UTC)
-	cfg := normalizeConfig(Config{FailureBreaker: FailureBreakerConfig{SameClassLimit: 3, Window: time.Hour, Cooldown: time.Hour}, BlockedRecovery: BlockedRecoveryConfig{BreakerCooldown: 24 * time.Hour}})
-	orch := &Orchestrator{cfg: cfg}
-	state := newState(cfg)
-	state.FailureBreaker.PreTurn = true
-	for attempt := 1; attempt <= 3; attempt++ {
-		at := base.Add(time.Duration(attempt) * time.Minute)
-		orch.recordProjectFailureBreakerEvidence(&state, ProjectFailure{IssueID: fmt.Sprintf("issue-%d", attempt)}, workAttemptErrorWorkspace, at)
-	}
-	if !state.FailureBreaker.ResumeAt.Equal(base.Add(3*time.Minute + time.Hour)) {
-		t.Fatalf("resume_at = %s, want one hour after third failure", state.FailureBreaker.ResumeAt)
 	}
 }

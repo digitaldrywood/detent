@@ -600,12 +600,6 @@ func healthFailureBreakerRows(breakers []telemetry.FailureBreaker) []healthRow {
 			Detail:    failureBreakerCauseLabel(breaker),
 			Resets:    "operator action",
 		}
-		if breaker.InstanceDrained {
-			row.Component = "Instance · " + projectID
-			row.Status = "Drained"
-			row.Detail = breaker.Class + ": " + breaker.RepresentativeError
-			row.Resets = breaker.ResumeAt.UTC().Format(time.RFC3339)
-		}
 		rows = append(rows, row)
 	}
 	return rows

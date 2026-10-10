@@ -51,6 +51,20 @@ type recordedBlockerEvaluation struct {
 	HumanOwned   bool
 }
 
+// instanceOnly reports blockers that all belong to the instance. They never
+// hold an issue: the instance retries the work instead.
+func (e recordedBlockerEvaluation) instanceOnly() bool {
+	if !e.Found || e.HumanOwned || len(e.Evidence) == 0 {
+		return false
+	}
+	for _, evidence := range e.Evidence {
+		if evidence.Owner != workpad.BlockerOwnerInstance && evidence.Status != blockerEvidenceStatusCleared {
+			return false
+		}
+	}
+	return true
+}
+
 func (o *Orchestrator) evaluateRecordedBlockers(
 	ctx context.Context,
 	state *State,
@@ -775,8 +789,9 @@ func recordedBlockerRecoveryComment(
 	return b.String()
 }
 
-// completeRecordedInstanceBlockers leaves cause-based dispatch to the existing
-// live Workpad evaluator. Reporting an instance blocker is not issue no-progress.
+// completeRecordedInstanceBlockers retries a run whose only blockers belong to
+// the instance. Reporting an instance blocker is not issue no-progress, so the
+// issue keeps its lane and retries with backoff instead of moving to Blocked.
 func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, state *State, event runpkg.Completion, running Running, reports ...*workpad.Signal) bool {
 	if event.Err != nil || running.Mode == runpkg.RunModePlan || event.Result.FinalState != "" && event.Result.FinalState != FinalStateCompleted {
 		return false
@@ -816,30 +831,15 @@ func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, sta
 	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
 		o.scheduleCITriggerLabel(ctx, issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, false)
 	}
-	if reader, native := o.connector.(connector.WorkflowStateReader); native && normalizeState(issue.State) != normalizeState("Blocked") {
-		states, err := reader.WorkflowStates(ctx)
-		if err == nil {
-			target, allowed := connector.CompletionLane(states, issue.State, "Blocked", true)
-			if !allowed {
-				err = fmt.Errorf("native workflow allows no blocker handoff from %s", issue.State)
-			} else {
-				err = o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, target, event.CompletedAt, "completed_active_review_transition", workflowLaneMetadata{})
-			}
-		}
-		if err != nil {
-			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
-			return true
-		}
-	}
 	o.recordCompletionUsage(ctx, state, event, issue)
 	detail := workpad.Reason(signal)
 	metadata := map[string]any{"blocker_evidence": evidence.Evidence}
 	if len(reports) > 0 && event.Result.NativeChange != nil {
 		metadata = mergeWorkAttemptMetadata(metadata, nativeChangeMetadata(event.Result.NativeChange))
 	}
-	if o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", detail, metadata) {
-		o.releaseCompletedAttemptClaim(ctx, state, issue)
-		delete(state.mergeReservations, issue.ID)
-	}
+	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", detail, metadata)
+	delete(state.mergeReservations, issue.ID)
+	running.CompletionLane = issue.State
+	o.retryInstanceFailure(ctx, state, running, event.CompletedAt, detail)
 	return true
 }

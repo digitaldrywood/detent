@@ -917,7 +917,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if !p.joinsNativeLandingBatch(issue) && !mergeControl && !p.workerSlotsAvailable(state, preferredWorkerHost) {
 		return dispatchableDecision{reason: dispatchSkipWorkerHostUnavailable}
 	}
-	if !projectFailureBreakerAllowsDispatch(state, now) && !p.workspaceBreakerAllowsMerge(state, issue) {
+	if !projectFailureBreakerAllowsDispatch(state, now) {
 		return dispatchableDecision{reason: dispatchSkipProjectFailureBreaker}
 	}
 	if p.recordedBlockers != nil {

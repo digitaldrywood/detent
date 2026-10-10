@@ -44,7 +44,7 @@ func allowanceInfrastructureAttempt(attempt store.WorkAttempt) bool {
 		} `json:"historical_completion_fence"`
 	}
 	if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) == nil {
-		if metadata.Fence.Excluded || attempt.TerminalState == store.WorkAttemptTerminalCancelled && metadata.Cancellation.IsAvailabilityInterruption() {
+		if metadata.Fence.Excluded || attempt.TerminalState == store.WorkAttemptTerminalCancelled && instanceCancellation(metadata.Cancellation) {
 			return true
 		}
 		for _, evidence := range metadata.BlockerEvidence {
@@ -54,6 +54,13 @@ func allowanceInfrastructureAttempt(attempt store.WorkAttempt) bool {
 		}
 	}
 	return false
+}
+
+// instanceCancellation reports a cancellation the runner caused (shutdown,
+// restart, project reload, availability window) rather than an operator,
+// lane or merge decision about the issue.
+func instanceCancellation(cause *runpkg.CancellationCause) bool {
+	return cause != nil && cause.Reason == "context_cancelled"
 }
 
 func validAttemptTriageNote(note string) bool {

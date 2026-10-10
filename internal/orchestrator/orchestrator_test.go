@@ -1438,9 +1438,9 @@ func TestRunSchedulesRetryAfterRunnerPanic(t *testing.T) {
 	stop := runOrchestrator(t, orch)
 	defer stop()
 
-	state := waitForState(t, orch, func(state orchestrator.State) bool { return state.FailureBreaker.Active() })
-	if len(state.Retry) != 0 || len(state.Blocked) != 0 || len(state.Claimed) != 0 || !state.FailureBreaker.PreTurn {
-		t.Fatal("runner panic was attributed to issue")
+	state := waitForState(t, orch, func(state orchestrator.State) bool { _, ok := state.Retry[issue.ID]; return ok })
+	if len(state.Blocked) != 0 || state.FailureBreaker.Active() {
+		t.Fatal("runner panic parked the issue or paused the project")
 	}
 }
 

@@ -376,7 +376,7 @@ func TestHandleRunResultRetriesTransientOverloadWithoutBackendOutage(t *testing.
 	}
 }
 
-func TestHandleRunResultTracksStartupTimeoutAsCapacityAndBreakerSignal(t *testing.T) {
+func TestHandleRunResultRetriesStartupTimeoutWithoutProjectBreaker(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 15, 18, 0, 0, 0, time.UTC)
@@ -427,11 +427,11 @@ func TestHandleRunResultTracksStartupTimeoutAsCapacityAndBreakerSignal(t *testin
 	if len(state.BackendOutages) != 0 {
 		t.Fatalf("BackendOutages = %#v, want short retry without outage", state.BackendOutages)
 	}
-	if len(state.Retry) != 0 {
-		t.Fatal("startup failure retained issue retry")
+	if _, retried := state.Retry[issue.ID]; !retried {
+		t.Fatal("startup failure did not retry the issue")
 	}
-	if len(state.FailureBreaker.Failures[backendcapacity.StartupTimeoutErrorClass]) != 1 || state.FailureBreaker.Active() {
-		t.Fatalf("FailureBreaker = %#v, want one preserved systemic signal", state.FailureBreaker)
+	if len(state.FailureBreaker.Failures) != 0 || state.FailureBreaker.Active() {
+		t.Fatalf("FailureBreaker = %#v, want instance startup failure kept out of the project breaker", state.FailureBreaker)
 	}
 	if len(attempts.completions) != 1 {
 		t.Fatalf("work attempt completions = %#v, want one", attempts.completions)
@@ -451,7 +451,7 @@ func TestHandleRunResultTracksStartupTimeoutAsCapacityAndBreakerSignal(t *testin
 	}
 }
 
-func TestHandleRunResultTracksStartupExitAsStableBreakerSignal(t *testing.T) {
+func TestHandleRunResultRetriesStartupExitWithoutProjectBreaker(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 18, 18, 0, 0, 0, time.UTC)
@@ -488,8 +488,8 @@ func TestHandleRunResultTracksStartupExitAsStableBreakerSignal(t *testing.T) {
 		})
 	}
 
-	if !state.FailureBreaker.Active() || state.FailureBreaker.Class != backendcapacity.StartupFailureErrorClass || state.FailureBreaker.Count != 3 {
-		t.Fatalf("FailureBreaker = %#v, want three normalized startup failures", state.FailureBreaker)
+	if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 || len(state.Retry) != 3 {
+		t.Fatalf("FailureBreaker = %#v retries=%d, want three issue retries and no project pause", state.FailureBreaker, len(state.Retry))
 	}
 	if len(attempts.completions) != 3 {
 		t.Fatalf("work attempt completions = %#v, want three", attempts.completions)

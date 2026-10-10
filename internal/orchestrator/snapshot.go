@@ -371,7 +371,6 @@ func projectFailureBreakerSnapshots(state State) []telemetry.FailureBreaker {
 	}
 	candidateCount := state.DispatchStatus.EligibleCandidateCount
 	row := telemetry.FailureBreaker{
-		InstanceDrained:        breaker.PreTurn,
 		Class:                  breaker.Class,
 		Count:                  breaker.Count,
 		AttemptCount:           attemptCount,
@@ -389,9 +388,6 @@ func projectFailureBreakerSnapshots(state State) []telemetry.FailureBreaker {
 		TrippedAt:              breaker.TrippedAt,
 		ResumeAt:               breaker.ResumeAt,
 		CanaryIssueID:          breaker.CanaryIssueID,
-	}
-	if breaker.PreTurn {
-		row.CooldownSeconds = int64(breaker.ResumeAt.Sub(breaker.TrippedAt) / time.Second)
 	}
 	if scope := (backendcapacity.Scope{BackendID: row.BackendID, BackendKind: row.BackendKind, Provider: row.Provider}).Normalize(); scope.BackendID != "" || scope.BackendKind != "" || scope.Provider != "" {
 		if _, outage, ok := matchingBackendOutage(state.BackendOutages, scope); ok {

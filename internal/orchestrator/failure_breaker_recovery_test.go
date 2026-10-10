@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 
@@ -97,7 +96,7 @@ func TestMatchingFailureBreakerCanaryFailureRestartsCooldown(t *testing.T) {
 	cfg := normalizeConfig(Config{FailureBreaker: FailureBreakerConfig{SameClassLimit: 2, Window: time.Hour, Cooldown: 5 * time.Minute}})
 	orch := &Orchestrator{cfg: cfg}
 	state := newState(cfg)
-	class := "backend_startup_timeout"
+	class := projectFailureClassBackendError + ":" + projectFailureHash(`{"code":"overloaded"}`)
 	state.FailureBreaker.Class = class
 	state.FailureBreaker.CanaryIssueID = "issue-canary"
 	state.FailureBreaker.Failures[class] = []ProjectFailure{{IssueID: "issue-first", At: now.Add(-time.Minute)}}
@@ -110,7 +109,7 @@ func TestMatchingFailureBreakerCanaryFailureRestartsCooldown(t *testing.T) {
 	if projectFailureBreakerAllowsDispatch(&state, now.Add(time.Minute)) {
 		t.Fatal("matching canary failure released another queued attempt")
 	}
-	if got := projectAttemptFailureClass(errors.New("startup timeout"), "timed_out", class, "startup timeout"); got == "" {
-		t.Fatal("startup timeout did not retain a project failure class")
+	if got := projectAttemptFailureClass(failureBreakerBackendError{body: `{"code":"overloaded"}`}, "failed", "", ""); got != class {
+		t.Fatalf("backend failure class = %q, want %q", got, class)
 	}
 }
