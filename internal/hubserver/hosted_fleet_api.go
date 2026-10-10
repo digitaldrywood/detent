@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -61,6 +63,8 @@ type hostedFleetRunner struct {
 	IsolationTier      string                                     `json:"isolation_tier"`
 	BackendIsolation   map[string][]string                        `json:"backend_isolation"`
 	Availability       runnerauth.Availability                    `json:"availability"`
+	Editable           bool                                       `json:"editable"`
+	EditRefusalReason  string                                     `json:"edit_refusal_reason,omitempty"`
 	CanEditProjects    bool                                       `json:"can_edit_projects"`
 	Routing            *runnerauth.Routing                        `json:"routing,omitempty"`
 	Revision           int64                                      `json:"revision,omitempty"`
@@ -178,7 +182,7 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 		visible[tracker.ProjectID(project.ID)] = true
 	}
 	editable := credential.HostedRole != "viewer" && s.hostedAllRunnerGrants(ctx, credential)
-	runners, err := s.hostedFleetRunners(ctx, credential, visible, editable)
+	runners, err := s.hostedFleetRunners(ctx, credential, visible)
 	if err != nil {
 		return hostedFleetResponse{}, err
 	}
@@ -205,7 +209,7 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 	return hostedFleetResponse{Runners: runners, RunnerNames: names, Editable: editable, Usage: usage, Current: detentVersion(s.config.Version), MinimumRunnerVersion: minimumRunnerVersion(s.config.Version)}, nil
 }
 
-func (s *Service) hostedFleetRunners(ctx context.Context, credential apiCredential, visible map[tracker.ProjectID]bool, editable bool) ([]hostedFleetRunner, error) {
+func (s *Service) hostedFleetRunners(ctx context.Context, credential apiCredential, visible map[tracker.ProjectID]bool) ([]hostedFleetRunner, error) {
 	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, ''), r.local_checks_json FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
 WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.id`, organization)
@@ -257,14 +261,26 @@ WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.
 		if err := s.hostedFleetSprite(ctx, spriteContext, credential, &view, runner, visible); err != nil {
 			return nil, err
 		}
-		if editable {
+		routing := runner.Routing
+		routing.UpdateRequest = nil
+		routing.CapacityRequest = nil
+		routing.ProjectConfigurationCommand = nil
+		view.Routing = &routing
+		view.Revision = runner.Revision
+		authorityErr := s.requireHostedRunnerProjects(ctx, s.database.reader, credential, runnerManagementProjects(runner))
+		if authorityErr != nil && !errors.Is(authorityErr, operatortool.ErrAccessDenied) {
+			return nil, authorityErr
+		}
+		view.Editable = authorityErr == nil
+		if authorityErr != nil {
+			view.EditRefusalReason = strings.TrimPrefix(authorityErr.Error(), operatortool.ErrAccessDenied.Error()+": ")
+		}
+		if view.Editable {
 			owned, err := runnerOwnedBy(ctx, s.database.reader, organization, runner.RunnerID, credential)
 			if err != nil {
 				return nil, err
 			}
 			view.CanEditProjects = owned
-			view.Routing = &runner.Routing
-			view.Revision = runner.Revision
 			capacity, err := s.runnerCapacityView(ctx, s.database.reader, runner, "", s.config.now())
 			if err != nil {
 				return nil, err

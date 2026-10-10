@@ -280,6 +280,9 @@ func (s *Service) updateRunnerRouting(c echo.Context) error {
 
 func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeScope, resource string, request runnerRoutingRequest) (any, error) {
 	change := request.RoutingChange
+	scope.managedRunner = resource
+	scope.managedRunnerScope = request.Normalized().Scope
+	scope.managedRunnerProjects = request.Normalized().ProjectIDs
 	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		organization := tracker.OrganizationID(string(scope.organization))
 		r, err := readRunner(ctx, tx, organization, resource, now)
