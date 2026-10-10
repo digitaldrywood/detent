@@ -20,7 +20,7 @@ const HeartbeatTimeout = 2 * time.Minute
 
 type Routing struct {
 	ProjectRankOverrides        map[tracker.ProjectID]int    `json:"-"`
-	Scope                       string                       `json:"scope"`
+	Scope                       string                       `json:"scope,omitempty"`
 	ProjectConfigurationCommand *ProjectConfigurationCommand `json:"-"`
 	UpdateRequest               *UpdateRequest               `json:"update_request,omitempty"`
 	CapacityRequest             *CapacityRequest             `json:"capacity_request,omitempty"`
