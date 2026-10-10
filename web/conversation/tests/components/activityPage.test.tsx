@@ -345,18 +345,19 @@ it("discloses incomplete activity and suppresses speed claims from partial basel
 });
 
 it.each([
-  ["deduplicated leases", 0, 3],
-  ["host usage beyond listed leases", 4, 4],
-])("counts shared host capacity once with %s and keeps sleeping runners idle", (_name, hostUsed, used) => {
+  ["deduplicated leases", 0, 3, "healthy", 2, 1],
+  ["host usage beyond listed leases", 4, 4, "healthy", 2, 1],
+  ["live leases during an offline transition", 0, 3, "offline", 0, 3],
+])("counts shared host capacity once with %s and keeps sleeping runners idle", (_name, hostUsed, used, health, working, offline) => {
   const lease = runners[0]!.leases[0]!;
-  const shared = { ...runners[0]!, machine_id: "shared", host_capacity: 8, host_used: hostUsed, capacity_limit: 8, reported_capacity: 8 };
+  const shared = { ...runners[0]!, machine_id: "shared", health, host_capacity: 8, host_used: hostUsed, capacity_limit: 8, reported_capacity: 8 };
   render(<View hosts={[
     { ...shared, leases: [lease, { ...lease, lease_id: "second" }] },
     { ...shared, id: "sibling", display_name: "Sibling", leases: [lease, { ...lease, lease_id: "third" }] },
     { ...runners[1]!, machine_id: "sleeping", health: "asleep", claim_refusal_reason: "", host_capacity: 2, host_used: 0, capacity_limit: 2, reported_capacity: 2 },
     { ...runners[2]!, machine_id: "offline", host_capacity: 2, host_used: 0 },
   ]} />);
-  expect(screen.getByRole("heading", { name: `Runners · 2 working · 1 idle · 1 offline · ${used} of 12 slots in use` })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: `Runners · ${working} working · 1 idle · ${offline} offline · ${used} of 12 slots in use` })).toBeTruthy();
   const sleeping = within(screen.getByRole("button", { name: "Filter by Beta" }));
   expect(sleeping.getByRole("img", { name: "Asleep" })).toBeTruthy();
   expect(sleeping.queryByText("offline")).toBeNull();
