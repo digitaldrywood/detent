@@ -479,7 +479,8 @@ func TestPolicyCapacity(t *testing.T) {
 		capacity       uint64
 		explicit, want int64
 	}{
-		{"reference volume", 1858 << 30, 0, int64(uint64(1858<<30) / 10)},
+		{"reference volume", 1858 << 30, 0, 40 << 30},
+		{"small volume", 256 << 30, 0, int64(uint64(256<<30) / 10)},
 		{"unavailable", 0, 0, 20 << 30}, {"explicit", 1858 << 30, 123, 123}, {"explicit unavailable", 0, 123, 123},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
