@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -189,6 +190,35 @@ func TestHostedFleetVisibility(t *testing.T) {
 			activeID = binding.RunnerID
 		}
 	}
+	now := f.service.config.now().UTC()
+	summary := testHostSummary(now)
+	raw, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO runner_host_hours(organization_id,runner_id,hour,summary_json,segment_ids_json) VALUES(?,?,?,?,'[]')", f.service.config.Hosted.OrganizationID, activeID, formatHubTime(summary.Hour), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range []string{"owner", "viewer"} {
+		path := browserHostedOrganizationBase + "/fleet?include=host_metrics&runner_id=" + activeID
+		if account == "viewer" {
+			f.api(t, account, http.MethodGet, path, nil, http.StatusNotFound)
+			continue
+		}
+		var history []runnerHostHour
+		browserHostedDecode(t, f.api(t, account, http.MethodGet, path, nil, http.StatusOK), &history)
+		if len(history) != 1 || history[0].MemoryAvailableAverageBytes == nil || *history[0].MemoryAvailableAverageBytes != 200 || history[0].CPUBusyAveragePercent == nil || *history[0].CPUBusyAveragePercent != 40 {
+			t.Fatalf("host history: %+v", history)
+		}
+		for _, runner := range []string{removedID, "runner_other_organization"} {
+			f.api(t, account, http.MethodGet, browserHostedOrganizationBase+"/fleet?include=host_metrics&runner_id="+runner, nil, http.StatusNotFound)
+		}
+		for _, query := range []string{
+			"&from=invalid", "&from=" + url.QueryEscape(now.Format(time.RFC3339)) + "&to=" + url.QueryEscape(now.Add(721*time.Hour).Format(time.RFC3339)),
+		} {
+			f.api(t, account, http.MethodGet, path+query, nil, http.StatusUnprocessableEntity)
+		}
+	}
 	for _, account := range []string{"owner", "viewer"} {
 		t.Run(account, func(t *testing.T) {
 			var fleet hostedFleetResponse
@@ -225,12 +255,39 @@ func TestHostedFleetVisibility(t *testing.T) {
 			}
 		})
 	}
-	for _, path := range []string{"/fleet", "/fleet?include=names"} {
+	for _, path := range []string{"/fleet", "/fleet?include=names", "/fleet?include=host_metrics&runner_id=" + activeID} {
 		f.api(t, "staff", http.MethodGet, browserHostedOrganizationBase+path, nil, http.StatusForbidden)
 		f.api(t, "revoked", http.MethodGet, browserHostedOrganizationBase+path, nil, http.StatusUnauthorized)
 		f.api(t, "owner", http.MethodGet, "/api/v2/organizations/org_other"+path, nil, http.StatusNotFound)
 		browserHostedStatus(t, f.page(t, "", browserHostedOrganizationBase+path), http.StatusUnauthorized)
 	}
+	t.Run("host history requires all project reads", func(t *testing.T) {
+		path := browserHostedOrganizationBase + "/fleet?include=host_metrics&runner_id=" + activeID
+		for _, test := range []struct {
+			name    string
+			project string
+			revoke  bool
+			status  int
+		}{
+			{name: "all projects", project: f.privateProject, status: http.StatusOK},
+			{name: "only runner project", project: f.project, revoke: true, status: http.StatusNotFound},
+			{name: "no projects", project: f.privateProject, revoke: true, status: http.StatusNotFound},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/members/membership_user_browser_viewer/grants", map[string]any{
+					"project_id": test.project, "revoke": test.revoke, "idempotency_key": "fleet-viewer-" + test.name,
+				}, http.StatusOK)
+				response := f.api(t, "viewer", http.MethodGet, path, nil, test.status)
+				if test.status == http.StatusOK {
+					var history []runnerHostHour
+					browserHostedDecode(t, response, &history)
+					if len(history) != 1 || history[0].CPUBusyAveragePercent == nil || *history[0].CPUBusyAveragePercent != 40 {
+						t.Fatalf("fully authorized viewer history: %+v", history)
+					}
+				}
+			})
+		}
+	})
 	t.Run("names do not read retained collaboration quotas", func(t *testing.T) {
 		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TABLE hosted_usage_counters"); err != nil {
 			t.Fatal(err)

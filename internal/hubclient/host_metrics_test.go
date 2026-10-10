@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -28,7 +29,7 @@ func TestHostMetricsShutdownHeartbeat(t *testing.T) {
 		elapsed time.Duration
 		cached  bool
 	}{
-		{"older Hub ignores optional metrics", "", 0, false},
+		{"older Hub omits unsupported metrics", "", 0, false},
 		{"unreachable Hub exits at deadline", "timeout", 3 * time.Second, false},
 		{"failed send dropped without retry", "unavailable", 0, false},
 		{"preserves negotiated payload and closed availability", "", 0, true},
@@ -125,6 +126,11 @@ func TestHostMetricsShutdownHeartbeat(t *testing.T) {
 				}
 				scheduler.machine.WorkspaceCapabilities = workspacesession.Capabilities{Files: true}
 				scheduler.machine.WorkspaceIsolation = workspacesession.IsolationUser
+				if test.name != "older Hub omits unsupported metrics" {
+					client.runner.hostMetricsSupported = true
+					client.runner.heartbeat = machineHeartbeatPayload(scheduler.machine, nil, false)
+					client.runner.heartbeatPath = "/api/v2/organizations/org_test/projects/prj_test/machines/" + string(file.Identity.MachineID) + "/heartbeat"
+				}
 				if test.cached {
 					client.runner.heartbeat = machineHeartbeatPayload(scheduler.machine, nil, false)
 					cursor := "cursor_test"
@@ -142,7 +148,11 @@ func TestHostMetricsShutdownHeartbeat(t *testing.T) {
 				stopped := time.Now()
 				cancel()
 				<-done
-				if elapsed := time.Since(stopped); elapsed != test.elapsed || calls != 1 {
+				wantCalls := 1
+				if test.name == "older Hub omits unsupported metrics" {
+					wantCalls = 0
+				}
+				if elapsed := time.Since(stopped); elapsed != test.elapsed || calls != wantCalls {
 					t.Fatalf("shutdown elapsed = %v, calls = %d; want %v and one send", elapsed, calls, test.elapsed)
 				}
 				wantLogs := 0
@@ -155,4 +165,91 @@ func TestHostMetricsShutdownHeartbeat(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestHostMetricsMultipleProjectHeartbeats(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.Chmod(root, 0700); err != nil {
+			t.Fatal(err)
+		}
+		identityPath := filepath.Join(root, "identity.json")
+		file, err := runnerauth.Initialize(identityPath, "https://hub.test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		file.Identity.OrganizationID = "org_test"
+		file.Identity.ProjectIDs = []tracker.ProjectID{"prj_a", "prj_b"}
+		file.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
+		if err := runnerauth.Save(identityPath, file); err != nil {
+			t.Fatal(err)
+		}
+		snapshot := runnerauth.RoutingSnapshot{RunnerID: file.Identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 2}.Normalized()}
+		if err := runnerauth.SaveRoutingCache(identityPath, snapshot); err != nil {
+			t.Fatal(err)
+		}
+		var deliveries int
+		client, err := New(Config{URL: file.HubURL, IdentityFile: identityPath, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+			if request.URL.Path == "/api/v2/capabilities" {
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"protocol_majors":[2],"event_schema_versions":[1],"features":["native_issues","scoped_collaboration","repository_policy","runner_host_metrics"]}`)), Header: http.Header{}}, nil
+			}
+			if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/heartbeat") {
+				t.Fatalf("unexpected request: %s", request.URL.Path)
+			}
+			var payload nativeMachineHeartbeat
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			response := snapshot
+			response.Routing.Availability = runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun " + time.Now().Add(time.Hour).Format("15:04") + "-" + time.Now().Add(2*time.Hour).Format("15:04")}}
+			for _, summary := range payload.HostMetrics {
+				deliveries++
+				response.HostMetricsAcknowledged = append(response.HostMetricsAcknowledged, hostmetrics.Acknowledgment{Hour: summary.Hour, SegmentID: summary.SegmentID})
+			}
+			raw, err := json.Marshal(response)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(raw))), Header: http.Header{}}, nil
+		})}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		scheduler, err := NewScheduler(client, SchedulerConfig{OrganizationID: file.Identity.OrganizationID, NativeProjects: map[string]tracker.ProjectID{"a": "prj_a", "b": "prj_b"}, Machine: Machine{ID: file.Identity.MachineID, Hostname: "host", Capacity: 2, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
+		if err != nil {
+			t.Fatal(err)
+		}
+		scheduler.hostMetrics = hostmetrics.New(root, time.Now())
+		ctx, cancel := context.WithCancel(t.Context())
+		var sampler sync.WaitGroup
+		sampler.Go(func() { scheduler.hostMetrics.Run(ctx) })
+		synctest.Wait()
+		time.Sleep(time.Hour)
+		synctest.Wait()
+		cancel()
+		sampler.Wait()
+		if len(scheduler.hostMetrics.Summaries()) != 1 {
+			t.Fatal("hour not ready")
+		}
+		var sends sync.WaitGroup
+		for _, source := range scheduler.nativeProjectSnapshot() {
+			sends.Go(func() {
+				if err := scheduler.sendNativeMachineHeartbeat(t.Context(), source, scheduler.machine, false); err != nil {
+					t.Error(err)
+				}
+			})
+		}
+		sends.Wait()
+		if deliveries != 1 || len(scheduler.hostMetrics.Summaries()) != 0 {
+			t.Fatalf("deliveries=%d pending=%d", deliveries, len(scheduler.hostMetrics.Summaries()))
+		}
+		for _, source := range scheduler.nativeProjectSnapshot() {
+			if err := scheduler.sendNativeMachineHeartbeat(t.Context(), source, scheduler.machine, false); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if deliveries != 1 {
+			t.Fatalf("acknowledged summary resent: %d", deliveries)
+		}
+	})
 }

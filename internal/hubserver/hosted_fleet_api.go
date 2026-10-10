@@ -160,6 +160,20 @@ func (s *Service) hostedFleet(c echo.Context) error {
 		var names map[string]hostedRunnerName
 		names, err = readHostedRunnerNames(c.Request().Context(), s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID), true)
 		result = hostedRunnerNamesResponse{RunnerNames: names}
+	} else if c.QueryParam("include") == "host_metrics" {
+		var from, to time.Time
+		for _, bound := range []struct {
+			name  string
+			value *time.Time
+		}{{"from", &from}, {"to", &to}} {
+			if raw := c.QueryParam(bound.name); raw != "" {
+				*bound.value, err = time.Parse(time.RFC3339, raw)
+				if err != nil {
+					return s.nativeAPIError(c, nativeInvalid("Host history timestamps must use RFC3339"))
+				}
+			}
+		}
+		result, err = s.readHostedRunnerHostHistory(c.Request().Context(), credential, c.QueryParam("runner_id"), from, to)
 	} else {
 		result, err = s.readHostedFleet(c.Request().Context(), credential)
 	}
@@ -416,4 +430,29 @@ func scopeProviderUsage(runners []hostedFleetRunner, reservations []providercapa
 			}
 		}
 	}
+}
+
+func (s *Service) readHostedRunnerHostHistory(ctx context.Context, credential apiCredential, runnerID string, from, to time.Time) ([]runnerHostHour, error) {
+	if runnerID == "" {
+		return nil, nativeInvalid("Runner ID is required for host history")
+	}
+	readable, err := s.hostedReadableProjects(ctx, credential)
+	if err != nil {
+		return nil, err
+	}
+	var projects int
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id = ?", s.config.Hosted.OrganizationID).Scan(&projects); err != nil {
+		return nil, err
+	}
+	if len(readable) < projects {
+		return nil, nativeNotFound()
+	}
+	fleet, err := s.readHostedFleet(ctx, credential)
+	if err != nil {
+		return nil, err
+	}
+	if !slices.ContainsFunc(fleet.Runners, func(runner hostedFleetRunner) bool { return runner.ID == runnerID }) {
+		return nil, nativeNotFound()
+	}
+	return s.readRunnerHostHistory(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), runnerID, from, to)
 }

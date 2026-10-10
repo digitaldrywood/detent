@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -65,12 +66,13 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 	}
 	var supportsChecks, supportsCheckout, wrongIdentity atomic.Bool
 	var supportsSetup, supportsDeclaration atomic.Bool
-	var supportsRanking atomic.Bool
+	var supportsRanking, supportsMetrics atomic.Bool
 	var claimCalls, previewCalls atomic.Int64
 	var mu sync.Mutex
 	var reports []struct {
 		repository *string
 		checks     *runnerauth.LocalChecks
+		metrics    []hostmetrics.Summary
 	}
 	var snapshot runnerauth.RoutingSnapshot
 	var machineID tracker.MachineID
@@ -90,6 +92,9 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 			}
 			if supportsDeclaration.Load() {
 				features = append(features, tracker.NativeRunnerSetupDeclarationCapability)
+			}
+			if supportsMetrics.Load() {
+				features = append(features, tracker.NativeHostMetricsCapability)
 			}
 			if supportsRanking.Load() {
 				features = append(features, tracker.NativeDispatchPriorityCapability)
@@ -132,10 +137,24 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 				checkoutHeartbeat
 				LocalChecks *runnerauth.LocalChecks `json:"local_checks"`
 			}
+			var withMetrics struct {
+				HostMetrics []hostmetrics.Summary `json:"host_metrics,omitempty"`
+			}
+			var negotiated struct {
+				HostMetrics []hostmetrics.Summary `json:"host_metrics,omitempty"`
+				originalHeartbeat
+				CheckoutRepository *string                 `json:"checkout_repository"`
+				LocalChecks        *runnerauth.LocalChecks `json:"local_checks"`
+			}
 			decoder := json.NewDecoder(r.Body)
 			decoder.DisallowUnknownFields()
 			var err error
-			if supportsChecks.Load() {
+			if supportsMetrics.Load() {
+				err = decoder.Decode(&negotiated)
+				current.originalHeartbeat = negotiated.originalHeartbeat
+				current.CheckoutRepository, current.LocalChecks = negotiated.CheckoutRepository, negotiated.LocalChecks
+				withMetrics.HostMetrics = negotiated.HostMetrics
+			} else if supportsChecks.Load() {
 				err = decoder.Decode(&current)
 			} else if supportsCheckout.Load() {
 				err = decoder.Decode(&current.checkoutHeartbeat)
@@ -161,9 +180,13 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 			reports = append(reports, struct {
 				repository *string
 				checks     *runnerauth.LocalChecks
-			}{current.CheckoutRepository, current.LocalChecks})
+				metrics    []hostmetrics.Summary
+			}{current.CheckoutRepository, current.LocalChecks, withMetrics.HostMetrics})
 			mu.Unlock()
 			response := snapshot
+			for _, summary := range withMetrics.HostMetrics {
+				response.HostMetricsAcknowledged = append(response.HostMetricsAcknowledged, hostmetrics.Acknowledgment{Hour: summary.Hour, SegmentID: summary.SegmentID})
+			}
 			if wrongIdentity.Load() {
 				response.RunnerID = "runner_foreign"
 			}
@@ -268,6 +291,39 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 			now = now.Add(2 * time.Second)
 		})
 	}
+	for _, test := range []struct {
+		name               string
+		supported, present bool
+	}{
+		{"summaries on unsupported Hub", false, true}, {"negotiated summaries", true, true}, {"omitted summaries", true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			supportsMetrics.Store(test.supported)
+			supportsChecks.Store(true)
+			expireCapabilities(client)
+			machine := scheduler.machine
+			summary := hostmetrics.Summary{Hour: now.UTC().Truncate(time.Hour), SegmentID: now, SampleCount: 1, LogicalCores: 1}
+			if test.present {
+				machine.HostMetrics = []hostmetrics.Summary{summary}
+			}
+			var acknowledged []hostmetrics.Acknowledgment
+			machine.HostMetricsAcknowledged = &acknowledged
+			if err := source.client.HeartbeatMachine(t.Context(), machine); err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			got := reports[len(reports)-1]
+			mu.Unlock()
+			want := 0
+			if test.supported && test.present {
+				want = 1
+			}
+			if len(got.metrics) != want || len(acknowledged) != want {
+				t.Fatalf("summaries=%d acknowledged=%d want=%d", len(got.metrics), len(acknowledged), want)
+			}
+		})
+	}
+	supportsMetrics.Store(false)
 	for _, supported := range []bool{false, true} {
 		supportsChecks.Store(supported)
 		expireCapabilities(client)
