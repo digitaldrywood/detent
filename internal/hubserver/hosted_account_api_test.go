@@ -271,6 +271,11 @@ func TestAccountClientRoutes(t *testing.T) {
 		want         []string
 	}{
 		{
+			name:   "Sprites token reads both scopes",
+			source: "send(ProjectSecretStatus, \"GET\", `${projectId ? project(projectId) : base}/secrets/fly_sprites_token`)",
+			want:   []string{"GET " + hostedOrganizationBase + "/secrets/fly_sprites_token", "GET " + project + "/secrets/fly_sprites_token"},
+		},
+		{
 			name:   "model selection reads both scopes",
 			source: "send(CloudModelSelection, \"GET\", `${projectId === undefined ? base : project(projectId)}/model-selection`)",
 			want:   []string{"GET " + hostedOrganizationBase + "/model-selection", "GET " + project + "/model-selection"},
@@ -360,7 +365,7 @@ func TestAccountClientRouteMatches(t *testing.T) {
 
 var accountClientOptionalSegment = regexp.MustCompile(`\$\{[^}]*\? "([^"]*)" : ""\}`)
 
-var accountClientScope = regexp.MustCompile(`\$\{[\w.]+ === undefined \? base : project\([\w.]+\)\}`)
+var accountClientScope = regexp.MustCompile(`\$\{(?:[\w.]+ === undefined \? base : project\([\w.]+\)|[\w.]+ \? project\([\w.]+\) : base)\}`)
 
 var accountClientQuery = regexp.MustCompile("\\$\\{[\\w.]+ \\? `[?&][^`]*` : \"\"\\}")
 

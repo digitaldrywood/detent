@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -101,8 +102,11 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 	}{
 		{"allowlist filters higher priority", 1, 4, 0, 1, -time.Hour, time.Hour, "second", false},
 		{"empty allowlist runs nothing", 1, 4, 0, 1, -time.Hour, time.Hour, "empty", false},
-		{"issue priority beats project rank", 2, 1, 0, 1, -time.Hour, time.Hour, "both", false},
+		{"project rank beats issue priority", 2, 1, 0, 1, -time.Hour, time.Hour, "both", true},
 		{"project rank breaks priority ties", 2, 2, 0, 1, time.Hour, -time.Hour, "both", true},
+		{"organization runner follows organization rank", 2, 1, 0, 1, -time.Hour, time.Hour, "organization", true},
+		{"runner rank override wins", 1, 2, 0, 1, -time.Hour, time.Hour, "override", false},
+		{"issue priority breaks equal ranks", 2, 1, 0, 0, -time.Hour, time.Hour, "both", false},
 		{"age breaks remaining ties", 2, 2, 0, 0, time.Hour, -time.Hour, "both", false},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -118,6 +122,13 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 				allowed = []tracker.ProjectID{}
 			}
 			routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: allowed}}
+			if scenario.allowed == "organization" || scenario.allowed == "override" {
+				routing.Scope = "organization"
+				routing.ProjectIDs = nil
+			}
+			if scenario.allowed == "override" {
+				routing.ProjectRanks = map[tracker.ProjectID]int{first.project.ID: 2, second.project.ID: 0}
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
 			descriptor := hubTestPolicy()
 			now := first.service.config.now()
@@ -160,6 +171,57 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 				}
 			} else {
 				requireNativeStatus(t, response, http.StatusOK)
+			}
+		})
+	}
+}
+
+func TestRunnerFutureProjectAdmission(t *testing.T) {
+	for _, scenario := range []struct {
+		name, scope       string
+		approved, deleted bool
+		want              int
+	}{
+		{"organization admits future project", "organization", true, false, http.StatusOK},
+		{"project scope stays restricted", "projects", true, false, http.StatusNotFound},
+		{"organization still requires approved policy", "organization", false, false, http.StatusConflict},
+		{"organization omits deleted project", "organization", true, true, 0},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			r := prepareRunnerForScope(t, f, scenario.scope, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			r.enroll(t)
+			later := newNativeFixture(t, f.service, f.project.OrganizationID, "future")
+			descriptor := hubTestPolicy()
+			if scenario.approved {
+				approveHubTestPolicy(t, f.service, later.base+"/policy", descriptor)
+			}
+			item := later.create(t, "future work")
+			if scenario.deleted {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET deleted_at=? WHERE id=?", formatHubTime(f.service.config.now()), later.project.ID); err != nil {
+					t.Fatal(err)
+				}
+				projects, err := readRunnerProjects(t.Context(), f.service.database.db, r.binding.RunnerID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ranks, err := readRunnerProjectRanks(t.Context(), f.service.database.db, r.binding.RunnerID, f.project.OrganizationID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, ranked := ranks[later.project.ID]; ranked || !slices.Equal(projects, []tracker.ProjectID{f.project.ID}) {
+					t.Fatalf("projects=%v ranks=%v advertise deleted %s", projects, ranks, later.project.ID)
+				}
+				return
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, later.base+"/claims", r.redemption.Credential, tracker.NativeClaim{PolicyID: descriptor.ID, MachineID: r.binding.MachineID, SessionID: "future", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
+			requireNativeStatus(t, response, scenario.want)
+			if scenario.want == http.StatusOK {
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				if lease.WorkItemID != item.WorkItemID {
+					t.Fatalf("claimed %s, want %s", lease.WorkItemID, item.WorkItemID)
+				}
 			}
 		})
 	}

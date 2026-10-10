@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func coordinatorRunnerTools() []runner.AgentTool {
@@ -38,7 +39,7 @@ type coordinatorRunnerChange struct {
 
 func (s *Service) coordinatorRunner(ctx context.Context, scope nativeScope, id string) (runnerauth.Runner, error) {
 	var visible bool
-	err := s.database.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runner_identities r JOIN token_grants g ON g.token_id=r.token_id AND g.organization_id=r.organization_id WHERE r.organization_id=? AND r.id=? AND r.removed_at IS NULL AND g.project_id=?)`, scope.organization, id, scope.project).Scan(&visible)
+	err := s.database.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runner_identities r WHERE r.organization_id=? AND r.id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?)))`, scope.organization, id, scope.project).Scan(&visible)
 	if err != nil {
 		return runnerauth.Runner{}, err
 	}
@@ -70,7 +71,7 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 		return nil, err
 	}
 	s := t.coordinator.service.server
-	scope, err := s.coordinatorSpriteScope(ctx, string(record.ProjectID), manage)
+	scope, err := s.coordinatorScope(ctx, record.ProjectID, manage)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +93,7 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 		if limit == 0 {
 			limit = 20
 		}
-		rows, err := s.database.db.QueryContext(ctx, `SELECT DISTINCT r.id FROM runner_identities r JOIN token_grants g ON g.token_id=r.token_id AND g.organization_id=r.organization_id WHERE r.organization_id=? AND r.removed_at IS NULL AND g.project_id=? ORDER BY r.id LIMIT ? OFFSET ?`, scope.organization, scope.project, limit, args.Offset)
+		rows, err := s.database.db.QueryContext(ctx, `SELECT r.id FROM runner_identities r WHERE r.organization_id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?)) ORDER BY r.id LIMIT ? OFFSET ?`, scope.organization, scope.project, limit, args.Offset)
 		if err != nil {
 			return nil, err
 		}
@@ -124,7 +125,7 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 }
 
 func (s *Service) executeCoordinatorRunnerAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
-	scope, err := s.coordinatorSpriteScope(ctx, action.ProjectID, true)
+	scope, err := s.coordinatorScope(ctx, tracker.ProjectID(action.ProjectID), true)
 	if err != nil {
 		return chat.ActionExecution{}, err
 	}
@@ -139,7 +140,9 @@ func (s *Service) executeCoordinatorRunnerAction(ctx context.Context, action cha
 		}
 		return chat.ActionExecution{}, err
 	}
-	request := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: change.ExpectedRevision, Routing: r.Routing}, IsolationTier: &change.IsolationTier}
+	routing := r.Routing
+	routing.ProjectRanks = r.ProjectRankOverrides
+	request := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: change.ExpectedRevision, Routing: routing}, IsolationTier: &change.IsolationTier}
 	if _, err := s.updateRunnerRoutingCommand(ctx, scope, r.RunnerID, request); err != nil {
 		return chat.ActionExecution{}, err
 	}

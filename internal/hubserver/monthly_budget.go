@@ -213,6 +213,42 @@ func monthlySpriteAllowed(ctx context.Context, q nativeQueryer, scope nativeScop
 	if err != nil || !decision.Allowed {
 		return false, err
 	}
+	projects := []tracker.ProjectID{scope.project}
+	if scope.project == "" {
+		projects, err = liveOrganizationProjects(ctx, q, scope.organization)
+		if err != nil {
+			return false, err
+		}
+	}
+	for _, project := range projects {
+		projectScope := scope
+		projectScope.project = project
+		admitted, err := monthlyAdmittedCandidate(ctx, q, projectScope, now)
+		if err != nil || admitted {
+			return admitted, err
+		}
+	}
+	return false, nil
+}
+
+func liveOrganizationProjects(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID) ([]tracker.ProjectID, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id FROM projects WHERE organization_id=? AND deleted_at IS NULL ORDER BY id`, organization)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var projects []tracker.ProjectID
+	for rows.Next() {
+		var id tracker.ProjectID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		projects = append(projects, id)
+	}
+	return projects, rows.Err()
+}
+
+func monthlyAdmittedCandidate(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) (bool, error) {
 	query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), AvailableAt: now, Limit: 100}
 	for {
 		ids, err := nativeCandidateIDs(ctx, q, query, nil, nil, nil, nil, nil, nil, nil)
@@ -271,33 +307,7 @@ func (s *Service) resumeMonthlyBudgetWork(ctx context.Context, scope nativeScope
 			s.config.Logger.Warn("Resume budget-eligible conversations", "error", err)
 		}
 	}
-	if scope.project != "" {
-		s.startSpritePoolForQueue(scope)
-		return
-	}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT project_id FROM project_sprite_pools WHERE organization_id=?`, scope.organization)
-	if err != nil {
-		s.config.Logger.Warn("Read budget-eligible Sprite pools", "error", err)
-		return
-	}
-	defer rows.Close()
-	var projects []tracker.ProjectID
-	for rows.Next() {
-		var id tracker.ProjectID
-		if err = rows.Scan(&id); err != nil {
-			break
-		}
-		projects = append(projects, id)
-	}
-	err = errors.Join(err, rows.Err(), rows.Close())
-	if err != nil {
-		s.config.Logger.Warn("Read budget-eligible Sprite pools", "error", err)
-		return
-	}
-	for _, id := range projects {
-		scope.project = id
-		s.startSpritePoolForQueue(scope)
-	}
+	s.startSpritePoolForQueue(scope)
 }
 
 func (s *Service) stopMonthlyBudgetSpritePasses(ctx context.Context, organization tracker.OrganizationID) {
@@ -310,7 +320,7 @@ func (s *Service) stopMonthlyBudgetSpritePasses(ctx context.Context, organizatio
 	}
 	s.spriteWakeMu.Unlock()
 	for _, key := range keys {
-		decision, err := checkMonthlyBudget(ctx, s.database.db, nativeScope{organization: key.organization, project: key.project}, budget.CostExposure{SpriteInfrastructure: true}, true, s.config.now())
+		decision, err := checkMonthlyBudget(ctx, s.database.db, nativeScope{organization: key.organization}, budget.CostExposure{SpriteInfrastructure: true}, true, s.config.now())
 		if err != nil {
 			s.config.Logger.Warn("Check active Sprite lifecycle monthly budget", "error", err)
 			continue

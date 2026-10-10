@@ -76,6 +76,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				}
 				response := f.request(t, u, http.MethodPost, f.base+"/work-items", map[string]any{"idempotency_key": "luna-issue", "title": "Original issue", "body": nativeContractTestBody, "state": "Todo", "labels": []string{"original"}})
 				requireNativeStatus(t, response, http.StatusOK)
+				if coordinatorSpriteMutation(tool) {
+					f.service.spriteWakeWork.Wait()
+				}
 				var issue tracker.NativeIssue
 				decodeHubResponse(t, response, &issue)
 				id := issue.WorkItemID
@@ -117,14 +120,14 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				tools := newCoordinatorToolset(c, state)
 				if coordinatorSpriteMutation(tool) {
 					f.service.spriteWakeWork.Wait()
-					envelope, err := f.service.config.SecretKeys.Seal([]byte(spritesSecretSentinel), secretAAD("org_security", string(f.project), flySpritesToken))
+					envelope, err := f.service.config.SecretKeys.Seal([]byte(spritesSecretSentinel), secretAAD("org_security", "", flySpritesToken))
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := db.ExecContext(t.Context(), `INSERT INTO project_secrets(organization_id,project_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES('org_security',?,?,'detent-test',?,?,?,?,?)`, f.project, flySpritesToken, envelope.Ciphertext, envelope.Nonce, envelope.WrappedKey, envelope.Version, formatHubTime(f.service.config.now())); err != nil {
+					if _, err := db.ExecContext(t.Context(), `INSERT INTO organization_secrets(organization_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES('org_security',?,'detent-test',?,?,?,?,?)`, flySpritesToken, envelope.Ciphertext, envelope.Nonce, envelope.WrappedKey, envelope.Version, formatHubTime(f.service.config.now())); err != nil {
 						t.Fatal(err)
 					}
-					if _, err := db.ExecContext(t.Context(), `INSERT INTO project_sprite_pools(organization_id,project_id,min_runners,max_runners,idle_seconds,bootstrap,configured_by) SELECT 'org_security',?,1,1,300,'private-provider-secret',principal_id FROM hosted_members WHERE user_id=?`, f.project, u.identity.Subject); err != nil {
+					if _, err := db.ExecContext(t.Context(), `INSERT INTO organization_sprite_pools(organization_id,min_runners,max_runners,idle_seconds,bootstrap,configured_by) SELECT 'org_security',1,1,300,'private-provider-secret',principal_id FROM hosted_members WHERE user_id=?`, u.identity.Subject); err != nil {
 						t.Fatal(err)
 					}
 					if outcome == "execute" {
@@ -257,7 +260,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						arguments["isolation_tier"] = "native-trusted"
 					}
 					if outcome == "preserve access" {
-						if _, err := db.ExecContext(t.Context(), "UPDATE project_sprite_pools SET isolation_tier='sandbox' WHERE project_id=?", f.project); err != nil {
+						if _, err := db.ExecContext(t.Context(), "UPDATE organization_sprite_pools SET isolation_tier='sandbox' WHERE organization_id='org_security'"); err != nil {
 							t.Fatal(err)
 						}
 					}
@@ -407,7 +410,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					requireNativeStatus(t, response, http.StatusOK)
 					var floor, ceiling int
 					var bootstrap string
-					if err := db.QueryRowContext(t.Context(), "SELECT min_runners,max_runners,bootstrap FROM project_sprite_pools WHERE project_id=?", f.project).Scan(&floor, &ceiling, &bootstrap); err != nil {
+					if err := db.QueryRowContext(t.Context(), "SELECT min_runners,max_runners,bootstrap FROM organization_sprite_pools WHERE organization_id='org_security'").Scan(&floor, &ceiling, &bootstrap); err != nil {
 						t.Fatal(err)
 					}
 					if floor != 2 || ceiling != 2 || bootstrap != "private-provider-secret" {
@@ -460,7 +463,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				}
 				if outcome == "stale" {
 					if coordinatorSpriteMutation(tool) {
-						_, err = db.ExecContext(t.Context(), "UPDATE project_sprite_pools SET revision=revision+1 WHERE project_id=?", f.project)
+						_, err = db.ExecContext(t.Context(), "UPDATE organization_sprite_pools SET revision=revision+1 WHERE organization_id='org_security'")
 					} else if tool == "update_project_integration" {
 						_, err = db.ExecContext(t.Context(), "UPDATE projects SET integration_revision=integration_revision+1 WHERE id=?", f.project)
 					} else if tool != operatortool.AddComment {
@@ -527,7 +530,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						want = "native-trusted"
 					}
 					var got string
-					if err := db.QueryRowContext(t.Context(), "SELECT isolation_tier FROM project_sprite_pools WHERE project_id=?", f.project).Scan(&got); err != nil || got != want {
+					if err := db.QueryRowContext(t.Context(), "SELECT isolation_tier FROM organization_sprite_pools WHERE organization_id='org_security'").Scan(&got); err != nil || got != want {
 						t.Fatalf("saved tier=%q want=%q err=%v", got, want, err)
 					}
 				}
@@ -613,9 +616,9 @@ func assertCoordinatorEffect(t *testing.T, f hostedSecurityFixture, id tracker.N
 		assertCoordinatorSplitEffect(t, f, id, changed)
 		return
 	case "set_sprite_pool":
-		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT max_runners=0 FROM project_sprite_pools WHERE project_id=?", f.project).Scan(&actual)
+		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT max_runners=0 FROM organization_sprite_pools WHERE organization_id='org_security'").Scan(&actual)
 	case "scale_up_sprite_pool":
-		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM project_sprite_members WHERE project_id=?)", f.project).Scan(&actual)
+		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM organization_sprite_members WHERE organization_id='org_security')").Scan(&actual)
 	case "update_project_integration":
 		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT github_repository_enabled FROM projects WHERE id=?", f.project).Scan(&actual)
 	case operatortool.MoveItem:

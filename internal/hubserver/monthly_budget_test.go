@@ -179,6 +179,10 @@ func TestMonthlyBudgetDrainLifecycle(t *testing.T) {
 	if err != nil || !allowed {
 		t.Fatalf("ranked cohort beyond first page lost Sprite continuation: %t %v", allowed, err)
 	}
+	allowed, err = monthlySpriteAllowed(t.Context(), f.service.database.db, nativeScope{organization: scope.organization}, f.service.config.now())
+	if err != nil || !allowed {
+		t.Fatalf("organization Sprite lifecycle lost the admitted cohort: %t %v", allowed, err)
+	}
 	backlog := f.create(t, "untouched Backlog")
 	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Backlog') WHERE native_id=?`, f.project.ID, backlog.WorkItemID); err != nil {
 		t.Fatal(err)
@@ -443,8 +447,8 @@ func TestMonthlyBudgetStopsSpriteLifecycleByScope(t *testing.T) {
 	defer cancel()
 	otherCtx, otherCancel := context.WithCancel(t.Context())
 	defer otherCancel()
-	key := spriteWakeKey{organization: scope.organization, project: scope.project}
-	otherKey := spriteWakeKey{organization: scope.organization, project: "other-project"}
+	key := spriteWakeKey{organization: scope.organization}
+	otherKey := spriteWakeKey{organization: "org_other"}
 	f.service.spriteWakeMu.Lock()
 	f.service.spriteWakes[key] = &spriteLifecyclePass{cancel: cancel, pendingState: "Todo"}
 	f.service.spriteWakes[otherKey] = &spriteLifecyclePass{cancel: otherCancel, pendingState: "Todo"}
@@ -456,6 +460,10 @@ func TestMonthlyBudgetStopsSpriteLifecycleByScope(t *testing.T) {
 		f.service.spriteWakeMu.Unlock()
 	}()
 	setMonthlyBudgetFixture(t, f, false, budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, SpriteMicros: new(int64)})
+	if ctx.Err() != nil {
+		t.Fatal("project budget cancelled the organization pool")
+	}
+	setMonthlyBudgetFixture(t, f, true, budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, SpriteMicros: new(int64)})
 	if !errors.Is(ctx.Err(), context.Canceled) {
 		t.Fatal("affected lifecycle was not cancelled")
 	}

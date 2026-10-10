@@ -228,8 +228,8 @@ func (s *Service) createRunnerEnrollment(c echo.Context) error {
 }
 
 func (s *Service) createRunnerEnrollmentCommand(ctx context.Context, scope nativeScope, request runnerauth.EnrollmentRequest) (any, error) {
-	if !request.Valid() && !request.Unbound() || !runnerauth.ValidOperations(request.Operations) || len(request.ProjectIDs) == 0 || len(request.ProjectIDs) > 100 || request.TTLSeconds <= 0 || request.TTLSeconds > int64(runnerauth.MaxEnrollmentTTL/time.Second) {
-		return nil, nativeInvalid("Enrollment requires valid or omitted host IDs, explicit projects and operations, and a TTL of 1 to 900 seconds")
+	if !request.Valid() && !request.Unbound() || !runnerauth.ValidOperations(request.Operations) || request.Scope != "" && request.Scope != "projects" && request.Scope != "organization" || request.Scope == "organization" && len(request.ProjectIDs) > 0 || request.Scope != "organization" && len(request.ProjectIDs) == 0 || len(request.ProjectIDs) > 100 || request.TTLSeconds <= 0 || request.TTLSeconds > int64(runnerauth.MaxEnrollmentTTL/time.Second) {
+		return nil, nativeInvalid("Enrollment requires valid or omitted host IDs, a project or organization scope and operations, and a TTL of 1 to 900 seconds")
 	}
 	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		return s.createRunnerEnrollmentInTx(ctx, tx, scope, request, now)
@@ -237,6 +237,9 @@ func (s *Service) createRunnerEnrollmentCommand(ctx context.Context, scope nativ
 }
 
 func (s *Service) createRunnerEnrollmentInTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request runnerauth.EnrollmentRequest, now time.Time) (runnerauth.Enrollment, error) {
+	if request.Scope == "" {
+		request.Scope = "projects"
+	}
 	for i, project := range request.ProjectIDs {
 		var count int
 		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id = ? AND id = ?", string(scope.organization), project).Scan(&count); err != nil {
@@ -260,8 +263,8 @@ func (s *Service) createRunnerEnrollmentInTx(ctx context.Context, tx *sql.Tx, sc
 	if err != nil {
 		return runnerauth.Enrollment{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO runner_enrollments (id, organization_id, runner_id, machine_id, token_hash, operations_json, created_at, expires_at, created_by, shared_machine)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, result.ID, string(scope.organization), request.RunnerID, request.MachineID, apikey.HashToken(token), operations, formatHubTime(now), formatHubTime(result.ExpiresAt), scope.credential.ID, request.SharedMachine); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO runner_enrollments (id, organization_id, runner_id, machine_id, token_hash, operations_json, created_at, expires_at, created_by, shared_machine, scope)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, result.ID, string(scope.organization), request.RunnerID, request.MachineID, apikey.HashToken(token), operations, formatHubTime(now), formatHubTime(result.ExpiresAt), scope.credential.ID, request.SharedMachine, request.Scope); err != nil {
 		return runnerauth.Enrollment{}, err
 	}
 	for _, project := range request.ProjectIDs {
@@ -361,12 +364,12 @@ func (s *Service) redeemRunnerEnrollment(c echo.Context) error {
 		return s.nativeAPIError(c, nativeInvalid("Isolation tier must be sandbox or native-trusted"))
 	}
 	return s.runnerTransaction(c, http.StatusCreated, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-		var id, operations, created, expires, actor string
+		var id, operations, created, expires, actor, enrollmentScope string
 		var binding runnerauth.Binding
 		var redeemed, revoked sql.NullString
 		var shared bool
-		err := tx.QueryRowContext(ctx, `SELECT id, runner_id, machine_id, operations_json, created_at, expires_at, created_by, redeemed_at, revoked_at, shared_machine
-FROM runner_enrollments WHERE token_hash = ? AND organization_id = ?`, apikey.HashToken(token), c.Param("organization")).Scan(&id, &binding.RunnerID, &binding.MachineID, &operations, &created, &expires, &actor, &redeemed, &revoked, &shared)
+		err := tx.QueryRowContext(ctx, `SELECT id, runner_id, machine_id, operations_json, created_at, expires_at, created_by, redeemed_at, revoked_at, shared_machine, scope
+FROM runner_enrollments WHERE token_hash = ? AND organization_id = ?`, apikey.HashToken(token), c.Param("organization")).Scan(&id, &binding.RunnerID, &binding.MachineID, &operations, &created, &expires, &actor, &redeemed, &revoked, &shared, &enrollmentScope)
 		unbound := binding == runnerauth.Binding{}
 		if err != nil || !unbound && binding != request.Binding || redeemed.Valid || revoked.Valid || !runnerTimeValid(now, created, expires) {
 			return nil, runnerUnauthorized()
@@ -375,7 +378,7 @@ FROM runner_enrollments WHERE token_hash = ? AND organization_id = ?`, apikey.Ha
 		if err := runnerBindingAvailable(ctx, tx, binding, c.Param("organization"), shared); err != nil {
 			return nil, err
 		}
-		identity := runnerauth.Identity{Binding: binding, OrganizationID: tracker.OrganizationID(c.Param("organization")), ExpiresAt: now.Add(runnerauth.CredentialTTL)}
+		identity := runnerauth.Identity{Scope: enrollmentScope, Binding: binding, OrganizationID: tracker.OrganizationID(c.Param("organization")), ExpiresAt: now.Add(runnerauth.CredentialTTL)}
 		if err := json.Unmarshal([]byte(operations), &identity.Operations); err != nil {
 			return nil, err
 		}
@@ -395,11 +398,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, binding.MachineID, request.Hostname, req
 				return nil, err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO runner_identities (id, organization_id, machine_id, token_id, enrollment_id, operations_json, created_at, display_name, capacity_limit, reported_capacity, os, architecture, last_heartbeat_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, binding.RunnerID, identity.OrganizationID, binding.MachineID, binding.RunnerID, id, operations, formatHubTime(now), request.DisplayName, request.Capacity, request.Capacity, request.OS, request.Architecture, formatHubTime(now)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO runner_identities (id, organization_id, machine_id, token_id, enrollment_id, operations_json, created_at, display_name, capacity_limit, reported_capacity, os, architecture, last_heartbeat_at, scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, binding.RunnerID, identity.OrganizationID, binding.MachineID, binding.RunnerID, id, operations, formatHubTime(now), request.DisplayName, request.Capacity, request.Capacity, request.OS, request.Architecture, formatHubTime(now), enrollmentScope); err != nil {
 			return nil, err
 		}
 		if request.SpriteName != "" {
-			if _, err := tx.ExecContext(ctx, `UPDATE runner_identities SET tags_json='["sprite"]' WHERE id=? AND EXISTS (SELECT 1 FROM project_sprite_members m WHERE m.enrollment_id=? AND m.organization_id=? AND m.name=?)`, binding.RunnerID, id, identity.OrganizationID, request.SpriteName); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE runner_identities SET tags_json='["sprite"]' WHERE id=? AND EXISTS (SELECT 1 FROM organization_sprite_members m WHERE m.enrollment_id=? AND m.organization_id=? AND m.name=?)`, binding.RunnerID, id, identity.OrganizationID, request.SpriteName); err != nil {
 				return nil, err
 			}
 		}

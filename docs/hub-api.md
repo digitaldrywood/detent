@@ -85,43 +85,46 @@ organization settings and shared runners are unchanged.
 Deletion is refused until live work leases, running attempts, open workspaces,
 queued or running scripts, unfinished conversation turns or messages, pending
 imports and GitHub writes have finished or been cancelled through their existing
-lifecycle. Provisioned Sprite pool members must be removed through the existing
-pool lifecycle first. No work is implicitly stopped by deletion. Once deleted,
+lifecycle. Sprite pool members that still use this project's token must be removed
+through the existing pool lifecycle first; organization-owned capacity is retained. No work is implicitly stopped by deletion. Once deleted,
 the project cannot accept new work, runner grants or repository intake.
 
-## Project Sprite pools
+## Organization Sprite pools
 
-Hosted projects expose `GET` and `PUT`
-`/api/v2/organizations/{organization}/projects/{project}/sprite-pool`.
-Reads follow project grants; writes require owner/admin authority and the current
+Hosted organizations expose `GET` and `PUT`
+`/api/v2/organizations/{organization}/sprite-pool`.
+There is one pool for all current and future projects; writes require owner/admin authority and the current
 `revision` (zero for initial configuration). Settings are `min_runners` (default
 zero), `max_runners` (default zero, disabled; maximum 100), `idle_seconds` (default
 300; range 30–86400), and `bootstrap`. Enabling requires nonempty customer
-bootstrap steps, hosted configuration and the existing project secret store.
+bootstrap steps, hosted configuration and the organization secret store.
 The response includes current settings, every active member and the most recent
 20 deleted members, with lifecycle state, ordinary runner ID and last safe
-bootstrap progress log. The project and runner settings pages expose these reads.
+bootstrap progress log. The runner settings page exposes these reads.
 
-Store the customer's Sprites organization token through the existing write-only
-secret endpoint. Pool calls use only `api.sprites.dev`, refuse redirects, audit
+Store the customer's Sprites organization token through the write-only
+`/api/v2/organizations/{organization}/secrets/fly_sprites_token` endpoint.
+Projects inherit this token, with their existing project secret endpoint providing
+a write-only override. Each use retains the supplying secret's encryption binding
+and audit scope. Pool calls use only `api.sprites.dev`, refuse redirects, audit
 each secret use, and bind each member to the organization used to create it.
 Replacing a token with one for a different organization cannot delete old
 members; restore authorized access to their original organization to finish
 cleanup. Removing the configuring principal's authority stops provider work.
 
-Customer bootstrap runs before enrollment, with `DETENT_PROJECT_ID` and
+Customer bootstrap runs before enrollment, with `DETENT_ORGANIZATION_ID` and
 `DETENT_HUB_URL` set. It must configure legitimate provider authentication, Git
 credentials, repository checkout and dependencies in the runner's expected
 workspace. Deliver secrets through the customer's existing authorized secret
 service; do not store credential values in this readable script. The Hub then
-runs the pinned public bootstrap script with a fresh single-project enrollment,
+runs the pinned public bootstrap script with a fresh organization-scoped enrollment,
 pins the runner binary to its own released version, starts the ordinary runner
 Service and creates a post-setup checkpoint. Development builds cannot provision
 members. Arbitrary command output is suppressed; logs retain stage progress and
 failure status without provider or enrollment credentials. Enrollment does not
 prove provider authentication, checkout readiness or approved repository policy.
 
-Pool settings accept a project-scoped `placement` object. Its `mode` is
+Pool settings accept an organization-scoped `placement` object. Its `mode` is
 `blended` (local and Sprite runners eligible without preference weights),
 `sprites_only` (local execution excluded), or `local_first`. Existing settings
 and projects without a pool resolve to `blended`; omitting `placement` from a
@@ -335,11 +338,19 @@ signed amount, timestamp, actor and reason. Account sessions record the
 administrator's email; the service token records `entitlement-administrator`.
 Stripe purchases, auto-fund and chat usage retain their existing ledger kinds.
 
+Organization-scoped runners enroll with `scope: "organization"` and an empty
+`project_ids` list. Routing can switch between `organization` and `projects`;
+omitting scope on existing project enrollments retains explicit project access.
+Every claim still requires approved repository policy, supported isolation and
+available capacity. Shared runners choose the organization project rank before
+issue priority; `project_ranks` on a runner overrides the organization rank for
+those projects. Each project's checkout and `hooks.runner_setup` remain separate.
+
 ## Scoped runner onboarding
 
 | Credential | Owner and lifetime | Revocation |
 | --- | --- | --- |
-| Enrollment token | Hub issues a grant for one organization, explicit projects, operations and, optionally, host-generated runner/machine IDs; valid for 1–900 seconds and one redemption | Administrator deletes the unconsumed enrollment; expiry/revocation does not end an enrolled session |
+| Enrollment token | Hub issues a grant for one organization, either scope `organization` with no project list or scope `projects` with explicit projects, operations and, optionally, host-generated runner/machine IDs; valid for 1–900 seconds and one redemption | Administrator deletes the unconsumed enrollment; expiry/revocation does not end an enrolled session |
 | Runner credential | Customer host generates a random 256-bit bearer credential; Hub stores its SHA-256 hash; valid for 24 hours from enrollment or renewal | Administrator revokes the runner; no resurrection by renewal, rotation, generic token rotation or ID reuse |
 | Provider/repository/storage credential | Customer login, keychain, workload identity or private host configuration; may outlive many runner sessions | Customer revokes it at its provider; revoking Hub access does not revoke this credential |
 
@@ -352,6 +363,26 @@ Copying the private identity file copies bearer authority: never clone it into
 machine images or share it across hosts. Multiple logical runners on one host
 share the same machine ID and capacity ceiling through explicit enrollment
 approval. Hardware attestation is not implemented.
+
+### Runner routing authority
+
+Fleet reads include each runner's routing, revision, editability and, when
+editing is refused, the missing authority. Routing remains visible to
+organization viewers; work details remain restricted to readable projects.
+
+Owners and admins can change any runner's routing. Members need `manage_runner`
+on every currently allowed project and every project with an active lease on
+that runner. Adding a project also requires its `manage_runner` grant. These
+checks run again inside the mutation transaction. Unrelated projects do not
+restrict runner routing edits, including taking-work state and capacity.
+Organization-scoped runners can serve every organization project, so editing
+them or switching to organization scope requires grants on every current
+organization project.
+An unassigned runner with no active leases requires an owner or admin.
+Changing allowed projects additionally requires ownership of the runner.
+Organization-wide enrollment, removal and machine routing retain their
+all-project runner-management requirement. Scoped API keys must also cover
+every affected project and allow writes.
 
 ### Register a runner with one command
 
