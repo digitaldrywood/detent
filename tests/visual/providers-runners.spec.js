@@ -55,8 +55,8 @@ for (const width of [1440, 390]) {
         await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue(/^detent-[a-z0-9]+$/);
         await expect(dialog.getByText(/The Sprite gets the same name/)).toBeVisible();
         if (location === "sprite without token") {
-          await expect(dialog.getByText(/No Sprites token is set/)).toBeVisible();
-          await expect(dialog.getByRole("link", { name: "Set a Sprites token" })).toHaveAttribute("href", "/settings/integrations?project=proj_preview#sprites");
+          await expect(dialog.getByText(/No Sprites token is set for the organization/)).toBeVisible();
+          await expect(dialog.getByRole("link", { name: "Set a Sprites token" })).toHaveAttribute("href", "/settings/integrations#sprites");
         } else {
           await expect(dialog.getByText("Checking Sprites tokens…")).toHaveCount(0);
           await expect(dialog.getByRole("link", { name: "Set a Sprites token" })).toHaveCount(0);
@@ -142,12 +142,12 @@ for (const width of [1440, 390]) {
     await expect(providers.getByRole("columnheader")).toHaveText(["Provider", "Accounts", "In use", "Models", "Status"]);
     await expect(providers.getByText("Rate limited until Sep 10, 5:00 PM")).toBeVisible();
     await expect(page.getByTestId("host-card")).toHaveCount(3);
-    await expect(page.getByText("Sprite pool · Preview project", { exact: true })).toBeVisible();
+    await expect(page.getByText("Organization Sprite pool", { exact: true })).toBeVisible();
     const poolRow = page.getByTestId("sprite-pool-row");
     await expect(poolRow).toContainText(`Floor ${spritePool.min_runners} · Ceiling ${spritePool.max_runners} · Idle ${spritePool.idle_seconds}s · 1 members`);
     await expect(page.getByLabel("Minimum runners", { exact: true })).toHaveCount(0);
     await poolRow.getByRole("button", { name: /Configure pool/ }).click();
-    const poolDialog = page.getByRole("dialog", { name: "Sprite pool · Preview project" });
+    const poolDialog = page.getByRole("dialog", { name: "Organization Sprite pool" });
     await expect(poolDialog.getByLabel("Minimum runners", { exact: true })).toHaveValue(String(spritePool.min_runners));
     await expect(poolDialog.getByLabel("Maximum runners", { exact: true })).toHaveValue(String(spritePool.max_runners));
     await expect(poolDialog.getByLabel("Idle seconds", { exact: true })).toHaveValue(String(spritePool.idle_seconds));
@@ -325,17 +325,17 @@ for (const multiple of [false, true]) {
     await page.getByRole("button", { name: "Add runner", exact: true }).focus();
     await page.keyboard.press("Enter");
     await page.getByRole("menuitem", { name: "AI assisted", exact: true }).click();
-    if (multiple) {
-      const dialog = page.getByRole("dialog", { name: "Add runner with Luna" });
-      await expect(dialog).toContainText("Fly Sprite or your own machine");
-      await expect(dialog.getByRole("option", { name: "Read-only project" })).toHaveCount(0);
-      await dialog.getByLabel("Project", { exact: true }).selectOption(selected);
-      await dialog.getByRole("button", { name: "Open Luna" }).click();
-    }
+    const dialog = page.getByRole("dialog", { name: "Add runner with Luna" });
+    await expect(dialog).toContainText("Fly Sprite or your own machine");
+    await expect(dialog.getByLabel("Project", { exact: true })).toHaveValue("");
+    await expect(dialog.getByRole("option", { name: "Read-only project" })).toHaveCount(0);
+    await dialog.getByLabel("Project", { exact: true }).selectOption(selected);
+    await dialog.getByRole("button", { name: "Open Luna" }).click();
     await expect(page).toHaveURL(new RegExp(`/chat/p/${selected}$`));
     const draft = await page.evaluate((selected) => localStorage.getItem(`detent.conversation.draft:org_preview:owner_preview:${selected}:new`), selected);
     expect(draft).toContain("Keep my existing draft.");
-    expect(draft).toContain("Help me add a runner for this project.");
+    expect(draft).toContain("Help me add a runner for this project only.");
+    expect(draft).not.toContain("organization Sprite pool");
     expect(draft).toContain("Fly Sprite or a machine I run");
     expect(draft).toContain("enrollment, the register command, provider login and the first connection");
     if (multiple) {
@@ -351,7 +351,7 @@ for (const version of ["operator-landed-3c51987c563b", "dev"]) {
     await page.getByRole("menuitem", { name: "Manual", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Enroll a runner", exact: true });
     await dialog.getByLabel("A Fly Sprite").check();
-    await expect(dialog.getByRole("link", { name: "Set a Sprites token" })).toHaveAttribute("href", "/settings/integrations?project=proj_preview#sprites");
+    await expect(dialog.getByRole("link", { name: "Set a Sprites token" })).toHaveAttribute("href", "/settings/integrations#sprites");
     await expect(dialog.getByText(/latest tagged release/)).toBeVisible();
     await dialog.getByRole("radio", { name: "Full access", exact: true }).check();
       await dialog.getByRole("button", { name: "Create command" }).click();
@@ -365,8 +365,8 @@ for (const version of ["operator-landed-3c51987c563b", "dev"]) {
 test("Sprite pool row saves its limits without exposing setup fields on the list", async ({ page }) => {
   await openFleet(page, fleet, "", false, { ...spritePool, min_runners: 0, max_runners: 0, members: [] });
   const row = page.getByTestId("sprite-pool-row");
-  await expect(row).toContainText("Not set up. Sprites start runners for this project when work is queued.");
-  await expect(row.getByRole("link", { name: "Set up Sprites Preview project" })).toHaveAttribute("href", "/settings/integrations?project=proj_preview#sprites");
+  await expect(row).toContainText("Not set up. Sprites start runners for every project when work is queued.");
+  await expect(row.getByRole("link", { name: "Set up Sprites", exact: true })).toHaveAttribute("href", "/settings/integrations#sprites");
   await expect(row.getByRole("link", { name: "Set a Sprites token" })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Needs attention 1" })).toBeVisible();
   await page.getByRole("link", { name: "Needs attention 1" }).click();
@@ -380,11 +380,11 @@ test("Sprite pool row saves its limits without exposing setup fields on the list
     } else await route.fulfill({ json: spritePool });
   });
   await page.reload();
-  await expect(row).toContainText("No Sprites token is set for Preview project, so the Hub cannot start Sprites.");
+  await expect(row).toContainText("No organization Sprites token is set, so the Hub cannot start Sprites.");
   await expect(page.getByRole("link", { name: "Needs attention 2" })).toBeVisible();
-  await expect(row.getByRole("link", { name: "Set a Sprites token" })).toHaveAttribute("href", "/settings/integrations?project=proj_preview#sprites");
+  await expect(row.getByRole("link", { name: "Set a Sprites token" })).toHaveAttribute("href", "/settings/integrations#sprites");
   await row.getByRole("button", { name: /Configure pool/ }).click();
-  const dialog = page.getByRole("dialog", { name: "Sprite pool · Preview project" });
+  const dialog = page.getByRole("dialog", { name: "Organization Sprite pool" });
   await dialog.getByLabel("Minimum runners", { exact: true }).fill("2");
   await dialog.getByLabel("Maximum runners", { exact: true }).fill("5");
   await dialog.getByLabel("Idle seconds", { exact: true }).fill("600");
