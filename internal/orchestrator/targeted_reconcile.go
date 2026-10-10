@@ -71,7 +71,7 @@ func (o *Orchestrator) applyTargetedReconcile(
 	if normalizeState(issue.State) == normalizeState(blockedStatusState) {
 		o.setBlockedStatusIssue(ctx, state, issue, now)
 	} else {
-		clearBlockedStatusIssue(state, issue.ID)
+		clearBlockedStatusIssue(state, issue)
 	}
 
 	if _, _, err := o.observeLane(ctx, state, issue, now); err != nil && o.logger != nil {
