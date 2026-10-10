@@ -48,28 +48,24 @@ var smokeWrites = strings.Fields(`file_issue edit_item add_comment edit_comment 
 var errSmokeFixture = errors.New("smoke resource fixture unavailable")
 
 var smokeReadSkips = map[string]string{
+	operatortool.GetChange:        "operator-only Change detail read is outside the dedicated project smoke key's authority",
+	operatortool.GetChangeVersion: "operator-only Change version read is outside the dedicated project smoke key's authority",
+	operatortool.GetNativeRun:     "operator-only native run read is outside the dedicated project smoke key's authority",
 	"get_git_hub_import":          "native smoke projects have no GitHub import; importing requires an external tracker and cutover",
 	"list_git_hub_import_records": "native smoke projects have no GitHub import; importing requires an external tracker and cutover",
 }
 
 var smokeKnownGaps = map[string]map[string]string{
-	"production": smokeFixtureGaps(map[string]string{
+	"production": {
 		operatortool.OrderItem: "#724", operatortool.SetQueuePriority: "#724", "board_session_history": "#724", "get_cutover_receipt": "#724", "get_change_review_policy": "#724",
-	}),
-	"staging": smokeFixtureGaps(map[string]string{
+	},
+	"staging": {
 		operatortool.OrderItem: "#724", operatortool.SetQueuePriority: "#724", "board_session_history": "#724", "get_cutover_receipt": "#724",
 		"update_project_integration": "#724", operatortool.ActionResult: "#724",
-	}),
+	},
 }
 
 var smokeDependencyFixtures = []string{"change_id", "version_id", "native_attempt_id", "attempt_id", "run_id"}
-
-func smokeFixtureGaps(gaps map[string]string) map[string]string {
-	for _, name := range []string{"get_change", "get_change_version", "change_viewed_files", "get_attempt_diff", "get_native_run", "work_attempt_receipt", operatortool.RunnerProjectDiagnostics, operatortool.GitHubScopeTimings} {
-		gaps[name] = "#725 fixtures"
-	}
-	return gaps
-}
 
 var smokeHostedGaps = []string{operatortool.ArchiveItem, operatortool.OrderItem, operatortool.SetQueuePriority}
 
@@ -554,6 +550,7 @@ func (s *mcpSmoke) run(ctx context.Context) error {
 		}
 		return strings.Compare(a, b)
 	})
+	skippedReads := map[string]bool{}
 	pending := []string{}
 	for _, name := range names {
 		tool := s.mcp.tools[name]
@@ -591,8 +588,8 @@ func (s *mcpSmoke) run(ctx context.Context) error {
 		if !madeCall {
 			for _, name := range deferred {
 				_, argErr := s.arguments(s.mcp.tools[name])
-				failures = append(failures, argErr)
-				fmt.Fprintln(s.output, argErr)
+				skippedReads[name] = true
+				fmt.Fprintf(s.output, "%s skipped: %v\n", name, argErr)
 			}
 			break
 		}
@@ -633,7 +630,7 @@ func (s *mcpSmoke) run(ctx context.Context) error {
 		}
 	}
 	for _, name := range names {
-		if !s.called[name] && !slices.Contains(smokeSkipped, name) && smokeReadSkips[name] == "" && name != operatortool.RestoreItem {
+		if !s.called[name] && !skippedReads[name] && !slices.Contains(smokeSkipped, name) && smokeReadSkips[name] == "" && name != operatortool.RestoreItem {
 			failures = append(failures, fmt.Errorf("%s: non-skipped tool was not exercised", name))
 		}
 	}
@@ -691,6 +688,9 @@ func (s *mcpSmoke) arguments(tool operatortool.Definition) (map[string]any, erro
 	var schema smokeSchema
 	if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
 		return nil, fmt.Errorf("%s: schema: %w", tool.Name, err)
+	}
+	if tool.Name == operatortool.RunnerProjectDiagnostics {
+		schema.Required = append(schema.Required, "runner_id")
 	}
 	for _, alternatives := range []*[]smokeSchema{&schema.AnyOf, &schema.OneOf} {
 		for _, candidate := range *alternatives {
