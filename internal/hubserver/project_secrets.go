@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const flySpritesToken = "fly_sprites_token"
@@ -108,6 +109,14 @@ func (s *Service) projectSecretMetadata(c echo.Context) error {
 
 func readSecretStatus(ctx context.Context, db nativeQueryer, scope nativeScope) (projectSecretStatus, error) {
 	result := projectSecretStatus{Kind: flySpritesToken}
+	if scope.project == "" {
+		err := db.QueryRowContext(ctx, `SELECT organization_slug,master_key_version FROM organization_secrets WHERE organization_id=? AND kind=?`, scope.organization, flySpritesToken).Scan(&result.OrganizationSlug, &result.KeyVersion)
+		if errors.Is(err, sql.ErrNoRows) {
+			return result, nil
+		}
+		result.Present = err == nil
+		return result, err
+	}
 	err := db.QueryRowContext(ctx, `SELECT organization_slug, master_key_version FROM project_secrets WHERE organization_id = ? AND project_id = ? AND kind = ?`, scope.organization, scope.project, flySpritesToken).Scan(&result.OrganizationSlug, &result.KeyVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return result, nil
@@ -189,7 +198,11 @@ func (s *Service) setProjectSecret(c echo.Context) error {
 			event = "replace"
 		}
 		now := formatHubTime(s.config.now())
-		_, err = tx.ExecContext(ctx, `INSERT INTO project_secrets(organization_id, project_id, kind, organization_slug, ciphertext, nonce, wrapped_data_key, master_key_version, updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id, project_id, kind) DO UPDATE SET organization_slug=excluded.organization_slug, ciphertext=excluded.ciphertext, nonce=excluded.nonce, wrapped_data_key=excluded.wrapped_data_key, master_key_version=excluded.master_key_version, updated_at=excluded.updated_at`, scope.organization, scope.project, flySpritesToken, slug, envelope.Ciphertext, envelope.Nonce, envelope.WrappedKey, envelope.Version, now)
+		if scope.project == "" {
+			_, err = tx.ExecContext(ctx, `INSERT INTO organization_secrets(organization_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(organization_id,kind) DO UPDATE SET organization_slug=excluded.organization_slug,ciphertext=excluded.ciphertext,nonce=excluded.nonce,wrapped_data_key=excluded.wrapped_data_key,master_key_version=excluded.master_key_version,updated_at=excluded.updated_at`, scope.organization, flySpritesToken, slug, envelope.Ciphertext, envelope.Nonce, envelope.WrappedKey, envelope.Version, now)
+		} else {
+			_, err = tx.ExecContext(ctx, `INSERT INTO project_secrets(organization_id, project_id, kind, organization_slug, ciphertext, nonce, wrapped_data_key, master_key_version, updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id, project_id, kind) DO UPDATE SET organization_slug=excluded.organization_slug, ciphertext=excluded.ciphertext, nonce=excluded.nonce, wrapped_data_key=excluded.wrapped_data_key, master_key_version=excluded.master_key_version, updated_at=excluded.updated_at`, scope.organization, scope.project, flySpritesToken, slug, envelope.Ciphertext, envelope.Nonce, envelope.WrappedKey, envelope.Version, now)
+		}
 		if err != nil {
 			return err
 		}
@@ -295,8 +308,38 @@ func removeProjectSecretInTx(ctx context.Context, tx *sql.Tx, scope nativeScope,
 	if err != nil || !old.Present {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM project_secrets WHERE organization_id=? AND project_id=? AND kind=?`, scope.organization, scope.project, flySpritesToken); err != nil {
+	if scope.project == "" {
+		_, err = tx.ExecContext(ctx, `DELETE FROM organization_secrets WHERE organization_id=? AND kind=?`, scope.organization, flySpritesToken)
+		if err != nil {
+			return err
+		}
+	} else if _, err := tx.ExecContext(ctx, `DELETE FROM project_secrets WHERE organization_id=? AND project_id=? AND kind=?`, scope.organization, scope.project, flySpritesToken); err != nil {
 		return err
 	}
 	return secretAudit(ctx, tx, string(scope.organization), string(scope.project), secretActor(scope), flySpritesToken, "remove", old.KeyVersion, formatHubTime(now))
+}
+
+func resolveSpritesSecret(ctx context.Context, db nativeQueryer, scope nativeScope) (nativeScope, string, hubsecrets.Envelope, error) {
+	var envelope hubsecrets.Envelope
+	var slug string
+	var source tracker.ProjectID
+	err := db.QueryRowContext(ctx, `SELECT project_id,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version FROM (
+ SELECT project_id,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,0 AS rank FROM project_secrets WHERE organization_id=? AND project_id=? AND kind=?
+ UNION ALL SELECT '',organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,1 FROM organization_secrets WHERE organization_id=? AND kind=?) ORDER BY rank LIMIT 1`, scope.organization, scope.project, flySpritesToken, scope.organization, flySpritesToken).Scan(&source, &slug, &envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
+	scope.project = source
+	return scope, slug, envelope, err
+}
+
+func (s *Service) organizationSpritesScope(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		scope, err := s.organizationModelSelectionScope(c)
+		if err != nil {
+			return s.hostedAPIError(c, err)
+		}
+		if c.Request().Method != http.MethodGet && !canManageProjectSecrets(scope.credential) {
+			return s.nativeAPIError(c, &nativeError{Code: "forbidden", Message: "Changing Sprites settings requires owner or admin access", status: http.StatusForbidden})
+		}
+		c.Set("native_scope", scope)
+		return next(c)
+	}
 }

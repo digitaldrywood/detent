@@ -4,6 +4,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import React from "react";
+import { ShellContext, useOptionalShell } from "./shellContext.ts";
 import { Outlet, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 
 import type {
@@ -138,11 +139,8 @@ export interface ShellState {
   readonly refreshList: () => void;
 }
 
-const ShellContext = React.createContext<ShellState | null>(null);
-
-/** The shell's state, for the route surfaces it renders through its outlet. */
 export function useShell(): ShellState {
-  const shell = React.useContext(ShellContext);
+  const shell = useOptionalShell();
   if (shell === null) throw new Error("The shell is not mounted.");
   return shell;
 }

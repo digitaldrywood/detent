@@ -261,13 +261,14 @@ func readSpriteCostResources(ctx context.Context, query nativeQueryer, organizat
 		return nil, err
 	}
 	rows, err := query.QueryContext(ctx, `SELECT DISTINCT project_id,provider_account,name FROM (
-SELECT project_id,provider_organization AS provider_account,name FROM project_sprite_members WHERE organization_id=? AND state<>'deleted'
+SELECT token_project_id AS project_id,provider_organization AS provider_account,name FROM organization_sprite_members WHERE organization_id=? AND state<>'deleted'
 UNION
 SELECT g.project_id,ps.organization_slug,m.hostname FROM machines m JOIN runner_identities r ON r.machine_id=m.id AND r.removed_at IS NULL
 JOIN token_grants g ON g.token_id=r.token_id AND g.organization_id=r.organization_id
 JOIN project_secrets ps ON ps.organization_id=g.organization_id AND ps.project_id=g.project_id AND ps.kind='fly_sprites_token'
-WHERE m.organization_id=? AND json_extract(m.capabilities_json,'$.sprite_name')=m.hostname)
-WHERE (? OR project_id IN (SELECT value FROM json_each(?))) ORDER BY project_id,provider_account,name`, organization, organization, projects == nil, string(encoded))
+WHERE m.organization_id=? AND json_extract(m.capabilities_json,'$.sprite_name')=m.hostname
+UNION SELECT '',os.organization_slug,m.hostname FROM machines m JOIN runner_identities r ON r.machine_id=m.id AND r.removed_at IS NULL AND r.scope='organization' JOIN organization_secrets os ON os.organization_id=r.organization_id AND os.kind='fly_sprites_token' WHERE m.organization_id=? AND json_extract(m.capabilities_json,'$.sprite_name')=m.hostname)
+WHERE (? OR project_id IN (SELECT value FROM json_each(?))) ORDER BY project_id,provider_account,name`, organization, organization, organization, projects == nil, string(encoded))
 	if err != nil {
 		return nil, fmt.Errorf("read Sprite cost inventory: %w", err)
 	}

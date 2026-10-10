@@ -120,10 +120,10 @@ func (s *Service) waitNativeCandidates(c echo.Context) error {
 		if err := s.requireHostedProject(ctx, tx, scope, false); err != nil {
 			return err
 		}
-		if err := authorizeNativeProject(ctx, tx, scope); err != nil {
+		if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
 			return err
 		}
-		if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
+		if err := authorizeNativeProject(ctx, tx, scope); err != nil {
 			return err
 		}
 		return tx.Commit()
