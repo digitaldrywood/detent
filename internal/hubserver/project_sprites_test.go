@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,6 +110,65 @@ func TestWakeSpriteRunners(t *testing.T) {
 				if call.Header.Get("Authorization") != "Bearer "+spritesSecretSentinel {
 					t.Fatal("wake request did not carry the project's Sprites token")
 				}
+			}
+		})
+	}
+}
+
+func TestSpriteWakeSecret(t *testing.T) {
+	t.Parallel()
+	const other = "detent-test/other/token/value"
+	for _, tt := range []struct {
+		name, projectToken, organizationToken string
+		member                                bool
+		memberProject                         bool
+		provider                              string
+		want                                  string
+	}{
+		{name: "manual Sprite uses the target project token", projectToken: spritesSecretSentinel, organizationToken: other, want: spritesSecretSentinel},
+		{name: "manual Sprite inherits the organization token", organizationToken: spritesSecretSentinel, want: spritesSecretSentinel},
+		{name: "pool member keeps its organization token over a project override", projectToken: other, organizationToken: spritesSecretSentinel, member: true, provider: "detent-test", want: spritesSecretSentinel},
+		{name: "pool member keeps its project token", projectToken: spritesSecretSentinel, organizationToken: other, member: true, memberProject: true, provider: "detent-test", want: spritesSecretSentinel},
+		{name: "pool member from another Fly organization stays asleep", organizationToken: spritesSecretSentinel, member: true, provider: "elsewhere"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f, scope, runners := newSpriteWakeFixture(t, http.DefaultClient, false, time.Minute, "customer-host")
+			if tt.projectToken != "" {
+				storeSpriteWakeSecret(t, f, tt.projectToken)
+			}
+			if tt.organizationToken != "" {
+				storeOrganizationSpritesSecret(t, f, tt.organizationToken)
+			}
+			if tt.member {
+				tokenProject := ""
+				if tt.memberProject {
+					tokenProject = string(f.project.ID)
+				}
+				now := formatHubTime(f.service.config.now())
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_pools(organization_id,configured_by) VALUES(?,(SELECT id FROM api_tokens ORDER BY id LIMIT 1))`, f.project.OrganizationID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,token_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,?,?,'enrolled',?,?)`, f.project.OrganizationID, tokenProject, "customer-host", tt.provider, runners[0].enrollment.ID, now, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			secretScope, envelope, err := spriteWakeSecret(t.Context(), f.service.database.db, scope, "customer-host")
+			if tt.want == "" {
+				if !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("err = %v, want no usable token", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			token, err := f.service.config.SecretKeys.Open(envelope, secretAAD(string(secretScope.organization), string(secretScope.project), flySpritesToken))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(token) != tt.want {
+				t.Fatal("wake used the wrong Sprites token")
 			}
 		})
 	}

@@ -213,6 +213,42 @@ func monthlySpriteAllowed(ctx context.Context, q nativeQueryer, scope nativeScop
 	if err != nil || !decision.Allowed {
 		return false, err
 	}
+	projects := []tracker.ProjectID{scope.project}
+	if scope.project == "" {
+		projects, err = liveOrganizationProjects(ctx, q, scope.organization)
+		if err != nil {
+			return false, err
+		}
+	}
+	for _, project := range projects {
+		projectScope := scope
+		projectScope.project = project
+		admitted, err := monthlyAdmittedCandidate(ctx, q, projectScope, now)
+		if err != nil || admitted {
+			return admitted, err
+		}
+	}
+	return false, nil
+}
+
+func liveOrganizationProjects(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID) ([]tracker.ProjectID, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id FROM projects WHERE organization_id=? AND deleted_at IS NULL ORDER BY id`, organization)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var projects []tracker.ProjectID
+	for rows.Next() {
+		var id tracker.ProjectID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		projects = append(projects, id)
+	}
+	return projects, rows.Err()
+}
+
+func monthlyAdmittedCandidate(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) (bool, error) {
 	query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), AvailableAt: now, Limit: 100}
 	for {
 		ids, err := nativeCandidateIDs(ctx, q, query, nil, nil, nil, nil, nil, nil, nil)

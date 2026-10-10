@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -177,13 +178,14 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 
 func TestRunnerFutureProjectAdmission(t *testing.T) {
 	for _, scenario := range []struct {
-		name, scope string
-		approved    bool
-		want        int
+		name, scope       string
+		approved, deleted bool
+		want              int
 	}{
-		{"organization admits future project", "organization", true, http.StatusOK},
-		{"project scope stays restricted", "projects", true, http.StatusNotFound},
-		{"organization still requires approved policy", "organization", false, http.StatusConflict},
+		{"organization admits future project", "organization", true, false, http.StatusOK},
+		{"project scope stays restricted", "projects", true, false, http.StatusNotFound},
+		{"organization still requires approved policy", "organization", false, false, http.StatusConflict},
+		{"organization omits deleted project", "organization", true, true, 0},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
@@ -195,6 +197,23 @@ func TestRunnerFutureProjectAdmission(t *testing.T) {
 				approveHubTestPolicy(t, f.service, later.base+"/policy", descriptor)
 			}
 			item := later.create(t, "future work")
+			if scenario.deleted {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET deleted_at=? WHERE id=?", formatHubTime(f.service.config.now()), later.project.ID); err != nil {
+					t.Fatal(err)
+				}
+				projects, err := readRunnerProjects(t.Context(), f.service.database.db, r.binding.RunnerID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ranks, err := readRunnerProjectRanks(t.Context(), f.service.database.db, r.binding.RunnerID, f.project.OrganizationID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, ranked := ranks[later.project.ID]; ranked || !slices.Equal(projects, []tracker.ProjectID{f.project.ID}) {
+					t.Fatalf("projects=%v ranks=%v advertise deleted %s", projects, ranks, later.project.ID)
+				}
+				return
+			}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, later.base+"/claims", r.redemption.Credential, tracker.NativeClaim{PolicyID: descriptor.ID, MachineID: r.binding.MachineID, SessionID: "future", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
 			requireNativeStatus(t, response, scenario.want)
 			if scenario.want == http.StatusOK {

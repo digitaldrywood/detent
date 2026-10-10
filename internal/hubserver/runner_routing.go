@@ -574,7 +574,7 @@ func validateRunnerLeaseTx(ctx context.Context, tx *sql.Tx, scope nativeScope, i
 }
 
 func readRunnerProjectRanks(ctx context.Context, db nativeQueryer, runnerID string, organization tracker.OrganizationID) (map[tracker.ProjectID]int, error) {
-	rows, err := db.QueryContext(ctx, "SELECT p.id, COALESCE(json_extract(r.routing_settings_json, '$.project_ranks.' || p.id), p.scheduling_rank) FROM projects p JOIN runner_identities r ON r.organization_id=p.organization_id WHERE r.id=? AND p.organization_id=? AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.project_id=p.id AND g.organization_id=p.organization_id))", runnerID, organization)
+	rows, err := db.QueryContext(ctx, "SELECT p.id, COALESCE(json_extract(r.routing_settings_json, '$.project_ranks.' || p.id), p.scheduling_rank) FROM projects p JOIN runner_identities r ON r.organization_id=p.organization_id WHERE r.id=? AND p.organization_id=? AND (r.scope='organization' AND p.deleted_at IS NULL OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.project_id=p.id AND g.organization_id=p.organization_id))", runnerID, organization)
 	if err != nil {
 		return nil, err
 	}

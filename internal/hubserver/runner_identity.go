@@ -71,7 +71,7 @@ func authenticatedRunner(c echo.Context) (apiCredential, error) {
 }
 
 func readRunnerProjects(ctx context.Context, query nativeQueryer, tokenID string) ([]tracker.ProjectID, error) {
-	rows, err := query.QueryContext(ctx, "SELECT p.id FROM projects p JOIN runner_identities r ON r.organization_id=p.organization_id WHERE r.token_id=? AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.project_id=p.id AND g.organization_id=p.organization_id)) ORDER BY p.id", tokenID)
+	rows, err := query.QueryContext(ctx, "SELECT p.id FROM projects p JOIN runner_identities r ON r.organization_id=p.organization_id WHERE r.token_id=? AND (r.scope='organization' AND p.deleted_at IS NULL OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.project_id=p.id AND g.organization_id=p.organization_id)) ORDER BY p.id", tokenID)
 	if err != nil {
 		return nil, err
 	}

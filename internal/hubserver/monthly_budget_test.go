@@ -179,6 +179,10 @@ func TestMonthlyBudgetDrainLifecycle(t *testing.T) {
 	if err != nil || !allowed {
 		t.Fatalf("ranked cohort beyond first page lost Sprite continuation: %t %v", allowed, err)
 	}
+	allowed, err = monthlySpriteAllowed(t.Context(), f.service.database.db, nativeScope{organization: scope.organization}, f.service.config.now())
+	if err != nil || !allowed {
+		t.Fatalf("organization Sprite lifecycle lost the admitted cohort: %t %v", allowed, err)
+	}
 	backlog := f.create(t, "untouched Backlog")
 	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Backlog') WHERE native_id=?`, f.project.ID, backlog.WorkItemID); err != nil {
 		t.Fatal(err)

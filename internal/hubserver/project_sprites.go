@@ -316,7 +316,7 @@ ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config
 				continue
 			}
 		}
-		secretScope, _, envelope, err := resolveSpritesSecret(ctx, s.database.db, scope)
+		secretScope, envelope, err := spriteWakeSecret(ctx, s.database.db, scope, name)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
@@ -341,6 +341,22 @@ ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config
 			woken++
 		}
 	}
+}
+
+func spriteWakeSecret(ctx context.Context, db nativeQueryer, scope nativeScope, name string) (nativeScope, hubsecrets.Envelope, error) {
+	var provider string
+	member := db.QueryRowContext(ctx, `SELECT token_project_id,provider_organization FROM organization_sprite_members WHERE organization_id=? AND name=? AND state<>'deleted'`, scope.organization, name).Scan(&scope.project, &provider)
+	if member != nil && !errors.Is(member, sql.ErrNoRows) {
+		return nativeScope{}, hubsecrets.Envelope{}, member
+	}
+	secretScope, slug, envelope, err := resolveSpritesSecret(ctx, db, scope)
+	if err != nil {
+		return nativeScope{}, hubsecrets.Envelope{}, err
+	}
+	if member == nil && slug != provider {
+		return nativeScope{}, hubsecrets.Envelope{}, sql.ErrNoRows
+	}
+	return secretScope, envelope, nil
 }
 
 func (s *Service) wakeSpriteRunnerWithSecret(ctx context.Context, scope, secretScope nativeScope, client *http.Client, name string, envelope hubsecrets.Envelope) (bool, error) {
