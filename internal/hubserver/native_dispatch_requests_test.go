@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -153,6 +154,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		checkpointEdit func(*tracker.NativeCheckpoint)
 		publication    string
 		terminal       bool
+		aged           bool
 	}{
 		{name: "completed instance report is answered", finalMessage: instanceReport},
 		{name: "completed definition blocker is answered with clean source", finalMessage: definitionReport},
@@ -211,6 +213,19 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "legacy complete with published retained head stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "head"},
 		{name: "unrelated historical publication preserves retained source", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "unrelated", wantCandidate: true},
 		{name: "earlier published head from same attempt preserves retained source", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "earlier", wantCandidate: true},
+		{name: "aged instance blocker report retries", finalMessage: instanceReport, aged: true, wantCandidate: true},
+		{name: "aged validation failure retries", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "validation_failed"}, aged: true, wantCandidate: true},
+		{name: "aged moved head retries", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "head_moved"}, aged: true, wantCandidate: true},
+		{name: "confirmed push without a disposition continues", retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
+			c.ExternalEffect, c.EffectState, c.EffectID = "git_push", "confirmed", newNativeID("effect")
+		}},
+		{name: "confirmed pull request without a disposition continues", retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
+			c.ExternalEffect, c.EffectState, c.EffectID = "pr_create", "confirmed", newNativeID("effect")
+		}},
+		{name: "aged human action stays held", disposition: &tracker.NativeDisposition{Status: "blocked", HumanAction: true}, aged: true},
+		{name: "aged permission wait stays held", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "permission_wait"}, aged: true},
+		{name: "aged external blocker stays held", finalMessage: strings.Replace(instanceReport, "human_action: null", "  - ref: '#42'\n    reason: Await dependency\nhuman_action: null", 1), aged: true},
+		{name: "aged accepted completion stays held", disposition: &tracker.NativeDisposition{Status: "complete"}, accepted: true, aged: true},
 		{name: "legacy complete preserves manual hold", finalMessage: completeReport, legacy: true, retainedSource: true, manualHold: true},
 		{name: "legacy complete preserves terminal lane", finalMessage: completeReport, legacy: true, retainedSource: true, terminal: true},
 	} {
@@ -251,6 +266,11 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			f.finish(t, test.disposition)
 			if test.accepted {
 				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.runtime.completion.acceptance_recorded', json('true')) WHERE id = ?`, f.attempt); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.aged {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET updated_at = ? WHERE id = ?`, formatHubTime(f.now.Add(-2*time.Hour)), f.attempt); err != nil {
 					t.Fatal(err)
 				}
 			}
