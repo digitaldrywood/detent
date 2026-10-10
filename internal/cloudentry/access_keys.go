@@ -358,8 +358,9 @@ func (s *Service) accountKeys(c echo.Context) error {
 		orgs = append(orgs, org)
 	}
 	views := []keyView{}
+	reachCache := map[keyReachOwner]keyReach{}
 	for _, key := range keys {
-		view, err := s.describeKey(c.Request().Context(), key, orgs)
+		view, err := s.describeKeyWithReachCache(c.Request().Context(), key, orgs, reachCache)
 		if err != nil {
 			return keyError(c, err)
 		}

@@ -171,6 +171,61 @@ func TestOrganizationKeyDiscoveryPagination(t *testing.T) {
 	if !seen[key.ID] {
 		t.Fatal("unused global key missing")
 	}
+	for _, test := range []struct {
+		name        string
+		removeBeta  bool
+		memberships int
+		services    int
+	}{
+		{name: "account list", memberships: 3, services: 2},
+		{name: "account list after membership removal", removeBeta: true, memberships: 2, services: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			serviceCalls = 0
+			f.provider.mu.Lock()
+			if test.removeBeta {
+				delete(f.provider.memberships, "om_user_alice_porg_beta")
+			}
+			before := f.provider.membershipLists
+			f.provider.mu.Unlock()
+			response := attachmentRequest(t, owner, http.MethodGet, "/api/cloud/account/api-keys", nil, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("account list=%d %s", response.Code, response.Body.String())
+			}
+			var listed struct {
+				Keys []keyView `json:"keys"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &listed); err != nil {
+				t.Fatal(err)
+			}
+			if len(listed.Keys) != 57 {
+				t.Fatalf("account keys=%d want=57", len(listed.Keys))
+			}
+			for _, item := range listed.Keys {
+				want := 1
+				if item.ID == "key_page_000" {
+					want = 0
+				}
+				if !test.removeBeta && item.ID != "other organization" {
+					want++
+				}
+				if item.Owner != key.Owner || len(item.EffectiveReach) != want {
+					t.Fatalf("incorrect account reach: %+v", item)
+				}
+				for _, reach := range item.EffectiveReach {
+					if test.removeBeta && reach.OrganizationID == "org_beta" || (len(reach.Projects) == 0) != (item.ID == "key_page_000") {
+						t.Fatalf("stale or scope-contaminated account reach: %+v", item)
+					}
+				}
+			}
+			f.provider.mu.Lock()
+			lookups := f.provider.membershipLists - before
+			f.provider.mu.Unlock()
+			if lookups != test.memberships || serviceCalls != test.services {
+				t.Fatalf("account membership lookups=%d service calls=%d, want %d and %d", lookups, serviceCalls, test.memberships, test.services)
+			}
+		})
+	}
 }
 
 func TestAccessKeyOrganizationControls(t *testing.T) {

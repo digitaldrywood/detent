@@ -111,10 +111,6 @@ type keyReachOwner struct {
 	Owner        string
 }
 
-func (s *Service) describeKey(ctx context.Context, key accessKey, organizations []Organization) (keyView, error) {
-	return s.describeKeyWithReachCache(ctx, key, organizations, nil)
-}
-
 func (s *Service) describeKeyWithReachCache(ctx context.Context, key accessKey, organizations []Organization, cache map[keyReachOwner]keyReach) (keyView, error) {
 	view := keyView{accessKey: key, EffectiveReach: []keyReach{}}
 	var last sql.NullString
