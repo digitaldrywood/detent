@@ -83,6 +83,23 @@ if stage == os.environ.get("PROBE_FAILURE"):
 
 @unittest.skipIf(os.name == "nt", "landing gate requires a POSIX shell")
 class LandingGateTest(unittest.TestCase):
+    def test_check_barrier_runs_only_in_landing_barrier(self):
+        scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
+        self.assertIsNotNone(scratch, "a supplied scratch directory is required")
+        for value in (None, "", "0"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory(dir=scratch) as directory:
+                root = Path(directory)
+                (root / "scripts").mkdir()
+                for name in ("go.mod", "scripts/check-barrier.sh", "scripts/check-evidence.sh"):
+                    shutil.copy2(ROOT / name, root / name)
+                env = {key: item for key, item in os.environ.items() if key != "DETENT_LANDING_BARRIER"}
+                if value is not None:
+                    env["DETENT_LANDING_BARRIER"] = value
+                result = subprocess.run(["bash", "scripts/check-barrier.sh", "4"], cwd=root, env=env, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("make check-land", result.stderr)
+                self.assertEqual(sorted(path.name for path in root.iterdir()), ["go.mod", "scripts"])
+
     def test_stage_budget_and_failures(self):
         scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
         self.assertIsNotNone(scratch, "a supplied scratch directory is required")
@@ -105,7 +122,7 @@ class LandingGateTest(unittest.TestCase):
                         path.write_text(TOOL)
                         path.chmod(0o700)
                 env = {key: value for key, value in os.environ.items() if key not in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES")}
-                env.update(PATH=str(root) + os.pathsep + env["PATH"], PROBE_BUDGET=str(budget), PROBE_FAILURE=failure, PROBE_TARGET=target, PROBE_MAKE=shutil.which("make"), PROBE_PYTHON=sys.executable, DETENT_BARRIER_FAILED="")
+                env.update(PATH=str(root) + os.pathsep + env["PATH"], PROBE_BUDGET=str(budget), PROBE_FAILURE=failure, PROBE_TARGET=target, PROBE_MAKE=shutil.which("make"), PROBE_PYTHON=sys.executable, DETENT_BARRIER_FAILED="", DETENT_LANDING_BARRIER="1")
                 result = subprocess.run([env["PROBE_MAKE"], target, f"TEST_PROCS={budget}", f"GOLANGCI_LINT={root / 'lint'}"], cwd=root, env=env, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode == 0, not failure, result.stdout + result.stderr)
                 events = [json.loads(line) for line in (root / "trace").read_text().splitlines()]

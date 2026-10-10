@@ -95,7 +95,7 @@ func TestLandingBarrierRunsOutsideSourceLock(t *testing.T) {
 				result gate.CommandResult
 				err    error
 			}, 1)
-			command := "printf x > " + shellQuote(started) + "; read line < " + shellQuote(resume) + "; exit " + string(rune('0'+code))
+			command := "test \"$DETENT_LANDING_BARRIER\" = 1 || exit 9; printf x > " + shellQuote(started) + "; read line < " + shellQuote(resume) + "; exit " + string(rune('0'+code))
 			go func() {
 				result, err := f.backend.RunLandingBarrier(ctx, "barrier", "main", command)
 				resultCh <- struct {
@@ -185,7 +185,7 @@ func TestLandingBarrierRepairPublication(t *testing.T) {
 			}
 			moved := f.remoteMain(t)
 			if !test.wantErr {
-				verified, changed, err := f.backend.VerifyLandingBarrierRepair(ctx, path, head, `test "$DETENT_BARRIER_FAILED" = "detent-barrier-failed: go example.com/pkg"`, []string{"detent-barrier-failed: go example.com/pkg"})
+				verified, changed, err := f.backend.VerifyLandingBarrierRepair(ctx, path, head, `test "$DETENT_LANDING_BARRIER" = 1 && test "$DETENT_BARRIER_FAILED" = "detent-barrier-failed: go example.com/pkg"`, []string{"detent-barrier-failed: go example.com/pkg"})
 				if err != nil || changed != test.commit || changed && verified.ExitCode != 0 {
 					t.Fatalf("verify changed=%v result=%+v error=%v", changed, verified, err)
 				}

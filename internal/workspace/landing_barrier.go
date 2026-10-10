@@ -75,7 +75,8 @@ func (l *LocalGit) RunLandingBarrier(ctx context.Context, id, base, command stri
 		resultErr = errors.Join(resultErr, l.removeLandingWorktree(cleanupCtx, l.sourceRoot, path))
 	}()
 	issue.PullRequestHeadSHA = head
-	result, resultErr = l.RunReviewCommand(ctx, info, issue, command)
+	result, resultErr = l.RunReviewCommand(ctx, info, issue, landingBarrierCommand(command))
+	result.Command = command
 	if !result.StartedAt.IsZero() {
 		result.TimingStage = "barrier"
 	}
@@ -121,6 +122,12 @@ func (l *LocalGit) RevertLandingBarrierCommit(ctx context.Context, path, head, c
 
 const LandingBarrierFailedEnv = "DETENT_BARRIER_FAILED"
 
+const LandingBarrierEnv = "DETENT_LANDING_BARRIER"
+
+func landingBarrierCommand(command string) string {
+	return "export " + LandingBarrierEnv + "=1; " + command
+}
+
 func (l *LocalGit) VerifyLandingBarrierRepair(ctx context.Context, path, head, command string, failed []string) (gate.CommandResult, bool, error) {
 	repaired, err := runGitAt(ctx, path, "rev-parse", "HEAD")
 	if err != nil {
@@ -134,7 +141,8 @@ func (l *LocalGit) VerifyLandingBarrierRepair(ctx context.Context, path, head, c
 		command = "export " + LandingBarrierFailedEnv + "=" + shellQuoteArg(strings.Join(failed, "\n")) + "; " + command
 	}
 	key := filepath.Base(path)
-	result, err := l.RunReviewCommand(ctx, Info{Path: path, Key: key}, Issue{ID: key, Identifier: key, PullRequestHeadSHA: repaired}, command)
+	result, err := l.RunReviewCommand(ctx, Info{Path: path, Key: key}, Issue{ID: key, Identifier: key, PullRequestHeadSHA: repaired}, landingBarrierCommand(command))
+	result.Command = command
 	return result, true, err
 }
 

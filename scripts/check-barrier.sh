@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
+# Usage: DETENT_LANDING_BARRIER=1 scripts/check-barrier.sh <procs>
 set -euo pipefail
+if [ "${DETENT_LANDING_BARRIER:-}" != 1 ]; then
+    echo "check-barrier runs only in the runner's landing barrier; run make check-land to validate a work item." >&2
+    exit 2
+fi
 GOTOOLCHAIN=$(awk '$1 == "toolchain" {print $2}' go.mod)
 export GOTOOLCHAIN=${GOTOOLCHAIN:-auto}
 source scripts/check-evidence.sh
