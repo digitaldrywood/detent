@@ -82,7 +82,15 @@ Personal keys are user-owned and stored in the shared entry authentication store
 The account API creates and lists them at `/api/cloud/account/api-keys` and
 revokes them with `DELETE /api/cloud/account/api-keys/:key`. These management
 routes require the signed-in account's browser session and same-origin writes.
-The account settings redesign is separate from these APIs.
+Open **Account settings → API keys** (`/settings/api-keys`) to create, rotate
+or revoke your personal keys, inspect effective reach today and last use, and
+copy secret-free MCP or direct API setup prompts. A key never grants more than
+its owner has. `GET /api/cloud/account/key-context` supplies the current
+organizations, roles, permitted projects and single multi-org MCP endpoint.
+The key list includes current effective reach and last use. Rotation uses
+`POST /api/cloud/account/api-keys/:key/rotate`: it replaces the token immediately,
+retains the key's scope, expiry, approvals and org blocks, and returns the new
+secret once. Update clients after saving it privately.
 
 Creation accepts `name`, `permission` (`read`, `write`, `admin`),
 `access_context` (`global`, `selected`, `project`), `organizations`, and either
@@ -93,7 +101,7 @@ requires exactly one. A global personal key reaches all current and future
 organizations, with all projects by default; explicit organization entries can
 narrow individual organizations. Selected context reaches only the supplied
 organizations. Project context requires exactly one organization and one project.
-The secret is returned only when created.
+The secret is returned only on creation or rotation.
 
 Use one bearer key with `https://cloud.detent.build/mcp`. Project and organization
 tools accept `organization_id` alongside their existing project selectors.
@@ -111,13 +119,26 @@ fields with one organization and selected or project context. Service keys are
 org-owned and remain valid after their creator leaves; permission and project
 context still restrict each call.
 
-Org owners/admins read or set `allow_external_keys` through
-`/api/cloud/organizations/:organization/key-policy` (GET/PUT). It defaults to
-true; disabling it refuses global and multi-org personal keys in that org.
-Reached personal keys appear as read-only metadata through `external-keys`.
-`PUT external-keys/:key/block` with `{}` blocks that key only in this org;
-`{"project_id":"..."}` blocks a single project. The owner's account receives a
-notice through `/api/cloud/account/key-notifications`. Calls and policy/block
+Open **Org settings → API & MCP** to manage service keys, member keys, personal
+key policy and the approval queue. Non-admins see only a link to their own
+account keys; the management APIs enforce current owner/admin authority.
+
+Org owners/admins read or set `personal_keys` (`allowed`, `approval`, `blocked`)
+through `/api/cloud/organizations/:organization/key-policy` (GET/PUT). The
+default is `allowed`. `approval` refuses personal keys until an admin approves
+each key with `PUT external-keys/:key/approve`; `blocked` refuses all personal
+keys, including keys scoped to one project. The old `allow_external_keys` write
+field remains accepted, mapping true to `allowed` and false to `blocked`.
+Existing false policies migrate to `blocked`.
+
+`GET /api/cloud/organizations/:organization/external-keys` includes active
+personal keys whose owner still belongs to the org and whose scope includes
+it, including unused keys. It returns only this org's reach and last use.
+Pending entries form the approval queue. `PUT external-keys/:key/block` with
+`{}` revokes access to this org without affecting other orgs;
+`{"project_id":"..."}` blocks a single project. An approval never clears an org
+block. The owner's account receives a notice through
+`/api/cloud/account/key-notifications`. Calls and policy, approval and block
 changes are audited in the target org with key and owner identity.
 
 Personal keys intersect their scope with the owner's current provider and local
@@ -129,7 +150,13 @@ refusals include `key_organization_denied`, `key_project_denied`,
 
 ## Existing per-organization keys
 
-Sign in to the intended Cloud organization and open **Settings → API & MCP**.
+Previously issued org keys keep working through their existing API and MCP
+endpoints. Shared Cloud uses the account key screen for newly issued personal
+keys and the org screen for service keys. Existing org keys remain available
+through `GET /api/v2/organizations/:organization/api-keys` and can be revoked
+through `DELETE /api/v2/organizations/:organization/api-keys/:key`.
+
+On dedicated deployments, sign in to the intended Cloud organization and open **Settings → API & MCP**.
 Existing `/settings/mcp` bookmarks open this same page. Create a named key,
 choose Read, Write or Admin, and choose an expiry (7, 30 or 90 days, or Never). The creation API accepts 1–90
 days
