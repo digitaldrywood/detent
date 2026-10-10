@@ -89,6 +89,14 @@ run_checks_in_order() {
     local name pid status=0 pids=() names=()
     : > tmp/barrier-checks.failed
     for name in "$@"; do
+        [ "$name" = generated ] || continue
+        if ! check_with_evidence "barrier-$name" check_command "$name"; then
+            echo "$name" >> tmp/barrier-checks.failed
+            return 1
+        fi
+    done
+    for name in "$@"; do
+        [ "$name" != generated ] || continue
         check_with_evidence "barrier-$name" check_command "$name" > "tmp/barrier-check-$name.log" 2>&1 &
         pids+=("$!")
         names+=("$name")
