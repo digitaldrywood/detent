@@ -355,9 +355,15 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 		case <-t.Context().Done():
 			t.Fatal(t.Context().Err())
 		}
-		_, err = scheduler.RenewClaim(guarded, string(issue.WorkItemID), time.Now())
-		if !errors.Is(err, instancelock.ErrHeld) || errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
-			t.Fatalf("credential-owner contention = %v", err)
+		renewDone := make(chan error, 1)
+		go func() {
+			_, err := scheduler.RenewClaim(guarded, string(issue.WorkItemID), time.Now())
+			renewDone <- err
+		}()
+		select {
+		case err := <-renewDone:
+			t.Fatalf("renewal did not wait for the in-process rotation: %v", err)
+		case <-time.After(200 * time.Millisecond):
 		}
 		if guarded.Err() != nil || scheduler.RunExecution(string(issue.WorkItemID)) != execution {
 			t.Fatalf("rotation discarded the active worker: %v", context.Cause(guarded))
@@ -369,6 +375,12 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 		resumeRotation.Do(func() { close(rotationResume) })
 		if err := <-rotationDone; err != nil {
 			t.Fatal(err)
+		}
+		if err := <-renewDone; errors.Is(err, orchestrator.ErrSchedulingClaimLost) || errors.Is(err, instancelock.ErrHeld) {
+			t.Fatalf("renewal after rotation = %v", err)
+		}
+		if guarded.Err() != nil || scheduler.RunExecution(string(issue.WorkItemID)) != execution {
+			t.Fatalf("renewal after rotation discarded the active worker: %v", context.Cause(guarded))
 		}
 		rotated, err := runnerauth.Load(path)
 		expectedIdentity := original.Identity
@@ -852,5 +864,70 @@ func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 	}
 	if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); err != nil || claims != 1 {
 		t.Fatalf("open claim = %v, calls = %d", err, claims)
+	}
+}
+
+func TestLockIdentityFileSerializesCallersInOneProcess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity.json")
+	for _, test := range []struct {
+		name    string
+		callers int
+	}{
+		{name: "two callers", callers: 2},
+		{name: "many callers", callers: 32},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var holders, maxHolders atomic.Int32
+			var wg sync.WaitGroup
+			errs := make(chan error, test.callers)
+			for range test.callers {
+				wg.Go(func() {
+					release, err := lockIdentityFile(path)
+					if err != nil {
+						errs <- err
+						return
+					}
+					current := holders.Add(1)
+					for {
+						seen := maxHolders.Load()
+						if current <= seen || maxHolders.CompareAndSwap(seen, current) {
+							break
+						}
+					}
+					time.Sleep(time.Millisecond)
+					holders.Add(-1)
+					if err := release(); err != nil {
+						errs <- err
+					}
+				})
+			}
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				t.Fatalf("lockIdentityFile() error = %v", err)
+			}
+			if maxHolders.Load() != 1 {
+				t.Fatalf("concurrent holders = %d, want 1", maxHolders.Load())
+			}
+		})
+	}
+}
+
+func TestLockIdentityFileRefusesHeldFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity.json")
+	held, err := instancelock.Acquire(path + ".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if _, err := lockIdentityFile(path); !errors.Is(err, instancelock.ErrHeld) {
+		t.Fatalf("lockIdentityFile() error = %v, want ErrHeld", err)
+	}
+	release, err := lockIdentityFile(filepath.Join(t.TempDir(), "other.json"))
+	if err != nil {
+		t.Fatalf("lockIdentityFile(other) error = %v", err)
+	}
+	if err := release(); err != nil {
+		t.Fatal(err)
 	}
 }
