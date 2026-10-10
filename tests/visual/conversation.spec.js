@@ -1284,12 +1284,7 @@ test.describe("decisions.md §10 corrections", () => {
         };
       }),
     ).toEqual({ inCard: true, aboveEditor: true, sameWidth: true });
-    // The runner's own skills and prompts are in the contract and the hub does
-    // not serve them yet, so the menu says so rather than dropping the feature
-    // silently or inventing rows that would not run (decisions.md §16).
-    await expect(menu.getByTestId("slash-provider-skills")).toContainText(
-      "Runner skills and prompts appear here once the hub serves them",
-    );
+    await expect(menu.getByTestId("slash-provider-skills")).toHaveCount(0);
 
     // Typing filters by name, and the highlighted row is what Enter runs.
     await page.keyboard.type("mod");
