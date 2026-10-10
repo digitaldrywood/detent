@@ -274,18 +274,27 @@ func conversationWorkerError(err error) error {
 // attempt to that lease and fencing token. With allowReleased the lease may
 // already be released or expired, which lets a finishing worker unbind.
 func (c *conversationService) requireWorkerOwner(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, identity conversationWorkerIdentity, runID string, allowReleased bool, now time.Time) (leaseRecord, error) {
-	if err := identity.validate(); err != nil {
-		return leaseRecord{}, err
-	}
 	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
 		return leaseRecord{}, err
 	}
-	if allowReleased {
-		if err := requireLeaseRunner(ctx, tx, identity.LeaseID, scope); err != nil {
+	if err := requireLeaseRunner(ctx, tx, identity.LeaseID, scope); err != nil {
+		return leaseRecord{}, err
+	}
+	lease, err := c.requireExecutionOwner(ctx, tx, scope, item, identity, runID, allowReleased, now)
+	if err != nil {
+		return leaseRecord{}, err
+	}
+	if !allowReleased {
+		if err := requireApprovedLeasePolicy(ctx, tx, identity.LeaseID, true); err != nil {
 			return leaseRecord{}, err
 		}
-	} else if err := requireNativeMutationLease(ctx, tx, scope, item, tracker.Mutation{LeaseID: identity.LeaseID, FencingToken: identity.FencingToken}, now); err != nil {
-		return leaseRecord{}, conversationWorkerError(err)
+	}
+	return lease, nil
+}
+
+func (c *conversationService) requireExecutionOwner(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, identity conversationWorkerIdentity, runID string, allowReleased bool, now time.Time) (leaseRecord, error) {
+	if err := identity.validate(); err != nil {
+		return leaseRecord{}, err
 	}
 	lease, found, err := readLeaseByID(ctx, tx, identity.LeaseID)
 	if err != nil {
@@ -303,6 +312,11 @@ func (c *conversationService) requireWorkerOwner(ctx context.Context, tx *sql.Tx
 	}
 	if lease.session.FencingToken != identity.FencingToken {
 		return leaseRecord{}, conversationStale("The lease fencing token does not match")
+	}
+	if !allowReleased {
+		if err := requireCurrentLease(lease, identity.FencingToken, now); err != nil {
+			return leaseRecord{}, conversationWorkerError(err)
+		}
 	}
 	query := "SELECT count(*) FROM native_attempts WHERE id = ? AND organization_id = ? AND project_id = ? AND work_item_id = ? AND lease_id = ? AND fencing_token = ?"
 	args := []any{identity.AttemptID, scope.organization, scope.project, item, identity.LeaseID, identity.FencingToken}
@@ -1452,14 +1466,15 @@ func (c *conversationService) settleLostExecution(ctx context.Context, ref conve
 			// stopped reporting; it must not interrupt a live in-process turn.
 			return nil
 		}
-		if execution.Owner.LeaseID != "" {
-			lease, found, err := readLeaseByID(ctx, tx, tracker.LeaseID(execution.Owner.LeaseID))
-			if err != nil {
-				return err
-			}
-			if found && lease.session.FencingToken == tracker.FencingToken(execution.Owner.FencingToken) && lease.session.ReleasedAt == nil && lease.session.ExpiresAt.After(now) {
-				return nil
-			}
+		identity := conversationWorkerIdentity{LeaseID: tracker.LeaseID(execution.Owner.LeaseID), FencingToken: tracker.FencingToken(execution.Owner.FencingToken), AttemptID: execution.Owner.AttemptID}
+		_, err = c.requireExecutionOwner(ctx, tx, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, record.WorkItemID, identity, execution.Owner.RunID, false, now)
+		if err == nil {
+			return nil
+		}
+		var failure *nativeError
+		lostOwner := errors.Is(err, sql.ErrNoRows) || (errors.As(err, &failure) && failure.status >= http.StatusBadRequest && failure.status < http.StatusInternalServerError)
+		if !lostOwner {
+			return err
 		}
 		changed = true
 		if execution.Status.Terminal() {

@@ -172,8 +172,6 @@ func (c *conversationService) committed(record conversationRecord) {
 	c.controls.Wake(record.ID)
 }
 
-// start normalizes state left behind by a previous process so that no
-// in-flight delivery or execution is reported as live after a restart.
 func (c *conversationService) start(ctx context.Context) error {
 	now, err := c.server.database.currentTime()
 	if err != nil {
@@ -186,6 +184,9 @@ func (c *conversationService) start(ctx context.Context) error {
 	c.logger.Info("conversation.restart_normalized",
 		"conversations", summary.Conversations, "messages", summary.Messages,
 		"questions", summary.Questions, "receipts", summary.Receipts)
+	if err := c.reconcileExecutions(ctx); err != nil {
+		return err
+	}
 	return c.wakePending(ctx)
 }
 

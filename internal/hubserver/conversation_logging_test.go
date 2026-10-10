@@ -241,6 +241,7 @@ func TestConversationLoggingRestartNormalization(t *testing.T) {
 	t.Parallel()
 	f, _ := newConversationLogFixture(t, &ConversationConfig{Enabled: true, ControlQueueSize: 8})
 	unlinked := f.create(t, f.token, map[string]any{"title": "Unlinked", "first_message": map[string]any{"key": "u1", "text": conversationLogSentinel}}).Conversation
+	requireNativeStatus(t, f.command(t, f.token, unlinked.ID, conversation.Command{Key: "u2", Kind: conversation.CommandMessage, Text: conversationLogSentinel}), http.StatusOK)
 	linked := f.create(t, f.token, map[string]any{"title": "Linked", "first_message": map[string]any{"key": "l1", "text": conversationLogSentinel}}).Conversation
 	requireNativeStatus(t, f.link(t, f.token, linked.ID, "link", true, "Ship the release"), http.StatusOK)
 	requireNativeStatus(t, f.command(t, f.token, linked.ID, conversation.Command{Key: "l2", Kind: conversation.CommandMessage, Text: conversationLogSentinel}), http.StatusOK)
@@ -257,12 +258,12 @@ func TestConversationLoggingRestartNormalization(t *testing.T) {
 			t.Fatalf("seed %q: %v", query, err)
 		}
 	}
-	exec("UPDATE conversations SET execution_json = json_set(execution_json, '$.status', 'running') WHERE id = ?", linked.ID)
-	exec("UPDATE conversation_messages SET delivery = ? WHERE conversation_id = ? AND command_key = ?", conversation.DeliverySending, linked.ID, "l3")
-	exec("UPDATE conversation_commands SET receipt_json = json_set(receipt_json, '$.status', ?) WHERE conversation_id = ? AND key = ?", conversation.DeliverySending, linked.ID, "l3")
+	exec("UPDATE conversations SET execution_json = json_set(execution_json, '$.status', 'running') WHERE id = ?", unlinked.ID)
+	exec("UPDATE conversation_messages SET delivery = ? WHERE conversation_id = ? AND command_key = ?", conversation.DeliverySending, unlinked.ID, "u2")
+	exec("UPDATE conversation_commands SET receipt_json = json_set(receipt_json, '$.status', ?) WHERE conversation_id = ? AND key = ?", conversation.DeliverySending, unlinked.ID, "u2")
 	exec("UPDATE conversation_messages SET delivery = ? WHERE conversation_id = ? AND command_key = ?", conversation.DeliverySaved, unlinked.ID, "u1")
 	var messageID string
-	if err := db.QueryRowContext(ctx, "SELECT id FROM conversation_messages WHERE conversation_id = ? AND command_key = ?", linked.ID, "l2").Scan(&messageID); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT id FROM conversation_messages WHERE conversation_id = ? AND command_key = ?", unlinked.ID, "u2").Scan(&messageID); err != nil {
 		t.Fatalf("read seeded message: %v", err)
 	}
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
@@ -271,7 +272,7 @@ func TestConversationLoggingRestartNormalization(t *testing.T) {
 		t.Fatalf("BeginTx() error = %v", err)
 	}
 	question := conversationQuestionRecord{Question: conversation.Question{
-		ID: conversation.NewQuestionID(), ConversationID: linked.ID, MessageID: messageID,
+		ID: conversation.NewQuestionID(), ConversationID: unlinked.ID, MessageID: messageID,
 		Status: conversation.QuestionPending, Prompts: []conversation.Prompt{{ID: "p", Question: "Continue?"}},
 		CreatedAt: now, UpdatedAt: now,
 	}}

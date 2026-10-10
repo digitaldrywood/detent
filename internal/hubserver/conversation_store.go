@@ -1022,10 +1022,6 @@ type conversationNormalizeSummary struct {
 	Receipts      int64
 }
 
-// normalizeAfterRestart applies the restart rules from internal/conversation
-// in one transaction: in-flight executions become unknown, in-flight
-// deliveries and receipts become unknown, pending questions expire and
-// questions being sent become unknown. The summary counts what changed.
 func (s *conversationStore) normalizeAfterRestart(ctx context.Context, now time.Time) (summary conversationNormalizeSummary, resultErr error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1043,7 +1039,7 @@ func (s *conversationStore) normalizeAfterRestart(ctx context.Context, now time.
 		execution conversation.Execution
 	}
 	pending, err := func() ([]inFlight, error) {
-		rows, err := tx.QueryContext(ctx, "SELECT id, revision, execution_json FROM conversations WHERE json_extract(execution_json, '$.status') IN ('starting', 'running', 'waiting_input', 'interrupting')")
+		rows, err := tx.QueryContext(ctx, "SELECT id, revision, execution_json FROM conversations WHERE work_item_id IS NULL AND json_extract(execution_json, '$.status') IN ('starting', 'running', 'waiting_input', 'interrupting')")
 		if err != nil {
 			return nil, fmt.Errorf("list in-flight conversations: %w", err)
 		}
@@ -1095,7 +1091,7 @@ func (s *conversationStore) normalizeAfterRestart(ctx context.Context, now time.
 		{query: "UPDATE conversation_questions SET status = ?, updated_at = ? WHERE status = ?", args: []any{conversation.QuestionUnknown, stamp, conversation.QuestionSending}, count: &summary.Questions},
 		{query: "UPDATE conversation_commands SET receipt_json = json_set(receipt_json, '$.status', ?, '$.updated_at', ?), updated_at = ? WHERE json_extract(receipt_json, '$.status') IN (?, ?, ?)", args: []any{conversation.DeliveryUnknown, formatHubTime(now), stamp, conversation.DeliverySending, conversation.DeliverySent, conversation.DeliveryResponding}, count: &summary.Receipts},
 	} {
-		result, err := tx.ExecContext(ctx, statement.query, statement.args...)
+		result, err := tx.ExecContext(ctx, statement.query+" AND conversation_id IN (SELECT id FROM conversations WHERE work_item_id IS NULL)", statement.args...)
 		if err != nil {
 			return summary, fmt.Errorf("normalize conversation state: %w", err)
 		}

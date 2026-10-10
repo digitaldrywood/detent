@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -55,17 +56,35 @@ type nativeChangeHub struct {
 // changeFailingTransport refuses Change Request creation when armed, which is
 // how a hub that cannot open the change looks to the runner.
 type changeFailingTransport struct {
-	next         http.RoundTripper
-	fail         atomic.Bool
-	failDiffs    atomic.Bool
-	failEvents   atomic.Bool
-	failIntake   atomic.Bool
-	failDetails  atomic.Bool
-	failVersions atomic.Bool
-	dropVersions atomic.Bool
+	next            http.RoundTripper
+	fail            atomic.Bool
+	failDiffs       atomic.Bool
+	failEvents      atomic.Bool
+	failIntake      atomic.Bool
+	failDetails     atomic.Bool
+	failVersions    atomic.Bool
+	dropVersions    atomic.Bool
+	controlFailures atomic.Int32
+	controlsFailed  chan int
 }
 
 func (t *changeFailingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/controls") {
+		if failure := t.controlFailures.Load(); failure != 0 {
+			if failure > 0 {
+				next := failure - 1
+				if next == 0 {
+					next = -1
+				}
+				t.controlFailures.Store(next)
+				t.controlsFailed <- int(failure)
+			}
+			if failure == 2 {
+				return &http.Response{StatusCode: http.StatusBadGateway, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("hub restarting")), Request: request}, nil
+			}
+			return nil, errors.New("hub disconnected")
+		}
+	}
 	if t.failDetails.Load() && request.Method == http.MethodGet && (strings.Contains(request.URL.Path, "/changes/") || request.URL.Query().Get("view") == "recovery") {
 		return nil, errors.New("change detail unavailable")
 	}
@@ -1390,6 +1409,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 	for _, test := range []struct {
 		finalMessage     string
 		wantDisposition  *tracker.NativeDisposition
+		reconnect        bool
 		publicationFault string
 		publication      string
 		largeOutput      bool
@@ -1469,6 +1489,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "enrolled runner executes beside intake-off local runtime", localIntakeOff: true, staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "commits", commit: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "initial interactive code stays conversation owned", interactive: true, staged: true, wantNone: true, wantState: "In Progress"},
+		{name: "same worker reconnects during a provider command and publishes once", reconnect: true, staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "host commits staged code", staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "expired parent publishes completed staged code", expired: true, staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "expired parent publishes with native validation", expired: true, staged: true, validator: "pass", land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
@@ -1496,6 +1517,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			genuinePublication := test.publication != "" && test.validator != "" && test.publicationFault == ""
+			if test.reconnect {
+				useFastConversationTimings(t)
+			}
 			review := "In Review"
 			states := []tracker.NativeState{
 				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
@@ -1888,6 +1912,88 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						t.Fatal(err)
 					}
 					targetHead = strings.TrimSpace(string(head))
+				}
+			}
+			if test.reconnect {
+				provider.duringLiveTurn = func(request runner.AgentTurnRequest, update runner.AgentUpdateHandler) {
+					ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+					defer cancel()
+					command := exec.CommandContext(ctx, "sh", "-c", "read release")
+					input, err := command.StdinPipe()
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer input.Close()
+					if err := command.Start(); err != nil {
+						t.Fatal(err)
+					}
+					defer func() {
+						_, _ = io.WriteString(input, "release\n")
+						if err := command.Wait(); err != nil {
+							t.Error(err)
+						}
+					}()
+					if err := update(runner.AgentUpdate{Type: runner.AgentUpdateToolStarted, ThreadID: "thread-native", TurnID: "turn-1", ItemID: "validation", Tool: "commandExecution", Command: "long validation"}); err != nil {
+						t.Fatal(err)
+					}
+					var before struct {
+						Conversation struct {
+							ID        string                 `json:"id"`
+							Execution conversation.Execution `json:"execution"`
+						} `json:"conversation"`
+					}
+					ticker := time.NewTicker(5 * time.Millisecond)
+					defer ticker.Stop()
+					for {
+						if err := h.admin.client.request(ctx, http.MethodGet, h.admin.base()+"/work-items/"+issue.ID+"/conversation", nil, &before); err != nil {
+							t.Fatal(err)
+						}
+						if before.Conversation.Execution.Owner.TurnID == "turn-1" {
+							break
+						}
+						select {
+						case <-ticker.C:
+						case <-ctx.Done():
+							t.Fatal("provider turn was not reported")
+						}
+					}
+					h.failChanges.controlsFailed = make(chan int, 2)
+					h.failChanges.controlFailures.Store(2)
+					for range 2 {
+						select {
+						case <-h.failChanges.controlsFailed:
+						case <-ctx.Done():
+							t.Fatal("worker did not retry the transport failure")
+						}
+					}
+					h.reopen(func(string) error { return nil })
+					h.failChanges.controlFailures.Store(0)
+					after := before
+					if err := h.admin.client.request(ctx, http.MethodGet, h.admin.base()+"/work-items/"+issue.ID+"/conversation", nil, &after); err != nil {
+						t.Fatal(err)
+					}
+					if after.Conversation.Execution.Owner != before.Conversation.Execution.Owner || after.Conversation.Execution.Status != conversation.ExecutionRunning || after.Conversation.Execution.Capabilities != before.Conversation.Execution.Capabilities {
+						t.Fatalf("restart lost current worker: before=%+v after=%+v", before.Conversation.Execution, after.Conversation.Execution)
+					}
+					var receipt conversation.Receipt
+					if err := h.admin.client.request(ctx, http.MethodPost, h.admin.base()+"/conversations/"+after.Conversation.ID+"/commands", conversation.Command{Key: "reconnected-steer", Kind: conversation.CommandMessage, Text: "Keep validating", Expected: conversation.Expected{AttemptID: after.Conversation.Execution.Owner.AttemptID, TurnID: "turn-1"}}, &receipt); err != nil {
+						t.Fatal(err)
+					}
+					select {
+					case control := <-request.ConversationControl.Commands:
+						if control.ThreadID != "thread-native" || control.TurnID != "turn-1" || control.Text != "Keep validating" {
+							t.Fatalf("control lost provider identity: %+v", control)
+						}
+						if err := control.Check(ctx); err != nil {
+							t.Fatal(err)
+						}
+						control.Reply <- nil
+					case <-ctx.Done():
+						t.Fatal("original worker did not resume controls")
+					}
+					if err := update(runner.AgentUpdate{Type: runner.AgentUpdateToolCompleted, ThreadID: "thread-native", TurnID: "turn-1", ItemID: "validation", Tool: "commandExecution", Status: "completed"}); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			var runtimeStore store.Store
@@ -2618,6 +2724,27 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatalf("completed Rework lost current review after an earlier landing: reviewed=%t, error=%v", reviewed, err)
 				}
 			}
+			if test.reconnect {
+				detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
+				if err != nil || len(detail.Versions) != 1 || len(h.changes(t, issue.ID)) != 1 || provider.calls != 1 {
+					t.Fatalf("worker finalization did not publish once: detail=%+v calls=%d error=%v", detail, provider.calls, err)
+				}
+				owner := execution.(*nativeExecution).data
+				var stored tracker.AttemptDiff
+				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/attempts/"+owner.AttemptID+"/diff", nil, &stored); err != nil {
+					t.Fatal(err)
+				}
+				if stored.AttemptID != owner.AttemptID || stored.Producer.LeaseID != owner.LeaseID || stored.Producer.FencingToken != owner.FencingToken || detail.Versions[0].AttemptID != owner.AttemptID || detail.Versions[0].RunID != owner.RunID {
+					t.Fatalf("finalization lost current owner fencing: diff=%+v version=%+v", stored, detail.Versions[0])
+				}
+				if err := execution.Finish(t.Context(), "succeeded"); err != nil {
+					t.Fatal(err)
+				}
+				replayed, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
+				if err != nil || !reflect.DeepEqual(detail.Versions, replayed.Versions) || len(h.changes(t, issue.ID)) != 1 {
+					t.Fatalf("repeated finalization republished the Change: %+v, %v", replayed, err)
+				}
+			}
 			h.complete(t, issue.ID, change, test.land)
 			if state := h.state(t, issue.ID); state != test.wantState {
 				t.Fatalf("state = %s, want %s", state, test.wantState)
@@ -2870,6 +2997,7 @@ type committingAgent struct {
 	calls            int
 	bound            bool
 	duringTurn       func()
+	duringLiveTurn   func(runner.AgentTurnRequest, runner.AgentUpdateHandler)
 	afterTurn        func()
 }
 
@@ -2930,6 +3058,9 @@ func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnR
 	}
 	if a.duringTurn != nil {
 		a.duringTurn()
+	}
+	if a.duringLiveTurn != nil {
+		a.duringLiveTurn(request, onUpdate)
 	}
 	if a.dirty {
 		if err := os.WriteFile(filepath.Join(request.Workspace, "SCRATCH.md"), []byte("draft\n"), 0o600); err != nil {
