@@ -1,3 +1,4 @@
+import { AccessKeys, CreatedAccessKey, KeyContext, KeyPolicy, type CreateAccessKey, type PersonalKeyPolicy } from "../../contracts/accessKeys.ts";
 import { CloudModelSelection, type CloudSelection } from "../../contracts/account.ts";
 import { IssueIntake, type IntakeCommand } from "../../contracts/githubIntake.ts";
 // The hosted account API client.
@@ -165,7 +166,22 @@ export function makeAccountApi(options: AccountApiOptions) {
 
   const project = (projectId: string) => `${base}/projects/${encodeURIComponent(projectId)}`;
 
+  const organizationId = base.split("/organizations/")[1]?.split("/")[0] ?? "";
+  const cloudOrganization = `/api/cloud/organizations/${organizationId}`;
   return {
+    personalKeys: () => send(AccessKeys, "GET", "/api/cloud/account/api-keys"),
+    keyContext: () => send(KeyContext, "GET", "/api/cloud/account/key-context"),
+    createPersonalKey: (input: CreateAccessKey) => send(CreatedAccessKey, "POST", "/api/cloud/account/api-keys", input),
+    rotatePersonalKey: (id: string) => send(CreatedAccessKey, "POST", `/api/cloud/account/api-keys/${encodeURIComponent(id)}/rotate`, {}),
+    revokePersonalKey: (id: string) => send(null, "DELETE", `/api/cloud/account/api-keys/${encodeURIComponent(id)}`),
+    serviceKeys: () => send(AccessKeys, "GET", `${cloudOrganization}/service-keys`),
+    createServiceKey: (input: CreateAccessKey) => send(CreatedAccessKey, "POST", `${cloudOrganization}/service-keys`, input),
+    revokeServiceKey: (id: string) => send(null, "DELETE", `${cloudOrganization}/service-keys/${encodeURIComponent(id)}`),
+    memberKeys: () => send(AccessKeys, "GET", `${cloudOrganization}/external-keys`),
+    keyPolicy: () => send(KeyPolicy, "GET", `${cloudOrganization}/key-policy`),
+    saveKeyPolicy: (policy: PersonalKeyPolicy) => send(KeyPolicy, "PUT", `${cloudOrganization}/key-policy`, { personal_keys: policy }),
+    blockMemberKey: (id: string) => send(null, "PUT", `${cloudOrganization}/external-keys/${encodeURIComponent(id)}/block`, {}),
+    approveMemberKey: (id: string) => send(null, "PUT", `${cloudOrganization}/external-keys/${encodeURIComponent(id)}/approve`, {}),
     apiKeys: () => send(OperatorAPIKeys, "GET", `${base}/api-keys`),
     createAPIKey: (input: { name: string; scope: string; expires_days: number; never_expires?: boolean; project_access?: "all" | "selected"; project_ids?: readonly string[] }) =>
       send(CreatedOperatorAPIKey, "POST", `${base}/api-keys`, input),

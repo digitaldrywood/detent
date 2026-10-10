@@ -50,6 +50,7 @@ import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsL
 import { ProjectRankSettings } from "./ProjectRankSettings.tsx";
 import { SpritesCard } from "../account/SpritesCard.tsx";
 import { SlackSettings } from "./SlackSettings.tsx";
+import { PersonalAPIKeysSettings } from "./PersonalAPIKeysSettings.tsx";
 import { MCPSettings } from "./MCPSettings.tsx";
 import { signInPath } from "../../runtime/basePath.ts";
 
@@ -697,6 +698,8 @@ function SettingsBody({
       return <RunnersSettings />;
     case "integrations":
       return <IntegrationsSettings project={project} onNavigate={onNavigate} />;
+    case "api-keys":
+      return <PersonalAPIKeysSettings />;
     case "mcp":
       return <MCPSettings />;
     case "plan":

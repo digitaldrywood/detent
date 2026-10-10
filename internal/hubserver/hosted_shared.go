@@ -205,6 +205,7 @@ func (s *Service) registerHostedSharedRoutes(e *echo.Echo) {
 	e.POST("/internal/v1/keys/catalog", s.entryKeyCatalog, s.operatorAuthority)
 	e.POST("/internal/v1/keys/call", s.entryKeyCall, s.operatorAuthority)
 	e.POST("/internal/v1/keys/admin", s.entryKeyAdmin)
+	e.POST("/internal/v1/keys/context", s.entryKeyContext)
 	e.POST("/internal/v1/keys/audit", s.entryKeyAudit)
 	e.POST("/internal/v1/github/repositories", s.hostedGitHubRepositories)
 	e.POST("/internal/v1/github/receipt", s.hostedGitHubReceipt)
