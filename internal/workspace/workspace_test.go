@@ -3803,7 +3803,11 @@ exit %d
 			if err != nil {
 				t.Fatal(err)
 			}
-			if output != canonicalDir {
+			canonicalOutput, err := filepath.EvalSymlinks(output)
+			if err != nil {
+				t.Fatalf("git query = %q: %v", output, err)
+			}
+			if canonicalOutput != canonicalDir {
 				t.Fatalf("git query = %q, want %q", output, canonicalDir)
 			}
 			if entries, err := os.ReadDir(scratchDir); err != nil || len(entries) != 0 {

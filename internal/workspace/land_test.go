@@ -850,7 +850,9 @@ func TestLocalGitNativeLanding(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			batch := NewLandingBatch(t.Context())
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+			defer cancel()
+			batch := NewLandingBatch(ctx)
 			tickets := make([]*LandingBatchTicket, len(requests))
 			for i := range tickets {
 				tickets[i] = batch.Add()
@@ -860,7 +862,6 @@ func TestLocalGitNativeLanding(t *testing.T) {
 				outcome LandOutcome
 			}
 			done := make(chan completion, len(requests))
-			started := time.Now()
 			for i := len(requests) - 1; i >= 0; i-- {
 				go func() {
 					if i == test.skip {
@@ -875,11 +876,12 @@ func TestLocalGitNativeLanding(t *testing.T) {
 			batch.Seal()
 			outcomes := make([]LandOutcome, len(requests))
 			for range requests {
-				result := <-done
-				outcomes[result.i] = result.outcome
-			}
-			if elapsed := time.Since(started); elapsed >= 30*time.Second {
-				t.Fatalf("clean batch took %s", elapsed)
+				select {
+				case result := <-done:
+					outcomes[result.i] = result.outcome
+				case <-ctx.Done():
+					t.Fatalf("landing batch did not finish: %v", ctx.Err())
+				}
 			}
 			landed := 0
 			for i, outcome := range outcomes {

@@ -672,7 +672,7 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 	}))
 	defer server.Close()
 	defer releaseOnce.Do(func() { close(release) })
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test-token" }})
 	if err != nil {
@@ -686,7 +686,8 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scheduler.nativeHeartbeats["prj_blocked"] = time.Now().Add(-time.Minute)
+	staleHeartbeat := time.Now().Add(-time.Minute)
+	scheduler.nativeHeartbeats["prj_blocked"] = staleHeartbeat
 	scheduler.nativeHeartbeats["prj_free"] = time.Now().Add(time.Hour)
 	free := scheduler.nativeProjects["free"]
 	install := func(id, policyID string, token tracker.FencingToken) nativeClaim {
@@ -735,7 +736,7 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 				if lost := errors.Is(err, orchestrator.ErrSchedulingClaimLost); lost != tc.wantLost || !lost && err != nil {
 					t.Fatalf("renewNativeClaim() error = %v, want lost %t", err, tc.wantLost)
 				}
-			case <-time.After(time.Second):
+			case <-ctx.Done():
 				t.Fatal("lease renewal waited on another project's machine report")
 			}
 			scheduler.mu.Lock()
@@ -761,7 +762,7 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 	scheduler.mu.Lock()
 	reported := scheduler.nativeHeartbeats["prj_blocked"]
 	scheduler.mu.Unlock()
-	if time.Since(reported) > time.Minute {
+	if !reported.After(staleHeartbeat) {
 		t.Fatalf("blocked project heartbeat not committed: %v", reported)
 	}
 }

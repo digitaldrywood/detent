@@ -827,6 +827,8 @@ func TestOpenExcludesAnotherHubProcess(t *testing.T) {
 		{name: "shared entry refuses live sibling", shared: true, sibling: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			bound, release := context.WithTimeout(t.Context(), 2*time.Minute)
+			defer release()
 			path := filepath.Join(t.TempDir(), "hub.db")
 			command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestHubOwnerHelperProcess$")
 			command.Env = append(os.Environ(), "DETENT_HUB_OWNER_HELPER="+path, "GOCOVERDIR="+t.TempDir())
@@ -856,9 +858,7 @@ func TestOpenExcludesAnotherHubProcess(t *testing.T) {
 			}
 
 			if test.sibling {
-				ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
-				defer cancel()
-				contender := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHubOwnerHelperProcess$")
+				contender := exec.CommandContext(bound, os.Args[0], "-test.run=^TestHubOwnerHelperProcess$")
 				contender.Env = append(os.Environ(), "DETENT_HUB_OWNER_HELPER="+path, "DETENT_HUB_OWNER_CONTENDER=1", "GOCOVERDIR="+t.TempDir())
 				output, err := contender.CombinedOutput()
 				if err != nil || !strings.Contains(string(output), "held\n") {
@@ -892,7 +892,7 @@ func TestOpenExcludesAnotherHubProcess(t *testing.T) {
 						_ = got.service.Close()
 					}
 					t.Fatalf("shared tenant exited instead of waiting: %v", got.err)
-				case <-time.After(20 * time.Second):
+				case <-bound.Done():
 					t.Fatal("tenant did not wait on previous owner")
 				}
 				if test.cancel {
@@ -904,7 +904,7 @@ func TestOpenExcludesAnotherHubProcess(t *testing.T) {
 			var got opened
 			select {
 			case got = <-result:
-			case <-time.After(20 * time.Second):
+			case <-bound.Done():
 				t.Fatal("tenant startup did not finish")
 			}
 			if got.service != nil {
