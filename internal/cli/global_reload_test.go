@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -394,6 +395,45 @@ func TestGlobalConfigReloaderUpdatesRuntimeGitHubToken(t *testing.T) {
 	}
 	if got, want := manager.config.RuntimeCredentialVersion, runtimeGitHubTokenVersion("next-token"); got != want {
 		t.Fatalf("RuntimeCredentialVersion = %q, want %q", got, want)
+	}
+}
+
+func TestStartupManagerConfigMatchesFirstReload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs a fake gh command")
+	}
+
+	tests := []struct {
+		name        string
+		githubToken string
+	}{
+		{name: "configured token", githubToken: "literal-token"},
+		{name: "gh sentinel", githubToken: "gh"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeGHDir := t.TempDir()
+			writeFakeGHAuthToken(t, fakeGHDir)
+			t.Setenv("PATH", fakeGHDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("GITHUB_TOKEN", "")
+
+			cfg := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+			cfg.GitHubToken = tt.githubToken
+			token := newRuntimeGitHubTokenState("")
+			startup, err := startupManagerConfig(t.Context(), cfg, token, runtimeGitHubTokenRefresher(newGlobalConfigState(cfg), token))
+			if err != nil {
+				t.Fatalf("startupManagerConfig() error = %v", err)
+			}
+
+			manager := &globalReloadManager{}
+			reloader := &globalConfigReloader{current: cfg, manager: manager, githubToken: token}
+			if _, err := reloader.apply(t.Context(), configwatcher.FileUpdate[globalconfig.Config]{Path: cfg.Path, Value: cfg}); err != nil {
+				t.Fatalf("apply() error = %v", err)
+			}
+			if startup.RuntimeCredentialVersion == "" || !reflect.DeepEqual(startup, manager.config) {
+				t.Fatalf("startup manager config = %+v, first reload = %+v", startup, manager.config)
+			}
+		})
 	}
 }
 

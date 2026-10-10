@@ -349,6 +349,11 @@ func withoutRuntimeGitHubTokenEnv(lookupEnv func(string) string) func(string) st
 	}
 }
 
+func startupManagerConfig(ctx context.Context, cfg globalconfig.Config, token *runtimeGitHubTokenState, refresh func(context.Context) (string, error)) (project.ManagerConfig, error) {
+	_, err := refresh(ctx)
+	return managerConfigWithRuntimeGitHubToken(cfg, token.get()), err
+}
+
 func managerConfigWithRuntimeGitHubToken(cfg globalconfig.Config, token string) project.ManagerConfig {
 	managerConfig := project.ManagerConfigFromGlobal(cfg)
 	managerConfig.RuntimeCredentialVersion = runtimeGitHubTokenVersion(token)
