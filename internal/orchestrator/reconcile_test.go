@@ -1498,3 +1498,31 @@ func TestRefreshHintRoutingStates(t *testing.T) {
 		})
 	}
 }
+
+func TestClearBlockedStatusIssueFollowsTrackerLane(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		source    BlockedSource
+		heldLane  string
+		freshLane string
+		wantHeld  bool
+	}{
+		{name: "project status clears once the lane leaves Blocked", source: BlockedSourceProjectStatus, heldLane: "Blocked", freshLane: "Rework"},
+		{name: "operator stop clears after an operator moves the item", source: BlockedSourceOperatorStop, heldLane: "Blocked", freshLane: "Rework"},
+		{name: "merge duration hold stays while the item is still Merging", source: BlockedSourceMergeDuration, heldLane: "Merging", freshLane: "Merging", wantHeld: true},
+		{name: "merge duration hold clears once the lane moves", source: BlockedSourceMergeDuration, heldLane: "Merging", freshLane: "Rework"},
+		{name: "dependency holds are reconciled by dependency tracking", source: BlockedSourceDependency, heldLane: "Todo", freshLane: "Rework", wantHeld: true},
+		{name: "ownership holds are reconciled by ownership tracking", source: BlockedSourceOwnership, heldLane: "Todo", freshLane: "Rework", wantHeld: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			state := newState(normalizeConfig(Config{}))
+			state.Blocked["issue"] = Blocked{Issue: connector.Issue{ID: "issue", State: test.heldLane}, Source: test.source}
+			clearBlockedStatusIssue(&state, connector.Issue{ID: "issue", State: test.freshLane})
+			if _, held := state.Blocked["issue"]; held != test.wantHeld {
+				t.Fatalf("held = %t, want %t", held, test.wantHeld)
+			}
+		})
+	}
+}

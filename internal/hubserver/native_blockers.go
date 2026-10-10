@@ -114,8 +114,10 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 	if fence != attempt.FencingToken || active {
 		return tracker.ErrStaleFencingToken
 	}
-	if err := requireLeaseRunner(ctx, tx, attempt.LeaseID, scope); err != nil {
-		return err
+	if !instanceOwnedBlockers(attempt.Disposition) {
+		if err := requireLeaseRunner(ctx, tx, attempt.LeaseID, scope); err != nil {
+			return err
+		}
 	}
 	if _, err := validateClaimPolicy(ctx, tx, claimCandidateQuery{NativeScope: &scope, PolicyID: request.PolicyID}, attempt.MachineID); err != nil {
 		return err
@@ -151,6 +153,9 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 		return nativeInvalid("Recorded blocker return lane is not dispatchable")
 	}
 	for _, blocker := range disposition.BlockerEvidence {
+		if blocker.Owner == workpad.BlockerOwnerInstance {
+			continue
+		}
 		if blocker.Unverifiable || blocker.Owner != workpad.BlockerOwnerOrchestrator || blocker.Predicate == nil || blocker.Predicate.Type != workpad.PredicateIssueState {
 			return nativeInvalid("Recorded blocker cannot be verified by native dependencies")
 		}
@@ -180,4 +185,16 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 		return nativeInvalid("Native dependencies remain unfinished")
 	}
 	return nil
+}
+
+func instanceOwnedBlockers(disposition *tracker.NativeDisposition) bool {
+	if disposition == nil || len(disposition.BlockerEvidence) == 0 {
+		return false
+	}
+	for _, blocker := range disposition.BlockerEvidence {
+		if blocker.Owner != workpad.BlockerOwnerInstance {
+			return false
+		}
+	}
+	return true
 }

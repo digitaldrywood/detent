@@ -51,6 +51,7 @@ type nativeChangeHub struct {
 	connector    *NativeConnector
 	scheduler    *Scheduler
 	failChanges  *changeFailingTransport
+	otherWorker  func(*testing.T) *NativeClient
 }
 
 // changeFailingTransport refuses Change Request creation when armed, which is
@@ -227,6 +228,28 @@ func newNativeChangeHubDependencies(t *testing.T, review string, states []tracke
 	}
 	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{Policy: h.descriptor}); err != nil {
 		t.Fatal(err)
+	}
+	h.otherWorker = func(t *testing.T) *NativeClient {
+		t.Helper()
+		var other struct {
+			ID    string `json:"id"`
+			Token string `json:"token"`
+		}
+		if err := admin.request(t.Context(), http.MethodPost, "/api/v1/tokens", map[string]string{"name": "native-change-other-worker", "scope": "worker"}, &other); err != nil {
+			t.Fatal(err)
+		}
+		if err := admin.request(t.Context(), http.MethodPost, "/api/v2/tokens/"+other.ID+"/grants", map[string]any{"organization_id": h.organization, "project_id": h.project}, nil); err != nil {
+			t.Fatal(err)
+		}
+		client, err := New(Config{URL: serverURL, TokenSource: func() string { return other.Token }, HTTPClient: httpClient})
+		if err != nil {
+			t.Fatal(err)
+		}
+		native, err := client.Native(h.organization, h.project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return native
 	}
 	h.failChanges = &changeFailingTransport{next: httpClient.Transport}
 	worker, err := New(Config{URL: serverURL, TokenSource: func() string { return token.Token }, HTTPClient: &http.Client{Transport: h.failChanges}})

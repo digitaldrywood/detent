@@ -222,8 +222,10 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 		dirty         bool
 		second        bool
 		external      bool
+		instance      bool
 	}{
 		{name: "reported prerequisite registers dependency hold"},
+		{name: "instance-owned blocker recovers on any runner without a dependency", instance: true},
 		{name: "canonical native reference", qualified: true},
 		{name: "last reported prerequisite releases hold", second: true},
 		{name: "external prerequisite retains hold", external: true, refusal: "external"},
@@ -306,6 +308,9 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			if test.external {
 				report = strings.Replace(report, reference, "vendor/service#42", 1)
 			}
+			if test.instance {
+				report = "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: 'instance:check-barrier'\n    reason: barrier failed on this host\n    owner: instance\nhuman_action: null\n```"
+			}
 			if test.second {
 				report = strings.Replace(report, "human_action:", fmt.Sprintf("  - ref: '#%d'\n    reason: second prerequisite must finish\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\nhuman_action:", second.Number), 1)
 			}
@@ -329,7 +334,7 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantDependencies := 1
-			if test.refusal == "human" || test.external {
+			if test.refusal == "human" || test.external || test.instance {
 				wantDependencies = 0
 			} else if test.refusal == "relation" || test.second {
 				wantDependencies = 2
@@ -377,6 +382,12 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 				}
 			}
 			request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "too-early", LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}, PolicyID: h.descriptor.ID, BlockerAttemptID: attempt.AttemptID, ExpectedRevision: blocked.Revision, State: prior, Reason: "dependency_ready", ReasonDetail: "recorded_blocker_recovery"}
+			if test.instance {
+				if _, err := h.otherWorker(t).Transition(t.Context(), blocked.WorkItemID, request); err != nil || h.state(t, issue.ID) != prior {
+					t.Fatalf("instance-owned blocker recovery = %v, state %s, want %s", err, h.state(t, issue.ID), prior)
+				}
+				return
+			}
 			if _, err := h.native.Transition(t.Context(), blocked.WorkItemID, request); err == nil {
 				t.Fatal("recovery cleared a genuinely unresolved prerequisite")
 			}

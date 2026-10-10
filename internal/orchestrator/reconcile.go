@@ -533,16 +533,26 @@ func (o *Orchestrator) trackCandidateBlockedStatusIssues(ctx context.Context, st
 			continue
 		}
 		if issueState != blockedState {
-			clearBlockedStatusIssue(state, issue.ID)
+			clearBlockedStatusIssue(state, issue)
 			continue
 		}
 		o.setBlockedStatusIssue(ctx, state, issue, now)
 	}
 }
 
-func clearBlockedStatusIssue(state *State, issueID string) {
-	if blocked, ok := state.Blocked[issueID]; ok && blocked.Source == BlockedSourceProjectStatus {
-		delete(state.Blocked, issueID)
+func clearBlockedStatusIssue(state *State, issue connector.Issue) {
+	blocked, ok := state.Blocked[issue.ID]
+	if !ok {
+		return
+	}
+	switch blocked.Source {
+	case BlockedSourceDependency, BlockedSourceOwnership:
+	case BlockedSourceProjectStatus:
+		delete(state.Blocked, issue.ID)
+	default:
+		if normalizeState(blocked.Issue.State) != normalizeState(issue.State) {
+			delete(state.Blocked, issue.ID)
+		}
 	}
 }
 
