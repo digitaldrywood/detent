@@ -115,8 +115,23 @@ func TestSpritePoolConversion(t *testing.T) {
 				t.Fatalf("pool totals/members changed: %+v", view)
 			}
 			if test.already && !test.captured && test.count > 1 {
-				if _, err := db.ExecContext(t.Context(), "UPDATE organization_sprite_pools SET min_runners=160,max_runners=180,revision=revision+1 WHERE organization_id=?", f.project.OrganizationID); err != nil {
+				f.service.config.Hosted = &HostedConfig{}
+				scope.credential = apiCredential{Scope: apiScopeAdmin, Hash: apikey.HashToken(testHubAdminToken)}
+				if err := db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE token_hash=?", scope.credential.Hash).Scan(&scope.credential.ID); err != nil {
+					t.Fatal(err)
+				}
+				settings := view.spritePoolSettings
+				settings.MinRunners, settings.MaxRunners = 160, 180
+				if err := f.service.updateSpritePool(t.Context(), scope, settings); err != nil {
 					t.Fatalf("cannot restore known original bounds after upgrade: %v", err)
+				}
+				previousRevision := view.Revision
+				view, err = f.service.readSpritePool(t.Context(), scope)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if view.MinRunners != 160 || view.MaxRunners != 180 || view.Revision != previousRevision+1 || len(view.Members) != test.count {
+					t.Fatalf("admin restoration did not retain bounds and members: %+v", view)
 				}
 			}
 			for i, r := range runners {
