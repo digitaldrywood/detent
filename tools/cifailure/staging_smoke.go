@@ -681,6 +681,9 @@ func (s *mcpSmoke) arguments(tool operatortool.Definition) (map[string]any, erro
 	if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
 		return nil, fmt.Errorf("%s: schema: %w", tool.Name, err)
 	}
+	if tool.Name == operatortool.RunnerProjectDiagnostics {
+		schema.Required = append(schema.Required, "runner_id")
+	}
 	for _, alternatives := range []*[]smokeSchema{&schema.AnyOf, &schema.OneOf} {
 		for _, candidate := range *alternatives {
 			available := true

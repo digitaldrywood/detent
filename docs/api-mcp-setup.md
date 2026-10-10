@@ -495,12 +495,15 @@ Provision the persistent resources using [deployment MCP fixtures](deployment-mc
 once in each environment. The smoke discovers the conversation by title and
 the attachment, change, artifact receipt and attempt through the stable
 `MCP smoke dependency` item. Discovery reads run before their resource detail
-calls; missing fixtures produce explicit read skips with recorded reasons. Unsafe
-external and operator mutations are explicitly skipped. The two GitHub import reads are also skipped
-with a named reason: a native smoke project has no external tracker import.
+calls; missing fixtures produce explicit read skips with recorded reasons.
+Unsafe external and operator mutations are explicitly skipped. The two GitHub
+import reads are also skipped with a named reason: a native smoke project has
+no external tracker import.
 The operator-only `get_change`, `get_change_version` and `get_native_run` detail
 reads are skipped because they exceed the dedicated project key's authority.
 Available fixture reads run, and tool errors still fail deployment.
+`runner_project_diagnostics` selects a discovered runner explicitly, including
+when multiple runners report the project.
 `get_project_policy` accepts either an approved policy or the documented
 `policy_mismatch` refusal beginning with `No approved repository policy`;
 other refusals fail the smoke.

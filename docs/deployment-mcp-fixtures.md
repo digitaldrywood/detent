@@ -2,8 +2,9 @@
 
 Provision these resources once in both dedicated smoke tenants to exercise
 fixture-backed deployment MCP reads. Use the tenant's copied API/MCP URL and
-project IDs discovered through `list_projects`; never copy production credentials or IDs into
-source. The staging and production probes run the same fixture discovery.
+project IDs discovered through `list_projects`; never copy production
+credentials or IDs into source. The staging and production probes run the same
+fixture discovery.
 
 Setup uses existing [native API](hub-api.md), MCP commands and the
 [artifact service](artifacts-deployment.md). It does not start a runner process,
@@ -168,6 +169,9 @@ Change discovery/viewed-file reads, exact artifact receipt revision, attempt dif
 attempt receipt, GitHub scope timings and both runner reads.
 `github_scope_timings` uses the recorded attempt's runner ID; unavailable timing
 boundaries are valid because setup made no GitHub requests.
+`runner_project_diagnostics` selects the runner discovered through `runner_fleet`
+so multiple registered runners do not make the read ambiguous. If no runner is
+discovered, this read records an explicit missing-fixture skip.
 
 `get_project_policy` runs too: either an approved policy or the documented
 `policy_mismatch` refusal beginning `No approved repository policy` is valid.
@@ -179,7 +183,8 @@ one would exercise an external tracker/cutover workflow outside the smoke's scop
 
 Run the probe twice to verify persistent resource reuse. Neither invocation may
 create another fixture or dispatch a runner. After discovery finishes, a read
-whose required fixture is absent is explicitly skipped with the missing argument and advertised schema recorded in the output.
+whose required fixture is absent is explicitly skipped with the missing argument
+and advertised schema recorded in the output.
 Available fixtures are exercised. Schema errors, discovery failures and errors
 from exercised tools, including inaccessible resources, still fail deployment.
 The same skip policy applies to staging and production.

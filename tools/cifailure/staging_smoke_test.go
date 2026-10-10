@@ -187,8 +187,8 @@ func TestStagingSmokeHostedGapDoesNotHideDecoderFailure(t *testing.T) {
 
 func TestStagingSmokeWriteCycle(t *testing.T) {
 	operatorReads := []string{operatortool.GetChange, operatortool.GetChangeVersion, operatortool.GetNativeRun}
-	fixtureDetails := strings.Fields(`get_conversation get_conversation_attachment list_conversation_messages stream_conversation_events change_viewed_files get_artifact_reference get_attempt_diff github_scope_timings work_attempt_receipt get_runner_capacity get_runner_update get_runner_routing read_attachment read_attachment_metadata`)
-	fixtureReads := strings.Fields(`list_project_conversations get_conversation get_conversation_attachment list_conversation_messages stream_conversation_events list_changes get_change get_change_version change_viewed_files artifact_references get_artifact_reference work_runs get_attempt_diff get_native_run github_scope_timings work_attempt_receipt get_runner_capacity get_runner_update get_runner_routing get_project_policy`)
+	fixtureDetails := strings.Fields(`get_conversation get_conversation_attachment list_conversation_messages stream_conversation_events change_viewed_files get_artifact_reference get_attempt_diff github_scope_timings work_attempt_receipt get_runner_capacity get_runner_update get_runner_routing runner_project_diagnostics read_attachment read_attachment_metadata`)
+	fixtureReads := strings.Fields(`list_project_conversations get_conversation get_conversation_attachment list_conversation_messages stream_conversation_events list_changes get_change get_change_version change_viewed_files artifact_references get_artifact_reference work_runs get_attempt_diff get_native_run github_scope_timings work_attempt_receipt get_runner_capacity get_runner_update get_runner_routing runner_project_diagnostics get_project_policy`)
 	for _, test := range []struct {
 		name, policyCode, policyMessage string
 		gaps, failure, emptyFixtures    bool
@@ -284,7 +284,14 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 					integrationRevision++
 					result["revision"] = strconv.FormatInt(integrationRevision, 10)
 				case operatortool.RunnerFleet:
-					result["runners"] = []map[string]any{{"id": "runner_fixture"}}
+					result["runners"] = []map[string]any{{"id": "runner_fixture"}, {"id": "runner_other"}}
+				case operatortool.RunnerProjectDiagnostics:
+					if args["runner_id"] == nil {
+						isError = true
+						result = map[string]any{"code": "invalid_request", "message": "Multiple runners report this project; select runner_id"}
+					} else if args["runner_id"] != "runner_fixture" {
+						t.Fatalf("wrong diagnostic runner selector: %v", args)
+					}
 				case operatortool.GetRunnerRouting:
 					if args["runner_id"] != "runner_fixture" {
 						t.Fatalf("undiscovered runner fixture: %v", args)
