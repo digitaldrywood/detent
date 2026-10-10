@@ -2,7 +2,10 @@ package cloudentry
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -15,10 +18,9 @@ func TestStoreEscapedPaths(t *testing.T) {
 	for _, database := range []struct {
 		name          string
 		applicationID int64
-		version       int
 	}{
-		{"registry", registryApplicationID, 20261006163000},
-		{"auth", authApplicationID, 20261006222521},
+		{"registry", registryApplicationID},
+		{"auth", authApplicationID},
 	} {
 		for _, directory := range []string{"plain", "cloud entry café 数据库 #100%"} {
 			t.Run(database.name+"/"+directory, func(t *testing.T) {
@@ -66,10 +68,33 @@ func TestStoreEscapedPaths(t *testing.T) {
 					t.Fatalf("application ID = %d, %v; want %d", applicationID, err, database.applicationID)
 				}
 				var version int
-				if err := db.QueryRowContext(t.Context(), "SELECT max(version_id) FROM entry_schema_version").Scan(&version); err != nil || version != database.version {
-					t.Fatalf("migration version = %d, %v; want %d", version, err, database.version)
+				want := latestMigrationVersion(t, filepath.Join("migrations", database.name))
+				if err := db.QueryRowContext(t.Context(), "SELECT max(version_id) FROM entry_schema_version").Scan(&version); err != nil || version != want {
+					t.Fatalf("migration version = %d, %v; want %d", version, err, want)
 				}
 			})
 		}
 	}
+}
+
+func latestMigrationVersion(t *testing.T, directory string) int {
+	t.Helper()
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest := 0
+	for _, entry := range entries {
+		prefix, _, ok := strings.Cut(entry.Name(), "_")
+		if !ok || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		if version, err := strconv.Atoi(prefix); err == nil && version > latest {
+			latest = version
+		}
+	}
+	if latest == 0 {
+		t.Fatalf("no migrations in %s", directory)
+	}
+	return latest
 }
