@@ -106,7 +106,16 @@ func (s *Service) accountKeyContext(c echo.Context) error {
 	}{result, s.config.PublicURL + "/mcp"})
 }
 
+type keyReachOwner struct {
+	Organization string
+	Owner        string
+}
+
 func (s *Service) describeKey(ctx context.Context, key accessKey, organizations []Organization) (keyView, error) {
+	return s.describeKeyWithReachCache(ctx, key, organizations, nil)
+}
+
+func (s *Service) describeKeyWithReachCache(ctx context.Context, key accessKey, organizations []Organization, cache map[keyReachOwner]keyReach) (keyView, error) {
 	view := keyView{accessKey: key, EffectiveReach: []keyReach{}}
 	var last sql.NullString
 	if err := s.auth.store.db.QueryRowContext(ctx, "SELECT MAX(last_used_at) FROM access_key_organizations WHERE key_id=?", key.ID).Scan(&last); err != nil {
@@ -120,7 +129,16 @@ func (s *Service) describeKey(ctx context.Context, key accessKey, organizations 
 		if !reaches {
 			continue
 		}
-		reach, err := s.ownerKeyReach(ctx, key.Owner, key.OwnerEmail, org)
+		cacheKey := keyReachOwner{Organization: org.ID, Owner: key.Owner}
+		reach, cached := cache[cacheKey]
+		var err error
+		if !cached {
+			reach, err = s.ownerKeyReach(ctx, key.Owner, key.OwnerEmail, org)
+			if err == nil && cache != nil {
+				cache[cacheKey] = reach
+			}
+		}
+		reach.Projects = slices.Clone(reach.Projects)
 		if err != nil {
 			var refusal *apikey.Refusal
 			if errors.As(err, &refusal) {

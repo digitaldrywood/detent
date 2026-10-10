@@ -177,7 +177,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     serviceKeys: () => send(AccessKeys, "GET", `${cloudOrganization}/service-keys`),
     createServiceKey: (input: CreateAccessKey) => send(CreatedAccessKey, "POST", `${cloudOrganization}/service-keys`, input),
     revokeServiceKey: (id: string) => send(null, "DELETE", `${cloudOrganization}/service-keys/${encodeURIComponent(id)}`),
-    memberKeys: () => send(AccessKeys, "GET", `${cloudOrganization}/external-keys`),
+    memberKeys: (cursor = "") => send(AccessKeys, "GET", `${cloudOrganization}/external-keys${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
     keyPolicy: () => send(KeyPolicy, "GET", `${cloudOrganization}/key-policy`),
     saveKeyPolicy: (policy: PersonalKeyPolicy) => send(KeyPolicy, "PUT", `${cloudOrganization}/key-policy`, { personal_keys: policy }),
     blockMemberKey: (id: string) => send(null, "PUT", `${cloudOrganization}/external-keys/${encodeURIComponent(id)}/block`, {}),
