@@ -140,8 +140,8 @@ func parseNativeIssueIncludes(value string) (bool, error) {
 		return false, nil
 	}
 	for name := range strings.SplitSeq(value, ",") {
-		if name = strings.TrimSpace(name); name != "workspace" && name != "work" && name != "summary" {
-			return false, nativeInvalid("include supports workspace,work,summary")
+		if name = strings.TrimSpace(name); name != "workspace" && name != "work" && name != "summary" && name != "board" {
+			return false, nativeInvalid("include supports workspace,work,summary,board")
 		}
 	}
 	return slices.ContainsFunc(strings.Split(value, ","), func(name string) bool { return strings.TrimSpace(name) == "workspace" }), nil
@@ -162,6 +162,9 @@ func (s *Service) listNativeIssues(c echo.Context) error {
 }
 
 func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
+	if slices.Contains(strings.Split(params.Get("include"), ","), "board") {
+		return s.readBoardIssues(ctx, scope, params)
+	}
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items"
 
 	if err := validateNativeIssueQuery(params); err != nil {

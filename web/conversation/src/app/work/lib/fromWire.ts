@@ -8,6 +8,7 @@ import type {
   ChangeDetail,
   ChangeRequest,
   NativeAttempt,
+  NativeBoardCard,
   NativeIssue,
   NativeProject,
 } from "../../../contracts/work.ts";
@@ -220,5 +221,23 @@ export function toWorkItemView(
       extras.attempts === undefined ? null : toAttemptView(extras.attempts, extras.runnerNames),
     change: extras.change ?? null,
     conversationId: extras.conversationId ?? null,
+  };
+}
+
+export function toBoardCardView(card: NativeBoardCard, projectName: string): WorkItemView {
+  const item = toWorkItemView(card.issue, projectName, { observations: { worker: "known", change: "known" } });
+  const attempt = card.attempt;
+  const change = card.change;
+  const externalNumber = change?.external === undefined ? null : Number.parseInt(change.external.id, 10);
+  return { ...item, reserveWorkerSpace: attempt !== null,
+    attempt: attempt === null ? null : {
+      id: attempt.attempt_id, status: attempt.status, running: attempt.status === "running",
+      runner: runnerDisplay(undefined, attempt.runner_id ?? attempt.machine_id ?? null),
+      backend: attempt.identity?.backend ?? null, model: attempt.identity?.model ?? null,
+      effort: null, access: null, startedAt: attempt.started_at, tokens: null, progress: null, attemptNumber: attempt.count ?? 1,
+    },
+    change: change === null ? null : { id: change.change_id,
+      number: externalNumber !== null && Number.isFinite(externalNumber) ? externalNumber : null,
+      title: change.title, state: change.status, review: reviewWord(change.status), url: change.external?.url ?? null },
   };
 }
