@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
@@ -77,6 +78,10 @@ func (l *LocalGit) RunLandingBarrier(ctx context.Context, id, base, command stri
 	result, resultErr = l.RunReviewCommand(ctx, info, issue, command)
 	if !result.StartedAt.IsZero() {
 		result.TimingStage = "barrier"
+	}
+	if resultErr != nil && result.DurationNS > 0 {
+		slog.Warn("landing barrier cleanup failed after the command finished", "barrier", id, "error", resultErr)
+		resultErr = nil
 	}
 	return result, resultErr
 }
