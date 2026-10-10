@@ -33,7 +33,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 		{name: "active execution", running: true, status: http.StatusUnprocessableEntity},
 		{name: "partition and lease expiry do not prove quiescence", running: true, expired: true, status: http.StatusUnprocessableEntity},
 		{name: "terminal execution still owns lease", status: http.StatusUnprocessableEntity},
-		{name: "dirty changes not captured", dirty: true, released: true, status: http.StatusUnprocessableEntity},
+		{name: "legacy dirty changes no longer pin the source", dirty: true, released: true, status: http.StatusOK},
 		{name: "write grant does not grant runner management", denied: true, released: true, status: http.StatusForbidden},
 		{name: "clean startup with uncertain publication", cleanEffect: true, uncertain: true, released: true, status: http.StatusUnprocessableEntity},
 		{name: "uncertain publication outcome", uncertain: true, released: true, status: http.StatusUnprocessableEntity},
@@ -258,8 +258,6 @@ func TestNativeSourceTransfer(t *testing.T) {
 				}
 				return
 			}
-			claim.SessionID = "returned-source"
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", a.redemption.Credential, claim), http.StatusConflict)
 			claim.MachineID, claim.SessionID = b.binding.MachineID, "destination"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", b.redemption.Credential, claim), http.StatusOK)
 			event.IdempotencyKey, event.Data.Sequence = "late-owner", 4

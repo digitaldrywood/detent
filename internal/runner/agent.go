@@ -1212,6 +1212,9 @@ func (r *Runner) runAgentTurn(
 			workerProcessObserved = true
 		}
 		r.logAgentUpdate(runRequest, detentSessionID, update)
+		if update.Type == AgentUpdateTurnCompleted && !update.AuxiliaryTurn {
+			runRequest.checkpointRefs.requestPush()
+		}
 		if artifacts, ok := runRequest.Execution.(ArtifactExecution); ok && update.Delta != "" {
 			if err := artifacts.ArtifactLog(updateCtx, update.Delta); err != nil {
 				r.logger.Warn("artifact log upload deferred", "issue_id", runRequest.Issue.ID)
@@ -1590,12 +1593,19 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 
 		var recovered workspace.ChangeSource
 		recovered, err = source.RecoverChangeSource(ctx)
-		if err != nil {
+		if err != nil && !checkpointRefCoversChangeSource(err, req.Execution.Recovery(), nativeLanding, freshCheckout) {
 			return RunResult{}, fmt.Errorf("recover native Change source: %w", err)
+		}
+		if err != nil {
+			r.logWorkerEvent(req.Issue, "worker_change_source_from_checkpoint_ref", "error", err)
+			err = nil
 		}
 		if recovered.Version.ID != "" {
 			workspaceIssue.Source = &recovered
 		}
+	}
+	if req.Execution != nil && !nativeLanding && !freshCheckout {
+		workspaceIssue.Checkpoint = nativeRestorableCheckpoint(req.Execution.Recovery(), workspaceIssue.Source)
 	}
 	var landingTarget NativeLandingTarget
 	if nativeLanding {
@@ -1763,6 +1773,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "initial")
+	if !nativeLanding && (mode == RunModeImplement || mode == RunModePlan) {
+		req.checkpointRefs = newCheckpointRefs(runWorkspace, req.Execution, info, workspaceIssue, recoveryState)
+		defer req.checkpointRefs.halt()
+	}
 	var promptRecoveryState *workspace.RecoveryState
 	initialDeliverableState := workspaceDeliverableStateObservation{}
 	initialArtifactEvidence := workspaceArtifactEvidenceObservation{}
@@ -1953,6 +1967,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if !agentResumeEmpty(agentResumeFromState(resumeState)) {
 			checkpoint.Resume = "resume_session"
 		}
+		req.checkpointRefs.apply(&checkpoint)
 		if err := req.Execution.Checkpoint(ctx, checkpoint); err != nil {
 			return RunResult{}, err
 		}
@@ -2019,6 +2034,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			if !agentResumeEmpty(agentResumeFromState(resumeState)) {
 				checkpoint.Resume = "resume_session"
 			}
+			r.pushCheckpointRef(ctx, req.checkpointRefs, req, "rework_started")
+			req.checkpointRefs.apply(&checkpoint)
 			if err := req.Execution.Checkpoint(ctx, checkpoint); err != nil {
 				return RunResult{}, err
 			}
@@ -2102,6 +2119,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	checkpoint := r.prepareWorkerCheckpoint(ctx, req, runWorkspace, info, workspaceIssue)
+	r.startCheckpointRefs(ctx, req.checkpointRefs, req, runWorkspace)
 	sessionID, sessionStarted, err := r.startSession(ctx, req, startedAt, runtimeIdentity, resumeState, orphanRecoveryOutcome, orphanRecoveryFallbackReason)
 	if err != nil {
 		return RunResult{}, err

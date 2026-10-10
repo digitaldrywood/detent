@@ -658,6 +658,7 @@ type RunRequest struct {
 	sessionTokenOffset        int64
 	retainCheckpoint          bool
 	finalizeNativeWork        bool
+	checkpointRefs            *checkpointRefs
 	executionCancellation     func() error
 	validationEvidenceSource  AttemptDiffSource
 }

@@ -247,6 +247,7 @@ type ResidualReconciler interface {
 
 type Issue struct {
 	Source                  *ChangeSource
+	Checkpoint              *CheckpointRef
 	Landing                 *LandOptions
 	NativeRework            bool
 	FreshCheckout           bool
@@ -620,6 +621,26 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			return Info{}, err
 		}
 	}
+	if issue.Checkpoint != nil {
+		checkpoint := *issue.Checkpoint
+		release, err := l.acquireSourceOperation(ctx)
+		if err != nil {
+			return Info{}, err
+		}
+		err = l.fetchCheckpointRef(ctx, &checkpoint)
+		release()
+		if err != nil {
+			return Info{}, err
+		}
+		issue.Checkpoint, issue.FreshCheckout = &checkpoint, true
+		exists, isDir, err := pathExists(info.Path)
+		if err != nil {
+			return Info{}, err
+		}
+		if exists && isDir && l.isSourceWorktree(ctx, info.Path) && checkpointMatches(ctx, info.Path, &checkpoint) {
+			issue.Checkpoint, issue.FreshCheckout = nil, false
+		}
+	}
 	if issue.NativeRework && !issue.FreshCheckout {
 		exists, isDir, err := pathExists(info.Path)
 		if err != nil {
@@ -650,6 +671,9 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		if issue.Source != nil {
 			head = issue.Source.Version.HeadSHA
 		}
+		if issue.Checkpoint != nil {
+			head = issue.Checkpoint.HeadSHA
+		}
 		created, err = l.createWorktree(ctx, info.Path, info.Branch, issue.FreshCheckout, head)
 	}
 	if issue.Landing != nil && created {
@@ -672,7 +696,15 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			return Info{}, l.preserveFailedWorkspace(ctx, info.Path, err)
 		}
 	}
-	if err := l.prepareChangeSourceWorktree(ctx, info, issue); err != nil {
+	if issue.Checkpoint != nil {
+		observed, err := runGitAt(ctx, info.Path, "rev-parse", "HEAD")
+		if err != nil || strings.TrimSpace(observed) != issue.Checkpoint.HeadSHA {
+			return Info{}, errors.Join(fmt.Errorf("restored worktree head differs from checkpoint %s", issue.Checkpoint.Ref), err)
+		}
+		if err := restoreCheckpointTree(ctx, info.Path, issue.Checkpoint); err != nil {
+			return Info{}, err
+		}
+	} else if err := l.prepareChangeSourceWorktree(ctx, info, issue); err != nil {
 		return Info{}, err
 	}
 	if issue.Landing != nil {
@@ -779,6 +811,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		if err := l.removeOwnershipRecord(info.Path); err != nil {
 			return result, err
 		}
+		l.deleteCheckpointRef(ctx, issue)
 		return result, nil
 	}
 	result.Processes = reapWorkspaceProcesses(ctx, info.Path, l.logger)
@@ -808,6 +841,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	if err := l.removeOwnershipRecord(info.Path); err != nil {
 		return result, err
 	}
+	l.deleteCheckpointRef(ctx, issue)
 	return result, nil
 }
 

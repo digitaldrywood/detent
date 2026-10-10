@@ -319,6 +319,18 @@ func TestNativeCheckpointValidation(t *testing.T) {
 		{"untyped change", func(d *tracker.NativeRunData) {
 			d.Handoff.Change = &tracker.NativeChangeReference{ChangeID: "https://example.com"}
 		}},
+		{"git checkpoint without commit", func(d *tracker.NativeRunData) {
+			d.Handoff.Storage, d.Handoff.Ref, d.Handoff.TreeSHA = "git_ref", tracker.CheckpointRefPrefix+"wi_1", strings.Repeat("e", 40)
+		}},
+		{"git checkpoint outside the Detent namespace", func(d *tracker.NativeRunData) {
+			d.Handoff.Storage, d.Handoff.Ref, d.Handoff.CommitSHA, d.Handoff.TreeSHA = "git_ref", "refs/heads/main", strings.Repeat("c", 40), strings.Repeat("e", 40)
+		}},
+		{"git checkpoint ref traversal", func(d *tracker.NativeRunData) {
+			d.Handoff.Storage, d.Handoff.Ref, d.Handoff.CommitSHA, d.Handoff.TreeSHA = "git_ref", tracker.CheckpointRefPrefix+"..", strings.Repeat("c", 40), strings.Repeat("e", 40)
+		}},
+		{"local checkpoint claiming a git ref", func(d *tracker.NativeRunData) {
+			d.Handoff.Ref, d.Handoff.CommitSHA, d.Handoff.TreeSHA = tracker.CheckpointRefPrefix+"wi_1", strings.Repeat("c", 40), strings.Repeat("e", 40)
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			data := tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}, Handoff: nativeTestCheckpoint()}

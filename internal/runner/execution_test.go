@@ -251,7 +251,6 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 		{name: "already paused index changed", rework: true, paused: true, foreign: "index", blocked: true},
 		{name: "already paused hidden index edit", rework: true, paused: true, foreign: "hidden-index", blocked: true},
 		{name: "already paused lease revoked", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.validateErr = ErrExecutionAuthorityUnavailable }},
-		{name: "already paused host changed", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Lease.MachineID = "other-host" }},
 		{name: "already paused policy changed", rework: true, paused: true, fresh: true, changedPolicy: true},
 		{name: "already paused unavailable checkpoint", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
 			e.recovery.Attempts[0].Checkpoint.Availability = "inaccessible"
@@ -267,7 +266,6 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 		{name: "rework foreign head", rework: true, foreign: "head", blocked: true},
 		{name: "rework wrong branch", rework: true, foreign: "branch", blocked: true},
 		{name: "rework lease revoked", rework: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.validateErr = ErrExecutionAuthorityUnavailable }},
-		{name: "rework host changed", rework: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Lease.MachineID = "other-host" }},
 		{name: "rework policy changed", rework: true, fresh: true, changedPolicy: true},
 		{name: "published checkpoint policy changed", fresh: true, changedPolicy: true, published: true},
 		{name: "policy changed with ambiguous publication", rework: true, changedPolicy: true, fresh: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
@@ -323,7 +321,6 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 		{name: "workspace changed", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
 			e.recovery.Attempts[0].Checkpoint.WorkspaceDigest = "other-digest"
 		}},
-		{name: "host changed", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Lease.MachineID = "other-host" }},
 		{name: "ambiguous effect", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
 			e.recovery.Attempts[0].Checkpoint.ExternalEffect = "git_push"
 			e.recovery.Attempts[0].Checkpoint.EffectState = "ambiguous"
@@ -958,8 +955,8 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		}, "manual_recovery", "checkpoint_unavailable", nil},
 		{"first run", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Attempts = nil }, "fresh_checkout", "no_prior_attempt", nil},
 		{"missing checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Attempts[0].Checkpoint = nil }, "fresh_checkout", "checkpoint_missing", nil},
-		{"machine lost with dirty work", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Lease.MachineID = "other" }, "manual_recovery", "checkpoint_unavailable", nil},
-		{"local workspace missing", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) { *local = nil }, "manual_recovery", "checkpoint_unavailable", nil},
+		{"machine lost with dirty work", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Lease.MachineID = "other" }, "fresh_checkout", "checkpoint_unavailable", nil},
+		{"local workspace missing", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) { *local = nil }, "fresh_checkout", "checkpoint_unavailable", nil},
 		{"dirty checkpoint replaced", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
 			(*local).WorkspaceFingerprint = "different"
 		}, "manual_recovery", "local_checkpoint_changed", nil},
@@ -1006,6 +1003,25 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		{"manual checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.Resume = "manual_recovery"
 		}, "manual_recovery", "checkpoint_requires_recovery", nil},
+		{"git checkpoint restores on another runner", func(r *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
+			r.Lease.MachineID = "other"
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+			(*local).HeadSHA, (*local).WorkspaceFingerprint = "restored", "restored-digest"
+		}, "fresh_checkout", "session_restart_required", nil},
+		{"git checkpoint resumes a session its runner still has", func(r *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+			(*local).WorkspaceFingerprint = "restored-digest"
+		}, "resume_session", "verified_local_session", nil},
+		{"interrupted git checkpoint without its session never blocks", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, available *bool) {
+			r.Attempts[0].Status = "interrupted"
+			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "provider_turn", "pending"
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+			*available = false
+		}, "fresh_checkout", "session_restart_required", nil},
+		{"git checkpoint keeps an uncertain push", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "git_push", "ambiguous"
+		}, "manual_recovery", "external_effect_uncertain", nil},
 		{"current Change supersedes obsolete unpushed checkpoint", func(*tracker.NativeRecovery, **workspace.RecoveryState, *bool) {}, "fresh_checkout", "session_restart_required", current},
 		{"current Change on original machine", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].MachineID = "machine"
@@ -1015,13 +1031,13 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		}, "fresh_checkout", "session_restart_required", current},
 		{"current Change with dirty checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.WorktreeState = "dirty"
-		}, "manual_recovery", "checkpoint_unavailable", current},
+		}, "fresh_checkout", "checkpoint_unavailable", current},
 		{"current Change with dirty local source", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
 			(*local).TrackedPaths = []string{"work.go"}
-		}, "manual_recovery", "checkpoint_unavailable", current},
+		}, "fresh_checkout", "checkpoint_unavailable", current},
 		{"current Change does not match local head", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
 			(*local).HeadSHA = "unrelated"
-		}, "manual_recovery", "checkpoint_unavailable", current},
+		}, "fresh_checkout", "checkpoint_unavailable", current},
 		{"current Change preserves ambiguous push", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "git_push", "ambiguous"
 		}, "manual_recovery", "external_effect_uncertain", current},
@@ -1058,6 +1074,10 @@ func TestNativeRecoveryDecision(t *testing.T) {
 			})
 		}
 	}
+}
+
+func remoteCheckpoint(c *tracker.NativeCheckpoint) {
+	c.Storage, c.Ref, c.CommitSHA, c.TreeSHA = "git_ref", tracker.CheckpointRefPrefix+"work", strings.Repeat("c", 40), strings.Repeat("e", 40)
 }
 
 func TestNativeEpiloguePreservesBeforeCleanup(t *testing.T) {
@@ -1213,22 +1233,23 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 		fresh       bool
 		ambiguous   bool
 		automatic   bool
+		lost        bool
 	}{
 		{name: "first run without worker GitHub access"},
-		{name: "lost checkpoint", blocked: true},
+		{name: "lost legacy checkpoint starts fresh", lost: true},
 		{name: "preserved planner checkpoint", local: true},
 		{name: "explicit worker GitHub access", workerAuth: true},
 		{name: "interrupted planner requires resume evidence", local: true, interrupted: true, blocked: true},
 		{name: "explicit fresh implementation preserves planner workspace", local: true, interrupted: true, fresh: true},
 		{name: "automatic fresh cannot restart interrupted planner", local: true, interrupted: true, fresh: true, blocked: true, automatic: true},
-		{name: "explicit fresh cannot discard missing dirty checkpoint", interrupted: true, fresh: true, blocked: true},
+		{name: "explicit fresh restarts from a lost legacy checkpoint", interrupted: true, fresh: true},
 		{name: "explicit fresh cannot replay ambiguous push", local: true, interrupted: true, fresh: true, ambiguous: true, blocked: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}}}
 			agent := &fakeCodexClient{}
 			execution := &testExecution{}
-			if test.blocked || test.local || test.interrupted {
+			if test.lost || test.local || test.interrupted {
 				execution.recovery = tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "new-machine"}, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{MachineID: "lost-machine"}, Checkpoint: &tracker.NativeCheckpoint{Storage: "local_only", WorktreeState: "dirty", Resume: "resume_session"}}}}
 			}
 			if test.local {
@@ -1564,31 +1585,39 @@ func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
 
 type wipExecutionWorkspace struct {
 	retainedExecutionWorkspace
-	published      bool
-	publishErr     error
-	publishedState *workspace.RecoveryState
+	published  bool
+	pushes     int
+	publishErr error
 }
 
-func (w *wipExecutionWorkspace) PublishWorkInProgress(ctx context.Context, _ workspace.Issue, validate func(context.Context) error) error {
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
+func (w *wipExecutionWorkspace) PushCheckpointRef(ctx context.Context, _ workspace.Info, _ workspace.Issue, previous workspace.CheckpointRef, validate func(context.Context) error) (workspace.CheckpointRef, bool, error) {
 	if err := validate(ctx); err != nil {
-		return err
+		return previous, false, err
 	}
+	w.pushes++
 	w.published = true
-	if w.publishErr == nil && w.publishedState != nil {
-		w.recoveryStates = []workspace.RecoveryState{*w.publishedState}
+	if w.publishErr != nil {
+		return previous, false, w.publishErr
 	}
-	return w.publishErr
+	return workspace.CheckpointRef{Ref: workspace.CheckpointRefPrefix + "work", CommitSHA: strings.Repeat("c", 40), HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("e", 40)}, true, nil
 }
 
-func TestAvailabilityDeadlinePublishesBeforeFinish(t *testing.T) {
+func TestStageEndPushesCheckpointRef(t *testing.T) {
 	t.Parallel()
-	for _, failed := range []bool{false, true} {
-		t.Run(strconv.FormatBool(failed), func(t *testing.T) {
-			backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}, publishedState: &workspace.RecoveryState{HeadSHA: "published-head", WorkspaceFingerprint: "published-digest"}}
-			if failed {
+	for _, test := range []struct {
+		name       string
+		failed     bool
+		restored   *workspace.CheckpointRef
+		wantCommit string
+	}{
+		{name: "pushed", wantCommit: strings.Repeat("c", 40)},
+		{name: "push failure keeps the job and records local state", failed: true},
+		{name: "push failure keeps the newest recorded checkpoint", failed: true, restored: &workspace.CheckpointRef{Ref: workspace.CheckpointRefPrefix + "work", CommitSHA: strings.Repeat("b", 40), TreeSHA: strings.Repeat("d", 40)}, wantCommit: strings.Repeat("b", 40)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
+			if test.failed {
 				backend.publishErr = errors.New("push unavailable")
 			}
 			execution := &availabilityTestExecution{deadline: time.Now().Add(-time.Second)}
@@ -1596,15 +1625,22 @@ func TestAvailabilityDeadlinePublishesBeforeFinish(t *testing.T) {
 			cancel(context.Canceled)
 			defer cancel(context.Canceled)
 			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
-			err := r.afterExecution(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, backend, workspace.Info{}, workspace.Issue{}, AgentResume{}, false)
-			if !backend.published || backend.afterRun {
-				t.Fatalf("published=%t cleaned=%t", backend.published, backend.afterRun)
+			req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}
+			req.checkpointRefs = newCheckpointRefs(backend, execution, workspace.Info{}, workspace.Issue{Checkpoint: test.restored}, nil)
+			err := r.afterExecution(ctx, req, backend, workspace.Info{}, workspace.Issue{}, AgentResume{}, true)
+			wantPushes := 1
+			if test.failed {
+				wantPushes = checkpointRefFinalAttempts
 			}
-			if failed && !errors.Is(err, backend.publishErr) {
-				t.Fatalf("publish error lost: %v", err)
+			if backend.pushes != wantPushes || backend.afterRun || errors.Is(err, backend.publishErr) && backend.publishErr != nil {
+				t.Fatalf("pushes=%d cleaned=%t err=%v", backend.pushes, backend.afterRun, err)
 			}
-			if execution.checkpoint == nil || !failed && (execution.checkpoint.WorktreeState != "clean" || execution.checkpoint.HeadSHA != "published-head" || execution.checkpoint.WorkspaceDigest != "published-digest") {
-				t.Fatalf("final checkpoint = %#v", execution.checkpoint)
+			checkpoint := execution.checkpoint
+			if checkpoint == nil || checkpoint.CommitSHA != test.wantCommit || checkpoint.GitRef() != (test.wantCommit != "") {
+				t.Fatalf("final checkpoint = %#v", checkpoint)
+			}
+			if checkpoint.GitRef() && checkpoint.Resume == "manual_recovery" {
+				t.Fatal("a pushed checkpoint still demands manual recovery")
 			}
 		})
 	}
@@ -1645,7 +1681,7 @@ func (e *deadlineRunExecution) Finish(ctx context.Context, outcome string) error
 		return ctx.Err()
 	}
 	if !*e.published {
-		return errors.New("finish preceded WIP publication")
+		return errors.New("finish preceded checkpoint ref push")
 	}
 	e.finish = outcome
 	return nil
@@ -1663,7 +1699,7 @@ func (b *availabilityStoppingBackend) RunTurn(ctx context.Context, _ AgentTurnRe
 	return AgentTurnResult{}, errors.Join(ctx.Err(), b.err)
 }
 
-func TestRunnerAvailabilityInterruptionFinishesAfterWIP(t *testing.T) {
+func TestRunnerAvailabilityInterruptionFinishesAfterCheckpointRef(t *testing.T) {
 	if testing.Short() {
 		t.Skip("real-time lifecycle and timeout integration")
 	}
@@ -1753,7 +1789,7 @@ func TestAvailabilityStopFinalizesLocalSessionAfterPushFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
-	if !errors.Is(err, backend.publishErr) || sessionStore.finishCalls != 1 || sessionStore.usageCalls != 1 || execution.finish != "interrupted" {
+	if errors.Is(err, backend.publishErr) || backend.pushes == 0 || sessionStore.finishCalls != 1 || sessionStore.usageCalls != 1 || execution.finish != "interrupted" {
 		t.Fatalf("error=%v session finishes=%d usage=%d outcome=%s", err, sessionStore.finishCalls, sessionStore.usageCalls, execution.finish)
 	}
 }

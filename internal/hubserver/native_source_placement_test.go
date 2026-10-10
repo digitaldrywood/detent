@@ -16,22 +16,24 @@ func TestNativeSourcePlacement(t *testing.T) {
 	for _, test := range []struct {
 		name, state, availability              string
 		source, initial, newerClean, uncertain bool
-		corrupt, missing, wrongHead            bool
+		corrupt, missing, wrongHead, pushed    bool
 		owner, destination                     bool
 	}{
-		{name: "local dirty", state: "dirty", owner: true},
-		{name: "legacy unpushed", state: "unpushed", owner: true},
+		{name: "legacy local dirty is not pinned", state: "dirty", owner: true, destination: true},
+		{name: "legacy unpushed is not pinned", state: "unpushed", owner: true, destination: true},
+		{name: "pushed checkpoint restores anywhere", state: "dirty", pushed: true, owner: true, destination: true},
+		{name: "pushed checkpoint ignores a missing Hub bundle", state: "unpushed", pushed: true, source: true, missing: true, owner: true, destination: true},
 		{name: "missing local source", state: "dirty", availability: "missing"},
 		{name: "inaccessible local source", state: "dirty", availability: "inaccessible"},
 		{name: "verified immutable source", state: "unpushed", source: true, owner: true, destination: true},
 		{name: "corrupt retained bytes", state: "unpushed", source: true, corrupt: true, owner: true},
 		{name: "corrupt retained and missing local source", state: "unpushed", source: true, corrupt: true, availability: "missing"},
 		{name: "missing retained bytes", state: "unpushed", source: true, missing: true, owner: true},
-		{name: "retained older head cannot replace checkpoint", state: "unpushed", source: true, wrongHead: true, owner: true},
-		{name: "durable commit does not contain dirty changes", state: "dirty", source: true, owner: true},
+		{name: "legacy checkpoint ahead of verified source is not pinned", state: "unpushed", source: true, wrongHead: true, owner: true, destination: true},
+		{name: "legacy dirty checkpoint after verified source is not pinned", state: "dirty", source: true, owner: true, destination: true},
 		{name: "initial checkout is not completed source", state: "clean", initial: true, owner: true, destination: true},
 		{name: "clean startup with uncertain publication owns source", state: "clean", initial: true, uncertain: true, owner: true},
-		{name: "newer clean startup does not hide source", state: "dirty", newerClean: true, owner: true},
+		{name: "newer clean startup does not hide source", state: "dirty", newerClean: true, owner: true, destination: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}))
@@ -56,6 +58,10 @@ func TestNativeSourcePlacement(t *testing.T) {
 			}
 			if test.availability != "" {
 				event.Data.Handoff.Availability = test.availability
+			}
+			if test.pushed {
+				event.Data.Handoff.Storage, event.Data.Handoff.Ref = "git_ref", tracker.CheckpointRefPrefix+string(f.issue.WorkItemID)
+				event.Data.Handoff.CommitSHA, event.Data.Handoff.TreeSHA = strings.Repeat("c", 40), strings.Repeat("e", 40)
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 			if test.source {
@@ -108,7 +114,7 @@ func TestNativeSourcePlacement(t *testing.T) {
 				machine tracker.MachineID
 				allowed bool
 			}{{"source-machine", test.owner}, {"destination-machine", test.destination}} {
-				allowed, reason, err := nativeSourceClaimAllowed(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, candidate.machine, id, time.Now())
+				allowed, reason, err := nativeSourceClaimAllowed(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, candidate.machine, id)
 				if err != nil || allowed != candidate.allowed {
 					t.Fatalf("%s allowed=%v reason=%q error=%v", candidate.machine, allowed, reason, err)
 				}
@@ -127,9 +133,9 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 		source, ownerOffline     bool
 		otherAllowed             bool
 	}{
-		{name: "local-only checkpoint is claimed by its owner and refused elsewhere", state: "dirty", otherReason: "is local to source runner"},
-		{name: "local-only checkpoint waits for an offline owner", state: "unpushed", ownerOffline: true, otherReason: "is local to source runner"},
-		{name: "verified durable source stays with an online owner", state: "unpushed", source: true, otherReason: "stays with source runner"},
+		{name: "local-only checkpoint is not pinned to its online owner", state: "dirty", otherAllowed: true},
+		{name: "local-only checkpoint does not wait for an offline owner", state: "unpushed", ownerOffline: true, otherAllowed: true},
+		{name: "verified durable source is not pinned to an online owner", state: "unpushed", source: true, otherAllowed: true},
 		{name: "verified durable source moves when the owner is offline", state: "unpushed", source: true, ownerOffline: true, otherAllowed: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {

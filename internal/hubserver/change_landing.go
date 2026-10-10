@@ -357,6 +357,9 @@ func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nati
 	if checkpoint == nil || checkpoint.Storage != "local_only" || checkpoint.WorktreeState != "unpushed" || checkpoint.HeadSHA != version.HeadSHA {
 		return true, true, nil
 	}
+	if stored, err := nativeChangeSourceStored(ctx, query, version); err != nil || stored {
+		return stored, true, err
+	}
 	return attempt.MachineID == machine && (attempt.RunnerID == "" || attempt.RunnerID == scope.credential.Runner.RunnerID), true, nil
 }
 
