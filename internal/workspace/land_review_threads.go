@@ -68,7 +68,9 @@ func resolveLandingReviewThreads(ctx context.Context, client GitHubRESTClient, r
 			}
 		}
 		if thread.Bot && !surfacedAt(thread, head) {
-			_ = replyLandingReviewThread(ctx, client, thread.ID, "Detent surfaced this conversation to Rework at "+shortLandingHead(head)+".\n\n<!-- detent:surfaced "+head+" -->")
+			if err := replyLandingReviewThread(ctx, client, thread.ID, "Detent surfaced this conversation to Rework at "+shortLandingHead(head)+".\n\n<!-- detent:surfaced "+head+" -->"); err != nil {
+				thread.Body += "\n(surfacing reply failed; this thread will not be auto-resolved until a later surfacing reply succeeds)"
+			}
 		}
 		remaining = append(remaining, thread)
 	}
@@ -103,7 +105,7 @@ func readLandingReviewThreads(ctx context.Context, client GitHubRESTClient, repo
 	owner, name, _ := strings.Cut(repository, "/")
 	var threads []landingReviewThread
 	var after any
-	for page := 0; page < landingReviewThreadPages; page++ {
+	for range landingReviewThreadPages {
 		var result struct {
 			Repository *struct {
 				PullRequest *struct {
