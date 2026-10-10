@@ -110,7 +110,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	last := s.nativeHeartbeats[project]
 	owner := s.updateOwner
 	s.mu.Unlock()
-	if !last.IsZero() && now.Before(last.Add(s.heartbeatInterval)) {
+	if ownerView == nil && !last.IsZero() && now.Before(last.Add(s.heartbeatInterval)) {
 		return nil
 	}
 	var update *runnerauth.UpdateObservation
