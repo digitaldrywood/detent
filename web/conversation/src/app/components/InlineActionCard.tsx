@@ -8,7 +8,7 @@ export function InlineActionCard({ proposal, text }: {
   text: string;
 }): React.ReactElement {
   const client = useClient();
-  const requiresApproval = proposal.action.kind === "set_runner_tier" || proposal.action.kind === "set_sprite_pool";
+  const requiresApproval = proposal.action.kind === "set_runner_tier" || proposal.action.kind === "set_sprite_pool" || proposal.action.kind === "convert_runner_scope" || proposal.action.kind === "promote_sprites_token";
   const preferenceKey = `detent:chat-confirmation:${client.bootstrap.actor.principal_id}`;
   const resultKey = `${preferenceKey}:${String(proposal.action.request_id)}`;
   const requiresConfirmation = requiresApproval || proposal.action.requires_confirmation === true;

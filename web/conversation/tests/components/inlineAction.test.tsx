@@ -13,7 +13,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it.each(["set_runner_tier", "set_sprite_pool"])("requires approval for %s with ordinary confirmations off", async (kind) => {
+it.each(["set_runner_tier", "set_sprite_pool", "convert_runner_scope", "promote_sprites_token"])("requires approval for %s with ordinary confirmations off", async (kind) => {
   localStorage.setItem("detent:chat-confirmation:tier-admin", "off");
   const submit = vi.fn().mockResolvedValue({ ok: true });
   vi.stubGlobal("fetch", submit);

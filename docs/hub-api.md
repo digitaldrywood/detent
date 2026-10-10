@@ -95,12 +95,25 @@ Hosted organizations expose `GET` and `PUT`
 `/api/v2/organizations/{organization}/sprite-pool`.
 There is one pool for all current and future projects; writes require owner/admin authority and the current
 `revision` (zero for initial configuration). Settings are `min_runners` (default
-zero), `max_runners` (default zero, disabled; maximum 100), `idle_seconds` (default
+zero), `max_runners` (default zero, disabled; at least the floor), `idle_seconds` (default
 300; range 30–86400), and `bootstrap`. Enabling requires nonempty customer
 bootstrap steps, hosted configuration and the organization secret store.
 The response includes current settings, every active member and the most recent
 20 deleted members, with lifecycle state, ordinary runner ID and last safe
 bootstrap progress log. The runner settings page exposes these reads.
+
+Legacy per-project pools convert in place at schema upgrade: their floors and
+ceilings are summed, and their existing members retain Sprite names, runner IDs
+and project-token overrides. A forward migration restores totals captured before
+the historical capped cutover. If that cutover already deleted the legacy rows
+without capturing their totals, the original bounds must be supplied through
+the existing pool settings; the upgrade does not infer them from member counts.
+Administrators can then change the organization
+bounds through the existing pool settings. No project token is promoted
+implicitly. Luna's `promote_sprites_token` previews the first existing project
+token in organization project rank order as the organization default; an owner
+or admin must explicitly approve it. The preview is bound to that exact source
+token, and an existing organization token is never overwritten by promotion.
 
 Store the customer's Sprites organization token through the write-only
 `/api/v2/organizations/{organization}/secrets/fly_sprites_token` endpoint.
@@ -341,6 +354,13 @@ Stripe purchases, auto-fund and chat usage retain their existing ledger kinds.
 Organization-scoped runners enroll with `scope: "organization"` and an empty
 `project_ids` list. Routing can switch between `organization` and `projects`;
 omitting scope on existing project enrollments retains explicit project access.
+The runner owner may change its allowed projects; an organization owner/admin
+may also convert an existing project runner to organization scope. This routing
+change preserves identity, enrollment, project rank overrides, checkouts and
+provider logins, applies on the next refresh, and never releases active leases.
+Luna's `convert_runner_scope` uses the same routing command with explicit admin
+approval. Routing lists additional projects and links to their existing policy
+review in project settings; conversion approves no repository policies.
 Every claim still requires approved repository policy, supported isolation and
 available capacity. Shared runners choose the organization project rank before
 issue priority; `project_ranks` on a runner overrides the organization rank for

@@ -280,8 +280,11 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 	if action.Kind == chat.ActionIssueSplit {
 		return s.executeCoordinatorIssueSplit(ctx, action)
 	}
-	if string(action.Kind) == "set_runner_tier" {
+	if string(action.Kind) == "set_runner_tier" || string(action.Kind) == "convert_runner_scope" {
 		return s.executeCoordinatorRunnerAction(ctx, action)
+	}
+	if string(action.Kind) == "promote_sprites_token" {
+		return s.executePromoteSpritesToken(ctx, action)
 	}
 	if coordinatorSpriteMutation(string(action.Kind)) {
 		return s.executeCoordinatorSpriteAction(ctx, action)
@@ -358,7 +361,7 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 
 func (s *Service) authorizeCoordinatorAction(ctx context.Context, action chat.Action) (context.Context, error) {
 	requirement := operatortool.Requirement{Scope: apikey.ScopeWrite, ProjectID: action.ProjectID, ResourceKind: "work_item", ResourceID: action.IssueID}
-	if string(action.Kind) == "set_runner_tier" || string(action.Kind) == "update_project_integration" || coordinatorSpriteMutation(string(action.Kind)) {
+	if string(action.Kind) == "set_runner_tier" || string(action.Kind) == "convert_runner_scope" || string(action.Kind) == "promote_sprites_token" || string(action.Kind) == "update_project_integration" || coordinatorSpriteMutation(string(action.Kind)) {
 		requirement.Scope, requirement.ResourceKind, requirement.ResourceID = apikey.ScopeAdmin, "", ""
 	}
 	if action.Kind == chat.ActionArchiveItems || action.Kind == chat.ActionFileIssue {
@@ -439,7 +442,7 @@ func (s *Service) postConversationAction(c echo.Context) error {
 	if err := s.conversations.authorizeWrite(ctx, s.database.db, scope, record); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if !slices.Contains([]string{operatortool.StopRun, operatortool.FileIssue, operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_runner_tier", "set_sprite_pool", "scale_up_sprite_pool", string(chat.ActionIssueSplit), string(chat.ActionArchiveItems)}, string(action.Kind)) || action.ProjectID != string(scope.project) || action.RequestID == "" || len(action.RequestID) > 128 {
+	if !slices.Contains([]string{operatortool.StopRun, operatortool.FileIssue, operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_runner_tier", "convert_runner_scope", "promote_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", string(chat.ActionIssueSplit), string(chat.ActionArchiveItems)}, string(action.Kind)) || action.ProjectID != string(scope.project) || action.RequestID == "" || len(action.RequestID) > 128 {
 		return invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
 	identity := operatortool.ConnectionIdentity(ctx)

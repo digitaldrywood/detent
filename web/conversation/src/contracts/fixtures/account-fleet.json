@@ -3,6 +3,7 @@
     {
       "id": "rnr_macbook",
       "editable": false,
+      "can_convert_scope": false,
       "machine_id": "machine_macbook",
       "display_name": "Michael's MacBook Pro",
       "hostname": "michaels-macbook-pro.local",
@@ -75,6 +76,7 @@
     {
       "id": "rnr_macmini",
       "editable": false,
+      "can_convert_scope": false,
       "machine_id": "machine_macmini",
       "display_name": "mac-mini-1",
       "hostname": "mac-mini-1.local",
