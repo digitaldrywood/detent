@@ -896,7 +896,7 @@ func githubLandingREST(ctx context.Context, client GitHubRESTClient, method, pat
 				if decodeErr := json.Unmarshal([]byte(status.Body), &response); decodeErr == nil {
 					message := strings.ToLower(response.Message)
 					if strings.Contains(message, "conversation") && strings.Contains(message, "resolved") {
-						return refuse(LandRefusalReviewThreads, "GitHub refused the reviewed head merge until its review conversations are resolved: "+status.Error())
+						return refuse(LandRefusalProtected, ReviewConversationsRefusalText+" GitHub refused the reviewed head merge: "+status.Error())
 					}
 					if strings.Contains(message, "pull request is closed") || strings.Contains(message, "pull request is not open") {
 						return refuse(LandRefusalHeadMoved, "GitHub refused the reviewed head merge: "+status.Error())

@@ -12,9 +12,10 @@ import (
 )
 
 type reviewThreadClient struct {
-	threads   string
+	pages     []string
 	readErr   error
 	failClose string
+	cursors   []any
 	mutations []string
 }
 
@@ -27,7 +28,8 @@ func (c *reviewThreadClient) GraphQL(_ context.Context, query string, variables 
 		if c.readErr != nil {
 			return c.readErr
 		}
-		return json.Unmarshal([]byte(c.threads), out)
+		c.cursors = append(c.cursors, variables["after"])
+		return json.Unmarshal([]byte(c.pages[len(c.cursors)-1]), out)
 	}
 	thread, _ := variables["thread"].(string)
 	if thread == c.failClose {
@@ -36,80 +38,95 @@ func (c *reviewThreadClient) GraphQL(_ context.Context, query string, variables 
 	kind := "reply"
 	if strings.Contains(query, "resolveReviewThread") {
 		kind = "resolve"
+	} else if strings.Contains(variables["body"].(string), "detent:surfaced") {
+		kind = "surface"
 	}
 	c.mutations = append(c.mutations, kind+":"+thread)
 	return nil
 }
 
-func reviewThreadsResponse(nodes ...string) string {
-	return `{"repository":{"pullRequest":{"reviewThreads":{"nodes":[` + strings.Join(nodes, ",") + `]}}}}`
+func reviewThreadsPage(next string, nodes ...string) string {
+	return `{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":` + map[bool]string{true: "true", false: "false"}[next != ""] + `,"endCursor":"` + next + `"},"nodes":[` + strings.Join(nodes, ",") + `]}}}}`
 }
 
-func reviewThreadNode(id string, resolved bool, author, typename, commit, body string) string {
-	encoded, _ := json.Marshal(map[string]any{
-		"id": id, "isResolved": resolved, "path": "web/app.ts", "line": 7,
-		"comments": map[string]any{"nodes": []any{map[string]any{
-			"body":           body,
-			"author":         map[string]any{"__typename": typename, "login": author},
-			"originalCommit": map[string]any{"oid": commit},
-		}}},
-	})
+func reviewThreadNode(id string, resolved bool, author, typename, body string, replies ...string) string {
+	comments := []any{map[string]any{"body": body, "author": map[string]any{"__typename": typename, "login": author}}}
+	for _, reply := range replies {
+		comments = append(comments, map[string]any{"body": reply, "author": map[string]any{"__typename": "User", "login": "corylanou"}})
+	}
+	encoded, _ := json.Marshal(map[string]any{"id": id, "isResolved": resolved, "path": "web/app.ts", "line": 7, "comments": map[string]any{"nodes": comments}})
 	return string(encoded)
 }
 
 func TestResolveLandingReviewThreads(t *testing.T) {
 	const head = "1111111111111111111111111111111111111111"
 	const earlier = "2222222222222222222222222222222222222222"
-	conversation := refuse(LandRefusalReviewThreads, "GitHub refused the merge")
+	surfacedEarlier := "Detent surfaced this conversation to Rework.\n\n<!-- detent:surfaced " + earlier + " -->"
+	surfacedNow := "<!-- detent:surfaced " + head + " -->"
+	conversation := refuse(LandRefusalProtected, ReviewConversationsRefusalText+" GitHub refused the merge")
 	for _, test := range []struct {
 		name          string
 		refusal       error
 		client        *reviewThreadClient
 		wantRetry     bool
-		wantKind      string
 		wantReason    []string
 		wantMutations []string
+		wantCursors   int
 	}{
 		{
-			name:     "other refusals pass through untouched",
-			refusal:  refuse(LandRefusalProtected, "required reviews"),
-			client:   &reviewThreadClient{},
-			wantKind: LandRefusalProtected,
+			name:    "other protected refusals pass through untouched",
+			refusal: refuse(LandRefusalProtected, "required reviews"),
+			client:  &reviewThreadClient{},
 		},
 		{
-			name:          "bot findings from an earlier head are resolved and the merge retries",
+			name:          "a bot finding surfaced to an earlier Rework is resolved and the merge retries",
 			refusal:       conversation,
-			client:        &reviewThreadClient{threads: reviewThreadsResponse(reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", earlier, "P2 finding"), reviewThreadNode("T0", true, "chatgpt-codex-connector", "Bot", earlier, "done"))},
+			client:        &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P2 finding", surfacedEarlier), reviewThreadNode("T0", true, "chatgpt-codex-connector", "Bot", "done"))}},
 			wantRetry:     true,
 			wantMutations: []string{"reply:T1", "resolve:T1"},
+			wantCursors:   1,
 		},
 		{
-			name:       "bot findings on the current head reach Rework",
-			refusal:    conversation,
-			client:     &reviewThreadClient{threads: reviewThreadsResponse(reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", head, "Honor partial baselines"))},
-			wantKind:   LandRefusalReviewThreads,
-			wantReason: []string{"chatgpt-codex-connector on web/app.ts:7: Honor partial baselines"},
-		},
-		{
-			name:          "human conversations are surfaced and never resolved",
+			name:          "a bot finding never surfaced is surfaced, not resolved",
 			refusal:       conversation,
-			client:        &reviewThreadClient{threads: reviewThreadsResponse(reviewThreadNode("T1", false, "corylanou", "User", earlier, "Please rename this"), reviewThreadNode("T2", false, "reviewer[bot]", "User", earlier, "old finding"))},
-			wantKind:      LandRefusalReviewThreads,
-			wantReason:    []string{"corylanou on web/app.ts:7: Please rename this", "1 bot conversation(s) raised on earlier heads were resolved"},
-			wantMutations: []string{"reply:T2", "resolve:T2"},
+			client:        &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "Honor partial baselines"))}},
+			wantReason:    []string{ReviewConversationsRefusalText, "chatgpt-codex-connector on web/app.ts:7: Honor partial baselines"},
+			wantMutations: []string{"surface:T1"},
+			wantCursors:   1,
 		},
 		{
-			name:       "a failed resolution keeps the finding actionable",
-			refusal:    conversation,
-			client:     &reviewThreadClient{failClose: "T1", threads: reviewThreadsResponse(reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", earlier, "P1 finding"))},
-			wantKind:   LandRefusalReviewThreads,
-			wantReason: []string{"P1 finding"},
+			name:        "a bot finding already surfaced at this head stays actionable without another reply",
+			refusal:     conversation,
+			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "Still open", surfacedNow))}},
+			wantReason:  []string{"Still open"},
+			wantCursors: 1,
+		},
+		{
+			name:        "human conversations are surfaced in the refusal and never resolved",
+			refusal:     conversation,
+			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "corylanou", "User", "Please rename this", surfacedEarlier))}},
+			wantReason:  []string{"corylanou on web/app.ts:7: Please rename this"},
+			wantCursors: 1,
+		},
+		{
+			name:          "every page of the thread connection is read",
+			refusal:       conversation,
+			client:        &reviewThreadClient{pages: []string{reviewThreadsPage("c1", reviewThreadNode("T0", true, "chatgpt-codex-connector", "Bot", "old")), reviewThreadsPage("", reviewThreadNode("T9", false, "chatgpt-codex-connector", "Bot", "Second page finding"))}},
+			wantReason:    []string{"Second page finding"},
+			wantMutations: []string{"surface:T9"},
+			wantCursors:   2,
+		},
+		{
+			name:        "a failed resolution keeps the finding actionable",
+			refusal:     conversation,
+			client:      &reviewThreadClient{failClose: "T1", pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P1 finding", surfacedEarlier))}},
+			wantReason:  []string{"P1 finding"},
+			wantCursors: 1,
 		},
 		{
 			name:       "an unreadable thread list keeps the GitHub refusal",
 			refusal:    conversation,
 			client:     &reviewThreadClient{readErr: &github.StatusError{StatusCode: http.StatusBadGateway}},
-			wantKind:   LandRefusalReviewThreads,
 			wantReason: []string{"GitHub refused the merge"},
 		},
 	} {
@@ -121,8 +138,8 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 				}
 			} else {
 				var refusal *LandRefusal
-				if !errors.As(err, &refusal) || refusal.Kind != test.wantKind {
-					t.Fatalf("resolveLandingReviewThreads() = %v, want %s refusal", err, test.wantKind)
+				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalProtected {
+					t.Fatalf("resolveLandingReviewThreads() = %v, want a protected refusal", err)
 				}
 				for _, want := range test.wantReason {
 					if !strings.Contains(err.Error(), want) {
@@ -133,26 +150,32 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			if strings.Join(test.client.mutations, ",") != strings.Join(test.wantMutations, ",") {
 				t.Fatalf("mutations = %v, want %v", test.client.mutations, test.wantMutations)
 			}
+			if len(test.client.cursors) != test.wantCursors {
+				t.Fatalf("pages read = %d, want %d", len(test.client.cursors), test.wantCursors)
+			}
+			if test.wantCursors == 2 && test.client.cursors[1] != "c1" {
+				t.Fatalf("second page cursor = %v, want c1", test.client.cursors[1])
+			}
 		})
 	}
 }
 
 func TestGitHubLandingRESTConversationRefusal(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		message string
-		want    string
+		name         string
+		message      string
+		conversation bool
 	}{
-		{name: "ruleset conversation resolution", message: "Repository rule violations found\n\nA conversation must be resolved before this pull request can be merged.", want: LandRefusalReviewThreads},
-		{name: "branch protection reviews stay protected", message: "Branch protection requires reviews", want: LandRefusalProtected},
+		{name: "ruleset conversation resolution", message: "Repository rule violations found\n\nA conversation must be resolved before this pull request can be merged.", conversation: true},
+		{name: "branch protection reviews stay generic", message: "Branch protection requires reviews"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			body, _ := json.Marshal(map[string]string{"message": test.message})
 			client := &statusRESTClient{err: &github.StatusError{StatusCode: http.StatusMethodNotAllowed, Body: string(body)}}
 			err := githubLandingREST(context.Background(), client, http.MethodPut, "repos/example/repo/pulls/7/merge", nil, nil)
 			var refusal *LandRefusal
-			if !errors.As(err, &refusal) || refusal.Kind != test.want {
-				t.Fatalf("githubLandingREST() = %v, want %s", err, test.want)
+			if !errors.As(err, &refusal) || refusal.Kind != LandRefusalProtected || ReviewConversationsRefusal(refusal.Reason) != test.conversation {
+				t.Fatalf("githubLandingREST() = %v, want protected refusal with conversation=%v", err, test.conversation)
 			}
 		})
 	}

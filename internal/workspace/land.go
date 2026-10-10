@@ -117,13 +117,12 @@ type LandResult struct {
 
 // Landing refusal kinds, each a reason a person acts on.
 const (
-	LandRefusalHeadMoved     = "head_moved"
-	LandRefusalMissingHead   = "missing_head"
-	LandRefusalConflict      = "conflict"
-	LandRefusalNothing       = "nothing_to_land"
-	LandRefusalProtected     = "base_protected"
-	LandRefusalBaseMoved     = "base_moved"
-	LandRefusalReviewThreads = "review_threads"
+	LandRefusalHeadMoved   = "head_moved"
+	LandRefusalMissingHead = "missing_head"
+	LandRefusalConflict    = "conflict"
+	LandRefusalNothing     = "nothing_to_land"
+	LandRefusalProtected   = "base_protected"
+	LandRefusalBaseMoved   = "base_moved"
 )
 
 // LandRefusal is a landing the repository or its history did not allow. It is
