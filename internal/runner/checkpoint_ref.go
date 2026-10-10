@@ -191,3 +191,22 @@ func (c *checkpointRefs) halt() {
 		c.stop()
 	}
 }
+
+// sameMachineWorkspaceRetained reports whether the previous attempt ran on this
+// runner and its workspace is still here. That workspace is at least as new as
+// the pushed checkpoint, which cannot hold an unmerged index, so this runner
+// continues in it; every other runner restores the checkpoint ref.
+func sameMachineWorkspaceRetained(backend workspace.Backend, recovery tracker.NativeRecovery, issue workspace.Issue) bool {
+	previous := recovery.SourceAttempt()
+	if previous == nil || previous.MachineID == "" || previous.MachineID != recovery.Lease.MachineID {
+		return false
+	}
+	local, ok := backend.(interface {
+		Existing(workspace.Issue) (workspace.Info, error)
+	})
+	if !ok {
+		return false
+	}
+	_, err := local.Existing(issue)
+	return err == nil
+}
