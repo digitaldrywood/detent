@@ -157,7 +157,6 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "work")
 	worker := f.worker(t, "worker")
-	other := f.worker(t, "replacement")
 	lease := claimNativeAttempt(t, f, worker, "first-machine", "first-session", issue.WorkItemID)
 	event := nativeStartedEvent(lease)
 	path := f.base + "/work-items/" + string(issue.WorkItemID)
@@ -183,10 +182,7 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 	}
 	f.service = openTestService(t, config)
 	now = now.Add(90*time.Second + time.Nanosecond)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", other, map[string]any{"id": "other-machine", "hostname": "other-machine", "version": "test", "capacity": 1}), http.StatusOK)
-	refused := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", other, tracker.NativeClaim{PolicyID: lease.PolicyID, WorkItemID: issue.WorkItemID, MachineID: "other-machine", SessionID: "other-session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
-	requireNativeStatus(t, refused, http.StatusConflict)
-	other = worker
+	other := worker
 	replacement := claimNativeAttempt(t, f, other, "first-machine", "other-session", issue.WorkItemID)
 	if replacement.FencingToken <= lease.FencingToken {
 		t.Fatal("lease reassignment did not advance fencing")

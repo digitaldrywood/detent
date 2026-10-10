@@ -345,12 +345,12 @@ func nativePublicationRecovery(recovery tracker.NativeRecovery, local *workspace
 		return false
 	}
 	checkpoint, version := previous.Checkpoint, current.Version
-	if previous.MachineID != recovery.Lease.MachineID || previous.PolicyID != recovery.Lease.PolicyID || version.PolicyID != recovery.Lease.PolicyID ||
+	if previous.PolicyID != recovery.Lease.PolicyID || version.PolicyID != recovery.Lease.PolicyID ||
 		version.Policy.ID != version.PolicyID || !version.Policy.Gates.GitHubPullRequest || version.ID == "" || version.ChangeID == "" || version.Repository == "" ||
 		checkpoint.Change == nil || *checkpoint.Change != (tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) ||
 		checkpoint.HeadSHA != version.HeadSHA || checkpoint.EffectID == "" || checkpoint.Availability != "available" || checkpoint.Storage != "local_only" && !checkpoint.GitRef() ||
 		(checkpoint.WorktreeState != "clean" && checkpoint.WorktreeState != "unpushed") || local.HeadSHA != version.HeadSHA ||
-		checkpoint.WorkspaceDigest == "" || checkpoint.WorkspaceDigest != local.WorkspaceFingerprint || len(local.TrackedPaths) != 0 || len(local.UntrackedPaths) != 0 {
+		len(local.TrackedPaths) != 0 || len(local.UntrackedPaths) != 0 {
 		return false
 	}
 	return recovery.ChangeDetail != nil && recovery.ChangeDetail.Change.ID == version.ChangeID && recovery.ChangeDetail.Change.CurrentVersion == version.ID &&

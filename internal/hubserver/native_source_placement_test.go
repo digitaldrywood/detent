@@ -32,7 +32,8 @@ func TestNativeSourcePlacement(t *testing.T) {
 		{name: "legacy checkpoint ahead of verified source is not pinned", state: "unpushed", source: true, wrongHead: true, owner: true, destination: true},
 		{name: "legacy dirty checkpoint after verified source is not pinned", state: "dirty", source: true, owner: true, destination: true},
 		{name: "initial checkout is not completed source", state: "clean", initial: true, owner: true, destination: true},
-		{name: "clean startup with uncertain publication owns source", state: "clean", initial: true, uncertain: true, owner: true},
+		{name: "uncertain publication reconciles on any runner", state: "clean", initial: true, uncertain: true, owner: true, destination: true},
+		{name: "uncertain publication of verified source reconciles on any runner", state: "unpushed", source: true, uncertain: true, owner: true, destination: true},
 		{name: "newer clean startup does not hide source", state: "dirty", newerClean: true, owner: true, destination: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {

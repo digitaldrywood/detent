@@ -229,7 +229,7 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			if previous := e.claim.recovery.SourceAttempt(); previous != nil && previous.Checkpoint != nil &&
 				(previous.Checkpoint.EffectState == "pending" || previous.Checkpoint.EffectState == "ambiguous") {
 				checkpoint := previous.Checkpoint
-				if e.role != runner.RoleRework || !checkpoint.UncertainForgeEffect() || e.recoveredSource == nil || previous.MachineID != e.claim.lease.MachineID ||
+				if e.role != runner.RoleRework || !checkpoint.UncertainForgeEffect() || e.recoveredSource == nil ||
 					previous.PolicyID != version.PolicyID || checkpoint.Change == nil || *checkpoint.Change != (tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) ||
 					checkpoint.HeadSHA != version.HeadSHA || checkpoint.Storage != "local_only" && !checkpoint.GitRef() || checkpoint.Availability != "available" || e.lastDiff.HeadSHA != version.HeadSHA {
 					return errors.New("uncertain publication requires unchanged verified current Rework source under its newly owned lease; preserve its checkpoint and reconcile the source, version and policy before retrying")

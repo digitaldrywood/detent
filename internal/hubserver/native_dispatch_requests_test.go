@@ -179,6 +179,9 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "unfinished external blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", Blockers: true}},
 		{name: "unfinished human action keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", HumanAction: true}},
 		{name: "missing legacy disposition keeps the answer"},
+		{name: "uncertain push without a disposition is reconciled by any runner", retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
+			c.ExternalEffect, c.EffectState, c.EffectID = "git_push", "pending", newNativeID("effect")
+		}},
 		{name: "legacy complete unpublished retained source is runnable", finalMessage: completeReport, legacy: true, retainedSource: true, wantCandidate: true},
 		{name: "typed complete unpublished retained source is runnable", finalMessage: completeReport, retainedSource: true, wantCandidate: true},
 		{name: "typed complete without legacy body is runnable", disposition: &tracker.NativeDisposition{Status: "complete"}, retainedSource: true, wantCandidate: true},
@@ -198,10 +201,10 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "legacy complete with missing digest stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.WorkspaceDigest = "" }},
 		{name: "legacy complete with unavailable source stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.Availability = "missing" }},
 		{name: "legacy complete requiring manual recovery stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.Resume = "manual_recovery" }},
-		{name: "legacy complete with pending publication stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
+		{name: "pending publication is reconciled by any runner", finalMessage: completeReport, legacy: true, retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
 			c.ExternalEffect, c.EffectState, c.EffectID = "git_push", "pending", newNativeID("effect")
 		}},
-		{name: "legacy complete with ambiguous publication stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
+		{name: "ambiguous publication is reconciled by any runner", finalMessage: completeReport, legacy: true, retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
 			c.ExternalEffect, c.EffectState, c.EffectID = "pr_create", "ambiguous", newNativeID("effect")
 		}},
 		{name: "legacy complete with genuine publication stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "owned"},
