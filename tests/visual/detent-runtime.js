@@ -72,6 +72,24 @@ async function startDetentRuntime(name, args, options = {}) {
     releaseStartup() {
       child.stdin.write("hydrate\n");
     },
+    async waitForProjectsReady() {
+      const deadline = Date.now() + 60_000;
+      let last = "";
+      while (Date.now() < deadline) {
+        try {
+          const state = await (await fetch(`${url}/api/v1/state`)).json();
+          const projects = state.projects || [];
+          last = projects.map((project) => `${project.project?.id}:${project.refresh?.status}`).join(",");
+          if (projects.length > 0 && projects.every((project) => project.refresh?.status === "ready")) {
+            return;
+          }
+        } catch (error) {
+          last = String(error);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      throw new Error(`${name} projects did not finish their first refresh: ${last}`);
+    },
     async stop() {
       if (child.exitCode !== null) {
         return;

@@ -8,6 +8,7 @@ test("open board disables moves and recovers after runtime restart", async ({
   let runtime = await startDetentRuntime("board-restart", args);
 
   try {
+    await runtime.waitForProjectsReady();
     await page.goto(`${runtime.url}/`, { waitUntil: "domcontentloaded" });
     await page.locator("#board-lanes").waitFor({ state: "visible" });
     const cards = page.locator('[data-kanban-action="move"]');
@@ -45,6 +46,7 @@ test("open board disables moves and recovers after runtime restart", async ({
       home,
       port: Number(port),
     });
+    await runtime.waitForProjectsReady();
 
     await expect(page.locator("html")).toHaveAttribute(
       "data-detent-connection",
