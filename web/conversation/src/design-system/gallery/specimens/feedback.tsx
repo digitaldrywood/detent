@@ -27,6 +27,31 @@ import { Spinner } from "~/components/ui/spinner";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 
 import { Cell, keysOf, LONG_LABEL, Matrix, Row, type GalleryDoc } from "../specimen";
+import { RunnerStatusDot } from "../../../components/RunnerStatusDot.tsx";
+import { StageProgress } from "../../../components/StageProgress.tsx";
+
+export const runnerStatusDot: GalleryDoc = {
+  meta: { name: "Runner status dot", kind: "composition", group: "feedback" },
+
+  specimens: [{ id: "health", title: "Healthy, paused, failed, attention, asleep and offline", render: () => <Row>
+    {[
+      { state: "active", health: "healthy" },
+      { state: "paused", health: "healthy" },
+      { state: "failed", health: "failed" },
+      { state: "active", health: "needs_attention" },
+      { state: "active", health: "asleep" },
+      { state: "active", health: "offline" },
+    ].map((runner, index) => <Cell key={index} label={`${runner.state} · ${runner.health}`}><RunnerStatusDot runner={runner} /></Cell>)}
+  </Row> }],
+};
+
+export const stageProgress: GalleryDoc = {
+  meta: { name: "Stage progress", kind: "composition", group: "feedback" },
+
+  specimens: [{ id: "outcomes", title: "Working, successful, slow, failed and cancelled", render: () => <div className="grid gap-4">
+    {(["working", "success", "warning", "error", "muted"] as const).map((tone) => <div key={tone} className="grid grid-cols-[6rem_1fr] items-center gap-3 text-xs"><span>{tone}</span><StageProgress steps={["Plan", "Code", "Review", "Merge"]} currentStep={2} progress={tone === "working" || tone === "muted" ? 0.5 : 1} tone={tone} label={`Stage 3 of 4, Review, ${tone}`} description="Review for 10m. Typical: 8m median, 20m for the slowest 10%." /></div>)}
+  </div> }],
+};
 
 type AlertVariant = "default" | "info" | "success" | "warning" | "error";
 type BadgeVariant = NonNullable<VariantProps<typeof badgeVariants>["variant"]>;
