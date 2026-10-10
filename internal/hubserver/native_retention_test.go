@@ -7,10 +7,60 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestNativeRetention(t *testing.T) {
+	t.Run("hourly host history", func(t *testing.T) {
+		now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
+		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+		r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+		r.enroll(t)
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		for index := range 744 {
+			summary := testHostSummary(now.Add(-time.Duration(index) * time.Hour))
+			raw, err := json.Marshal(summary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(t.Context(), "INSERT INTO runner_host_hours(organization_id,runner_id,hour,summary_json,segment_ids_json) VALUES(?,?,?,?,'[]')", f.project.OrganizationID, r.binding.RunnerID, formatHubTime(summary.Hour), string(raw)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
+			t.Fatal(err)
+		}
+		var count int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM runner_host_hours WHERE runner_id=?", r.binding.RunnerID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 720 {
+			t.Fatalf("retained %d hours, want 720", count)
+		}
+		stale := testHostSummary(now.Add(-720 * time.Hour))
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation, "host_metrics": []hostmetrics.Summary{stale}})
+		requireNativeStatus(t, response, http.StatusOK)
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM runner_host_hours WHERE runner_id=?", r.binding.RunnerID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 720 {
+			t.Fatalf("stale retry recreated history: %d hours", count)
+		}
+		history, err := f.service.readRunnerHostHistory(t.Context(), f.project.OrganizationID, r.binding.RunnerID, now.UTC().Truncate(time.Hour).Add(-719*time.Hour), now.UTC().Truncate(time.Hour).Add(time.Hour))
+		if err != nil || len(history) != 720 {
+			t.Fatalf("bounded history=%d error=%v", len(history), err)
+		}
+	})
+
 	t.Parallel()
 	for _, test := range []struct {
 		name, state                                                                            string

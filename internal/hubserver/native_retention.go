@@ -21,6 +21,9 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 	if _, err := tx.ExecContext(ctx, "UPDATE attachments SET deleted_at=? WHERE deleted_at IS NULL AND work_item_id IS NULL AND julianday(created_at)<=julianday(?)", formatHubTime(now), formatHubTime(now.Add(-attachment.OrphanTTL))); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM runner_host_hours WHERE hour <= ?", formatHubTime(now.UTC().Truncate(time.Hour).Add(-720*time.Hour))); err != nil {
+		return err
+	}
 	period := "CASE WHEN ws.detent_state = 'Cancelled' THEN p.archive_cancelled_after_days ELSE p.archive_completed_after_days END"
 	restored := `(SELECT e.recorded_at FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.edited' AND json_extract(e.data_json,'$.operation')='restore' ORDER BY e.sequence DESC LIMIT 1)`
 	entered := "julianday(" + nativeTerminalEnteredAt + ")"
