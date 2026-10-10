@@ -35,7 +35,7 @@ func (s *Service) runnerAdminTransaction(ctx context.Context, scope nativeScope,
 	if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion); err != nil {
 		return nil, err
 	}
-	if err := s.database.commit(ctx, tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	s.notifications.notify(dispatchNotificationKey(scope.organization))

@@ -823,7 +823,7 @@ events require worker scope. Instance administrators can perform these operation
 | --- | --- |
 | `GET /` | Project profile, states, transitions and readiness policy |
 | `POST /work-items` | `idempotency_key`, `title`, full `body`, configured `state`, optional `priority`, `labels`, `assignees`, import `provenance` |
-| `GET /work-items` | Paged issues; repeatable exact `state`, `label`, `assignee`, `priority` filters (OR within a dimension, AND across dimensions; at most 32 values and 4096 bytes per dimension). `q` matches title, project name or ID plus `#number`, and labels; without `include=work`, it also matches body. `include=work` adds compact body-free items, bounded current open selection, and complete-filter lane/running totals independent of cursor. `include=board` reads indexed lane pages with attempt/change card summaries and maintained scope totals; `include=summary` provides the byte-bounded MCP list projection with explicit detail omissions and continuation; it cannot be combined with `work` |
+| `GET /work-items` | Paged issues; repeatable exact `state`, `label`, `assignee`, `priority` filters (OR within a dimension, AND across dimensions; at most 32 values and 4096 bytes per dimension). `q` matches title, project name or ID plus `#number`, and labels; without `include=work`, it also matches body. `include=work` adds compact body-free items, bounded current open selection, and complete-filter lane/running totals independent of cursor. `include=summary` provides the byte-bounded MCP list projection with explicit detail omissions and continuation; it cannot be combined with `work` |
 | `GET /work-items/{id}` | Full content, immutable scope, revision, authenticated author, import provenance, dependencies and optional external references |
 | `PATCH /work-items/{id}` | `idempotency_key`, `expected_revision`, supplied `title`, `body`, `priority`, `labels` or `assignees` |
 | `POST /work-items/{id}/workflow` | `idempotency_key`, `expected_revision`, target `state`, typed `reason` |
@@ -1058,27 +1058,6 @@ refusal, including its runner, reason and item revision, even after a later
 claim succeeds. `explain_item` exposes it as historical evidence; it does not
 establish current ineligibility. Analytics `skip_reasons` counts these recorded
 events rather than current admission snapshots.
-
-`GET /work-items?include=board` returns compact `items`, matching `cards`
-(issue, status line, current attempt and change summaries), the durable project
-`sequence`, and `work` totals. Board reads use the maintained card projection,
-without reading attempts or Changes per card. Their scope totals ignore lane
-and open/closed selection while respecting search, labels, assignees, priorities
-and archive selection. Board pages accept up to 2000 items and use signed
-keyset cursors; cursor/filter scope and expiry remain enforced. The client reads
-one initial page per visible lane and pages Backlog on demand.
-
-The hosted project activity stream accepts `board=true&since=<sequence>` for
-board frames. Each JSON `activity` frame has an SSE `id`, `sequence`, `gap`,
-`deltas` (ordered sequence plus previous/current card), and scope `work` totals.
-A null current card removes the item from the board. The stream accepts the
-board's search, label, assignee, priority, archive and completed-window filters
-for its totals. `Last-Event-ID` takes precedence over `since` on browser
-reconnects. The Hub retains the latest 2048 card deltas per project; `gap=true`
-means the requested sequence is outside retained history and requires a new
-snapshot. Otherwise reconnect replays missed cards, and unchanged ticks need
-no additional browser requests. Workspace and item-scoped streams retain their
-existing activity protocol.
 
 `GET /work-items?include=work` adds a compact `work` member to the existing
 inventory page. `work.lanes` contains state, total and observed running counts
