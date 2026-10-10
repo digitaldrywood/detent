@@ -1602,7 +1602,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			workspaceIssue.Source = &recovered
 		}
 	}
-	if req.Execution != nil && !nativeLanding && !freshCheckout {
+	if req.Execution != nil && !nativeLanding && !freshCheckout && !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), workspaceIssue) {
 		workspaceIssue.Checkpoint = nativeRestorableCheckpoint(req.Execution.Recovery(), workspaceIssue.Source)
 	}
 	var landingTarget NativeLandingTarget

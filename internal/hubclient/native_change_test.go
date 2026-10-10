@@ -2281,7 +2281,12 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				}
 				publicationRetry = true
 				candidates := h.candidatesIn(t, "Rework")
-
+				if test.publicationFault == "foreign_source" {
+					if len(candidates) != 0 {
+						t.Fatalf("foreign runner was admitted to an uncertain publication owned by its source runner: candidates=%d", len(candidates))
+					}
+					return
+				}
 				if len(candidates) != 1 {
 					t.Fatalf("unchanged held source not admitted: candidates=%d", len(candidates))
 				}
@@ -2321,7 +2326,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				remoteBefore, readErr := exec.CommandContext(t.Context(), "git", "-C", remote, "show-ref").Output()
+				remoteBefore, readErr := exec.CommandContext(t.Context(), "git", "-C", remote, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", "refs/tags").Output()
 				if readErr != nil {
 					t.Fatal(readErr)
 				}
@@ -2344,7 +2349,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					if err == nil && (result.NativeChange == nil || result.NativeChange.VersionError == "" && result.NativeChange.Error == "") || owner.publication != nil || forgeCreates != wantCreates || forgePull != prBefore || provider.calls != callsBefore {
 						t.Fatalf("unresolved publication was accepted or rewrote forge/source: fault=%s creates=%d publication=%v provider_calls=%d error=%v", test.publicationFault, forgeCreates, owner.publication != nil, provider.calls-callsBefore, err)
 					}
-					remoteAfter, readErr := exec.CommandContext(t.Context(), "git", "-C", remote, "show-ref").Output()
+					remoteAfter, readErr := exec.CommandContext(t.Context(), "git", "-C", remote, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", "refs/tags").Output()
 					if readErr != nil || string(remoteBefore) != string(remoteAfter) {
 						t.Fatal("refused reconciliation modified bare remote")
 					}

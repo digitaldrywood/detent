@@ -24,7 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func TestNativeReworkTransfersUnpushedSourceAcrossMachines(t *testing.T) {
+func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
@@ -110,8 +110,8 @@ func TestNativeReworkTransfersUnpushedSourceAcrossMachines(t *testing.T) {
 			providerA := &committingAgent{staged: true, validator: "pass", complete: true}
 			first := run(sourceA, providerA, candidateA, h.scheduler.RunExecution(issue.ID))
 			oldHead := first.NativeChange.HeadSHA
-			if _, err := exec.CommandContext(t.Context(), "git", "-C", remote, "cat-file", "-e", oldHead+"^{commit}").Output(); err == nil {
-				t.Fatal("reviewed commit was pushed to the forge fixture")
+			if _, err := exec.CommandContext(t.Context(), "git", "-C", remote, "merge-base", "--is-ancestor", oldHead, "refs/detent/checkpoints/"+issue.ID).Output(); err != nil {
+				t.Fatalf("reviewed commit is not reachable from the forge checkpoint ref: %v", err)
 			}
 			old, err := h.admin.Change(t.Context(), item, first.NativeChange.ChangeID)
 			if err != nil || old.Versions[0].Source == nil || len(old.Reviews) != 1 {
@@ -179,11 +179,6 @@ func TestNativeReworkTransfersUnpushedSourceAcrossMachines(t *testing.T) {
 			}
 			providerB := &committingAgent{validator: "pass", complete: true}
 			providerB.duringTurn = func() {
-				if test.republish {
-					if _, err := exec.CommandContext(t.Context(), "git", "-C", sourceB, "cat-file", "-e", oldHead+"^{commit}").Output(); err == nil {
-						t.Fatal("obsolete attempt head was available on the second Mac")
-					}
-				}
 				for name, expected := range map[string]string{"CHANGE.md": "changed\n", "UPSTREAM.md": "new dev base\n"} {
 					data, err := os.ReadFile(filepath.Join(providerB.workspace, name))
 					if err != nil || string(data) != expected {
