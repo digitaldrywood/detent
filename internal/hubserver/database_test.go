@@ -188,6 +188,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"workspace_relay_tickets",
 		"workspace_relay_sessions",
 		"workspace_terminal_recordings",
+		"runner_host_hours",
 	}
 	sort.Strings(wantTables)
 	if strings.Join(tables, ",") != strings.Join(wantTables, ",") {
