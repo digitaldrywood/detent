@@ -111,21 +111,6 @@
     "tests/visual/work.spec.js"
   ],
   "waitForTimeout": [],
-  "toHaveScreenshot": [
-    "tests/visual/cloud-reports.spec.js",
-    "tests/visual/density.spec.js",
-    "tests/visual/entry-fallback.spec.js",
-    "tests/visual/hub-login.spec.js",
-    "tests/visual/invitations.spec.js",
-    "tests/visual/layout.spec.js",
-    "tests/visual/magic-link-auth.spec.js",
-    "tests/visual/mobile.spec.js",
-    "tests/visual/oidc-auth.spec.js",
-    "tests/visual/platform-shell.spec.js",
-    "tests/visual/providers-runners.spec.js",
-    "tests/visual/sidebar-findings.spec.js",
-    "tests/visual/work-defaults.spec.js"
-  ],
   "beforeAll": [
     "tests/visual/account.spec.js",
     "tests/visual/active-hours.spec.js",

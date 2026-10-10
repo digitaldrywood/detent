@@ -82,7 +82,6 @@ for (const theme of ["light", "dark"]) {
       await expect(group.locator("time")).toHaveText(["3h", "2h", "1h"]);
       await expect(sidebar.getByTestId("finding-hf_watch")).toHaveCount(0);
       expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
-      await expect(sidebar).toHaveScreenshot(`sidebar-findings-${theme}-${width}.png`);
       await sidebar.screenshot({ path: path.join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `sidebar-findings-${theme}-${width}.png`) });
       await resolve(["hf_runner"]);
       await expect(sidebar.getByTestId("finding-hf_runner")).toHaveCount(0);

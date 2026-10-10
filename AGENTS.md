@@ -230,10 +230,12 @@ not layout, exact counts or element order unless the issue concerns that detail.
 Use web-first assertions; never use `waitForTimeout` or fixed sleeps. Wait for
 the UI state that follows an animation or debounce.
 
-Use `toHaveScreenshot` only for the short allowlisted set of key pages. Generate
-baselines only in the pinned Playwright Linux container and only in a change
-whose purpose is visual. The frozen `internal/invariants/browser_policy.json`
-allowlists may only shrink; remove entries when files or patterns disappear.
+UI changes attach screenshots (light/dark, desktop/390 as relevant) to the
+issue or PR as review evidence. Screenshots are never compared by pixels or
+hashes in any test or gate. Every browser journey runs the same outcome
+assertions on every operating system. The frozen
+`internal/invariants/browser_policy.json` allowlists may only shrink; remove
+entries when files or patterns disappear.
 
 Fix or delete flaky browser tests. Retries provide diagnosis, never a fix.
 

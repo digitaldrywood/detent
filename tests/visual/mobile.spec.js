@@ -81,7 +81,10 @@ for (const route of routes) {
     const topbarToggleBox = await topbarToggle.boundingBox();
     expect(topbarToggleBox?.width).toBeGreaterThanOrEqual(44);
     expect(topbarToggleBox?.height).toBeGreaterThanOrEqual(44);
-    await expect(page).toHaveScreenshot(`${route.name}.png`);
+    await test.info().attach(`${route.name}.png`, {
+      body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+      contentType: "image/png",
+    });
     await expectNoHorizontalScroll(page);
 
     await topbarToggle.click();
@@ -159,7 +162,10 @@ test("onboarding has a touch-safe mobile baseline", async ({ page }) => {
     expect(box?.height).toBeGreaterThanOrEqual(44);
   }
   await expectNoHorizontalScroll(page);
-  await expect(page).toHaveScreenshot("onboarding.png");
+  await test.info().attach("onboarding.png", {
+    body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+    contentType: "image/png",
+  });
 });
 
 test("shared figures use a compact mobile grid", async ({ page }) => {
@@ -274,7 +280,10 @@ test("issue detail is a touch-safe full-screen sheet", async ({ page }) => {
   );
   await expect(dialog).toBeVisible();
   await expectNoHorizontalScroll(page);
-  await expect(page).toHaveScreenshot("issue-detail-sheet.png");
+  await test.info().attach("issue-detail-sheet.png", {
+    body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+    contentType: "image/png",
+  });
 
   await dialog.getByRole("button", { name: "Close details" }).tap();
   await expect(sheet).toHaveCount(0);

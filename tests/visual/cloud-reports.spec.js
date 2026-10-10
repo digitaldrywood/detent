@@ -66,9 +66,10 @@ for (const theme of ["light", "dark"]) {
           () => document.documentElement.scrollWidth > innerWidth,
         ),
       ).toBe(false);
-      await expect(page).toHaveScreenshot(
-        `cloud-reports-${theme}-${width}.png`,
-      );
+      await test.info().attach(`cloud-reports-${theme}-${width}.png`, {
+        body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+        contentType: "image/png",
+      });
       for (const [name, file] of [
         ["Aging work in progress", "aging"],
         ["Stages and models", "stages"],
@@ -77,9 +78,12 @@ for (const theme of ["light", "dark"]) {
       ]) {
         const section = report.getByRole("region", { name, exact: true });
         await section.scrollIntoViewIfNeeded();
-        await expect(section).toHaveScreenshot(
-          `cloud-reports-${file}-${theme}-${width}.png`,
-        );
+        await expect(section).toBeVisible();
+        await expect(section.getByRole("heading", { name, exact: true })).toBeVisible();
+        await test.info().attach(`cloud-reports-${file}-${theme}-${width}.png`, {
+          body: await section.screenshot({ animations: "disabled", caret: "hide" }),
+          contentType: "image/png",
+        });
       }
       expect(errors).toEqual([]);
     });

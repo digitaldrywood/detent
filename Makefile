@@ -56,7 +56,7 @@ GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
 GOSEC_EXCLUDES ?= G115,G301,G304,G306,G703,G704
 GOSEC_EXCLUDE_DIRS ?= .detent
 GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
-.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-race coverage-check test-cover soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast check-land modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-race coverage-check test-cover soak visual-e2e lint vet gosec-build security-gosec-determinism check check-fast check-land modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -193,10 +193,6 @@ visual-e2e: build
 	@if [ ! -x node_modules/.bin/playwright ]; then npm ci; fi
 	DETENT_BINARY="$(CURDIR)/$(BINARY_PATH)" node_modules/.bin/playwright test
 
-visual-e2e-update: build
-	@if [ ! -x node_modules/.bin/playwright ]; then npm ci; fi
-	DETENT_BINARY="$(CURDIR)/$(BINARY_PATH)" node_modules/.bin/playwright test --update-snapshots
-
 lint: $(GOLANGCI_LINT)
 	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --concurrency=$(TEST_PROCS) --timeout=15m
 
@@ -297,8 +293,7 @@ help:
 	@echo "  test-race    Run the short unit suite under the race detector"
 	@echo "  test-cover   Run Go tests with a coverage profile as evidence (no floor)"
 	@echo "  soak         Run opt-in orchestrator incident and adversarial soak tests"
-	@echo "  visual-e2e   Run Playwright visual layout tests"
-	@echo "  visual-e2e-update  Update Playwright visual baselines"
+	@echo "  visual-e2e   Run Playwright browser journeys"
 	@echo "  lint         Run golangci-lint"
 	@echo "  security-gosec-determinism  Verify deterministic G705 caller traversal"
 	@echo "  security     Run govulncheck and gosec security scans"

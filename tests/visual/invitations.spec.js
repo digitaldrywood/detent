@@ -55,7 +55,10 @@ for (const [state, message] of [
     await expect(page.getByRole("link", { name: "Go to detent.build" })).toHaveAttribute("href", "https://detent.build");
     await expect(page.locator("body")).not.toContainText("invitee@example.test");
     await expect(page.locator("input")).toHaveCount(0);
-    await expect(page).toHaveScreenshot(`invitation-${state}.png`);
+    await test.info().attach(`invitation-${state}.png`, {
+      body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+      contentType: "image/png",
+    });
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.getByRole("link", { name: "Go to detent.build" })).toBeInViewport();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

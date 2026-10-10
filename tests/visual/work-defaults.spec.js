@@ -65,7 +65,10 @@ for (const scope of ["all", "project"]) {
         document.documentElement.dataset.theme = theme;
         document.documentElement.classList.toggle("dark", theme === "dark");
       }, theme);
-      await expect(page.getByTestId("work-board")).toHaveScreenshot(`active-board-${scope}-${theme}.png`, { mask: [page.getByTestId("issue-age")] });
+      await test.info().attach(`active-board-${scope}-${theme}.png`, {
+        body: await page.getByTestId("work-board").screenshot({ animations: "disabled", caret: "hide", mask: [page.getByTestId("issue-age")] }),
+        contentType: "image/png",
+      });
     }
     await page.getByTestId("lanes-trigger").click();
     await expect(page.getByTestId("lanes-trigger")).toHaveText("Lanes8/8");

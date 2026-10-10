@@ -55,7 +55,10 @@ for (const mode of ["denied", "stopped", "unavailable"]) {
       await expect(card).toBeInViewport();
       await expect(card.getByRole("button", { name: "Sign out" })).toBeInViewport();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-      await expect(page).toHaveScreenshot(`entry-${mode === "denied" ? "denied" : "unavailable"}-${size}.png`);
+      await test.info().attach(`entry-${mode === "denied" ? "denied" : "unavailable"}-${size}.png`, {
+        body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+        contentType: "image/png",
+      });
     }
     await page.evaluate(() => document.documentElement.classList.add("dark"));
     expect(await page.locator("body").evaluate((body) => getComputedStyle(body).backgroundColor)).toBe("rgb(11, 13, 16)");

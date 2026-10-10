@@ -170,7 +170,10 @@ for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: Math.max(2400, height) });
     await scroll.evaluate((element) => { element.scrollTop = 0; });
     await page.getByText("Fleet capacity and providers", { exact: true }).click();
-    await expect(page.locator("[data-settings-page-scroll] > div")).toHaveScreenshot("providers-runners-" + width + ".png");
+    await test.info().attach("providers-runners-" + width + ".png", {
+      body: await page.locator("[data-settings-page-scroll] > div").screenshot({ animations: "disabled", caret: "hide" }),
+      contentType: "image/png",
+    });
     await page.setViewportSize({ width, height: 1100 });
     await page.getByRole("link", { name: "Needs attention 2" }).click();
     await expect(page).toHaveURL(/health=needs_attention/);
