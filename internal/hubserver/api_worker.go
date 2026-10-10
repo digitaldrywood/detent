@@ -748,6 +748,8 @@ const notAlreadyAnsweredClause = `(p.profile <> 'native' OR lower(trim(ws.detent
      AND COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 1) = 0
      AND COALESCE(json_extract(answered.data_json, '$.disposition.human_action'), 1) = 0
      AND COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') = '')
+   AND NOT (COALESCE(json_extract(answered.checkpoint_json, '$.external_effect'), '') IN ('git_push', 'pr_create')
+     AND COALESCE(json_extract(answered.checkpoint_json, '$.effect_state'), '') IN ('pending', 'ambiguous'))
    AND answered.work_item_revision >= i.revision
    AND answered.dispatch_generation >= i.dispatch_generation
    AND answered.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest

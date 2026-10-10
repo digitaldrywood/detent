@@ -1482,7 +1482,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "held publication refuses stale validator head", publication: "lost_create", publicationFault: "changed_head", rework: true, formal: true, validator: "pass"},
 		{name: "held publication reconciles staged work through new Runner lease", publication: "lost_create", rework: true, formal: true, staged: true},
 		{name: "held publication refuses replaced version on new Runner lease", publication: "lost_create", publicationFault: "version", rework: true, formal: true},
-		{name: "held publication refuses foreign source admission", publication: "lost_create", publicationFault: "foreign_source", rework: true, formal: true},
+		{name: "held publication admits a foreign runner to reconcile", publication: "lost_create", publicationFault: "foreign_source", rework: true, formal: true},
 		{name: "held publication refuses unavailable source on new Runner lease", publication: "lost_create", publicationFault: "unavailable_source", rework: true, formal: true},
 		{name: "held publication refuses missing_pr on new Runner lease", publication: "lost_create", publicationFault: "missing_pr", rework: true, formal: true},
 		{name: "held publication refuses wrong_base on new Runner lease", publication: "lost_create", publicationFault: "wrong_base", rework: true, formal: true},
@@ -2305,8 +2305,8 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				publicationRetry = true
 				candidates := h.candidatesIn(t, "Rework")
 				if test.publicationFault == "foreign_source" {
-					if len(candidates) != 0 {
-						t.Fatalf("foreign runner was admitted to an uncertain publication owned by its source runner: candidates=%d", len(candidates))
+					if len(candidates) != 1 {
+						t.Fatalf("foreign runner was not admitted to reconcile an uncertain publication: candidates=%d", len(candidates))
 					}
 					return
 				}

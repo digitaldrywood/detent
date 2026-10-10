@@ -1867,3 +1867,56 @@ func TestValidationEvidenceUsesCurrentAttemptDiff(t *testing.T) {
 		t.Fatalf("current screenshot bound lost: evidence=%d error=%v", len(evidence), err)
 	}
 }
+
+func TestNativePublicationRecoveryOnAnyRunner(t *testing.T) {
+	t.Parallel()
+	change := tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "head"}
+	for _, test := range []struct {
+		name string
+		edit func(*tracker.NativeRecovery, *workspace.RecoveryState)
+		want bool
+	}{
+		{"source runner", func(*tracker.NativeRecovery, *workspace.RecoveryState) {}, true},
+		{"another runner restored the Change source", func(r *tracker.NativeRecovery, local *workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			local.WorkspaceFingerprint = "fresh-checkout-digest"
+		}, true},
+		{"restored head differs from the version", func(r *tracker.NativeRecovery, local *workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			local.HeadSHA = "other-head"
+		}, false},
+		{"restored workspace is dirty", func(r *tracker.NativeRecovery, local *workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			local.TrackedPaths = []string{"work.go"}
+		}, false},
+		{"version superseded", func(r *tracker.NativeRecovery, _ *workspace.RecoveryState) {
+			r.ChangeDetail.Change.CurrentVersion = "newer"
+		}, false},
+		{"settled publication", func(r *tracker.NativeRecovery, _ *workspace.RecoveryState) {
+			r.Attempts[0].Checkpoint.EffectState = "confirmed"
+		}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			identity := tracker.NativeExecutionIdentity{Role: RoleRework}
+			recovery := tracker.NativeRecovery{
+				Lease: tracker.NativeLease{MachineID: "source", PolicyID: "policy"},
+				Attempts: []tracker.NativeAttempt{{
+					NativeRunData: tracker.NativeRunData{MachineID: "source", PolicyID: "policy", Identity: &identity},
+					Checkpoint:    &tracker.NativeCheckpoint{Resume: "resume_session", Availability: "available", Storage: "local_only", WorktreeState: "unpushed", HeadSHA: "head", WorkspaceDigest: "source-digest", ExternalEffect: "git_push", EffectState: "pending", EffectID: "effect_push", Change: &change},
+				}},
+				ChangeDetail: &tracker.ChangeDetail{Change: tracker.ChangeRequest{ID: "change", CurrentVersion: "version"}, Summary: tracker.ChangeSummary{Status: "reviewed"}},
+			}
+			local := &workspace.RecoveryState{HeadSHA: "head", WorkspaceFingerprint: "source-digest"}
+			current := &workspace.ChangeSource{Version: tracker.ChangeVersion{
+				ID: "version", ChangeID: "change",
+				ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", Repository: "owner/repo", PolicyID: "policy"},
+				Policy:             policy.Descriptor{ID: "policy", Gates: policy.Gates{GitHubPullRequest: true}},
+			}}
+			test.edit(&recovery, local)
+			if got := nativePublicationRecovery(recovery, local, identity, current); got != test.want {
+				t.Fatalf("nativePublicationRecovery() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}

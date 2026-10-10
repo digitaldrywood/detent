@@ -58,9 +58,6 @@ func nativeSourceClaimAllowed(ctx context.Context, q nativeQueryer, scope native
 	owned := func(owner tracker.MachineID, ownerRunner string) bool {
 		return owner != "" && machine == owner && (ownerRunner == "" || ownerRunner == scope.credential.Runner.RunnerID)
 	}
-	if checkpoint.UncertainForgeEffect() {
-		return owned(source.MachineID, source.RunnerID), fmt.Sprintf("Checkpoint %s on source runner %s has an uncertain Git push or PR creation; that runner reconciles it first", source.AttemptID, source.MachineID), nil
-	}
 	if checkpoint.GitRef() {
 		return true, "Checkpoint " + checkpoint.Ref + " is in the project repository; any eligible runner restores it", nil
 	}
