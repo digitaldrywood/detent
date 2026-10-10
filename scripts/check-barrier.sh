@@ -113,13 +113,16 @@ run_checks_in_order() {
 
 make assets generate-docs
 mkdir -p tmp
-if [ -f web/conversation/package-lock.json ] && [ ! -d web/conversation/node_modules ]; then (cd web/conversation && npm ci); fi
 if [ "$run_browser" = 1 ]; then
     [ -x node_modules/.bin/playwright ] || npm ci
     node_modules/.bin/playwright install chromium
     make build
     go test -c -o tmp/hubserver-preview.test ./internal/hubserver
     go test -c -o tmp/startup-preview.test ./internal/cli
+fi
+
+if [ -f web/conversation/package-lock.json ] && [ ! -x web/conversation/node_modules/.bin/tsc ]; then
+    (cd web/conversation && npm ci --include=dev --no-audit --no-fund)
 fi
 
 go_pid=
