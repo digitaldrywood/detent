@@ -105,6 +105,7 @@ run_checks_in_order() {
 
 make assets generate-docs
 mkdir -p tmp
+if [ -f web/conversation/package-lock.json ] && [ ! -d web/conversation/node_modules ]; then (cd web/conversation && npm ci); fi
 if [ "$run_browser" = 1 ]; then
     [ -x node_modules/.bin/playwright ] || npm ci
     node_modules/.bin/playwright install chromium
