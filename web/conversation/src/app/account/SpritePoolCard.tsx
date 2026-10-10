@@ -59,8 +59,8 @@ export function SpritePoolCard({ projectId, canManage, compact = false, attentio
   const content = <div className="w-full space-y-4 py-4">
       {canManage && pool.value !== undefined ? <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void save(); }}>
         <div className="grid gap-3 sm:grid-cols-3">
-          <label className="space-y-1 text-sm">Minimum runners<Input type="number" min={0} max={100} required value={floor} disabled={pending} onChange={(event) => setFloor(Number(event.target.value))} /></label>
-          <label className="space-y-1 text-sm">Maximum runners<Input type="number" min={floor} max={100} required value={ceiling} disabled={pending} onChange={(event) => setCeiling(Number(event.target.value))} /></label>
+          <label className="space-y-1 text-sm">Minimum runners<Input type="number" min={0} required value={floor} disabled={pending} onChange={(event) => setFloor(Number(event.target.value))} /></label>
+          <label className="space-y-1 text-sm">Maximum runners<Input type="number" min={floor} required value={ceiling} disabled={pending} onChange={(event) => setCeiling(Number(event.target.value))} /></label>
           <label className="space-y-1 text-sm">Idle seconds<Input type="number" min={30} max={86400} required value={idle} disabled={pending} onChange={(event) => setIdle(Number(event.target.value))} /></label>
         </div>
         <label className="block space-y-1 text-sm">Extra bootstrap (optional)

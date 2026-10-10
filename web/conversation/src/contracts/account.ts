@@ -591,6 +591,7 @@ export const FleetRunner = Schema.Struct({
   editable: Schema.optional(Schema.Boolean),
   edit_refusal_reason: Schema.optional(Schema.String),
   can_edit_projects: Schema.optional(Schema.Boolean),
+  can_convert_scope: Schema.optional(Schema.Boolean),
   machine_id: Schema.String,
   sprite: Schema.optional(Schema.Struct({ name: Schema.String, status: Schema.String, can_wake: Schema.Boolean, wake_failed: Schema.Boolean })),
   claim_refusal_reason: Schema.optional(Schema.String),

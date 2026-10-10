@@ -304,6 +304,14 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 			if err != nil {
 				return nil, err
 			}
+			if !owned && r.Scope == "projects" && change.Scope == "organization" && canManageProjectSecrets(scope.credential) {
+				adminScope := scope
+				adminScope.requireHostedAdmin = true
+				if err := s.requireRunnerAdministration(ctx, tx, adminScope, now); err != nil {
+					return nil, err
+				}
+				owned = true
+			}
 			if !owned {
 				return nil, &nativeError{Code: "access_denied", Message: "Only the runner owner may change its allowed projects", status: http.StatusForbidden}
 			}

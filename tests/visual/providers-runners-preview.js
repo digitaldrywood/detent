@@ -10,7 +10,7 @@ async function providersRunnersPreview() {
     format: "iife",
     minify: true,
     jsx: "automatic",
-    define: { "process.env.NODE_ENV": '"production"' },
+    define: { "process.env.NODE_ENV": '"production"', "import.meta.env.DEV": "false" },
     alias: {
       "~": path.resolve("web/conversation/src"),
       "lucide-react/dynamic": path.resolve("web/conversation/src/browser/lucideDynamicIcon.tsx"),
