@@ -40,7 +40,7 @@ export function approachingPlanLimits(plan: PlanReport) {
 export function nextFittingPlan(plan: PlanReport, comparisons: readonly ComparisonPlan[]): ComparisonPlan | undefined {
   const currentPrice = plan.monthly_usd_cents ?? 0;
   return comparisons.toSorted((a, b) => (a.monthly_usd_cents ?? Infinity) - (b.monthly_usd_cents ?? Infinity)).find((candidate) =>
-    candidate.id !== plan.effective_base.id && (candidate.monthly_usd_cents ?? 0) > currentPrice &&
+    (candidate.id !== plan.effective_base.id || candidate.version !== plan.effective_base.version) && (candidate.monthly_usd_cents ?? 0) > currentPrice &&
     planUsageRows(plan).filter((row) => row.group !== "This hour" && !row.limitOnly && row.used > 0).every((row) => {
       if (row.name.startsWith("artifact_") && !candidate.features.includes("hosted_artifacts")) return false;
       const limit = candidate.allowances[row.name];

@@ -490,7 +490,7 @@ export function PlanSettings(): React.ReactElement {
           : comparisons.length === 0 ? <SettingsRow title="No comparison plans are available" /> : (
             <div className="grid grid-cols-1 sm:grid-cols-3">
               {comparisons.map((candidate) => {
-                const current = candidate.id === report?.effective_base.id;
+                const current = candidate.id === report?.effective_base.id && candidate.version === report?.effective_base.version;
                 const label = candidate.name ?? candidate.id;
                 return (
                   <SettingsRow key={`${candidate.id}-${candidate.version}`} title={<>{label} {current ? <Badge variant="outline" size="sm">Current</Badge> : null}</>}>
@@ -498,7 +498,7 @@ export function PlanSettings(): React.ReactElement {
                       <p>{candidate.monthly_usd_cents == null ? "Custom price" : formatUsd(candidate.monthly_usd_cents / 100)}<br />
                         {candidate.allowances.projects === undefined ? "Unlimited projects" : `${formatCount(candidate.allowances.projects)} projects`}<br />
                         {candidate.allowances.unarchived_issues === undefined ? "Unlimited open issues" : `${formatCount(candidate.allowances.unarchived_issues)} open issues`}</p>
-                      {!current && canBill ? <Button size="sm" variant={candidate.id === nextPlan?.id ? "default" : "outline"} disabled={!canCheckout || usage?.checkout_pending === true || candidate.price_id === "" || checkout.pending} onClick={() => void checkout.call(candidate.price_id)}>{checkout.pending ? "Opening…" : `Move to ${label}`}</Button> : null}
+                      {!current && canBill ? <Button size="sm" variant={candidate.id === nextPlan?.id && candidate.version === nextPlan?.version ? "default" : "outline"} disabled={!canCheckout || usage?.checkout_pending === true || candidate.price_id === "" || checkout.pending} onClick={() => void checkout.call(candidate.price_id)}>{checkout.pending ? "Opening…" : `Move to ${label}`}</Button> : null}
                     </div>
                   </SettingsRow>
                 );

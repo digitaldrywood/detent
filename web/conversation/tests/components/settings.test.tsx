@@ -691,6 +691,31 @@ describe("plan usage meters", () => {
 
 
 describe("plan billing usage", () => {
+  it("keeps a newer version of the current tier selectable and recommended", async () => {
+    const starter = usageFixture.comparison_plans[0]!;
+    const nextStarter = {
+      ...starter, version: 2, monthly_usd_cents: 6900,
+      allowances: { ...starter.allowances, projects: 10, unarchived_issues: 4000 },
+      price_id: "price_starter_v2",
+    };
+    const fetch = mockPlanUsage({
+      ...usageFixture,
+      comparison_plans: [starter, nextStarter, ...usageFixture.comparison_plans.slice(1)],
+    });
+    const assign = vi.fn();
+    vi.stubGlobal("location", { assign, search: "" });
+    renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
+    const move = await screen.findByRole("button", { name: "Move to Starter" });
+    expect(screen.getAllByText("Current")).toHaveLength(1);
+    expect(screen.getByRole("alert").textContent).toContain("Move to Starter for 10 projects and 4,000 open issues");
+    expect(move.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(move);
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.stripe.com/test"));
+    const call = fetch.mock.calls.find(([input]) => String(input).endsWith("/billing/checkout"));
+    expect(call).toBeDefined();
+    expect(JSON.parse(String((call?.[1] as RequestInit).body)).price).toBe("price_starter_v2");
+  });
+
   it.each(["owner", "admin", "member", "support"])("shows usage and restricts purchases for %s", async (role) => {
     mockPlanUsage();
     const account = OWNER_ACCOUNT.account;
