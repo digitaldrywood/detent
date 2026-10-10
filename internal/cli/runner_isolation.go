@@ -56,7 +56,6 @@ func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config) (isolati
 	for _, configured := range cfg.Projects {
 		workflow, err := project.LoadWorkflowContext(ctx, configured)
 		if err != nil {
-			report[configured.ID+"/workflow"] = []string{}
 			p := runnerauth.NewProblem("settings_invalid")
 			p.ProjectID = configured.ID
 			p.Subject = configured.ID + "/workflow"
