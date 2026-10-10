@@ -19,16 +19,16 @@ test("loads all 79 open cards without global pagination", async ({ page }) => {
     .filter(({ url }) => url.pathname.endsWith("/work-items"))
     .map(({ url }) => ({ project: url.pathname, states: url.searchParams.getAll("state"),
       open: url.searchParams.get("open"), limit: url.searchParams.get("limit"), include: url.searchParams.get("include") })));
-  expect(requests).toHaveLength(6);
+  expect(requests).toHaveLength(12);
   for (const project of new Set(requests.map((request) => request.project))) {
-    const totals = requests.filter((request) => request.project === project && request.include === "work");
-    expect(totals).toEqual([{ project, states: [], open: null, limit: "1", include: "work" }]);
-    const pages = requests.filter((request) => request.project === project && request.include === null);
-    expect(pages).toHaveLength(2);
-    expect(pages[0].states).not.toContain("Backlog");
-    expect(pages[1].states).toEqual(["Backlog"]);
-    expect(pages.every((request) => request.open === "true" && request.limit === "200")).toBe(true);
+    const pages = requests.filter((request) => request.project === project);
+    expect(pages.map((request) => request.states.join(",")).sort()).toEqual(
+      ["Backlog", "Todo", "In Progress", "In Review", "Blocked", "Merging"].sort());
+    expect(pages.every((request) => request.open === "true" && request.include === "board"
+      && request.limit === (request.states[0] === "Backlog" ? "200" : "2000"))).toBe(true);
   }
+  expect(await page.evaluate(() => window.workFixture.requests
+    .filter(({ url }) => /\/work-items\/[^/]+\/(attempts|changes)/.test(url.pathname)))).toHaveLength(0);
 });
 
 test("continues Backlog inside its scroll body and retains the server count", async ({ page }) => {
@@ -45,8 +45,8 @@ test("continues Backlog inside its scroll body and retains the server count", as
   const pages = await page.evaluate((start) => window.workFixture.requests.slice(start)
     .filter(({ url }) => url.pathname.endsWith("/work-items"))
     .map(({ url }) => ({ states: url.searchParams.getAll("state"), cursor: url.searchParams.has("cursor"),
-      include: url.searchParams.has("include") })), before);
-  expect(pages).toEqual([{ states: ["Backlog"], cursor: true, include: false }]);
+      include: url.searchParams.get("include") })), before);
+  expect(pages).toEqual([{ states: ["Backlog"], cursor: true, include: "board" }]);
   await backlog.getByRole("button", { name: "Show more", exact: true }).click();
   await expect(backlog.getByTestId("issue-card")).toHaveCount(405);
   await expect(page.getByRole("button", { name: "Show more", exact: true })).toHaveCount(0);

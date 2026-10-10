@@ -1,5 +1,7 @@
 import { build } from "esbuild";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import tailwindcss from "@tailwindcss/vite";
+import { build as buildStyles } from "vite";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -15,7 +17,11 @@ await build({
   bundle: true,
   format: "iife",
   platform: "browser",
-  alias: { "node:crypto": join(output, "crypto.js"), "lucide-react/dynamic": resolve(root, "src/browser/lucideDynamicIcon.tsx") },
+  alias: {
+    "node:crypto": join(output, "crypto.js"),
+    "lucide-react/dynamic": resolve(root, "src/browser/lucideDynamicIcon.tsx"),
+    lucide: resolve(root, "node_modules/lucide/dist/esm/lucide/src/lucide.js"),
+  },
   minify: true,
   define: { "process.env.NODE_ENV": '"production"' },
   plugins: [{ name: "fixture-shell", setup(builder) {
@@ -25,7 +31,19 @@ await build({
     }));
   } }],
 });
-const css = await readFile(resolve(root, "../../static/app/conversation/app.css"), "utf8");
-await writeFile(join(output, "app.css"), css);
+await buildStyles({
+  configFile: false,
+  root,
+  logLevel: "silent",
+  plugins: [tailwindcss()],
+  build: {
+    outDir: output,
+    emptyOutDir: false,
+    rollupOptions: {
+      input: resolve(root, "src/app/index.css"),
+      output: { assetFileNames: "app.css" },
+    },
+  },
+});
 await writeFile(join(output, "index.html"), '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="app.css"></head><body><div id="app" style="height:100vh;display:flex;flex-direction:column"></div><script src="app.js"></script></body></html>');
 process.stdout.write(`${pathToFileURL(join(output, "index.html")).href}\n`);
