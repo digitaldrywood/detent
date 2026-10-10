@@ -67,6 +67,13 @@ func (s *session) catalog(ctx context.Context, cursor string, toolsets []string)
 	}
 	for _, shared := range registry {
 		if seen[shared.Name] && (len(selected) == 0 || selected[shared.Meta.Toolset]) {
+			if selector, ok := s.executor.(interface{ OrganizationSelectors() bool }); ok && selector.OrganizationSelectors() {
+				var err error
+				shared, err = operatortool.WithOrganizationSelector(shared)
+				if err != nil {
+					return catalogPage{}, err
+				}
+			}
 			canonical = append(canonical, shared)
 		}
 	}

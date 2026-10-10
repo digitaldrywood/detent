@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
@@ -29,6 +30,7 @@ const (
 )
 
 type apiCredential struct {
+	EntryKey   *apikey.KeyAuthority
 	Hosted     *auth.HostedIdentity
 	HostedRole string
 	// HostedMembership is the provider membership the credential was
@@ -153,6 +155,9 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 }
 
 func (s *Service) authenticateAPIRequest(c echo.Context) (apiCredential, int, error) {
+	if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindKey {
+		return s.entryKeyCredential(c.Request().Context(), claims)
+	}
 	if s.config.Hosted != nil && c.Request().Header.Get(echo.HeaderAuthorization) == "" {
 		return s.hostedCredential(c.Request().Context(), c)
 	}

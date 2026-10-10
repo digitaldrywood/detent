@@ -63,7 +63,13 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 		claims, shared := hostedSharedClaims(c)
 		resolve := func(ctx context.Context) (apiCredential, error) {
 			current := credential
-			if token != "" {
+			if credential.EntryKey != nil {
+				var err error
+				current, _, err = s.entryKeyCredential(ctx, claims)
+				if err != nil {
+					return apiCredential{}, err
+				}
+			} else if token != "" {
 				var err error
 				current, _, err = s.authenticateAPIToken(ctx, token, "", "")
 				if err != nil {
