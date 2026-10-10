@@ -378,8 +378,18 @@ type CollaborationData struct {
 }
 
 type Page[T any] struct {
-	Items      []T    `json:"items"`
-	NextCursor string `json:"next_cursor,omitempty"`
+	Items      []T              `json:"items"`
+	NextCursor string           `json:"next_cursor,omitempty"`
+	Compaction *EventCompaction `json:"compaction,omitempty"`
+}
+
+type EventCompaction struct {
+	ThroughSequence int64            `json:"through_sequence"`
+	RemovedEvents   int64            `json:"removed_events"`
+	RetainedEvents  int64            `json:"retained_events"`
+	RemovedBytes    int64            `json:"removed_bytes"`
+	RemovedByType   map[string]int64 `json:"removed_by_type"`
+	CompactedAt     time.Time        `json:"compacted_at"`
 }
 
 type NativeIssuePage struct {
