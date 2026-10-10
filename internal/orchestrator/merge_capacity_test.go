@@ -36,9 +36,6 @@ func TestReadyMergeAtWorkerCapacity(t *testing.T) {
 			})
 			state := providerWindowState(cfg, tt.workers)
 			if tt.outage {
-				state.FailureBreaker.Class = workAttemptErrorWorkspace
-				state.FailureBreaker.PreTurn = true
-				state.FailureBreaker.ResumeAt = now.Add(time.Hour)
 				state.ForgeUnavailable["github.test"] = ForgeCondition{
 					Host: "github.test", Operation: "git ls-remote", ErrorClass: forgeavailability.ClassTransport,
 					NextProbeAt: now.Add(time.Hour),

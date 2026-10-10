@@ -77,22 +77,19 @@ func TestProjectAttemptFailureClass(t *testing.T) {
 			errorClass:    "spend_since_progress_circuit_breaker",
 		},
 		{
-			name:          "startup timeout shares systemic startup class",
+			name:          "startup timeout belongs to the instance",
 			terminalState: store.WorkAttemptTerminalTimedOut,
 			errorClass:    backendcapacity.StartupTimeoutErrorClass,
-			want:          backendcapacity.StartupFailureErrorClass,
 		},
 		{
-			name:          "startup exit keeps systemic startup class",
+			name:          "startup exit belongs to the instance",
 			terminalState: store.WorkAttemptTerminalFailure,
 			errorClass:    backendcapacity.StartupFailureErrorClass,
-			want:          backendcapacity.StartupFailureErrorClass,
 		},
 		{
-			name:          "workspace infrastructure retains its owner",
+			name:          "workspace preparation belongs to the instance",
 			terminalState: store.WorkAttemptTerminalFailure,
 			errorClass:    workAttemptErrorWorkspace,
-			want:          workAttemptErrorWorkspace,
 		},
 		{
 			name:          "merge receipt metadata stays attempt scoped",
@@ -156,10 +153,18 @@ func TestGenericNoProgressDoesNotPauseProject(t *testing.T) {
 	if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 || !projectFailureBreakerAllowsDispatch(&state, now) {
 		t.Fatalf("ordinary attempt metadata or owned provider reset paused project: %+v", state.FailureBreaker)
 	}
-	for _, issueID := range []string{"backend-1", "backend-2", "backend-3", "backend-4", "backend-5"} {
+	for _, issueID := range []string{"startup-1", "startup-2", "startup-3", "startup-4", "startup-5"} {
 		orch.recordProjectAttemptOutcome(&state, issueID, now, store.WorkAttemptTerminalFailure, nil, backendcapacity.StartupFailureErrorClass, "startup failed")
+		orch.recordProjectAttemptOutcome(&state, issueID, now, store.WorkAttemptTerminalFailure, nil, workAttemptErrorWorkspace, "git branch -f failed")
 	}
-	if !state.FailureBreaker.Active() || state.FailureBreaker.Class != backendcapacity.StartupFailureErrorClass || projectFailureBreakerAllowsDispatch(&state, now) {
+	if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 || !projectFailureBreakerAllowsDispatch(&state, now) {
+		t.Fatalf("instance startup or workspace failures paused project: %+v", state.FailureBreaker)
+	}
+	backendErr := failureBreakerBackendError{body: `{"code":"overloaded"}`}
+	for _, issueID := range []string{"backend-1", "backend-2", "backend-3", "backend-4", "backend-5"} {
+		orch.recordProjectAttemptOutcome(&state, issueID, now, store.WorkAttemptTerminalFailure, backendErr, "", "overloaded")
+	}
+	if !state.FailureBreaker.Active() || state.FailureBreaker.Class != projectAttemptFailureClass(backendErr, store.WorkAttemptTerminalFailure, "", "") || projectFailureBreakerAllowsDispatch(&state, now) {
 		t.Fatalf("concrete backend failure did not retain configured pause: %+v", state.FailureBreaker)
 	}
 }

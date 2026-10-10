@@ -276,7 +276,7 @@ func (o *Orchestrator) currentWorkAttemptRecoveryBlockers(ctx context.Context, s
 	if refusal, held := state.BudgetRefusals[issue.ID]; held {
 		blockers = append(blockers, "budget: "+refusal.Code)
 	}
-	if state.FailureBreaker.Active() && !projectFailureBreakerAllowsDispatch(state, now) && !o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) {
+	if state.FailureBreaker.Active() && !projectFailureBreakerAllowsDispatch(state, now) {
 		blockers = append(blockers, "project_failure_breaker: "+state.FailureBreaker.Class+"; recheck "+state.FailureBreaker.ResumeAt.Format(time.RFC3339))
 	}
 	if state.Draining || o.dispatchQuiesced() {

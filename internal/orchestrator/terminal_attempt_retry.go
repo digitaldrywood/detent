@@ -253,7 +253,14 @@ func workAttemptMatchesIssue(attempt telemetry.WorkAttempt, issue connector.Issu
 }
 
 func retryCycleAttemptMatches(attempt telemetry.WorkAttempt, cause string) bool {
-	if preTurnAttempt(attempt) {
+	if allowanceInfrastructureAttempt(store.WorkAttempt{
+		TerminalState:      store.WorkAttemptTerminalState(strings.ToLower(strings.TrimSpace(attempt.TerminalState))),
+		ErrorClass:         attempt.ErrorClass,
+		ErrorMessage:       attempt.ErrorMessage,
+		Phase:              attempt.Phase,
+		MetricsJSON:        attempt.MetricsJSON,
+		WorkerMetadataJSON: attempt.WorkerMetadataJSON,
+	}) {
 		return false
 	}
 	switch strings.TrimSpace(cause) {

@@ -316,7 +316,6 @@ type AdmissionProposal struct {
 }
 
 type FailureBreaker struct {
-	InstanceDrained        bool                 `json:"instance_drained,omitempty"`
 	ProjectID              string               `json:"project_id,omitempty"`
 	Class                  string               `json:"class"`
 	Count                  int                  `json:"count"`

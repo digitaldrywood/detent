@@ -93,21 +93,6 @@ func (o *Orchestrator) handlePreTurnFailure(ctx context.Context, state *State, e
 	if class == "" {
 		return false
 	}
-	breaker := &state.FailureBreaker
-	failures := []ProjectFailure(nil)
-	if breaker.PreTurn {
-		for _, previous := range breaker.Failures {
-			failures = append(failures, previous...)
-		}
-	} else {
-		resetProjectFailureBreaker(breaker)
-	}
-	breaker.PreTurn = true
-	breaker.Failures = map[string][]ProjectFailure{class: failures}
-	if breaker.Active() {
-		breaker.Class = class
-	}
-	o.recordProjectFailureBreakerEvidence(state, o.projectFailureEvidence(state, event.IssueID, event.Err, event.Err.Error(), event.CompletedAt), class, event.CompletedAt)
 	terminal := store.WorkAttemptTerminalFailure
 	if class == backendcapacity.StartupTimeoutErrorClass {
 		terminal = store.WorkAttemptTerminalTimedOut
@@ -118,8 +103,20 @@ func (o *Orchestrator) handlePreTurnFailure(ctx context.Context, state *State, e
 	}
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, class, event.Err.Error(), "failed", "instance workspace or startup failure", metadata)
 	releaseBackendCapacityProbe(state, running)
-	o.restorePreTurnIssue(ctx, state, running, event.CompletedAt)
+	o.retryInstanceFailure(ctx, state, running, event.CompletedAt, event.Err.Error())
 	return true
+}
+
+// retryInstanceFailure attributes a failure to the instance: the issue keeps
+// its dispatch lane and retries with backoff, and neither the issue nor the
+// project is parked.
+func (o *Orchestrator) retryInstanceFailure(ctx context.Context, state *State, running Running, at time.Time, message string) {
+	issue, _ := o.restorePreTurnIssue(ctx, state, running, at)
+	if !stateIn(issue.State, o.cfg.ActiveStates) {
+		return
+	}
+	o.scheduleRetry(state, issue, nextAttempt(running.Attempt), at, message, false, running.WorkerHost)
+	recordStateEvent(state, telemetry.ActivityEvent{At: at, Event: "instance_failure_retry", Message: "instance failure for " + issueLabel(issue) + "; retrying without parking the issue or pausing the project"})
 }
 
 func preTurnAttempt(attempt telemetry.WorkAttempt) bool {

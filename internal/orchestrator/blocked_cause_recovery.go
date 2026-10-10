@@ -364,8 +364,9 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	if issue.WorkpadSignal == nil || len(issue.WorkpadSignal.Blockers) == 0 || workpadCurrent {
 		recorded = o.evaluateRecordedBlockers(ctx, state, issue, evidence.references, now, len(cohort) > 0 && cohort[0] != nil)
 	}
+	instanceOnly := recorded.instanceOnly() && (issue.WorkpadSignal == nil || issue.WorkpadSignal.Invalid == nil && strings.TrimSpace(issue.WorkpadSignal.HumanAction) == "")
 	if recorded.Found {
-		if recorded.Unverifiable {
+		if recorded.Unverifiable && !instanceOnly {
 			reason := "unverifiable_blocker"
 			if issue.WorkpadSignal != nil {
 				switch {

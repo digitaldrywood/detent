@@ -663,7 +663,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused && o.dispatchPlanner().githubRESTDependent(issue) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubRESTPaused}
 	}
-	if !projectFailureBreakerAllowsDispatch(state, now) && !o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) {
+	if !projectFailureBreakerAllowsDispatch(state, now) {
 		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
 	}
 	o.observeHostPressure(ctx, state, o.clockNow())
@@ -808,10 +808,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 		return dispatchIssueOutcome{reason: recoveryReason}
 	}
-	canary, allowed := false, true
-	if !o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) {
-		canary, allowed = tryReserveProjectFailureBreakerCanary(state, issue.ID, now)
-	}
+	canary, allowed := tryReserveProjectFailureBreakerCanary(state, issue.ID, now)
 	if !allowed {
 		if recovery {
 			releaseDispatchRecoveryAdmission(state, issue.ID)

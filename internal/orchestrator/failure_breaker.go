@@ -318,9 +318,6 @@ func (o *Orchestrator) recordProjectFailureBreakerSuccess(state *State, issueID 
 }
 
 func (o *Orchestrator) recordProjectFailureBreakerProgress(state *State, issueID string, at time.Time) {
-	if state != nil && state.FailureBreaker.PreTurn && !state.FailureBreaker.Active() {
-		resetProjectFailureBreaker(&state.FailureBreaker)
-	}
 	if state == nil || !state.FailureBreaker.Active() || strings.TrimSpace(state.FailureBreaker.CanaryIssueID) != strings.TrimSpace(issueID) {
 		return
 	}
@@ -352,14 +349,7 @@ func (o *Orchestrator) recordProjectFailureBreakerEvidence(state *State, failure
 	breaker := &state.FailureBreaker
 	breaker.Config = normalizeFailureBreakerConfig(breaker.Config)
 	limit, cooldown := breaker.Config.SameClassLimit, breaker.Config.Cooldown
-	if breaker.PreTurn {
-		limit = consecutiveRetryCycleLimit
-		if class != workAttemptErrorWorkspace {
-			cooldown = normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery).BreakerCooldown
-		}
-	} else {
-		pruneProjectFailures(breaker, at)
-	}
+	pruneProjectFailures(breaker, at)
 
 	if breaker.Active() && breaker.Class != class {
 		closedClass := breaker.Class
@@ -407,9 +397,6 @@ func (o *Orchestrator) logProjectFailureBreaker(state *State, at time.Time, even
 	recordStateEvent(state, telemetry.ActivityEvent{At: at, Event: event, Message: message})
 	if o.logger != nil {
 		cooldownSource := "agent.failure_breaker.cooldown_seconds"
-		if breaker.PreTurn && breaker.Class != workAttemptErrorWorkspace {
-			cooldownSource = "tracker.blocked_recovery.breaker_cooldown_seconds"
-		}
 		o.logger.Warn(
 			"project failure circuit breaker tripped",
 			"event", event,
@@ -434,7 +421,7 @@ func resetProjectFailureBreaker(breaker *ProjectFailureBreaker) {
 }
 
 func pruneProjectFailures(breaker *ProjectFailureBreaker, now time.Time) {
-	if breaker == nil || breaker.PreTurn {
+	if breaker == nil {
 		return
 	}
 	breaker.Config = normalizeFailureBreakerConfig(breaker.Config)
@@ -460,14 +447,8 @@ func projectAttemptFailureClass(
 	errorClass string,
 	errorMessage string,
 ) string {
-	if issueConfigurationFailure(err, errorClass, errorMessage) {
+	if issueConfigurationFailure(err, errorClass, errorMessage) || instanceFailureClass(normalizeProjectFailureClass(errorClass)) {
 		return ""
-	}
-	switch class := normalizeProjectFailureClass(errorClass); class {
-	case backendcapacity.StartupFailureErrorClass, backendcapacity.StartupTimeoutErrorClass:
-		return backendcapacity.StartupFailureErrorClass
-	case workAttemptErrorWorkspace:
-		return class
 	}
 	if capacity, ok := backendcapacity.As(err); ok && capacity != nil {
 		return ""
@@ -493,6 +474,17 @@ func projectAttemptFailureClass(
 		}
 	}
 	return ""
+}
+
+// instanceFailureClass reports failures attributed to the runner instance
+// rather than the issue or the project: workspace preparation and backend
+// startup. They retry the issue and never pause project dispatch.
+func instanceFailureClass(class string) bool {
+	switch class {
+	case workAttemptErrorWorkspace, backendcapacity.StartupFailureErrorClass, backendcapacity.StartupTimeoutErrorClass:
+		return true
+	}
+	return false
 }
 
 func issueConfigurationFailure(err error, errorClass, message string) bool {

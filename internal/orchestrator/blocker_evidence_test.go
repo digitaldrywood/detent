@@ -264,12 +264,14 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 		priorReworkLimit  bool
 		dependencyState   string
 		nativeDisposition bool
+		instanceOnly      bool
 	}{
 		{name: "condition holds", fingerprint: "config-a", wantStatus: blockerEvidenceStatusHolds},
 		{name: "condition clears", fingerprint: "config-b", wantTransition: true},
 		{name: "other current causes preserve recorded recovery order", fingerprint: "config-b", wantTransition: true, priorReworkLimit: true},
 		{name: "stored native terminal prerequisite clears next tick", dependencyState: "Done", nativeDisposition: true, wantTransition: true},
 		{name: "stored native unfinished prerequisite holds", dependencyState: "In Progress", nativeDisposition: true, wantStatus: blockerEvidenceStatusHolds},
+		{name: "instance-only blocker releases the issue", instanceOnly: true, wantTransition: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -284,6 +286,10 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 					Type:        workpad.PredicateConfigFingerprint,
 					Fingerprint: "config-a",
 				})},
+			}
+			if tt.instanceOnly {
+				issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: 'instance:check-barrier'\n    reason: barrier failed on the runner\n```"}}
+				issue.WorkpadSignal, _ = workpad.SignalFromComment(issue.Comments[0].Body, "", "")
 			}
 			if tt.dependencyState != "" {
 				dependency := connector.Issue{ID: "prerequisite", Identifier: "prj_test#517", State: tt.dependencyState, Closed: tt.dependencyState == "Done"}
@@ -568,8 +574,8 @@ func TestSymbolicBlockerCompletion(t *testing.T) {
 				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
 					t.Fatalf("completions = %#v", attempts.completions)
 				}
-				if len(tracker.updates) != 0 || len(state.Blocked) != 0 || len(state.Retry) != 0 || len(state.Claimed) != 0 {
-					t.Fatalf("instance blocker changed issue state: updates=%v blocked=%v retries=%v claims=%v", tracker.updates, state.Blocked, state.Retry, state.Claimed)
+				if _, retried := state.Retry[issue.ID]; !retried || len(tracker.updates) != 0 || len(state.Blocked) != 0 || len(state.Claimed) != 0 {
+					t.Fatalf("instance blocker did not retry in its lane: updates=%v blocked=%v retries=%v claims=%v", tracker.updates, state.Blocked, state.Retry, state.Claimed)
 				}
 				evidence := o.evaluateRecordedBlockers(t.Context(), &state, issue, nil, now)
 				if !evidence.Unverifiable || evidence.HumanOwned || len(evidence.Evidence) != 1 || evidence.Evidence[0].Owner != workpad.BlockerOwnerInstance || evidence.Evidence[0].Reference != ref || !strings.Contains(evidence.Evidence[0].Reason, "tool unavailable") {
@@ -577,7 +583,7 @@ func TestSymbolicBlockerCompletion(t *testing.T) {
 				}
 				planner := o.liveDispatchPlanner(t.Context(), nil)
 				decision := planner.dispatchableIssueDecision(issue, &state, false, now, "")
-				if !decision.dispatchable {
+				if !decision.dispatchable && decision.reason != dispatchSkipRetryPending {
 					t.Fatalf("dispatch = %#v", decision)
 				}
 				tracker.refreshed.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\n```"}}

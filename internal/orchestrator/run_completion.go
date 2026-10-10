@@ -47,7 +47,7 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.usage.RateLimits)
 		o.recoverBackendCapacityFromStatus(state, running, event.usage.RateLimits, event.usage.LastEventAt)
 	}
-	if event.usage.TurnCount > 0 || strings.TrimSpace(event.usage.SessionID) != "" && !state.FailureBreaker.PreTurn {
+	if event.usage.TurnCount > 0 || strings.TrimSpace(event.usage.SessionID) != "" {
 		progressedAt := event.usage.LastEventAt
 		if progressedAt.IsZero() {
 			progressedAt = o.clockNow()

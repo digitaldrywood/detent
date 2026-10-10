@@ -826,7 +826,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			}
 			if tt.wantInstanceFailure {
 				completion := attempts.completions[0]
-				if completion.ErrorClass != workAttemptErrorWorkspace || !state.FailureBreaker.PreTurn || len(state.FailureBreaker.Failures[workAttemptErrorWorkspace]) != 1 {
+				if completion.ErrorClass != workAttemptErrorWorkspace || state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
 					t.Fatalf("workspace failure lost its instance owner: completion=%#v breaker=%#v", completion, state.FailureBreaker)
 				}
 				var metadata struct {
@@ -835,8 +835,8 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				if err := json.Unmarshal([]byte(completion.WorkerMetadataJSON), &metadata); err != nil || !metadata.WorkProductPushed {
 					t.Fatalf("workspace failure lost pushed work evidence: metadata=%s error=%v", completion.WorkerMetadataJSON, err)
 				}
-				if len(state.Retry) != 0 || len(state.PriorAttempts) != 0 || len(state.Claimed) != 0 || len(state.Completed) != 0 || len(state.RepeatedFailures) != 0 || len(tracker.transitionStates()) != 0 {
-					t.Fatalf("instance failure charged or moved the issue: retries=%d prior=%d claims=%d completed=%d failures=%d moves=%v", len(state.Retry), len(state.PriorAttempts), len(state.Claimed), len(state.Completed), len(state.RepeatedFailures), tracker.transitionStates())
+				if _, retried := state.Retry[issue.ID]; !retried || len(state.PriorAttempts) != 0 || len(state.Claimed) != 0 || len(state.Completed) != 0 || len(state.RepeatedFailures) != 0 || len(tracker.transitionStates()) != 0 {
+					t.Fatalf("instance failure did not retry or charged/moved the issue: retries=%d prior=%d claims=%d completed=%d failures=%d moves=%v", len(state.Retry), len(state.PriorAttempts), len(state.Claimed), len(state.Completed), len(state.RepeatedFailures), tracker.transitionStates())
 				}
 				return
 			}
@@ -1309,11 +1309,17 @@ func TestRetryCycleAttemptMatches(t *testing.T) {
 		{name: "timed out", cause: terminalAttemptRetryLimitCause, wantMatching: true, mutate: func(attempt *telemetry.WorkAttempt) {
 			attempt.TerminalState = string(store.WorkAttemptTerminalTimedOut)
 		}},
-		{name: "abandoned", cause: terminalAttemptRetryLimitCause, wantMatching: true, mutate: func(attempt *telemetry.WorkAttempt) {
+		{name: "abandoned session belongs to the instance", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) {
 			attempt.TerminalState = string(store.WorkAttemptTerminalAbandoned)
 		}},
-		{name: "capacity", cause: terminalAttemptRetryLimitCause, wantMatching: true, mutate: func(attempt *telemetry.WorkAttempt) {
+		{name: "capacity wait belongs to the instance", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) {
 			attempt.TerminalState = string(store.WorkAttemptTerminalCapacity)
+		}},
+		{name: "instance blocker report does not count", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) {
+			attempt.WorkerMetadataJSON = `{"blocker_evidence":[{"type":"instance","owner":"instance","status":"unverifiable","reference":"instance:check-barrier"}]}`
+		}},
+		{name: "backend startup failure does not count", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) {
+			attempt.ErrorClass = backendcapacity.StartupFailureErrorClass
 		}},
 		{name: "success resets terminal", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) { attempt.TerminalState = string(store.WorkAttemptTerminalSuccess) }},
 		{name: "pushed work resets terminal", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) { attempt.WorkerMetadataJSON = `{"work_product_pushed":true}` }},

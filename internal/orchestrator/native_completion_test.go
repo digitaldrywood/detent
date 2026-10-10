@@ -178,12 +178,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "PLAN recovery refusal loses authority at lane write", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: planRecovery, updateErr: errors.Join(runpkg.ErrExecutionAuthorityUnavailable, tracker.ErrStaleFencingToken), runErr: fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired), wantAuthority: true},
 		{name: "source free completion without Change returns to Todo", states: fourLanes, humanReview: &no, wantSettled: true, wantState: "Todo"},
 		{name: "unfinished completion without Change returns checkpoint to Rework", states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, diffStats: checkpoint, wantSettled: true, wantState: "Rework"},
-		{name: "typed instance blockers retain Blocked with instance reason code", states: blockedLanding, humanReview: &no, finalMessage: strings.Replace(instanceReport, "status: blocked", "status: blocked\nreason_code: instance_limitation", 1), wantInstance: true},
-		{name: "instance blocked completion without Change settles in Blocked", states: blockedLanding, humanReview: &no, finalMessage: instanceReport, wantInstance: true},
+		{name: "typed instance blockers retry with instance reason code", states: blockedLanding, humanReview: &no, finalMessage: strings.Replace(instanceReport, "status: blocked", "status: blocked\nreason_code: instance_limitation", 1), wantInstance: true},
+		{name: "instance blocked completion without Change retries", states: blockedLanding, humanReview: &no, finalMessage: instanceReport, wantInstance: true},
 		{name: "blocked unchanged Rework preserves instance checkpoint without Change", states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: instanceReport, diffStats: checkpoint, wantInstance: true, roundTrip: true},
 		{name: "blocked unchanged Rework preserves unmet prerequisite without Change", states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: prerequisiteReport, blockerState: "Backlog", diffStats: checkpoint, wantState: "Blocked", wantComment: "detent-status blocked", roundTrip: true},
-		{name: "instance blocker lane refusal preserves completion authority", states: blockedLanding, humanReview: &no, finalMessage: instanceReport, updateErr: connector.ErrStateUpdateBlocked, wantDeferred: true},
-		{name: "instance blocker without allowed lane retains completion authority", states: fourLanes, humanReview: &no, finalMessage: instanceReport, wantDeferred: true},
+		{name: "instance blocker lane refusal still retries", states: blockedLanding, humanReview: &no, finalMessage: instanceReport, updateErr: connector.ErrStateUpdateBlocked, wantInstance: true},
+		{name: "instance blocker without Blocked lane retries", states: fourLanes, humanReview: &no, finalMessage: instanceReport, wantInstance: true},
 		{name: "unfinished source free completion with checkpoint returns to Rework", states: unfinishedWorkflow, change: &runpkg.NativeChange{}, humanReview: &no, diffStats: checkpoint, wantSettled: true, wantState: "Rework"},
 		{name: "recorded failed completion with retained checkpoint returns to Rework", states: unfinishedWorkflow, humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, turnStarted: true, wantState: "Rework", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
 		{name: "recorded failed completion without checkpoint returns to Todo", states: fourLanes, humanReview: &no, runErr: checkpointDeadline, turnStarted: true, wantState: "Todo", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
@@ -194,8 +194,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "failed Rework checkpoint stays in Rework", states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, wantState: "Rework", wantSameState: true, wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
 		{name: "retained failed checkpoint lane refusal preserves authority", states: unfinishedWorkflow, humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, updateErr: connector.ErrStateUpdateBlocked, wantDeferred: true},
 		{name: "failed provider with checkpoint returns to Rework", states: unfinishedWorkflow, humanReview: &no, runErr: errors.New("provider failed"), diffStats: checkpoint, wantState: "Rework"},
-		{name: "completed checkpoint ownership deadline is instance owned with human review", states: workflow, humanReview: &yes, runErr: errors.Join(runpkg.ErrWorkspacePreparation, runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded)},
-		{name: "completed checkpoint ownership deadline is instance owned without human review", states: workflow, humanReview: &no, runErr: errors.Join(runpkg.ErrWorkspacePreparation, runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded)},
+		{name: "completed checkpoint ownership deadline is instance owned with human review", states: workflow, humanReview: &yes, runErr: errors.Join(runpkg.ErrWorkspacePreparation, runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded), wantContinue: true},
+		{name: "completed checkpoint ownership deadline is instance owned without human review", states: workflow, humanReview: &no, runErr: errors.Join(runpkg.ErrWorkspacePreparation, runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded), wantContinue: true},
 		{name: "checkpoint mismatch without retained source returns to Todo", states: fourLanes, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "Todo", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
 		{name: "checkpoint mismatch without human review returns to Todo", states: workflow, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "Todo", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
 		{name: "checkpoint mismatch optout requires recovery in Blocked", states: workflow, humanReview: &no, optout: true, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "Blocked", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
@@ -228,7 +228,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "reason only report settles without acceptance", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: "Source conflicts remain unresolved.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```", wantSettled: true},
 		{name: "human action comment retains agent reason and summary", change: accepted, states: workflow, finalMessage: "The operator must approve the migration.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: permission_wait\nblockers: []\nhuman_action: Approve the migration\n```", wantHuman: true, wantReason: "permission_wait", wantSummary: "The operator must approve the migration."},
 		{name: "untyped instance limitation settles without acceptance", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: "Sandbox forbids TCP listeners; upstream fetch returned HTTP 403.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: instance_limitation\nblockers: []\nhuman_action: null\n```", wantSettled: true},
-		{name: "deferred cleanup deadline retains instance attribution", states: workflow, runErr: errors.Join(runpkg.ErrWorkerProcessReap, context.DeadlineExceeded), roundTrip: true},
+		{name: "deferred cleanup deadline retains instance attribution", states: workflow, runErr: errors.Join(runpkg.ErrWorkerProcessReap, context.DeadlineExceeded), roundTrip: true, wantContinue: true},
 		{name: "deferred provider cancellation retains its outcome", states: workflow, runErr: context.Canceled, wantState: "In Review", wantTerminal: store.WorkAttemptTerminalCancelled, roundTrip: true},
 		{name: "failed native stale authority is rejected", states: workflow, runErr: errors.New("provider failed"), updateErr: errors.Join(runpkg.ErrExecutionAuthorityUnavailable, errors.New("final diff unavailable")), wantAbandoned: true},
 		{name: "failed provider without native change settles for review", states: workflow, runErr: errors.New("provider failed"), wantState: "In Review"},
@@ -271,7 +271,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "human attention without final text", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, wantHuman: true, noUsage: true},
 		{name: "human attention with synthetic unchanged change", change: &runpkg.NativeChange{}, states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", wantHuman: true},
 		{name: "human attention with failed producer and no change", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: deliveryErr, wantHuman: true},
-		{name: "human attention retains instance workspace failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, runpkg.ErrWorkspacePreparation)},
+		{name: "human attention retains instance workspace failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, runpkg.ErrWorkspacePreparation), wantContinue: true},
 		{name: "human attention retains checkpoint failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, errors.New("checkpoint persistence failed")), wantState: "In Review"},
 		{name: "human attention retains lease failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, errors.New("native execution lease lost")), wantState: "In Review"},
 		{name: "human attention retains session failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, errors.New("session persistence failed")), wantState: "In Review"},
@@ -370,8 +370,10 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 			}
 			scheduling.release = func() {
-				if test.wantInstance && (len(tick.updates) != 1 || tick.updates[0].state != "Blocked") {
-					t.Fatalf("instance claim released before blocker handoff: %v", tick.updates)
+				for _, update := range tick.updates {
+					if test.wantInstance && update.state == "Blocked" {
+						t.Fatalf("instance claim released after a Blocked handoff: %v", tick.updates)
+					}
 				}
 				if test.wantState != "" && !test.wantSameState && !test.wantDirect && (len(tick.updates) != 1 || tick.updates[0].state != test.wantState) {
 					t.Fatalf("claim released before lane settlement: updates=%v, want=%s", tick.updates, test.wantState)
@@ -694,8 +696,17 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				return
 			}
 			if test.wantInstance {
-				if len(tick.updates) != 1 || tick.updates[0].state != "Blocked" || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Retry) != 0 || len(state.Completed) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || len(state.FailureBreaker.Failures) != 0 {
-					t.Fatalf("instance report acquired issue completion effects: updates=%v blocked=%v retry=%v completed=%v claims=%v releases=%d", tick.updates, state.Blocked, state.Retry, state.Completed, state.Claimed, scheduling.releases)
+				lane := issue.State
+				for _, update := range tick.updates {
+					if update.state == "Blocked" {
+						t.Fatalf("instance report parked the issue in Blocked: updates=%v", tick.updates)
+					}
+					if test.updateErr == nil {
+						lane = update.state
+					}
+				}
+				if _, retried := state.Retry[issue.ID]; retried != stateIn(lane, cfg.ActiveStates) || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Completed) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || len(state.FailureBreaker.Failures) != 0 {
+					t.Fatalf("instance report did not retry in its lane: lane=%s updates=%v blocked=%v retry=%v completed=%v claims=%v releases=%d", lane, tick.updates, state.Blocked, state.Retry, state.Completed, state.Claimed, scheduling.releases)
 				}
 				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess || attempts.completions[0].ErrorClass != "" {
 					t.Fatalf("instance report lost provider success: %#v", attempts.completions)

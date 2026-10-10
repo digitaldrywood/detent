@@ -15,7 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-func TestPreTurnFailuresDrainInstance(t *testing.T) {
+func TestPreTurnFailuresRetryWithoutPausingProject(t *testing.T) {
 	t.Parallel()
 	startup := backendcapacity.NewError(backendcapacity.Scope{}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: backendcapacity.StartupTimeoutKind}, context.DeadlineExceeded)
 	protocol := errors.New("codex turn/start: JSON-RPC -32600 invalid request")
@@ -52,48 +52,17 @@ func TestPreTurnFailuresDrainInstance(t *testing.T) {
 				tracker.issues[issue.ID] = issue
 				state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: int64(index + 1), DispatchSourceState: "Todo", DispatchTargetState: "In Progress", StartedAt: now.Add(-time.Second)}
 				o.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: failure, CompletedAt: now})
-				if tracker.issues[issue.ID].State != "Todo" || len(state.Blocked) != 0 || len(tracker.comments) != 0 || len(state.Retry) != 0 || len(state.PriorAttempts) != 0 {
-					t.Fatalf("pre-turn failure changed issue accounting: state=%s blocked=%v comments=%v retries=%v", tracker.issues[issue.ID].State, state.Blocked, tracker.comments, state.Retry)
+				retry, retried := state.Retry[issue.ID]
+				if tracker.issues[issue.ID].State != "Todo" || len(state.Blocked) != 0 || len(tracker.comments) != 0 || !retried || retry.Attempt != 2 || !retry.DueAt.After(now) {
+					t.Fatalf("pre-turn failure %d did not retry in its lane: state=%s blocked=%v comments=%v retry=%#v", index+1, tracker.issues[issue.ID].State, state.Blocked, tracker.comments, state.Retry)
 				}
-				if allowed := projectFailureBreakerAllowsDispatch(&state, now); allowed != (index < 2) {
-					t.Fatalf("dispatch allowed after failure %d = %v", index+1, allowed)
+				if !projectFailureBreakerAllowsDispatch(&state, now) || state.FailureBreaker.Active() {
+					t.Fatalf("instance failure %d paused project dispatch: breaker=%#v", index+1, state.FailureBreaker)
 				}
 			}
-			rows := projectFailureBreakerSnapshots(state)
-			cooldown := time.Minute
-			if state.FailureBreaker.Class == workAttemptErrorWorkspace {
-				cooldown = time.Hour
+			if rows := projectFailureBreakerSnapshots(state); len(rows) != 0 {
+				t.Fatalf("instance failures produced project breaker evidence: %#v", rows)
 			}
-			if len(rows) != 1 || rows[0].RepresentativeError == "" || rows[0].Count != 3 || !rows[0].InstanceDrained || rows[0].CooldownSeconds != int64(cooldown/time.Second) {
-				t.Fatalf("breaker health evidence = %#v", rows)
-			}
-			if clearProjectFailureBreakerIssue(&state.FailureBreaker, "issue-0") {
-				t.Fatal("moving an issue cleared instance evidence")
-			}
-			if !state.FailureBreaker.ResumeAt.Equal(now.Add(cooldown)) || !projectFailureBreakerAllowsDispatch(&state, now.Add(cooldown)) {
-				t.Fatal("cooldown did not resume dispatch")
-			}
-			reserved, allowed := tryReserveProjectFailureBreakerCanary(&state, "canary", now.Add(cooldown))
-			if !reserved || !allowed || projectFailureBreakerAllowsDispatch(&state, now.Add(cooldown)) {
-				t.Fatal("cooldown did not admit exactly one canary")
-			}
-			if !clearProjectFailureBreakerIssue(&state.FailureBreaker, "canary") || !state.FailureBreaker.Active() {
-				t.Fatal("moving canary did not release reservation while preserving drain")
-			}
-			reserved, allowed = tryReserveProjectFailureBreakerCanary(&state, "canary", now.Add(cooldown))
-			if !reserved || !allowed {
-				t.Fatal("moved canary retained reservation")
-			}
-			state.Running["canary"] = Running{Issue: connector.Issue{ID: "canary"}}
-			o.handleRunUpdate(&state, runUpdate{issueID: "canary", usage: runpkg.UsageUpdate{SessionID: "thread-only"}})
-			if !state.FailureBreaker.Active() {
-				t.Fatal("thread creation cleared pre-turn breaker")
-			}
-			o.handleRunUpdate(&state, runUpdate{issueID: "canary", usage: runpkg.UsageUpdate{TurnCount: 1}})
-			if state.FailureBreaker.Active() {
-				t.Fatal("first turn did not close canary")
-			}
-
 		})
 	}
 }

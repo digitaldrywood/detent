@@ -372,7 +372,6 @@ type RepeatedFailure struct {
 }
 
 type ProjectFailureBreaker struct {
-	PreTurn        bool
 	Config         FailureBreakerConfig
 	Failures       map[string][]ProjectFailure
 	Class          string
