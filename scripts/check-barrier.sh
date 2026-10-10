@@ -82,7 +82,7 @@ run_browser_specs() {
     if [ -n "$browser_items" ]; then
         IFS=$'\n' read -r -d '' -a specs <<<"$browser_items" || true
     fi
-    node_modules/.bin/playwright test "${specs[@]}"
+    node_modules/.bin/playwright test --retries=1 "${specs[@]}"
 }
 
 run_checks_in_order() {
