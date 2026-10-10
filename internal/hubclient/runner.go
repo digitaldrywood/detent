@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"slices"
@@ -38,6 +39,34 @@ type runnerCredentialSource struct {
 	heartbeatPath    string
 	mu               sync.Mutex
 	path             string
+}
+
+var identityFileLocks sync.Map
+
+// lockIdentityFile holds the runner identity file for one read-modify-write.
+// Every Client in a process shares one mutex per identity file, so concurrent
+// callers in the same runner wait for each other; the file lock still refuses
+// another process.
+func lockIdentityFile(path string) (func() error, error) {
+	key := path
+	if absolute, err := filepath.Abs(path); err == nil {
+		key = absolute
+	}
+	value, _ := identityFileLocks.LoadOrStore(key, &sync.Mutex{})
+	mu, ok := value.(*sync.Mutex)
+	if !ok {
+		return nil, errors.New("runner identity lock registry is corrupt")
+	}
+	mu.Lock()
+	lock, err := instancelock.Acquire(path + ".lock")
+	if err != nil {
+		mu.Unlock()
+		return nil, err
+	}
+	return func() error {
+		defer mu.Unlock()
+		return lock.Close()
+	}, nil
 }
 
 func runnerSpriteName(hostname string) string {
@@ -99,11 +128,11 @@ func (c *Client) runnerToken(ctx context.Context) (token string, resultErr error
 func (c *Client) runnerCredential(ctx context.Context, refreshIdentity bool) (result runnerauth.File, resultErr error) {
 	c.runner.mu.Lock()
 	defer c.runner.mu.Unlock()
-	lock, err := instancelock.Acquire(c.runner.path + ".lock")
+	release, err := lockIdentityFile(c.runner.path)
 	if err != nil {
 		return result, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, lock.Close()) }()
+	defer func() { resultErr = errors.Join(resultErr, release()) }()
 	file, err := runnerauth.Load(c.runner.path)
 	if err != nil {
 		return result, err
@@ -184,11 +213,11 @@ func validateRunnerResponse(file runnerauth.File, identity runnerauth.Identity) 
 }
 
 func EnrollRunner(ctx context.Context, path string, organization tracker.OrganizationID, enrollment string, machine Machine) (identity runnerauth.Identity, resultErr error) {
-	lock, err := instancelock.Acquire(path + ".lock")
+	release, err := lockIdentityFile(path)
 	if err != nil {
 		return identity, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, lock.Close()) }()
+	defer func() { resultErr = errors.Join(resultErr, release()) }()
 	file, err := runnerauth.Load(path)
 	if err != nil {
 		return identity, err
@@ -236,11 +265,11 @@ func (c *Client) RunnerIdentity(ctx context.Context) (runnerauth.Identity, error
 }
 
 func RefreshRunner(ctx context.Context, path string, rotate bool) (identity runnerauth.Identity, resultErr error) {
-	lock, err := instancelock.Acquire(path + ".lock")
+	release, err := lockIdentityFile(path)
 	if err != nil {
 		return identity, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, lock.Close()) }()
+	defer func() { resultErr = errors.Join(resultErr, release()) }()
 	file, err := runnerauth.Load(path)
 	if err != nil {
 		return identity, err
