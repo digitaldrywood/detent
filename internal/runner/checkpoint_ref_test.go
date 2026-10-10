@@ -101,3 +101,37 @@ func TestCheckpointRefCoversChangeSource(t *testing.T) {
 		})
 	}
 }
+
+type existingWorkspaceBackend struct {
+	workspace.Backend
+	err error
+}
+
+func (b existingWorkspaceBackend) Existing(workspace.Issue) (workspace.Info, error) {
+	return workspace.Info{}, b.err
+}
+
+func TestSameMachineWorkspaceRetained(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		previous string
+		lease    string
+		backend  workspace.Backend
+		want     bool
+	}{
+		{name: "same runner keeps its retained workspace", previous: "machine", lease: "machine", backend: existingWorkspaceBackend{}, want: true},
+		{name: "same runner without the workspace restores the ref", previous: "machine", lease: "machine", backend: existingWorkspaceBackend{err: workspace.ErrMissingWorkspace}},
+		{name: "another runner restores the ref", previous: "machine", lease: "other", backend: existingWorkspaceBackend{}},
+		{name: "unknown previous runner restores the ref", lease: "machine", backend: existingWorkspaceBackend{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			recovery := tracker.NativeRecovery{SourceAttemptID: "attempt", Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "attempt", MachineID: tracker.MachineID(test.previous)}}}}
+			recovery.Lease.MachineID = tracker.MachineID(test.lease)
+			if got := sameMachineWorkspaceRetained(test.backend, recovery, workspace.Issue{ID: "issue"}); got != test.want {
+				t.Fatalf("sameMachineWorkspaceRetained() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}

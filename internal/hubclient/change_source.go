@@ -108,7 +108,7 @@ func (e *nativeExecution) requireRecoveredSource(detail tracker.ChangeDetail, di
 func (e *nativeExecution) recoverLocalChangeSource(ctx context.Context, version tracker.ChangeVersion) (tracker.ChangeSourceCapture, error) {
 	recovery := e.Recovery()
 	owner := recovery.SourceAttempt()
-	if owner == nil || owner.Checkpoint == nil || owner.MachineID != recovery.Lease.MachineID || owner.Checkpoint.HeadSHA != version.HeadSHA || owner.Checkpoint.Availability != "available" || owner.Checkpoint.Storage != "local_only" || e.changeSource == nil {
+	if owner == nil || owner.Checkpoint == nil || owner.MachineID != recovery.Lease.MachineID || owner.Checkpoint.HeadSHA != version.HeadSHA || owner.Checkpoint.Availability != "available" || owner.Checkpoint.Storage != "local_only" && !owner.Checkpoint.GitRef() || e.changeSource == nil {
 		return tracker.ChangeSourceCapture{}, errors.New("retained source is unavailable; verify the exact local checkpoint on its source runner before recapture")
 	}
 	capture, err := e.changeSource(ctx, version.BaseSHA, version.HeadSHA)
