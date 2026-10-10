@@ -98,6 +98,10 @@ func TestAccessKeyOrganizationControls(t *testing.T) {
 	owner := newBrowser(t, f.service.Handler())
 	owner.login("/organizations", "user_alice:")
 	key := createTestAccessKey(t, owner, "global", nil, "")
+	unused := attachmentRequest(t, owner, http.MethodGet, "/api/cloud/organizations/org_beta/external-keys", nil, nil)
+	if unused.Code != http.StatusOK || !strings.Contains(unused.Body.String(), key.ID) || !strings.Contains(unused.Body.String(), `"last_used_at":null`) {
+		t.Fatalf("unused key visibility=%d %s", unused.Code, unused.Body.String())
+	}
 	client := newBrowser(t, f.service.Handler())
 	call := entryMCPClient(t, client, key.Token, "2025-11-25", "/mcp")
 	if result, failed := call("list_projects", map[string]any{"organization_id": "org_beta"}); failed {
@@ -121,6 +125,24 @@ func TestAccessKeyOrganizationControls(t *testing.T) {
 	change = attachmentRequest(t, owner, http.MethodPut, "/api/cloud/organizations/org_beta/key-policy", strings.NewReader(`{"allow_external_keys":true}`), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
 	if change.Code != http.StatusOK {
 		t.Fatal(change.Body.String())
+	}
+	change = attachmentRequest(t, owner, http.MethodPut, "/api/cloud/organizations/org_beta/key-policy", strings.NewReader(`{"personal_keys":"approval"}`), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
+	if change.Code != http.StatusOK {
+		t.Fatalf("approval policy=%d %s", change.Code, change.Body.String())
+	}
+	if result, failed := call("list_projects", map[string]any{"organization_id": "org_beta"}); !failed || !strings.Contains(string(result), "organization_key_policy_denied") {
+		t.Fatalf("unapproved key=%s failed=%v", result, failed)
+	}
+	queue := attachmentRequest(t, owner, http.MethodGet, "/api/cloud/organizations/org_beta/external-keys", nil, nil)
+	if queue.Code != http.StatusOK || !strings.Contains(queue.Body.String(), `"status":"pending"`) {
+		t.Fatalf("approval queue=%d %s", queue.Code, queue.Body.String())
+	}
+	approved := attachmentRequest(t, owner, http.MethodPut, "/api/cloud/organizations/org_beta/external-keys/"+key.ID+"/approve", strings.NewReader(`{}`), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
+	if approved.Code != http.StatusNoContent {
+		t.Fatalf("approve=%d %s", approved.Code, approved.Body.String())
+	}
+	if result, failed := call("list_projects", map[string]any{"organization_id": "org_beta"}); failed {
+		t.Fatalf("approved key=%s", result)
 	}
 	blocked := attachmentRequest(t, owner, http.MethodPut, "/api/cloud/organizations/org_beta/external-keys/"+key.ID+"/block", strings.NewReader(`{}`), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
 	if blocked.Code != http.StatusNoContent {
@@ -224,7 +246,7 @@ func TestAccessKeyMembershipAndPolicyMatrix(t *testing.T) {
 							if member {
 								f.provider.member(owner, "porg_alpha", role)
 							}
-							if _, err := f.service.auth.store.db.ExecContext(t.Context(), "INSERT INTO organization_key_policy(organization_id,allow_external_keys) VALUES('org_alpha',?) ON CONFLICT(organization_id) DO UPDATE SET allow_external_keys=excluded.allow_external_keys", allowed); err != nil {
+							if _, err := f.service.auth.store.db.ExecContext(t.Context(), "INSERT INTO organization_key_policy(organization_id,personal_keys) VALUES('org_alpha',CASE WHEN ? THEN 'allowed' ELSE 'blocked' END) ON CONFLICT(organization_id) DO UPDATE SET personal_keys=excluded.personal_keys", allowed); err != nil {
 								t.Fatal(err)
 							}
 							k := accessKey{ID: owner, Owner: owner, Name: "matrix", Kind: kind, Permission: apikey.ScopeWrite, AccessContext: access}
@@ -242,7 +264,7 @@ func TestAccessKeyMembershipAndPolicyMatrix(t *testing.T) {
 							want := ""
 							if kind == "personal" && !member {
 								want = "membership_denied"
-							} else if kind == "personal" && !allowed && access != "project" {
+							} else if kind == "personal" && !allowed {
 								want = "organization_key_policy_denied"
 							}
 							var refusal *apikey.Refusal
@@ -293,6 +315,20 @@ func TestAccessKeyLifecycleAndREST(t *testing.T) {
 	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), key.ID) || strings.Contains(listed.Body.String(), key.Token) {
 		t.Fatalf("account list=%d %s", listed.Code, listed.Body.String())
 	}
+	rotated := attachmentRequest(t, owner, http.MethodPost, "/api/cloud/account/api-keys/"+key.ID+"/rotate", strings.NewReader(`{}`), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
+	var replacement accessKey
+	if rotated.Code != http.StatusCreated || json.Unmarshal(rotated.Body.Bytes(), &replacement) != nil || replacement.ID != key.ID || replacement.Token == key.Token {
+		t.Fatalf("rotate=%d %s", rotated.Code, rotated.Body.String())
+	}
+	response = attachmentRequest(t, client, http.MethodGet, "/api/v2/projects", nil, headers)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("old token still accepted=%d", response.Code)
+	}
+	headers["Authorization"] = "Bearer " + replacement.Token
+	response = attachmentRequest(t, client, http.MethodGet, "/api/v2/projects", nil, headers)
+	if response.Code != http.StatusOK {
+		t.Fatalf("replacement token=%d %s", response.Code, response.Body.String())
+	}
 	revoked := attachmentRequest(t, owner, http.MethodDelete, "/api/cloud/account/api-keys/"+key.ID, nil, nil)
 	if revoked.Code != http.StatusNoContent {
 		t.Fatalf("revoke=%d %s", revoked.Code, revoked.Body.String())
@@ -309,5 +345,37 @@ func TestAccessKeyLifecycleAndREST(t *testing.T) {
 	response = attachmentRequest(t, client, http.MethodGet, "/api/v2/projects", nil, headers)
 	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "key_inactive") {
 		t.Fatalf("expired key=%d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAccessKeyMemberSettingsIsolation(t *testing.T) {
+	f := newEntryFixture(t)
+	owner := newBrowser(t, f.service.Handler())
+	owner.login("/organizations", "user_alice:")
+	other := createTestAccessKey(t, owner, "global", nil, "")
+	member := newBrowser(t, f.service.Handler())
+	member.login("/organizations", "user_bob:")
+	own := createTestAccessKey(t, member, "global", nil, "")
+	listed := attachmentRequest(t, member, http.MethodGet, "/api/cloud/account/api-keys", nil, nil)
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), own.ID) || strings.Contains(listed.Body.String(), other.ID) {
+		t.Fatalf("member keys=%d %s", listed.Code, listed.Body.String())
+	}
+	for _, test := range []struct{ method, path, body string }{
+		{http.MethodGet, "external-keys", ""}, {http.MethodGet, "key-policy", ""}, {http.MethodPut, "key-policy", `{"personal_keys":"blocked"}`},
+		{http.MethodPut, "external-keys/" + other.ID + "/block", `{}`}, {http.MethodPut, "external-keys/" + other.ID + "/approve", `{}`},
+		{http.MethodPost, "service-keys", `{}`}, {http.MethodGet, "service-keys", ""},
+	} {
+		t.Run(test.method+test.path, func(t *testing.T) {
+			response := attachmentRequest(t, member, test.method, "/api/cloud/organizations/org_beta/"+test.path, strings.NewReader(test.body), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("non-admin access=%d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+	for _, test := range []struct{ method, path string }{{http.MethodPost, "/rotate"}, {http.MethodDelete, ""}} {
+		response := attachmentRequest(t, member, test.method, "/api/cloud/account/api-keys/"+other.ID+test.path, strings.NewReader(`{}`), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("other owner's key mutation=%d", response.Code)
+		}
 	}
 }
