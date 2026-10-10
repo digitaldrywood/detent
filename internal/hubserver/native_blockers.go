@@ -151,6 +151,9 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 		return nativeInvalid("Recorded blocker return lane is not dispatchable")
 	}
 	for _, blocker := range disposition.BlockerEvidence {
+		if blocker.Owner == workpad.BlockerOwnerInstance {
+			continue
+		}
 		if blocker.Unverifiable || blocker.Owner != workpad.BlockerOwnerOrchestrator || blocker.Predicate == nil || blocker.Predicate.Type != workpad.PredicateIssueState {
 			return nativeInvalid("Recorded blocker cannot be verified by native dependencies")
 		}
