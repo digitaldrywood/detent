@@ -258,7 +258,7 @@ func (request runnerRoutingRequest) effective(current runnerauth.Routing) runner
 	} else {
 		change.HostServices = *request.HostServices
 	}
-	if request.Availability == nil || request.Availability.Timezone == "" && request.Availability.Windows == nil && request.Availability.HardDeadline == "" {
+	if request.Availability == nil || request.Availability.Timezone == "" && request.Availability.Windows == nil && request.Availability.WindowSlots == nil && request.Availability.HardDeadline == "" {
 		change.Availability = current.Availability
 	} else {
 		change.Availability = *request.Availability
