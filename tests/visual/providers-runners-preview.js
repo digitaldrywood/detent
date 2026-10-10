@@ -11,7 +11,20 @@ async function providersRunnersPreview() {
     minify: true,
     jsx: "automatic",
     define: { "process.env.NODE_ENV": '"production"' },
-    alias: { "~": path.resolve("web/conversation/src") },
+    alias: {
+      "~": path.resolve("web/conversation/src"),
+      "lucide-react/dynamic": path.resolve("web/conversation/src/browser/lucideDynamicIcon.tsx"),
+      "@pierre/diffs/utils/parsePatchFiles": path.resolve("web/conversation/node_modules/@pierre/diffs/dist/utils/parsePatchFiles.js"),
+      "@pierre/diffs/types": path.resolve("web/conversation/node_modules/@pierre/diffs/dist/types.js"),
+    },
+    loader: { ".css": "empty" },
+    plugins: [{
+      name: "vite-worker-stub",
+      setup(build) {
+        build.onResolve({ filter: /\?worker$/ }, (args) => ({ path: args.path, namespace: "vite-worker-stub" }));
+        build.onLoad({ filter: /.*/, namespace: "vite-worker-stub" }, () => ({ contents: "export default class {}", loader: "js" }));
+      },
+    }],
     tsconfig: "web/conversation/tsconfig.json",
     nodePaths: [path.resolve("web/conversation/node_modules")],
   });
