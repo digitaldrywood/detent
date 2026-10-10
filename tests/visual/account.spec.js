@@ -602,10 +602,6 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
 
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("heading", { name: "Enroll a runner" })).toBeVisible();
-  await expect(dialog.getByLabel("Runner scope")).toHaveValue("organization");
-  await dialog.getByLabel("Runner scope").selectOption("projects");
-  await expect(dialog.getByRole("checkbox").first()).toBeVisible();
-  await dialog.getByLabel("Runner scope").selectOption("organization");
   await expect(dialog.locator('[aria-current="step"]')).toHaveText("1. Set it up");
   // Nothing to copy from the host first: the dialog asks for a name, a
   // capacity and projects, never for runner or machine IDs.
@@ -674,10 +670,12 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   await enroll.click();
   await page.getByRole("menuitem", { name: "AI assisted", exact: true }).click();
   const assistance = page.getByRole("dialog", { name: "Add runner with Luna" });
-  await expect(assistance.getByLabel("Project", { exact: true })).toHaveValue("");
-  await assistance.getByRole("button", { name: "Open Luna" }).click();
-  await expect(page).toHaveURL(/\/chat$/);
-  await expect(page.getByRole("textbox", { name: "Message" })).toContainText("all current and future projects in this organization");
+  if (await assistance.count()) {
+    await assistance.getByLabel("Project", { exact: true }).selectOption(hub.fixture.project_id);
+    await assistance.getByRole("button", { name: "Open Luna" }).click();
+  }
+  await expect(page).toHaveURL(new RegExp(`/chat/p/${hub.fixture.project_id}$`));
+  await expect(page.getByRole("textbox", { name: "Message" })).toContainText("Help me add a runner for this project.");
   await expect(page.getByRole("textbox", { name: "Message" })).toContainText("Fly Sprite or a machine I run");
   await expectNoSeriousAxeViolations(page, "AI assisted runner draft");
   expect(errors, "console errors while enrolling a runner").toEqual([]);

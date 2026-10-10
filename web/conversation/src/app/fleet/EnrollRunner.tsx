@@ -18,7 +18,6 @@ import { Label } from "../../components/ui/label.tsx";
 import { Radio, RadioGroup } from "../../components/ui/radio-group.tsx";
 import type { FleetResponse, FleetRunner } from "../../contracts/account.ts";
 import { ContextHelp } from "../components/ContextHelp.tsx";
-import { NativeSelect } from "../account/controls.tsx";
 import { ControlError } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useMutation, useResource, type Resource } from "../account/useResource.ts";
@@ -215,7 +214,6 @@ export function EnrollRunnerDialog({
   // the next opening's command.
   const generation = React.useRef(0);
   const [service, setService] = React.useState(true);
-  const [scope, setScope] = React.useState<"organization" | "projects">(projectIds === undefined ? "organization" : "projects");
   const [selected, setSelected] = React.useState<readonly string[]>(initialSelection);
   const [enrollment, setEnrollment] = React.useState<(PendingEnrollment & {
     readonly command: string;
@@ -225,17 +223,15 @@ export function EnrollRunnerDialog({
   const selectedKey = selected.join(",");
   const sprites = useResource(async () => {
     if (!open || location !== "sprite") return [];
-    return Promise.all((scope === "organization" ? [""] : selected).map(async (id) => {
+    return Promise.all(selected.map(async (id) => {
       try {
-        const secret = await api.spritesSecret(id);
-        const present = secret.present || (id !== "" && (await api.spritesSecret("")).present);
-        return { id, present };
+        return { id, present: (await api.spritesSecret(id)).present };
       } catch {
         return { id, present: null };
       }
     }));
-  }, [api, open, location, selectedKey, scope]);
-  const canWake = sprites.value?.length === (scope === "organization" ? 1 : selected.length) && sprites.value.every((entry) => entry.present === true);
+  }, [api, open, location, selectedKey]);
+  const canWake = sprites.value?.length === selected.length && sprites.value.every((entry) => entry.present === true);
   const publishedVersion = fleet.value?.current ?? bootstrap?.version ?? "";
   const pin = spriteBootstrapPin(publishedVersion);
   const downloadRef = pin.ref === "latest" ? '${detent_release}' : pin.ref;
@@ -260,7 +256,6 @@ export function EnrollRunnerDialog({
     setShowToken(false);
     setConnected(null);
     setSelected(initialSelection());
-    setScope(projectIds === undefined ? "organization" : "projects");
   }, [open, initialSelection, initialName]);
 
   React.useEffect(() => {
@@ -294,8 +289,7 @@ export function EnrollRunnerDialog({
     const mine = generation.current;
     const existingRunnerIds = baseline.runners.map((runner) => runner.id);
     const created = await api.enrollRunner({
-      scope,
-      projectIds: scope === "organization" ? [] : selected,
+      projectIds: selected,
       operations: [...ENROLLMENT_OPERATIONS],
       ttlSeconds: ENROLLMENT_TTL_SECONDS,
     });
@@ -319,7 +313,7 @@ export function EnrollRunnerDialog({
 
   const nameFits = runnerNameFits(name);
   const spriteNameFits = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name.trim());
-  const ready = fleet.value !== undefined && (scope === "organization" || selected.length > 0) && capacity !== null && isolationTier !== null && nameFits && (location === "machine" || spriteNameFits);
+  const ready = fleet.value !== undefined && selected.length > 0 && capacity !== null && isolationTier !== null && nameFits && (location === "machine" || spriteNameFits);
   const baselinePending = enrollment === null && fleet.value === undefined;
   const step = connected !== null ? 2 : enrollment !== null ? 1 : 0;
 
@@ -390,8 +384,8 @@ export function EnrollRunnerDialog({
                 {pin.release === null ? <p className="text-xs text-warning">The bootstrap installs the latest tagged release. Upgrade the runner to {publishedVersion || "the Hub’s build"} afterwards.</p> : null}
                 {sprites.loading ? <p className="text-xs text-muted-foreground">Checking Sprites tokens…</p> : sprites.value?.filter((entry) => entry.present !== true).map((entry) => (
                   <p key={entry.id} className="text-xs text-warning">
-                    {entry.present === false ? "No Sprites token is set" : "Could not check the Sprites token"} for {entry.id === "" ? "the organization" : projects.find((project) => project.id === entry.id)?.name}. Without it the Hub cannot wake the Sprite.{entry.id === "" ? "" : " You can uncheck the project to continue without it."}{" "}
-                    <a className="underline" href={`${bootstrap?.base_path ?? ""}/settings/integrations${entry.id === "" ? "" : `?project=${encodeURIComponent(entry.id)}`}#sprites`}>Set a Sprites token</a>
+                    {entry.present === false ? "No Sprites token is set" : "Could not check the Sprites token"} for {projects.find((project) => project.id === entry.id)?.name}. Without it the Hub cannot wake the Sprite for this project; uncheck the project to continue without it.{" "}
+                    <a className="underline" href={`${bootstrap?.base_path ?? ""}/settings/integrations?project=${encodeURIComponent(entry.id)}#sprites`}>Set a Sprites token</a>
                   </p>
                 ))}
               </> : null}
@@ -456,8 +450,7 @@ export function EnrollRunnerDialog({
                     </ContextHelp>
                   </span>
                 </legend>
-                <NativeSelect aria-label="Runner scope" value={scope} onValueChange={(value) => setScope(value as "organization" | "projects")} options={[{ value: "organization", label: "All projects" }, { value: "projects", label: "Selected projects" }]} />
-                {scope === "organization" ? <p className="text-xs text-muted-foreground">Serves all current and future projects, subject to each project’s approved policy and capacity.</p> : projects.length === 0 ? (
+                {projects.length === 0 ? (
                   <p className="text-[13px] text-muted-foreground">
                     You can read no projects on this organization, so there is nothing to enroll a
                     runner for.

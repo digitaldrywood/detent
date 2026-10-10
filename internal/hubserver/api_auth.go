@@ -183,10 +183,10 @@ func (s *Service) authenticateAPIHash(ctx context.Context, hash, renewalRunner, 
 	var revokedAt, expiresAt, lastUsedAt sql.NullString
 	err := s.database.auth().QueryRowContext(ctx, `
 SELECT t.id, t.name, t.scope, t.token_hash, t.revoked_at, t.native_only, t.expires_at, t.created_at, t.last_used_at,
-coalesce(r.id, ''), coalesce(r.machine_id, ''), coalesce(r.organization_id, ''), coalesce(r.operations_json, '[]'), coalesce(r.scope, 'projects')
+coalesce(r.id, ''), coalesce(r.machine_id, ''), coalesce(r.organization_id, ''), coalesce(r.operations_json, '[]')
 FROM api_tokens t LEFT JOIN runner_identities r ON r.token_id = t.id
 WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credential.Scope, &storedHash, &revokedAt, &credential.NativeOnly, &expiresAt, &createdAt, &lastUsedAt,
-		&credential.Runner.RunnerID, &credential.Runner.MachineID, &credential.Runner.OrganizationID, &operations, &credential.Runner.Scope)
+		&credential.Runner.RunnerID, &credential.Runner.MachineID, &credential.Runner.OrganizationID, &operations)
 	if errors.Is(err, sql.ErrNoRows) {
 		return apiCredential{}, http.StatusUnauthorized, errors.New("token was not found")
 	}

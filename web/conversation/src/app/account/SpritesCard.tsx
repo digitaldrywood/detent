@@ -36,10 +36,10 @@ export function SpritesCard({ projectId, canManage }: {
   return (
     <SettingsRow
       id="sprites"
-      title={projectId ? "Sprites project override" : "Sprites organization token"}
+      title="Sprites"
       description={
         <>
-          {projectId ? "A project token overrides the organization token. " : "Projects inherit this token unless they set an override. "}A Sprites organization token lets Detent create and drive sprites only in that Fly organization.
+          A Sprites organization token lets Detent create and drive sprites only in that Fly organization.
           Use a dedicated Fly organization with nothing else in it, and set a spend alert.
           {" "}<a className="underline" href="https://sprites.dev/account" target="_blank" rel="noreferrer">Manage or revoke tokens in your Sprites account</a>.
           {" "}The token is encrypted and write-only. Removing it here removes Detent's copy; revoke it in Sprites to invalidate it.

@@ -17,11 +17,7 @@ func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query
 	if err != nil {
 		return 0, false, err
 	}
-	projects, err := readRunnerProjects(ctx, tx, query.NativeScope.credential.ID)
-	if err != nil {
-		return 0, false, err
-	}
-	if len(projects) == 0 {
+	if len(r.ProjectIDs) == 0 {
 		return 0, true, nil
 	}
 	probe := query
@@ -34,7 +30,7 @@ func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query
 	probe.Limit = 100
 	var heads []tracker.WorkItemID
 projects:
-	for _, project := range projects {
+	for _, project := range r.ProjectIDs {
 		projectScope := scope
 		projectScope.project = project
 		projectQuery := probe

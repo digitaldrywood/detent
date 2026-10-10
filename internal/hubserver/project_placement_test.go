@@ -21,7 +21,7 @@ func setPlacementFixture(t *testing.T, f nativeFixture, placement policy.Placeme
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_pools(organization_id,max_runners,bootstrap,configured_by,placement_json) SELECT ?,?,'true',id,? FROM api_tokens WHERE token_hash=? ON CONFLICT(organization_id) DO UPDATE SET placement_json=excluded.placement_json,max_runners=excluded.max_runners`, f.project.OrganizationID, ceiling, string(raw), apikey.HashToken(testHubAdminToken))
+	_, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO project_sprite_pools(organization_id,project_id,max_runners,bootstrap,configured_by,placement_json) SELECT ?,?,?,'true',id,? FROM api_tokens WHERE token_hash=? ON CONFLICT(organization_id,project_id) DO UPDATE SET placement_json=excluded.placement_json,max_runners=excluded.max_runners`, f.project.OrganizationID, f.project.ID, ceiling, string(raw), apikey.HashToken(testHubAdminToken))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,6 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 		name, excluded, model string
 		locals, providerMax   int
 		shared, pending       bool
-		organization          bool
 		wantDemand, wantLocal int
 		wantPending           int
 	}{
@@ -139,8 +138,6 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 		{name: "independent accounts add capacity", locals: 2, providerMax: 1, wantDemand: 3, wantLocal: 2},
 		{name: "host and runner limit", locals: 1, providerMax: 8, wantDemand: 3, wantLocal: 2},
 		{name: "pending creation is not double counted", pending: true, wantDemand: 3, wantPending: 1},
-		{name: "organization local capacity is counted once", organization: true, locals: 1, providerMax: 8, wantDemand: 6, wantLocal: 2},
-		{name: "organization pending member is counted once", organization: true, pending: true, wantDemand: 6, wantPending: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -187,7 +184,7 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 				}
 			}
 			if test.pending {
-				if _, err := db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,'test',?,'bootstrapping',?,?)`, f.project.OrganizationID, sprite.redemption.Hostname, sprite.enrollment.ID, formatHubTime(f.service.config.now()), formatHubTime(f.service.config.now())); err != nil {
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO project_sprite_members(organization_id,project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,'test',?,'bootstrapping',?,?)`, f.project.OrganizationID, f.project.ID, sprite.redemption.Hostname, sprite.enrollment.ID, formatHubTime(f.service.config.now()), formatHubTime(f.service.config.now())); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := db.ExecContext(t.Context(), `UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?`, formatHubTime(f.service.config.now().Add(-time.Minute)), sprite.binding.RunnerID); err != nil {
@@ -198,25 +195,9 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 				}
 			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			if test.organization {
-				later := newNativeFixture(t, f.service, f.project.OrganizationID, "later")
-				approveHubTestPolicy(t, f.service, later.base+"/policy", hubTestPolicy())
-				for i := range 3 {
-					later.create(t, fmt.Sprintf("later %d", i))
-				}
-				if _, err := db.ExecContext(t.Context(), "UPDATE runner_identities SET scope='organization' WHERE organization_id=?", scope.organization); err != nil {
-					t.Fatal(err)
-				}
-			}
 			decision, err := readPlacementSnapshot(t.Context(), db, scope, f.service.config.now(), nil)
 			if err != nil {
 				t.Fatal(err)
-			}
-			if test.organization {
-				decision, err = readOrganizationPlacementSnapshot(t.Context(), db, scope, f.service.config.now())
-				if err != nil {
-					t.Fatal(err)
-				}
 			}
 			if decision.ReadyTodo != test.wantDemand || decision.LocalFree != test.wantLocal || decision.Pending != test.wantPending {
 				t.Fatalf("decision=%+v; want demand=%d local=%d pending=%d", decision.placementDecision, test.wantDemand, test.wantLocal, test.wantPending)
@@ -232,13 +213,11 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 	for _, test := range []struct {
 		name, mode                     string
 		ceiling, overflow, limit, want int
-		organization                   bool
 	}{
-		{"overflow bounds concurrent warm claims", "local_first", 4, 2, 0, 2, false},
-		{"smaller Sprite maximum bounds overflow", "local_first", 4, 2, 1, 1, false},
-		{"explicit Sprite maximum bounds concurrent warm claims", "blended", 1, 0, 1, 1, false},
-		{"legacy blended retains deployed capacity", "blended", 1, 0, 0, 6, false},
-		{"organization Sprite maximum spans projects", "blended", 1, 0, 1, 1, true},
+		{"overflow bounds concurrent warm claims", "local_first", 4, 2, 0, 2},
+		{"smaller Sprite maximum bounds overflow", "local_first", 4, 2, 1, 1},
+		{"explicit Sprite maximum bounds concurrent warm claims", "blended", 1, 0, 1, 1},
+		{"legacy blended retains deployed capacity", "blended", 1, 0, 0, 6},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
@@ -253,23 +232,13 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 			for i := range 6 {
 				items = append(items, f.create(t, fmt.Sprintf("queued %d", i)))
 			}
-			if test.organization {
-				later := newNativeFixture(t, f.service, f.project.OrganizationID, "later")
-				approveHubTestPolicy(t, f.service, later.base+"/policy", hubTestPolicy())
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET scope='organization' WHERE id=?", sprite.binding.RunnerID); err != nil {
-					t.Fatal(err)
-				}
-				for i := range 3 {
-					items[i] = later.create(t, fmt.Sprintf("later %d", i))
-				}
-			}
 			start := make(chan struct{})
 			statuses := make(chan int, len(items))
 			var workers sync.WaitGroup
 			for i, issue := range items {
 				workers.Go(func() {
 					<-start
-					response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/"+string(issue.OrganizationID)+"/projects/"+string(issue.ProjectID)+"/claims", sprite.redemption.Credential, providerClaim(sprite, issue, fmt.Sprintf("concurrent-%d", i)))
+					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", sprite.redemption.Credential, providerClaim(sprite, issue, fmt.Sprintf("concurrent-%d", i)))
 					statuses <- response.Code
 				})
 			}
@@ -407,7 +376,7 @@ func TestPlacementSettingsCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: principal, Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO organization_sprite_pools(organization_id,configured_by) VALUES(?,?)`, scope.organization, principal); err != nil {
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO project_sprite_pools(organization_id,project_id,configured_by) VALUES(?,?,?)`, scope.organization, scope.project, principal); err != nil {
 		t.Fatal(err)
 	}
 	view, err := f.service.readSpritePool(t.Context(), scope)

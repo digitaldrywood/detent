@@ -253,8 +253,7 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 		response.Body = &spritePipeBody{Conn: local, reader: reader}
 		return response, nil
 	})}
-	f, scope, _ := newSpriteWakeFixture(t, client, false, 0)
-	storeOrganizationSpritesSecret(t, f, spritesSecretSentinel)
+	f, scope, _ := newSpriteWakeFixture(t, client, true, 0)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	f.create(t, "first")
 	f.create(t, "second")
@@ -267,7 +266,7 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 		return token, err
 	}
 	provider.f = f
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_pools(organization_id,min_runners,max_runners,idle_seconds,bootstrap,configured_by) SELECT ?,0,2,300,'true',id FROM api_tokens WHERE token_hash=?`, scope.organization, apikey.HashToken(testHubAdminToken)); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO project_sprite_pools(organization_id,project_id,min_runners,max_runners,idle_seconds,bootstrap,configured_by) SELECT ?,?,0,2,300,'true',id FROM api_tokens WHERE token_hash=?`, scope.organization, scope.project, apikey.HashToken(testHubAdminToken)); err != nil {
 		t.Fatal(err)
 	}
 	return f, scope, provider
@@ -316,12 +315,12 @@ func TestSpritePoolLifecycle(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f, scope, provider := newSpritePoolFixture(t, test.failure)
 			if test.tier != "" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE organization_sprite_pools SET isolation_tier=? WHERE organization_id='org_security'", test.tier); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE project_sprite_pools SET isolation_tier=? WHERE project_id=?", test.tier, scope.project); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if test.emptyBootstrap {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE organization_sprite_pools SET bootstrap='' WHERE organization_id='org_security'"); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE project_sprite_pools SET bootstrap='' WHERE project_id=?", scope.project); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -365,7 +364,7 @@ func TestSpritePoolLifecycle(t *testing.T) {
 				f.service.spriteWakeWork.Wait()
 			}
 			view.Bootstrap = "private-saved-bootstrap"
-			status, err := f.service.coordinatorSpritePoolStatus(t.Context(), scope, view, "/settings/integrations#sprites", scope.project)
+			status, err := f.service.coordinatorSpritePoolStatus(t.Context(), scope, view, "/settings/integrations#sprites")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -397,7 +396,7 @@ func TestSpritePoolLifecycle(t *testing.T) {
 				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET archived=1 WHERE project_id=?`, scope.project); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_members SET idle_since=? WHERE organization_id=?`, formatHubTime(f.service.config.now().Add(-time.Hour)), scope.organization); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE project_sprite_members SET idle_since=? WHERE project_id=?`, formatHubTime(f.service.config.now().Add(-time.Hour)), scope.project); err != nil {
 					t.Fatal(err)
 				}
 				if test.heartbeat {
@@ -512,13 +511,13 @@ func TestSpritePoolFreshAuthority(t *testing.T) {
 			var err error
 			switch test.change {
 			case "secret":
-				_, err = f.service.database.db.ExecContext(t.Context(), `DELETE FROM organization_secrets WHERE organization_id=?`, scope.organization)
+				_, err = f.service.database.db.ExecContext(t.Context(), `DELETE FROM project_secrets WHERE project_id=?`, scope.project)
 			case "actor":
 				_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE api_tokens SET revoked_at=? WHERE id=?`, formatHubTime(f.service.config.now()), bootstrapTokenID)
 			case "disable":
-				_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_pools SET max_runners=0 WHERE organization_id=?`, scope.organization)
+				_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE project_sprite_pools SET max_runners=0 WHERE project_id=?`, scope.project)
 			case "project":
-				scope.organization = "org_foreign"
+				scope.project = "prj_foreign"
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -587,7 +586,7 @@ func TestSpritePoolDeletionBoundaries(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET archived=1 WHERE project_id=?`, scope.project); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_members SET idle_since=? WHERE organization_id=?`, formatHubTime(f.service.config.now().Add(-time.Hour)), scope.organization); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE project_sprite_members SET idle_since=? WHERE project_id=?`, formatHubTime(f.service.config.now().Add(-time.Hour)), scope.project); err != nil {
 				t.Fatal(err)
 			}
 			var err error
@@ -596,16 +595,16 @@ func TestSpritePoolDeletionBoundaries(t *testing.T) {
 				now := formatHubTime(f.service.config.now())
 				_, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT 'lease-busy',i.id,r.machine_id,'session-busy',?,?,?,?,? FROM issues i JOIN runner_identities r ON r.organization_id=i.organization_id WHERE i.project_id=? LIMIT 1`, formatHubTime(f.service.config.now().Add(time.Hour)), now, now, now, now, scope.project)
 			case "floor":
-				_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_pools SET min_runners=1 WHERE organization_id=?`, scope.organization)
+				_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE project_sprite_pools SET min_runners=1 WHERE project_id=?`, scope.project)
 			case "recent":
-				_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_members SET idle_since=? WHERE organization_id=?`, formatHubTime(f.service.config.now()), scope.organization)
+				_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE project_sprite_members SET idle_since=? WHERE project_id=?`, formatHubTime(f.service.config.now()), scope.project)
 			case "expired":
-				_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_members SET state='bootstrapping' WHERE organization_id=?`, scope.organization)
+				_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE project_sprite_members SET state='bootstrapping' WHERE project_id=?`, scope.project)
 				if err == nil {
-					_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE runner_enrollments SET expires_at=? WHERE id IN (SELECT enrollment_id FROM organization_sprite_members WHERE organization_id=?)`, formatHubTime(f.service.config.now().Add(-time.Minute)), scope.organization)
+					_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE runner_enrollments SET expires_at=? WHERE id IN (SELECT enrollment_id FROM project_sprite_members WHERE project_id=?)`, formatHubTime(f.service.config.now().Add(-time.Minute)), scope.project)
 				}
 			case "organization":
-				_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE organization_secrets SET organization_slug='another-org' WHERE organization_id=?`, scope.organization)
+				_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE project_secrets SET organization_slug='another-org' WHERE project_id=?`, scope.project)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -629,7 +628,7 @@ func TestSpritePoolMutationDuringDeletion(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET archived=1 WHERE project_id=?`, scope.project); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_members SET idle_since=? WHERE organization_id=?`, formatHubTime(f.service.config.now().Add(-time.Hour)), scope.organization); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE project_sprite_members SET idle_since=? WHERE project_id=?`, formatHubTime(f.service.config.now().Add(-time.Hour)), scope.project); err != nil {
 		t.Fatal(err)
 	}
 	provider.deleteStarted = make(chan struct{})

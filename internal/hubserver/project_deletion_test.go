@@ -34,8 +34,7 @@ func TestHostedProjectDeletion(t *testing.T) {
 		{name: "partial import refused", account: "owner", update: "UPDATE github_imports SET status='partial' WHERE project_id=?", status: http.StatusUnprocessableEntity},
 		{name: "pending GitHub write refused", account: "owner", update: "UPDATE github_outbox SET status='pending' WHERE issue_id IN (SELECT id FROM issues WHERE project_id=?)", status: http.StatusUnprocessableEntity},
 		{name: "processing GitHub write refused", account: "owner", update: "UPDATE github_outbox SET status='processing' WHERE issue_id IN (SELECT id FROM issues WHERE project_id=?)", status: http.StatusUnprocessableEntity},
-		{name: "organization Sprite preserved", account: "owner", update: "UPDATE organization_sprite_members SET state='enrolled',token_project_id='' WHERE token_project_id=?", status: http.StatusOK},
-		{name: "provisioned Sprite using project token refused", account: "owner", update: "UPDATE organization_sprite_members SET state='enrolled' WHERE token_project_id=?", status: http.StatusUnprocessableEntity},
+		{name: "provisioned Sprite refused", account: "owner", update: "UPDATE project_sprite_members SET state='enrolled' WHERE project_id=?", status: http.StatusUnprocessableEntity},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
@@ -79,8 +78,8 @@ func TestHostedProjectDeletion(t *testing.T) {
 				exec("INSERT INTO runner_enrollment_projects(enrollment_id,organization_id,project_id) VALUES('deletion-enrollment','org_browser_preview',?)", project)
 				exec("INSERT INTO project_secrets(organization_id,project_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES('org_browser_preview',?,'fly_sprites_token','retained',X'01',X'02',X'03',1,'2026-01-01T00:00:00Z')", project)
 			}
-			exec("INSERT INTO organization_sprite_pools(organization_id,configured_by) VALUES('org_browser_preview',?)", principal)
-			exec("INSERT INTO organization_sprite_members(organization_id,token_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES('org_browser_preview',?,'sprite','org','deletion-enrollment','deleted','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", f.project)
+			exec("INSERT INTO project_sprite_pools(organization_id,project_id,configured_by) VALUES('org_browser_preview',?,?)", f.project, principal)
+			exec("INSERT INTO project_sprite_members(organization_id,project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES('org_browser_preview',?,'sprite','org','deletion-enrollment','deleted','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", f.project)
 			if test.role != "" {
 				var membership string
 				if err := db.QueryRowContext(t.Context(), "SELECT membership_id FROM hosted_members WHERE user_id='user_browser_owner'").Scan(&membership); err != nil {
@@ -131,7 +130,7 @@ func TestHostedProjectDeletion(t *testing.T) {
 			if err := json.Unmarshal([]byte(deletionDataSnapshot(t, db)), &afterRecords); err != nil {
 				t.Fatal(err)
 			}
-			for _, table := range []string{"issues", "native_attempts", "workspace_sessions", "project_action_runs", "conversations", "conversation_messages", "github_imports", "github_outbox", "organization_sprite_members", "organization_sprite_pools", "repositories", "machines", "runner_identities", "organizations", "attachments", "artifact_references", "change_requests", "change_versions"} {
+			for _, table := range []string{"issues", "native_attempts", "workspace_sessions", "project_action_runs", "conversations", "conversation_messages", "github_imports", "github_outbox", "project_sprite_members", "repositories", "machines", "runner_identities", "organizations", "attachments", "artifact_references", "change_requests", "change_versions"} {
 				if string(beforeRecords[table]) != string(afterRecords[table]) {
 					t.Fatalf("deletion changed retained %s records", table)
 				}
@@ -174,7 +173,7 @@ func TestHostedProjectDeletion(t *testing.T) {
 func deletionDataSnapshot(t *testing.T, db *sql.DB) string {
 	t.Helper()
 	data := map[string][][]any{}
-	for _, table := range []string{"projects", "issues", "native_attempts", "workspace_sessions", "project_action_runs", "conversations", "conversation_messages", "github_imports", "github_outbox", "project_secrets", "hosted_project_grants", "token_grants", "runner_enrollment_projects", "organization_sprite_members", "organization_sprite_pools", "repositories", "machines", "runner_identities", "organizations", "attachments", "artifact_references", "change_requests", "change_versions"} {
+	for _, table := range []string{"projects", "issues", "native_attempts", "workspace_sessions", "project_action_runs", "conversations", "conversation_messages", "github_imports", "github_outbox", "project_secrets", "hosted_project_grants", "token_grants", "runner_enrollment_projects", "project_sprite_members", "repositories", "machines", "runner_identities", "organizations", "attachments", "artifact_references", "change_requests", "change_versions"} {
 		rows, err := db.QueryContext(t.Context(), "SELECT * FROM "+table+" ORDER BY rowid")
 		if err != nil {
 			t.Fatal(err)

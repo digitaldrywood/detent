@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -21,10 +22,10 @@ import (
 func coordinatorSpriteTools() []runner.AgentTool {
 	empty := `{"type":"object","properties":{},"additionalProperties":false}`
 	return []runner.AgentTool{
-		coordinatorTool("get_sprite_pool", "Read this organization's Sprites token metadata, pool bounds, bootstrap state, runner_setup_declared (null means unknown) and runner connection/provider readiness. Enrollment alone is not readiness.", empty),
-		coordinatorTool("set_sprites_token", "Get the secure Sprites connector link for setting or replacing this organization's write-only Sprites token. The user enters the token there, never in chat or tool arguments.", empty),
+		coordinatorTool("get_sprite_pool", "Read this project's Sprites token metadata, pool bounds, bootstrap state, runner_setup_declared (null means unknown) and runner connection/provider readiness. Enrollment alone is not readiness.", empty),
+		coordinatorTool("set_sprites_token", "Get the secure Sprites connector link for setting or replacing this project's write-only organization token. The user enters the token there, never in chat or tool arguments.", empty),
 		coordinatorTool("set_sprite_pool", "Preview pool isolation tier, floor/ceiling and optional customer bootstrap steps. Preserve existing bootstrap when omitted. Never include credentials in bootstrap; use customer-owned login/setup. Requires current owner/admin authority; the client controls confirmation; saving starts the existing pool lifecycle.", `{"type":"object","required":["min_runners","max_runners"],"properties":{"min_runners":{"type":"integer","minimum":0,"maximum":100},"max_runners":{"type":"integer","minimum":0,"maximum":100},"idle_seconds":{"type":"integer","minimum":30,"maximum":86400},"bootstrap":{"type":"string","maxLength":12000},"isolation_tier":{"type":"string","enum":["sandbox","native-trusted"]}},"additionalProperties":false}`),
-		coordinatorTool("scale_up_sprite_pool", "Preview a scale-up or retry through the existing pool lifecycle, within the saved floor and ceiling. Set a floor of one for the first runner on an empty organization. Requires current owner/admin authority; the client controls confirmation.", empty),
+		coordinatorTool("scale_up_sprite_pool", "Preview a scale-up or retry through the existing pool lifecycle, within the saved floor and ceiling. Set a floor of one for the first runner on an empty project. Requires current owner/admin authority; the client controls confirmation.", empty),
 		coordinatorTool("get_sprite_bootstrap_log", "Read the last Sprite bootstrap progress log tail, including failed/deleted members, and retry guidance. Logs contain known progress only.", empty),
 	}
 }
@@ -116,7 +117,7 @@ func (t *coordinatorToolset) spriteTool(ctx context.Context, record conversation
 	if err != nil {
 		return nil, err
 	}
-	connector := s.hostedPath("/settings/integrations") + "#sprites"
+	connector := s.hostedPath("/settings/integrations") + "?project=" + url.QueryEscape(string(scope.project)) + "#sprites"
 	if call.Name == "set_sprites_token" {
 		return map[string]string{"connector_url": connector, "token_url": "https://sprites.dev/account", "instructions": "Create a Sprites organization token for a dedicated Fly organization with billing enabled and a spend alert. Set or replace the complete token in the Sprites connector. Its value is write-only; never paste it or provider API keys into chat."}, nil
 	}
@@ -125,7 +126,7 @@ func (t *coordinatorToolset) spriteTool(ctx context.Context, record conversation
 		return nil, err
 	}
 	if call.Name == "get_sprite_pool" {
-		return s.coordinatorSpritePoolStatus(ctx, scope, view, connector, record.ProjectID)
+		return s.coordinatorSpritePoolStatus(ctx, scope, view, connector)
 	}
 	if call.Name == "get_sprite_bootstrap_log" {
 		result := map[string]string{"name": "", "state": "", "log_tail": "", "retry": "After correcting token, billing or customer setup, approve scale_up_sprite_pool. The existing lifecycle cleans up the failed member and retries within the configured bounds."}
@@ -158,7 +159,7 @@ func (t *coordinatorToolset) spriteTool(ctx context.Context, record conversation
 	return t.submitCoordinatorAction(ctx, record, call, action)
 }
 
-func (s *Service) coordinatorSpriteScope(ctx context.Context, _ string, manage bool) (nativeScope, error) {
+func (s *Service) coordinatorSpriteScope(ctx context.Context, project string, manage bool) (nativeScope, error) {
 	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
 	if !ok {
 		return nativeScope{}, operatortool.ErrAccessDenied
@@ -167,7 +168,7 @@ func (s *Service) coordinatorSpriteScope(ctx context.Context, _ string, manage b
 	if err != nil || manage && !canManageProjectSecrets(scope.credential) {
 		return nativeScope{}, operatortool.ErrAccessDenied
 	}
-	scope.project = ""
+	scope.project = tracker.ProjectID(project)
 	scope.requireHostedAdmin = manage
 	return scope, nil
 }
@@ -178,7 +179,7 @@ func (s *Service) validateCoordinatorSpriteChange(ctx context.Context, scope nat
 	}
 	if settings.MaxRunners > 0 {
 		if s.config.SecretKeys == nil || s.config.Hosted == nil {
-			return nativeInvalid("Sprite pools require hosted configuration and the organization secret store")
+			return nativeInvalid("Sprite pools require hosted configuration and the project secret store")
 		}
 		status, err := readSecretStatus(ctx, s.database.db, scope)
 		if err != nil {
@@ -226,7 +227,7 @@ func (s *Service) executeCoordinatorSpriteAction(ctx context.Context, action cha
 				return operatortool.ErrAccessDenied
 			}
 			var revision int64
-			if err := tx.QueryRowContext(ctx, `SELECT revision FROM organization_sprite_pools WHERE organization_id=?`, scope.organization).Scan(&revision); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT revision FROM project_sprite_pools WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&revision); err != nil {
 				return err
 			}
 			if revision != settings.Revision {
@@ -242,7 +243,7 @@ func (s *Service) executeCoordinatorSpriteAction(ctx context.Context, action cha
 	return chat.ActionExecution{Message: "Sprite pool lifecycle requested. Read get_sprite_pool and get_sprite_bootstrap_log to watch progress. A connected runner still needs customer provider sign-in, Git access, checkout and approved project policy before it can push work."}, nil
 }
 
-func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeScope, view spritePoolView, connector string, project tracker.ProjectID) (any, error) {
+func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeScope, view spritePoolView, connector string) (any, error) {
 	secret, err := readSecretStatus(ctx, s.database.db, scope)
 	if err != nil {
 		return nil, err
@@ -269,7 +270,7 @@ func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeS
 			if err != nil {
 				return nil, err
 			}
-			if r.Scope == "organization" {
+			if slices.Contains(r.ProjectIDs, scope.project) {
 				item["isolation_tier"] = r.IsolationTier
 				item["problems"] = r.Problems
 				item["backend_isolation"] = r.BackendIsolation
@@ -293,9 +294,7 @@ func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeS
 		}
 		members = append(members, item)
 	}
-	setupScope := scope
-	setupScope.project = project
-	declared, err := s.projectRunnerSetupDeclaration(ctx, setupScope)
+	declared, err := s.projectRunnerSetupDeclaration(ctx, scope)
 	if err != nil {
 		return nil, err
 	}

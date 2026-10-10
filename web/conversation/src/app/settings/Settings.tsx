@@ -48,7 +48,6 @@ import {
 import { CreditSettings } from "./CreditSettings.tsx";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout.tsx";
 import { ProjectRankSettings } from "./ProjectRankSettings.tsx";
-import { SpritesCard } from "../account/SpritesCard.tsx";
 import { SlackSettings } from "./SlackSettings.tsx";
 import { MCPSettings } from "./MCPSettings.tsx";
 import { signInPath } from "../../runtime/basePath.ts";
@@ -261,7 +260,6 @@ export function IntegrationsSettings({
     return (
       <SettingsPageContainer>
         <SlackSettings />
-        {bootstrap ? <SettingsSection title="Organization Sprites"><SpritesCard projectId="" canManage={bootstrap.actor.can_manage} /></SettingsSection> : null}
         <SettingsSection
           id="settings-integrations"
           title="Integrations"
@@ -279,7 +277,6 @@ export function IntegrationsSettings({
   const picker = (
     <>
       <SlackSettings />
-        {bootstrap ? <SettingsSection title="Organization Sprites"><SpritesCard projectId="" canManage={bootstrap.actor.can_manage} /></SettingsSection> : null}
       <SettingsSection
         id="settings-integrations"
         title="Integrations"

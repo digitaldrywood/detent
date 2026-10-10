@@ -35,7 +35,7 @@ function mountPool(pool: typeof SpritePool.Type = emptyPool, token: boolean | "f
     account: {
       organization: { id: "org_build", name: "Build" },
       actor: { can_manage: true, can_manage_runners: false },
-      projects: [{ id: "project_build", name: "detent.build", can_write: true }, { id: "project_detent", name: "detent", can_write: true }],
+      projects: [{ id: "project_build", name: "detent.build", can_write: true }],
       base_path: "/organizations/org_build",
     },
     http: { origin: "", apiBase: "/api/v2/organizations/org_build", csrfToken: "csrf" },
@@ -65,27 +65,27 @@ describe("Sprite pool setup and attention", () => {
     await waitFor(() => expect(screen.getByRole("link", { name: `Needs attention ${warning ? 1 : 0}` })).toBeDefined());
     const controls = within(row);
     if (state === "not_set_up") {
-      expect(row.textContent).toContain("Not set up. Sprites start runners for every project when work is queued.");
+      expect(row.textContent).toContain("Not set up. Sprites start runners for this project when work is queued.");
       expect(row.textContent).not.toContain("Floor");
       expect(row.querySelector(".text-warning-foreground, .text-destructive, [role=alert]")).toBeNull();
-      const setup = controls.getByRole(token === true ? "button" : "link", { name: "Set up Sprites" });
+      const setup = controls.getByRole(token === true ? "button" : "link", { name: "Set up Sprites detent.build" });
       if (token === true) {
         fireEvent.click(setup);
-        expect(await screen.findByRole("dialog", { name: "Organization Sprite pool" })).toBeDefined();
+        expect(await screen.findByRole("dialog", { name: "Sprite pool · detent.build" })).toBeDefined();
         await userEvent.keyboard("{Escape}");
         await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       } else {
-        expect(setup.getAttribute("href")).toBe("/organizations/org_build/settings/integrations#sprites");
+        expect(setup.getAttribute("href")).toBe("/organizations/org_build/settings/integrations?project=project_build#sprites");
       }
     } else {
-      expect(controls.getByRole("button", { name: "Configure pool" })).toBeDefined();
+      expect(controls.getByRole("button", { name: "Configure pool detent.build" })).toBeDefined();
       expect(row.textContent).toContain(`Floor 0 · Ceiling ${pool.max_runners} · Idle 300s · ${pool.members.length} members`);
       if (warning) {
         expect(row.textContent).toContain(state === "missing"
-          ? "No organization Sprites token is set, so the Hub cannot start Sprites."
-          : "Could not check the organization’s Sprites token.");
+          ? "No Sprites token is set for detent.build, so the Hub cannot start Sprites."
+          : "Could not check the Sprites token for detent.build.");
         expect(controls.getByRole("link", { name: state === "missing" ? "Set a Sprites token" : "Review the token" }).getAttribute("href"))
-          .toBe("/organizations/org_build/settings/integrations#sprites");
+          .toBe("/organizations/org_build/settings/integrations?project=project_build#sprites");
       } else {
         expect(row.querySelector(".text-warning-foreground")).toBeNull();
       }
@@ -97,7 +97,7 @@ describe("Sprite pool setup and attention", () => {
   it("updates attention after disabling an enabled pool", async () => {
     mountPool({ ...emptyPool, max_runners: 4 });
     await screen.findByRole("link", { name: "Needs attention 1" });
-    fireEvent.click(screen.getByRole("button", { name: "Configure pool" }));
+    fireEvent.click(screen.getByRole("button", { name: "Configure pool detent.build" }));
     fireEvent.change(await screen.findByLabelText("Maximum runners"), { target: { value: "0" } });
     fireEvent.click(screen.getByRole("button", { name: "Save pool" }));
     await waitFor(() => expect(screen.getByTestId("sprite-pool-row").textContent).toContain("Not set up."));
