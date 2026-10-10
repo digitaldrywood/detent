@@ -153,7 +153,7 @@ agents:
 gate:
   landing_mode: rolling_barrier
   kind: command
-  run: "make check-land"
+  run: "make check-barrier"
   approval_label: human-approved
   automated_review: "off"
   require_automated_review: false
