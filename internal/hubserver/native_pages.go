@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -21,11 +22,12 @@ import (
 )
 
 type nativeCursor struct {
-	Version int                    `json:"v"`
-	Scope   string                 `json:"scope"`
-	After   string                 `json:"after"`
-	Expires int64                  `json:"expires"`
-	Issues  *nativeIssuePageCursor `json:"issues,omitempty"`
+	Version    int                    `json:"v"`
+	Scope      string                 `json:"scope"`
+	After      string                 `json:"after"`
+	Expires    int64                  `json:"expires"`
+	Issues     *nativeIssuePageCursor `json:"issues,omitempty"`
+	Compaction int64                  `json:"compaction,omitempty"`
 }
 
 func (s *Service) nativePage(c echo.Context) (int, nativeCursor, []byte, error) {
@@ -441,9 +443,27 @@ func (s *Service) readHistory(ctx context.Context, scope nativeScope, item strin
 		return tracker.Page[tracker.CollaborationEvent]{}, err
 	}
 
-	if _, _, err := readNativeIssueProjection(ctx, s.database.db, scope, item, true); err != nil {
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
 		return tracker.Page[tracker.CollaborationEvent]{}, err
 	}
+	defer tx.Rollback()
+	if _, _, err := readNativeIssueProjection(ctx, tx, scope, item, true); err != nil {
+		return tracker.Page[tracker.CollaborationEvent]{}, err
+	}
+	summary, err := readEventCompaction(ctx, tx, scope.organization, scope.project, "work_item", item)
+	if err != nil {
+		return tracker.Page[tracker.CollaborationEvent]{}, err
+	}
+	var compaction *tracker.EventCompaction
+	if summary.RemovedEvents > 0 {
+		compaction = &summary
+	}
+	generation := summary.RemovedEvents
+	if params.Get("cursor") != "" && cursor.Compaction != generation {
+		return tracker.Page[tracker.CollaborationEvent]{}, nativeInvalid("History was compacted; restart the query")
+	}
+	cursor.Compaction = generation
 	var after int64
 	if cursor.After != "" {
 		after, err = strconv.ParseInt(cursor.After, 10, 64)
@@ -451,13 +471,13 @@ func (s *Service) readHistory(ctx context.Context, scope nativeScope, item strin
 			return tracker.Page[tracker.CollaborationEvent]{}, nativeInvalid("History cursor is invalid")
 		}
 	}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT id, sequence, type, schema_version, actor_json, `+dataColumn+`, recorded_at FROM collaboration_events
+	rows, err := tx.QueryContext(ctx, `SELECT id, sequence, type, schema_version, actor_json, `+dataColumn+`, recorded_at FROM collaboration_events
 WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence > ? ORDER BY sequence LIMIT ?`, scope.organization, scope.project, item, after, limit+1)
 	if err != nil {
 		return tracker.Page[tracker.CollaborationEvent]{}, err
 	}
 	defer rows.Close()
-	page := tracker.Page[tracker.CollaborationEvent]{Items: []tracker.CollaborationEvent{}}
+	page := tracker.Page[tracker.CollaborationEvent]{Items: []tracker.CollaborationEvent{}, Compaction: compaction}
 	for rows.Next() {
 		event := tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "work_item", AggregateID: tracker.NativeWorkItemID(item)}
 		var actor, data, recorded string
@@ -501,7 +521,7 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence >
 		var count int
 		condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
 		args := append([]any{scope.organization, event.Data.RelatedWorkItemID}, grantArgs...)
-		err := s.database.db.QueryRowContext(ctx, `SELECT count(*) FROM issues i WHERE i.organization_id=? AND i.native_id=? AND (`+condition+`)`, args...).Scan(&count)
+		err := tx.QueryRowContext(ctx, `SELECT count(*) FROM issues i WHERE i.organization_id=? AND i.native_id=? AND (`+condition+`)`, args...).Scan(&count)
 		if err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}

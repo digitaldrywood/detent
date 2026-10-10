@@ -309,4 +309,24 @@ func TestAttemptDiffObjectStorage(t *testing.T) {
 			}
 		})
 	}
+	t.Run("pending vacuum does not run online", func(t *testing.T) {
+		calls := 0
+		s.config.transport = func(Organization) (http.RoundTripper, error) {
+			return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				switch r.URL.Path {
+				case "/internal/v1/diff-bodies/batch":
+					if err := json.NewEncoder(w).Encode(diffbody.Batch{VacuumPending: true}); err != nil {
+						t.Error(err)
+					}
+				default:
+					t.Errorf("unexpected maintenance path %s", r.URL.Path)
+				}
+			})}, nil
+		}
+		active, err := s.maintainAttemptDiffBodies(t.Context(), organization)
+		if err != nil || active || calls != 1 {
+			t.Fatalf("pending maintenance active=%v calls=%d err=%v", active, calls, err)
+		}
+	})
 }

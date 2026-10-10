@@ -1784,6 +1784,38 @@ defines full-instance export/import, credential fencing on restore, whole-instan
 retirement and operator-managed backup expiry. Scoped purge remains unimplemented;
 append-only storage is not a promise of permanent retention.
 
+The existing archive/retention sweep compacts archived work and conversations
+settled for more than 30 days. Active leases, unfinished executions, queued
+messages and pending questions exclude an aggregate. Each transaction examines
+at most four work items and four conversations, deleting at most 500 events per
+aggregate. It retains comments, content revisions, workflow transitions,
+scheduler decisions, attempt checkpoints and final observations, validation and
+landing evidence, messages, questions and command receipts. Superseded runtime
+observations, message updates and execution progress, streaming deltas,
+heartbeats and redundant conversation snapshots are removed. Conversation
+metadata changes keep their timeline boundaries.
+
+History pages and conversation snapshots carry an optional `compaction` summary
+with removed event counts by type, retained event count, removed payload bytes,
+last removed sequence and compaction time. Existing history cursors invalidate
+when their aggregate is compacted and instruct the reader to restart. Conversation
+SSE cursors behind a removed event receive `closed` with `cursor_expired`; clients
+fetch the current snapshot and resume from its cursor. Open work streams retain
+all events and their existing cursors. Ordinary collaboration updates and
+deletions remain rejected; retention replaces and restores the deletion trigger
+within its transaction, so a failed batch rolls back rows and enforcement.
+
+The first compaction records database and event-table sizes in the existing
+maintenance record and marks space reclamation pending. The online diff-body
+owner never invokes VACUUM: a quiet hour does not make VACUUM safe for tenant
+health checks. Reclaim space through offline operator maintenance after the
+first compaction has finished, with the tenant Hub quiesced and the database
+ownership lock held. Schedule that maintenance with the release owner and
+report the recorded before-compaction sizes, sizes before and after VACUUM,
+and retained event counts. Workers do not stop or maintain live tenant services.
+Later compaction frees pages for reuse without requesting another first-pass
+VACUUM.
+
 A future scoped deletion procedure must use the following contract:
 
 1. Authorize the organization and record the deletion scope outside the affected

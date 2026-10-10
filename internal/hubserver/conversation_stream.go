@@ -17,8 +17,9 @@ import (
 
 // Stream timing. Variables rather than constants so tests can shorten them.
 var (
-	conversationStreamHeartbeat = conversationHeartbeatInterval
-	conversationStreamAuthorize = conversationAuthorizeInterval
+	conversationStreamHeartbeat  = conversationHeartbeatInterval
+	conversationStreamAuthorize  = conversationAuthorizeInterval
+	errConversationCursorExpired = errors.New("conversation cursor expired")
 )
 
 // Reasons carried by the closed frame.
@@ -81,9 +82,9 @@ func (s *conversationStream) closed(reason string) error {
 
 // replay writes every committed event after cursor in pages and returns the
 // new cursor.
-func (s *conversationStream) replay(ctx context.Context, store *conversationStore, conversationID string, cursor int64) (int64, error) {
+func (s *conversationStream) replay(ctx context.Context, store *conversationStore, reader *sql.DB, conversationID string, cursor int64) (int64, error) {
 	for {
-		events, err := store.listEvents(ctx, store.db, conversationID, cursor, conversationEventPage)
+		events, err := store.replayEvents(ctx, reader, conversationID, cursor)
 		if err != nil {
 			return cursor, err
 		}
@@ -117,8 +118,6 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 	}
 	stream := newConversationStream(c)
 	if after > record.EventSeq {
-		// Every event is retained in this milestone, so only a cursor ahead
-		// of the head is outside the replayable window.
 		return stream.closed(conversationClosedCursorExpired)
 	}
 	subscription, cancel := service.broker.subscribe(record.ID)
@@ -137,7 +136,10 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 			service.logger.Warn("conversation.stream_reauthorize_failed", "conversation_id", record.ID, "reason", reason, "error", err)
 			return stream.closed(reason)
 		}
-		if cursor, err = stream.replay(ctx, service.store, record.ID, cursor); err != nil {
+		if cursor, err = stream.replay(ctx, service.store, s.database.reader, record.ID, cursor); err != nil {
+			if errors.Is(err, errConversationCursorExpired) {
+				return stream.closed(conversationClosedCursorExpired)
+			}
 			return nil
 		}
 	wait:
@@ -206,4 +208,20 @@ func conversationStreamCloseReason(err error) string {
 	default:
 		return conversationClosedServerError
 	}
+}
+
+func (s *conversationStore) replayEvents(ctx context.Context, reader *sql.DB, id string, after int64) ([]conversation.Event, error) {
+	tx, err := reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var through int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT json_extract(summary_json,'$.through_sequence') FROM event_compactions WHERE aggregate_kind='conversation' AND aggregate_id=c.id AND organization_id=c.organization_id AND project_id=c.project_id),0) FROM conversations c WHERE c.id=?`, id).Scan(&through); err != nil {
+		return nil, err
+	}
+	if after < through {
+		return nil, errConversationCursorExpired
+	}
+	return s.listEvents(ctx, tx, id, after, conversationEventPage)
 }

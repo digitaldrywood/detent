@@ -233,6 +233,7 @@ type conversationListPage struct {
 
 type conversationSnapshot struct {
 	Skills       []skills.ProviderSkill        `json:"skills"`
+	Compaction   *tracker.EventCompaction      `json:"compaction,omitempty"`
 	Conversation conversationResource          `json:"conversation"`
 	Messages     []conversationMessageResource `json:"messages"`
 	Questions    []conversation.Question       `json:"questions"`
@@ -1365,6 +1366,13 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 		snapshot.Skills, err = readConversationSkills(ctx, tx, record)
 		if err != nil {
 			return err
+		}
+		compaction, err := readEventCompaction(ctx, tx, record.OrganizationID, record.ProjectID, "conversation", record.ID)
+		if err != nil {
+			return err
+		}
+		if compaction.RemovedEvents > 0 {
+			snapshot.Compaction = &compaction
 		}
 		snapshot.HasMore, _ = conversationOlderCursor(snapshot.Messages)
 		for _, question := range questions {
