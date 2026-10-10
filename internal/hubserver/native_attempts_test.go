@@ -542,3 +542,21 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?view=blockers", denied, nil), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?view=blockers", denied, nil), http.StatusNotFound)
 }
+
+func TestValidateNativeRuntimeLandingRefusalKinds(t *testing.T) {
+	for _, test := range []struct {
+		kind  string
+		valid bool
+	}{
+		{kind: "review_threads", valid: true},
+		{kind: "conflict", valid: true},
+		{kind: "unknown_refusal", valid: false},
+	} {
+		t.Run(test.kind, func(t *testing.T) {
+			err := validateNativeRuntime(&tracker.NativeRuntimeObservation{Phase: "merging", Landing: &tracker.NativeLandingReceipt{RefusalKind: test.kind, ObservedAt: time.Now().UTC()}})
+			if (err == nil) != test.valid {
+				t.Fatalf("validateNativeRuntime(%s) = %v, want valid=%v", test.kind, err, test.valid)
+			}
+		})
+	}
+}

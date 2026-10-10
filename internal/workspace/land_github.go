@@ -493,7 +493,10 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 					}
 					return result, err
 				}
-			} else {
+			} else if threadsErr := resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, pull.Number, head, err); threadsErr != nil {
+				return result, threadsErr
+			} else if err := githubLandingAPI(ctx, opts.GitHubClient, &merged, "PUT", mergePath,
+				"merge_method="+opts.Method, "sha="+head); err != nil {
 				return result, err
 			}
 		}
@@ -892,6 +895,9 @@ func githubLandingREST(ctx context.Context, client GitHubRESTClient, method, pat
 				}
 				if decodeErr := json.Unmarshal([]byte(status.Body), &response); decodeErr == nil {
 					message := strings.ToLower(response.Message)
+					if strings.Contains(message, "conversation") && strings.Contains(message, "resolved") {
+						return refuse(LandRefusalReviewThreads, "GitHub refused the reviewed head merge until its review conversations are resolved: "+status.Error())
+					}
 					if strings.Contains(message, "pull request is closed") || strings.Contains(message, "pull request is not open") {
 						return refuse(LandRefusalHeadMoved, "GitHub refused the reviewed head merge: "+status.Error())
 					}
