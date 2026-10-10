@@ -29,7 +29,9 @@ export function RunnerStatusDot({
         ? "Needs attention"
         : healthy
           ? "Healthy"
-          : "Offline";
+          : runner?.state === "active" && runner.health === "asleep"
+            ? "Asleep"
+            : "Offline";
   return (
     <span
       role="img"

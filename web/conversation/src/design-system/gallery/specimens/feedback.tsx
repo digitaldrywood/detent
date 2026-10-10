@@ -33,12 +33,13 @@ import { StageProgress } from "../../../components/StageProgress.tsx";
 export const runnerStatusDot: GalleryDoc = {
   meta: { name: "Runner status dot", kind: "composition", group: "feedback" },
 
-  specimens: [{ id: "health", title: "Healthy, paused, failed, attention and offline", render: () => <Row>
+  specimens: [{ id: "health", title: "Healthy, paused, failed, attention, asleep and offline", render: () => <Row>
     {[
       { state: "active", health: "healthy" },
       { state: "paused", health: "healthy" },
       { state: "failed", health: "failed" },
       { state: "active", health: "needs_attention" },
+      { state: "active", health: "asleep" },
       { state: "active", health: "offline" },
     ].map((runner, index) => <Cell key={index} label={`${runner.state} · ${runner.health}`}><RunnerStatusDot runner={runner} /></Cell>)}
   </Row> }],
