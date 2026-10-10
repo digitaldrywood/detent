@@ -23,8 +23,14 @@ func TestCoordinatorProjectActions(t *testing.T) {
 		t.Skip("durable SQLite integration")
 	}
 
-	for _, tool := range []string{"update_project_integration", operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, string(chat.ActionIssueSplit), string(chat.ActionArchiveItems), "set_sprite_pool", "scale_up_sprite_pool"} {
+	for _, tool := range []string{"propose_stop_run", "propose_file_issue", "propose_maintenance_issue", "propose_move_item", "propose_set_priority", "propose_backlog_admission", "update_project_integration", operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, string(chat.ActionIssueSplit), string(chat.ActionArchiveItems), "set_sprite_pool", "scale_up_sprite_pool"} {
 		outcomes := []string{"execute", "reject", "unauthorized", "revoked", "stale", "foreign issue", "expired session", "wrong role", "no write grant", "bad arguments"}
+		if tool == "propose_stop_run" {
+			outcomes = append(outcomes, "replaced attempt", "expired attempt", "release failure", "routing failure", "no active attempt")
+		}
+		if tool == "propose_file_issue" || tool == "propose_maintenance_issue" {
+			outcomes = []string{"execute", "reject", "unauthorized", "revoked", "no write grant", "bad arguments"}
+		}
 		if tool == "update_project_integration" {
 			outcomes = append(outcomes, "transport unavailable", "execute with manual import")
 		}
@@ -83,6 +89,30 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				decodeHubResponse(t, response, &issue)
 				id := issue.WorkItemID
 				db := f.service.database.db
+				if tool == "propose_stop_run" {
+					now := formatHubTime(f.service.config.now())
+					if _, err := db.ExecContext(t.Context(), `UPDATE projects SET states_json=json_insert(states_json,'$[0].transitions[#]','Blocked','$[#]',json('{"name":"Blocked","transitions":["Todo"]}')) WHERE id=?`, f.project); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES (?,'Blocked','Blocked',?,?)", f.project, now, now); err != nil {
+						t.Fatal(err)
+					}
+					if outcome != "no active attempt" {
+						seedCoordinatorArchiveLease(t, f.service, string(id))
+					}
+				}
+				if tool == "propose_backlog_admission" {
+					if _, err := db.ExecContext(t.Context(), `UPDATE projects SET states_json=json_insert(states_json,'$[#]',json('{"name":"Backlog","transitions":["Todo"]}')) WHERE id=?`, f.project); err != nil {
+						t.Fatal(err)
+					}
+					now := formatHubTime(f.service.config.now())
+					if _, err := db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES (?,'Backlog','Backlog',?,?)", f.project, now, now); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Backlog') WHERE native_id=?", f.project, id); err != nil {
+						t.Fatal(err)
+					}
+				}
 				seedCoordinatorRepository(t, f.service, f.project)
 				if outcome == "execute with manual import" {
 					if _, err := db.ExecContext(t.Context(), "UPDATE projects SET github_intake='manual' WHERE id=?", f.project); err != nil {
@@ -228,10 +258,16 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				}
 				arguments := map[string]any{"work_item_id": id}
 				switch tool {
+				case "propose_stop_run":
+					arguments["destination"], arguments["priority"] = "Blocked", 2
 				case "update_project_integration":
 					arguments = map[string]any{"repository_enabled": true}
-				case operatortool.MoveItem:
+				case operatortool.MoveItem, "propose_move_item":
 					arguments["state"] = "Done"
+				case "propose_set_priority":
+					arguments["priority"] = 2
+				case "propose_file_issue", "propose_maintenance_issue":
+					arguments = map[string]any{"title": "Slash issue", "description": "A proposed change", "state": "Todo"}
 				case operatortool.EditItem:
 					arguments["title"], arguments["body"], arguments["labels"], arguments["priority"] = "Edited by Luna", "", []string{"approved"}, 2
 				case operatortool.AddComment:
@@ -338,7 +374,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					assertCoordinatorEffect(t, f, id, tool, false)
 					return
 				}
-				if outcome == "running" || outcome == "merging" || outcome == "already archived" || outcome == "duplicate" || outcome == "empty" || outcome == "outside project" || outcome == "unauthorized" || outcome == "foreign issue" || outcome == "expired session" || outcome == "bad arguments" || outcome == "invalid state" || outcome == "cycle" || outcome == "no write grant" || outcome == "wrong role" && (tool == "update_project_integration" || coordinatorSpriteMutation(tool)) {
+				if outcome == "running" || outcome == "merging" || outcome == "already archived" || outcome == "duplicate" || outcome == "empty" || outcome == "outside project" || outcome == "unauthorized" || outcome == "foreign issue" || outcome == "expired session" || outcome == "bad arguments" || outcome == "invalid state" || outcome == "cycle" || outcome == "no write grant" || outcome == "no active attempt" || outcome == "wrong role" && (tool == "update_project_integration" || coordinatorSpriteMutation(tool)) {
 					if result.Success || !strings.Contains(result.Content, "error") {
 						t.Fatalf("unauthorized result: %+v", result)
 					}
@@ -383,6 +419,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					if json.Unmarshal(message.Data, &data) == nil && data.Proposal.Action.ID == preview.ActionID {
 						action = data.Proposal.Action
 					}
+				}
+				if strings.HasPrefix(tool, "propose_") && !action.RequiresConfirmation {
+					t.Fatal("slash proposal must require explicit confirmation")
 				}
 				if action.RequestID == "" {
 					t.Fatal("inline proposal missing")
@@ -515,6 +554,30 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						}
 					}
 				}
+				if tool == "propose_stop_run" {
+					switch outcome {
+					case "replaced attempt":
+						now := formatHubTime(f.service.config.now())
+						if _, err := db.ExecContext(t.Context(), "UPDATE leases SET released_at=? WHERE lease_id='archive-lease'", now); err != nil {
+							t.Fatal(err)
+						}
+						if _, err := db.ExecContext(t.Context(), "INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT 'replacement-lease',issue_id,machine_id,'replacement-session',expires_at,acquired_at,renewed_at,created_at,updated_at FROM leases WHERE lease_id='archive-lease'"); err != nil {
+							t.Fatal(err)
+						}
+					case "expired attempt":
+						if _, err := db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id='archive-lease'", formatHubTime(f.service.config.now().Add(-time.Second))); err != nil {
+							t.Fatal(err)
+						}
+					case "release failure":
+						if _, err := db.ExecContext(t.Context(), "CREATE TRIGGER fail_slash_release BEFORE UPDATE OF released_at ON leases BEGIN SELECT RAISE(ABORT, 'release failed'); END"); err != nil {
+							t.Fatal(err)
+						}
+					case "routing failure":
+						if _, err := db.ExecContext(t.Context(), "CREATE TRIGGER fail_slash_route BEFORE UPDATE OF workflow_state_id ON issues BEGIN SELECT RAISE(ABORT, 'route failed'); END"); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
 				response = f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
 				changed := outcome == "sandbox access" || outcome == "full access" || outcome == "preserve access" || outcome == "execute" || outcome == "execute with manual import" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "runner grant revoked" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
 				if changed {
@@ -621,9 +684,27 @@ func assertCoordinatorEffect(t *testing.T, f hostedSecurityFixture, id tracker.N
 		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM organization_sprite_members WHERE organization_id='org_security')").Scan(&actual)
 	case "update_project_integration":
 		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT github_repository_enabled FROM projects WHERE id=?", f.project).Scan(&actual)
-	case operatortool.MoveItem:
+	case operatortool.MoveItem, "propose_move_item":
 		issue, _, readErr := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project}, string(id))
 		err, actual = readErr, issue.State == "Done"
+	case "propose_stop_run":
+		issue, _, readErr := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project}, string(id))
+		err, actual = readErr, issue.State == "Blocked" && issue.Priority != nil && *issue.Priority == 1
+		var released bool
+		if queryErr := f.service.database.db.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM work_events WHERE kind='lease_released')").Scan(&released); queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		if released != changed {
+			t.Fatalf("stop released=%v, want %v", released, changed)
+		}
+	case "propose_file_issue", "propose_maintenance_issue":
+		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM issues WHERE project_id=? AND title='Slash issue')", f.project).Scan(&actual)
+	case "propose_backlog_admission":
+		issue, _, readErr := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project}, string(id))
+		err, actual = readErr, issue.State == "Todo"
+	case "propose_set_priority":
+		issue, _, readErr := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project}, string(id))
+		err, actual = readErr, issue.Priority != nil && *issue.Priority == 1
 	case operatortool.EditItem:
 		issue, _, readErr := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project}, string(id))
 		err, actual = readErr, issue.Title == "Edited by Luna" && issue.Body == "" && issue.Priority != nil && *issue.Priority == 2 && len(issue.Labels) == 1 && issue.Labels[0] == "approved"

@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -782,16 +783,23 @@ func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 	now := time.Now().UTC()
 	closed := runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun " + now.Add(time.Hour).Format("15:04") + "-" + now.Add(2*time.Hour).Format("15:04")}}
 	snapshot := runnerauth.RoutingSnapshot{RunnerID: file.Identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 3, Availability: closed}.Normalized()}
+	inventory := []skills.ProviderSkill{{Name: "plan", Scope: "project", Path: ".agents/skills/plan/SKILL.md", Invocation: "$plan", Enabled: true, UserInvocable: true}}
 	var capacities []int
 	claims := 0
 	transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 		body := `{}`
-		if strings.HasSuffix(request.URL.Path, "/heartbeat") {
+		if strings.HasSuffix(request.URL.Path, "/capabilities") {
+			body = `{"features":["runner_project_skills"]}`
+		} else if strings.HasSuffix(request.URL.Path, "/heartbeat") {
 			var report struct {
-				Capacity int `json:"capacity"`
+				Capacity int                    `json:"capacity"`
+				Skills   []skills.ProviderSkill `json:"skills"`
 			}
 			if err := json.NewDecoder(request.Body).Decode(&report); err != nil {
 				return nil, err
+			}
+			if !reflect.DeepEqual(report.Skills, inventory) {
+				t.Errorf("heartbeat skill inventory = %#v, want %#v", report.Skills, inventory)
 			}
 			capacities = append(capacities, report.Capacity)
 			encoded, err := json.Marshal(snapshot)
@@ -813,7 +821,7 @@ func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	machine := Machine{ID: file.Identity.MachineID, Capacity: 3, Version: "test"}
+	machine := Machine{ID: file.Identity.MachineID, Capacity: 3, Version: "test", Skills: &inventory}
 	if err := native.RegisterMachine(t.Context(), machine); err != nil {
 		t.Fatal(err)
 	}

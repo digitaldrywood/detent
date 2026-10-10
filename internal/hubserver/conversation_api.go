@@ -16,6 +16,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -231,6 +232,7 @@ type conversationListPage struct {
 }
 
 type conversationSnapshot struct {
+	Skills       []skills.ProviderSkill        `json:"skills"`
 	Conversation conversationResource          `json:"conversation"`
 	Messages     []conversationMessageResource `json:"messages"`
 	Questions    []conversation.Question       `json:"questions"`
@@ -1360,6 +1362,10 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 			return err
 		}
 		snapshot = conversationSnapshot{Conversation: projectConversation(record), Messages: projectMessages(messages), Questions: make([]conversation.Question, 0, len(questions)), Cursor: record.EventSeq}
+		snapshot.Skills, err = readConversationSkills(ctx, tx, record)
+		if err != nil {
+			return err
+		}
 		snapshot.HasMore, _ = conversationOlderCursor(snapshot.Messages)
 		for _, question := range questions {
 			snapshot.Questions = append(snapshot.Questions, question.Question)

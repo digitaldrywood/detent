@@ -967,6 +967,7 @@ export type RuntimeItemStatus =
 
 /** `server.ts`: one skill a provider advertises. */
 export interface ServerProviderSkill {
+  readonly invocation?: string;
   readonly name: string;
   readonly description?: string;
   readonly path: string;

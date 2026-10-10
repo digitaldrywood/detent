@@ -83,3 +83,8 @@ export function shortcutFor(event: ShortcutEvent): Shortcut | null {
 
   return null;
 }
+
+export const SHELL_SHORTCUTS: readonly { readonly action: string; readonly keys: readonly string[] }[] = [
+  { action: "New conversation", keys: NEW_CHAT_KEYSHORTCUTS.split(" ") },
+  { action: "Focus search", keys: SEARCH_KEYSHORTCUTS.split(" ") },
+];

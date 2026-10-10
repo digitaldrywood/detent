@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -241,6 +242,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 		// answer and the heartbeat are the same row.
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
+		Skills                *[]skills.ProviderSkill        `json:"skills,omitempty"`
 		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
@@ -336,6 +338,9 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			if err := updateRunnerWorkspaceReport(ctx, tx, scope, request.WorkspaceCapabilities, request.WorkspaceIsolation); err != nil {
 				return nil, err
 			}
+			if err := updateRunnerSkills(ctx, tx, scope, request.Skills, now); err != nil {
+				return nil, err
+			}
 			if err := updateRunnerCheckoutReport(ctx, tx, scope, request.CheckoutRepository, now); err != nil {
 				return nil, err
 			}
@@ -402,6 +407,9 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 		}
 		if request.WorkspaceCapabilities != nil {
 			return nil, nativeInvalid("Workspace capabilities require an enrolled runner")
+		}
+		if request.Skills != nil {
+			return nil, nativeInvalid("Skill reports require an enrolled runner")
 		}
 		if request.CheckoutRepository != nil && *request.CheckoutRepository != "" {
 			return nil, nativeInvalid("Checkout reports require an enrolled runner")

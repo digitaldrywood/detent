@@ -11,8 +11,9 @@ export function InlineActionCard({ proposal, text }: {
   const requiresApproval = proposal.action.kind === "set_runner_tier" || proposal.action.kind === "set_sprite_pool";
   const preferenceKey = `detent:chat-confirmation:${client.bootstrap.actor.principal_id}`;
   const resultKey = `${preferenceKey}:${String(proposal.action.request_id)}`;
+  const requiresConfirmation = requiresApproval || proposal.action.requires_confirmation === true;
   const [confirm, setConfirm] = React.useState(() => {
-    try { return localStorage.getItem(preferenceKey) !== "off"; } catch { return true; }
+    try { return requiresConfirmation || localStorage.getItem(preferenceKey) !== "off"; } catch { return true; }
   });
   const [status, setStatus] = React.useState(() => {
     try { return localStorage.getItem(resultKey) ?? "proposed"; } catch { return "proposed"; }
@@ -37,7 +38,7 @@ export function InlineActionCard({ proposal, text }: {
       setStatus("failed");
     } finally { submitting.current = false; }
   }, [client, proposal, resultKey, status]);
-  React.useEffect(() => { if (!requiresApproval && !confirm && status === "proposed") void execute(); }, [requiresApproval, confirm, status, execute]);
+  React.useEffect(() => { if (!requiresConfirmation && !confirm && status === "proposed") void execute(); }, [requiresConfirmation, confirm, status, execute]);
   const argumentsValue = proposal.action.arguments;
   const children = typeof argumentsValue === "object" && argumentsValue !== null && "children" in argumentsValue ? argumentsValue.children : undefined;
   const change = typeof argumentsValue === "object" && argumentsValue !== null
@@ -51,7 +52,7 @@ export function InlineActionCard({ proposal, text }: {
     <p className="text-sm">{text}</p>
     <OperatorActionPreview action={proposal.action} />
     <details><summary className="text-xs cursor-pointer">Proposed change</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(change, null, 2)}</pre></details>
-    {requiresApproval ? null : <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={confirm} onChange={(event) => {
+    {requiresApproval ? null : <label className="flex items-center gap-2 text-xs"><input type="checkbox" disabled={requiresConfirmation} checked={requiresConfirmation || confirm} onChange={(event) => {
       const enabled = event.target.checked;
       setConfirm(enabled);
       try { localStorage.setItem(preferenceKey, enabled ? "on" : "off"); } catch { }

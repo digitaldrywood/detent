@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacerunner"
@@ -136,9 +137,31 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		reportProblems = options[0].problems
 	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
-		PrepareProject:        prepareProject,
-		RefreshProjects:       projects.refresh,
-		RunnerSetupDeclared:   projects.runnerSetupDeclared,
+		PrepareProject:      prepareProject,
+		RefreshProjects:     projects.refresh,
+		RunnerSetupDeclared: projects.runnerSetupDeclared,
+		Skills: func(name string) []skills.ProviderSkill {
+			projects.mu.Lock()
+			projects.syncRuntimeLocked()
+			selectedProjects := project.ManagerConfigFromGlobal(projects.cfg).Projects
+			projects.mu.Unlock()
+			var workdir string
+			for _, selected := range selectedProjects {
+				if selected.ID == name {
+					workdir = selected.Workdir
+					break
+				}
+			}
+			home, err := os.UserHomeDir()
+			var report []skills.ProviderSkill
+			if err == nil {
+				report, err = skills.DiscoverProviderSkills(workdir, home)
+			}
+			if err != nil {
+				projects.logger.Warn("Runner skill discovery failed", "project", name, "error", err)
+			}
+			return report
+		},
 		CapacityConfiguration: capacityConfiguration,
 		LocalChecks:           localChecks,
 		GitHubIntake:          github.FetchIssueSnapshot,

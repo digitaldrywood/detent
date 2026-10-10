@@ -3,6 +3,12 @@
 import { PaperclipIcon, PlugZapIcon, XIcon } from "lucide-react";
 import React from "react";
 
+import type { ServerProviderSkill } from "../../contracts/ui.ts";
+import { getProviderSkillsForSlashMenu } from "../../runtime/providerSkills.ts";
+import { keybindingCatalogue } from "../adapters/keybindings.ts";
+import { SHELL_SHORTCUTS } from "../lib/shortcuts.ts";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogPanel } from "../../components/ui/dialog.tsx";
+
 import type { PreferenceChoices, TurnPreferences } from "../../contracts/index.ts";
 import { cn } from "../../lib/utils.ts";
 import { Button } from "../../components/ui/button.tsx";
@@ -125,6 +131,7 @@ export interface ComposerProps {
    * provides for itself. A name that matches a built-in replaces it.
    */
   readonly slashCommands?: readonly SlashCommand[];
+  readonly skills?: readonly ServerProviderSkill[] | undefined;
   /**
    * The element that describes the composer, when the surface renders one.
    * No surface does today — the shortcut hint line that used to sit under the
@@ -302,6 +309,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
     [],
   );
 
+  const [helpOpen, setHelpOpen] = React.useState(false);
   const extraCommands = props.slashCommands ?? NO_SLASH_COMMANDS;
   const onStop = props.onStop;
   const streaming = props.streaming;
@@ -314,9 +322,16 @@ export function Composer(props: ComposerProps): React.ReactElement {
           clear: disabled ? null : () => onChange(""),
           stop: streaming && onStop !== undefined && !disabled ? () => onStop() : null,
         }),
-        extraCommands,
+        resolveSlashCommands(
+          getProviderSkillsForSlashMenu(props.skills ?? [], true).map((skill) => ({
+            name: skill.name,
+            description: skill.description ?? skill.displayName ?? skill.name,
+            run: () => onChange(`${skill.invocation ?? `$${skill.name}`} `),
+          })).filter((skill) => !["help", "model", "effort", "access", "stop", "attach", "clear"].includes(skill.name.toLowerCase())),
+          [{ name: "help", description: "List commands and keyboard shortcuts", run: () => setHelpOpen(true) }, ...extraCommands],
+        ),
       ),
-    [attachingBlocked, disabled, extraCommands, footerControls, onChange, onStop, openPicker, streaming],
+    [attachingBlocked, disabled, extraCommands, footerControls, onChange, onStop, openPicker, streaming, props.skills],
   );
 
   const slashMatches = React.useMemo(
@@ -392,6 +407,33 @@ export function Composer(props: ComposerProps): React.ReactElement {
 
   return (
     <ComposerSurface.Shell contextStrip={props.contextStrip !== undefined}>
+      <Dialog open={helpOpen} onOpenChange={setHelpOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Commands and keyboard shortcuts</DialogTitle>
+            <DialogDescription>Available on this composer.</DialogDescription>
+          </DialogHeader>
+          <DialogPanel className="max-h-[70vh] overflow-y-auto">
+            <dl className="space-y-2 text-sm">
+              {commands.map((command) => (
+                <div key={command.name}>
+                  <dt className="font-medium">/{command.name}</dt>
+                  <dd className="text-muted-foreground">{command.description}</dd>
+                </div>
+              ))}
+            </dl>
+            <p className="mt-4 font-medium text-sm">Keyboard shortcuts</p>
+            <dl className="mt-2 space-y-2 text-sm">
+              <div><dt>Send message</dt><dd className="text-muted-foreground">Enter</dd></div>
+              <div><dt>New issue</dt><dd className="text-muted-foreground">C</dd></div>
+              <div><dt>New line</dt><dd className="text-muted-foreground">Shift+Enter</dd></div>
+              <div><dt>Choose slash command</dt><dd className="text-muted-foreground">↑ / ↓, Enter · Escape closes the menu</dd></div>
+              {SHELL_SHORTCUTS.map((binding) => <div key={binding.action}><dt>{binding.action}</dt><dd className="text-muted-foreground">{binding.keys.join(" / ")}</dd></div>)}
+              {keybindingCatalogue().filter((binding) => binding.chord !== null).map((binding) => <div key={binding.command}><dt>{binding.label}</dt><dd className="text-muted-foreground">{binding.chord}</dd></div>)}
+            </dl>
+          </DialogPanel>
+        </DialogContent>
+      </Dialog>
 
       <ProviderStatusBanner status={null} onDismiss={() => {}} />
       <ComposerSurface.Host>

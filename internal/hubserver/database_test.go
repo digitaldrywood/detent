@@ -162,6 +162,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"runner_enrollments",
 		"runner_identities",
 		"runner_identity_events",
+		"runner_project_skills",
 		"sync_checkpoints",
 		"work_events",
 		"workflow_states",

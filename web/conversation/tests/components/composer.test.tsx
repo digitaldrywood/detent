@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { InlineActionCard } from "../../src/app/components/InlineActionCard.tsx";
+import { ClientContext } from "../../src/app/client.ts";
+import type { ConversationClient } from "../../src/runtime/bootstrap.ts";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_TURN_PREFERENCES } from "../../src/contracts/index.ts";
 import { Composer } from "../../src/app/components/Composer.tsx";
-import { composerCaret, composerText, focusComposer, typeInComposer } from "./composerInput.ts";
+import { composerCaret, composerText, focusComposer, typeInComposer, setComposerText } from "./composerInput.ts";
 
 afterEach(cleanup);
 
@@ -211,4 +214,56 @@ describe("Composer", () => {
     setup({ disabled: true, streaming: true, blockedReason: "This chat is settled" });
     expect(screen.queryByLabelText("Stop generation")).toBeNull();
   });
+});
+
+
+describe("composer slash help and skills", () => {
+  it.each(["pickers", "none"] as const)("help lists the resolved commands on a %s surface", async (footerControls) => {
+    const { textarea, onSend } = setup({ value: "", footerControls, attachControl: "none", slashCommands: [{ name: "custom", description: "Surface command", run: vi.fn() }] });
+    await setComposerText(textarea, "/");
+    const menu = screen.getByRole("listbox", { name: "Slash commands" });
+    const names = within(menu).getAllByRole("option").map((option) => within(option).getByText(/^\//).textContent);
+    fireEvent.click(within(menu).getByRole("option", { name: /\/help/ }));
+    const dialog = await screen.findByRole("dialog");
+    for (const name of names) expect(within(dialog).getByText(name!)).toBeTruthy();
+    expect(within(dialog).queryByText("/attach")).toBeNull();
+    expect(within(dialog).queryByText("/stop")).toBeNull();
+    if (footerControls === "none") expect(within(dialog).queryByText("/model")).toBeNull();
+    expect(within(dialog).getByText("Shift+Enter")).toBeTruthy();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+  it("shows invocable project skills, inserts their native form, and reserves command names", async () => {
+    const skill = { name: "review", description: "Review the work", path: "/repo/.agents/skills/review/SKILL.md", enabled: true, invocation: "$review" };
+    const { textarea, onChange, onSend } = setup({ value: "", skills: [skill, { ...skill, name: "hidden", userInvocable: false }, { ...skill, name: "disabled", enabled: false }, { ...skill, name: "MODEL" }, { ...skill, name: "plan" }], slashCommands: [{ name: "plan", description: "Plan this work", run: vi.fn() }] });
+    await setComposerText(textarea, "/");
+    const menu = screen.getByRole("listbox", { name: "Slash commands" });
+    expect(within(menu).queryByRole("option", { name: /\/hidden/ })).toBeNull();
+    expect(within(menu).queryByRole("option", { name: /\/disabled/ })).toBeNull();
+    expect(within(menu).getAllByRole("option", { name: /\/model/ })).toHaveLength(1);
+    expect(within(menu).getAllByRole("option", { name: /\/plan/ })).toHaveLength(1);
+    expect(screen.queryByText("Runner skills and prompts appear here once the hub serves them")).toBeNull();
+    fireEvent.click(within(menu).getByRole("option", { name: /\/review/ }));
+    await waitFor(() => expect(onChange).toHaveBeenLastCalledWith("$review "));
+    expect(onSend).not.toHaveBeenCalled();
+  });
+});
+
+
+it("requires a click to apply a slash proposal even when automatic chat confirmation is enabled", async () => {
+  const preference = "detent:chat-confirmation:slash-test";
+  localStorage.setItem(preference, "off");
+  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+  try {
+    const client = { bootstrap: { actor: { principal_id: "slash-test" }, api_base: "/api", csrf_token: "test" } } as unknown as ConversationClient;
+    render(<ClientContext value={client}><InlineActionCard text="Move the item" proposal={{ conversation_id: "chat", action: { request_id: "slash", project_id: "project", kind: "move_item", requires_confirmation: true, arguments: { state: "Todo" } } }} /></ClientContext>);
+    expect(fetch).not.toHaveBeenCalled();
+    expect((screen.getByRole("checkbox", { name: "Ask me to confirm chat changes" }) as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Change completed."));
+    expect(fetch).toHaveBeenCalledOnce();
+  } finally {
+    localStorage.removeItem(preference);
+    localStorage.removeItem(`${preference}:slash`);
+    fetch.mockRestore();
+  }
 });

@@ -91,7 +91,7 @@ func (t *coordinatorToolset) actionContext(ctx context.Context, record conversat
 	return service.OriginatingContext(ctx, data.ConnectionID, data.PrincipalID, string(record.OrganizationID))
 }
 
-func (t *coordinatorToolset) projectAction(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+func (t *coordinatorToolset) projectAction(ctx context.Context, record conversationRecord, call runner.AgentToolCall, requireConfirmation ...bool) (any, error) {
 	s := t.coordinator.service.server
 	ctx, err := t.actionContext(ctx, record)
 	if err != nil {
@@ -145,9 +145,8 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 			return nil, operatortool.ErrInvalidArguments
 		}
 	}
-	digest := sha256.Sum256([]byte(t.state.users[len(t.state.users)-1].ID + ":" + call.Name + ":" + string(call.Arguments)))
-	requestID := "luna_" + hex.EncodeToString(digest[:])
-	action := chat.Action{ConversationID: record.ID, Kind: chat.ActionKind(call.Name), ProjectID: string(record.ProjectID), RequestID: requestID, Title: strings.ReplaceAll(call.Name, "_", " "), Material: true}
+	requestID := coordinatorActionRequestID(t.state.users[len(t.state.users)-1].ID, call)
+	action := chat.Action{RequiresConfirmation: len(requireConfirmation) > 0 && requireConfirmation[0], ConversationID: record.ID, Kind: chat.ActionKind(call.Name), ProjectID: string(record.ProjectID), RequestID: requestID, Title: strings.ReplaceAll(call.Name, "_", " "), Material: true}
 	if call.Name == "get_project_integration" || call.Name == "update_project_integration" {
 		current, err := s.projectIntegration(ctx, s.database.db, scope)
 		if err != nil {
@@ -231,10 +230,14 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 	return t.submitCoordinatorAction(ctx, record, call, action)
 }
 
+func coordinatorActionRequestID(messageID string, call runner.AgentToolCall) string {
+	digest := sha256.Sum256([]byte(messageID + ":" + call.Name + ":" + string(call.Arguments)))
+	return "luna_" + hex.EncodeToString(digest[:])
+}
+
 func (t *coordinatorToolset) submitCoordinatorAction(ctx context.Context, record conversationRecord, call runner.AgentToolCall, action chat.Action) (any, error) {
 	if action.RequestID == "" {
-		digest := sha256.Sum256([]byte(t.state.users[len(t.state.users)-1].ID + ":" + call.Name + ":" + string(call.Arguments)))
-		action.RequestID = "luna_" + hex.EncodeToString(digest[:])
+		action.RequestID = coordinatorActionRequestID(t.state.users[len(t.state.users)-1].ID, call)
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
 	action.Mutation = mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: action.ProjectID, ResourceID: action.IssueID, Action: call.Name, Source: "chat", CorrelationID: newNativeID("luna")}
@@ -299,6 +302,33 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 		return chat.ActionExecution{}, err
 	}
 	scope.project = tracker.ProjectID(action.ProjectID)
+	if action.Kind == chat.ActionStopRun {
+		return s.executeCoordinatorStopRun(ctx, scope, action)
+	}
+	if action.Kind == chat.ActionFileIssue {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(action.Arguments, &fields); err != nil {
+			return chat.ActionExecution{}, err
+		}
+		delete(fields, "request_id")
+		raw, err := json.Marshal(fields)
+		if err != nil {
+			return chat.ActionExecution{}, err
+		}
+		request, err := operatortool.DecodeFileIssue(raw)
+		if err != nil || request.ProjectID != action.ProjectID {
+			return chat.ActionExecution{}, operatortool.ErrInvalidArguments
+		}
+		var priority *int
+		if request.Priority != nil {
+			priority = new(*request.Priority - 1)
+		}
+		result, err := s.operatorCreateNativeWork(ctx, scope, tracker.CreateIssue{Mutation: tracker.MutationForContext(ctx, action.RequestID), Title: request.Title, Body: request.Description, State: request.State, Labels: request.Labels, Priority: priority})
+		if err != nil {
+			return chat.ActionExecution{}, coordinatorActionError(err)
+		}
+		return chat.ActionExecution{Message: "Issue filed.", Data: result}, nil
+	}
 	var request operatortool.WorkArguments
 	if err := operatortool.DecodeArguments(action.Arguments, &request); err != nil {
 		return chat.ActionExecution{}, err
@@ -331,7 +361,7 @@ func (s *Service) authorizeCoordinatorAction(ctx context.Context, action chat.Ac
 	if string(action.Kind) == "set_runner_tier" || string(action.Kind) == "update_project_integration" || coordinatorSpriteMutation(string(action.Kind)) {
 		requirement.Scope, requirement.ResourceKind, requirement.ResourceID = apikey.ScopeAdmin, "", ""
 	}
-	if action.Kind == chat.ActionArchiveItems {
+	if action.Kind == chat.ActionArchiveItems || action.Kind == chat.ActionFileIssue {
 		requirement.ResourceKind = ""
 	}
 	ctx, err := operatortool.AuthorizeCurrent(ctx, requirement)
@@ -409,7 +439,7 @@ func (s *Service) postConversationAction(c echo.Context) error {
 	if err := s.conversations.authorizeWrite(ctx, s.database.db, scope, record); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if !slices.Contains([]string{operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_runner_tier", "set_sprite_pool", "scale_up_sprite_pool", string(chat.ActionIssueSplit), string(chat.ActionArchiveItems)}, string(action.Kind)) || action.ProjectID != string(scope.project) || action.RequestID == "" || len(action.RequestID) > 128 {
+	if !slices.Contains([]string{operatortool.StopRun, operatortool.FileIssue, operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_runner_tier", "set_sprite_pool", "scale_up_sprite_pool", string(chat.ActionIssueSplit), string(chat.ActionArchiveItems)}, string(action.Kind)) || action.ProjectID != string(scope.project) || action.RequestID == "" || len(action.RequestID) > 128 {
 		return invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
 	identity := operatortool.ConnectionIdentity(ctx)

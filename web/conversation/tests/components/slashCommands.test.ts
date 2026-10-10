@@ -1,3 +1,4 @@
+import { chatSlashCommands, CHAT_PROMPTS, ISSUE_QUESTIONS } from "../../src/app/adapters/chatPrompts.ts";
 // The composer's slash-command registry and its matching.
 //
 // Everything here is pure, which is the point of the split: the menu's
@@ -173,5 +174,24 @@ describe("resolveSlashCommands", () => {
     ]);
     expect(names(resolved)).toEqual(["model", "clear"]);
     expect(resolved[1]?.description).toBe("surface");
+  });
+});
+
+
+describe("chat prompts", () => {
+  it("inserts starters without sending and submits actions as proposal prompts", () => {
+    const insert = vi.fn();
+    const send = vi.fn();
+    const commands = chatSlashCommands({ issue: true, coordinator: true, insert, send });
+    for (const name of ["plan", "triage", "why", "status"]) commands.find((command) => command.name === name)?.run();
+    expect(insert.mock.calls.map(([text]) => text)).toEqual([CHAT_PROMPTS.plan.prompt, CHAT_PROMPTS.triage.prompt, CHAT_PROMPTS.why.prompt, CHAT_PROMPTS.status.prompt]);
+    expect(send).not.toHaveBeenCalled();
+    for (const name of ["split", "file", "move", "priority", "stop-run", "admit", "maintenance"]) commands.find((command) => command.name === name)?.run();
+    expect(send.mock.calls.map(([text]) => text)).toEqual([ISSUE_QUESTIONS[3]!.prompt, CHAT_PROMPTS.file.prompt, CHAT_PROMPTS.move.prompt, CHAT_PROMPTS.priority.prompt, CHAT_PROMPTS["stop-run"].prompt, CHAT_PROMPTS.admit.prompt, CHAT_PROMPTS.maintenance.prompt]);
+  });
+  it("offers actions only to a coordinator and split only with an attached issue", () => {
+    const options = { issue: false, coordinator: false, insert: vi.fn(), send: vi.fn() };
+    expect(names(chatSlashCommands(options))).toEqual(["plan", "triage", "why", "status"]);
+    expect(names(chatSlashCommands({ ...options, coordinator: true }))).toEqual(["plan", "triage", "why", "status", "file", "move", "priority", "stop-run", "admit", "maintenance"]);
   });
 });

@@ -593,7 +593,18 @@ export interface ConversationFrame {
 
 // --- Responses --------------------------------------------------------------
 
+export const ProviderSkill = Schema.Struct({
+  name: Schema.String,
+  description: Schema.optional(Schema.String),
+  path: Schema.String,
+  scope: Schema.optional(Schema.String),
+  enabled: Schema.Boolean,
+  userInvocable: Schema.optional(Schema.Boolean),
+  invocation: Schema.optional(Schema.String),
+});
+
 export const ConversationSnapshot = Schema.Struct({
+  skills: Schema.optional(Schema.Array(ProviderSkill)),
   conversation: Conversation,
   messages: Schema.Array(Message),
   questions: Schema.Array(Question),

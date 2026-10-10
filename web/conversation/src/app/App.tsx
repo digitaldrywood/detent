@@ -6,6 +6,8 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import React from "react";
 import { Outlet, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 
+import { chatSlashCommands } from "./adapters/chatPrompts.ts";
+
 import type {
   Answers,
   Conversation,
@@ -516,19 +518,20 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
     client.drafts.writeDraft(scope, value);
   };
 
-  const send = async () => {
+  const send = async (prompt?: string) => {
+    const messageText = prompt ?? draft;
     if (project === undefined || (subjectId !== null && subject === null)) return;
     if (project.can_write === false) {
       setError("You have read-only access to this project.");
       return;
     }
-    if (draft.trim().length === 0 && attachments.staged.length === 0) return;
+    if (messageText.trim().length === 0 && attachments.staged.length === 0) return;
     setSending(true);
     setError(null);
     client.drafts.writeOutbox(scope, {
       key: createKey.current,
       kind: "create",
-      text: draft,
+      text: messageText,
       createdAt: new Date().toISOString(),
       status: "unknown",
       error: null,
@@ -541,7 +544,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
       projectId: active,
       ...(removedContext || subject === null ? {} : { subjectWorkItemId: subject.work_item_id }),
       key: createKey.current,
-      ...(withFiles ? {} : { firstMessage: { key: commandKey.current, text: draft } }),
+      ...(withFiles ? {} : { firstMessage: { key: commandKey.current, text: messageText } }),
     });
     if (result._tag !== "Success") {
       setSending(false);
@@ -566,7 +569,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
         projectId: active,
         conversationId: createdId,
         key: commandKey.current,
-        text: draft,
+        text: messageText,
         attachments: ids,
       });
       attachments.clear();
@@ -654,6 +657,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
             // `/handoff` are not on offer here; the draft's pickers, paperclip
             // and draft are, and the composer supplies those itself.
             slashCommands={[
+              ...chatSlashCommands({ issue: !removedContext && subject !== null, coordinator: project !== undefined && project.can_write !== false, insert: onChange, send: (prompt) => void send(prompt) }),
               {
                 name: "shortcuts",
                 description: "Open the keyboard shortcuts",
@@ -858,14 +862,15 @@ export function ConversationView({
     handoffTrigger.current?.focus();
   }, []);
 
-  const send = async () => {
+  const send = async (prompt?: string) => {
+    const messageText = prompt ?? draft;
     const files = attachments.ids;
     // A message is text, files, or both (decisions.md §17.1): a drop with no
     // sentence is still something to send.
-    if (draft.trim().length === 0 && files.length === 0) return;
+    if (messageText.trim().length === 0 && files.length === 0) return;
     if (attachments.uploading) return;
     setSending(true);
-    const text = draft;
+    const text = messageText;
     await sendMessage({
       projectId,
       conversationId,
@@ -1349,6 +1354,7 @@ export function ConversationView({
               // — the three pickers, the paperclip, the draft, the interrupt —
               // the composer supplies from its own handles.
               slashCommands={[
+                ...chatSlashCommands({ issue: detail.conversation.subject_work_item_id != null, coordinator: !linked && !closed, insert: (prompt) => { setDraft(prompt); client.drafts.writeDraft(scope, prompt); }, send: (prompt) => void send(prompt) }),
                 ...(linked || closed || detail.conversation.subject_work_item_id != null
                   ? []
                   : [
@@ -1373,6 +1379,7 @@ export function ConversationView({
                     }),
                 },
               ]}
+              skills={detail.skills}
               contextStrip={
                 issueAskComposer !== undefined ? undefined : detail.conversation.subject_work_item_id != null ? (
                   <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">

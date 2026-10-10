@@ -18,6 +18,7 @@ import (
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -60,6 +61,7 @@ type Client struct {
 type Machine struct {
 	HostMetrics          []hostmetrics.Summary               `json:"-"`
 	IsolationTier        string                              `json:"-"`
+	Skills               *[]skills.ProviderSkill             `json:"-"`
 	ProjectConfiguration *runnerauth.ProjectConfiguration    `json:"-"`
 	Admission            *tracker.NativeAdmissionObservation `json:"-"`
 	Update               *runnerauth.UpdateObservation       `json:"-"`
