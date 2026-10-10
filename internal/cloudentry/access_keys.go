@@ -157,13 +157,22 @@ func (s *Service) keyClaims(ctx context.Context, k accessKey, organization Organ
 			return cloudassert.Claims{}, err
 		}
 		role, subject = member.Role.Slug, k.Owner
-		var allowed bool
-		err = s.auth.store.db.QueryRowContext(ctx, "SELECT allow_external_keys FROM organization_key_policy WHERE organization_id=?", organization.ID).Scan(&allowed)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		policy, err := s.personalKeyPolicy(ctx, organization.ID)
+		if err != nil {
 			return cloudassert.Claims{}, err
 		}
-		if err == nil && !allowed && (k.AccessContext == "global" || len(k.Organizations) > 1) {
-			return cloudassert.Claims{}, &apikey.Refusal{Code: "organization_key_policy_denied", Message: "This organization disallows keys created outside it"}
+		if policy == "blocked" {
+			return cloudassert.Claims{}, &apikey.Refusal{Code: "organization_key_policy_denied", Message: "This organization blocks personal keys"}
+		}
+		if policy == "approval" {
+			var approved bool
+			err := s.auth.store.db.QueryRowContext(ctx, "SELECT approved_at IS NOT NULL FROM access_key_organizations WHERE key_id=? AND organization_id=?", k.ID, organization.ID).Scan(&approved)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return cloudassert.Claims{}, err
+			}
+			if !approved {
+				return cloudassert.Claims{}, &apikey.Refusal{Code: "organization_key_policy_denied", Message: "This personal key requires organization approval"}
+			}
 		}
 	}
 	var blocked bool
@@ -236,12 +245,15 @@ func (s *Service) accountKeySession(c echo.Context) (accountSession, error) {
 func (s *Service) registerAccessKeys() {
 	s.echo.GET("/api/cloud/account/api-keys", s.accountKeys)
 	s.echo.POST("/api/cloud/account/api-keys", s.createAccountKey)
+	s.echo.POST("/api/cloud/account/api-keys/:key/rotate", s.rotateAccountKey)
+	s.echo.GET("/api/cloud/account/key-context", s.accountKeyContext)
 	s.echo.DELETE("/api/cloud/account/api-keys/:key", s.revokeAccountKey)
 	s.echo.GET("/api/cloud/account/key-notifications", s.keyNotifications)
 	s.echo.GET("/api/cloud/organizations/:organization/external-keys", s.organizationKeys)
 	s.echo.GET("/api/cloud/organizations/:organization/key-policy", s.organizationKeyPolicy)
 	s.echo.PUT("/api/cloud/organizations/:organization/key-policy", s.organizationKeyPolicy)
 	s.echo.PUT("/api/cloud/organizations/:organization/external-keys/:key/block", s.blockOrganizationKey)
+	s.echo.PUT("/api/cloud/organizations/:organization/external-keys/:key/approve", s.approveOrganizationKey)
 	s.echo.POST("/api/cloud/organizations/:organization/service-keys", s.createAccountKey)
 	s.echo.GET("/api/cloud/organizations/:organization/service-keys", s.serviceKeys)
 	s.echo.DELETE("/api/cloud/organizations/:organization/service-keys/:key", s.revokeServiceKey)
@@ -333,9 +345,29 @@ func (s *Service) accountKeys(c echo.Context) error {
 	if err != nil {
 		return keyError(c, err)
 	}
+	organizations, err := s.organizationChoices(c.Request().Context(), session)
+	if err != nil {
+		return keyError(c, err)
+	}
+	orgs := []Organization{}
+	for _, choice := range organizations {
+		org, err := s.readyOrganization(c.Request().Context(), choice.ID)
+		if err != nil {
+			return keyError(c, err)
+		}
+		orgs = append(orgs, org)
+	}
+	views := []keyView{}
+	for _, key := range keys {
+		view, err := s.describeKey(c.Request().Context(), key, orgs)
+		if err != nil {
+			return keyError(c, err)
+		}
+		views = append(views, view)
+	}
 	return c.JSON(http.StatusOK, struct {
-		Keys []accessKey `json:"keys"`
-	}{keys})
+		Keys []keyView `json:"keys"`
+	}{views})
 }
 
 func (s *Service) listAccessKeys(ctx context.Context, query string, args ...any) ([]accessKey, error) {
@@ -423,9 +455,25 @@ func (s *Service) serviceKeys(c echo.Context) error {
 	if err != nil {
 		return keyError(c, err)
 	}
+	type serviceKeyView struct {
+		accessKey
+		LastUsedAt *string `json:"last_used_at"`
+	}
+	views := []serviceKeyView{}
+	for _, key := range keys {
+		var last sql.NullString
+		if err := s.auth.store.db.QueryRowContext(c.Request().Context(), "SELECT MAX(last_used_at) FROM access_key_organizations WHERE key_id=? AND organization_id=?", key.ID, org.ID).Scan(&last); err != nil {
+			return keyError(c, err)
+		}
+		view := serviceKeyView{accessKey: key}
+		if last.Valid {
+			view.LastUsedAt = &last.String
+		}
+		views = append(views, view)
+	}
 	return c.JSON(http.StatusOK, struct {
-		Keys []accessKey `json:"keys"`
-	}{keys})
+		Keys []serviceKeyView `json:"keys"`
+	}{views})
 }
 
 func (s *Service) revokeServiceKey(c echo.Context) error {
@@ -460,24 +508,31 @@ func (s *Service) organizationKeyPolicy(c echo.Context) error {
 	if err != nil {
 		return keyError(c, err)
 	}
+	policy, err := s.personalKeyPolicy(c.Request().Context(), org.ID)
+	if err != nil {
+		return keyError(c, err)
+	}
 	input := struct {
-		Allowed bool `json:"allow_external_keys"`
-	}{Allowed: true}
+		Policy  string `json:"personal_keys"`
+		Allowed *bool  `json:"allow_external_keys,omitempty"`
+	}{Policy: policy}
 	if c.Request().Method == http.MethodPut {
 		if err := decodeKeyJSON(c, &input); err != nil {
 			return err
 		}
-		_, err = s.auth.store.db.ExecContext(c.Request().Context(), "INSERT INTO organization_key_policy(organization_id,allow_external_keys) VALUES(?,?) ON CONFLICT(organization_id) DO UPDATE SET allow_external_keys=excluded.allow_external_keys", org.ID, input.Allowed)
-	} else {
-		err = s.auth.store.db.QueryRowContext(c.Request().Context(), "SELECT allow_external_keys FROM organization_key_policy WHERE organization_id=?", org.ID).Scan(&input.Allowed)
-		if errors.Is(err, sql.ErrNoRows) {
-			err = nil
+		if input.Allowed != nil {
+			input.Policy = "allowed"
+			if !*input.Allowed {
+				input.Policy = "blocked"
+			}
 		}
-	}
-	if err != nil {
-		return keyError(c, err)
-	}
-	if c.Request().Method == http.MethodPut {
+		if input.Policy != "allowed" && input.Policy != "approval" && input.Policy != "blocked" {
+			return c.NoContent(http.StatusUnprocessableEntity)
+		}
+		_, err = s.auth.store.db.ExecContext(c.Request().Context(), "INSERT INTO organization_key_policy(organization_id,personal_keys) VALUES(?,?) ON CONFLICT(organization_id) DO UPDATE SET personal_keys=excluded.personal_keys", org.ID, input.Policy)
+		if err != nil {
+			return keyError(c, err)
+		}
 		if err := s.keyAudit(c.Request().Context(), org, "", session.Subject, "external_key_policy_changed"); err != nil {
 			return keyError(c, err)
 		}
@@ -494,28 +549,60 @@ func (s *Service) organizationKeys(c echo.Context) error {
 	if err != nil {
 		return keyError(c, err)
 	}
-	keys, err := s.listAccessKeys(c.Request().Context(), "SELECT k.id FROM access_keys k JOIN access_key_organizations r ON r.key_id=k.id WHERE r.organization_id=? AND r.reached_at IS NOT NULL AND k.kind='personal' ORDER BY k.created_at DESC,k.id LIMIT 200", org.ID)
+	ctx := c.Request().Context()
+	cursor := c.QueryParam("cursor")
+	if len(cursor) > 256 {
+		return c.NoContent(http.StatusBadRequest)
+	}
+	memberships, err := s.config.Provider.Memberships(ctx, "", org.ProviderID)
 	if err != nil {
 		return keyError(c, err)
 	}
-	type reachedKey struct {
-		accessKey
-		LastUsedAt string `json:"last_used_at"`
-		Blocked    bool   `json:"blocked"`
-		ReadOnly   bool   `json:"read_only"`
+	owners := []string{}
+	for _, member := range memberships {
+		if member.OrganizationID == org.ProviderID && member.Status == "active" && auth.ValidOrganizationRole(member.Role.Slug) {
+			owners = append(owners, member.UserID)
+		}
 	}
-	result := []reachedKey{}
+	encoded, err := json.Marshal(owners)
+	if err != nil {
+		return keyError(c, err)
+	}
+	keys, err := s.listAccessKeys(ctx, `SELECT id FROM access_keys INDEXED BY access_keys_owner
+		WHERE owner_subject IN (SELECT value FROM json_each(?)) AND kind='personal'
+		AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?) AND id>?
+		AND (access_context='global' OR EXISTS (SELECT 1 FROM json_each(organizations_json) WHERE json_extract(value,'$.organization_id')=?))
+		ORDER BY id LIMIT 51`, string(encoded), formatTime(s.config.now()), cursor, org.ID)
+	if err != nil {
+		return keyError(c, err)
+	}
+	nextCursor := ""
+	if len(keys) > 50 {
+		keys = keys[:50]
+		nextCursor = keys[len(keys)-1].ID
+	}
+	reachCache := map[keyReachOwner]keyReach{}
+	result := []keyView{}
 	for _, key := range keys {
-		row := reachedKey{accessKey: key, ReadOnly: true}
-		if err := s.auth.store.db.QueryRowContext(c.Request().Context(), "SELECT last_used_at,blocked FROM access_key_organizations WHERE key_id=? AND organization_id=?", key.ID, org.ID).Scan(&row.LastUsedAt, &row.Blocked); err != nil {
+		if _, reaches := key.projectContext(org.ID); !reaches {
+			continue
+		}
+		view, err := s.describeKeyWithReachCache(ctx, key, []Organization{org}, reachCache)
+		if err != nil {
 			return keyError(c, err)
 		}
-		row.Organizations = slices.DeleteFunc(slices.Clone(row.Organizations), func(item keyOrganization) bool { return item.OrganizationID != org.ID })
-		result = append(result, row)
+		if len(view.EffectiveReach) == 0 {
+			continue
+		}
+		view.LastUsedAt = view.EffectiveReach[0].LastUsedAt
+		view.Organizations = slices.DeleteFunc(slices.Clone(view.Organizations), func(item keyOrganization) bool { return item.OrganizationID != org.ID })
+		view.ReadOnly = true
+		result = append(result, view)
 	}
 	return c.JSON(http.StatusOK, struct {
-		Keys []reachedKey `json:"keys"`
-	}{result})
+		Keys       []keyView `json:"keys"`
+		NextCursor string    `json:"next_cursor,omitempty"`
+	}{result, nextCursor})
 }
 
 func (s *Service) blockOrganizationKey(c echo.Context) error {
