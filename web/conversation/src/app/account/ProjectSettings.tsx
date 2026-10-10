@@ -2,7 +2,6 @@ import { ModelSelectionSettings } from "./ModelSelectionSettings.tsx";
 import React from "react";
 
 import { SpritesCard } from "./SpritesCard.tsx";
-import { SpritePoolCard } from "./SpritePoolCard.tsx";
 import { WorkflowRevisions } from "./WorkflowRevisions.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
@@ -791,7 +790,7 @@ export function ProjectSettingsRoute({
       onOpenFleet={() => onNavigate?.("/settings/runners")}
       intakeHref={`/projects/${projectId}/setup`}
       onOpenSetup={onNavigate ? () => onNavigate(`/projects/${projectId}/setup`) : undefined}
-      sprites={<><SpritesCard key={projectId} projectId={projectId} canManage={canManage} /><SpritePoolCard key={`pool-${projectId}`} projectId={projectId} canManage={canManage} /></>}
+      sprites={<><SpritesCard key={projectId} projectId={projectId} canManage={canManage} /></>}
       workflow={
         <>
           <ModelSelectionSettings projectId={projectId} canManage={canManage && project?.can_write === true} />

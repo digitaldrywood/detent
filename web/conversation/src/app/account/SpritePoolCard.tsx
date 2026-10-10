@@ -8,9 +8,8 @@ import { useAccountApi, useAccountBootstrap } from "./context.ts";
 import { ControlError } from "./controls.tsx";
 import { useResource } from "./useResource.ts";
 
-export function SpritePoolCard({ projectId, projectName, canManage, compact = false, attentionOnly = false, onAttentionChange }: {
+export function SpritePoolCard({ projectId, canManage, compact = false, attentionOnly = false, onAttentionChange }: {
   readonly projectId: string;
-  readonly projectName?: string;
   readonly canManage: boolean;
   readonly compact?: boolean;
   readonly attentionOnly?: boolean;
@@ -48,11 +47,11 @@ export function SpritePoolCard({ projectId, projectName, canManage, compact = fa
     }
   }
 
-  const title = projectName === undefined ? "Sprite pool" : `Sprite pool · ${projectName}`;
+  const title = "Organization Sprite pool";
   const turnedOn = pool.value !== undefined && (pool.value.max_runners > 0 || pool.value.members.some((member) => member.state !== "deleted"));
   const notSetUp = pool.value !== undefined && !turnedOn;
   const needsAttention = turnedOn && !token.loading && (token.error !== null || token.value?.present === false);
-  const integrationsUrl = `${account?.base_path ?? ""}/settings/integrations?project=${encodeURIComponent(projectId)}#sprites`;
+  const integrationsUrl = `${account?.base_path ?? ""}/settings/integrations#sprites`;
   React.useEffect(() => {
     if (compact) onAttentionChange?.(projectId, needsAttention);
   }, [compact, projectId, needsAttention, onAttentionChange]);
@@ -83,13 +82,13 @@ export function SpritePoolCard({ projectId, projectName, canManage, compact = fa
   return <div className="px-4" data-testid="sprite-pool-row">
     <Dialog>
       <SettingsRow title={title}
-        description={notSetUp ? "Not set up. Sprites start runners for this project when work is queued." : pool.value === undefined ? status : `Floor ${pool.value.min_runners} · Ceiling ${pool.value.max_runners} · Idle ${pool.value.idle_seconds}s · ${status}`}
+        description={notSetUp ? "Not set up. Sprites start runners for every project when work is queued." : pool.value === undefined ? status : `Floor ${pool.value.min_runners} · Ceiling ${pool.value.max_runners} · Idle ${pool.value.idle_seconds}s · ${status}`}
         control={notSetUp && token.value?.present !== true
-          ? <Button size="xs" variant="outline" render={<a href={integrationsUrl} />}>Set up Sprites<span className="sr-only"> {projectName}</span></Button>
-          : <DialogTrigger render={<Button size="xs" variant="outline">{notSetUp ? "Set up Sprites" : canManage ? "Configure pool" : "View pool"}<span className="sr-only"> {projectName}</span></Button>} />}
+          ? <Button size="xs" variant="outline" render={<a href={integrationsUrl} />}>Set up Sprites</Button>
+          : <DialogTrigger render={<Button size="xs" variant="outline">{notSetUp ? "Set up Sprites" : canManage ? "Configure pool" : "View pool"}</Button>} />}
       >
         {turnedOn && token.loading ? <p className="pb-3 text-xs text-muted-foreground">Checking Sprites token…</p> : needsAttention ? <p className="pb-3 text-xs text-warning-foreground">
-          {token.error !== null ? `Could not check the Sprites token for ${projectName}.` : `No Sprites token is set for ${projectName}, so the Hub cannot start Sprites.`}{" "}
+          {token.error !== null ? "Could not check the organization’s Sprites token." : "No organization Sprites token is set, so the Hub cannot start Sprites."}{" "}
           <a className="underline underline-offset-4" href={integrationsUrl}>{token.error !== null ? "Review the token" : "Set a Sprites token"}</a>
         </p> : null}
       </SettingsRow>

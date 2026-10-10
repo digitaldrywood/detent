@@ -52,7 +52,7 @@ type placementSnapshot struct {
 func readPlacementPolicy(ctx context.Context, q nativeQueryer, scope nativeScope) (policy.Placement, int, error) {
 	var raw string
 	var ceiling int
-	err := q.QueryRowContext(ctx, `SELECT placement_json,max_runners FROM project_sprite_pools WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&raw, &ceiling)
+	err := q.QueryRowContext(ctx, `SELECT placement_json,max_runners FROM organization_sprite_pools WHERE organization_id=?`, scope.organization).Scan(&raw, &ceiling)
 	if errors.Is(err, sql.ErrNoRows) {
 		return policy.Placement{Mode: "blended"}, 0, nil
 	}
@@ -68,12 +68,12 @@ func readPlacementPolicy(ctx context.Context, q nativeQueryer, scope nativeScope
 
 func readPlacementSpriteUsage(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) (int, error) {
 	var used int
-	err := q.QueryRowContext(ctx, `SELECT count(*) FROM leases l JOIN issues i ON i.id=l.issue_id JOIN machines m ON m.id=l.machine_id WHERE i.organization_id=? AND i.project_id=? AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?) AND json_extract(m.capabilities_json,'$.sprite_name')=m.hostname`, scope.organization, scope.project, formatHubTime(now)).Scan(&used)
+	err := q.QueryRowContext(ctx, `SELECT count(*) FROM leases l JOIN issues i ON i.id=l.issue_id JOIN machines m ON m.id=l.machine_id WHERE i.organization_id=? AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?) AND json_extract(m.capabilities_json,'$.sprite_name')=m.hostname`, scope.organization, formatHubTime(now)).Scan(&used)
 	return used, err
 }
 
 func readPlacementRunners(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) ([]placementRunner, error) {
-	rows, err := q.QueryContext(ctx, `SELECT r.id, r.enrollment_id, COALESCE(json_extract(m.capabilities_json,'$.sprite_name'),''), COALESCE(json_extract(m.capabilities_json,'$.sprite_woken_at'),'') FROM runner_identities r JOIN machines m ON m.id=r.machine_id JOIN token_grants g ON g.token_id=r.token_id WHERE r.organization_id=? AND r.removed_at IS NULL AND g.organization_id=? AND g.project_id=? ORDER BY r.id`, scope.organization, scope.organization, scope.project)
+	rows, err := q.QueryContext(ctx, `SELECT r.id, r.enrollment_id, COALESCE(json_extract(m.capabilities_json,'$.sprite_name'),''), COALESCE(json_extract(m.capabilities_json,'$.sprite_woken_at'),'') FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.organization_id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=? AND g.project_id=?)) ORDER BY r.id`, scope.organization, scope.organization, scope.project)
 	if err != nil {
 		return nil, err
 	}
@@ -174,6 +174,10 @@ func (c *placementCapacity) available(r placementRunner, project tracker.Project
 }
 
 func readPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate) (placementSnapshot, error) {
+	return readPlacementSnapshotWithCapacity(ctx, q, scope, now, overrides, newPlacementCapacity(), make(map[string]bool))
+}
+
+func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate, localCapacity *placementCapacity, counted map[string]bool) (placementSnapshot, error) {
 	var result placementSnapshot
 	placement, ceiling, err := readPlacementPolicy(ctx, q, scope)
 	if err != nil {
@@ -264,7 +268,6 @@ func readPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeSco
 		}
 		ids = continuations
 	}
-	localCapacity := newPlacementCapacity()
 	localAssigned := make(map[tracker.WorkItemID]bool)
 	for _, id := range ids {
 		var native tracker.NativeWorkItemID
@@ -322,7 +325,6 @@ func readPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeSco
 		}
 	}
 	spriteCapacity := localCapacity
-	counted := make(map[string]bool)
 	for _, id := range ids {
 		if limit := placement.SpriteLimit(); limit > 0 && result.SpriteFree+result.Pending >= max(limit-result.SpriteUsed, 0) {
 			break
@@ -345,7 +347,7 @@ func readPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeSco
 		}
 	}
 	bootstrapPending := 0
-	rows, err := q.QueryContext(ctx, `SELECT enrollment_id,state FROM project_sprite_members WHERE organization_id=? AND project_id=? AND state IN ('bootstrapping','enrolled')`, scope.organization, scope.project)
+	rows, err := q.QueryContext(ctx, `SELECT enrollment_id,state FROM organization_sprite_members WHERE organization_id=? AND state IN ('bootstrapping','enrolled')`, scope.organization)
 	if err != nil {
 		return result, err
 	}
@@ -358,9 +360,10 @@ func readPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeSco
 		if state == "enrolled" && slices.ContainsFunc(result.Runners, func(r placementRunner) bool { return r.Enrollment == enrollment && len(r.ProviderCapacity) > 0 }) {
 			continue
 		}
-		if !slices.ContainsFunc(result.Runners, func(r placementRunner) bool {
-			return r.Enrollment == enrollment && (r.Used > 0 || counted[enrollment])
+		if !counted[enrollment] && !slices.ContainsFunc(result.Runners, func(r placementRunner) bool {
+			return r.Enrollment == enrollment && r.Used > 0
 		}) {
+			counted[enrollment] = true
 			result.Pending++
 			bootstrapPending++
 		}
@@ -534,4 +537,64 @@ func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeSco
 		reason = "Local-first overflow is eligible for this candidate"
 	}
 	return allowed, fmt.Sprintf("%s: ready Todo=%d, threshold=%d, local free=%d, Sprite used=%d, overflow slots=%d", reason, snapshot.ReadyTodo, placement.TodoThreshold, snapshot.LocalFree, snapshot.SpriteUsed, placement.OverflowSlots), nil
+}
+
+func readOrganizationPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) (placementSnapshot, error) {
+	result := placementSnapshot{Items: make(map[tracker.WorkItemID]providercapacity.Requirement), Local: make(map[tracker.WorkItemID]int)}
+	placement, _, err := readPlacementPolicy(ctx, q, scope)
+	if err != nil {
+		return result, err
+	}
+	result.Policy = placement
+	rows, err := q.QueryContext(ctx, `SELECT id FROM projects WHERE organization_id=? AND profile='native' ORDER BY scheduling_rank,id`, scope.organization)
+	if err != nil {
+		return result, err
+	}
+	defer rows.Close()
+	var projects []tracker.ProjectID
+	for rows.Next() {
+		var id tracker.ProjectID
+		if err := rows.Scan(&id); err != nil {
+			return result, err
+		}
+		projects = append(projects, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return result, err
+	}
+	capacity := newPlacementCapacity()
+	counted := make(map[string]bool)
+	for _, project := range projects {
+		projectScope := scope
+		projectScope.project = project
+		snapshot, err := readPlacementSnapshotWithCapacity(ctx, q, projectScope, now, nil, capacity, counted)
+		if err != nil {
+			return result, err
+		}
+		result.ReadyTodo += snapshot.ReadyTodo
+		result.SpriteTarget += snapshot.SpriteTarget
+		result.SpriteFree += snapshot.SpriteFree
+		result.Pending += snapshot.Pending
+		result.Provisionable += snapshot.Provisionable
+		result.LocalFree += snapshot.LocalFree
+		if snapshot.ProviderFree != nil {
+			if result.ProviderFree == nil {
+				result.ProviderFree = new(*snapshot.ProviderFree)
+			} else {
+				*result.ProviderFree = max(*result.ProviderFree, *snapshot.ProviderFree)
+			}
+		}
+	}
+	result.SpriteUsed, err = readPlacementSpriteUsage(ctx, q, scope, now)
+	if err != nil {
+		return result, err
+	}
+	if limit := placement.SpriteLimit(); limit > 0 {
+		remaining := max(limit-result.SpriteUsed, 0)
+		result.SpriteTarget = min(result.SpriteTarget, remaining)
+		result.SpriteFree = min(result.SpriteFree, remaining)
+		result.Pending = min(result.Pending, max(remaining-result.SpriteFree, 0))
+	}
+	result.Provisionable = max(result.SpriteTarget-result.SpriteFree-result.Pending, 0)
+	return result, nil
 }
