@@ -112,7 +112,7 @@ func (t *coordinatorToolset) spriteTool(ctx context.Context, record conversation
 		return nil, err
 	}
 	s := t.coordinator.service.server
-	scope, err := s.coordinatorSpriteScope(ctx, string(record.ProjectID), permission == apikey.ScopeAdmin)
+	scope, err := s.coordinatorScope(ctx, "", permission == apikey.ScopeAdmin)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +158,7 @@ func (t *coordinatorToolset) spriteTool(ctx context.Context, record conversation
 	return t.submitCoordinatorAction(ctx, record, call, action)
 }
 
-func (s *Service) coordinatorSpriteScope(ctx context.Context, _ string, manage bool) (nativeScope, error) {
+func (s *Service) coordinatorScope(ctx context.Context, project tracker.ProjectID, manage bool) (nativeScope, error) {
 	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
 	if !ok {
 		return nativeScope{}, operatortool.ErrAccessDenied
@@ -167,7 +167,7 @@ func (s *Service) coordinatorSpriteScope(ctx context.Context, _ string, manage b
 	if err != nil || manage && !canManageProjectSecrets(scope.credential) {
 		return nativeScope{}, operatortool.ErrAccessDenied
 	}
-	scope.project = ""
+	scope.project = project
 	scope.requireHostedAdmin = manage
 	return scope, nil
 }
@@ -192,7 +192,7 @@ func (s *Service) validateCoordinatorSpriteChange(ctx context.Context, scope nat
 }
 
 func (s *Service) executeCoordinatorSpriteAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
-	scope, err := s.coordinatorSpriteScope(ctx, action.ProjectID, true)
+	scope, err := s.coordinatorScope(ctx, "", true)
 	if err != nil {
 		return chat.ActionExecution{}, err
 	}

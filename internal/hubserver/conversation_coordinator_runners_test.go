@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -26,6 +27,8 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 		status                 int
 	}{
 		{"read unavailable tier", "member", "get_runners", "", true, false, 0},
+		{"organization runner read", "member", "get_runners", "", true, false, 0},
+		{"organization runner admin full access", "admin", "set_runner_tier", isolation.NativeTrusted, true, true, http.StatusOK},
 		{"admin full access", "admin", "set_runner_tier", isolation.NativeTrusted, true, true, http.StatusOK},
 		{"owner sandbox", "owner", "set_runner_tier", isolation.Sandbox, true, true, http.StatusOK},
 		{"unapproved preview", "owner", "set_runner_tier", isolation.NativeTrusted, true, false, 0},
@@ -43,7 +46,11 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 			})
 			owner := f.user(t, "runner-owner", "owner", "owner@example.test", "write", "")
 			f.grant(t, owner, true, true)
-			response := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/runner-enrollments", runnerauth.EnrollmentRequest{ProjectIDs: []tracker.ProjectID{f.project}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, TTLSeconds: 900})
+			enrollmentRequest := runnerauth.EnrollmentRequest{ProjectIDs: []tracker.ProjectID{f.project}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, TTLSeconds: 900}
+			if strings.HasPrefix(test.name, "organization runner") {
+				enrollmentRequest.Scope, enrollmentRequest.ProjectIDs = "organization", nil
+			}
+			response := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/runner-enrollments", enrollmentRequest)
 			requireNativeStatus(t, response, http.StatusCreated)
 			var enrollment runnerauth.Enrollment
 			decodeHubResponse(t, response, &enrollment)
