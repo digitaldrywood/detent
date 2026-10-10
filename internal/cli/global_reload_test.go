@@ -419,14 +419,19 @@ func TestStartupManagerConfigMatchesFirstReload(t *testing.T) {
 
 			cfg := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
 			cfg.GitHubToken = tt.githubToken
+			unloaded := func(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+				return context.WithTimeout(ctx, 2*time.Minute)
+			}
 			token := newRuntimeGitHubTokenState("")
-			startup, err := startupManagerConfig(t.Context(), cfg, token, runtimeGitHubTokenRefresher(newGlobalConfigState(cfg), token), time.Minute)
+			startup, err := startupManagerConfig(t.Context(), cfg, token, runtimeGitHubTokenRefresherWithCommandContext(newGlobalConfigState(cfg), token, unloaded), 2*time.Minute)
 			if err != nil {
 				t.Fatalf("startupManagerConfig() error = %v", err)
 			}
 
 			manager := &globalReloadManager{}
-			reloader := &globalConfigReloader{current: cfg, manager: manager, githubToken: token}
+			reloader := &globalConfigReloader{current: cfg, manager: manager, githubToken: token, resolveGitHubToken: func(ctx context.Context, cfg globalconfig.Config) (string, error) {
+				return resolveGlobalRuntimeGitHubTokenWithCommandContext(ctx, cfg, unloaded)
+			}}
 			if _, err := reloader.apply(t.Context(), configwatcher.FileUpdate[globalconfig.Config]{Path: cfg.Path, Value: cfg}); err != nil {
 				t.Fatalf("apply() error = %v", err)
 			}
