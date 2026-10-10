@@ -305,11 +305,6 @@ func TestHubCollidingMigrationsPreserveHistory(t *testing.T) {
 				}
 				files["20261006023000_sprite_placement.sql"] = &fstest.MapFile{Data: data}
 			}
-			tierMigration, err := migrationFiles.ReadFile("migrations/20261009153000_sprite_pool_isolation_tier.sql")
-			if err != nil {
-				t.Fatal(err)
-			}
-			files["20261009153000_sprite_pool_isolation_tier.sql"] = &fstest.MapFile{Data: tierMigration}
 			provider, err := goose.NewProvider(goose.DialectSQLite3, db, files,
 				goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable),
 				goose.WithSlog(discardLogger()), goose.WithGoMigrations(goMigrations...))
@@ -343,26 +338,6 @@ SELECT organization_id,project_id,'migration-key','retained bootstrap' FROM issu
 					t.Fatal(err)
 				}
 			}
-			if _, err := db.ExecContext(t.Context(), `
-UPDATE project_sprite_pools SET min_runners=1,max_runners=2,idle_seconds=600,revision=4;
-INSERT INTO projects(id,organization_id,name,profile,created_at,scheduling_rank)
-SELECT 'migration-other',organization_id,'Other project',profile,created_at,10 FROM projects LIMIT 1;
-INSERT INTO project_sprite_pools(organization_id,project_id,min_runners,max_runners,idle_seconds,bootstrap,configured_by)
-SELECT organization_id,id,2,3,120,'secondary bootstrap','migration-key' FROM projects WHERE id='migration-other';
-INSERT INTO runner_enrollments(id,organization_id,runner_id,machine_id,token_hash,operations_json,created_at,expires_at,created_by)
-SELECT 'enrollment-' || project_id,organization_id,'runner-' || project_id,'machine-' || project_id,lower(hex(randomblob(32))),'["read","claim"]','2026-01-01T00:00:00Z','2026-01-01T00:15:00Z','migration-key' FROM project_sprite_pools;
-INSERT INTO runner_enrollment_projects(enrollment_id,organization_id,project_id)
-SELECT 'enrollment-' || project_id,organization_id,project_id FROM project_sprite_pools;
-INSERT INTO project_sprite_members(organization_id,project_id,name,provider_organization,enrollment_id,state,bootstrap_log,idle_since,created_at)
-SELECT organization_id,project_id,'sprite-' || project_id,'retained-provider','enrollment-' || project_id,'bootstrapping','retained log','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z' FROM project_sprite_pools;`); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := provider.UpTo(t.Context(), 20261009153000); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := db.ExecContext(t.Context(), "UPDATE project_sprite_pools SET isolation_tier='sandbox'"); err != nil {
-				t.Fatal(err)
-			}
 			var originalHistory string
 			var lastID int64
 			const historyQuery = "SELECT json_group_array(json_object('id',id,'version',version_id,'applied',is_applied,'timestamp',tstamp)) FROM hub_schema_version WHERE id <= ?"
@@ -380,7 +355,7 @@ SELECT organization_id,project_id,'sprite-' || project_id,'retained-provider','e
 			if version, err := runMigrations(t.Context(), db, discardLogger()); err != nil || version != supportedSchemaVersion(t) {
 				t.Fatalf("repair migration version=%d error=%v", version, err)
 			}
-			var history, issue, url, placement, bootstrap, tier string
+			var history, issue, url, placement, bootstrap string
 			var number int
 			if err := db.QueryRowContext(t.Context(), historyQuery, lastID).Scan(&history); err != nil || history != originalHistory {
 				t.Fatalf("repair rewrote migration history: %s error=%v", history, err)
@@ -391,19 +366,8 @@ SELECT organization_id,project_id,'sprite-' || project_id,'retained-provider','e
 			if err := db.QueryRowContext(t.Context(), "SELECT url,github_number FROM issues WHERE id = ?", issueID).Scan(&url, &number); err != nil || url != sourceURL || number != 2199 {
 				t.Fatalf("backfilled reference=%q number=%d error=%v", url, number, err)
 			}
-			if err := db.QueryRowContext(t.Context(), "SELECT placement_json,bootstrap,isolation_tier FROM organization_sprite_pools").Scan(&placement, &bootstrap, &tier); err != nil || placement != wantPlacement || bootstrap != "retained bootstrap" || tier != "sandbox" {
-				t.Fatalf("placement=%q bootstrap=%q tier=%q error=%v", placement, bootstrap, tier, err)
-			}
-			var floor, ceiling, idle, revision, members, enrollments, grants, retired int
-			if err := db.QueryRowContext(t.Context(), "SELECT min_runners,max_runners,idle_seconds,revision FROM organization_sprite_pools").Scan(&floor, &ceiling, &idle, &revision); err != nil || floor != 3 || ceiling != 5 || idle != 120 || revision != 5 {
-				t.Fatalf("merged pool floor=%d ceiling=%d idle=%d revision=%d error=%v", floor, ceiling, idle, revision, err)
-			}
-			if err := db.QueryRowContext(t.Context(), `SELECT
-(SELECT count(*) FROM organization_sprite_members WHERE token_project_id<>'' AND provider_organization='retained-provider' AND bootstrap_log='retained log'),
-(SELECT count(*) FROM runner_enrollments WHERE scope='organization'),
-(SELECT count(*) FROM runner_enrollment_projects),
-(SELECT count(*) FROM sqlite_master WHERE name IN ('project_sprite_pools','project_sprite_members'))`).Scan(&members, &enrollments, &grants, &retired); err != nil || members != 2 || enrollments != 2 || grants != 0 || retired != 0 {
-				t.Fatalf("merged members=%d enrollments=%d grants=%d retired=%d error=%v", members, enrollments, grants, retired, err)
+			if err := db.QueryRowContext(t.Context(), "SELECT placement_json,bootstrap FROM project_sprite_pools").Scan(&placement, &bootstrap); err != nil || placement != wantPlacement || bootstrap != "retained bootstrap" {
+				t.Fatalf("placement=%q bootstrap=%q error=%v", placement, bootstrap, err)
 			}
 			var violations int
 			if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM pragma_foreign_key_check").Scan(&violations); err != nil || violations != 0 {

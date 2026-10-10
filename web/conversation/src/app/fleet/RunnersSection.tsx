@@ -2,8 +2,7 @@ import { BotIcon, ChevronDownIcon, ServerIcon } from "lucide-react";
 import React from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Menu, MenuTrigger, MenuPopup, MenuItem } from "../../components/ui/menu.tsx";
-import { useOptionalShell } from "../App.tsx";
-import { accountKey, readLastChatProject, useClient } from "../client.ts";
+import { accountKey, readLastProject, useClient } from "../client.ts";
 import { SpritePoolCard } from "../account/SpritePoolCard.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
@@ -304,7 +303,6 @@ export function RunnersSectionView({
 
 /** The section as the settings page mounts it: it owns the one read. */
 export function RunnersSettings(): React.ReactElement {
-  const shell = useOptionalShell();
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
   const client = useClient();
@@ -315,17 +313,14 @@ export function RunnersSettings(): React.ReactElement {
     setPoolAttention((current) => current[projectId] === needsAttention ? current : { ...current, [projectId]: needsAttention });
   }, []);
   const writableProjects = bootstrap?.projects.filter((project) => project.can_write) ?? [];
-  const [assistProject, setAssistProject] = React.useState("");
+  const [assistProject, setAssistProject] = React.useState(() => writableProjects.find((project) => project.id === readLastProject())?.id ?? writableProjects[0]?.id ?? "");
   function assist(projectId: string): void {
-    const chatProjectId = projectId || writableProjects.find((project) => project.id === (shell?.projectId || readLastChatProject()))?.id || writableProjects[0]?.id || "";
-    const scope = { accountKey: accountKey(client), projectId: chatProjectId, conversationId: "new" };
-    shell?.setProjectId(chatProjectId);
-    const request = `Help me add a runner for ${projectId ? "this project only" : "all current and future projects in this organization"}. Ask whether I want a Fly Sprite or a machine I run, then walk me through enrollment, the register command, provider login and the first connection.${projectId ? "" : " Configure one organization Sprite pool if I choose Sprites."}`;
+    const scope = { accountKey: accountKey(client), projectId, conversationId: "new" };
+    const request = "Help me add a runner for this project. Ask whether I want a Fly Sprite or a machine I run, then walk me through enrollment, the register command, provider login and the first connection.";
     const existing = client.drafts.readDraft(scope);
     client.drafts.writeDraft(scope, existing.trim() ? `${existing}\n\n${request}` : request);
     setAssistOpen(false);
-    if (projectId) void navigate({ to: "/chat/p/$projectId", params: { projectId } });
-    else void navigate({ to: "/chat" });
+    void navigate({ to: "/chat/p/$projectId", params: { projectId } });
   }
   const fleet = useResource(() => api.fleet(), [api]);
   const [open, setOpen] = React.useState(false);
@@ -372,11 +367,11 @@ export function RunnersSettings(): React.ReactElement {
           organizationName={bootstrap?.organization.name}
           projects={bootstrap?.projects ?? []}
           onReloadRunner={reloadRunner}
-          spritePoolAttentionCount={poolAttention[""] ? 1 : 0}
-          spritePools={(attentionOnly) => bootstrap ? <SpritePoolCard compact projectId="" canManage={bootstrap.actor.can_manage} attentionOnly={attentionOnly} onAttentionChange={onPoolAttentionChange} /> : null}
-          {...(canEnroll ? { onAssist: () => {
-            setAssistProject("");
-            setAssistOpen(true);
+          spritePoolAttentionCount={bootstrap?.projects.filter((project) => poolAttention[project.id]).length ?? 0}
+          spritePools={(attentionOnly) => bootstrap?.projects.map((project) => <SpritePoolCard key={project.id} compact projectId={project.id} projectName={project.name} canManage={bootstrap.actor.can_manage && project.can_write} attentionOnly={attentionOnly} onAttentionChange={onPoolAttentionChange} />)}
+          {...(canEnroll && writableProjects.length > 0 ? { onAssist: () => {
+            if (writableProjects.length === 1) assist(writableProjects[0]!.id);
+            else setAssistOpen(true);
           } } : {})}
           {...(canEnroll && fleet.value.editable ? { onRemoveRunner: async (runner: FleetRunner) => {
             await api.removeRunner(runner.id);
@@ -387,7 +382,7 @@ export function RunnersSettings(): React.ReactElement {
           {...(canEnroll ? { onEnroll: (name = "") => { setEnrollmentName(name); setOpen(true); } } : {})}
           {...(canEnroll && fleet.value.editable ? { onSaveRouting: async (runner: FleetRunner, routing: RunnerRouting) => {
             await api.setRunnerRouting({ runner: runner.id, revision: runner.revision ?? 0, displayName: routing.display_name,
-              tags: routing.tags, state: routing.state, capacityLimit: routing.capacity_limit, projectIds: routing.project_ids, scope: routing.scope,
+              tags: routing.tags, state: routing.state, capacityLimit: routing.capacity_limit, projectIds: routing.project_ids,
               isolationTier: routing.isolation_tier, hostServices: routing.host_services, availability: routing.availability });
             await reloadRunner();
           } } : {})}
@@ -401,12 +396,12 @@ export function RunnersSettings(): React.ReactElement {
           </DialogHeader>
           <DialogPanel>
             <label className="grid gap-2 text-sm">Project
-              <NativeSelect aria-label="Project" value={assistProject} onValueChange={setAssistProject} options={[{ value: "", label: "All projects" }, ...writableProjects.map((project) => ({ value: project.id, label: project.name }))]} />
+              <NativeSelect aria-label="Project" value={assistProject} onValueChange={setAssistProject} options={writableProjects.map((project) => ({ value: project.id, label: project.name }))} />
             </label>
           </DialogPanel>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAssistOpen(false)}>Cancel</Button>
-            <Button disabled={assistProject !== "" && !writableProjects.some((project) => project.id === assistProject)} onClick={() => assist(assistProject)}>Open Luna</Button>
+            <Button disabled={!writableProjects.some((project) => project.id === assistProject)} onClick={() => assist(assistProject)}>Open Luna</Button>
           </DialogFooter>
         </DialogPopup>
       </Dialog>

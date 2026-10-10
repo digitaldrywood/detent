@@ -42,13 +42,10 @@ test("runner sheet saves through the fleet and persists routing after reload", a
   await expect(saved.getByLabel("Until 1")).toHaveValue("17:00");
   await expect(saved.getByLabel("Stop running work after hours end")).toHaveValue("30m");
   await saved.getByRole("checkbox", { name: projectName.trim(), exact: true }).check();
-  await saved.getByLabel("Runner scope").selectOption("organization");
   await saved.getByRole("button", { name: "Save runner" }).click();
   await expect(saved).toHaveCount(0);
   await page.reload();
   await page.getByRole("button", { name: "Manage Settings runner" }).click();
-  await expect(page.getByRole("dialog").getByLabel("Runner scope")).toHaveValue("organization");
-  await expect(page.getByRole("dialog")).toContainText("All current and future projects");
 
   await page.goto(hub.fixture.accounts.viewer);
   await page.goto(new URL("/settings/runners", hub.fixture.url).toString());

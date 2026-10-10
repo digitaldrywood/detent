@@ -120,7 +120,8 @@ func validSpritesSlug(slug string) bool {
 // call, audit before the call, and clear the byte buffer on every exit. No API
 // or coordinator tool exposes a plaintext reader or an arbitrary callback.
 func (s *Service) checkProjectSprites(ctx context.Context, scope nativeScope) (string, error) {
-	scope, _, envelope, err := resolveSpritesSecret(ctx, s.database.db, scope)
+	var envelope hubsecrets.Envelope
+	err := s.database.db.QueryRowContext(ctx, `SELECT ciphertext, nonce, wrapped_data_key, master_key_version FROM project_secrets WHERE organization_id=? AND project_id=? AND kind=?`, scope.organization, scope.project, flySpritesToken).Scan(&envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
@@ -144,6 +145,7 @@ const spriteRunnerIdle = 15 * time.Second
 
 type spriteWakeKey struct {
 	organization tracker.OrganizationID
+	project      tracker.ProjectID
 }
 
 type spriteLifecyclePass struct {
@@ -174,7 +176,7 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 		return
 	}
 	if state != "" {
-		allowed, err := monthlySpriteAllowed(ctx, s.database.db, nativeScope{organization: scope.organization}, s.config.now())
+		allowed, err := monthlySpriteAllowed(ctx, s.database.db, scope, s.config.now())
 		if err != nil {
 			s.config.Logger.Warn("Check Sprite lifecycle monthly budget", "error", err)
 			return
@@ -183,7 +185,7 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 			return
 		}
 	}
-	key := spriteWakeKey{organization: scope.organization}
+	key := spriteWakeKey{organization: scope.organization, project: scope.project}
 	s.spriteWakeMu.Lock()
 	defer s.spriteWakeMu.Unlock()
 	if ctx.Err() != nil {
@@ -208,12 +210,15 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 			close(pass.done)
 			s.spriteWakeMu.Unlock()
 			if pending != "" && ctx.Err() == nil {
-				s.scheduleSpriteLifecycle(ctx, scope, pending)
+				var configured int
+				if err := s.database.db.QueryRowContext(ctx, `SELECT count(*) FROM project_sprite_pools WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&configured); err == nil && configured > 0 {
+					s.scheduleSpriteLifecycle(ctx, scope, pending)
+				}
 			}
 		}()
 		defer cancel()
 		if state != "" {
-			if _, err := s.wakeOrganizationSpriteRunners(wakeContext, scope); err != nil {
+			if _, err := s.wakeSpriteRunners(wakeContext, scope, state); err != nil {
 				if wakeContext.Err() == nil {
 					s.config.Logger.Warn("sprite runners could not be woken", "error", err)
 				}
@@ -264,7 +269,7 @@ func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, stat
 			return woken, err
 		}
 		var configured bool
-		if err := s.database.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM organization_sprite_pools WHERE organization_id=?)`, scope.organization).Scan(&configured); err != nil {
+		if err := s.database.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM project_sprite_pools WHERE organization_id=? AND project_id=?)`, scope.organization, scope.project).Scan(&configured); err != nil {
 			return woken, err
 		}
 		var placement placementSnapshot
@@ -279,12 +284,15 @@ func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, stat
 		}
 		var name string
 		var runnerID string
+		var envelope hubsecrets.Envelope
 		cutoff := formatHubTime(s.config.now().Add(-spriteRunnerIdle))
-		err = s.database.db.QueryRowContext(ctx, `SELECT r.id,m.hostname FROM runner_identities r
-JOIN machines m ON m.id=r.machine_id JOIN api_tokens t ON t.id=r.token_id AND t.revoked_at IS NULL
-WHERE r.organization_id=? AND r.state='active' AND r.removed_at IS NULL AND r.last_heartbeat_at<? AND COALESCE(json_extract(m.capabilities_json,'$.sprite_woken_at'),'')<? AND m.hostname>? AND json_extract(m.capabilities_json,'$.sprite_name')=m.hostname AND
-(r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?))
-ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config.now().Add(-time.Minute)), last, scope.project).Scan(&runnerID, &name)
+		err = s.database.db.QueryRowContext(ctx, `SELECT r.id, m.hostname, ps.ciphertext, ps.nonce, ps.wrapped_data_key, ps.master_key_version FROM runner_identities r
+JOIN machines m ON m.id = r.machine_id
+JOIN api_tokens t ON t.id = r.token_id AND t.revoked_at IS NULL
+JOIN token_grants g ON g.token_id = r.token_id AND g.organization_id = r.organization_id AND g.project_id = ?
+JOIN project_secrets ps ON ps.organization_id = r.organization_id AND ps.project_id = g.project_id AND ps.kind = ?
+WHERE r.organization_id = ? AND r.state = 'active' AND r.last_heartbeat_at < ? AND m.hostname > ?
+ORDER BY m.hostname LIMIT 1`, scope.project, flySpritesToken, scope.organization, cutoff, last).Scan(&runnerID, &name, &envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
 		if errors.Is(err, sql.ErrNoRows) {
 			return woken, nil
 		}
@@ -316,14 +324,7 @@ ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config
 				continue
 			}
 		}
-		secretScope, _, envelope, err := resolveSpritesSecret(ctx, s.database.db, scope)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return woken, err
-		}
-		started, err := s.wakeSpriteRunnerWithSecret(ctx, scope, secretScope, &client, name, envelope)
+		started, err := s.wakeSpriteRunner(ctx, scope, &client, name, envelope)
 		if err != nil {
 			return woken, err
 		}
@@ -331,7 +332,7 @@ ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config
 		if !started {
 			failedAt = formatHubTime(s.config.now())
 		}
-		if _, err := s.database.db.ExecContext(ctx, `UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_wake_failed_at',?) WHERE id=(SELECT machine_id FROM runner_identities WHERE id=? AND organization_id=?)`, failedAt, runnerID, scope.organization); err != nil {
+		if _, err := s.database.db.ExecContext(ctx, `UPDATE machines SET capabilities_json=json_set(capabilities_json, '$.sprite_wake_failed_at', ?) WHERE organization_id=? AND hostname=? AND json_extract(capabilities_json, '$.sprite_name')=hostname AND id IN (SELECT r.machine_id FROM runner_identities r JOIN token_grants g ON g.token_id=r.token_id AND g.organization_id=r.organization_id JOIN api_tokens t ON t.id=r.token_id AND t.revoked_at IS NULL WHERE r.organization_id=? AND g.project_id=? AND r.state='active')`, failedAt, scope.organization, name, scope.organization, scope.project); err != nil {
 			return woken, err
 		}
 		if started {
@@ -343,15 +344,15 @@ ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config
 	}
 }
 
-func (s *Service) wakeSpriteRunnerWithSecret(ctx context.Context, scope, secretScope nativeScope, client *http.Client, name string, envelope hubsecrets.Envelope) (bool, error) {
+func (s *Service) wakeSpriteRunner(ctx context.Context, scope nativeScope, client *http.Client, name string, envelope hubsecrets.Envelope) (bool, error) {
 	allowed, err := monthlySpriteAllowed(ctx, s.database.db, scope, s.config.now())
 	if err != nil || !allowed {
 		return false, err
 	}
-	if err := s.auditSecretUse(ctx, secretScope, envelope.Version); err != nil {
+	if err := s.auditSecretUse(ctx, scope, envelope.Version); err != nil {
 		return false, err
 	}
-	token, err := s.config.SecretKeys.Open(envelope, secretAAD(string(secretScope.organization), string(secretScope.project), flySpritesToken))
+	token, err := s.config.SecretKeys.Open(envelope, secretAAD(string(scope.organization), string(scope.project), flySpritesToken))
 	if err != nil {
 		return false, err
 	}
@@ -369,37 +370,4 @@ func (s *Service) wakeSpriteRunnerWithSecret(ctx context.Context, scope, secretS
 	_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
 	_ = response.Body.Close()
 	return readErr == nil && response.StatusCode >= 200 && response.StatusCode <= 299, nil
-}
-
-func (s *Service) wakeOrganizationSpriteRunners(ctx context.Context, scope nativeScope) (int, error) {
-	rows, err := s.database.db.QueryContext(ctx, `SELECT p.id,ws.source_name FROM projects p JOIN workflow_states ws ON ws.project_id=p.id WHERE p.organization_id=? AND p.profile='native' AND ws.dispatchable=1 AND ws.terminal=0 AND EXISTS(SELECT 1 FROM issues i WHERE i.project_id=p.id AND i.organization_id=p.organization_id AND i.workflow_state_id=ws.id AND i.archived=0 AND NOT EXISTS(SELECT 1 FROM leases l WHERE l.issue_id=i.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?))) ORDER BY p.scheduling_rank,p.id,ws.source_name`, scope.organization, formatHubTime(s.config.now()))
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-	type target struct {
-		project tracker.ProjectID
-		state   string
-	}
-	var targets []target
-	for rows.Next() {
-		var t target
-		if err := rows.Scan(&t.project, &t.state); err != nil {
-			return 0, err
-		}
-		targets = append(targets, t)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return 0, err
-	}
-	total := 0
-	for _, target := range targets {
-		scope.project = target.project
-		count, err := s.wakeSpriteRunners(ctx, scope, target.state)
-		if err != nil {
-			return total, err
-		}
-		total += count
-	}
-	return total, nil
 }

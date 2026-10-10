@@ -271,7 +271,33 @@ func (s *Service) resumeMonthlyBudgetWork(ctx context.Context, scope nativeScope
 			s.config.Logger.Warn("Resume budget-eligible conversations", "error", err)
 		}
 	}
-	s.startSpritePoolForQueue(scope)
+	if scope.project != "" {
+		s.startSpritePoolForQueue(scope)
+		return
+	}
+	rows, err := s.database.db.QueryContext(ctx, `SELECT project_id FROM project_sprite_pools WHERE organization_id=?`, scope.organization)
+	if err != nil {
+		s.config.Logger.Warn("Read budget-eligible Sprite pools", "error", err)
+		return
+	}
+	defer rows.Close()
+	var projects []tracker.ProjectID
+	for rows.Next() {
+		var id tracker.ProjectID
+		if err = rows.Scan(&id); err != nil {
+			break
+		}
+		projects = append(projects, id)
+	}
+	err = errors.Join(err, rows.Err(), rows.Close())
+	if err != nil {
+		s.config.Logger.Warn("Read budget-eligible Sprite pools", "error", err)
+		return
+	}
+	for _, id := range projects {
+		scope.project = id
+		s.startSpritePoolForQueue(scope)
+	}
 }
 
 func (s *Service) stopMonthlyBudgetSpritePasses(ctx context.Context, organization tracker.OrganizationID) {
@@ -284,7 +310,7 @@ func (s *Service) stopMonthlyBudgetSpritePasses(ctx context.Context, organizatio
 	}
 	s.spriteWakeMu.Unlock()
 	for _, key := range keys {
-		decision, err := checkMonthlyBudget(ctx, s.database.db, nativeScope{organization: key.organization}, budget.CostExposure{SpriteInfrastructure: true}, true, s.config.now())
+		decision, err := checkMonthlyBudget(ctx, s.database.db, nativeScope{organization: key.organization, project: key.project}, budget.CostExposure{SpriteInfrastructure: true}, true, s.config.now())
 		if err != nil {
 			s.config.Logger.Warn("Check active Sprite lifecycle monthly budget", "error", err)
 			continue

@@ -95,23 +95,16 @@ func TestHubSchedulingUsesEnrolledIdentity(t *testing.T) {
 	}
 	for _, test := range []struct {
 		name   string
-		scope  string
 		change func(*globalconfig.HubClient)
 		valid  bool
 	}{
-		{"enrolled", "projects", func(*globalconfig.HubClient) {}, true},
-		{"hostname identity override", "projects", func(c *globalconfig.HubClient) { c.MachineID = "hostname" }, false},
-		{"foreign organization", "projects", func(c *globalconfig.HubClient) { c.OrganizationID = "org_other" }, false},
-		{"foreign project", "projects", func(c *globalconfig.HubClient) { c.NativeProjects = map[string]string{"native": "prj_other"} }, false},
-		{"Cloud project discovery pending", "projects", func(c *globalconfig.HubClient) { c.NativeProjects = nil }, true},
-		{"organization future project", "organization", func(c *globalconfig.HubClient) { c.NativeProjects = map[string]string{"native": "prj_later"} }, true},
-		{"organization foreign organization", "organization", func(c *globalconfig.HubClient) { c.OrganizationID = "org_other" }, false},
+		{"enrolled", func(*globalconfig.HubClient) {}, true},
+		{"hostname identity override", func(c *globalconfig.HubClient) { c.MachineID = "hostname" }, false},
+		{"foreign organization", func(c *globalconfig.HubClient) { c.OrganizationID = "org_other" }, false},
+		{"foreign project", func(c *globalconfig.HubClient) { c.NativeProjects = map[string]string{"native": "prj_other"} }, false},
+		{"Cloud project discovery pending", func(c *globalconfig.HubClient) { c.NativeProjects = nil }, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			file.Identity.Scope = test.scope
-			if err := runnerauth.Save(path, file); err != nil {
-				t.Fatal(err)
-			}
 			cfg := globalconfig.Config{Client: globalconfig.HubClient{URL: file.HubURL, IdentityFile: path, OrganizationID: "org_example", NativeProjects: map[string]string{"native": "prj_example"}}, Global: globalconfig.Settings{MaxConcurrentAgents: 1}}
 			test.change(&cfg.Client)
 			_, err := newHubScheduling(t.Context(), cfg, "test")

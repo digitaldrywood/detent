@@ -30,7 +30,6 @@ type Binding struct {
 
 type EnrollmentRequest struct {
 	Binding
-	Scope         string              `json:"scope,omitempty"`
 	SharedMachine bool                `json:"shared_machine,omitempty"`
 	ProjectIDs    []tracker.ProjectID `json:"project_ids"`
 	Operations    []string            `json:"operations"`
@@ -65,7 +64,6 @@ type Redemption struct {
 
 type Identity struct {
 	Binding
-	Scope          string                 `json:"scope"`
 	OrganizationID tracker.OrganizationID `json:"organization_id"`
 	ProjectIDs     []tracker.ProjectID    `json:"project_ids"`
 	Operations     []string               `json:"operations"`

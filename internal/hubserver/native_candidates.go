@@ -91,7 +91,7 @@ SELECT i.id,
   WHEN substr(COALESCE(i.native_created_at, i.created_at), 20, 1) = '.'
   THEN substr(COALESCE(i.native_created_at, i.created_at), 21, length(COALESCE(i.native_created_at, i.created_at)) - 21) || '000000000'
   ELSE '000000000' END, 1, 9) AS created,
- COALESCE((SELECT json_extract(routing_settings_json, '$.project_ranks.' || p.id) FROM runner_identities WHERE token_id = `, bind(query.NativeScope.credential.ID), `), p.scheduling_rank) AS project_rank,
+ p.scheduling_rank AS project_rank,
  CASE WHEN lower(trim(ws.detent_state)) = 'merging' THEN 0 ELSE 1 END AS landing,
  i.project_id || '#' || i.number AS identifier
 FROM issues i
@@ -125,9 +125,7 @@ WHERE i.organization_id = `,
 	if query.NativeScope.project != "" {
 		statement += ` AND i.project_id = ` + bind(query.NativeScope.project)
 	} else {
-		condition, grantArgs := query.NativeScope.credential.projectGrantSQL("i.organization_id", "i.project_id")
-		statement += " AND (" + condition + ")"
-		args = append(args, grantArgs...)
+		statement += ` AND i.project_id IN (SELECT project_id FROM token_grants WHERE token_id = ` + bind(query.NativeScope.credential.ID) + ` AND organization_id = ` + bind(query.NativeScope.organization) + `)`
 	}
 	if query.Scope != "" {
 		statement += ` AND q.id IS NOT NULL`
@@ -175,9 +173,6 @@ WHERE i.organization_id = `,
 	}
 	statement += `)`
 	order := "priority, landing, project_rank, created, identifier, id"
-	if query.NativeScope.credential.Runner.Valid() {
-		order = "project_rank, priority, landing, created, identifier, id"
-	}
 	baseArgs := args
 	readPage := func(after tracker.WorkItemID, limit int, anchor bool) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
 		args = append([]any(nil), baseArgs...)

@@ -19,8 +19,6 @@ import (
 const HeartbeatTimeout = 2 * time.Minute
 
 type Routing struct {
-	ProjectRankOverrides        map[tracker.ProjectID]int    `json:"-"`
-	Scope                       string                       `json:"scope"`
 	ProjectConfigurationCommand *ProjectConfigurationCommand `json:"-"`
 	UpdateRequest               *UpdateRequest               `json:"update_request,omitempty"`
 	CapacityRequest             *CapacityRequest             `json:"capacity_request,omitempty"`
@@ -153,9 +151,6 @@ type ProjectEligibility struct {
 }
 
 func (r Routing) Normalized() Routing {
-	if r.Scope == "" {
-		r.Scope = "projects"
-	}
 	r.DisplayName = strings.TrimSpace(r.DisplayName)
 	r.Tags = (policy.Requirements{RequiredTags: r.Tags}).Normalized().RequiredTags
 	if r.Tags == nil {
@@ -200,20 +195,12 @@ func (r Routing) Validate() error {
 	if !slices.Contains([]string{"active", "draining", "disabled"}, r.State) || r.CapacityLimit < 0 || r.CapacityLimit > 10000 {
 		return errors.New("runner state must be active, draining or disabled and capacity must be between 0 and 10000")
 	}
-	if r.Scope != "" && r.Scope != "projects" && r.Scope != "organization" || r.Scope == "organization" && len(r.ProjectIDs) != 0 {
-		return errors.New("runner scope must be projects or organization; organization scope has no project list")
-	}
 	if len(r.ProjectIDs) > 100 {
 		return errors.New("runner access is limited to 100 projects")
 	}
 	for i, id := range r.ProjectIDs {
 		if id == "" || slices.Contains(r.ProjectIDs[:i], id) {
 			return errors.New("runner project access must contain unique project IDs")
-		}
-	}
-	for id, rank := range r.ProjectRanks {
-		if id == "" || rank < 0 || int64(rank) > 2147483647 {
-			return errors.New("runner project ranks require project IDs and nonnegative 32-bit ranks")
 		}
 	}
 	if r.IsolationTier != "sandbox" && r.IsolationTier != "native-trusted" {
@@ -268,7 +255,7 @@ func validateHostService(service string) error {
 func (r Runner) Exclusions(project tracker.ProjectID, requirements policy.Requirements, activeLease bool) []Exclusion {
 	result := []Exclusion{}
 	add := func(code, message string) { result = append(result, Exclusion{Code: code, Message: message}) }
-	if !r.AllowsProject(project) {
+	if !slices.Contains(r.ProjectIDs, project) {
 		add("project_access_denied", "Runner owner has not allowed this project")
 	}
 	if !slices.Contains(r.Operations, Claim) {
@@ -355,8 +342,4 @@ func (r Runner) Status(now time.Time) string {
 		}
 	}
 	return r.Health
-}
-
-func (r Routing) AllowsProject(project tracker.ProjectID) bool {
-	return project != "" && (r.Scope == "organization" || slices.Contains(r.ProjectIDs, project))
 }

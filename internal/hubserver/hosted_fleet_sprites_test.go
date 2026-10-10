@@ -66,12 +66,10 @@ func TestHostedFleetSprites(t *testing.T) {
 				return spritesTestResponse(`{"name":"customer-host","organization":"`+organization+`","status":"`+tt.status+`"}`, http.StatusOK), nil
 			})}
 			f, scope, runners := newSpriteWakeFixture(t, client, tt.token, 3*time.Minute, "customer-host")
-			name := ""
 			if tt.known {
-				name = "customer-host"
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capabilities_json=json_set(capabilities_json, '$.sprite_name', ?) WHERE id=?", name, runners[0].binding.MachineID); err != nil {
-				t.Fatal(err)
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capabilities_json=json_set(capabilities_json, '$.sprite_name', 'customer-host') WHERE id=?", runners[0].binding.MachineID); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if tt.wakeFailure {
 				state := ""

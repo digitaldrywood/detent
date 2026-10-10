@@ -443,8 +443,8 @@ func TestMonthlyBudgetStopsSpriteLifecycleByScope(t *testing.T) {
 	defer cancel()
 	otherCtx, otherCancel := context.WithCancel(t.Context())
 	defer otherCancel()
-	key := spriteWakeKey{organization: scope.organization}
-	otherKey := spriteWakeKey{organization: "org_other"}
+	key := spriteWakeKey{organization: scope.organization, project: scope.project}
+	otherKey := spriteWakeKey{organization: scope.organization, project: "other-project"}
 	f.service.spriteWakeMu.Lock()
 	f.service.spriteWakes[key] = &spriteLifecyclePass{cancel: cancel, pendingState: "Todo"}
 	f.service.spriteWakes[otherKey] = &spriteLifecyclePass{cancel: otherCancel, pendingState: "Todo"}
@@ -456,10 +456,6 @@ func TestMonthlyBudgetStopsSpriteLifecycleByScope(t *testing.T) {
 		f.service.spriteWakeMu.Unlock()
 	}()
 	setMonthlyBudgetFixture(t, f, false, budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, SpriteMicros: new(int64)})
-	if ctx.Err() != nil {
-		t.Fatal("project budget cancelled the organization pool")
-	}
-	setMonthlyBudgetFixture(t, f, true, budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, SpriteMicros: new(int64)})
 	if !errors.Is(ctx.Err(), context.Canceled) {
 		t.Fatal("affected lifecycle was not cancelled")
 	}

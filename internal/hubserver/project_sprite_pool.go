@@ -77,7 +77,7 @@ func (s *Service) getSpritePool(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	decision, err := readOrganizationPlacementSnapshot(c.Request().Context(), s.database.db, nativeRequestScope(c), s.config.now())
+	decision, err := readPlacementSnapshot(c.Request().Context(), s.database.db, nativeRequestScope(c), s.config.now(), nil)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -93,7 +93,7 @@ func (s *Service) getSpritePool(c echo.Context) error {
 func (s *Service) readSpritePool(ctx context.Context, scope nativeScope) (spritePoolView, error) {
 	view := spritePoolView{spritePoolSettings: spritePoolSettings{IsolationTier: isolation.NativeTrusted, IdleSeconds: 300, Placement: &policy.Placement{Mode: "blended"}}, Members: []spritePoolMember{}}
 	var placement string
-	err := s.database.db.QueryRowContext(ctx, `SELECT min_runners,max_runners,idle_seconds,bootstrap,revision,placement_json,isolation_tier FROM organization_sprite_pools WHERE organization_id=?`, scope.organization).Scan(&view.MinRunners, &view.MaxRunners, &view.IdleSeconds, &view.Bootstrap, &view.Revision, &placement, &view.IsolationTier)
+	err := s.database.db.QueryRowContext(ctx, `SELECT min_runners,max_runners,idle_seconds,bootstrap,revision,placement_json,isolation_tier FROM project_sprite_pools WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&view.MinRunners, &view.MaxRunners, &view.IdleSeconds, &view.Bootstrap, &view.Revision, &placement, &view.IsolationTier)
 	if errors.Is(err, sql.ErrNoRows) {
 		return view, nil
 	}
@@ -105,7 +105,7 @@ func (s *Service) readSpritePool(ctx context.Context, scope nativeScope) (sprite
 	}
 	resolved := view.Placement.Resolved()
 	view.Placement = &resolved
-	rows, err := s.database.db.QueryContext(ctx, `SELECT m.name,m.state,m.bootstrap_log,m.enrollment_id,COALESCE(r.id,''),m.idle_since FROM organization_sprite_members m LEFT JOIN runner_identities r ON r.enrollment_id=m.enrollment_id WHERE m.organization_id=? AND (m.state<>'deleted' OR m.name IN (SELECT name FROM organization_sprite_members WHERE organization_id=m.organization_id AND state='deleted' ORDER BY created_at DESC,name DESC LIMIT 20)) ORDER BY m.created_at,m.name`, scope.organization)
+	rows, err := s.database.db.QueryContext(ctx, `SELECT m.name,m.state,m.bootstrap_log,m.enrollment_id,COALESCE(r.id,''),m.idle_since FROM project_sprite_members m LEFT JOIN runner_identities r ON r.enrollment_id=m.enrollment_id WHERE m.organization_id=? AND m.project_id=? AND (m.state<>'deleted' OR m.name IN (SELECT name FROM project_sprite_members WHERE organization_id=m.organization_id AND project_id=m.project_id AND state='deleted' ORDER BY created_at DESC,name DESC LIMIT 20)) ORDER BY m.created_at,m.name`, scope.organization, scope.project)
 	if err != nil {
 		return view, err
 	}
@@ -192,7 +192,6 @@ func (s *Service) updateSpritePool(ctx context.Context, scope nativeScope, setti
 	if settings.MaxRunners > 0 && (s.config.SecretKeys == nil || s.config.Hosted == nil) {
 		return nativeInvalid("Sprite pools require hosted configuration and the project secret store")
 	}
-	scope.project = ""
 	scope.requireHostedAdmin = true
 	return s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
 		if err := requireCredentialAuthority(ctx, tx, scope.credential, s.config.now()); err != nil {
@@ -204,7 +203,7 @@ func (s *Service) updateSpritePool(ctx context.Context, scope nativeScope, setti
 		}
 		var revision int64
 		currentPlacement := `{"mode":"blended"}`
-		err := tx.QueryRowContext(ctx, `SELECT revision,placement_json FROM organization_sprite_pools WHERE organization_id=?`, scope.organization).Scan(&revision, &currentPlacement)
+		err := tx.QueryRowContext(ctx, `SELECT revision,placement_json FROM project_sprite_pools WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&revision, &currentPlacement)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -218,24 +217,23 @@ func (s *Service) updateSpritePool(ctx context.Context, scope nativeScope, setti
 			}
 			currentPlacement = string(raw)
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO organization_sprite_pools(organization_id,min_runners,max_runners,idle_seconds,bootstrap,configured_by,placement_json,isolation_tier,revision) VALUES(?,?,?,?,?,?,?,?,1) ON CONFLICT(organization_id) DO UPDATE SET min_runners=excluded.min_runners,max_runners=excluded.max_runners,idle_seconds=excluded.idle_seconds,bootstrap=excluded.bootstrap,configured_by=excluded.configured_by,placement_json=excluded.placement_json,isolation_tier=excluded.isolation_tier,revision=organization_sprite_pools.revision+1`, scope.organization, settings.MinRunners, settings.MaxRunners, settings.IdleSeconds, settings.Bootstrap, actor, currentPlacement, settings.IsolationTier)
+		_, err = tx.ExecContext(ctx, `INSERT INTO project_sprite_pools(organization_id,project_id,min_runners,max_runners,idle_seconds,bootstrap,configured_by,placement_json,isolation_tier,revision) VALUES(?,?,?,?,?,?,?,?,?,1) ON CONFLICT(organization_id,project_id) DO UPDATE SET min_runners=excluded.min_runners,max_runners=excluded.max_runners,idle_seconds=excluded.idle_seconds,bootstrap=excluded.bootstrap,configured_by=excluded.configured_by,placement_json=excluded.placement_json,isolation_tier=excluded.isolation_tier,revision=project_sprite_pools.revision+1`, scope.organization, scope.project, settings.MinRunners, settings.MaxRunners, settings.IdleSeconds, settings.Bootstrap, actor, currentPlacement, settings.IsolationTier)
 		return err
 	})
 }
 
 func (s *Service) spritePoolAuthority(ctx context.Context, query nativeQueryer, scope nativeScope) (string, error) {
 	var actor string
-	err := query.QueryRowContext(ctx, `SELECT p.configured_by FROM organization_sprite_pools p JOIN api_tokens t ON t.id=p.configured_by AND t.revoked_at IS NULL
-WHERE p.organization_id=? AND (t.expires_at IS NULL OR julianday(t.expires_at)>julianday(?)) AND
-((t.scope='admin' AND t.native_only=0) OR EXISTS (SELECT 1 FROM hosted_members m WHERE m.principal_id=t.id AND m.active=1 AND m.role IN ('owner','admin')))`, scope.organization, formatHubTime(s.config.now())).Scan(&actor)
+	err := query.QueryRowContext(ctx, `SELECT p.configured_by FROM project_sprite_pools p JOIN api_tokens t ON t.id=p.configured_by AND t.revoked_at IS NULL
+WHERE p.organization_id=? AND p.project_id=? AND (t.expires_at IS NULL OR julianday(t.expires_at)>julianday(?)) AND
+((t.scope='admin' AND t.native_only=0) OR EXISTS (SELECT 1 FROM hosted_members m JOIN hosted_project_grants g ON g.user_id=m.user_id WHERE m.principal_id=t.id AND m.active=1 AND m.role IN ('owner','admin') AND g.organization_id=p.organization_id AND g.project_id=p.project_id AND g.can_write=1))`, scope.organization, scope.project, formatHubTime(s.config.now())).Scan(&actor)
 	return actor, err
 }
 
 func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, view spritePoolView) (spriteScaleInput, []spritePoolMember, error) {
-	scope.project = ""
 	input := spriteScaleInput{Floor: view.MinRunners, Ceiling: view.MaxRunners}
 	now := s.config.now()
-	placement, err := readOrganizationPlacementSnapshot(ctx, s.database.db, scope, now)
+	placement, err := readPlacementSnapshot(ctx, s.database.db, scope, now, nil)
 	if err != nil {
 		return input, nil, err
 	}
@@ -282,7 +280,7 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 			return input, nil, err
 		}
 		if runner.HostUsed > 0 || retained {
-			_, err := s.database.db.ExecContext(ctx, `UPDATE organization_sprite_members SET idle_since=? WHERE organization_id=? AND name=?`, formatHubTime(now), scope.organization, member.Name)
+			_, err := s.database.db.ExecContext(ctx, `UPDATE project_sprite_members SET idle_since=? WHERE organization_id=? AND project_id=? AND name=?`, formatHubTime(now), scope.organization, scope.project, member.Name)
 			if err != nil {
 				return input, nil, err
 			}
@@ -360,11 +358,21 @@ func (s *Service) scaleSpritePool(ctx context.Context, scope nativeScope, allowC
 }
 
 func (s *Service) scheduleSpritePoolForQueue(ctx context.Context, scope nativeScope) {
-	s.startSpriteLifecycle(scope, "organization")
+	project, err := readNativeProject(ctx, s.database.db, scope)
+	if err != nil {
+		return
+	}
+	for _, state := range project.States {
+		if state.Dispatchable && !state.Terminal {
+			s.startSpriteLifecycle(scope, state.Name)
+			return
+		}
+	}
+	s.startSpriteLifecycle(scope, "")
 }
 
 func (s *Service) maintainSpritePools(ctx context.Context) {
-	rows, err := s.database.db.QueryContext(ctx, `SELECT DISTINCT organization_id FROM organization_sprite_members WHERE state<>'deleted'`)
+	rows, err := s.database.db.QueryContext(ctx, `SELECT DISTINCT organization_id,project_id FROM project_sprite_members WHERE state<>'deleted'`)
 	if err != nil {
 		return
 	}
@@ -372,7 +380,7 @@ func (s *Service) maintainSpritePools(ctx context.Context) {
 	var scopes []nativeScope
 	for rows.Next() {
 		var scope nativeScope
-		if err := rows.Scan(&scope.organization); err != nil {
+		if err := rows.Scan(&scope.organization, &scope.project); err != nil {
 			return
 		}
 		scopes = append(scopes, scope)
