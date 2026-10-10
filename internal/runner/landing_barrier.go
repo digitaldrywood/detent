@@ -309,7 +309,7 @@ func barrierRepairPrompt(result gate.CommandResult, failed []string, culprit str
 	}
 	rerun := "Re-run the failing checks to confirm they pass."
 	if len(failed) > 0 {
-		rerun = fmt.Sprintf("Only these checks failed:\n%s\n\nWhile iterating, re-run only them with: %s='<the lines above>' %s\nDo not run the full command; the runner re-runs exactly these failures before publishing your commit.", strings.Join(failed, "\n"), workspace.LandingBarrierFailedEnv, result.Command)
+		rerun = fmt.Sprintf("Only these checks failed:\n%s\n\nWhile iterating, re-run only them with: %s=1 %s='<the lines above>' %s\nDo not run the full command; the runner re-runs exactly these failures before publishing your commit.", strings.Join(failed, "\n"), workspace.LandingBarrierEnv, workspace.LandingBarrierFailedEnv, result.Command)
 	}
 	if culprit != "" {
 		rerun += fmt.Sprintf("\n\nThe failures first appear in commit %s; inspect it with git show %s. Fix forward on the current checkout; if no correct fix exists, make no commit and the runner reverts that commit instead.", culprit, culprit)
