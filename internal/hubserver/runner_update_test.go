@@ -291,7 +291,10 @@ func TestRunnerUpdateApplication(t *testing.T) {
 	request := runnerUpdateChange{ExpectedRevision: snapshot.Revision, ExpectedBuildRevision: report.Revision, Service: "detent", Version: "1.2.4", Release: true, Confirm: true, IdempotencyKey: "selected-release"}
 	staleBuild := request
 	staleBuild.ExpectedBuildRevision = strings.Repeat("e", 64)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/update/apply", testHubAdminToken, staleBuild), http.StatusConflict)
+	failure := requireNativeError(t, performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/update/apply", testHubAdminToken, staleBuild), http.StatusConflict, "revision_conflict")
+	if failure.CurrentRevision != tracker.Revision(snapshot.Revision) || !strings.Contains(failure.Message, "build revision") {
+		t.Fatalf("stale build refusal=%+v", failure)
+	}
 	unavailable := *report
 	unavailable.Supported = false
 	unavailable.Revision = unavailable.BuildRevision()
@@ -331,7 +334,16 @@ func TestRunnerUpdateApplication(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			copy := request
 			test.change(&copy)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, test.path, test.credential, copy), test.want)
+			response := performHubAPIRequest(t, f.service, http.MethodPost, test.path, test.credential, copy)
+			if test.want == http.StatusConflict {
+				code := "revision_conflict"
+				if test.name == "changed retry" {
+					code = "idempotency_conflict"
+				}
+				requireNativeError(t, response, test.want, code)
+			} else {
+				requireNativeStatus(t, response, test.want)
+			}
 		})
 	}
 	snapshot = send(report, 2)

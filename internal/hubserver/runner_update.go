@@ -24,7 +24,7 @@ type runnerUpdateChange struct {
 	Version               string `json:"version"`
 	Release               bool   `json:"release"`
 	FromRelease           bool   `json:"from_release"`
-	Confirm               bool   `json:"confirm"`
+	Confirm               bool   `json:"confirm,omitempty"`
 	IdempotencyKey        string `json:"idempotency_key,omitempty"`
 }
 
@@ -38,12 +38,25 @@ func runnerUpdateReady(r runnerauth.Runner, request runnerUpdateChange, now time
 		return &nativeError{Code: "unavailable", Message: "The enrolled runner has no current installed update owner; upgrade or reconnect that runner", status: http.StatusServiceUnavailable}
 	}
 	if view.Status == "requested" || view.Status == "draining" || view.Status == "uncertain" || view.Status == "applied" || view.Status == "restart_requested" {
-		return &nativeError{Code: "revision_conflict", Message: "The existing runner update has not settled; read its current receipt", status: http.StatusConflict}
+		return runnerUpdateConflict(r.Revision, "The existing runner update has not settled; read get_runner_update and wait for its running or refused receipt")
 	}
-	if request.ExpectedRevision != r.Revision || request.ExpectedBuildRevision != r.Update.Revision || request.Version != r.Update.AvailableVersion || !request.Release && !r.Update.Pending {
-		return nativeConflict(tracker.Revision(r.Revision))
+	if request.ExpectedRevision != r.Revision {
+		return runnerUpdateConflict(r.Revision, "The runner revision has changed; read get_runner_update and use its current revision")
+	}
+	if request.ExpectedBuildRevision != r.Update.Revision {
+		return runnerUpdateConflict(r.Revision, "The observed build revision has changed; read get_runner_update and use its current observation revision")
+	}
+	if request.Version != r.Update.AvailableVersion {
+		return runnerUpdateConflict(r.Revision, "The selected version differs from the observed available version; read get_runner_update and select its available version")
+	}
+	if !request.Release && !r.Update.Pending {
+		return runnerUpdateConflict(r.Revision, "The runner has no pending automatic update; read get_runner_update and explicitly select a release")
 	}
 	return nil
+}
+
+func runnerUpdateConflict(revision int64, message string) error {
+	return &nativeError{Code: "revision_conflict", Message: message, CurrentRevision: tracker.Revision(revision), status: http.StatusConflict, publicMessage: true}
 }
 
 func (s *Service) readRunnerUpdate(ctx context.Context, scope nativeScope, resource string) (any, error) {

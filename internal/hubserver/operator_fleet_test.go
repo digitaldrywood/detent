@@ -1,15 +1,18 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -24,6 +27,169 @@ import (
 )
 
 const fleetProtocolMeta = `{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"fleet-test","version":"1"}}`
+
+func TestHubOperatorConflictProjection(t *testing.T) {
+	for _, test := range []struct {
+		name, code, message string
+		err                 error
+		revision            int64
+	}{
+		{"private revision details", "revision_conflict", "Resource has changed; read its current revision before retrying", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 42, status: http.StatusConflict}, 42},
+		{"public update refusal", "revision_conflict", "Read get_runner_update", runnerUpdateConflict(42, "Read get_runner_update"), 42},
+		{"private retry details", "idempotency_conflict", "The request_id was already used with different content", &nativeError{Code: "idempotency_conflict", Message: "credential-secret", status: http.StatusConflict}, 0},
+		{"owner retry conflict", "idempotency_conflict", "The request_id was already used with different content", mutation.ErrConflict, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := safeHubOperatorError(fmt.Errorf("private owner context: %w", test.err))
+			var conflict *operatortool.ConflictError
+			if !errors.As(err, &conflict) || conflict.Code != test.code || conflict.Message != test.message || conflict.CurrentRevision != test.revision || !errors.Is(err, mutation.ErrConflict) {
+				t.Fatalf("projected conflict=%+v error=%v", conflict, err)
+			}
+		})
+	}
+}
+
+func TestRunnerUpdateMCP(t *testing.T) {
+	for _, fromRelease := range []bool{false, true} {
+		t.Run(fmt.Sprintf("from release %t", fromRelease), func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+			r.enroll(t)
+			now := time.Now().UTC()
+			observation := &runnerauth.UpdateObservation{Discovery: "available", Protocol: 1, Service: "detent", Supported: true, AvailableVersion: "0.117.63", AvailableObservedAt: now, ObservedAt: now, Running: runnerauth.BuildEvidence{Version: "0.117.62", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}}
+			observation.Revision = observation.BuildRevision()
+			heartbeat := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "isolated-update", "capacity": 1, "version": observation.Running.Version, "os": "linux", "architecture": "amd64", "protocol_major": 2, "update": observation, "backend_isolation": r.redemption.BackendIsolation})
+			requireNativeStatus(t, heartbeat, http.StatusOK)
+			var snapshot runnerauth.RoutingSnapshot
+			decodeHubResponse(t, heartbeat, &snapshot)
+			var sessionID string
+			send := func(body any) *httptest.ResponseRecorder {
+				t.Helper()
+				raw, err := json.Marshal(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := httptest.NewRequest(http.MethodPost, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/mcp", bytes.NewReader(raw))
+				request.Header.Set("Authorization", "Bearer "+testHubAdminToken)
+				request.Header.Set("Content-Type", "application/json")
+				if sessionID != "" {
+					request.Header.Set("Mcp-Session-Id", sessionID)
+					request.Header.Set("Mcp-Protocol-Version", "2025-11-25")
+				}
+				response := httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, request)
+				return response
+			}
+			connect := func() {
+				t.Helper()
+				sessionID = ""
+				initialized := send(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "isolated-update", "version": "1"}}})
+				requireNativeStatus(t, initialized, http.StatusOK)
+				sessionID = initialized.Header().Get("Mcp-Session-Id")
+				if sessionID == "" {
+					t.Fatal("missing MCP session")
+				}
+				requireNativeStatus(t, send(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}), http.StatusAccepted)
+			}
+			connect()
+			call := func(t *testing.T, key string, change json.RawMessage, wantCode, wantMessage string) runnerauth.UpdateView {
+				t.Helper()
+				arguments := map[string]any{"project_id": string(f.project.ID), "runner_id": r.binding.RunnerID, "request_id": key, "change": change}
+				response := send(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{"name": operatortool.UpdateApply, "arguments": arguments}})
+				requireNativeStatus(t, response, http.StatusOK)
+				var reply struct {
+					Result struct {
+						IsError bool                    `json:"isError"`
+						Content []struct{ Text string } `json:"content"`
+					} `json:"result"`
+				}
+				decodeHubResponse(t, response, &reply)
+				if len(reply.Result.Content) != 1 || reply.Result.IsError != (wantCode != "") {
+					t.Fatalf("MCP reply=%s", response.Body)
+				}
+				content := []byte(reply.Result.Content[0].Text)
+				if wantCode != "" {
+					var failure operatortool.ConflictError
+					if err := json.Unmarshal(content, &failure); err != nil || failure.Code != wantCode || !strings.Contains(failure.Message, wantMessage) || wantCode == "revision_conflict" && failure.CurrentRevision != snapshot.Revision {
+						t.Fatalf("refusal=%s error=%v", content, err)
+					}
+					return runnerauth.UpdateView{}
+				}
+				var result struct {
+					Status  string                `json:"status"`
+					Receipt runnerauth.UpdateView `json:"receipt"`
+				}
+				if err := json.Unmarshal(content, &result); err != nil || result.Status != "succeeded" || result.Receipt.Desired == nil {
+					t.Fatalf("acceptance=%s error=%v", content, err)
+				}
+				return result.Receipt
+			}
+			selection := runnerUpdateChange{ExpectedRevision: snapshot.Revision, ExpectedBuildRevision: observation.Revision, Service: "detent", Version: "0.117.63", Release: true, FromRelease: fromRelease}
+			for _, test := range []struct {
+				name, message string
+				change        func(*runnerUpdateChange)
+			}{
+				{"stale runner", "runner revision", func(c *runnerUpdateChange) { c.ExpectedRevision++ }},
+				{"stale build", "build revision", func(c *runnerUpdateChange) { c.ExpectedBuildRevision = strings.Repeat("e", 64) }},
+				{"different available release", "selected version", func(c *runnerUpdateChange) { c.Version = "0.117.64" }},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					change := selection
+					test.change(&change)
+					raw, err := json.Marshal(change)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var fields map[string]json.RawMessage
+					if err := json.Unmarshal(raw, &fields); err != nil {
+						t.Fatal(err)
+					}
+					delete(fields, "confirm")
+					raw, err = json.Marshal(fields)
+					if err != nil {
+						t.Fatal(err)
+					}
+					call(t, test.name, raw, "revision_conflict", test.message)
+				})
+			}
+			fromReleaseField := ""
+			if fromRelease {
+				fromReleaseField = `,"from_release":true`
+			}
+			raw := json.RawMessage(fmt.Sprintf(`{"expected_revision":%d,"expected_build_revision":%q,"service":"detent","version":"0.117.63","release":true%s}`, snapshot.Revision, observation.Revision, fromReleaseField))
+			accepted := call(t, "fresh-selection", raw, "", "")
+			if accepted.Revision != snapshot.Revision+1 || accepted.Status != "requested" || accepted.Desired.Version != "0.117.63" || accepted.Desired.ExpectedBuildRevision != observation.Revision || accepted.Desired.FromRelease != fromRelease {
+				t.Fatalf("accepted update=%+v", accepted)
+			}
+			reordered := json.RawMessage(fmt.Sprintf(`{"from_release":%t,"release":true,"version":"0.117.63","service":"detent","expected_build_revision":%q,"expected_revision":%d}`, fromRelease, observation.Revision, snapshot.Revision))
+			for _, reconnect := range []bool{false, true} {
+				if reconnect {
+					connect()
+				}
+				replayed := call(t, "fresh-selection", reordered, "", "")
+				if replayed.Revision != accepted.Revision || *replayed.Desired != *accepted.Desired {
+					t.Fatal("normalized retry duplicated update work")
+				}
+				changed := bytes.ReplaceAll(raw, []byte("0.117.63"), []byte("0.117.64"))
+				call(t, "fresh-selection", changed, "idempotency_conflict", "different content")
+			}
+			snapshot.Revision = accepted.Revision
+			call(t, "fresh-but-unsettled", raw, "revision_conflict", "has not settled")
+			var current runnerauth.UpdateView
+			response := performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/update", testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &current)
+			if current.Revision != accepted.Revision || *current.Desired != *accepted.Desired || current.Observation.Receipt != nil {
+				t.Fatalf("request acceptance changed running evidence or duplicated work: %+v", current)
+			}
+			receipt, err := json.Marshal(accepted)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("isolated normalized input=%s accepted receipt=%s", raw, receipt)
+		})
+	}
+}
 
 func TestHubMCPFleetBoundary(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{GitHubRequestCounts: func() []GitHubRequestCount { return []GitHubRequestCount{} }})
