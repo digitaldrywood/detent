@@ -2,7 +2,7 @@ import { BotIcon, ChevronDownIcon, ServerIcon } from "lucide-react";
 import React from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Menu, MenuTrigger, MenuPopup, MenuItem } from "../../components/ui/menu.tsx";
-import { useOptionalShell } from "../App.tsx";
+import { useOptionalShell } from "../shellContext.ts";
 import { accountKey, readLastChatProject, useClient } from "../client.ts";
 import { SpritePoolCard } from "../account/SpritePoolCard.tsx";
 
