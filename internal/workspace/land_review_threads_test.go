@@ -117,6 +117,13 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			wantCursors:   2,
 		},
 		{
+			name:        "a failed surfaced marker reports the failure and keeps the finding actionable",
+			refusal:     conversation,
+			client:      &reviewThreadClient{failClose: "T1", pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P1 finding"))}},
+			wantReason:  []string{"P1 finding", "surface unresolved review conversation: mutation refused"},
+			wantCursors: 1,
+		},
+		{
 			name:        "a failed resolution keeps the finding actionable",
 			refusal:     conversation,
 			client:      &reviewThreadClient{failClose: "T1", pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P1 finding", surfacedEarlier))}},

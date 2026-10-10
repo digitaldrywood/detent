@@ -57,6 +57,7 @@ func resolveLandingReviewThreads(ctx context.Context, client GitHubRESTClient, r
 		return errors.Join(refusal, fmt.Errorf("read unresolved review conversations: %w", err))
 	}
 	resolved := 0
+	var surfaceErr error
 	var remaining []landingReviewThread
 	for _, thread := range threads {
 		if thread.Bot && surfacedBefore(thread, head) {
@@ -68,7 +69,9 @@ func resolveLandingReviewThreads(ctx context.Context, client GitHubRESTClient, r
 			}
 		}
 		if thread.Bot && !surfacedAt(thread, head) {
-			_ = replyLandingReviewThread(ctx, client, thread.ID, "Detent surfaced this conversation to Rework at "+shortLandingHead(head)+".\n\n<!-- detent:surfaced "+head+" -->")
+			if err := replyLandingReviewThread(ctx, client, thread.ID, "Detent surfaced this conversation to Rework at "+shortLandingHead(head)+".\n\n<!-- detent:surfaced "+head+" -->"); err != nil {
+				surfaceErr = errors.Join(surfaceErr, fmt.Errorf("surface unresolved review conversation: %w", err))
+			}
 		}
 		remaining = append(remaining, thread)
 	}
@@ -78,7 +81,7 @@ func resolveLandingReviewThreads(ctx context.Context, client GitHubRESTClient, r
 		}
 		return nil
 	}
-	return refuse(LandRefusalProtected, landingReviewThreadsReason(remaining, resolved))
+	return errors.Join(refuse(LandRefusalProtected, landingReviewThreadsReason(remaining, resolved)), surfaceErr)
 }
 
 func surfacedAt(thread landingReviewThread, head string) bool {
@@ -103,7 +106,7 @@ func readLandingReviewThreads(ctx context.Context, client GitHubRESTClient, repo
 	owner, name, _ := strings.Cut(repository, "/")
 	var threads []landingReviewThread
 	var after any
-	for page := 0; page < landingReviewThreadPages; page++ {
+	for range landingReviewThreadPages {
 		var result struct {
 			Repository *struct {
 				PullRequest *struct {
