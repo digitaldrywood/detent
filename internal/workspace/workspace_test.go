@@ -471,6 +471,41 @@ func TestLocalGitCreateClassifiesOccupiedBranch(t *testing.T) {
 	requireSameFile(t, heldErr.Path, occupiedPath)
 }
 
+func TestLocalGitFreshCreateReportsRebasingHolder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
+	t.Parallel()
+
+	source := initSourceRepo(t)
+	root := filepath.Join(t.TempDir(), "workspaces")
+	backend, err := NewLocalGit(LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewLocalGit() error = %v", err)
+	}
+	holder := filepath.Join(t.TempDir(), "rebasing-worktree")
+	runGit(t, source, "worktree", "add", "-b", "detent/dd-rebase", holder, "HEAD")
+	if err := os.WriteFile(filepath.Join(holder, "rebase.txt"), []byte("one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, holder, "add", "rebase.txt")
+	runGit(t, holder, "commit", "-m", "rebase fixture")
+	runGit(t, holder, "-c", "sequence.editor=sed -i.bak s/^pick/edit/", "rebase", "-i", "HEAD~1")
+
+	_, err = backend.Create(context.Background(), Issue{Identifier: "DD-REBASE", FreshCheckout: true})
+	if err == nil {
+		t.Fatal("Create() error = nil, want rebasing holder error")
+	}
+	if !strings.Contains(err.Error(), "cannot force update the branch") {
+		t.Fatalf("Create() error = %q, want git's explanation", err)
+	}
+}
+
 func TestRunWorktreeAddWithPrune(t *testing.T) {
 	t.Parallel()
 

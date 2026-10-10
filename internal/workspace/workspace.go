@@ -724,7 +724,7 @@ func (l *LocalGit) createWorktree(ctx context.Context, path string, branch strin
 		}
 		if l.autoBranch {
 			if _, err := l.runGit(ctx, "branch", "-f", branch, baseRef); err != nil {
-				return false, err
+				return false, withCommandOutput(err)
 			}
 		}
 	}
