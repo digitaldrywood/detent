@@ -77,7 +77,6 @@ type cloudAllocationFileConfig struct {
 	Binary                   string                       `yaml:"binary"`
 	MaxTenants               int                          `yaml:"max_tenants"`
 	MaxConcurrentProvisions  int                          `yaml:"max_concurrent_provisions"`
-	MaxPerIdentity           int                          `yaml:"max_organizations_per_identity"`
 	RetryLimit               int                          `yaml:"retry_limit"`
 	MinFreeDiskBytes         uint64                       `yaml:"min_free_disk_bytes"`
 	MinAvailableMemoryBytes  uint64                       `yaml:"min_available_memory_bytes"`
@@ -135,6 +134,9 @@ func tenantConfiguration(config cloudFileConfig) func(cloudentry.TenantSpec) ([]
 			Workspaces:               preserved.Workspaces,
 			EntitlementAdministrator: config.Allocation.EntitlementAdministrator, EntitlementAdminTokenEnv: config.Allocation.EntitlementAdminTokenEnv,
 			SharedEntry: &hostedSharedEntryFileConfig{Issuer: spec.Issuer, PublicKeys: []string{spec.PublicKey}, AllocationGeneration: spec.Organization.Generation},
+		}
+		if spec.Organization.CheckoutPrice != "" {
+			tenant.Plans = hubserver.CheckoutHostedPlans(tenant.Plans)
 		}
 		tenant.WorkOS.ClientID, tenant.WorkOS.APIKeyEnv, tenant.WorkOS.APIURL, tenant.WorkOS.IssuerURL = config.WorkOS.ClientID, config.WorkOS.APIKeyEnv, config.WorkOS.APIURL, config.WorkOS.IssuerURL
 		return yaml.Marshal(tenant)
@@ -291,9 +293,6 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		if allocation.MaxConcurrentProvisions == 0 {
 			allocation.MaxConcurrentProvisions = 1
 		}
-		if allocation.MaxPerIdentity == 0 {
-			allocation.MaxPerIdentity = 1
-		}
 		if allocation.RetryLimit == 0 {
 			allocation.RetryLimit = 5
 		}
@@ -305,7 +304,7 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		}
 		result.Allocation = &cloudentry.AllocationConfig{
 			TenantRoot: allocation.TenantRoot, SocketRoot: allocation.SocketRoot, MaxTenants: allocation.MaxTenants, MaxConcurrent: allocation.MaxConcurrentProvisions,
-			MaxPerIdentity: allocation.MaxPerIdentity, RetryLimit: allocation.RetryLimit, MinFreeDiskBytes: allocation.MinFreeDiskBytes, MinAvailableMemoryBytes: allocation.MinAvailableMemoryBytes,
+			RetryLimit: allocation.RetryLimit, MinFreeDiskBytes: allocation.MinFreeDiskBytes, MinAvailableMemoryBytes: allocation.MinAvailableMemoryBytes,
 			AllowedEmails: allocation.AllowedEmails, AllowedDomains: allocation.AllowedDomains,
 			Launcher: &cloudentry.ExecLauncher{Binary: binary, Environment: tenantEnvironment(config, lookupEnv), Configure: tenantConfiguration(config), Logger: slog.Default(), RestartLimit: allocation.RetryLimit},
 		}
@@ -313,6 +312,9 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 			result.Allocation.EntitlementAdminToken = []byte(lookupEnv(name))
 		}
 		if tenantBilling := allocation.Billing; tenantBilling != nil {
+			if !tenantBilling.CheckoutDisabled {
+				result.Allocation.Prices = tenantBilling.Prices
+			}
 			if tenantBilling.CustomerID != "" || config.Billing == nil || tenantBilling.Mode != config.Billing.Mode || tenantBilling.AccountID != config.Billing.AccountID {
 				return cloudentry.Config{}, errors.New("allocated tenant billing must match the entry billing mode and account and must not name a customer")
 			}

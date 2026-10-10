@@ -11,7 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
-func (s *Service) createOrganizationFor(ctx context.Context, session accountSession, name, key string) (string, error) {
+func (s *Service) createOrganizationFor(ctx context.Context, session accountSession, name, key, price string) (string, error) {
 	if s.config.Allocation == nil {
 		return "", ErrOrganizationNotFound
 	}
@@ -22,8 +22,15 @@ func (s *Service) createOrganizationFor(ctx context.Context, session accountSess
 	if name == "" || len(name) > 120 || len(key) < 16 || len(key) > 128 || !safeID(key) {
 		return "", operatortool.ErrInvalidArguments
 	}
-	fingerprint := sha256.Sum256([]byte(name))
-	id, err := s.recordIntent(ctx, session, key, hex.EncodeToString(fingerprint[:]), name)
+	if price != "" && !s.creationPriceAllowed(price) {
+		return "", operatortool.ErrInvalidArguments
+	}
+	intent := name
+	if price != "" {
+		intent += "\x00" + price
+	}
+	fingerprint := sha256.Sum256([]byte(intent))
+	id, err := s.recordIntent(ctx, session, key, hex.EncodeToString(fingerprint[:]), name, price)
 	if err != nil {
 		return "", err
 	}

@@ -192,6 +192,25 @@ func defaultHostedPlans(cfg *HostedConfig) HostedPlansConfig {
 	return config
 }
 
+func CheckoutHostedPlans(plans *HostedPlansConfig) *HostedPlansConfig {
+	config := capacityHostedPlans()
+	if !plans.IsZero() {
+		config = *plans
+	}
+	config.Plans = slices.Clone(config.Plans)
+	config.Base = PlanReference{ID: "payment_pending", Version: 1}
+	allowances := make(map[string]int64)
+	for _, name := range hostedAllowanceNames() {
+		allowances[name] = 0
+	}
+	free := capacityHostedPlans().Plans[0]
+	for _, name := range []string{"api_mutations", "history_records", "collaboration_bytes"} {
+		allowances[name] = free.Allowances[name]
+	}
+	config.Plans = append(config.Plans, HostedPlan{PlanReference: config.Base, Name: "Payment pending", Features: []string{}, Allowances: allowances})
+	return &config
+}
+
 func hostedCapacityPlan(ref PlanReference) bool {
 	return ref.Version == 1 && slices.Contains([]string{"free", "starter", "growth", "scale"}, ref.ID)
 }

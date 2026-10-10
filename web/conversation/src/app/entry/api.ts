@@ -25,7 +25,10 @@ export const EntryOrganizations = Schema.Struct({
 });
 export type EntryOrganizations = typeof EntryOrganizations.Type;
 
+export const CreationPrice = Schema.Struct({ id: Schema.String, label: Schema.String });
 export const EntrySession = Schema.Struct({
+  free_slot_used: Schema.optional(Schema.Boolean),
+  creation_prices: Schema.optional(Schema.Array(CreationPrice)),
   email: Schema.String,
   csrf: Schema.String,
   can_create: Schema.optional(Schema.Boolean),
@@ -331,8 +334,8 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
     session: () => read(EntrySession, "/api/cloud/session"),
     provisioning: (organization: string) =>
       read(Provisioning, `/api/cloud/organizations/${encodeURIComponent(organization)}/provisioning`),
-    createOrganization: (input: { name: string; key: string; csrf: string }) =>
-      submit(NextResult, "/organizations", input.csrf, { name: input.name, creation_key: input.key }),
+    createOrganization: (input: { name: string; key: string; csrf: string; price?: string }) =>
+      submit(NextResult, "/organizations", input.csrf, { name: input.name, creation_key: input.key, price: input.price ?? "" }),
     resume: (input: { organization: string; csrf: string }) =>
       submit(NextResult, `/organizations/${encodeURIComponent(input.organization)}/provisioning/resume`, input.csrf, {}),
     platformOrganizations: () => read(PlatformOrganizations, "/api/cloud/platform/organizations"),

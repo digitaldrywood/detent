@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -100,7 +101,9 @@ func TestSharedBillingJourney(t *testing.T) {
 			{PlanReference: hubserver.PlanReference{ID: "team", Version: 1}, Features: []string{"collaboration"}, Allowances: allowances(30)},
 		},
 	}
-	f := newProvisioningFixtureWith(t, 3, nil, func(f *provisioningFixture) {
+	f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) {
+		a.Prices = []hubserver.HostedBillingPrice{{PriceID: "price_team", Label: "Team", Plan: hubserver.PlanReference{ID: "team", Version: 1}}}
+	}, func(f *provisioningFixture) {
 		f.launcher.plans = plans
 		f.launcher.billing = func() *hubserver.HostedBillingConfig {
 			return &hubserver.HostedBillingConfig{Mode: "test", AccountID: "acct_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte(testWebhookSecret),
@@ -219,6 +222,41 @@ func TestSharedBillingJourney(t *testing.T) {
 	var mapped string
 	if err := f.service.registry.store.db.QueryRowContext(t.Context(), "SELECT organization_id FROM billing_customers WHERE customer_id = ?", customer).Scan(&mapped); err != nil || mapped != id {
 		t.Fatalf("customer mapping = %q %v", mapped, err)
+	}
+	response, page = dana.get("/organizations/new")
+	if response.StatusCode != http.StatusOK || !strings.Contains(page, "Your Free organization slot is used") || !strings.Contains(page, "price_team") {
+		t.Fatalf("paid creation form = %d %s", response.StatusCode, page)
+	}
+	_, rest, _ := strings.Cut(page, `name="creation_key" value="`)
+	creationKey, _, _ := strings.Cut(rest, `"`)
+	created := dana.do(http.MethodPost, "/organizations", url.Values{"name": {"Second paid organization"}, "creation_key": {creationKey}, "price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
+	if created.StatusCode != http.StatusSeeOther {
+		t.Fatalf("paid creation = %d %s", created.StatusCode, created.Body)
+	}
+	secondID := organizationFromLocation(t, created.Header.Get("Location"))
+	second := f.waitState(t, secondID, "ready")
+	binding, err := f.service.tenantBillingState(t.Context(), second, false)
+	if err != nil || binding.FreeOrganization {
+		t.Fatalf("paid creation consumed Free allowance: %+v %v", binding, err)
+	}
+	destination := dana.login("/organizations/"+secondID+"/organization/billing", "user_dana:porg_"+secondID)
+	if destination != "/organizations/"+secondID+"/organization/billing?checkout_price=price_team" {
+		t.Fatalf("paid creation login destination = %q", destination)
+	}
+	response, page = dana.get(destination)
+	if response.StatusCode != http.StatusOK || !strings.Contains(page, "Complete checkout to activate") || strings.Contains(page, "Complimentary access") || !strings.Contains(page, `value="price_team" selected`) {
+		t.Fatalf("paid creation billing = %d %s", response.StatusCode, page)
+	}
+	view := dana.do(http.MethodGet, "/api/v2/organizations/"+secondID+"/billing", nil, map[string]string{"Accept": "application/json"})
+	var report struct {
+		Entitlement hubserver.HostedEntitlement `json:"entitlement"`
+	}
+	if view.StatusCode != http.StatusOK || json.Unmarshal([]byte(view.Body), &report) != nil || report.Entitlement.Base.ID != "payment_pending" || report.Entitlement.Allowances["projects"] != 0 || report.Entitlement.Allowances["unarchived_issues"] != 0 || slices.Contains(report.Entitlement.Features, "native_execution") {
+		t.Fatalf("unpaid creation allowances = %d %s", view.StatusCode, view.Body)
+	}
+	checkout := dana.do(http.MethodPost, "/organizations/"+secondID+"/organization/billing/checkout", url.Values{"price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
+	if checkout.StatusCode != http.StatusSeeOther || !strings.HasPrefix(checkout.Header.Get("Location"), "https://checkout.stripe.com/") {
+		t.Fatalf("paid creation checkout = %d %s", checkout.StatusCode, checkout.Body)
 	}
 }
 

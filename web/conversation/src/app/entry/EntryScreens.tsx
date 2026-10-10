@@ -7,6 +7,7 @@ import React from "react";
 
 import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
+import { Select, SelectTrigger, SelectValue, SelectPopup, SelectItem } from "../../components/ui/select.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Separator } from "../../components/ui/separator.tsx";
 import { Label } from "../../components/ui/label.tsx";
@@ -228,28 +229,35 @@ export function CreateOrganization({ onNavigate }: { readonly onNavigate: Naviga
   const api = useEntryApi();
   const listing = useResource<EntrySession>(() => api.session(), [api]);
   const [name, setName] = React.useState("");
+  const [price, setPrice] = React.useState("");
+  const used = listing.value?.free_slot_used === true;
   // One key for this form: a retried submit after an uncertain response
   // returns the same organization instead of creating a second one.
   const key = React.useMemo(() => newKey(), []);
   const create = useMutation(async (organizationName: string) => {
     const csrf = listing.value?.csrf ?? "";
-    const result = await api.createOrganization({ name: organizationName, key, csrf });
-    onNavigate(result.next);
-    return result;
+    try {
+      const result = await api.createOrganization({ name: organizationName, key, csrf, price: used ? price : "" });
+      onNavigate(result.next);
+      return result;
+    } catch (error) {
+      if (error instanceof AccountError && error.code === "paid_plan_required") await listing.refresh();
+      throw error;
+    }
   });
   if (signInAgain(listing.error ?? create.error)) return <EntryCard title="Signing you in…">{null}</EntryCard>;
   const trimmed = name.trim();
   return (
     <EntryCard
       title="Create an organization"
-      description="You become its owner. The free plan applies, and no payment details are needed."
+      description={used ? "Your Free organization slot is used. Choose a paid plan for this organization. Each organization is billed separately." : "You become its owner. The free plan applies, and no payment details are needed."}
     >
       <Problem message={create.error?.message ?? listing.error?.message ?? null} />
       <form
         className="flex flex-col gap-3"
         onSubmit={(event) => {
           event.preventDefault();
-          if (trimmed.length === 0 || trimmed.length > 120) return;
+          if (trimmed.length === 0 || trimmed.length > 120 || (used && price === "")) return;
           void create.call(trimmed);
         }}
       >
@@ -264,10 +272,32 @@ export function CreateOrganization({ onNavigate }: { readonly onNavigate: Naviga
           value={name}
           onChange={(event) => setName(event.currentTarget.value)}
         />
+        {used ? (
+          <>
+            <Label htmlFor="entry-organization-price">Paid plan</Label>
+            <Select value={price} onValueChange={(value) => setPrice(value ?? "")}>
+              <SelectTrigger id="entry-organization-price">
+                <SelectValue placeholder="Choose a paid plan">
+                  {listing.value?.creation_prices?.find((option) => option.id === price)?.label}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup>
+                {listing.value?.creation_prices?.map((option) => (
+                  <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+            {listing.value?.creation_prices?.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Paid organization creation is temporarily unavailable. Upgrade your existing Free organization to free the slot.
+              </p>
+            ) : null}
+          </>
+        ) : null}
         <div className="flex flex-wrap gap-2">
           <Button
             type="submit"
-            disabled={create.pending || listing.value === undefined || trimmed.length === 0}
+            disabled={create.pending || listing.value === undefined || trimmed.length === 0 || (used && price === "")}
           >
             {create.pending ? "Creating…" : "Create organization"}
           </Button>

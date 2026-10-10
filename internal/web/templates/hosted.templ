@@ -386,13 +386,29 @@ templ hostedChooser(data HostedPageData) {
 templ hostedCreate(data HostedPageData) {
 	<section class="max-w-lg space-y-4 rounded-card border border-line bg-surface p-6">
 		<h2 class="text-lg font-semibold">Create an organization</h2>
-		<p class="text-sm text-sec">You become its owner. The free plan applies; no payment details are needed.</p>
+		if data.FreeSlotUsed {
+			<p class="text-sm text-sec">Your Free organization slot is used. Choose a paid plan for this organization. Each organization is billed separately.</p>
+		} else {
+			<p class="text-sm text-sec">You become its owner. The free plan applies; no payment details are needed.</p>
+		}
 		<form method="post" action="/organizations" class="space-y-3">
 			@hostedCSRF(data.CSRF)
 			<input type="hidden" name="creation_key" value={ data.CreationKey }/>
 			<label for="organization-name" class="block text-sm font-medium">Organization name</label>
 			<input id="organization-name" name="name" required maxlength="120" autocomplete="organization" class="min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"/>
-			<button type="submit" class="min-h-11 rounded-card bg-accent px-4 text-sm font-semibold text-page focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Create organization</button>
+			if data.FreeSlotUsed {
+				<label for="organization-price" class="block text-sm font-medium">Paid plan</label>
+				<select id="organization-price" name="price" required class="min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+					<option value="">Choose a paid plan</option>
+					for _, price := range data.BillingPrices {
+						<option value={ price.ID }>{ price.Label }</option>
+					}
+				</select>
+				if len(data.BillingPrices) == 0 {
+					<p class="text-sm text-sec">Paid organization creation is temporarily unavailable. Upgrade your existing Free organization to free the slot.</p>
+				}
+			}
+			<button type="submit" disabled?={ data.FreeSlotUsed && len(data.BillingPrices) == 0 } class="min-h-11 rounded-card bg-accent px-4 text-sm font-semibold text-page focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Create organization</button>
 		</form>
 		<a href="/organizations" class="inline-flex min-h-11 items-center text-sm text-accent">Back to organizations</a>
 	</section>

@@ -176,17 +176,25 @@ describe("organization chooser auto-enter", () => {
 });
 
 describe("create organization", () => {
-  it("submits once with the session token and a stable key, then follows the next step", async () => {
-    const api = fakeApi();
+  it.each([false, true])("submits with a stable key and the selected plan when the Free slot is used: %s", async (used) => {
+    const api = fakeApi({ session: vi.fn(async () => ({ email: listing.email, csrf: listing.csrf, can_create: true, free_slot_used: used, creation_prices: [{ id: "price_starter", label: "Starter" }] })) });
     const navigate = vi.fn();
     renderWith(api, <CreateOrganization onNavigate={navigate} />);
     await waitFor(() => expect(api.session).toHaveBeenCalled());
     fireEvent.change(screen.getByLabelText("Organization name"), { target: { value: "  Delta  " } });
+    if (used) {
+      await screen.findByText(/Your Free organization slot is used/);
+      expect((screen.getByRole("button", { name: "Create organization" }) as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(screen.getByRole("combobox", { name: "Paid plan" }));
+      fireEvent.click(await screen.findByRole("option", { name: "Starter" }));
+      await waitFor(() => expect(screen.getByRole("combobox", { name: "Paid plan" }).textContent).toContain("Starter"));
+    }
     await waitFor(() => expect((screen.getByRole("button", { name: "Create organization" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Create organization" }));
     await waitFor(() => expect(navigate).toHaveBeenCalledWith("/organizations/org_new/provisioning"));
     const call = vi.mocked(api.createOrganization).mock.calls[0]![0];
     expect(call.name).toBe("Delta");
+    expect(call.price).toBe(used ? "price_starter" : "");
     expect(call.csrf).toBe("csrf-token");
     expect(call.key.length).toBeGreaterThanOrEqual(16);
   });
@@ -194,8 +202,9 @@ describe("create organization", () => {
   it("shows the entry's refusal", async () => {
     renderWith(
       fakeApi({
+        session: vi.fn().mockResolvedValueOnce({ email: listing.email, csrf: listing.csrf, can_create: true, free_slot_used: false }).mockResolvedValue({ email: listing.email, csrf: listing.csrf, can_create: true, free_slot_used: true, creation_prices: [{ id: "price_starter", label: "Starter" }] }),
         createOrganization: vi.fn(async () => {
-          throw new AccountError({ status: 429, code: "quota_reached", message: "Your account has reached its organization limit." });
+          throw new AccountError({ status: 422, code: "paid_plan_required", message: "Your Free organization slot is used. Choose a paid plan." });
         }),
       }),
       <CreateOrganization onNavigate={vi.fn()} />,
@@ -203,7 +212,8 @@ describe("create organization", () => {
     fireEvent.change(screen.getByLabelText("Organization name"), { target: { value: "Delta" } });
     await waitFor(() => expect((screen.getByRole("button", { name: "Create organization" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Create organization" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("organization limit");
+    expect((await screen.findByRole("alert")).textContent).toContain("Free organization slot");
+    expect(await screen.findByRole("combobox", { name: "Paid plan" })).toBeTruthy();
   });
 });
 

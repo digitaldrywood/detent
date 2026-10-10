@@ -13,6 +13,7 @@ type AdministrationArguments struct {
 	Offset           int                   `json:"offset,omitempty"`
 	Limit            int                   `json:"limit,omitempty"`
 	OrganizationID   string                `json:"organization_id,omitempty"`
+	Price            string                `json:"price,omitempty"`
 	Name             string                `json:"name,omitempty"`
 	ConfirmName      string                `json:"confirm_name,omitempty"`
 	InvitationID     string                `json:"invitation_id,omitempty"`
