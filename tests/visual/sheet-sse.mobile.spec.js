@@ -105,6 +105,7 @@ test("only dashboard lifecycle events gate moves and recovery", async ({ page })
   const args = ["--demo", "kanban", "--demo-project", "demo-project"];
   let runtime = await startDetentRuntime("sheet-sse-recovery", args);
   try {
+    await runtime.waitForProjectsReady();
     await page.goto(runtime.url, { waitUntil: "domcontentloaded" });
     const html = page.locator("html");
     const moves = page.locator('[data-kanban-action="move"]');
@@ -145,6 +146,7 @@ test("only dashboard lifecycle events gate moves and recovery", async ({ page })
     await expect(page.locator("#detent-connection-notice")).toBeVisible();
     await expect(page.locator('[data-kanban-connection-disabled="true"]')).toHaveCount(count);
     runtime = await startDetentRuntime("sheet-sse-recovered", args, { home, port: Number(port) });
+    await runtime.waitForProjectsReady();
     await expect(html).toHaveAttribute("data-detent-connection", "connected");
     await expect(moves).toHaveCount(count);
     await expect(page.locator("#detent-connection-notice")).toBeHidden();
