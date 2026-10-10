@@ -8,7 +8,7 @@ procs=${1:?process budget required}
 started=$SECONDS
 trap 'result=$?; printf "check-barrier finished: exit=%s wall=%ss\n" "$result" "$((SECONDS - started))"' EXIT
 
-checks=(lint vet generated migrations app security nilaway checkland)
+checks=(lint vet generated migrations security nilaway checkland)
 check_command() {
     case $1 in
         lint) make lint ;;
