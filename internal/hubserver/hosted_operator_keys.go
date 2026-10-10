@@ -30,6 +30,9 @@ func (credential apiCredential) projectGrantSQL(organization, project string) (s
 	if credential.Scope == apiScopeAdmin && !credential.NativeOnly {
 		return live, nil
 	}
+	if credential.Runner.RunnerID != "" {
+		return "EXISTS (SELECT 1 FROM runner_identities r WHERE r.token_id=? AND r.organization_id=" + organization + " AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=" + organization + " AND g.project_id=" + project + ")))", []any{credential.ID}
+	}
 	principal := credential.ID
 	if credential.Hosted != nil && credential.HostedKeyScope != "" && credential.HostedProjectAccess == hostedProjectsAll {
 		principal = credential.HostedPrincipal

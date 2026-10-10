@@ -206,6 +206,8 @@ describe("the Enroll dialog", () => {
 
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Build host" } });
     fireEvent.change(screen.getByLabelText("Concurrency"), { target: { value: "2" } });
+    expect((screen.getByLabelText("Runner scope") as HTMLSelectElement).value).toBe("organization");
+    fireEvent.change(screen.getByLabelText("Runner scope"), { target: { value: "projects" } });
     fireEvent.click(projectBox(projects[1]!.id));
     fireEvent.click(screen.getByRole("button", { name: "Create command" }));
 
@@ -346,6 +348,7 @@ describe("the Enroll dialog", () => {
     expect(screen.getByText("That name is too long; shorten it.")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "é".repeat(100) } });
     expect(create.disabled).toBe(false);
+    fireEvent.change(screen.getByLabelText("Runner scope"), { target: { value: "projects" } });
     for (const project of projects) fireEvent.click(projectBox(project.id));
     expect(create.disabled).toBe(true);
   });

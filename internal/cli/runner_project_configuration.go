@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"slices"
 	"sync"
 	"time"
 
@@ -28,7 +27,7 @@ func runnerProjectConfigurationOwner(selected globalconfig.Config, runtime func(
 			return view
 		}
 		identity, err := runnerauth.Load(selected.Client.IdentityFile)
-		if err != nil || !slices.Contains(identity.Identity.ProjectIDs, tracker.ProjectID(id)) || !identity.Identity.ExpiresAt.After(time.Now()) {
+		if err != nil || !(runnerauth.Routing{Scope: identity.Identity.Scope, ProjectIDs: identity.Identity.ProjectIDs}).AllowsProject(tracker.ProjectID(id)) || !identity.Identity.ExpiresAt.After(time.Now()) {
 			return view
 		}
 		var local string

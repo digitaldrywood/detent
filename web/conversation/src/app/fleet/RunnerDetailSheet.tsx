@@ -5,6 +5,7 @@ import { Radio, RadioGroup } from "../../components/ui/radio-group.tsx";
 import { Sheet, SheetClose, SheetDescription, SheetFooter, SheetHeader, SheetPopup, SheetTitle } from "../../components/ui/sheet.tsx";
 import type { FleetRunner, RunnerRouting } from "../../contracts/account.ts";
 import { cn } from "../../lib/utils.ts";
+import { NativeSelect } from "../account/controls.tsx";
 import { PathValue } from "../account/controls.tsx";
 import { RUNNER_UPGRADE_COMMAND } from "../lib/detentUpdates.ts";
 import { AccountError } from "../account/api.ts";
@@ -153,6 +154,8 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
                 <p className="text-xs text-muted-foreground">The runner reports room for {runner.reported_capacity}. The lower of the two wins, and runners on the same machine share its slots. 0 stops new work.</p>
               </Section>
               <Section title="Allowed projects">
+                {canEdit ? <NativeSelect aria-label="Runner scope" disabled={runner.can_edit_projects !== true} value={draft.scope ?? "projects"} onValueChange={(value) => update({ scope: value as "organization" | "projects", project_ids: value === "organization" ? [] : draft.project_ids })} options={[{ value: "organization", label: "All projects" }, { value: "projects", label: "Selected projects" }]} /> : null}
+                {draft.scope === "organization" ? <p>All current and future projects</p> : <>
                 <div className="divide-y divide-border/50 rounded-lg border border-border/60">
                   {choices.filter((project) => canEdit || draft.project_ids.includes(project.id)).map((project) => (
                     <div key={project.id} className="min-w-0 space-y-2 p-3">
@@ -168,6 +171,7 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
                     </div>
                   ))}
                 </div>
+                </>}
                 {!canEdit && runner.routing === undefined ? <p className="text-xs text-muted-foreground">Project access is not reported.</p> : null}
               </Section>
               <Section title="Tags">

@@ -7,20 +7,21 @@ checkouts. The runner executes work inside the Sprite; the Hub owns the work
 items and wakes the runner for new work. This guide takes you from a Fly account
 to a completed issue with the console closed.
 
-An organization owner or admin with the project's runner-management grant can
+An organization owner or admin with runner-management access can
 also ask **Luna** to add Sprites, add a runner, set up Fly, or provide more
 capacity. The AI guided conversation from the Runners page uses the same intake.
 Luna asks one question at a time and remembers answers already given:
 
-1. Luna reads whether the Sprites organization token is set. If it is missing,
+1. Scope defaults to All projects, including projects created later. One Sprite pool belongs to the organization.
+2. Luna reads whether the Sprites organization token is set. If it is missing,
    follow the secure connector link, save it there, and return to continue.
-2. How many runners? The first-runner default is a floor and ceiling of 1/1,
+3. How many runners? The first-runner default is a floor and ceiling of 1/1,
    which you can accept with "yes". The floor retains minimum capacity and can
    incur Fly usage without queued work; the ceiling limits growth and potential
    concurrent usage. Provider subscriptions and usage are separate costs.
-3. Review one preview of the settings and approve it in chat.
+4. Review one preview of the settings and approve it in chat.
 
-The conversation selects the project. Luna remembers bounds already supplied,
+The organization pool serves every current and future project. Luna remembers bounds already supplied,
 for example "2 and 2", without asking again. Pool bootstrap is optional; saved
 extra steps are preserved and run before the pinned runner bootstrap. Project
 setup comes from the repository's hooks.runner_setup after checkout. The runner
@@ -102,11 +103,10 @@ organization and token and carry its secret. Copy the entire value, without
 spaces or line breaks. A Fly login token, a token ID, or just the final secret
 is not a Sprites organization token.
 
-In the Hub, open **Settings > Integrations**, select the project, find
-**Sprites**, paste the value into **Organization token**, and choose **Set
+In the Hub, open **Settings > Integrations**, find
+**Sprites organization token**, paste the value into **Organization token**, and choose **Set
 token**. Confirm the status becomes **Connected to** your Fly organization
-slug. Repeat for every project this Sprite will serve: the saved integration
-is scoped to a project.
+slug. Projects inherit this token; their project integration can set an override.
 
 The Hub validates the format and makes an authenticated Sprite list request,
 including for an empty organization. Its copy is encrypted and write-only.
@@ -413,7 +413,7 @@ Resolve any remaining policy or authentication requirements before testing wake.
 4. With no further work or open sessions, confirm the Sprite pauses again
    (warm, then eventually cold).
 
-The Hub uses the selected project's Sprites token to start the cold runner's
+The Hub uses the project's token override, or its inherited organization token, to start the cold runner's
 `detent-runner` Service. Detent holds a Sprite task during active work and
 releases it afterward. An open console would wake the Sprite itself and would
 not verify this loop. A connected runner alone is not proof that it can claim

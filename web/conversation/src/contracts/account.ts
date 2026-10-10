@@ -564,6 +564,8 @@ export const RunnerAvailability = Schema.Struct({
 export type RunnerAvailability = typeof RunnerAvailability.Type;
 
 export const RunnerRouting = Schema.Struct({
+  scope: Schema.optional(Schema.Literals(["projects", "organization"])),
+  project_ranks: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
   display_name: Schema.String,
   tags: Schema.Array(Schema.String),
   state: Schema.String,

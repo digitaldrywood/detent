@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"runtime"
-	"slices"
 	"strings"
 	"time"
 
@@ -58,7 +57,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 			return nil, errors.New("hub runner configuration does not match the enrolled identity")
 		}
 		for _, id := range clientConfig.NativeProjects {
-			if !slices.Contains(file.Identity.ProjectIDs, tracker.ProjectID(id)) {
+			if !(runnerauth.Routing{Scope: file.Identity.Scope, ProjectIDs: file.Identity.ProjectIDs}).AllowsProject(tracker.ProjectID(id)) {
 				return nil, errors.New("hub project is outside runner enrollment")
 			}
 		}
