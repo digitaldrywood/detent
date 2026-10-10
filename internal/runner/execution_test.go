@@ -1628,7 +1628,11 @@ func TestStageEndPushesCheckpointRef(t *testing.T) {
 			req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}
 			req.checkpointRefs = newCheckpointRefs(backend, execution, workspace.Info{}, workspace.Issue{Checkpoint: test.restored}, nil)
 			err := r.afterExecution(ctx, req, backend, workspace.Info{}, workspace.Issue{}, AgentResume{}, true)
-			if backend.pushes != 1 || backend.afterRun || errors.Is(err, backend.publishErr) && backend.publishErr != nil {
+			wantPushes := 1
+			if test.failed {
+				wantPushes = checkpointRefFinalAttempts
+			}
+			if backend.pushes != wantPushes || backend.afterRun || errors.Is(err, backend.publishErr) && backend.publishErr != nil {
 				t.Fatalf("pushes=%d cleaned=%t err=%v", backend.pushes, backend.afterRun, err)
 			}
 			checkpoint := execution.checkpoint

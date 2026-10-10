@@ -473,7 +473,7 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	}
 	finalizationErr = errors.Join(finalizationErr, executionCancellation(req))
 	deadlineExpired := availabilityStopped(req.Execution, context.Cause(ctx), time.Now())
-	r.pushCheckpointRef(ctx, req.checkpointRefs, req, "stage_finished")
+	r.finishCheckpointRef(ctx, req.checkpointRefs, req)
 	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 	state := r.workspaceRecoveryState(backend, recoveryCtx, info, issue, "native_checkpoint")
 	cancel()

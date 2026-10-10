@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -67,5 +69,35 @@ func TestCheckpointRefsPushAfterCompletedTurn(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("completed turn did not push a checkpoint")
+	}
+}
+
+func TestCheckpointRefCoversChangeSource(t *testing.T) {
+	t.Parallel()
+	pushed := &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "dirty", ExternalEffect: "none", EffectState: "none"}
+	remoteCheckpoint(pushed)
+	withRef := tracker.NativeRecovery{Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "a"}, Checkpoint: pushed}}}
+	localOnly := tracker.NativeRecovery{Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "a"}, Checkpoint: &tracker.NativeCheckpoint{Storage: "local_only", WorktreeState: "dirty"}}}}
+	missing := fmt.Errorf("%w: missing Hub bundle", ErrNativeRecoveryRequired)
+	for _, test := range []struct {
+		name     string
+		err      error
+		recovery tracker.NativeRecovery
+		landing  bool
+		fresh    bool
+		want     bool
+	}{
+		{name: "missing source with pushed checkpoint", err: missing, recovery: withRef, want: true},
+		{name: "missing source with local checkpoint", err: missing, recovery: localOnly},
+		{name: "landing needs the Change source", err: missing, recovery: withRef, landing: true},
+		{name: "fresh checkout ignores checkpoints", err: missing, recovery: withRef, fresh: true},
+		{name: "other failures still stop the run", err: errors.New("hub unavailable"), recovery: withRef},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := checkpointRefCoversChangeSource(test.err, test.recovery, test.landing, test.fresh); got != test.want {
+				t.Fatalf("covers = %t, want %t", got, test.want)
+			}
+		})
 	}
 }
