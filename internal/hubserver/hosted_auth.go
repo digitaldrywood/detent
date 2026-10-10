@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
@@ -20,7 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/mutation"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const hostedCookie = "detent_hosted_session"
@@ -400,37 +398,15 @@ WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > ju
 	}
 	if scope.credential.ManageRunners {
 		scope.credential.HostedRole = lesserHostedRole(scope.credential.HostedRole, membership.Role.Slug)
-		var projects []tracker.ProjectID
-		if scope.managedRunner != "" {
-			runner, err := readRunnerWithClock(ctx, tx, scope.organization, scope.managedRunner, s.config.now)
-			if err != nil {
-				return err
-			}
-			projects = runnerManagementProjects(runner)
-			if scope.managedRunnerScope == "organization" {
-				projects = nil
-			}
-			if projects != nil {
-				for _, project := range scope.managedRunnerProjects {
-					if !slices.Contains(projects, project) {
-						projects = append(projects, project)
-					}
-				}
-			}
-		}
-		if err := s.requireHostedRunnerProjects(ctx, tx, scope.credential, projects); err != nil {
+		if err := s.requireHostedRunnerAdministration(ctx, tx, scope.credential); err != nil {
 			return err
 		}
 		if scope.credential.HostedKeyScope != "" {
 			condition, args := scope.credential.projectGrantSQL("p.organization_id", "p.id")
-			raw, err := marshalNative(projects)
-			if err != nil {
-				return err
-			}
-			args = append(args, scope.organization, projects == nil, raw)
-			var total, granted int
-			err = tx.QueryRowContext(ctx, "SELECT count(*), COALESCE(sum("+condition+"),0) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=? AND (? OR p.id IN (SELECT value FROM json_each(?)))", args...).Scan(&total, &granted)
-			if err != nil || total == 0 || total != granted {
+			args = append(args, scope.organization)
+			var projects, granted int
+			err := tx.QueryRowContext(ctx, "SELECT count(*), COALESCE(sum("+condition+"),0) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=?", args...).Scan(&projects, &granted)
+			if err != nil || projects == 0 || projects != granted {
 				return auth.ErrHostedIdentity
 			}
 		}

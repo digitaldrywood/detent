@@ -25,14 +25,11 @@ const nativeBase = "/api/v2/organizations/:organization/projects/:project"
 const nativeOrganizationIssuePath = "/api/v2/organizations/:organization/work-items/:item"
 
 type nativeScope struct {
-	sourceActor           *tracker.Actor
-	organization          tracker.OrganizationID
-	project               tracker.ProjectID
-	credential            apiCredential
-	requireHostedAdmin    bool
-	managedRunner         string
-	managedRunnerScope    string
-	managedRunnerProjects []tracker.ProjectID
+	sourceActor        *tracker.Actor
+	organization       tracker.OrganizationID
+	project            tracker.ProjectID
+	credential         apiCredential
+	requireHostedAdmin bool
 }
 
 type nativeError struct {

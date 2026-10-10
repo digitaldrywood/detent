@@ -247,7 +247,7 @@ export function RunnersSectionView({
           </DialogFooter>
         </DialogPopup>
       </Dialog>
-      {selectedRunner ? <RunnerDetailSheet key={selectedRunner.id} runner={selectedRunner} projects={projects} editable={(selectedRunner.editable ?? fleet.editable) !== false && onSaveRouting !== undefined} now={now} onClose={() => setRunnerToOpen(null)} onSave={onSaveRouting} onReload={onReloadRunner} /> : null}
+      {selectedRunner ? <RunnerDetailSheet key={selectedRunner.id} runner={selectedRunner} projects={projects} editable={fleet.editable !== false && onSaveRouting !== undefined} now={now} onClose={() => setRunnerToOpen(null)} onSave={onSaveRouting} onReload={onReloadRunner} /> : null}
       <header className="flex flex-col items-start justify-between gap-4 sm:flex-row">
         <div className="min-w-0 space-y-2">
           <h2 className="text-xl font-semibold tracking-tight">Providers & runners</h2>
@@ -380,7 +380,7 @@ export function RunnersSettings(): React.ReactElement {
           } } : {})}
           enrollments={enrollments}
           {...(canEnroll ? { onEnroll: (name = "") => { setEnrollmentName(name); setOpen(true); } } : {})}
-          {...(canEnroll || fleet.value.runners.some((runner) => runner.editable) ? { onSaveRouting: async (runner: FleetRunner, routing: RunnerRouting) => {
+          {...(canEnroll && fleet.value.editable ? { onSaveRouting: async (runner: FleetRunner, routing: RunnerRouting) => {
             await api.setRunnerRouting({ runner: runner.id, revision: runner.revision ?? 0, displayName: routing.display_name,
               tags: routing.tags, state: routing.state, capacityLimit: routing.capacity_limit, projectIds: routing.project_ids,
               isolationTier: routing.isolation_tier, hostServices: routing.host_services, availability: routing.availability });

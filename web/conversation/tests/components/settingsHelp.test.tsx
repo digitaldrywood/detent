@@ -312,7 +312,7 @@ describe("runner settings help", () => {
       project_ids: ["prj_example"], isolation_tier: "sandbox", host_services: [],
       availability: { timezone: "", windows: [], hard_deadline: "" },
     };
-    render(<RunnersSectionView fleet={{ ...fleet, editable: true, runners: [{ ...fleet.runners[0]!, editable: true, routing }] }} onSaveRouting={save} />);
+    render(<RunnersSectionView fleet={{ ...fleet, editable: true, runners: [{ ...fleet.runners[0]!, routing }] }} onSaveRouting={save} />);
     await user.click(screen.getByRole("button", { name: `Manage ${fleet.runners[0]!.display_name}` }));
     const sheet = screen.getByRole("dialog");
     expect(sheet.textContent).toContain("The lower of the two wins");
