@@ -21,6 +21,7 @@ import { COMPOSITIONS_B } from "./specimens/compositionsB";
 import { FIELDS_LAYOUT_ENTRY } from "./specimens/fieldsLayoutEntry";
 import { SHARED } from "./specimens/shared";
 import * as workspace from "./specimens/workspace";
+import { activityPage } from "./specimens/activity";
 
 export const REGISTRY: Readonly<Record<string, GalleryDoc>> = {
   // Foundations (not catalog entries: token, type, icon and value rules)
@@ -55,6 +56,9 @@ export const REGISTRY: Readonly<Record<string, GalleryDoc>> = {
   spinner: feedback.spinner,
   skeleton: feedback.skeleton,
   empty: feedback.empty,
+  "runner-status-dot": feedback.runnerStatusDot,
+  "stage-progress": feedback.stageProgress,
+  "activity-page": activityPage,
   // Layout and data display
   "scroll-area": layout.scrollArea,
   separator: layout.separator,

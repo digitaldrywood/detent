@@ -370,15 +370,19 @@ test.describe("the work board", () => {
     const sidebar = page.locator("aside.dc-side");
     await expect(sidebar.getByTestId("nav-work")).toHaveAttribute("aria-current", "page");
 
-    for (const id of ["activity", "library"]) {
-      await expect(sidebar.getByTestId(`nav-${id}`)).toBeDisabled();
-    }
-    for (const id of ["reports", "diagnostics"]) {
+    await expect(sidebar.getByTestId("nav-library")).toBeDisabled();
+    for (const id of ["activity", "reports", "diagnostics"]) {
       await expect(sidebar.getByTestId(`nav-${id}`)).toBeEnabled();
     }
     for (const id of ["changes", "usage", "settings"]) {
       await expect(sidebar.getByTestId(`nav-${id}`)).toHaveCount(0);
     }
+
+    await sidebar.getByRole("button", { name: "Activity", exact: true }).click();
+    await expect(page).toHaveURL(/\/activity$/);
+    await expect(page.getByRole("heading", { name: "Activity", exact: true })).toBeVisible();
+    await sidebar.getByRole("button", { name: "Work", exact: true }).click();
+    await expect(page).toHaveURL(/\/work$/);
 
     const utility = sidebar.getByRole("button", { name: "Pull requests" });
     await expect(utility).toBeEnabled();

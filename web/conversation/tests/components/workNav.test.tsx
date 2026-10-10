@@ -18,12 +18,16 @@ describe("the sidebar's Work navigation", () => {
     expect(onNavigate).toHaveBeenCalledWith("/work/p/proj_alpha");
   });
 
-  it("opens Reports from Browse", async () => {
+  it.each([
+    ["activity", "/activity"],
+    ["diagnostics", "/diagnostics"],
+    ["reports", "/reports"],
+  ])("opens %s from Browse", async (id, destination) => {
     const { onNavigate } = await renderSidebar();
-    const reports = screen.getByTestId("nav-reports") as HTMLButtonElement;
-    expect(reports.disabled).toBe(false);
-    fireEvent.click(reports);
-    expect(onNavigate).toHaveBeenCalledWith("/reports");
+    const row = screen.getByTestId(`nav-${id}`) as HTMLButtonElement;
+    expect(row.disabled).toBe(false);
+    fireEvent.click(row);
+    expect(onNavigate).toHaveBeenCalledWith(destination);
   });
 
   it("sends Work to the all-projects board when no project is chosen", async () => {
@@ -53,7 +57,7 @@ describe("the sidebar's Work navigation", () => {
 
   it("disables the destinations this client does not serve", async () => {
     const { onNavigate } = await renderSidebar();
-    for (const id of ["activity", "library"]) {
+    for (const id of ["library"]) {
       const row = screen.getByTestId(`nav-${id}`) as HTMLButtonElement;
       expect(row.disabled, id).toBe(true);
       fireEvent.click(row);
@@ -61,7 +65,7 @@ describe("the sidebar's Work navigation", () => {
     expect(onNavigate).not.toHaveBeenCalled();
     // The tooltip's text is on a wrapper the keyboard can reach, so the reason
     // is available without a pointer.
-    expect(screen.getByLabelText("Activity: coming soon")).not.toBeNull();
+    expect(screen.getByLabelText("Library: coming soon")).not.toBeNull();
   });
 
   it("renders no navigation at all when the shell gives it none", async () => {
