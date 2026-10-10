@@ -1591,14 +1591,12 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			}
 		}
 
-		var recovered workspace.ChangeSource
-		recovered, err = source.RecoverChangeSource(ctx)
-		if err != nil && !checkpointRefCoversChangeSource(err, req.Execution.Recovery(), nativeLanding, freshCheckout) {
-			return RunResult{}, fmt.Errorf("recover native Change source: %w", err)
+		recovered, recoverErr := source.RecoverChangeSource(ctx)
+		if recoverErr != nil && !checkpointRefCoversChangeSource(recoverErr, req.Execution.Recovery(), nativeLanding, freshCheckout) {
+			return RunResult{}, fmt.Errorf("recover native Change source: %w", recoverErr)
 		}
-		if err != nil {
-			r.logWorkerEvent(req.Issue, "worker_change_source_from_checkpoint_ref", "error", err)
-			err = nil
+		if recoverErr != nil {
+			r.logWorkerEvent(req.Issue, "worker_change_source_from_checkpoint_ref", "error", recoverErr)
 		}
 		if recovered.Version.ID != "" {
 			workspaceIssue.Source = &recovered
