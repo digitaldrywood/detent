@@ -6,14 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -43,15 +41,6 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 			if credential.HostedRole != "owner" && credential.HostedRole != "admin" {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
-		case c.Path() == "/api/v2/organizations/:organization/runners/:runner/routing":
-			runner, err := readRunnerWithClock(c.Request().Context(), s.database.reader, tracker.OrganizationID(c.Param("organization")), c.Param("runner"), s.config.now)
-			if err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			if err := s.requireHostedRunnerProjects(c.Request().Context(), s.database.reader, credential, runnerManagementProjects(runner)); err != nil {
-				return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "not_found", Message: err.Error()})
-			}
-			credential.ManageRunners = true
 		case strings.HasPrefix(c.Path(), enrollmentBase) || strings.HasPrefix(c.Path(), runnerBase) || c.Path() == "/api/v2/organizations/:organization/machines/:machine/routing":
 			if err := s.requireHostedRunnerAdministration(c.Request().Context(), s.database.db, credential); err != nil {
 				return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "not_found", Message: err.Error()})
@@ -79,56 +68,25 @@ func (s *Service) hostedAllRunnerGrants(ctx context.Context, credential apiCrede
 }
 
 func (s *Service) requireHostedRunnerAdministration(ctx context.Context, query nativeQueryer, credential apiCredential) error {
-	return s.requireHostedRunnerProjects(ctx, query, credential, nil)
-}
-
-func runnerManagementProjects(runner runnerauth.Runner) []tracker.ProjectID {
-	if runner.Scope == "organization" {
-		return nil
-	}
-	projects := slices.Clone(runner.ProjectIDs)
-	if projects == nil {
-		projects = []tracker.ProjectID{}
-	}
-	for _, lease := range runner.Leases {
-		if !slices.Contains(projects, lease.ProjectID) {
-			projects = append(projects, lease.ProjectID)
-		}
-	}
-	return projects
-}
-
-func (s *Service) requireHostedRunnerProjects(ctx context.Context, query nativeQueryer, credential apiCredential, projects []tracker.ProjectID) error {
-	refusal := fmt.Errorf("%w: Runner changes need manage_runner on every allowed project and every project with running work; ask an owner or admin", operatortool.ErrAccessDenied)
 	if credential.Hosted == nil || credential.HostedRole != "owner" && credential.HostedRole != "admin" && credential.HostedRole != "member" {
-		return refusal
+		return operatortool.ErrAccessDenied
 	}
 	if credential.HostedRole == "owner" || credential.HostedRole == "admin" {
 		return nil
 	}
-	if projects != nil && len(projects) == 0 {
-		return fmt.Errorf("%w: An unassigned runner needs an owner or admin", operatortool.ErrAccessDenied)
-	}
-	raw, err := marshalNative(projects)
-	if err != nil {
-		return err
-	}
 	var project, name string
-	err = query.QueryRowContext(ctx, `SELECT p.id,p.name FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=? AND (? OR p.id IN (SELECT value FROM json_each(?))) AND NOT EXISTS
+	err := query.QueryRowContext(ctx, `SELECT p.id,p.name FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=? AND NOT EXISTS
 (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=p.organization_id AND g.project_id=p.id AND g.user_id=? AND g.manage_runner=1)
-ORDER BY p.name,p.id LIMIT 1`, s.config.Hosted.OrganizationID, projects == nil, raw, credential.Hosted.Subject).Scan(&project, &name)
+ORDER BY p.name,p.id LIMIT 1`, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&project, &name)
 	if err == nil {
-		return fmt.Errorf("%w: project %q (%s) lacks a manage_runner grant; ask an owner or admin", operatortool.ErrAccessDenied, name, project)
+		return fmt.Errorf("%w: project %q (%s) lacks a manage_runner grant", operatortool.ErrAccessDenied, name, project)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return operatortool.ErrAccessDenied
 	}
-	var count int
-	if err := query.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id=? AND (? OR id IN (SELECT value FROM json_each(?)))", s.config.Hosted.OrganizationID, projects == nil, raw).Scan(&count); err != nil {
-		return err
-	}
-	if count == 0 || projects != nil && count != len(projects) {
-		return refusal
+	var exists bool
+	if err := query.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM projects WHERE deleted_at IS NULL AND organization_id=?)", s.config.Hosted.OrganizationID).Scan(&exists); err != nil || !exists {
+		return operatortool.ErrAccessDenied
 	}
 	return nil
 }

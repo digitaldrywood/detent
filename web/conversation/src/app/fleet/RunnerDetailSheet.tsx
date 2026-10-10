@@ -127,7 +127,6 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
             {runner.problems?.some((problem) => problem.code === "tier_unavailable") && canEdit ? runnerAccessOptions.filter(({ tier }) => tier !== savedRouting.isolation_tier && Object.keys(runner.backend_isolation ?? {}).length > 0 && Object.values(runner.backend_isolation ?? {}).every((tiers) => tiers.includes(tier))).map(({ tier, label }) => (
               <Button key={tier} type="button" variant="outline" size="sm" disabled={saving} onClick={() => void submit(tier)}>Switch to {label}</Button>
             )) : null}
-            {!canEdit ? <p role="status" className="text-sm text-muted-foreground">{runner.edit_refusal_reason || "Runner changes need manage_runner on every allowed project and every project with running work; ask an owner or admin."}</p> : null}
             <fieldset disabled={saving} className="min-w-0 space-y-7">
               <Section title="Taking work">
                 {canEdit ? (

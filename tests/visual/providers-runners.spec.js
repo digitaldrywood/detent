@@ -220,7 +220,7 @@ for (const width of [1440, 390]) {
   test("runner sheet opens from rows and attention and saves at " + width + "px", async ({ page }) => {
     await page.setViewportSize({ width, height: 844 });
     const runner = {
-      ...fleet.runners[1], editable: true, revision: 4, capacity_limit: 4, backend_isolation: { codex: ["native-trusted"] },
+      ...fleet.runners[1], revision: 4, capacity_limit: 4, backend_isolation: { codex: ["native-trusted"] },
       routing: {
         display_name: "Build runner", state: "active", capacity_limit: 4,
         project_ids: ["proj_preview", "prj_unknown"],
