@@ -7,6 +7,7 @@ import {
   GitBranchIcon,
   InfoIcon,
   KeyboardIcon,
+  KeyRoundIcon,
   Link2Icon,
   PaletteIcon,
   PanelsTopLeftIcon,
@@ -45,6 +46,7 @@ const SnapShotIcon = createLucideIcon("snap-shot", [
 /** The sections this client serves, by path segment. */
 export const SETTINGS_SECTION_IDS = [
   "general",
+  "api-keys",
   "organization",
   "projects",
   "runners",
@@ -66,6 +68,7 @@ export function isSettingsSectionId(value: string): value is SettingsSectionId {
 /** What the breadcrumb's second item says, per section. */
 export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsSectionId, string>> = {
   general: "General",
+  "api-keys": "API keys",
   organization: "Organization",
   projects: "Projects",
   runners: "Providers & runners",
@@ -95,6 +98,7 @@ export function settingsNavItems({
 }): readonly SettingsNavItem[] {
   const items: SettingsNavItem[] = [
     { id: "general", label: SETTINGS_SECTION_LABELS.general, icon: Settings2Icon },
+    { id: "api-keys", label: SETTINGS_SECTION_LABELS["api-keys"], icon: KeyRoundIcon },
     { id: "organization", label: SETTINGS_SECTION_LABELS.organization, icon: UsersIcon },
 
     { id: "appearance", label: "Appearance", icon: PaletteIcon, disabled: true, reason: WHY_DISABLED },
