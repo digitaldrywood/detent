@@ -136,13 +136,6 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	if err := store.configureHostedBilling(ctx, cfg.Hosted); err != nil {
 		return nil, errors.Join(err, store.Close())
 	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, errors.Join(err, store.Close())
-	}
-	if err := store.commit(ctx, tx); err != nil {
-		return nil, errors.Join(err, tx.Rollback(), store.Close())
-	}
 	if err := store.health(ctx); err != nil {
 		return nil, errors.Join(err, store.Close())
 	}

@@ -111,7 +111,7 @@ func (d *database) recordWebhook(ctx context.Context, receipt webhookReceipt) (w
 	`, receipt.Payload, formatWebhookTime(receipt.PayloadExpiresAt), receivedAt, inboxID); err != nil {
 		return webhookReceiptResult{}, fmt.Errorf("store GitHub webhook payload: %w", err)
 	}
-	if err := d.commit(ctx, tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return webhookReceiptResult{}, fmt.Errorf("commit GitHub webhook receipt: %w", err)
 	}
 	return webhookReceiptResult{InboxID: inboxID, Duplicate: !inserted}, nil
@@ -198,7 +198,7 @@ func (d *database) processWebhook(ctx context.Context, inboxID int64, now time.T
 			return errors.Join(err, rollbackErr, failureErr)
 		}
 	}
-	if err := d.commit(ctx, tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		failureErr := d.markWebhookFailed(ctx, inboxID, now, err)
 		return errors.Join(fmt.Errorf("commit GitHub webhook processing: %w", err), failureErr)
 	}

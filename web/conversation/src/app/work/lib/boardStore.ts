@@ -1,8 +1,8 @@
 import * as Schema from "effect/Schema";
 
-import { NativeIssue, NativeProject, NativeWorkSummary, priorityValue, NativeBoardCard, type NativeBoardFrame } from "../../../contracts/work.ts";
+import { NativeIssue, NativeProject, NativeWorkSummary, priorityValue, type NativeAttempt } from "../../../contracts/work.ts";
 import { BOARD_CACHE_LIMIT, BOARD_CACHE_VERSION, readBoardDisk, updateBoardDisk } from "./boardDisk.ts";
-import { toBoardCardView, toLanes, toProjectView, toWorkItemView } from "./fromWire.ts";
+import { toChangeView, toLanes, toProjectView, toWorkItemView } from "./fromWire.ts";
 import type { Lane, ProjectView, ScopedWorkStats, WorkItemView } from "./model.ts";
 import type { WorkHttp } from "./workHttp.ts";
 import { effectiveSort, tabMatches, tabQuery, type WorkViewState } from "./viewState.ts";
@@ -39,8 +39,6 @@ const EMPTY: BoardData = {
 const LoadedSchema = Schema.Struct({
   project: NativeProject,
   issues: Schema.Array(NativeIssue),
-  cards: Schema.optional(Schema.Array(NativeBoardCard)),
-  sequence: Schema.optional(Schema.Number),
   work: Schema.optional(NativeWorkSummary),
   nextCursor: Schema.optional(Schema.String),
   pageCount: Schema.Number,
@@ -72,6 +70,15 @@ function newer(a: string | null, b: string | null): boolean {
   try { return BigInt(a) > BigInt(b); } catch { return false; }
 }
 
+function enrichable(loaded: readonly Loaded[]): NativeIssue[] {
+  const operationalOrder = new Map(loaded.flatMap((entry) => (entry.work?.items ?? [])
+      .map((issue, index) => [issue.work_item_id, index] as const)));
+  return [...new Map(loaded.flatMap((entry) => entry.issues).map((issue) => [issue.work_item_id, issue])).values()]
+      .filter((issue) => !issue.terminal).toSorted((a, b) =>
+        (operationalOrder.get(a.work_item_id) ?? Infinity) - (operationalOrder.get(b.work_item_id) ?? Infinity) ||
+        Date.parse(b.updated_at) - Date.parse(a.updated_at)).slice(0, 24);
+}
+
 export interface BoardAccount {
   readonly http: { readonly origin: string; readonly apiBase: string };
   readonly bootstrap: {
@@ -90,6 +97,7 @@ export function boardAccountKey(client: BoardAccount): string {
 let account: string | null = null;
 let epoch = 0;
 let mutationVersion = 0;
+const enrichmentReuseMs = 60_000;
 const boards = new Map<string, BoardRead>();
 const metadata = new Map<string, { at: number; read: Promise<NativeProject> }>();
 const confirmed = new Map<string, NativeIssue>();
@@ -185,8 +193,8 @@ export class BoardRead {
   private state: BoardData = EMPTY;
   private entries: readonly Loaded[] = [];
   private controller: AbortController | null = null;
-  private readonly frames = new Map<string, NativeBoardFrame[]>();
-  private readonly views = new Map<string, { issue: NativeIssue; card: NativeBoardCard | undefined; item: WorkItemView }>();
+  private enrichment: AbortController | null = null;
+  private readonly enrichedAt = new Map<string, { readonly revision: string | null; readonly at: number }>();
   private generation = 0;
   private pending = false;
   private continuation = false;
@@ -222,7 +230,9 @@ export class BoardRead {
   dispose(): void {
     this.generation++;
     this.controller?.abort();
+    this.enrichment?.abort();
     this.controller = null;
+    this.enrichment = null;
     this.pending = false;
   }
 
@@ -230,8 +240,6 @@ export class BoardRead {
     this.revoked = true;
     this.dispose();
     this.entries = [];
-    this.frames.clear();
-    this.views.clear();
     this.state = { ...EMPTY, loading: false, error: "Access to the board is no longer available." };
     queueMicrotask(() => { for (const notify of this.subscribers) notify(); });
   }
@@ -268,7 +276,7 @@ export class BoardRead {
     if (!board) {
       if (continuing && previous?.nextCursor === undefined) return previous!;
       const filters = {
-        projectId: id, includeBoard: true, completedWindow: this.view.completedWindow, q: this.view.q,
+        projectId: id, includeWork: true, completedWindow: this.view.completedWindow, q: this.view.q,
         archived: this.view.archived === true, label: this.view.label, assignee: this.view.assignee,
         priority: this.view.priority.map((name) => String(priorityValue(name) ?? name)), signal,
       };
@@ -276,103 +284,71 @@ export class BoardRead {
       let cursor = continuing ? previous?.nextCursor : undefined;
       let pageCount = continuing ? previous!.pageCount : 0;
       let work: Loaded["work"];
-      const cards: NativeBoardCard[] = continuing ? [...(previous?.cards ?? [])] : [];
-      let sequence: number | undefined;
       do {
         signal.throwIfAborted();
-        const page = await this.http.listWorkItems({ ...filters, limit: 100, ...tabQuery(this.view, toLanes(project)),
-          sort: effectiveSort(this.view) === "closed" ? "closed" : undefined, cursor });
+        const [page, totals] = await Promise.all([
+          this.http.listWorkItems({ ...filters, limit: 100, ...tabQuery(this.view, toLanes(project)),
+            sort: effectiveSort(this.view) === "closed" ? "closed" : undefined, cursor }),
+          this.http.listWorkItems({ ...filters, limit: 1 }),
+        ]);
         issues.push(...page.items);
-        cards.push(...(page.cards ?? []));
-        work = page.work;
-        sequence = Math.min(sequence ?? Infinity, page.sequence ?? 0);
+        work = totals.work ?? page.work;
         cursor = page.next_cursor;
         pageCount++;
       } while (cursor !== undefined && !continuing &&
         (pageCount < (previous?.pageCount ?? 1) || ["active", "backlog"].includes(this.view.tab)));
-      return { project, issues, cards, sequence, work, nextCursor: cursor, pageCount,
+      return { project, issues, work, nextCursor: cursor, pageCount,
         backlogPageCount: 0, backlogTotal: 0 };
     }
     const states = project.states.filter((state) => !state.terminal &&
       (this.view.lanes === null || this.view.lanes.includes(state.name)) &&
       (this.view.state.length === 0 || this.view.state.includes(state.name)));
+    const active = states.filter((state) => state.name.toLowerCase() !== "backlog").map((state) => state.name);
     const backlog = states.find((state) => state.name.toLowerCase() === "backlog");
-    const filters = this.streamFilters(id);
-    const readPage = (state: string, cursor?: string) =>
-      this.http.listWorkItems({ ...filters, signal, includeBoard: true, limit: state.toLowerCase() === "backlog" ? 200 : 2000, open: true, state, cursor });
+    const filters = {
+      projectId: id, completedWindow: this.view.completedWindow, q: this.view.q,
+      archived: this.view.archived === true, label: this.view.label, assignee: this.view.assignee,
+      priority: this.view.priority.map((name) => String(priorityValue(name) ?? name)), signal,
+    };
+    const readPage = (state: readonly string[], cursor?: string) =>
+      this.http.listWorkItems({ ...filters, limit: 200, open: true, state, cursor });
     if (continuing) {
       if (previous?.backlogCursor === undefined || backlog === undefined) return previous!;
-      const page = await readPage(backlog.name, previous.backlogCursor);
-      return { ...previous, issues: [...previous.issues, ...page.items], cards: [...(previous.cards ?? []), ...(page.cards ?? [])],
-        work: page.work ?? previous.work, backlogCursor: page.next_cursor, backlogTotal: page.total ?? previous.backlogTotal,
+      const page = await readPage([backlog.name], previous.backlogCursor);
+      return { ...previous, issues: [...previous.issues, ...page.items], backlogCursor: page.next_cursor,
         backlogPageCount: previous.backlogPageCount + 1 };
     }
-    const pages = await pooled(states, async (state) => {
-      const issues: NativeIssue[] = [];
-      const cards: NativeBoardCard[] = [];
-      let cursor: string | undefined;
-      let pageCount = 0;
-      let total = 0;
-      let sequence = Infinity;
-      let work: Loaded["work"];
+    const totals = this.http.listWorkItems({ ...filters, limit: 1, includeWork: true });
+    totals.catch(() => undefined);
+    const issues: NativeIssue[] = [];
+    let cursor: string | undefined;
+    let pageCount = 0;
+    if (active.length > 0) {
       do {
-        const page = await readPage(state.name, cursor);
+        signal.throwIfAborted();
+        const page = await readPage(active, cursor);
         issues.push(...page.items);
-        cards.push(...(page.cards ?? []));
         cursor = page.next_cursor;
-        sequence = Math.min(sequence, page.sequence ?? 0);
-        work = page.work;
-        total = page.total ?? total;
         pageCount++;
-      } while (cursor !== undefined && pageCount < (state.name === backlog?.name ? previous?.backlogPageCount ?? 1 : 1));
-      return { state: state.name, issues, cards, cursor, pageCount, total, sequence, work };
-    });
-    const back = pages.find((page) => page.state === backlog?.name);
-    const fallback = pages.length === 0 ? await this.http.listWorkItems({ ...filters, signal, includeBoard: true, limit: 1 }) : undefined;
-    return { project, issues: pages.flatMap((page) => page.issues), cards: pages.flatMap((page) => page.cards),
-      work: pages[0]?.work ?? fallback?.work, sequence: pages.length === 0 ? fallback?.sequence ?? 0 : Math.min(...pages.map((page) => page.sequence)),
-      pageCount: 1, backlogCursor: back?.cursor, backlogPageCount: back?.pageCount ?? 0, backlogTotal: back?.total ?? 0 };
+      } while (cursor !== undefined);
+    }
+    const work = (await totals).work;
+    let backlogCursor: string | undefined;
+    let backlogPageCount = 0;
+    let backlogTotal = 0;
+    if (backlog !== undefined) {
+      do {
+        signal.throwIfAborted();
+        const page = await readPage([backlog.name], backlogCursor);
+        backlogTotal = page.total ?? work?.lanes.find((lane) => lane.state === backlog.name)?.total ?? backlogTotal;
+        issues.push(...page.items);
+        backlogCursor = page.next_cursor;
+        backlogPageCount++;
+      } while (backlogCursor !== undefined && backlogPageCount < (previous?.backlogPageCount ?? 1));
+    }
+    return { project, issues, work, nextCursor: cursor, pageCount: Math.max(1, pageCount),
+      backlogCursor, backlogPageCount, backlogTotal };
   }
-
-  streamFilters = (projectId: string) => ({ projectId, completedWindow: this.view.completedWindow, q: this.view.q,
-    archived: this.view.archived === true, label: this.view.label, assignee: this.view.assignee,
-    priority: this.view.priority.map((name) => String(priorityValue(name) ?? name)) });
-
-  sequence = (projectId: string): number => this.entries.find((entry) => entry.project.project_id === projectId)?.sequence ?? 0;
-
-  applyFrame = (projectId: string, frame: NativeBoardFrame, replay = false): void => {
-    if (this.revoked || !this.scope.includes(projectId)) return;
-    if (frame.gap) { this.reload(); return; }
-    if (this.controller !== null && !replay) {
-      this.frames.set(projectId, [...(this.frames.get(projectId) ?? []), frame]);
-      return;
-    }
-    this.entries = this.entries.map((entry) => {
-      if (entry.project.project_id !== projectId || frame.sequence < (entry.sequence ?? 0)) return entry;
-      const issues = new Map(entry.issues.map((issue) => [issue.work_item_id, issue]));
-      const cards = new Map((entry.cards ?? []).map((card) => [card.issue.work_item_id, card]));
-      for (const delta of frame.deltas) {
-        if (delta.sequence <= (entry.sequence ?? 0)) continue;
-        const card = delta.current;
-        const issue = card?.issue ?? delta.previous?.issue;
-        if (issue === undefined || issue.project_id !== projectId) continue;
-        if (newer(issues.get(issue.work_item_id)?.revision ?? null, issue.revision)) continue;
-        issues.delete(issue.work_item_id);
-        cards.delete(issue.work_item_id);
-        if (card !== null && this.matches(card.issue, entry.project)) {
-          issues.set(issue.work_item_id, card.issue);
-          cards.set(issue.work_item_id, card);
-        }
-      }
-      const work = frame.work ?? entry.work;
-      return { ...entry, issues: [...issues.values()], cards: [...cards.values()], sequence: frame.sequence, work,
-        backlogTotal: work?.lanes.find((lane) => lane.state.toLowerCase() === "backlog")?.total ?? entry.backlogTotal };
-    });
-    if (this.state.resolved) {
-      this.publish({ ...this.build(this.entries, Date.now()), refreshing: this.state.refreshing, backlogLoading: this.state.backlogLoading });
-      this.persist();
-    }
-  };
 
   private matches(issue: NativeIssue, project: NativeProject): boolean {
     const view = this.view;
@@ -412,6 +388,7 @@ export class BoardRead {
 
   private read(continuing: boolean): void {
     if (this.revoked || this.scope.length === 0) return;
+    this.enrichment?.abort();
     const controller = new AbortController();
     this.controller = controller;
     this.continuation = continuing;
@@ -450,11 +427,8 @@ export class BoardRead {
         if (signal.aborted || generation !== this.generation) return;
         this.entries = loaded;
         this.publish(this.build(loaded, Date.now()));
-        for (const [id, frames] of this.frames) {
-          for (const frame of frames) this.applyFrame(id, frame, true);
-        }
-        this.frames.clear();
         this.persist();
+        this.enrich(loaded, generation);
       } catch (cause) {
         if (signal.aborted || generation !== this.generation) return;
         if (unauthorized(cause)) rejectBoardCache(this.owner);
@@ -515,15 +489,13 @@ export class BoardRead {
         truncated: loaded.some((entry) => entry.work!.truncated) };
     }
     const issues = [...new Map(loaded.flatMap((entry) => entry.issues).map((issue) => [issue.work_item_id, issue])).values()];
+    const selected = new Set(enrichable(loaded).map((issue) => issue.work_item_id));
     const items = issues.map((issue) => {
-      const entry = loaded.find((entry) => entry.project.project_id === issue.project_id)!;
-      const card = entry.cards?.find((card) => card.issue.work_item_id === issue.work_item_id);
-      const previous = this.views.get(issue.work_item_id);
-      if (previous?.issue === issue && previous.card === card) return previous.item;
-      const item = card === undefined ? toWorkItemView(issue, entry.project.name) : toBoardCardView({ ...card, issue }, entry.project.name);
-      const result = { ...item, terminal: entry.project.states.find((state) => state.name === issue.state)?.terminal ?? issue.terminal };
-      this.views.set(issue.work_item_id, { issue, card, item: result });
-      return result;
+      const project = loaded.find((entry) => entry.project.project_id === issue.project_id)!.project;
+      const item = toWorkItemView(issue, project.name);
+      const previous = this.state.items.find((candidate) => candidate.id === item.id);
+      return { ...item, reserveWorkerSpace: selected.has(item.id), terminal: project.states.find((state) => state.name === issue.state)?.terminal ?? issue.terminal,
+        ...(previous?.revision === item.revision ? { attempt: previous.attempt, change: previous.change, observations: previous.observations } : {}) };
     });
     const current = toProjectView(loaded[0]!.project, issues);
     const previous = facets.get(this.facetKey);
@@ -540,6 +512,44 @@ export class BoardRead {
       project: this.projectId === null ? null : { ...current, ...choices, lanes },
       workflows: loaded.map((entry) => entry.project), lanes, items, ...choices,
       truncated: loaded.some((entry) => entry.nextCursor !== undefined || entry.backlogCursor !== undefined), enriched: 0, asOf };
+  }
+
+  private enrich(loaded: readonly Loaded[], generation: number): void {
+    const controller = new AbortController();
+    this.enrichment = controller;
+    const signal = controller.signal;
+    const now = Date.now();
+    const issues = enrichable(loaded).filter((issue) => {
+      const prior = this.enrichedAt.get(issue.work_item_id);
+      const item = this.state.items.find((candidate) => candidate.id === issue.work_item_id);
+      return prior === undefined || prior.revision !== issue.revision || now - prior.at >= enrichmentReuseMs || item?.observations === undefined;
+    });
+    void pooled(issues, async (issue) => {
+      signal.throwIfAborted();
+      const [attemptRead, changeRead] = await Promise.allSettled([
+        this.http.listAttempts(issue.project_id, issue.work_item_id, 10, signal),
+        this.http.listChanges(issue.project_id, issue.work_item_id, signal),
+      ]);
+      signal.throwIfAborted();
+      for (const read of [attemptRead, changeRead]) if (read.status === "rejected" && unauthorized(read.reason)) throw read.reason;
+      const change = changeRead.status === "fulfilled" ? changeRead.value.at(-1) : undefined;
+      let detail = null;
+      if (change !== undefined) {
+        try { detail = await this.http.getChange(issue.project_id, issue.work_item_id, change.change_id, signal); }
+        catch (cause) { if (unauthorized(cause)) throw cause; }
+      }
+      if (signal.aborted || generation !== this.generation) return;
+      this.enrichedAt.set(issue.work_item_id, { revision: issue.revision, at: Date.now() });
+      const attempts: readonly NativeAttempt[] = attemptRead.status === "fulfilled" ? attemptRead.value.items : [];
+      const extra = toWorkItemView(issue, "", { attempts, change: change === undefined ? null : toChangeView(change, detail),
+        observations: { worker: attemptRead.status === "rejected" ? "unavailable" : attemptRead.value.next_cursor === undefined ? "known" : "partial",
+          change: changeRead.status === "rejected" ? "unavailable" : change !== undefined && detail === null ? "partial" : "known" } });
+      this.publish({ ...this.state, enriched: this.state.enriched + 1, items: this.state.items.map((item) =>
+        item.id === issue.work_item_id && item.revision === issue.revision
+          ? { ...item, attempt: extra.attempt, change: extra.change, observations: extra.observations } : item) });
+    }).catch((cause) => {
+      if (!signal.aborted && generation === this.generation && unauthorized(cause)) rejectBoardCache(this.owner);
+    });
   }
 
   confirm(issue: NativeIssue): void {

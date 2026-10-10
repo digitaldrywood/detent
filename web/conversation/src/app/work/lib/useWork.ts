@@ -1,6 +1,4 @@
 import React from "react";
-import * as Schema from "effect/Schema";
-import { NativeBoardFrame } from "../../../contracts/work.ts";
 
 import { useClient } from "../../client.ts";
 import { useRunnerNames, shortRunnerId } from "./runnerNames.ts";
@@ -48,27 +46,23 @@ export function useBoard(projectId: string | null, view: WorkViewState): BoardSt
   const [state, setState] = React.useState({ key: streamKey, live: false, sequence: null as number | null });
   const reload = store.reload;
   React.useEffect(() => { store.start(); }, [store]);
-  const namedItems = React.useRef(new WeakMap<WorkItemView, { display: string; item: WorkItemView }>());
   const items = React.useMemo(() => {
     const names = new Map([...runnerNames].map(([id, name]) => [shortRunnerId(id), name.display]));
     return data.items.map((item) => {
       const display = item.attempt?.runner === null || item.attempt?.runner === undefined ? undefined : names.get(item.attempt.runner);
-      if (display === undefined) return item;
-      const previous = namedItems.current.get(item);
-      if (previous?.display === display) return previous.item;
-      const result = { ...item, attempt: { ...item.attempt!, runner: display } };
-      namedItems.current.set(item, { display, item: result });
-      return result;
+      return display === undefined ? item : { ...item, attempt: { ...item.attempt!, runner: display } };
     });
   }, [data.items, runnerNames]);
-  const canStream = data.resolved && !data.cached && !data.refreshing;
+  const sequences = React.useRef({ key: streamKey, values: new Map<string, number>() });
+  if (sequences.current.key !== streamKey) sequences.current = { key: streamKey, values: new Map() };
   React.useEffect(() => {
-    if (!canStream || streamScope.length === 0 || typeof globalThis.EventSource !== "function") {
+    if (streamScope.length === 0 || typeof globalThis.EventSource !== "function") {
       setState({ key: streamKey, live: false, sequence: null });
       return;
     }
     setState({ key: streamKey, live: false, sequence: null });
     let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const connected = new Set<string>();
     const sources = new Map<string, EventSource>();
     const retries = new Map<string, ReturnType<typeof setTimeout>>();
@@ -83,18 +77,28 @@ export function useBoard(projectId: string | null, view: WorkViewState): BoardSt
       });
 
     const onActivity = (id: string, event: MessageEvent<string>) => {
-      let frame: NativeBoardFrame;
-      try { frame = Schema.decodeUnknownSync(NativeBoardFrame)(JSON.parse(event.data)); }
-      catch { return; }
-      store.applyFrame(id, frame);
+      const next = Number.parseInt(event.data, 10);
+      if (!Number.isFinite(next)) return;
+      // A frame arriving is proof the stream is up whether or not `open`
+      // fired: a reconnecting `EventSource` does not always announce itself.
       connected.add(id);
-      setState((current) => ({ ...current, key: streamKey, sequence: frame.sequence,
-        live: connected.size === streamScope.length }));
+      const previous = sequences.current.values.get(id);
+      sequences.current.values.set(id, next);
+      setState((current) => ({
+        ...current,
+        key: streamKey,
+        sequence: next,
+        live: connected.size === streamScope.length,
+      }));
+      if (previous === undefined || next <= previous) return;
+      // Coalesced: a burst of ticks is one reload, not one per tick.
+      clearTimeout(timer);
+      timer = setTimeout(reload, 400);
     };
 
     const connect = (id: string) => {
       if (stopped) return;
-      const source = new globalThis.EventSource(http.eventsUrl(id, undefined, undefined, { since: store.sequence(id), filters: store.streamFilters(id) }), { withCredentials: true });
+      const source = new globalThis.EventSource(http.eventsUrl(id), { withCredentials: true });
       sources.set(id, source);
       source.addEventListener("open", () => {
         connected.add(id);
@@ -120,10 +124,11 @@ export function useBoard(projectId: string | null, view: WorkViewState): BoardSt
 
     return () => {
       stopped = true;
+      clearTimeout(timer);
       for (const retry of retries.values()) clearTimeout(retry);
       for (const source of sources.values()) source.close();
     };
-  }, [http, store, canStream, streamKey, streamScope]);
+  }, [http, reload, streamKey, streamScope]);
 
   return { ...data, live: data.resolved && state.key === streamKey && state.live,
     sequence: state.key === streamKey ? state.sequence : null,

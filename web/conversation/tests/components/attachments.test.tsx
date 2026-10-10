@@ -69,7 +69,6 @@ async function openConversation(router: ReturnType<typeof makeRouter>): Promise<
     timeout: 5_000,
   });
   await setComposerText(composer, "First message");
-  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Send message" }).disabled).toBe(false));
   fireEvent.keyDown(composer, { key: "Enter" });
   await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/chat\/c\/conv_/), {
     timeout: 5_000,

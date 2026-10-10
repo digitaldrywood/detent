@@ -40,7 +40,7 @@ func (d *database) Claim(ctx context.Context, request tracker.ClaimRequest) (lea
 	if err != nil {
 		return tracker.Lease{}, err
 	}
-	if err := d.commit(ctx, tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return tracker.Lease{}, fmt.Errorf("commit hub claim: %w", err)
 	}
 	return lease, nil
@@ -245,7 +245,7 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 	if err := heartbeatMachine(ctx, tx, record.session.Machine.ID, now); err != nil {
 		return tracker.Lease{}, err
 	}
-	if err := d.commit(ctx, tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return tracker.Lease{}, fmt.Errorf("commit hub lease renewal: %w", err)
 	}
 	record.session.RenewedAt = now
@@ -289,7 +289,7 @@ func (d *database) Release(ctx context.Context, request tracker.ReleaseRequest) 
 	if err := heartbeatMachine(ctx, tx, record.session.Machine.ID, now); err != nil {
 		return err
 	}
-	if err := d.commit(ctx, tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit hub lease release: %w", err)
 	}
 	return nil
@@ -350,7 +350,7 @@ func (d *database) appendEvent(ctx context.Context, event tracker.WorkEvent, pol
 	if err := heartbeatMachine(ctx, tx, current.session.Machine.ID, now); err != nil {
 		return err
 	}
-	if err := d.commit(ctx, tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit hub work event: %w", err)
 	}
 	return nil

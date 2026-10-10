@@ -30,7 +30,7 @@ func seedArchiveIssues(t *testing.T, service *Service, scope nativeScope, count 
 		}
 		issues = append(issues, issue)
 	}
-	if err := service.database.commit(t.Context(), tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	return issues

@@ -1,4 +1,4 @@
-export const BOARD_CACHE_VERSION = 3;
+export const BOARD_CACHE_VERSION = 2;
 export const BOARD_CACHE_LIMIT = 12;
 
 export interface BoardDiskRecord {
