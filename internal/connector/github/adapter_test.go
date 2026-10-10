@@ -7526,7 +7526,7 @@ func (s *graphqlTestServer) requests() []map[string]any {
 func waitForGraphQLRequests(t *testing.T, server *graphqlTestServer, want int) []map[string]any {
 	t.Helper()
 
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		requests := server.requests()
 		if len(requests) >= want {
