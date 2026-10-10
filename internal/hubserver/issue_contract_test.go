@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -84,6 +85,15 @@ func TestNativeIssueContract(t *testing.T) {
 				if err != nil || got != want {
 					contract, contractErr := nativeIssueContract(t.Context(), f.service.database.db, scope)
 					t.Fatalf("claimable = %t, %v; want %t; contract %+v (%v), criteria %+v, evaluation %+v", got, err, want, contract, contractErr, issue.IssueContract, contract.Evaluate(nativeContractIssue(issue)))
+				}
+				claim := tracker.NativeClaim{PolicyID: descriptor.ID, MachineID: "contract-machine", SessionID: "contract-session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+				preview := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", worker, tracker.NativeCapacityPreview{NativeClaim: claim})
+				requireNativeStatus(t, preview, http.StatusOK)
+				var page tracker.NativeCapacityPage
+				decodeHubResponse(t, preview, &page)
+				listed := slices.ContainsFunc(page.Items, func(candidate tracker.NativeIssue) bool { return candidate.WorkItemID == issue.WorkItemID })
+				if listed != want {
+					t.Fatalf("preview listed = %t, want %t", listed, want)
 				}
 				expected := http.StatusConflict
 				if want {
