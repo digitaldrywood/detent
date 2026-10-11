@@ -90,7 +90,7 @@ func (l *LocalGit) RunLandingBarrier(ctx context.Context, id, base, command stri
 type LandingBarrierRepairWorkspace interface {
 	PrepareLandingBarrierRepair(ctx context.Context, id, base string) (path, head string, release func() error, err error)
 	VerifyLandingBarrierRepair(ctx context.Context, path, head, command string, failed []string) (result gate.CommandResult, changed bool, err error)
-	PublishLandingBarrierRepair(ctx context.Context, path, base, head string) (string, error)
+	PublishLandingBarrierRepair(ctx context.Context, path, base, head string, opts LandOptions) (string, error)
 	LandingBarrierCommits(ctx context.Context, path, from, to string) ([]string, error)
 	CheckoutLandingBarrierCommit(ctx context.Context, path, commit string) error
 	RevertLandingBarrierCommit(ctx context.Context, path, head, commit string) error
@@ -207,7 +207,7 @@ func (l *LocalGit) prepareBarrierWorktree(ctx context.Context, path, base string
 	return strings.TrimSpace(head), nil
 }
 
-func (l *LocalGit) PublishLandingBarrierRepair(ctx context.Context, path, base, head string) (string, error) {
+func (l *LocalGit) PublishLandingBarrierRepair(ctx context.Context, path, base, head string, opts LandOptions) (published string, returnErr error) {
 	status, err := runGitAt(ctx, path, "status", "--porcelain", "--untracked-files=no")
 	if err != nil {
 		return "", err
@@ -232,8 +232,72 @@ func (l *LocalGit) PublishLandingBarrierRepair(ctx context.Context, path, base, 
 			return "", err
 		}
 	}
+	authorize := opts.Authorize
+	opts.Authorize = func(ctx context.Context) error {
+		if authorize != nil {
+			if err := authorize(ctx); err != nil {
+				return err
+			}
+		}
+		current, err := l.LandingBarrierHead(ctx, base)
+		if err != nil {
+			return err
+		}
+		if current != head {
+			return &LandRefusal{Kind: LandRefusalBaseMoved, BaseSHA: current, Reason: "the base branch changed since the failed barrier"}
+		}
+		return nil
+	}
+	if err := opts.Authorize(ctx); err != nil {
+		return "", err
+	}
+	if !opts.Native {
+		key := filepath.Base(path)
+		branch := "detent/barrier/" + key + "/" + repaired
+		release, err := l.acquireSourceOperation(ctx)
+		if err != nil {
+			return "", err
+		}
+		_, err = runGitAt(ctx, path, "checkout", "-b", branch, repaired)
+		release()
+		if err != nil {
+			return "", err
+		}
+		defer func() {
+			cleanupCtx := context.WithoutCancel(ctx)
+			release, err := l.acquireSourceOperation(cleanupCtx)
+			if err != nil {
+				returnErr = errors.Join(returnErr, err)
+				return
+			}
+			defer release()
+			if _, err := runGitAt(cleanupCtx, path, "checkout", "--detach", repaired); err != nil {
+				returnErr = errors.Join(returnErr, err)
+				return
+			}
+			_, err = runGitAt(cleanupCtx, path, "branch", "-D", branch)
+			returnErr = errors.Join(returnErr, err)
+		}()
+		opts.HeadSHA, opts.TargetBranch = repaired, base
+		opts.ValidationCommand = ""
+		opts.LandingMode = ""
+		if opts.Repository == "" {
+			opts.Repository = l.LandingRepository(ctx)
+		}
+		if opts.Method == "" {
+			opts.Method = "squash"
+		}
+		if opts.Message == "" {
+			opts.Message = "fix: repair landing barrier"
+		}
+		result, err := l.LandChangeViaGitHub(ctx, Info{Path: path, Key: key, Branch: branch}, Issue{ID: key, Identifier: key, PullRequestHeadSHA: repaired}, opts)
+		if err != nil {
+			return "", fmt.Errorf("publish barrier repair: %w: %s", err, strings.TrimSpace(commandErrorOutput(err)))
+		}
+		return result.MergeSHA, nil
+	}
 	if _, err := runGitAt(ctx, path, "push", "--force-with-lease=refs/heads/"+base+":"+head, defaultGitRemote, repaired+":refs/heads/"+base); err != nil {
-		return "", fmt.Errorf("publish barrier repair: %w", err)
+		return "", fmt.Errorf("publish barrier repair: %w: %s", err, strings.TrimSpace(commandErrorOutput(err)))
 	}
 	return repaired, nil
 }

@@ -241,7 +241,21 @@ func (r *Runner) publishVerifiedBarrierRepair(ctx context.Context, repairer work
 		r.logger.Warn("landing barrier "+kind+" did not fix the failing checks", "head", head, "exit_code", verified.ExitCode, "failed", failed)
 		return false
 	}
-	published, err := repairer.PublishLandingBarrierRepair(ctx, path, base, head)
+	workflow, _, _, _ := r.runtimeSnapshot()
+	cfg := gate.Effective(workflow.Config.Gate)
+	opts := workspace.LandOptions{Native: !workflow.Config.Deliverable.GitHubPullRequest, Method: workflow.Config.Deliverable.MergeMethod, RequiredStatusChecks: cfg.RequiredStatusChecks, CITriggerLabel: cfg.CITriggerLabel, Message: "fix: landing barrier " + kind}
+	if cfg.CITriggerLabelStaggerSeconds != nil {
+		opts.CITriggerLabelStagger = time.Duration(*cfg.CITriggerLabelStaggerSeconds) * time.Second
+	}
+	if !opts.Native {
+		client, _, err := r.nativeLandingGitHubClient(ctx, RunRequest{}, workerGitHubPolicy{})
+		if err != nil {
+			r.logger.Warn("landing barrier "+kind+" publication failed", "head", head, "error", err)
+			return false
+		}
+		opts.GitHubClient = client
+	}
+	published, err := repairer.PublishLandingBarrierRepair(ctx, path, base, head, opts)
 	if err != nil {
 		r.logger.Warn("landing barrier "+kind+" publication failed", "head", head, "error", err)
 		return false

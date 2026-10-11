@@ -2,7 +2,10 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/gate"
 )
 
@@ -138,20 +142,32 @@ func TestLandingBarrierRepairPublication(t *testing.T) {
 	}
 	t.Parallel()
 	for _, test := range []struct {
-		name      string
-		edit      bool
-		commit    bool
-		moveBase  bool
-		published bool
-		wantErr   bool
+		name          string
+		edit          bool
+		commit        bool
+		moveBase      bool
+		github        bool
+		rejectBase    bool
+		rejectMerge   bool
+		moveAfterPush bool
+		published     bool
+		wantErr       bool
 	}{
 		{name: "no change publishes nothing"},
 		{name: "committed repair fast-forwards the base", edit: true, commit: true, published: true},
 		{name: "uncommitted repair is refused", edit: true, wantErr: true},
 		{name: "moved base refuses the stale repair", edit: true, commit: true, moveBase: true, wantErr: true},
+		{name: "protected base repair lands through a pull request", edit: true, commit: true, github: true, rejectBase: true, published: true},
+		{name: "protected base rejects a stale repair before publication", edit: true, commit: true, github: true, rejectBase: true, moveBase: true, wantErr: true},
+		{name: "base moving after branch publication prevents merge", edit: true, commit: true, github: true, moveAfterPush: true, wantErr: true},
+		{name: "direct push rejection keeps the git reason", edit: true, commit: true, rejectBase: true, wantErr: true},
+		{name: "pull request rejection keeps the host reason", edit: true, commit: true, github: true, rejectMerge: true, wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+			if test.rejectBase && runtime.GOOS == "windows" {
+				t.Skip("git hook requires a POSIX shell")
+			}
 			ctx := t.Context()
 			f := newLandingFixture(t)
 			before := f.remoteMain(t)
@@ -184,15 +200,97 @@ func TestLandingBarrierRepairPublication(t *testing.T) {
 				runGit(t, f.source, "push", "origin", "HEAD:main")
 			}
 			moved := f.remoteMain(t)
+			if test.rejectBase {
+				hook := "#!/bin/sh\nwhile read old new ref; do\nif [ \"$ref\" = refs/heads/main ]; then\necho 'base requires a pull request' >&2\nexit 1\nfi\ndone\n"
+				if err := os.WriteFile(filepath.Join(f.remote, "hooks", "pre-receive"), []byte(hook), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			opts := LandOptions{Native: !test.github, Method: "squash"}
+			var branch string
+			var requests, merges int
+			if test.github {
+				opts.Repository = "https://github.com/example/repo"
+				runGit(t, f.source, "config", "url.file://"+f.remote+".insteadOf", opts.Repository+".git")
+				runGit(t, f.source, "remote", "set-url", "origin", opts.Repository+".git")
+				var pull githubLandingPull
+				client, err := github.NewClient(github.ClientConfig{TokenSource: github.StaticTokenSource(t.Name()), DisableConditionalRequests: true,
+					HTTPClient: landingHTTPClient(func(req *http.Request) (*http.Response, error) {
+						requests++
+						status := http.StatusOK
+						var response any
+						var body map[string]string
+						if req.Body != nil {
+							if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+								t.Fatal(err)
+							}
+						}
+						switch {
+						case req.Method == http.MethodGet && req.URL.Path == "/repos/example/repo/pulls":
+							response = []githubLandingPull{}
+						case req.Method == http.MethodPost && req.URL.Path == "/repos/example/repo/pulls":
+							_, branch, _ = strings.Cut(body["head"], ":")
+							pull = githubLandingPull{Number: 17, State: "open"}
+							pull.Head.Ref, pull.Head.SHA = branch, strings.TrimSpace(runGit(t, f.remote, "rev-parse", "refs/heads/"+branch))
+							pull.Head.Repo.FullName, pull.Base.Repo.FullName = "example/repo", "example/repo"
+							pull.Base.Ref, pull.Base.SHA = body["base"], head
+							if pull.Base.Ref != "main" || pull.Head.SHA != strings.TrimSpace(runGit(t, path, "rev-parse", "HEAD")) {
+								t.Fatalf("PR differs from verified repair: %+v", pull)
+							}
+							if test.moveAfterPush {
+								f.advanceMain(t, "moved.txt", "moved after push\n")
+								moved = f.remoteMain(t)
+							}
+							response = pull
+						case req.Method == http.MethodPut && req.URL.Path == "/repos/example/repo/pulls/17/merge":
+							merges++
+							if body["sha"] != pull.Head.SHA || body["merge_method"] != "squash" {
+								t.Fatalf("merge differs from verified repair: %v", body)
+							}
+							if test.rejectMerge {
+								status, response = http.StatusForbidden, map[string]string{"message": "repository rules reject this merge"}
+							} else {
+								runGit(t, f.remote, "update-ref", "refs/heads/main", body["sha"])
+								response = githubLandingMerge{Merged: true, SHA: body["sha"]}
+							}
+						default:
+							t.Fatalf("unexpected landing request: %s %s", req.Method, req.URL)
+						}
+						data, err := json.Marshal(response)
+						if err != nil {
+							t.Fatal(err)
+						}
+						return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(string(data))), Request: req}, nil
+					})})
+				if err != nil {
+					t.Fatal(err)
+				}
+				opts.GitHubClient = client
+			}
 			if !test.wantErr {
 				verified, changed, err := f.backend.VerifyLandingBarrierRepair(ctx, path, head, `test "$DETENT_LANDING_BARRIER" = 1 && test "$DETENT_BARRIER_FAILED" = "detent-barrier-failed: go example.com/pkg"`, []string{"detent-barrier-failed: go example.com/pkg"})
 				if err != nil || changed != test.commit || changed && verified.ExitCode != 0 {
 					t.Fatalf("verify changed=%v result=%+v error=%v", changed, verified, err)
 				}
 			}
-			published, err := f.backend.PublishLandingBarrierRepair(ctx, path, "main", head)
+			published, err := f.backend.PublishLandingBarrierRepair(ctx, path, "main", head, opts)
 			if (err != nil) != test.wantErr || (published != "") != test.published {
 				t.Fatalf("published=%q error=%v", published, err)
+			}
+			if test.rejectBase && !test.github && (err == nil || !strings.Contains(err.Error(), "base requires a pull request")) {
+				t.Fatalf("git rejection reason missing: %v", err)
+			}
+			if test.rejectMerge && (err == nil || !strings.Contains(err.Error(), "repository rules reject this merge")) {
+				t.Fatalf("host rejection reason missing: %v", err)
+			}
+			if test.moveBase && (requests != 0 || branch != "") {
+				t.Fatal("stale repair published a branch or contacted GitHub")
+			}
+			if test.moveAfterPush && merges != 0 {
+				t.Fatal("stale repair requested a merge")
+			}
+			if test.github && test.published && (branch == "" || merges != 1) {
+				t.Fatal("repair did not land through a pull request")
 			}
 			want := moved
 			if test.published {
@@ -293,7 +391,7 @@ func TestLandingBarrierCulpritRevert(t *testing.T) {
 	if err != nil || !changed || verified.ExitCode != 0 {
 		t.Fatalf("revert verification changed=%v result=%+v error=%v", changed, verified, err)
 	}
-	published, err := f.backend.PublishLandingBarrierRepair(ctx, path, "main", head)
+	published, err := f.backend.PublishLandingBarrierRepair(ctx, path, "main", head, LandOptions{Native: true})
 	if err != nil || published == "" || f.remoteMain(t) != published {
 		t.Fatalf("published=%q remote=%s error=%v", published, f.remoteMain(t), err)
 	}

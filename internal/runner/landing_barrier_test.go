@@ -181,6 +181,7 @@ type repairingBarrierWorkspace struct {
 	current    string
 	reverted   string
 	flaky      bool
+	options    workspace.LandOptions
 }
 
 func (b *repairingBarrierWorkspace) VerifyLandingBarrierRepair(ctx context.Context, path, head, command string, failed []string) (result gate.CommandResult, changed bool, err error) {
@@ -240,8 +241,9 @@ func (b *repairingBarrierWorkspace) PrepareLandingBarrierRepair(context.Context,
 	return "/repair", b.head, func() error { b.released++; return nil }, nil
 }
 
-func (b *repairingBarrierWorkspace) PublishLandingBarrierRepair(_ context.Context, path, _, head string) (string, error) {
+func (b *repairingBarrierWorkspace) PublishLandingBarrierRepair(_ context.Context, path, _, head string, opts workspace.LandOptions) (string, error) {
 	b.published++
+	b.options = opts
 	if path != "/repair" || head != b.head {
 		return "", errors.New("unexpected repair workspace")
 	}
@@ -294,11 +296,15 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 		wantReverted  string
 		superseded    bool
 		flaky         bool
+		github        bool
 	}{
 		{name: "superseded barrier stops the culprit search and repair", preparedHead: head, reds: 1, verifyExit: 1, green: "g0", commits: []string{"c1", "c2", "c3", "c4", head}, firstBad: 2, superseded: true},
 		{name: "unverified repair falls back to reverting the culprit", preparedHead: head, reds: 1, verifyExit: 1, green: "g0", commits: []string{"c1", "c2", "c3", "c4", head}, firstBad: 2, wantTurns: 1, wantPublished: 1, wantReverted: "c3"},
 		{name: "first commit after green is the culprit", preparedHead: head, reds: 1, verifyExit: 1, green: "g0", commits: []string{"c1", head}, firstBad: 0, wantTurns: 1, wantPublished: 1, wantReverted: "c1"},
 		{name: "red head is repaired and published", preparedHead: head, reds: 1, wantTurns: 1, wantPublished: 1},
+		{name: "opted in repair uses pull request landing", preparedHead: head, reds: 1, github: true, wantTurns: 1, wantPublished: 1},
+		{name: "opted in revert uses pull request landing", preparedHead: head, reds: 1, github: true, verifyExit: 1, green: "g0", commits: []string{"c1", head}, firstBad: 0, wantTurns: 1, wantPublished: 1, wantReverted: "c1"},
+		{name: "opted in unverified repair is dropped", preparedHead: head, reds: 1, github: true, verifyExit: 1, wantTurns: 1},
 		{name: "same red head is repaired once", preparedHead: head, reds: 2, wantTurns: 1, wantPublished: 1},
 		{name: "moved base repairs failures that still fail", preparedHead: strings.Repeat("a", 40), reds: 1, verifyExit: 1, wantTurns: 1, wantPublished: 0},
 		{name: "moved base skips failures fixed upstream", preparedHead: strings.Repeat("a", 40), reds: 1, flaky: true, wantTurns: 0, wantPublished: 0},
@@ -315,6 +321,9 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 				cfg := config.Default()
 				cfg.Gate.LandingMode, cfg.Gate.Run = gate.LandingRollingBarrier, "make verify"
 				cfg = cfg.ForNativeTracker()
+				cfg.Deliverable.GitHubPullRequest = test.github
+				cfg.Worker.GitHubToken = t.Name()
+				cfg.Deliverable.MergeMethod = "squash"
 				workflow := config.Workflow{Config: cfg, SourceHash: policy.Digest([]byte("source")), Definition: config.ProjectDefinition{Revision: strings.Repeat("a", 40)}}
 				router, err := NewRouter([]Route{{Name: "code", Role: RoleCode, BackendID: "codex", Default: true}})
 				if err != nil {
@@ -337,6 +346,9 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 				}
 				if agent.calls != test.wantTurns || backend.published != test.wantPublished || backend.prepared != backend.released {
 					t.Fatalf("turns=%d published=%d prepared=%d released=%d", agent.calls, backend.published, backend.prepared, backend.released)
+				}
+				if backend.published > 0 && (backend.options.Native == test.github || (backend.options.GitHubClient != nil) != test.github || backend.options.Method != "squash") {
+					t.Fatalf("publication differs from project landing policy: %+v", backend.options)
 				}
 				if test.wantTurns > 0 && (agent.request.Workspace != "/repair" || !strings.Contains(agent.request.Prompt, "barrier failure sentinel") || !strings.Contains(agent.request.Prompt, head) || !strings.Contains(agent.request.Prompt, "re-run only them")) {
 					t.Fatalf("repair request=%+v", agent.request)
