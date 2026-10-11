@@ -3,6 +3,7 @@ package hubserver
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strconv"
 	"testing"
 
@@ -68,7 +69,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				issue, err := createNativeMachineIntakeTx(t.Context(), tx, scope, request, f.service.config.now())
+				issue, err := createNativeMachineIntakeTx(t.Context(), tx, scope, request, f.service.config.now(), false)
 				if err != nil {
 					_ = tx.Rollback()
 					t.Fatal(err)
@@ -128,7 +129,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 				t.Fatal(err)
 			}
 			request := tracker.CreateIssue{Title: "Late report", State: "Backlog", Priority: new(0), Body: issueorigin.Stamp(test.second, issueorigin.Origin{Kind: "worker", Source: "late-attempt", Fingerprint: "late-wording"})}
-			closed, err := createNativeMachineIntakeTx(t.Context(), tx, scope, request, f.service.config.now())
+			closed, err := createNativeMachineIntakeTx(t.Context(), tx, scope, request, f.service.config.now(), false)
 			if err != nil {
 				_ = tx.Rollback()
 				t.Fatal(err)
@@ -144,6 +145,72 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			}
 			if comments != 2 {
 				t.Fatalf("terminal report added an occurrence: %d", comments)
+			}
+			closed.PublicationReused = false
+			origin.Source = "new-scheduled-run"
+			request = tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "new-scheduled-occurrence"}, Title: "Recurring scheduled failure", Body: issueorigin.Stamp(test.second, origin), State: "Todo", Priority: new(1)}
+			var current tracker.NativeIssue
+			for replay := range 2 {
+				response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/work-items", testHubAdminToken, request)
+				requireNativeStatus(t, response, http.StatusOK)
+				var reported tracker.NativeIssue
+				decodeHubResponse(t, response, &reported)
+				if replay == 0 {
+					current = reported
+				} else if !reflect.DeepEqual(reported, current) {
+					t.Fatalf("scheduled replay changed result: %#v, want %#v", reported, current)
+				}
+			}
+			if test.otherProject {
+				if current.WorkItemID != owner.WorkItemID || !current.Terminal || !current.PublicationReused {
+					t.Fatalf("scheduled report changed other project policy: %#v", current)
+				}
+			} else {
+				if current.WorkItemID == owner.WorkItemID || current.Terminal || current.PublicationReused || current.State != "Todo" || current.Priority == nil || *current.Priority != 1 || current.Body != request.Body {
+					t.Fatalf("scheduled report did not retain a fresh occurrence: %#v", current)
+				}
+				if current.IssueContract != nil && (current.IssueContract.Exempt || len(current.IssueContract.ConfirmedSections) != 0) {
+					t.Fatalf("scheduled report granted contract approval: %#v", current.IssueContract)
+				}
+				origin.Source = "following-scheduled-run"
+				request.Body = issueorigin.Stamp(test.second, origin)
+				request.IdempotencyKey = "following-scheduled-occurrence"
+				response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/work-items", testHubAdminToken, request)
+				requireNativeStatus(t, response, http.StatusOK)
+				var reused tracker.NativeIssue
+				decodeHubResponse(t, response, &reused)
+				if reused.WorkItemID != current.WorkItemID || !reused.PublicationReused || reused.Body != current.Body {
+					t.Fatalf("following occurrence did not reuse open owner: %#v", reused)
+				}
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id = ?", current.WorkItemID).Scan(&comments); err != nil {
+					t.Fatal(err)
+				}
+				if comments != 1 {
+					t.Fatalf("fresh owner comments = %d, want one following occurrence", comments)
+				}
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodGet, base+"/work-items/"+string(owner.WorkItemID), testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var historical tracker.NativeIssue
+			decodeHubResponse(t, response, &historical)
+			if !reflect.DeepEqual(historical, closed) {
+				t.Fatalf("scheduled report changed terminal history: %#v, want %#v", historical, closed)
+			}
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id = ?", owner.WorkItemID).Scan(&comments); err != nil {
+				t.Fatal(err)
+			}
+			if comments != 2 {
+				t.Fatalf("scheduled report changed terminal comments: %d", comments)
+			}
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id = ?", project).Scan(&issues); err != nil {
+				t.Fatal(err)
+			}
+			wantIssues := 2
+			if test.otherProject {
+				wantIssues = 1
+			}
+			if issues != wantIssues {
+				t.Fatalf("issues = %d, want %d", issues, wantIssues)
 			}
 
 		})
