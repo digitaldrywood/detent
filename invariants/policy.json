@@ -88,7 +88,6 @@
       "TestNativePlannerAutomaticHandoff"
     ],
     "./internal/runner": [
-      "TestLandingBarrierPublication",
       "TestNativeInterruptedCodeRecoversPersistedSession",
       "TestNativeReworkFinalizesBeforeImmutableEvidence",
       "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
@@ -185,7 +184,6 @@
       "TestNativeExecutionSettlesFinishedRun"
     ],
     "./internal/hubserver": [
-      "TestRollingLandingBarrier",
       "TestClaimCandidatesRequireUnansweredWorkItem"
     ],
     "./internal/web": [

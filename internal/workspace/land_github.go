@@ -332,9 +332,6 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 			return LandResult{}, err
 		}
 	}
-	if gate.NormalizeLandingMode(opts.LandingMode) == gate.LandingRollingBarrier {
-		opts.ValidationCommand = ""
-	}
 	if err := l.verifyLandingWorktree(ctx, normalized, issue, opts); err != nil {
 		return LandResult{}, err
 	}
@@ -439,11 +436,8 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		if err != nil {
 			return result, err
 		}
-		if strings.TrimSpace(currentBase) != baseBefore && gate.NormalizeLandingMode(opts.LandingMode) != gate.LandingRollingBarrier {
+		if strings.TrimSpace(currentBase) != baseBefore {
 			return result, &LandRefusal{Kind: LandRefusalBaseMoved, BaseSHA: strings.TrimSpace(currentBase), Reason: "the base branch changed after landing validation"}
-		}
-		if gate.NormalizeLandingMode(opts.LandingMode) == gate.LandingRollingBarrier {
-			baseBefore = strings.TrimSpace(currentBase)
 		}
 		if opts.Authorize != nil {
 			if err := opts.Authorize(ctx); err != nil {

@@ -117,7 +117,6 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 		if l.Gate != nil && l.Gate.Pipeline != nil {
 			l.Gate.Pipeline.Timings = gate.PublicPipeline(l.Gate.Pipeline.Timings)
 		}
-		l.Barrier = nil
 		waitingCI := (l.Waiting || l.CI != nil && l.CI.State == "pending") && !l.GateFailed && l.RefusalKind == ""
 		if l.Landed {
 			if !validNativeID(l.ChangeID, "change") || !validNativeID(l.VersionID, "version") || !validCommitID(l.HeadSHA) || l.RefusalKind != "" || l.GateFailed || l.Waiting || !validCommitID(l.MergeSHA) || !slices.Contains([]string{"squash", "merge", "rebase"}, l.Method) || !validExecutionName(l.BaseRef) {

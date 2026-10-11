@@ -906,3 +906,13 @@ func TestPublishUnderTheDefaultPolicyLands(t *testing.T) {
 		})
 	}
 }
+
+func TestRetiredLandingBarrierEndpoints(t *testing.T) {
+	t.Parallel()
+	f := newDefaultNativeFixture(t, Config{})
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		t.Run(method, func(t *testing.T) {
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, method, f.base+"/landing-barrier", f.token, nil), http.StatusNotFound)
+		})
+	}
+}

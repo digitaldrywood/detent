@@ -1089,7 +1089,7 @@ func TestLandingMode(t *testing.T) {
 	}{
 		{"default", "", LandingPerChange, false},
 		{"per change", "per_landing", LandingPerChange, false},
-		{"rolling", " ROLLING_BARRIER ", LandingRollingBarrier, false},
+		{"legacy rolling", " ROLLING_BARRIER ", LandingPerChange, false},
 		{"unknown", "skip", "skip", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {

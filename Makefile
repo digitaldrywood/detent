@@ -224,9 +224,6 @@ check: check-invariants check-migrations check-generated check-app build lint ve
 check-land:
 	NILAWAY_VERSION="$(NILAWAY_VERSION)" NILAWAY_INCLUDE_PKGS="$(NILAWAY_INCLUDE_PKGS)" bash scripts/check-land.sh "$(CHECK_LAND_BASE)" "$(APP_DIR)" "$(TEST_PROCS)"
 
-check-barrier:
-	bash scripts/check-barrier.sh "$(TEST_PROCS)"
-
 check-fast: check-invariants check-migrations check-generated check-app lint vet test-fast
 	go build ./...
 	@echo "Fast checks passed."
