@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,122 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestHeartbeatOversizedIssuePages(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		reset           bool
+		failLater       bool
+		singleOversized bool
+		repeatCursor    bool
+		denied          bool
+	}{
+		{name: "initial board"},
+		{name: "reset board", reset: true},
+		{name: "later page failure preserves cache", reset: true, failLater: true},
+		{name: "single oversized issue fails", singleOversized: true},
+		{name: "repeated cursor preserves cache", reset: true, repeatCursor: true},
+		{name: "oversized denial is not retried", denied: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			items := make([]tracker.NativeIssue, 182)
+			for i := range items {
+				items[i] = tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%d", i)), Number: i + 1, Revision: 3}, State: "Todo", Body: strings.Repeat("x", 12<<10)}
+			}
+			if test.singleOversized {
+				items = items[:1]
+				items[0].Body = strings.Repeat("x", maxResponseBytes)
+			}
+			calls := 0
+			laterRead := false
+			client, err := New(Config{URL: "http://hub.test", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				calls++
+				w := httptest.NewRecorder()
+				limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+				if err != nil || limit < 1 {
+					t.Fatalf("invalid page limit: %s", r.URL.RawQuery)
+				}
+				start := 0
+				if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+					laterRead = true
+					start, err = strconv.Atoi(cursor)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.failLater && start > 0 {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = w.WriteString(`{"code":"unavailable"}`)
+					return w.Result(), nil
+				}
+				end := min(start+limit, len(items))
+				page := tracker.Page[tracker.NativeIssue]{Items: items[start:end]}
+				if end < len(items) {
+					page.NextCursor = strconv.Itoa(end)
+				}
+				if test.repeatCursor && start > 0 {
+					page.NextCursor = strconv.Itoa(start)
+				}
+				if test.denied {
+					w.WriteHeader(http.StatusForbidden)
+				}
+				if err := json.NewEncoder(w).Encode(page); err != nil {
+					t.Fatal(err)
+				}
+				return w.Result(), nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_test", "prj_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := native.heartbeatProject()
+			prior := tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_prior"}, Body: "preserved"}
+			if test.reset {
+				state.items = map[tracker.NativeWorkItemID]tracker.NativeIssue{prior.WorkItemID: prior}
+				state.loaded = true
+				state.cursor = "prior"
+			}
+			native.applyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "current", Reset: test.reset})
+			got, supported, err := native.heartbeatIssues(t.Context())
+			if test.failLater || test.singleOversized || test.repeatCursor || test.denied {
+				if err == nil || !supported || got != nil {
+					t.Fatalf("oversized/failing page succeeded: count=%d supported=%v error=%v", len(got), supported, err)
+				}
+				if test.reset && (state.cursor != "prior" || len(state.items) != 1 || state.items[prior.WorkItemID].Body != "preserved") {
+					t.Fatal("failed reset installed a partial cache")
+				}
+				if calls > 10 {
+					t.Fatalf("unbounded page retries: %d", calls)
+				}
+				if (test.failLater || test.repeatCursor) && !laterRead {
+					t.Fatal("failure did not reach a later page")
+				}
+				if test.denied && calls != 1 {
+					t.Fatalf("retried a denied response: %d calls", calls)
+				}
+				return
+			}
+			if err != nil || !supported || len(got) != len(items) {
+				t.Fatalf("hydrate board: count=%d supported=%v error=%v", len(got), supported, err)
+			}
+			for i, item := range got {
+				if item.WorkItemID != items[i].WorkItemID || item.Revision != 3 || item.Body != items[i].Body {
+					t.Fatalf("item %d lost identity, revision or body", i)
+				}
+			}
+			before := calls
+			if _, _, err := native.heartbeatIssues(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if calls != before {
+				t.Fatal("unchanged board was fetched again")
+			}
+		})
+	}
+}
 
 func TestHeartbeatDeltaApplication(t *testing.T) {
 	start := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
