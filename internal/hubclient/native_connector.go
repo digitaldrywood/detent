@@ -19,7 +19,8 @@ import (
 )
 
 type NativeConnector struct {
-	client *NativeClient
+	client      *NativeClient
+	laneEntries nativeLaneEntries
 }
 
 func NewNativeConnector(client *NativeClient) (*NativeConnector, error) {
