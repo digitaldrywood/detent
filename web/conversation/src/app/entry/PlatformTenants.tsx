@@ -1,10 +1,21 @@
 import React from "react";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
+import {
+  Link,
+  useNavigate,
+  useParams,
+  useRouterState,
+} from "@tanstack/react-router";
 import { ArrowDown, ArrowUp } from "lucide-react";
 
 import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
-import { Empty, EmptyHeader, EmptyTitle } from "../../components/ui/empty.tsx";
+import {
+  Empty,
+  EmptyHeader,
+  EmptyTitle,
+  EmptyDescription,
+  EmptyContent,
+} from "../../components/ui/empty.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import {
   Select,
@@ -13,14 +24,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../../components/ui/select.tsx";
-import {
-  Sheet,
-  SheetDescription,
-  SheetHeader,
-  SheetPanel,
-  SheetPopup,
-  SheetTitle,
-} from "../../components/ui/sheet.tsx";
 import { Skeleton } from "../../components/ui/skeleton.tsx";
 import {
   Table,
@@ -31,12 +34,6 @@ import {
   TableRow,
 } from "../../components/ui/table.tsx";
 import {
-  Tooltip,
-  TooltipPopup,
-  TooltipProvider,
-  TooltipTrigger,
-} from "../../components/ui/tooltip.tsx";
-import {
   AlertDialog,
   AlertDialogClose,
   AlertDialogDescription,
@@ -45,6 +42,24 @@ import {
   AlertDialogPopup,
   AlertDialogTitle,
 } from "../../components/ui/alert-dialog.tsx";
+import {
+  ToggleGroup,
+  ToggleGroupItem,
+} from "../../components/ui/toggle-group.tsx";
+import { SettingsSection } from "../settings/settingsLayout.tsx";
+import { formatCount, formatUsd } from "../usage/usageFormat.ts";
+import {
+  filterTenants,
+  tenantNeedsAttention,
+  tenantPlan,
+  tenantRow,
+  tenantStatus,
+  tenantStep,
+  type TenantRow,
+  type TenantSearch,
+  type TenantSort,
+  type TenantSegment,
+} from "./tenantList.ts";
 import { ControlError } from "../account/controls.tsx";
 import { useMutation } from "../account/useResource.ts";
 import {
@@ -66,34 +81,6 @@ const unavailableLabels: Record<string, string> = {
   member_count: "member count",
   runner_count: "runner count",
 };
-export type TenantSort = "name" | "state" | "created_at";
-
-function filterTenants(
-  organizations: readonly PlatformOrganization[],
-  search: string,
-  state: string,
-  plan: string,
-  sort: TenantSort,
-  descending = false,
-): PlatformOrganization[] {
-  const query = search.trim().toLowerCase();
-  return organizations
-    .filter(
-      (organization) =>
-        [organization.name, organization.id, organization.creator_email].some(
-          (value) => value.toLowerCase().includes(query),
-        ) &&
-        (state === "all" || organization.state === state) &&
-        (plan === "all" || (organization.plan ?? "unavailable") === plan),
-    )
-    .sort((left, right) => {
-      const order =
-        left[sort].localeCompare(right[sort]) ||
-        left.id.localeCompare(right.id);
-      return descending ? -order : order;
-    });
-}
-
 function day(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toISOString().slice(0, 10);
@@ -132,28 +119,25 @@ function TenantState({
 function TenantFilter({
   label,
   value,
-  values,
+  items,
   onChange,
 }: {
   readonly label: string;
   readonly value: string;
-  readonly values: readonly string[];
+  readonly items: readonly { label: string; value: string }[];
   readonly onChange: (value: string) => void;
 }): React.ReactElement {
-  const items = [
-    { label: `All ${label.toLowerCase()}s`, value: "all" },
-    ...values.map((value) => ({
-      label: value === "unavailable" ? "Unavailable" : value,
-      value,
-    })),
-  ];
   return (
     <Select
       value={value}
       items={items}
       onValueChange={(next) => onChange(next ?? "all")}
     >
-      <SelectTrigger aria-label={label} className="w-full sm:w-40">
+      <SelectTrigger
+        size="compact"
+        aria-label={label}
+        className="w-full sm:w-32"
+      >
         <SelectValue />
       </SelectTrigger>
       <SelectPopup>
@@ -169,173 +153,333 @@ function TenantFilter({
 
 export function TenantTable({
   value,
+  rows,
+  search,
+  onSearch,
   onOpen,
+  loading = false,
+  error,
+  onRetry,
 }: {
-  readonly value: PlatformOrganizations;
+  readonly value?: PlatformOrganizations;
+  readonly rows: readonly TenantRow[];
+  readonly search: TenantSearch;
+  readonly onSearch: (search: TenantSearch) => void;
   readonly onOpen: (id: string) => void;
+  readonly loading?: boolean;
+  readonly error?: string;
+  readonly onRetry: () => void;
 }): React.ReactElement {
-  const [search, setSearch] = React.useState("");
-  const [state, setState] = React.useState("all");
-  const [plan, setPlan] = React.useState("all");
-  const [sort, setSort] = React.useState<TenantSort>("created_at");
-  const [descending, setDescending] = React.useState(false);
-  const tenants = filterTenants(
-    value.organizations,
-    search,
-    state,
-    plan,
-    sort,
-    descending,
-  );
-  const sortBy = (next: TenantSort) => {
-    setSort(next);
-    setDescending(sort === next ? !descending : false);
-  };
+  const tenants = filterTenants(rows, search);
+  const sort = search.sort ?? "created";
+  const descending =
+    (search.direction ?? (sort === "created" ? "desc" : "asc")) === "desc";
+  const change = (next: Partial<TenantSearch>) =>
+    onSearch({ ...search, ...next, tenant: undefined });
   const sortHead = (field: TenantSort, title: string) => (
     <TableHead
       aria-sort={
         sort === field ? (descending ? "descending" : "ascending") : "none"
       }
     >
-      <Button variant="ghost" size="compact" onClick={() => sortBy(field)}>
+      <Button
+        variant="ghost"
+        size="compact"
+        onClick={() =>
+          change({
+            sort: field,
+            direction:
+              sort === field
+                ? descending
+                  ? "asc"
+                  : "desc"
+                : field === "created"
+                  ? "desc"
+                  : "asc",
+          })
+        }
+      >
         {title}
         {sort === field ? descending ? <ArrowDown /> : <ArrowUp /> : null}
       </Button>
     </TableHead>
   );
+  const segments: { value: TenantSegment; label: string; count: number }[] = [
+    { value: "all", label: "All", count: rows.length },
+    {
+      value: "attention",
+      label: "Needs attention",
+      count: rows.filter(tenantNeedsAttention).length,
+    },
+    {
+      value: "complimentary",
+      label: "Complimentary",
+      count: rows.filter((row) => (row.organization.grants ?? 0) > 0).length,
+    },
+  ];
+  const plans = [
+    ...new Set(
+      rows.map(({ organization }) => organization.plan ?? "unavailable"),
+    ),
+  ].sort();
+  const statuses = [
+    ...new Set(
+      rows.map(({ organization }) => tenantStatus(organization.state)),
+    ),
+  ].sort();
   return (
-    <section aria-label="Tenants" className="flex flex-col gap-4">
-      <p
-        className="text-sm tabular-nums text-muted-foreground"
-        aria-live="polite"
-      >
-        {tenants.length} tenants ·{" "}
-        {tenants.filter((tenant) => tenant.state === "ready").length} ready
-      </p>
-      {value.unavailable.length === 0 ? null : (
+    <div className="flex min-w-0 flex-col gap-5">
+      <div className="flex flex-wrap items-center gap-3">
+        <Input
+          size="compact"
+          aria-label="Search tenants"
+          placeholder="Search name, ID or owner email"
+          value={search.q ?? ""}
+          onChange={(event) =>
+            change({ q: event.currentTarget.value || undefined })
+          }
+          className="min-w-0 sm:w-40 sm:flex-1"
+        />
+        <ToggleGroup
+          aria-label="Tenant segment"
+          value={[search.segment ?? "all"]}
+          onValueChange={(values) => {
+            if (values[0])
+              change({
+                segment:
+                  values[0] === "all"
+                    ? undefined
+                    : (values[0] as TenantSegment),
+              });
+          }}
+        >
+          {segments.map((segment) => (
+            <ToggleGroupItem key={segment.value} value={segment.value}>
+              {segment.label}
+              <Badge
+                variant={
+                  segment.value === "attention" && segment.count > 0
+                    ? "warning"
+                    : "outline"
+                }
+              >
+                {loading ? "…" : formatCount(segment.count)}
+              </Badge>
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+        <div className="flex w-full gap-2 sm:ml-auto sm:w-auto">
+          <TenantFilter
+            label="Plan"
+            value={search.plan ?? "all"}
+            items={[
+              { label: "All plans", value: "all" },
+              ...plans.map((plan) => ({
+                label: tenantPlan(plan === "unavailable" ? null : plan),
+                value: plan,
+              })),
+            ]}
+            onChange={(plan) =>
+              change({ plan: plan === "all" ? undefined : plan })
+            }
+          />
+          <TenantFilter
+            label="Status"
+            value={search.status ?? "all"}
+            items={[
+              { label: "All statuses", value: "all" },
+              ...statuses.map((status) => ({ label: status, value: status })),
+            ]}
+            onChange={(status) =>
+              change({ status: status === "all" ? undefined : status })
+            }
+          />
+        </div>
+      </div>
+      {value?.unavailable.length ? (
         <p className="text-xs text-muted-foreground">
           Not shown:{" "}
           {value.unavailable
-            .map((field) => unavailableLabels[field] ?? field)
+            .map((field) => unavailableLabels[field] ?? "other tenant fields")
             .join(", ")}
           . The entry could not read these fields.
         </p>
-      )}
-      <div className="flex flex-col gap-3 sm:flex-row">
-        <Input
-          aria-label="Search tenants"
-          placeholder="Search name, id or creator"
-          value={search}
-          onChange={(event) => setSearch(event.currentTarget.value)}
-          className="sm:max-w-sm"
-        />
-        <TenantFilter
-          label="State"
-          value={state}
-          values={[
-            ...new Set(value.organizations.map((tenant) => tenant.state)),
-          ].sort()}
-          onChange={setState}
-        />
-        <TenantFilter
-          label="Plan"
-          value={plan}
-          values={[
-            ...new Set(
-              value.organizations.map((tenant) => tenant.plan ?? "unavailable"),
-            ),
-          ].sort()}
-          onChange={setPlan}
-        />
-      </div>
-      {tenants.length === 0 ? (
-        <Empty>
-          <EmptyHeader>
-            <EmptyTitle>No tenants match</EmptyTitle>
-          </EmptyHeader>
-        </Empty>
-      ) : (
-        <TooltipProvider>
-          <Table aria-label="Tenants">
+      ) : null}
+      {rows.some(
+        ({ organization, onlineRunners }) =>
+          (organization.runner_count ?? 0) > 0 && onlineRunners === null,
+      ) ? (
+        <p className="text-xs text-muted-foreground">
+          Not shown: runner health. Needs attention may be incomplete.
+        </p>
+      ) : null}
+      <SettingsSection
+        title={
+          loading
+            ? "Loading tenants"
+            : `${formatCount(tenants.length)} ${tenants.length === 1 ? "tenant" : "tenants"}`
+        }
+        aria-label="Tenant list"
+        className="min-w-0"
+        headerAction={
+          <span className="text-xs text-muted-foreground">
+            {sort === "created"
+              ? descending
+                ? "Newest first"
+                : "Oldest first"
+              : `${sort === "name" ? "Name" : "Status"} · ${descending ? "Z–A" : "A–Z"}`}
+          </span>
+        }
+      >
+        {error ? (
+          <Empty role="alert">
+            <EmptyHeader>
+              <EmptyTitle>Tenants could not be loaded</EmptyTitle>
+              <EmptyDescription>{error}</EmptyDescription>
+            </EmptyHeader>
+            <EmptyContent>
+              <Button variant="outline" size="compact" onClick={onRetry}>
+                Try again
+              </Button>
+            </EmptyContent>
+          </Empty>
+        ) : !loading && tenants.length === 0 ? (
+          <Empty>
+            <EmptyHeader>
+              <EmptyTitle>
+                {rows.length === 0 ? "No tenants yet" : "No tenants match"}
+              </EmptyTitle>
+              <EmptyDescription>
+                {rows.length === 0
+                  ? "Tenants will appear here when they are registered."
+                  : "Try another search or change the filters."}
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <Table
+            aria-label="Tenants"
+            aria-busy={loading}
+            className="min-w-[880px]"
+          >
             <TableHeader>
               <TableRow>
                 {sortHead("name", "Tenant")}
-                {sortHead("state", "State")}
+                {sortHead("status", "Status")}
                 <TableHead>Plan</TableHead>
+                <TableHead className="text-right">AI credits</TableHead>
                 <TableHead>Members</TableHead>
                 <TableHead>Runners</TableHead>
-                <TableHead>Billing</TableHead>
-                {sortHead("created_at", "Created")}
+                {sortHead("created", "Created")}
               </TableRow>
             </TableHeader>
             <TableBody>
-              {tenants.map((tenant) => (
-                <TableRow
-                  key={tenant.id}
-                  className="cursor-pointer"
-                  onClick={() => onOpen(tenant.id)}
-                >
-                  <TableCell>
-                    <Button
-                      variant="link"
-                      className="h-auto p-0"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onOpen(tenant.id);
-                      }}
-                    >
-                      {tenant.name}
-                    </Button>
-                    <div className="font-mono text-xs text-muted-foreground">
-                      {tenant.id}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <TenantState organization={tenant} />
-                  </TableCell>
-                  <TableCell>
-                    {tenant.plan ?? "—"}
-                    {(tenant.grants ?? 0) > 0 ? (
-                      <Tooltip>
-                        <TooltipTrigger
-                          render={
-                            <span
-                              tabIndex={0}
-                              aria-label="Complimentary grant active"
-                            />
-                          }
-                          className="ml-1"
-                        >
-                          ✦
-                        </TooltipTrigger>
-                        <TooltipPopup>Complimentary grant active</TooltipPopup>
-                      </Tooltip>
-                    ) : null}
-                  </TableCell>
-                  <TableCell className="tabular-nums">
-                    {tenant.member_count ?? "—"}
-                  </TableCell>
-                  <TableCell className="tabular-nums">
-                    {tenant.runner_count ?? "—"}
-                  </TableCell>
-                  <TableCell>
-                    {tenant.billing.available
-                      ? tenant.billing.status
-                      : "Unavailable"}
-                  </TableCell>
-                  <TableCell className="tabular-nums">
-                    {day(tenant.created_at)}
-                    <div className="text-xs text-muted-foreground">
-                      {tenant.creator_email || "Registered externally"}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {loading
+                ? Array.from({ length: 4 }, (_, index) => (
+                    <TableRow key={index}>
+                      {Array.from({ length: 7 }, (_, cell) => (
+                        <TableCell key={cell}>
+                          <Skeleton className="h-5 w-20" />
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  ))
+                : tenants.map(
+                    ({
+                      organization: tenant,
+                      onlineRunners,
+                      grantExpiry,
+                      creditBalance,
+                    }) => (
+                      <TableRow
+                        key={tenant.id}
+                        className="cursor-pointer"
+                        onClick={(event) => {
+                          if (!(event.target as HTMLElement).closest("a"))
+                            onOpen(tenant.id);
+                        }}
+                      >
+                        <TableCell>
+                          <Link
+                            to={"/platform/tenants/$tenantId" as never}
+                            params={{ tenantId: tenant.id } as never}
+                            search={search as never}
+                            className="font-medium hover:underline"
+                          >
+                            {tenant.name}
+                          </Link>
+                          <div className="text-xs text-muted-foreground">
+                            {tenant.creator_email || "Registered externally"}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={stateVariant(tenant.state)}>
+                            {tenantStatus(tenant.state)}
+                          </Badge>
+                          {tenant.state === "failed" ? (
+                            <div className="mt-1 text-xs text-destructive-foreground">
+                              {tenantStep(tenant.step)}
+                            </div>
+                          ) : null}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            {tenantPlan(tenant.plan)}
+                            {(tenant.grants ?? 0) > 0 ? (
+                              <Badge variant="info">Complimentary</Badge>
+                            ) : null}
+                          </div>
+                          {(tenant.grants ?? 0) > 0 && grantExpiry ? (
+                            <div className="text-xs text-muted-foreground">
+                              Until {day(grantExpiry)}
+                            </div>
+                          ) : null}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {creditBalance === null
+                            ? "Unavailable"
+                            : formatUsd(creditBalance)}
+                        </TableCell>
+                        <TableCell>
+                          {tenant.member_count === null ? (
+                            "Unavailable"
+                          ) : (
+                            <Badge variant="outline">
+                              {formatCount(tenant.member_count)}
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {tenant.runner_count === null ||
+                          onlineRunners === null ? (
+                            "Unavailable"
+                          ) : (
+                            <Badge
+                              variant={
+                                onlineRunners > 0
+                                  ? "success"
+                                  : tenant.runner_count > 0
+                                    ? "warning"
+                                    : "outline"
+                              }
+                            >
+                              {tenant.runner_count === 0
+                                ? "0 runners"
+                                : `${formatCount(onlineRunners)} online`}
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell className="tabular-nums">
+                          {day(tenant.created_at)}
+                        </TableCell>
+                      </TableRow>
+                    ),
+                  )}
             </TableBody>
           </Table>
-        </TooltipProvider>
-      )}
-    </section>
+        )}
+      </SettingsSection>
+    </div>
   );
 }
 
@@ -606,105 +750,124 @@ export function TenantSections({
   );
 }
 
-function TenantDetail({
-  id,
+export function PlatformTenant({
   role,
-  onChanged,
 }: {
-  readonly id: string;
   readonly role: string;
-  readonly onChanged: () => Promise<void>;
 }): React.ReactElement {
   const api = useEntryApi();
-  const resource = usePlatformResource(() => api.platformTenant(id), [api, id]);
-  const refresh = React.useCallback(async () => {
-    await resource.refresh();
-    await onChanged();
-  }, [resource.refresh, onChanged]);
+  const { tenantId } = useParams({ strict: false }) as { tenantId: string };
+  const search = useRouterState({
+    select: (state) => state.location.search as TenantSearch,
+  });
+  const resource = usePlatformResource(
+    () => api.platformTenant(tenantId),
+    [api, tenantId],
+  );
   const detail = resource.value;
   return (
-    <>
-      <SheetHeader>
-        <SheetTitle>{detail?.organization.name ?? "Tenant"}</SheetTitle>
-        <SheetDescription className="break-words">
-          {detail === undefined
-            ? id
-            : `${id} · created ${day(detail.organization.created_at)}${detail.organization.creator_email ? ` by ${detail.organization.creator_email}` : " · Registered externally"}`}
-        </SheetDescription>
-      </SheetHeader>
-      <SheetPanel>
-        <Problem
-          message={
-            resource.error === null
-              ? null
-              : `This tenant could not be reloaded and may be out of date: ${resource.error.message}`
-          }
+    <section
+      aria-label={detail?.organization.name ?? "Tenant"}
+      className="flex min-w-0 flex-col gap-4"
+    >
+      <Link
+        to={"/platform/tenants" as never}
+        search={{ ...search, tenant: undefined } as never}
+        className="text-sm text-muted-foreground hover:underline"
+      >
+        ← Back to tenants
+      </Link>
+      <div>
+        <h2 className="text-lg font-medium">
+          {detail?.organization.name ?? "Tenant"}
+        </h2>
+        <p className="break-words text-xs text-muted-foreground">
+          {tenantId}
+          {detail ? ` · created ${day(detail.organization.created_at)}` : ""}
+        </p>
+      </div>
+      <Problem
+        message={
+          resource.error === null
+            ? null
+            : `This tenant could not be reloaded and may be out of date: ${resource.error.message}`
+        }
+      />
+      {detail === undefined ? (
+        resource.loading ? (
+          <Skeleton className="h-48" aria-label="Loading tenant" />
+        ) : null
+      ) : (
+        <TenantSections
+          detail={detail}
+          role={role}
+          onChanged={resource.refresh}
         />
-        {detail === undefined ? (
-          resource.loading ? (
-            <div className="flex flex-col gap-4" aria-label="Loading tenant">
-              <Skeleton className="h-20" />
-              <Skeleton className="h-40" />
-            </div>
-          ) : null
-        ) : (
-          <TenantSections detail={detail} role={role} onChanged={refresh} />
-        )}
-      </SheetPanel>
-    </>
+      )}
+    </section>
   );
 }
 
-export function PlatformTenants({
-  role,
-}: {
-  readonly role: string;
-}): React.ReactElement {
+export function PlatformTenants(): React.ReactElement {
   const api = useEntryApi();
-  const resource = usePlatformResource(
-    () => api.platformOrganizations(),
-    [api],
-  );
+  const resource = usePlatformResource(async () => {
+    const value = await api.platformOrganizations();
+    const rows = await Promise.all(
+      value.organizations.map(async (organization) => {
+        if (
+          organization.state !== "ready" ||
+          ((organization.runner_count ?? 0) === 0 &&
+            (organization.grants ?? 0) === 0)
+        )
+          return tenantRow(organization);
+        try {
+          return tenantRow(
+            organization,
+            await api.platformTenant(organization.id),
+          );
+        } catch (error) {
+          redirectPlatformSignIn(error);
+          return tenantRow(organization);
+        }
+      }),
+    );
+    return { value, rows };
+  }, [api]);
   const search = useRouterState({
-    select: (state) => state.location.search as { tenant?: string },
+    select: (state) => state.location.search as TenantSearch,
   });
   const navigate = useNavigate();
-  const selectTenant = (tenant?: string) => {
-    void navigate({ to: "/platform/tenants", search: { tenant } } as never);
-  };
   return (
-    <>
-      <Problem
-        message={
-          resource.error?.status === 403
-            ? "The platform console is limited to Detent staff."
-            : (resource.error?.message ?? null)
-        }
-      />
-      {resource.value === undefined ? (
-        resource.loading ? (
-          <Skeleton className="h-48" aria-label="Loading tenants" />
-        ) : null
-      ) : (
-        <TenantTable value={resource.value} onOpen={selectTenant} />
-      )}
-      <Sheet
-        open={search.tenant !== undefined}
-        onOpenChange={(open) => {
-          if (!open) selectTenant();
-        }}
-      >
-        <SheetPopup className="w-full sm:max-w-xl">
-          {search.tenant === undefined ? null : (
-            <TenantDetail
-              key={search.tenant}
-              id={search.tenant}
-              role={role}
-              onChanged={resource.refresh}
-            />
-          )}
-        </SheetPopup>
-      </Sheet>
-    </>
+    <TenantTable
+      value={resource.value?.value}
+      rows={resource.value?.rows ?? []}
+      search={search}
+      onSearch={(search) => {
+        void navigate({
+          to: "/platform/tenants",
+          search,
+          replace: true,
+          resetScroll: false,
+        } as never);
+      }}
+      onOpen={(tenantId) => {
+        void navigate({
+          to: "/platform/tenants/$tenantId",
+          params: { tenantId },
+          search,
+        } as never);
+      }}
+      loading={resource.loading && resource.value === undefined}
+      error={
+        resource.error?.status === 403
+          ? "The platform console is limited to Detent staff."
+          : resource.error
+            ? "Try again to reload the tenant list."
+            : undefined
+      }
+      onRetry={() => {
+        void resource.refresh();
+      }}
+    />
   );
 }
