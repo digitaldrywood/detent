@@ -383,6 +383,8 @@ func TestPlatformSupportStartRequiresCSRFAndReason(t *testing.T) {
 		{"missing reason", url.Values{"organization": {"org_alpha"}, "csrf": {listing.CSRF}}, nil, http.StatusUnprocessableEntity, ""},
 		{"invalid reason", url.Values{"organization": {"org_alpha"}, "reason": {"curiosity"}, "csrf": {listing.CSRF}}, nil, http.StatusUnprocessableEntity, ""},
 		{"valid", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "csrf": {listing.CSRF}}, nil, http.StatusOK, "using reason troubleshooting"},
+		{"with note", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "note": {" Ticket 123 "}, "csrf": {listing.CSRF}}, nil, http.StatusOK, "using reason troubleshooting"},
+		{"oversized note", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "note": {strings.Repeat("n", 2001)}, "csrf": {listing.CSRF}}, nil, http.StatusUnprocessableEntity, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := staff.do(http.MethodPost, "/support/start", test.form, test.headers)
@@ -394,6 +396,10 @@ func TestPlatformSupportStartRequiresCSRFAndReason(t *testing.T) {
 	if got := platformAuditCount(t, f.service, "user_support", "support_requested:troubleshooting"); got != 1 {
 		t.Fatalf("support request audit = %d, want 1", got)
 	}
+	if got := platformAuditCount(t, f.service, "user_support", "support_requested:troubleshooting · Ticket 123"); got != 1 {
+		t.Fatalf("support note audited %d times", got)
+	}
+
 	callback, _ := staff.get("/auth/oidc/callback?code=" + url.QueryEscape("support|support@example.test|user_alice|porg_alpha|troubleshooting"))
 	if callback.StatusCode != http.StatusSeeOther {
 		t.Fatalf("support callback = %d %s", callback.StatusCode, callback.Body)

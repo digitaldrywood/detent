@@ -18,6 +18,7 @@ async function openTenants(page, { role = "admin", path = "/platform/tenants" } 
   await page.route("**/api/cloud/platform/**", (route) => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname.endsWith("/organizations")) return route.fulfill({ json: { ...fixture.organizations, organizations: [ready, free, failed], unavailable: ["plan", "grants", "member_count", "runner_count"] } });
+    if (pathname.endsWith("/audit")) return route.fulfill({ json: { rows: [], events: [], tenants: [], next_cursor: "" } });
     const organization = pathname.endsWith("org_failed") ? failed : ready;
     return route.fulfill({ json: { ...fixture.detail, organization: { ...organization, can_support: organization.state === "ready" && ["support", "admin"].includes(role) }, can_grant: ["billing", "admin"].includes(role), can_resume: organization.state === "failed" && role === "admin",
       members: organization.state === "failed" ? null : fixture.detail.members, runners: organization.state === "failed" ? null : fixture.detail.runners, projects: organization.state === "failed" ? null : fixture.detail.projects,
@@ -25,12 +26,12 @@ async function openTenants(page, { role = "admin", path = "/platform/tenants" } 
     } });
   });
   await page.goto(origin + path);
-  if (path.includes("?tenant=")) await expect(page.getByRole("dialog", { name: "Model Choice Labs", exact: true })).toBeVisible();
+  if (path.includes("/tenants/")) await expect(page.getByRole("region", { name: "Organization", exact: true })).toBeVisible();
   else await expect(page.getByRole("table", { name: "Tenants", exact: true })).toBeVisible();
 }
 
-for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844 }]) {
-  test(`tenant search, filters, sorting and detail at ${viewport.width}px`, async ({ page }) => {
+for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844 }]) for (const theme of ["light", "dark"]) {
+  test(`tenant search, filters, sorting and detail at ${viewport.width}px in ${theme}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     await openTenants(page);
     const table = page.getByRole("table", { name: "Tenants", exact: true });
@@ -64,25 +65,30 @@ for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844
     await table.getByRole("button", { name: "State", exact: true }).click();
     await expect(table.getByRole("row").nth(1)).toContainText("Example Co");
     await table.getByRole("button", { name: "Model Choice Labs", exact: true }).click();
-    const sheet = page.getByRole("dialog", { name: "Model Choice Labs", exact: true });
-    await expect(sheet).toBeVisible();
-    await expect(page).toHaveURL(origin + "/platform/tenants?tenant=org_preview");
-    await expect(sheet.getByRole("region", { name: "Members (1)" })).toContainText("owner@example.test");
-    await expect(sheet.getByRole("region", { name: "Runners (1)" })).toContainText("online");
-    await expect(sheet.getByRole("region", { name: "Projects (1)" })).toContainText("Detent");
-    await expect(sheet.getByRole("region", { name: "Billing", exact: true })).toContainText("Growth monthly");
-    await expect(sheet.getByRole("region", { name: "Provisioning timeline" })).toContainText("requested");
+    await expect(page.getByRole("heading", { name: "Model Choice Labs", exact: true })).toBeVisible();
+    await expect(page).toHaveURL(origin + "/platform/tenants/org_preview");
+    await page.evaluate((theme) => document.documentElement.classList.toggle("dark", theme === "dark"), theme);
+    await expect(page.getByRole("region", { name: "Organization" })).toContainText("owner@example.test");
+    await expect(page.getByRole("meter", { name: "Projects", exact: true })).toHaveAttribute("aria-valuetext", "2 of 5");
+    await test.info().attach("Tenant overview", { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
     expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
-    const bounds = await sheet.boundingBox();
-    expect(bounds.width).toBeLessThanOrEqual(Math.min(viewport.width, 576) + 1);
+    await page.getByRole("button", { name: "Members 1", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Members", exact: true })).toContainText("owner@example.test");
+    await page.getByRole("button", { name: "Runners 1", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Runners", exact: true })).toContainText("Online");
+    await page.getByRole("button", { name: "Projects 1", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Projects", exact: true })).toContainText("Detent");
+    await page.getByRole("button", { name: "Activity", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Provisioning timeline" })).toContainText("Requested");
     await page.reload();
-    await expect(sheet).toBeVisible();
-    await sheet.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Activity", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("main").getByRole("link", { name: "Tenants", exact: true }).click();
     await expect(page).toHaveURL(origin + "/platform/tenants");
     await table.getByRole("button", { name: "Example Co", exact: true }).click();
-    const failedSheet = page.getByRole("dialog", { name: "Example Co", exact: true });
-    await expect(failedSheet.getByRole("region", { name: "Members", exact: true })).toContainText("Unavailable");
-    await failedSheet.getByRole("button", { name: "Resume provisioning" }).click();
+    await page.getByRole("button", { name: "Members", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Members", exact: true })).toContainText("Unavailable");
+    await page.getByRole("button", { name: "Tenant actions" }).click();
+    await page.getByRole("menuitem", { name: "Resume provisioning" }).click();
     await expect(page.getByRole("alertdialog")).toBeVisible();
     await page.getByRole("alertdialog").getByRole("button", { name: "Cancel" }).click();
   });
@@ -90,11 +96,16 @@ for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844
 
 for (const role of ["viewer", "support", "billing", "admin"]) {
   test(`${role} tenant actions`, async ({ page }) => {
-    await openTenants(page, { role, path: "/platform/tenants?tenant=org_preview" });
-    const sheet = page.getByRole("dialog", { name: "Model Choice Labs", exact: true });
-    await expect(sheet.getByRole("region", { name: "Members (1)" })).toBeVisible();
-    await expect(sheet.getByRole("button", { name: "Start support access" })).toHaveCount(["admin", "support"].includes(role) ? 1 : 0);
-    await expect(sheet.getByRole("button", { name: "Grant complimentary plan" })).toHaveCount(["admin", "billing"].includes(role) ? 1 : 0);
-    await expect(sheet.getByRole("button", { name: "Resume provisioning" })).toHaveCount(0);
+    await openTenants(page, { role, path: "/platform/tenants/org_preview" });
+    await expect(page.getByRole("region", { name: "Organization" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Support access" })).toHaveCount(["admin", "support"].includes(role) ? 1 : 0);
+    await expect(page.getByRole("button", { name: "Change plan" })).toHaveCount(["admin", "billing"].includes(role) ? 1 : 0);
+    if (["admin", "support"].includes(role)) {
+      await page.getByRole("button", { name: "Support access" }).click();
+      const dialog = page.getByRole("dialog", { name: "Start support access", exact: true });
+      await expect(dialog.getByRole("combobox", { name: "Reason" })).toContainText("Customer asked for help");
+      await dialog.getByRole("button", { name: "Cancel" }).click();
+      await expect(dialog).toBeHidden();
+    }
   });
 }

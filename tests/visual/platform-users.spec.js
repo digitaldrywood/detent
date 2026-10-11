@@ -36,7 +36,7 @@ for (const width of [1440, 390]) {
     await expect(member).toContainText("user_01HX_michael");
     await expect(member).toContainText("2026-10-06 14:02Z");
     await expect(member.getByRole("link", { name: "Open tenant →" })).toHaveCount(3);
-    await expect(member.getByRole("link").first()).toHaveAttribute("href", "/platform/tenants?tenant=org_parable");
+    await expect(member.getByRole("link").first()).toHaveAttribute("href", "/platform/tenants/org_parable");
     await expect(page.getByText("No organization membership")).toBeVisible();
     await expect(page.getByText("Not searched: Slow Tenant")).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
@@ -57,7 +57,7 @@ for (const width of [1440, 390]) {
     await input.fill("example.test");
     await search.click();
     await member.getByRole("link", { name: "Open tenant →" }).first().click();
-    await expect(page).toHaveURL(origin + "/platform/tenants?tenant=org_parable");
-    await expect(page.getByRole("dialog", { name: "Parable", exact: true })).toBeVisible();
+    await expect(page).toHaveURL(origin + "/platform/tenants/org_parable");
+    await expect(page.getByRole("heading", { name: "Parable", exact: true })).toBeVisible();
   });
 }

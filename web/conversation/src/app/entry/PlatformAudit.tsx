@@ -148,7 +148,7 @@ function AuditTimeline({
                       <div className="flex items-center gap-2">
                         <Link
                           className="underline underline-offset-4"
-                          to={"/platform/tenants" as never} search={{ tenant: row.organization_id } as never}
+                          to={"/platform/tenants/$organization" as never} params={{ organization: row.organization_id } as never}
                         >
                           {row.organization_name || (
                             <span className="font-mono">

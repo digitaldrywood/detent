@@ -26,6 +26,7 @@ import {
   PlatformHealthPage,
   PlatformSectionPage,
   PlatformTenantsPage,
+  PlatformTenantPage,
 } from "./PlatformConsole.tsx";
 import { usePageTitle } from "../pageTitle.ts";
 import { PlatformAuditPage } from "./PlatformAudit.tsx";
@@ -56,6 +57,7 @@ export const ENTRY_ROUTE_PATHS = [
   "/organizations/$organization/provisioning",
   "/platform",
   "/platform/tenants",
+  "/platform/tenants/$organization",
   "/platform/users",
   "/platform/staff",
   "/platform/audit",
@@ -81,7 +83,16 @@ const platformRoutes = platformRoute.addChildren([
     getParentRoute: () => platformRoute,
     path: "/tenants",
     validateSearch: (search: Record<string, unknown>) => ({ tenant: typeof search.tenant === "string" ? search.tenant : undefined }),
+    beforeLoad: ({ search }) => {
+      if (search.tenant) throw redirect({ to: "/platform/tenants/$organization", params: { organization: search.tenant }, replace: true } as never);
+    },
     component: PlatformTenantsPage,
+  }),
+  createRoute({
+    getParentRoute: () => platformRoute,
+    path: "/tenants/$organization",
+    validateSearch: (search: Record<string, unknown>) => ({ section: typeof search.section === "string" ? search.section : undefined }),
+    component: PlatformTenantPage,
   }),
   createRoute({
     getParentRoute: () => platformRoute,

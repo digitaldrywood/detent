@@ -121,6 +121,7 @@ export type PlanReference = typeof PlanReference.Type;
 
 export const EntitlementPlan = Schema.Struct({
   id: Schema.String,
+  name: Schema.optional(Schema.String),
   version: Schema.Number,
   features: Schema.NullOr(Schema.Array(Schema.String)),
   allowances: Schema.NullOr(Schema.Record(Schema.String, Schema.Number)),
@@ -136,6 +137,7 @@ export const EntitlementGrant = Schema.Struct({
   reason: Schema.String,
   granted_by: Schema.String,
   granted_at: Schema.NullOr(Schema.String),
+  revoked_at: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type EntitlementGrant = typeof EntitlementGrant.Type;
 
@@ -147,6 +149,7 @@ export const OrganizationEntitlements = Schema.Struct({
   revision: Schema.Number,
   features: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
   grants: Schema.Array(EntitlementGrant),
+  grant_history: Schema.optional(Schema.NullOr(Schema.Array(EntitlementGrant))),
   plans: Schema.Array(EntitlementPlan),
 });
 export type OrganizationEntitlements = typeof OrganizationEntitlements.Type;
@@ -156,6 +159,10 @@ export const PlatformTenantDetail = Schema.Struct({
   csrf: Schema.String,
   can_grant: Schema.Boolean,
   can_resume: Schema.Boolean,
+  usage: Schema.optional(Schema.NullOr(Schema.Struct({
+    window_ends_at: Schema.String,
+    allowances: Schema.Record(Schema.String, Schema.Struct({ used: Schema.Number, limit: Schema.Number })),
+  }))),
   unavailable: Schema.Array(Schema.String),
   members: Schema.NullOr(Schema.Array(Schema.Struct({ id: Schema.String, email: Schema.String, role: Schema.String }))),
   runners: Schema.NullOr(Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, health: Schema.String }))),

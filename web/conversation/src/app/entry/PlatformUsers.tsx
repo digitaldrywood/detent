@@ -45,7 +45,7 @@ export function PlatformUserResults({ value }: { readonly value: PlatformUsers }
                   <TableCell>{membership.organization_name}</TableCell>
                   <TableCell><Badge variant="outline">{membership.role}</Badge></TableCell>
                   <TableCell><time dateTime={membership.joined_at}>{date(membership.joined_at)}</time></TableCell>
-                  <TableCell><Button size="compact" variant="ghost" render={<Link to={"/platform/tenants" as never} search={{ tenant: membership.organization_id } as never} />}>Open tenant →</Button></TableCell>
+                  <TableCell><Button size="compact" variant="ghost" render={<Link to={"/platform/tenants/$organization" as never} params={{ organization: membership.organization_id } as never} />}>Open tenant →</Button></TableCell>
                 </TableRow>
               ))}
               {user.invitations.map((invitation, index) => (
@@ -53,7 +53,7 @@ export function PlatformUserResults({ value }: { readonly value: PlatformUsers }
                   <TableCell>{invitation.organization_name}</TableCell>
                   <TableCell><Badge variant="warning">invited</Badge></TableCell>
                   <TableCell>expires <time dateTime={invitation.expires_at}>{date(invitation.expires_at)}</time></TableCell>
-                  <TableCell><Button size="compact" variant="ghost" render={<Link to={"/platform/tenants" as never} search={{ tenant: invitation.organization_id } as never} />}>Open tenant →</Button></TableCell>
+                  <TableCell><Button size="compact" variant="ghost" render={<Link to={"/platform/tenants/$organization" as never} params={{ organization: invitation.organization_id } as never} />}>Open tenant →</Button></TableCell>
                 </TableRow>
               ))}
             </TableBody>

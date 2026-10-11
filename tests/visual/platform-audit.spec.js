@@ -61,7 +61,7 @@ for (const [name, viewport] of [
     await expect(table).toContainText("troubleshooting");
     await expect(
       table.getByRole("link", { name: "Parable" }).first(),
-    ).toHaveAttribute("href", "/platform/tenants?tenant=org_alpha");
+    ).toHaveAttribute("href", "/platform/tenants/org_alpha");
     await expect(page).toHaveTitle("Audit log · Platform · Detent");
     expect(
       await page.evaluate(

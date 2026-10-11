@@ -9,7 +9,7 @@ import { Empty, EmptyHeader, EmptyTitle, EmptyDescription } from "../../componen
 import { Skeleton } from "../../components/ui/skeleton.tsx";
 import { SettingsSection } from "../settings/settingsLayout.tsx";
 import { PlatformSearch } from "./PlatformSearch.tsx";
-import { PlatformActionsContext } from "./PlatformPageActions.tsx";
+import { PlatformActionsContext, PlatformHeadingContext } from "./PlatformPageActions.tsx";
 import {
   Sidebar,
   SidebarContent,
@@ -35,6 +35,7 @@ import {
   type PlatformAllowlist,
   type PlatformHealth,
 } from "./api.ts";
+import { PlatformTenant } from "./PlatformTenant.tsx";
 import { PlatformTenants } from "./PlatformTenants.tsx";
 import { PlatformStaff } from "./PlatformStaff.tsx";
 import { Problem, SignOut, useEntryApi } from "./EntryScreens.tsx";
@@ -166,7 +167,7 @@ const PLATFORM_ROLES: Record<string, string> = {
   viewer: "Viewer",
 };
 
-const PlatformRoleContext = React.createContext("");
+export const PlatformRoleContext = React.createContext("");
 const PlatformCSRFContext = React.createContext("");
 
 function HealthBadge({ value }: { readonly value: PlatformHealth }): React.ReactElement {
@@ -195,7 +196,7 @@ function PlatformNavigation({ role, email, csrf, organizations, count, health, o
       <SidebarMenu>
         {ids.map((id) => PLATFORM_SECTIONS.find((section) => section.id === id)!).filter((section) => section.id !== "staff" || role === "admin").map((section) => {
           const href = `/platform/${section.id}`;
-          const active = pathname === href;
+          const active = pathname === href || pathname.startsWith(`${href}/`);
           return (
             <SidebarMenuItem key={section.id}>
               <SidebarMenuButton isActive={active} render={<Link to={href as never} aria-label={section.title} aria-current={active ? "page" : undefined} />} onClick={() => setOpenMobile(false)}>
@@ -257,24 +258,25 @@ export function PlatformConsole(): React.ReactElement {
   const tenants = usePlatformResource(() => role === "" ? Promise.resolve(null) : api.platformOrganizations(), [api, role]);
   const health = usePlatformResource(() => role === "" ? Promise.resolve(null) : api.platformHealth(), [api, role]);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const section = PLATFORM_SECTIONS.find((section) => pathname === `/platform/${section.id}`);
+  const section = PLATFORM_SECTIONS.find((section) => pathname === `/platform/${section.id}` || pathname.startsWith(`/platform/${section.id}/`));
   usePageTitle(section?.title ?? "Platform", "Platform");
   const [searchOpen, setSearchOpen] = React.useState(false);
+  const [heading, setHeading] = React.useState<React.ReactNode>(null);
   const [actions, setActions] = React.useState<HTMLDivElement | null>(null);
   const error = session.error ?? organizations.error;
   const denied = role === "" || (section?.id === "staff" && role !== "admin");
   return (
     <PlatformRoleContext.Provider value={role}>
       <PlatformCSRFContext.Provider value={value?.csrf ?? ""}>
-        <PlatformActionsContext.Provider value={actions}>
+        <PlatformHeadingContext.Provider value={setHeading}><PlatformActionsContext.Provider value={actions}>
           <SidebarProvider open className="relative h-full min-h-0 flex-1">
             <PlatformNavigation role={role} email={value?.email ?? ""} csrf={value?.csrf ?? ""} organizations={organizations.value?.organizations ?? []}
               count={tenants.value?.organizations.length} health={health.value} onSearch={() => setSearchOpen(true)} />
             <main className="flex min-h-0 min-w-0 flex-1 flex-col">
               <WorkspacePageHeader className="border-b border-border">
                 <SidebarTrigger className="md:hidden" />
-                <h1 className="min-w-0 truncate text-sm font-medium">{section?.title ?? "Platform"}</h1>
-                <div ref={setActions} className="ml-auto flex shrink-0 items-center gap-2" />
+                <div className="min-w-0 flex-1">{heading ?? <h1 className="truncate text-sm font-medium">{section?.title ?? "Platform"}</h1>}</div>
+                <div ref={setActions} className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2" />
               </WorkspacePageHeader>
               <div className="min-h-0 flex-1 overflow-y-auto">
                 <WorkspacePageContainer width="wide">
@@ -289,7 +291,7 @@ export function PlatformConsole(): React.ReactElement {
             </main>
             {role === "" ? null : <PlatformSearch open={searchOpen} onOpenChange={setSearchOpen} tenants={tenants.value?.organizations ?? []} tenantError={tenants.error} />}
           </SidebarProvider>
-        </PlatformActionsContext.Provider>
+        </PlatformActionsContext.Provider></PlatformHeadingContext.Provider>
       </PlatformCSRFContext.Provider>
     </PlatformRoleContext.Provider>
   );
@@ -304,6 +306,11 @@ export function PlatformPageTitle({ section }: { readonly section: PlatformSecti
 export function PlatformTenantsPage(): React.ReactElement {
   const role = React.useContext(PlatformRoleContext);
   return <><PlatformPageTitle section="tenants" /><PlatformTenants role={role} /></>;
+}
+
+export function PlatformTenantPage(): React.ReactElement {
+  const role = React.useContext(PlatformRoleContext);
+  return <PlatformTenant role={role} />;
 }
 
 export function PlatformHealthPage(): React.ReactElement {

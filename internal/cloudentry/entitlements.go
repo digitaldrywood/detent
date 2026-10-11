@@ -24,6 +24,7 @@ type planReference struct {
 
 type entitlementPlan struct {
 	planReference
+	Name       string           `json:"name,omitempty"`
 	Features   []string         `json:"features"`
 	Allowances map[string]int64 `json:"allowances"`
 }
@@ -48,6 +49,7 @@ type organizationEntitlements struct {
 	Revision       int64              `json:"revision"`
 	Features       []string           `json:"features"`
 	Grants         []entitlementGrant `json:"grants"`
+	GrantHistory   []entitlementGrant `json:"grant_history"`
 	Plans          []entitlementPlan  `json:"plans"`
 }
 
