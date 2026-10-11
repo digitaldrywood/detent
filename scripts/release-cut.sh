@@ -23,13 +23,17 @@ if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
 fi
 
 if [ -z "$source_sha" ]; then
-  runs="$(gh api --paginate --slurp "repos/$repository/actions/workflows/ci.yml/runs?status=success&branch=develop&per_page=100" | jq -c '[.[].workflow_runs[] | {head_sha, html_url}]')"
+  runs="$(gh api --paginate --slurp "repos/$repository/actions/workflows/ci.yml/runs?status=completed&branch=develop&per_page=100" | jq -c '[.[].workflow_runs[] | select(.head_branch == "develop" and (.event == "schedule" or .event == "workflow_dispatch")) | {head_sha, html_url, conclusion}]')"
   develop_history="$(git rev-list origin/develop)"
   while IFS= read -r candidate; do
-    run_urls="$(jq -c --arg sha "$candidate" '[.[] | select(.head_sha == $sha) | .html_url]' <<< "$runs")"
-    if [ "$run_urls" = '[]' ]; then continue; fi
+    candidate_runs="$(jq -c --arg sha "$candidate" '[.[] | select(.head_sha == $sha) | {html_url, conclusion}]' <<< "$runs")"
+    if [ "$candidate_runs" = '[]' ]; then continue; fi
     statuses="$(gh api --paginate --slurp "repos/$repository/commits/$candidate/statuses?per_page=100")"
-    if jq -e --argjson urls "$run_urls" '[.[][] | select(.context == "scheduled-full-ci")] | first | .state == "success" and (.target_url as $url | any($urls[]; $url == .))' <<< "$statuses" > /dev/null; then
+    if jq -e --argjson runs "$candidate_runs" '
+      [.[][] | select(.context == "scheduled-full-ci" and (.target_url as $url | any($runs[]; .html_url == $url)))]
+      | first
+      | .state == "success" and (.target_url as $url | any($runs[]; .html_url == $url and .conclusion == "success"))
+    ' <<< "$statuses" > /dev/null; then
       source_sha="$candidate"
       break
     fi

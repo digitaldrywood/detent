@@ -155,6 +155,7 @@ func TestRepositoryWorkflow(t *testing.T) {
 	}
 	type priorRun struct {
 		ID         int    `json:"id"`
+		HeadBranch string `json:"head_branch"`
 		Event      string `json:"event"`
 		Conclusion string `json:"conclusion"`
 	}
@@ -170,6 +171,10 @@ func TestRepositoryWorkflow(t *testing.T) {
 	}{
 		{name: "release push pins event SHA and runs despite prior failure", event: "push", currentRunID: "900", releaseBranch: "release/v1.2", priorRuns: []priorRun{{ID: 123, Conclusion: "failure"}}, wantRun: true},
 		{name: "release dispatch does not deduplicate against develop", event: "workflow_dispatch", currentRunID: "900", releaseBranch: "release/v1.2", priorRuns: []priorRun{{ID: 123, Conclusion: "success"}}, wantRun: true},
+		{name: "develop ignores release push at same SHA", event: "schedule", currentRunID: "900", priorRuns: []priorRun{{ID: 123, HeadBranch: "release/v1.2", Event: "push", Conclusion: "success"}}, wantRun: true, wantGitHubQuery: true},
+		{name: "develop ignores release dispatch at same SHA", event: "workflow_dispatch", currentRunID: "900", priorRuns: []priorRun{{ID: 123, HeadBranch: "release/v1.2", Event: "workflow_dispatch", Conclusion: "success"}}, wantRun: true, wantGitHubQuery: true},
+		{name: "develop ignores push events", event: "schedule", currentRunID: "900", priorRuns: []priorRun{{ID: 123, Event: "push", Conclusion: "success"}}, wantRun: true, wantGitHubQuery: true},
+		{name: "develop skips its own run after release run", event: "schedule", currentRunID: "900", priorRuns: []priorRun{{ID: 124, HeadBranch: "release/v1.2", Event: "workflow_dispatch", Conclusion: "success"}, {ID: 123, Event: "schedule", Conclusion: "failure"}}, wantGitHubQuery: true, wantPriorRunID: "123"},
 		{name: "dispatch on validated SHA skips", event: "workflow_dispatch", currentRunID: "900", priorRuns: []priorRun{{ID: 123, Event: "schedule", Conclusion: "success"}}, wantGitHubQuery: true, wantPriorRunID: "123"},
 		{name: "dispatch with force runs", event: "workflow_dispatch", currentRunID: "900", force: true, priorRuns: []priorRun{{ID: 123, Event: "schedule", Conclusion: "success"}}, wantRun: true},
 		{name: "cancelled prior run does not skip", event: "workflow_dispatch", currentRunID: "900", priorRuns: []priorRun{{ID: 123, Event: "schedule", Conclusion: "cancelled"}}, wantRun: true, wantGitHubQuery: true},
@@ -203,6 +208,11 @@ esac
 			priorRuns := tt.priorRuns
 			if priorRuns == nil {
 				priorRuns = []priorRun{}
+			}
+			for i := range priorRuns {
+				if priorRuns[i].HeadBranch == "" {
+					priorRuns[i].HeadBranch = "develop"
+				}
 			}
 			fixture, err := json.Marshal([]struct {
 				WorkflowRuns []priorRun `json:"workflow_runs"`
@@ -251,7 +261,7 @@ esac
 			}
 			if tt.wantGitHubQuery {
 				query := string(logs)
-				for _, required := range []string{"status=completed", "head_sha=0123456789012345678901234567890123456789"} {
+				for _, required := range []string{"status=completed", "branch=develop", "head_sha=0123456789012345678901234567890123456789"} {
 					if !strings.Contains(query, required) {
 						t.Fatalf("prior-run query omitted %q: %s", required, query)
 					}
