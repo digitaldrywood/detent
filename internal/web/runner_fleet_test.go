@@ -208,7 +208,7 @@ func TestRunnerFleetFormAuthorizationAndConflict(t *testing.T) {
 			}
 			if test.updates == 1 {
 				routing := probe.fleet.Runners[0].Routing
-				if routing.IsolationTier != "native-trusted" || routing.Availability.HardDeadline != "30m" || len(routing.HostServices) != 1 {
+				if routing.MachineUse != "" || routing.IsolationTier != "native-trusted" || routing.Availability.HardDeadline != "30m" || len(routing.HostServices) != 1 {
 					t.Fatalf("saved settings = %#v", routing)
 				}
 			}
