@@ -84,7 +84,23 @@ func NativeDispositionFromMessage(message string) *tracker.NativeDisposition {
 	if !reported || signal == nil || signal.Invalid != nil {
 		return nil
 	}
-	return &tracker.NativeDisposition{Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: signal.ReasonCode, FinalSummary: workpad.FinalSummary(message), BlockerEvidence: signal.Blockers}
+	status, reasonCode := signal.Status, signal.ReasonCode
+	if hostPublicationOnly(signal) {
+		status, reasonCode = workpad.StatusComplete, ""
+	}
+	return &tracker.NativeDisposition{Status: status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: reasonCode, FinalSummary: workpad.FinalSummary(message), BlockerEvidence: signal.Blockers}
+}
+
+// hostPublicationOnly reports a blocked disposition whose only stated cause is
+// that the host has not yet published or landed the work. The host publishes
+// only after a complete disposition, so treating it as blocked would wait on
+// itself forever.
+func hostPublicationOnly(signal *workpad.Signal) bool {
+	if signal.Status != workpad.StatusBlocked || len(signal.Blockers) != 0 || signal.HumanAction != "" {
+		return false
+	}
+	reason := strings.ToLower(signal.ReasonCode)
+	return strings.Contains(reason, "publication") || strings.Contains(reason, "publish")
 }
 
 type AvailabilityExecution interface {

@@ -181,6 +181,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "unfinished external blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", Blockers: true}},
 		{name: "unfinished human action keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", HumanAction: true}},
 		{name: "missing legacy disposition keeps the answer"},
+		{name: "aged attempt without disposition or report retries", aged: true, wantCandidate: true},
 		{name: "uncertain push without a disposition is reconciled by any runner", retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
 			c.ExternalEffect, c.EffectState, c.EffectID = "git_push", "pending", newNativeID("effect")
 		}},
@@ -189,6 +190,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "typed complete without legacy body is runnable", disposition: &tracker.NativeDisposition{Status: "complete"}, retainedSource: true, wantCandidate: true},
 		{name: "legacy complete dirty retained source is runnable", finalMessage: completeReport, legacy: true, retainedSource: true, worktreeState: "dirty", wantCandidate: true},
 		{name: "legacy retained source without report stays answered", legacy: true, retainedSource: true},
+		{name: "aged legacy retained source without report retries", legacy: true, retainedSource: true, aged: true, wantCandidate: true},
 		{name: "legacy instance report with retained source stays answered", finalMessage: instanceReport, legacy: true, retainedSource: true},
 		{name: "legacy definition blocker with retained source stays answered", finalMessage: definitionReport, legacy: true, retainedSource: true},
 		{name: "legacy human action with retained source stays answered", finalMessage: strings.Replace(completeReport, "human_action: null", "human_action: Approve the exception", 1), legacy: true, retainedSource: true},

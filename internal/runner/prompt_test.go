@@ -85,7 +85,7 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 					t.Errorf("contract missing %q", want)
 				}
 			}
-			for _, want := range []string{"assigned source deliverable is staged and ready for host finalization", "all worker-owned pre-publication requirements are met", "not that the whole issue is Done", "final report precedes the runner-owned commit and immutable Change publication", "do not report in_progress solely", "An explicitly assigned existing post-integration owner does not require a new follow-up", "For an unchanged inspection or verified already-landed result, use complete only when the issue acceptance is met"} {
+			for _, want := range []string{"assigned source deliverable is staged and ready for host finalization", "all worker-owned pre-publication requirements are met", "not that the whole issue is Done", "final report precedes the runner-owned commit and immutable Change publication", "do not report in_progress or blocked solely", "An explicitly assigned existing post-integration owner does not require a new follow-up", "For an unchanged inspection or verified already-landed result, use complete only when the issue acceptance is met"} {
 				if !strings.Contains(contract, want) {
 					t.Errorf("native source handoff contract missing %q", want)
 				}
