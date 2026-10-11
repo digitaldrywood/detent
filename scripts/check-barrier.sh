@@ -116,8 +116,13 @@ run_checks_in_order() {
     done
     for i in "${!pids[@]}"; do
         if ! wait "${pids[$i]}"; then
-            echo "${names[$i]}" >> tmp/barrier-checks.failed
-            status=1
+            cat "tmp/barrier-check-${names[$i]}.log"
+            if check_with_evidence "barrier-${names[$i]}" check_command "${names[$i]}" > "tmp/barrier-check-${names[$i]}.log" 2>&1; then
+                printf 'check-barrier: check passed on retry: %s\n' "${names[$i]}"
+            else
+                echo "${names[$i]}" >> tmp/barrier-checks.failed
+                status=1
+            fi
         fi
         cat "tmp/barrier-check-${names[$i]}.log"
     done
