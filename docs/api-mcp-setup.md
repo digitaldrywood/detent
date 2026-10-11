@@ -340,7 +340,7 @@ changing the connection. These failures have different owners:
 | Symptom | Cause and supported next step |
 | --- | --- |
 | `Environment variable DETENT_API_KEY for MCP server 'detent' is not set` | The process hosting MCP lacks the configured environment variable. A shared Codex app-server may have started before the project environment loaded. Loading direnv in a later terminal does not update that process. Start a separate client from the loaded project environment; do not restart a shared daemon serving other sessions. |
-| `MCP tool call requires approval, but approval policy is never` | Codex rejected the call before contacting Detent. A tool requiring client confirmation cannot run in that session. The user must select a client session that can present confirmation; repeating the call or reconnecting to Detent does not approve it. |
+| `MCP tool call requires approval, but approval policy is never` | Codex rejected the call before contacting Detent because this tool still requires client confirmation. The user must select an interactive session to review it. A previously saved tool-specific approval can allow later calls without a prompt; repeating the refused call or reconnecting to Detent does not approve it. |
 | A Detent response reports `403` or insufficient scope/grants | The request reached the Hub, which refused the current authority. Check the key scope, selected project and account grants through the existing Settings and connection reads. Client confirmation does not grant server permissions. |
 
 For an interactive operator session, the user can run the following from a
@@ -360,12 +360,37 @@ read does not establish permission to execute write tools. Inspect the actual
 session settings when resuming; do not assume the original sandbox or a changed
 user request altered its confirmation policy.
 
+In that interactive session, the user can choose **Always allow** for a specific
+tool they intend to authorize on subsequent calls. Codex persists that selection
+in its user configuration, normally `~/.codex/config.toml` (or
+`$CODEX_HOME/config.toml`). For example, selecting it for `update_runner_routing`
+on the server named `detent` saves:
+
+```toml
+[mcp_servers.detent.tools.update_runner_routing]
+approval_mode = "approve"
+```
+
+The general key is `mcp_servers.detent.tools.<tool>.approval_mode`. This records
+the user's client preference for that tool; it grants no Hub role, key scope or
+project access. Keep the selection specific to the intended tool rather than
+approving every tool on the server. A fresh `codex exec` loads the user
+configuration by default and can use the saved approval even with
+`approval_policy = "never"`, since that call no longer needs a prompt. Check for
+a different `CODEX_HOME`, configuration overrides or `--ignore-user-config` if
+the preference is absent. An existing session may retain its earlier settings;
+start a separate session with the intended configuration and loaded environment
+instead of restarting a shared daemon. See the
+[Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
+for per-tool approval settings.
+
 After connecting, verify the selected account and organization with
 `connection_info`, then read the intended project before making an authorized
 change. Detent executes authorized writes directly and returns their result;
 there is no Detent approval URL to open or pending approval to release. Preserve
 truthful tool annotations and scoped credentials. Do not relabel writes as
-read-only, disable confirmation or broaden grants to conceal a client failure.
+read-only, change approval settings without the user's authorization or broaden
+grants to conceal a client failure.
 See the [Codex MCP configuration reference](https://developers.openai.com/codex/mcp/)
 for client settings and [client confirmation and current authority](mcp-capabilities.md#client-confirmation-and-current-authority)
 for the server contract.
