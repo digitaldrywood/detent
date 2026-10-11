@@ -45,73 +45,125 @@ func TestRunnerSlotRecommendation(t *testing.T) {
 		hours    float64
 		runs     int
 		pressure int
+		disk     uint64
 	}{
-		{"dedicated", "dedicated", nil, &slotRange{14, 14}, 24, 10, 0},
-		{"shared day", "person_hours", nil, &slotRange{12, 12}, 24, 10, 0},
-		{"shared night", "free_hours", nil, &slotRange{14, 14}, 24, 10, 0},
+		{"dedicated", "dedicated", nil, &slotRange{14, 14}, 24, 10, 0, 0},
+		{"shared day", "person_hours", nil, &slotRange{12, 12}, 24, 10, 0, 0},
+		{"shared night", "free_hours", nil, &slotRange{14, 14}, 24, 10, 0, 0},
 		{"warn pressure", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
 			h[0].PressureWarnCount = 1
 			h[0].Slots = 6
 			return h, r
-		}, &slotRange{5, 5}, 24, 10, 1},
+		}, &slotRange{5, 5}, 24, 10, 1, 0},
 		{"critical pressure", "person_hours", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
 			h[0].PressureCriticalCount = 1
 			h[0].Slots = 4
 			return h, r
-		}, &slotRange{3, 3}, 24, 10, 1},
+		}, &slotRange{3, 3}, 24, 10, 1, 0},
 		{"PSI above ten", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
 			h[0].PSISomeAvg10Sum = 1320
 			h[0].PSISomeSampleCount = 120
 			h[0].Slots = 3
 			return h, r
-		}, &slotRange{2, 2}, 24, 10, 1},
+		}, &slotRange{2, 2}, 24, 10, 1, 0},
 		{"PSI exactly ten", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
 			h[0].PSISomeAvg10Sum = 1200
 			h[0].PSISomeSampleCount = 120
 			return h, r
-		}, &slotRange{14, 14}, 24, 10, 0},
+		}, &slotRange{14, 14}, 24, 10, 0, 0},
 		{"sustained swap", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
 			h[0].SwapUsedMaxBytes = capacityGiB
 			h[1].SwapUsedMaxBytes = capacityGiB
 			h[1].Slots = 5
 			return h, r
-		}, &slotRange{4, 4}, 24, 10, 1},
+		}, &slotRange{4, 4}, 24, 10, 1, 0},
 		{"isolated swap", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
 			h[0].SwapUsedMaxBytes = capacityGiB
 			return h, r
-		}, &slotRange{14, 14}, 24, 10, 0},
+		}, &slotRange{14, 14}, 24, 10, 0, 0},
 		{"hours insufficient", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
 			return h[:23], r
-		}, nil, 23, 10, 0},
+		}, nil, 23, 10, 0, 0},
 		{"runs insufficient", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
 			return h, r[:9]
-		}, nil, 24, 9, 0},
+		}, nil, 24, 9, 0, 0},
 		{"partial hours", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
 			for i := range h {
 				h[i].MemorySampleCount = 60
 			}
 			return h, r
-		}, nil, 12, 10, 0},
+		}, nil, 12, 10, 0, 0},
 		{"disk below reserve", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
 			h[0].DiskFreeMinBytes = 20 * capacityGiB
 			return h, r
-		}, &slotRange{0, 0}, 24, 10, 0},
+		}, &slotRange{0, 0}, 24, 10, 0, 0},
 		{"CPU cap", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
 			for i := range r {
 				r[i].Usage.UserCPUSeconds = 190
 			}
 			return h, r
-		}, &slotRange{7, 7}, 24, 10, 0},
+		}, &slotRange{7, 7}, 24, 10, 0, 0},
 		{"measured headroom range", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
 			h[0].MemoryAvailableMinBytes = 24 * capacityGiB
 			h[0].Slots = 2
 			return h, r
-		}, &slotRange{8, 14}, 24, 10, 0},
+		}, &slotRange{8, 14}, 24, 10, 0, 0},
 		{"measured disk cap", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
-			h[0].DiskFreeMinBytes = 280 * capacityGiB
-			h[0].Slots = 4
+			h[1].DiskFreeMinBytes = 280 * capacityGiB
+			h[1].Slots = 4
 			return h, r
-		}, &slotRange{10, 10}, 24, 10, 0},
+		}, &slotRange{10, 10}, 24, 10, 0, 30 * capacityGiB},
+		{"idle disk growth before a lease", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			for i := 1; i < len(h); i++ {
+				h[i].DiskFreeMinBytes = 280 * capacityGiB
+			}
+			h[2].Slots = 1
+			return h, r
+		}, &slotRange{14, 14}, 24, 10, 0, 0},
+		{"first disk observation occupied", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].DiskFreeMinBytes = 280 * capacityGiB
+			h[0].Slots = 1
+			return h, r
+		}, &slotRange{14, 14}, 24, 10, 0, 0},
+		{"disk growth across a gap", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			for i := 1; i < len(h); i++ {
+				h[i].Hour = h[i].Hour.Add(time.Hour)
+				h[i].DiskFreeMinBytes = 280 * capacityGiB
+			}
+			h[1].Slots = 1
+			return h, r
+		}, &slotRange{14, 14}, 24, 10, 0, 0},
+		{"disk cap preserves unrelated background usage", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[1].DiskFreeMinBytes = 140 * capacityGiB
+			h[2].DiskFreeMinBytes = 100 * capacityGiB
+			h[2].Slots = 2
+			return h, r
+		}, &slotRange{3, 3}, 24, 10, 0, 20 * capacityGiB},
+		{"warn without disk", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			hour := h[len(h)-1]
+			hour.Hour = hour.Hour.Add(time.Hour)
+			hour.DiskSampleCount = 0
+			hour.PressureWarnCount = 1
+			hour.Slots = 6
+			return append(h, hour), r
+		}, &slotRange{5, 5}, 24, 10, 1, 0},
+		{"critical without CPU", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			hour := h[len(h)-1]
+			hour.Hour = hour.Hour.Add(time.Hour)
+			hour.CPUSampleCount = 0
+			hour.PressureCriticalCount = 1
+			hour.Slots = 4
+			return append(h, hour), r
+		}, &slotRange{3, 3}, 24, 10, 1, 0},
+		{"PSI without memory", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			hour := h[len(h)-1]
+			hour.Hour = hour.Hour.Add(time.Hour)
+			hour.MemorySampleCount = 0
+			hour.PSISomeSampleCount = 1
+			hour.PSISomeAvg10Sum = 11
+			hour.Slots = 3
+			return append(h, hour), r
+		}, &slotRange{2, 2}, 24, 10, 1, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -125,8 +177,8 @@ func TestRunnerSlotRecommendation(t *testing.T) {
 				cores = append(cores, (run.Usage.UserCPUSeconds+run.Usage.SystemCPUSeconds)/run.Usage.WallSeconds)
 			}
 			got := recommendPeriod(test.period, hours, peaks, cores)
-			if !reflect.DeepEqual(got.Slots, test.want) || got.HoursCovered != test.hours || got.RunsObserved != test.runs || got.OverCapacityHours != test.pressure {
-				t.Fatalf("recommendation=%+v slots=%+v, want slots=%+v hours=%v runs=%d pressure=%d", got, got.Slots, test.want, test.hours, test.runs, test.pressure)
+			if !reflect.DeepEqual(got.Slots, test.want) || got.HoursCovered != test.hours || got.RunsObserved != test.runs || got.OverCapacityHours != test.pressure || got.DiskBytesPerSlot != test.disk {
+				t.Fatalf("recommendation=%+v slots=%+v, want slots=%+v hours=%v runs=%d pressure=%d disk=%d", got, got.Slots, test.want, test.hours, test.runs, test.pressure, test.disk)
 			}
 			if test.want == nil && got.Status != "insufficient_evidence" || test.want != nil && got.Status != "recommended" {
 				t.Fatalf("status=%q", got.Status)

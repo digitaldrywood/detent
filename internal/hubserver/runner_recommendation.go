@@ -153,22 +153,28 @@ func recommendPeriod(period string, hours []recommendationHour, peaks, cores []f
 	peak, cpuPeak := capacityP90(peaks), capacityP90(cores)
 	cpu := max(1, cpuPeak)
 	out.P90PeakMemoryBytes, out.P90CPUCores = uint64(peak), cpuPeak
-	baselineDiskUsed := math.Inf(1)
-	for _, hour := range hours {
-		if hour.DiskSampleCount > 0 {
-			baselineDiskUsed = min(baselineDiskUsed, float64(hour.DiskTotalMinBytes-hour.DiskFreeMinBytes))
-		}
-	}
 	diskPerSlot := []float64{}
-	for _, hour := range hours {
-		if hour.DiskSampleCount > 0 && hour.Slots > 0 {
-			diskPerSlot = append(diskPerSlot, max(0, float64(hour.DiskTotalMinBytes-hour.DiskFreeMinBytes)-baselineDiskUsed)/hour.Slots)
+	for i, hour := range hours {
+		if i == 0 || hour.DiskSampleCount == 0 || hour.Slots == 0 {
+			continue
 		}
+		previous := hours[i-1]
+		if previous.DiskSampleCount == 0 || hour.Hour.Sub(previous.Hour) != time.Hour || hour.DiskTotalMinBytes != previous.DiskTotalMinBytes {
+			continue
+		}
+		growth := max(0, float64(previous.DiskFreeMinBytes)-float64(hour.DiskFreeMinBytes))
+		diskPerSlot = append(diskPerSlot, growth/hour.Slots)
 	}
 	out.DiskBytesPerSlot = uint64(capacityP90(diskPerSlot))
 	lower, upper, observedUpper := 10000, 10000, 0
 	pressureCap := 10000
 	for i, hour := range hours {
+		swapping := hour.SwapUsedMaxBytes > 0 && i > 0 && hours[i-1].SwapUsedMaxBytes > 0 && hour.Hour.Sub(hours[i-1].Hour) == time.Hour
+		pressure := hour.OverCapacity || swapping || hour.PressureWarnCount > 0 || hour.PressureCriticalCount > 0 || hour.PSISomeSampleCount > 0 && hour.PSISomeAvg10Sum/float64(hour.PSISomeSampleCount) > 10
+		if pressure {
+			out.OverCapacityHours++
+			pressureCap = min(pressureCap, max(0, int(math.Ceil(hour.Slots))-1))
+		}
 		if hour.MemorySampleCount == 0 || hour.CPUSampleCount == 0 || hour.DiskSampleCount == 0 {
 			continue
 		}
@@ -182,12 +188,6 @@ func recommendPeriod(period string, hours []recommendationHour, peaks, cores []f
 		diskReserve := max(20*capacityGiB, float64(hour.DiskTotalMinBytes)*0.15)
 		out.MemoryReserveBytes = max(out.MemoryReserveBytes, uint64(math.Ceil(reserve)))
 		out.DiskReserveBytes = max(out.DiskReserveBytes, uint64(math.Ceil(diskReserve)))
-		swapping := hour.SwapUsedMaxBytes > 0 && i > 0 && hours[i-1].SwapUsedMaxBytes > 0 && hour.Hour.Sub(hours[i-1].Hour) == time.Hour
-		pressure := hour.OverCapacity || swapping || hour.PressureWarnCount > 0 || hour.PressureCriticalCount > 0 || hour.PSISomeSampleCount > 0 && hour.PSISomeAvg10Sum/float64(hour.PSISomeSampleCount) > 10
-		if pressure {
-			out.OverCapacityHours++
-			pressureCap = min(pressureCap, max(0, int(math.Ceil(hour.Slots))-1))
-		}
 		if peak == 0 {
 			continue
 		}
@@ -197,7 +197,8 @@ func recommendPeriod(period string, hours []recommendationHour, peaks, cores []f
 		if float64(hour.DiskFreeMinBytes) < diskReserve {
 			limit = 0
 		} else if out.DiskBytesPerSlot > 0 {
-			limit = min(limit, int(math.Floor((float64(hour.DiskTotalMinBytes)-baselineDiskUsed-diskReserve)/float64(out.DiskBytesPerSlot))))
+			diskBackground := max(0, float64(hour.DiskTotalMinBytes)-float64(hour.DiskFreeMinBytes)-hour.Slots*float64(out.DiskBytesPerSlot))
+			limit = min(limit, int(math.Floor((float64(hour.DiskTotalMinBytes)-diskBackground-diskReserve)/float64(out.DiskBytesPerSlot))))
 		}
 		upper = min(upper, limit)
 		memoryBackground := max(0, float64(hour.MemoryTotalBytes-hour.MemoryAvailableMinBytes)-hour.Slots*peak)

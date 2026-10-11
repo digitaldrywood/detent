@@ -706,15 +706,20 @@ cores with a p90 CPU requirement of at least one core per slot. Dedicated and
 free hours reserve max(2 GiB, 10% RAM) and one core; person hours reserve
 max(8 GiB, 25% RAM) and two cores. Disk reserves max(20 GiB, 15% total);
 insufficient free disk yields zero slots. When observed disk growth correlates
-with lease occupancy, its p90 bytes per slot additionally caps slots. Otherwise
-there is no measured per-slot disk estimate. GPU is not reserved.
+with lease occupancy, its p90 bytes per slot additionally caps slots. Growth is
+measured between consecutive sampled hours with unchanged disk capacity; idle
+growth and gaps do not become per-slot usage. The disk cap accounts for each
+hour's estimated background usage. Otherwise there is no measured per-slot disk
+estimate. GPU is not reserved.
 
 The range reflects the least and most headroom observed after estimating
 background memory and CPU from host metrics and lease-derived slot hours,
 within the resource ceilings. Any warn/critical macOS pressure, hourly mean
 Linux PSI memory `some` avg10 above 10%, or adjacent swap-bearing host hours
 lowers both bounds by at least one and caps them below the affected hour's
-observed slot usage. Swap maxima cannot distinguish active swapping from
+observed slot usage. Available pressure evidence counts even when other resource
+samples are missing; those hours do not add resource coverage. Swap maxima
+cannot distinguish active swapping from
 retained swap allocation; PSI summaries cannot identify individual sample spikes.
 The evidence includes coverage, run counts, p90 memory and CPU, reserves,
 measured disk bytes per slot, slot hours and over-capacity hour counts.
