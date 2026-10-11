@@ -1,16 +1,17 @@
 import React from "react";
-import { Link, useRouterState } from "@tanstack/react-router";
-import { usePlatformResource } from "./usePlatformResource.ts";
+import { Link, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 
 import { Badge } from "../../components/ui/badge.tsx";
-import { Button } from "../../components/ui/button.tsx";
 import { Empty, EmptyHeader, EmptyTitle } from "../../components/ui/empty.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Skeleton } from "../../components/ui/skeleton.tsx";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/table.tsx";
+import { SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
 import { usePageTitle } from "../pageTitle.ts";
 import { type PlatformUsers } from "./api.ts";
 import { Problem, useEntryApi } from "./EntryScreens.tsx";
+import { PlatformRoleContext } from "./PlatformConsole.tsx";
+import { usePlatformResource } from "./usePlatformResource.ts";
 
 function date(value: string, time = false): string {
   if (value === "") return "—";
@@ -20,53 +21,39 @@ function date(value: string, time = false): string {
   return time ? `${iso.slice(0, 10)} ${iso.slice(11, 16)}Z` : iso.slice(0, 10);
 }
 
-export function PlatformUserResults({ value }: { readonly value: PlatformUsers }): React.ReactElement {
+function PlatformRole({ role }: { readonly role: string }): React.ReactElement {
+  return role === "" ? <span className="text-muted-foreground">None</span> : <Badge variant="info">{role}</Badge>;
+}
+
+function Unsearched({ value }: { readonly value: PlatformUsers }): React.ReactElement | null {
+  return value.unsearched.length === 0 ? null : (
+    <div role="status" className="space-y-1 text-sm text-warning-foreground">
+      {value.unsearched.map((organization) => <p key={organization.organization_id}>Not searched: {organization.organization_name}</p>)}
+    </div>
+  );
+}
+
+export function PlatformUserResults({ value, query }: { readonly value: PlatformUsers; readonly query: string }): React.ReactElement {
   return (
-    <div className="flex flex-col gap-6" aria-live="polite">
-      {value.users.length === 0 ? (
-        <Empty><EmptyHeader><EmptyTitle>No users match</EmptyTitle></EmptyHeader></Empty>
-      ) : value.users.map((user) => (
-        <section key={user.email} aria-label={user.email} className="min-w-0 space-y-3 border-b border-border pb-6">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="break-all text-sm font-medium">{user.email}</h2>
-            <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-              <span>Platform role: {user.platform_role === "" ? "—" : <Badge variant="outline">{user.platform_role}</Badge>}</span>
-              <span>Last sign-in: <time dateTime={user.last_sign_in_at || undefined}>{date(user.last_sign_in_at, true)}</time></span>
-            </div>
-          </div>
-          <p className="break-all font-mono text-xs text-muted-foreground">Subject: {user.subject || "—"}</p>
-          <Table aria-label={`Organizations for ${user.email}`}>
-            <TableHeader><TableRow>
-              <TableHead>Organization</TableHead><TableHead>Role</TableHead><TableHead>Joined</TableHead><TableHead><span className="sr-only">Tenant</span></TableHead>
-            </TableRow></TableHeader>
-            <TableBody>
-              {user.memberships.map((membership) => (
-                <TableRow key={membership.organization_id}>
-                  <TableCell>{membership.organization_name}</TableCell>
-                  <TableCell><Badge variant="outline">{membership.role}</Badge></TableCell>
-                  <TableCell><time dateTime={membership.joined_at}>{date(membership.joined_at)}</time></TableCell>
-                  <TableCell><Button size="compact" variant="ghost" render={<Link to={"/platform/tenants" as never} search={{ tenant: membership.organization_id } as never} />}>Open tenant →</Button></TableCell>
-                </TableRow>
-              ))}
-              {user.invitations.map((invitation, index) => (
-                <TableRow key={`${invitation.organization_id}-${index}`}>
-                  <TableCell>{invitation.organization_name}</TableCell>
-                  <TableCell><Badge variant="warning">invited</Badge></TableCell>
-                  <TableCell>expires <time dateTime={invitation.expires_at}>{date(invitation.expires_at)}</time></TableCell>
-                  <TableCell><Button size="compact" variant="ghost" render={<Link to={"/platform/tenants" as never} search={{ tenant: invitation.organization_id } as never} />}>Open tenant →</Button></TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-          {user.memberships.length === 0 ? <p className="text-sm text-muted-foreground">No organization membership</p> : null}
-        </section>
-      ))}
+    <div className="flex min-w-0 flex-col gap-6" aria-live="polite">
+      <SettingsSection title="Users" headerAction={<Badge variant="outline">{value.users.length}</Badge>}>
+        <Table aria-label="Users">
+          <TableHeader><TableRow>
+            <TableHead>User</TableHead><TableHead>Platform role</TableHead><TableHead className="text-right">Organizations</TableHead><TableHead>Last sign-in</TableHead>
+          </TableRow></TableHeader>
+          <TableBody>
+            {value.users.map((user) => <TableRow key={user.email}>
+              <TableCell><Link to={"/platform/users/$email" as never} params={{ email: user.email } as never} search={{ q: query } as never} className="font-medium underline-offset-4 hover:underline focus-visible:underline">{user.email}</Link></TableCell>
+              <TableCell><PlatformRole role={user.platform_role} /></TableCell>
+              <TableCell className="text-right"><Badge variant="outline">{user.memberships.length}</Badge></TableCell>
+              <TableCell><time dateTime={user.last_sign_in_at || undefined}>{date(user.last_sign_in_at, true)}</time></TableCell>
+            </TableRow>)}
+            {value.users.length === 0 ? <TableRow><TableCell colSpan={4}><Empty size="compact"><EmptyHeader><EmptyTitle>No users match</EmptyTitle></EmptyHeader></Empty></TableCell></TableRow> : null}
+          </TableBody>
+        </Table>
+      </SettingsSection>
       {value.users.length === 50 ? <p className="text-sm text-muted-foreground">Showing up to 50 users. Refine your search to find other users.</p> : null}
-      {value.unsearched.length === 0 ? null : (
-        <div role="status" className="space-y-1 text-sm text-warning-foreground">
-          {value.unsearched.map((organization) => <p key={organization.organization_id}>Not searched: {organization.organization_name}</p>)}
-        </div>
-      )}
+      <Unsearched value={value} />
     </div>
   );
 }
@@ -74,34 +61,74 @@ export function PlatformUserResults({ value }: { readonly value: PlatformUsers }
 export function PlatformUsersPage(): React.ReactElement {
   usePageTitle("Users", "Platform");
   const api = useEntryApi();
+  const navigate = useNavigate();
   const routeQuery = useRouterState({ select: (state) => (state.location.search as { q?: string }).q ?? "" });
   const [query, setQuery] = React.useState(routeQuery);
-  const [submitted, setSubmitted] = React.useState(routeQuery);
-  React.useEffect(() => { setQuery(routeQuery); setSubmitted(routeQuery); }, [routeQuery]);
-  const resource = usePlatformResource(() => submitted === "" ? Promise.resolve(null) : api.platformUsers(submitted), [api, submitted]);
-  const loading = submitted !== "" && resource.loading;
-  const valid = Array.from(query.trim()).length >= 3;
+  React.useEffect(() => { setQuery(routeQuery); }, [routeQuery]);
+  React.useEffect(() => {
+    if (query.trim() === routeQuery) return;
+    const timer = setTimeout(() => {
+      void navigate({ to: "/platform/users", search: { q: query.trim() || undefined }, resetScroll: false } as never);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [query, routeQuery, navigate]);
+  const submitted = routeQuery.trim();
+  const valid = Array.from(submitted).length >= 3;
+  const resource = usePlatformResource(() => valid ? api.platformUsers(submitted) : Promise.resolve(null), [api, submitted, valid]);
+  const loading = valid && resource.loading;
   const value = loading || resource.error !== null ? null : resource.value;
-  function search(event: React.FormEvent): void {
-    event.preventDefault();
-    if (!valid || loading) return;
-    if (submitted === query.trim()) void resource.refresh();
-    else setSubmitted(query.trim());
-  }
 
   return (
     <>
-      <form onSubmit={search} className="space-y-2">
-        <label htmlFor="user-email" className="text-sm font-medium">Search by email</label>
-        <div className="flex items-center gap-2">
-          <Input id="user-email" type="search" value={query} onChange={(event) => setQuery(event.target.value)} aria-describedby="user-search-help" className="min-w-0 flex-1" />
-          <Button type="submit" disabled={!valid || loading}>{loading ? "Searching…" : "Search"}</Button>
-        </div>
-        <p id="user-search-help" className="text-xs text-muted-foreground">Enter at least three characters. Matches verified emails across all tenants.</p>
+      <form onSubmit={(event) => {
+        event.preventDefault();
+        void navigate({ to: "/platform/users", search: { q: query.trim() || undefined }, resetScroll: false } as never);
+      }} className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+        <label htmlFor="user-email" className="sr-only">Search by email</label>
+        <Input id="user-email" type="search" placeholder="Search by email" value={query} onChange={(event) => setQuery(event.target.value)} aria-describedby="user-search-help" className="min-w-0 sm:max-w-sm" />
+        <p id="user-search-help" className="text-xs text-muted-foreground">Enter at least three characters. Matches verified emails across all tenants. Search stays in the URL.</p>
       </form>
       <Problem message={resource.error?.message ?? null} />
       {loading ? <div role="status" aria-label="Searching users" className="space-y-3"><Skeleton className="h-6 w-1/2" /><Skeleton className="h-24 w-full" /></div> : null}
-      {value == null ? null : <PlatformUserResults value={value} />}
+      {value == null ? null : <PlatformUserResults value={value} query={submitted} />}
+    </>
+  );
+}
+
+export function PlatformUserPage(): React.ReactElement {
+  const { email } = useParams({ strict: false }) as { email: string };
+  usePageTitle(email, "Platform");
+  const api = useEntryApi();
+  const role = React.useContext(PlatformRoleContext);
+  const resource = usePlatformResource(() => api.platformUsers(email), [api, email]);
+  const value = resource.loading || resource.error !== null ? null : resource.value;
+  const user = value?.users.find((candidate) => candidate.email.toLowerCase() === email.toLowerCase());
+
+  return (
+    <>
+      <Problem message={resource.error?.message ?? null} />
+      {resource.loading ? <Skeleton className="h-48" aria-label="Loading user" /> : null}
+      {value == null ? null : user === undefined ? <><Empty><EmptyHeader><EmptyTitle>User not found</EmptyTitle></EmptyHeader></Empty><Unsearched value={value} /></> : <>
+        <SettingsSection title="Account" aria-label="Account">
+          <SettingsRow title="Email" control={<span className="min-w-0 break-all text-sm">{user.email}</span>} />
+          <SettingsRow title="Platform role" control={<><PlatformRole role={user.platform_role} />{role === "admin" ? <Link to={"/platform/staff" as never} className="text-sm text-primary underline underline-offset-4">Manage in Staff</Link> : null}</>} />
+          <SettingsRow title="Last sign-in" control={<time className="text-sm" dateTime={user.last_sign_in_at || undefined}>{date(user.last_sign_in_at, true)}</time>} />
+          <SettingsRow title="Identity subject" control={<span className="min-w-0 break-all font-mono text-xs">{user.subject || "—"}</span>} />
+        </SettingsSection>
+        <SettingsSection title="Organizations" aria-label="Organizations" headerAction={<Badge variant="outline">{user.memberships.length}</Badge>}>
+          {user.memberships.length === 0 ? <Empty size="compact"><EmptyHeader><EmptyTitle>No organization membership</EmptyTitle></EmptyHeader></Empty> : user.memberships.map((membership) => <SettingsRow key={membership.organization_id}
+            title={<Link to={"/platform/tenants/$tenantId" as never} params={{ tenantId: membership.organization_id } as never} className="break-words underline-offset-4 hover:underline focus-visible:underline">{membership.organization_name}</Link>}
+            description={<>Joined <time dateTime={membership.joined_at}>{date(membership.joined_at)}</time></>}
+            control={<Badge variant="outline">{membership.role}</Badge>} />)}
+        </SettingsSection>
+        <SettingsSection title="Pending invitations" aria-label="Pending invitations" headerAction={<Badge variant="outline">{user.invitations.length}</Badge>}>
+          {user.invitations.length === 0 ? <Empty size="compact"><EmptyHeader><EmptyTitle>No pending invitations</EmptyTitle></EmptyHeader></Empty> : user.invitations.map((invitation) => <SettingsRow key={invitation.organization_id}
+            title={<Link to={"/platform/tenants/$tenantId" as never} params={{ tenantId: invitation.organization_id } as never} className="break-words underline-offset-4 hover:underline focus-visible:underline">{invitation.organization_name}</Link>}
+            description={<>Expires <time dateTime={invitation.expires_at}>{date(invitation.expires_at)}</time></>}
+            control={<Badge variant="warning">invited</Badge>} />)}
+        </SettingsSection>
+        <Unsearched value={value} />
+      </>}
     </>
   );
 }
