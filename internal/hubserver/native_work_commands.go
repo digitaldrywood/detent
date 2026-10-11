@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -446,6 +447,8 @@ func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, nam
 		return s.changeNativeDependencyCommand(ctx, scope, request.Identifier, tracker.DependencyMutation{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), RelatedWorkItemID: tracker.NativeWorkItemID(request.Related), Operation: request.Operation})
 	case operatortool.RestoreItem:
 		return s.setNativeArchiveCommand(ctx, scope, request.Identifier, archiveIssueRequest{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision)}, false)
+	case operatortool.OrderItem, operatortool.SetQueuePriority:
+		return nil, &nativeError{Code: "invalid_request", Message: "Queue ordering and priority overrides require a GitHub-compatible project; native projects use issue priority", status: http.StatusUnprocessableEntity, publicMessage: true}
 	default:
 		return nil, nativeInvalid("application service is unavailable")
 	}

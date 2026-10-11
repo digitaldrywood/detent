@@ -65,6 +65,19 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if err := json.Unmarshal(raw, &createdFields); err != nil || string(createdFields["revision"]) != `"1"` {
 		t.Fatalf("creation revision=%s err=%v", raw, err)
 	}
+	for _, tool := range []string{operatortool.OrderItem, operatortool.SetQueuePriority} {
+		fields := map[string]any{"identifier": created.WorkItemID, "queue_scope": "project", "state": "Todo"}
+		if tool == operatortool.OrderItem {
+			fields["rank"] = "1"
+		} else {
+			fields["queue_priority"] = "high"
+		}
+		refused, failed := call(tool, "native-"+tool, fields)
+		var refusal operatortool.RequestError
+		if !failed || json.Unmarshal(refused, &refusal) != nil || refusal.Code != "invalid_request" || refusal.Message != "Queue ordering and priority overrides require a GitHub-compatible project; native projects use issue priority" {
+			t.Fatalf("%s native refusal=%s failed=%t", tool, refused, failed)
+		}
+	}
 	replay, failed := call("file_issue", "create", map[string]any{"title": "Created", "description": "Keep body", "state": "Todo"})
 	if failed || string(raw) != string(replay) {
 		t.Fatalf("creation replay=%s", replay)
