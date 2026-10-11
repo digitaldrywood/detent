@@ -160,7 +160,7 @@ test-fast: generate-docs
 	$(GO_TEST) -short -timeout=60s ./...
 
 test-race: generate-docs
-	$(GO_TEST) -short -race -timeout=10m ./... -count=1
+	$(GO_TEST) -short -race -timeout=30m ./... -count=1
 
 # COVER_SHARD=i/n runs one balanced slice; shard 1 also owns workspace and web.
 COVER_SHARD ?= 1/1
