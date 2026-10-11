@@ -149,16 +149,16 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 			if request.Action == "cancel" {
 				barrier.Started = barrier.Green
 			} else {
-				if request.Result == nil || policy.Digest([]byte(request.Result.Command)) != barrier.CommandDigest || request.Result.Command == "" || request.Result.ExitCode < 0 || request.Result.DurationNS < 0 || len(request.Result.Command) > 4096 || len(request.Result.Output) > 64<<10 || !request.Result.Evidence.Valid() || !request.Result.ValidPipeline("barrier") || !validCommitID(request.Result.TreeSHA) || !changerequest.ValidHash(request.Result.HeadSHA, 40) && !changerequest.ValidHash(request.Result.HeadSHA, 64) {
-					return nil, nativeInvalid("Barrier completion requires a command result and checked commit")
+				if reason := invalidBarrierResult(request.Result, barrier.CommandDigest); reason != "" {
+					return nil, barrierInvalid(reason)
 				}
 				if request.Result.Pipeline != nil {
 					if len(request.Result.Pipeline.Timings) > 1024 || request.Result.Pipeline.Dropped < 0 {
-						return nil, nativeInvalid("Invalid barrier timing population")
+						return nil, barrierInvalid("Invalid barrier timing population")
 					}
 					for _, timing := range request.Result.Pipeline.Timings {
 						if !timing.Valid() {
-							return nil, nativeInvalid("Invalid barrier timing")
+							return nil, barrierInvalid("Invalid barrier timing")
 						}
 					}
 					request.Result.Pipeline.Timings = gate.PublicPipeline(request.Result.Pipeline.Timings)
@@ -295,4 +295,28 @@ func landingBarrierOwnerAvailable(ctx context.Context, query nativeQueryer, scop
 		return true, nil
 	}
 	return owner.Health != "online" || owner.State == "disabled", err
+}
+
+func barrierInvalid(message string) error {
+	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
+}
+
+func invalidBarrierResult(result *gate.CommandResult, commandDigest string) string {
+	switch {
+	case result == nil || result.Command == "":
+		return "Barrier completion requires a command result"
+	case len(result.Command) > 4096 || policy.Digest([]byte(result.Command)) != commandDigest:
+		return "Barrier completion command does not match the claimed barrier command"
+	case result.ExitCode < 0 || result.DurationNS < 0:
+		return "Barrier completion requires a finished command"
+	case len(result.Output) > 64<<10:
+		return "Barrier completion output exceeds 64 KiB"
+	case !result.Evidence.Valid():
+		return "Barrier completion check evidence is invalid"
+	case !result.ValidPipeline("barrier"):
+		return "Barrier completion pipeline timing is invalid"
+	case !validCommitID(result.TreeSHA) || !changerequest.ValidHash(result.HeadSHA, 40) && !changerequest.ValidHash(result.HeadSHA, 64):
+		return "Barrier completion requires the checked commit and tree"
+	}
+	return ""
 }

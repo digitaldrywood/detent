@@ -310,3 +310,31 @@ func TestLargestRunnerTakesOverSmallerRunnersBarrier(t *testing.T) {
 		t.Fatalf("largest runner did not take over: %+v", taken)
 	}
 }
+
+func TestInvalidBarrierResultNamesTheRefusal(t *testing.T) {
+	t.Parallel()
+	command := "make check-barrier"
+	digest := policy.Digest([]byte(command))
+	valid := func() *gate.CommandResult {
+		return &gate.CommandResult{Command: command, HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), ExitCode: 2, Output: "red"}
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*gate.CommandResult)
+		want   string
+	}{
+		{name: "valid red result", mutate: func(*gate.CommandResult) {}},
+		{name: "other command", mutate: func(r *gate.CommandResult) { r.Command = "make other" }, want: "Barrier completion command does not match the claimed barrier command"},
+		{name: "unfinished command", mutate: func(r *gate.CommandResult) { r.ExitCode = -1 }, want: "Barrier completion requires a finished command"},
+		{name: "oversized output", mutate: func(r *gate.CommandResult) { r.Output = strings.Repeat("x", 64<<10+1) }, want: "Barrier completion output exceeds 64 KiB"},
+		{name: "missing tree", mutate: func(r *gate.CommandResult) { r.TreeSHA = "" }, want: "Barrier completion requires the checked commit and tree"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := valid()
+			test.mutate(result)
+			if got := invalidBarrierResult(result, digest); got != test.want {
+				t.Fatalf("reason = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
