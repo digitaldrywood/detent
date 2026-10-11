@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -176,6 +177,10 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 			}
 			if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
 				t.Fatal(err)
+			}
+			recovered, err := h.scheduler.RunExecution(issue.ID).(runner.ChangeSourceExecution).RecoverChangeSource(t.Context())
+			if err != nil || slices.Contains(recovered.PreviousHeads, oldHead) != test.republish {
+				t.Fatalf("superseded source provenance=%v: %v", recovered.PreviousHeads, err)
 			}
 			providerB := &committingAgent{validator: "pass", complete: true}
 			providerB.duringTurn = func() {
