@@ -414,7 +414,7 @@ func NormalizeRequiredStatusChecks(checks []string) []string {
 
 func NormalizeLandingMode(mode string) string {
 	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" {
+	if mode == "" || mode == LandingRollingBarrier {
 		return LandingPerChange
 	}
 	return mode
@@ -422,8 +422,8 @@ func NormalizeLandingMode(mode string) string {
 
 func Validate(prefix string, cfg Config) []string {
 	var problems []string
-	if mode := NormalizeLandingMode(cfg.LandingMode); mode != LandingPerChange && mode != LandingRollingBarrier {
-		problems = append(problems, prefix+".landing_mode must be one of per_landing, rolling_barrier")
+	if mode := NormalizeLandingMode(cfg.LandingMode); mode != LandingPerChange {
+		problems = append(problems, prefix+".landing_mode must be per_landing")
 	}
 	switch NormalizeKind(cfg.Kind) {
 	case KindCommand, KindHumanReview, KindArtifact:

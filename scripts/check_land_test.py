@@ -95,45 +95,22 @@ if stage == os.environ.get("PROBE_FAILURE"):
 
 @unittest.skipIf(os.name == "nt", "landing gate requires a POSIX shell")
 class LandingGateTest(unittest.TestCase):
-    def test_check_barrier_runs_only_in_landing_barrier(self):
-        scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
-        self.assertIsNotNone(scratch, "a supplied scratch directory is required")
-        for value in (None, "", "0"):
-            with self.subTest(value=value), tempfile.TemporaryDirectory(dir=scratch) as directory:
-                root = Path(directory)
-                (root / "scripts").mkdir()
-                for name in ("go.mod", "scripts/check-barrier.sh", "scripts/check-evidence.sh"):
-                    shutil.copy2(ROOT / name, root / name)
-                env = {key: item for key, item in os.environ.items() if key != "DETENT_LANDING_BARRIER"}
-                if value is not None:
-                    env["DETENT_LANDING_BARRIER"] = value
-                result = subprocess.run(["bash", "scripts/check-barrier.sh", "4"], cwd=root, env=env, capture_output=True, text=True, timeout=600)
-                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-                self.assertIn("make check-land", result.stderr)
-                self.assertEqual(sorted(path.name for path in root.iterdir()), ["go.mod", "scripts"])
-
     def test_stage_budget_and_failures(self):
         scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
         self.assertIsNotNone(scratch, "a supplied scratch directory is required")
         cases = [("check-land", budget, failure) for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "lint"), (4, "unit-short"), (4, "docs"), (4, "sqlc"))]
-        cases += [(target, 4, "") for target in ("test", "test-fast", "test-race", "test-cover", "check-barrier")]
+        cases += [(target, 4, "") for target in ("test", "test-fast", "test-race", "test-cover")]
         cases += [("check-land", 4, "browser"), ("check-land", 4, "browser-pass")]
         for target, budget, failure in cases:
             with self.subTest(target=target, budget=budget, failure=failure), tempfile.TemporaryDirectory(dir=scratch) as directory:
                 root = Path(directory)
                 (root / "scripts").mkdir()
-                for name in ("Makefile", ".golangci-version", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/affected_browser.py", "scripts/check-browser.sh", "scripts/check-barrier.sh", "scripts/barrier_failures.py", "scripts/test-workspace.sh", "scripts/cover-packages.sh"):
+                for name in ("Makefile", ".golangci-version", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/affected_browser.py", "scripts/check-browser.sh", "scripts/test-workspace.sh", "scripts/cover-packages.sh"):
                     shutil.copy2(ROOT / name, root / name)
                 for name in ("go", "git", "lint"):
                     path = root / name
                     path.write_text(TOOL)
                     path.chmod(0o700)
-                if target == "check-barrier":
-                    for name in ("make", "python3", "node_modules/.bin/playwright"):
-                        path = root / name
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_text(TOOL)
-                        path.chmod(0o700)
                 browser = failure in ("browser", "browser-pass")
                 if failure == "browser-pass":
                     (root / "app-changed").touch()
@@ -144,7 +121,7 @@ class LandingGateTest(unittest.TestCase):
                         path.write_text(TOOL)
                         path.chmod(0o700)
                 env = {key: value for key, value in os.environ.items() if key not in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES")}
-                env.update(PATH=str(root) + os.pathsep + env["PATH"], PROBE_BUDGET=str(budget), PROBE_FAILURE=failure, PROBE_TARGET=target, PROBE_MAKE=shutil.which("make"), PROBE_PYTHON=sys.executable, DETENT_BARRIER_FAILED="", DETENT_LANDING_BARRIER="1")
+                env.update(PATH=str(root) + os.pathsep + env["PATH"], PROBE_BUDGET=str(budget), PROBE_FAILURE=failure, PROBE_TARGET=target, PROBE_MAKE=shutil.which("make"), PROBE_PYTHON=sys.executable)
                 if browser:
                     env["PROBE_CHANGED"] = "web/conversation/src/app/reports/ReportsPage.tsx"
                 failed = bool(failure) and failure != "browser-pass"
@@ -155,7 +132,7 @@ class LandingGateTest(unittest.TestCase):
                 if failure not in ("docs", "sqlc"):
                     self.assertTrue(tests)
                 for event in tests:
-                    self.assertEqual("-count=1" in event["args"], target in ("test-race", "test-cover", "check-barrier"), event)
+                    self.assertEqual("-count=1" in event["args"], target in ("test-race", "test-cover"), event)
                 if target != "check-land":
                     continue
                 self.assertEqual("Landing checks passed." in result.stdout, not failed)

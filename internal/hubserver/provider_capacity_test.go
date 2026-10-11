@@ -283,12 +283,12 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 		{name: "queue rank yields to age", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, ranks: []string{"c", "a", "b"}, want: []int{0, 1, 2}},
 		{name: "precise creation order breaks unranked ties", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, ranks: []string{" ", "  ", "   "}, created: []string{"2026-10-02T12:00:00.000000002Z", "2026-10-02T12:00:00Z", "2026-10-02T12:00:00.000000001Z"}, want: []int{1, 2, 0}, winner: 1},
 		{name: "unblocker count yields to age", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, unavailable: "unblocker", want: []int{0, 1}},
+		{name: "retired red barrier does not hold merging", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{0, 1, 2}, order: []string{"Merging", "Todo"}, unavailable: "retired barrier", want: []int{0, 1, 2}},
 		{name: "required review is retained", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "required review", want: []int{1, 2}, winner: 1},
 		{name: "unavailable merging provider falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{0, 1, 2}, order: []string{"Merging", "Todo"}, unavailable: "provider", want: []int{0, 1, 2}, winner: 1},
 		{name: "changed merging revision falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{0, 1, 2}, order: []string{"Merging", "Todo"}, unavailable: "revision", want: []int{0, 1, 2}, winner: 1},
 		{name: "unreviewed merging falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "review", want: []int{1, 2}, winner: 1},
 		{name: "dependency held merging falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "dependency", want: []int{1, 2}, winner: 1},
-		{name: "red barrier holds reviewed merging", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Merging", "Todo"}, unavailable: "red barrier", want: []int{1, 2}, winner: 1},
 		{name: "leased merging leaves next slot for todo", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "lease", want: []int{1, 2}, winner: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -370,20 +370,12 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if test.unavailable == "red barrier" {
+			if test.unavailable == "retired barrier" {
 				var repository string
 				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT json_extract(record_json, '$.repository') FROM change_versions LIMIT 1").Scan(&repository); err != nil {
 					t.Fatal(err)
 				}
-				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-				if err := writeLandingBarrier(t.Context(), tx, scope, tracker.LandingBarrier{Repository: repository, ProjectID: f.project.ID, Red: true, Repair: "wi_unrelated"}); err != nil {
-					t.Fatal(err)
-				}
-				if err := tx.Commit(); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO landing_barriers (organization_id, repository, project_id, record_json) VALUES (?, ?, ?, ?)", f.project.OrganizationID, repository, f.project.ID, `{"red":true,"repair":"wi_unrelated"}`); err != nil {
 					t.Fatal(err)
 				}
 			}

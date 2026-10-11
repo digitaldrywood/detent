@@ -453,9 +453,6 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 			workflow, _, _, _ := r.runtimeSnapshot()
 			effectiveGate := gate.Effective(workflow.Config.Gate)
 			command := effectiveGate.Run
-			if effectiveGate.LandingMode == gate.LandingRollingBarrier {
-				command = ""
-			}
 			if command != "" {
 				commands, canRun := backend.(workspace.ReviewCommandRunner)
 				heads, canRead := backend.(workspace.HeadProvider)

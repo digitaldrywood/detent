@@ -47,17 +47,14 @@ complete run exceeds ten minutes, report stage timings before moving expensive
 integration or race diagnostics to the scheduled suite.
 
 Workers run `make check-land` under this repository's validation instructions.
-The Cloud project's approved `gate.run` is the scalar command `make check-barrier`;
-the checked-in `detent.yaml` retains `make check-land`. Runners use the approved
-Cloud policy for the barrier, and policy changes require operator approval.
-This project opts into `gate.landing_mode: rolling_barrier`: the host skips
-command validation after source finalization, during landing and during
-merge-resolution preparation. Signed commit finalization and Change publication
-still occur; this mode does not reuse a worker command receipt for host
-validation. A detached base-tip worktree runs the approved `gate.run` outside
-the source lock after landings. A red result stops repository landing except for
-its native repair issue; a green result reopens landing. Other projects default to `per_landing`,
-where a command failure returns the item to Rework with the output. Focused diagnostics and full scheduled
+The Cloud project uses `gate.run: make check-land` and
+`gate.landing_mode: per_landing`; changes require operator re-approval in the Hub.
+Source finalization validates the immutable reviewed head. Clean squashes retain
+that receipt and join the ordered staging batch. Rebases run build, short Go tests
+for touched packages, and lint of touched files on the rebased tree. A command
+failure returns the item to Rework with its output. Full browser, race, NilAway
+and integration checks stay in the scheduled suite and never hold landing.
+Focused diagnostics and full scheduled
 suites do not publish a required local commit status. The
 scheduled suite validates pinned integrated develop commits for release tags;
 every failing Detent scheduled job enters native Todo at least High under the
@@ -83,8 +80,8 @@ Plain `go test ./...` outside `make` has no cap.
 Ordinary `make test`, `make test-fast`, and `make check-land` reuse Go's native
 test-result cache for unchanged packages and tracked inputs. Filesystem
 diagnostics in tests use temporary directories or explicit fixtures rather than
-walking host toolchain caches. The rolling barrier runs the full Go suite fresh;
-race and coverage targets also use `-count=1`, preserving fresh scheduled evidence.
+walking host toolchain caches. Scheduled race and coverage targets use
+`-count=1`, preserving fresh scheduled evidence.
 Build and module caches retain their native locations.
 
 Scheduled Windows portability runs the Hub suite through

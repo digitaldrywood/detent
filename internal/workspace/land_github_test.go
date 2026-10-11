@@ -323,7 +323,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "prepare refuses lost authority before recording", prepareOnly: true, authorityFail: 4, method: "squash"},
 		{name: "prepare refuses ambiguous external effect before push", prepareOnly: true, ambiguousEffect: true, authorityFail: 2, method: "squash"},
 		{name: "prepare preserves source on authentication refusal", prepareOnly: true, method: "squash", failureMethod: "POST", status: 403, message: "Resource not accessible by integration", wantRefusal: LandRefusalProtected},
-		{name: "rolling mode skips a failing gate", method: "squash", rolling: true},
+		{name: "legacy rolling mode rejects a failing gate", method: "squash", rolling: true, gateFailure: true},
 		{name: "creates the exact source closing payload", method: "squash", sourceIssues: true},
 		{name: "reuse preserves human delivery attribution", method: "squash", pullState: "open", sourceIssues: true, existingBody: "Human attribution\n\nCloses example/repo#44", wantPatch: true},
 		{name: "reuse retains source lines without duplication", method: "squash", pullState: "open", sourceIssues: true, existingBody: "Human attribution\n\nCloses digitaldrywood/detent#3410"},
@@ -1107,11 +1107,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if test.rolling {
-				if result.Gate.Command != "" {
-					t.Fatalf("rolling gate ran: %+v", result.Gate)
-				}
-			} else if result.Gate.Command != opts.ValidationCommand || result.Gate.ExitCode != 0 || result.Gate.DurationNS <= 0 || !validLandingHead(result.Gate.HeadSHA) || !validLandingHead(result.Gate.TreeSHA) {
+			if result.Gate.Command != opts.ValidationCommand || result.Gate.ExitCode != 0 || result.Gate.DurationNS <= 0 || !validLandingHead(result.Gate.HeadSHA) || !validLandingHead(result.Gate.TreeSHA) {
 				t.Fatalf("successful gate lost receipt: %#v", result)
 			}
 			wantHead := fixture.head

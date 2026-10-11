@@ -140,7 +140,6 @@ func TestEmptyPipelinePayloads(t *testing.T) {
 	}{
 		{"receipt", NativeLandingReceipt{Gate: &gate.CommandResult{Pipeline: &gate.PipelineEvidence{}}}},
 		{"observation", NativeRuntimeObservation{Validation: &gate.CommandResult{Pipeline: &gate.PipelineEvidence{}}}},
-		{"barrier claim", LandingBarrierRequest{}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			raw, err := json.Marshal(tt.value)

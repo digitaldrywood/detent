@@ -28,7 +28,7 @@ func analyticsPagingContext(ctx context.Context, cursor string) (context.Context
 			return ctx, nil, errors.New("invalid analytics population cursor")
 		}
 		switch parts[0] {
-		case "attempts", "landings", "usage", "decisions", "capacity", "residence_issues", "residence_events", "barriers", "failures", "quality_landings", "quality_events", "quality_evidence", "quality_worked":
+		case "attempts", "landings", "usage", "decisions", "capacity", "residence_issues", "residence_events", "failures", "quality_landings", "quality_events", "quality_evidence", "quality_worked":
 		default:
 			return ctx, nil, errors.New("invalid analytics population cursor")
 		}

@@ -393,11 +393,7 @@ func TestLocalGitLandChangeMethods(t *testing.T) {
 			}
 			runGit(t, f.source, "fetch", "origin")
 			landedTree := strings.TrimSpace(runGit(t, f.source, "rev-parse", after+"^{tree}"))
-			if test.mode == gate.LandingRollingBarrier {
-				if result.Gate.Command != "" {
-					t.Fatalf("rolling landing ran a gate: %+v", result.Gate)
-				}
-			} else if result.Gate.HeadSHA != after || result.Gate.TreeSHA != landedTree || result.Gate.ExitCode != 0 || result.Gate.DurationNS <= 0 {
+			if result.Gate.HeadSHA != after || result.Gate.TreeSHA != landedTree || result.Gate.ExitCode != 0 || result.Gate.DurationNS <= 0 {
 				t.Fatalf("gate did not validate the landed tree: %#v, landed tree=%s", result.Gate, landedTree)
 			}
 			parents := strings.Fields(strings.TrimSpace(runGit(t, f.source, "rev-list", "--parents", "-n", "1", after)))
@@ -760,15 +756,12 @@ func TestLocalGitNativeLanding(t *testing.T) {
 		name                    string
 		count                   int
 		conflict, invalid, skip int
-		moved, movedTwice       bool
-		rolling, red, redAtPush bool
+		moved                   bool
+		rolling                 bool
 		receiptMismatch         string
 	}{
-		{name: "rolling batch skips gate", count: 2, conflict: -1, invalid: -1, skip: -1, rolling: true},
-		{name: "red barrier admits only repair", count: 2, conflict: -1, invalid: -1, skip: -1, rolling: true, red: true},
-		{name: "barrier turns red before batch push", count: 2, conflict: -1, invalid: -1, skip: -1, rolling: true, redAtPush: true},
-		{name: "rolling survives two base advances", count: 2, conflict: -1, invalid: -1, skip: -1, moved: true, movedTwice: true, rolling: true},
-		{name: "rolling moved base resquashes", count: 2, conflict: -1, invalid: -1, skip: -1, moved: true, rolling: true},
+		{name: "legacy rolling batch preserves validated heads", count: 2, conflict: -1, invalid: -1, skip: -1, rolling: true},
+		{name: "legacy rolling moved base resquashes", count: 2, conflict: -1, invalid: -1, skip: -1, moved: true, rolling: true},
 		{name: "clean validated head skips gate", count: 1, conflict: -1, invalid: -1, skip: -1},
 		{name: "ten heads share one push", count: 10, conflict: -1, invalid: -1, skip: -1},
 		{name: "conflict does not hold later members", count: 4, conflict: 1, invalid: -1, skip: -1},
@@ -780,7 +773,6 @@ func TestLocalGitNativeLanding(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newLandingFixture(t)
-			redBarrier := errors.New("red landing barrier")
 			requests := make([]LandRequest, test.count)
 			for i := range requests {
 				issue := Issue{Identifier: fmt.Sprintf("native-%d", i)}
@@ -799,14 +791,6 @@ func TestLocalGitNativeLanding(t *testing.T) {
 				options := LandOptions{Native: true, HeadSHA: head, Method: "squash", TargetBranch: "main", Message: file, ValidationCommand: "exit 73", Validation: &gate.CommandResult{Command: "exit 73", HeadSHA: head, TreeSHA: tree, DurationNS: int64(time.Second)}}
 				if test.rolling {
 					options.LandingMode = gate.LandingRollingBarrier
-					calls := 0
-					options.Authorize = func(context.Context) error {
-						calls++
-						if test.red && i == 0 || test.redAtPush && calls > 1 {
-							return redBarrier
-						}
-						return nil
-					}
 				}
 				if i == test.invalid {
 					switch test.receiptMismatch {
@@ -833,19 +817,12 @@ func TestLocalGitNativeLanding(t *testing.T) {
 				f.advanceMain(t, "advanced.txt", "concurrent push\n")
 				base = f.remoteMain(t)
 				firstAdvance := base
-				if test.movedTwice {
-					f.advanceMain(t, "advanced-again.txt", "another concurrent push\n")
-					base = f.remoteMain(t)
-				}
 				runGit(t, f.remote, "update-ref", "refs/heads/main", before)
 				if err := os.Remove(pushes); err != nil {
 					t.Fatal(err)
 				}
 				marker := filepath.Join(t.TempDir(), "advanced")
 				hook := "#!/bin/sh\nif [ ! -f '" + marker + "' ]; then\n git --git-dir='" + f.remote + "' update-ref refs/heads/main " + firstAdvance + " " + before + " || exit 1\n touch '" + marker + "'\nfi\n"
-				if test.movedTwice {
-					hook = strings.TrimSuffix(hook, "fi\n") + "elif [ ! -f '" + marker + "-again' ]; then\n git --git-dir='" + f.remote + "' update-ref refs/heads/main " + base + " " + firstAdvance + " || exit 1\n touch '" + marker + "-again'\nfi\n"
-				}
 				if err := os.WriteFile(filepath.Join(f.source, ".git", "hooks", "pre-push"), []byte(hook), 0o700); err != nil {
 					t.Fatal(err)
 				}
@@ -885,12 +862,6 @@ func TestLocalGitNativeLanding(t *testing.T) {
 			}
 			landed := 0
 			for i, outcome := range outcomes {
-				if test.redAtPush || test.red && i == 0 {
-					if !errors.Is(outcome.Err, redBarrier) || outcome.Result.MergeSHA != "" {
-						t.Fatalf("red member %d published: %#v", i, outcome)
-					}
-					continue
-				}
 				if i == test.conflict || i == test.invalid || i == test.skip {
 					if i == test.conflict && test.count > 1 {
 						if outcome.Result.BaseBefore != "" || outcome.Result.BaseRef != "" || outcome.Result.Method != "" || outcome.Result.Gate.Command != "" || outcome.Result.Path != "batch_member" {
@@ -915,7 +886,7 @@ func TestLocalGitNativeLanding(t *testing.T) {
 					t.Fatalf("member %d = %#v, base %s", i, outcome, base)
 				}
 				wantPath := "clean_push"
-				if test.count > 1 && !test.red {
+				if test.count > 1 {
 					wantPath = "batch_member"
 				}
 				if outcome.Result.Path != wantPath {
@@ -931,9 +902,6 @@ func TestLocalGitNativeLanding(t *testing.T) {
 			wantPushes := 1
 			if test.moved {
 				wantPushes = 2
-				if test.movedTwice {
-					wantPushes = 3
-				}
 			}
 			if landed > 0 && (err != nil || strings.Count(string(data), "push\n") != wantPushes) {
 				t.Fatalf("pushes = %q, %v", data, err)
@@ -998,15 +966,6 @@ func TestLocalGitRebasedNativeLanding(t *testing.T) {
 			}
 			if !found {
 				t.Fatalf("missing rebase=%+v", result.Pipeline)
-			}
-			if mode == gate.LandingRollingBarrier {
-				if err != nil || !result.Rebased || result.Path != "rebase_push" || result.Gate.Command != "" || len(result.Packages) != 0 || f.remoteMain(t) != result.MergeSHA {
-					t.Fatalf("rolling rebase outcome = %#v, %v", result, err)
-				}
-				if _, err := os.Stat(lintLog); !errors.Is(err, os.ErrNotExist) {
-					t.Fatalf("rolling rebase ran lint: %v", err)
-				}
-				return
 			}
 			if err != nil || !result.Rebased || result.Path != "rebase_short_validation" || !reflect.DeepEqual(result.Packages, []string{"."}) || result.Gate.HeadSHA != result.MergeSHA || !strings.Contains(result.Gate.Command, "go test -p ${TEST_PROCS:-4} -short -timeout=60s '.'") || !strings.Contains(result.Gate.Output, "native-landing.test") || f.remoteMain(t) != result.MergeSHA {
 				t.Fatalf("rebase outcome = %#v, %v", result, err)
