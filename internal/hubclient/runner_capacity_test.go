@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
 func TestRunnerCapacityHeartbeat(t *testing.T) {
@@ -23,17 +25,19 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name      string
-		supported bool
-		denied    bool
-		dispatch  bool
-		draining  bool
+		name        string
+		supported   bool
+		denied      bool
+		dispatch    bool
+		draining    bool
+		retryUpdate bool
 	}{
-		{"older Hub", false, false, false, false},
-		{"capacity owner Hub", true, false, false, false},
-		{"dispatch heartbeat", true, false, true, false},
-		{"denied heartbeat", true, true, false, false},
-		{"heartbeat upgrade stops claims", true, false, true, true},
+		{"older Hub", false, false, false, false, false},
+		{"capacity owner Hub", true, false, false, false, false},
+		{"dispatch heartbeat", true, false, true, false, false},
+		{"denied heartbeat", true, true, false, false, false},
+		{"heartbeat upgrade stops claims", true, false, true, true, false},
+		{"failed Hub update retries while drained", true, false, true, true, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -61,7 +65,7 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 			updateRequest := runnerauth.UpdateRequest{RequestedAt: observedAt, ID: "update-selected", Service: "detent", ExpectedBuildRevision: strings.Repeat("a", 64), Version: "1.2.4", Release: true}
 			updateReport := &runnerauth.UpdateObservation{Discovery: "available", Protocol: 1, Service: "detent", Supported: true, AvailableVersion: "1.2.4", AvailableObservedAt: observedAt, ObservedAt: observedAt, Running: runnerauth.BuildEvidence{Version: "test", Commit: "none", Source: "unknown", OS: "linux", Architecture: "amd64", ObservedAt: observedAt}}
 			updateReport.Revision = updateReport.BuildRevision()
-			updateCalls, updateApplications := 0, 0
+			updateCalls, updateApplications, updateRestarts := 0, 0, 0
 
 			projectRequest := &runnerauth.ProjectConfigurationRequest{RequestID: "project-request", ProjectID: "prj_test", Operation: "apply_local_project_policy"}
 			projectCalls, projectApplications := 0, 0
@@ -143,14 +147,46 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 				t.Fatal(err)
 			}
 			now := time.Now()
+			var updateScheduler *detentupdate.Scheduler
+			if test.retryUpdate {
+				updateReport.Running.Version = "1.2.3"
+				updateScheduler, err = detentupdate.NewScheduler(detentupdate.SchedulerConfig{
+					CheckInterval: 2 * time.Second, StatePath: filepath.Join(root, "update.json"), RunningBuild: updateReport.Running,
+					Now:            func() time.Time { return now },
+					ReserveDrain:   func(context.Context) (func(), error) { return func() {}, nil },
+					RequestRestart: func(string) bool { updateRestarts++; return true },
+					Updater: heartbeatUpdater{apply: func(_ context.Context, options detentupdate.ApplyOptions) (detentupdate.Status, error) {
+						updateApplications++
+						if !options.FollowHub || options.ExpectedVersion != updateRequest.Version {
+							t.Errorf("lost Hub update target: %+v", options)
+						}
+						if updateApplications == 1 {
+							return detentupdate.Status{}, errors.New("release download unavailable")
+						}
+						return detentupdate.Status{Action: detentupdate.ActionUpdated, LatestVersion: updateRequest.Version, LatestCommit: strings.Repeat("c", 40), BinarySHA256: strings.Repeat("d", 64), VerifiedRelease: true}, nil
+					}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				updateReport = updateScheduler.EnrolledUpdate(t.Context(), updateReport.Running, nil)
+				updateRequest.ExpectedBuildRevision = updateReport.Revision
+			}
 			scheduler, err := NewScheduler(client, SchedulerConfig{
 				OrganizationID: "org_test", NativeProjects: map[string]tracker.ProjectID{"native": "prj_test"},
 				Machine: Machine{ID: file.Identity.MachineID, Hostname: "host", DisplayName: "Runner", Version: "test", Capacity: 2}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute, Now: func() time.Time { return now },
 				UpdateOwner: func(_ context.Context, desired *runnerauth.UpdateRequest) *runnerauth.UpdateObservation {
 					updateCalls++
+					if updateScheduler != nil {
+						return updateScheduler.EnrolledUpdate(t.Context(), updateReport.Running, desired)
+					}
 					if desired != nil {
 						if *desired != updateRequest {
 							t.Errorf("wrong update delivery=%+v", desired)
+						}
+						if updateReport.Receipt != nil && updateReport.Receipt.Request == *desired {
+							copy := *updateReport
+							return &copy
 						}
 						updateApplications++
 						updateReport.Receipt = &runnerauth.UpdateReceipt{Request: *desired, Status: "refused", ObservedAt: observedAt}
@@ -198,7 +234,11 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 				}
 				return projectReport
 			})
-			for range 2 {
+			heartbeats := 2
+			if test.retryUpdate {
+				heartbeats = 4
+			}
+			for heartbeatIndex := range heartbeats {
 				var err error
 				if test.draining {
 					var issues []connector.Issue
@@ -220,12 +260,25 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if test.retryUpdate {
+					wantApplications := []int{1, 1, 2, 2}[heartbeatIndex]
+					if updateApplications != wantApplications {
+						t.Fatalf("heartbeat %d update applications=%d, want %d", heartbeatIndex, updateApplications, wantApplications)
+					}
+				}
 				now = now.Add(time.Second)
 			}
-			if test.supported && !test.denied && (calls != 4 || applications != 2 || scheduler.machine.Capacity != 6) || !test.supported && calls != 0 || test.denied && (calls != 1 || applications != 0 || scheduler.machine.Capacity != 2) {
+			if test.supported && !test.denied && (calls != 2*heartbeats || applications != heartbeats || scheduler.machine.Capacity != 6) || !test.supported && calls != 0 || test.denied && (calls != 1 || applications != 0 || scheduler.machine.Capacity != 2) {
 				t.Fatalf("calls/applications/capacity=%d/%d/%d", calls, applications, scheduler.machine.Capacity)
 			}
-			if test.supported && !test.denied && (updateCalls != 3 || updateApplications != 1) || !test.supported && updateCalls != 0 || test.denied && (updateCalls != 1 || updateApplications != 0) {
+			wantApplications := 1
+			if test.retryUpdate {
+				wantApplications = 2
+				if updateRestarts != 1 || scheduler.machine.Update == nil || scheduler.machine.Update.Receipt == nil || scheduler.machine.Update.Receipt.Status != "restart_requested" {
+					t.Fatalf("recovered update restarts=%d report=%+v", updateRestarts, scheduler.machine.Update)
+				}
+			}
+			if test.supported && !test.denied && (updateCalls != 2*heartbeats || updateApplications != wantApplications) || !test.supported && updateCalls != 0 || test.denied && (updateCalls != 1 || updateApplications != 0) {
 				t.Fatalf("update observations/applications=%d/%d", updateCalls, updateApplications)
 			}
 			if test.dispatch {
@@ -235,8 +288,17 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 			} else if test.supported && !test.denied && (projectCalls != 3 || projectApplications != 1) || !test.supported && projectCalls != 0 || test.denied && (projectCalls != 1 || projectApplications != 0) {
 				t.Fatalf("project calls/applications=%d/%d", projectCalls, projectApplications)
 			}
-			if observations == 0 {
-				t.Fatal("heartbeat was not sent")
+			wantObservations := heartbeats
+			if test.denied {
+				wantObservations = 1
+			} else if test.supported {
+				wantObservations += wantApplications
+				if !test.dispatch {
+					wantObservations++
+				}
+			}
+			if observations != wantObservations {
+				t.Fatalf("heartbeats=%d, want %d without duplicate update reports", observations, wantObservations)
 			}
 			cached, err := runnerauth.LoadRoutingCache(path)
 			expected := request
@@ -248,4 +310,16 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 			}
 		})
 	}
+}
+
+type heartbeatUpdater struct {
+	apply func(context.Context, detentupdate.ApplyOptions) (detentupdate.Status, error)
+}
+
+func (heartbeatUpdater) Check(context.Context) (detentupdate.Status, error) {
+	return detentupdate.Status{}, nil
+}
+
+func (u heartbeatUpdater) Apply(ctx context.Context, options detentupdate.ApplyOptions) (detentupdate.Status, error) {
+	return u.apply(ctx, options)
 }

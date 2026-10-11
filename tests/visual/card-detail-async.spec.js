@@ -43,7 +43,8 @@ test("card shell paints before delayed enrichments and hydrates in place", async
     });
   }
 
-  const card = page.locator("#board-lanes article[id^='card-']").first();
+  const card = page.getByRole("button", { name: /Kanban demo backlog intake/ });
+  await expect(card).toBeVisible();
   const title = (await card.locator("[data-board-card-title]").textContent()).trim();
   const state = (await card.locator("[data-board-card-state]").textContent()).trim();
   await card.click();
@@ -93,9 +94,10 @@ test("newer cards and close actions invalidate delayed card responses", async ({
     held.push(route);
   });
 
-  const cards = page.locator("#board-lanes article[id^='card-']");
-  const first = cards.nth(0);
-  const second = cards.nth(1);
+  const first = page.getByRole("button", { name: /Kanban demo backlog intake/ });
+  const second = page.getByRole("button", { name: /Kanban demo todo ready card/ });
+  await expect(first).toBeVisible();
+  await expect(second).toBeVisible();
   const firstTitle = (await first.locator("[data-board-card-title]").textContent()).trim();
   const secondTitle = (await second.locator("[data-board-card-title]").textContent()).trim();
   await first.click();
@@ -152,7 +154,7 @@ test("snapshot morphs refresh only core facts and preserve sheet state", async (
   });
   await openBoard(page);
 
-  await page.locator("#board-lanes article[id^='card-']").first().click();
+  await page.getByRole("button", { name: /Kanban demo backlog intake/ }).click();
   const sheet = page.locator("[data-detail-sheet]");
   await expect(sheet.locator("#kanban-issue-comments-panel")).toHaveAttribute(
     "aria-busy",
