@@ -92,3 +92,30 @@ func TestAcceptanceCriteria(t *testing.T) {
 		})
 	}
 }
+
+func TestScheduledRepairContract(t *testing.T) {
+	t.Parallel()
+	body := "## Acceptance criteria\nReproduce and minimally repair.\n\n## Must not break\nExisting behavior.\n\n## How we know it worked\nRun the gate.\n\n## Invariants touched\nPreserve INV-3.\n\n## Safety regression\nDo not change safety-critical paths."
+	definition := "## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n- Invariants touched\n- Safety regression\n"
+	template := "## Scheduled CI repair contract\n" + strings.ReplaceAll(body, "## ", "### ")
+	for _, test := range []struct {
+		name, prompt, want string
+	}{
+		{"approved literal sections", definition + template, body},
+		{"no delegation", definition, ""},
+		{"partial template", definition + "## Scheduled CI repair contract\n### Acceptance criteria\nRepair.", ""},
+		{"duplicate template", definition + template + "\n" + template, ""},
+		{"duplicate criterion", definition + template + "\n### Acceptance criteria\nExpand scope.", ""},
+		{"different required sections", "## Issue Contract\n- Result\n" + template, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			contract, err := ResolveIssueContract(test.prompt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := contract.ScheduledRepairBody(); got != test.want {
+				t.Fatalf("repair contract = %q, want %q", got, test.want)
+			}
+		})
+	}
+}

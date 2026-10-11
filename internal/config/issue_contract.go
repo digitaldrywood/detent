@@ -79,6 +79,33 @@ func ResolveIssueContract(prompt string) (IssueContract, error) {
 	return contract, nil
 }
 
+func (c IssueContract) ScheduledRepairBody() string {
+	if !admissionHeadingExists(c.Context, "Scheduled CI repair contract") {
+		return ""
+	}
+	_, template, err := resolveAdmissionSection(c.Context, "Scheduled CI repair contract", "scheduled repair", BacklogAdmissionEffortFileWorkflow)
+	if err != nil {
+		return ""
+	}
+	names := []string{"Acceptance criteria", "Must not break", "How we know it worked", "Invariants touched", "Safety regression"}
+	if len(c.Sections) != len(names) {
+		return ""
+	}
+	sections := issueContractSections(template)
+	if len(sections) != len(names) {
+		return ""
+	}
+	var body strings.Builder
+	for i, name := range names {
+		key := issueContractSectionKey(name)
+		if issueContractSectionKey(c.Sections[i]) != key || sections[key] == "" {
+			return ""
+		}
+		fmt.Fprintf(&body, "## %s\n%s\n\n", name, sections[key])
+	}
+	return strings.TrimSpace(body.String())
+}
+
 func IssueContractSectionDigests(body string) map[string]string {
 	sections := issueContractSections(body)
 	digests := make(map[string]string, len(sections))
