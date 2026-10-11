@@ -200,7 +200,10 @@ var retiredSymbolNormalizer = strings.NewReplacer("_", "", "-", "", " ", "")
 
 func retiredSymbol(text string) bool {
 	normalized := strings.ToLower(retiredSymbolNormalizer.Replace(text))
-	for _, forbidden := range []string{"workerlanerevocation", "indeterminatelanestop", "laneindeterminatestop", "stopindeterminatelane", "laneoriginindeterminate"} {
+	for _, forbidden := range []string{
+		"workerlanerevocation", "indeterminatelanestop", "laneindeterminatestop", "stopindeterminatelane", "laneoriginindeterminate",
+		"readlandingbarrier", "runlandingbarrier", "nextlandingbarrier", "repairlandingbarrier", "landingbarrierculprit", "revertlandingbarriercommit",
+	} {
 		if strings.Contains(normalized, forbidden) {
 			return true
 		}
