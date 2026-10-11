@@ -180,6 +180,7 @@ type repairingBarrierWorkspace struct {
 	firstBad   int
 	current    string
 	reverted   string
+	flaky      bool
 }
 
 func (b *repairingBarrierWorkspace) VerifyLandingBarrierRepair(ctx context.Context, path, head, command string, failed []string) (result gate.CommandResult, changed bool, err error) {
@@ -196,13 +197,23 @@ func (b *repairingBarrierWorkspace) VerifyLandingBarrierRepair(ctx context.Conte
 		return gate.CommandResult{}, false, errors.New("unexpected repair verification")
 	}
 	if head == "" && b.commits != nil {
-		if slices.Index(b.commits, b.current) >= b.firstBad {
+		current := b.current
+		if current == "" {
+			current = b.commits[len(b.commits)-1]
+		}
+		if slices.Index(b.commits, current) >= b.firstBad {
 			return gate.CommandResult{ExitCode: 1}, true, nil
 		}
 		return gate.CommandResult{}, true, nil
 	}
 	if b.reverted != "" {
 		return gate.CommandResult{}, true, nil
+	}
+	if head == "" {
+		if b.flaky {
+			return gate.CommandResult{}, false, nil
+		}
+		return gate.CommandResult{ExitCode: 1}, false, nil
 	}
 	return gate.CommandResult{ExitCode: b.verifyExit}, true, nil
 }
@@ -282,6 +293,7 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 		wantPublished int
 		wantReverted  string
 		superseded    bool
+		flaky         bool
 	}{
 		{name: "superseded barrier stops the culprit search and repair", preparedHead: head, reds: 1, verifyExit: 1, green: "g0", commits: []string{"c1", "c2", "c3", "c4", head}, firstBad: 2, superseded: true},
 		{name: "unverified repair falls back to reverting the culprit", preparedHead: head, reds: 1, verifyExit: 1, green: "g0", commits: []string{"c1", "c2", "c3", "c4", head}, firstBad: 2, wantTurns: 1, wantPublished: 1, wantReverted: "c3"},
@@ -289,7 +301,8 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 		{name: "red head is repaired and published", preparedHead: head, reds: 1, wantTurns: 1, wantPublished: 1},
 		{name: "same red head is repaired once", preparedHead: head, reds: 2, wantTurns: 1, wantPublished: 1},
 		{name: "moved base repairs failures that still fail", preparedHead: strings.Repeat("a", 40), reds: 1, verifyExit: 1, wantTurns: 1, wantPublished: 0},
-		{name: "moved base skips failures fixed upstream", preparedHead: strings.Repeat("a", 40), reds: 1, wantTurns: 0, wantPublished: 0},
+		{name: "moved base skips failures fixed upstream", preparedHead: strings.Repeat("a", 40), reds: 1, flaky: true, wantTurns: 0, wantPublished: 0},
+		{name: "same head failures that pass on recheck are not repaired or reverted", preparedHead: head, reds: 1, verifyExit: 1, green: "g0", commits: []string{"c1", head}, firstBad: 2, flaky: true, wantTurns: 0, wantPublished: 0},
 		{name: "unverified repair is not published", preparedHead: head, reds: 1, verifyExit: 1, wantTurns: 1, wantPublished: 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -297,7 +310,7 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				failedLine := "detent-barrier-failed: go example.com/pkg:TestBroken"
-				backend := &repairingBarrierWorkspace{barrierWorkspace: barrierWorkspace{result: gate.CommandResult{Command: "make verify", HeadSHA: head, ExitCode: 7, Output: "barrier failure sentinel\n" + failedLine + "\ndetent-barrier-failed: browser \n"}}, head: test.preparedHead, verifyExit: test.verifyExit, commits: test.commits, firstBad: test.firstBad}
+				backend := &repairingBarrierWorkspace{barrierWorkspace: barrierWorkspace{result: gate.CommandResult{Command: "make verify", HeadSHA: head, ExitCode: 7, Output: "barrier failure sentinel\n" + failedLine + "\ndetent-barrier-failed: browser \n"}}, head: test.preparedHead, verifyExit: test.verifyExit, commits: test.commits, firstBad: test.firstBad, flaky: test.flaky}
 				owner := &repeatingBarrierOwner{cancel: cancel, reds: test.reds, green: test.green, superseded: test.superseded}
 				cfg := config.Default()
 				cfg.Gate.LandingMode, cfg.Gate.Run = gate.LandingRollingBarrier, "make verify"
