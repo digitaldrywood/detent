@@ -74,6 +74,13 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 	}
 	claimable, contractReason, err := nativeIssueContractClaimable(ctx, q, scope, id)
 	if err != nil {
+		var mismatch *nativeError
+		if errors.As(err, &mismatch) && mismatch.Code == "policy_mismatch" {
+			evidence.Unavailable = append(evidence.Unavailable, "approved_dispatch_policy")
+			evidence.Scheduling.Outcome = "skipped"
+			evidence.Scheduling.Reason = "Approved dispatch policy cannot be applied; approve a compatible policy before dispatch"
+			return nil
+		}
 		return err
 	}
 	if !claimable && len(candidate.IDs) > 0 && nonExecutableReason == "" {
