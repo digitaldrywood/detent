@@ -188,16 +188,21 @@ func TestStagingSmokeHostedGapDoesNotHideDecoderFailure(t *testing.T) {
 func TestStagingSmokeWriteCycle(t *testing.T) {
 	operatorReads := []string{operatortool.GetChange, operatortool.GetChangeVersion, operatortool.GetNativeRun}
 	fixtureDetails := strings.Fields(`get_conversation get_conversation_attachment list_conversation_messages stream_conversation_events change_viewed_files get_artifact_reference get_attempt_diff github_scope_timings work_attempt_receipt get_runner_capacity get_runner_update get_runner_routing runner_project_diagnostics read_attachment read_attachment_metadata`)
-	fixtureReads := strings.Fields(`list_project_conversations get_conversation get_conversation_attachment list_conversation_messages stream_conversation_events list_changes get_change get_change_version change_viewed_files artifact_references get_artifact_reference work_runs get_attempt_diff get_native_run github_scope_timings work_attempt_receipt get_runner_capacity get_runner_update get_runner_routing runner_project_diagnostics get_project_policy`)
+	fixtureReads := strings.Fields(`list_project_conversations get_conversation get_conversation_attachment list_conversation_messages stream_conversation_events list_changes get_change get_change_version change_viewed_files artifact_references get_artifact_reference work_runs get_attempt_diff get_native_run github_scope_timings work_attempt_receipt get_runner_capacity get_runner_update get_runner_routing runner_project_diagnostics get_project_policy board_session_history get_cutover_receipt get_change_review_policy action_result`)
 	for _, test := range []struct {
-		name, policyCode, policyMessage string
-		gaps, failure, emptyFixtures    bool
-		readFailure                     string
+		name, policyCode, policyMessage               string
+		gaps, failure, emptyFixtures, automaticIntake bool
+		readFailure                                   string
 	}{
 		{name: "approved policy"},
+		{name: "automatic native intake", automaticIntake: true},
 		{name: "unprovisioned fixtures", emptyFixtures: true},
 		{name: "unprovisioned fixtures with real error", emptyFixtures: true, readFailure: operatortool.RunnerFleet, failure: true},
 		{name: "available fixture with real error", readFailure: "get_conversation", failure: true},
+		{name: "queue service failure blocks", readFailure: operatortool.OrderItem, failure: true},
+		{name: "session service failure blocks", readFailure: operatortool.BoardSessionHistory, failure: true},
+		{name: "cutover service failure blocks", readFailure: "get_cutover_receipt", failure: true},
+		{name: "review policy service failure blocks", readFailure: operatortool.GetChangeReviewPolicy, failure: true},
 		{name: "fresh project", policyCode: "policy_mismatch", policyMessage: "No approved repository policy"},
 		{name: "hosted gaps", gaps: true},
 		{name: "different policy refusal", policyCode: "policy_mismatch", policyMessage: "Approved policy has changed", failure: true},
@@ -252,9 +257,12 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 					commentRevision++
 					result["revision"] = strconv.FormatInt(commentRevision, 10)
 				case operatortool.OrderItem, operatortool.SetQueuePriority:
+					if name == test.readFailure {
+						break
+					}
 					if gaps {
 						isError = true
-						result = map[string]any{"message": "application service is unavailable"}
+						result = map[string]any{"code": "invalid_request", "message": "Queue ordering and priority overrides require a GitHub-compatible project; native projects use issue priority"}
 						break
 					}
 					revision++
@@ -276,13 +284,43 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 					result["revision"] = strconv.FormatInt(revision, 10)
 				case "get_project_integration":
 					result["data"] = map[string]any{"revision": strconv.FormatInt(integrationRevision, 10), "intake": "manual", "projection": "native", "repository_enabled": false}
+					if test.automaticIntake {
+						result["data"].(map[string]any)["intake"] = "automatic"
+					}
 				case "update_project_integration":
 					input := args["input"].(map[string]any)
-					if input["expected_revision"] != strconv.FormatInt(integrationRevision, 10) || input["intake"] != "manual" || input["projection"] != "native" || input["repository_enabled"] != false {
+					var schema smokeSchema
+					if err := json.Unmarshal(m.tools[name].InputSchema, &schema); err != nil {
+						t.Fatal(err)
+					}
+					for _, required := range schema.Properties["input"].Required {
+						if _, present := input[required]; !present {
+							t.Fatalf("integration update omits required input %s", required)
+						}
+					}
+					var intake any = "manual"
+					if test.automaticIntake {
+						intake = nil
+					}
+					if input["expected_revision"] != strconv.FormatInt(integrationRevision, 10) || input["intake"] != intake || input["projection"] != "native" || input["repository_enabled"] != false {
 						t.Fatalf("changed integration: %v", input)
 					}
 					integrationRevision++
-					result["revision"] = strconv.FormatInt(integrationRevision, 10)
+					result = map[string]any{"id": "action_integration", "status": "succeeded", "result": `{}`}
+				case operatortool.ActionResult:
+					if args["action_id"] != "action_integration" {
+						t.Fatalf("wrong action selector: %v", args)
+					}
+					result = map[string]any{"id": "action_integration", "status": "succeeded", "result": `{}`}
+				case operatortool.BoardSessionHistory:
+					isError = true
+					result = map[string]any{"code": "not_found", "message": "No recorded session activity exists for this work item and attempt"}
+				case "get_cutover_receipt":
+					isError = true
+					result = map[string]any{"code": "not_found", "message": "No cutover receipt exists for this project"}
+				case operatortool.GetChangeReviewPolicy:
+					isError = true
+					result = map[string]any{"code": "not_found", "message": "No approved Change review policy exists for this project"}
 				case operatortool.RunnerFleet:
 					result["runners"] = []map[string]any{{"id": "runner_fixture"}, {"id": "runner_other"}}
 				case operatortool.RunnerProjectDiagnostics:
@@ -361,6 +399,9 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 				if name == test.readFailure {
 					isError = true
 					result = map[string]any{"message": "read service failed"}
+					if name == operatortool.BoardSessionHistory || name == "get_cutover_receipt" || name == operatortool.GetChangeReviewPolicy {
+						result["code"] = "not_found"
+					}
 				}
 				envelope := map[string]any{"structuredContent": result, "isError": isError}
 				if name == "get_project_policy" && isError {
@@ -394,6 +435,9 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 			}
 			if gaps && !strings.Contains(output.String(), "expected hosted gap (#615)") {
 				t.Fatal(output.String())
+			}
+			if gaps && (calls[operatortool.OrderItem] != 1 || calls[operatortool.SetQueuePriority] != 1 || !strings.Contains(output.String(), "order_item expected refusal: invalid_request") || !strings.Contains(output.String(), "set_queue_priority expected refusal: invalid_request")) {
+				t.Fatalf("native queue refusals did not exercise both tools: %v\n%s", calls, output.String())
 			}
 			for _, name := range append(fixtureReads, operatortool.ReadAttachment, operatortool.ReadAttachmentMetadata) {
 				if slices.Contains(operatorReads, name) || test.emptyFixtures && slices.Contains(fixtureDetails, name) || test.readFailure == "get_conversation" && name == "get_conversation_attachment" {
@@ -451,7 +495,7 @@ func TestSmokeVerdictRatchet(t *testing.T) {
 			for _, environment := range []string{"staging", "production"} {
 				t.Run(environment, func(t *testing.T) {
 					var output bytes.Buffer
-					err := smokeVerdict(&output, tt.failures, tt.called, tt.gapped, smokeKnownGaps[environment])
+					err := smokeVerdict(&output, tt.failures, tt.called, tt.gapped, map[string]string{"board_session_history": "#724", "get_cutover_receipt": "#724", "order_item": "#724"})
 					if tt.blocking == "" && err != nil {
 						t.Fatalf("verdict = %v, want nil", err)
 					}

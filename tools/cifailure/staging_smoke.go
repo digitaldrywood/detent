@@ -56,18 +56,13 @@ var smokeReadSkips = map[string]string{
 }
 
 var smokeKnownGaps = map[string]map[string]string{
-	"production": {
-		operatortool.OrderItem: "#724", operatortool.SetQueuePriority: "#724", "board_session_history": "#724", "get_cutover_receipt": "#724", "get_change_review_policy": "#724",
-	},
-	"staging": {
-		operatortool.OrderItem: "#724", operatortool.SetQueuePriority: "#724", "board_session_history": "#724", "get_cutover_receipt": "#724",
-		"update_project_integration": "#724", operatortool.ActionResult: "#724",
-	},
+	"production": {},
+	"staging":    {},
 }
 
 var smokeDependencyFixtures = []string{"change_id", "version_id", "native_attempt_id", "attempt_id", "run_id"}
 
-var smokeHostedGaps = []string{operatortool.ArchiveItem, operatortool.OrderItem, operatortool.SetQueuePriority}
+var smokeHostedGaps = []string{operatortool.ArchiveItem}
 
 func smokePolicy(definitions []operatortool.Definition) error {
 	catalog := map[string]operatortool.Definition{}
@@ -194,7 +189,7 @@ func (s *mcpSmoke) call(ctx context.Context, name string, args map[string]any) (
 	var payload any
 	err := s.mcp.call(ctx, name, args, &payload)
 	var refusal *operatortool.RequestError
-	if name == "get_project_policy" && errors.As(err, &refusal) && refusal.Code == "policy_mismatch" && strings.HasPrefix(refusal.Message, "No approved repository policy") {
+	if errors.As(err, &refusal) && smokeExpectedRefusal(name, refusal) {
 		s.called[name] = true
 		fmt.Fprintf(s.output, "%s expected refusal: %s\n", name, refusal.Code)
 		return map[string]any{"expected_refusal": refusal.Code}, nil
@@ -228,6 +223,23 @@ func (s *mcpSmoke) call(ctx context.Context, name string, args map[string]any) (
 	}
 	s.rememberRead(name, result)
 	return result, nil
+}
+
+func smokeExpectedRefusal(name string, refusal *operatortool.RequestError) bool {
+	switch name {
+	case "get_project_policy":
+		return refusal.Code == "policy_mismatch" && strings.HasPrefix(refusal.Message, "No approved repository policy")
+	case operatortool.OrderItem, operatortool.SetQueuePriority:
+		return refusal.Code == "invalid_request" && refusal.Message == "Queue ordering and priority overrides require a GitHub-compatible project; native projects use issue priority"
+	case "get_cutover_receipt":
+		return refusal.Code == "not_found" && refusal.Message == "No cutover receipt exists for this project"
+	case operatortool.GetChangeReviewPolicy:
+		return refusal.Code == "not_found" && refusal.Message == "No approved Change review policy exists for this project"
+	case operatortool.BoardSessionHistory:
+		return refusal.Code == "not_found" && refusal.Message == "No recorded session activity exists for this work item and attempt"
+	default:
+		return false
+	}
 }
 
 func (s *mcpSmoke) settle(ctx context.Context, result map[string]any) (map[string]any, error) {
@@ -407,13 +419,11 @@ func (s *mcpSmoke) mutate(ctx context.Context, name string, args map[string]any,
 		args["expected_revision"] = value
 	}
 	result, err := s.call(ctx, name, args)
-	if err != nil && slices.Contains(smokeHostedGaps, name) && strings.Contains(err.Error(), "application service is unavailable") {
-		fmt.Fprintf(s.output, "%s expected hosted gap (#615)\n", name)
-		s.gapped = append(s.gapped, name)
-		return map[string]any{"expected_gap": true}, previous, nil
-	}
 	if err != nil {
 		return nil, previous, err
+	}
+	if _, refused := result["expected_refusal"]; refused {
+		return result, previous, nil
 	}
 	revision, err := smokeRevision(result)
 	if err != nil || revision <= previous {
@@ -775,6 +785,9 @@ func (s *mcpSmoke) integration(ctx context.Context) error {
 	input := map[string]any{}
 	for _, key := range []string{"intake", "projection", "repository_enabled"} {
 		input[key] = data[key]
+	}
+	if input["intake"] == "automatic" {
+		delete(input, "intake")
 	}
 	value, err := smokeRevisionArgument(schema.Properties["input"].Properties["expected_revision"], revision)
 	if err != nil {

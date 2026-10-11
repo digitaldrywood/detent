@@ -129,13 +129,30 @@ func TestHostedProjectTools(t *testing.T) {
 			read := func(name string) operatortool.Call {
 				return operatortool.Call{Name: name, Arguments: json.RawMessage(`{"project_id":"` + id + `"}`)}
 			}
-			for _, name := range []string{operatortool.LocalProjectConfiguration, "list_projects", "get_native_project", "get_onboarding", "get_project_integration", "project_secret_metadata", "project_setup"} {
+			for _, missing := range []struct{ name, message string }{
+				{"get_cutover_receipt", "No cutover receipt exists for this project"},
+				{operatortool.GetChangeReviewPolicy, "No approved Change review policy exists for this project"},
+			} {
+				if _, err := (hostedOperatorExecutor{f.service}).Execute(ctx, read(missing.name)); err == nil {
+					t.Fatalf("missing %s succeeded", missing.name)
+				} else {
+					var refusal *operatortool.RequestError
+					if !errors.As(err, &refusal) || refusal.Code != "not_found" || refusal.Message != missing.message {
+						t.Fatalf("missing %s=%v", missing.name, err)
+					}
+				}
+			}
+			operatorSQL(t, f, "INSERT INTO github_cutovers(project_id,checkpoint,receipt_json,actor_id,created_at) VALUES (?,?,?,?,?)", id, "stored-cutover", `{"checkpoint":"stored-cutover","applied":true}`, owner.identity.Subject, formatHubTime(f.service.config.now()))
+			for _, name := range []string{operatortool.LocalProjectConfiguration, "list_projects", "get_native_project", "get_onboarding", "get_project_integration", "project_secret_metadata", "project_setup", "get_cutover_receipt"} {
 				result, err := e.Execute(ctx, read(name))
 				if err != nil || !strings.Contains(string(result.Content), `"observed_at"`) {
 					t.Fatalf("%s=%s %v", name, result.Content, err)
 				}
 				if name == operatortool.LocalProjectConfiguration && (!strings.Contains(string(result.Content), "not installed or is stopped") || strings.Contains(string(result.Content), `"applied":true`)) {
 					t.Fatalf("Cloud fabricated local application: %s", result.Content)
+				}
+				if name == "get_cutover_receipt" && (!strings.Contains(string(result.Content), `"checkpoint":"stored-cutover"`) || !strings.Contains(string(result.Content), `"applied":true`)) {
+					t.Fatalf("stored cutover receipt=%s", result.Content)
 				}
 			}
 			ordinary := projectCall(t, "save_onboarding", id, "progress", operatortool.OnboardingInput{Progress: onboarding.Progress{Repository: "existing"}})
@@ -328,6 +345,11 @@ func TestHostedProjectTools(t *testing.T) {
 			operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE user_id=?", owner.identity.Subject)
 			if _, err := e.Execute(ctx, read("get_native_project")); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatalf("revoked direct read=%v", err)
+			}
+			for _, name := range []string{"get_cutover_receipt", operatortool.GetChangeReviewPolicy} {
+				if _, err := (hostedOperatorExecutor{f.service}).Execute(ctx, read(name)); !errors.Is(err, operatortool.ErrAccessDenied) {
+					t.Fatalf("revoked %s=%v", name, err)
+				}
 			}
 		})
 	}
