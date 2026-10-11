@@ -63,7 +63,7 @@ fi
 script_tests=()
 while IFS= read -r path; do
     case "$path" in
-        Makefile) test=scripts/check_land_test.py ;;
+        Makefile|scripts/check-browser.sh) test=scripts/check_land_test.py ;;
         scripts/*_test.py) test=$path ;;
         scripts/*) name=${path#scripts/}; name=${name%.*}; test=scripts/${name//-/_}_test.py ;;
         *) continue ;;
@@ -76,6 +76,16 @@ fi
 
 check_with_evidence invariants env -u DETENT_API_TOKEN go test -p "$procs" -timeout=60s ./internal/invariants
 check_with_evidence migrations make check-migrations
+browser_specs=()
+selected_specs=$(printf '%s\n' "$changed" | python3 scripts/affected_browser.py)
+while IFS= read -r spec; do
+    [ -n "$spec" ] && browser_specs+=("$spec")
+done <<< "$selected_specs"
+if [ "${#browser_specs[@]}" -gt 0 ]; then
+    check_with_evidence browser bash scripts/check-browser.sh "$procs" "$app_changed" "${browser_specs[@]}"
+else
+    printf 'UI sources unchanged; skipping browser specs.\n'
+fi
 if [ "$app_changed" = false ]; then
     printf 'Conversation sources unchanged; skipping check-app.\n'
 fi
