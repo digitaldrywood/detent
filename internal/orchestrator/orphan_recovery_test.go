@@ -41,7 +41,7 @@ func TestRestartResumeDispatchCompletionIdentity(t *testing.T) {
 			}
 			state := newState(orch.cfg)
 			orch.recoverDurableWorkAttempts(t.Context(), &state, now)
-			if !orch.dispatchIssue(t.Context(), &state, issue, state.Retry[issue.ID].Attempt, now, "") {
+			if !orch.dispatchIssue(t.Context(), &state, issue, state.Retry[issue.ID].Attempt, now, "local") {
 				t.Fatal("restart resume dispatch failed")
 			}
 			request := receiveWorkerHostRunRequest(t, runner.started)
