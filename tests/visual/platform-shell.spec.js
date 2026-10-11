@@ -1,6 +1,8 @@
 const { test, expect } = require("@playwright/test");
 const { platformPreview } = require("./platform-preview");
 const fixture = require("./platform-preview-data.json");
+const users = require("./platform-users-data.json");
+const audit = require("./platform-audit-data.json");
 
 const origin = "https://platform.detent.test";
 let html;
@@ -14,6 +16,10 @@ async function openPlatform(page, { role = "admin", organizations = fixture.acco
   await page.route("**/api/cloud/platform/**", (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/organizations")) return route.fulfill({ json: { ...fixture.organizations, can_grant: false } });
+    if (path.startsWith("/api/cloud/platform/organizations/")) return route.fulfill({ json: fixture.detail });
+    if (path.endsWith("/users")) return route.fulfill({ json: { ...users, users: users.users.filter((user) => user.email.includes(new URL(route.request().url()).searchParams.get("q") ?? "")) } });
+    if (path.endsWith("/audit")) return route.fulfill({ json: audit });
+    if (path.endsWith("/members")) return route.fulfill({ json: { members: [], revision: 1, self: { email: account.email, role } } });
     if (path.endsWith("/allowlist")) return route.fulfill({ json: fixture.allowlist });
     return route.fulfill({ json: fixture.health });
   });
@@ -26,33 +32,34 @@ test("desktop platform shell redirects to tenants and keeps chrome across pages"
   await expect(page.getByRole("heading", { name: "Tenants", exact: true })).toBeVisible();
   await expect(page.getByText("Platform", { exact: true })).toBeVisible();
   const nav = page.getByRole("navigation", { name: "Platform navigation" });
-  await expect(nav.getByRole("link")).toHaveText(["Tenants", "Users", "Staff", "Audit", "Health", "Allowlist"]);
+  for (const title of ["Tenants", "Users", "Audit log", "Health", "Sign-up allowlist", "Staff"]) await expect(nav.getByRole("link", { name: title, exact: true })).toBeVisible();
   await expect(nav.getByRole("link", { name: "Tenants" })).toHaveAttribute("data-active", "true");
   await expect(page.getByRole("table", { name: "Tenants", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Open organization" }).click();
-  await expect(page.getByRole("menuitem", { name: "Model Choice Labs" })).toHaveAttribute("href", fixture.account.organizations[0].url);
-  await page.keyboard.press("Escape");
+  await expect(page.getByRole("navigation", { name: "Your organizations" }).getByRole("link", { name: "Model Choice Labs" })).toHaveAttribute("href", fixture.account.organizations[0].url);
+  const documentRequests = [];
+  page.on("request", (request) => { if (request.isNavigationRequest()) documentRequests.push(request.url()); });
   await nav.getByRole("link", { name: "Health" }).click();
   await expect(page.getByRole("region", { name: "Service health" })).toBeVisible();
   await expect(page).toHaveTitle("Health · Platform · Detent");
   await expect(nav.getByRole("link", { name: "Health" })).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("table", { name: "Tenants", exact: true })).toHaveCount(0);
-  await nav.getByRole("link", { name: "Allowlist" }).click();
+  await nav.getByRole("link", { name: "Sign-up allowlist" }).click();
   await expect(page.getByRole("region", { name: "Signup allowlist" })).toContainText("example.test");
   await expect(page.getByText("Platform", { exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Service health" })).toHaveCount(0);
+  expect(documentRequests).toEqual([]);
   await page.reload();
   await expect(page.getByRole("region", { name: "Signup allowlist" })).toBeVisible();
 });
 
 for (const role of ["support", "billing", "viewer"]) {
-  test(`${role} has readable sections and no organization menu without memberships`, async ({ page }) => {
+  test(`${role} has readable sections and no organizations without memberships`, async ({ page }) => {
     await openPlatform(page, { role, organizations: [] });
     const nav = page.getByRole("navigation", { name: "Platform navigation" });
-    await expect(nav.getByRole("link")).toHaveText(["Tenants", "Users", "Audit", "Health", "Allowlist"]);
+    for (const title of ["Tenants", "Users", "Audit log", "Health", "Sign-up allowlist"]) await expect(nav.getByRole("link", { name: title, exact: true })).toBeVisible();
     await expect(nav.getByRole("link", { name: "Staff" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Open organization" })).toHaveCount(0);
-    await expect(page.locator('[data-slot="sidebar-footer"]').getByText(role[0].toUpperCase() + role.slice(1), { exact: true })).toBeVisible();
+    await expect(page.getByRole("contentinfo", { name: "Platform account" }).getByText(role[0].toUpperCase() + role.slice(1), { exact: true })).toBeVisible();
   });
 }
 
@@ -60,7 +67,6 @@ test("mobile platform navigation opens a sheet and closes on selection", async (
   await page.setViewportSize({ width: 390, height: 844 });
   await openPlatform(page, { path: "/platform/health" });
   await expect(page.getByRole("region", { name: "Service health" })).toBeVisible();
-  await expect(page.getByText("Platform", { exact: true })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Platform navigation" })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   await test.info().attach("platform-health-mobile.png", {
@@ -78,9 +84,9 @@ test("mobile platform navigation opens a sheet and closes on selection", async (
     body: await page.screenshot({ animations: "disabled", caret: "hide" }),
     contentType: "image/png",
   });
-  await sheet.getByRole("link", { name: "Allowlist" }).click();
+  await sheet.getByRole("link", { name: "Sign-up allowlist" }).click();
   await expect(sheet).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Allowlist", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign-up allowlist", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Signup allowlist" })).toBeVisible();
 });
 
@@ -99,4 +105,47 @@ test("the chooser exposes the platform entry only for platform members", async (
   await expect(page.getByRole("link", { name: "Open Model Choice Labs" })).toBeVisible();
   await expect(link).toHaveCount(0);
   await expect(page.getByText("Platform console", { exact: true })).toHaveCount(0);
+});
+
+for (const theme of ["light", "dark"]) {
+  for (const width of [1440, 390]) {
+    test(`all platform routes keep the shell in ${theme} at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 980 });
+      await page.addInitScript((theme) => { document.documentElement.classList.toggle("dark", theme === "dark"); }, theme);
+      await openPlatform(page);
+      for (const [path, title] of [["tenants", "Tenants"], ["users", "Users"], ["audit", "Audit log"], ["health", "Health"], ["allowlist", "Sign-up allowlist"], ["staff", "Staff"]]) {
+        if (width === 390) await page.getByRole("button", { name: "Toggle Sidebar" }).click();
+        await page.getByRole("navigation", { name: "Platform navigation" }).getByRole("link", { name: title, exact: true }).click();
+        const heading = page.getByRole("heading", { name: title, exact: true, level: 1 });
+        await expect(heading).toBeVisible();
+        await expect(page.getByRole("alert")).toHaveCount(0);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+        await test.info().attach(`platform-shell-${path}-${theme}-${width}.png`, {
+          body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+          contentType: "image/png",
+        });
+      }
+    });
+  }
+}
+
+test("the palette opens tenants and users with keyboard navigation", async ({ page }) => {
+  await openPlatform(page);
+  const navigations = [];
+  page.on("request", (request) => { if (request.isNavigationRequest()) navigations.push(request.url()); });
+  await page.keyboard.press("Meta+k");
+  let dialog = page.getByRole("dialog", { name: "Find tenant or user" });
+  await dialog.getByRole("combobox", { name: "Find tenant or user" }).fill("model");
+  await expect(dialog.getByRole("option", { name: /Model Choice Labs/ })).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(origin + "/platform/tenants?tenant=org_preview");
+  await expect(page.getByRole("dialog", { name: "Model Choice Labs" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Meta+k");
+  dialog = page.getByRole("dialog", { name: "Find tenant or user" });
+  await dialog.getByRole("combobox", { name: "Find tenant or user" }).fill("cory");
+  await expect(dialog.getByRole("option", { name: /cory/ })).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("region", { name: "cory+detent-prod-test@example.test" })).toBeVisible();
+  expect(navigations).toEqual([]);
 });

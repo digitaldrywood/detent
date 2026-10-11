@@ -1,5 +1,5 @@
 import React from "react";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 
 import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
@@ -146,16 +146,16 @@ function AuditTimeline({
                       <span className="text-muted-foreground">—</span>
                     ) : (
                       <div className="flex items-center gap-2">
-                        <a
+                        <Link
                           className="underline underline-offset-4"
-                          href={`/platform/tenants?tenant=${encodeURIComponent(row.organization_id)}`}
+                          to={"/platform/tenants" as never} search={{ tenant: row.organization_id } as never}
                         >
                           {row.organization_name || (
                             <span className="font-mono">
                               {row.organization_id}
                             </span>
                           )}
-                        </a>
+                        </Link>
                         {row.organization_deleted ? (
                           <Badge variant="outline">deleted</Badge>
                         ) : null}

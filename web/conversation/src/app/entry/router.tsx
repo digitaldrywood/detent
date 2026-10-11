@@ -83,7 +83,12 @@ const platformRoutes = platformRoute.addChildren([
     validateSearch: (search: Record<string, unknown>) => ({ tenant: typeof search.tenant === "string" ? search.tenant : undefined }),
     component: PlatformTenantsPage,
   }),
-  createRoute({ getParentRoute: () => platformRoute, path: "/users", component: PlatformUsersPage }),
+  createRoute({
+    getParentRoute: () => platformRoute,
+    path: "/users",
+    validateSearch: (search: Record<string, unknown>) => ({ q: typeof search.q === "string" ? search.q : undefined }),
+    component: PlatformUsersPage,
+  }),
   createRoute({
     getParentRoute: () => platformRoute,
     path: "/accounts",

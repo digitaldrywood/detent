@@ -39,7 +39,7 @@ async function openAudit(page, path = "/platform/audit") {
   });
   await page.goto(origin + path);
   await expect(
-    page.getByRole("heading", { name: "Audit", exact: true }),
+    page.getByRole("heading", { name: "Audit log", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole("region", { name: "Audit timeline" }),
@@ -62,7 +62,7 @@ for (const [name, viewport] of [
     await expect(
       table.getByRole("link", { name: "Parable" }).first(),
     ).toHaveAttribute("href", "/platform/tenants?tenant=org_alpha");
-    await expect(page).toHaveTitle("Audit · Platform · Detent");
+    await expect(page).toHaveTitle("Audit log · Platform · Detent");
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth > innerWidth,

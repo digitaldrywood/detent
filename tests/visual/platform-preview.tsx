@@ -41,10 +41,13 @@ if (location.protocol === "file:") {
         ...fixture.account, platform_role: params.get("role") ?? "admin",
         organizations: params.has("no-organizations") ? [] : fixture.account.organizations,
       };
+    } else if (path === "/api/cloud/platform/members") {
+      value = { members: [], revision: 1, self: { email: fixture.account.email, role: params.get("role") ?? "admin" } };
     } else if (path.startsWith("/api/cloud/platform/audit")) {
       value = audit;
     } else if (path.startsWith("/api/cloud/platform/users?")) {
-      value = users;
+      const query = new URL(path, "https://platform.detent.test").searchParams.get("q") ?? "";
+      value = { ...users, users: users.users.filter((user) => user.email.includes(query)) };
     } else if (path.endsWith("/organizations")) {
       value = { ...fixture.organizations, can_grant: !location.search.includes("staff") };
     } else if (path.endsWith("/allowlist")) {

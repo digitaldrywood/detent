@@ -1,4 +1,5 @@
 import React from "react";
+import { PlatformPageActions } from "./PlatformPageActions.tsx";
 import { Plus } from "lucide-react";
 
 import { AlertDialog, AlertDialogPopup, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "../../components/ui/alert-dialog.tsx";
@@ -176,11 +177,10 @@ function Staff({ csrf }: { readonly csrf: string }): React.ReactElement {
   return <>
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div className="grid gap-2">
-        <h1 className="text-2xl font-semibold tracking-[-0.02em]">Staff</h1>
         <p className="text-sm text-muted-foreground">Platform roles are separate from organization membership.</p>
         <p className="max-w-3xl text-sm text-muted-foreground">Admin manages staff and everything below. Support may start support access. Billing may grant and revoke plans. Viewer reads the console.</p>
       </div>
-      <Button onClick={() => setEdit({ action: "add" })} disabled={unavailable || value === undefined}><Plus />Add member</Button>
+      <PlatformPageActions><Button size="sm" onClick={() => setEdit({ action: "add" })} disabled={unavailable || value === undefined}><Plus />Add member</Button></PlatformPageActions>
     </div>
     <Problem message={resource.error?.message ?? null} />
     {resource.error ? <Button variant="outline" disabled={resource.loading} onClick={() => { void resource.refresh(); }}>Reload</Button> : null}

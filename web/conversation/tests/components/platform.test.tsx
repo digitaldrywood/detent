@@ -185,14 +185,14 @@ describe("platform console", () => {
     renderPlatform(api);
     const nav = await screen.findByRole("navigation", { name: "Platform navigation" });
     await screen.findByRole("heading", { name: "Tenants", level: 1 });
-    expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual(
-      role === "admin" ? ["Tenants", "Users", "Staff", "Audit", "Health", "Allowlist"] : ["Tenants", "Users", "Audit", "Health", "Allowlist"],
+    expect(within(nav).getAllByRole("link").map((link) => link.getAttribute("aria-label"))).toEqual(
+      role === "admin" ? ["Tenants", "Users", "Audit log", "Health", "Sign-up allowlist", "Staff"] : ["Tenants", "Users", "Audit log", "Health", "Sign-up allowlist"],
     );
     expect(within(nav).getByRole("link", { name: "Tenants" }).getAttribute("data-active")).toBe("true");
     expect(screen.getByText("Platform")).toBeTruthy();
-    expect(document.querySelector('[data-slot="sidebar-footer"]')?.textContent).toBe(role[0]!.toUpperCase() + role.slice(1));
+    expect(document.querySelector('[data-slot="sidebar-footer"]')?.textContent).toContain(role[0]!.toUpperCase() + role.slice(1));
     expect(screen.queryByRole("button", { name: "Open organization" })).toBeNull();
-    expect(api.platformHealth).not.toHaveBeenCalled();
+    expect(api.platformHealth).toHaveBeenCalled();
     expect(api.platformAllowlist).not.toHaveBeenCalled();
   });
 
@@ -205,11 +205,9 @@ describe("platform console", () => {
       ],
     })) });
     const router = renderPlatform(api);
-    fireEvent.click(await screen.findByRole("button", { name: "Open organization" }));
-    const menu = await screen.findByRole("menu");
-    expect(within(menu).getByRole("menuitem", { name: "My Alpha" }).getAttribute("href")).toBe("/organizations/org_alpha/organization");
-    expect(within(menu).getByRole("menuitem", { name: "My Beta" }).getAttribute("href")).toBe("/organizations/org_beta/work");
-    fireEvent.keyDown(menu, { key: "Escape" });
+    const nav = await screen.findByRole("navigation", { name: "Your organizations" });
+    expect(within(nav).getByRole("link", { name: "My Alpha" }).getAttribute("href")).toBe("/organizations/org_alpha/organization");
+    expect(within(nav).getByRole("link", { name: "My Beta" }).getAttribute("href")).toBe("/organizations/org_beta/work");
     fireEvent.click(screen.getByRole("link", { name: "Health" }));
     await screen.findByRole("region", { name: "Service health" });
     expect(router.state.location.pathname).toBe("/platform/health");
@@ -223,7 +221,7 @@ describe("platform console", () => {
 
   it("refuses a direct Staff route for a non-admin inside the shell", async () => {
     renderPlatform(fakeApi({ session: vi.fn(async () => ({ email: "support@example.test", csrf: "c", platform_role: "support" })) }), "/platform/staff");
-    expect((await screen.findByRole("alert")).textContent).toBe("You do not have permission to do that.");
+    expect(await screen.findByText("You don't have access to this page")).toBeTruthy();
     expect(screen.getByText("Platform")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Staff" })).toBeNull();
   });
@@ -301,6 +299,59 @@ describe("platform console", () => {
     });
     renderPlatform(fakeApi({ platformOrganizations: vi.fn(async () => administrator), [method]: expired }), path);
     await waitFor(() => expect(assign).toHaveBeenCalledWith(SIGN_IN_PLATFORM));
+  });
+
+  it.each(["alp", "org_alpha", "dana@"])('finds a tenant by "%s" and opens its addressable detail', async (query) => {
+    const user = userEvent.setup();
+    const router = renderPlatform(fakeApi());
+    await screen.findByRole("table", { name: "Tenants" });
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    const dialog = await screen.findByRole("dialog", { name: "Find tenant or user" });
+    const input = within(dialog).getByRole("combobox", { name: "Find tenant or user" });
+    await user.type(input, query);
+    await within(dialog).findByRole("option", { name: /Alpha/ });
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(router.state.location.search).toEqual({ tenant: "org_alpha" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Find tenant or user" })).toBeNull());
+    await screen.findByRole("dialog", { name: "Alpha" });
+  });
+
+  it("opens a selected user with results loaded without reloading the shell", async () => {
+    const user = userEvent.setup();
+    const api = fakeApi({ platformUsers: vi.fn(async () => ({ ...userResults, users: userResults.users.filter((user) => user.email.startsWith("cory")) })) });
+    const router = renderPlatform(api);
+    await screen.findByRole("table", { name: "Tenants" });
+    fireEvent.click(screen.getByRole("button", { name: /Find tenant or user/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Find tenant or user" });
+    await user.type(within(dialog).getByRole("combobox", { name: "Find tenant or user" }), "cory@");
+    await user.click(await within(dialog).findByRole("option", { name: /cory/ }));
+    const results = await screen.findByRole("region", { name: "cory+detent-prod-test@example.test" });
+    expect(router.state.location.pathname).toBe("/platform/users");
+    expect(router.state.location.search).toEqual({ q: "cory+detent-prod-test@example.test" });
+    expect(results.textContent).toContain("No organization membership");
+    expect(api.session).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [{ registry: { ok: true }, tenants: { expected: 2, running: 2 } }, "OK"],
+    [{ registry: { ok: true }, tenants: { expected: 2, running: 1 } }, "Degraded"],
+    [{ registry: { ok: false } }, "Down"],
+  ])("renders the endpoint health status as %s", async (health, label) => {
+    renderPlatform(fakeApi({ platformHealth: vi.fn(async () => health) }));
+    const nav = await screen.findByRole("navigation", { name: "Platform navigation" });
+    expect(await within(nav).findByText(label)).toBeTruthy();
+    expect(within(nav).getByText(label).getAttribute("data-slot")).toBe("badge");
+    expect(await within(nav).findByText("2")).toBeTruthy();
+    expect(within(nav).getByText("2").getAttribute("data-slot")).toBe("badge");
+  });
+
+  it("keeps the shell for a non-staff account without calling platform APIs", async () => {
+    const api = fakeApi({ session: vi.fn(async () => ({ email: "customer@example.test", csrf: "c", platform_role: "" })) });
+    renderPlatform(api);
+    await screen.findByText("You don't have access to this page");
+    expect(screen.getByText("The platform console is limited to Detent staff.")).toBeTruthy();
+    expect(api.platformOrganizations).not.toHaveBeenCalled();
+    expect(api.platformHealth).not.toHaveBeenCalled();
   });
 
   it("formats byte readings", () => {
@@ -764,7 +815,7 @@ describe("platform audit", () => {
       "/platform/audit?tenant=org_alpha&actor=admin&event=support_started&from=2026-09-01&to=2026-10-01",
     );
     await screen.findByRole("table", { name: "Audit events" });
-    expect(document.title).toBe("Audit · Platform · Detent");
+    expect(document.title).toBe("Audit log · Platform · Detent");
     expect((screen.getByLabelText("Actor") as HTMLInputElement).value).toBe(
       "admin",
     );
