@@ -48,6 +48,9 @@ func (o *Orchestrator) liveDispatchPlanner(ctx context.Context, blockerCache map
 			markRefreshError(state, "fetch dispatch Workpad comments failed: "+err.Error(), now)
 			return recordedBlockerEvaluation{}, err
 		}
+		if o.workpadHoldSupersededByLaneEntry(ctx, issue) {
+			return recordedBlockerEvaluation{}, nil
+		}
 		resolved := make(map[string]connector.Issue, len(blockerCache))
 		for _, blocker := range blockerCache {
 			if identifier := normalizedIssueIdentifier(blocker.Issue.Identifier); blocker.Resolved && identifier != "" {

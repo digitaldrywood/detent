@@ -372,6 +372,12 @@ type IssueStateTransitionReader interface {
 	IssueStateTransition(context.Context, Issue) (IssueStateTransition, bool, error)
 }
 
+// CurrentLaneEntryReader reports when an issue entered its current tracker
+// lane, from the tracker's own history.
+type CurrentLaneEntryReader interface {
+	CurrentLaneEntry(context.Context, Issue) (IssueStateTransition, bool, error)
+}
+
 type IssueStateTransition struct {
 	EnteredAt time.Time  `json:"entered_at" yaml:"entered_at"`
 	Actor     IssueActor `json:"actor,omitzero" yaml:"actor,omitempty"`

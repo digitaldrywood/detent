@@ -152,6 +152,31 @@ func (o *Orchestrator) evaluateRecordedBlockerSignal(
 	return result
 }
 
+// workpadHoldSupersededByLaneEntry reports a blocked Workpad recorded before
+// the issue entered its current tracker lane. The tracker lane is authoritative:
+// moving the issue into a dispatchable lane after the hold releases it.
+func (o *Orchestrator) workpadHoldSupersededByLaneEntry(ctx context.Context, issue connector.Issue) bool {
+	reader, ok := o.connector.(connector.CurrentLaneEntryReader)
+	if !ok {
+		return false
+	}
+	signal, _ := rawIssueWorkpadSignal(issue)
+	if signal == nil || strings.TrimSpace(signal.Status) != workpad.StatusBlocked {
+		return false
+	}
+	if signal.RecordedAt == nil || signal.RecordedAt.IsZero() {
+		return false
+	}
+	entry, found, err := reader.CurrentLaneEntry(ctx, issue)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("read current lane entry failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+		return false
+	}
+	return found && entry.EnteredAt.After(*signal.RecordedAt)
+}
+
 // recordedHumanActionEvidence is shared by dispatch evaluation and the Needs-you snapshot.
 func recordedHumanActionEvidence(state *State, issue connector.Issue, now time.Time) *telemetry.BlockerEvidence {
 	signal, _ := rawIssueWorkpadSignal(issue)
