@@ -83,23 +83,17 @@ func (l *LocalGit) PrepareGitHubPublication(ctx context.Context, info Info, issu
 		remote = defaultGitRemote
 	}
 	branch, base := identity.Branch, identity.BaseRef
-	var pull githubLandingPull
-	var created bool
-	if opts.External != nil {
-		pull, err = readExternalLandingPull(ctx, opts.GitHubClient, opts.Repository, opts.External, opts.HeadSHA, base)
-	} else {
-		pull, created, _, err = l.publishGitHubPull(ctx, normalized, issue, opts, repository, owner, remote, branch, opts.HeadSHA, base)
-	}
+	pull, created, _, err := l.publishGitHubPull(ctx, normalized, issue, opts, repository, owner, remote, branch, opts.HeadSHA, base)
 	if err != nil {
 		return GitHubPublication{}, fmt.Errorf("prepare GitHub PR; preserve source and retry publication after resolving this blocker: %w", err)
 	}
-	if opts.External == nil && !created && pull.Number != 0 && pull.State == "open" {
+	if !created && pull.Number != 0 && pull.State == "open" {
 		if err := githubLandingAPI(ctx, opts.GitHubClient, &pull, "GET", "repos/"+repository+"/pulls/"+strconv.Itoa(pull.Number)); err != nil {
 			return GitHubPublication{}, err
 		}
 	}
 	if !githubPublicationMatches(pull, repository, branch, opts.HeadSHA, base) || pull.State != "open" || pull.Merged || pull.MergedAt != "" {
-		return GitHubPublication{}, refuse(LandRefusalHeadMoved, "the PR does not match the source repository, branch, target and head; reconcile its delivery identity before retrying publication")
+		return GitHubPublication{}, githubPublicationRefusal(pull, repository, branch, opts.HeadSHA, base)
 	}
 	publication := GitHubPublication{Repository: opts.Repository, BaseRef: base, HeadSHA: opts.HeadSHA, Branch: branch,
 		External: tracker.ChangeExternalReference{Provider: "github", ID: strconv.Itoa(pull.Number), URL: opts.Repository + "/pull/" + strconv.Itoa(pull.Number)}}
@@ -144,11 +138,31 @@ func (l *LocalGit) GitHubPublicationIdentity(ctx context.Context, info Info, iss
 		}
 	}
 	branch := strings.TrimSpace(normalized.Branch)
+	if opts.External != nil {
+		pull, err := readExternalGitHubPull(ctx, opts.GitHubClient, opts.Repository, opts.External, base)
+		if err != nil {
+			return GitHubPublication{}, err
+		}
+		branch = pull.Head.Ref
+		if !validLandingHead(pull.Head.SHA) || pull.Head.SHA != opts.HeadSHA && pull.Head.SHA != opts.ExternalHeadSHA || pull.State != "open" || pull.Merged || pull.MergedAt != "" {
+			return GitHubPublication{}, githubPublicationRefusal(pull, pull.Head.Repo.FullName, branch, opts.HeadSHA, base)
+		}
+		published, exists, err := remoteBranchHead(ctx, normalized.Path, remote, branch)
+		if err != nil {
+			return GitHubPublication{}, fmt.Errorf("inspect retained PR branch: %w", err)
+		}
+		if !exists || published != pull.Head.SHA {
+			return GitHubPublication{}, refuse(LandRefusalHeadMoved, "the retained PR projection differs from its remote branch; preserve both sources and reconcile the recorded PR before retrying publication")
+		}
+	}
 	if branch == "" {
 		return GitHubPublication{}, refuse(LandRefusalProtected, "PR publication requires the assigned source branch")
 	}
 	if _, err := runGitAt(ctx, normalized.Path, "check-ref-format", "--branch", branch); err != nil {
 		return GitHubPublication{}, refuse(LandRefusalProtected, "the assigned publication branch is invalid")
+	}
+	if branch == base {
+		return GitHubPublication{}, refuse(LandRefusalProtected, "the PR publication branch is the target branch; preserve source and reconcile the recorded PR branch before retrying")
 	}
 	return GitHubPublication{Repository: opts.Repository, BaseRef: base, Branch: branch, HeadSHA: opts.HeadSHA}, nil
 }
@@ -183,6 +197,10 @@ func githubPublicationMatches(pull githubLandingPull, repository, branch, head, 
 	return pull.Number > 0 && pull.Head.SHA == head && pull.Head.Ref == branch && pull.Head.Repo.FullName == repository && pull.Base.Ref == base && pull.Base.Repo.FullName == repository
 }
 
+func githubPublicationRefusal(pull githubLandingPull, repository, branch, head, base string) error {
+	return refuse(LandRefusalHeadMoved, fmt.Sprintf("PR publication identity mismatch: expected repository=%s branch=%s target=%s head=%s; observed head_repository=%s base_repository=%s branch=%s target=%s head=%s state=%s merged=%t; preserve source and reconcile the recorded PR before retrying", repository, branch, base, head, pull.Head.Repo.FullName, pull.Base.Repo.FullName, pull.Head.Ref, pull.Base.Ref, pull.Head.SHA, pull.State, pull.Merged || pull.MergedAt != ""))
+}
+
 func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue, opts LandOptions, repository, owner, remote, branch, head, base string) (githubLandingPull, bool, bool, error) {
 	authorize := func() error {
 		if opts.Authorize != nil {
@@ -199,6 +217,9 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 	if err != nil {
 		return githubLandingPull{}, false, false, fmt.Errorf("inspect published attempt branch: %w", err)
 	}
+	if opts.External != nil && (!exists || previous != head && previous != opts.ExternalHeadSHA) {
+		return githubLandingPull{}, false, false, refuse(LandRefusalHeadMoved, "the retained PR branch moved beyond its recorded source; preserve both sources and reconcile the PR before retrying publication")
+	}
 	headChanged := exists && previous != head
 	var pulls []githubLandingPull
 	query := "repos/" + repository + "/pulls?state=all&head=" + url.QueryEscape(owner+":"+branch) + "&per_page=100"
@@ -207,6 +228,9 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 	}
 	var pull githubLandingPull
 	for _, candidate := range pulls {
+		if candidate.State == "open" && opts.External != nil && strconv.Itoa(candidate.Number) != opts.External.ID {
+			return githubLandingPull{}, false, headChanged, refuse(LandRefusalHeadMoved, "the retained publication branch identifies another PR; preserve both references and reconcile before retrying")
+		}
 		if candidate.State == "open" && (candidate.Number <= 0 || candidate.Head.Ref != branch || candidate.Head.Repo.FullName != repository || candidate.Base.Repo.FullName != repository) {
 			return githubLandingPull{}, false, headChanged, refuse(LandRefusalHeadMoved, "an open PR does not identify the configured publication repository and branch; reconcile its delivery identity before retrying")
 		}
@@ -223,6 +247,9 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 		if candidate.State == "open" {
 			return githubLandingPull{}, false, headChanged, refuse(LandRefusalHeadMoved, "an open PR on the publication branch targets another base; reconcile its delivery identity before retrying publication")
 		}
+	}
+	if opts.External != nil && (pull.Number == 0 || strconv.Itoa(pull.Number) != opts.External.ID || pull.State != "open" || pull.Head.SHA != head && pull.Head.SHA != opts.ExternalHeadSHA) {
+		return githubLandingPull{}, false, headChanged, githubPublicationRefusal(pull, repository, branch, head, base)
 	}
 	if exists && previous != head {
 		if _, err := runGitAt(ctx, info.Path, "cat-file", "-e", previous+"^{commit}"); err != nil {
@@ -824,6 +851,17 @@ func githubLandingConflictReadFailure(operation string, err, refusal error) erro
 }
 
 func readExternalLandingPull(ctx context.Context, client GitHubRESTClient, repositoryURL string, external *tracker.ChangeExternalReference, head, base string) (githubLandingPull, error) {
+	pull, err := readExternalGitHubPull(ctx, client, repositoryURL, external, base)
+	if err != nil {
+		return pull, err
+	}
+	if pull.Head.SHA != head || pull.Head.Ref == "" || pull.State != "open" && !pull.Merged && pull.MergedAt == "" {
+		return pull, refuse(LandRefusalHeadMoved, "the external pull request no longer names the reviewed head")
+	}
+	return pull, nil
+}
+
+func readExternalGitHubPull(ctx context.Context, client GitHubRESTClient, repositoryURL string, external *tracker.ChangeExternalReference, base string) (githubLandingPull, error) {
 	repository, _, ok := githubLandingRepository(repositoryURL)
 	if !ok || external.Provider != "github" {
 		return githubLandingPull{}, refuse(LandRefusalProtected, "the external pull request must belong to the reviewed GitHub repository")
@@ -840,10 +878,7 @@ func readExternalLandingPull(ctx context.Context, client GitHubRESTClient, repos
 		return pull, err
 	}
 	if pull.Number != number || pull.Base.Repo.FullName != repository || pull.Head.Repo.FullName != repository || pull.Base.Ref != base {
-		return pull, refuse(LandRefusalProtected, "the external pull request repository or base differs from the authorized landing source")
-	}
-	if pull.Head.SHA != head || pull.Head.Ref == "" || pull.State != "open" && !pull.Merged && pull.MergedAt == "" {
-		return pull, refuse(LandRefusalHeadMoved, "the external pull request no longer names the reviewed head")
+		return pull, refuse(LandRefusalProtected, fmt.Sprintf("external PR identity mismatch: expected number=%d repository=%s target=%s; observed number=%d head_repository=%s base_repository=%s target=%s; preserve source and reconcile the recorded PR before retrying", number, repository, base, pull.Number, pull.Head.Repo.FullName, pull.Base.Repo.FullName, pull.Base.Ref))
 	}
 	return pull, nil
 }

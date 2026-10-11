@@ -301,7 +301,16 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		remoteNewer         bool
 		remoteOnlyHead      bool
 		preservePublication bool
+		publicationBranch   string
+		publicationPrior    bool
+		unknownPrior        bool
+		lostPushReceipt     bool
 	}{
+		{name: "prepare resumes a retained PR after a lost push receipt", prepareOnly: true, external: true, publicationBranch: "manual/recovery", publicationPrior: true, lostPushReceipt: true, method: "squash"},
+		{name: "prepare preserves the retained PR after a push refusal", prepareOnly: true, external: true, publicationBranch: "manual/recovery", publicationPrior: true, pushRefused: true, method: "squash", wantRefusal: LandRefusalProtected},
+		{name: "prepare reuses the external PR on a retained branch", prepareOnly: true, external: true, publicationBranch: "manual/recovery", method: "squash"},
+		{name: "prepare updates the retained PR with the same tree and base", prepareOnly: true, external: true, publicationBranch: "manual/recovery", publicationPrior: true, method: "squash"},
+		{name: "prepare refuses an unrecorded retained PR head", prepareOnly: true, external: true, publicationBranch: "manual/recovery", publicationPrior: true, unknownPrior: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
 		{name: "prepare refuses a different selected remote", prepareOnly: true, wrongRemote: "selected", method: "squash", wantRefusal: LandRefusalProtected},
 		{name: "prepare refuses a different push repository", prepareOnly: true, wrongRemote: "pushurl", method: "squash", wantRefusal: LandRefusalProtected},
 		{name: "prepare refuses duplicate matching PRs", prepareOnly: true, duplicatePull: true, preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
@@ -444,6 +453,14 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			runGit(t, fixture.source, "remote", "set-url", "origin", repository+".git")
 			previous := base
 			externalHead := fixture.head
+			publicationBranch := fixture.info.Branch
+			if test.publicationBranch != "" {
+				publicationBranch = test.publicationBranch
+			}
+			if test.publicationPrior {
+				tree := strings.TrimSpace(runGit(t, fixture.source, "rev-parse", fixture.head+"^{tree}"))
+				externalHead = strings.TrimSpace(runGit(t, fixture.source, "commit-tree", tree, "-p", base, "-m", "Retained recovery"))
+			}
 			if test.pullState == "merged" {
 				runGit(t, fixture.source, "push", "origin", fixture.head+":refs/heads/"+fixture.info.Branch)
 			}
@@ -451,7 +468,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				if test.pullError == "head" {
 					externalHead = base
 				}
-				runGit(t, fixture.source, "push", "origin", externalHead+":refs/heads/"+fixture.info.Branch)
+				runGit(t, fixture.source, "push", "origin", externalHead+":refs/heads/"+publicationBranch)
 			}
 			if test.reworked {
 				tree := strings.TrimSpace(runGit(t, fixture.source, "rev-parse", fixture.head+"^{tree}"))
@@ -523,7 +540,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 						}
 						var response string
 						if test.external {
-							pullHead, headRef, baseRef, headRepo, baseRepo := externalHead, fixture.info.Branch, "main", "example/repo", "example/repo"
+							pullHead, headRef, baseRef, headRepo, baseRepo := externalHead, publicationBranch, "main", "example/repo", "example/repo"
+							if test.publicationBranch != "" {
+								pullHead = strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+headRef))
+							}
 							if mergeCalls > 1 {
 								pullHead = strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+headRef))
 							}
@@ -634,10 +654,13 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 										t.Setenv("PATH", wrapper+string(os.PathListSeparator)+os.Getenv("PATH"))
 									}
 								case test.external:
-									if req.URL.Path != "/repos/example/repo/pulls/7" || req.URL.RawQuery != "" {
+									if test.prepareOnly && req.URL.Path == "/repos/example/repo/pulls" && req.URL.Query().Get("head") == "example:"+publicationBranch {
+										response = "[" + pull + "]"
+									} else if req.URL.Path != "/repos/example/repo/pulls/7" || req.URL.RawQuery != "" {
 										t.Fatalf("external PR lookup = %s", req.URL)
+									} else {
+										response = pull
 									}
-									response = pull
 								case test.duplicatePull:
 									response = "[" + pull + "," + strings.Replace(pull, `"number":7`, `"number":8`, 1) + "]"
 								case createdPull:
@@ -732,6 +755,12 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			}
 			if test.external {
 				opts.External = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: repository + "/pull/7"}
+				if test.publicationPrior {
+					opts.ExternalHeadSHA = externalHead
+					if test.unknownPrior {
+						opts.ExternalHeadSHA = base
+					}
+				}
 			}
 			landingInfo, landingIssue := fixture.info, fixture.issue
 			if test.isolated {
@@ -809,6 +838,17 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					}
 					return nil
 				}
+				lostPushReceipt := false
+				pushReceiptError := errors.New("push succeeded but its receipt was unavailable")
+				if test.lostPushReceipt {
+					opts.PublicationEffect = func(_ context.Context, kind, state string, _ GitHubPublication) error {
+						if kind == "git_push" && state == "confirmed" && !lostPushReceipt {
+							lostPushReceipt = true
+							return pushReceiptError
+						}
+						return nil
+					}
+				}
 				if test.stagedWork {
 					if err := os.WriteFile(filepath.Join(landingInfo.Path, "repair.txt"), []byte("existing staged repair\n"), 0o600); err != nil {
 						t.Fatal(err)
@@ -837,6 +877,12 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					runGit(t, fixture.source, "config", "remote.origin.pushurl", "https://github.com/other/repo.git")
 				}
 				publication, err := fixture.backend.PrepareGitHubPublication(t.Context(), landingInfo, landingIssue, opts)
+				if test.lostPushReceipt {
+					if !errors.Is(err, pushReceiptError) || publication.External.ID != "" || createCalls != 0 || strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+publicationBranch)) != fixture.head {
+						t.Fatalf("lost push receipt discarded or misreported the retained PR: %+v, %v", publication, err)
+					}
+					publication, err = fixture.backend.PrepareGitHubPublication(t.Context(), landingInfo, landingIssue, opts)
+				}
 				if test.lostCreate {
 					if err == nil || createCalls != 1 {
 						t.Fatalf("lost create response did not preserve one publication: %+v, %v, calls=%d", publication, err, createCalls)
@@ -863,6 +909,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					return
 				}
 				if test.wantRefusal != "" {
+					if test.publicationBranch != "" && (createCalls != 0 || strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+publicationBranch)) != externalHead || preservedBranch != runGit(t, fixture.remote, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"+fixture.info.Branch)) {
+						t.Fatal("refused publication changed the retained PR or assigned branch")
+					}
 					if test.preservePublication && (preservedBranch != runGit(t, fixture.remote, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"+fixture.info.Branch) || preservedLog != runGit(t, fixture.remote, "reflog", "show", "--format=%H %gs", "refs/heads/"+fixture.info.Branch)) {
 						t.Fatalf("refusal overwrote published branch or PR head: old=%s current=%s", previous, runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
 					}
@@ -875,16 +924,19 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					}
 					return
 				}
-				if err != nil || publication.Repository != repository || publication.HeadSHA != fixture.head || publication.BaseRef != target || publication.Branch != landingInfo.Branch || publication.External.ID != "7" || publication.External.URL != repository+"/pull/7" {
+				if err != nil || publication.Repository != repository || publication.HeadSHA != fixture.head || publication.BaseRef != target || publication.Branch != publicationBranch || publication.External.ID != "7" || publication.External.URL != repository+"/pull/7" {
 					t.Fatalf("publication did not record the exact reviewable PR: %+v, %v", publication, err)
 				}
 				again, err := fixture.backend.PrepareGitHubPublication(t.Context(), landingInfo, landingIssue, opts)
 				wantCreates := 1
-				if test.pullState == "stale" || test.pullState == "open" {
+				if test.pullState == "stale" || test.pullState == "open" || test.external {
 					wantCreates = 0
 				}
 				if err != nil || again != publication || createCalls != wantCreates || mergeCalls != 0 {
 					t.Fatalf("publication retry duplicated or merged work: %+v, %v, creates=%d merges=%d", again, err, createCalls, mergeCalls)
+				}
+				if test.publicationBranch != "" && (strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+publicationBranch)) != fixture.head || preservedBranch != runGit(t, fixture.remote, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"+fixture.info.Branch)) {
+					t.Fatal("retained PR publication lost its exact head or changed the assigned branch")
 				}
 				return
 			}

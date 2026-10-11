@@ -256,6 +256,15 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			return errors.New("required GitHub PR preparation is unavailable; retain the current Change source and resume on its authorized publication runner")
 		}
 		confirmedPR := workspace.GitHubPublication{}
+		external, externalHead := version.External, version.HeadSHA
+		if external == nil {
+			var previousNumber int64
+			for _, previous := range detail.Versions {
+				if previous.Number < version.Number && previous.Number > previousNumber && previous.Repository == version.Repository && previous.External != nil && previous.Landing == nil {
+					external, externalHead, previousNumber = previous.External, previous.HeadSHA, previous.Number
+				}
+			}
+		}
 		effect := func(ctx context.Context, kind, state string, publication workspace.GitHubPublication) error {
 			check := authorize
 			if state == "pending" {
@@ -302,7 +311,7 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			}
 			return nil
 		}
-		publication, err := e.publicationSource(ctx, version, workspace.LandOptions{Authorize: authorizeStart, PublicationEffect: effect, External: version.External, SourceIssues: detail.SourceIssues})
+		publication, err := e.publicationSource(ctx, version, workspace.LandOptions{Authorize: authorizeStart, PublicationEffect: effect, External: external, ExternalHeadSHA: externalHead, SourceIssues: detail.SourceIssues})
 		if err != nil {
 			if e.data.Handoff != nil && e.data.Handoff.EffectState == "ambiguous" {
 				return fmt.Errorf("%w: required GitHub PR has an ambiguous publication response; retain source and reconcile the exact existing PR before another write: %w", ErrUnavailable, err)
