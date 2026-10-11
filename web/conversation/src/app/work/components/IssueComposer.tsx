@@ -3,6 +3,7 @@ import React from "react";
 import { DEFAULT_TURN_PREFERENCES } from "../../../contracts/index.ts";
 import type { SlashCommand } from "../../adapters/slashCommands.ts";
 import { Composer } from "../../components/Composer.tsx";
+import { useAttachmentDraft } from "./AttachmentEditor.tsx";
 
 /**
  * The slash commands this page adds to the composer's own.
@@ -30,6 +31,7 @@ export function issueComposerSlashCommands(options: {
 }
 
 export interface IssueComposerProps {
+  readonly projectId?: string | undefined;
   /** False for a reader who may not write: the composer is unavailable. */
   readonly canWrite: boolean;
   readonly onComment: (body: string) => Promise<void>;
@@ -40,14 +42,19 @@ export interface IssueComposerProps {
 export function IssueComposer(props: IssueComposerProps): React.ReactElement {
   const [draft, setDraft] = React.useState("");
   const [sending, setSending] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const upload = useAttachmentDraft(props.projectId ?? "", setDraft);
 
   const send = async () => {
     const text = draft.trim();
-    if (text.length === 0 || sending) return;
+    if (text.length === 0 || sending || upload.uploading) return;
     setSending(true);
+    setError(null);
     try {
       await props.onComment(text);
       setDraft("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSending(false);
     }
@@ -74,7 +81,10 @@ export function IssueComposer(props: IssueComposerProps): React.ReactElement {
       preferences={DEFAULT_TURN_PREFERENCES}
       onPreferencesChange={() => {}}
       footerControls="none"
-      attachControl="none"
+      attachControl={props.projectId === undefined ? "none" : "attach"}
+      onFiles={props.projectId === undefined ? undefined : upload.addFiles}
+      uploadingFiles={upload.uploading}
+      attachmentErrors={[...upload.errors, ...(error === null ? [] : [error])]}
       slashCommands={slashCommands}
       // No hint line under this card, so nothing for the editor to point at.
       describedBy={null}

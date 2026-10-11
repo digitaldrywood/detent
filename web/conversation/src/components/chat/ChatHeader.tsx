@@ -62,9 +62,15 @@ interface ChatHeaderProps {
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   rightPanelOpen: boolean;
+  compactOnMobile?: boolean;
   gitCwd: string | null;
   readonly onOpenPullRequest?: ((number: number) => void) | undefined;
+  onAsk?: (() => void) | undefined;
   onNewThreadInProject: () => void;
+  projectBreadcrumbAction?: {
+    readonly label: string;
+    readonly onClick: () => void;
+  } | undefined;
   onOpenProjectSettings?: (() => void) | undefined;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<ProjectScriptActionResult>;
@@ -131,9 +137,12 @@ export const ChatHeader = memo(function ChatHeader({
   keybindings,
   availableEditors,
   rightPanelOpen,
+  compactOnMobile = false,
   gitCwd,
   onOpenPullRequest,
+  onAsk,
   onNewThreadInProject,
+  projectBreadcrumbAction,
   onOpenProjectSettings,
   onRunProjectScript,
   onAddProjectScript,
@@ -157,6 +166,7 @@ export const ChatHeader = memo(function ChatHeader({
   }, [panelAnimationDurationMs, panelAnimationsActive]);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const activeProjectName = activeProject?.title;
+  const projectBreadcrumbLabel = projectBreadcrumbAction?.label ?? `New thread in ${activeProjectName}`;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const fileScripts = useProjectFileScripts(
     activeThreadEnvironmentId,
@@ -314,7 +324,7 @@ export const ChatHeader = memo(function ChatHeader({
   );
   return (
     <div
-      className="@container/header-actions flex min-w-0 flex-1 items-center gap-2 sm:gap-3"
+      className={cn("@container/header-actions flex min-w-0 flex-1 items-center gap-2 sm:gap-3", compactOnMobile && "max-md:pr-16")}
       onContextMenu={handleHeaderContextMenu}
     >
       <WorkspaceBreadcrumb
@@ -332,16 +342,16 @@ export const ChatHeader = memo(function ChatHeader({
                   render={
                     <button
                       type="button"
-                      aria-label={`New thread in ${activeProjectName}`}
-                      onClick={onNewThreadInProject}
+                      aria-label={projectBreadcrumbLabel}
+                      onClick={projectBreadcrumbAction?.onClick ?? onNewThreadInProject}
                       className="inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                     />
                   }
                 >
                   <ProjectFavicon project={activeProject} className="size-3.5" />
-                  <span className="max-w-40 truncate">{activeProjectName}</span>
+                  <span className={cn("max-w-40 truncate", compactOnMobile && "hidden md:inline")}>{activeProjectName}</span>
                 </TooltipTrigger>
-                <TooltipPopup side="top">New thread in {activeProjectName}</TooltipPopup>
+                <TooltipPopup side="top">{projectBreadcrumbLabel}</TooltipPopup>
               </Tooltip>
             </WorkspaceBreadcrumbItem>
             <WorkspaceBreadcrumbSeparator />
@@ -404,11 +414,17 @@ export const ChatHeader = memo(function ChatHeader({
         ref={headerActionsRef}
         data-chat-header-actions
         className={cn(
-          "flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
+          "shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
+          compactOnMobile ? "hidden md:flex" : "flex",
           rightPanelOpen ? "pr-0" : "pr-16",
           "[[data-panel-animations=true]_&]:motion-safe:transition-[padding-right] [[data-panel-animations=true]_&]:motion-safe:[transition-duration:var(--panel-animation-duration)] [[data-panel-animations=true]_&]:motion-safe:ease-out",
         )}
       >
+        {onAsk === undefined ? null : (
+          <button type="button" onClick={onAsk} data-testid="issue-ask-button" title="Ask about this issue (A). Private; never posted to the issue." className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring">
+            Ask <kbd className="ml-1 text-xs text-muted-foreground">A</kbd>
+          </button>
+        )}
         {activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}

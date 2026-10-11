@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/activehours"
@@ -20,11 +21,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/piagent"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
@@ -80,6 +83,7 @@ type telemetrySnapshotPublisher interface {
 //
 // If load is nil, the default project.Load is used.
 func withRunnerFactory(
+	ctx context.Context,
 	deps project.Dependencies,
 	sessionStore runnerpkg.SessionStore,
 	load func(project.Dependencies) (*project.Project, error),
@@ -87,10 +91,11 @@ func withRunnerFactory(
 	serviceTokenSource func(string) string,
 	githubTokenSource ...func() string,
 ) project.Factory {
-	return withRunnerFactoryWithIsolation(deps, sessionStore, load, serviceConnection, serviceTokenSource, nil, githubTokenSource...)
+	return withRunnerFactoryWithIsolation(ctx, deps, sessionStore, load, serviceConnection, serviceTokenSource, nil, githubTokenSource...)
 }
 
 func withRunnerFactoryWithIsolation(
+	ctx context.Context,
 	deps project.Dependencies,
 	sessionStore runnerpkg.SessionStore,
 	load func(project.Dependencies) (*project.Project, error),
@@ -99,9 +104,35 @@ func withRunnerFactoryWithIsolation(
 	isolationPolicy func() (isolation.Policy, error),
 	githubTokenSource ...func() string,
 ) project.Factory {
+	return withRunnerFactoryWithProjectTokens(ctx, deps, sessionStore, load, serviceConnection, serviceTokenSource, isolationPolicy, func(_ context.Context, _ globalconfig.Project, _ workflowconfig.Config) (string, error) {
+		token := deps.GitHubToken
+		if len(githubTokenSource) > 0 && githubTokenSource[0] != nil {
+			token = githubTokenSource[0]()
+		}
+		return strings.TrimSpace(token), nil
+	})
+}
+
+func withRunnerFactoryWithProjectTokens(
+	ctx context.Context,
+	deps project.Dependencies,
+	sessionStore runnerpkg.SessionStore,
+	load func(project.Dependencies) (*project.Project, error),
+	serviceConnection serviceapi.Connection,
+	serviceTokenSource func(string) string,
+	isolationPolicy func() (isolation.Policy, error),
+	tokenSource func(context.Context, globalconfig.Project, workflowconfig.Config) (string, error),
+) project.Factory {
 	var hostCache atomic.Pointer[toolcache.Report]
 	return func(cfg globalconfig.Project) (*project.Project, error) {
-		workflow, err := project.LoadWorkflow(cfg)
+		if preparation, ok := deps.Scheduling.(interface {
+			PrepareProject(context.Context, string) error
+		}); ok {
+			if err := preparation.PrepareProject(ctx, cfg.ID); err != nil {
+				return nil, errors.Join(project.ErrProjectDefinition, connector.NewRetryableError(err.Error()))
+			}
+		}
+		workflow, err := project.LoadWorkflowContext(ctx, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("load project workflow %s: %w", cfg.ID, err)
 		}
@@ -109,12 +140,14 @@ func withRunnerFactoryWithIsolation(
 			workflow.Config.Identity = cfg.Identity
 			workflow.Config.Identity.Normalize()
 		}
-		if len(githubTokenSource) > 0 && githubTokenSource[0] != nil {
-			token := strings.TrimSpace(githubTokenSource[0]())
-			if token != "" && (workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHub || workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHubLocal) {
-				workflow.Config.Tracker.APIKey = token
-			}
+		workflow.Config = project.WithMappedNativeTracker(workflow.Config, deps.Scheduling, project.ID(cfg.ID))
+		credentialConfig := workflow.Config
+		token, err := tokenSource(ctx, cfg, credentialConfig)
+		if err != nil {
+			return nil, fmt.Errorf("%w: project %s: %w", project.ErrConnectorCreation, cfg.ID, connector.NewRetryableError(err.Error()))
 		}
+		workflow.Config = workflow.Config.WithRuntimeGitHubToken(token)
+		workflow.Config = project.EffectivePolicyConfig(cfg, workflow.Config)
 
 		run := deps.Runner
 		if run == nil {
@@ -150,14 +183,17 @@ func withRunnerFactoryWithIsolation(
 				return err
 			}
 		}
-		if len(githubTokenSource) > 0 && githubTokenSource[0] != nil {
-			projectDeps.GitHubToken = githubTokenSource[0]()
+		projectDeps.GitHubToken = token
+		if projectDeps.RefreshGitHubToken == nil {
+			projectDeps.RefreshGitHubToken = func(ctx context.Context) (string, error) {
+				return tokenSource(ctx, cfg, credentialConfig)
+			}
 		}
 
 		if load != nil {
 			return load(projectDeps)
 		}
-		return project.Load(cfg, projectDeps)
+		return project.NewContext(ctx, project.Config{Project: cfg, Workflow: workflow}, projectDeps)
 	}
 }
 
@@ -190,7 +226,7 @@ func buildRunner(
 	if err != nil {
 		return nil, fmt.Errorf("create runner: %w", err)
 	}
-	return run, nil
+	return &sshRunner{Runner: run, workdir: projectWorkdir, projectID: projectID, memory: memory, goBuildSlots: goBudget.Slots, connection: serviceConnection, logger: logger, command: sshCommand}, nil
 }
 
 func hostGoBudget(slots int) gobudget.Budget {
@@ -314,19 +350,37 @@ func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string,
 		OutputRoot: outputRoot,
 		AutoBranch: cfg.Workspace.AutoBranch,
 		Hooks: workspace.Hooks{
-			Shell:        cfg.Hooks.Shell,
-			AfterCreate:  cfg.Hooks.AfterCreate,
-			BeforeRun:    cfg.Hooks.BeforeRun,
-			AfterRun:     cfg.Hooks.AfterRun,
-			BeforeRemove: cfg.Hooks.BeforeRemove,
-			Timeout:      durationFromMillis(cfg.Hooks.TimeoutMS),
+			Shell:             cfg.Hooks.Shell,
+			AfterCreate:       cfg.Hooks.AfterCreate,
+			BeforeRun:         cfg.Hooks.BeforeRun,
+			AfterRun:          cfg.Hooks.AfterRun,
+			BeforeRemove:      cfg.Hooks.BeforeRemove,
+			Timeout:           durationFromMillis(cfg.Hooks.TimeoutMS),
+			StripGitHubTokens: cfg.Tracker.Kind == workflowconfig.TrackerHubNative,
 		},
 		Logger: logger,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create workspace backend: %w", err)
+		context := fmt.Sprintf("create workspace backend for workspace root %q and source root %q", root, sourceRoot)
+		return nil, classifyWorkspaceBackendError(context, err)
 	}
 	return backend, nil
+}
+
+func classifyWorkspaceBackendError(context string, err error) error {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) && (errors.Is(err, os.ErrNotExist) ||
+		isInvalidConfiguredPath(err)) {
+		return fmt.Errorf("%w: %s: %w", project.ErrProjectDefinition, context, err)
+	}
+	return fmt.Errorf("%s: %w", context, err)
+}
+
+func isInvalidConfiguredPath(err error) bool {
+	return errors.Is(err, syscall.ENOTDIR) ||
+		errors.Is(err, syscall.ELOOP) ||
+		errors.Is(err, syscall.ENAMETOOLONG) ||
+		errors.Is(err, syscall.ENOTSUP)
 }
 
 func buildAgentBackend(backend workflowconfig.AgentBackend) (runnerpkg.AgentBackend, error) {
@@ -337,13 +391,25 @@ func buildAgentBackendWithIsolation(backend workflowconfig.AgentBackend, policie
 	switch backend.Kind {
 	case workflowconfig.AgentBackendCodex:
 		return buildCodexAgentBackend(backend.Command, backend.CodexOptions(), policies...)
+	case workflowconfig.AgentBackendPiAgent:
+		cfg := backend.PiAgentOptions()
+		return piagent.NewAgentBackend(piagent.Options{
+			BackendID:       backend.ID,
+			IsolationPolicy: firstIsolationPolicy(policies),
+			CommandFactory: func(ctx context.Context, args []string) *exec.Cmd {
+				return buildClaudeCommandFromConfig(ctx, backend.Command, cfg.Shell, args)
+			},
+			Provider: backend.Provider, ThinkingLevel: cfg.ThinkingLevel, Tools: cfg.Tools, SessionDir: cfg.SessionDir,
+			TurnTimeout: durationFromMillis(cfg.TurnTimeoutMS), StallTimeout: durationFromMillis(cfg.StallTimeoutMS),
+		})
 	case workflowconfig.AgentBackendClaudeCode:
 		return buildClaudeAgentBackend(backend.Command, backend.ClaudeCodeOptions(), policies...)
 	default:
-		return nil, fmt.Errorf("unsupported agent backend kind %q; supported kinds: %s, %s",
+		return nil, fmt.Errorf("unsupported agent backend kind %q; supported kinds: %s, %s, %s",
 			backend.Kind,
 			workflowconfig.AgentBackendCodex,
 			workflowconfig.AgentBackendClaudeCode,
+			workflowconfig.AgentBackendPiAgent,
 		)
 	}
 }
@@ -400,7 +466,9 @@ func buildCodexAgentBackend(command string, cfg workflowconfig.CodexOptions, pol
 		return nil, fmt.Errorf("create codex transport factory: %w", err)
 	}
 
-	opts := []codex.AppServerOption{}
+	opts := []codex.AppServerOption{codex.WithThreadPreparation(func(ctx context.Context, threadID string) error {
+		return prepareLegacyCodexRollout(ctx, serviceCommand.Environment["CODEX_HOME"], threadID)
+	})}
 	if timeout := durationFromMillis(cfg.ReadTimeoutMS); timeout > 0 {
 		opts = append(opts, codex.WithReadTimeout(timeout))
 	}
@@ -663,8 +731,7 @@ func startupSnapshot(
 	now time.Time,
 	updateSources ...autoUpdateStatusSource,
 ) telemetry.Snapshot {
-	nextRefreshAt := now
-	refresh := telemetry.Refresh{Status: telemetry.RefreshStatusInitializing, NextRefreshAt: &nextRefreshAt}
+	refresh := telemetry.Refresh{Status: telemetry.RefreshStatusInitializing}
 	unknown := telemetry.SnapshotSection{Source: telemetry.SnapshotSourceUnknown}
 	snapshot := telemetry.Snapshot{
 		GeneratedAt:    now,
@@ -1745,15 +1812,16 @@ func mergeShutdown(current, next telemetry.Shutdown) telemetry.Shutdown {
 
 func projectSnapshot(snapshot telemetry.Snapshot) telemetry.ProjectSnapshot {
 	return telemetry.ProjectSnapshot{
-		Project:    snapshot.Project,
-		Tracker:    snapshot.Tracker,
-		Runtime:    snapshot.Runtime,
-		Counts:     snapshot.Counts,
-		Tokens:     snapshot.Tokens,
-		Throughput: snapshot.Throughput,
-		Auth:       snapshot.Auth,
-		Refresh:    snapshot.Refresh,
-		Dispatch:   snapshot.Dispatch,
+		LocalIntake: snapshot.LocalIntake,
+		Project:     snapshot.Project,
+		Tracker:     snapshot.Tracker,
+		Runtime:     snapshot.Runtime,
+		Counts:      snapshot.Counts,
+		Tokens:      snapshot.Tokens,
+		Throughput:  snapshot.Throughput,
+		Auth:        snapshot.Auth,
+		Refresh:     snapshot.Refresh,
+		Dispatch:    snapshot.Dispatch,
 	}
 }
 

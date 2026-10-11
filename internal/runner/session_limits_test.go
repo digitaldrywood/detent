@@ -22,6 +22,10 @@ func (b *sessionLimitsBackend) RunTurn(_ context.Context, req AgentTurnRequest, 
 }
 
 func TestRunnerSelectedSessionLimits(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	for _, mode := range []string{"worker", "validator", "triage"} {
 		for _, stop := range []string{"duration", "tokens"} {
 			for _, explicit := range []bool{false, true} {

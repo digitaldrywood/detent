@@ -12,8 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -43,7 +46,7 @@ var errCoordinatorToolArguments = errors.New("invalid tool arguments")
 // conversation's owner has lost read access to its project.
 var errCoordinatorProjectUnreadable = errors.New("the conversation owner can no longer read this project")
 
-// coordinatorToolset executes the read-only coordination tools for one turn.
+// coordinatorToolset executes the coordination tools for one turn.
 // Every query is scoped to the conversation's organization; project access
 // follows the conversation owner's grants.
 type coordinatorToolset struct {
@@ -60,24 +63,37 @@ func coordinatorTool(name, description, schema string) runner.AgentTool {
 }
 
 func (t *coordinatorToolset) tools() []runner.AgentTool {
-	return []runner.AgentTool{
+	return append([]runner.AgentTool{
+		coordinatorTool("read_skill", "Read one built-in Detent skill's guidance by name or alias from the Available skills catalog.", `{"type":"object","required":["name"],"properties":{"name":{"type":"string"}},"additionalProperties":false}`),
 		coordinatorTool(coordinatorToolListAttention,
 			"List issues that need attention, grouped as blocked, waiting_for_input, running and review. Scope is this conversation's project or every project the user can read.",
 			`{"type":"object","properties":{"scope":{"type":"string","enum":["project","all_projects"],"description":"project (default) or all_projects"},"limit":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum issues per group, default 20"}},"additionalProperties":false}`),
 		coordinatorTool(coordinatorToolExplainIssue,
-			"Explain one issue: title, body, workflow state, latest attempt, recent comments and its linked conversation.",
-			`{"type":"object","required":["work_item_id"],"properties":{"work_item_id":{"type":"string","description":"Work item identifier (wi_...)"}},"additionalProperties":false}`),
+			"Explain one issue, including Done and other terminal issues: title, body, workflow state, latest attempt, recent comments and its linked conversation. Resolve issue numbers within this conversation's project and return the native work_item_id for action proposals.",
+			`{"type":"object","required":["work_item_id"],"properties":{"work_item_id":{"type":"string","description":"Issue number (#19 or 19) in this conversation's project, or native work item identifier (wi_...)"}},"additionalProperties":false}`),
+		coordinatorTool("read_issue_history", "Read current issue records with pagination, including Done and terminal issues. Supply work_item_id to resolve an issue number in this conversation's project; otherwise defaults to the attached issue. Sections include full body, comments, lane and phase history with reasons, attempts with outcomes, dependencies and PR state.", `{"type":"object","required":["section"],"properties":{"work_item_id":{"type":"string","description":"Issue number (#19 or 19) or native work item identifier (wi_...) in this conversation's project; defaults to the attached issue"},"section":{"type":"string","enum":["work_item","work_comments","work_history","work_runs","work_relationships","work_references","work_attempt_receipt"]},"cursor":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer","minimum":1,"maximum":200},"native_attempt_id":{"type":"string"}},"additionalProperties":false}`),
+		coordinatorIssueSplitTool(),
+		coordinatorTool("load_split_issue_skill", "Load the split-issue skill before proposing an issue decomposition.", `{"type":"object","properties":{},"additionalProperties":false}`),
 		coordinatorTool(coordinatorToolProposeIssue,
 			"Propose a new issue for the user to confirm. This never creates the issue; it prepares a card the user can accept in the app.",
 			`{"type":"object","required":["title","objective"],"properties":{"title":{"type":"string","maxLength":500},"objective":{"type":"string","maxLength":4000,"description":"What the issue should achieve, in Markdown"},"project_id":{"type":"string","description":"Target project; defaults to this conversation's project"}},"additionalProperties":false}`),
-	}
+	}, append(append(append(coordinatorActionTools(), coordinatorSlashActionTools()...), coordinatorSpriteTools()...), coordinatorRunnerTools()...)...)
 }
 
 // handle runs one tool call. Errors are returned to the model as
 // {"error": ...} and logged; they never end the turn.
 func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
+	t.state.endTextSegment(ctx)
 	result, err := t.execute(ctx, call)
 	if err != nil {
+		if call.Name == "get_runners" || call.Name == "set_runner_tier" || coordinatorSpriteTool(call.Name) || call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) {
+			err = coordinatorActionError(err)
+		}
+		if call.Name == "set_runner_tier" || coordinatorSpriteMutation(call.Name) || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) {
+			if postErr := t.postActionRefusal(ctx, call.Name, err); postErr != nil {
+				t.coordinator.logger.Warn("coordinator could not persist refusal", "conversation_id", t.state.conversationID, "error", postErr)
+			}
+		}
 		t.coordinator.logger.Warn("coordinator tool failed", "conversation_id", t.state.conversationID, "tool", call.Name, "error", err)
 		return coordinatorToolError(err), nil
 	}
@@ -92,7 +108,12 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 }
 
 func coordinatorToolError(err error) runner.AgentToolResult {
-	encoded, encodeErr := json.Marshal(map[string]string{"error": boundRunes(err.Error(), coordinatorErrorRunes)})
+	message := err.Error()
+	var native *nativeError
+	if errors.As(err, &native) && native.Code == "invalid_request" {
+		message = native.Message
+	}
+	encoded, encodeErr := json.Marshal(map[string]string{"error": boundRunes(message, coordinatorErrorRunes)})
 	if encodeErr != nil {
 		encoded = []byte(`{"error":"tool failed"}`)
 	}
@@ -112,6 +133,35 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 		return nil, errCoordinatorProjectUnreadable
 	}
 	switch call.Name {
+	case "read_skill":
+		var args struct {
+			Name string `json:"name"`
+		}
+		if err := decodeCoordinatorArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(args.Name) == "" {
+			return nil, errCoordinatorToolArguments
+		}
+		skill, body, err := skills.ReadBuiltin(args.Name)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"name": skill.Name, "body": body}, nil
+	case "get_runners", "set_runner_tier", "convert_runner_scope":
+		return t.runnerTool(ctx, record, call)
+	case "promote_sprites_token":
+		return t.promoteSpritesTokenTool(ctx, record, call)
+	case "get_sprite_pool", "set_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", "get_sprite_bootstrap_log":
+		return t.spriteTool(ctx, record, call)
+	case "read_issue_history":
+		return t.readIssueHistory(ctx, record, call)
+	case "get_project_integration", "update_project_integration", "move_item", "edit_item", "add_comment":
+		return t.projectAction(ctx, record, call)
+	case "propose_stop_run":
+		return t.proposeStopRun(ctx, record, call)
+	case "propose_file_issue", "propose_maintenance_issue", "propose_move_item", "propose_set_priority", "propose_backlog_admission":
+		return t.slashAction(ctx, record, call)
 	case coordinatorToolListAttention:
 		var args struct {
 			Scope string `json:"scope"`
@@ -129,6 +179,12 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 			return nil, err
 		}
 		return t.explainIssue(ctx, record, readable, args.WorkItemID)
+	case "load_split_issue_skill":
+		return t.loadSplitIssueSkill(call.Arguments)
+	case string(chat.ActionArchiveItems):
+		return t.proposeIssueArchive(ctx, record, call)
+	case string(chat.ActionIssueSplit):
+		return t.proposeIssueSplit(ctx, record, call)
 	case coordinatorToolProposeIssue:
 		var args struct {
 			Title     string `json:"title"`
@@ -201,7 +257,7 @@ WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ?`
 		query = "SELECT project_id FROM token_grants WHERE token_id = ? AND organization_id = ?"
 		args = []any{record.OwnerPrincipalID, record.OrganizationID}
 		if apiScope(scope) == apiScopeAdmin && !nativeOnly {
-			query = "SELECT id FROM projects WHERE organization_id = ?"
+			query = "SELECT id FROM projects WHERE deleted_at IS NULL AND organization_id = ?"
 			args = []any{record.OrganizationID}
 		}
 	}
@@ -327,7 +383,7 @@ ORDER BY i.native_updated_at DESC, i.native_id LIMIT ?`, readableJSON, record.Or
 			result.Truncated = true
 			break
 		}
-		item.URL = "/chat/issues/" + item.WorkItemID
+		item.URL = "/work/i/" + item.WorkItemID
 		item.Title = boundRunes(item.Title, coordinatorToolSummaryRunes)
 		state := strings.ToLower(item.State)
 		var group *[]coordinatorAttentionItem
@@ -446,9 +502,28 @@ type coordinatorIssue struct {
 	URL            string               `json:"url"`
 }
 
+func (t *coordinatorToolset) resolveIssueReference(ctx context.Context, record conversationRecord, reference string) (string, error) {
+	reference = strings.TrimSpace(reference)
+	if reference == "" || strings.HasPrefix(reference, "wi_") {
+		return reference, nil
+	}
+	s := t.coordinator.service.server
+	issue, err := s.resolveOperatorNativeItem(ctx, s.database.db, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, reference)
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, explain.ErrNotFound) {
+		return "", fmt.Errorf("no issue %s in this project", "#"+strings.TrimPrefix(reference, "#"))
+	}
+	if err != nil {
+		return "", err
+	}
+	return string(issue.WorkItemID), nil
+}
+
 // explainIssue describes one issue in a project the owner can read.
 func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversationRecord, readable []tracker.ProjectID, workItemID string) (any, error) {
-	workItemID = strings.TrimSpace(workItemID)
+	workItemID, err := t.resolveIssueReference(ctx, record, workItemID)
+	if err != nil {
+		return nil, err
+	}
 	if workItemID == "" {
 		return nil, fmt.Errorf("%w: work_item_id is required", errCoordinatorToolArguments)
 	}
@@ -469,7 +544,7 @@ WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM json_each(?))
 		return nil, fmt.Errorf("read issue: %w", err)
 	}
 	issue.Body = boundRunes(issue.Body, coordinatorIssueBodyRunes)
-	issue.URL = "/chat/issues/" + issue.WorkItemID
+	issue.URL = "/work/i/" + issue.WorkItemID
 	now, err := t.coordinator.service.server.database.currentTime()
 	if err != nil {
 		return nil, err

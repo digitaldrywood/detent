@@ -7,19 +7,9 @@
 // screen reader or a keyboard cannot reach fails the test rather than passing
 // on a class name.
 //
-// **What the fixture can and cannot cover.** The Go preview seeds one project
-// with two issues: `Review the invitation flow` in `Todo`, and the issue the
-// seeded conversation was linked to. It seeds no attempt, no change request
-// and no second project. So this spec asserts what exists — lanes, cards, the
-// keyboard move, the view switch, the URL state, the issue page — and the
-// treatments that need an attempt or a change (the worker strip, the PR chip,
-// the review dock's four tabs) are covered against fixtures in
-// `web/conversation/tests/components/work.test.tsx` and against the mock hub
-// in `web/conversation/tests/work.test.ts`. Each is named at the assertion
-// that would otherwise be silently absent.
 const { test, expect } = require("@playwright/test");
 const AxeBuilder = require("@axe-core/playwright").default;
-const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
+const { startHostedHub, resetSavedWorkViews, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
 test.describe.configure({ mode: "serial" });
 
@@ -35,9 +25,10 @@ test.afterAll(async () => {
   hub = undefined;
 });
 
-// The client lists project actions on every issue and chat page, and main's
-// hub does not serve that endpoint yet, so its 404 is the one error allowed.
+// A project may have no actions and an issue may have no linked worker
+// conversation. Both optional reads report not_found, which the UI handles.
 const UNSERVED_PROJECT_ACTIONS = /\/api\/v2\/organizations\/[^/]+\/projects\/[^/]+\/actions$/;
+const UNLINKED_CONVERSATION = /\/api\/v2\/organizations\/[^/]+\/projects\/[^/]+\/work-items\/[^/]+\/conversation$/;
 const NOT_FOUND = /status of 404\b/;
 
 function watchConsole(page) {
@@ -45,7 +36,9 @@ function watchConsole(page) {
   page.on("console", (message) => {
     if (message.type() !== "error") return;
     const expected404 =
-      NOT_FOUND.test(message.text()) && UNSERVED_PROJECT_ACTIONS.test(message.location().url ?? "");
+      NOT_FOUND.test(message.text()) &&
+      (UNSERVED_PROJECT_ACTIONS.test(message.location().url ?? "") ||
+        UNLINKED_CONVERSATION.test(message.location().url ?? ""));
     if (expected404) return;
     errors.push(message.text());
   });
@@ -56,6 +49,7 @@ function watchConsole(page) {
 /** Signs in as the organization owner and opens a work route. */
 async function openWork(page, route = "/work") {
   await page.goto(hub.fixture.accounts.owner, { waitUntil: "domcontentloaded" });
+  await resetSavedWorkViews(page);
   // The router's basepath is `/` now (decisions.md §11, §12): Work is served
   // at the hub's root, not under the chat prefix.
   await page.goto(new URL(route, hub.fixture.url).toString(), {
@@ -85,6 +79,47 @@ async function scan(page, name) {
 }
 
 test.describe("the work board", () => {
+  test("defaults board lanes and list rows to priority then activity for open work and activity for Done", async ({ page }) => {
+    const fixture = require("../../web/conversation/src/contracts/fixtures/work-item.json");
+    const entries = [
+      { number: 1, state: "Todo", priority: 1, last_activity_at: "2026-10-03T12:00:00Z" },
+      { number: 2, state: "Todo", priority: 3, last_activity_at: "2026-10-05T12:00:00Z" },
+      { number: 3, state: "Todo", priority: 1, last_activity_at: "2026-10-04T12:00:00Z" },
+      { number: 4, state: "Done", priority: 0, last_activity_at: "2026-10-03T12:00:00Z", closed_at: "2026-10-03T12:00:00Z" },
+      { number: 5, state: "Done", priority: 3, last_activity_at: "2026-10-05T12:00:00Z", closed_at: "2026-10-05T12:00:00Z" },
+      { number: 6, state: "Done", priority: 1, last_activity_at: "2026-10-04T12:00:00Z", closed_at: "2026-10-04T12:00:00Z" },
+    ];
+    const issues = entries.map((entry) => ({ ...fixture, ...entry,
+      project_id: hub.fixture.project_id,
+      work_item_id: `wi_sort_${entry.number}`, title: `Sort fixture ${entry.number}`,
+      terminal: entry.state === "Done", blockers: [],
+      updated_at: "2026-10-02T12:00:00Z",
+    }));
+    await page.route("**/projects/*/work-items?**", async (route) => {
+      const params = new URL(route.request().url()).searchParams;
+      const states = params.getAll("state");
+      const items = issues.filter((issue) => (states.length === 0 || states.includes(issue.state))
+        && (!params.has("open") || issue.terminal === (params.get("open") === "false")));
+      await route.fulfill({ json: { items, sequence: 0, total: items.length } });
+    });
+    await page.route("**/projects/*/events?**", (route) => route.fulfill({
+      contentType: "text/event-stream", body: 'event: activity\ndata: {"sequence":0,"deltas":[]}\n\n',
+    }));
+    await openWork(page, `/work/p/${hub.fixture.project_id}`);
+    const todo = page.locator('[data-testid="board-lane"][data-lane="Todo"]');
+    await expect(todo.getByTestId("issue-card-open")).toHaveText(["Sort fixture 3", "Sort fixture 1", "Sort fixture 2"]);
+    await expect(page.locator('[data-testid="board-lane"][data-lane="Done"]')).toHaveCount(0);
+    await page.getByTestId("view-list").click();
+    await expect(page.getByTestId("work-list-open")).toHaveText(["Sort fixture 3", "Sort fixture 1", "Sort fixture 2"]);
+    await page.getByTestId("list-tab-closed").click();
+    await expect(page).toHaveURL(/tab=closed/);
+    await expect(page.getByTestId("work-list-open")).toHaveText(["Sort fixture 5", "Sort fixture 6", "Sort fixture 4"]);
+    await page.getByTestId("sort-trigger").click();
+    await page.getByTestId("sort-priority").click();
+    await expect(page).toHaveURL(/sort=priority/);
+    await expect(page.getByTestId("work-list-open")).toHaveText(["Sort fixture 4", "Sort fixture 6", "Sort fixture 5"]);
+  });
+
   test("renders the project's lanes and its issues", async ({ page }) => {
     const errors = watchConsole(page);
     await openWork(page, `/work/p/${hub.fixture.project_id}`);
@@ -99,9 +134,11 @@ test.describe("the work board", () => {
     const card = page.getByRole("button", { name: "Review the invitation flow", exact: true });
     await expect(card).toBeVisible();
 
-    // The stats strip is derived from the cards, so it cannot disagree.
-    await expect(page.getByTestId("work-stats")).toBeVisible();
-    await expect(page.getByTestId("stat-coverage")).toContainText("issues");
+    await expect(page.getByTestId("stat-completed")).toBeVisible();
+    await expect(page.getByTestId("work-stats")).toHaveCount(0);
+    await expect(page.getByTestId("work-toolbar")).toHaveCount(1);
+
+    await expect(page.getByTestId("stat-coverage")).toHaveCount(0);
 
     // The fixture seeds no running attempt and no pull request, so neither a
     // worker strip nor a PR chip is invented.
@@ -110,6 +147,29 @@ test.describe("the work board", () => {
 
     expect(errors).toEqual([]);
     await scan(page, "board");
+  });
+
+  test("keeps one toolbar and the completed counter in the header at desktop and phone widths", async ({ page }) => {
+    await openWork(page, `/work/p/${hub.fixture.project_id}`);
+    for (const width of [1440, 390, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      const header = page;
+      await expect(page.getByTestId("work-toolbar")).toHaveCount(1);
+      await expect(page.getByTestId("work-stats")).toHaveCount(0);
+      await expect(header.getByRole("button", { name: /completed ·/ })).toBeVisible();
+      await expect(page.getByTestId("connection-chip")).toHaveCount(1);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      if (width < 768) {
+        const chip = await page.getByTestId("connection-chip").boundingBox();
+        const ask = await header.getByRole("button", { name: "Ask", exact: true }).boundingBox();
+        const menu = await header.getByRole("button", { name: "More work actions", exact: true }).boundingBox();
+        expect(chip.x + chip.width).toBeLessThanOrEqual(ask.x);
+        expect(menu.x).toBeGreaterThan(ask.x);
+        await header.getByRole("button", { name: "More work actions", exact: true }).click();
+        await expect(page.getByRole("menuitem", { name: /New issue/ })).toBeVisible();
+        await page.keyboard.press("Escape");
+      }
+    }
   });
 
   // Michael's review of September 12: the toolbar read "1 project · ● Not
@@ -128,8 +188,10 @@ test.describe("the work board", () => {
     await expect(page.getByTestId("sidebar-connection")).toHaveCount(0);
     // The all-projects scope is the default route and used to subscribe to
     // nothing at all, which is the chip Michael was looking at.
-    const board = page.getByTestId("board-freshness");
-    await expect(board).toContainText("Live");
+    const board = page.getByTestId("connection-chip");
+    await expect(board).toHaveCount(1);
+    await expect(board).toContainText(/Live\s*·\s*\d{1,2}:\d{2}\s*[AP]M/);
+    await expect(page.getByTestId("work-toolbar").getByRole("status")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Reload", exact: true })).toHaveCount(0);
 
     await board.hover();
@@ -138,7 +200,7 @@ test.describe("the work board", () => {
     );
 
     await openWork(page, `/work/p/${hub.fixture.project_id}`);
-    await expect(page.getByTestId("board-freshness")).toContainText("Live");
+    await expect(page.getByTestId("connection-chip")).toContainText("Live");
     await expect(page.getByRole("button", { name: "Reload", exact: true })).toHaveCount(0);
 
     expect(errors).toEqual([]);
@@ -168,7 +230,7 @@ test.describe("the work board", () => {
 
   test("keeps the search in the URL and filters the board", async ({ page }) => {
     await openWork(page, `/work/p/${hub.fixture.project_id}`);
-    const search = page.getByTestId("work-search");
+    const search = page.getByRole("searchbox", { name: "Search issues" });
     await search.fill("invitation");
     await expect(page).toHaveURL(/q=invitation/);
     await expect(page.getByRole("button", { name: "Review the invitation flow", exact: true })).toBeVisible();
@@ -184,17 +246,15 @@ test.describe("the work board", () => {
   });
 
   test("moves an issue between lanes from the keyboard", async ({ page }) => {
-    // The project stream is replaced by one that answers every connection with
-    // a single, higher activity sequence and a one-second retry (longer than the
-    // board's 400 ms tick coalescing), so the board keeps reconnecting and
-    // reloading on its own while the move is held below.
     let sequence = 1_000_000;
-    await page.route("**/projects/*/events", (route) => {
+    let ticks = 0;
+    await page.route("**/projects/*/events?**", (route) => {
+      ticks += 1;
       sequence += 1;
       return route.fulfill({
         status: 200,
         headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-store" },
-        body: `retry: 1000\nevent: activity\ndata: ${sequence}\n\n`,
+        body: `retry: 1000\nevent: activity\ndata: ${JSON.stringify({ sequence, deltas: [] })}\n\n`,
       });
     });
     await openWork(page, `/work/p/${hub.fixture.project_id}`);
@@ -216,9 +276,6 @@ test.describe("the work board", () => {
     expect(await items.count()).toBeGreaterThan(0);
     const target = await items.first().innerText();
 
-    // The board is optimistic: the hub's answer is held back on the wire for
-    // a while, and the card must already be in the new lane before it comes,
-    // and must not snap back when the activity tick reloads the board.
     let released;
     const held = new Promise((resolve) => {
       released = resolve;
@@ -227,22 +284,28 @@ test.describe("the work board", () => {
       await held;
       await route.continue();
     });
-    const isBoardReload = (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname.endsWith("/work-items");
+    const reads = [];
+    page.on("request", (request) => {
+      if (request.method() === "GET" && /\/work-items(?:[?]|\/[^/]+\/(?:attempts|changes))/.test(request.url())) {
+        reads.push(request.url());
+      }
+    });
+    const ticksBeforeMove = ticks;
     await page.keyboard.press("Enter");
     const lane = page.locator(`[data-testid="board-lane"][data-lane="${target}"]`);
     await expect(
       lane.getByRole("button", { name: "Review the invitation flow", exact: true }),
     ).toBeVisible({ timeout: 1_000 });
-    // A reload the activity stream asked for, answered while the hub still
-    // holds the old lane: the card has to survive it.
-    await page.waitForResponse(isBoardReload, { timeout: 10_000 });
-    await page.waitForResponse(isBoardReload, { timeout: 10_000 });
+    await expect.poll(() => ticks).toBeGreaterThan(ticksBeforeMove + 1);
+    expect(reads).toEqual([]);
     await expect(
       lane.getByRole("button", { name: "Review the invitation flow", exact: true }),
     ).toBeVisible();
+    const moved = page.waitForResponse((response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname.endsWith("/workflow"));
     released();
+    expect((await moved).ok()).toBe(true);
 
     // The card lands in the new lane and stays there across a reload, which is
     // what proves the move reached the hub rather than only the screen.
@@ -308,16 +371,19 @@ test.describe("the work board", () => {
     const sidebar = page.locator("aside.dc-side");
     await expect(sidebar.getByTestId("nav-work")).toHaveAttribute("aria-current", "page");
 
-    // Browse keeps only what the footer icon row does not already serve
-    // (decisions.md §17.4): Pull requests, Usage and Settings left the group
-    // when the footer took them, so none of the four rows left is a duplicate
-    // and none of them is served yet.
-    for (const id of ["activity", "diagnostics", "reports", "library"]) {
-      await expect(sidebar.getByTestId(`nav-${id}`)).toBeDisabled();
+    await expect(sidebar.getByTestId("nav-library")).toBeDisabled();
+    for (const id of ["activity", "reports", "diagnostics"]) {
+      await expect(sidebar.getByTestId(`nav-${id}`)).toBeEnabled();
     }
     for (const id of ["changes", "usage", "settings"]) {
       await expect(sidebar.getByTestId(`nav-${id}`)).toHaveCount(0);
     }
+
+    await sidebar.getByRole("button", { name: "Activity", exact: true }).click();
+    await expect(page).toHaveURL(/\/activity$/);
+    await expect(page.getByRole("heading", { name: "Activity", exact: true })).toBeVisible();
+    await sidebar.getByRole("button", { name: "Work", exact: true }).click();
+    await expect(page).toHaveURL(/\/work$/);
 
     const utility = sidebar.getByRole("button", { name: "Pull requests" });
     await expect(utility).toBeEnabled();
@@ -335,6 +401,41 @@ test.describe("the work board", () => {
  * an activity feed and a two-mode composer.
  */
 test.describe("the issue page", () => {
+
+  test("returns to the issue's project Work board from the project breadcrumb", async ({ page }, testInfo) => {
+    await openWork(page);
+    const otherProjectId = new URL(hub.fixture.private_project).pathname.split("/").at(-1);
+    const otherTitle = "Another project's breadcrumb fixture";
+    const created = await page.evaluate(async ({ projectId, title }) => {
+      const bootstrap = await (await fetch("/chat/bootstrap")).json();
+      const response = await fetch(`${bootstrap.api_base}/projects/${projectId}/work-items`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": bootstrap.csrf_token },
+        body: JSON.stringify({ idempotency_key: "breadcrumb-other-project", title, state: "Todo" }),
+      });
+      return response.status;
+    }, { projectId: otherProjectId, title: otherTitle });
+    expect(created).toBe(200);
+    await page.reload();
+    await expect(page.getByTestId("work-board").getByRole("button", { name: otherTitle, exact: true })).toBeVisible();
+
+    await page.goto(new URL(`/work/i/${hub.fixture.work_item}`, hub.fixture.url).toString());
+    await expect(page.getByTestId("issue-properties")).toBeVisible();
+    const label = "Open Browser collaboration in Work";
+    const crumb = page.locator("[data-chat-header]").getByRole("button", { name: label, exact: true });
+    await crumb.hover();
+    await expect(page.locator("[data-slot='tooltip-popup']")).toHaveText(label);
+    await testInfo.attach("issue-project-breadcrumb", { body: await page.screenshot(), contentType: "image/png" });
+    await crumb.click();
+
+    await expect.poll(() => new URL(page.url()).pathname).toBe(`/work/p/${hub.fixture.project_id}`);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Browser collaboration");
+    await expect(page.getByRole("combobox", { name: "Filter threads by project" })).toHaveText("Browser collaboration");
+    const board = page.getByTestId("work-board");
+    await expect(board.getByRole("button", { name: "Review the invitation flow", exact: true })).toBeVisible();
+    await expect(board.getByRole("button", { name: otherTitle, exact: true })).toHaveCount(0);
+    await testInfo.attach("project-work-board", { body: await page.screenshot(), contentType: "image/png" });
+  });
 
   async function typeInto(box, page, text) {
     await box.focus();
@@ -380,10 +481,6 @@ test.describe("the issue page", () => {
     await expect(feed).toBeVisible();
     await expect(feed.getByText(/created the issue/).first()).toBeVisible();
     expect(errors).toEqual([]);
-  });
-
-  test("merges attempts into the activity feed", async () => {
-    test.skip(true, "The preview seeds no runner attempt: the attempt and diff seeding slice of #2635 is not ported.");
   });
 
   // Driven on the linked issue rather than on the board's card, so it does not
@@ -454,26 +551,19 @@ test.describe("the issue page", () => {
     await scan(page, "issue-with-conversation-panel");
   });
 
-  test("shows the stored attempt diff, hunks and denied file alike", async () => {
-    test.skip(true, "The preview seeds no stored attempt diff: the attempt and diff seeding slice of #2635 is not ported.");
-  });
-
   test("posts a comment that appears as a card in the feed", async ({ page }) => {
     const errors = watchConsole(page);
     await openWork(page, `/work/i/${hub.fixture.work_item}`);
 
     const composer = page.getByRole("textbox", { name: "Comment" });
     await expect(composer).toHaveCount(1);
-    // This card posts comments and nothing else (§19.5, Michael's review of
-    // September 12): a prompt and a send. No mode toggle, because the runner
-    // is steered from the conversation surface the Activity feed opens; no
-    // pickers, because a comment configures no turn; no paperclip, because the
-    // hub's comment endpoint takes no files; no strip under the card and no
-    // shortcut line.
+    // This card posts comments with optional attachments. Runner steering
+    // stays on the conversation surface opened from Activity, so comments
+    // offer neither a mode toggle nor turn configuration pickers.
     await expect(composer).toHaveAttribute("aria-placeholder", "Leave a comment…");
     await expect(page.getByTestId("issue-composer-mode")).toHaveCount(0);
     await expect(page.getByTestId("issue-composer-scope")).toHaveCount(0);
-    await expect(page.getByTestId("composer-attach")).toHaveCount(0);
+    await expect(page.getByTestId("composer-attach")).toBeVisible();
 
     for (const label of ["Model", "Reasoning effort", "Runtime access"]) {
       await expect(page.getByLabel(label, { exact: true })).toHaveCount(0);
@@ -537,11 +627,13 @@ test.describe("the issue page", () => {
   });
 
   test("scans the open label picker", async ({ page }) => {
-    test.skip(true, "Product bug on main: axe aria-hidden-focus flags the tabbable Base UI focus guards around the open label picker.");
     await openWork(page, `/work/i/${hub.fixture.work_item}`);
     await page.getByRole("heading", { level: 1 }).click();
     await page.keyboard.press("l");
-    await expect(page.getByTestId("label-picker")).toBeVisible();
+    const picker = page.getByTestId("label-picker");
+    await expect(picker).toBeVisible();
+    await expect(picker).toHaveCSS("opacity", "1");
+    await expect(picker.getByRole("combobox")).toBeFocused();
     await scan(page, "label picker");
   });
 
@@ -556,13 +648,19 @@ test.describe("the issue page", () => {
     for (const name of ["Urgent", "High", "Normal", "Low"]) {
       await expect(picker.getByTestId(`priority-menu-${name}`)).toBeVisible();
     }
+    const savedHigh = page.waitForResponse((response) => response.request().method() === "PATCH"
+      && new URL(response.url()).pathname.endsWith(`/work-items/${hub.fixture.work_item}`));
     await picker.getByTestId("priority-menu-High").click();
+    expect((await savedHigh).ok()).toBe(true);
     await expect(properties.getByTestId("issue-priority")).toHaveText("High");
 
     // The removal: what the hub's patch could not express until it learned a
     // three-way priority member.
     await properties.getByTestId("priority-menu").click();
+    const savedNone = page.waitForResponse((response) => response.request().method() === "PATCH"
+      && new URL(response.url()).pathname.endsWith(`/work-items/${hub.fixture.work_item}`));
     await page.getByTestId("priority-picker").getByTestId("priority-menu-none").click();
+    expect((await savedNone).ok()).toBe(true);
     await expect(properties.getByTestId("issue-priority")).toHaveText("No priority");
 
     // It survives a reload, so the hub took the removal rather than the page.
@@ -574,19 +672,28 @@ test.describe("the issue page", () => {
     await openWork(page, `/work/i/${hub.fixture.work_item}`);
     const name = `flaky-${Date.now()}`;
 
-    await page.getByTestId("add-label").click();
+    await page.getByRole("heading", { level: 1 }).click();
+    await page.keyboard.press("l");
     const picker = page.getByTestId("label-picker");
-    await picker.getByPlaceholder("Change or add labels…").fill(name);
+    const search = picker.getByRole("combobox");
+    await expect(search).toBeFocused();
+    await search.fill(name);
     // A project with no catalogue offers to make the first label rather than
     // showing an empty list.
-    await picker.getByTestId("create-label").click();
+    const create = picker.getByRole("option", { name: `Create label "${name}"` });
+    await expect(create).toBeVisible();
+    await page.keyboard.press("ArrowDown");
+    await expect(search).toHaveAttribute("aria-activedescendant", await create.getAttribute("id"));
+    await page.keyboard.press("Enter");
     await expect(page.getByTestId("issue-labels").getByTestId(`label-${name}`)).toBeVisible();
     // The picker stays open after a label is attached, as Linear's does:
     // labels are a set, and closing after each one would make three labels
     // three round trips through the trigger.
     await expect(picker).toBeVisible();
+    await expect(page.getByRole("button", { name: "Add label", exact: true })).toBeEnabled();
     await page.keyboard.press("Escape");
     await expect(picker).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Add label", exact: true })).toBeFocused();
 
     // It is in the project's catalogue now, with a dot of its own.
     await page.getByTestId("add-label").click();
@@ -646,4 +753,85 @@ test.describe("the issue page", () => {
     await expect(page).toHaveURL(new RegExp(`/work/i/${hub.fixture.work_item}$`));
     await expect(page.getByTestId("issue-properties")).toBeVisible();
   });
+
+});
+
+test("shares project scope between the sidebar and Work across reloads", async ({ page }) => {
+  const errors = watchConsole(page);
+  await openWork(page, `/work/p/${hub.fixture.project_id}`);
+  const secondProjectId = new URL(hub.fixture.private_project).pathname.split("/").at(-1);
+  const projects = [
+    { id: hub.fixture.project_id, name: "Browser collaboration", title: "Completed collaboration work" },
+    { id: secondProjectId, name: "Owner private project", title: "Completed private work" },
+  ];
+  for (const project of projects) {
+    const created = await page.evaluate(async ({ id, title }) => {
+      const bootstrap = await (await fetch("/chat/bootstrap")).json();
+      const response = await fetch(`${bootstrap.api_base}/projects/${id}/work-items`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": bootstrap.csrf_token },
+        body: JSON.stringify({ idempotency_key: `scope-done-${id}`, title, state: "Done" }),
+      });
+      return response.status;
+    }, project);
+    expect(created).toBe(200);
+  }
+  const scope = page.getByRole("combobox", { name: "Filter threads by project" });
+  const closedTab = page.getByTestId("list-tab-closed");
+  const closed = page.getByTestId("work-list");
+  const showClosed = async () => {
+    await expect(page.getByTestId("view-segmented")).toBeVisible();
+    if (await closedTab.count() === 0) await page.getByTestId("view-list").click();
+    if (await closedTab.getAttribute("aria-pressed") !== "true") await closedTab.click();
+    await expect(page).toHaveURL(/[?&]tab=closed/);
+    await expect(closedTab).toHaveAttribute("aria-pressed", "true");
+  };
+  const selectScope = async (name) => {
+    await scope.click();
+    await page.getByRole("option", { name, exact: true }).click();
+  };
+  const expectProject = async (project) => {
+    await expect.poll(() => new URL(page.url()).pathname).toBe(`/work/p/${project.id}`);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText(project.name);
+    await expect(scope).toHaveText(project.name);
+    await showClosed();
+    await expect(closedTab).toHaveText("Closed 1");
+    await expect(closed.getByText(project.title, { exact: true })).toBeVisible();
+    const other = projects.find((candidate) => candidate.id !== project.id);
+    await expect(closed.getByText(other.title, { exact: true })).toHaveCount(0);
+  };
+  await expect(scope).toHaveText(projects[0].name);
+  await selectScope(projects[1].name);
+  await expectProject(projects[1]);
+  await page.reload();
+  await expectProject(projects[1]);
+  await page.getByTestId("nav-chat").click();
+  await page.getByTestId("nav-work").click();
+  await expectProject(projects[1]);
+  await selectScope(projects[0].name);
+  await expectProject(projects[0]);
+  await page.goBack();
+  await expectProject(projects[1]);
+  await page.goForward();
+  await expectProject(projects[0]);
+
+  await selectScope("All projects");
+  const expectAll = async () => {
+    await expect(page).toHaveURL(/\/work(?:\?|$)/);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("All projects");
+    await expect(scope).toHaveText("All projects");
+    await showClosed();
+    await expect(closedTab).toHaveText("Closed 2");
+    for (const project of projects) {
+      await expect(closed.getByText(project.title, { exact: true })).toBeVisible();
+    }
+  };
+  await expectAll();
+  await page.reload();
+  await expectAll();
+  await page.getByTestId("nav-chat").click();
+  await page.reload();
+  await page.getByTestId("nav-work").click();
+  await expectAll();
+  await expect(errors).toEqual([]);
 });

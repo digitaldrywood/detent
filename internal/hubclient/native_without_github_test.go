@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -10,8 +11,11 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -34,7 +38,16 @@ func (a *environmentRecordingAgent) RunTurn(ctx context.Context, request runner.
 	return a.committingAgent.RunTurn(ctx, request, onUpdate)
 }
 
+func (a *environmentRecordingAgent) RunTurnWithTools(ctx context.Context, request runner.AgentTurnRequest, tools []runner.AgentTool, handler runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	a.requests = append(a.requests, request)
+	return a.committingAgent.RunTurnWithTools(ctx, request, tools, handler, update)
+}
+
 func TestNativeRunnerReachesHumanReviewWithoutGitHub(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	isolateNativeChangeGit(t)
 	bin := t.TempDir()
 	ghLog := filepath.Join(t.TempDir(), "gh.log")
@@ -50,10 +63,22 @@ func TestNativeRunnerReachesHumanReviewWithoutGitHub(t *testing.T) {
 	http.DefaultTransport = denied
 	t.Cleanup(func() { http.DefaultTransport = previous })
 
-	for _, name := range []string{"code"} {
+	for _, name := range []string{"code", "linked source"} {
 		t.Run(name, func(t *testing.T) {
-			h := newNativeChangeHubWithStates(t, "Human Review", hubserver.HostedProjectStates())
-			issue := h.createInProgress(t, "Update the README")
+			var h *nativeChangeHub
+			var issue connector.Issue
+			if name == "linked source" {
+				var linked tracker.NativeIssue
+				h, linked = newLinkedChangeHub(t)
+				h.scheduler.githubIntake = func(context.Context, string) (tracker.GitHubIssueSnapshot, error) {
+					t.Error("runner fetched GitHub source after Hub intake")
+					return tracker.GitHubIssueSnapshot{}, errors.New("runner must not fetch a source after Hub intake")
+				}
+				issue = issueFromNative(linked)
+			} else {
+				h = newNativeChangeHubWithStates(t, "Human Review", hubserver.HostedProjectStates())
+				issue = h.createInProgress(t, "Update the README")
+			}
 			candidate := h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID)
 			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: nativeChangeSourceRepo(t), AutoBranch: true})
@@ -63,6 +88,7 @@ func TestNativeRunnerReachesHumanReviewWithoutGitHub(t *testing.T) {
 			cfg := config.Config{
 				Tracker:     config.Tracker{Kind: config.TrackerHubNative, Repository: "acme/orders"},
 				Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest},
+				Gate:        gate.Config{Run: "true"},
 			}.WithRuntimeGitHubToken("instance-canary")
 			agent := &environmentRecordingAgent{committingAgent: committingAgent{commit: true}}
 			run, err := runner.NewRunner(runner.Dependencies{

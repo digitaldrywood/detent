@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -26,6 +27,7 @@ func checkDoctorHubPolicy(ctx context.Context, cfg globalconfig.Config, selected
 		check.Detail = err.Error()
 		return check
 	}
+	workflow.Config = project.MapNativeTracker(workflow.Config, cfg.Client.NativeProjects[selected.ID] != "")
 	descriptor, err := project.ResolvePolicy(selected, workflow)
 	if err != nil {
 		check.Detail = err.Error()
@@ -51,6 +53,12 @@ func checkDoctorHubPolicy(ctx context.Context, cfg globalconfig.Config, selected
 		approval, err = native.ProjectPolicy(ctx)
 	} else {
 		approval, err = client.ProjectPolicy(ctx, workflow.Config.Tracker.Repository)
+	}
+	if err == nil && approval.Policy.Configuration != nil {
+		workflow, err = workflowconfig.ApplyNativePolicy(workflow, approval.Policy)
+		if err == nil {
+			descriptor, err = project.ResolvePolicy(selected, workflow)
+		}
 	}
 	if err == nil {
 		err = descriptor.Match(approval.Policy)

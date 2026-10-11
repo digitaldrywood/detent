@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"slices"
@@ -29,12 +30,19 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 		}
 		since = parsed
 	}
-	report, err := s.store.OperationsReport(c.Request().Context(), now, since)
+	return s.readOperationsReport(c.Request().Context(), now, since)
+}
+
+func (s *Server) readOperationsReport(ctx context.Context, now, since time.Time) (operations.Report, error) {
+	if s.store == nil {
+		return operations.Report{}, errOperatorCommandUnavailable
+	}
+	report, err := s.store.OperationsReport(ctx, now, since)
 	if err != nil {
 		return operations.Report{}, err
 	}
 	report.Instance = s.instanceName()
-	snapshot := s.latestSnapshot(c.Request().Context())
+	snapshot := s.latestSnapshot(ctx)
 
 	issues := dailyDigestSnapshotIssues(snapshot)
 	mergeDepths := map[string]int{}
@@ -397,6 +405,9 @@ func (s *Server) operationsProjectHumanReviewPolicy(issue telemetry.Issue, fallb
 		ciTriggerLabel: strings.TrimSpace(workflow.Gate.CITriggerLabel),
 		configured:     true,
 		terminalStates: append([]string(nil), workflow.Tracker.TerminalStates...),
+	}
+	if !workflow.Review.Human {
+		return policy
 	}
 	if !workflow.Agent.AutoPromote.Enabled {
 		policy.required = true

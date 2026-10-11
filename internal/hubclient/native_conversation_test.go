@@ -38,6 +38,7 @@ type conversationHub struct {
 	rejectKey     string
 	rejectType    string
 	bindHang      bool
+	bindDelay     time.Duration
 	unbinds       []ConversationUnbindRequest
 	staleCalls    int
 	controlsDeny  int
@@ -47,6 +48,9 @@ type conversationHub struct {
 
 func newConversationHub(t *testing.T) (*conversationHub, *nativeExecution) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("conversation HTTP listener and timeout integration")
+	}
 	hub := &conversationHub{t: t, bindStatus: http.StatusOK, controlsWake: make(chan struct{}, 16), hangEvents: make(chan struct{})}
 	server := httptest.NewServer(hub)
 	t.Cleanup(server.Close)
@@ -133,7 +137,11 @@ func (h *conversationHub) serveBind(w http.ResponseWriter, r *http.Request) {
 	}
 	h.mu.Lock()
 	hang := h.bindHang
+	delay := h.bindDelay
 	h.mu.Unlock()
+	if delay > 0 && !sleepContext(r.Context(), delay) {
+		return
+	}
 	if hang {
 		select {
 		case <-h.hangEvents:
@@ -841,6 +849,10 @@ func TestNativeConversationTracksLastTurnStatus(t *testing.T) {
 // A hub that accepts the report and never answers must not hold the run's
 // teardown past the deadline the runner gave Close.
 func TestNativeConversationCloseHonoursDeadline(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	useFastConversationTimings(t)
 	hub, execution := newConversationHub(t)
 	hub.hangReports = true
@@ -984,6 +996,10 @@ func TestNativeConversationPollStopsOnAuthorizationFailure(t *testing.T) {
 // that was still in flight when the turn ended is drained with the rest, so a
 // control its waiter reports unknown is never handed over twice.
 func TestNativeConversationTurnEndLeavesNoControlQueued(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	useFastConversationTimings(t)
 	hub, execution := newConversationHub(t)
 	bound, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
@@ -1089,29 +1105,37 @@ func TestNativeConversationDeclinesQuestionsTheHubDropped(t *testing.T) {
 }
 
 func TestNativeBindConversationDoesNotHoldTheRun(t *testing.T) {
-	previous := conversationBindTimeout
-	conversationBindTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { conversationBindTimeout = previous })
 	for _, test := range []struct {
 		name    string
 		script  func(*conversationHub)
 		wantErr error
+		timeout time.Duration
 	}{
-		{name: "hub never answers", script: func(h *conversationHub) { h.bindHang = true }, wantErr: context.DeadlineExceeded},
+		{name: "hub never answers", script: func(h *conversationHub) { h.bindHang = true }, wantErr: context.DeadlineExceeded, timeout: 100 * time.Millisecond},
 		{name: "no conversation", script: func(h *conversationHub) { h.bindStatus, h.bindCode = http.StatusNotFound, "not_found" }, wantErr: runner.ErrNoConversation},
+		{name: "bind uses native request budget", script: func(h *conversationHub) { h.bindDelay = 2100 * time.Millisecond }, timeout: 5 * time.Second},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			hub, execution := newConversationHub(t)
 			hub.mu.Lock()
 			test.script(hub)
 			hub.mu.Unlock()
+			execution.claim.source.client.client.httpClient.Timeout = test.timeout
 			started := time.Now()
 			session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
-			if elapsed := time.Since(started); elapsed > 2*time.Second {
+			if elapsed := time.Since(started); elapsed > max(2*time.Second, test.timeout+time.Second) {
 				t.Fatalf("bind held the run for %s", elapsed)
 			}
-			if session != nil || !errors.Is(err, test.wantErr) {
+			if !errors.Is(err, test.wantErr) || (session != nil) != (test.wantErr == nil) {
 				t.Fatalf("bind = %v, %v, want %v", session, err, test.wantErr)
+			}
+			if session != nil {
+				if session.ConversationID() != "conv_1" {
+					t.Fatalf("bound another conversation: %s", session.ConversationID())
+				}
+				if err := session.Close(t.Context(), runner.ConversationOutcomeSucceeded, nil); err != nil {
+					t.Fatal(err)
+				}
 			}
 		})
 	}

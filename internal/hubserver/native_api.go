@@ -15,17 +15,24 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const nativeBase = "/api/v2/organizations/:organization/projects/:project"
+const nativeOrganizationIssuePath = "/api/v2/organizations/:organization/work-items/:item"
 
 type nativeScope struct {
-	organization       tracker.OrganizationID
-	project            tracker.ProjectID
-	credential         apiCredential
-	requireHostedAdmin bool
+	sourceActor           *tracker.Actor
+	organization          tracker.OrganizationID
+	project               tracker.ProjectID
+	credential            apiCredential
+	requireHostedAdmin    bool
+	managedRunner         string
+	managedRunnerScope    string
+	managedRunnerProjects []tracker.ProjectID
 }
 
 type nativeError struct {
@@ -34,9 +41,15 @@ type nativeError struct {
 	CurrentRevision tracker.Revision `json:"current_revision,string,omitempty"`
 	Details         map[string]any   `json:"details,omitempty"`
 	status          int
+	publicMessage   bool
 }
 
-func (e *nativeError) Error() string { return e.Code }
+func (e *nativeError) Error() string {
+	if e.publicMessage {
+		return e.Message
+	}
+	return e.Code
+}
 
 func nativeInvalid(message string) error {
 	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity}
@@ -62,6 +75,13 @@ func isNativeConflict(err error) bool {
 }
 
 func (s *Service) nativeAPIError(c echo.Context, err error) error {
+	var refusal *apikey.Refusal
+	if errors.As(err, &refusal) {
+		return c.JSON(http.StatusForbidden, refusal)
+	}
+	if errors.Is(err, operatortool.ErrAccessDenied) {
+		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: err.Error()})
+	}
 	if errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, auth.ErrInvalidSession) {
 		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: "Access is no longer available"})
 	}
@@ -76,6 +96,9 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 	var failure *nativeError
 	if errors.As(err, &failure) {
 		if s.config.Hosted != nil {
+			if failure.Code == "checkout_unavailable" || failure.publicMessage {
+				return c.JSON(failure.status, apiErrorResponse{Code: failure.Code, Message: failure.Message})
+			}
 			if len(failure.Details) > 0 {
 				return c.JSON(failure.status, &nativeError{Code: failure.Code, Message: "The requested operation is unavailable", Details: failure.Details, status: failure.status})
 			}
@@ -98,21 +121,30 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	s.registerOnboardingRoutes(e)
 	s.registerArtifactRoutes(e)
+	s.registerCloudAttachmentRoutes(e)
+	s.registerAttemptDiffBodyRoutes(e)
 	s.registerIntegrationRoutes(e)
 	s.registerChangeRoutes(e)
 	read := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
+	e.GET(nativeBase+"/health/findings", s.getHealthFindings, read)
+	e.GET(nativeBase+"/runner-diagnostics", s.getRunnerProjectDiagnostics, read)
 	write := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
 	admin := s.requireInstanceAdmin()
+	policyAdmin := admin
+	if s.config.Hosted != nil {
+		policyAdmin = s.requireOnboardingAdmin()
+	}
 	worker := s.requireNativeScope(apiScopeWorker)
 	e.GET(nativeBase+"/policy", s.getProjectPolicy, s.requireNativeScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))
-	e.PUT(nativeBase+"/policy", s.approveProjectPolicy, admin)
-	e.DELETE(nativeBase+"/policy", s.revokeProjectPolicy, admin)
+	e.PUT(nativeBase+"/policy", s.approveProjectPolicy, policyAdmin)
+	e.DELETE(nativeBase+"/policy", s.revokeProjectPolicy, policyAdmin)
 	e.POST(nativeBase+"/policy/observed", s.observeProjectPolicy, worker)
 	e.GET("/api/v2/capabilities", s.nativeCapabilities, s.requireAPIScope(apiScopeWorker, apiScopeOperator))
 	e.GET("/api/v2/organizations", s.nativeOrganizations, admin)
 	e.POST("/api/v2/organizations", s.createNativeOrganization, admin)
 	if s.config.Hosted != nil {
 		e.POST("/api/v2/organizations/:organization/projects", s.createHostedProjectJSON, admin)
+		e.DELETE(nativeBase, s.deleteCloudProject, s.requireOnboardingAdmin())
 	} else {
 		e.POST("/api/v2/organizations/:organization/projects", s.createNativeProject, admin)
 	}
@@ -121,21 +153,30 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET(nativeBase+"/labels", s.listNativeLabels, read)
 	e.GET(nativeBase+"/work-items", s.listNativeIssues, read)
 	e.POST(nativeBase+"/work-items", s.createNativeIssue, write)
+	e.GET(nativeOrganizationIssuePath, s.getNativeIssue, read)
 	e.GET(nativeBase+"/work-items/:item", s.getNativeIssue, read)
 	e.PATCH(nativeBase+"/work-items/:item", s.updateNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/archive", s.archiveNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/restore", s.restoreNativeIssue, write)
+	e.POST(nativeBase+"/work-items/:item/source-intake", s.intakeLinkedIssue, worker)
 	e.POST(nativeBase+"/work-items/:item/workflow", s.transitionNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/dependencies", s.changeNativeDependency, write)
 	e.GET(nativeBase+"/work-items/:item/comments", s.listNativeComments, read)
 	e.POST(nativeBase+"/work-items/:item/comments", s.createNativeComment, write)
 	e.PATCH(nativeBase+"/work-items/:item/comments/:comment", s.updateNativeComment, write)
 	e.GET(nativeBase+"/work-items/:item/history", s.listNativeHistory, read)
+	e.GET(nativeBase+"/work-items/:item/runtime", s.getNativeRuntime, read)
+	e.GET(nativeBase+"/work-items/:item/explanation", s.getNativeExplanation, read)
+	e.GET(nativeBase+"/work-items/:item/source-recovery", s.getNativeSourceRecovery, read)
+	e.POST(nativeBase+"/work-items/:item/source-recovery", s.transferNativeSource, write)
+	e.GET(nativeBase+"/work-items/:item/runtime/github-timings", s.getNativeGitHubTimings, read)
 	e.GET(nativeBase+"/work-items/:item/attempts", s.listNativeAttempts, read)
+	e.GET(nativeBase+"/work-items/:item/attempts/:attempt", s.getNativeAttempt, read)
 	e.GET(nativeBase+"/work-items/:item/versions/:revision", s.getNativeVersion, read)
 	e.GET(nativeBase+"/work-items/:item/comments/:comment/versions/:revision", s.getNativeVersion, read)
 	e.POST(nativeBase+"/claims", s.claimNativeIssue, worker)
 	e.POST(nativeBase+"/claims/preview", s.previewProviderCandidates, worker)
+	e.GET(nativeBase+"/claims/wait", s.waitNativeCandidates, worker)
 	e.POST(nativeBase+"/leases/:lease/renew", s.renewNativeLease, worker)
 	e.POST(nativeBase+"/leases/:lease/release", s.releaseNativeLease, worker)
 	e.POST(nativeBase+"/machines/register", s.registerNativeMachine, worker)
@@ -144,6 +185,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	// 18.5 and 18.6). The diff write is a worker endpoint fenced by the
 	// producer's lease; every read follows the issue's read rule.
 	e.POST(nativeBase+"/attempts/:attempt/diff", s.postAttemptDiff, worker)
+	e.POST(nativeBase+"/attempts/:attempt/diff/check", s.checkAttemptDiff, worker)
 	e.GET(nativeBase+"/attempts/:attempt/diff", s.getAttemptDiff, read)
 	e.GET(nativeBase+"/work-items/:item/diff", s.getWorkItemDiff, read)
 	e.GET(nativeBase+"/work-items/:item/pull-requests", s.listWorkItemPullRequests, read)
@@ -202,6 +244,12 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
+			if c.Path() == nativeOrganizationIssuePath {
+				err := s.database.auth().QueryRowContext(c.Request().Context(), "SELECT project_id FROM issues WHERE organization_id = ? AND native_id = ?", scope.organization, c.Param("item")).Scan(&scope.project)
+				if err != nil {
+					return s.nativeAPIError(c, err)
+				}
+			}
 			runnerHeartbeat := c.Path() == nativeBase+"/machines/:machine/heartbeat" && credential.Runner.RunnerID != ""
 			if runnerHeartbeat {
 				if credential.Runner.OrganizationID != scope.organization {
@@ -209,7 +257,7 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				}
 			} else {
 				write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
-				if err := s.requireHostedProject(c.Request().Context(), s.database.db, scope, write); err != nil {
+				if err := s.requireHostedProject(c.Request().Context(), s.database.auth(), scope, write); err != nil {
 					return s.nativeAPIError(c, err)
 				}
 				if err := s.database.authorizeNativeProject(c.Request().Context(), scope); err != nil {
@@ -229,17 +277,20 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 }
 
 func (d *database) authorizeNativeProject(ctx context.Context, scope nativeScope) error {
+	return authorizeNativeProject(ctx, d.auth(), scope)
+}
+
+func authorizeNativeProject(ctx context.Context, db nativeQueryer, scope nativeScope) error {
 	if scope.credential.Runner.RunnerID != "" && scope.credential.Runner.OrganizationID != scope.organization {
 		return nativeNotFound()
 	}
 	var count int
 	query := "SELECT count(*) FROM projects WHERE organization_id = ? AND id = ?"
 	args := []any{scope.organization, scope.project}
-	if scope.credential.Scope != apiScopeAdmin || scope.credential.NativeOnly {
-		query += " AND EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = ? AND g.organization_id = projects.organization_id AND g.project_id = projects.id)"
-		args = append(args, scope.credential.ID)
-	}
-	if err := d.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+	condition, grantArgs := scope.credential.projectGrantSQL("projects.organization_id", "projects.id")
+	query += " AND (" + condition + ")"
+	args = append(args, grantArgs...)
+	if err := db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
 		return err
 	}
 	if count != 1 {
@@ -256,12 +307,22 @@ func nativeRequestScope(c echo.Context) nativeScope {
 	return scope
 }
 
+func nativeIntegrationActor(principalID string) *tracker.Actor {
+	return &tracker.Actor{Kind: "integration", PrincipalID: principalID}
+}
+
 func (scope nativeScope) actor() tracker.Actor {
+	if scope.sourceActor != nil {
+		return *scope.sourceActor
+	}
 	kind := "human"
 	if scope.credential.Scope == apiScopeWorker {
 		kind = "runner"
 	}
-	return tracker.Actor{Kind: kind, PrincipalID: scope.credential.ID}
+	if scope.credential.EntryKey != nil && scope.credential.EntryKey.Kind == "service" {
+		kind = "integration"
+	}
+	return tracker.Actor{Kind: kind, PrincipalID: operatorIdentity(scope.credential, string(scope.organization)).PrincipalID}
 }
 
 func newNativeID(prefix string) string {
@@ -280,95 +341,132 @@ func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input
 // nativeMutationStatus is nativeMutation with the success status the route
 // reports. A replay answers with the same status as the first call, so a
 // created resource stays 201 on every retry of its key.
-func (s *Service) nativeMutationStatus(c echo.Context, status int, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (resultErr error) {
-	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
-		return s.nativeAPIError(c, nativeInvalid("An idempotency key of at most 128 bytes is required"))
-	}
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	encoded, err := json.Marshal(input)
+func (s *Service) nativeMutationStatus(c echo.Context, status int, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) error {
+	options := nativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath(), Item: c.Param("item"), CheckPrincipal: changeCheckRequest(c), RequireLease: c.Param("item") != "" && !strings.HasSuffix(c.Path(), "/events") && c.Path() != changeBase+"/:change/versions/:version/checks", Completion: hostedCompletionMutation(c, input), Feature: hostedMutationFeature(c)}
+	result, err := s.executeNativeMutation(c.Request().Context(), nativeRequestScope(c), options, command, input, operation)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	hash := sha256.Sum256(encoded)
-	requestHash := hex.EncodeToString(hash[:])
-	operationID := c.Request().Method + " " + c.Request().URL.EscapedPath()
-	if scope.credential.Hosted != nil {
-		operationID += " " + scope.credential.Hosted.SessionID
+	return c.JSONBlob(status, result)
+}
+
+type nativeCommandOptions struct {
+	RunnerAdministration                     bool
+	OperationID, Item, Feature               string
+	CheckPrincipal, RequireLease, Completion bool
+	ArtifactRead                             bool
+}
+
+// executeNativeMutation owns the shared transaction, current native authority,
+// hosted allowances, audit history and durable business replay for all callers.
+func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (result json.RawMessage, resultErr error) {
+	ctx = s.linkedSourceContext(ctx)
+	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
+		return nil, nativeInvalid("An idempotency key of at most 128 bytes is required")
 	}
+	requestHash, err := nativeCommandHash(input)
+	if err != nil {
+		return nil, err
+	}
+	operationID := options.OperationID
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	defer func() {
 		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
-	if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
-		return s.nativeAPIError(c, err)
+	if options.ArtifactRead {
+		if err := s.recheckHostedArtifactReader(ctx, tx, scope); err != nil {
+			return nil, err
+		}
+	} else if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		return nil, err
 	}
-	if s.config.Hosted != nil && scope.credential.Hosted == nil && scope.credential.Runner.RunnerID == "" && changeCheckRequest(c) {
+	if options.RunnerAdministration {
+		if err := s.requireRunnerAdministration(ctx, tx, scope, s.config.now()); err != nil {
+			return nil, err
+		}
+	}
+	if s.config.Hosted != nil && scope.credential.Hosted == nil && scope.credential.Runner.RunnerID == "" && options.CheckPrincipal {
 		if err := s.requireHostedChangeCheckPrincipal(ctx, tx, scope); err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 	}
-	var storedHash, response string
-	err = tx.QueryRowContext(ctx, `SELECT request_hash, response_json FROM native_commands WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ?`, scope.organization, scope.credential.ID, operationID, command.IdempotencyKey).Scan(&storedHash, &response)
-	if err == nil {
-		if storedHash != requestHash {
-			return s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict})
-		}
-		if err := tx.Commit(); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.JSONBlob(status, []byte(response))
+	// Older hosted receipts included the originating session in operation.
+	// Read those records as the same business operation across reconnects.
+	response, found, err := nativeCommandReceipt(ctx, tx, scope, operationID, command.IdempotencyKey, requestHash)
+	if err != nil {
+		return nil, err
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return s.nativeAPIError(c, err)
+	if found {
+		if err := s.database.commit(ctx, tx); err != nil {
+			return nil, err
+		}
+		return json.RawMessage(response), nil
 	}
 	now, err := s.database.currentTime()
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	if scope.credential.Scope == apiScopeWorker && c.Param("item") != "" && !strings.HasSuffix(c.Path(), "/events") && c.Path() != changeBase+"/:change/versions/:version/checks" {
-		if err := requireNativeMutationLease(ctx, tx, scope, c.Param("item"), command, now); err != nil {
-			return s.nativeAPIError(c, err)
+	if scope.credential.Scope == apiScopeWorker && options.RequireLease {
+		if err := requireNativeMutationLease(ctx, tx, scope, options.Item, command, now); err != nil {
+			return nil, err
 		}
 	}
-	before, err := s.database.hostedConsumption(ctx, tx, now)
+	metrics := hostedNativeMutationMetrics(input, options.Completion)
+	before, err := s.database.hostedConsumption(ctx, tx, now, metrics...)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	completion := hostedCompletionMutation(c, input)
-	if !completion {
-		if err := s.database.requireHostedFeature(ctx, tx, hostedMutationFeature(c), now); err != nil {
-			return s.nativeAPIError(c, err)
+	completion := options.Completion
+	event, runEvent := input.(tracker.NativeRunEvent)
+	consolidateRunEvent := runEvent && !completion && s.database.hostedPlans != nil
+	var runEventState hostedRunEventState
+	if consolidateRunEvent {
+		runEventState, err = readHostedRunEventState(ctx, tx, event)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !completion && !options.ArtifactRead {
+		if err := s.database.requireHostedFeature(ctx, tx, options.Feature, now); err != nil {
+			return nil, err
 		}
 	}
 	value, err := operation(ctx, tx, scope, now)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	response, err = marshalNative(value)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, scope.organization, scope.credential.ID, operationID, command.IdempotencyKey, requestHash, response, formatHubTime(now)); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion); err != nil {
-		return s.nativeAPIError(c, err)
+	if consolidateRunEvent {
+		after, err := s.database.hostedRunEventConsumption(ctx, tx, now, before, runEventState, event, response)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.database.checkHostedConsumptionGrowth(ctx, tx, before, after, now, completion); err != nil {
+			return nil, err
+		}
+	} else if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion, metrics...); err != nil {
+		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
-		return s.nativeAPIError(c, err)
+	if err := s.database.commit(ctx, tx); err != nil {
+		return nil, err
 	}
-	return c.JSONBlob(status, []byte(response))
+	s.notifyNativeDispatch(ctx, scope, input)
+	return json.RawMessage(response), nil
 }
-
 func (s *Service) requireCompatibilityResource(c echo.Context) error {
 	var query string
 	path := c.Path()
@@ -390,4 +488,53 @@ func (s *Service) requireCompatibilityResource(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusNotFound, apiErrorResponse{Code: "not_found", Message: "Resource was not found"})
 	}
 	return nil
+}
+
+func nativeCommandHash(input any) (string, error) {
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(encoded)
+	return hex.EncodeToString(hash[:]), nil
+}
+
+func nativeCommandReceipt(ctx context.Context, query nativeQueryer, scope nativeScope, operation, key, hash string) (string, bool, error) {
+	var storedHash, response string
+	err := query.QueryRowContext(ctx, `SELECT request_hash, response_json FROM native_commands WHERE organization_id = ? AND actor_id = ? AND command_key = ? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ') ORDER BY created_at, operation LIMIT 1`, scope.organization, scope.credential.ID, key, operation, operation, operation).Scan(&storedHash, &response)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if storedHash != hash {
+		return "", false, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict}
+	}
+	return response, true, nil
+}
+
+// External-read commands consult the same receipt before fetching a provider.
+// Current application authority is rechecked even when returning a replay.
+func (s *Service) nativeCommandReplay(ctx context.Context, scope nativeScope, operation, key string, input any) (json.RawMessage, bool, error) {
+	if strings.TrimSpace(key) == "" || len(key) > 128 {
+		return nil, false, nativeInvalid("An idempotency key of at most 128 bytes is required")
+	}
+	hash, err := nativeCommandHash(input)
+	if err != nil {
+		return nil, false, err
+	}
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+	if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		return nil, false, err
+	}
+	response, found, err := nativeCommandReceipt(ctx, tx, scope, operation, key, hash)
+	if !found || err != nil {
+		return nil, found, err
+	}
+	return json.RawMessage(response), true, nil
 }

@@ -9,6 +9,10 @@ import (
 )
 
 func TestAPIKeysPersistLifecycleAndUsage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -120,6 +124,10 @@ func TestAPIKeysPersistLifecycleAndUsage(t *testing.T) {
 }
 
 func TestExpiredAPIKeysDoNotCountActive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()

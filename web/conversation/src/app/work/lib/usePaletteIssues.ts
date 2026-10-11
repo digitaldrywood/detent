@@ -31,7 +31,7 @@ export function useWorkIssueItems(projectId: string | null): readonly PaletteIss
     }
     let cancelled = false;
     void http
-      .listWorkItems({ projectId, limit: PALETTE_ISSUE_LIMIT })
+      .listWorkItems({ projectId, limit: PALETTE_ISSUE_LIMIT, archived: "all" })
       .then((page) => {
         if (cancelled) return;
         setIssues(

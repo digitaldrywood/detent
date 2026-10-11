@@ -50,7 +50,7 @@ func TestHostedIndependentChangeChecks(t *testing.T) {
 			reopenCredentialFixture(t, f, false)
 			rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: test.review, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}}
 			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/change-review-policy", tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules}), http.StatusOK)
-			response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Independent CI", State: "Todo"})
+			response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Independent CI", Body: nativeContractTestBody, State: "Todo"})
 			requireNativeStatus(t, response, http.StatusOK)
 			var issue tracker.NativeIssue
 			decodeHubResponse(t, response, &issue)
@@ -123,7 +123,7 @@ func TestHostedIndependentChangeChecks(t *testing.T) {
 				}
 				requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPost, path+"/versions/"+version.ID+"/reviews", tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, Decision: "approved"}), http.StatusOK)
 			}
-			if summary := detail().Summary; summary.Status != "reviewed" || summary.ExternalReview != "external_gate" {
+			if summary := detail().Summary; summary.Status != "needs_evidence" || summary.ExternalReview != "external_gate" {
 				t.Fatalf("readiness or external protection changed: %+v", summary)
 			}
 			now := f.service.config.now

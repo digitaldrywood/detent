@@ -2,17 +2,45 @@ package tracker
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/issuecontract"
+	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/workpad"
+
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 )
 
 const NativeProtocolMajor = 2
 
+const NativeDispatchPriorityCapability = "dispatch_priority"
+
+const NativeDispatchWaitCapability = "native_dispatch_wait"
+const NativeHostMetricsCapability = "runner_host_metrics"
+
+const NativeHeartbeatChangesCapability = "native_heartbeat_changes"
+
 const NativeProviderCapacityCapability = "provider_capacity_reservations"
+const NativeRunnerSkillsCapability = "runner_project_skills"
+
+const NativeCheckoutRepositoryCapability = "runner_checkout_repository"
+const NativeRunnerUpdateCapability = "runner_installed_update"
+
+const NativeProjectDiagnosticsCapability = "runner_project_diagnostics"
+
+const NativeProjectConfigurationCapability = "runner_project_configuration"
+
+const NativeRunnerCapacityCapability = "runner_capacity_configuration"
+const NativeLocalChecksCapability = "runner_local_checks"
+const NativeProjectCheckoutCapability = "runner_project_checkout"
+const NativeRunnerSetupCapability = "runner_project_setup"
+const NativeRunnerSetupDeclarationCapability = "runner_setup_declaration"
 
 // NativeWorkspaceCapability is declared by a runner's workspace lane on its
 // claim. It is what separates the lane that holds a workspace session open
@@ -52,8 +80,13 @@ type Provenance struct {
 }
 
 type NativeIssue struct {
-	IgnoreDependencies bool `json:"ignore_dependencies,omitempty"`
+	IssueContract      *issuecontract.State `json:"issue_contract,omitempty" yaml:"issue_contract,omitempty"`
+	OmittedFields      []string             `json:"omitted_fields,omitempty"`
+	LinkedSource       *LinkedIssueSource   `json:"linked_source,omitempty"`
+	IgnoreDependencies bool                 `json:"ignore_dependencies,omitempty"`
 	NativeReference
+	WebURL             string              `json:"web_url"`
+	PublicationReused  bool                `json:"publication_reused,omitempty"`
 	Title              string              `json:"title"`
 	Body               string              `json:"body"`
 	State              string              `json:"state"`
@@ -66,6 +99,10 @@ type NativeIssue struct {
 	Provenance         *Provenance         `json:"provenance,omitempty"`
 	CreatedAt          time.Time           `json:"created_at"`
 	UpdatedAt          time.Time           `json:"updated_at"`
+	ClosedAt           *time.Time          `json:"closed_at,omitempty"`
+	ListChange         *NativeListChange   `json:"list_change,omitempty"`
+	PullRequest        *NativePullRequest  `json:"pull_request,omitempty"`
+	LastActivityAt     time.Time           `json:"last_activity_at"`
 	Dependencies       []NativeWorkItemID  `json:"dependencies"`
 	Blockers           []NativeDependency  `json:"blockers"`
 	ExternalReferences []ExternalReference `json:"external_references"`
@@ -73,6 +110,16 @@ type NativeIssue struct {
 	// the caller asked for it with (include=change). It is null everywhere
 	// else, so the default work item resource is what it always was.
 	Change *NativeIssueChange `json:"change,omitempty"`
+}
+
+type NativeListChange struct {
+	Branch  string `json:"branch"`
+	HeadSHA string `json:"head_sha"`
+}
+
+type NativePullRequest struct {
+	Number int    `json:"number"`
+	URL    string `json:"url"`
 }
 
 // Change review connectors. The value is stated on every change review
@@ -123,16 +170,20 @@ type NativeIssueChange struct {
 }
 
 type ExternalReference struct {
-	Provider string `json:"provider"`
-	Kind     string `json:"kind"`
-	ID       string `json:"id"`
+	Provider   string `json:"provider"`
+	Kind       string `json:"kind"`
+	ID         string `json:"id"`
+	URL        string `json:"url,omitempty"`
+	Repository string `json:"repository,omitempty"`
+	Number     int    `json:"number,omitempty"`
 }
 
 type NativeDependency struct {
-	ID        NativeWorkItemID `json:"work_item_id"`
-	ProjectID ProjectID        `json:"project_id"`
-	State     string           `json:"state"`
-	Terminal  bool             `json:"terminal"`
+	Identifier string           `json:"identifier,omitempty"`
+	ID         NativeWorkItemID `json:"work_item_id"`
+	ProjectID  ProjectID        `json:"project_id"`
+	State      string           `json:"state"`
+	Terminal   bool             `json:"terminal"`
 }
 
 type NativeComment struct {
@@ -158,13 +209,14 @@ type Mutation struct {
 
 type CreateIssue struct {
 	Mutation
-	Title      string      `json:"title"`
-	Body       string      `json:"body"`
-	State      string      `json:"state"`
-	Priority   *int        `json:"priority,omitempty"`
-	Labels     []string    `json:"labels"`
-	Assignees  []string    `json:"assignees"`
-	Provenance *Provenance `json:"provenance,omitempty"`
+	GitHubIssueURL string      `json:"github_issue_url,omitempty"`
+	Title          string      `json:"title"`
+	Body           string      `json:"body"`
+	State          string      `json:"state"`
+	Priority       *int        `json:"priority,omitempty"`
+	Labels         []string    `json:"labels"`
+	Assignees      []string    `json:"assignees"`
+	Provenance     *Provenance `json:"provenance,omitempty"`
 }
 
 // PriorityPatch is the priority member of UpdateIssue.
@@ -276,9 +328,12 @@ type UpdateComment struct {
 
 type Transition struct {
 	Mutation
+	PolicyID         string   `json:"policy_id,omitempty"`
+	BlockerAttemptID string   `json:"blocker_attempt_id,omitempty"`
 	ExpectedRevision Revision `json:"expected_revision,string"`
 	State            string   `json:"state"`
 	Reason           string   `json:"reason"`
+	ReasonDetail     string   `json:"reason_detail,omitempty"`
 }
 
 type DependencyMutation struct {
@@ -289,68 +344,111 @@ type DependencyMutation struct {
 }
 
 type CollaborationEvent struct {
-	ID                string            `json:"event_id"`
-	OrganizationID    OrganizationID    `json:"organization_id"`
-	ProjectID         ProjectID         `json:"project_id"`
-	AggregateType     string            `json:"aggregate_type"`
-	AggregateID       NativeWorkItemID  `json:"aggregate_id"`
-	AggregateSequence int64             `json:"aggregate_sequence,string"`
-	Type              string            `json:"type"`
-	SchemaVersion     int               `json:"schema_version"`
-	RecordedAt        time.Time         `json:"recorded_at"`
-	Actor             Actor             `json:"actor"`
-	Data              CollaborationData `json:"data"`
+	ID                string               `json:"event_id"`
+	OrganizationID    OrganizationID       `json:"organization_id"`
+	ProjectID         ProjectID            `json:"project_id"`
+	AggregateType     string               `json:"aggregate_type"`
+	AggregateID       NativeWorkItemID     `json:"aggregate_id"`
+	AggregateSequence int64                `json:"aggregate_sequence,string"`
+	Type              string               `json:"type"`
+	SchemaVersion     int                  `json:"schema_version"`
+	RecordedAt        time.Time            `json:"recorded_at"`
+	Actor             Actor                `json:"actor"`
+	Data              CollaborationData    `json:"data"`
+	DataOmission      *HistoryDataOmission `json:"data_omission,omitempty"`
+}
+
+type HistoryDataOmission struct {
+	Bytes  int    `json:"bytes"`
+	SHA256 string `json:"sha256"`
 }
 
 type CollaborationData struct {
-	Change            *NativeChangeReference `json:"change,omitempty"`
-	Run               *NativeRunData         `json:"run,omitempty"`
-	Revision          Revision               `json:"revision,string,omitempty"`
-	Fields            []string               `json:"fields,omitempty"`
-	CommentID         string                 `json:"comment_id,omitempty"`
-	RelatedWorkItemID NativeWorkItemID       `json:"related_work_item_id,omitempty"`
-	Operation         string                 `json:"operation,omitempty"`
-	FromState         string                 `json:"from_state,omitempty"`
-	ToState           string                 `json:"to_state,omitempty"`
-	Reason            string                 `json:"reason,omitempty"`
+	BlockerAttemptID  string                   `json:"blocker_attempt_id,omitempty"`
+	Decision          *NativeSchedulerDecision `json:"decision,omitempty"`
+	Change            *NativeChangeReference   `json:"change,omitempty"`
+	Run               *NativeRunData           `json:"run,omitempty"`
+	Revision          Revision                 `json:"revision,string,omitempty"`
+	Fields            []string                 `json:"fields,omitempty"`
+	CommentID         string                   `json:"comment_id,omitempty"`
+	RelatedWorkItemID NativeWorkItemID         `json:"related_work_item_id,omitempty"`
+	Operation         string                   `json:"operation,omitempty"`
+	FromState         string                   `json:"from_state,omitempty"`
+	ToState           string                   `json:"to_state,omitempty"`
+	Reason            string                   `json:"reason,omitempty"`
+	ReasonDetail      string                   `json:"reason_detail,omitempty"`
 }
 
 type Page[T any] struct {
-	Items      []T    `json:"items"`
-	NextCursor string `json:"next_cursor,omitempty"`
+	Items      []T              `json:"items"`
+	NextCursor string           `json:"next_cursor,omitempty"`
+	Compaction *EventCompaction `json:"compaction,omitempty"`
 }
 
-type NativeState struct {
-	OperatorOnly bool     `json:"operator_only,omitempty"`
-	Name         string   `json:"name"`
-	Terminal     bool     `json:"terminal"`
-	Dispatchable bool     `json:"dispatchable"`
-	Transitions  []string `json:"transitions"`
+type EventCompaction struct {
+	ThroughSequence int64            `json:"through_sequence"`
+	RemovedEvents   int64            `json:"removed_events"`
+	RetainedEvents  int64            `json:"retained_events"`
+	RemovedBytes    int64            `json:"removed_bytes"`
+	RemovedByType   map[string]int64 `json:"removed_by_type"`
+	CompactedAt     time.Time        `json:"compacted_at"`
 }
+
+type NativeIssuePage struct {
+	Page[NativeIssue]
+	Total        int                `json:"total"`
+	Work         *NativeWorkSummary `json:"work,omitempty"`
+	Cards        []NativeBoardCard  `json:"cards,omitempty"`
+	Sequence     int64              `json:"sequence,omitempty"`
+	GrantVersion string             `json:"grant_version,omitempty"`
+}
+
+type NativeWorkSummary struct {
+	Completed int              `json:"completed"`
+	Items     []NativeIssue    `json:"items"`
+	Lanes     []NativeWorkLane `json:"lanes"`
+	Truncated bool             `json:"truncated"`
+	AsOf      time.Time        `json:"as_of"`
+}
+
+type NativeWorkLane struct {
+	State   string `json:"state"`
+	Total   int    `json:"total"`
+	Running int    `json:"running"`
+}
+
+type NativeState = policy.State
 
 type NativeProject struct {
-	ID                  ProjectID      `json:"project_id"`
-	OrganizationID      OrganizationID `json:"organization_id"`
-	Name                string         `json:"name"`
-	Profile             string         `json:"profile"`
-	States              []NativeState  `json:"states"`
-	RequireDependencies bool           `json:"require_dependencies"`
+	CloneURL            string          `json:"clone_url,omitempty"`
+	Repository          string          `json:"repository,omitempty"`
+	ModelSelection      json.RawMessage `json:"model_selection,omitempty"`
+	WorkflowMarkdown    string          `json:"workflow_markdown,omitempty"`
+	ID                  ProjectID       `json:"project_id"`
+	OrganizationID      OrganizationID  `json:"organization_id"`
+	Name                string          `json:"name"`
+	Profile             string          `json:"profile"`
+	States              []NativeState   `json:"states"`
+	RequireDependencies bool            `json:"require_dependencies"`
 }
 
 type NativeClaim struct {
-	ProviderCandidates []NativeCapacityCandidate `json:"provider_candidates,omitempty"`
-	PolicyID           string                    `json:"policy_id"`
-	WorkItemID         NativeWorkItemID          `json:"work_item_id,omitempty"`
-	MachineID          MachineID                 `json:"machine_id"`
-	SessionID          string                    `json:"session_id"`
-	TTLSeconds         int64                     `json:"ttl_seconds"`
-	ProtocolMajor      int                       `json:"protocol_major"`
-	Capabilities       []string                  `json:"capabilities"`
-	WorkflowStates     []string                  `json:"workflow_states,omitempty"`
-	Authors            []string                  `json:"authors,omitempty"`
-	Assignees          []string                  `json:"assignees,omitempty"`
-	LabelInclude       []string                  `json:"label_include,omitempty"`
-	LabelExclude       []string                  `json:"label_exclude,omitempty"`
+	DispatchPriorityByState []string                  `json:"dispatch_priority_by_state,omitempty"`
+	DispatchPriorityByLabel []string                  `json:"dispatch_priority_by_label,omitempty"`
+	PrioritizeUnblockers    bool                      `json:"prioritize_unblockers,omitempty"`
+	ProviderCandidates      []NativeCapacityCandidate `json:"provider_candidates,omitempty"`
+	PolicyID                string                    `json:"policy_id"`
+	WorkItemID              NativeWorkItemID          `json:"work_item_id,omitempty"`
+	MachineID               MachineID                 `json:"machine_id"`
+	SessionID               string                    `json:"session_id"`
+	TTLSeconds              int64                     `json:"ttl_seconds"`
+	ProtocolMajor           int                       `json:"protocol_major"`
+	Capabilities            []string                  `json:"capabilities"`
+	WorkflowStates          []string                  `json:"workflow_states,omitempty"`
+	Authors                 []string                  `json:"authors,omitempty"`
+	Assignees               []string                  `json:"assignees,omitempty"`
+	LabelInclude            []string                  `json:"label_include,omitempty"`
+	LabelExclude            []string                  `json:"label_exclude,omitempty"`
 }
 
 type NativeLease struct {
@@ -377,6 +475,7 @@ type NativeCapacityCandidate struct {
 type NativeCapacityPreview struct {
 	NativeClaim
 	After WorkItemID `json:"after,omitempty"`
+	Limit int        `json:"limit,omitempty"`
 }
 
 type NativeCapacityPage struct {
@@ -390,24 +489,46 @@ type NativeLeaseMutation struct {
 	Reason       string       `json:"reason,omitempty"`
 }
 
+type NativeDisposition struct {
+	Status          string            `json:"status"`
+	Blockers        bool              `json:"blockers"`
+	HumanAction     bool              `json:"human_action"`
+	ReasonCode      string            `json:"reason_code,omitempty"`
+	FinalSummary    string            `json:"final_summary,omitempty"`
+	BlockerEvidence []workpad.Blocker `json:"blocker_evidence,omitempty"`
+}
+
 type NativeRunData struct {
-	Sequence     int64                    `json:"sequence,string,omitempty"`
-	Identity     *NativeExecutionIdentity `json:"identity,omitempty"`
-	MachineID    MachineID                `json:"machine_id,omitempty"`
-	RunnerID     string                   `json:"runner_id,omitempty"`
-	SessionID    string                   `json:"session_id,omitempty"`
-	Handoff      *NativeCheckpoint        `json:"handoff,omitempty"`
-	LeaseID      LeaseID                  `json:"lease_id"`
-	FencingToken FencingToken             `json:"fencing_token,string"`
-	RunID        string                   `json:"run_id"`
-	AttemptID    string                   `json:"attempt_id"`
-	PolicyID     string                   `json:"policy_id"`
-	Outcome      string                   `json:"outcome,omitempty"`
-	ArtifactIDs  []string                 `json:"artifact_ids,omitempty"`
+	ProcessUsage    *procgroup.Usage          `json:"process_usage,omitempty"`
+	TerminalFailure *NativeTerminalFailure    `json:"terminal_failure,omitempty"`
+	Finalization    *NativeFinalization       `json:"finalization,omitempty"`
+	Evidence        []NativeEvidence          `json:"evidence,omitempty"`
+	CompletionBody  string                    `json:"completion_body,omitempty"`
+	Disposition     *NativeDisposition        `json:"disposition,omitempty"`
+	Runtime         *NativeRuntimeObservation `json:"runtime,omitempty"`
+	Sequence        int64                     `json:"sequence,string,omitempty"`
+	Identity        *NativeExecutionIdentity  `json:"identity,omitempty"`
+	MachineID       MachineID                 `json:"machine_id,omitempty"`
+	RunnerID        string                    `json:"runner_id,omitempty"`
+	SessionID       string                    `json:"session_id,omitempty"`
+	Handoff         *NativeCheckpoint         `json:"handoff,omitempty"`
+	LeaseID         LeaseID                   `json:"lease_id"`
+	FencingToken    FencingToken              `json:"fencing_token,string"`
+	RunID           string                    `json:"run_id"`
+	AttemptID       string                    `json:"attempt_id"`
+	PolicyID        string                    `json:"policy_id"`
+	Outcome         string                    `json:"outcome,omitempty"`
+	ArtifactIDs     []string                  `json:"artifact_ids,omitempty"`
 	// Usage is what the attempt has spent so far, one entry per provider and
 	// model (decisions section 17.5). A runner that reports none leaves the
 	// field out, so the event is byte-identical to what it was before.
 	Usage []NativeUsage `json:"usage,omitempty"`
+}
+
+type NativeEvidence struct {
+	AttachmentID string `json:"attachment_id"`
+	Caption      string `json:"caption"`
+	Reference    string `json:"reference"`
 }
 
 type NativeRunEvent struct {
@@ -416,4 +537,36 @@ type NativeRunEvent struct {
 	SchemaVersion int           `json:"schema_version"`
 	OccurredAt    time.Time     `json:"occurred_at,omitempty"`
 	Data          NativeRunData `json:"data"`
+}
+
+// MutationForContext forwards the application retry identity without deriving
+// business identity from an HTTP/JSON-RPC request or including sensitive input.
+func MutationForContext(ctx context.Context, fallback string) Mutation {
+	if m, ok := mutation.FromContext(ctx); ok && m.RetryIdentity != "" {
+		return Mutation{IdempotencyKey: m.RetryIdentity}
+	}
+	return Mutation{IdempotencyKey: fallback}
+}
+
+// NativeLabel is the existing project's label-picker read model.
+type NativeLabel struct {
+	Name  string `json:"name"`
+	Color string `json:"color"`
+	// Count orders the existing project label-picker suggestions by usage.
+	Count int `json:"count"`
+}
+
+// WithExpectedRevision carries an operator command's optimistic precondition
+// to the native connector while the orchestrator owns the lane write.
+type expectedRevisionKey struct{}
+
+func WithExpectedRevision(ctx context.Context, revision Revision) context.Context {
+	return context.WithValue(ctx, expectedRevisionKey{}, revision)
+}
+func ExpectedRevision(ctx context.Context) Revision {
+	revision, ok := ctx.Value(expectedRevisionKey{}).(Revision)
+	if !ok {
+		return 0
+	}
+	return revision
 }

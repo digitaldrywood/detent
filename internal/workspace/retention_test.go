@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,100 @@ func retentionFixture(t *testing.T, path string, at time.Time) {
 	}
 	if err := os.Chtimes(path, at, at); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLandingRetention(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		age    time.Duration
+		remove bool
+	}{
+		{name: "stale", age: 2 * time.Hour, remove: true},
+		{name: "boundary", age: time.Hour, remove: true},
+		{name: "recent", age: time.Hour - time.Second},
+		{name: "active", age: 2 * time.Hour},
+		{name: "busy", age: 2 * time.Hour},
+		{name: "locked", age: 2 * time.Hour},
+		{name: "missing", age: 2 * time.Hour, remove: true},
+		{name: "unregistered", age: 2 * time.Hour},
+		{name: "staging", age: 2 * time.Hour, remove: true},
+		{name: "legacy receipt", age: 2 * time.Hour, remove: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			backend := retentionBackend(t)
+			head := strings.TrimSpace(runGit(t, backend.sourceRoot, "rev-parse", "HEAD"))
+			issue := Issue{Identifier: "DD-LAND", Landing: &LandOptions{HeadSHA: head}}
+			info, err := backend.infoForIssue(issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := info.Path
+			if test.name == "staging" {
+				path = filepath.Join(backend.root, "landing-"+info.Key)
+			}
+			if test.name == "unregistered" {
+				retentionFixture(t, filepath.Join(path, "keep"), time.Now())
+			} else {
+				runGit(t, backend.sourceRoot, "worktree", "add", "--detach", path, head)
+			}
+			now := time.Now()
+			at := now.Add(-test.age)
+			stamp := path
+			request := RetentionRequest{Now: now}
+			switch test.name {
+			case "active":
+				request.Active = []Issue{issue}
+			case "busy":
+				backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) { return []int{123}, nil }
+			case "locked":
+				runGit(t, backend.sourceRoot, "worktree", "lock", path)
+			case "missing":
+				dir := strings.TrimSpace(runGit(t, path, "rev-parse", "--absolute-git-dir"))
+				stamp = filepath.Join(dir, "gitdir")
+				if err := os.RemoveAll(path); err != nil {
+					t.Fatal(err)
+				}
+			case "legacy receipt":
+				dir := strings.TrimSpace(runGit(t, path, "rev-parse", "--absolute-git-dir"))
+				if err := os.WriteFile(filepath.Join(dir, landingRecordFile), []byte(`{"head_sha":"`+head+`","result":{"MergeSHA":"`+head+`"}}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Chtimes(stamp, at, at); err != nil {
+				t.Fatal(err)
+			}
+			totals, err := backend.SweepRetention(t.Context(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 0
+			if test.remove {
+				want = 1
+			}
+			if totals.Landing.Count != want {
+				t.Fatalf("landing removed = %+v, want %d", totals.Landing, want)
+			}
+			registered := strings.Contains(runGit(t, backend.sourceRoot, "worktree", "list", "--porcelain"), filepath.ToSlash(path))
+			if test.name != "unregistered" && registered == test.remove {
+				t.Fatalf("landing registration remains = %v, remove = %v", registered, test.remove)
+			}
+			_, statErr := os.Stat(path)
+			if test.remove && !errors.Is(statErr, os.ErrNotExist) || !test.remove && statErr != nil {
+				t.Fatalf("landing directory: %v", statErr)
+			}
+			if test.name == "legacy receipt" {
+				runGit(t, backend.sourceRoot, "worktree", "add", "--detach", path, head)
+				if kept, ok := keptLanding(t.Context(), path, head, "HEAD"); !ok || kept.MergeSHA != head {
+					t.Fatalf("legacy receipt lost: %+v, %v", kept, ok)
+				}
+			}
+		})
 	}
 }
 
@@ -75,6 +170,10 @@ func TestRetentionHookLogs(t *testing.T) {
 }
 
 func TestRetentionQuarantine(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
@@ -102,7 +201,127 @@ func TestRetentionQuarantine(t *testing.T) {
 	}
 }
 
+func TestRetentionQuarantineReadOnlyDirectory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
+	t.Parallel()
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name     string
+		readOnly string
+	}{
+		{name: "writable"},
+		{name: "read-only nested directory", readOnly: "cache"},
+		{name: "read-only quarantine directory", readOnly: "."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := retentionBackend(t)
+			quarantine := filepath.Join(backend.root, ".detent/quarantine", "workspace-"+now.Add(-4*24*time.Hour).Format(quarantineTimestampFormat))
+			retentionFixture(t, filepath.Join(quarantine, "cache", "file"), now)
+			if test.readOnly != "" {
+				readOnly := filepath.Join(quarantine, test.readOnly)
+				if err := os.Chmod(readOnly, 0o500); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := os.Chmod(readOnly, 0o700); err != nil && !errors.Is(err, fs.ErrNotExist) {
+						t.Error(err)
+					}
+				})
+			}
+			totals, err := backend.SweepRetention(t.Context(), RetentionRequest{Now: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if totals.Quarantine.Count != 1 || totals.Quarantine.Bytes != 16 {
+				t.Fatalf("totals=%+v", totals)
+			}
+			if _, err := os.Stat(quarantine); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("quarantine remains: %v", err)
+			}
+		})
+	}
+}
+
+func TestRetentionQuarantineDoesNotChmodSymlinkTarget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
+	t.Parallel()
+	backend := retentionBackend(t)
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	quarantine := filepath.Join(backend.root, ".detent/quarantine", "workspace-"+now.Add(-4*24*time.Hour).Format(quarantineTimestampFormat))
+	retentionFixture(t, filepath.Join(quarantine, "file"), now)
+	target := t.TempDir()
+	retentionFixture(t, filepath.Join(target, "keep"), now)
+	if err := os.Chmod(target, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(target, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	before, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(quarantine, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := backend.SweepRetention(t.Context(), RetentionRequest{Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(target)
+	if err != nil || info.Mode().Perm() != before.Mode().Perm() {
+		t.Fatalf("symlink target mode changed: info=%v err=%v", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "keep")); err != nil {
+		t.Fatalf("symlink target content removed: %v", err)
+	}
+}
+
+func TestRetentionQuarantineUnremovablePath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod on Windows does not deny directory removal; this fixture requires POSIX permissions")
+	}
+	backend := retentionBackend(t)
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	parent := filepath.Join(backend.root, ".detent/quarantine")
+	quarantine := filepath.Join(parent, "workspace-"+now.Add(-4*24*time.Hour).Format(quarantineTimestampFormat))
+	retentionFixture(t, filepath.Join(quarantine, "file"), now)
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(parent, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	for range 2 {
+		totals, err := backend.SweepRetention(t.Context(), RetentionRequest{Now: now})
+		if err == nil || !strings.Contains(err.Error(), filepath.Join(".detent/quarantine", filepath.Base(quarantine))) {
+			t.Fatalf("retention error = %v, want quarantine path", err)
+		}
+		if totals.Quarantine.Count != 0 {
+			t.Fatalf("totals=%+v", totals)
+		}
+	}
+}
+
 func TestRetentionAttempts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
@@ -172,17 +391,24 @@ func TestRetentionAttempts(t *testing.T) {
 }
 
 func TestRetentionCompletedWorkspace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
 		name                      string
 		age                       time.Duration
 		active, live, lookupError bool
+		landing                   bool
 		remove                    bool
 	}{
 		{name: "expired unpushed", age: 8 * 24 * time.Hour, remove: true}, {name: "boundary", age: 7 * 24 * time.Hour, remove: true},
 		{name: "recent", age: 6 * 24 * time.Hour}, {name: "active", age: 8 * 24 * time.Hour, active: true},
 		{name: "live", age: 8 * 24 * time.Hour, live: true}, {name: "lookup failure", age: 8 * 24 * time.Hour, lookupError: true},
+		{name: "expired landing preserves Code", age: 8 * 24 * time.Hour, landing: true, remove: true},
+		{name: "active issue protects landing", age: 8 * 24 * time.Hour, landing: true, active: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			backend := retentionBackend(t)
@@ -190,6 +416,20 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 			info, err := backend.Create(t.Context(), issue)
 			if err != nil {
 				t.Fatal(err)
+			}
+			var codeUnchanged func()
+			if test.landing {
+				remote := initBareRemote(t)
+				runGit(t, backend.sourceRoot, "config", "url.file://"+remote+".insteadOf", "https://github.com/example/repo.git")
+				runGit(t, backend.sourceRoot, "remote", "add", "origin", "https://github.com/example/repo.git")
+				runGit(t, backend.sourceRoot, "push", "-u", "origin", "main")
+				codeUnchanged = preserveLandingOwner(t, info.Path)
+				head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+				issue.Landing = &LandOptions{Repository: RepositoryURL(t.Context(), backend.sourceRoot), HeadSHA: head}
+				info, err = backend.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
 				t.Fatal(err)
@@ -220,12 +460,17 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 				return map[string]time.Time{issue.ID: now.Add(-test.age)}, nil
 			}}
 			if test.active {
-				request.Active = []Issue{issue}
+				activeIssue := issue
+				activeIssue.Landing = nil
+				request.Active = []Issue{activeIssue}
 			}
 			if test.live {
 				backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) { return []int{999999}, nil }
 			}
 			total, err := backend.SweepRetention(t.Context(), request)
+			if codeUnchanged != nil {
+				codeUnchanged()
+			}
 			if (err != nil) != test.lookupError {
 				t.Fatalf("sweep error=%v", err)
 			}
@@ -303,6 +548,10 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 }
 
 func TestRetentionOwnership(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, missing := range []bool{false, true} {
 		t.Run(map[bool]string{false: "exists", true: "missing"}[missing], func(t *testing.T) {
@@ -336,6 +585,10 @@ func TestRetentionOwnership(t *testing.T) {
 }
 
 func TestRetentionArchiveFailureKeepsWorkspace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, failure := range []string{"archive destination", "unmanaged git"} {
 		t.Run(failure, func(t *testing.T) {
@@ -372,6 +625,10 @@ func TestRetentionArchiveFailureKeepsWorkspace(t *testing.T) {
 }
 
 func TestRetentionRejectsRedirectedArtifacts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, artifact := range []string{".detent/hook-logs", ".detent/quarantine", "workspace/.detent/worker-tmp"} {
 		t.Run(artifact, func(t *testing.T) {
@@ -398,6 +655,10 @@ func TestRetentionRejectsRedirectedArtifacts(t *testing.T) {
 }
 
 func TestRetentionRemovalFailureDeduplicatesArchives(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, change := range []string{"unchanged", "modified", "partially removed"} {
 		t.Run(change, func(t *testing.T) {
@@ -460,6 +721,10 @@ func TestRetentionRemovalFailureDeduplicatesArchives(t *testing.T) {
 }
 
 func TestRetentionCompletedResidue(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {

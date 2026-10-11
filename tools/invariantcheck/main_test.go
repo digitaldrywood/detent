@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -33,6 +34,10 @@ func TestBehaviorEvidence(t *testing.T) {
 }
 
 func TestBehaviorCommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("repository behavior-command subprocess integration")
+	}
+
 	for _, tt := range []struct {
 		name, body string
 		want       int
@@ -64,7 +69,7 @@ func TestBehaviorCommand(t *testing.T) {
 
 func TestManifestValidation(t *testing.T) {
 	t.Parallel()
-	for _, data := range []string{`{}`, `{"tests":{}}`, `{"unknown":true}`, `{"tests":{"bad":["TestGuard"]}}`, `{"tests":{"./":[]}}`, `{"tests":{"./":["Other"]}}`, `broken`} {
+	for _, data := range []string{`{}`, `{"tests":{}}`, `{"unknown":true}`, `{"tests":{"bad":["TestGuard"]}}`, `{"tests":{"./":[]}}`, `{"tests":{"./":["Other"]}}`, `{"tests":{"./":["TestGuard"],"./":["TestOther"]}}`, `{"tests":[]}`, `broken`} {
 		t.Run(data, func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "policy.json")
@@ -82,5 +87,39 @@ func TestManifestValidation(t *testing.T) {
 	}
 	if got := run([]string{"extra"}, &out, &out); got != 2 {
 		t.Fatal(got)
+	}
+}
+
+func TestManifestReferences(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		file     string
+		source   string
+		wantCode int
+	}{
+		{"declared without execution", "guard_test.go", "func TestGuard(t *testing.T) { t.Fatal(\"must not execute\") }", 0},
+		{"renamed", "guard_test.go", "func TestRenamed(t *testing.T) {}", 1},
+		{"production file", "guard.go", "func TestGuard(t *testing.T) {}", 1},
+		{"method", "guard_test.go", "type guard struct{}\nfunc (guard) TestGuard(t *testing.T) {}", 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			for name, data := range map[string]string{
+				tt.file:       "package example\nimport \"testing\"\n" + tt.source + "\n",
+				"policy.json": `{"tests":{"./":["TestGuard"]}}`,
+			} {
+				if err := os.WriteFile(filepath.Join(root, name), []byte(data), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Chdir(root)
+			var out, errout bytes.Buffer
+			if got := run([]string{"-policy", "policy.json", "-check-manifest"}, &out, &errout); got != tt.wantCode {
+				t.Fatalf("code %d want %d: %s", got, tt.wantCode, &errout)
+			}
+			if tt.wantCode != 0 && !strings.Contains(errout.String(), `required behavioral test "TestGuard" is not declared`) {
+				t.Fatalf("missing reference diagnostic: %s", &errout)
+			}
+		})
 	}
 }

@@ -21,6 +21,10 @@ import (
 // a per-request deadline, not a global bump, so an ordinary request through
 // the same client still honours the default.
 func TestConversationControlsOutlivesDefaultRequestTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	const (
 		clientTimeout = 60 * time.Millisecond
 		serverDelay   = 250 * time.Millisecond

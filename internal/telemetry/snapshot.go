@@ -15,6 +15,11 @@ import (
 )
 
 type Snapshot struct {
+	LocalIntake *LocalIntake `json:"local_intake,omitempty"`
+	// Shipped is the dashboard projection of durable lane-writer deliveries.
+	// Completed and Counts remain runtime session observations.
+	Shipped []Completed `json:"-"`
+
 	WorkspaceRetention []workspace.RetentionTotals `json:"workspace_retention,omitempty"`
 	HostCache          *toolcache.Report           `json:"host_cache,omitempty"`
 
@@ -53,7 +58,6 @@ type Snapshot struct {
 	RateLimits              *RateLimits         `json:"rate_limits"`
 	TrackerUnavailable      []TrackerCondition  `json:"tracker_unavailable,omitempty"`
 	ForgeUnavailable        []ForgeCondition    `json:"forge_unavailable,omitempty"`
-	GitHubMonitors          []GitHubMonitor     `json:"worker_github_budget_monitor_unavailable,omitempty"`
 	CIUnavailable           []CICondition       `json:"ci_unavailable,omitempty"`
 	BackendOutages          []BackendOutage     `json:"backend_outages,omitempty"`
 	FailureBreakers         []FailureBreaker    `json:"failure_breakers,omitempty"`
@@ -300,22 +304,6 @@ type ForgeCondition struct {
 	LastError       string    `json:"last_error,omitempty"`
 }
 
-type GitHubMonitor struct {
-	ProjectID          string    `json:"project_id,omitempty"`
-	CredentialIdentity string    `json:"credential_identity"`
-	Consumer           string    `json:"consumer"`
-	Operation          string    `json:"operation,omitempty"`
-	DetectedAt         time.Time `json:"detected_at"`
-	LastObservedAt     time.Time `json:"last_observed_at"`
-	NextProbeAt        time.Time `json:"next_probe_at"`
-	LastProbeAt        time.Time `json:"last_probe_at,omitzero"`
-	LastProbeResult    string    `json:"last_probe_result,omitempty"`
-	LastProbeDetail    string    `json:"last_probe_detail,omitempty"`
-	ProbeAttempts      int       `json:"probe_attempts,omitempty"`
-	ProbeIssueID       string    `json:"probe_issue_id,omitempty"`
-	LastError          string    `json:"last_error,omitempty"`
-}
-
 type AdmissionProposal struct {
 	ID              string    `json:"id"`
 	ProjectID       string    `json:"project_id"`
@@ -328,7 +316,6 @@ type AdmissionProposal struct {
 }
 
 type FailureBreaker struct {
-	InstanceDrained        bool                 `json:"instance_drained,omitempty"`
 	ProjectID              string               `json:"project_id,omitempty"`
 	Class                  string               `json:"class"`
 	Count                  int                  `json:"count"`
@@ -495,6 +482,12 @@ type Shutdown struct {
 	Result            string     `json:"result,omitempty"`
 }
 
+type LocalIntake struct {
+	Enabled   bool     `json:"enabled"`
+	Remaining []string `json:"remaining"`
+	Blocked   []string `json:"blocked"`
+}
+
 type Project struct {
 	ID          string      `json:"id,omitempty"`
 	DisplayName string      `json:"display_name,omitempty"`
@@ -560,15 +553,16 @@ type Instance struct {
 }
 
 type ProjectSnapshot struct {
-	Project    Project         `json:"project"`
-	Tracker    SnapshotSection `json:"tracker,omitzero"`
-	Runtime    SnapshotSection `json:"runtime,omitzero"`
-	Counts     Counts          `json:"counts"`
-	Tokens     Tokens          `json:"tokens"`
-	Throughput TokenThroughput `json:"throughput"`
-	Auth       AuthHealth      `json:"auth,omitzero"`
-	Refresh    Refresh         `json:"refresh,omitzero"`
-	Dispatch   DispatchStatus  `json:"dispatch"`
+	LocalIntake *LocalIntake    `json:"local_intake,omitempty"`
+	Project     Project         `json:"project"`
+	Tracker     SnapshotSection `json:"tracker,omitzero"`
+	Runtime     SnapshotSection `json:"runtime,omitzero"`
+	Counts      Counts          `json:"counts"`
+	Tokens      Tokens          `json:"tokens"`
+	Throughput  TokenThroughput `json:"throughput"`
+	Auth        AuthHealth      `json:"auth,omitzero"`
+	Refresh     Refresh         `json:"refresh,omitzero"`
+	Dispatch    DispatchStatus  `json:"dispatch"`
 }
 
 type SnapshotSource string
@@ -1138,6 +1132,7 @@ type Issue struct {
 	PriorityName          string                 `json:"priority_name,omitempty"`
 	UnblockerCount        int                    `json:"unblocker_count,omitempty"`
 	State                 string                 `json:"state,omitempty"`
+	DispatchMode          string                 `json:"dispatch_mode,omitempty"`
 	AuthorID              string                 `json:"author_id,omitempty"`
 	Origin                string                 `json:"origin,omitempty"`
 	OriginActor           string                 `json:"origin_actor,omitempty"`
@@ -1261,6 +1256,7 @@ type BlockedRef struct {
 }
 
 type PullRequest struct {
+	Draft           bool               `json:"draft,omitempty"`
 	HeadCommittedAt *time.Time         `json:"head_committed_at"`
 	Checks          []PullRequestCheck `json:"checks,omitempty"`
 
@@ -1413,6 +1409,7 @@ type WorkAttempt struct {
 }
 
 type SchedulerDecision struct {
+	RunnerAdmissionJSON    string    `json:"-"`
 	ID                     int64     `json:"id,omitempty"`
 	ProjectID              string    `json:"project_id,omitempty"`
 	IssueID                string    `json:"issue_id,omitempty"`

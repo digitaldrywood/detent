@@ -17,6 +17,10 @@ import (
 )
 
 func TestStalenessWarningAcknowledgementSurvivesNextSSESnapshot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
 	if err != nil {
@@ -103,6 +107,10 @@ func TestStalenessWarningAcknowledgementSurvivesNextSSESnapshot(t *testing.T) {
 }
 
 func TestBulkStalenessWarningAcknowledgementUsesExplicitTransactionalIDs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
 	if err != nil {

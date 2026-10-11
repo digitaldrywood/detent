@@ -144,6 +144,7 @@ func (c githubReadinessChecker) Check(ctx context.Context, cfg ReadinessConfig) 
 	} else {
 		checks = append(checks,
 			c.projectAccessCheck(ctx),
+			c.projectSizeCheck(ctx),
 			c.statusOptionsCheck(ctx, cfg.StatusStates),
 			c.projectItemsReadCheck(ctx, cfg.ReadStates),
 		)

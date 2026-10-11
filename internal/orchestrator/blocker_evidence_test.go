@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -250,15 +251,27 @@ func TestRecordedBlockerPredicateRegistry(t *testing.T) {
 }
 
 func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	now := time.Date(2026, 8, 16, 18, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name           string
-		fingerprint    string
-		wantTransition bool
-		wantStatus     string
+		name              string
+		fingerprint       string
+		wantTransition    bool
+		wantStatus        string
+		priorReworkLimit  bool
+		dependencyState   string
+		nativeDisposition bool
+		instanceOnly      bool
 	}{
 		{name: "condition holds", fingerprint: "config-a", wantStatus: blockerEvidenceStatusHolds},
 		{name: "condition clears", fingerprint: "config-b", wantTransition: true},
+		{name: "other current causes preserve recorded recovery order", fingerprint: "config-b", wantTransition: true, priorReworkLimit: true},
+		{name: "stored native terminal prerequisite clears next tick", dependencyState: "Done", nativeDisposition: true, wantTransition: true},
+		{name: "stored native unfinished prerequisite holds", dependencyState: "In Progress", nativeDisposition: true, wantStatus: blockerEvidenceStatusHolds},
+		{name: "instance-only blocker releases the issue", instanceOnly: true, wantTransition: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -274,8 +287,37 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 					Fingerprint: "config-a",
 				})},
 			}
+			if tt.instanceOnly {
+				issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: 'instance:check-barrier'\n    reason: barrier failed on the runner\n```"}}
+				issue.WorkpadSignal, _ = workpad.SignalFromComment(issue.Comments[0].Body, "", "")
+			}
+			if tt.dependencyState != "" {
+				dependency := connector.Issue{ID: "prerequisite", Identifier: "prj_test#517", State: tt.dependencyState, Closed: tt.dependencyState == "Done"}
+				tracker.blockers = []connector.Issue{dependency}
+				issue.Identifier = "prj_test#519"
+				issue.DependencySource = connector.BlockedRefSourceNative
+				issue.BlockedBy = []connector.BlockedRef{{ID: dependency.ID, Identifier: dependency.Identifier, State: dependency.State, Source: connector.BlockedRefSourceNative}}
+				issue.WorkpadSignal.Blockers = []workpad.Blocker{typedTestBlocker(workpad.Predicate{Type: workpad.PredicateIssueState, Identifier: dependency.Identifier, States: []string{"open"}})}
+			}
+			if tt.nativeDisposition {
+				issue.Metadata = map[string]string{"hub_profile": "native", "hub_disposition_attempt_id": "blocked-attempt", "hub_disposition_return_state": "Todo"}
+				observed := cloneIssue(issue)
+				observed.WorkpadSignal = nil
+				observed.Metadata = map[string]string{"hub_profile": "native"}
+				issue = mergeIssueTrackerFields(observed, issue)
+			}
 			state := newState(orch.cfg)
 			state.Blocked[issue.ID] = Blocked{Issue: issue, BlockedAt: now.Add(-time.Hour), Source: BlockedSourceProjectStatus}
+			if tt.priorReworkLimit {
+				orch.workflowMetrics = openWorkAttemptRecoveryStore(t, t.Context())
+				prior := cloneIssue(issue)
+				prior.State = "Rework"
+				prior.PullRequest = &connector.PullRequest{Number: 24, HeadSHA: "unchanged-head"}
+				orch.recordLaneTransition(t.Context(), prior, blockedStatusState, now.Add(-time.Hour), "rework_limit", workflowLaneMetadata{ReworkBreaker: &workflowLaneReworkBreakerMetadata{Reason: string(AutoPromoteReasonCINotGreen)}})
+				if _, found := orch.latestReworkBreakerPark(t.Context(), issue); !found {
+					t.Fatal("fixture must retain the unrelated Rework-limit owner")
+				}
+			}
 
 			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)
 
@@ -305,20 +347,45 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 }
 
 func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	now := time.Date(2026, 9, 24, 3, 0, 0, 0, time.UTC)
 	parkedAt := now.Add(-time.Hour).Add(500 * time.Millisecond)
 	const source = "digitaldrywood/detent#685"
 	for _, tt := range []struct {
 		name           string
+		comments       []connector.IssueComment
 		body           string
 		authorized     bool
 		commentAt      time.Time
 		parkCause      string
 		legacyBlocker  bool
+		legacyLane     string
+		metadataAbsent bool
 		started        bool
 		wantState      string
 		wantTransition bool
 	}{
+		{name: "edited earlier clearance defeats stale later hold", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, wantState: "Todo", wantTransition: true,
+			comments: []connector.IssueComment{
+				{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", AuthorAuthorized: true, CreatedAt: new(parkedAt.Add(-time.Hour)), UpdatedAt: &now},
+				{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: approve release\n```", AuthorAuthorized: true, CreatedAt: &parkedAt, UpdatedAt: &parkedAt},
+			}},
+		{name: "edited earlier hold defeats stale later clearance", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason,
+			comments: []connector.IssueComment{
+				{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: approve release\n```", AuthorAuthorized: true, CreatedAt: new(parkedAt.Add(-time.Hour)), UpdatedAt: &now},
+				{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", AuthorAuthorized: true, CreatedAt: &parkedAt, UpdatedAt: &parkedAt},
+			}},
+		{name: "unknown project-status hold remains", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, metadataAbsent: true, started: true},
+		{name: "legacy Todo does not start fresh work", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "Todo", started: true},
+		{name: "legacy clearance restores In Progress", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "In Progress", started: true, wantState: "In Progress", wantTransition: true},
+		{name: "legacy clearance restores Rework", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "Rework", started: true, wantState: "Rework", wantTransition: true},
+		{name: "legacy unauthorized answer holds", body: "status: in_progress\nblockers: []\nhuman_action: null", commentAt: now, legacyLane: "In Progress", started: true},
+		{name: "legacy stale answer holds", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: parkedAt.Add(-time.Minute), legacyLane: "In Progress", started: true},
+		{name: "legacy uncleared action holds", body: "status: blocked\nblockers: []\nhuman_action: approve rehearsal", authorized: true, commentAt: now, legacyLane: "In Progress", started: true},
+		{name: "legacy unresolved dependency holds", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "In Progress", started: true, legacyBlocker: true},
 		{name: "authorized clearance resumes existing work", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, started: true, wantState: "Rework", wantTransition: true},
 		{name: "authorized clearance queues new work", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, wantState: "Todo", wantTransition: true},
 		{name: "same-second clearance", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: parkedAt.Truncate(time.Second), parkCause: workpadBlockedUnactionedReason, wantState: "Todo", wantTransition: true},
@@ -339,7 +406,13 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 			}
 			body := "## Codex Workpad\n\n```detent-status\nschema: 1\n" + tt.body + "\n```"
 			issue.Comments = []connector.IssueComment{{Body: body, AuthorAuthorized: tt.authorized, CreatedAt: &tt.commentAt}}
+			if tt.comments != nil {
+				issue.Comments = tt.comments
+			}
 			issue.WorkpadSignal, _ = workpad.SignalFromComment(body, "", "digitaldrywood/detent")
+			if tt.comments != nil {
+				issue.WorkpadSignal, _ = rawIssueWorkpadSignal(issue)
+			}
 			if tt.legacyBlocker {
 				issue.DependencySource = connector.BlockedRefSourceNative
 				issue.BlockedBy = []connector.BlockedRef{{Identifier: source, Source: connector.BlockedRefSourceNative}}
@@ -348,6 +421,37 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 			state := newState(orch.cfg)
 			state.Blocked[issue.ID] = Blocked{Issue: issue, BlockedAt: parkedAt, Source: BlockedSourceProjectStatus,
 				Recovery: &workflowLaneBlockedRecoveryMetadata{Owner: blockedRecoveryOwnerHuman, Cause: tt.parkCause, TargetState: "Rework"}}
+			if tt.metadataAbsent {
+				blocked := state.Blocked[issue.ID]
+				blocked.Recovery = nil
+				state.Blocked[issue.ID] = blocked
+			}
+			if tt.legacyLane != "" {
+				blocked := state.Blocked[issue.ID]
+				blocked.Recovery = nil
+				state.Blocked[issue.ID] = blocked
+				backend, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = backend.Close() })
+				orch.workflowMetrics = backend
+				_, err = backend.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+					ProjectID: orch.workflowMetricsProjectID(), IssueID: issue.ID, Identifier: issue.Identifier,
+					PhaseType: store.WorkflowPhaseTypeLane, PhaseName: blockedStatusState, PreviousPhaseName: tt.legacyLane,
+					Reason: string(AutoPromoteReasonWorkpadBlocker), Status: "entered", StartedAt: parkedAt, MetadataJSON: `{"tracker_mutation_at":"` + parkedAt.Format(time.RFC3339Nano) + `"}`,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if tt.parkCause != "" {
+				orch.workflowMetrics = openValidatorMemoStore(t)
+				prior := cloneIssue(issue)
+				prior.State = "In Progress"
+				orch.recordLaneTransition(t.Context(), prior, blockedStatusState, parkedAt, tt.parkCause, workflowLaneMetadata{BlockedRecovery: state.Blocked[issue.ID].Recovery})
+			}
 
 			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)
 			_, ok := transitioned[issue.ID]
@@ -357,6 +461,22 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 			if tt.wantTransition {
 				if len(tracker.updates) != 1 || tracker.updates[0].state != tt.wantState {
 					t.Fatalf("updates = %+v, want %s", tracker.updates, tt.wantState)
+				}
+				if tt.parkCause != "" {
+					orch.cfg.ActiveStates = append(orch.cfg.ActiveStates, normalizeState(tt.wantState))
+					recovered := cloneIssue(issue)
+					recovered.State = tt.wantState
+					recovered.StageUpdatedAt = &now
+					for _, restarted := range []bool{false, true} {
+						if restarted {
+							state = newState(orch.cfg)
+						}
+						state.Blocked[issue.ID] = Blocked{Issue: recovered, Source: BlockedSourceProjectStatus, Reason: tt.parkCause, BlockedAt: parkedAt, RecoveryReason: "park_acknowledgement_required"}
+						orch.retainUnacknowledgedRecoveryParks(t.Context(), &state, []connector.Issue{recovered})
+						if blocked, held := state.Blocked[issue.ID]; held {
+							t.Fatalf("authorized recovery resurrected after restart=%t: %+v", restarted, blocked)
+						}
+					}
 				}
 			} else if len(tracker.updates) != 0 {
 				t.Fatalf("updates = %+v, want no transition", tracker.updates)
@@ -454,16 +574,16 @@ func TestSymbolicBlockerCompletion(t *testing.T) {
 				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
 					t.Fatalf("completions = %#v", attempts.completions)
 				}
-				if len(tracker.updates) != 0 || len(state.Blocked) != 0 || len(state.Retry) != 0 || len(state.Claimed) != 0 {
-					t.Fatalf("instance blocker changed issue state: updates=%v blocked=%v retries=%v claims=%v", tracker.updates, state.Blocked, state.Retry, state.Claimed)
+				if _, retried := state.Retry[issue.ID]; !retried || len(tracker.updates) != 0 || len(state.Blocked) != 0 || len(state.Claimed) != 0 {
+					t.Fatalf("instance blocker did not retry in its lane: updates=%v blocked=%v retries=%v claims=%v", tracker.updates, state.Blocked, state.Retry, state.Claimed)
 				}
 				evidence := o.evaluateRecordedBlockers(t.Context(), &state, issue, nil, now)
 				if !evidence.Unverifiable || evidence.HumanOwned || len(evidence.Evidence) != 1 || evidence.Evidence[0].Owner != workpad.BlockerOwnerInstance || evidence.Evidence[0].Reference != ref || !strings.Contains(evidence.Evidence[0].Reason, "tool unavailable") {
 					t.Fatalf("evidence = %#v", evidence)
 				}
-				planner := o.liveDispatchPlanner(t.Context())
+				planner := o.liveDispatchPlanner(t.Context(), nil)
 				decision := planner.dispatchableIssueDecision(issue, &state, false, now, "")
-				if !decision.dispatchable {
+				if !decision.dispatchable && decision.reason != dispatchSkipRetryPending {
 					t.Fatalf("dispatch = %#v", decision)
 				}
 				tracker.refreshed.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\n```"}}

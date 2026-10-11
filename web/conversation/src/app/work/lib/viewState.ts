@@ -1,31 +1,30 @@
-// The board's view state, and where it lives.
-//
-// The URL is the source of truth: a filtered board is a thing people paste to
-// each other, and a filter that only exists in component state cannot be
-// linked, reloaded or navigated back to. `localStorage` is a second-class
-// memory used for exactly one thing — the view you last had *in this project*
-// when you arrive with no query string at all — so a shared link always wins
-// over a remembered preference.
-//
-// Everything here is pure apart from the two storage helpers, which swallow a
-// blocked store: a private window costs the reader a remembered filter, not
-// the board.
+import type { Lane } from "./model.ts";
 
 export const WORK_VIEWS = ["board", "list"] as const;
 export type WorkViewMode = (typeof WORK_VIEWS)[number];
 
-export const WORK_SORTS = ["priority", "updated", "created", "title"] as const;
-export type WorkSort = (typeof WORK_SORTS)[number];
+export const WORK_TABS = ["active", "backlog", "closed", "all"] as const;
+export type WorkTab = (typeof WORK_TABS)[number];
+
+export const WORK_SORTS = ["priority", "updated", "created", "title", "closed"] as const;
+export type WorkSort = (typeof WORK_SORTS)[number] | "default";
 
 export const SORT_LABELS: Readonly<Record<WorkSort, string>> = {
+  default: "Priority",
   priority: "Priority",
   updated: "Recently updated",
   created: "Newest",
   title: "Title",
+  closed: "Closed",
 };
 
+export const COMPLETED_WINDOWS = ["48h", "7d", "14d", "all"] as const;
+export type CompletedWindow = (typeof COMPLETED_WINDOWS)[number];
+
 export interface WorkViewState {
+  readonly completedWindow: CompletedWindow;
   readonly view: WorkViewMode;
+  readonly tab: WorkTab;
   readonly archived?: boolean;
   readonly q: string;
   readonly state: readonly string[];
@@ -33,25 +32,22 @@ export interface WorkViewState {
   readonly assignee: readonly string[];
   readonly priority: readonly string[];
   readonly sort: WorkSort;
-  /**
-   * The lanes the reader chose to show. `null` means "every lane", which is
-   * not the same as an empty list ("none") and is why this is nullable rather
-   * than defaulted to the full set: the full set is not known until the
-   * project's workflow has loaded, and a default written before then would
-   * freeze whatever lanes happened to exist that day.
-   */
   readonly lanes: readonly string[] | null;
+  readonly collapsed: readonly string[];
 }
 
 export const DEFAULT_VIEW_STATE: WorkViewState = {
   view: "board",
+  tab: "active",
   q: "",
   state: [],
   label: [],
   assignee: [],
   priority: [],
-  sort: "priority",
+  sort: "default",
   lanes: null,
+  collapsed: ["Backlog"],
+  completedWindow: "48h",
 };
 
 /** The multi-valued filters, in the order the Filters menu renders them. */
@@ -80,11 +76,6 @@ function writeList(values: readonly string[]): string {
   return [...new Set(values)].toSorted().join(",");
 }
 
-/**
- * Reads the view out of a query string. Anything unrecognised falls back to
- * the default rather than failing: a stale link from an older build has to
- * still open the board.
- */
 export function parseViewState(search: string | URLSearchParams): WorkViewState {
   const params = typeof search === "string" ? new URLSearchParams(search) : search;
   const view = params.get("view");
@@ -92,16 +83,17 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
   const lanes = params.get("lanes");
   return {
     view: WORK_VIEWS.includes(view as WorkViewMode) ? (view as WorkViewMode) : DEFAULT_VIEW_STATE.view,
+    tab: WORK_TABS.find((tab) => tab === params.get("tab")) ?? "active",
     ...(params.get("archived") === "true" ? { archived: true } : {}),
     q: params.get("q") ?? "",
     state: readList(params.get("state")),
     label: readList(params.get("label")),
     assignee: readList(params.get("assignee")),
     priority: readList(params.get("priority")),
-    sort: WORK_SORTS.includes(sort as WorkSort) ? (sort as WorkSort) : DEFAULT_VIEW_STATE.sort,
-    // `lanes=` with an empty value is "no lanes", which is a legitimate (if
-    // odd) thing to link to; a missing `lanes` is "every lane".
+    sort: WORK_SORTS.find((candidate) => candidate === sort) ?? DEFAULT_VIEW_STATE.sort,
     lanes: lanes === null ? null : readList(lanes),
+    collapsed: params.has("collapsed") ? readList(params.get("collapsed")) : DEFAULT_VIEW_STATE.collapsed,
+    completedWindow: COMPLETED_WINDOWS.find((window) => window === params.get("completed")) ?? "48h",
   };
 }
 
@@ -113,6 +105,7 @@ export function serializeViewState(state: WorkViewState): string {
   const params = new URLSearchParams();
   if (state.archived === true) params.set("archived", "true");
   if (state.view !== DEFAULT_VIEW_STATE.view) params.set("view", state.view);
+  if (state.tab !== DEFAULT_VIEW_STATE.tab) params.set("tab", state.tab);
   if (state.q.trim().length > 0) params.set("q", state.q.trim());
   for (const key of FILTER_KEYS) {
     const values = state[key];
@@ -120,6 +113,8 @@ export function serializeViewState(state: WorkViewState): string {
   }
   if (state.sort !== DEFAULT_VIEW_STATE.sort) params.set("sort", state.sort);
   if (state.lanes !== null) params.set("lanes", writeList(state.lanes));
+  if (writeList(state.collapsed) !== writeList(DEFAULT_VIEW_STATE.collapsed)) params.set("collapsed", writeList(state.collapsed));
+  if (state.completedWindow !== "48h") params.set("completed", state.completedWindow);
   return params.toString();
 }
 
@@ -146,30 +141,33 @@ export function toggleFilter(
   return { ...state, [key]: next };
 }
 
-/** Shows or hides one lane. `null` (every lane) expands first, then removes. */
-export function toggleLane(
-  state: WorkViewState,
-  lane: string,
-  allLanes: readonly string[],
-): WorkViewState {
-  const current = state.lanes ?? allLanes;
-  const next = current.includes(lane)
-    ? current.filter((candidate) => candidate !== lane)
-    : [...current, lane];
-  // Back to every lane is expressed as `null`, not as the full list: the full
-  // list would pin today's workflow into tomorrow's URL.
-  const ordered = allLanes.filter((candidate) => next.includes(candidate));
-  return { ...state, lanes: ordered.length === allLanes.length ? null : ordered };
+export function defaultLaneNames(lanes: readonly Lane[]): readonly string[] {
+  return lanes.filter((lane) => !lane.terminal).map((lane) => lane.name);
 }
 
-/** Whether a lane is visible under this view. */
-export function laneVisible(state: WorkViewState, lane: string): boolean {
-  return state.lanes === null || state.lanes.includes(lane);
+export function toggleLane(state: WorkViewState, lane: string, lanes: readonly Lane[]): WorkViewState {
+  const defaults = defaultLaneNames(lanes);
+  if (!defaults.includes(lane)) return state;
+  const current = state.lanes ?? defaults;
+  const next = current.includes(lane) ? current.filter((candidate) => candidate !== lane) : [...current, lane];
+  const ordered = defaults.filter((name) => next.includes(name));
+  return { ...state, lanes: ordered.length === defaults.length && defaults.every((name) => ordered.includes(name)) ? null : ordered };
+}
+
+export function laneVisible(state: WorkViewState, lane: Lane): boolean {
+  return !lane.terminal && (state.lanes === null || state.lanes.includes(lane.name));
+}
+
+export function toggleCollapsed(state: WorkViewState, lane: string): WorkViewState {
+  const collapsed = state.collapsed.includes(lane)
+    ? state.collapsed.filter((name) => name !== lane)
+    : [...state.collapsed, lane].toSorted();
+  return { ...state, collapsed };
 }
 
 const STORAGE_PREFIX = "detent.work.view:";
 
-/** The remembered view for a project, or `null` when there is none. */
+
 export function readStoredViewState(projectId: string): WorkViewState | null {
   try {
     const raw = globalThis.localStorage?.getItem(`${STORAGE_PREFIX}${projectId}`);
@@ -180,7 +178,7 @@ export function readStoredViewState(projectId: string): WorkViewState | null {
   }
 }
 
-/** Remembers the view for a project. A default view clears the memory. */
+
 export function writeStoredViewState(projectId: string, state: WorkViewState): void {
   try {
     const key = `${STORAGE_PREFIX}${projectId}`;
@@ -192,7 +190,30 @@ export function writeStoredViewState(projectId: string, state: WorkViewState): v
   }
 }
 
-/** The scope key a view is remembered under. `""` is the all-projects board. */
+
 export function viewScopeKey(projectId: string | null): string {
   return projectId ?? "";
+}
+
+export function tabQuery(view: WorkViewState, lanes: readonly Lane[]): { open?: boolean; state: readonly string[] } {
+  if (view.view === "board") return { state: view.state };
+  switch (view.tab) {
+    case "active": return { open: true, state: lanes.filter((lane) => !lane.terminal && lane.name.toLowerCase() !== "backlog").map((lane) => lane.name) };
+    case "backlog": return { state: lanes.filter((lane) => lane.name.toLowerCase() === "backlog").map((lane) => lane.name) };
+    case "closed": return { open: false, state: [] };
+    case "all": return { state: [] };
+  }
+}
+
+export function effectiveSort(view: WorkViewState): WorkSort {
+  return view.view === "list" && view.tab === "closed" && view.sort === "default" ? "closed" : view.sort;
+}
+
+export function tabMatches(tab: WorkTab, item: { readonly state: string; readonly terminal: boolean }): boolean {
+  switch (tab) {
+    case "active": return !item.terminal && item.state.toLowerCase() !== "backlog";
+    case "backlog": return item.state.toLowerCase() === "backlog";
+    case "closed": return item.terminal;
+    case "all": return true;
+  }
 }

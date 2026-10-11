@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -84,6 +85,13 @@ const WorkspaceItemLabel = "detent:workspace"
 // workspaceServedRecheck while it keeps advertising workspace sessions. A hub
 // that does not advertise them answers ErrWorkspacesNotServed without a claim.
 func (c *WorkspaceClaimer) ClaimWorkspace(ctx context.Context) (tracker.NativeLease, error) {
+	state := c.ClaimState()
+	if len(state.Reasons) > 0 {
+		for _, reason := range state.Reasons {
+			slog.Info("workspace.claim_skipped", "project_id", c.native.project, "reason", reason)
+		}
+		return tracker.NativeLease{}, ErrNoClaimableWork
+	}
 	if err := c.requireServed(ctx); err != nil {
 		return tracker.NativeLease{}, err
 	}
@@ -92,7 +100,7 @@ func (c *WorkspaceClaimer) ClaimWorkspace(ctx context.Context) (tracker.NativeLe
 		return tracker.NativeLease{}, fmt.Errorf("workspace claim session: %w", err)
 	}
 	lease, err := c.native.Claim(ctx, tracker.NativeClaim{
-		PolicyID: c.config.PolicyID, MachineID: c.config.MachineID, SessionID: session,
+		PolicyID: state.PolicyID, MachineID: c.config.MachineID, SessionID: session,
 		TTLSeconds: int64(c.config.LeaseTTL / time.Second), ProtocolMajor: tracker.NativeProtocolMajor,
 		// The workspace capability is the lane's authority to be offered
 		// workspace items at all: the hub's ordinary claim excludes them from
@@ -161,3 +169,51 @@ func (c *WorkspaceClaimer) RunIdentifier(ctx context.Context, workItemID string)
 // Native exposes the client the lane hands its sessions, so one construction
 // site wires both halves.
 func (c *WorkspaceClaimer) Native() *NativeClient { return c.native }
+
+type WorkspaceClaimState struct {
+	ProjectID tracker.ProjectID
+	PolicyID  string
+	Reasons   []string
+	Changed   <-chan struct{}
+}
+
+func (c *WorkspaceClaimer) ClaimState() WorkspaceClaimState {
+	state := WorkspaceClaimState{ProjectID: c.native.project, PolicyID: c.config.PolicyID}
+	r := c.native.client.runner
+	if r == nil {
+		return state
+	}
+	r.routingMu.Lock()
+	defer r.routingMu.Unlock()
+	if r.routingChanged == nil {
+		r.routingChanged = make(chan struct{})
+	}
+	state.Changed = r.routingChanged
+	if local, ok := r.localPolicies[c.native.project]; ok {
+		state.PolicyID = local
+	}
+	if r.routing == nil {
+		return state
+	}
+	if r.routing.Routing.State == "draining" {
+		state.Reasons = append(state.Reasons, "runner_draining")
+	}
+	if capacity := r.routing.ClaimState; capacity != nil {
+		if approved, ok := capacity.PolicyIDs[c.native.project]; ok && approved != state.PolicyID {
+			state.Reasons = append(state.Reasons, "policy_mismatch")
+		}
+		if len(capacity.Slots) >= capacity.HostCapacity {
+			state.Reasons = append(state.Reasons, "host_capacity")
+		}
+		used := 0
+		for _, slot := range capacity.Slots {
+			if slot.RunnerID == r.routing.RunnerID {
+				used++
+			}
+		}
+		if used >= capacity.RunnerCapacity {
+			state.Reasons = append(state.Reasons, "runner_capacity")
+		}
+	}
+	return state
+}

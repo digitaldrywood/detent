@@ -158,11 +158,19 @@ func (s *Server) apiBoardSessionHistory(c echo.Context) error {
 	ctx := c.Request().Context()
 	snapshot := s.latestSnapshot(ctx)
 	issue := boardActivityIssue(snapshot, request)
-	session := s.boardSessionData(ctx, snapshot, issue, request.ProjectID)
-	session.FullPage = c.QueryParam("display") == "full"
+	data := s.readBoardSessionHistory(ctx, snapshot, issue, request.ProjectID, offset, limit)
+	data.Session.FullPage = c.QueryParam("display") == "full"
+	if offset > 0 {
+		return render(c, templates.BoardLiveSessionHistoryMore(data))
+	}
+	return render(c, templates.BoardLiveSessionHistory(data))
+}
+
+func (s *Server) readBoardSessionHistory(ctx context.Context, snapshot telemetry.Snapshot, issue telemetry.Issue, projectID string, offset, limit int) templates.BoardSessionHistoryData {
+	session := s.boardSessionData(ctx, snapshot, issue, projectID)
 	data := templates.BoardSessionHistoryData{Session: session, Offset: offset, Limit: limit}
 	state, err := s.latestIssueAgentSession(ctx, issue)
-	if err != nil {
+	if err != nil || s.history == nil {
 		data.Error = "Rollout history is unavailable for this session."
 	} else {
 		page, pageErr := s.history.Page(ctx, activity.HistoryQuery{
@@ -182,10 +190,7 @@ func (s *Server) apiBoardSessionHistory(c echo.Context) error {
 			}
 		}
 	}
-	if offset > 0 {
-		return render(c, templates.BoardLiveSessionHistoryMore(data))
-	}
-	return render(c, templates.BoardLiveSessionHistory(data))
+	return data
 }
 
 func (s *Server) apiBoardSessionEvents(c echo.Context) error {
@@ -390,6 +395,7 @@ func boardStoredActivityEvent(event store.IssueActivityEvent) templates.BoardAct
 		title = "Turn usage"
 	}
 	return templates.BoardActivityEvent{
+		Source:        "durable",
 		ID:            event.ID,
 		At:            event.At,
 		Kind:          event.Kind,
@@ -472,6 +478,9 @@ func boardSnapshotActivityEvents(snapshot telemetry.Snapshot, issue telemetry.Is
 			Detail: event.Message,
 			Status: event.Event,
 		})
+	}
+	for i := range events {
+		events[i].Source = "snapshot"
 	}
 	return events
 }

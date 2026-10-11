@@ -30,6 +30,7 @@ type Binding struct {
 
 type EnrollmentRequest struct {
 	Binding
+	Scope         string              `json:"scope,omitempty"`
 	SharedMachine bool                `json:"shared_machine,omitempty"`
 	ProjectIDs    []tracker.ProjectID `json:"project_ids"`
 	Operations    []string            `json:"operations"`
@@ -49,6 +50,8 @@ type Enrollment struct {
 }
 
 type Redemption struct {
+	IsolationTier    string           `json:"isolation_tier,omitempty"`
+	SpriteName       string           `json:"sprite_name,omitempty"`
 	BackendIsolation isolation.Report `json:"backend_isolation,omitempty"`
 	Binding
 	Credential   string `json:"credential"`
@@ -62,6 +65,7 @@ type Redemption struct {
 
 type Identity struct {
 	Binding
+	Scope          string                 `json:"scope"`
 	OrganizationID tracker.OrganizationID `json:"organization_id"`
 	ProjectIDs     []tracker.ProjectID    `json:"project_ids"`
 	Operations     []string               `json:"operations"`

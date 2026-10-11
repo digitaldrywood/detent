@@ -1196,6 +1196,7 @@ budget:
   pricing_path: priv/pricing/models.yaml
 hooks:
   shell: bash
+  runner_setup: scripts/runner-setup.sh
   after_create: git clone .
   before_run: echo before
   after_run: echo after
@@ -1461,6 +1462,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Hooks.AfterCreate != "git clone ." {
 		t.Fatalf("Hooks.AfterCreate = %q", cfg.Hooks.AfterCreate)
+	}
+	if cfg.Hooks.RunnerSetup != "scripts/runner-setup.sh" {
+		t.Fatalf("Hooks.RunnerSetup = %q", cfg.Hooks.RunnerSetup)
 	}
 	if cfg.Hooks.Shell != "bash" {
 		t.Fatalf("Hooks.Shell = %q, want bash", cfg.Hooks.Shell)
@@ -1742,7 +1746,7 @@ func TestParseWorkflowDefaults(t *testing.T) {
 		t.Fatalf("Agent.MaxSessionDurationMS = %d, want %d", cfg.Agent.MaxSessionDurationMS, DefaultMaxSessionDurationMS)
 	}
 	if cfg.Agent.NoProgressTimeoutMS != DefaultNoProgressTimeoutMS {
-		t.Fatalf("Agent.NoProgressTimeoutMS = %d, want %d", cfg.Agent.NoProgressTimeoutMS, DefaultNoProgressTimeoutMS)
+		t.Fatalf("Agent.NoProgressTimeoutMS = %d, want legacy default %d", cfg.Agent.NoProgressTimeoutMS, DefaultNoProgressTimeoutMS)
 	}
 	if cfg.Agent.MaxSessionTokens != 0 {
 		t.Fatalf("Agent.MaxSessionTokens = %d, want disabled default", cfg.Agent.MaxSessionTokens)
@@ -1770,6 +1774,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Agent.Skills.Path != ".detent/skills" {
 		t.Fatalf("Agent.Skills.Path = %q", cfg.Agent.Skills.Path)
+	}
+	if cfg.Agent.Skills.MaxSkillsInPrompt != 100 {
+		t.Fatalf("Agent.Skills.MaxSkillsInPrompt = %d, want 100", cfg.Agent.Skills.MaxSkillsInPrompt)
 	}
 	if !cfg.Agent.Knowledge.Enabled {
 		t.Fatal("Agent.Knowledge.Enabled = false, want true default")
@@ -2984,6 +2991,7 @@ gate:
     enabled: true
     model: gpt-5-validator
     min_score: 0.85
+    unverified_criteria: pass-with-disclosure
     max_attempts: 4
     turn_timeout_ms: 120000
     max_inline_diff_bytes: 32768
@@ -3001,6 +3009,9 @@ Prompt
 	}
 
 	validator := workflow.Config.Gate.Validator
+	if validator.UnverifiedCriteria != gate.UnverifiedCriteriaDisclose {
+		t.Fatalf("Gate.Validator.UnverifiedCriteria = %q", validator.UnverifiedCriteria)
+	}
 	if !validator.Enabled {
 		t.Fatal("Gate.Validator.Enabled = false, want true")
 	}
@@ -4297,6 +4308,7 @@ gate:
   validator:
     enabled: true
     min_score: 1.2
+    unverified_criteria: ignore
     turn_timeout_ms: -1
     max_inline_diff_bytes: -1
     block_on:
@@ -4306,6 +4318,7 @@ Prompt
 `,
 			want: []string{
 				"gate.validator.min_score must be greater than 0 and less than or equal to 1",
+				"gate.validator.unverified_criteria must be rework or pass-with-disclosure",
 				"gate.validator.turn_timeout_ms must be greater than or equal to 0",
 				"gate.validator.max_inline_diff_bytes must be greater than or equal to 0",
 			},

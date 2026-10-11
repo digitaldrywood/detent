@@ -12,9 +12,13 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/digitaldrywood/detent/internal/policy"
 )
 
 const ProjectDefinitionSchema = 1
+
+var ErrNoProjectDefinition = errors.New("no structured project definition")
 
 type ProjectDefinitionLayout string
 
@@ -23,6 +27,7 @@ const (
 	ProjectDefinitionSplit      ProjectDefinitionLayout = "split"
 	ProjectDefinitionMixed      ProjectDefinitionLayout = "mixed"
 	ProjectDefinitionIncomplete ProjectDefinitionLayout = "incomplete"
+	ProjectDefinitionCloud      ProjectDefinitionLayout = "cloud"
 )
 
 type ProjectDefinition struct {
@@ -90,9 +95,23 @@ func LoadProjectDefinition(path string) (Workflow, error) {
 	return ParseProjectDefinition(sources)
 }
 
+func LoadProjectDefinitionWithLocalConfig(path string, local []byte) (Workflow, error) {
+	sources, err := readProjectDefinitionSources(path)
+	if err != nil {
+		return Workflow{}, err
+	}
+	sources.LocalConfig, sources.HasLocalConfig = local, true
+	return ParseProjectDefinition(sources)
+}
+
 func readProjectDefinitionSources(path string) (ProjectDefinitionSources, error) {
 	workflowRaw, err := os.ReadFile(path)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
+		if _, parentErr := os.Stat(filepath.Dir(path)); parentErr != nil {
+			return ProjectDefinitionSources{}, projectDefinitionReadError(path, "read definition directory", parentErr)
+		}
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return ProjectDefinitionSources{}, &ProjectDefinitionError{
 			Definition: projectDefinitionForPath(path),
 			Err:        fmt.Errorf("read workflow file: %w", err),
@@ -122,7 +141,16 @@ func readProjectDefinitionSources(path string) (ProjectDefinitionSources, error)
 	return sources, nil
 }
 
-func ParseProjectDefinition(sources ProjectDefinitionSources) (Workflow, error) {
+func ParseProjectDefinition(sources ProjectDefinitionSources) (workflow Workflow, resultErr error) {
+	defer func() {
+		if resultErr == nil {
+			workflow.Authored = &policy.Authored{Version: PolicyCanonicalizationVersion}
+			if workflow.Config.Tracker.Kind == TrackerHubNative {
+				workflow.Authored.Version = NativePolicyCanonicalizationVersion
+			}
+			workflow.DefinitionSources = &sources
+		}
+	}()
 	definition := projectDefinitionFromSources(sources)
 	shared, err := splitProjectWorkflow(sources.Workflow)
 	if err != nil {
@@ -175,9 +203,10 @@ func ParseProjectDefinition(sources ProjectDefinitionSources) (Workflow, error) 
 		return Workflow{}, definitionError(definition, mixedProjectDefinitionError(sources, shared, local))
 	default:
 		return Workflow{}, definitionError(definition, fmt.Errorf(
-			"incomplete project definition: %s is prompt-only and %s is missing",
+			"incomplete project definition: %s is prompt-only and %s is missing: %w",
 			displayDefinitionPath(sources.WorkflowPath, "WORKFLOW.md"),
 			displayDefinitionPath(sources.ConfigPath, "detent.yaml"),
+			ErrNoProjectDefinition,
 		))
 	}
 }

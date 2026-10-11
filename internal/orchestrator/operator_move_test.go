@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -221,4 +222,54 @@ func TestHandleOperatorMoveReconcilesConfiguredNonBlockedTargets(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Board removal must run under the existing lane owner and preserve connector
+// errors; a failed field clear must never claim successful reconciliation.
+func TestOperatorRemovalCommand(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		field       int
+		write, fail bool
+	}{
+		{"project removal", 0, true, false}, {"field removal", 7, true, false},
+		{"failed project removal", 0, true, true}, {"failed field removal", 7, true, true},
+		{"no write authority", 0, false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			backend := &operatorRemovalProbe{}
+			if tt.fail {
+				backend.err = connector.ErrNotImplemented
+			}
+			o := &Orchestrator{connector: backend}
+			state := newState(normalizeConfig(Config{}))
+			result := o.applyOperatorMove(t.Context(), &state, OperatorMoveRequest{IssueID: "item", Remove: true, WriteTracker: tt.write, StateFieldID: tt.field}, time.Now())
+			if result.Reconciled != (tt.write && !tt.fail) || (result.err != nil) != (tt.fail || !tt.write) {
+				t.Fatalf("result=%+v", result)
+			}
+			if tt.write && (backend.id != "item" || backend.field != tt.field) {
+				t.Fatalf("command=%+v", backend)
+			}
+			if !tt.write && backend.id != "" {
+				t.Fatal("unrequested tracker write")
+			}
+		})
+	}
+}
+
+type operatorRemovalProbe struct {
+	connector.Connector
+	id    string
+	field int
+	err   error
+}
+
+func (p *operatorRemovalProbe) RemoveIssueFromProject(_ context.Context, id string) error {
+	p.id = id
+	return p.err
+}
+func (p *operatorRemovalProbe) ClearIssueField(_ context.Context, id string, field int) error {
+	p.id = id
+	p.field = field
+	return p.err
 }

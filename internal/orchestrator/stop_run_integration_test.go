@@ -21,6 +21,10 @@ import (
 const operatorStopIntegrationWaitTimeout = 10 * time.Second
 
 func TestStopRunTargetsOneRunAndBlocksRedispatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	issue := testIssue("issue-stop", "digitaldrywood/detent#1311", "In Progress")
 	other := testIssue("issue-other", "digitaldrywood/detent#1312", "In Progress")
 	tracker := newFakeConnector(issue, other)
@@ -32,7 +36,7 @@ func TestStopRunTargetsOneRunAndBlocksRedispatch(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = runtimeStore.Close() })
 	completionStore := &operatorStopCompletionStore{Store: runtimeStore, completed: make(chan store.WorkflowPhaseEvent)}
-	gate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 2}))
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}))
 	orch, err := orchestrator.New(orchestrator.Config{PollInterval: time.Hour, MaxConcurrentAgents: 2, MaxRetryBackoff: time.Hour, FailureRetryBaseDelay: time.Hour, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, StopRunTargetState: "Blocked"}, orchestrator.Dependencies{Connector: tracker, Runner: runner, WorkspaceReaper: reaper, WorkAttempts: completionStore, WorkflowMetrics: completionStore, GlobalDispatchGate: gate})
 	if err != nil {
 		t.Fatalf("orchestrator.New() error = %v", err)
@@ -191,6 +195,10 @@ func TestStopRunPreservesConfiguredCustomDefault(t *testing.T) {
 }
 
 func TestStopRunAppliesTodoPriorityBeforeRedispatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	issue := testIssue("issue-stop-priority", "digitaldrywood/detent#1354", "In Progress")
 	tracker := newOperatorStopAtomicConnector(issue)
 	runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 2)}
@@ -296,6 +304,10 @@ func TestStopRunAcknowledgesBeforeTrackerTransitionCompletes(t *testing.T) {
 }
 
 func TestStopRunRecoveryReconcilesDurableHoldBeforeDispatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	synctest.Test(t, func(t *testing.T) {
 		issue := testIssue("issue-stop-recovery", "digitaldrywood/detent#1311", "In Progress")
 		tracker := &operatorStopRecoveryConnector{fakeConnector: newFakeConnector(issue), stateUpdated: make(chan struct{}), releaseStateUpdate: make(chan struct{})}
@@ -376,6 +388,10 @@ func TestStopRunRecoveryReconcilesDurableHoldBeforeDispatch(t *testing.T) {
 }
 
 func TestStopRunRecoveryAppliesTodoPriorityBeforeDispatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	issue := testIssue("issue-stop-todo-recovery", "digitaldrywood/detent#1354", "Todo")
 	tracker := newOperatorStopAtomicConnector(issue)
 	close(tracker.releasePriority)
@@ -417,6 +433,10 @@ func TestStopRunRecoveryAppliesTodoPriorityBeforeDispatch(t *testing.T) {
 }
 
 func TestStopRunHoldsItemWhenTrackerTransitionFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	issue := testIssue("issue-stop-failure", "digitaldrywood/detent#1311", "In Progress")
 	tracker := &operatorStopFailingConnector{fakeConnector: newFakeConnector(issue), err: errors.New("tracker unavailable")}
 	runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 1)}
@@ -459,10 +479,11 @@ func TestStopRunHoldsItemWhenTrackerTransitionFails(t *testing.T) {
 	if err != nil || result.Outcome != "succeeded" || !result.AlreadyStopped {
 		t.Fatalf("retry StopRun() = %#v, %v, want success", result, err)
 	}
-	state, err = orch.State(t.Context())
-	if err != nil {
-		t.Fatalf("State() error = %v", err)
-	}
+	state = waitForOperatorStopState(t, orch, func(state orchestrator.State) bool {
+		attempt, ok := workAttemptSnapshot(state, running.WorkAttemptID)
+		_, held := state.Blocked[issue.ID]
+		return !held && ok && attempt.Phase == "operator_stop_succeeded"
+	})
 	if attempt, ok := workAttemptSnapshot(state, running.WorkAttemptID); !ok || attempt.Phase != "operator_stop_succeeded" || attempt.NextAction != "await operator resume" {
 		t.Fatalf("work attempt snapshot = %#v, %v, want successful operator stop retry", attempt, ok)
 	}

@@ -12,8 +12,8 @@ export function useClient(): ConversationClient {
   return client;
 }
 
-export { LAST_PROJECT_STORAGE_KEY } from "../runtime/state/drafts.ts";
-import { LAST_PROJECT_STORAGE_KEY } from "../runtime/state/drafts.ts";
+export { LAST_CHAT_PROJECT_STORAGE_KEY, LAST_PROJECT_STORAGE_KEY } from "../runtime/state/drafts.ts";
+import { LAST_CHAT_PROJECT_STORAGE_KEY, LAST_PROJECT_STORAGE_KEY } from "../runtime/state/drafts.ts";
 
 export function readLastProject(): string | null {
   try {
@@ -23,9 +23,19 @@ export function readLastProject(): string | null {
   }
 }
 
+export function readLastChatProject(): string | null {
+  try {
+    const storage = globalThis.localStorage;
+    return storage?.getItem(LAST_CHAT_PROJECT_STORAGE_KEY) || storage?.getItem(LAST_PROJECT_STORAGE_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
 export function writeLastProject(projectId: string): void {
   try {
     globalThis.localStorage?.setItem(LAST_PROJECT_STORAGE_KEY, projectId);
+    if (projectId !== "") globalThis.localStorage?.setItem(LAST_CHAT_PROJECT_STORAGE_KEY, projectId);
   } catch {
     // A blocked store only costs the preselection.
   }
@@ -35,4 +45,8 @@ export function writeLastProject(projectId: string): void {
 export function newCommandKey(): string {
   const random = globalThis.crypto?.randomUUID?.();
   return `cmd_${random ?? `${Date.now()}_${Math.random().toString(16).slice(2)}`}`;
+}
+
+export function accountKey(client: ConversationClient): string {
+  return `${client.bootstrap.organization.id}:${client.bootstrap.actor.principal_id}`;
 }

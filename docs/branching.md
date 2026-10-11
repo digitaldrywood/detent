@@ -4,36 +4,214 @@
 
 Detent uses two long-lived branches.
 
-- `develop` is the default integration and staging branch. Start changes from
-  current `origin/develop` and merge pull requests into `develop` after the
-  branch passes `make check-fast` in its own worktree. No GitHub Actions run
+- `develop` is the default integration branch. Start changes from
+  current `origin/develop` and land reviewed changes into `develop` under
+  [AGENTS.md validation](../AGENTS.md#validation), including the configured
+  per-landing command and no additional local-gate status prerequisite. No GitHub Actions run
   starts for a pull request and no branch ruleset requires a status check.
-- `main` remains available for deliberate production promotion. Scheduled full
-  validation tags a pinned `develop` SHA and publishes release artifacts from
-  that validated tag. It does not merge to `main` or deploy production.
+- `main` records deliberate production promotions. Stable releases are tagged
+  from a green `release/vX.Y` head, and production uses artifacts built from that
+  validated tag. Promotion to `main` is an operator-reviewed PR.
+- `release/vX.Y` branches stabilize a fixed develop snapshot. They accept only
+  fixes already landed on develop, cherry-picked with `git cherry-pick -x`.
+  Develop landing never waits for a release branch.
 
-`develop` always deploys to staging on push, even before scheduled validation.
-Production installations and releases use validated version tags only.
+The release workflow owns both staging and production deployment. It serializes
+the complete sequence without cancelling an active release when newer work
+arrives. Staging consumes the release's signed build artifact; develop pushes
+cannot replace it during smoke validation. Stable production installations and
+releases use validated version tags. An operator may also deploy a pinned develop
+commit through the same workflow's operator prerelease path below.
 
-Every push to `develop` redeploys the operator staging Hub through
-`.github/workflows/deploy-staging.yml`. It runs on a GitHub-hosted runner, never
-for pull requests, and uses the `staging` environment, whose deployment policy
-admits only `develop`. The workflow streams the built binary to a restricted SSH
-key whose only command is the staging deploy script; that script rolls back when
-https health does not report the pushed commit. Production is not deployed
-automatically.
+Genuine source/test failures blocking deployment or a validated release require
+at least High priority in this repository's native reporting context, preserving
+Urgent, Backlog and admission holds. Historical pinned failures do not establish
+that the current head fails or staging is down. See the
+[failure reporting policy](../AGENTS.md#deployment-and-release-failure-reporting).
+
+A newly validated version tag dispatches `.github/workflows/release.yml`, which
+publishes signed release artifacts and passes the same linux/amd64 Hub binary to
+`.github/workflows/deploy-staging.yml` and then `deploy-production.yml`. Each job
+runs the hosted-origin smoke and checks the deployed version and full commit. A
+failed deploy or smoke stops the chain and creates or updates a High native
+issue through the existing Cloud reporting owner. Logs and reporting receipts
+remain Actions artifacts even if Cloud publication is unavailable.
+
+Both GitHub deployment environments must admit validated `v*` tags. Staging uses
+`STAGING_SSH_KEY` and `STAGING_SSH_KNOWN_HOSTS`; production uses
+`PRODUCTION_SSH_KEY` and `PRODUCTION_SSH_KNOWN_HOSTS`. Each environment's restricted
+key connects as `apprunner` at its Cloud origin and permits only `deploy COMMIT`,
+streaming the binary on stdin. Provision the production forced-command owner
+with the same commit verification, backup and atomic replacement contract as
+staging before enabling release deployment. Host keys are pinned using the
+respective legacy Hub hostname alias. Do not give either key an unrestricted
+shell. `DETENT_API_KEY` must authorize the selected native reporter in both
+environments; Cloud failure reporting never falls back to GitHub issue writes.
+
+## Operator-landed Cloud deploys
+
+Dispatch `.github/workflows/release.yml` on `develop` with `operator_landed`
+enabled. The workflow pins the dispatch commit, verifies its develop ancestry,
+and runs `make check-land`. It binds the completed source-validation Actions
+check to the existing release provenance owner, including authenticated develop
+ruleset requirements. This release path uses that check instead of the scheduled
+full-suite requirement; it does not publish a local-gate status or change the
+scheduled stable-release policy.
+
+The workflow derives `v<next-patch>-op.<sha12>` from the latest published stable
+release and the pinned commit, creates an annotated provenance tag, verifies its
+evidence, and publishes it through the existing GoReleaser signing workflow.
+The prerelease stays out of the stable latest-release installer path and package
+manager feeds. Its signed runner archives and the deployed Hub binary come from
+the same build. Staging deploy and smoke still precede production deploy and
+smoke. Deployment environments must permit operator dispatches from `develop`
+in addition to release tags.
+
+The Hub reports the semver prerelease version. Officially installed enrolled
+runners follow it through their existing verified update and coordinated drain:
+new claims pause, in-flight work finishes, then the service restarts. A later
+stable release of the same patch sorts above the prerelease. Operator builds are
+Cloud deployments only; they do not become standalone stable releases.
+
+Retry failed release or deployment jobs without rerunning a successful source
+validation job. Provenance tags are immutable, and the existing evidence verifier
+rejects an annotation superseded by a newer source check. Do not overwrite an
+existing operator tag or publish signed artifacts from a workstation.
+
+## Release branches
+
+### Cut
+
+`.github/workflows/release-cut.yml` cuts a branch weekly by default (Monday at
+06:37 UTC). Adjust its cron to change the cadence. Manual dispatch accepts a
+`version` (`vX.Y`) and a develop `sha`; both may be omitted. The default version
+is the next minor after the highest stable tag or existing release series, or
+`v0.1` when neither exists. An existing branch is never overwritten.
+
+The default source is the newest develop ancestor with successful full-suite
+CI and matching `develop-full-ci` evidence from that run. Legacy
+`scheduled-full-ci` evidence is accepted only from an authenticated develop run.
+A successful
+preflight skip is not evidence. If none exists, use develop tip. An explicit
+source must be an ancestor of develop. For the first cut after introducing this
+flow, select a develop SHA containing the release workflows, scripts and
+`CI_RELEASE_BRANCH` handoff. The cut refuses an incompatible snapshot before
+creating the branch.
+
+A cut also refuses a source already contained in an existing release series or
+stable version tag, including a series still awaiting its first release. Finish
+that series or explicitly select a newer develop snapshot. The cut does not
+silently substitute a different commit. Operator prerelease tags do not prevent
+the first stable release of their source.
+
+```bash
+gh workflow run release-cut.yml --ref develop
+gh workflow run release-cut.yml --ref develop -f version=v1.2 -f sha=<develop-sha>
+```
+
+The cut owner creates the branch and explicitly dispatches `ci.yml` on it,
+because GitHub's workflow token does not trigger push workflows when it creates
+a ref. Human pushes and merged cherry-pick PRs trigger full CI through
+`push: release/*`. Cutting and fixing a release do not freeze develop.
+
+### Stabilize
+
+Land fixes on develop first. From a clean, dedicated linked worktree, run the
+script from a checkout containing this flow:
+
+```bash
+scripts/release-pick.sh <develop-fix-sha> release/v1.2
+```
+
+The script fetches develop and the target, refuses commits outside develop,
+creates a pick branch from the release head, cherry-picks with `-x`, pushes, and
+opens a PR to the release branch. Review and validate the fix before merging.
+A conflict leaves the pick in progress without pushing or opening a PR. Resolve
+it, continue the cherry-pick, validate, then push and open the PR against the
+release branch. Picks go only from develop to release; do not merge a release
+branch back into develop or land new features on it.
+
+### Validate and tag
+
+The hourly scheduled workflow continues to validate pinned develop commits.
+Each develop SHA receives a full suite once across scheduled and manual runs;
+preflight skips completed non-cancelled runs regardless of conclusion. Set
+`force: true` or select a non-`none` `fail_job` to rerun. Green develop evidence
+is published as `develop-full-ci`, helps select the next cut and does not
+publish a stable release.
+
+Every release push or dispatch runs the same full suite on the event's exact
+SHA, with a separate concurrency group from develop and other release branches.
+A release run never reuses develop evidence or skips because that SHA ran
+elsewhere. Only its successful full-suite finalizer publishes
+`scheduled-full-ci`, verifies that the validated SHA is still the release head,
+and creates an annotated provenance tag. The first tag is `vX.Y.0`; subsequent
+validated heads increment the patch within the same series. A commit already
+tagged in that series receives no new tag or replacement evidence. A retry
+authenticates the tag's original status, refuses superseded evidence, and
+dispatches the release workflow only if no run exists for the tag. Retry failed
+jobs in an existing release run. A moved release head must pass its own full
+suite before tagging.
+
+To explicitly validate and tag the current release head:
+
+```bash
+gh workflow run ci.yml --ref release/v1.2 -f force=true
+gh run list --workflow ci.yml --branch release/v1.2
+gh run watch <run-id> --exit-status
+git fetch origin release/v1.2:refs/remotes/origin/release/v1.2 --tags
+git tag --points-at origin/release/v1.2 --list 'v1.2.*'
+gh release view v1.2.0
+```
+
+Do not create or overwrite stable tags locally. The existing `release.yml`
+builds from the validated tag, preserves Hub and runner version stamping,
+publishes signed artifacts, and deploys staging with smoke before production
+with smoke. The finalizer explicitly dispatches it because a tag pushed by the
+workflow token does not trigger another push workflow. No Detent runner calls
+the GitHub API for this flow; only operators and GitHub Actions own it.
 
 ## Promotion
 
-The scheduled GitHub Actions workflow validates one pinned `develop` SHA every
-hour when it has new commits since the last validated tag. A green run posts
-release evidence and cuts an annotated patch version tag on that SHA. Production
-promotion is deliberate and separate from the scheduled validation. Do not
-merge `develop` to `main` automatically.
+Promote the tagged snapshot to `main` through a normal reviewed PR after the
+release succeeds. Pin the tag so later release picks cannot change the PR's
+source. In a fresh linked worktree, merge the tag into main history and verify
+that the resulting tree exactly matches the validated tag:
+
+```bash
+git fetch origin main --tags
+git worktree add -b promote/v1.2.0 ../detent-promote-v1.2.0 origin/main
+cd ../detent-promote-v1.2.0
+git merge --no-ff --no-edit v1.2.0
+git diff --exit-code v1.2.0 HEAD --
+git push -u origin promote/v1.2.0
+gh pr create --base main --head promote/v1.2.0 --title 'chore(release): promote v1.2.0' --body 'Promote the validated v1.2.0 snapshot. The promotion tree matches the release tag.'
+```
+
+Resolve any equivalent cherry-pick conflicts before continuing and retain the
+exact tag tree. If main contains a production hotfix absent from the tag, bring
+it into develop and pick it onto the release branch, then validate a new patch
+before promotion. Do not deploy an unvalidated merge tree. Merging this PR
+records production history; the tag release workflow owns production artifacts
+and deployments. Later patches repeat the same flow on the existing series.
+
+Enrolled runners receive a durable update request for their Hub's release version
+on their normal heartbeat. The existing updater verifies the exact release's
+minisign checksum signature, archive, release provenance and candidate binary
+identity, waits for active work to finish, and replaces the installed binary.
+The official launchd and systemd services restart the runner after its drained
+exit. Manually started POSIX runners re-exec the installed binary. The runner
+reports the update receipt and actual running build on heartbeat; the fleet
+shows the outcome. Explicit operator requests and urgent updates retain their
+existing owners. Standalone update settings remain independent. Automatic Hub
+following needs an enrolled runner with this update protocol, a writable
+installer-managed binary and its persistent update state; unsupported or
+unwritable installations report a refusal rather than claiming an update.
 
 ## Hotfixes
 
 A hotfix may target `main` directly when production cannot wait for the next
-promotion. Bring the same change into `develop` right after it merges, with a
-pull request from `main` into `develop` or an equivalent change, before the
-next promotion.
+promotion. Bring the same change into `develop` right after it merges, then
+cherry-pick its develop commit onto the active release branch before the next
+validated patch or promotion. Do not use a release branch as a source for a
+develop pick.

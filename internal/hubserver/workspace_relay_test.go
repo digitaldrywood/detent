@@ -110,7 +110,7 @@ func newRelayFixture(t *testing.T, options ...func(*relayFixture)) *relayFixture
 		option(fixture)
 	}
 	recording := !fixture.noRecording
-	service := openTestService(t, Config{
+	f := newDefaultNativeFixture(t, Config{
 		DatabasePath: filepath.Join(t.TempDir(), "hub.db"),
 		Workspace: &WorkspaceConfig{Enabled: true,
 			Terminal: WorkspaceTerminalConfig{
@@ -123,7 +123,8 @@ func newRelayFixture(t *testing.T, options ...func(*relayFixture)) *relayFixture
 			return fixture.clock
 		},
 	})
-	fixture.nativeFixture = newNativeFixture(t, service, "", "relay")
+	fixture.nativeFixture = f
+	service := f.service
 	policy := hubTestPolicy()
 	approveHubTestPolicy(t, service, fixture.base+"/policy", policy)
 	fixture.server = httptest.NewServer(service.echo)
@@ -1199,7 +1200,14 @@ func TestWorkspaceRelayFailsARunWhenThePersonDisconnects(t *testing.T) {
 	person.send(execRunFrame(run, action))
 	forwarded := runner.receive()
 	runner.send(execOutputFrame(forwarded.Stream, workspacesession.ExecOutput{Data: "building\n"}))
-	person.receive()
+	output := person.receive()
+	if output.Type != workspacesession.TypeExecOutput || output.Stream != forwarded.Stream {
+		t.Fatalf("person received %+v, want the run's output before closing", output)
+	}
+	var payload workspacesession.ExecOutput
+	if err := json.Unmarshal(output.Payload, &payload); err != nil || payload.Data != "building\n" {
+		t.Fatalf("output = %+v, decode error = %v, want building output before closing", payload, err)
+	}
 
 	// A run is not parked for a resume the way its stream is: a closed tab
 	// must not leave a build that looks like it is still going.

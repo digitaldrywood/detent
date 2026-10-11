@@ -1,7 +1,10 @@
 package hubserver
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"time"
@@ -22,6 +25,7 @@ func (s *Service) registerArtifactRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/artifact-services/:service/authorize", s.authorizeArtifactRead, read)
 	e.POST(nativeBase+"/work-items/:item/artifact-authority", s.authorizeArtifactUpload, s.requireNativeScope(apiScopeWorker))
 	e.GET(nativeBase+"/work-items/:item/artifacts", s.artifactReferences, read)
+	e.GET(nativeBase+"/work-items/:item/artifacts/:artifact/revisions/:revision", s.getArtifactReference, read)
 	e.POST(nativeBase+"/work-items/:item/artifacts/:artifact/access", s.artifactReadGrant, read)
 }
 
@@ -42,56 +46,49 @@ func (s *Service) hostedArtifactPublisher(c echo.Context, credential apiCredenti
 }
 
 func (s *Service) bindArtifactService(c echo.Context) error {
-	var binding artifact.Binding
-	if err := decodeAPIJSON(c, &binding); err != nil {
+	var request struct {
+		artifact.Binding
+		tracker.Mutation
+	}
+	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	if !artifact.ValidID(binding.ServiceID, "service") || binding.ServiceID != c.Param("service") || !artifact.ValidOrigin(binding.Origin) || !slices.Contains([]string{"customer", "hosted"}, binding.Mode) || binding.Mode == "hosted" && !binding.HostedOptIn || binding.PublisherTokenID == "" {
-		return s.nativeAPIError(c, nativeInvalid("Invalid artifact service binding"))
+	// Existing dashboard callers may omit a key; typed clients supply one to
+	// replay the same binding command across reconnects.
+	if request.IdempotencyKey == "" {
+		request.IdempotencyKey = newNativeID("command")
 	}
-	scope := nativeRequestScope(c)
+	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+		return s.bindArtifactServiceCommand(ctx, tx, scope, c.Param("service"), request.Binding)
+	})
+}
+
+func (s *Service) bindArtifactServiceCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, serviceID string, binding artifact.Binding) (artifact.Binding, error) {
+	if !artifact.ValidID(binding.ServiceID, "service") || binding.ServiceID != serviceID || !artifact.ValidOrigin(binding.Origin) || !slices.Contains([]string{"customer", "hosted"}, binding.Mode) || binding.Mode == "hosted" && !binding.HostedOptIn || binding.PublisherTokenID == "" {
+		return artifact.Binding{}, nativeInvalid("Invalid artifact service binding")
+	}
 	var count int
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM api_tokens t JOIN token_grants g ON g.token_id=t.id WHERE t.id=? AND t.revoked_at IS NULL AND g.organization_id=? AND g.project_id=?", binding.PublisherTokenID, scope.organization, scope.project).Scan(&count); err != nil {
-		return s.nativeAPIError(c, err)
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM api_tokens t JOIN token_grants g ON g.token_id=t.id WHERE t.id=? AND t.revoked_at IS NULL AND g.organization_id=? AND g.project_id=?", binding.PublisherTokenID, scope.organization, scope.project).Scan(&count); err != nil {
+		return artifact.Binding{}, err
 	}
 	if count != 1 {
-		return s.nativeAPIError(c, nativeNotFound())
+		return artifact.Binding{}, nativeNotFound()
 	}
 	raw, err := json.Marshal(binding)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return artifact.Binding{}, err
 	}
-	_, err = s.database.db.ExecContext(c.Request().Context(), "INSERT INTO artifact_services(organization_id,project_id,id,binding_json,publisher_token_id) VALUES(?,?,?,?,?) ON CONFLICT(organization_id,project_id,id) DO UPDATE SET binding_json=excluded.binding_json,publisher_token_id=excluded.publisher_token_id", scope.organization, scope.project, binding.ServiceID, raw, binding.PublisherTokenID)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, binding)
+	_, err = tx.ExecContext(ctx, "INSERT INTO artifact_services(organization_id,project_id,id,binding_json,publisher_token_id) VALUES(?,?,?,?,?) ON CONFLICT(organization_id,project_id,id) DO UPDATE SET binding_json=excluded.binding_json,publisher_token_id=excluded.publisher_token_id", scope.organization, scope.project, binding.ServiceID, raw, binding.PublisherTokenID)
+	binding.PublisherTokenID = ""
+	return binding, err
 }
 
 func (s *Service) artifactServices(c echo.Context) error {
-	scope := nativeRequestScope(c)
-	rows, err := s.database.db.QueryContext(c.Request().Context(), "SELECT binding_json FROM artifact_services WHERE organization_id=? AND project_id=? ORDER BY id LIMIT 16", scope.organization, scope.project)
+	result, err := s.artifactServicesCommand(c.Request().Context(), nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	defer rows.Close()
-	bindings := []artifact.Binding{}
-	for rows.Next() {
-		var raw []byte
-		var b artifact.Binding
-		if err := rows.Scan(&raw); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if err := json.Unmarshal(raw, &b); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		b.PublisherTokenID = ""
-		bindings = append(bindings, b)
-	}
-	if err := rows.Err(); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, bindings)
+	return c.JSON(http.StatusOK, result)
 }
 
 func (s *Service) artifactPublisher(c echo.Context) error {
@@ -175,10 +172,21 @@ func (s *Service) artifactReceipt(c echo.Context) error {
 }
 
 func (s *Service) artifactReferences(c echo.Context) error {
-	scope := nativeRequestScope(c)
-	rows, err := s.database.db.QueryContext(c.Request().Context(), "SELECT a.reference_json FROM artifact_references a WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.revision=(SELECT max(b.revision) FROM artifact_references b WHERE b.organization_id=a.organization_id AND b.project_id=a.project_id AND b.artifact_id=a.artifact_id) ORDER BY a.artifact_id LIMIT 64", scope.organization, scope.project, c.Param("item"))
+	refs, err := s.readArtifactReferences(c.Request().Context(), nativeRequestScope(c), c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, refs)
+}
+
+func (s *Service) readArtifactReferences(ctx context.Context, scope nativeScope, item string) ([]artifact.Reference, error) {
+	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.database.db.QueryContext(ctx, "SELECT a.reference_json FROM artifact_references a WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.revision=(SELECT max(b.revision) FROM artifact_references b WHERE b.organization_id=a.organization_id AND b.project_id=a.project_id AND b.artifact_id=a.artifact_id) ORDER BY a.artifact_id LIMIT 64", scope.organization, scope.project, item)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	refs := []artifact.Reference{}
@@ -186,10 +194,10 @@ func (s *Service) artifactReferences(c echo.Context) error {
 		var raw []byte
 		var ref artifact.Reference
 		if err := rows.Scan(&raw); err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		if err := json.Unmarshal(raw, &ref); err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		if !s.config.now().Before(ref.ExpiresAt) {
 			ref.Availability = "expired"
@@ -197,9 +205,9 @@ func (s *Service) artifactReferences(c echo.Context) error {
 		refs = append(refs, ref)
 	}
 	if err := rows.Err(); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	return c.JSON(http.StatusOK, refs)
+	return refs, nil
 }
 
 func (s *Service) authorizeArtifactUpload(c echo.Context) error {
@@ -247,54 +255,14 @@ func (s *Service) artifactReadGrant(c echo.Context) error {
 	if err := decodeAPIJSON(c, &input); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	var raw, bindingRaw []byte
-	if err := s.database.db.QueryRowContext(ctx, "SELECT a.reference_json,s.binding_json FROM artifact_references a JOIN artifact_services s ON s.organization_id=a.organization_id AND s.project_id=a.project_id AND s.id=a.service_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.artifact_id=? AND a.revision=?", scope.organization, scope.project, c.Param("item"), c.Param("artifact"), input.Revision).Scan(&raw, &bindingRaw); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	var ref artifact.Reference
-	var binding artifact.Binding
-	if err := json.Unmarshal(raw, &ref); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := json.Unmarshal(bindingRaw, &binding); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	now := s.config.now().UTC()
-	expires := minTime(now.Add(time.Minute), ref.ExpiresAt)
-	if scope.credential.Hosted != nil {
-		expires = minTime(expires, scope.credential.Hosted.ExpiresAt)
-	}
-	if !now.Before(expires) {
+	result, err := s.artifactReadGrantCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("artifact"), input.Revision, s.config.now())
+	if errors.Is(err, artifact.ErrExpired) {
 		return c.JSON(http.StatusGone, apiErrorResponse{Code: "expired", Message: "Artifact retention has expired"})
 	}
-	token, err := apikey.GenerateToken()
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	defer tx.Rollback()
-	var count int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM token_grants g JOIN api_tokens t ON t.id=g.token_id WHERE g.token_id=? AND g.organization_id=? AND g.project_id=? AND t.revoked_at IS NULL", scope.credential.ID, scope.organization, scope.project).Scan(&count); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if count != 1 {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM artifact_grants WHERE expires_at<=?", now.Unix()); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO artifact_grants(token_hash,principal_id,organization_id,project_id,service_id,artifact_id,revision,expires_at,hosted_session_hash) VALUES(?,?,?,?,?,?,?,?,?)", apikey.HashToken(token), scope.credential.ID, scope.organization, scope.project, ref.ServiceID, ref.ArtifactID, ref.Revision, expires.Unix(), scope.credential.SessionHash); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, artifact.Grant{Token: token, Origin: binding.Origin, ArtifactID: ref.ArtifactID, Revision: ref.Revision, SHA256: ref.SHA256, ExpiresAt: expires})
+	return c.JSON(http.StatusOK, result)
 }
 
 func minTime(a, b time.Time) time.Time {
@@ -347,4 +315,132 @@ func (s *Service) authorizeHostedArtifactRead(c echo.Context, principal, session
 		return err
 	}
 	return s.hostedAudit(ctx, session.Identity, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0)
+}
+
+func (s *Service) artifactServicesCommand(ctx context.Context, scope nativeScope) (result []artifact.Binding, err error) {
+	rows, err := s.database.db.QueryContext(ctx, "SELECT binding_json FROM artifact_services WHERE organization_id=? AND project_id=? ORDER BY id LIMIT 16", scope.organization, scope.project)
+	if err != nil {
+		return result, err
+	}
+	defer rows.Close()
+	bindings := []artifact.Binding{}
+	for rows.Next() {
+		var raw []byte
+		var b artifact.Binding
+		if err := rows.Scan(&raw); err != nil {
+			return result, err
+		}
+		if err := json.Unmarshal(raw, &b); err != nil {
+			return result, err
+		}
+		b.PublisherTokenID = ""
+		bindings = append(bindings, b)
+	}
+	if err := rows.Err(); err != nil {
+		return result, err
+	}
+	return bindings, nil
+}
+
+func (s *Service) artifactReadGrantCommand(ctx context.Context, scope nativeScope, item, artifactID string, revision int64, now time.Time) (result artifact.Grant, err error) {
+	var raw, bindingRaw []byte
+	if err := s.database.db.QueryRowContext(ctx, "SELECT a.reference_json,s.binding_json FROM artifact_references a JOIN artifact_services s ON s.organization_id=a.organization_id AND s.project_id=a.project_id AND s.id=a.service_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.artifact_id=? AND a.revision=?", scope.organization, scope.project, item, artifactID, revision).Scan(&raw, &bindingRaw); err != nil {
+		return result, err
+	}
+	var ref artifact.Reference
+	var binding artifact.Binding
+	if err := json.Unmarshal(raw, &ref); err != nil {
+		return result, err
+	}
+	if err := json.Unmarshal(bindingRaw, &binding); err != nil {
+		return result, err
+	}
+	now = now.UTC()
+	expires := minTime(now.Add(time.Minute), ref.ExpiresAt)
+	if scope.credential.Hosted != nil {
+		expires = minTime(expires, scope.credential.Hosted.ExpiresAt)
+	}
+	if !artifact.ValidOrigin(binding.Origin) || ref.Availability != "available" {
+		return result, artifact.ErrMissing
+	}
+	if !now.Before(expires) {
+		return result, artifact.ErrExpired
+	}
+	token, err := apikey.GenerateToken()
+	if err != nil {
+		return result, err
+	}
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return result, err
+	}
+	defer tx.Rollback()
+	if err := s.recheckHostedArtifactReader(ctx, tx, scope); err != nil {
+		return result, err
+	}
+
+	var count int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM token_grants g JOIN api_tokens t ON t.id=g.token_id WHERE g.token_id=? AND g.organization_id=? AND g.project_id=? AND t.revoked_at IS NULL", scope.credential.ID, scope.organization, scope.project).Scan(&count); err != nil {
+		return result, err
+	}
+	if count != 1 {
+		return result, nativeNotFound()
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM artifact_grants WHERE expires_at<=?", now.Unix()); err != nil {
+		return result, err
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO artifact_grants(token_hash,principal_id,organization_id,project_id,service_id,artifact_id,revision,expires_at,hosted_session_hash) VALUES(?,?,?,?,?,?,?,?,?)", apikey.HashToken(token), scope.credential.ID, scope.organization, scope.project, ref.ServiceID, ref.ArtifactID, ref.Revision, expires.Unix(), scope.credential.SessionHash); err != nil {
+		return result, err
+	}
+	if err := tx.Commit(); err != nil {
+		return result, err
+	}
+	return artifact.Grant{Token: token, Origin: binding.Origin, ArtifactID: ref.ArtifactID, Revision: ref.Revision, SHA256: ref.SHA256, ExpiresAt: expires}, nil
+}
+
+// Read grants preserve dashboard read authority, including viewer membership.
+func (s *Service) recheckHostedArtifactReader(ctx context.Context, tx *sql.Tx, scope nativeScope) error {
+	if scope.credential.Hosted == nil {
+		return nil
+	}
+	if _, _, err := s.hostedMutationIdentity(ctx, scope.credential); err != nil {
+		return err
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM hosted_sessions WHERE token_hash=? AND revoked_at IS NULL AND julianday(expires_at)>julianday(?)`, scope.credential.SessionHash, formatHubTime(s.config.now())).Scan(&count); err != nil {
+		return err
+	}
+	if count != 1 {
+		return nativeNotFound()
+	}
+	return s.requireHostedProject(ctx, tx, scope, false)
+}
+
+func (s *Service) getArtifactReference(c echo.Context) error {
+	revision, err := artifact.Revision(c.Param("revision"))
+	if err != nil {
+		return s.nativeAPIError(c, nativeInvalid("Invalid artifact revision"))
+	}
+	result, err := s.artifactReferenceCommand(c.Request().Context(), s.database.db, nativeRequestScope(c), c.Param("item"), c.Param("artifact"), revision, s.config.now())
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, result)
+}
+func (s *Service) artifactReferenceCommand(ctx context.Context, query nativeQueryer, scope nativeScope, item, id string, revision int64, now time.Time) (artifact.Reference, error) {
+	var result artifact.Reference
+	var raw []byte
+	if _, _, err := readNativeIssue(ctx, query, scope, item); err != nil {
+		return result, err
+	}
+	if err := query.QueryRowContext(ctx, `SELECT reference_json FROM artifact_references WHERE organization_id=? AND project_id=? AND work_item_id=? AND artifact_id=? AND revision=?`, scope.organization, scope.project, item, id, revision).Scan(&raw); err != nil {
+		return result, err
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return result, err
+	}
+	if !now.Before(result.ExpiresAt) {
+		result.Availability = "expired"
+	}
+	return result, nil
 }

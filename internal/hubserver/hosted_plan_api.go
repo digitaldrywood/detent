@@ -50,6 +50,7 @@ type hostedEntitlementReport struct {
 	EffectiveBase  PlanReference       `json:"effective_base"`
 	Source         string              `json:"source"`
 	Revision       int64               `json:"revision"`
+	Features       []string            `json:"features"`
 	Grants         []hostedGrantRecord `json:"grants"`
 	Plans          []HostedPlan        `json:"plans"`
 }
@@ -78,7 +79,7 @@ func (d *database) hostedEntitlementReport(ctx context.Context) (hostedEntitleme
 	if err != nil {
 		return report, err
 	}
-	report = hostedEntitlementReport{OrganizationID: entitlement.OrganizationID, Base: entitlement.Base, EffectiveBase: entitlement.EffectiveBase, Source: entitlement.Source, Revision: entitlement.Revision, Grants: []hostedGrantRecord{}, Plans: []HostedPlan{}}
+	report = hostedEntitlementReport{OrganizationID: entitlement.OrganizationID, Base: entitlement.Base, EffectiveBase: entitlement.EffectiveBase, Source: entitlement.Source, Revision: entitlement.Revision, Features: entitlement.Features, Grants: []hostedGrantRecord{}, Plans: []HostedPlan{}}
 	for _, configured := range d.hostedPlans.Plans {
 		plan, err := readHostedPlan(ctx, d.db, configured.PlanReference)
 		if err != nil {
@@ -245,6 +246,30 @@ func insertHostedComplimentaryGrant(ctx context.Context, tx *sql.Tx, command hos
 	}
 	_, err = tx.ExecContext(ctx, "INSERT INTO hosted_complimentary_grants(id,record_json) VALUES(?,?)", command.GrantID, string(raw))
 	return err
+}
+
+func hostedRunnerTransactionMetrics(path string) []string {
+	switch path {
+	case nativeBase + "/leases/:lease/validate", nativeBase + "/claims/preview":
+		return []string{"events_total", "usage_windows"}
+	case nativeBase + "/machines/:machine/heartbeat":
+		return []string{"connected_runners", "events_total", "usage_windows"}
+	}
+	return nil
+}
+
+func hostedNativeMutationMetrics(input any, completion bool) []string {
+	metrics := []string{"events_total", "usage_windows"}
+	if _, runEvent := input.(tracker.NativeRunEvent); !runEvent {
+		metrics = append(metrics, "unarchived_issues", "projects", "repositories", "registered_runners")
+		if !completion {
+			metrics = append(metrics, "connected_runners")
+		}
+	}
+	if !completion {
+		metrics = append(metrics, "collaboration_bytes", "history_records")
+	}
+	return metrics
 }
 
 func hostedCompletionMutation(c echo.Context, input any) bool {

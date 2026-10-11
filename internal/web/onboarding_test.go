@@ -430,6 +430,9 @@ func TestOnboardingWriteGitHubWorkflows(t *testing.T) {
 				t.Fatalf("ParseWorkflow() error = %v", err)
 			}
 			cfg := workflow.Config
+			if cfg.Agent.Skills.MaxSkillsInPrompt != workflowconfig.Default().Agent.Skills.MaxSkillsInPrompt {
+				t.Fatalf("MaxSkillsInPrompt = %d, want config default", cfg.Agent.Skills.MaxSkillsInPrompt)
+			}
 			if cfg.Tracker.GitHubStatusSource != tt.source {
 				t.Fatalf("GitHubStatusSource = %q, want %q", cfg.Tracker.GitHubStatusSource, tt.source)
 			}
@@ -610,34 +613,6 @@ func TestOnboardingProjectStepAppliesProfileKanbanModeAfterAgentBack(t *testing.
 	}
 }
 
-func TestOnboardingWriteWorkflowCanEnableDependencyAutoUnblock(t *testing.T) {
-	t.Parallel()
-
-	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
-	server, err := web.NewServer(web.Config{WorkflowPath: workflowPath}, testDeps(t))
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
-
-	form := validOnboardingForm()
-	form.Set("delivery_profile", "full_autopilot")
-	rec := httptest.NewRecorder()
-	req := onboardingRequest(http.MethodPost, "/onboarding/write", form)
-
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	raw, err := os.ReadFile(workflowPath)
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	if !strings.Contains(string(raw), "dependency_auto_unblock:\n    enabled: true") {
-		t.Fatalf("workflow missing enabled dependency auto-unblock:\n%s", raw)
-	}
-}
-
 func TestOnboardingWriteWorkflowAppliesFullAutopilotProfile(t *testing.T) {
 	t.Parallel()
 
@@ -669,7 +644,6 @@ func TestOnboardingWriteWorkflowAppliesFullAutopilotProfile(t *testing.T) {
 		"dependency_auto_unblock:\n    enabled: true",
 		"max_concurrent_agents_by_state:\n    Merging: 1",
 		"auto_promote:\n    enabled: true\n    quiet_seconds: 0\n    gate_wait_state: source",
-		"# Skills guide: https://github.com/digitaldrywood/detent/blob/main/docs/ONBOARDING.md#skills-and-skill-creation",
 		"gate:\n  kind: command\n  run: make check\n  required_status_checks: []\n  require_automated_review: false",
 		"server:\n  host: 127.0.0.1\n  kanban:\n    mode: integration",
 		"Full autopilot still requires linked PRs, green CI, clear gates, and no blocking P1 automated findings.",
@@ -886,6 +860,10 @@ func TestOnboardingWriteRunsCloseoutVerifierAfterMutation(t *testing.T) {
 }
 
 func TestOnboardingWriteCloseoutVerifierReportsStalledReload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service integration")
+	}
+
 	t.Parallel()
 
 	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")

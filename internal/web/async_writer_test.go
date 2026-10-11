@@ -14,6 +14,10 @@ import (
 )
 
 func TestAsyncStoreWriter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {

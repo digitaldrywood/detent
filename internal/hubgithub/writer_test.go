@@ -400,3 +400,45 @@ func testReview(state, login string) restReview {
 	result.User.Login = login
 	return result
 }
+
+func TestWriterLinkedSourceEffects(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, reason string
+		close        bool
+	}{
+		{"intake linkback", "", false},
+		{"Cancelled closes not planned", "not_planned", true},
+		{"cutover retains its close behavior", "", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			desired := hubserver.WorkpadDesired{Summary: true, CloseSource: test.close, StateReason: test.reason, Phase: "summary", Body: "Tracked in Detent: https://cloud.example/work/i/wi_source", Marker: "<!-- detent-summary:wi_source:intake -->"}
+			item := testOutboxItem(t, hubserver.MutationWorkpad, desired)
+			body := desired.Body + "\n\n" + desired.Marker
+			steps := []restStep{
+				{method: http.MethodGet, path: "/repos/digitaldrywood/detent/issues/17/comments?per_page=100", response: []restComment{}},
+				{method: http.MethodPost, path: "/repos/digitaldrywood/detent/issues/17/comments", body: map[string]any{"body": body}, response: restComment{ID: 77}},
+			}
+			closeBody := map[string]any{"state": "closed"}
+			if test.reason != "" {
+				closeBody["state_reason"] = test.reason
+			}
+			if test.close {
+				steps = append(steps, restStep{method: http.MethodPatch, path: "/repos/digitaldrywood/detent/issues/17", body: closeBody})
+			}
+			steps = append(steps, restStep{method: http.MethodGet, path: "/repos/digitaldrywood/detent/issues/17/comments?per_page=100", response: []restComment{{ID: 77, Body: body}}})
+			if test.close {
+				steps = append(steps, restStep{method: http.MethodPatch, path: "/repos/digitaldrywood/detent/issues/17", body: closeBody})
+			}
+			client := &scriptedRESTClient{t: t, steps: steps}
+			writer := NewWriter(client)
+			for range 2 {
+				if err := writer.Execute(t.Context(), item); err != nil {
+					t.Fatal(err)
+				}
+			}
+			client.assertDone()
+		})
+	}
+}

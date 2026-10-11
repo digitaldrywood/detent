@@ -33,9 +33,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/healthnotify"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/instancelock"
+	"github.com/digitaldrywood/detent/internal/logging"
 	"github.com/digitaldrywood/detent/internal/notify"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/profiling"
 	"github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -46,6 +48,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tmuxstatus"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/tui"
 	"github.com/digitaldrywood/detent/internal/web"
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
@@ -64,7 +67,7 @@ func resolveBootConfig(ctx context.Context, configPath string, host string, flag
 	return resolveBootConfigWithRuntimeDeps(ctx, configPath, host, flags, opts, runtimeDepsFromOptions(opts))
 }
 
-func resolveBootConfigWithRuntimeDeps(ctx context.Context, configPath string, host string, flags runtimeFlags, opts options, deps runtimeDeps) (BootConfig, error) {
+func resolveBootConfigWithRuntimeDeps(ctx context.Context, configPath string, host string, flags runtimeFlags, opts options, deps runtimeDeps, deferProjectValidation ...bool) (BootConfig, error) {
 	resolution, err := resolveConfigPathResolution(configPath, opts)
 	if err != nil {
 		return BootConfig{}, err
@@ -73,12 +76,17 @@ func resolveBootConfigWithRuntimeDeps(ctx context.Context, configPath string, ho
 
 	cfg, err := opts.read(path)
 	if err == nil {
+		cfg, err = resolveRunnerProjects(ctx, cfg)
+		if err != nil {
+			return BootConfig{}, err
+		}
 		workflowPath := firstGlobalWorkflowPath(cfg)
 		runtime, err := resolveRuntimeSettings(ctx, runtimeInput{
-			Config:     &cfg,
-			ConfigPath: resolution,
-			Workflow:   workflowPath,
-			Flags:      flags,
+			Config:                 &cfg,
+			ConfigPath:             resolution,
+			Workflow:               workflowPath,
+			Flags:                  flags,
+			DeferProjectValidation: len(deferProjectValidation) > 0 && deferProjectValidation[0],
 		}, deps)
 		if err != nil {
 			return BootConfig{}, err
@@ -177,6 +185,7 @@ type startRunningDependencies struct {
 	readInstalledBuild    installedBuildReader
 	managerDependencies   project.ManagerDependencies
 	providerStatusManager *statuspage.Manager
+	startupMaintenance    func(context.Context, globalconfig.Config, store.Store)
 }
 
 func startRunning(ctx context.Context, cfg BootConfig) error {
@@ -184,6 +193,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 }
 
 func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps startRunningDependencies) error {
+	startedAt := time.Now().UTC()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -243,6 +253,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	if err != nil {
 		return fmt.Errorf("bind Detent web listener %s: %w", serverAddr(cfg), err)
 	}
+	logger.Info("web listener bound", "addr", listener.Addr().String())
 	listenerOwned := true
 	defer func() {
 		if listenerOwned {
@@ -261,6 +272,9 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			return fmt.Errorf("publish dashboard listener: %w", err)
 		}
 	}
+	if err := printBootBanner(cfg, displayURL); err != nil {
+		return err
+	}
 
 	runtimeStore, err := openRuntimeStore(runCtx, cfg)
 	if err != nil {
@@ -276,55 +290,33 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			logShutdownBoundaryEnd(logger, "runtime_store_close", closeStarted, nil, "component", "runtime_store")
 		}
 	}()
-	if err := reapWorkerProcesses(runCtx, runtimeStore, logger, "startup", procgroup.DefaultTerminationGrace, time.Now, nil); err != nil {
-		// Prior workers are gone; a workspace artifact scan that cannot finish
-		// on a large tree must not keep this instance from serving.
-		var cleanupOnly *workerArtifactCleanupError
-		if !errors.As(err, &cleanupOnly) {
-			return fmt.Errorf("reap worker processes from prior instance: %w", err)
-		}
-		logger.Warn("prior-instance worker artifact cleanup failed; continuing startup", "error", err)
-	}
-	retentionHomes := map[string]bool{}
-	for _, projectConfig := range cfg.Global.Projects {
-		workflow, err := project.LoadWorkflow(projectConfig)
-		if err != nil {
-			continue
-		} // Project loading reports its own errors below.
-		homes, err := codexRetentionHomes(workflow.Config, os.LookupEnv)
-		if err != nil {
-			logger.Warn("resolve Codex retention homes", "error", err)
-			continue
-		}
-		for _, home := range homes {
-			if retentionHomes[home] {
-				continue
-			}
-			retentionHomes[home] = true
-			if err := pruneCodexLogs(runCtx, home, time.Now(), codexLogSizeLimit, codexAppServerAlive); err != nil {
-				logger.Warn("Codex log retention failed", "home", home, "error", err)
-			}
-		}
-	}
-	if cfg.Isolated != nil && cfg.Isolated.Demo == "screenshots" {
-		if err := demofixtures.SeedUsageEvents(runCtx, runtimeStore); err != nil {
-			return err
-		}
-	}
-	if err := backfillRuntimeSessionProjects(runCtx, cfg.Global.Projects, runtimeStore, project.LoadWorkflow); err != nil {
+	workerGeneration, err := startWorkerGeneration(runCtx, runtimeStore, cfg.Version, time.Now())
+	if err != nil {
 		return err
+	}
+	logger.Info("worker generation started", "worker_generation", workerGeneration, "pid", os.Getpid())
+	defer func() { exitWorkerGeneration(runtimeStore, logger, time.Now()) }()
+
+	if !cfg.Global.Client.Configured() {
+		cfg.Global, err = initializeLocalConfiguration(runCtx, runtimeStore, cfg.Global, logger)
+		if err != nil {
+			return fmt.Errorf("initialize local configuration: %w", err)
+		}
 	}
 
 	events := hub.New[project.Event]()
 	activityBroker := activity.NewBroker()
-	globalDispatchGate, err := buildGlobalDispatchPools(cfg.Global, runtimeStore)
+	globalDispatchGate, err := buildGlobalDispatchPools(cfg.Global)
 	if err != nil {
 		return err
 	}
 	runtimeGitHubToken := newRuntimeGitHubTokenState(runtimeGlobalGitHubToken(cfg.Runtime.GitHubToken))
 	globalConfigState := newGlobalConfigState(cfg.Global)
 	refreshGitHubToken := runtimeGitHubTokenRefresher(globalConfigState, runtimeGitHubToken)
-	managerConfig := managerConfigWithRuntimeGitHubToken(cfg.Global, runtimeGitHubToken.get())
+	managerConfig, err := startupManagerConfig(runCtx, cfg.Global, runtimeGitHubToken, refreshGitHubToken, startupTokenRefreshTimeout)
+	if err != nil {
+		logger.Warn("resolve runtime GitHub token at startup failed", "error", err)
+	}
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	projectIDs := make([]string, 0, len(cfg.Global.Projects))
 	for _, projectConfig := range cfg.Global.Projects {
@@ -341,20 +333,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	})
 	var hubScheduling orchestrator.SchedulingSource
 	var manager *project.Manager
-	if cfg.Global.Client.Configured() {
-		hubScheduling, err = newHubScheduling(cfg.Global, cfg.Version, func() []runnerauth.Problem {
-			var problems []runnerauth.Problem
-			if manager != nil {
-				for _, runtimeProject := range manager.Registry().List() {
-					problems = append(problems, runtimeProject.RunnerProblems()...)
-				}
-			}
-			return problems
-		})
-		if err != nil {
-			return err
-		}
-	}
 	serviceAddress, err := dashboardServiceAddress(listener.Addr())
 	if err != nil {
 		return fmt.Errorf("resolve bound dashboard address: %w", err)
@@ -366,32 +344,11 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	serviceConnection := serviceapi.Connection{
 		Address: serviceAddress,
 	}
-	projectFactory := withRunnerFactoryWithIsolation(project.Dependencies{
-		Events:             events,
-		Scheduling:         hubScheduling,
-		Logger:             logger,
-		GlobalDispatchGate: globalDispatchGate,
-		DispatchPacer:      dispatchPacer,
-		WorkflowMetrics:    runtimeStore,
-		Efficiency:         runtimeStore,
-		WorkAttempts:       runtimeStore,
-		ProgressSpend:      runtimeStore,
-		AgentResume:        runtimeStore,
-		ValidatorMemo:      runtimeStore,
-		StalenessWarnings:  stalenessAcknowledgements,
-		RetroStore:         runtimeStore,
-		RoutineStore:       runtimeStore,
-		AdmissionStore:     runtimeStore,
-		ScheduleRuns:       runtimeStore,
-		Activity:           activityBroker,
-		GitHubToken:        runtimeGitHubToken.get(),
-		RefreshGitHubToken: refreshGitHubToken,
-		ScheduleOwner:      cfg.Global.InstanceName,
-		ConnectorFactory:   cfg.ConnectorFactory,
-		Runner:             cfg.Runner,
-	}, runtimeStore, nil, serviceConnection, workerCredentials.Token, runnerIsolationPolicy(cfg.Global.Client.IdentityFile), runtimeGitHubToken.get)
+	var projectFactory project.Factory
 	managerDependencies := deps.managerDependencies
-	managerDependencies.ProjectFactory = projectFactory
+	managerDependencies.ProjectFactory = func(selected globalconfig.Project) (*project.Project, error) {
+		return projectFactory(selected)
+	}
 	managerDependencies.Events = events
 	managerDependencies.Logger = logger
 	manager, err = project.NewManager(managerConfig, managerDependencies)
@@ -466,15 +423,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			return err
 		}
 	}
-	cachedSnapshot, cached, loadErr := boardSnapshotStore.Load(runCtx)
-	if loadErr != nil {
-		logger.Warn("load board snapshot failed", "error", loadErr)
-	}
-	if cached {
-		if err := stalenessAcknowledgements.Publish(cachedSnapshot); err != nil {
-			return fmt.Errorf("publish cached board snapshot: %w", err)
-		}
-	} else if err := publishStartupSnapshotOnce(runCtx, cfg.Global, stalenessAcknowledgements, runtimeStore, displayURL, time.Now(), updateScheduler); err != nil {
+	if err := publishStartupSnapshotOnce(runCtx, cfg.Global, stalenessAcknowledgements, nil, displayURL, time.Now(), updateScheduler); err != nil {
 		return err
 	}
 	chatProvider := buildChatProvider(manager.Registry(), logger)
@@ -489,48 +438,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	readInstalledBuild := deps.readInstalledBuild
 	if readInstalledBuild == nil {
 		readInstalledBuild = newInstalledExecutableBuildReader(os.Executable, defaultCommandRunner)
-	}
-	resourceWorkers.Go(func() {
-		runRuntimeBuildDriftMonitor(runCtx, cfg.Build, deps.buildDriftInterval, readInstalledBuild, logger)
-	})
-	if windowStatus != nil {
-		resourceWorkers.Go(func() {
-			runTmuxWindowStatus(runCtx, snapshotHub, windowStatus, defaultSnapshotInterval, logger)
-		})
-	}
-	resourceWorkers.Go(func() {
-		providerStatus.Run(runCtx, func() []statuspage.Source {
-			return providerStatusSources(manager.Registry())
-		}, func() []telemetry.TrackerCondition {
-			snapshot, ok := snapshotHub.Latest()
-			if !ok {
-				return nil
-			}
-			return append([]telemetry.TrackerCondition(nil), snapshot.TrackerUnavailable...)
-		}, time.Now)
-	})
-	resourceWorkers.Go(func() {
-		var runnerHeartbeat runnerHeartbeatSource
-		if reporter, ok := hubScheduling.(runnerHeartbeatSource); ok {
-			runnerHeartbeat = reporter
-		}
-		publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, stalenessAcknowledgements, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, providerStatus, defaultSnapshotInterval, deps.snapshotNow, runnerHeartbeat, updateScheduler)
-	})
-	if healthNotifications.Enabled() {
-		resourceWorkers.Go(func() {
-			healthNotifications.Run(runCtx, snapshotHub, manager.Registry().Health)
-		})
-	}
-	go republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger) // #nosec G118 -- runCtx is the service-lifetime context canceled during shutdown.
-	resourceWorkers.Go(func() {
-		persistBoardSnapshots(runCtx, snapshotHub, boardSnapshotStore, deps.boardSnapshotInterval, logger)
-	})
-	// The workspace lane claims detent:workspace items beside dispatch
-	// (decisions section 18.1). It is waited on with the other long-lived
-	// components: a runner that exited without unbinding would leave every
-	// workspace it held to time out unreachable.
-	for _, workspaceLane := range newWorkspaceLanes(runCtx, cfg.Global, hubScheduling, logger) {
-		resourceWorkers.Go(func() { runWorkspaceLane(runCtx, workspaceLane, logger) })
 	}
 	startupLifecycle := web.NewStartupLifecycle()
 	var fleetSource web.RunnerFleet
@@ -561,6 +468,16 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			Clock: isolatedDemoClock(cfg),
 		},
 	}, web.Dependencies{
+		ProjectConfigOwner: project.NewConfigurationOwner(runCtx, cfg.Global, globalConfigState.get, manager, runtimeStore, func(ctx context.Context, selected globalconfig.Config, id, repository, checkpoint string) error {
+			if selected.Client.OrganizationID != cfg.Global.Client.OrganizationID || selected.Client.URL != cfg.Global.Client.URL || selected.Client.IdentityFile != cfg.Global.Client.IdentityFile || selected.Client.TokenEnvironment != cfg.Global.Client.TokenEnvironment {
+				return errors.New("selected cutover connection changed")
+			}
+			fleet, err := newHubRunnerFleet(selected)
+			if err != nil {
+				return err
+			}
+			return fleet.VerifyProjectCutover(ctx, id, repository, checkpoint)
+		}),
 		RunnerFleet:         fleetSource,
 		Hub:                 snapshotHub,
 		Store:               runtimeStore,
@@ -584,21 +501,189 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		return err
 	}
 
+	process := "orchestrator"
+	if cfg.Global.Client.Configured() {
+		process = "runner"
+	}
+	profileService := profiling.New(filepath.Join(filepath.Dir(runtimeBoardSnapshotPath(cfg)), "profiles", process), logger)
+	profileService.Apply(runCtx, cfg.Global.Profiling)
+	defer profileService.Close()
+
 	onGlobalReload := func(reloaded globalconfig.Config) {
+		profileService.Apply(runCtx, reloaded.Profiling)
 		syncGlobalDispatchProjects(globalDispatchGate, reloaded.Projects, manager.Registry())
 		globalConfigState.set(reloaded)
 		republishLatestSnapshot(snapshotHub, logger)
 	}
 	reloadLogLevel := runtimeLogLevelForReload(cfg)
 	applyRuntimeConfig := func(reloaded globalconfig.Config) error {
-		return applyGlobalRuntimeConfig(globalDispatchGate, runtimeStore, reloadLogLevel, reloaded)
+		if source, ok := hubScheduling.(interface {
+			SetNativeProjects(tracker.OrganizationID, map[string]tracker.ProjectID, map[string]runnerauth.LocalChecks) error
+		}); ok {
+			if err := source.SetNativeProjects(tracker.OrganizationID(reloaded.Client.OrganizationID), nativeProjectsFromConfig(reloaded.Client.NativeProjects), nil); err != nil {
+				return err
+			}
+		}
+		return applyGlobalRuntimeConfig(globalDispatchGate, reloadLogLevel, reloaded)
 	}
 	startProjects := func(ctx context.Context) error {
-		if err := manager.Start(ctx); err != nil {
+		if err := awaitStartupServer(ctx, startupServerURL(listener.Addr()), cfg.Build); err != nil {
+			return fmt.Errorf("verify startup listener: %w", err)
+		}
+		logger.Info("web server responding", "addr", listener.Addr().String(), "lifecycle", startupLifecycle.State())
+		cachedSnapshot, cached, loadErr := boardSnapshotStore.Load(ctx)
+		if loadErr != nil {
+			logger.Warn("load board snapshot failed", "error", loadErr)
+		}
+		if cached {
+			if err := stalenessAcknowledgements.Publish(cachedSnapshot); err != nil {
+				return fmt.Errorf("publish cached board snapshot: %w", err)
+			}
+		}
+		if err := reapWorkerProcesses(ctx, runtimeStore, logger, "startup", procgroup.DefaultTerminationGrace, time.Now, nil); err != nil {
+			var cleanupOnly *workerArtifactCleanupError
+			if !errors.As(err, &cleanupOnly) {
+				return fmt.Errorf("reap worker processes from prior instance: %w", err)
+			}
+			logger.Warn("prior-instance worker artifact cleanup failed; continuing startup", "error", err)
+		}
+		maintenance := deps.startupMaintenance
+		if maintenance == nil {
+			maintenance = maintainStartupCodexArtifacts
+		}
+		maintenance(ctx, cfg.Global, runtimeStore)
+		if cfg.Isolated != nil && cfg.Isolated.Demo == "screenshots" {
+			if err := demofixtures.SeedUsageEvents(ctx, runtimeStore); err != nil {
+				return err
+			}
+		}
+		if err := backfillRuntimeSessionProjects(ctx, cfg.Global.Projects, runtimeStore, func(selected globalconfig.Project) (workflowconfig.Workflow, error) {
+			workflow, err := project.LoadWorkflowContext(ctx, selected)
+			if cfg.Global.Client.IdentityFile != "" && errors.Is(err, os.ErrNotExist) {
+				err = errors.Join(project.ErrProjectDefinition, err)
+			}
+			return workflow, err
+		}); err != nil {
 			return err
 		}
-		go updateScheduler.Run(ctx)
-		globalWatcherDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, runtimeGitHubToken, applyRuntimeConfig, onGlobalReload)
+		observationsStarted := time.Now()
+		logger.Info("runner setup observations started")
+		if cfg.Global.Client.Configured() {
+			hubScheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
+				applyProjects: func(ctx context.Context, current globalconfig.Config) error {
+					if _, err := manager.Reconcile(ctx, managerConfigWithRuntimeGitHubToken(current, runtimeGitHubToken.get())); err != nil {
+						return err
+					}
+					onGlobalReload(current)
+					return nil
+				},
+				setupStore:    runtimeStore,
+				logger:        logger,
+				runtimeConfig: globalConfigState.get,
+				intakeToken:   newRunnerIntakeTokenSource(runtimeGitHubToken.get, refreshGitHubToken),
+				problems: func() []runnerauth.Problem {
+					return runnerStartupProblems(manager.Registry())
+				},
+			})
+			if err != nil {
+				return err
+			}
+		}
+		if reporter, ok := hubScheduling.(interface {
+			SetUpdateOwner(func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation)
+		}); ok {
+			running := updateScheduler.RunningBuild()
+			reporter.SetUpdateOwner(enrolledUpdateOwner(runCtx, updateScheduler, running))
+		}
+		if reporter, ok := hubScheduling.(interface {
+			SetProjectConfigurationOwner(func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration)
+		}); ok {
+			owner := project.NewConfigurationOwner(runCtx, cfg.Global, globalConfigState.get, manager, runtimeStore, nil)
+			reporter.SetProjectConfigurationOwner(runnerProjectConfigurationOwner(cfg.Global, globalConfigState.get, owner))
+		}
+		logger.Info("runner setup observations completed", "duration", time.Since(observationsStarted))
+		projectFactory = withRunnerFactoryWithProjectTokens(ctx, project.Dependencies{
+			Events:             events,
+			Scheduling:         hubScheduling,
+			Logger:             logger,
+			GlobalDispatchGate: globalDispatchGate,
+			DispatchPacer:      dispatchPacer,
+			WorkflowMetrics:    runtimeStore,
+			Efficiency:         runtimeStore,
+			WorkAttempts:       runtimeStore,
+			ProgressSpend:      runtimeStore,
+			AgentResume:        runtimeStore,
+			ValidatorMemo:      runtimeStore,
+			StalenessWarnings:  stalenessAcknowledgements,
+			RetroStore:         runtimeStore,
+			RoutineStore:       runtimeStore,
+			AdmissionStore:     runtimeStore,
+			ScheduleRuns:       runtimeStore,
+			Activity:           activityBroker,
+			GitHubToken:        runtimeGitHubToken.get(),
+			ScheduleOwner:      cfg.Global.InstanceName,
+			ConnectorFactory:   cfg.ConnectorFactory,
+			Runner:             cfg.Runner,
+		}, runtimeStore, nil, serviceConnection, workerCredentials.Token, runnerIsolationPolicy(cfg.Global.Client.IdentityFile), func(ctx context.Context, selected globalconfig.Project, workflow workflowconfig.Config) (string, error) {
+			return resolveRunnerProjectGitHubToken(ctx, globalConfigState.get(), selected, workflow, runtimeDeps{})
+		})
+		resourceWorkers.Go(func() {
+			runRuntimeBuildDriftMonitor(runCtx, cfg.Build, deps.buildDriftInterval, readInstalledBuild, logger)
+		})
+		if windowStatus != nil {
+			resourceWorkers.Go(func() {
+				runTmuxWindowStatus(runCtx, snapshotHub, windowStatus, defaultSnapshotInterval, logger)
+			})
+		}
+		resourceWorkers.Go(func() {
+			providerStatus.Run(runCtx, func() []statuspage.Source {
+				return providerStatusSources(manager.Registry())
+			}, func() []telemetry.TrackerCondition {
+				snapshot, ok := snapshotHub.Latest()
+				if !ok {
+					return nil
+				}
+				return append([]telemetry.TrackerCondition(nil), snapshot.TrackerUnavailable...)
+			}, time.Now)
+		})
+		if healthNotifications.Enabled() {
+			resourceWorkers.Go(func() {
+				healthNotifications.Run(runCtx, snapshotHub, manager.Registry().Health)
+			})
+		}
+		resourceWorkers.Go(func() {
+			republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger)
+		})
+		resourceWorkers.Go(func() {
+			persistBoardSnapshots(runCtx, snapshotHub, boardSnapshotStore, deps.boardSnapshotInterval, logger)
+		})
+		for _, workspaceLane := range newWorkspaceLanes(runCtx, cfg.Global, hubScheduling, workerGeneration, logger) {
+			resourceWorkers.Go(func() { runWorkspaceLane(runCtx, workspaceLane, logger) })
+		}
+		if err := startRunnerProjects(ctx, manager, hubScheduling); err != nil {
+			return err
+		}
+		resourceWorkers.Go(func() {
+			var runnerHeartbeat runnerHeartbeatSource
+			if reporter, ok := hubScheduling.(runnerHeartbeatSource); ok {
+				runnerHeartbeat = reporter
+			}
+			publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, stalenessAcknowledgements, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, providerStatus, defaultSnapshotInterval, deps.snapshotNow, runnerHeartbeat, updateScheduler)
+		})
+		if observer, ok := hubScheduling.(interface {
+			RunHostMetrics(context.Context, string, time.Time)
+		}); ok {
+			root := ""
+			for _, runtimeProject := range manager.Registry().List() {
+				root = runtimeProject.Workflow().Config.Workspace.Root
+				if root != "" {
+					break
+				}
+			}
+			resourceWorkers.Go(func() { observer.RunHostMetrics(runCtx, root, startedAt) })
+		}
+		resourceWorkers.Go(func() { updateScheduler.Run(ctx) })
+		globalWatcherDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, runtimeGitHubToken, applyRuntimeConfig, onGlobalReload, runtimeStore)
 		credentialWatcherDone := startBackendCredentialWatchers(ctx, manager.Registry(), events, logger)
 		resourceWorkers.Go(func() {
 			<-credentialWatcherDone
@@ -611,10 +696,10 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			registry := manager.Registry()
 			runPauseMonitor(ctx, pauseMonitorDeps{
 				read: func() (globalconfig.Config, error) {
-					return globalconfig.Read(cfg.Global.Path, globalconfig.WithProjectPathLiterals())
+					return readRuntimeConfiguration(ctx, runtimeStore, cfg.Global.Path)
 				},
 				write: func(updated globalconfig.Config) error {
-					return globalconfig.Write(cfg.Global.Path, updated, globalconfig.WithProjectPathLiterals())
+					return writeRuntimeConfiguration(ctx, runtimeStore, updated)
 				},
 				unpause: func(ctx context.Context, projectID string) error {
 					return manager.Unpause(ctx, project.ID(projectID))
@@ -653,16 +738,10 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	}
 	readiness := startupReadiness{}
 	if cfg.StartupRecovery != nil {
-		readiness.AwaitServe = func(ctx context.Context) error {
-			return awaitStartupServer(ctx, startupServerURL(listener.Addr()), cfg.Build)
-		}
 		readiness.MarkHealthy = cfg.StartupRecovery.MarkHealthy
 	}
 
 	if useDashboard {
-		if err := printBootBanner(cfg, displayURL); err != nil {
-			return err
-		}
 		listenerOwned = false
 		if cfg.Shutdown == nil {
 			return runStartupAndServe(runCtx, startupLifecycle, startProjects, readiness, func(ctx context.Context) error {
@@ -694,9 +773,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			})
 		})
 	}
-	if err := printBootBanner(cfg, displayURL); err != nil {
-		return err
-	}
 	listenerOwned = false
 	if cfg.Shutdown == nil {
 		return runStartupAndServe(runCtx, startupLifecycle, startProjects, readiness, func(ctx context.Context) error {
@@ -722,6 +798,34 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			return serve(ctx, server, listener)
 		})
 	})
+}
+
+func maintainStartupCodexArtifacts(ctx context.Context, cfg globalconfig.Config, runtimeStore store.Store) {
+	logger := slog.Default()
+	retentionHomes := map[string]bool{}
+	for _, projectConfig := range cfg.Projects {
+		workflow, err := project.LoadWorkflowContext(ctx, projectConfig)
+		if err != nil {
+			continue
+		}
+		homes, err := codexRetentionHomes(workflow.Config, os.LookupEnv)
+		if err != nil {
+			logger.Warn("resolve Codex retention homes", "error", err)
+			continue
+		}
+		for _, home := range homes {
+			if retentionHomes[home] {
+				continue
+			}
+			retentionHomes[home] = true
+			if err := pruneCodexTranscripts(ctx, home, time.Now(), runtimeStore); err != nil {
+				logger.Warn("Codex transcript retention failed", "home", home, "error", err)
+			}
+			if err := pruneCodexLogs(ctx, home, time.Now(), codexLogSizeLimit, codexAppServerAlive); err != nil {
+				logger.Warn("Codex log retention failed", "home", home, "error", err)
+			}
+		}
+	}
 }
 
 func newHealthNotificationManager(cfg globalconfig.Config, stateStore store.HealthNotificationStateStore, logger *slog.Logger) (*healthnotify.Manager, error) {
@@ -836,9 +940,8 @@ func globalProjectCandidatesWithDefault(projects []globalconfig.Project, default
 		overrideUntil := activehours.ParsePersistedOverride(projectConfig.ActiveHoursOverrideUntil)
 		candidates = append(candidates, scheduler.ProjectCandidate{
 			ID:                       projectConfig.ID,
+			Rank:                     projectConfig.Priority,
 			Pool:                     projectConfig.Pool,
-			Weight:                   projectConfig.Weight,
-			Priority:                 projectConfig.Priority,
 			Paused:                   projectConfig.Paused,
 			ActiveHours:              activeHours,
 			ActiveHoursOverrideUntil: overrideUntil,
@@ -1010,6 +1113,7 @@ func runStartupAndServe(
 					}
 				}
 				completeStartupLifecycle(lifecycle, nil)
+				slog.Info("runner startup ready")
 				healthyMarked = true
 				result = <-results
 			}
@@ -1330,10 +1434,7 @@ func redirectDefaultLoggerWithRotation(path string, level string, rotation logRo
 	previous := slog.Default()
 	parsedLevel := parseSlogLevel(level)
 	logLevel := resolveRuntimeLogLevel(parsedLevel, levels)
-	slog.SetDefault(slog.New(slog.NewJSONHandler(file, &slog.HandlerOptions{
-		Level:     logLevel,
-		AddSource: runtimeLogAddSource(parsedLevel),
-	})))
+	slog.SetDefault(slog.New(logging.NewHandler(file, logLevel, false, logging.SourceFromEnv(os.Getenv))))
 
 	return func() {
 		slog.SetDefault(previous)
@@ -1520,8 +1621,6 @@ func globalConfigFromWorkflow(globalPath string, workflowPath string) (globalcon
 			ID:       defaultProjectID,
 			Workflow: workflowPath,
 			Workdir:  workdir,
-			Weight:   1,
-			Priority: 0,
 		},
 	}
 	return cfg, nil
@@ -1540,6 +1639,9 @@ func bootWorkflow(ctx context.Context, cfg BootConfig) (workflowconfig.Workflow,
 	firstProject := firstGlobalProject(cfg.Global)
 	if strings.TrimSpace(firstProject.Workflow) != "" {
 		workflow, err := loadRuntimeProjectWorkflow(ctx, firstProject, runtimeDeps{}.withDefaults())
+		if cfg.Global.Client.IdentityFile != "" && errors.Is(err, os.ErrNotExist) {
+			return workflowconfig.Workflow{}, false, nil
+		}
 		if err != nil {
 			return workflowconfig.Workflow{}, false, fmt.Errorf("load boot workflow: %w", err)
 		}
@@ -1557,8 +1659,8 @@ func bootWorkflow(ctx context.Context, cfg BootConfig) (workflowconfig.Workflow,
 	return workflow, true, nil
 }
 
-func buildGlobalScheduler(settings globalconfig.Settings, fairShareStore scheduler.FairShareStore) (scheduler.GlobalScheduler, error) {
-	schedulerConfig, err := globalSchedulerConfig(settings, fairShareStore)
+func buildGlobalScheduler(settings globalconfig.Settings) (scheduler.GlobalScheduler, error) {
+	schedulerConfig, err := globalSchedulerConfig(settings)
 	if err != nil {
 		return nil, err
 	}
@@ -1574,11 +1676,8 @@ func buildGlobalScheduler(settings globalconfig.Settings, fairShareStore schedul
 	return global, nil
 }
 
-func buildGlobalDispatchPools(
-	cfg globalconfig.Config,
-	fairShareStore scheduler.FairShareStore,
-) (*scheduler.PoolRegistry, error) {
-	pools, err := globalPoolConfigs(cfg.Global, fairShareStore)
+func buildGlobalDispatchPools(cfg globalconfig.Config) (*scheduler.PoolRegistry, error) {
+	pools, err := globalPoolConfigs(cfg.Global)
 	if err != nil {
 		return nil, err
 	}
@@ -1604,11 +1703,8 @@ func startupDispatchRampStarts(registry *scheduler.PoolRegistry) int {
 	return max(total, 1)
 }
 
-func globalPoolConfigs(
-	settings globalconfig.Settings,
-	fairShareStore scheduler.FairShareStore,
-) ([]scheduler.PoolConfig, error) {
-	defaultConfig, err := globalSchedulerConfig(settings, fairShareStore)
+func globalPoolConfigs(settings globalconfig.Settings) ([]scheduler.PoolConfig, error) {
+	defaultConfig, err := globalSchedulerConfig(settings)
 	if err != nil {
 		return nil, err
 	}
@@ -1620,11 +1716,7 @@ func globalPoolConfigs(
 	for _, pool := range settings.AgentPools {
 		poolSettings := settings
 		poolSettings.MaxConcurrentAgents = pool.MaxConcurrentAgents
-		poolSettings.Scheduling = pool.Scheduling
-		if strings.TrimSpace(poolSettings.Scheduling) == "" {
-			poolSettings.Scheduling = settings.Scheduling
-		}
-		poolConfig, err := globalSchedulerConfig(poolSettings, fairShareStore)
+		poolConfig, err := globalSchedulerConfig(poolSettings)
 		if err != nil {
 			return nil, err
 		}
@@ -1637,31 +1729,16 @@ func globalPoolConfigs(
 	return pools, nil
 }
 
-func globalSchedulerConfig(settings globalconfig.Settings, fairShareStore scheduler.FairShareStore) (scheduler.Config, error) {
-	halfLife, err := globalFairShareHalfLife(settings.FairShare)
-	if err != nil {
-		return scheduler.Config{}, err
-	}
-
-	schedulerConfig := scheduler.Config{
-		Kind:          settings.Scheduling,
-		Capacity:      settings.MaxConcurrentAgents,
-		DecayHalfLife: halfLife,
-	}
-	if settings.Scheduling == globalconfig.SchedulingFairShare {
-		schedulerConfig.FairShareStore = fairShareStore
-	}
-
-	return schedulerConfig, nil
+func globalSchedulerConfig(settings globalconfig.Settings) (scheduler.Config, error) {
+	return scheduler.Config{Kind: "strict", Capacity: settings.MaxConcurrentAgents}, nil
 }
 
 func applyGlobalRuntimeConfig(
 	gate *scheduler.PoolRegistry,
-	fairShareStore scheduler.FairShareStore,
 	logLevel *slog.LevelVar,
 	cfg globalconfig.Config,
 ) error {
-	pools, err := globalPoolConfigs(cfg.Global, fairShareStore)
+	pools, err := globalPoolConfigs(cfg.Global)
 	if err != nil {
 		return err
 	}
@@ -1680,30 +1757,6 @@ func runtimeLogLevelForReload(cfg BootConfig) *slog.LevelVar {
 		return cfg.LogLevel
 	default:
 		return nil
-	}
-}
-
-func globalFairShareHalfLife(settings map[string]any) (time.Duration, error) {
-	value, ok := settings["half_life"]
-	if !ok || value == nil {
-		return 0, nil
-	}
-
-	switch halfLife := value.(type) {
-	case string:
-		text := strings.TrimSpace(halfLife)
-		if text == "" {
-			return 0, nil
-		}
-		duration, err := time.ParseDuration(text)
-		if err != nil {
-			return 0, fmt.Errorf("global.fair_share.half_life: %w", err)
-		}
-		return duration, nil
-	case time.Duration:
-		return halfLife, nil
-	default:
-		return 0, errors.New("global.fair_share.half_life: must be a duration string")
 	}
 }
 
@@ -1855,32 +1908,6 @@ func parseSlogLevel(level string) slog.Level {
 		return slog.LevelError
 	default:
 		return slog.LevelInfo
-	}
-}
-
-func runtimeLogAddSource(level slog.Level) bool {
-	value, ok := lookupLogSourceEnv("LOG_ADD_SOURCE", "DETENT_LOG_ADD_SOURCE")
-	if ok {
-		return parseRuntimeLogBool(value)
-	}
-	return level == slog.LevelDebug
-}
-
-func lookupLogSourceEnv(keys ...string) (string, bool) {
-	for _, key := range keys {
-		if value, ok := os.LookupEnv(key); ok && strings.TrimSpace(value) != "" {
-			return value, true
-		}
-	}
-	return "", false
-}
-
-func parseRuntimeLogBool(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "t", "true", "y", "yes", "on":
-		return true
-	default:
-		return false
 	}
 }
 

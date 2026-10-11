@@ -1,14 +1,20 @@
 package hubserver
 
 import (
+	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -22,15 +28,26 @@ func TestRunnerRoutingClaims(t *testing.T) {
 		state        string
 		requirements policy.Requirements
 		want         int
+		lane         string
 	}{
-		{"empty selector", nil, "active", policy.Requirements{}, http.StatusOK},
-		{"all tags", []string{"linux", "build"}, "active", policy.Requirements{RequiredTags: []string{"build", "linux"}}, http.StatusOK},
-		{"missing tag", []string{"linux"}, "active", policy.Requirements{RequiredTags: []string{"build", "linux"}}, http.StatusConflict},
-		{"unknown tag", []string{"linux"}, "active", policy.Requirements{RequiredTags: []string{"unknown"}}, http.StatusConflict},
-		{"wrong machine", []string{"linux"}, "active", policy.Requirements{MachineID: string(runnerauth.NewBinding().MachineID)}, http.StatusConflict},
-		{"wrong runner", []string{"linux"}, "active", policy.Requirements{RunnerID: runnerauth.NewBinding().RunnerID}, http.StatusConflict},
-		{"draining", nil, "draining", policy.Requirements{}, http.StatusConflict},
-		{"disabled", nil, "disabled", policy.Requirements{}, http.StatusConflict},
+		{"empty selector", nil, "active", policy.Requirements{}, http.StatusOK, "Todo"},
+		{"all tags", []string{"linux", "build"}, "active", policy.Requirements{RequiredTags: []string{"build", "linux"}}, http.StatusOK, "Todo"},
+		{"missing tag", []string{"linux"}, "active", policy.Requirements{RequiredTags: []string{"build", "linux"}}, http.StatusConflict, "Todo"},
+		{"unknown tag", []string{"linux"}, "active", policy.Requirements{RequiredTags: []string{"unknown"}}, http.StatusConflict, "Todo"},
+		{"wrong machine", []string{"linux"}, "active", policy.Requirements{MachineID: string(runnerauth.NewBinding().MachineID)}, http.StatusConflict, "Todo"},
+		{"wrong runner", []string{"linux"}, "active", policy.Requirements{RunnerID: runnerauth.NewBinding().RunnerID}, http.StatusConflict, "Todo"},
+		{"draining", nil, "draining", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"disabled", nil, "disabled", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"draining rework", nil, "draining", policy.Requirements{}, http.StatusConflict, "Rework"},
+		{"draining custom lane", nil, "draining", policy.Requirements{}, http.StatusConflict, "Repair Queue"},
+		{"stale policy", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"host full", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"draining broad claim", nil, "draining", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"candidate excluded", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"intake pending", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"isolation unsupported", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"stale policy broad claim", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"host full broad claim", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -38,6 +55,27 @@ func TestRunnerRoutingClaims(t *testing.T) {
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
 			issue := f.create(t, "queued")
+			if test.lane != "Todo" {
+				states := nativeFixtureStates()
+				states[0].Name = test.lane
+				for i := range states {
+					for j, target := range states[i].Transitions {
+						if target == "Todo" {
+							states[i].Transitions[j] = test.lane
+						}
+					}
+				}
+				raw, err := marshalNative(states)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", raw, f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET source_name=?, detent_state=? WHERE project_id=? AND detent_state='Todo'", test.lane, test.lane, f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			settings := map[string]any{"expected_revision": 1, "display_name": "Build runner", "tags": test.tags, "state": test.state, "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, settings), http.StatusOK)
 			descriptor := hubTestPolicy()
@@ -45,6 +83,30 @@ func TestRunnerRoutingClaims(t *testing.T) {
 			descriptor = descriptor.WithID()
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "claim", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			switch test.name {
+			case "stale policy", "stale policy broad claim":
+				claim.PolicyID = "stale"
+			case "host full", "host full broad claim":
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=0 WHERE id=?", r.binding.MachineID); err != nil {
+					t.Fatal(err)
+				}
+			case "draining broad claim":
+				claim.WorkItemID = ""
+			case "candidate excluded":
+				claim.LabelInclude = []string{"missing"}
+			case "isolation unsupported":
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET backend_isolation_json='{}' WHERE id=?", r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+				r.redemption.BackendIsolation = nil
+			case "intake pending":
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO github_imports (id, project_id, issue_number, work_item_id, intake_pending, observed_at) VALUES (?, ?, 1, ?, 1, ?)", newNativeID("import"), f.project.ID, issue.WorkItemID, testTimestamp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.name == "stale policy broad claim" || test.name == "host full broad claim" {
+				claim.WorkItemID = ""
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), test.want)
 			var leases int
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM leases").Scan(&leases); err != nil {
@@ -56,6 +118,170 @@ func TestRunnerRoutingClaims(t *testing.T) {
 			}
 			if leases != wantLeases {
 				t.Fatalf("leases = %d, want %d", leases, wantLeases)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Build runner", "capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation})
+			requireNativeStatus(t, response, http.StatusOK)
+			var snapshot runnerauth.RoutingSnapshot
+			decodeHubResponse(t, response, &snapshot)
+			if snapshot.ClaimState == nil || snapshot.ClaimState.PolicyIDs[f.project.ID] != descriptor.ID || len(snapshot.ClaimState.Slots) != wantLeases || snapshot.ClaimState.RunnerCapacity != 2 {
+				t.Fatalf("heartbeat claim facts = %#v", snapshot.ClaimState)
+			}
+			if wantLeases > 0 && snapshot.ClaimState.Slots[0].RunnerID != r.binding.RunnerID {
+				t.Fatalf("heartbeat slot owner = %#v", snapshot.ClaimState.Slots)
+			}
+			if test.name == "host full" || test.name == "host full broad claim" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=0 WHERE id=?", r.binding.MachineID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runtimePath := f.base + "/work-items/" + string(issue.WorkItemID) + "/runtime"
+			var evidence tracker.NativeRuntimeEvidence
+			readDecision := func() {
+				t.Helper()
+				response := performHubAPIRequest(t, f.service, http.MethodGet, runtimePath, f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &evidence)
+			}
+			readDecision()
+			if test.state == "disabled" {
+				if evidence.LatestDecision != nil {
+					t.Fatal("pre-evaluation refusal manufactured a scheduling decision")
+				}
+				return
+			}
+			if evidence.LatestDecision == nil || evidence.LatestDecision.Actor.Kind != "runner" || evidence.LatestDecision.Data.Decision.RunnerID != r.binding.RunnerID || evidence.LatestDecision.Data.Decision.WorkItemRevision != issue.Revision || evidence.LatestDecision.Data.Change != nil || evidence.Issue.State != test.lane {
+				t.Fatalf("claim evaluation lost scoped evidence: %#v", evidence)
+			}
+			decision := evidence.LatestDecision
+			decisionID := decision.ID
+			if test.want == http.StatusOK {
+				if decision.Data.Decision.Outcome != "claimed" || decision.Data.Decision.Source != "native_claim" {
+					t.Fatalf("claim evidence = %#v", decision)
+				}
+				var evaluatedLanding int
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision' AND json_extract(data_json, '$.decision.source')='native_claim_eligibility'", issue.WorkItemID).Scan(&evaluatedLanding); err != nil || evaluatedLanding != 0 {
+					t.Fatalf("ordinary claim manufactured Change readiness: count=%d error=%v", evaluatedLanding, err)
+				}
+				if test.name == "empty selector" {
+					foreign := newNativeFixture(t, f.service, "", "foreign-routing")
+					claim.WorkItemID = foreign.create(t, "foreign").WorkItemID
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, foreign.base+"/claims", r.redemption.Credential, claim), http.StatusNotFound)
+					var count int
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE project_id=? AND type='scheduler.decision'", foreign.project.ID).Scan(&count); err != nil || count != 0 {
+						t.Fatalf("foreign refusal mutated history: count=%d error=%v", count, err)
+					}
+				}
+				return
+			}
+			wantReason := "selector_no_match"
+			switch {
+			case test.state == "draining":
+				wantReason = "runner_draining"
+			case test.name == "stale policy" || test.name == "stale policy broad claim":
+				wantReason = "policy_mismatch"
+			case test.name == "host full" || test.name == "host full broad claim":
+				wantReason = "host_capacity"
+			case test.name == "candidate excluded" || test.name == "intake pending" || test.name == "isolation unsupported":
+				wantReason = "no_claimable_work"
+			}
+			if decision.Data.Decision.Outcome != "skipped" || decision.Data.Decision.Reason != wantReason || evidence.NativeCandidateExclusion == nil || evidence.NativeCandidateExclusion.ID != decision.ID {
+				t.Fatalf("refusal evidence = %#v", evidence)
+			}
+			explanation := explain.FromNativeEvidence(evidence)
+			if !slices.ContainsFunc(explanation.Sources, func(source explain.SourceStatus) bool {
+				return source.Name == "native_candidate_exclusion" && source.State == explain.SourceAvailable
+			}) {
+				t.Fatal("explain_item omitted recorded refusal availability")
+			}
+			for _, admission := range explanation.NativeRuntime.Admission {
+				if slices.Contains(admission.Unavailable, "native_candidate_exclusion") {
+					t.Fatal("explain_item marked the recorded exclusion unavailable")
+				}
+			}
+			if test.name == "intake pending" && !slices.Contains(evidence.Admission[0].Unavailable, "other_native_candidate_exclusions") {
+				t.Fatal("historical refusal hid unavailable current exclusion detail")
+			}
+			for range 3 {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), test.want)
+			}
+			readDecision()
+			if evidence.LatestDecision.ID != decisionID {
+				t.Fatal("unchanged refused evaluation appended duplicate history")
+			}
+			var count int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&count); err != nil || count != 1 {
+				t.Fatalf("repeated polls recorded %d decisions: %v", count, err)
+			}
+			now := time.Now().UTC()
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			analytics, err := readNativeAnalytics(t.Context(), f.service.database.db, scope, operatortool.AnalyticsRequest{}, operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour})
+			if err != nil || len(analytics.SkipReasons) != 1 || analytics.SkipReasons[0].Reason != wantReason || analytics.SkipReasons[0].Count != 1 {
+				t.Fatalf("skip_reasons = %#v: %v", analytics.SkipReasons, err)
+			}
+			if test.name == "draining" {
+				claim.PolicyID = "stale"
+				for range 2 {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
+				}
+				claim.PolicyID = descriptor.ID
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&count); err != nil || count != 2 {
+					t.Fatalf("alternating refusals recorded %d decisions: %v", count, err)
+				}
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE native_id=?", issue.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), test.want)
+			readDecision()
+			if evidence.LatestDecision.ID == decisionID || evidence.LatestDecision.Data.Decision.WorkItemRevision != issue.Revision+1 {
+				t.Fatalf("changed revision lost fresh refusal: event=%s original=%s decision=%+v expected=%d", evidence.LatestDecision.ID, decisionID, *evidence.LatestDecision.Data.Decision, issue.Revision+1)
+			}
+			if test.name == "draining" {
+				refusalID := evidence.NativeCandidateExclusion.ID
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET state='active' WHERE id=?", r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+				claim.SessionID = "accepted"
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				readDecision()
+				if evidence.LatestDecision.Data.Decision.Outcome != "claimed" || evidence.NativeCandidateExclusion.ID != refusalID {
+					t.Fatal("successful claim lost the historical refusal")
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET state='draining' WHERE id=?", r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+				claim.SessionID = "next-cycle"
+				for range 2 {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
+				}
+				readDecision()
+				if evidence.NativeCandidateExclusion.ID == refusalID {
+					t.Fatal("successful claim did not start a new evaluation cycle")
+				}
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&count); err != nil || count != 5 {
+					t.Fatalf("claim cycle recorded %d decisions: %v", count, err)
+				}
+				other := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim)
+				other.enroll(t)
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET state='draining' WHERE id=?", other.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+				claim.MachineID, claim.SessionID = other.binding.MachineID, "other-runner"
+				for range 2 {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", other.redemption.Credential, claim), http.StatusConflict)
+				}
+				readDecision()
+				if evidence.NativeCandidateExclusion.Data.Decision.RunnerID != other.binding.RunnerID {
+					t.Fatal("another runner's refusal was deduplicated away")
+				}
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&count); err != nil || count != 6 {
+					t.Fatalf("runner refusals recorded %d decisions: %v", count, err)
+				}
 			}
 		})
 	}
@@ -69,28 +295,28 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 	change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{
 		DisplayName: "Build runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID},
 		IsolationTier: "native-trusted", HostServices: []string{"tcp:127.0.0.1:8080"},
-		Availability: runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}, HardDeadline: "30m"},
-		Spillover:    runnerauth.Spillover{Mode: "after", AfterMinutes: 0},
+		Availability: runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}, WindowSlots: map[string]int{"Mon-Fri 09:00-17:00": 1}, HardDeadline: "30m"},
 	}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, change), http.StatusOK)
 	var stored runnerauth.Runner
 	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", r.redemption.Credential, nil), &stored)
-	if stored.IsolationTier != "native-trusted" || stored.Availability.HardDeadline != "30m" || stored.Spillover.Mode != "after" || len(stored.HostServices) != 1 {
+	if stored.Revision != 2 || stored.Availability.WindowSlots["Mon-Fri 09:00-17:00"] != 1 || stored.IsolationTier != "native-trusted" || stored.Availability.HardDeadline != "30m" || len(stored.HostServices) != 1 {
 		t.Fatalf("stored settings = %#v", stored.Routing)
 	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, change), http.StatusConflict)
 	response := performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/projects/"+string(f.project.ID)+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential,
 		map[string]any{"display_name": "Build runner", "capacity": 2, "version": "test", "os": "linux", "architecture": "arm64"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var snapshot runnerauth.RoutingSnapshot
 	decodeHubResponse(t, response, &snapshot)
-	if snapshot.RunnerID != r.binding.RunnerID || snapshot.Revision != stored.Revision || snapshot.Routing.IsolationTier != "native-trusted" || snapshot.Routing.Availability.HardDeadline != "30m" || snapshot.Routing.Spillover.Mode != "after" {
+	if !maps.Equal(snapshot.Routing.Availability.WindowSlots, change.Availability.WindowSlots) || snapshot.RunnerID != r.binding.RunnerID || snapshot.Revision != stored.Revision || snapshot.Routing.IsolationTier != "native-trusted" || snapshot.Routing.Availability.HardDeadline != "30m" {
 		t.Fatalf("heartbeat routing = %#v", snapshot)
 	}
 	legacy := runnerauth.RoutingChange{ExpectedRevision: stored.Revision, Routing: runnerauth.Routing{DisplayName: "Renamed", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}}}
 	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, legacy)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &stored)
-	if stored.DisplayName != "Renamed" || stored.IsolationTier != "native-trusted" || stored.Spillover.Mode != "after" {
+	if !maps.Equal(stored.Availability.WindowSlots, change.Availability.WindowSlots) || stored.DisplayName != "Renamed" || stored.IsolationTier != "native-trusted" {
 		t.Fatalf("legacy routing update lost settings: %#v", stored.Routing)
 	}
 	partial := map[string]any{"expected_revision": stored.Revision, "display_name": "Renamed", "tags": stored.Tags, "state": stored.State,
@@ -98,7 +324,7 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, partial)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &stored)
-	if stored.IsolationTier != "sandbox" || len(stored.HostServices) != 1 || stored.Availability.HardDeadline != "30m" || stored.Spillover.Mode != "after" {
+	if stored.IsolationTier != "sandbox" || len(stored.HostServices) != 1 || stored.Availability.HardDeadline != "30m" {
 		t.Fatalf("partial routing update lost settings: %#v", stored.Routing)
 	}
 	partial["expected_revision"] = stored.Revision
@@ -106,17 +332,17 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, partial)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &stored)
-	if len(stored.HostServices) != 0 || stored.Availability.HardDeadline != "30m" || stored.Spillover.Mode != "after" {
+	if len(stored.HostServices) != 0 || stored.Availability.HardDeadline != "30m" {
 		t.Fatalf("explicit host service clear lost settings: %#v", stored.Routing)
 	}
 	partial["expected_revision"] = stored.Revision
 	partial["availability"] = runnerauth.Availability{Windows: []string{}}
-	partial["spillover"] = runnerauth.Spillover{Mode: "never"}
 	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, partial)
 	requireNativeStatus(t, response, http.StatusOK)
+	stored = runnerauth.Runner{}
 	decodeHubResponse(t, response, &stored)
-	if stored.IsolationTier != "sandbox" || len(stored.Availability.Windows) != 0 || stored.Availability.HardDeadline != "" || stored.Spillover.Mode != "never" {
-		t.Fatalf("explicit availability and spillover clear lost settings: %#v", stored.Routing)
+	if len(stored.Availability.WindowSlots) != 0 || stored.IsolationTier != "sandbox" || len(stored.Availability.Windows) != 0 || stored.Availability.HardDeadline != "" {
+		t.Fatalf("explicit availability clear lost settings: %#v", stored.Routing)
 	}
 	disabled := runnerauth.RoutingChange{ExpectedRevision: stored.Revision, Routing: stored.Routing}
 	disabled.State = "disabled"
@@ -141,6 +367,86 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 	decodeHubResponse(t, response, &snapshot)
 	if len(snapshot.Routing.ProjectIDs) != 0 || snapshot.Revision != stored.Revision {
 		t.Fatalf("unassigned runner heartbeat routing = %#v", snapshot)
+	}
+
+	for _, test := range []struct {
+		name    string
+		elapsed time.Duration
+		expired bool
+		revoked bool
+		want    string
+	}{
+		{name: "heartbeat committed while read waits", elapsed: 1338 * time.Millisecond, want: "online"},
+		{name: "stale heartbeat", elapsed: runnerauth.HeartbeatTimeout, want: "offline"},
+		{name: "future heartbeat", elapsed: -time.Nanosecond, want: "offline"},
+		{name: "expired credential", expired: true, want: "expired"},
+		{name: "revoked credential", revoked: true, want: "revoked"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			before := f.service.config.now()
+			heartbeatAt := before.Add(time.Second)
+			observedAt := heartbeatAt.Add(test.elapsed)
+			var clock atomic.Int64
+			clock.Store(before.UnixNano())
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			db := f.service.database.db
+			tx, err := db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			waits := db.Stats().WaitCount
+			var result runnerauth.Runner
+			var readErr error
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				result, readErr = readRunnerWithClock(ctx, db, f.project.OrganizationID, r.binding.RunnerID, func() time.Time {
+					return time.Unix(0, clock.Load()).UTC()
+				})
+			}()
+			defer func() {
+				cancel()
+				_ = tx.Rollback()
+				<-done
+			}()
+			ticker := time.NewTicker(time.Millisecond)
+			defer ticker.Stop()
+			for db.Stats().WaitCount == waits {
+				select {
+				case <-done:
+					t.Fatalf("runner read did not wait for the heartbeat transaction: %v", readErr)
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				case <-ticker.C:
+				}
+			}
+			if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET last_heartbeat_at = ? WHERE id = ?", formatHubTime(heartbeatAt), r.binding.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			expiresAt := r.identity.ExpiresAt
+			if test.expired {
+				expiresAt = observedAt
+			}
+			var revokedAt any
+			if test.revoked {
+				revokedAt = formatHubTime(heartbeatAt)
+			}
+			if _, err := tx.ExecContext(ctx, "UPDATE api_tokens SET expires_at = ?, revoked_at = ? WHERE id = ?", formatHubTime(expiresAt), revokedAt, r.binding.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			clock.Store(observedAt.UnixNano())
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			<-done
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if result.Health != test.want || result.ConnectionHealth != test.want || !result.LastHeartbeatAt.Equal(heartbeatAt) {
+				t.Fatalf("runner observed at %s: health=%s connection_health=%s heartbeat=%s, want %s at %s", observedAt, result.Health, result.ConnectionHealth, result.LastHeartbeatAt, test.want, heartbeatAt)
+			}
+		})
 	}
 }
 
@@ -211,6 +517,15 @@ func TestRunnerSharedHostConcurrentClaimsAndRestart(t *testing.T) {
 	}
 	if len(winners) != 2 {
 		t.Fatalf("shared host allocated %d leases, want 2", len(winners))
+	}
+	for _, runner := range []runnerFixture{first, second} {
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"capacity": 8, "version": "test"})
+		requireNativeStatus(t, response, http.StatusOK)
+		var snapshot runnerauth.RoutingSnapshot
+		decodeHubResponse(t, response, &snapshot)
+		if snapshot.ClaimState == nil || snapshot.ClaimState.HostCapacity != 2 || len(snapshot.ClaimState.Slots) != 2 {
+			t.Fatalf("shared host heartbeat facts = %#v", snapshot.ClaimState)
+		}
 	}
 	for _, winner := range winners {
 		other := first
@@ -305,6 +620,91 @@ func TestRunnerRoutingRevocationAndDrain(t *testing.T) {
 	}
 }
 
+func TestRunnerLeaseValidationAccounting(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, statement, target, code string
+		apiLimit                      int64
+		fenceOffset                   tracker.FencingToken
+		status                        int
+	}{
+		{name: "available with exhausted event window", apiLimit: 100, status: http.StatusOK},
+		{name: "API window exhausted", apiLimit: 0, status: http.StatusTooManyRequests, code: "allowance_exhausted"},
+		{name: "stale fence", apiLimit: 100, fenceOffset: 1, status: http.StatusConflict, code: "stale_fencing_token"},
+		{name: "expired lease", apiLimit: 100, statement: "UPDATE leases SET expires_at=acquired_at WHERE lease_id=?", target: "lease", status: http.StatusConflict, code: "stale_fencing_token"},
+		{name: "released lease", apiLimit: 100, statement: "UPDATE leases SET released_at=acquired_at WHERE lease_id=?", target: "lease", status: http.StatusConflict, code: "stale_fencing_token"},
+		{name: "revoked credential", apiLimit: 100, statement: "UPDATE api_tokens SET revoked_at=created_at WHERE id=?", target: "runner", status: http.StatusUnauthorized, code: "unauthorized"},
+		{name: "project access removed", apiLimit: 100, statement: "DELETE FROM token_grants WHERE token_id=?", target: "runner", status: http.StatusNotFound, code: "not_found"},
+		{name: "policy approval removed", apiLimit: 100, statement: "DELETE FROM project_policies WHERE scope=?", target: "project", status: http.StatusConflict, code: "policy_mismatch"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+			f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}), "", "lease-accounting")
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			r.enroll(t)
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			issue := f.create(t, "work")
+			claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "work", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+			requireNativeStatus(t, response, http.StatusOK)
+			var lease tracker.NativeLease
+			decodeHubResponse(t, response, &lease)
+			d := f.service.database
+			seedHubMachine(t, f.service, "unrelated", now)
+			if _, err := d.db.ExecContext(t.Context(), "UPDATE machines SET last_heartbeat_at='invalid',token_id=? WHERE id='unrelated'", bootstrapTokenID); err != nil {
+				t.Fatal(err)
+			}
+			if test.statement != "" {
+				var target any = r.binding.RunnerID
+				switch test.target {
+				case "lease":
+					target = lease.ID
+				case "project":
+					target = string(f.project.OrganizationID) + "/" + string(f.project.ID)
+				}
+				if _, err := d.db.ExecContext(t.Context(), test.statement, target); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.service.config.Hosted = &HostedConfig{}
+			d.hostedOrganization = f.project.OrganizationID
+			hostedTestPlans(t, f.service, map[string]int64{"api_mutations": test.apiLimit, "ingested_events": 0, "collaboration_bytes": 0, "history_records": 0})
+			f.service.config.Hosted = nil
+			metrics := hostedRunnerTransactionMetrics(nativeBase + "/leases/:lease/validate")
+			before, err := d.hostedConsumption(t.Context(), d.db, now, metrics...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/validate", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken + test.fenceOffset})
+			requireNativeStatus(t, response, test.status)
+			if test.code != "" {
+				var failure apiErrorResponse
+				decodeHubResponse(t, response, &failure)
+				if failure.Code != test.code {
+					t.Fatalf("refusal=%s want=%s", failure.Code, test.code)
+				}
+			}
+			after, err := d.hostedConsumption(t.Context(), d.db, now, metrics...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.status == http.StatusOK {
+				before["api_mutations"]++
+			}
+			if !maps.Equal(before, after) {
+				t.Fatalf("validation accounting=%v want=%v", after, before)
+			}
+			var expires string
+			if err := d.db.QueryRowContext(t.Context(), "SELECT expires_at FROM leases WHERE lease_id=?", lease.ID).Scan(&expires); err != nil {
+				t.Fatal(err)
+			}
+			if test.name != "expired lease" && expires != formatHubTime(lease.ExpiresAt) {
+				t.Fatal("validation changed lease expiry")
+			}
+		})
+	}
+}
+
 func TestRunnerRoutingAdministratorControls(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -319,6 +719,7 @@ func TestRunnerRoutingAdministratorControls(t *testing.T) {
 		{"invalid tag", func(c *runnerauth.RoutingChange) { c.Tags = []string{"not a tag"} }, false, http.StatusUnprocessableEntity},
 		{"invalid state", func(c *runnerauth.RoutingChange) { c.State = "unknown" }, false, http.StatusUnprocessableEntity},
 		{"negative capacity", func(c *runnerauth.RoutingChange) { c.CapacityLimit = -1 }, false, http.StatusUnprocessableEntity},
+		{"nonowner allowlist edit", func(c *runnerauth.RoutingChange) { c.ProjectIDs = []tracker.ProjectID{} }, false, http.StatusForbidden},
 		{"unknown project", func(c *runnerauth.RoutingChange) { c.ProjectIDs = []tracker.ProjectID{"prj_unknown"} }, false, http.StatusUnprocessableEntity},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -326,6 +727,11 @@ func TestRunnerRoutingAdministratorControls(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "admin")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
+			if test.name == "nonowner allowlist edit" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_enrollments SET created_by = (SELECT id FROM api_tokens WHERE token_hash = ?) WHERE runner_id = ?", apikey.HashToken(f.token), r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Trusted", State: "active", Tags: []string{"production"}, CapacityLimit: 1, ProjectIDs: []tracker.ProjectID{f.project.ID}}}
 			test.change(&change)
 			token := testHubAdminToken
@@ -453,6 +859,9 @@ func TestRunnerClaimRevalidatesStaleAuthentication(t *testing.T) {
 			var count int
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM leases").Scan(&count); err != nil || count != 0 {
 				t.Fatalf("leases=%d error=%v", count, err)
+			}
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE type='scheduler.decision'").Scan(&count); err != nil || count != 0 {
+				t.Fatalf("stale authority mutated scheduling history: count=%d error=%v", count, err)
 			}
 		})
 	}

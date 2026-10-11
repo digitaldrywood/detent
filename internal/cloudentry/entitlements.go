@@ -46,12 +46,14 @@ type organizationEntitlements struct {
 	EffectiveBase  planReference      `json:"effective_base"`
 	Source         string             `json:"source"`
 	Revision       int64              `json:"revision"`
+	Features       []string           `json:"features"`
 	Grants         []entitlementGrant `json:"grants"`
 	Plans          []entitlementPlan  `json:"plans"`
 }
 
 type entitlementChange struct {
 	Action           string        `json:"action"`
+	Feature          string        `json:"feature,omitempty"`
 	IdempotencyKey   string        `json:"idempotency_key"`
 	ExpectedRevision int64         `json:"expected_revision"`
 	Plan             planReference `json:"plan"`
@@ -77,20 +79,9 @@ func (e *tenantStatusError) Error() string {
 	return fmt.Sprintf("tenant entitlements answered %d", e.status)
 }
 
-func (c Config) validateEntitlementAdministrators() error {
-	for _, email := range c.EntitlementAdministrators {
-		if !listed(c.StaffEmails, email) {
-			return fmt.Errorf("entitlement administrator %q must also be listed in staff_emails", email)
-		}
-	}
-	if len(c.EntitlementAdministrators) > 0 && (c.Allocation == nil || len(c.Allocation.EntitlementAdminToken) < 32) {
-		return errors.New("entitlement_administrators requires allocation.entitlement_admin_token_env naming a token of at least 32 bytes")
-	}
-	return nil
-}
-
-func (s *Service) entitlementAdministrator(session accountSession) bool {
-	return s.platformStaff(session) && listed(s.config.EntitlementAdministrators, session.Email) && s.config.Allocation != nil && len(s.config.Allocation.EntitlementAdminToken) >= 32
+func (s *Service) entitlementAdministrator(ctx context.Context, session accountSession) bool {
+	role := s.sessionPlatformRole(ctx, session)
+	return role == "admin" || role == "billing"
 }
 
 func tenantEntitlementsPath(organization string) string {
@@ -153,8 +144,11 @@ func (s *Service) entitlementSession(c echo.Context, event string) (accountSessi
 	if err != nil {
 		return accountSession{}, Organization{}, false, c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
 	}
-	if !s.entitlementAdministrator(session) {
+	if !s.entitlementAdministrator(c.Request().Context(), session) {
 		return accountSession{}, Organization{}, false, c.JSON(http.StatusForbidden, map[string]string{"code": "forbidden", "message": "Complimentary plans are limited to entitlement administrators"})
+	}
+	if s.config.Allocation == nil || len(s.config.Allocation.EntitlementAdminToken) < 32 {
+		return accountSession{}, Organization{}, false, c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "Platform entitlement administration is not configured"})
 	}
 	ctx := c.Request().Context()
 	organization, err := s.readyOrganization(ctx, c.Param("organization"))
@@ -232,6 +226,8 @@ func (s *Service) changePlatformEntitlement(c echo.Context) error {
 	switch {
 	case change.Action != "grant" && change.Action != "revoke":
 		return c.JSON(http.StatusUnprocessableEntity, map[string]string{"code": "invalid_request", "message": "Choose grant or revoke"})
+	case change.Feature != "" && (change.Action != "grant" || change.Feature != "model_choice" || change.Plan != (planReference{})):
+		return c.JSON(http.StatusUnprocessableEntity, map[string]string{"code": "invalid_request", "message": "Choose model_choice without a plan for a feature grant"})
 	case !safeID(change.IdempotencyKey) || change.ExpectedRevision < 1:
 		return c.JSON(http.StatusUnprocessableEntity, map[string]string{"code": "invalid_request", "message": "Reload the organization's plan and try again"})
 	case change.Reason == "" || len(change.Reason) > 500:
@@ -247,11 +243,16 @@ func (s *Service) changePlatformEntitlement(c echo.Context) error {
 	command := tenantPlanCommand{ID: change.IdempotencyKey, Action: change.Action, ExpectedRevision: change.ExpectedRevision, Reason: change.Reason}
 	switch change.Action {
 	case "grant":
-		index := slices.IndexFunc(current.Plans, func(plan entitlementPlan) bool { return plan.planReference == change.Plan })
-		if index < 0 {
-			return c.JSON(http.StatusUnprocessableEntity, map[string]string{"code": "invalid_request", "message": "Choose a configured plan"})
+		if change.Feature == "model_choice" {
+			command.Plan, command.Scope = current.Base, []string{change.Feature}
+		} else {
+			index := slices.IndexFunc(current.Plans, func(plan entitlementPlan) bool { return plan.planReference == change.Plan })
+			if index < 0 {
+				return c.JSON(http.StatusUnprocessableEntity, map[string]string{"code": "invalid_request", "message": "Choose a configured plan"})
+			}
+			command.Plan, command.Scope = change.Plan, planScope(current.Plans[index])
 		}
-		command.Plan, command.Scope, command.ExpiresAt = change.Plan, planScope(current.Plans[index]), change.ExpiresAt
+		command.ExpiresAt = change.ExpiresAt
 		command.GrantID = complimentaryGrantID(organization.ID, change.IdempotencyKey)
 		if command.ExpiresAt != nil {
 			expiry := command.ExpiresAt.UTC()

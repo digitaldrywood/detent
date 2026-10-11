@@ -1,3 +1,4 @@
+import type { ServerProviderSkill } from "../../contracts/ui.ts";
 // Conversation detail state and its pure reducer.
 //
 // Written for this repository. The shape follows the POC's thread state
@@ -164,6 +165,7 @@ export interface ConversationPageState {
 }
 
 export interface ConversationDetail {
+  readonly skills?: readonly ServerProviderSkill[] | undefined;
   readonly conversation: Conversation;
   /** Ordered by seq, ascending. Never re-ordered by a merge. */
   readonly messages: readonly Message[];
@@ -303,6 +305,7 @@ export function detailFromSnapshot(
 ): ConversationDetail {
   const messages = snapshot.messages.slice().toSorted(bySeq);
   return {
+    skills: snapshot.skills ?? [],
     conversation: snapshot.conversation,
     messages,
     // A re-snapshot after `cursor_expired` replaces the transcript; buffered

@@ -54,15 +54,16 @@ func (e *Error) Unwrap() error {
 }
 
 type Request struct {
-	Title         string                 `json:"title"`
-	Description   string                 `json:"description"`
-	State         string                 `json:"state,omitempty"`
-	Labels        []string               `json:"labels,omitempty"`
-	Fields        map[string]string      `json:"fields,omitempty"`
-	Priority      *int                   `json:"priority,omitempty"`
-	ModelOverride string                 `json:"model_override,omitempty"`
-	Deliverable   *connector.Deliverable `json:"deliverable,omitempty"`
-	Identifier    string                 `json:"identifier,omitempty"`
+	GitHubIssueURL string                 `json:"github_issue_url,omitempty"`
+	Title          string                 `json:"title"`
+	Description    string                 `json:"description"`
+	State          string                 `json:"state,omitempty"`
+	Labels         []string               `json:"labels,omitempty"`
+	Fields         map[string]string      `json:"fields,omitempty"`
+	Priority       *int                   `json:"priority,omitempty"`
+	ModelOverride  string                 `json:"model_override,omitempty"`
+	Deliverable    *connector.Deliverable `json:"deliverable,omitempty"`
+	Identifier     string                 `json:"identifier,omitempty"`
 }
 
 type Response struct {

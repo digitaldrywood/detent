@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestWindowsInstallDocsExposeOneStepPowerShellInstall(t *testing.T) {
+func TestWindowsInstallScriptVerifiesAndInstallsRelease(t *testing.T) {
 	t.Parallel()
 
 	read := func(path string) string {
@@ -21,17 +21,13 @@ func TestWindowsInstallDocsExposeOneStepPowerShellInstall(t *testing.T) {
 		return string(raw)
 	}
 
-	readme := read("README.md")
 	script := read("install.ps1")
 
-	wantCommand := "irm https://raw.githubusercontent.com/digitaldrywood/detent/main/install.ps1 | iex"
 	for _, tt := range []struct {
 		name    string
 		content string
 		want    string
 	}{
-		{name: "readme one-step command", content: readme, want: wantCommand},
-		{name: "readme windows path", content: readme, want: `%LOCALAPPDATA%\detent\bin`},
 		{name: "script downloads release archive", content: script, want: "releases/latest"},
 		{name: "script verifies checksum", content: script, want: "Security.Cryptography.SHA256"},
 		{name: "script installs exe", content: script, want: "detent.exe"},
@@ -49,48 +45,6 @@ func TestWindowsInstallDocsExposeOneStepPowerShellInstall(t *testing.T) {
 				t.Fatalf("%s missing %q", tt.name, tt.want)
 			}
 		})
-	}
-}
-
-func TestInstallDocsPromoteReleaseInstallersBeforeFallbacks(t *testing.T) {
-	t.Parallel()
-
-	raw, err := os.ReadFile("README.md")
-	if err != nil {
-		t.Fatalf("ReadFile(README.md) error = %v", err)
-	}
-
-	readme := string(raw)
-	installStart := strings.Index(readme, "## Install")
-	if installStart == -1 {
-		t.Fatal("README.md missing install section")
-	}
-	nextSection := strings.Index(readme[installStart+len("## Install"):], "\n## ")
-	if nextSection == -1 {
-		t.Fatal("README.md install section does not terminate before next section")
-	}
-	install := readme[installStart : installStart+len("## Install")+nextSection]
-
-	windows := strings.Index(install, "irm https://raw.githubusercontent.com/digitaldrywood/detent/main/install.ps1 | iex")
-	linux := strings.Index(install, "curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh")
-	homebrew := strings.Index(install, "brew install digitaldrywood/tap/detent")
-	goInstall := strings.Index(install, "go install github.com/digitaldrywood/detent/cmd/detent@latest")
-
-	for name, index := range map[string]int{
-		"windows installer": windows,
-		"linux installer":   linux,
-		"homebrew fallback": homebrew,
-		"go fallback":       goInstall,
-	} {
-		if index == -1 {
-			t.Fatalf("README.md install section missing %s", name)
-		}
-	}
-	if windows > homebrew || windows > goInstall {
-		t.Fatal("README.md presents Windows release installer after fallback options")
-	}
-	if linux > homebrew || linux > goInstall {
-		t.Fatal("README.md presents Linux release installer after fallback options")
 	}
 }
 

@@ -29,7 +29,7 @@ import {
 import { Textarea } from "../../components/ui/textarea.tsx";
 import { ControlError } from "../account/controls.tsx";
 import { newKey } from "../account/idempotency.ts";
-import { useResource } from "../account/useResource.ts";
+import { redirectPlatformSignIn } from "./usePlatformResource.ts";
 import { AccountError } from "../account/api.ts";
 import type {
   EntitlementChange,
@@ -40,7 +40,8 @@ import type {
 } from "./api.ts";
 import { useEntryApi } from "./EntryScreens.tsx";
 
-export const STALE_PLAN_MESSAGE = "Someone changed this organization's plan; reload and try again.";
+export const STALE_PLAN_MESSAGE =
+  "Someone changed this organization's plan; reload and try again.";
 
 function planName(plan: PlanReference): string {
   return `${plan.id} v${plan.version}`;
@@ -58,7 +59,9 @@ function day(value: string | null): string {
 
 function failureMessage(error: unknown): string {
   if (error instanceof AccountError) {
-    return error.status === 409 || error.code === "revision_conflict" ? STALE_PLAN_MESSAGE : error.message;
+    return error.status === 409 || error.code === "revision_conflict"
+      ? STALE_PLAN_MESSAGE
+      : error.message;
   }
   return error instanceof Error ? error.message : String(error);
 }
@@ -85,6 +88,7 @@ function useChange(
         await onChanged();
         return "done";
       } catch (cause) {
+        redirectPlatformSignIn(cause);
         setError(failureMessage(cause));
         if (cause instanceof AccountError && cause.status === 409) {
           await onChanged();
@@ -112,22 +116,27 @@ export function GrantComplimentaryDialog({
   entitlements,
   csrf,
   onChanged,
+  modelChoice = false,
 }: {
   readonly organization: PlatformOrganization;
   readonly entitlements: OrganizationEntitlements;
   readonly csrf: string;
   readonly onChanged: () => Promise<void>;
+  readonly modelChoice?: boolean;
 }): React.ReactElement {
   const [open, setOpen] = React.useState(false);
-  const choices = entitlements.plans.filter((plan) => planKey(plan) !== planKey(entitlements.base));
+  const choices = entitlements.plans.filter(
+    (plan) => planKey(plan) !== planKey(entitlements.base),
+  );
   const [plan, setPlan] = React.useState("");
   const [expires, setExpires] = React.useState("");
   const [reason, setReason] = React.useState("");
   const [key, setKey] = React.useState(newKey);
   const [retryRevision, setRetryRevision] = React.useState<number | null>(null);
   const change = useChange(organization.id, csrf, onChanged);
-  const selected = choices.find((choice) => planKey(choice) === plan) ?? choices[0];
-  const prefix = `grant-${organization.id}`;
+  const selected =
+    choices.find((choice) => planKey(choice) === plan) ?? choices[0];
+  const prefix = `grant-${modelChoice ? "model-choice-" : ""}${organization.id}`;
 
   const reset = (next: boolean) => {
     setOpen(next);
@@ -143,7 +152,12 @@ export function GrantComplimentaryDialog({
 
   const onSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (selected === undefined) {
+    const selection = modelChoice
+      ? { feature: "model_choice" as const }
+      : selected === undefined
+        ? null
+        : { plan: { id: selected.id, version: selected.version } };
+    if (selection === null) {
       change.setError("No other plan is configured to grant.");
       return;
     }
@@ -156,7 +170,7 @@ export function GrantComplimentaryDialog({
       action: "grant",
       idempotency_key: key,
       expected_revision: revision,
-      plan: { id: selected.id, version: selected.version },
+      ...selection,
       expires_at: expires === "" ? null : `${expires}T23:59:59Z`,
       reason: reason.trim(),
     });
@@ -175,34 +189,49 @@ export function GrantComplimentaryDialog({
 
   return (
     <Dialog open={open} onOpenChange={reset}>
-      <Button size="sm" onClick={() => reset(true)}>
-        Grant complimentary plan
+      <Button
+        size="sm"
+        onClick={() => reset(true)}
+        disabled={
+          modelChoice && (entitlements.features ?? []).includes("model_choice")
+        }
+      >
+        {modelChoice ? "Grant model choice" : "Grant complimentary plan"}
       </Button>
       <DialogPopup>
-        <form onSubmit={onSubmit} noValidate>
+        <form className="contents" onSubmit={onSubmit} noValidate>
           <DialogHeader>
-            <DialogTitle>Grant a complimentary plan to {organization.name}</DialogTitle>
+            <DialogTitle>
+              {modelChoice
+                ? "Grant model choice"
+                : "Grant a complimentary plan"}{" "}
+              to {organization.name}
+            </DialogTitle>
             <DialogDescription>
-              The organization gets every feature and allowance of the chosen plan until the grant expires or is revoked.
+              {modelChoice
+                ? "The organization can choose from models reported by its runners until the grant expires or is revoked."
+                : "The organization gets every feature and allowance of the chosen plan until the grant expires or is revoked."}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
             <div className="flex flex-col gap-4">
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor={`${prefix}-plan`}>Plan</Label>
-                <select
-                  id={`${prefix}-plan`}
-                  value={selected === undefined ? "" : planKey(selected)}
-                  onChange={(event) => setPlan(event.currentTarget.value)}
-                  className="h-9 rounded-lg border border-input bg-background px-2 text-sm"
-                >
-                  {choices.map((choice) => (
-                    <option key={planKey(choice)} value={planKey(choice)}>
-                      {planName(choice)}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {modelChoice ? null : (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={`${prefix}-plan`}>Plan</Label>
+                  <select
+                    id={`${prefix}-plan`}
+                    value={selected === undefined ? "" : planKey(selected)}
+                    onChange={(event) => setPlan(event.currentTarget.value)}
+                    className="h-9 rounded-lg border border-input bg-background px-2 text-sm"
+                  >
+                    {choices.map((choice) => (
+                      <option key={planKey(choice)} value={planKey(choice)}>
+                        {planName(choice)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor={`${prefix}-expires`}>Expires (optional)</Label>
                 <Input
@@ -256,6 +285,8 @@ export function RevokeGrantDialog({
   const [retryRevision, setRetryRevision] = React.useState<number | null>(null);
   const change = useChange(organization.id, csrf, onChanged);
   const reasonId = `revoke-${organization.id}-${grant.id}-reason`;
+  const modelChoice =
+    (grant.scope ?? []).length === 1 && grant.scope?.[0] === "model_choice";
 
   const reset = (next: boolean) => {
     setOpen(next);
@@ -296,11 +327,16 @@ export function RevokeGrantDialog({
         Revoke
       </Button>
       <DialogPopup>
-        <form onSubmit={onSubmit} noValidate>
+        <form className="contents" onSubmit={onSubmit} noValidate>
           <DialogHeader>
-            <DialogTitle>Revoke {planName(grant.plan)} for {organization.name}?</DialogTitle>
+            <DialogTitle>
+              Revoke {modelChoice ? "model choice" : planName(grant.plan)} for{" "}
+              {organization.name}?
+            </DialogTitle>
             <DialogDescription>
-              The organization returns to its base plan. Existing data stays; new work must fit the base allowances.
+              {modelChoice
+                ? "This grant will no longer allow the organization to choose models."
+                : "The organization returns to its base plan. Existing data stays; new work must fit the base allowances."}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
@@ -318,7 +354,11 @@ export function RevokeGrantDialog({
           </DialogPanel>
           <DialogFooter>
             <DialogClose render={<Button variant="outline">Keep it</Button>} />
-            <Button type="submit" variant="destructive" disabled={change.pending}>
+            <Button
+              type="submit"
+              variant="destructive"
+              disabled={change.pending}
+            >
               {change.pending ? "Revoking…" : "Revoke grant"}
             </Button>
           </DialogFooter>
@@ -335,124 +375,118 @@ function effectivePlan(entitlements: OrganizationEntitlements): string {
   return `${plan} + ${grants} complimentary grant${grants === 1 ? "" : "s"}`;
 }
 
-export function OrganizationPlan({
+export function TenantPlan({
   organization,
   csrf,
+  value,
+  canGrant,
+  onChanged,
 }: {
   readonly organization: PlatformOrganization;
   readonly csrf: string;
+  readonly value: OrganizationEntitlements;
+  readonly canGrant: boolean;
+  readonly onChanged: () => Promise<void>;
 }): React.ReactElement {
-  const api = useEntryApi();
-  const entitlements = useResource<OrganizationEntitlements>(
-    () => api.platformEntitlements(organization.id),
-    [api, organization.id],
-  );
-  const value = entitlements.value;
   return (
-    <section aria-label={`Plan for ${organization.name}`} className="rounded-xl border border-border p-4">
+    <section
+      aria-label={`Plan for ${organization.name}`}
+      className="border-t border-border pt-4"
+    >
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex-1">
-          <div className="font-medium">{organization.name}</div>
-          <div className="font-mono text-xs text-muted-foreground">{organization.id}</div>
+          <h3 className="text-sm font-medium">Plan</h3>
         </div>
-        {value === undefined ? null : (
-          <GrantComplimentaryDialog organization={organization} entitlements={value} csrf={csrf} onChanged={entitlements.refresh} />
+        {!canGrant ? null : (
+          <>
+            <GrantComplimentaryDialog
+              organization={organization}
+              entitlements={value}
+              csrf={csrf}
+              onChanged={onChanged}
+            />
+            <GrantComplimentaryDialog
+              organization={organization}
+              entitlements={value}
+              csrf={csrf}
+              onChanged={onChanged}
+              modelChoice
+            />
+          </>
         )}
       </div>
-      {value === undefined ? (
-        entitlements.error === null ? (
-          <p className="mt-3 text-sm text-muted-foreground">Loading plan…</p>
-        ) : (
-          <div className="mt-3">
-            <ControlError message={entitlements.error.message} />
-          </div>
-        )
-      ) : (
-        <>
-          {entitlements.error === null ? null : (
-            <div className="mt-3">
-              <ControlError message={`This plan could not be reloaded and may be out of date: ${entitlements.error.message}`} />
-            </div>
-          )}
-          <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
-            <div>
-              <dt className="text-muted-foreground">Base plan</dt>
-              <dd className="font-medium">{planName(value.base)}</dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">Effective plan</dt>
-              <dd className="font-medium">{effectivePlan(value)}</dd>
-            </div>
-          </dl>
-          {value.grants.length === 0 ? (
-            <p className="mt-3 text-sm text-muted-foreground">No active complimentary grants.</p>
-          ) : (
-            <Table aria-label={`Active grants for ${organization.name}`} className="mt-3">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Plan</TableHead>
-                  <TableHead>Scope</TableHead>
-                  <TableHead>Starts</TableHead>
-                  <TableHead>Expires</TableHead>
-                  <TableHead>Reason</TableHead>
-                  <TableHead>Granted by</TableHead>
-                  <TableHead />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {value.grants.map((grant) => (
-                  <TableRow key={grant.id}>
-                    <TableCell>
-                      <Badge variant="info">{planName(grant.plan)}</Badge>
-                    </TableCell>
-                    <TableCell className="max-w-56 whitespace-normal text-muted-foreground">
-                      {(grant.scope ?? []).join(", ")}
-                    </TableCell>
-                    <TableCell>{day(grant.starts_at)}</TableCell>
-                    <TableCell>{day(grant.expires_at)}</TableCell>
-                    <TableCell className="max-w-56 whitespace-normal">{grant.reason}</TableCell>
-                    <TableCell>{grant.granted_by}</TableCell>
-                    <TableCell>
-                      <RevokeGrantDialog
-                        organization={organization}
-                        grant={grant}
-                        revision={value.revision}
-                        csrf={csrf}
-                        onChanged={entitlements.refresh}
-                      />
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </>
-      )}
-    </section>
-  );
-}
-
-export function ComplimentaryPlansPanel({
-  organizations,
-  csrf,
-}: {
-  readonly organizations: readonly PlatformOrganization[];
-  readonly csrf: string;
-}): React.ReactElement {
-  const ready = organizations.filter((organization) => organization.state === "ready");
-  return (
-    <section aria-label="Complimentary plans" className="rounded-2xl border border-border bg-card p-5">
-      <h2 className="text-base font-semibold">Complimentary plans</h2>
-      <p className="mt-1 text-[13px] text-muted-foreground">
-        Grant or revoke free access to a configured plan. Every change needs a reason and is audited.
+      <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
+        <div>
+          <dt className="text-muted-foreground">Base plan</dt>
+          <dd className="font-medium">{planName(value.base)}</dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Effective plan</dt>
+          <dd className="font-medium">{effectivePlan(value)}</dd>
+        </div>
+      </dl>
+      <p className="mt-3 text-sm text-muted-foreground">
+        Model choice:{" "}
+        {(value.features ?? []).includes("model_choice")
+          ? "Enabled"
+          : "Disabled"}
       </p>
-      <div className="mt-4 flex flex-col gap-3">
-        {ready.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No organizations are ready.</p>
-        ) : (
-          ready.map((organization) => <OrganizationPlan key={organization.id} organization={organization} csrf={csrf} />)
-        )}
-      </div>
+      {value.grants.length === 0 ? (
+        <p className="mt-3 text-sm text-muted-foreground">
+          No active complimentary grants.
+        </p>
+      ) : (
+        <Table
+          aria-label={`Active grants for ${organization.name}`}
+          className="mt-3"
+        >
+          <TableHeader>
+            <TableRow>
+              <TableHead>Plan</TableHead>
+              <TableHead>Scope</TableHead>
+              <TableHead>Starts</TableHead>
+              <TableHead>Expires</TableHead>
+              <TableHead>Reason</TableHead>
+              <TableHead>Granted by</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {value.grants.map((grant) => (
+              <TableRow key={grant.id}>
+                <TableCell>
+                  <Badge variant="info">
+                    {grant.scope?.length === 1 &&
+                    grant.scope[0] === "model_choice"
+                      ? "Model choice"
+                      : planName(grant.plan)}
+                  </Badge>
+                </TableCell>
+                <TableCell className="max-w-56 whitespace-normal text-muted-foreground">
+                  {(grant.scope ?? []).join(", ")}
+                </TableCell>
+                <TableCell>{day(grant.starts_at)}</TableCell>
+                <TableCell>{day(grant.expires_at)}</TableCell>
+                <TableCell className="max-w-56 whitespace-normal">
+                  {grant.reason}
+                </TableCell>
+                <TableCell>{grant.granted_by}</TableCell>
+                <TableCell>
+                  {canGrant ? (
+                    <RevokeGrantDialog
+                      organization={organization}
+                      grant={grant}
+                      revision={value.revision}
+                      csrf={csrf}
+                      onChanged={onChanged}
+                    />
+                  ) : null}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
     </section>
   );
 }

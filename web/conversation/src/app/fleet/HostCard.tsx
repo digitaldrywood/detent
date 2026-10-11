@@ -1,194 +1,72 @@
-// One runner, as a card.
-//
-// `host_capacity`/`host_used` are the shared machine's numbers and
-// `capacity_limit`/`reported_capacity` the runner's own, so the card shows the
-// meter for the host and names the runner's limit beside it rather than
-// averaging two different facts into one bar.
-import { DownloadIcon, Monitor } from "lucide-react";
 import React from "react";
 
-import { cn } from "../../lib/utils.ts";
+import { Button } from "../../components/ui/button.tsx";
 import type { FleetRunner } from "../../contracts/account.ts";
-import { PathValue } from "../account/controls.tsx";
-import { RUNNER_UPGRADE_COMMAND, runnerUpdateLabel } from "../lib/detentUpdates.ts";
-import { formatLocalTime, formatRelativeTime } from "./format.ts";
-
-function healthTone(health: string): string {
-  if (health === "healthy") return "bg-success motion-safe:animate-status-pulse";
-  if (health === "needs_attention") return "bg-warning";
-  return "bg-muted-foreground";
-}
-
-function Field({
-  label,
-  children,
-}: {
-  readonly label: string;
-  readonly children: React.ReactNode;
-}): React.ReactElement {
-  return (
-    <div>
-      {label}
-      <b className="block text-[13px] font-medium tabular-nums text-foreground">{children}</b>
-    </div>
-  );
-}
-
-/**
- * Whether this host is not on the hub's build. The footer's pill counts the
- * same runners through `GET /app/updates`, where the hub does the comparison
- * itself; here there are two version strings and nothing that knows how to
- * order them, so the rule is the conservative half of the hub's: a difference
- * between two versions that both exist.
- */
-export function hostIsBehind(reported: string, current: string): boolean {
-  const from = reported.trim();
-  const to = current.trim();
-  if (from === "" || to === "" || from === "dev" || to === "dev") return false;
-  return from !== to;
-}
+import { RunnerProblems } from "./RunnerProblems.tsx";
+import { cn } from "../../lib/utils.ts";
+import { RunnerStatusDot } from "../../components/RunnerStatusDot.tsx";
+import type { RunnerProject } from "./RunnerDetailSheet.tsx";
 
 export function HostCard({
   runner,
-  now,
-  current = "",
-  settings,
+  projects = [],
+  onOpen,
+  onRemove,
 }: {
   readonly runner: FleetRunner;
-  readonly now?: number;
-  /** The hub's own build, which is the version a runner should be on. */
-  readonly current?: string;
-  readonly settings?: React.ReactNode;
+  readonly projects?: readonly RunnerProject[];
+  readonly onOpen: () => void;
+  readonly onRemove?: () => void;
 }): React.ReactElement {
-  const behind = hostIsBehind(runner.version ?? "", current);
-  const percent =
-    runner.host_capacity > 0
-      ? Math.min(100, Math.round((runner.host_used / runner.host_capacity) * 100))
-      : 0;
+  const health = runner.health === "asleep" ? "Asleep, wakes on new work"
+    : runner.health === "healthy" || runner.health === "online" ? "Healthy"
+    : runner.health === "needs_attention" ? "Needs attention"
+    : runner.health === "outside_hours" ? "Outside hours"
+    : runner.health;
+  const updateLabels: Record<string, string> = {
+    requested: "Update requested",
+    draining: "Waiting for active work",
+    refused: "Update failed",
+    uncertain: "Update needs attention",
+    applied: "Update installed",
+    restart_requested: "Restart requested",
+    running: "Updated",
+    drifted: "Version changed since update",
+    unavailable: "Update unavailable",
+  };
+  const updateNeedsHuman = runner.update?.status === "refused" || runner.update?.status === "uncertain";
+  const legacyReinstall = !!runner.claim_refusal_reason && (runner.update?.status === "unavailable" || /^v?0\.117\.(?:[0-9]|[1-4][0-9]|50)$/.test(runner.version ?? ""));
+  const updateStatus = runner.update?.desired ? updateLabels[runner.update.status] ?? "Update pending" : undefined;
   return (
     <article
+      id={`runner-${runner.id}`}
+      tabIndex={-1}
       data-testid="host-card"
-      className="flex flex-col gap-2.5 rounded-xl border border-border/60 bg-card/40 p-4"
+      className="grid min-w-0 gap-4 px-4 py-4 focus-visible:outline-2 focus-visible:outline-ring @[48rem]/runner-list:grid-cols-[minmax(0,1.2fr)_6rem_minmax(0,1fr)_7rem_minmax(0,1fr)_11rem] @[48rem]/runner-list:items-start"
     >
-      <div className="flex items-start gap-2">
-        <span
-          aria-hidden="true"
-          className={cn("mt-1.5 size-2 shrink-0 rounded-full", healthTone(runner.health))}
-        />
-        <Monitor aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium">{runner.display_name}</div>
-          <div className={cn("text-xs text-muted-foreground", runner.health === "needs_attention" && "text-warning")}>
-            {runner.health === "needs_attention" ? <span className="rounded border border-warning/40 px-1.5">Needs attention</span> : runner.health === "outside_hours" ? "Outside hours" : runner.health}
-          </div>
-        </div>
-        <div className="text-right text-xs text-muted-foreground">
-          {runner.state} · {runner.hostname} · {runner.os}/{runner.architecture}
+      <div className="flex min-w-0 items-start gap-2.5">
+        <RunnerStatusDot runner={runner} className="mt-1.5" />
+        <div className="min-w-0 space-y-1">
+          <h3 className="break-words text-sm font-medium">{runner.display_name}</h3>
+          {updateNeedsHuman ? <p className="text-xs text-warning-foreground">Needs human: reinstall the signed release with <code className="break-all">curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh</code>.</p> : legacyReinstall ? <p className="text-xs text-warning-foreground">One-time manual reinstall required to enable heartbeat updates: <code className="break-all">curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh</code>.</p> : null}
+          {updateStatus ? <p className="text-xs text-muted-foreground">{updateStatus} · {runner.update?.desired?.version}</p> : null}
         </div>
       </div>
-
-      {(runner.problems?.length ?? 0) > 0 ? (
-        <ul aria-label="Runner problems" role={runner.health === "needs_attention" ? "alert" : undefined} className="space-y-2 text-xs">
-          {runner.problems?.map((problem) => (
-            <li key={problem.code} data-problem={problem.code}>
-              <p className="font-medium">{problem.message}</p>
-              <p className="text-muted-foreground">{problem.fix_hint}</p>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-
-      <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
-        <Field label="Slots">
-          {runner.host_used} / {runner.host_capacity} in use
-        </Field>
-        <Field label="Runner limit">
-          {runner.capacity_limit}
-          {runner.reported_capacity !== runner.capacity_limit
-            ? ` (reports ${runner.reported_capacity})`
-            : ""}
-        </Field>
-        <Field label="Last heartbeat">{formatRelativeTime(runner.last_heartbeat_at, now)}</Field>
+      <p className="text-xs text-muted-foreground">{runner.sprite ? "Fly Sprite" : "Own machine"}</p>
+      <div className={cn("space-y-1 text-xs text-muted-foreground", runner.health === "needs_attention" && "text-warning-foreground")}>
+        <p>{runner.claim_refusal_reason ? "Can’t take work" : health}</p>
+        <p>{runner.state} · Limit {runner.capacity_limit}</p>
       </div>
-
-      {runner.isolation_tier === undefined ? null : (
-        <div className="text-xs text-muted-foreground">
-          {`Isolation setting: ${runner.isolation_tier === "native-trusted" ? "Trusted only: full host access" : "Sandbox"}`}
-          {runner.availability?.windows.length
-            ? ` · ${runner.availability.windows.join(", ")} (${runner.availability.timezone})`
-            : " · Always available"}
-        </div>
-      )}
-
-      {(runner.home_project_ids?.length ?? 0) > 0 ? (
-        <div className="text-xs text-muted-foreground" data-testid="home-status">
-          <span>Home projects: {runner.home_project_ids?.join(", ")}</span>
-          {runner.home_status ? <span className="block">{runner.home_status}</span> : null}
-        </div>
-      ) : null}
-
-      {behind ? (
-        // Where the footer's update pill sends a reader. Nothing here can
-        // upgrade the host — it is somebody else's machine — so the row says
-        // which build it is on, which build it should be on, and hands over
-        // the one command that closes the gap.
-        <div
-          data-testid="host-update"
-          className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-warning/40 bg-warning/8 px-2.5 py-2 text-xs"
-        >
-          <DownloadIcon aria-hidden="true" className="size-3.5 shrink-0 text-warning" />
-          <span className="font-medium text-foreground">
-            {runnerUpdateLabel(runner.version ?? "", current)}
-          </span>
-          <span className="ml-auto">
-            <PathValue value={RUNNER_UPGRADE_COMMAND} />
-          </span>
-        </div>
-      ) : null}
-
-      <div
-        role="progressbar"
-        aria-label={`Slots in use on ${runner.display_name}`}
-        aria-valuenow={runner.host_used}
-        aria-valuemin={0}
-        aria-valuemax={runner.host_capacity}
-        className="h-[5px] overflow-hidden rounded-[3px] bg-accent"
-      >
-        <i className="block h-full bg-primary" style={{ width: `${percent}%` }} />
+      <div className="min-w-0 space-y-1 text-xs">
+        <p className="text-muted-foreground @[48rem]/runner-list:sr-only">Running</p>
+        <p className="text-muted-foreground tabular-nums">{runner.leases.length} of {runner.host_capacity} slots in use</p>
       </div>
-
-      {runner.leases.length > 0 ? (
-        <ul className="flex flex-col gap-1 text-xs text-muted-foreground">
-          {runner.leases.map((lease) => (
-            <li key={lease.lease_id} className="flex min-w-0 items-baseline gap-1.5">
-              <span className="shrink-0 font-medium tabular-nums text-foreground">
-                #{lease.work_item_id}
-              </span>
-              <span className="truncate">{lease.title}</span>
-              <span className="ml-auto shrink-0">expires {formatLocalTime(lease.expires_at)}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-
-      {runner.provider_capacity.length > 0 ? (
-        <ul className="flex flex-col gap-1 text-xs text-muted-foreground">
-          {runner.provider_capacity.map((capacity) => (
-            <li
-              key={`${capacity.provider}-${capacity.account_alias}`}
-              className="flex min-w-0 items-baseline gap-1.5"
-            >
-              <span className="shrink-0 text-foreground">{capacity.provider}</span>
-              <span className="truncate">{capacity.account_alias}</span>
-              <span className="ml-auto shrink-0 tabular-nums">
-                {capacity.availability} · {capacity.state} · {capacity.used}/
-                {capacity.max_concurrent}
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {settings}
+      <p className="break-words text-xs text-muted-foreground">{runner.routing?.project_ids.map((id) => projects.find((project) => project.id === id)?.name ?? "Unavailable project").join(", ") || "No projects reported"}</p>
+      <div className="flex flex-wrap gap-2">
+        <Button size="xs" variant="outline" aria-label={`Manage ${runner.display_name}`} onClick={onOpen}>Manage</Button>
+        {onRemove ? <Button size="xs" variant="outline" aria-label={`Remove runner ${runner.display_name}`} onClick={onRemove}>Remove runner</Button> : null}
+      </div>
+      {runner.problems?.length ? <div className="col-span-full min-w-0"><RunnerProblems runner={runner} alert needsHuman /></div> : null}
     </article>
   );
 }

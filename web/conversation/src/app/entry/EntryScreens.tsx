@@ -1,13 +1,15 @@
-// The shared entry's screens at `https://hub.detent.build`: sign-in, the
-// organization chooser, creation with its provisioning progress, and joining
-// with an invitation token. They sit outside every organization's base path,
+// The shared entry's screens at `https://cloud.detent.build`: sign-in, the
+// organization chooser and creation with its provisioning progress. They sit
+// outside every organization's base path,
 // so links here are plain root paths and opening an organization is a full
 // navigation into that organization's own client.
 import React from "react";
 
 import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
+import { Select, SelectTrigger, SelectValue, SelectPopup, SelectItem } from "../../components/ui/select.tsx";
 import { Input } from "../../components/ui/input.tsx";
+import { Separator } from "../../components/ui/separator.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import { DetentCloudLogo, LoginCard, locationError } from "../account/Login.tsx";
 import { AccountError } from "../account/api.ts";
@@ -44,14 +46,6 @@ function signInAgain(error: AccountError | null): boolean {
   if (error?.status !== 401) return false;
   assign(SIGN_IN_ORGANIZATIONS);
   return true;
-}
-
-/** Staff never create or join customer organizations; their home is the platform console. */
-function useStaffRedirect(staff: boolean | undefined, onNavigate: Navigate): boolean {
-  React.useEffect(() => {
-    if (staff === true) onNavigate(PLATFORM);
-  }, [staff, onNavigate]);
-  return staff === true;
 }
 
 function EntryCard({
@@ -105,14 +99,7 @@ export function SignOut({ csrf }: { readonly csrf: string }): React.ReactElement
 }
 
 export function EntrySignIn(): React.ReactElement {
-  return (
-    <LoginCard
-      error={locationError()}
-      onAcceptInvitation={(token) =>
-        assign(`/invite?invitation_token=${encodeURIComponent(token)}`)
-      }
-    />
-  );
+  return <LoginCard error={locationError()} />;
 }
 
 const STATE_LABELS: Record<string, string> = {
@@ -133,7 +120,7 @@ export function autoEnterTarget(
   listing: EntryOrganizations | undefined,
   search: string = globalThis.location?.search ?? "",
 ): EntryOrganization | null {
-  if (listing === undefined || listing.staff === true) return null;
+  if (listing === undefined) return null;
   if (new URLSearchParams(search).has("switch")) return null;
   if (listing.organizations.length !== 1 || (listing.pending ?? []).length > 0) return null;
   return listing.organizations[0] ?? null;
@@ -142,13 +129,11 @@ export function autoEnterTarget(
 export function OrganizationChooser({ onNavigate }: { readonly onNavigate: Navigate }): React.ReactElement {
   const api = useEntryApi();
   const listing = useResource<EntryOrganizations>(() => api.organizations(), [api]);
-  const staff = useStaffRedirect(listing.value?.staff, onNavigate);
   const enter = autoEnterTarget(listing.value);
   React.useEffect(() => {
     if (enter !== null) globalThis.location?.replace(enter.url);
   }, [enter]);
   if (signInAgain(listing.error)) return <EntryCard title="Signing you in…">{null}</EntryCard>;
-  if (staff) return <EntryCard title="Opening the platform console…">{null}</EntryCard>;
   if (enter !== null) return <EntryCard title={`Opening ${enter.name}…`}>{null}</EntryCard>;
   const value = listing.value;
   return (
@@ -164,8 +149,7 @@ export function OrganizationChooser({ onNavigate }: { readonly onNavigate: Navig
         <div className="flex flex-col gap-5">
           {value.organizations.length === 0 && (value.pending ?? []).length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              Your account does not belong to an organization yet. Create one, or use the invitation
-              sent to you.
+              Ask an owner to send you an invitation.
             </p>
           ) : null}
           {value.organizations.length === 0 ? null : (
@@ -212,13 +196,26 @@ export function OrganizationChooser({ onNavigate }: { readonly onNavigate: Navig
               </ul>
             </div>
           )}
+          {value.platform_role ? (
+            <>
+              <Separator />
+              <div className="flex items-center gap-3">
+                <Badge variant="info">Platform</Badge>
+                <span className="flex-1 text-sm font-medium">Platform console</span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  render={<a href={PLATFORM} aria-label="Open Platform console" />}
+                >
+                  Open
+                </Button>
+              </div>
+            </>
+          ) : null}
           <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-4">
             {value.can_create === true ? (
               <Button onClick={() => onNavigate("/organizations/new")}>Create organization</Button>
             ) : null}
-            <Button variant="outline" onClick={() => onNavigate("/invitations/join")}>
-              Join with invitation
-            </Button>
             <span className="flex-1" />
             <SignOut csrf={value.csrf} />
           </div>
@@ -232,30 +229,35 @@ export function CreateOrganization({ onNavigate }: { readonly onNavigate: Naviga
   const api = useEntryApi();
   const listing = useResource<EntrySession>(() => api.session(), [api]);
   const [name, setName] = React.useState("");
+  const [price, setPrice] = React.useState("");
+  const used = listing.value?.free_slot_used === true;
   // One key for this form: a retried submit after an uncertain response
   // returns the same organization instead of creating a second one.
   const key = React.useMemo(() => newKey(), []);
-  const staff = useStaffRedirect(listing.value?.staff, onNavigate);
   const create = useMutation(async (organizationName: string) => {
     const csrf = listing.value?.csrf ?? "";
-    const result = await api.createOrganization({ name: organizationName, key, csrf });
-    onNavigate(result.next);
-    return result;
+    try {
+      const result = await api.createOrganization({ name: organizationName, key, csrf, price: used ? price : "" });
+      onNavigate(result.next);
+      return result;
+    } catch (error) {
+      if (error instanceof AccountError && error.code === "paid_plan_required") await listing.refresh();
+      throw error;
+    }
   });
   if (signInAgain(listing.error ?? create.error)) return <EntryCard title="Signing you in…">{null}</EntryCard>;
-  if (staff) return <EntryCard title="Opening the platform console…">{null}</EntryCard>;
   const trimmed = name.trim();
   return (
     <EntryCard
       title="Create an organization"
-      description="You become its owner. The free plan applies, and no payment details are needed."
+      description={used ? "Your Free organization slot is used. Choose a paid plan for this organization. Each organization is billed separately." : "You become its owner. The free plan applies, and no payment details are needed."}
     >
       <Problem message={create.error?.message ?? listing.error?.message ?? null} />
       <form
         className="flex flex-col gap-3"
         onSubmit={(event) => {
           event.preventDefault();
-          if (trimmed.length === 0 || trimmed.length > 120) return;
+          if (trimmed.length === 0 || trimmed.length > 120 || (used && price === "")) return;
           void create.call(trimmed);
         }}
       >
@@ -270,10 +272,32 @@ export function CreateOrganization({ onNavigate }: { readonly onNavigate: Naviga
           value={name}
           onChange={(event) => setName(event.currentTarget.value)}
         />
+        {used ? (
+          <>
+            <Label htmlFor="entry-organization-price">Paid plan</Label>
+            <Select value={price} onValueChange={(value) => setPrice(value ?? "")}>
+              <SelectTrigger id="entry-organization-price">
+                <SelectValue placeholder="Choose a paid plan">
+                  {listing.value?.creation_prices?.find((option) => option.id === price)?.label}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup>
+                {listing.value?.creation_prices?.map((option) => (
+                  <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+            {listing.value?.creation_prices?.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Paid organization creation is temporarily unavailable. Upgrade your existing Free organization to free the slot.
+              </p>
+            ) : null}
+          </>
+        ) : null}
         <div className="flex flex-wrap gap-2">
           <Button
             type="submit"
-            disabled={create.pending || listing.value === undefined || trimmed.length === 0}
+            disabled={create.pending || listing.value === undefined || trimmed.length === 0 || (used && price === "")}
           >
             {create.pending ? "Creating…" : "Create organization"}
           </Button>
@@ -377,56 +401,6 @@ export function ProvisioningProgress({
           </div>
         </div>
       )}
-    </EntryCard>
-  );
-}
-
-export function JoinInvitation({ onNavigate }: { readonly onNavigate: Navigate }): React.ReactElement {
-  const api = useEntryApi();
-  const listing = useResource<EntrySession>(() => api.session(), [api]);
-  const [token, setToken] = React.useState("");
-  const staff = useStaffRedirect(listing.value?.staff, onNavigate);
-  const join = useMutation(async (value: string) => {
-    const result = await api.joinInvitation({ token: value, csrf: listing.value?.csrf ?? "" });
-    assign(result.next);
-    return result;
-  });
-  if (signInAgain(listing.error)) return <EntryCard title="Signing you in…">{null}</EntryCard>;
-  if (staff) return <EntryCard title="Opening the platform console…">{null}</EntryCard>;
-  return (
-    <EntryCard
-      title="Join with invitation"
-      description="Paste the invitation token sent to your verified email address."
-    >
-      <Problem message={join.error?.message ?? null} />
-      <form
-        className="flex flex-col gap-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const value = token.trim();
-          if (value.length > 0) void join.call(value);
-        }}
-      >
-        <Label htmlFor="entry-invitation-token" className="text-sm font-medium">
-          Invitation token
-        </Label>
-        <Input
-          id="entry-invitation-token"
-          name="token"
-          type="password"
-          autoComplete="off"
-          value={token}
-          onChange={(event) => setToken(event.currentTarget.value)}
-        />
-        <div className="flex flex-wrap gap-2">
-          <Button type="submit" disabled={join.pending || token.trim().length === 0 || listing.value === undefined}>
-            {join.pending ? "Joining…" : "Join organization"}
-          </Button>
-          <Button type="button" variant="outline" onClick={() => onNavigate(CHOOSE_ORGANIZATION)}>
-            Back to organizations
-          </Button>
-        </div>
-      </form>
     </EntryCard>
   );
 }

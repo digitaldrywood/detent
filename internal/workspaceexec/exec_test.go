@@ -29,6 +29,10 @@ func discardLogger() *slog.Logger {
 // requirePOSIXShell skips a test whose command is written in POSIX shell.
 func requirePOSIXShell(t *testing.T) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("real shell process integration")
+	}
+
 	if runtime.GOOS == "windows" {
 		t.Skip("the command is POSIX shell syntax")
 	}
@@ -279,6 +283,10 @@ func TestRunNamesTheSignalThatKilledTheCommand(t *testing.T) {
 // lease loss" requirement: a command that started a build or a server must not
 // leave it running in the worktree, and killing only the shell would.
 func TestRunKillsTheWholeProcessGroup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real process or filesystem integration")
+	}
+
 	t.Parallel()
 	requirePOSIXShell(t)
 

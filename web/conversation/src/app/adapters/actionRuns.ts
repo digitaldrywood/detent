@@ -38,6 +38,7 @@ import {
 } from "./workspaceRelay.ts";
 import { newWorkKey } from "../work/lib/workHttp.ts";
 import type { WorkHttp } from "../work/lib/workHttp.ts";
+import { subscribeProjectEvents } from "../work/lib/projectEvents.ts";
 import { useWorkHttp } from "../work/lib/useWork.ts";
 import {
   ACTION_RUN_EVENT_TYPES,
@@ -633,9 +634,6 @@ export function useActionRuns(input: UseActionRunsInput): ActionRunsHandle {
   React.useEffect(() => {
     if (projectId === null) return;
     if (typeof globalThis.EventSource !== "function") return;
-    const source = new globalThis.EventSource(http.eventsUrl(projectId), {
-      withCredentials: true,
-    });
     const onRunEvent = (event: MessageEvent<string>) => {
       let parsed: unknown;
       try {
@@ -661,15 +659,9 @@ export function useActionRuns(input: UseActionRunsInput): ActionRunsHandle {
         upsert(snapshotFromRecord(record, name, output));
       })();
     };
-    for (const type of ACTION_RUN_EVENT_TYPES) {
-      source.addEventListener(type, onRunEvent as EventListener);
-    }
-    return () => {
-      for (const type of ACTION_RUN_EVENT_TYPES) {
-        source.removeEventListener(type, onRunEvent as EventListener);
-      }
-      source.close();
-    };
+    return subscribeProjectEvents(http, projectId, Object.fromEntries(
+      ACTION_RUN_EVENT_TYPES.map((type) => [type, onRunEvent as EventListener]),
+    ));
   }, [http, projectId, upsert]);
 
   const start = React.useCallback((request: StartRunInput) => {

@@ -1,8 +1,10 @@
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -10,34 +12,43 @@ ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "scripts" / "nilaway-baseline.json"
 DIAGNOSTIC = re.compile(r"^(?P<path>\S+\.go):(?P<line>\d+):(?P<column>\d+):\s*(?:error:\s*)?(?P<message>.*)")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def git(*args):
-    return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
+RELATED_DIAGNOSTIC = re.compile(r"^\(Same nil source could also cause potential nil panic\(s\) at \d+ other place\(s\): .+\.\)$")
 
 
 def main():
-    version, include_packages = sys.argv[1:]
-    try:
-        previous = git("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "HEAD")
-        changed = git("diff", "--name-only", "--diff-filter=ACMRT", previous, "HEAD", "--", "*.go")
-    except subprocess.CalledProcessError:
-        changed = git("ls-files", "--", "*.go")
-    packages = sorted({"./" + str(Path(name).parent) for name in changed.splitlines() if (ROOT / name).is_file()})
-    if not packages:
-        print("No changed Go packages to audit")
-        return 0
-
+    version, include_packages, *packages = sys.argv[1:]
+    packages = packages or ["./..."]
     baseline = json.loads(BASELINE.read_text())
     allowed = {(entry["file"], entry["line"], entry["column"], entry["rule"]): entry["source_sha256"] for entry in baseline}
-    command = ["go", "run", f"go.uber.org/nilaway/cmd/nilaway@{version}", f"-include-pkgs={include_packages}", *packages]
-    result = subprocess.run(command, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
+    if scratch is None:
+        print("Set TMPDIR, TMP, or TEMP for the NilAway audit")
+        return 1
+    env = dict(os.environ)
+    env.setdefault("GOMEMLIMIT", "1GiB")
+    with tempfile.TemporaryDirectory(dir=scratch) as directory:
+        env["GOBIN"] = directory
+        install = subprocess.run(
+            ["go", "install", "-p=1", f"go.uber.org/nilaway/cmd/nilaway@{version}"],
+            cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+        )
+        if install.returncode:
+            print(install.stdout)
+            return 1
+        binary = Path(directory) / ("nilaway.exe" if os.name == "nt" else "nilaway")
+        command = ["go", "vet", "-p=1", f"-vettool={binary}", f"-include-pkgs={include_packages}", *packages]
+        result = subprocess.run(command, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    if result.returncode not in (0, 1):
+        print(result.stdout)
+        return 1
     unexpected = []
     diagnostics = 0
     for raw in result.stdout.splitlines():
         line = ANSI.sub("", raw)
         match = DIAGNOSTIC.search(line)
         if not match:
+            if line.strip() and not line.startswith(("# ", "\t", " ")) and not RELATED_DIAGNOSTIC.fullmatch(line):
+                unexpected.append(line)
             continue
         diagnostics += 1
         path = Path(match["path"])
@@ -62,7 +73,8 @@ def main():
     if result.returncode and not diagnostics:
         print(result.stdout)
         return result.returncode
-    print(f"Audited {len(packages)} changed Go packages; {diagnostics} reviewed legacy diagnostics")
+    scope = "all Go packages" if packages == ["./..."] else f"{len(packages)} changed Go packages"
+    print(f"Audited {scope}; {diagnostics} reviewed legacy diagnostics")
     return 0
 
 

@@ -101,15 +101,17 @@ func (d *database) recordWebhook(ctx context.Context, receipt webhookReceipt) (w
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO github_webhook_payloads (inbox_id, body, expires_at, created_at)
-		VALUES (?, ?, ?, ?)
+		SELECT id, ?, ?, ?
+		FROM github_webhook_inbox
+		WHERE id = ? AND status NOT IN ('processed', 'ignored')
 		ON CONFLICT(inbox_id) DO UPDATE SET
 			body = excluded.body,
 			expires_at = excluded.expires_at,
 			created_at = excluded.created_at
-	`, inboxID, receipt.Payload, formatWebhookTime(receipt.PayloadExpiresAt), receivedAt); err != nil {
+	`, receipt.Payload, formatWebhookTime(receipt.PayloadExpiresAt), receivedAt, inboxID); err != nil {
 		return webhookReceiptResult{}, fmt.Errorf("store GitHub webhook payload: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := d.commit(ctx, tx); err != nil {
 		return webhookReceiptResult{}, fmt.Errorf("commit GitHub webhook receipt: %w", err)
 	}
 	return webhookReceiptResult{InboxID: inboxID, Duplicate: !inserted}, nil
@@ -163,7 +165,7 @@ func (d *database) processWebhook(ctx context.Context, inboxID int64, now time.T
 		return errors.Join(fmt.Errorf("mark GitHub webhook processing: %w", err), rollbackErr)
 	}
 
-	result, err := applyWebhook(ctx, tx, delivery, now)
+	result, err := applyWebhook(context.WithValue(ctx, linkedSourceURLKey{}, d.linkedSourceBase), tx, delivery, now)
 	if err != nil {
 		rollbackErr := tx.Rollback()
 		failureErr := d.markWebhookFailed(ctx, inboxID, now, err)
@@ -196,7 +198,7 @@ func (d *database) processWebhook(ctx context.Context, inboxID int64, now time.T
 			return errors.Join(err, rollbackErr, failureErr)
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := d.commit(ctx, tx); err != nil {
 		failureErr := d.markWebhookFailed(ctx, inboxID, now, err)
 		return errors.Join(fmt.Errorf("commit GitHub webhook processing: %w", err), failureErr)
 	}
@@ -317,16 +319,17 @@ func (d *database) pendingWebhookIDs(ctx context.Context, now time.Time) ([]int6
 	return inboxIDs, nil
 }
 
-func (d *database) purgeWebhookPayloads(ctx context.Context, now time.Time) (int64, error) {
+func (d *database) purgeWebhookPayloads(ctx context.Context, now time.Time, retention time.Duration) (int64, error) {
 	result, err := d.db.ExecContext(ctx, `
 		DELETE FROM github_webhook_payloads
-		WHERE expires_at <= ?
-			AND inbox_id IN (
-				SELECT id
-				FROM github_webhook_inbox
-				WHERE status IN ('processed', 'ignored')
-			)
-	`, formatWebhookTime(now))
+		WHERE EXISTS (
+			SELECT 1
+			FROM github_webhook_inbox i
+			WHERE i.id = github_webhook_payloads.inbox_id
+				AND i.status IN ('processed', 'ignored')
+				AND julianday(i.processed_at) <= julianday(?)
+		)
+	`, formatWebhookTime(now.Add(-retention)))
 	if err != nil {
 		return 0, fmt.Errorf("purge GitHub webhook payloads: %w", err)
 	}

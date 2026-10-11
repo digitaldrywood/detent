@@ -97,6 +97,9 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 	issues []connector.Issue,
 	now time.Time,
 ) map[string]struct{} {
+	if !o.LocalIntakeEnabled() {
+		return nil
+	}
 	cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
 	if !cfg.Enabled {
 		return nil
@@ -106,6 +109,10 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 	for _, issue := range dependencyAutoUnblockOrder(issues, cfg.SourceStates, state.dependencyUnblockCursor) {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
+			continue
+		}
+		if stickyReason := o.issueStickyBlockReason(ctx, state, issue); stickyReason != "" {
+			o.logDependencyAutoUnblockDecision(issue, "hold", stickyReason, nil, "")
 			continue
 		}
 		hydrated, ok, err := o.hydrateDependencyAutoUnblockIssue(ctx, issue, cfg.SourceStates)
@@ -236,6 +243,9 @@ func (o *Orchestrator) autoPromoteBlockerIssues(
 	issues []connector.Issue,
 	now time.Time,
 ) map[string]struct{} {
+	if !o.LocalIntakeEnabled() {
+		return nil
+	}
 	cfg := normalizeBlockerAutoPromoteConfig(o.cfg.BlockerAutoPromote, o.cfg.ActiveStates, o.cfg.DependencyAutoUnblock)
 	if !cfg.Enabled {
 		return nil
@@ -449,8 +459,10 @@ func (o *Orchestrator) refreshDependencyAutoUnblockComments(ctx context.Context,
 		return connector.Issue{}, err
 	}
 	issue.Comments = comments
-	issue.WorkpadSignal = nil
-	issue.BlockerReason = ""
+	if issue.Metadata["hub_disposition_attempt_id"] == "" {
+		issue.WorkpadSignal = nil
+		issue.BlockerReason = ""
+	}
 	issue.WorkpadSignal, _ = rawIssueWorkpadSignal(issue)
 	return o.issueWithDependencyRefs(issue), nil
 }
@@ -854,9 +866,13 @@ func (o *Orchestrator) resolveDependencyBlockersWithError(ctx context.Context, i
 	}
 	issues, err := resolver.FetchIssueStatesByIdentifiers(ctx, identifiers)
 	if err != nil {
-		return blockers, err
+		return dependencyBlockersWithIssues(blockers, nil), err
 	}
 
+	return dependencyBlockersWithIssues(blockers, issues), nil
+}
+
+func dependencyBlockersWithIssues(blockers []dependencyBlocker, issues []connector.Issue) []dependencyBlocker {
 	byIdentifier := make(map[string]connector.Issue, len(issues))
 	for _, blocker := range issues {
 		identifier := strings.ToLower(strings.TrimSpace(blocker.Identifier))
@@ -867,6 +883,10 @@ func (o *Orchestrator) resolveDependencyBlockersWithError(ctx context.Context, i
 	}
 	for index := range blockers {
 		identifier := strings.ToLower(strings.TrimSpace(blockers[index].Ref.Identifier))
+		if identifier != "" {
+			blockers[index].Ref.State, blockers[index].Ref.TrackerState = "", ""
+			blockers[index].Ref.HumanCompletionReady = false
+		}
 		blocker, ok := byIdentifier[identifier]
 		if !ok {
 			continue
@@ -883,7 +903,7 @@ func (o *Orchestrator) resolveDependencyBlockersWithError(ctx context.Context, i
 			blockers[index].Ref.TrackerState = connector.BlockedRefTrackerStateClosed
 		}
 	}
-	return blockers, nil
+	return blockers
 }
 
 func dependencyResolvedBlockerRefs(blockers []dependencyBlocker) []connector.BlockedRef {
@@ -1527,7 +1547,7 @@ func dependencyAutoUnblockComment(sourceState string, targetState string, blocke
 			b.WriteString(")")
 		}
 		if pullRequest := dependencyBlockerPullRequest(blocker); pullRequest != nil && pullRequestMerged(pullRequest) {
-			b.WriteString(fmt.Sprintf(" (merged PR: #%d)", pullRequest.Number))
+			fmt.Fprintf(&b, " (merged PR: #%d)", pullRequest.Number)
 		}
 	}
 	return b.String()

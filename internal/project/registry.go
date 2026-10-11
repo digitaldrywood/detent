@@ -26,6 +26,7 @@ type Health struct {
 	LastErrorAt  time.Time
 	NextRetryAt  time.Time
 	RetryStopped bool
+	Transient    bool
 	PauseExit    *pause.ExitStatus
 }
 
@@ -269,6 +270,7 @@ func projectHealth(trackedProject *Project) Health {
 		LastErrorAt:  runtimeErr.At,
 		NextRetryAt:  runtimeErr.NextRetryAt,
 		RetryStopped: runtimeErr.Terminal,
+		Transient:    runtimeErr.Transient,
 	}
 }
 
@@ -280,5 +282,6 @@ func pendingHealth(pending pendingProject) Health {
 		LastErrorAt:  pending.runtimeError.At,
 		NextRetryAt:  pending.runtimeError.NextRetryAt,
 		RetryStopped: pending.runtimeError.Terminal,
+		Transient:    pending.runtimeError.Transient,
 	}
 }

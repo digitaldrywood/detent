@@ -19,6 +19,10 @@ import (
 // The legacy arm exercises the pre-batch detail path against identical source
 // data. No fixture sends ETags, so each counted REST read is billable.
 func TestCandidatePRRepeatedRefreshCounts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	for _, mode := range []string{"board", "labels", "board fallback"} {
 		for _, legacy := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/legacy=%t", mode, legacy), func(t *testing.T) {
@@ -241,6 +245,10 @@ func legacyCandidatePRRefresh(t *testing.T, c *Connector, mode string) (connecto
 }
 
 func TestCandidatePRIndependentRefreshEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	for _, entry := range []string{"admission", "refresh candidates", "refresh observed", "refresh overlap"} {
 		t.Run(entry, func(t *testing.T) { testIndependentRefreshEvidence(t, entry) })
 	}
@@ -641,6 +649,10 @@ func candidateFixtureSummary(completed bool) map[string]any {
 }
 
 func TestCandidatePRPartialCursor(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	const repo = "fixture/project"
 	details := map[int]int{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -722,6 +734,10 @@ func TestCandidatePRPartialCursor(t *testing.T) {
 }
 
 func TestCandidatePRFallbackUsesFreshAssociation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, kind := range []string{"association pagination", "status unavailable"} {
 		t.Run(kind, func(t *testing.T) {
 			const repo = "fixture/project"

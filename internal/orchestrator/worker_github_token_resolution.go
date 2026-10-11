@@ -43,7 +43,6 @@ func (o *Orchestrator) handleWorkerGitHubTokenResolutionCompletion(
 	nextRetryAt := detectedAt.Add(delay)
 	o.finishForgeAvailabilityProbe(state, event, running)
 	o.deferBackendCapacityProbe(state, running, detectedAt, event.Err)
-	releaseWorkerGitHubMonitorProbe(state, event.IssueID, "deferred", errorString(event.Err), detectedAt)
 	o.releaseTerminalAttemptClaim(ctx, state, running.Issue, detectedAt)
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
 	metadata := workerGitHubTokenResolutionWaitMetadata{

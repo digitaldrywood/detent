@@ -1,7 +1,7 @@
 import React from "react";
 
 import { cn } from "../../lib/utils.ts";
-import { PROVIDER_SKILLS_NOTICE, type SlashCommand } from "../adapters/slashCommands.ts";
+import { type SlashCommand } from "../adapters/slashCommands.ts";
 
 export interface SlashCommandMenuProps {
   readonly open: boolean;
@@ -19,6 +19,10 @@ export function slashOptionId(domId: string, name: string): string {
 }
 
 export function SlashCommandMenu(props: SlashCommandMenuProps): React.ReactElement | null {
+  const highlighted = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    highlighted.current?.scrollIntoView?.({ block: "nearest" });
+  }, [props.highlighted, props.open]);
   if (!props.open) return null;
   return (
     <div
@@ -39,6 +43,7 @@ export function SlashCommandMenu(props: SlashCommandMenuProps): React.ReactEleme
           return (
             <div
               key={command.name}
+              ref={active ? highlighted : undefined}
               role="option"
               id={slashOptionId(props.domId, command.name)}
               aria-selected={active}
@@ -60,17 +65,6 @@ export function SlashCommandMenu(props: SlashCommandMenuProps): React.ReactEleme
           );
         })}
       </div>
-      {/* The runner's own skills and prompts. Present with its reason rather
-          than dropped (decisions.md §16): the contract for them is already in
-          the client, the hub is what does not serve them yet. A quiet last
-          line rather than a boxed footer — the list has no border of its own
-          any more, so a rule inside it would be the only one on the card. */}
-      <p
-        data-testid="slash-provider-skills"
-        className="px-2 pt-1 pb-0.5 text-muted-foreground/70 text-xs"
-      >
-        {PROVIDER_SKILLS_NOTICE}
-      </p>
     </div>
   );
 }

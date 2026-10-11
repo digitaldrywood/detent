@@ -23,6 +23,9 @@ import { SetupRoute } from "./account/Setup.tsx";
 import { SettingsRoute } from "./settings/Settings.tsx";
 import { DEFAULT_SECTION, isSettingsSectionId } from "./settings/sections.tsx";
 import { UsageRoute } from "./usage/UsagePage.tsx";
+import { ActivityRoute } from "./activity/ActivityPage.tsx";
+import { DiagnosticsRoute } from "./diagnostics/DiagnosticsPage.tsx";
+import { ReportsRoute } from "./reports/ReportsPage.tsx";
 import { usePageTitle } from "./pageTitle.ts";
 
 /**
@@ -77,6 +80,8 @@ export const ACCOUNT_ROUTE_PATHS = [
   "/settings",
   "/settings/$section",
   "/usage",
+  "/reports",
+  "/diagnostics",
   "/projects/$project/settings",
   "/projects/$project/setup",
   "/fleet",
@@ -113,6 +118,9 @@ export function accountRoutes(rootRoute: AnyRoute): AnyRoute[] {
     }),
     createRoute({ getParentRoute, path: "/settings/$section", component: SettingsScreen }),
     createRoute({ getParentRoute, path: "/usage", component: UsageRoute }),
+    createRoute({ getParentRoute, path: "/reports", component: ReportsRoute }),
+    createRoute({ getParentRoute, path: "/activity", component: ActivityRoute }),
+    createRoute({ getParentRoute, path: "/diagnostics", component: DiagnosticsRoute }),
     createRoute({
       getParentRoute,
       path: "/projects/$project/settings",

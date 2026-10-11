@@ -20,6 +20,10 @@ import (
 )
 
 func TestRunnerEnforcesConfiguredDurationLimits(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -105,7 +109,7 @@ func TestRunnerEnforcesConfiguredDurationLimits(t *testing.T) {
 					t.Fatalf("backend deadlines = %v, want activity not to extend total duration", agentBackend.deadlines)
 				}
 			}
-			if result.TurnCount != tt.wantTurns || sessionStore.finished.Turns != int64(max(1, tt.wantTurns)) {
+			if result.TurnCount != tt.wantTurns || sessionStore.finished.Turns != int64(tt.wantTurns) {
 				t.Fatalf("result turn count = %d, session turns = %d", result.TurnCount, sessionStore.finished.Turns)
 			}
 			if sessionStore.finishCalls != 1 {
@@ -206,7 +210,6 @@ func TestWorkerSessionCanceled(t *testing.T) {
 		{name: "turn duration", err: ErrTurnDurationExceeded, want: true},
 		{name: "session duration", err: ErrSessionDurationExceeded, want: true},
 		{name: "session turn limit", err: ErrSessionTurnLimitExceeded, want: true},
-		{name: "session no progress", err: ErrSessionNoProgress, want: true},
 		{name: "session memory ceiling", err: ErrSessionMemoryCeilingExceeded, want: true},
 		{name: "ordinary failure", err: errors.New("provider failed")},
 		{name: "success"},
@@ -233,7 +236,6 @@ func TestRunnerReapsWorkerAfterTerminalTurn(t *testing.T) {
 		{name: "completed", wantReason: "turn_completed"},
 		{name: "failed", turnErr: errors.New("provider failed"), wantReason: "turn_failed"},
 		{name: "cancelled", turnErr: context.Canceled, wantReason: "context_cancelled:runner.agent_backend"},
-		{name: "no progress", turnErr: ErrSessionNoProgress, wantReason: SessionBrakeReasonNoProgress},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -294,6 +296,10 @@ func TestRunnerReapsWorkerAfterTerminalTurn(t *testing.T) {
 }
 
 func TestRunnerSessionDurationSpansResumeFallback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	sessionDurationLimit := &controlledDurationLimit{}
@@ -496,22 +502,6 @@ func TestRunAgentBackendTurnDoesNotTreatLivenessTimeoutAsTotalDuration(t *testin
 	}
 }
 
-func TestRunAgentBackendTurnLeavesDurationDisabledWithoutDeadline(t *testing.T) {
-	t.Parallel()
-
-	backend := &deadlineObservingAgentBackend{}
-	_, err, cleanupErr := runAgentBackendTurn(context.Background(), backend, AgentTurnRequest{}, nil)
-	if err != nil {
-		t.Fatalf("runAgentBackendTurn() error = %v", err)
-	}
-	if cleanupErr != nil {
-		t.Fatalf("runAgentBackendTurn() cleanup error = %v", cleanupErr)
-	}
-	if backend.hasDeadline {
-		t.Fatal("backend context has a deadline with duration limit disabled")
-	}
-}
-
 func TestRunAgentBackendTurnPropagatesDurationContextToUpdates(t *testing.T) {
 	t.Parallel()
 
@@ -546,6 +536,10 @@ func TestRunAgentBackendTurnPropagatesDurationContextToUpdates(t *testing.T) {
 }
 
 func TestRunnerValidatorUpdatePersistenceUsesSessionDurationContext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	sessionDurationLimit := &controlledDurationLimit{}

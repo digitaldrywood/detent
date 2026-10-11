@@ -3,7 +3,17 @@
 The React application the hub serves at `/chat`. It implements the client half
 of [`docs/conversation/decisions.md`](../../docs/conversation/decisions.md) and
 follows [`docs/conversation/design-inventory.md`](../../docs/conversation/design-inventory.md)
-for its visual system.
+for screen coverage. The [Detent design system](../../docs/design-system/README.md)
+defines shared visual rules, component selection, interaction states, and screen
+recipes and is the source of truth for them. Its
+[component catalog](./src/design-system/catalog.json) records every primitive
+and shared component; `npm run design:catalog` validates it and regenerates the
+[component contracts](../../docs/design-system/components.md), and
+`npm run design:tokens` regenerates the token data and tables from the
+stylesheets. `make check-app` runs both in `--check` mode, so a stale catalog,
+token file or generated doc fails the client gate. The development gallery is at
+`/design-system` under `npm run dev` (no hub needed); `npm run build:gallery`
+writes a static copy to `dist-gallery/`.
 
 Third-party attribution is in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md);
 the upstream MIT license is in [LICENSE.t3code](./LICENSE.t3code).
@@ -25,24 +35,24 @@ See [third-party notices](./THIRD_PARTY_NOTICES.md) for MIT and Apache-2.0 attri
 ## Build
 
 ```sh
-make app        # npm ci when needed, then vite build
+make app        # npm ci, then vite build
 make app-test   # tsc --noEmit && vitest run
 make app-dev    # vite dev server, proxying to a local hub
-make check-app  # typecheck, tests, rebuild, bundle drift and attribution
+make check-app  # typecheck, tests, rebuild, source diagnostics and attribution
 ```
 
-`make check-app` is the branch gate and runs inside `make check`
-(decisions.md §10.15). After the typecheck and the unit tests it rebuilds the
-bundle and fails if `static/app/conversation` changed — the built client is
-committed, so a client change that was not rebuilt is drift — and fails if
-`app.js` lost its MIT attribution banner. The build is deterministic (fixed
-output names, no content hashes, no timestamps), so two builds of the same tree
-are byte identical and the drift check means what it says.
+`make check-app` runs typechecking, unit tests, a build and attribution checks.
+It is an optional diagnostic and runs in the scheduled integrated-source suite.
+There is no committed-output drift check.
 
-`make generate` runs `make app`. The output lands in
-`static/app/conversation/` (`index.html`, `app.js`, `app.css`, fixed names, no
-content hashes) and is committed, following the precedent of
-`static/css/output.css`, so `go build` never needs Node.
+`make generate` and `make build` run `make assets`, including `make app` and
+the dashboard CSS build. The client's complete output lands in
+ignored `static/app/conversation/`, including the shell, CSS, workers, lazy
+chunks and third-party licenses. Feature commits contain client source only.
+Staging, releases and private operators generate assets from their selected
+source before Go compilation. The prepared release source archive carries the
+same output for Go-only end-user builds; raw module downloads cannot provide
+it. See [build ownership](../../docs/development.md#conversation-assets).
 
 `app.js` begins with the MIT notice for the reused T3 Code source
 (decisions.md §10.13). It is prepended by the `detent-mit-attribution` plugin
@@ -134,14 +144,14 @@ an issue" makes the coordinator answer with a `data.proposal` status message.
 | `src/runtime/connection/` | The T3 connection supervisor and registry, unmodified |
 | `src/runtime/rpc/` | Detent adapters: same-origin HTTP, the SSE transport, and the session the supervisor manages |
 | `src/runtime/state/` | Conversation list and detail atoms, the pure reducer, and draft storage |
-| `src/components/ui/` | T3 Code's primitive set, byte-identical |
-| `src/components/` | T3's breadcrumb and composer surface, byte-identical |
+| `src/components/ui/` | Shared primitives, each catalogued in the [design catalog](./src/design-system/catalog.json) |
+| `src/components/` | Shared compositions (shell, sidebar, composer, timeline, panels) |
 | `src/lib/`, `src/hooks/` | T3's `cn`, visible-animation observer and media-query hooks, byte-identical |
 | `src/app/` | Router, shell, components, and the two stylesheets (`global.css` copied, `index.css` Detent's overrides) |
 | `src/app/account/` | Login, organization, project settings and the first-run wizard, with the account API client and its hooks |
 | `src/app/settings/` | T3's settings layout and navigation, and the `/settings` page |
 | `src/app/fleet/` | Fleet and spend: the hero number, the chart, the totals and the host cards |
-| `src/app/work/` | The Work board, the list, the issue page, the changes list and the review dock |
+| `src/app/work/` | The Work board, the list, the issue page, the changes list and Change Request review |
 | `dev/` | The mock hub, and the native work API's own mock |
 | `tests/` | Runtime integration tests against the mock hub, and component tests |
 
@@ -641,7 +651,7 @@ burst of ticks into one reload.
   `422`), the string revision, an allowed and a disallowed transition, a stale
   revision, a scripted conflict and its recovery, and the activity stream.
 - `tests/components/work.test.tsx` covers the card, the lane, the list row, the
-  stats strip and the review dock's four tabs against the shared fixtures.
+  stats strip and Surface Diff against the shared fixtures.
 - `tests/components/activity.test.tsx` covers the feed: one sentence per
   history type, the merge of all four sources, the fold rule, the comment card
   and its reply, and the live row in both of its states.

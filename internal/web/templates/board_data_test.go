@@ -620,7 +620,7 @@ func TestBoardCardDataSeqUsesProjectRefresh(t *testing.T) {
 	}
 }
 
-func TestBoardViewSortsCardsBySchedulerPriorityInputs(t *testing.T) {
+func TestBoardViewSortsCardsByLanePriorityAndActivity(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 9, 20, 0, 0, 0, time.UTC)
@@ -649,17 +649,80 @@ func TestBoardViewSortsCardsBySchedulerPriorityInputs(t *testing.T) {
 		},
 	}
 
-	view := boardViewFromDashboard(data)
-	if len(view.Lanes) != 1 {
-		t.Fatalf("lanes = %d, want 1", len(view.Lanes))
-	}
-	got := make([]string, 0, len(view.Lanes[0].Cards))
-	for _, card := range view.Lanes[0].Cards {
-		got = append(got, card.IssueID)
-	}
-	want := []string{"rank-one", "rank-three", "hotfix", "bug", "unblocker", "plain"}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("card order = %#v, want %#v", got, want)
+	for _, tt := range []struct {
+		name     string
+		state    string
+		terminal bool
+		mutate   func(*DashboardData)
+		want     []string
+	}{
+		{name: "non-terminal ignores dispatch boosts", state: "Todo", want: []string{"rank-one", "rank-three", "unblocker", "hotfix", "bug", "plain"}},
+		{name: "terminal ignores priority", state: "Done", terminal: true, want: []string{"rank-one", "unblocker", "rank-three", "hotfix", "bug", "plain"}},
+		{name: "cancelled ignores priority", state: "Cancelled", terminal: true, want: []string{"rank-one", "unblocker", "rank-three", "hotfix", "bug", "plain"}},
+		{name: "custom terminal uses project workflow", state: "Released", terminal: true, want: []string{"rank-one", "unblocker", "rank-three", "hotfix", "bug", "plain"}},
+		{name: "issue update outranks stage entry", state: "Todo", mutate: func(data *DashboardData) {
+			data.Snapshot.BoardIssues[0].UpdatedAt = &now
+		}, want: []string{"rank-one", "rank-three", "plain", "unblocker", "hotfix", "bug"}},
+		{name: "stage entry outranks older issue update", state: "Todo", mutate: func(data *DashboardData) {
+			data.Snapshot.BoardIssues[1].UpdatedAt = &oldest
+		}, want: []string{"rank-one", "rank-three", "unblocker", "hotfix", "bug", "plain"}},
+		{name: "running event outranks issue activity", state: "Todo", mutate: func(data *DashboardData) {
+			data.Snapshot.Running = []telemetry.Running{{Issue: data.Snapshot.BoardIssues[0], StartedAt: oldest, LastEventAt: &now}}
+		}, want: []string{"rank-one", "rank-three", "plain", "unblocker", "hotfix", "bug"}},
+		{name: "recent run event outranks last event", state: "Todo", mutate: func(data *DashboardData) {
+			data.Snapshot.Running = []telemetry.Running{{Issue: data.Snapshot.BoardIssues[0], StartedAt: oldest, LastEventAt: &older, RecentEvents: []telemetry.ActivityEvent{{At: now}}}}
+		}, want: []string{"rank-one", "rank-three", "plain", "unblocker", "hotfix", "bug"}},
+		{name: "completed run outranks issue activity", state: "Todo", mutate: func(data *DashboardData) {
+			data.Snapshot.Completed = []telemetry.Completed{{Issue: data.Snapshot.BoardIssues[0], StartedAt: oldest, CompletedAt: now}}
+		}, want: []string{"rank-one", "rank-three", "plain", "unblocker", "hotfix", "bug"}},
+		{name: "latest attempt event regardless of input order", state: "Todo", mutate: func(data *DashboardData) {
+			data.Snapshot.WorkAttempts = []telemetry.WorkAttempt{
+				{AttemptID: 2, ProjectID: "detent", IssueID: "plain", StartedAt: oldest, CompletedAt: &now},
+				{AttemptID: 1, ProjectID: "detent", IssueID: "plain", StartedAt: oldest, CompletedAt: &older},
+			}
+		}, want: []string{"rank-one", "rank-three", "plain", "unblocker", "hotfix", "bug"}},
+		{name: "attempt heartbeat is activity", state: "Todo", mutate: func(data *DashboardData) {
+			data.Snapshot.WorkAttempts = []telemetry.WorkAttempt{{ProjectID: "detent", IssueID: "plain", StartedAt: oldest, HeartbeatAt: &now}}
+		}, want: []string{"rank-one", "rank-three", "plain", "unblocker", "hotfix", "bug"}},
+		{name: "foreign project attempt does not change order", state: "Todo", mutate: func(data *DashboardData) {
+			data.Snapshot.WorkAttempts = []telemetry.WorkAttempt{{ProjectID: "other", IssueID: "plain", StartedAt: now}}
+		}, want: []string{"rank-one", "rank-three", "unblocker", "hotfix", "bug", "plain"}},
+		{name: "missing activity sorts last and ties use identifier", state: "Todo", mutate: func(data *DashboardData) {
+			data.Snapshot.BoardIssues[0].StageUpdatedAt = nil
+			data.Snapshot.BoardIssues[2].StageUpdatedAt = &newest
+			data.Snapshot.BoardIssues[3].StageUpdatedAt = &newest
+		}, want: []string{"rank-one", "rank-three", "bug", "hotfix", "unblocker", "plain"}},
+		{name: "missing and invalid priority sort after low", state: "Todo", mutate: func(data *DashboardData) {
+			data.Snapshot.BoardIssues[0].Priority = boardPriorityPointer(4)
+			data.Snapshot.BoardIssues[1].Priority = boardPriorityPointer(0)
+		}, want: []string{"rank-one", "rank-three", "plain", "unblocker", "hotfix", "bug"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			data := data
+			data.Snapshot.BoardIssues = append([]telemetry.Issue(nil), data.Snapshot.BoardIssues...)
+			data.Kanban.States = []string{tt.state}
+			if tt.terminal {
+				data.Kanban.TerminalStatesByProject = map[string][]string{"detent": {tt.state}}
+			}
+			for i := range data.Snapshot.BoardIssues {
+				data.Snapshot.BoardIssues[i].State = tt.state
+			}
+			if tt.mutate != nil {
+				tt.mutate(&data)
+			}
+			view := boardViewFromDashboard(data)
+			if len(view.Lanes) != 1 {
+				t.Fatalf("lanes = %d, want 1", len(view.Lanes))
+			}
+			var got []string
+			for _, card := range view.Lanes[0].Cards {
+				got = append(got, card.IssueID)
+			}
+			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Fatalf("card order = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }
 

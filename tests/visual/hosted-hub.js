@@ -50,18 +50,22 @@ async function terminate(child) {
  * @returns {Promise<{fixture: object, output: () => string, stop: () => Promise<void>}>}
  */
 async function startHostedHub(name = "conversation", options = {}) {
-  const evidenceDir = path.join(process.cwd(), "tmp", "playwright-evidence", name);
+  const scratch = process.env.TMPDIR || process.env.TMP || process.env.TEMP;
+  if (!scratch) throw new Error("The hosted preview requires a scratch directory");
+  const evidenceDir = path.join(scratch, "playwright-evidence", `${name}-worker-${process.env.TEST_WORKER_INDEX ?? 0}`);
   fs.mkdirSync(evidenceDir, { recursive: true });
   const logPath = path.join(evidenceDir, "hosted-hub.log");
   fs.writeFileSync(logPath, "");
 
   const child = spawn(
-    "go",
-    [
+    process.env.DETENT_HOSTED_PREVIEW_BINARY || "go",
+    process.env.DETENT_HOSTED_PREVIEW_BINARY ? ["-test.run=^TestHostedBrowserPreview$", "-test.v", "-test.timeout=25m"] : [
       "test",
+      "-p",
+      "4",
       "./internal/hubserver",
       "-run",
-      "TestHostedBrowserPreview",
+      "^TestHostedBrowserPreview$",
       "-count=1",
       "-v",
       "-timeout",
@@ -160,4 +164,16 @@ async function startHostedHub(name = "conversation", options = {}) {
   };
 }
 
-module.exports = { startHostedHub, STARTUP_TIMEOUT_MS };
+async function resetSavedWorkViews(page) {
+  const statuses = await page.evaluate(async () => {
+    const bootstrap = await (await fetch("/chat/bootstrap")).json();
+    const scopes = [bootstrap.api_base, ...bootstrap.projects.map((project) => `${bootstrap.api_base}/projects/${project.id}`)];
+    return Promise.all(scopes.map(async (scope) => (await fetch(`${scope}/work-view-preference`, {
+      method: "DELETE",
+      headers: { "X-CSRF-Token": bootstrap.csrf_token },
+    })).status));
+  });
+  if (statuses.some((status) => status !== 200)) throw new Error(`resetting saved Work views returned ${statuses.join(", ")}`);
+}
+
+module.exports = { startHostedHub, resetSavedWorkViews, STARTUP_TIMEOUT_MS };

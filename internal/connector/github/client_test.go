@@ -24,6 +24,10 @@ import (
 )
 
 func TestClientGraphQLSendsBearerRequest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	requests := make(chan map[string]any, 1)
@@ -65,18 +69,23 @@ func TestClientGraphQLSendsBearerRequest(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
+	scope := &connector.RESTScope{Name: "refresh"}
+	ctx := connector.WithRESTScope(t.Context(), scope)
 	var got struct {
 		Viewer struct {
 			Login string `json:"login"`
 		} `json:"viewer"`
 	}
-	err = client.GraphQL(context.Background(), "query Viewer($id: ID!) { viewer { login } }", map[string]any{"id": "PVT_1"}, &got)
+	err = client.GraphQL(ctx, "query Viewer($id: ID!) { viewer { login } }", map[string]any{"id": "PVT_1"}, &got)
 	if err != nil {
 		t.Fatalf("GraphQL() error = %v", err)
 	}
 	if got.Viewer.Login != "octocat" {
 		t.Fatalf("viewer.login = %q, want octocat", got.Viewer.Login)
 	}
+
+	assertScopeTiming(t, scope, "http_transport", "graphql", "200", 1)
+	assertScopeTiming(t, scope, "token_resolution_inclusive", "graphql", "200", 1)
 
 	payload := <-requests
 	if payload["query"] == "" {
@@ -89,6 +98,10 @@ func TestClientGraphQLSendsBearerRequest(t *testing.T) {
 }
 
 func TestClientGraphQLStopsLookupsAfterRateLimitResponse(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -276,6 +289,10 @@ func TestClientGraphQLPrimaryExhaustionExpires(t *testing.T) {
 }
 
 func TestClientStopsLookupsAfterHeaderlessForbiddenRateLimitResponse(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -332,6 +349,10 @@ func TestClientStopsLookupsAfterHeaderlessForbiddenRateLimitResponse(t *testing.
 }
 
 func TestClientGraphQLSecondaryBackoffExpires(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -433,6 +454,10 @@ func TestClientGraphQLSecondaryBackoffExpires(t *testing.T) {
 }
 
 func TestConnectorRateLimitProbesRequireFreshResponse(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -525,6 +550,10 @@ func TestConnectorRateLimitProbesRequireFreshResponse(t *testing.T) {
 }
 
 func TestClientGraphQLSuccessfulMutationClearsRateLimitResponse(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -570,6 +599,10 @@ func TestClientGraphQLSuccessfulMutationClearsRateLimitResponse(t *testing.T) {
 }
 
 func TestConnectorProbeRESTRateLimitPreservesRetryAfter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -674,6 +707,10 @@ func TestClientTrackerAvailabilityClassification(t *testing.T) {
 }
 
 func TestClientReportsResponseProgress(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -699,6 +736,14 @@ func TestClientReportsResponseProgress(t *testing.T) {
 				return err
 			},
 		},
+		{name: "REST text", run: func(ctx context.Context, client *Client) error {
+			_, _, err := client.RESTText(ctx, "/user", "text/plain", 1)
+			return err
+		}},
+		{name: "REST text size", run: func(ctx context.Context, client *Client) error {
+			_, _, _, err := client.RESTTextWithSize(ctx, "/user", "text/plain", 1)
+			return err
+		}},
 	}
 
 	for _, tt := range tests {
@@ -725,7 +770,8 @@ func TestClientReportsResponseProgress(t *testing.T) {
 			}
 
 			calls := 0
-			ctx := connector.WithProgressReporter(context.Background(), func() {
+			scope := &connector.RESTScope{Name: "refresh"}
+			ctx := connector.WithProgressReporter(connector.WithRESTScope(t.Context(), scope), func() {
 				calls++
 			})
 			if err := tt.run(ctx, client); err != nil {
@@ -734,11 +780,21 @@ func TestClientReportsResponseProgress(t *testing.T) {
 			if calls != 1 {
 				t.Fatalf("progress reports = %d, want 1", calls)
 			}
+			family := restEndpointFamily(http.MethodGet, "/user")
+			if tt.name == "GraphQL" {
+				family = "graphql"
+			}
+			assertScopeTiming(t, scope, "http_transport", family, "200", 1)
+			assertScopeTiming(t, scope, "token_resolution_inclusive", family, "200", 1)
 		})
 	}
 }
 
 func TestClientGraphQLClassifiesFailures(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -824,7 +880,16 @@ func TestClientGraphQLClassifiesFailures(t *testing.T) {
 				t.Fatalf("NewClient() error = %v", err)
 			}
 
-			err = client.GraphQL(context.Background(), "query { viewer { login } }", nil, nil)
+			scope := &connector.RESTScope{Name: "refresh"}
+			err = client.GraphQL(connector.WithRESTScope(t.Context(), scope), "query { viewer { login } }", nil, nil)
+			httpOutcome := classifyRESTScopeOutcome(&http.Response{StatusCode: tt.statusCode, Header: http.Header{}}, nil)
+			if errors.Is(tt.want, ErrRateLimited) && tt.statusCode != http.StatusOK {
+				httpOutcome = "429"
+			}
+			assertScopeTiming(t, scope, "http_transport", "graphql", httpOutcome, 1)
+			if len(scope.Counts()) != 0 {
+				t.Fatalf("GraphQL affected REST count: %#v", scope.Counts())
+			}
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("GraphQL() error = %v, want %v", err, tt.want)
 			}
@@ -853,6 +918,10 @@ func TestClassifyStatusMapsCommentCapToResourceExhaustion(t *testing.T) {
 }
 
 func TestClientGraphQLRefreshesTokenAfterAuthFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	source := newRefreshingTokenTestSource("stale-token", "fresh-token")
@@ -883,17 +952,26 @@ func TestClientGraphQLRefreshesTokenAfterAuthFailure(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
+	scope := &connector.RESTScope{Name: "refresh"}
+	ctx := connector.WithRESTScope(t.Context(), scope)
 	var got struct {
 		Viewer struct {
 			Login string `json:"login"`
 		} `json:"viewer"`
 	}
-	if err := client.GraphQL(context.Background(), "query { viewer { login } }", nil, &got); err != nil {
+	if err := client.GraphQL(ctx, "query { viewer { login } }", nil, &got); err != nil {
 		t.Fatalf("GraphQL() error = %v", err)
 	}
 	if got.Viewer.Login != "octocat" {
 		t.Fatalf("Viewer.Login = %q, want octocat", got.Viewer.Login)
 	}
+	assertScopeTiming(t, scope, "http_transport", "graphql", "error", 1)
+	assertScopeTiming(t, scope, "http_transport", "graphql", "200", 1)
+	assertScopeTiming(t, scope, "token_resolution_inclusive", "graphql", "200", 2)
+	if len(scope.Counts()) != 0 {
+		t.Fatalf("retry REST counts = %#v", scope.Counts())
+	}
+
 	if source.refreshes.Load() != 1 {
 		t.Fatalf("RefreshToken() calls = %d, want 1", source.refreshes.Load())
 	}
@@ -913,6 +991,10 @@ func TestClientGraphQLRefreshesTokenAfterAuthFailure(t *testing.T) {
 }
 
 func TestClientRESTRefreshesTokenAfterAuthFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	source := newRefreshingTokenTestSource("stale-token", "fresh-token")
@@ -946,15 +1028,24 @@ func TestClientRESTRefreshesTokenAfterAuthFailure(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
+	scope := &connector.RESTScope{Name: "refresh"}
+	ctx := connector.WithRESTScope(t.Context(), scope)
 	var got struct {
 		OK bool `json:"ok"`
 	}
-	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues", nil, &got); err != nil {
+	if err := client.REST(ctx, http.MethodGet, "/repos/digitaldrywood/detent/issues", nil, &got); err != nil {
 		t.Fatalf("REST() error = %v", err)
 	}
 	if !got.OK {
 		t.Fatal("REST() response OK = false, want true")
 	}
+	assertScopeTiming(t, scope, "http_transport", "repository issues", "error", 1)
+	assertScopeTiming(t, scope, "http_transport", "repository issues", "200", 1)
+	assertScopeTiming(t, scope, "token_resolution_inclusive", "repository issues", "200", 2)
+	if len(scope.Counts()) != 2 {
+		t.Fatalf("retry REST counts = %#v", scope.Counts())
+	}
+
 	if source.refreshes.Load() != 1 {
 		t.Fatalf("RefreshToken() calls = %d, want 1", source.refreshes.Load())
 	}
@@ -1169,6 +1260,10 @@ func TestClientRESTLogsUnexpectedFailuresByDefault(t *testing.T) {
 }
 
 func TestClientRESTAggregatesUsageAndBacksOffAfterRateLimit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	resetAt := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
@@ -1262,6 +1357,10 @@ func TestClientRESTAggregatesUsageAndBacksOffAfterRateLimit(t *testing.T) {
 }
 
 func TestClientRESTDoesNotGloballyBackOffAfterSecondaryFanoutThrottle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	resetAt := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
@@ -1337,6 +1436,10 @@ func TestClientRESTDoesNotGloballyBackOffAfterSecondaryFanoutThrottle(t *testing
 }
 
 func TestClientRESTStopsFanoutAtRequestCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -1466,6 +1569,10 @@ func TestNewClientLogsEffectiveRESTFanoutCap(t *testing.T) {
 }
 
 func TestClientRESTFanoutBudgetsIsolateProjectOperations(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -1559,6 +1666,10 @@ func TestSortedRESTEndpointUsagesUsesBudgetTieBreakers(t *testing.T) {
 }
 
 func TestClientRESTCountsRepositoryIssuesAsFanout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -1641,6 +1752,10 @@ func TestRESTFanoutEndpointFamilyIncludesBulkHydrationReads(t *testing.T) {
 }
 
 func TestClientRESTStopsEndpointFamilyFanoutBelowReserve(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	resetAt := time.Now().UTC().Add(time.Hour)
@@ -1672,15 +1787,24 @@ func TestClientRESTStopsEndpointFamilyFanoutBelowReserve(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/commits/abc/statuses", nil, nil); err != nil {
+	scope := &connector.RESTScope{Name: "refresh"}
+	ctx := connector.WithRESTScope(t.Context(), scope)
+	if err := client.REST(ctx, http.MethodGet, "/repos/digitaldrywood/detent/commits/abc/statuses", nil, nil); err != nil {
 		t.Fatalf("REST() first commit statuses error = %v", err)
 	}
-	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/commits/def/statuses", nil, nil)
+	err = client.REST(ctx, http.MethodGet, "/repos/digitaldrywood/detent/commits/def/statuses", nil, nil)
 	if !errors.Is(err, ErrRESTBudgetReserved) {
 		t.Fatalf("REST() reserve fanout error = %v, want ErrRESTBudgetReserved", err)
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("REST calls = %d, want reserve to stop second request", calls.Load())
+	}
+
+	assertScopeTiming(t, scope, "http_transport", "commit statuses", "200", 1)
+	assertScopeTiming(t, scope, "token_resolution_inclusive", "commit statuses", "200", 2)
+	counts := scope.Counts()
+	if len(counts) != 2 || counts[1].Outcome != "reserve-refused" || counts[1].Count != 1 {
+		t.Fatalf("reserve outcomes changed: %#v", counts)
 	}
 
 	usage := client.FlushRESTRateLimitUsage()
@@ -1698,6 +1822,10 @@ func TestClientRESTStopsEndpointFamilyFanoutBelowReserve(t *testing.T) {
 }
 
 func TestClientRESTAllowsFanoutAfterReserveSnapshotReset(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	resetAt := time.Now().UTC().Add(-time.Minute)
@@ -1749,6 +1877,10 @@ func TestClientRESTAllowsFanoutAfterReserveSnapshotReset(t *testing.T) {
 }
 
 func TestClientRESTAllowsCoreFanoutAfterSearchPoolBelowReserve(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	var calls atomic.Int64
@@ -1840,6 +1972,10 @@ func TestClientFlushRESTRateLimitUsagePrefersCoreBudget(t *testing.T) {
 }
 
 func TestClientFlushRESTRateLimitUsageAttributesEndpointBudgets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	now := time.Now().UTC().Truncate(time.Second)
@@ -1948,6 +2084,10 @@ func TestClientRESTCredentialIdentityStaysStableAcrossInstallationTokenRotation(
 }
 
 func TestClientDoesNotWarnOnExpectedSharedRESTBudgetUsage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -2001,6 +2141,10 @@ func TestClientDoesNotWarnOnExpectedSharedRESTBudgetUsage(t *testing.T) {
 }
 
 func TestClientCoalescesExpectedSharedRESTBudgetDivergence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	resetAt := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
@@ -2173,6 +2317,10 @@ func mustAtoi(t *testing.T, value string) int {
 }
 
 func TestClientRESTBackoffAppliesAcrossClientsWithSharedToken(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	token := StaticTokenSource(t.TempDir())
@@ -2288,8 +2436,8 @@ func TestClientRESTBackoffLifetimeAcrossRecreatedClients(t *testing.T) {
 			if tt.wantBackoff {
 				wantCalls = 0
 				var apiErr *StatusError
-				if !errors.Is(err, ErrRateLimited) || !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusTooManyRequests {
-					t.Fatalf("recreated REST() error = %v, want synthetic 429 backoff", err)
+				if !errors.Is(err, ErrRateLimited) || !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusForbidden || apiErr.CredentialIdentity == "" || apiErr.ObservedAt.IsZero() || apiErr.RateLimitKind != restRateLimitKindSecondaryThrottled || apiErr.RetryAfter != 120*time.Second {
+					t.Fatalf("recreated REST() error = %v, want original 403 quota authority", err)
 				}
 			} else if err != nil {
 				t.Fatalf("recreated REST() error = %v", err)
@@ -2302,6 +2450,10 @@ func TestClientRESTBackoffLifetimeAcrossRecreatedClients(t *testing.T) {
 }
 
 func TestClientReportsStaleAuthWhenRefreshFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	source := newRefreshingTokenTestSource("stale-token", "")
@@ -2359,6 +2511,10 @@ func restEndpointUsage(usages []connector.RESTEndpointUsage, family string) conn
 }
 
 func TestClientGraphQLCapturesRateLimitSnapshot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	resetAt := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
@@ -2400,6 +2556,10 @@ func TestClientGraphQLCapturesRateLimitSnapshot(t *testing.T) {
 }
 
 func TestClientGraphQLAggregatesRateLimitCostsByQueryType(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	responses := make(chan string, 3)
@@ -2422,14 +2582,33 @@ func TestClientGraphQLAggregatesRateLimitCostsByQueryType(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	if err := client.GraphQLWithType(context.Background(), "candidate_issues", "query { rateLimit { cost } }", nil, nil); err != nil {
+	scope := &connector.RESTScope{Name: "refresh"}
+	ctx := connector.WithRESTScope(t.Context(), scope)
+	if err := client.GraphQLWithType(ctx, "candidate_issues", "query { rateLimit { cost } }", nil, nil); err != nil {
 		t.Fatalf("first GraphQLWithType() error = %v", err)
 	}
-	if err := client.GraphQLWithType(context.Background(), "candidate_issues", "query { rateLimit { cost } }", nil, nil); err != nil {
+	if err := client.GraphQLWithType(ctx, "candidate_issues", "query { rateLimit { cost } }", nil, nil); err != nil {
 		t.Fatalf("second GraphQLWithType() error = %v", err)
 	}
-	if err := client.GraphQLWithType(context.Background(), "running_states", "query { rateLimit { cost } }", nil, nil); err != nil {
+	if err := client.GraphQLWithType(ctx, "running_states", "query { rateLimit { cost } }", nil, nil); err != nil {
 		t.Fatalf("third GraphQLWithType() error = %v", err)
+	}
+
+	if len(scope.Counts()) != 0 {
+		t.Fatalf("GraphQL counted as REST: %#v", scope.Counts())
+	}
+	timings := scope.Timings()
+	if len(timings) != 4 {
+		t.Fatalf("purpose coverage: %#v", timings)
+	}
+	for _, item := range timings {
+		want := int64(1)
+		if item.QueryPurpose == graphQLQueryCandidateIssues {
+			want = 2
+		}
+		if item.AttemptCount != want || item.TimedCount != want {
+			t.Fatalf("timing count: %#v", item)
+		}
 	}
 
 	usage := client.FlushGraphQLRateLimitUsage()
@@ -2468,6 +2647,10 @@ func TestClientGraphQLAggregatesRateLimitCostsByQueryType(t *testing.T) {
 }
 
 func TestClientGraphQLRecordsRateLimitStatusWithoutSnapshot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -2507,6 +2690,10 @@ func TestClientGraphQLRecordsRateLimitStatusWithoutSnapshot(t *testing.T) {
 }
 
 func TestClientGraphQLRateLimitFailureDoesNotPublishStaleSnapshot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	resetAt := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
@@ -2555,6 +2742,10 @@ func TestClientGraphQLRateLimitFailureDoesNotPublishStaleSnapshot(t *testing.T) 
 }
 
 func TestClientGraphQLInfersMutationCostsFromHeaders(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	resetAt := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
@@ -2724,6 +2915,10 @@ func TestClientGraphQLCountsStaleHeaderInferredMutation(t *testing.T) {
 }
 
 func TestClientGraphQLCapturesRetryAfterRateLimit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -2760,6 +2955,10 @@ func TestClientGraphQLCapturesRetryAfterRateLimit(t *testing.T) {
 }
 
 func TestClientGraphQLClearsRetryAfterOnHeaderRefresh(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	responses := make(chan func(http.ResponseWriter), 2)
@@ -2837,6 +3036,10 @@ func TestClientGraphQLClearsRetryAfterOnHeaderRefresh(t *testing.T) {
 }
 
 func TestClientGraphQLRejectsInvalidPayloads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -3078,6 +3281,10 @@ func TestClientRESTBudgetRecordsResourceHeaderPresence(t *testing.T) {
 				"/repos/o/r/commits/abc/check-runs", http.StatusOK, headers, nil, now, false,
 			)
 
+			observations := client.RESTRateLimitStatus().Requests
+			if len(observations) != 1 || !observations[0].LastObservedAt.Equal(now) || observations[0].UsedObserved {
+				t.Fatalf("operation observation = %#v", observations)
+			}
 			budgets := client.RESTRateLimitStatus().Budgets
 			if len(budgets) != 1 {
 				t.Fatalf("budgets = %#v, want one endpoint-family budget", budgets)
@@ -3263,6 +3470,10 @@ func TestClientRESTResourceReserveAdmissionUsesEndpointFamilyWindow(t *testing.T
 }
 
 func TestConnectorRESTResourceReserveRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	tests := []struct {
 		name      string
@@ -3351,6 +3562,10 @@ func TestClientGraphQLSecondaryRepeatedFailures(t *testing.T) {
 }
 
 func TestClientGraphQLSecondarySharedAcrossProjects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, sameCredential := range []bool{true, false} {
 		t.Run(strconv.FormatBool(sameCredential), func(t *testing.T) {

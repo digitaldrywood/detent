@@ -26,9 +26,6 @@ func (c *trimSwapContext) Err() error {
 }
 
 func TestTrimRootReplacement(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows prevents replacing a directory held open by os.Root")
-	}
 	for _, tt := range []struct {
 		name     string
 		age      time.Duration
@@ -59,7 +56,15 @@ func TestTrimRootReplacement(t *testing.T) {
 			}
 			moved := filepath.Join(base, "moved")
 			ctx := &trimSwapContext{Context: t.Context(), swap: func() {
-				if err := os.Rename(root, moved); err != nil {
+				err := os.Rename(root, moved)
+				if runtime.GOOS == "windows" {
+					// Windows protects the open root by refusing its rename.
+					if err == nil {
+						t.Fatal("renamed cache while its os.Root was open")
+					}
+					return
+				}
+				if err != nil {
 					t.Fatal(err)
 				}
 				if err := os.Symlink(outside, root); err != nil {
@@ -69,11 +74,20 @@ func TestTrimRootReplacement(t *testing.T) {
 			if _, err := Trim(ctx, root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.maxBytes}, now); err != nil {
 				t.Fatal(err)
 			}
+			if ctx.swap != nil {
+				t.Fatal("root replacement was not attempted during trim")
+			}
 			if data, err := os.ReadFile(filepath.Join(outside, name)); err != nil || string(data) != "untouched" {
 				t.Fatalf("outside file changed: %q, %v", data, err)
 			}
 			if _, err := os.Stat(filepath.Join(outside, "detent-trim.txt")); !os.IsNotExist(err) {
 				t.Fatalf("outside marker created: %v", err)
+			}
+			if runtime.GOOS == "windows" {
+				// Rename now succeeds only if Trim released its root handle.
+				if err := os.Rename(root, moved); err != nil {
+					t.Fatalf("rename after closing cache root: %v", err)
+				}
 			}
 			if _, err := os.Stat(filepath.Join(moved, name)); !os.IsNotExist(err) {
 				t.Fatalf("original cache entry not evicted: %v", err)

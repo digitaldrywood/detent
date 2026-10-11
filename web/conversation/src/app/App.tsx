@@ -1,9 +1,12 @@
+import { conversationBus } from "../runtime/state/conversationList.ts";
 // Application shell and route surfaces.
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import React from "react";
 import { Outlet, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
+
+import { chatSlashCommands } from "./adapters/chatPrompts.ts";
 
 import type {
   Answers,
@@ -36,9 +39,12 @@ import {
   latestControl,
   unsettledControls,
 } from "../runtime/state/conversationState.ts";
-import { newCommandKey, readLastProject, useClient, writeLastProject } from "./client.ts";
+import { accountKey, newCommandKey, readLastChatProject, readLastProject, useClient, writeLastProject } from "./client.ts";
 import { Button } from "../components/ui/button.tsx";
-import { Composer } from "./components/Composer.tsx";
+import { Composer, type ComposerProps } from "./components/Composer.tsx";
+import { ComposerContextAttachment } from "./components/ComposerContextAttachment.tsx";
+import { useWorkHttp } from "./work/lib/useWork.ts";
+import type { NativeIssue } from "../contracts/work.ts";
 import { ComposerContextStrip } from "./components/ComposerContextStrip.tsx";
 import { useIssuePullRequest } from "./adapters/issuePullRequest.ts";
 import { DraftHeroHeadline } from "./components/DraftHeroHeadline.tsx";
@@ -50,7 +56,10 @@ import {
 import { QuestionRecord } from "./components/QuestionRecord.tsx";
 import { Timeline } from "./components/Timeline.tsx";
 import { ChatWorkspace } from "./components/ChatWorkspace.tsx";
+import { useSidebarFindings } from "./adapters/sidebarFindings.ts";
 import { SidebarDataProvider } from "./adapters/sidebarData.tsx";
+import { sidebarProjectScopeKey } from "./adapters/shell.ts";
+import { setSidebarProjectScopeKey, useUiStateStore } from "../uiStateStore.ts";
 import { publishPaletteShell } from "./adapters/paletteContext.ts";
 import { useKeybindingActions } from "./adapters/keybindingActions.ts";
 import { CommandPalette } from "./components/CommandPalette.tsx";
@@ -62,6 +71,7 @@ import { composerBanners } from "./adapters/composerBanners.tsx";
 import { usePendingQuestion } from "./adapters/pendingQuestions.ts";
 import {
   focusSidebarSearch,
+  SidebarSearchProvider,
   publishSidebarData,
   useSidebarSearchQuery,
   type SidebarShellData,
@@ -79,7 +89,7 @@ import { expectedOwner, isActive } from "./lib/execution.ts";
 import { dialogOpen, shortcutFor } from "./lib/shortcuts.ts";
 import { conversationDestination } from "./lib/conversationDestination.ts";
 import { shouldSearchServer } from "./lib/sidebarLogic.ts";
-import { hubPath } from "../runtime/basePath.ts";
+import { hubPath, withoutBasePath } from "../runtime/basePath.ts";
 import { usePageTitle } from "./pageTitle.ts";
 
 function hasLunaCoordinator(choices: PreferenceChoices | undefined): boolean {
@@ -123,6 +133,7 @@ export interface ConnectionChip {
 
 export interface ShellState {
   readonly projectId: string;
+  readonly newChatSubjectId: string | null;
   readonly setProjectId: (id: string) => void;
   readonly conversations: readonly Conversation[];
   readonly connection: ConnectionChip;
@@ -132,8 +143,12 @@ export interface ShellState {
 const ShellContext = React.createContext<ShellState | null>(null);
 
 /** The shell's state, for the route surfaces it renders through its outlet. */
+export function useOptionalShell(): ShellState | null {
+  return React.useContext(ShellContext);
+}
+
 export function useShell(): ShellState {
-  const shell = React.useContext(ShellContext);
+  const shell = useOptionalShell();
   if (shell === null) throw new Error("The shell is not mounted.");
   return shell;
 }
@@ -211,16 +226,33 @@ function ShellBody(): React.ReactElement {
   const list = useListState(client);
   const search = useAtomSet(client.searchConversations, { mode: "promise" });
   const refreshList = useAtomSet(client.refreshList, { mode: "promise" });
-  const params = useParams({ strict: false }) as { conversationId?: string };
+  const params = useParams({ strict: false }) as { conversationId?: string; projectId?: string; workItemId?: string };
   // The Work destination and the Browse group need to know where they are.
   // `useRouterState` is the only source of the current path that stays correct
   // through a redirect; `params` alone cannot tell `/work` from `/work/changes`.
-  const activePath = useRouterState({ select: (state) => state.location.pathname });
+  const activePath = useRouterState({ select: (state) => withoutBasePath(state.location.pathname) });
+
+  const [newChatSubjectId, setNewChatSubjectId] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (activePath !== "/chat") {
+      setNewChatSubjectId(params.workItemId ?? null);
+    }
+  }, [activePath, params.workItemId]);
 
   const projects = client.bootstrap.projects;
-  const [projectId, setProjectIdState] = React.useState(
+  const findings = useSidebarFindings(projects);
+  const [selectedProjectId, setProjectIdState] = React.useState(
     () => readLastProject() ?? projects[0]?.id ?? "",
   );
+  const projectId = params.projectId ?? (activePath === "/work" ? "" : selectedProjectId);
+  React.useEffect(() => {
+    setProjectIdState(projectId);
+    writeLastProject(projectId);
+    const project = projects.find((candidate) => candidate.id === projectId);
+    useUiStateStore.setState((state) =>
+      setSidebarProjectScopeKey(state, project === undefined ? null : sidebarProjectScopeKey(project)),
+    );
+  }, [projectId, projects]);
   // The copied `components/Sidebar.tsx` owns its search box and searches its
   // own list by title (`Sidebar.logic.ts`). The shell reads that query back
   // off the input so it can ask the hub for conversations past the first page
@@ -228,6 +260,11 @@ function ShellBody(): React.ReactElement {
   // (`state/entities.ts` `useThreadShells`).
   const query = useSidebarSearchQuery();
   const [serverResults, setServerResults] = React.useState<readonly Conversation[]>([]);
+  React.useEffect(() => conversationBus.subscribe((update) => {
+    if ("removed" in update || update.archived) {
+      setServerResults((current) => current.filter((conversation) => conversation.id !== update.id));
+    }
+  }), []);
   const [asOf, setAsOf] = React.useState<number | null>(null);
 
   const setProjectId = React.useCallback((id: string) => {
@@ -281,6 +318,7 @@ function ShellBody(): React.ReactElement {
 
   const shell: ShellState = {
     projectId,
+    newChatSubjectId,
     setProjectId,
     conversations,
     connection,
@@ -295,7 +333,13 @@ function ShellBody(): React.ReactElement {
     activeProjectId: projectId === "" ? null : projectId,
     onProjectChange: (id: string) => {
       setProjectId(id);
-      void navigate({ to: "/chat/p/$projectId", params: { projectId: id } });
+      if (activePath === "/reports") {
+        writeLastProject(id);
+      } else if (activePath.startsWith("/work")) {
+        void navigate({ to: id === "" ? "/work" : `/work/p/${id}` });
+      } else {
+        void navigate({ to: id === "" ? "/chat" : `/chat/p/${id}` });
+      }
     },
     conversations,
     serverResults,
@@ -327,6 +371,7 @@ function ShellBody(): React.ReactElement {
       onNavigate: (to: string) => void navigate({ to }),
     },
     attention,
+    findings,
   };
 
   // `state/entities.ts` reads the same value outside React, for the one path
@@ -337,6 +382,7 @@ function ShellBody(): React.ReactElement {
     <ShellContext.Provider value={shell}>
 
       <SidebarDataProvider value={sidebarProps}>
+        <SidebarSearchProvider work={activePath === "/work" || activePath.startsWith("/work/")}>
 
         <NewProjectProvider>
           <NewIssueProvider>
@@ -351,6 +397,7 @@ function ShellBody(): React.ReactElement {
             </CommandPalette>
           </NewIssueProvider>
         </NewProjectProvider>
+        </SidebarSearchProvider>
       </SidebarDataProvider>
     </ShellContext.Provider>
   );
@@ -405,7 +452,31 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
   const navigate = useNavigate();
   const create = useAtomSet(client.createConversation, { mode: "promise" });
   const sendFirst = useAtomSet(client.sendMessage, { mode: "promise" });
-  const active = projectId ?? shell.projectId;
+  const http = useWorkHttp();
+  const subjectId = projectId === undefined ? shell.newChatSubjectId : null;
+  const [loadedSubject, setSubject] = React.useState<NativeIssue | null>(null);
+  const subject = loadedSubject?.work_item_id === subjectId ? loadedSubject : null;
+  const [contextError, setContextError] = React.useState<string | null>(null);
+  const [removedContext, setRemovedContext] = React.useState(false);
+  React.useEffect(() => {
+    let cancelled = false;
+    setSubject(null);
+    setContextError(null);
+    setRemovedContext(false);
+    if (subjectId !== null) {
+      void http.getWorkItemById(subjectId).then((issue) => {
+        if (!cancelled) setSubject(issue);
+      }).catch((cause) => {
+        if (!cancelled) setContextError(cause instanceof Error ? cause.message : String(cause));
+      });
+    }
+    return () => { cancelled = true; };
+  }, [http, subjectId, projectId]);
+  const writableProjects = client.bootstrap.projects.filter((candidate) => candidate.can_write);
+  const rememberedProjectId = shell.projectId || readLastChatProject();
+  const active = subject?.project_id ?? projectId
+    ?? writableProjects.find((candidate) => candidate.id === rememberedProjectId)?.id
+    ?? writableProjects[0]?.id ?? "";
   const project = client.bootstrap.projects.find((candidate) => candidate.id === active);
   usePageTitle("Chat", projectId === undefined ? undefined : project?.name);
   // No runner able to take coordinator turns is enrolled here. The message is
@@ -447,18 +518,20 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
     client.drafts.writeDraft(scope, value);
   };
 
-  const send = async () => {
-    if (project?.can_write === false) {
+  const send = async (prompt?: string) => {
+    const messageText = prompt ?? draft;
+    if (project === undefined || (subjectId !== null && subject === null)) return;
+    if (project.can_write === false) {
       setError("You have read-only access to this project.");
       return;
     }
-    if (draft.trim().length === 0 && attachments.staged.length === 0) return;
+    if (messageText.trim().length === 0 && attachments.staged.length === 0) return;
     setSending(true);
     setError(null);
     client.drafts.writeOutbox(scope, {
       key: createKey.current,
       kind: "create",
-      text: draft,
+      text: messageText,
       createdAt: new Date().toISOString(),
       status: "unknown",
       error: null,
@@ -469,8 +542,9 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
     const withFiles = attachments.staged.length > 0;
     const result = await create({
       projectId: active,
+      ...(removedContext || subject === null ? {} : { subjectWorkItemId: subject.work_item_id }),
       key: createKey.current,
-      ...(withFiles ? {} : { firstMessage: { key: commandKey.current, text: draft } }),
+      ...(withFiles ? {} : { firstMessage: { key: commandKey.current, text: messageText } }),
     });
     if (result._tag !== "Success") {
       setSending(false);
@@ -495,7 +569,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
         projectId: active,
         conversationId: createdId,
         key: commandKey.current,
-        text: draft,
+        text: messageText,
         attachments: ids,
       });
       attachments.clear();
@@ -505,6 +579,9 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
     client.drafts.writeDraft(scope, "");
     commandKey.current = newCommandKey();
     createKey.current = newCommandKey();
+    // Bind the acknowledged project before opening a chat from All projects.
+    // The sidebar list can refresh after the route mounts.
+    shell.setProjectId(result.success.conversation.project_id);
     // The composer moves from centred to docked across this navigation. On a
     // narrow viewport that move is animated; reduced motion and browsers
     // without view transitions fall through to a plain navigation.
@@ -531,25 +608,26 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
       onNewThreadInProject={() => void navigate({ to: "/chat" })}
     >
 
-      <div className="dc-hero flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-3 py-8 sm:px-5">
-        <div className="w-full max-w-3xl">
-          <div className="pb-8">
+      <div className="dc-hero dc-chat-composer flex min-h-0 flex-1 flex-col items-center justify-end px-3 pt-8 pb-3 md:justify-center md:overflow-y-auto md:px-5 md:py-8">
+        <div className="flex min-h-0 w-full max-w-3xl flex-1 flex-col md:flex-none">
+          <div className="min-h-0 flex-1 overflow-y-auto pb-8 md:flex-none md:overflow-visible">
             <DraftHeroHeadline
               projects={client.bootstrap.projects}
               activeProjectId={active === "" ? null : active}
               activeProjectName={project?.name ?? null}
               onProjectChange={(id) => {
+                if (draft.length > 0) client.drafts.writeDraft({ ...scope, projectId: id }, draft);
                 shell.setProjectId(id);
                 void navigate({ to: "/chat/p/$projectId", params: { projectId: id } });
               }}
             />
           </div>
-          {error === null ? null : (
+          {(error ?? contextError) === null ? null : (
             <div
               className="mx-auto mb-2 w-full max-w-3xl rounded-md bg-error-surface px-3 py-2 text-error-foreground text-sm"
               role="alert"
             >
-              {error}
+              {error ?? contextError}
             </div>
           )}
           <Composer
@@ -561,7 +639,16 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
             autoFocus
             label="Message"
             placeholder="Ask for changes, send follow-ups, or describe the work"
-            blockedReason={project?.can_write === false ? "Read-only project" : null}
+            promptContext={removedContext || project === undefined || (subjectId !== null && subject === null) ? undefined : (
+              <ComposerContextAttachment
+                label={subject === null ? project.name : `#${subject.number}`}
+                onRemove={() => setRemovedContext(true)}
+                disabled={sending}
+              />
+            )}
+            blockedReason={
+              subjectId !== null && subject === null ? "Loading issue context" : project === undefined ? "Choose a project first" : project.can_write === false ? "Read-only project" : null
+            }
             attachments={attachments}
             preferences={preferences}
             preferenceChoices={generalChatChoices(client.bootstrap.preferences)}
@@ -570,6 +657,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
             // `/handoff` are not on offer here; the draft's pickers, paperclip
             // and draft are, and the composer supplies those itself.
             slashCommands={[
+              ...chatSlashCommands({ issue: !removedContext && subject !== null, coordinator: project !== undefined && project.can_write !== false, insert: onChange, send: (prompt) => void send(prompt) }),
               {
                 name: "shortcuts",
                 description: "Open the keyboard shortcuts",
@@ -584,7 +672,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
             contextStrip={
               <ComposerContextStrip
                 projectName={project?.name ?? null}
-                issueIdentifier={null}
+                issueIdentifier={removedContext || subject === null ? null : `#${subject.number}`}
                 onCreateIssue={null}
                 draft
               />
@@ -604,10 +692,6 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
       </div>
     </ChatWorkspace>
   );
-}
-
-function accountKey(client: ConversationClient): string {
-  return `${client.bootstrap.organization.id}:${client.bootstrap.actor.principal_id}`;
 }
 
 /** The issue a linked conversation carries, as the transcript reports it. */
@@ -688,6 +772,7 @@ export function ConversationView({
   conversationId,
   projectId,
   header = true,
+  issueAskComposer,
 }: {
   conversationId: string;
   projectId: string;
@@ -698,6 +783,7 @@ export function ConversationView({
    * else about the view is unchanged.
    */
   header?: boolean;
+  issueAskComposer?: Pick<ComposerProps, "label" | "placeholder" | "promptClassName" | "promptContext" | "sendLabel" | "focusRequest" | "footerControls" | "attachControl" | "disabled">;
 }): React.ReactElement {
   const client = useClient();
   const shell = useShell();
@@ -776,14 +862,15 @@ export function ConversationView({
     handoffTrigger.current?.focus();
   }, []);
 
-  const send = async () => {
+  const send = async (prompt?: string) => {
+    const messageText = prompt ?? draft;
     const files = attachments.ids;
     // A message is text, files, or both (decisions.md §17.1): a drop with no
     // sentence is still something to send.
-    if (draft.trim().length === 0 && files.length === 0) return;
+    if (messageText.trim().length === 0 && files.length === 0) return;
     if (attachments.uploading) return;
     setSending(true);
-    const text = draft;
+    const text = messageText;
     await sendMessage({
       projectId,
       conversationId,
@@ -1122,7 +1209,7 @@ export function ConversationView({
       isServerThread: true,
       workItemId: detail.conversation.work_item_id,
       issueIdentifier: issue?.identifier ?? detail.conversation.work_item_id,
-      onCreateIssue: linked || closed ? null : () => openHandoff(null),
+      onCreateIssue: linked || closed || detail.conversation.subject_work_item_id != null ? null : () => openHandoff(null),
     },
     <>
       <div className="relative flex min-h-0 flex-1 flex-col">
@@ -1138,7 +1225,7 @@ export function ConversationView({
             onDismiss={(entry) =>
               void dismissPending({ projectId, conversationId, key: entry.key })
             }
-            onCreateIssue={linked || closed ? undefined : (proposal) => openHandoff(proposal)}
+            onCreateIssue={linked || closed || detail.conversation.subject_work_item_id != null ? undefined : (proposal) => openHandoff(proposal)}
             onOpenIssue={openIssue}
 
             renderQuestion={(question) =>
@@ -1207,7 +1294,7 @@ export function ConversationView({
           </div>
         )}
 
-        <div className="shrink-0 px-3 pb-3 sm:px-5 sm:pb-4">
+        <div className="dc-chat-composer shrink-0 px-3 pb-3 sm:px-5 sm:pb-4">
           <div className="mx-auto w-full max-w-3xl">
             {handoffOpen ? (
               <HandoffForm
@@ -1246,7 +1333,6 @@ export function ConversationView({
               autoFocus={!closed}
               label="Message"
               blockedReason={composerBlockedReason}
-              disabled={closed}
               preferences={linked ? turnPreferences(detail.conversation) : generalChatPreferences(turnPreferences(detail.conversation), client.bootstrap.preferences)}
               preferenceChoices={linked ? linkedChatChoices(client.bootstrap.preferences) : generalChatChoices(client.bootstrap.preferences)}
               onPreferencesChange={(next) =>
@@ -1262,11 +1348,14 @@ export function ConversationView({
               // where a send goes (Michael, September 12: "Queued for the next
               // attempt, why is this showing if we have the top banner").
               describedBy={null}
+              {...issueAskComposer}
+              disabled={closed || issueAskComposer?.disabled === true}
               // The chat's own slash commands. Everything else the menu offers
               // — the three pickers, the paperclip, the draft, the interrupt —
               // the composer supplies from its own handles.
               slashCommands={[
-                ...(linked || closed
+                ...chatSlashCommands({ issue: detail.conversation.subject_work_item_id != null, coordinator: !linked && !closed, insert: (prompt) => { setDraft(prompt); client.drafts.writeDraft(scope, prompt); }, send: (prompt) => void send(prompt) }),
+                ...(linked || closed || detail.conversation.subject_work_item_id != null
                   ? []
                   : [
                       {
@@ -1290,8 +1379,16 @@ export function ConversationView({
                     }),
                 },
               ]}
+              skills={detail.skills}
               contextStrip={
-                <ChatContextStrip
+                issueAskComposer !== undefined ? undefined : detail.conversation.subject_work_item_id != null ? (
+                  <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+                    <button type="button" onClick={() => openIssue(detail.conversation.subject_work_item_id as string)} className="rounded-md border border-border px-2 py-1 hover:bg-muted">
+                      {detail.conversation.title.match(/^#\d+/)?.[0] ?? "Issue"} attached
+                    </button>
+                    <span>Private · Never posted to the issue</span>
+                  </div>
+                ) : <ChatContextStrip
                   projectId={projectId}
                   workItemId={detail.conversation.work_item_id}
                   projectName={project?.name ?? null}
@@ -1299,7 +1396,7 @@ export function ConversationView({
                     linked ? (issue?.identifier ?? detail.conversation.work_item_id) : null
                   }
                   issueLane={detail.conversation.work_item?.lane ?? issue?.lane ?? null}
-                  onCreateIssue={linked || closed ? null : () => openHandoff(null)}
+                  onCreateIssue={linked || closed || detail.conversation.subject_work_item_id != null ? null : () => openHandoff(null)}
                   onOpenIssue={
                     linked && detail.conversation.work_item_id !== null
                       ? () => openIssue(detail.conversation.work_item_id as string)

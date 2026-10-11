@@ -1,6 +1,7 @@
 package global
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -520,6 +521,53 @@ func TestUpdateUsesSixHourDefaultInterval(t *testing.T) {
 	}
 }
 
+func TestHubRunnerUpdateDefaultsAndOptOut(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		hub       bool
+		update    string
+		wantCheck bool
+		wantApply bool
+	}{
+		{name: "standalone disabled"},
+		{name: "Hub defaults", hub: true, wantCheck: true, wantApply: true},
+		{name: "Hub interval only", hub: true, update: "update:\n  check_interval_hours: 2\n", wantCheck: true, wantApply: true},
+		{name: "Hub check opt out", hub: true, update: "update:\n  auto_check_enabled: false\n", wantApply: true},
+		{name: "Hub apply opt out", hub: true, update: "update:\n  auto_apply_enabled: false\n", wantCheck: true},
+		{name: "Hub both opt out", hub: true, update: "update:\n  auto_check_enabled: false\n  auto_apply_enabled: false\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			paths := createProjectFiles(t)
+			configPath := filepath.Join(paths.root, "global.yaml")
+			client := ""
+			if test.hub {
+				client = "client:\n  hub_url: https://hub.example.test\n"
+			}
+			writeFile(t, configPath, "apiVersion: detent/v1\nkind: GlobalConfig\n"+client+test.update+"global:\n  max_concurrent_agents: 4\n  scheduling: weighted\nprojects:\n  - id: detent\n    workflow: "+paths.workflow+"\n    workdir: "+paths.workdir+"\n    weight: 1\n    priority: 0\n")
+			cfg, err := Read(configPath, WithHome(paths.home))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Update.AutoCheckEnabled != test.wantCheck || cfg.Update.AutoApplyEnabled != test.wantApply {
+				t.Fatalf("Update = %#v, want check %t, apply %t", cfg.Update, test.wantCheck, test.wantApply)
+			}
+			if err := Write(configPath, cfg, WithHome(paths.home)); err != nil {
+				t.Fatal(err)
+			}
+			reloaded, err := Read(configPath, WithHome(paths.home))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reloaded.Update.AutoCheckEnabled != test.wantCheck || reloaded.Update.AutoApplyEnabled != test.wantApply {
+				t.Fatalf("reloaded Update = %#v, want check %t, apply %t", reloaded.Update, test.wantCheck, test.wantApply)
+			}
+		})
+	}
+}
+
 func TestReadAllowsRefBackedRelativeWorkflow(t *testing.T) {
 	t.Parallel()
 
@@ -619,11 +667,13 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 		LogLevel:              "debug",
 		LogMaxSizeBytes:       &logMaxSizeBytes,
 		LogMaxBackups:         &logMaxBackups,
-		GitHubToken:           "gh",
+		GitHubToken:           "github_test_token",
 		APIToken:              "detent_test_api_token",
 		TrustLoopbackPeerRead: true,
+		DashboardAccess:       DashboardAccess{Mode: DashboardAccessModePrivateToken, Token: strings.Repeat("d", 42) + "A", AllowWrite: true},
 		Port:                  &port,
 		Global: Settings{
+			LocalIntakeEnabled:  new(false),
 			MaxConcurrentAgents: 3,
 			RateWindowPacing:    workflowconfig.DefaultRateWindowPacing(),
 			Scheduling:          SchedulingStrict,
@@ -646,25 +696,46 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 		},
 		Projects: []Project{
 			{
-				GlobalCache:      defaultSettings().Cache.Normalized(),
-				ID:               "detent",
-				Pool:             "code",
-				Workflow:         paths.workflowPath,
-				Workdir:          paths.workdirPath,
-				Color:            "#1192e8",
-				Weight:           5,
-				Priority:         2,
-				Paused:           true,
-				PausedReason:     "release hold",
-				PausedAt:         "2026-07-20T12:00:00Z",
-				PausedUntilIssue: "digitaldrywood/detent#1499",
-				CredentialRef:    "github-default",
+				LocalIntakeEnabled: new(true),
+				GlobalCache:        defaultSettings().Cache.Normalized(),
+				ID:                 "detent",
+				Pool:               "code",
+				Workflow:           paths.workflowPath,
+				Workdir:            paths.workdirPath,
+				Color:              "#1192e8",
+				Weight:             5,
+				Priority:           2,
+				Paused:             true,
+				PausedReason:       "release hold",
+				PausedAt:           "2026-07-20T12:00:00Z",
+				PausedUntilIssue:   "digitaldrywood/detent#1499",
+				CredentialRef:      "github-default",
 				Authorization: selector.Selector{
 					Labels: selector.Labels{Include: []string{"release"}},
 					Fields: []selector.FieldEquals{{Name: "Track", Value: "multi-instance"}},
 				},
 			},
 		},
+	}
+
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range []string{cfg.GitHubToken, cfg.APIToken, cfg.DashboardAccess.Token} {
+		if strings.Contains(string(raw), credential) {
+			t.Fatal("JSON configuration contains a credential")
+		}
+	}
+	var public Config
+	if err := json.Unmarshal(raw, &public); err != nil {
+		t.Fatal(err)
+	}
+	if public.GitHubToken != "" || public.APIToken != "" || public.DashboardAccess.Token != "" {
+		t.Fatal("JSON configuration includes credential fields")
+	}
+	if public.LogLevel != cfg.LogLevel || public.Global.MaxConcurrentAgents != cfg.Global.MaxConcurrentAgents || !reflect.DeepEqual(public.Projects, cfg.Projects) || public.DashboardAccess.Mode != cfg.DashboardAccess.Mode || public.DashboardAccess.AllowWrite != cfg.DashboardAccess.AllowWrite {
+		t.Fatal("JSON configuration changed non-credential settings")
 	}
 
 	if err := Write(configPath, cfg, WithHome(paths.home)); err != nil {
@@ -696,6 +767,9 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 	}
 	if got.APIToken != cfg.APIToken {
 		t.Fatalf("APIToken = %q, want %q", got.APIToken, cfg.APIToken)
+	}
+	if got.DashboardAccess != cfg.DashboardAccess {
+		t.Fatal("DashboardAccess did not round-trip through YAML")
 	}
 	if got.TrustLoopbackPeerRead != cfg.TrustLoopbackPeerRead {
 		t.Fatalf("TrustLoopbackPeerRead = %t, want %t", got.TrustLoopbackPeerRead, cfg.TrustLoopbackPeerRead)
@@ -1417,7 +1491,6 @@ func TestReadReportsInvalidConfig(t *testing.T) {
 				"apiVersion: is required",
 				"kind: is required",
 				"global: is required",
-				"projects: is required",
 			},
 		},
 		{

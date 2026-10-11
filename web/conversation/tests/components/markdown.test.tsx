@@ -5,14 +5,67 @@
 // `react-markdown` pipeline holds them because `rehype-raw` is not in it and
 // because the default URL transform strips dangerous schemes. Both are worth a
 // test, because both are one plugin away from being lost.
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Markdown } from "../../src/app/components/Markdown.tsx";
+import { ClientContext } from "../../src/app/client.ts";
+import type { ConversationClient } from "../../src/runtime/bootstrap.ts";
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+const attachmentId = `att_${"a".repeat(32)}`;
+const attachment = { id: attachmentId, project_id: "prj_current", name: "photo.png", content_type: "image/png", size: 120, width: 800, height: 400 };
+const attachmentClient = { http: { origin: "", apiBase: "/organizations/org_current/api/v2", csrfToken: "csrf" } } as ConversationClient;
+
+function cloudMarkdown(source: string, projectId = "prj_current") {
+  return <ClientContext value={attachmentClient}><Markdown source={source} projectId={projectId} /></ClientContext>;
+}
 
 describe("Markdown", () => {
+  it("resolves an attachment in the current scope and opens its image preview", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(attachment)));
+    render(cloudMarkdown(`![A photo](attachment:${attachmentId})`));
+    const image = await screen.findByRole("button", { name: "Preview A photo" });
+    expect(image.getAttribute("src")).toBe(`/organizations/org_current/api/v2/projects/prj_current/attachments/${attachmentId}`);
+    expect(image.getAttribute("width")).toBe("800");
+    expect(image.getAttribute("data-markdown-copy")).toBe(`![A photo](attachment:${attachmentId})`);
+    expect(image.style.maxWidth).toBe("100%");
+    expect(fetch.mock.calls[0]?.[0]).toBe(`/organizations/org_current/api/v2/projects/prj_current/attachments/${attachmentId}/metadata`);
+    fireEvent.click(image);
+    expect(screen.getByRole("dialog", { name: "Expanded image preview" })).toBeTruthy();
+  });
+
+  it("renders a non-image attachment with its stored name, size and download URL", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ...attachment, name: "report.txt", content_type: "text/plain", width: 0, height: 0 })));
+    render(cloudMarkdown(`[Report](attachment:${attachmentId})`));
+    const link = await screen.findByTestId("issue-attachment-file");
+    expect(link.textContent).toContain("report.txt");
+    expect(link.textContent).toContain("KB");
+    expect(link.getAttribute("download")).toBe("report.txt");
+    expect(link.getAttribute("data-markdown-copy")).toBe(`[report.txt](attachment:${attachmentId})`);
+    expect(link.getAttribute("href")).toBe(`/organizations/org_current/api/v2/projects/prj_current/attachments/${attachmentId}`);
+  });
+
+  it.each(["missing", "other project", "other id"])("renders %s attachments as unavailable with no byte URL", async (kind) => {
+    const file = kind === "other project" ? { ...attachment, project_id: "prj_other" } : { ...attachment, id: `att_${"b".repeat(32)}` };
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(file), { status: kind === "missing" ? 404 : 200 }));
+    const { container } = render(cloudMarkdown(`![private](attachment:${attachmentId})`));
+    await screen.findByTestId("attachment-unavailable");
+    expect(container.querySelector("img, a")).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0]?.[0]).toBe(`/organizations/org_current/api/v2/projects/prj_current/attachments/${attachmentId}/metadata`);
+  });
+
+  it("forgets a resolved image immediately when the project changes", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(attachment)));
+    const { container, rerender } = render(cloudMarkdown(`![photo](attachment:${attachmentId})`));
+    await screen.findByTestId("issue-attachment-image");
+    fetch.mockImplementation(async () => new Response("{}", { status: 404 }));
+    rerender(cloudMarkdown(`![photo](attachment:${attachmentId})`, "prj_other"));
+    expect(container.querySelector("img")).toBeNull();
+    await waitFor(() => expect(screen.getByTestId("attachment-unavailable")).toBeTruthy());
+  });
   it("never renders raw HTML from a reply", () => {
     const { container } = render(
       <Markdown source={"<img src=x onerror=alert(1)> <script>alert(1)</script>"} />,

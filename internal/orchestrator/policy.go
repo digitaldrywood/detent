@@ -20,6 +20,16 @@ func (o *Orchestrator) checkDispatchPolicy(ctx context.Context) error {
 	return checker.CheckProjectPolicy(ctx, o.cfg.Project.ID, o.cfg.SchedulingRepository, o.cfg.Policy)
 }
 
+func (o *Orchestrator) prepareDispatchProject(ctx context.Context) error {
+	preparer, ok := o.scheduling.(interface {
+		PrepareProject(context.Context, string) error
+	})
+	if !ok {
+		return nil
+	}
+	return preparer.PrepareProject(ctx, o.cfg.Project.ID)
+}
+
 func (o *Orchestrator) checkAttemptPolicy(attempt store.WorkAttempt) error {
 	if o.cfg.Policy.ID == "" && strings.TrimSpace(attempt.WorkerMetadataJSON) == "" {
 		return nil

@@ -20,7 +20,7 @@ func TestMergeFallbackPublicationFailureRecordsFailedAttempt(t *testing.T) {
 		name string
 		err  error
 	}{
-		{name: "gate failure", err: errors.New("verify merge fallback: merge resolution gate failed: exit status 1")},
+		{name: "gate failure", err: errors.New("verify merge fallback: merge-fallback verification gate failed: exit status 1")},
 		{name: "push failure", err: errors.New("verify merge fallback: push validated merge resolution: rejected")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -161,6 +161,10 @@ func TestMergeFallbackRoutesBoundedOutcomesToRework(t *testing.T) {
 			}
 			if _, ok := state.Claimed[issue.ID]; ok {
 				t.Fatalf("Claimed[%q] present after Rework handoff", issue.ID)
+			}
+			issue.State = tracker.updates[0].state
+			if got := orch.dispatchMode(t.Context(), &state, issue); got != runpkg.RunModeImplement {
+				t.Fatalf("dispatch after Rework handoff = %q, want implementation for unchanged dirty PR", got)
 			}
 		})
 	}

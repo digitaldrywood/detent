@@ -7,8 +7,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,7 +19,9 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 type fakeBilling struct {
@@ -79,6 +84,10 @@ func signedEvent(body string) (string, string) {
 }
 
 func TestSharedBillingJourney(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service integration")
+	}
+
 	t.Parallel()
 	stripe := &fakeBilling{customers: map[string]string{}}
 	allowances := func(projects int64) map[string]int64 {
@@ -92,7 +101,9 @@ func TestSharedBillingJourney(t *testing.T) {
 			{PlanReference: hubserver.PlanReference{ID: "team", Version: 1}, Features: []string{"collaboration"}, Allowances: allowances(30)},
 		},
 	}
-	f := newProvisioningFixtureWith(t, 3, nil, func(f *provisioningFixture) {
+	f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) {
+		a.Prices = []hubserver.HostedBillingPrice{{PriceID: "price_team", Label: "Team", Plan: hubserver.PlanReference{ID: "team", Version: 1}}}
+	}, func(f *provisioningFixture) {
 		f.launcher.plans = plans
 		f.launcher.billing = func() *hubserver.HostedBillingConfig {
 			return &hubserver.HostedBillingConfig{Mode: "test", AccountID: "acct_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte(testWebhookSecret),
@@ -114,6 +125,49 @@ func TestSharedBillingJourney(t *testing.T) {
 	}
 	if portal := dana.do(http.MethodPost, "/organizations/"+id+"/organization/billing/portal", url.Values{"csrf": {csrfFrom(t, page)}}, nil); portal.StatusCode != http.StatusConflict {
 		t.Fatalf("portal before a customer = %d", portal.StatusCode)
+	}
+	// Catches losing the original billing authority/CSRF binding through the
+	// real organization proxy, or creating a provider effect before approval.
+	var session string
+	mcpCall := func(body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, testPublicURL+"/organizations/"+id+"/mcp", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Origin", testPublicURL)
+		request.Header.Set("X-CSRF-Token", csrfFrom(t, page))
+		if session != "" {
+			request.Header.Set("Mcp-Session-Id", session)
+			request.Header.Set("Mcp-Protocol-Version", "2025-11-25")
+		}
+		base, _ := url.Parse(testPublicURL)
+		for _, cookie := range dana.jar.Cookies(base) {
+			request.AddCookie(cookie)
+		}
+		response := httptest.NewRecorder()
+		f.service.Handler().ServeHTTP(response, request)
+		return response
+	}
+	initialized := mcpCall(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"shared-billing","version":"1"}}}`)
+	session = initialized.Header().Get("Mcp-Session-Id")
+	if initialized.Code != http.StatusOK || session == "" {
+		t.Fatalf("MCP initialize=%d %s", initialized.Code, initialized.Body.String())
+	}
+	mcpCall(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	args := `{"price":"price_team","request_id":"shared-purchase"}`
+	checkoutCall := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"` + operatortool.BillingCheckout + `","arguments":` + args + `}}`
+	preview := mcpCall(checkoutCall)
+	var reply struct {
+		Result struct {
+			Structured struct {
+				Preview chat.Action `json:"preview"`
+			} `json:"structuredContent"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(preview.Body.Bytes(), &reply) != nil || reply.Result.Structured.Preview.Status != chat.ActionSucceeded || stripe.creates != 1 || stripe.checkouts != 1 {
+		t.Fatalf("shared preview=%s", preview.Body.String())
+	}
+	replayed := mcpCall(checkoutCall)
+	if !strings.Contains(replayed.Body.String(), `"status":"succeeded"`) || stripe.checkouts != 1 {
+		t.Fatalf("shared replay=%s", replayed.Body.String())
 	}
 	for range 2 {
 		checkout := dana.do(http.MethodPost, "/organizations/"+id+"/organization/billing/checkout", url.Values{"price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
@@ -168,6 +222,41 @@ func TestSharedBillingJourney(t *testing.T) {
 	var mapped string
 	if err := f.service.registry.store.db.QueryRowContext(t.Context(), "SELECT organization_id FROM billing_customers WHERE customer_id = ?", customer).Scan(&mapped); err != nil || mapped != id {
 		t.Fatalf("customer mapping = %q %v", mapped, err)
+	}
+	response, page = dana.get("/organizations/new")
+	if response.StatusCode != http.StatusOK || !strings.Contains(page, "Your Free organization slot is used") || !strings.Contains(page, "price_team") {
+		t.Fatalf("paid creation form = %d %s", response.StatusCode, page)
+	}
+	_, rest, _ := strings.Cut(page, `name="creation_key" value="`)
+	creationKey, _, _ := strings.Cut(rest, `"`)
+	created := dana.do(http.MethodPost, "/organizations", url.Values{"name": {"Second paid organization"}, "creation_key": {creationKey}, "price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
+	if created.StatusCode != http.StatusSeeOther {
+		t.Fatalf("paid creation = %d %s", created.StatusCode, created.Body)
+	}
+	secondID := organizationFromLocation(t, created.Header.Get("Location"))
+	second := f.waitState(t, secondID, "ready")
+	binding, err := f.service.tenantBillingState(t.Context(), second, false)
+	if err != nil || binding.FreeOrganization {
+		t.Fatalf("paid creation consumed Free allowance: %+v %v", binding, err)
+	}
+	destination := dana.login("/organizations/"+secondID+"/organization/billing", "user_dana:porg_"+secondID)
+	if destination != "/organizations/"+secondID+"/organization/billing?checkout_price=price_team" {
+		t.Fatalf("paid creation login destination = %q", destination)
+	}
+	response, page = dana.get(destination)
+	if response.StatusCode != http.StatusOK || !strings.Contains(page, "Complete checkout to activate") || strings.Contains(page, "Complimentary access") || !strings.Contains(page, `value="price_team" selected`) {
+		t.Fatalf("paid creation billing = %d %s", response.StatusCode, page)
+	}
+	view := dana.do(http.MethodGet, "/api/v2/organizations/"+secondID+"/billing", nil, map[string]string{"Accept": "application/json"})
+	var report struct {
+		Entitlement hubserver.HostedEntitlement `json:"entitlement"`
+	}
+	if view.StatusCode != http.StatusOK || json.Unmarshal([]byte(view.Body), &report) != nil || report.Entitlement.Base.ID != "payment_pending" || report.Entitlement.Allowances["projects"] != 0 || report.Entitlement.Allowances["unarchived_issues"] != 0 || slices.Contains(report.Entitlement.Features, "native_execution") {
+		t.Fatalf("unpaid creation allowances = %d %s", view.StatusCode, view.Body)
+	}
+	checkout := dana.do(http.MethodPost, "/organizations/"+secondID+"/organization/billing/checkout", url.Values{"price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
+	if checkout.StatusCode != http.StatusSeeOther || !strings.HasPrefix(checkout.Header.Get("Location"), "https://checkout.stripe.com/") {
+		t.Fatalf("paid creation checkout = %d %s", checkout.StatusCode, checkout.Body)
 	}
 }
 

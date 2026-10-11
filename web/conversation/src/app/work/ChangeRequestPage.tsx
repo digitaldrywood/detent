@@ -30,23 +30,15 @@ import { AttemptDiffBody } from "../components/surfaces/DiffSurface.tsx";
 import { Pill, type PillTone } from "./components/IssueCard.tsx";
 import { WorkTopBar } from "./components/WorkTopBar.tsx";
 import { actorLabel } from "./lib/activity.ts";
+import { currentVersion, useRoundDiff } from "./lib/roundDiff.ts";
 import { ageLabel, issueNumber } from "./lib/format.ts";
 import { NO_RUNNER_NAMES, useRunnerNames, type RunnerNames } from "./lib/runnerNames.ts";
 import { useNow, useWorkHttp } from "./lib/useWork.ts";
 import { newWorkKey, WorkApiError, type WorkHttp } from "./lib/workHttp.ts";
 
-export type ReviewDecision = "approved" | "changes_requested";
+export { currentVersion, diffForRound } from "./lib/roundDiff.ts";
 
-/** The version a change is reviewed at: the current one, else the newest. */
-export function currentVersion(change: ChangeDetail): ChangeVersion | null {
-  return (
-    change.versions.find(
-      (version) => version.version_id === change.change.current_version_id,
-    ) ??
-    change.versions.at(-1) ??
-    null
-  );
-}
+export type ReviewDecision = "approved" | "changes_requested";
 
 /** The version the reader asked for, falling back to the current one. */
 export function selectVersion(
@@ -180,8 +172,10 @@ export interface ChangeRequestViewProps {
   readonly version: ChangeVersion | null;
   readonly diff: AttemptDiff | null;
   readonly diffLoading: boolean;
-  /** False for a reader who may not write: the decisions are not offered. */
+  /** A project write grant permits discussion comments. */
   readonly canWrite: boolean;
+  /** Hosted reviews require an owner or admin with a project write grant. */
+  readonly canReview: boolean;
   readonly busy: boolean;
   readonly now: number;
   readonly viewerPrincipalId: string;
@@ -201,10 +195,10 @@ export function ChangeRequestView(props: ChangeRequestViewProps): React.ReactEle
   const [draft, setDraft] = React.useState("");
   const text = draft.trim();
   const current = version !== null && version.version_id === change.change.current_version_id;
-  const decisions = props.canWrite && version !== null;
+  const decisions = props.canReview && version !== null;
   // No decision while the round's diff is still being read: what the reader
   // sees must be the round they decide on.
-  const disabled = props.busy || props.diffLoading || !decisions;
+  const decisionDisabled = props.busy || props.diffLoading || !decisions;
 
   const act = async (run: () => Promise<void>) => {
     await run();
@@ -272,7 +266,7 @@ export function ChangeRequestView(props: ChangeRequestViewProps): React.ReactEle
           )}
         </section>
 
-        {decisions ? (
+        {props.canWrite ? (
           <section
             className="rounded-lg border border-border bg-card p-3"
             data-testid="change-review-actions"
@@ -287,36 +281,40 @@ export function ChangeRequestView(props: ChangeRequestViewProps): React.ReactEle
               onChange={(event) => setDraft(event.currentTarget.value)}
             />
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Button
-                size="sm"
-                data-testid="change-approve"
-                disabled={disabled || !current}
-                title={current ? undefined : "Only the current round can be approved"}
-                onClick={() => void act(() => props.onReview("approved", text))}
-              >
-                Approve
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive-outline"
-                data-testid="change-request-changes"
-                disabled={disabled || !current || text.length === 0}
-                title={
-                  !current
-                    ? "Only the current round can be sent back"
-                    : text.length === 0
-                      ? "Say what needs to change first"
-                      : undefined
-                }
-                onClick={() => void act(() => props.onReview("changes_requested", text))}
-              >
-                Request changes
-              </Button>
+              {decisions ? (
+                <Button
+                  size="sm"
+                  data-testid="change-approve"
+                  disabled={decisionDisabled || !current}
+                  title={current ? undefined : "Only the current round can be approved"}
+                  onClick={() => void act(() => props.onReview("approved", text))}
+                >
+                  Approve
+                </Button>
+              ) : null}
+              {decisions ? (
+                <Button
+                  size="sm"
+                  variant="destructive-outline"
+                  data-testid="change-request-changes"
+                  disabled={decisionDisabled || !current || text.length === 0}
+                  title={
+                    !current
+                      ? "Only the current round can be sent back"
+                      : text.length === 0
+                        ? "Say what needs to change first"
+                        : undefined
+                  }
+                  onClick={() => void act(() => props.onReview("changes_requested", text))}
+                >
+                  Request changes
+                </Button>
+              ) : null}
               <Button
                 size="sm"
                 variant="ghost"
                 data-testid="change-comment"
-                disabled={disabled || text.length === 0}
+                disabled={props.busy || props.diffLoading || text.length === 0}
                 onClick={() => void act(() => props.onComment(text))}
               >
                 Comment
@@ -432,6 +430,37 @@ export function ChangeRequestView(props: ChangeRequestViewProps): React.ReactEle
                   {review.body.length === 0 ? null : (
                     <p className="mt-1 whitespace-pre-wrap text-xs">{review.body}</p>
                   )}
+                  {review.validator === undefined ? null : (
+                    <section aria-label="Acceptance evidence" className="mt-3 space-y-2 text-xs">
+                      <h3 className="font-medium">Acceptance evidence</h3>
+                      {review.validator.criteria_evidence === undefined ? (
+                        <p className="text-muted-foreground">No criterion evidence recorded for this review.</p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {review.validator.criteria_evidence.map((entry, index) => (
+                            <li key={index} className="space-y-1">
+                              <p className="flex flex-wrap items-center gap-2">
+                                <Pill tone={entry.kind === "not_verified" ? "err" : "ok"}>
+                                  {entry.kind === "not_verified" ? "Not verified" : entry.kind === "receipt" ? "Command receipt" : "Named test"}
+                                </Pill>
+                                <span className="whitespace-pre-wrap">{entry.criterion}</span>
+                              </p>
+                              {entry.reference === "" ? null : <p className="break-words text-muted-foreground">{entry.reference}</p>}
+                              {entry.behavior === undefined ? null : <p className="whitespace-pre-wrap text-muted-foreground">{entry.behavior}</p>}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {(review.validator.not_verified?.length ?? 0) === 0 ? null : (
+                        <section aria-label="Not verified criteria" className="space-y-1">
+                          <h4 className="font-medium text-destructive">Not verified</h4>
+                          <ul className="list-inside list-disc">
+                            {review.validator.not_verified?.map((criterion, index) => <li key={index}>{criterion}</li>)}
+                          </ul>
+                        </section>
+                      )}
+                    </section>
+                  )}
                 </li>
               ))}
             </ul>
@@ -515,65 +544,6 @@ function useChangeRequest(
   return { data, error, loading, reload: () => setNonce((value) => value + 1) };
 }
 
-/**
- * The diff a round is decided on: a stored diff whose head is the round's
- * head, and nothing else. The attempt that published the round is asked
- * first; the issue's latest diff stands in only when it carries the same
- * head, so a reader never approves one round while looking at another's
- * code. The previous round's diff is dropped the moment the round changes.
- */
-export function diffForRound(
-  headSha: string | null,
-  candidate: AttemptDiff | null,
-): AttemptDiff | null {
-  if (headSha === null || candidate === null || candidate.files.length === 0) return null;
-  return candidate.head_sha === headSha ? candidate : null;
-}
-
-function useRoundDiff(
-  http: WorkHttp,
-  projectId: string | null,
-  workItemId: string,
-  version: ChangeVersion | null,
-): { diff: AttemptDiff | null; loading: boolean } {
-  const [state, setState] = React.useState<{
-    versionId: string | null;
-    diff: AttemptDiff | null;
-    loading: boolean;
-  }>({ versionId: null, diff: null, loading: false });
-  const attemptId = version?.attempt_id ?? null;
-  const versionId = version?.version_id ?? null;
-  const headSha = version?.head_sha ?? null;
-  React.useEffect(() => {
-    if (projectId === null || versionId === null || headSha === null) {
-      setState({ versionId, diff: null, loading: false });
-      return;
-    }
-    let cancelled = false;
-    setState({ versionId, diff: null, loading: true });
-    void (async () => {
-      const byAttempt =
-        attemptId === null
-          ? null
-          : await http.getAttemptDiff(projectId, attemptId).catch(() => null);
-      const found =
-        byAttempt ??
-        (await http
-          .getWorkItemDiff(projectId, workItemId)
-          .then((answer) => answer.diff)
-          .catch(() => null));
-      if (cancelled) return;
-      setState({ versionId, diff: diffForRound(headSha, found), loading: false });
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [http, projectId, workItemId, attemptId, versionId, headSha]);
-  // A diff is only ever shown for the round it was read for.
-  if (state.versionId !== versionId) return { diff: null, loading: versionId !== null };
-  return { diff: state.diff, loading: state.loading };
-}
-
 export function ChangeRequestPage(): React.ReactElement {
   const { workItemId, changeId } = useParams({ from: "/work/i/$workItemId/changes/$changeId" });
   const search = useSearch({ strict: false }) as { project?: string };
@@ -606,7 +576,9 @@ export function ChangeRequestPage(): React.ReactElement {
       ? null
       : (client.bootstrap.projects.find((candidate) => candidate.id === projectId) ?? null);
   usePageTitle(data === null ? "Change" : `Change: ${data.change.change.title}`, project?.name);
-  const canWrite = project?.can_write !== false;
+  const canWrite = project?.can_write === true;
+  const canReview =
+    canWrite && (client.bootstrap.actor.role === "owner" || client.bootstrap.actor.role === "admin");
 
   const openIssue = React.useCallback(
     () => void navigate({ to: "/work/i/$workItemId", params: { workItemId } }),
@@ -729,6 +701,7 @@ export function ChangeRequestPage(): React.ReactElement {
         diff={roundDiff.diff}
         diffLoading={roundDiff.loading}
         canWrite={canWrite}
+        canReview={canReview}
         busy={busy}
         now={now}
         viewerPrincipalId={client.bootstrap.actor.principal_id}

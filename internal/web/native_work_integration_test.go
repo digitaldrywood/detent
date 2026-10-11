@@ -17,6 +17,10 @@ import (
 )
 
 func TestNativeWorkFormsPersistWithoutGitHub(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte("integration-admin")})
 	if err != nil {

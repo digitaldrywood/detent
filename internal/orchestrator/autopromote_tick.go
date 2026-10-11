@@ -92,7 +92,8 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 	}
 
 	result := autoPromoteTickResult{transitioned: map[string]struct{}{}}
-	for _, issue := range o.autoPromoteEvaluationIssues(state, issues, cfg) {
+	issues = o.localIntakeIssues(state, issues)
+	for _, issue := range o.autoPromoteEvaluationIssues(ctx, state, issues, cfg) {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
 			continue
@@ -106,6 +107,10 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 				continue
 			}
 		}
+		// Unfinished ready PRs need the existing repair lane before a worker can
+		// publish corrections. They do not gain eligibility for promotion.
+		repairOnly := autoPromoteInProgressRepairIssue(issue, cfg) &&
+			(!autoPromoteSourceGateWaitEnabled(cfg) || !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg))
 		rework := gateRequiresPullRequest(cfg.Gate) && normalizeState(issue.State) == normalizeState(cfg.ReworkState)
 		if rework {
 			if _, running := state.Running[issueID]; running {
@@ -123,29 +128,40 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			}
 		}
 
-		allowance, allowanceErr := o.issueAttemptAllowance(ctx, issue)
-		if allowanceErr != nil {
-			continue
-		}
-		if allowance.exhausted() && o.cfg.DeliverableKind != "artifact" {
-			if _, running := state.Running[issueID]; running {
+		merging := mergeWorkerIssue(issue)
+		var securityAudit securityaudit.Evaluation
+		if merging {
+			// The tick already hydrated this PR. Merging consumes only its
+			// exact-head/base audit here; merge preparation owns fresh checks,
+			// reviews, threads, and the final live eligibility verification.
+			if issue.PullRequest == nil || pullRequestHydrationBlocksProgress(issue.PullRequest) {
 				continue
 			}
-			if allowance.Triage != nil {
-				if err := o.publishAttemptTriage(ctx, state, issue, *allowance.Triage, now); err != nil && o.logger != nil {
-					o.logger.Warn("publish stalled issue triage", "issue_id", issue.ID, "error", err)
+			securityAudit = o.securityAuditEvaluation(ctx, issue)
+			if verdict, pending := gate.EvaluateSecurityAudit(cfg.Gate.SecurityAudit, securityAudit); pending && verdict.Action == gate.ActionRework {
+				// A lane-changing verdict still needs a live identity check. Reuse
+				// the existing refresh only for that side effect, never for a
+				// passing or running audit whose lane stays unchanged.
+				issue, securityAudit = o.liveSecurityAuditEvaluation(ctx, issue)
+				if !mergeWorkerIssue(issue) || issue.PullRequest == nil || pullRequestHydrationBlocksProgress(issue.PullRequest) {
+					continue
 				}
-			} else if !mergeWorkerIssue(issue) {
-				o.dispatchIssue(ctx, state, issue, 1, now, "")
 			}
-			continue
+		} else {
+			issue, securityAudit = o.liveSecurityAuditEvaluation(ctx, issue)
 		}
-
-		issue, securityAudit := o.liveSecurityAuditEvaluation(ctx, issue)
-		if gateRequiresPullRequest(cfg.Gate) {
+		if !merging && gateRequiresPullRequest(cfg.Gate) {
 			var hydrated bool
 			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
 			if !hydrated {
+				continue
+			}
+		}
+		if normalizeState(issue.State) == normalizeState(blockedStatusState) && normalizeState(cfg.SourceState) != normalizeState(blockedStatusState) {
+			completed := state.Completed[issueID]
+			accepted := completed.gateWaitEvidence.PullRequest
+			if accepted == nil || issue.PullRequest == nil || accepted.Number != issue.PullRequest.Number ||
+				strings.TrimSpace(accepted.HeadSHA) == "" || strings.TrimSpace(accepted.HeadSHA) != strings.TrimSpace(issue.PullRequest.HeadSHA) {
 				continue
 			}
 		}
@@ -157,12 +173,11 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		}
 		summary := AutoPromoteSummaryFromIssue(issue)
 		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issueID)
-		summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issueID)
+		summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue)
 		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
 		summary.SecurityAudit = securityAudit
-		summary.NativeQueueEligibleHeadSHA = o.nativeMergeQueuePromotionHead(ctx, state, issue, now)
-		decision := EvaluateAutoPromote(issue, summary, cfg, now)
-		if mergeWorkerIssue(issue) {
+		var decision AutoPromoteDecision
+		if merging {
 			// Merging consumes only the audit verdict here; its other gates remain
 			// owned by merge preparation. Passing audits leave the lane unchanged.
 			auditDecision, pending := gate.EvaluateSecurityAudit(cfg.Gate.SecurityAudit, securityAudit)
@@ -171,6 +186,13 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			}
 			decision = autoPromoteDecision(autoPromoteActionFromGate(auditDecision.Action), autoPromoteReasonFromGate(auditDecision.Reason))
 			decision.Findings = autoPromoteFindingsFromGate(auditDecision.Findings)
+		} else {
+			summary.NativeQueueEligibleHeadSHA = o.nativeMergeQueuePromotionHead(ctx, state, issue, now)
+			decision = EvaluateAutoPromote(issue, summary, cfg, now)
+			if repairOnly && (decision.Action != AutoPromoteActionRework ||
+				(decision.Reason != AutoPromoteReasonUnresolvedReviewThreads && decision.Reason != AutoPromoteReasonCINotGreen)) {
+				continue
+			}
 		}
 		if decision.Reason == AutoPromoteReasonSecurityAuditMissing {
 			o.startSecurityAuditStage(ctx, issue, now)
@@ -220,7 +242,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			// Conflict routing must preserve deliberate review parks, while ready
 			// heads remain eligible for the normal promotion path.
 			if reason, ok := o.latestWorkflowLaneReason(ctx, issue, issue.State); ok &&
-				(reason == "operator_move" || reason == attemptAllowanceExhaustedReason) {
+				reason == "operator_move" {
 				decision.Action = AutoPromoteActionSkip
 			}
 		}
@@ -263,12 +285,13 @@ func autoPromoteCompletedFinalState(state *State, issueID string) string {
 	return completed.FinalState
 }
 
-func autoPromoteOperationalCompletionAccepted(state *State, issueID string) bool {
+func autoPromoteOperationalCompletionAccepted(state *State, issue connector.Issue) bool {
 	if state == nil {
 		return false
 	}
-	completed, ok := state.Completed[strings.TrimSpace(issueID)]
-	return ok && strings.TrimSpace(completed.CompletionKind) == workpad.CompletionOperational
+	completed, ok := state.Completed[strings.TrimSpace(issue.ID)]
+	return ok && strings.TrimSpace(completed.CompletionKind) == workpad.CompletionOperational &&
+		operationalCompletionEvidenceCurrent(completed.Issue, issue)
 }
 
 func autoPromoteReviewWaitExpired(state *State, issueID string, cfg AutoPromoteConfig, now time.Time) bool {
@@ -303,6 +326,7 @@ func recordAutoPromoteSnapshotDecision(state *State, issueID string, decision Au
 }
 
 func (o *Orchestrator) autoPromoteEvaluationIssues(
+	ctx context.Context,
 	state *State,
 	issues []connector.Issue,
 	cfg AutoPromoteConfig,
@@ -315,6 +339,33 @@ func (o *Orchestrator) autoPromoteEvaluationIssues(
 	seen := make(map[string]struct{}, len(out))
 	for _, issue := range out {
 		if issueID := strings.TrimSpace(issue.ID); issueID != "" {
+			seen[issueID] = struct{}{}
+		}
+	}
+
+	if !cfg.humanReviewEnabled() && state != nil {
+		for _, issue := range issuesInStates(issues, []string{blockedStatusState}) {
+			issueID := strings.TrimSpace(issue.ID)
+			if issueID == "" {
+				continue
+			}
+			if _, running := state.Running[issueID]; running {
+				continue
+			}
+			if _, included := seen[issueID]; included || o.issueHasStickyBlockReason(ctx, state, issue) || issueBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
+				continue
+			}
+			entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
+			if !ok || normalizeState(entry.Event.PhaseName) != normalizeState(issue.State) ||
+				!workflowLaneEntryMatchesCurrent(issue, entry.Event) || entry.Event.Reason != "completed_active_review_transition" {
+				continue
+			}
+			attempt, ok, err := o.latestSuccessfulGateWaitAttempt(ctx, issue)
+			if err != nil || !ok {
+				continue
+			}
+			state.Completed[issueID] = completedFromGateWaitAttempt(issue, attempt)
+			out = append(out, cloneIssue(issue))
 			seen[issueID] = struct{}{}
 		}
 	}
@@ -335,13 +386,21 @@ func (o *Orchestrator) autoPromoteEvaluationIssues(
 			_, running = state.Running[issueID]
 		}
 		liveRework := gateRequiresPullRequest(cfg.Gate) && !running && normalizeState(issue.State) == normalizeState(cfg.ReworkState) && issueHasOpenPullRequest(issue) && completedActiveIssueReadyForReview(issue, true, false)
-		if !liveRework && (!autoPromoteSourceGateWaitEnabled(cfg) || !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg)) {
+		if !liveRework && !autoPromoteInProgressRepairIssue(issue, cfg) && (!autoPromoteSourceGateWaitEnabled(cfg) || !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg)) {
 			continue
 		}
 		out = append(out, cloneIssue(issue))
 		seen[issueID] = struct{}{}
 	}
 	return out
+}
+
+func autoPromoteInProgressRepairIssue(issue connector.Issue, cfg AutoPromoteConfig) bool {
+	state := normalizeState(issue.State)
+	return gateRequiresPullRequest(cfg.Gate) && state == "in progress" &&
+		state != normalizeState(cfg.SourceState) && state != normalizeState(cfg.PassState) &&
+		state != normalizeState(cfg.ReworkState) &&
+		issueHasOpenPullRequest(issue) && !issue.PullRequest.Draft
 }
 
 func autoPromoteIssueCompleted(state *State, issueID string) bool {
@@ -373,13 +432,10 @@ func (o *Orchestrator) restoreDurableGateWaitCompletionState(
 	if o == nil || state == nil {
 		return durableGateWaitCompletionRestore{issues: cloneIssues(issues)}
 	}
-	issues = o.refreshRequiredGateEvidence(ctx, state, issues)
+	issues = cloneIssues(issues)
 	result := durableGateWaitCompletionRestore{
 		issues:                 issues,
 		validatorHeadHydration: map[string]bool{},
-	}
-	if o.workAttempts == nil {
-		return result
 	}
 	autoCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	gateWaitTracking := autoPromoteDurableGateWaitTrackingEnabled(autoCfg)
@@ -391,9 +447,17 @@ func (o *Orchestrator) restoreDurableGateWaitCompletionState(
 		if issueID == "" {
 			continue
 		}
+		reworkCurrent := false
+		if issue.PullRequest != nil && normalizeState(issue.State) == normalizeState(autoCfg.ReworkState) {
+			issue, reworkCurrent = o.refreshImplementCompletionIssue(ctx, issue)
+			issues[index] = issue
+		}
+		if o.workAttempts == nil {
+			continue
+		}
 		completed, completedOK := state.Completed[issueID]
 		trackedReworkWait := autoPromoteReworkGateWaitTrackedIssue(issue, o.cfg, autoCfg)
-		completion, operational := operationalCompletionFromIssue(issue)
+		_, operational := operationalCompletionFromIssue(issue)
 		var recentAttempts []store.WorkAttempt
 		recentAttemptsLoaded := false
 		if gate.Effective(autoCfg.Gate).Validator.Enabled && trackedReworkWait && !operational {
@@ -422,9 +486,14 @@ func (o *Orchestrator) restoreDurableGateWaitCompletionState(
 				result.validatorHeadHydration[issueID] = true
 			}
 		}
+		if completedOK && completed.CompletionKind == workpad.CompletionOperational && !operationalCompletionEvidenceCurrent(completed.Issue, issue) {
+			delete(state.Completed, issueID)
+			completedOK = false
+		}
 		if completedOK {
 			if completed.GateWaitReason == completedReworkGateWaitReason &&
-				(!completedReworkGateWaitEvidenceCurrent(completed, issue) || !o.reworkGateWaitCurrent(ctx, issue)) {
+				(!reworkCurrent || !completedReworkGateWaitEvidenceCurrent(completed, issue) ||
+					!reworkGateWaitWorkpadComplete(issue) || !reworkGateWaitAuditReady(autoCfg.Gate, o.securityAuditEvaluation(ctx, issue))) {
 				delete(state.Completed, issueID)
 			}
 			continue
@@ -436,12 +505,16 @@ func (o *Orchestrator) restoreDurableGateWaitCompletionState(
 		)
 		switch {
 		case operational:
-			attempt, ok, err = o.latestSuccessfulOperationalCompletionAttempt(ctx, issue, completion)
+			attempt, ok, err = o.latestSuccessfulOperationalCompletionAttempt(ctx, issue)
 		case gateWaitTracking && autoPromoteDurableGateWaitTrackedIssue(issue, o.cfg, autoCfg):
-			if recentAttemptsLoaded {
+			if normalizeState(issue.State) == normalizeState(autoCfg.ReworkState) && !reworkCurrent {
+				continue
+			}
+			if !recentAttemptsLoaded {
+				recentAttempts, err = o.recentAgentTerminalAttempts(ctx, issue)
+			}
+			if err == nil {
 				attempt, ok = o.latestSuccessfulGateWaitAttemptFromHistory(ctx, issue, recentAttempts)
-			} else {
-				attempt, ok, err = o.latestSuccessfulGateWaitAttempt(ctx, issue)
 			}
 		default:
 			continue
@@ -455,6 +528,7 @@ func (o *Orchestrator) restoreDurableGateWaitCompletionState(
 		}
 		state.Completed[issueID] = completedFromGateWaitAttempt(issue, attempt)
 	}
+	result.issues = o.refreshRequiredGateEvidence(ctx, state, issues)
 	return result
 }
 
@@ -511,6 +585,16 @@ func (o *Orchestrator) latestSuccessfulGateWaitAttempt(
 	if err != nil {
 		return store.WorkAttempt{}, false, err
 	}
+	if normalizeState(issue.State) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState) {
+		if !reworkGateWaitPullRequestReady(issue) || reworkGateWaitWorkpadBlocked(issue) {
+			return store.WorkAttempt{}, false, nil
+		}
+		var current bool
+		issue, current = o.refreshImplementCompletionIssue(ctx, issue)
+		if !current {
+			return store.WorkAttempt{}, false, nil
+		}
+	}
 	attempt, ok := o.latestSuccessfulGateWaitAttemptFromHistory(ctx, issue, attempts)
 	return attempt, ok, nil
 }
@@ -520,7 +604,9 @@ func (o *Orchestrator) latestSuccessfulGateWaitAttemptFromHistory(
 	issue connector.Issue,
 	attempts []store.WorkAttempt,
 ) (store.WorkAttempt, bool) {
-	if normalizeState(issue.State) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState) && !o.reworkGateWaitCurrent(ctx, issue) {
+	if normalizeState(issue.State) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState) &&
+		(!reworkGateWaitPullRequestReady(issue) || !reworkGateWaitWorkpadComplete(issue) ||
+			!reworkGateWaitAuditReady(o.cfg.AutoPromote.Gate, o.securityAuditEvaluation(ctx, issue))) {
 		return store.WorkAttempt{}, false
 	}
 	for _, attempt := range attempts {
@@ -562,17 +648,13 @@ func containsReworkGateWaitAttempt(attempts []store.WorkAttempt, issue connector
 func (o *Orchestrator) latestSuccessfulOperationalCompletionAttempt(
 	ctx context.Context,
 	issue connector.Issue,
-	completion operationalCompletion,
 ) (store.WorkAttempt, bool, error) {
-	if completion.recordedAt == nil || completion.recordedAt.IsZero() {
-		return store.WorkAttempt{}, false, nil
-	}
 	attempts, err := o.recentAgentTerminalAttempts(ctx, issue)
 	if err != nil {
 		return store.WorkAttempt{}, false, err
 	}
 	for _, attempt := range attempts {
-		if attempt.TerminalState != store.WorkAttemptTerminalSuccess || attempt.CompletedAt.Before(*completion.recordedAt) {
+		if attempt.TerminalState != store.WorkAttemptTerminalSuccess || !operationalCompletionReceiptMatches(issue, attempt) {
 			continue
 		}
 		record, ok := implementProgressRecordFromAttempt(attempt)
@@ -621,6 +703,19 @@ func gateWaitAttemptMatchesPullRequest(attempt store.WorkAttempt, issue connecto
 	}
 	if issue.PullRequest == nil {
 		return false
+	}
+	if record.CurrentSignature.HeadSHA == "" && record.CurrentSignature.PRNumber == 0 {
+		var metadata struct {
+			RunMode           string `json:"run_mode"`
+			PRNumber          int64  `json:"pr_number"`
+			PRHeadSHA         string `json:"pr_head_sha"`
+			WorkProductPushed bool   `json:"work_product_pushed"`
+		}
+		if err := json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata); err != nil || metadata.RunMode != runpkg.RunModeImplement || !metadata.WorkProductPushed {
+			return false
+		}
+		record.CurrentSignature.PRNumber = metadata.PRNumber
+		record.CurrentSignature.HeadSHA = metadata.PRHeadSHA
 	}
 	currentHeadSHA := strings.TrimSpace(issue.PullRequest.HeadSHA)
 	attemptHeadSHA := strings.TrimSpace(record.CurrentSignature.HeadSHA)
@@ -882,15 +977,6 @@ func completedReworkGateWaitEvidenceCurrent(completed Completed, issue connector
 	return true
 }
 
-func (o *Orchestrator) reworkGateWaitCurrent(ctx context.Context, issue connector.Issue) bool {
-	if !reworkGateWaitPullRequestReady(issue) || reworkGateWaitWorkpadBlocked(issue) {
-		return false
-	}
-	refreshed, current := o.refreshImplementCompletionIssue(ctx, issue)
-	return current && reworkGateWaitWorkpadComplete(refreshed) &&
-		reworkGateWaitAuditReady(o.cfg.AutoPromote.Gate, o.securityAuditEvaluation(ctx, refreshed))
-}
-
 func reworkGateWaitWorkpadComplete(issue connector.Issue) bool {
 	signal, ok := autoPromoteIssueWorkpadSignal(issue)
 	return ok && signal != nil && signal.Invalid == nil && signal.Source == workpad.SourceStructured &&
@@ -983,7 +1069,12 @@ func (o *Orchestrator) applyValidatorStage(
 	if decision.Reason != AutoPromoteReasonValidatorMissing {
 		return decision, true
 	}
-	validation, shouldComment, ok := o.validatorStageResult(ctx, issue)
+	var current bool
+	issue, current = o.refreshValidatorContext(ctx, issue)
+	if !current {
+		return decision, false
+	}
+	validation, shouldComment, ok := o.validatorStageResultForInput(ctx, issue)
 	if !ok {
 		o.startValidatorStage(ctx, state, issue, now)
 		return decision, false
@@ -1186,17 +1277,20 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 	transitioned := map[string]struct{}{}
 	for _, issue := range issuesInStates(issues, staleLinkedPullRequestReconciliationStates(o.cfg)) {
 		issueID := strings.TrimSpace(issue.ID)
-		if issueID == "" || issue.PullRequest == nil || issue.PullRequest.HydrationUnavailableReason == associationUnavailable {
+		if issueID == "" || stateIn(issue.State, o.cfg.TerminalStates) {
+			continue
+		}
+		if running, active := state.Running[issueID]; active && !running.CompletionOwnershipReleased {
+			continue
+		}
+		if resolved, ok := o.resolveMergedCompletionPullRequest(ctx, issue); ok {
+			issue = resolved
+		}
+		if issue.PullRequest == nil || issue.PullRequest.HydrationUnavailableReason == associationUnavailable {
 			continue
 		}
 		pullRequestState := normalizePullRequestState(issue.PullRequest.State)
 		if pullRequestState != "open" && pullRequestState != "merged" {
-			continue
-		}
-		if stateIn(issue.State, o.cfg.TerminalStates) {
-			continue
-		}
-		if staleTodoPullRequestAlreadyActive(state, issueID) {
 			continue
 		}
 
@@ -1226,6 +1320,9 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 		if normalizeState(issue.State) != "todo" {
 			continue
 		}
+		if staleTodoPullRequestAlreadyActive(state, issueID) {
+			continue
+		}
 		if gateRequiresPullRequest(o.cfg.AutoPromote.Gate) {
 			var hydrated bool
 			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
@@ -1240,6 +1337,11 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 		decision := staleTodoPullRequestDecision(issue, summary, o.cfg.AutoPromote, now)
 		if autoPromoteDecisionNeedsWorkpadHydration(decision) {
 			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, o.cfg.AutoPromote, now)
+		}
+		// An unproduced local status is worker-owned work, not a stale Todo PR.
+		// Preserve explicit Workpad blockers before leaving the work dispatchable.
+		if decision.Reason != AutoPromoteReasonWorkpadBlocker && issue.PullRequest.HasMissingLocalStatus(gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus) {
+			continue
 		}
 		targetState := staleTodoPullRequestTargetState(decision, o.cfg.AutoPromote)
 		if decision.Reason == AutoPromoteReasonWorkpadBlocker {
@@ -1314,8 +1416,7 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 			continue
 		}
 		if decision.reason == string(AutoPromoteReasonOperationalCompletion) {
-			completion, _ := operationalCompletionFromIssue(issue)
-			_, completed, err := o.latestSuccessfulOperationalCompletionAttempt(ctx, issue, completion)
+			_, completed, err := o.latestSuccessfulOperationalCompletionAttempt(ctx, issue)
 			if err != nil {
 				if o.logger != nil {
 					o.logger.Warn(
@@ -1376,13 +1477,13 @@ func staleMergingPullRequestDecisionForIssue(issue connector.Issue, cfg Config) 
 	}
 	if _, revoked := mergeApprovalLabelRevoked(issue, cfg); revoked {
 		return staleMergingPullRequestDecision{
-			targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).SourceState,
+			targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).reviewTargetState(),
 			reason:      mergeRevocationApprovalLabelRemoved,
 		}
 	}
 	pullRequest := issue.PullRequest
 	if pullRequest == nil {
-		return staleMergingPullRequestDecision{targetState: autoPromoteSourceState, reason: string(AutoPromoteReasonMissingPullRequest)}
+		return staleMergingPullRequestDecision{targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).reviewTargetState(), reason: string(AutoPromoteReasonMissingPullRequest)}
 	}
 	pullRequestState := normalizePullRequestState(pullRequest.State)
 	if pullRequestState == "" && pullRequestHydrationBlocksProgress(pullRequest) {
@@ -1397,7 +1498,7 @@ func staleMergingPullRequestDecisionForIssue(issue connector.Issue, cfg Config) 
 		}
 		if _, revoked := mergeCITriggerLabelRevoked(issue, cfg); revoked {
 			return staleMergingPullRequestDecision{
-				targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).SourceState,
+				targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).reviewTargetState(),
 				reason:      mergeRevocationCITriggerLabelRemoved,
 			}
 		}
@@ -2224,7 +2325,7 @@ func staleTodoPullRequestTargetState(decision AutoPromoteDecision, cfg AutoPromo
 	case AutoPromoteReasonMissingPullRequest:
 		return ""
 	default:
-		return cfg.SourceState
+		return cfg.reviewTargetState()
 	}
 }
 
@@ -2271,7 +2372,7 @@ func staleMergedPullRequestTargetState(decision AutoPromoteDecision, cfg AutoPro
 	case AutoPromoteReasonPullRequestMerged:
 		return doneStateName(terminalStates)
 	case AutoPromoteReasonPullRequestHydrationUnavailable:
-		return cfg.SourceState
+		return cfg.reviewTargetState()
 	default:
 		return ""
 	}
@@ -2500,9 +2601,15 @@ func (o *Orchestrator) clearAutoPromotedIssueDispatchMemory(state *State, issueI
 }
 
 func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, issue connector.Issue, now time.Time) {
+	var current bool
+	issue, current = o.refreshValidatorContext(ctx, issue)
+	if !current {
+		return
+	}
+
 	// An active run owns this head until it finishes. Avoid hydrating the PR
 	// again on every tick while that run is in progress.
-	if key := validatorStageIdentityForIssue(issue).Key; key != "" {
+	if key := validatorStageIdentityForIssue(issue, o.cfg.AutoPromote.Gate).Key; key != "" {
 		o.validatorMu.Lock()
 		_, running := o.validatorRuns[key]
 		o.validatorMu.Unlock()
@@ -2517,7 +2624,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 			return
 		}
 	}
-	identity := validatorStageIdentityForIssue(issue)
+	identity := validatorStageIdentityForIssue(issue, o.cfg.AutoPromote.Gate)
 	if identity.Key == "" {
 		if o.logger != nil {
 			o.logger.Error(
@@ -2554,7 +2661,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		}
 		return
 	}
-	if _, _, ok := o.validatorStageResult(ctx, issue); ok {
+	if _, _, ok := o.validatorStageResultForInput(ctx, issue); ok {
 		return
 	}
 	capacityScope, capacityProbeKey, capacityPaused := o.validatorCapacityDispatch(state, issue, now)
@@ -2757,7 +2864,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		}
 		if _, canHydrate := o.connector.(connector.PullRequestHydrator); canHydrate {
 			if current, ok := o.hydrateValidatorStagePullRequest(ctx, issue); ok {
-				if validatorStageIdentityForIssue(current).Key != identity.Key {
+				if validatorStageIdentityForIssue(current, o.cfg.AutoPromote.Gate).Key != identity.Key {
 					// The reviewed diff no longer describes the PR. Let the next
 					// tick validate its current identity instead of storing a verdict.
 					o.validatorMu.Lock()
@@ -2776,6 +2883,14 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 				return
 			}
 		}
+		currentIssue, currentContext := o.refreshValidatorContext(ctx, issue)
+		if !currentContext || validatorStageIdentityForIssue(currentIssue, o.cfg.AutoPromote.Gate).Key != identity.Key {
+			o.validatorMu.Lock()
+			o.validatorTokenTotals = addTokenTotals(o.validatorTokenTotals, o.validatorRuns[identity.Key].withProgress().Tokens)
+			delete(o.validatorRuns, identity.Key)
+			o.validatorMu.Unlock()
+			return
+		}
 		o.recordValidatorVerdict(ctx, issue, identity, result, completedAt)
 
 		o.validatorMu.Lock()
@@ -2788,7 +2903,17 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 }
 
 func (o *Orchestrator) validatorStageResult(ctx context.Context, issue connector.Issue) (gate.ValidatorResult, bool, bool) {
-	identity := validatorStageIdentityForIssue(issue)
+	current, ok := o.refreshValidatorContext(ctx, issue)
+	if !ok {
+		return gate.ValidatorResult{}, false, false
+	}
+	return o.validatorStageResultForInput(ctx, current)
+}
+
+// validatorStageResultForInput consumes the current task snapshot supplied by
+// refreshValidatorContext; routing, dispatch and reporting share this lookup.
+func (o *Orchestrator) validatorStageResultForInput(ctx context.Context, issue connector.Issue) (gate.ValidatorResult, bool, bool) {
+	identity := validatorStageIdentityForIssue(issue, o.cfg.AutoPromote.Gate)
 	if identity.Key == "" {
 		return gate.ValidatorResult{}, false, false
 	}
@@ -2812,7 +2937,7 @@ func (o *Orchestrator) validatorStageResult(ctx context.Context, issue connector
 }
 
 func (o *Orchestrator) markValidatorResultCommented(ctx context.Context, issue connector.Issue) {
-	identity := validatorStageIdentityForIssue(issue)
+	identity := validatorStageIdentityForIssue(issue, o.cfg.AutoPromote.Gate)
 	if identity.Key == "" {
 		return
 	}
@@ -2838,7 +2963,7 @@ func (o *Orchestrator) commentValidatorResult(ctx context.Context, issue connect
 	if repository == "" || number <= 0 {
 		return
 	}
-	if err := commenter.CreatePullRequestComment(ctx, repository, number, validatorResultComment(result)); err != nil && o.logger != nil {
+	if err := commenter.CreatePullRequestComment(ctx, repository, number, validatorResultComment(result, runpkg.ValidationContextDigest(issue, o.cfg.AutoPromote.Gate))); err != nil && o.logger != nil {
 		o.logger.Warn(
 			"validator result comment failed",
 			"issue_id", strings.TrimSpace(issue.ID),
@@ -2849,7 +2974,7 @@ func (o *Orchestrator) commentValidatorResult(ctx context.Context, issue connect
 	}
 }
 
-func validatorResultComment(result gate.ValidatorResult) string {
+func validatorResultComment(result gate.ValidatorResult, contextDigests ...string) string {
 	var b strings.Builder
 	b.WriteString("Validator verdict: ")
 	b.WriteString(strings.TrimSpace(result.Verdict))
@@ -2859,9 +2984,12 @@ func validatorResultComment(result gate.ValidatorResult) string {
 		b.WriteString("\n- reviewed files: ")
 		b.WriteString(strings.Join(result.DiffFiles, ", "))
 	}
+	if len(contextDigests) > 0 {
+		fmt.Fprintf(&b, "\n- task context SHA-256: %s", contextDigests[0])
+	}
 	if result.Score > 0 {
 		b.WriteString("\n- score: ")
-		b.WriteString(fmt.Sprintf("%.2f", result.Score))
+		fmt.Fprintf(&b, "%.2f", result.Score)
 	}
 	if strings.TrimSpace(result.Summary) != "" {
 		b.WriteString("\n- summary: ")
@@ -2905,15 +3033,21 @@ func pullRequestNumber(issue connector.Issue) int {
 }
 
 type validatorStageIdentity struct {
-	Key        string
-	IssueID    string
-	HeadSHA    string
-	BaseSHA    string
-	Repository string
-	PRNumber   int
+	ContextDigest string
+	Key           string
+	IssueID       string
+	HeadSHA       string
+	BaseSHA       string
+	Repository    string
+	PRNumber      int
 }
 
-func validatorStageIdentityForIssue(issue connector.Issue) validatorStageIdentity {
+func validatorStageIdentityForIssue(issue connector.Issue, policies ...gate.Config) validatorStageIdentity {
+	var policy gate.Config
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	digest := runpkg.ValidationContextDigest(issue, policy)
 	issueID := strings.TrimSpace(issue.ID)
 	if issueID == "" {
 		return validatorStageIdentity{}
@@ -2934,12 +3068,13 @@ func validatorStageIdentityForIssue(issue connector.Issue) validatorStageIdentit
 		}
 	}
 	return validatorStageIdentity{
-		Key:        fmt.Sprintf("%s:%s:%d:%s:%s", issueID, repository, pullRequestNumber(issue), baseSHA, headSHA),
-		IssueID:    issueID,
-		HeadSHA:    headSHA,
-		BaseSHA:    baseSHA,
-		Repository: repository,
-		PRNumber:   pullRequestNumber(issue),
+		Key:           fmt.Sprintf("%s:%s:%d:%s:%s:%s", issueID, repository, pullRequestNumber(issue), baseSHA, headSHA, digest),
+		ContextDigest: digest,
+		IssueID:       issueID,
+		HeadSHA:       headSHA,
+		BaseSHA:       baseSHA,
+		Repository:    repository,
+		PRNumber:      pullRequestNumber(issue),
 	}
 }
 
@@ -2973,9 +3108,11 @@ func (o *Orchestrator) loadValidatorVerdict(ctx context.Context, issue connector
 		return validatorStageResult{}, false
 	}
 	verdict, err := o.validatorMemo.ValidatorVerdict(ctx, store.ValidatorVerdictKey{
-		ProjectID: o.workflowMetricsProjectID(),
-		IssueID:   identity.IssueID,
-		HeadSHA:   identity.HeadSHA,
+		ProjectID:     o.workflowMetricsProjectID(),
+		IssueID:       identity.IssueID,
+		HeadSHA:       identity.HeadSHA,
+		ContextDigest: identity.ContextDigest,
+		Repository:    identity.Repository, BaseSHA: identity.BaseSHA, PRNumber: int64(identity.PRNumber),
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -2992,7 +3129,7 @@ func (o *Orchestrator) loadValidatorVerdict(ctx context.Context, issue connector
 		}
 		return validatorStageResult{}, false
 	}
-	if verdict.Repository == "" || verdict.Repository != identity.Repository || verdict.PRNumber == nil || *verdict.PRNumber != int64(identity.PRNumber) || verdict.BaseSHA == "" || verdict.BaseSHA != identity.BaseSHA || verdict.HeadSHA != identity.HeadSHA || (verdict.Submitted && verdict.DiffDigest == "") {
+	if verdict.ContextDigest == "" || verdict.ContextDigest != identity.ContextDigest || verdict.Repository == "" || verdict.Repository != identity.Repository || verdict.PRNumber == nil || *verdict.PRNumber != int64(identity.PRNumber) || verdict.BaseSHA == "" || verdict.BaseSHA != identity.BaseSHA || verdict.HeadSHA != identity.HeadSHA || (verdict.Submitted && verdict.DiffDigest == "") {
 		return validatorStageResult{}, false
 	}
 	validatorConfig := gate.Effective(o.cfg.AutoPromote.Gate).Validator
@@ -3064,6 +3201,7 @@ func (o *Orchestrator) recordValidatorStageOutcome(
 		ProjectID:       o.workflowMetricsProjectID(),
 		IssueID:         identity.IssueID,
 		HeadSHA:         identity.HeadSHA,
+		ContextDigest:   identity.ContextDigest,
 		Identifier:      issue.Identifier,
 		IssueURL:        issue.URL,
 		PRNumber:        &prNumber,
@@ -3117,9 +3255,11 @@ func (o *Orchestrator) markValidatorVerdictCommented(ctx context.Context, identi
 		return
 	}
 	if err := o.validatorMemo.MarkValidatorVerdictCommented(ctx, store.ValidatorVerdictKey{
-		ProjectID: o.workflowMetricsProjectID(),
-		IssueID:   identity.IssueID,
-		HeadSHA:   identity.HeadSHA,
+		ProjectID:     o.workflowMetricsProjectID(),
+		IssueID:       identity.IssueID,
+		HeadSHA:       identity.HeadSHA,
+		ContextDigest: identity.ContextDigest,
+		Repository:    identity.Repository, BaseSHA: identity.BaseSHA, PRNumber: int64(identity.PRNumber),
 	}, o.clockNow().UTC()); err != nil && !errors.Is(err, store.ErrNotFound) && o.logger != nil {
 		o.logger.Warn(
 			"validator verdict comment marker failed",
@@ -3301,14 +3441,14 @@ func autoPromoteFailedChecksFromPullRequest(pullRequest *connector.PullRequest) 
 	return uniqueStrings(checks)
 }
 
-func autoPromotePendingChecksFromPullRequest(pullRequest *connector.PullRequest) []string {
+func autoPromotePendingChecksFromPullRequest(pullRequest *connector.PullRequest, localStatus string) []string {
 	if pullRequest == nil {
 		return nil
 	}
 	checks := append([]string(nil), pullRequest.RunningChecks...)
 	checks = append(checks, pullRequestCheckNames(pullRequest.UnstartedChecks)...)
 	for _, check := range pullRequest.RequiredCheckFailures {
-		if !autoPromoteCheckPending(check) {
+		if check.IsMissingLocalStatus(localStatus) || !autoPromoteCheckPending(check) {
 			continue
 		}
 		checks = append(checks, check.Name)
@@ -3364,7 +3504,7 @@ func autoPromoteCheckFailed(check connector.PullRequestCheck) bool {
 // issue explicitly requests human review. Preserve legacy routing without it.
 func (o *Orchestrator) nonReviewDecisionTargetState(issue connector.Issue, fallback string) string {
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
-	if gate.Effective(cfg.Gate).Kind == gate.KindHumanReview || autoPromoteOptoutLabel(issue, cfg) {
+	if cfg.humanReviewEnabled() && (gate.Effective(cfg.Gate).Kind == gate.KindHumanReview || autoPromoteOptoutLabel(issue, cfg)) {
 		return fallback
 	}
 	if stateIn(blockedStatusState, o.cfg.ActiveStates) || stateIn(blockedStatusState, o.cfg.ObservedStates) {
@@ -3571,7 +3711,7 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 		if failedChecks := strings.Join(autoPromoteFailedChecksFromPullRequest(issue.PullRequest), ", "); failedChecks != "" {
 			attrs = append(attrs, "failed_checks", failedChecks)
 		}
-		if pendingChecks := strings.Join(autoPromotePendingChecksFromPullRequest(issue.PullRequest), ", "); pendingChecks != "" {
+		if pendingChecks := strings.Join(autoPromotePendingChecksFromPullRequest(issue.PullRequest, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus), ", "); pendingChecks != "" {
 			attrs = append(attrs, "pending_checks", pendingChecks)
 		}
 		if staleSuccessfulChecks := strings.Join(autoPromoteStaleSuccessfulChecks(issue.PullRequest), ", "); staleSuccessfulChecks != "" {

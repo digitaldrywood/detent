@@ -46,8 +46,11 @@ var errAIDebugNotFound = errors.New("AI Debug target not found")
 var errAIDebugAmbiguous = errors.New("AI Debug target is ambiguous")
 
 func (s *Server) aiDebugProjection(ctx context.Context, scope aidebug.Scope, projectID string, issueRef string) (aidebug.Projection, error) {
+	return s.aiDebugProjectionFromSnapshot(ctx, scope, projectID, issueRef, s.latestSnapshot(ctx))
+}
+
+func (s *Server) aiDebugProjectionFromSnapshot(ctx context.Context, scope aidebug.Scope, projectID, issueRef string, snapshot telemetry.Snapshot) (aidebug.Projection, error) {
 	now := s.now().UTC()
-	snapshot := s.latestSnapshot(ctx)
 	projection := aidebug.NewProjection(scope, now)
 	host, err := s.hostname()
 	if err != nil {

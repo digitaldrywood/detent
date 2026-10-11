@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
 const defaultJitterFraction = 10
@@ -42,6 +44,7 @@ type AutoStatus struct {
 }
 
 type SchedulerConfig struct {
+	RunningBuild       runnerauth.BuildEvidence
 	Enabled            bool
 	AutoApplyEnabled   bool
 	CheckInterval      time.Duration
@@ -61,13 +64,21 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
-	cfg         SchedulerConfig
-	operationMu sync.Mutex
-	mu          sync.RWMutex
-	status      AutoStatus
+	enrolledReceipt    *runnerauth.UpdateReceipt
+	enrolledStateValid bool
+	enrolledDiscovery  string
+	cfg                SchedulerConfig
+	operationMu        sync.Mutex
+	mu                 sync.RWMutex
+	status             AutoStatus
 }
 
 func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
+	discovery := ""
+	if strings.TrimSpace(cfg.RunningBuild.Version) != "" && IsDevelopmentVersion(cfg.RunningBuild.Version) {
+		cfg.Enabled = false
+		discovery = "unknown"
+	}
 	if cfg.CheckInterval <= 0 {
 		return nil, errors.New("update check interval must be positive")
 	}
@@ -105,6 +116,21 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	if err != nil {
 		cfg.Logger.Warn("load automatic update state failed", "path", cfg.StatePath, "error", err)
 	}
+	if receipt := loadedState.EnrolledReceipt; receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && receipt.Running == nil {
+		switch {
+		case receipt.Status == "draining":
+			receipt.FailureReason = "Update was interrupted before completion"
+		case receipt.Applied != nil && !cfg.RunningBuild.Matches(*receipt.Applied), receipt.VerifiedTarget != nil && !cfg.RunningBuild.Matches(*receipt.VerifiedTarget):
+			receipt.FailureReason = "Update did not restart into the verified build"
+		}
+		if receipt.FailureReason != "" {
+			receipt.Status = "uncertain"
+			receipt.ObservedAt = cfg.Now().UTC()
+			if saveErr := saveSchedulerState(cfg.StatePath, loadedState); saveErr != nil {
+				cfg.Logger.Warn("persist interrupted update receipt failed", "error", saveErr)
+			}
+		}
+	}
 	var lastCheckAt *time.Time
 	if stateFound {
 		lastCheckAt = &loadedState.LastCheckAt
@@ -122,8 +148,9 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 		availableVersion = loadedState.AvailableVersion
 		critical = loadedState.Critical
 	}
-	return &Scheduler{
-		cfg: cfg,
+	scheduler := &Scheduler{
+		cfg:             cfg,
+		enrolledReceipt: loadedState.EnrolledReceipt, enrolledStateValid: err == nil, enrolledDiscovery: discovery,
 		status: AutoStatus{
 			Enabled:            cfg.Enabled,
 			AutoApplyEnabled:   cfg.AutoApplyEnabled,
@@ -136,7 +163,13 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 			PendingSince:       pendingSince,
 			Critical:           critical,
 		},
-	}, nil
+	}
+	observation := scheduler.enrolledObservation(cfg.RunningBuild)
+	cfg.Logger.Info("enrolled runner update support", "supported", observation.Supported,
+		"state_valid", err == nil, "updater_available", cfg.Updater != nil,
+		"drain_available", cfg.ReserveDrain != nil, "restart_available", cfg.RequestRestart != nil,
+		"state_path_configured", strings.TrimSpace(cfg.StatePath) != "", "running_version", cfg.RunningBuild.Version)
+	return scheduler, nil
 }
 
 func (s *Scheduler) Run(ctx context.Context) {
@@ -323,11 +356,14 @@ func (s *Scheduler) drainAndApplyWithOptionsLocked(ctx context.Context, opts App
 	})
 	releaseDrain, err := s.cfg.ReserveDrain(ctx)
 	if err != nil {
+		if releaseDrain != nil {
+			releaseDrain()
+		}
 		s.updateStatus(func(status *AutoStatus) {
 			status.State = "pending_idle"
 			status.LastError = err.Error()
 		})
-		return Status{}, fmt.Errorf("drain runtime for automatic update: %w", err)
+		return Status{FailureReason: "Update drain failed"}, fmt.Errorf("drain runtime for automatic update: %w", err)
 	}
 	return s.applyWithOptionsLocked(ctx, releaseDrain, opts)
 }
@@ -372,13 +408,20 @@ func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func
 		status.LastError = ""
 		clearPending(status)
 	})
+	s.recordEnrolledApplied(applied)
 	persistErr := s.persistCurrentState()
+	if persistErr != nil {
+		applied.FailureReason = "Update state persistence failed"
+		return applied, persistErr
+	}
 	restartRequested := s.cfg.RequestRestart != nil && s.cfg.RequestRestart(applied.Binary)
 	if !restartRequested {
 		s.updateStatus(func(status *AutoStatus) {
 			status.State = "applied_restart_deferred"
+			status.LastError = "Update restart request was declined"
 		})
 		s.cfg.Logger.Warn("Detent update applied; restart deferred because shutdown is already in progress or restart is unavailable", "version", applied.LatestVersion)
+		applied.FailureReason = "Update restart request was declined"
 		return applied, persistErr
 	}
 	s.updateStatus(func(status *AutoStatus) {
@@ -463,7 +506,8 @@ func (s *Scheduler) recordCheckFailure(checkedAt time.Time, err error) error {
 
 func (s *Scheduler) persistLastCheck(checkedAt time.Time) error {
 	status := s.Status()
-	state := schedulerState{LastCheckAt: checkedAt}
+	receipt, _ := s.enrolledState()
+	state := schedulerState{LastCheckAt: checkedAt, EnrolledReceipt: receipt}
 	if status.State == "pending_idle" && status.PendingSince != nil && strings.TrimSpace(status.AvailableVersion) != "" {
 		pendingSince := *status.PendingSince
 		state.AvailableVersion = status.AvailableVersion
@@ -483,6 +527,10 @@ func (s *Scheduler) persistLastCheck(checkedAt time.Time) error {
 func (s *Scheduler) persistCurrentState() error {
 	status := s.Status()
 	if status.LastCheckAt == nil {
+		receipt, at := s.enrolledState()
+		if receipt != nil {
+			return s.persistLastCheck(at)
+		}
 		return nil
 	}
 	return s.persistLastCheck(*status.LastCheckAt)

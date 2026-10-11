@@ -5,12 +5,17 @@ package workspaceterminal
 import (
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
+
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 // ErrNoPTY reports a platform with no pseudo-terminal. It exists on both builds
@@ -33,15 +38,88 @@ const Supported = true
 // that asks isatty would answer no and switch to its non-interactive behaviour.
 // Setsid also puts the shell in a session and a process group of its own, which
 // is what lets the teardown signal the whole group.
-func startPTY(cmd *exec.Cmd, cols, rows int) (*os.File, error) {
+func startPTY(cmd *exec.Cmd, cols, rows int, isolation, worktree string) (*os.File, error) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.Setsid = true
 	cmd.SysProcAttr.Setctty = true
-	file, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}) // #nosec G115 -- the window is bounded by NormalizeTerminalSize well inside uint16.
+	master, tty, err := pty.Open()
 	if err != nil {
 		return nil, err
+	}
+	defer func() { _ = tty.Close() }()    //nolint:errcheck // Best effort: only the subprocess retains the slave.
+	defer func() { _ = master.Close() }() //nolint:errcheck // Best effort: the duplicate owns the returned master.
+
+	if err := pty.Setsize(master, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}); err != nil { // #nosec G115 -- bounded by NormalizeTerminalSize.
+		return nil, err
+	}
+	// Darwin's PTY master is a blocking os.NewFile. Duplicate it before
+	// wrapping a nonblocking descriptor so Go's poller can interrupt reads
+	// on Close. The original wrapper must retain ownership of its own fd.
+	fd, err := unix.FcntlInt(master.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("duplicate terminal master: %w", err)
+	}
+	if err := unix.SetNonblock(fd, true); err != nil {
+		_ = unix.Close(fd) //nolint:errcheck // Best effort cleanup before reporting the setup failure.
+		return nil, fmt.Errorf("make terminal master nonblocking: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), master.Name())
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
+	var confirmation *os.File
+	var ready *os.File
+	if isolation == workspacesession.IsolationSandbox {
+		confirmation, ready, err = os.Pipe()
+		if err != nil {
+			return nil, errors.Join(err, file.Close())
+		}
+		defer func() {
+			if err := confirmation.Close(); err != nil {
+				slog.Debug("terminal confirmation descriptor close", "error", err)
+			}
+		}()
+		defer func() {
+			if err := ready.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+				slog.Debug("terminal readiness descriptor close", "error", err)
+			}
+		}()
+		cmd.ExtraFiles = []*os.File{ready}
+		if err := sandboxCommand(cmd, worktree, tty.Name()); err != nil {
+			return nil, errors.Join(err, file.Close())
+		}
+	}
+	if err := cmd.Start(); err != nil {
+		_ = file.Close() //nolint:errcheck // Best effort cleanup before reporting the start failure.
+		return nil, err
+	}
+	if confirmation != nil {
+		err := errors.Join(ready.Close(), confirmation.SetReadDeadline(time.Now().Add(5*time.Second)))
+		var marker [1]byte
+		if err == nil {
+			_, err = io.ReadFull(confirmation, marker[:])
+		}
+		if err != nil || marker[0] != 1 {
+			closeErr := file.Close()
+			groupErr := kill(cmd)
+			processErr := cmd.Process.Kill()
+			waited := make(chan struct{})
+			go func() {
+				if err := cmd.Wait(); err != nil {
+					slog.Debug("terminal launch cleanup wait", "error", err)
+				}
+				close(waited)
+			}()
+			if groupErr != nil && processErr != nil && !errors.Is(processErr, os.ErrProcessDone) {
+				return nil, fmt.Errorf("%w: launch cleanup: %w", ErrSandboxIsolation, errors.Join(groupErr, processErr, closeErr))
+			}
+			select {
+			case <-waited:
+			case <-time.After(KillGrace):
+				return nil, fmt.Errorf("%w: launch cleanup did not finish", ErrSandboxIsolation)
+			}
+			return nil, fmt.Errorf("%w: launch was not confirmed", errors.Join(ErrSandboxIsolation, closeErr))
+		}
 	}
 	return file, nil
 }

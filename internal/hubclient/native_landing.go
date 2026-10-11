@@ -13,32 +13,38 @@ import (
 // branch: the item's Change Request, its current version, and the merge
 // method of the policy that version was published under.
 func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandingTarget, error) {
+	if err := nativeEffectError(ctx); err != nil {
+		return runner.NativeLandingTarget{}, err
+	}
 	if e.claim.source == nil || e.claim.source.client == nil {
 		return runner.NativeLandingTarget{}, runner.ErrExecutionAuthorityUnavailable
 	}
 	client, item := e.claim.source.client, e.claim.lease.WorkItemID
-	changes, err := client.Changes(ctx, item)
+	detail, err := client.currentChange(ctx, item)
 	if err != nil {
-		return runner.NativeLandingTarget{}, fmt.Errorf("list changes: %w", err)
+		return runner.NativeLandingTarget{}, err
 	}
-	if len(changes) == 0 {
+	if detail.Change.ID == "" {
 		return runner.NativeLandingTarget{}, fmt.Errorf("%w: the item has no Change Request", runner.ErrLandingNotReviewed)
 	}
-	detail, err := client.Change(ctx, item, changes[len(changes)-1].ID)
-	if err != nil {
-		return runner.NativeLandingTarget{}, fmt.Errorf("read change: %w", err)
-	}
-	target := runner.NativeLandingTarget{ChangeID: detail.Change.ID, VersionID: detail.Change.CurrentVersion, Title: detail.Change.Title, Method: "squash"}
+	target := runner.NativeLandingTarget{ChangeID: detail.Change.ID, VersionID: detail.Change.CurrentVersion, Title: detail.Change.Title, Method: "squash", SourceIssues: detail.SourceIssues}
 	for _, version := range detail.Versions {
 		if version.ID == detail.Change.CurrentVersion {
 			target.HeadSHA, target.Number = version.HeadSHA, version.Number
+			target.Repository, target.GitHubPullRequest = version.Repository, version.Policy.Gates.GitHubPullRequest
+			target.External = version.External
+			target.Validation = version.Validation
+			if version.Landing != nil {
+				target.CI = version.Landing.CI
+				target.RebaseRequired = version.Landing.RefusalKind == "conflict"
+			}
 			if version.Policy.Gates.MergeMethod != "" {
 				target.Method = version.Policy.Gates.MergeMethod
 			}
 		}
 	}
-	if detail.Change.Landed != nil {
-		return target, fmt.Errorf("%w: the Change Request already landed as %s", runner.ErrLandingNotReviewed, detail.Change.Landed.MergeSHA)
+	if landed := detail.Change.CurrentLanding(); landed != nil {
+		return target, fmt.Errorf("%w: the Change Request already landed as %s", runner.ErrLandingNotReviewed, landed.MergeSHA)
 	}
 	if target.HeadSHA == "" {
 		return target, fmt.Errorf("%w: no version is published", runner.ErrLandingNotReviewed)
@@ -60,7 +66,8 @@ func (e *nativeExecution) RecordLanding(ctx context.Context, landing runner.Nati
 	}
 	_, err := e.claim.source.client.LandChangeVersion(ctx, e.claim.lease.WorkItemID, landing.ChangeID, landing.VersionID, tracker.LandChangeVersion{
 		Mutation: tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":landing", LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
-		MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method,
+		Receipt:  &tracker.NativeLandingReceipt{Pipeline: landing.Pipeline, PipelineDropped: landing.PipelineDropped, Path: landing.Path, Packages: landing.Packages, ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Gate: landing.Gate, Landed: true, Rebased: landing.Rebased},
+		MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Rebased: landing.Rebased,
 	})
 	return err
 }

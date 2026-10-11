@@ -68,10 +68,11 @@ type RuntimeSettings struct {
 }
 
 type runtimeInput struct {
-	Config     *globalconfig.Config
-	ConfigPath globalconfig.PathResolution
-	Workflow   string
-	Flags      runtimeFlags
+	Config                 *globalconfig.Config
+	ConfigPath             globalconfig.PathResolution
+	Workflow               string
+	Flags                  runtimeFlags
+	DeferProjectValidation bool
 }
 
 type runtimeFlags struct {
@@ -177,7 +178,16 @@ func resolveRuntimeSettings(ctx context.Context, input runtimeInput, deps runtim
 	}
 	settings.Port = port
 
-	token, warnings, err := resolveRuntimeGitHubToken(ctx, input.Config, deps)
+	tokenConfig := input.Config
+	if input.DeferProjectValidation && tokenConfig != nil {
+		copy := *tokenConfig
+		copy.Projects = nil
+		if githubTokenSentinel(copy.GitHubToken) {
+			copy.GitHubToken = ""
+		}
+		tokenConfig = &copy
+	}
+	token, warnings, err := resolveRuntimeGitHubToken(ctx, tokenConfig, deps)
 	if err != nil {
 		return RuntimeSettings{}, err
 	}
@@ -637,18 +647,26 @@ func runGHAuthTokenWithCommandContext(
 	commandCtx, cancel := commandContext(ctx, runtimeCommandTimeout)
 	defer cancel()
 
+	status := exec.CommandContext(commandCtx, "gh", "auth", "status")
+	if env != nil {
+		status.Env = env
+	}
+	if err := status.Run(); err != nil {
+		if commandCtx.Err() != nil {
+			return "", commandCtx.Err()
+		}
+		return "", fmt.Errorf("gh auth status failed: %w", err)
+	}
+
 	cmd := exec.CommandContext(commandCtx, path, "auth", "token") // #nosec G204 -- gh path is PATH-resolved and arguments are fixed.
 	if env != nil {
 		cmd.Env = env
 	}
-	output, err := cmd.CombinedOutput()
+	output, err := cmd.Output()
 	if commandCtx.Err() != nil {
 		return "", commandCtx.Err()
 	}
 	if err != nil {
-		if detail := strings.TrimSpace(string(output)); detail != "" {
-			return "", fmt.Errorf("gh auth token failed: %w: %s", err, detail)
-		}
 		return "", fmt.Errorf("gh auth token failed: %w", err)
 	}
 	token := strings.TrimSpace(string(output))

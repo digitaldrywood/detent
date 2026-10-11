@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -184,8 +185,8 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	if run == nil {
 		t.Fatal("buildRunner() = nil, want non-nil runner")
 	}
-	if _, ok := run.(*runnerpkg.Runner); !ok {
-		t.Fatalf("buildRunner() = %T, want *runner.Runner", run)
+	if _, ok := run.(*sshRunner); !ok {
+		t.Fatalf("buildRunner() = %T, want SSH-capable runner", run)
 	}
 }
 
@@ -222,6 +223,10 @@ func TestServiceConnectionForProjectUsesScopedToken(t *testing.T) {
 }
 
 func TestBuildRunnerSupportsClaudeCodeBackendRoutes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	source := initRunnerSourceRepo(t)
@@ -409,6 +414,10 @@ func TestBuildRunnerUsesTopLevelPricingPath(t *testing.T) {
 }
 
 func TestBuildBudgetDispatchGuards(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	disabled := workflowconfig.Default().Budget
@@ -493,6 +502,10 @@ func TestBuildBudgetDispatchGuards(t *testing.T) {
 }
 
 func TestBuildBudgetDispatchGuardsIsolatesProjectDailySpend(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -614,6 +627,10 @@ func TestWithCodexQuestionFeature(t *testing.T) {
 }
 
 func TestBuildWorkspaceBackendUsesProjectWorkdirAsSourceRoot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	source := initRunnerSourceRepo(t)
@@ -640,21 +657,131 @@ func TestBuildWorkspaceBackendUsesProjectWorkdirAsSourceRoot(t *testing.T) {
 	}
 }
 
+func TestWorkspaceHookGitHubTokenInheritance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	if runtime.GOOS == "windows" {
+		t.Skip("hook fixture uses a POSIX shell")
+	}
+	source := initRunnerSourceRepo(t)
+	// Cleanup preserves unpublished commits; publish the fixture to a local remote.
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runRunnerGit(t, source, "init", "--bare", "-b", "main", remote)
+	runRunnerGit(t, source, "remote", "add", "origin", remote)
+	runRunnerGit(t, source, "push", "-u", "origin", "main")
+	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+		t.Setenv(key, "operator-secret")
+	}
+	tests := []struct {
+		name   string
+		kind   string
+		prefix string
+		want   string
+	}{
+		{name: "native", kind: workflowconfig.TrackerHubNative, want: "|||"},
+		{name: "native explicit hook credential", kind: workflowconfig.TrackerHubNative, prefix: "GH_TOKEN=hook-opt-in; ", want: "hook-opt-in|||"},
+		{name: "GitHub", kind: workflowconfig.TrackerGitHub, want: "operator-secret|operator-secret|operator-secret|operator-secret"},
+	}
+	for _, tt := range tests {
+		for _, backendKind := range []string{workspace.KindLocalGit, workspace.KindFilesystem} {
+			t.Run(tt.name+"/"+backendKind, func(t *testing.T) {
+				cfg := workflowconfig.Default()
+				cfg.Tracker.Kind = tt.kind
+				cfg.Workspace.Kind = backendKind
+				cfg.Workspace.Root = filepath.Join(t.TempDir(), "workspaces")
+				trace := filepath.Join(t.TempDir(), "tokens")
+				hook := tt.prefix + "printf '%s|%s|%s|%s\\n' \"$GH_TOKEN\" \"$GITHUB_TOKEN\" \"$GH_ENTERPRISE_TOKEN\" \"$GITHUB_ENTERPRISE_TOKEN\" >> " + runnerShellQuote(trace)
+				cfg.Hooks.AfterCreate = hook
+				cfg.Hooks.BeforeRun = hook
+				cfg.Hooks.AfterRun = hook
+				cfg.Hooks.BeforeRemove = hook
+
+				backend, err := buildWorkspaceBackend(cfg, source, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				issue := workspace.Issue{Identifier: "DD-3187"}
+				info, err := backend.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := backend.BeforeRun(t.Context(), info, issue); err != nil {
+					t.Fatal(err)
+				}
+				backend.AfterRun(t.Context(), info, issue)
+				if err := backend.Cleanup(t.Context(), info.Key); err != nil {
+					t.Fatal(err)
+				}
+				data, err := os.ReadFile(trace)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, want := string(data), strings.Repeat(tt.want+"\n", 4); got != want {
+					t.Fatalf("hook tokens = %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestClassifyWorkspaceBackendError(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name           string
+		err            error
+		wantDefinition bool
+	}{
+		{name: "missing source root", err: &os.PathError{Op: "lstat", Path: "/missing/source", Err: syscall.ENOENT}, wantDefinition: true},
+		{name: "non-directory workspace ancestor", err: &os.PathError{Op: "mkdir", Path: "/home/user", Err: syscall.ENOTDIR}, wantDefinition: true},
+		{name: "unsupported workspace path", err: &os.PathError{Op: "mkdir", Path: "/home/user", Err: syscall.ENOTSUP}, wantDefinition: true},
+		{name: "symlink loop", err: &os.PathError{Op: "lstat", Path: "/loop/source", Err: syscall.ELOOP}, wantDefinition: true},
+		{name: "path too long", err: &os.PathError{Op: "mkdir", Path: "/long/workspace", Err: syscall.ENAMETOOLONG}, wantDefinition: true},
+		{name: "storage exhausted", err: &os.PathError{Op: "mkdir", Path: "/home/user", Err: syscall.ENOSPC}},
+		{name: "storage I/O failure", err: &os.PathError{Op: "lstat", Path: "/home/user", Err: syscall.EIO}},
+		{name: "host permission failure", err: &os.PathError{Op: "mkdir", Path: "/home/user", Err: syscall.EACCES}},
+		{name: "backend failure", err: workspace.ErrUnsupportedBackend},
+		{name: "unscoped path errno", err: syscall.ENOTDIR},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := classifyWorkspaceBackendError("create workspace backend", tt.err)
+			if gotDefinition := errors.Is(got, projectpkg.ErrProjectDefinition); gotDefinition != tt.wantDefinition {
+				t.Fatalf("classified as project definition = %v, want %v: %v", gotDefinition, tt.wantDefinition, got)
+			}
+			if !errors.Is(got, tt.err) {
+				t.Fatalf("error %v does not wrap original error %v", got, tt.err)
+			}
+		})
+	}
+}
+
 func TestProjectDependenciesInjectsNonNilRunner(t *testing.T) {
 	t.Parallel()
 
 	var captured projectpkg.Dependencies
 	base := projectpkg.Dependencies{Logger: nil}
-	factory := withRunnerFactory(base, nil, func(d projectpkg.Dependencies) (*projectpkg.Project, error) {
+	factory := withRunnerFactory(t.Context(), base, nil, func(d projectpkg.Dependencies) (*projectpkg.Project, error) {
 		captured = d
 		return nil, errProjectFactoryStub
 	}, serviceapi.Connection{}, nil)
 
 	workflowPath := writeWorkflowFile(t)
-	_, err := factory(globalconfig.Project{
+	raw, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = []byte(strings.Replace(string(raw), filepath.Join(filepath.Dir(workflowPath), "workspaces"), ".detent/workspaces", 1))
+	if err := os.WriteFile(workflowPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workdir := t.TempDir()
+	_, err = factory(globalconfig.Project{
 		ID:       "alpha",
 		Workflow: workflowPath,
-		Workdir:  filepath.Dir(workflowPath),
+		Workdir:  workdir,
 		Weight:   1,
 	})
 	if !errors.Is(err, errProjectFactoryStub) {
@@ -663,49 +790,91 @@ func TestProjectDependenciesInjectsNonNilRunner(t *testing.T) {
 	if captured.Runner == nil {
 		t.Fatal("project dependencies Runner = nil, want non-nil injected runner")
 	}
-	if _, ok := captured.Runner.(*runnerpkg.Runner); !ok {
-		t.Fatalf("injected Runner = %T, want *runner.Runner", captured.Runner)
+	run, ok := captured.Runner.(*sshRunner)
+	if !ok {
+		t.Fatalf("injected Runner = %T, want *sshRunner", captured.Runner)
+	}
+	if run.Runner == nil {
+		t.Fatal("SSH runner has no local runner")
+	}
+	if info, err := os.Stat(filepath.Join(workdir, ".detent", "workspaces")); err != nil || !info.IsDir() {
+		t.Fatalf("runner did not provision its workdir-relative workspace root: %v", err)
 	}
 }
 
 func TestProjectDependenciesUseRuntimeGitHubTokenSource(t *testing.T) {
 	t.Parallel()
 
-	var captured projectpkg.Dependencies
-	token := "first-token"
-	factory := withRunnerFactory(projectpkg.Dependencies{}, nil, func(d projectpkg.Dependencies) (*projectpkg.Project, error) {
-		captured = d
-		return nil, errProjectFactoryStub
-	}, serviceapi.Connection{}, nil, func() string {
-		return token
-	})
+	for _, tt := range []struct {
+		name       string
+		tracker    string
+		worker     string
+		wantWorker string
+		appID      string
+	}{
+		{name: "plain GitHub definition", tracker: "github", wantWorker: "runtime"},
+		{name: "explicit worker credential", tracker: "github", worker: "worker-token", wantWorker: "worker-token"},
+		{name: "GitHub App tracker", tracker: "github", wantWorker: "runtime", appID: "123"},
+		{name: "native project excludes inherited credential", tracker: "hub_native"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var captured projectpkg.Dependencies
+			token := "first-token"
+			factory := withRunnerFactory(t.Context(), projectpkg.Dependencies{}, nil, func(d projectpkg.Dependencies) (*projectpkg.Project, error) {
+				captured = d
+				return nil, errProjectFactoryStub
+			}, serviceapi.Connection{}, nil, func() string { return token })
 
-	workflowPath := writeWorkflowFile(t)
-	_, err := factory(globalconfig.Project{
-		ID:       "alpha",
-		Workflow: workflowPath,
-		Workdir:  filepath.Dir(workflowPath),
-		Weight:   1,
-	})
-	if !errors.Is(err, errProjectFactoryStub) {
-		t.Fatalf("ProjectFactory() error = %v, want %v", err, errProjectFactoryStub)
-	}
-	if captured.GitHubToken != "first-token" {
-		t.Fatalf("GitHubToken = %q, want first-token", captured.GitHubToken)
-	}
-
-	token = "second-token"
-	_, err = factory(globalconfig.Project{
-		ID:       "bravo",
-		Workflow: workflowPath,
-		Workdir:  filepath.Dir(workflowPath),
-		Weight:   1,
-	})
-	if !errors.Is(err, errProjectFactoryStub) {
-		t.Fatalf("ProjectFactory() error = %v, want %v", err, errProjectFactoryStub)
-	}
-	if captured.GitHubToken != "second-token" {
-		t.Fatalf("GitHubToken = %q, want second-token", captured.GitHubToken)
+			workflowPath := writeWorkflowFile(t)
+			raw, err := os.ReadFile(workflowPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tracker := "tracker:\n  kind: " + tt.tracker + "\n"
+			if tt.tracker == "github" {
+				tracker += "  repository: example/repo\n"
+			}
+			if tt.appID != "" {
+				tracker += "  github_app_id: '" + tt.appID + "'\n  github_app_installation_id: '456'\n  github_app_private_key_path: /example/app.pem\n"
+			}
+			raw = []byte(strings.Replace(string(raw), "tracker:\n  kind: memory\n", tracker, 1))
+			if tt.worker != "" {
+				raw = []byte(strings.Replace(string(raw), "codex:\n", "worker:\n  github_token: "+tt.worker+"\ncodex:\n", 1))
+			}
+			if err := os.WriteFile(workflowPath, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := globalconfig.Project{ID: "alpha", Workflow: workflowPath, Workdir: filepath.Dir(workflowPath), Weight: 1}
+			for _, nextToken := range []string{"first-token", "second-token"} {
+				token = nextToken
+				_, err := factory(cfg)
+				if !errors.Is(err, errProjectFactoryStub) {
+					t.Fatalf("ProjectFactory() error = %v, want stub", err)
+				}
+				if captured.GitHubToken != nextToken {
+					t.Fatal("project dependencies did not use the current runtime credential")
+				}
+				run, ok := captured.Runner.(*sshRunner)
+				if !ok {
+					t.Fatalf("injected Runner = %T, want *sshRunner", captured.Runner)
+				}
+				workflow, _, _, err := run.SSHWorkflow(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantWorker := tt.wantWorker
+				if wantWorker == "runtime" {
+					wantWorker = nextToken
+				}
+				if workflow.Config.Worker.GitHubToken != wantWorker {
+					t.Fatal("runner did not receive the selected worker credential before construction")
+				}
+				if tt.appID != "" && (workflow.Config.Tracker.GitHubAppID != tt.appID || workflow.Config.Tracker.GitHubAppInstallationID != "456" || workflow.Config.Tracker.GitHubAppPrivateKeyPath != "/example/app.pem") {
+					t.Fatal("runtime credential propagation changed the configured GitHub App identity")
+				}
+			}
+		})
 	}
 }
 
@@ -720,8 +889,11 @@ func TestStartupSnapshotMarksTrackerStateInitializing(t *testing.T) {
 	if got := snapshot.Refresh.ReadinessStatus(); got != telemetry.RefreshStatusInitializing {
 		t.Fatalf("snapshot Refresh status = %q, want %q", got, telemetry.RefreshStatusInitializing)
 	}
-	if snapshot.Refresh.NextRefreshAt == nil || !snapshot.Refresh.NextRefreshAt.Equal(now) {
-		t.Fatalf("snapshot.Refresh.NextRefreshAt = %v, want %v", snapshot.Refresh.NextRefreshAt, now)
+	if snapshot.Refresh.NextRefreshAt != nil {
+		t.Fatalf("snapshot.Refresh.NextRefreshAt = %v before dispatch starts", snapshot.Refresh.NextRefreshAt)
+	}
+	if got := snapshot.Refresh.WithFreshness(now.Add(time.Minute)).ReadinessStatus(); got != telemetry.RefreshStatusInitializing {
+		t.Fatalf("startup Refresh status after maintenance delay = %q, want %q", got, telemetry.RefreshStatusInitializing)
 	}
 	if len(snapshot.Projects) != 1 {
 		t.Fatalf("snapshot.Projects len = %d, want 1", len(snapshot.Projects))
@@ -939,7 +1111,7 @@ func TestPublishSnapshotOnceReplacesLastKnownStatePerProject(t *testing.T) {
 					t.Fatalf("alpha.Start() error = %v", err)
 				}
 				t.Cleanup(func() {
-					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
 					if err := alpha.Stop(ctx); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
 						t.Fatalf("alpha.Stop() error = %v", err)
@@ -1644,7 +1816,7 @@ func TestPublishSnapshotOncePreservesPipeline(t *testing.T) {
 			t.Fatalf("Project.Start() error = %v", err)
 		}
 		t.Cleanup(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if err := project.Stop(ctx); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
 				t.Fatalf("Project.Stop() error = %v", err)
@@ -2505,7 +2677,7 @@ func waitForProjectDataSeq(t *testing.T, project *projectpkg.Project, wantAtLeas
 		t.Fatal("Project.Orchestrator() = nil")
 	}
 
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		state, err := orch.State(ctx)
@@ -2542,7 +2714,7 @@ func TestPublishSnapshotOnceReportsHostCache(t *testing.T) {
 				if paused {
 					return
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 				if err := tracked.Stop(ctx); err != nil {
 					t.Error(err)

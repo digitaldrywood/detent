@@ -132,6 +132,18 @@ func (o *Orchestrator) closeCompletedEpicsForTerminalTransitions(
 		return nil, failedTransitions
 	}
 	plans := completedEpicPlans(parents)
+	current := newEpicIssueIndex(issues)
+	eligible := plans[:0]
+plans:
+	for _, plan := range plans {
+		for _, child := range plan.children {
+			if issue, ok := current.issueForRef(child); ok && !terminalIssue(issue, o.cfg.TerminalStates) {
+				continue plans
+			}
+		}
+		eligible = append(eligible, plan)
+	}
+	plans = eligible
 	for index := range plans {
 		key := issueIdentityKey(plans[index].issue)
 		plans[index].retryIssues = cloneIssues(parentTransitions[key])

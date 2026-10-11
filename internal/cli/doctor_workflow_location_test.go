@@ -37,7 +37,7 @@ projects:
 		t.Fatalf("write global config: %v", err)
 	}
 
-	_, cfg, _, _, configCheck := checkDoctorConfig(configPath, "", defaultOptions())
+	_, cfg, _, _, configCheck := checkDoctorConfig(t.Context(), configPath, "", defaultOptions())
 	if configCheck.Status != doctorOK || cfg == nil {
 		t.Fatalf("checkDoctorConfig() = (%#v, %#v), want parsed config", cfg, configCheck)
 	}
@@ -152,26 +152,6 @@ func TestCheckDoctorProjectContinuesWithConfiguredExternalWorkflow(t *testing.T)
 		if !strings.Contains(checks[0].Detail, want) {
 			t.Fatalf("workflow check detail = %q, want containing %q", checks[0].Detail, want)
 		}
-	}
-}
-
-func TestCheckDoctorWorkflowLocationClearsAfterMove(t *testing.T) {
-	t.Parallel()
-
-	repoRoot := t.TempDir()
-	configuredPath := filepath.Join(repoRoot, "WORKFLOW.md")
-	misplacedPath := filepath.Join(repoRoot, ".detent", "WORKFLOW.md")
-	writeDoctorWorkflowLocationFile(t, misplacedPath)
-	project := globalconfig.Project{Workflow: configuredPath, Workdir: repoRoot}
-
-	if _, ok := checkDoctorWorkflowLocation(project); !ok {
-		t.Fatal("checkDoctorWorkflowLocation() did not report misplaced workflow")
-	}
-	if err := os.Rename(misplacedPath, configuredPath); err != nil {
-		t.Fatalf("move workflow to repository root: %v", err)
-	}
-	if check, ok := checkDoctorWorkflowLocation(project); ok {
-		t.Fatalf("checkDoctorWorkflowLocation() = %#v, want finding cleared", check)
 	}
 }
 

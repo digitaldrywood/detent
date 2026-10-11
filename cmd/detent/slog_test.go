@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -362,5 +364,54 @@ func TestEnvValueFallback(t *testing.T) {
 
 	if got := envValue("TEST_PRIMARY", "TEST_FALLBACK"); got != "fallback" {
 		t.Fatalf("envValue fallback = %q, want fallback", got)
+	}
+}
+
+func TestLogHandlerDiagnostics(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, env, config string
+		level             slog.Level
+		source            logSourceSetting
+		wantSource        bool
+	}{
+		{name: "error at info", env: "production", config: "info", level: slog.LevelError, wantSource: true},
+		{name: "warn at info", env: "production", config: "info", level: slog.LevelWarn, wantSource: true},
+		{name: "info stays quiet", env: "production", config: "info", level: slog.LevelInfo},
+		{name: "debug keeps source", env: "production", config: "debug", level: slog.LevelDebug, wantSource: true},
+		{name: "override disables errors", env: "production", config: "info", level: slog.LevelError, source: logSourceSetting{set: true}},
+		{name: "override enables info", env: "production", config: "info", level: slog.LevelInfo, source: logSourceSetting{set: true, value: true}, wantSource: true},
+		{name: "text error", env: "development", config: "info", level: slog.LevelError, wantSource: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var out bytes.Buffer
+			logger := slog.New(newLogHandlerForTerminalWithSource(tt.env, true, tt.config, &out, false, tt.source))
+			failure := fmt.Errorf("load version: %w", &json.UnmarshalTypeError{Value: "array", Type: reflect.TypeFor[string]()})
+			logger.With("err", failure).WithGroup("request").Log(t.Context(), tt.level, "operator tool failed", "error", failure, "source", "runner")
+			if tt.env == "development" {
+				if !strings.Contains(out.String(), "slog_test.go:") || !strings.Contains(out.String(), "error=") || !strings.Contains(out.String(), "load version:") {
+					t.Fatal(out.String())
+				}
+				return
+			}
+			var record map[string]any
+			if err := json.Unmarshal(out.Bytes(), &record); err != nil {
+				t.Fatal(err)
+			}
+			_, source := record["source"]
+			if source != tt.wantSource {
+				t.Fatalf("source present=%t want=%t: %s", source, tt.wantSource, out.String())
+			}
+			if record["error"] != failure.Error() || record["error_class"] != "*json.UnmarshalTypeError" || strings.Count(out.String(), `"error":`) != 1 || strings.Contains(out.String(), `"err":`) {
+				t.Fatal(out.String())
+			}
+			if source {
+				location := record["source"].(map[string]any)
+				if location["file"] != "slog_test.go" || location["line"].(float64) <= 0 {
+					t.Fatal(out.String())
+				}
+			}
+		})
 	}
 }

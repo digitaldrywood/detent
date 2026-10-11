@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/firebase/genkit/go/ai"
 	"github.com/firebase/genkit/go/core/api"
+	"github.com/firebase/genkit/go/core/status"
 	"github.com/firebase/genkit/go/genkit"
 
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -117,6 +119,15 @@ func (b *Backend) RunTurnWithTools(ctx context.Context, request runner.AgentTurn
 	options := []ai.GenerateOption{
 		ai.WithModel(b.model), ai.WithSystem(request.ToolInstructions), ai.WithPrompt(request.Prompt),
 		ai.WithMaxTurns(8), ai.WithTools(registered...),
+		ai.WithUse(ai.MiddlewareFunc(func(context.Context) (*ai.Hooks, error) {
+			return &ai.Hooks{WrapTool: func(ctx context.Context, params *ai.ToolParams, next ai.ToolNext) (*ai.MultipartToolResponse, error) {
+				response, err := next(ctx, params)
+				if errors.Is(err, status.ErrInvalidInput) {
+					return &ai.MultipartToolResponse{Output: map[string]any{"error": err.Error()}}, nil
+				}
+				return response, err
+			}}, nil
+		})),
 		ai.WithConfig(map[string]any{"reasoning_effort": defaultEffort(request.ReasoningEffort)}),
 		ai.WithStreaming(func(_ context.Context, chunk *ai.ModelResponseChunk) error {
 			for _, part := range chunk.Content {
@@ -129,11 +140,34 @@ func (b *Backend) RunTurnWithTools(ctx context.Context, request runner.AgentTurn
 			return nil
 		}),
 	}
-	_, err := genkit.Generate(ctx, b.genkit, options...)
+	response, err := genkit.Generate(ctx, b.genkit, options...)
 	if err != nil {
+		if errors.Is(err, ai.ErrMaxTurnsExceeded) {
+			if message := lastToolError(response); message != "" {
+				return runner.AgentTurnResult{}, fmt.Errorf("%w: %s", err, message)
+			}
+		}
 		return runner.AgentTurnResult{}, err
 	}
 	return runner.AgentTurnResult{}, nil
+}
+
+func lastToolError(response *ai.ModelResponse) string {
+	if response == nil || response.Request == nil {
+		return ""
+	}
+	for _, message := range slices.Backward(response.Request.Messages) {
+		for _, part := range slices.Backward(message.Content) {
+			if part.IsToolResponse() {
+				if output, ok := part.ToolResponse.Output.(map[string]any); ok {
+					if message, ok := output["error"].(string); ok && message != "" {
+						return message
+					}
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func defaultEffort(effort string) string {

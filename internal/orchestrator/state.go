@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/compute"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -23,11 +24,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type State struct {
+	LocalIntake              telemetry.LocalIntake
+	localAdmitted            map[string]struct{}
+	localAdmissionRecovered  bool
+	nativeAdmission          *tracker.NativeAdmissionContext
 	RuntimeObservation       telemetry.SnapshotSection
 	PollInterval             time.Duration
 	RefreshFailureThreshold  int
@@ -122,7 +128,6 @@ type State struct {
 	trackerEvidence          map[string]trackerAvailabilityEvidence
 	deferredCompletions      map[string]deferredCompletion
 	ForgeUnavailable         map[string]ForgeCondition
-	GitHubMonitors           map[string]GitHubMonitor
 	CIUnavailable            *CICondition
 	BackendOutages           map[string]BackendOutage
 	BackendRecoveries        map[string]BackendRecovery
@@ -133,6 +138,7 @@ type State struct {
 	graphQLUsageSamples      []graphQLUsageSample
 	laneEntries              map[string]time.Time
 	laneProvenance           map[string]provenance.Attribution
+	dispatchModes            map[string]string
 	dispatchLoopResets       map[string]time.Time
 	planRework               map[string]struct{}
 	epicTransitionWatch      []connector.Issue
@@ -153,7 +159,23 @@ type StalenessWarning struct {
 	DeliveryError         string
 }
 
+func (s State) UnsettledWork() int {
+	ids := make(map[string]struct{}, len(s.Running)+len(s.Claimed)+len(s.deferredCompletions))
+	for id := range s.Running {
+		ids[id] = struct{}{}
+	}
+	for id := range s.Claimed {
+		ids[id] = struct{}{}
+	}
+	for id := range s.deferredCompletions {
+		ids[id] = struct{}{}
+	}
+	return len(ids)
+}
+
 type Running struct {
+	Compute                     *compute.Usage
+	TokenUSD                    float64
 	progress                    *workerProgress
 	Policy                      policy.Descriptor
 	Issue                       connector.Issue
@@ -198,7 +220,6 @@ type Running struct {
 	CapacityProbe               bool
 	ForgeProbeHost              string
 	ForgeWriteCompleted         bool
-	GitHubCredential            string
 	ModelPermitExempt           bool
 	CIStopRequested             bool
 	CompletionOwnershipReleased bool
@@ -279,9 +300,15 @@ type MergeTiming struct {
 	MergeStartedAt             time.Time
 	BaseRefreshStartedAt       time.Time
 	BaseRefreshFinishedAt      time.Time
+	BaseSyncActiveAt           time.Time
+	BaseSyncObserved           bool
+	BaseSyncSeconds            int64
 	CIWaitHeadSHA              string
 	CIWaitStartedAt            time.Time
 	CIWaitFinishedAt           time.Time
+	CIWaitActiveAt             time.Time
+	CIWaitSeconds              int64
+	CIWaitBeforeSlotSeconds    int64
 	MergedAt                   time.Time
 	MergeFailedAt              time.Time
 	MergeFailureReason         string
@@ -307,8 +334,6 @@ type Retry struct {
 	ForgeUnavailable   bool
 	ForgeHost          string
 	ForgeRetry         *runpkg.ForgeRetry
-	GitHubMonitor      bool
-	GitHubCredential   string
 	Wait               RetryWait
 }
 
@@ -347,7 +372,6 @@ type RepeatedFailure struct {
 }
 
 type ProjectFailureBreaker struct {
-	PreTurn        bool
 	Config         FailureBreakerConfig
 	Failures       map[string][]ProjectFailure
 	Class          string
@@ -388,6 +412,8 @@ type DependencyAutoUnblockRecord struct {
 
 func newState(cfg Config) State {
 	return State{
+		LocalIntake:             telemetry.LocalIntake{Enabled: !cfg.LocalIntakeDisabled},
+		localAdmitted:           map[string]struct{}{},
 		PollInterval:            cfg.PollInterval,
 		RefreshFailureThreshold: cfg.RefreshFailureThreshold,
 		MaxConcurrentAgents:     cfg.MaxConcurrentAgents,
@@ -450,7 +476,6 @@ func newState(cfg Config) State {
 		trackerEvidence:          map[string]trackerAvailabilityEvidence{},
 		deferredCompletions:      map[string]deferredCompletion{},
 		ForgeUnavailable:         map[string]ForgeCondition{},
-		GitHubMonitors:           map[string]GitHubMonitor{},
 		BackendOutages:           map[string]BackendOutage{},
 		BackendRecoveries:        map[string]BackendRecovery{},
 		DiffStats:                map[string]DiffStats{},
@@ -466,6 +491,9 @@ func newState(cfg Config) State {
 
 func (s State) clone() State {
 	cloned := State{
+		LocalIntake:              telemetry.LocalIntake{Enabled: s.LocalIntake.Enabled, Remaining: append([]string(nil), s.LocalIntake.Remaining...), Blocked: append([]string(nil), s.LocalIntake.Blocked...)},
+		localAdmitted:            maps.Clone(s.localAdmitted),
+		localAdmissionRecovered:  s.localAdmissionRecovered,
 		RuntimeObservation:       s.RuntimeObservation,
 		PollInterval:             s.PollInterval,
 		RefreshFailureThreshold:  s.RefreshFailureThreshold,
@@ -561,7 +589,6 @@ func (s State) clone() State {
 		trackerEvidence:          maps.Clone(s.trackerEvidence),
 		deferredCompletions:      cloneDeferredCompletions(s.deferredCompletions),
 		ForgeUnavailable:         maps.Clone(s.ForgeUnavailable),
-		GitHubMonitors:           maps.Clone(s.GitHubMonitors),
 		CIUnavailable:            cloneCICondition(s.CIUnavailable),
 		BackendOutages:           maps.Clone(s.BackendOutages),
 		BackendRecoveries:        cloneBackendRecoveries(s.BackendRecoveries),
@@ -572,6 +599,7 @@ func (s State) clone() State {
 		graphQLUsageSamples:      append([]graphQLUsageSample(nil), s.graphQLUsageSamples...),
 		laneEntries:              maps.Clone(s.laneEntries),
 		laneProvenance:           maps.Clone(s.laneProvenance),
+		dispatchModes:            maps.Clone(s.dispatchModes),
 		dispatchLoopResets:       maps.Clone(s.dispatchLoopResets),
 		planRework:               make(map[string]struct{}, len(s.planRework)),
 		epicTransitionWatch:      cloneIssues(s.epicTransitionWatch),
@@ -763,6 +791,11 @@ func cloneStatusDrift(drift connector.StatusDrift) connector.StatusDrift {
 func cloneIssue(issue connector.Issue) connector.Issue {
 	issue.DependencyNotes = append([]string(nil), issue.DependencyNotes...)
 	cloned := issue
+	if issue.IssueContract != nil {
+		contract := *issue.IssueContract
+		contract.ConfirmedSections = maps.Clone(issue.IssueContract.ConfirmedSections)
+		cloned.IssueContract = &contract
+	}
 	cloned.PRHeadCommittedAt = cloneTimePointer(issue.PRHeadCommittedAt)
 	if issue.Priority != nil {
 		priority := *issue.Priority

@@ -61,6 +61,8 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 		workpadBlockerRef  string
 		runningWorkpadBody string
 		currentWorkpadBody string
+		bodyWorkpad        bool
+		generation         uint64
 		resolvedBlockers   []connector.Issue
 		completionErr      error
 		wantClaimed        bool
@@ -143,6 +145,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantCurrentHead:  "new-head",
 			wantHydrations:   1,
 			wantRetry:        true,
+			wantConsecutive:  1,
 		},
 		{
 			name:             "unchanged signature and clean diff records no progress",
@@ -156,6 +159,43 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantPreviousHead: "same-head",
 			wantCurrentHead:  "same-head",
 			wantHydrations:   1,
+			wantRetry:        true,
+			wantConsecutive:  1,
+		},
+		{
+			name:          "configured signature limit stops unchanged attempts",
+			runningIssue:  implementProgressIssue("same-head", "Test"),
+			hydratedIssue: implementProgressIssue("same-head", "Test"),
+			history: []store.WorkAttempt{
+				implementProgressHistoryAttempt(2, signature, store.WorkAttemptTerminalNoProgress),
+				implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalNoProgress),
+			},
+			diffStats:        DiffStats{Status: "clean"},
+			noProgressLimit:  3,
+			wantTerminal:     store.WorkAttemptTerminalNoProgress,
+			wantReason:       "unchanged_signature_clean_diff",
+			wantPreviousHead: "same-head",
+			wantCurrentHead:  "same-head",
+			wantHydrations:   1,
+			wantConsecutive:  3,
+			wantBlocked:      true,
+			wantBlockReason:  noProgressLimitReason,
+		},
+		{
+			name:          "disabled signature limit retains unchanged classification",
+			runningIssue:  implementProgressIssue("same-head", "Test"),
+			hydratedIssue: implementProgressIssue("same-head", "Test"),
+			history: []store.WorkAttempt{
+				implementProgressHistoryAttempt(2, signature, store.WorkAttemptTerminalNoProgress),
+				implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalNoProgress),
+			},
+			diffStats:        DiffStats{Status: "clean"},
+			wantTerminal:     store.WorkAttemptTerminalNoProgress,
+			wantReason:       "unchanged_signature_clean_diff",
+			wantPreviousHead: "same-head",
+			wantCurrentHead:  "same-head",
+			wantHydrations:   1,
+			wantConsecutive:  3,
 			wantRetry:        true,
 		},
 		{
@@ -183,6 +223,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantBlocked:      true,
 			wantBlockReason:  strandedUnpushedWorkReason,
 			wantComment:      "commits_not_in_pull_request: \"abc123 fix: preserve work\"",
+			wantConsecutive:  3,
 		},
 		{
 			name:          "untracked file with matching pull request head is not stranded",
@@ -223,6 +264,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantBlocked:     true,
 			wantBlockReason: strandedUnpushedWorkReason,
 			wantComment:     "tracked_paths: \"tracked.go\"",
+			wantConsecutive: 1,
 		},
 		{
 			name:            "missing workspace head defers unpushed classification",
@@ -254,17 +296,16 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantTerminal:    store.WorkAttemptTerminalNoProgress,
 			wantReason:      "completed_clean_diff_without_pull_request",
 			wantRetry:       true,
+			wantConsecutive: 1,
 		},
 		{
-			name:               "already merged completion needs no prior authorization",
+			name:               "merged receipt without native evidence cannot complete",
 			runningIssue:       implementProgressIssueWithoutPR(),
 			diffStats:          DiffStats{Status: "clean"},
 			noProgressLimit:    3,
-			wantTerminal:       store.WorkAttemptTerminalSuccess,
-			wantReason:         string(AutoPromoteReasonOperationalCompletion),
-			wantProgressKinds:  []string{"operational_completion"},
-			wantCompletionKind: workpad.CompletionOperational,
-			wantReview:         true,
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         implementProgressOutcomeNoProgress,
+			wantRetry:          true,
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
 			currentWorkpadBody: mergedCompletionWorkpadBody(),
 		},
@@ -278,6 +319,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRetry:          true,
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
 			currentWorkpadBody: strings.Replace(mergedCompletionWorkpadBody(), "completion_ancestry: verified", "completion_ancestry: unknown", 1),
+			wantConsecutive:    1,
 		},
 		{
 			name: "preauthorized operational completion is deliverable progress",
@@ -297,6 +339,56 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			currentWorkpadBody: operationalCompletionWorkpadBody("Backfill completed and verified."),
 		},
 		{
+			name: "current body operational completion is attributed",
+			runningIssue: func() connector.Issue {
+				issue := implementProgressIssueWithoutPR()
+				issue.Description = operationalCompletionAuthorizationBody()
+				return issue
+			}(),
+			diffStats:          DiffStats{Status: "clean"},
+			noProgressLimit:    3,
+			bodyWorkpad:        true,
+			generation:         25,
+			currentWorkpadBody: strings.Replace(operationalCompletionWorkpadBody("Backfill verified."), "fields:\n", "fields:\n  completion_work_attempt_id: \"42\"\n  completion_generation: \"25\"\n", 1),
+			wantTerminal:       store.WorkAttemptTerminalSuccess,
+			wantReason:         string(AutoPromoteReasonOperationalCompletion),
+			wantProgressKinds:  []string{"operational_completion"},
+			wantCompletionKind: workpad.CompletionOperational,
+			wantReview:         true,
+		},
+		{
+			name: "body operational completion rejects another attempt",
+			runningIssue: func() connector.Issue {
+				issue := implementProgressIssueWithoutPR()
+				issue.Description = operationalCompletionAuthorizationBody()
+				return issue
+			}(),
+			diffStats:          DiffStats{Status: "clean"},
+			noProgressLimit:    3,
+			bodyWorkpad:        true,
+			generation:         25,
+			currentWorkpadBody: strings.Replace(operationalCompletionWorkpadBody("Backfill verified."), "fields:\n", "fields:\n  completion_work_attempt_id: \"41\"\n  completion_generation: \"25\"\n", 1),
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         implementProgressOutcomeNoProgress,
+			wantRetry:          true,
+		},
+		{
+			name: "body operational completion rejects another generation",
+			runningIssue: func() connector.Issue {
+				issue := implementProgressIssueWithoutPR()
+				issue.Description = operationalCompletionAuthorizationBody()
+				return issue
+			}(),
+			diffStats:          DiffStats{Status: "clean"},
+			noProgressLimit:    3,
+			bodyWorkpad:        true,
+			generation:         25,
+			currentWorkpadBody: strings.Replace(operationalCompletionWorkpadBody("Backfill verified."), "fields:\n", "fields:\n  completion_work_attempt_id: \"42\"\n  completion_generation: \"24\"\n", 1),
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         implementProgressOutcomeNoProgress,
+			wantRetry:          true,
+		},
+		{
 			name: "operational completion with undelivered commits is stranded",
 			runningIssue: func() connector.Issue {
 				issue := implementProgressIssueWithoutPR()
@@ -310,6 +402,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRetry:          true,
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
 			currentWorkpadBody: operationalCompletionWorkpadBody("Backfill completed and verified."),
+			wantConsecutive:    1,
 		},
 		{
 			name:               "undeclared operational assertion remains no progress",
@@ -321,6 +414,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRetry:          true,
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
 			currentWorkpadBody: operationalCompletionWorkpadBody("Backfill completed and verified."),
+			wantConsecutive:    1,
 		},
 		{
 			name:              "first dependency deferral releases claim without tripping loop",
@@ -371,6 +465,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRejectedRef:   "fabricated-ref",
 			wantLogContains:   "fabricated-ref",
 			wantRetry:         true,
+			wantConsecutive:   1,
 		},
 		{
 			name:              "unresolvable blocker ref counts as no progress",
@@ -383,6 +478,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRejectedRef:   "digitaldrywood/detent#9999",
 			wantLogContains:   "digitaldrywood/detent#9999",
 			wantRetry:         true,
+			wantConsecutive:   1,
 		},
 		{
 			name:              "already terminal blocker does not defer empty attempt",
@@ -394,9 +490,10 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			workpadBlockerRef: "digitaldrywood/detent#134",
 			resolvedBlockers:  []connector.Issue{{ID: "blocker-134", Identifier: "digitaldrywood/detent#134", State: "Done"}},
 			wantRetry:         true,
+			wantConsecutive:   1,
 		},
 		{
-			name:         "legacy telemetry replay fails open without dispatch start evidence",
+			name:         "legacy no-product history respects configured limit",
 			runningIssue: implementProgressIssueWithoutPR(),
 			history: []store.WorkAttempt{
 				implementProgressLegacyNoPRHistoryAttempt(2),
@@ -406,7 +503,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			noProgressLimit: 3,
 			wantTerminal:    store.WorkAttemptTerminalNoProgress,
 			wantReason:      "completed_clean_diff_without_pull_request",
-			wantRetry:       true,
+			wantBlocked:     true,
+			wantBlockReason: noProgressLimitReason,
+			wantConsecutive: 3,
 		},
 		{
 			name:         "unpushed arithmetic without linked pull request defers",
@@ -459,6 +558,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRetry:          true,
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "baseline prose", nil),
 			currentWorkpadBody: implementProgressStructuredWorkpad("in_progress", "expanded prose without a machine artifact", nil),
+			wantConsecutive:    2,
 		},
 		{
 			name:               "mixed diff and audit field records both progress kinds",
@@ -573,7 +673,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			if tt.refreshedState != "" {
 				refreshed.State = tt.refreshedState
 			}
-			if tt.currentWorkpadBody != "" {
+			if tt.bodyWorkpad {
+				refreshed.Description += "\n" + tt.currentWorkpadBody
+			} else if tt.currentWorkpadBody != "" {
 				refreshed.Comments = []connector.IssueComment{{Body: tt.currentWorkpadBody, URL: "https://github.test/workpad"}}
 			} else if tt.workpadHumanAction != "" || tt.workpadBlockerRef != "" {
 				refreshed.Comments = []connector.IssueComment{{
@@ -607,6 +709,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 				Issue:            tt.runningIssue,
 				Attempt:          1,
 				WorkAttemptID:    42,
+				Generation:       tt.generation,
 				Mode:             runpkg.RunModeImplement,
 				StartedAt:        base.Add(-time.Minute),
 				DiffStats:        tt.diffStats,
@@ -828,6 +931,11 @@ func TestRunnerWorkAttemptErrorClass(t *testing.T) {
 		want string
 	}{
 		{name: "generic runner failure", err: errors.New("runner failed"), want: workAttemptErrorRunner},
+		{name: "typed workspace diagnostic", err: errors.Join(runpkg.ErrWorkspacePreparation, errors.New("workspace diff stat: index unreadable")), want: workAttemptErrorWorkspace},
+		{name: "historical workspace diagnostic", err: errors.New("workspace diff stat: git add intent to add: git -C /tmp/example add --intent-to-add -- . :(top,exclude).detent/worker-tmp/ failed: exit status 1"), want: workAttemptErrorWorkspace},
+		{name: "worker Git command failure", err: errors.New("run agent turn: git add intent to add: git add failed: exit status 1"), want: workAttemptErrorRunner},
+		{name: "worker cites workspace diagnostic", err: errors.New("run agent turn: workspace diff stat: git add intent to add: git add failed: exit status 1"), want: workAttemptErrorRunner},
+		{name: "unrecognized workspace failure", err: errors.New("workspace diff stat: code failed"), want: workAttemptErrorRunner},
 		{name: "post-push command failure", err: &runpkg.DeliverableCommandError{OperationClass: "post_push"}, want: workAttemptErrorPostPushCommand},
 		{name: "interrupted backend turn", err: backendStatusTestError{status: "interrupted"}, want: workAttemptErrorInterrupted},
 		{name: "failed backend turn", err: backendStatusTestError{status: "failed"}, want: workAttemptErrorRunner},
@@ -942,25 +1050,11 @@ func TestHandleRunResultAcceptsMergedNoDiffCompletion(t *testing.T) {
 	if _, blocked := state.Blocked[runningIssue.ID]; blocked {
 		t.Fatalf("Blocked[%q] present after accepted merged completion", runningIssue.ID)
 	}
-	if len(tracker.updates) != 0 {
-		t.Fatalf("updates = %#v, want no completion-time Blocked transition", tracker.updates)
+	if len(state.Retry) != 0 || len(state.Claimed) != 0 || len(state.Completed) != 0 {
+		t.Fatalf("merged completion retained dispatch memory: retry=%d claimed=%d completed=%d", len(state.Retry), len(state.Claimed), len(state.Completed))
 	}
 	if tracker.hydrations != 1 {
 		t.Fatalf("hydrations = %d, want tracker-discovered PR hydrated once", tracker.hydrations)
-	}
-	completed := state.Completed[runningIssue.ID]
-	if completed.Issue.PullRequest == nil || completed.Issue.PullRequest.State != "MERGED" {
-		t.Fatalf("completed issue pull request = %#v, want refreshed merged PR", completed.Issue.PullRequest)
-	}
-
-	transitioned := orch.reconcileStaleLinkedPullRequestIssues(
-		context.Background(),
-		&state,
-		[]connector.Issue{hydratedIssue},
-		now.Add(time.Minute),
-	)
-	if _, ok := transitioned[runningIssue.ID]; !ok {
-		t.Fatalf("transitioned = %#v, want issue %q", transitioned, runningIssue.ID)
 	}
 	if len(tracker.updates) != 1 || tracker.updates[0] != (implementProgressUpdate{issueID: runningIssue.ID, state: "Done"}) {
 		t.Fatalf("updates = %#v, want Done reconciliation", tracker.updates)
@@ -982,10 +1076,37 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 	}
 	tests := []struct {
 		name           string
+		ready          bool
+		mutate         func(*connector.Issue, *Config)
+		wantState      string
 		history        []store.WorkAttempt
 		wantTerminal   store.WorkAttemptTerminalState
 		wantHydrations int
 	}{
+		{name: "ready current head promotes immediately", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1, wantState: "Merging"},
+		{name: "real CI pending waits without continuation", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1,
+			mutate: func(issue *connector.Issue, _ *Config) { issue.PullRequest.CIStatus = "pending" }},
+		{name: "omitted checks with no CI producer remains held", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1,
+			mutate: func(issue *connector.Issue, _ *Config) { issue.PullRequest.CIStatus = "" }},
+		{name: "native required checks remain held", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1,
+			mutate: func(issue *connector.Issue, cfg *Config) {
+				issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "native-required", Status: "completed", Conclusion: "failure"}}
+				issue.PullRequest.CIStatus = "failure"
+				cfg.AutoPromote.Gate.CIFailureAction = gate.CIFailureActionSkip
+			}},
+		{name: "automated review remains pending", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1,
+			mutate: func(issue *connector.Issue, _ *Config) { issue.PullRequest.CodexReviewState = "PENDING" }},
+		{name: "validator evidence remains pending", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 2,
+			mutate: func(_ *connector.Issue, cfg *Config) { cfg.AutoPromote.Gate.Validator.Enabled = true }},
+		{name: "unknown PR authority remains held", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1,
+			mutate: func(issue *connector.Issue, _ *Config) {
+				issue.PullRequest.HydrationUnavailableReason = associationUnavailable
+			}},
+		{name: "human review remains required", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1, wantState: "Human Review",
+			mutate: func(_ *connector.Issue, cfg *Config) {
+				cfg.AutoPromote.HumanReview = new(true)
+				cfg.AutoPromote.Gate.Kind = gate.KindHumanReview
+			}},
 		{
 			name:           "initial success waits for gate without continuation",
 			wantTerminal:   store.WorkAttemptTerminalSuccess,
@@ -1002,7 +1123,15 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			tracker := &implementProgressConnector{hydrated: issue}
+			current := cloneIssue(issue)
+			if tt.ready {
+				current.PullRequest.RequiredCheckFailures = nil
+				current.PullRequest.CIStatus = "success"
+				current.PullRequest.MergeableState = "clean"
+				current.PullRequest.CodexReviewState = "COMMENTED"
+				current.PullRequest.CodexReviewSubmittedAt = new(base.Add(-time.Hour))
+				current.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"}}
+			}
 			attempts := &implementProgressAttemptStore{history: tt.history}
 			cfg := normalizeConfig(Config{
 				Project: scheduler.ProjectCandidate{ID: "detent"},
@@ -1018,6 +1147,13 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 				TerminalStates:         []string{"Done", "Cancelled"},
 				ContinuationRetryDelay: time.Minute,
 			})
+			if tt.ready {
+				cfg.AutoPromote.HumanReview = new(false)
+			}
+			if tt.mutate != nil {
+				tt.mutate(&current, &cfg)
+			}
+			tracker := &implementProgressConnector{hydrated: current, refreshed: current}
 			orch := &Orchestrator{
 				cfg:          cfg,
 				connector:    tracker,
@@ -1026,7 +1162,7 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 			}
 			state := newState(cfg)
 			state.Running[issue.ID] = Running{
-				Issue:         issue,
+				Issue:         current,
 				Attempt:       2,
 				WorkAttemptID: 42,
 				Mode:          runpkg.RunModeImplement,
@@ -1063,8 +1199,12 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 			if _, ok := state.Blocked[issue.ID]; ok {
 				t.Fatalf("Blocked[%q] present after gate-wait completion", issue.ID)
 			}
-			if len(tracker.updates) != 0 {
-				t.Fatalf("state updates = %#v, want breaker untouched", tracker.updates)
+			if tt.wantState == "" {
+				if len(tracker.updates) != 0 {
+					t.Fatalf("state updates = %#v, want existing hold", tracker.updates)
+				}
+			} else if len(tracker.updates) != 1 || tracker.updates[0] != (implementProgressUpdate{issueID: issue.ID, state: tt.wantState}) {
+				t.Fatalf("state updates = %#v, want immediate %s", tracker.updates, tt.wantState)
 			}
 		})
 	}
@@ -1751,10 +1891,14 @@ func TestImplementProgressMergedCompletionQualification(t *testing.T) {
 			issue.PullRequest.Number = 0
 		}},
 		{name: "head missing", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.HeadSHA = "" }},
-		{name: "check evidence missing", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.CheckRunCount = 0 }},
-		{name: "ci pending", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.CIStatus = "pending" }},
-		{name: "required check pending", mutate: func(issue *connector.Issue, _ *DiffStats) {
+		{name: "check evidence missing after merge", qualifies: true, mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.CheckRunCount = 0 }},
+		{name: "ci pending after merge", qualifies: true, mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.CIStatus = "pending" }},
+		{name: "required check pending after merge", qualifies: true, mutate: func(issue *connector.Issue, _ *DiffStats) {
 			issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Status: "in_progress"}}
+		}},
+		{name: "ci red remains", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.CIStatus = "failure" }},
+		{name: "failed check remains", mutate: func(issue *connector.Issue, _ *DiffStats) {
+			issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Status: "completed", Conclusion: "failure"}}
 		}},
 		{name: "hydration degraded", mutate: func(issue *connector.Issue, _ *DiffStats) {
 			issue.PullRequest.HydrationDegradedReason = connector.PullRequestHydrationReasonStaleCachedPullData
@@ -2290,8 +2434,11 @@ type implementProgressConnector struct {
 	hydrateErr         error
 	hydrateErrs        []error
 	refreshErr         error
+	commentErr         error
 	referenceErr       error
 	hydrations         int
+	stateReads         int
+	commentReads       int
 	referenceRefreshes int
 	updates            []implementProgressUpdate
 	comments           []implementProgressComment
@@ -2323,6 +2470,7 @@ func (c *implementProgressConnector) FetchIssuesByStates(context.Context, []stri
 }
 
 func (c *implementProgressConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	c.stateReads++
 	if c.refreshErr != nil {
 		return nil, c.refreshErr
 	}
@@ -2344,6 +2492,10 @@ func (c *implementProgressConnector) RefreshPullRequestReference(_ context.Conte
 }
 
 func (c *implementProgressConnector) FetchIssueComments(context.Context, connector.Issue) ([]connector.IssueComment, error) {
+	c.commentReads++
+	if c.commentErr != nil {
+		return nil, c.commentErr
+	}
 	return cloneIssueComments(c.refreshed.Comments), nil
 }
 

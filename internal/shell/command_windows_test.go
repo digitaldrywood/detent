@@ -47,6 +47,10 @@ func TestCommandWindowsConfiguredArguments(t *testing.T) {
 }
 
 func TestCommandWindowsQuotedGitDirectory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	for _, name := range []string{"plain", "directory with spaces", "percent%value"} {

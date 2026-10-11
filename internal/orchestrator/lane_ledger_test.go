@@ -17,13 +17,19 @@ import (
 )
 
 func TestLaneWritePersistsBeforeTrackerAndRetainsUncertainIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
-		name        string
-		mutationErr error
-		result      string
-		origin      provenance.Origin
+		name         string
+		mutationErr  error
+		result       string
+		origin       provenance.Origin
+		reasonDetail string
 	}{
+		{name: "conflicting files preserved in reason detail", result: "applied", origin: provenance.OriginDetent, reasonDetail: "conflict: internal/web/templates/work_templ.go, internal/store/sqlc/db.go"},
 		{name: "applied", result: "applied", origin: provenance.OriginDetent},
 		{name: "uncertain", mutationErr: errors.New("response lost"), result: "uncertain", origin: provenance.OriginDetent},
 		{name: "blocked", mutationErr: connector.ErrStateUpdateBlocked, result: "blocked", origin: provenance.OriginHuman},
@@ -39,11 +45,18 @@ func TestLaneWritePersistsBeforeTrackerAndRetainsUncertainIdentity(t *testing.T)
 				if err != nil || result != "prepared" || write.To != target || write.From != issue.State || write.FenceToken == 0 {
 					t.Fatalf("tracker called before durable intent: %#v, %s, %v", write, result, err)
 				}
+				wantReason := tt.reasonDetail
+				if wantReason == "" {
+					wantReason = "test transition"
+				}
+				if reason := connector.LaneTransitionReason(ctx); reason != wantReason {
+					t.Fatalf("tracker lost lane ledger reason: %q", reason)
+				}
 				return tt.mutationErr
 			}}
 			orch := newLaneMutationTestOrchestrator(cfg, tracker, backend, nil, at)
 			state := newState(cfg)
-			err := orch.updateIssueStateByIDStrictWithMetadata(t.Context(), &state, issue.ID, issue, "Rework", at, "test_transition", workflowLaneMetadata{})
+			err := orch.updateIssueStateByIDStrictWithMetadata(t.Context(), &state, issue.ID, issue, "Rework", at, "test_transition", workflowLaneMetadata{ReasonDetail: tt.reasonDetail})
 			if !errors.Is(err, tt.mutationErr) {
 				t.Fatalf("write error=%v, want %v", err, tt.mutationErr)
 			}
@@ -70,6 +83,10 @@ func (c ledgerCheckingConnector) UpdateIssueState(ctx context.Context, id, targe
 }
 
 func TestLaneLedgerClassifiesTransitionsWithoutStoppingWorkers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name            string
@@ -156,6 +173,10 @@ func (p lanePeerReader) CompareAndSwap(context.Context, string, string, []byte) 
 }
 
 func TestLaneMoveEntryPointsPreserveWorkerCompletionLane(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, entry := range []string{"targeted refresh", "kanban"} {
 		t.Run(entry, func(t *testing.T) {
@@ -214,6 +235,10 @@ func (s notifyingLaneStore) LaneWriteLock() sync.Locker {
 }
 
 func TestLaneWritesSerializeAcrossOrchestratorEntryPoints(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	at := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	issue := laneRevocationIssue("serial", "example/repo#4", "Todo")
@@ -307,11 +332,12 @@ func TestObservedLanePreTurnFailureRemainsInstanceOwned(t *testing.T) {
 			state := newState(cfg)
 			running := Running{Issue: issue, WorkAttemptID: 1, CompletionLane: lane, DispatchSourceState: "Todo", DispatchTargetState: "In Progress"}
 			orch.finishObservedLaneRun(t.Context(), &state, running, runpkg.Completion{IssueID: issue.ID, CompletedAt: at, Err: errors.New("backend failed before turn")})
-			if !state.FailureBreaker.PreTurn || len(attempts.completions) != 1 || attempts.completions[0].ErrorClass != workAttemptErrorRunner {
+			if state.FailureBreaker.Active() || len(attempts.completions) != 1 || attempts.completions[0].ErrorClass != workAttemptErrorRunner {
 				t.Fatalf("pre-turn failure lost instance attribution: breaker=%#v completions=%#v", state.FailureBreaker, attempts.completions)
 			}
-			if len(tracker.updates) != 0 || len(state.Retry) != 0 {
-				t.Fatalf("pre-turn failure overwrote observed lane: writes=%v retry=%v", tracker.updates, state.Retry)
+			_, retried := state.Retry[issue.ID]
+			if len(tracker.updates) != 0 || retried != stateIn(lane, cfg.ActiveStates) {
+				t.Fatalf("pre-turn failure overwrote observed lane or mis-scheduled retry: writes=%v retry=%v", tracker.updates, state.Retry)
 			}
 		})
 	}
@@ -348,6 +374,10 @@ func TestHumanMoveToMergingDoesNotChangeWorkerMode(t *testing.T) {
 }
 
 func TestLaneAcknowledgementDoesNotHideLaterHumanReentry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, peer := range []bool{false, true} {
 		t.Run(strconv.FormatBool(peer), func(t *testing.T) {

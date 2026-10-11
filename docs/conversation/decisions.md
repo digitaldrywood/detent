@@ -240,7 +240,7 @@ Conversation:
 ```json
 {
   "id": "conv_…", "organization_id": "…", "project_id": "…",
-  "title": "…", "visibility": "private|shared",
+  "title": "…", "visibility": "private|shared", "origin": "user|worker",
   "status": "active|archived",
   "work_item_id": "wi_…|null", "linked_at": "…|null",
   "work_item": {"id": "wi_…", "identifier": "<project>#<number>", "title": "…", "lane": "…", "runner_bound": false}|null,
@@ -295,7 +295,7 @@ Receipt:
 | Method and path | Body | Result |
 |---|---|---|
 | `POST /conversations` | `{title?, first_message?: {key, text}}` | 201 conversation (+ receipt when a first message was sent) |
-| `GET /conversations?cursor&limit&q&include_archived` | | `{conversations: [...], next_cursor}` visible to the actor, most recent activity first |
+| `GET /conversations?cursor&limit&q&include_archived` | | `{conversations: [...], next_cursor}` user-origin conversations visible to the actor, including linked chats, most recent activity first |
 | `GET /api/v2/organizations/:organization/conversations?...` | | Same across projects the actor can read |
 | `GET /conversations/:conversation` | | `{conversation, messages (latest page), questions, cursor}`; `questions` carries every question still awaiting an answer plus the ones the current attempt already settled, newest 20, so a reloading tab renders a locked card instead of losing it |
 | `GET /conversations/:conversation/messages?before=<seq>&limit` | | Older page, ordered by seq |
@@ -305,7 +305,7 @@ Receipt:
 | `POST /conversations/:conversation/archive` / `unarchive` | | 200 conversation |
 | `PATCH /conversations/:conversation` | `{title}` | 200 conversation |
 
-On main: there are no `archive` or `unarchive` routes (section 14 replaced archive with Settled), `PATCH` accepts a title, preferences or both, and the list takes `settled=true|false` rather than `include_archived`. Main also mounts `GET /work-items/:item/references` and the attachment routes of section 17.1 beside these (`internal/hubserver/conversation_api.go`).
+The conversation API supports `POST /conversations/:conversation/archive` (200 conversation) and `DELETE /conversations/:conversation` (204). Archive persists the independent `archived` boolean, excludes the conversation from project and organization lists and search, and preserves history and scoped reads. Delete removes the conversation, messages, attachments and their bytes, questions, commands, events, starts, turn batches and references; subsequent scoped reads return 404. Linked work items, projects, runners and usage accounting remain intact. Both operations require live actor authority and conversation write access inside the transaction and return 409 `stale_execution` during a live turn or while a runner owns nonterminal execution. Confirmations remain client-owned. `PATCH` accepts a title, preferences or both, and the list takes `settled=true|false` rather than `include_archived`. Main also mounts `GET /work-items/:item/references` and the attachment routes of section 17.1 beside these (`internal/hubserver/conversation_api.go`).
 
 Command envelope:
 
@@ -779,9 +779,11 @@ each. These amend earlier sections; where they conflict, this section wins.
     linking to `/chat` when the conversation product is enabled. The
     single-tenant dashboard's operator chat drawer is a different product
     and stays as is.
-15. **Client tests gate the branch.** `make check` runs the client typecheck,
-    unit tests and a bundle drift check (`make app` must leave
-    `static/app/conversation` unchanged).
+15. **Build owners generate the client.** Feature commits carry source only.
+    `make check-app` retains source and attribution diagnostics in scheduled
+    validation, without a committed-output freshness requirement. Staging,
+    releases and private operator builds regenerate from their selected source;
+    prepared release source archives preserve Go-only end-user builds.
 16. **Delivered-after-revocation is deliberate.** A control accepted before
     the actor lost access is still delivered to the bound worker; acceptance
     is durable and the audit shows who sent it. The actor's later requests
@@ -961,8 +963,9 @@ On main: the list accepts the `state`, `label`, `assignee` and `priority` filter
    including T3's sidebar provider, tooltips, hover preview cards and row
    icons; adaptation is only allowed for data bindings, handlers and
    Detent-only content.
-4. The review dock ships as Diff / State / Receipt / Activity first; visual
-   review later.
+4. The issue retains the original Properties aside and mobile layout. Diff
+   opens through the user-selected Surface; Change Request review and round
+   history stay on the linked change page (operator correction, October 1).
 5. Naming stays: Chat, New chat, Needs you.
 6. Sharing rules stand (private by default, whole history on link).
 7. One conversation per issue and one issue per conversation, but
@@ -1011,8 +1014,8 @@ On main: the list accepts the `state`, `label`, `assignee` and `priority` filter
   defaults (first dispatchable state, default priority, dispatch later) and
   the user can change them. `dispatch: "now"` places the issue in the first
   dispatchable state; `later` in Backlog when the project has one.
-- **Settled (13.9).** Archive endpoints and the `archived` status are
-  removed. Conversations are `active` or `settled`; a conversation settles
+- **Settled (13.9).** Conversations are `active` or `settled`; archiving is an
+  independent `archived` boolean and does not change this status. A conversation settles
   automatically when its execution is terminal or idle for the project's
   settle window (default 24 hours) and unsettles on new activity; the list
   endpoint accepts `settled=true|false` and the sidebar groups Settled as T3
@@ -1354,7 +1357,7 @@ What it is. A terminal is the runner account's authority, handed to a
 person. Stripping environment variables does not confine a shell: the
 process can read the runner's provider login files, its credential store,
 other checkouts and anything else that user can read. The contract does not
-pretend otherwise. It offers two isolation levels the runner declares in
+pretend otherwise. It offers three isolation levels the runner declares in
 `isolation` and the organization chooses between:
 
 - `user`: the PTY runs as the runner's user in the worktree. Provider
@@ -1363,16 +1366,23 @@ pretend otherwise. It offers two isolation levels the runner declares in
   `workspaces.terminal.isolation: user` explicitly and the person is an
   owner or admin with the `runners` grant. The setting page says in words
   what this level exposes.
+- `sandbox`: the runner applies kernel confinement before the configured shell
+  starts, inherited by its children. Only the assigned worktree is writable;
+  runner credentials, other checkouts and host services are inaccessible.
+  Members with `write` and the `runners` grant may use it. This is the default
+  policy; actual support is measured independently of agent-worker isolation.
+  Darwin uses Seatbelt and confines descendants to the PTY's process group;
+  process-group job control is consequently restricted. Linux currently reports
+  unavailable sandbox support. See [runtime acceptance](operations.md#terminal-isolation-and-runtime-acceptance).
 - `container`: the runner starts the PTY inside a container (or equivalent
   the runner implements) that mounts only the worktree, has no access to
   the runner's home directory, credential files or sockets, and runs as an
   unprivileged user. Members with `write` and the `runners` grant may use
-  it. This is the default the setting offers and the only level a viewer of
-  the setting page sees as recommended.
+  it. No container PTY launcher is currently implemented.
 
-A runner that cannot provide `container` reports `isolation: "user"` and
-the terminal card stays disabled for organizations that require
-`container`, with the reason.
+A runner reports the isolation it actually enforces. A runner that cannot
+provide the organization's required isolation is excluded and Terminal stays
+disabled with the reason; an unsupported sandbox never becomes a user shell.
 
 - Frames. Person → runner: `open {cols, rows, cwd?}` (cwd relative to the
   worktree; shell is the runner's choice), `input {data}`, `resize {cols,
@@ -1749,6 +1759,29 @@ Resource and API.
   section 18.10 — so it is neither deferred nor live: it is not carried.)
 
 ### 18.10 Capabilities and keybindings
+
+Cloud workspace availability (native #144) is published as `feature.workspaces`
+and `projects[].capabilities`. Missing service or unknown capabilities leave
+Files and Terminal disabled with an explanation. The project projection uses
+fresh, active, unrevoked registered runners with a current project grant and
+claim operation. Files availability requires one runner serving both files and
+exec; Terminal additionally requires that same runner's terminal capability,
+the hosted person's write/runners grants, enabled terminal policy and the
+existing isolation rule. Once a workspace exists, its own capabilities further
+narrow availability. Opening Surface sends the selected attempt ID and reuses
+only workspaces on that attempt; running attempts request files read-only.
+Every command and relay request still rechecks application authority.
+
+The shared tenant generator retains the matching tenant's deliberate
+`workspaces` policy through regeneration; absent policy stays disabled and is
+never copied to another tenant. It regenerates shared settings and secret
+environment references through their existing owners. A reviewed activation
+must use a runner's actual supported terminal isolation and explicitly authorize
+that scoped tenant policy. Mac terminals report `user`, which default sandbox
+policy refuses. After integration, the operator must review the isolation and
+activation, then verify the selected runner/workspace identity with a benign
+command through the genuine relay after any active attempt ends. Source tests
+do not establish live activation or that runtime acceptance.
 
 - **No Agents surface (September 12, 2026).** Michael, reviewing the right
   panel: "I think for our purposes we don't need an agents tab." T3's `agents`
@@ -2565,3 +2598,30 @@ settled.
    (`app/lib/connectionTooltips.ts`) so one client is never explained two
    ways: "Live: updates arrive over the project event stream." and
    "Not streaming: showing data from 9:02 AM, Reload fetches the board again."
+
+### Issue questions (#171)
+
+The issue header's Ask button (`A`) and inline question field open the Ask
+surface in the right panel. Ask lists the creator's private threads for this
+issue, newest first, and opens the latest thread or an empty question composer.
+Starting a question creates a conversation with optional `subject_work_item_id`
+and `first_message`; the title is `#<number> · <first question>`. Open in Chat
+opens the same conversation at `/chat/c/:id`.
+
+A subject is separate from `work_item_id`: multiple private question threads can
+coexist with the canonical worker conversation. Subjects do not redirect to the
+issue or change handoff. The creator's current project access and normal private
+conversation visibility govern reads. Subject chats cannot be linked or shared.
+`GET /conversations?subject_work_item_id=:id` lists only the creator's private
+subject threads in that project.
+
+Each coordinator turn pins the subject and refreshes the full body, all comment,
+lane/phase history and attempt pages, the latest Workpad, dependencies and PR
+references/state through the shared operator work-read adapter. The
+`read_issue_history` tool reads paginated sections and individual attempt receipts
+for the pinned subject. Issue records are untrusted data. Answers cite history,
+comments and attempts with `#issue-history-<event_id>`,
+`#issue-comment-<comment_id>` and `#issue-attempt-<attempt_id>` links; clicking one
+on the issue page reveals and highlights the corresponding Activity record.
+Moving the issue or posting an answer uses the existing coordinator approval
+forms. Private questions and answers are never copied into issue comments.

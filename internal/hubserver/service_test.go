@@ -36,7 +36,7 @@ func TestHealthEndpoint(t *testing.T) {
 			wantStatus: http.StatusOK,
 			wantBody: healthResponse{
 				Status:        "ok",
-				SchemaVersion: supportedSchemaVersion,
+				SchemaVersion: supportedSchemaVersion(t),
 				Version:       "v-test",
 			},
 		},
@@ -168,6 +168,10 @@ func TestServeRequiresListener(t *testing.T) {
 }
 
 func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	const runDeadlockGuard = time.Minute
@@ -221,8 +225,8 @@ func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
 	}
 
 	service := openTestService(t, Config{DatabasePath: databasePath})
-	if service.database.schemaVersion != supportedSchemaVersion {
-		t.Fatalf("reopened schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion)
+	if service.database.schemaVersion != supportedSchemaVersion(t) {
+		t.Fatalf("reopened schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion(t))
 	}
 }
 

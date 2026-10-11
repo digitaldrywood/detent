@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 )
 
 const (
@@ -64,8 +66,8 @@ type readyProjectSlot struct {
 }
 
 type runningProjectSlot struct {
-	RunningProject
-	slot Slot
+	ProjectID string
+	slot      Slot
 }
 
 type projectCycleState struct {
@@ -191,6 +193,7 @@ func (g *GlobalDispatchGate) SetProjects(projects []ProjectCandidate) {
 			g.finishRequestLocked(call)
 			continue
 		}
+		project.Rank = call.project.Rank
 		call.project = project
 		g.waiting = append(g.waiting, call)
 	}
@@ -372,44 +375,34 @@ func (g *GlobalDispatchGate) acquireRequest(call *dispatchRequest) (Slot, bool, 
 	return call.slot, call.granted, call.decision, call.err
 }
 
-// selectDispatchRequest shares ordering between standalone gates and elastic
-// pools. Strict pools use project rank as a leading key; other modes have no
-// project-rank preference. Lane rank follows, and a pool's scheduler breaks ties
-// among its own requests. Selection never acquires or reserves capacity.
-func selectDispatchRequest(pending []*dispatchRequest) (int, error) {
+func selectDispatchRequest(pending []*dispatchRequest) int {
 	index := 0
 	for i := 1; i < len(pending); i++ {
 		left, right := pending[i], pending[index]
-		leftRank, rightRank := dispatchProjectRank(left), dispatchProjectRank(right)
-		if leftRank < rightRank || (leftRank == rightRank && left.request.Priority < right.request.Priority) {
+		leftPriority, rightPriority := dispatchpriority.Priority(&left.request.Priority), dispatchpriority.Priority(&right.request.Priority)
+		if leftPriority != rightPriority {
+			if leftPriority < rightPriority {
+				index = i
+			}
+			continue
+		}
+		if left.project.Rank != right.project.Rank {
+			if left.project.Rank < right.project.Rank {
+				index = i
+			}
+			continue
+		}
+		if !left.request.CreatedAt.Equal(right.request.CreatedAt) {
+			if !left.request.CreatedAt.IsZero() && (right.request.CreatedAt.IsZero() || left.request.CreatedAt.Before(right.request.CreatedAt)) {
+				index = i
+			}
+			continue
+		}
+		if left.request.IssueID < right.request.IssueID {
 			index = i
 		}
 	}
-	best := pending[index]
-	projects := make([]ProjectCandidate, 0, len(pending))
-	for _, call := range pending {
-		if call.gate == best.gate && call.request.Priority == best.request.Priority && dispatchProjectRank(call) == dispatchProjectRank(best) {
-			projects = append(projects, call.project)
-		}
-	}
-	selection, err := best.gate.global.SelectProject(best.ctx, ProjectSelectionRequest{Projects: projects, Now: best.now})
-	if err == nil {
-		for i, call := range pending {
-			if call.gate == best.gate && call.project.ID == selection.Project.ID && call.request.Priority == best.request.Priority {
-				return i, nil
-			}
-		}
-	} else if !errors.Is(err, ErrNoSlots) && !errors.Is(err, ErrNoCandidates) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		return index, err
-	}
-	return index, nil
-}
-
-func dispatchProjectRank(call *dispatchRequest) int {
-	if call.gate.global.Mode() == ModeStrictPriority {
-		return priorityRank(call.project.Priority)
-	}
-	return 0
+	return index
 }
 
 // dispatchLocked ranks queued and currently calling requests, then attempts real
@@ -430,13 +423,9 @@ func (g *GlobalDispatchGate) dispatchLocked(pending []*dispatchRequest) {
 		call.gate = g
 	}
 	for len(pending) > 0 {
-		index, err := selectDispatchRequest(pending)
+		index := selectDispatchRequest(pending)
 		call := pending[index]
-		if err != nil {
-			call.err = err
-		} else {
-			call.slot, call.granted, call.decision, call.err = g.acquireRequestHostLocked(call)
-		}
+		call.slot, call.granted, call.decision, call.err = g.acquireRequestHostLocked(call)
 		g.finishRequestLocked(call)
 		pending = append(pending[:index], pending[index+1:]...)
 	}
@@ -537,24 +526,12 @@ func (g *GlobalDispatchGate) acquireLocked(
 		}
 		return Slot{}, false, DispatchGateDecision{}, err
 	}
-	if err := g.global.RecordProjectDispatch(ctx, ProjectDispatch{
-		ProjectID:    project.ID,
-		Weight:       project.Weight,
-		DispatchedAt: now,
-	}); err != nil {
-		return Slot{}, false, DispatchGateDecision{}, errors.Join(err, g.global.ReleaseSlot(slot))
-	}
 
 	decision := g.decisionLocked(project.ID, req, DispatchGateReasonGranted)
 	delete(g.ready, project.ID)
 	g.running[slot.token] = runningProjectSlot{
-		RunningProject: RunningProject{
-			ProjectID:    project.ID,
-			Priority:     project.Priority,
-			State:        slot.State,
-			SlotPriority: slot.Priority,
-		},
-		slot: slot,
+		ProjectID: project.ID,
+		slot:      slot,
 	}
 	return slot, true, decision, nil
 }

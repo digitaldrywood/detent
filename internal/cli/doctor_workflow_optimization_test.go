@@ -26,6 +26,10 @@ import (
 )
 
 func TestDoctorWorkflowOptimizationReportsRetroStatus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	paths := seedDoctorWorkflowOptimizationFixture(t)
@@ -69,6 +73,10 @@ func TestDoctorWorkflowOptimizationReportsRetroStatus(t *testing.T) {
 }
 
 func TestDoctorWorkflowOptimizationFindsFixtureRules(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -262,6 +270,10 @@ func TestDoctorOrphanRecoveryTelemetryUsesTwentyFourHourWindow(t *testing.T) {
 }
 
 func TestDoctorWorkflowOptimizationProposesGovernedSelfImprovement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -319,6 +331,10 @@ func TestDoctorWorkflowOptimizationProposesGovernedSelfImprovement(t *testing.T)
 }
 
 func TestDoctorWorkflowImprovementProposalsUsesCapturedLessonThreshold(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -376,6 +392,10 @@ func TestDoctorWorkflowImprovementProposalsUsesCapturedLessonThreshold(t *testin
 }
 
 func TestDoctorWorkflowOptimizationCreatesProposalIssuesWithMemoryTracker(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -692,6 +712,10 @@ func TestDoctorReviewFlowPhraseMatches(t *testing.T) {
 }
 
 func TestDoctorWorkflowReviewFlowTelemetryCountsImmediateReviewEntries(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -806,6 +830,10 @@ func TestDoctorWorkflowReviewFlowTelemetryCountsImmediateReviewEntries(t *testin
 }
 
 func TestDoctorWorkflowReviewFlowTelemetryRespectsCurrentWorkflowBoundary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	boundary := time.Date(2026, 7, 9, 16, 0, 0, 0, time.UTC)
@@ -1254,6 +1282,10 @@ func TestDoctorWorkflowOptimizationModelAndSessionGuardConfigurations(t *testing
 }
 
 func TestDoctorWorkflowSessionGuardTelemetryGroupsMultiplierKills(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1327,6 +1359,10 @@ func TestDoctorWorkflowSessionGuardTelemetryGroupsMultiplierKills(t *testing.T) 
 }
 
 func TestDoctorWorkflowOptimizationFlagsPinBehindObservedDefault(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1552,6 +1588,10 @@ func TestDoctorSQLiteReadOnlyDSNFormatsWindowsDrivePath(t *testing.T) {
 }
 
 func TestDoctorWorkflowOptimizationWriteRoundTripsWorkflow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	paths := seedDoctorWorkflowOptimizationFixture(t)
@@ -1605,6 +1645,10 @@ func TestDoctorWorkflowOptimizationWriteRoundTripsWorkflow(t *testing.T) {
 }
 
 func TestDoctorWorkflowOptimizationStrictFailsOnAdvisoryFindings(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	paths := seedDoctorWorkflowOptimizationFixture(t)
@@ -1709,6 +1753,10 @@ Prompt
 }
 
 func TestDoctorWorkflowSessionTelemetryBoundsRecentEmptyModelsByLatestSessionWindow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1932,6 +1980,10 @@ Prompt
 }
 
 func TestDoctorWorkflowOptimizationUsesRuntimeGitHubToken(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()

@@ -24,7 +24,7 @@ func patchLabels(t *testing.T, f nativeFixture, issue tracker.NativeIssue, key s
 
 func TestNativeLabelCatalogue(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "labels")
+	f := newDefaultNativeFixture(t, Config{})
 
 	empty := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/labels", f.token, nil)
 	requireNativeStatus(t, empty, http.StatusOK)
@@ -147,7 +147,7 @@ func TestLabelColorIsStableAndInThePalette(t *testing.T) {
 // removed rather than replaced.
 func TestNativeIssueAssigneesAndPriorityClear(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "properties")
+	f := newDefaultNativeFixture(t, Config{})
 	issue := f.create(t, "assignable")
 	path := f.base + "/work-items/" + string(issue.WorkItemID)
 

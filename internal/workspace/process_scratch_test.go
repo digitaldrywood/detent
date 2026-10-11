@@ -19,9 +19,14 @@ import (
 )
 
 func TestReapScratchProcessesOutsideWorkspace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	for _, legacy := range []bool{false, true} {
 		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
 			root := t.TempDir()
+			useRealProcessScan(t, root)
 			scratch := filepath.Join(root, ".detent", "worker-tmp", "attempt-example")
 			if legacy {
 				scratch = filepath.Join(root, ".detent", "tmp")
@@ -141,6 +146,10 @@ func startScratchEnvironmentDescendant(t *testing.T, scratch string, legacy bool
 }
 
 func TestScratchEnvironmentProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	role := os.Getenv("DETENT_SCRATCH_ENV_HELPER")
 	if role == "" {
 		return

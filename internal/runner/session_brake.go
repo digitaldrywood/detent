@@ -22,15 +22,13 @@ const (
 	FinalStateTurnLimitExceeded       = "turn_limit_exceeded"
 	FinalStateNoProgress              = "no_progress"
 
-	SessionBrakeReasonDuration   = "session_duration_exceeded"
-	SessionBrakeReasonTurnLimit  = "session_turn_limit_exceeded"
-	SessionBrakeReasonNoProgress = "session_no_progress"
-	SessionBrakeReasonMemory     = FinalStateMemoryCeilingExceeded
+	SessionBrakeReasonDuration  = "session_duration_exceeded"
+	SessionBrakeReasonTurnLimit = "session_turn_limit_exceeded"
+	SessionBrakeReasonMemory    = FinalStateMemoryCeilingExceeded
 )
 
 var (
 	ErrSessionTurnLimitExceeded = errors.New("agent session turn limit exceeded")
-	ErrSessionNoProgress        = errors.New("agent session made no work-product progress")
 )
 
 type SessionBrakeError struct {
@@ -88,36 +86,11 @@ func (e *SessionBrakeError) Is(target error) bool {
 		return e.Reason == SessionBrakeReasonDuration
 	case ErrSessionTurnLimitExceeded:
 		return e.Reason == SessionBrakeReasonTurnLimit
-	case ErrSessionNoProgress:
-		return e.Reason == SessionBrakeReasonNoProgress
 	case ErrSessionMemoryCeilingExceeded:
 		return e.Reason == SessionBrakeReasonMemory
 	default:
 		return errors.Is(e.cause, target)
 	}
-}
-
-type sessionProgressTicker interface {
-	Channel() <-chan time.Time
-	Stop()
-}
-
-type sessionProgressTickerFactory func(time.Duration) sessionProgressTicker
-
-type realSessionProgressTicker struct {
-	ticker *time.Ticker
-}
-
-func (t *realSessionProgressTicker) Channel() <-chan time.Time {
-	return t.ticker.C
-}
-
-func (t *realSessionProgressTicker) Stop() {
-	t.ticker.Stop()
-}
-
-func newSessionProgressTicker(interval time.Duration) sessionProgressTicker {
-	return &realSessionProgressTicker{ticker: time.NewTicker(interval)}
 }
 
 type sessionProgressSnapshot struct {
@@ -152,7 +125,6 @@ type sessionBrakeController struct {
 	startedAt           time.Time
 	lastProgressAt      time.Time
 	maxTurns            int
-	noProgressTimeout   time.Duration
 	turns               int
 	tokens              int64
 	initial             sessionProgressSnapshot
@@ -162,11 +134,8 @@ type sessionBrakeController struct {
 	cancelSession       context.CancelCauseFunc
 	probe               func(context.Context) (sessionProgressSnapshot, error)
 	now                 func() time.Time
-	tickerFactory       sessionProgressTickerFactory
 	logger              *slog.Logger
 	issue               connector.Issue
-	watchCancel         context.CancelFunc
-	watchDone           chan struct{}
 	journal             *sessionProgressJournal
 	observation         *store.SessionProgress
 }
@@ -176,43 +145,36 @@ func newSessionBrakeController(
 	startedAt time.Time,
 	sessionDuration time.Duration,
 	maxTurns int,
-	noProgressTimeout time.Duration,
 	cancelSession context.CancelCauseFunc,
 	probe func(context.Context) (sessionProgressSnapshot, error),
 	now func() time.Time,
-	tickerFactory sessionProgressTickerFactory,
 	logger *slog.Logger,
 	issue connector.Issue,
 	journals ...*sessionProgressJournal,
 ) *sessionBrakeController {
-	if sessionDuration <= 0 && maxTurns <= 0 && noProgressTimeout <= 0 {
+	if sessionDuration <= 0 && maxTurns <= 0 {
 		return nil
 	}
 	if now == nil {
 		now = time.Now
 	}
-	if tickerFactory == nil {
-		tickerFactory = newSessionProgressTicker
-	}
 	if startedAt.IsZero() {
 		startedAt = now()
 	}
 	controller := &sessionBrakeController{
-		startedAt:         startedAt,
-		lastProgressAt:    startedAt,
-		maxTurns:          maxTurns,
-		noProgressTimeout: noProgressTimeout,
-		cancelSession:     cancelSession,
-		probe:             probe,
-		now:               now,
-		tickerFactory:     tickerFactory,
-		logger:            logger,
-		issue:             issue,
+		startedAt:      startedAt,
+		lastProgressAt: startedAt,
+		maxTurns:       maxTurns,
+		cancelSession:  cancelSession,
+		probe:          probe,
+		now:            now,
+		logger:         logger,
+		issue:          issue,
 	}
 	if len(journals) > 0 {
 		controller.journal = journals[0]
 	}
-	if noProgressTimeout <= 0 || probe == nil {
+	if probe == nil {
 		return controller
 	}
 	snapshot, err := probe(ctx)
@@ -225,56 +187,7 @@ func newSessionBrakeController(
 			controller.logProbeFailure(err)
 		}
 	}
-	watchCtx, watchCancel := context.WithCancel(ctx)
-	controller.watchCancel = watchCancel
-	controller.watchDone = make(chan struct{})
-	go controller.watch(watchCtx)
 	return controller
-}
-
-func (c *sessionBrakeController) watch(ctx context.Context) {
-	defer close(c.watchDone)
-	ticker := c.tickerFactory(sessionProgressCheckInterval(c.noProgressTimeout))
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case at := <-ticker.Channel():
-			c.checkProgress(ctx, at)
-		}
-	}
-}
-
-func (c *sessionBrakeController) checkProgress(ctx context.Context, at time.Time) {
-	snapshot, err := c.probe(ctx)
-	if err != nil {
-		c.logProbeFailure(err)
-	}
-	if at.IsZero() {
-		at = c.now()
-	}
-	at = at.UTC()
-
-	c.mu.Lock()
-	if c.breach != nil {
-		c.mu.Unlock()
-		return
-	}
-	if err == nil {
-		c.current = snapshot
-		if err := c.observeSnapshotLocked(ctx, snapshot, at); err != nil {
-			c.logProbeFailure(err)
-		}
-	}
-	if at.Sub(c.lastProgressAt) < c.noProgressTimeout {
-		c.mu.Unlock()
-		return
-	}
-	breach := c.newErrorLocked(SessionBrakeReasonNoProgress, ErrSessionNoProgress, c.noProgressTimeout, at)
-	c.breach = breach
-	c.mu.Unlock()
-	c.cancelSession(breach)
 }
 
 func (c *sessionBrakeController) observe(ctx context.Context, turns int, tokens int64) error {
@@ -421,14 +334,6 @@ func (c *sessionBrakeController) resultDiffStats() DiffStats {
 	return result
 }
 
-func (c *sessionBrakeController) Stop() {
-	if c == nil || c.watchCancel == nil {
-		return
-	}
-	c.watchCancel()
-	<-c.watchDone
-}
-
 func (c *sessionBrakeController) logProbeFailure(err error) {
 	if c == nil || c.logger == nil || err == nil {
 		return
@@ -439,17 +344,6 @@ func (c *sessionBrakeController) logProbeFailure(err error) {
 		"identifier", c.issue.Identifier,
 		"error", err,
 	)
-}
-
-func sessionProgressCheckInterval(timeout time.Duration) time.Duration {
-	interval := timeout / 12
-	if interval < time.Second {
-		return time.Second
-	}
-	if interval > 5*time.Minute {
-		return 5 * time.Minute
-	}
-	return interval
 }
 
 func sessionBrakeFingerprint(brake *SessionBrakeError) string {

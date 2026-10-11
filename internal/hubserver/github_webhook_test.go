@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
 
 const testWebhookSecret = "webhook-secret"
@@ -20,7 +22,7 @@ const testWebhookSecret = "webhook-secret"
 func TestGitHubWebhookRejectsUnverifiableSignaturesWithoutReceipt(t *testing.T) {
 	t.Parallel()
 
-	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, true)
 	payload := completeIssueWebhookPayload(t, "Issue", "2026-09-02T12:00:00Z")
 	tests := []struct {
 		name      string
@@ -51,54 +53,217 @@ func TestGitHubWebhookRejectsUnverifiableSignaturesWithoutReceipt(t *testing.T) 
 func TestGitHubWebhookDeduplicatesDeliveriesAndRejectsConflicts(t *testing.T) {
 	t.Parallel()
 
-	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
-	payload := completeIssueWebhookPayload(t, "Original title", "2026-09-02T12:00:00Z")
-	for attempt := range 2 {
-		response := sendSignedWebhookRequest(t, service, "duplicate-delivery", "issues", payload)
-		if response.Code != http.StatusAccepted {
-			t.Fatalf("attempt %d status = %d body = %s, want %d", attempt, response.Code, response.Body.String(), http.StatusAccepted)
-		}
-		var body webhookResponse
-		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
-			t.Fatalf("decode attempt %d response: %v", attempt, err)
-		}
-		if body.Duplicate != (attempt == 1) {
-			t.Fatalf("attempt %d duplicate = %t, want %t", attempt, body.Duplicate, attempt == 1)
-		}
-	}
+	for _, expired := range []bool{false, true} {
+		t.Run(fmt.Sprintf("payload expired=%t", expired), func(t *testing.T) {
+			t.Parallel()
 
-	conflictingPayload := completeIssueWebhookPayload(t, "Conflicting title", "2026-09-02T12:00:00Z")
-	response := sendSignedWebhookRequest(t, service, "duplicate-delivery", "issues", conflictingPayload)
-	if response.Code != http.StatusConflict {
-		t.Fatalf("conflict status = %d body = %s, want %d", response.Code, response.Body.String(), http.StatusConflict)
-	}
+			now := time.Date(2026, 9, 2, 13, 0, 0, 0, time.UTC)
+			service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), func() time.Time { return now }, true)
+			payload := completeIssueWebhookPayload(t, "Original title", "2026-09-02T12:00:00Z")
+			for attempt := range 2 {
+				if attempt == 1 && expired {
+					if _, err := service.database.db.ExecContext(t.Context(), "UPDATE github_webhook_inbox SET processed_at=? WHERE delivery_id='duplicate-delivery'", formatWebhookTime(now.Add(-8*24*time.Hour))); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := service.database.db.ExecContext(t.Context(), "UPDATE github_webhook_payloads SET expires_at=?", formatWebhookTime(now.Add(-24*time.Hour))); err != nil {
+						t.Fatal(err)
+					}
+					service.maintainGitHubWebhooks(t.Context())
+					var payloads int
+					if err := service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM github_webhook_payloads").Scan(&payloads); err != nil {
+						t.Fatal(err)
+					}
+					if payloads != 0 {
+						t.Fatalf("payloads after retention = %d, want 0", payloads)
+					}
+				}
+				response := sendSignedWebhookRequest(t, service, "duplicate-delivery", "issues", payload)
+				if response.Code != http.StatusAccepted {
+					t.Fatalf("attempt %d status = %d body = %s, want %d", attempt, response.Code, response.Body.String(), http.StatusAccepted)
+				}
+				var body webhookResponse
+				if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+					t.Fatalf("decode attempt %d response: %v", attempt, err)
+				}
+				if body.Duplicate != (attempt == 1) {
+					t.Fatalf("attempt %d duplicate = %t, want %t", attempt, body.Duplicate, attempt == 1)
+				}
+			}
 
-	var receipts int
-	var redeliveries int
-	var status string
-	if err := service.database.db.QueryRowContext(t.Context(), `
+			conflictingPayload := completeIssueWebhookPayload(t, "Conflicting title", "2026-09-02T12:00:00Z")
+			response := sendSignedWebhookRequest(t, service, "duplicate-delivery", "issues", conflictingPayload)
+			if response.Code != http.StatusConflict {
+				t.Fatalf("conflict status = %d body = %s, want %d", response.Code, response.Body.String(), http.StatusConflict)
+			}
+
+			var receipts int
+			var redeliveries int
+			var status string
+			if err := service.database.db.QueryRowContext(t.Context(), `
 		SELECT COUNT(*), max(redelivery_count), max(status)
 		FROM github_webhook_inbox
 	`).Scan(&receipts, &redeliveries, &status); err != nil {
-		t.Fatalf("read webhook receipt: %v", err)
+				t.Fatalf("read webhook receipt: %v", err)
+			}
+			if receipts != 1 || redeliveries != 1 || status != "processed" {
+				t.Fatalf("receipt = count %d redeliveries %d status %q, want 1, 1, processed", receipts, redeliveries, status)
+			}
+			var payloads int
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM github_webhook_payloads").Scan(&payloads); err != nil {
+				t.Fatal(err)
+			}
+			wantPayloads := 1
+			if expired {
+				wantPayloads = 0
+			}
+			if payloads != wantPayloads {
+				t.Fatalf("payloads after terminal redelivery = %d, want %d", payloads, wantPayloads)
+			}
+			var issues int
+			var title string
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*), max(title) FROM issues").Scan(&issues, &title); err != nil {
+				t.Fatalf("read issue projection: %v", err)
+			}
+			if issues != 1 || title != "Original title" {
+				t.Fatalf("issue projection = count %d title %q, want one original issue", issues, title)
+			}
+		})
 	}
-	if receipts != 1 || redeliveries != 1 || status != "processed" {
-		t.Fatalf("receipt = count %d redeliveries %d status %q, want 1, 1, processed", receipts, redeliveries, status)
+}
+
+func TestHostedGitHubWebhookDeduplicatesVerifiedDeliveries(t *testing.T) {
+	t.Parallel()
+	f := newHostedSharedFixture(t)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = 'digitaldrywood/detent' WHERE id = ?", f.project); err != nil {
+		t.Fatal(err)
 	}
-	var issues int
-	var title string
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*), max(title) FROM issues").Scan(&issues, &title); err != nil {
-		t.Fatalf("read issue projection: %v", err)
+	payload := completeIssueWebhookPayload(t, "Hosted intake", "2026-09-02T12:00:00Z")
+	payload = strings.Replace(payload, `"action":"edited"`, `"action":"opened"`, 1)
+	for _, test := range []struct {
+		name      string
+		unsigned  bool
+		kind      string
+		duplicate bool
+		status    int
+	}{
+		{name: "unsigned internal request", unsigned: true, status: http.StatusUnauthorized},
+		{name: "machine cannot deliver", kind: cloudassert.KindMachine, status: http.StatusNotFound},
+		{name: "verified delivery", status: http.StatusAccepted},
+		{name: "verified redelivery", duplicate: true, status: http.StatusAccepted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			kind := test.kind
+			if kind == "" {
+				kind = cloudassert.KindService
+			}
+			request := hostedSharedRequest{kind: kind, method: http.MethodPost, target: "/internal/v1/github/webhook?delivery_id=hosted-delivery&event_type=issues", body: payload, unsigned: test.unsigned,
+				headers: map[string]string{"X-GitHub-Delivery": "forged-delivery", "X-GitHub-Event": "ping", "X-Hub-Signature-256": "invalid"}}
+			if kind == cloudassert.KindMachine {
+				request.bearer = "detent_invalid"
+			}
+			response := f.serve(t, request)
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body)
+			}
+			if test.status == http.StatusAccepted {
+				var receipt webhookResponse
+				if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil || receipt.DeliveryID != "hosted-delivery" || receipt.Duplicate != test.duplicate {
+					t.Fatalf("receipt = %+v: %v", receipt, err)
+				}
+			}
+		})
 	}
-	if issues != 1 || title != "Original title" {
-		t.Fatalf("issue projection = count %d title %q, want one original issue", issues, title)
+	var inbox, issues, redeliveries int
+	if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT
+ (SELECT count(*) FROM github_webhook_inbox WHERE delivery_id = 'hosted-delivery'),
+ (SELECT count(*) FROM issues WHERE project_id = ?),
+ (SELECT redelivery_count FROM github_webhook_inbox WHERE delivery_id = 'hosted-delivery')`, f.project).Scan(&inbox, &issues, &redeliveries); err != nil {
+		t.Fatal(err)
+	}
+	if inbox != 1 || issues != 1 || redeliveries != 1 {
+		t.Fatalf("inbox = %d, issues = %d, redeliveries = %d", inbox, issues, redeliveries)
+	}
+}
+
+func TestHostedGitHubWebhooksDoNotCreateProjects(t *testing.T) {
+	t.Parallel()
+	for _, binding := range []string{"unbound", "checkout", "repository"} {
+		for _, event := range []string{"push", "installation", "installation_repositories", "issues", "pull_request"} {
+			t.Run(binding+"/"+event, func(t *testing.T) {
+				t.Parallel()
+				f := newHostedSharedFixture(t)
+				if binding != "unbound" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = 'digitaldrywood/detent', github_repository_enabled = 1 WHERE id = ?", f.project); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if binding == "repository" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO repositories(github_node_id,github_owner,github_name,created_at,updated_at) VALUES ('R_repo','digitaldrywood','detent',?,?)", testTimestamp, testTimestamp); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id = (SELECT id FROM repositories WHERE github_node_id = 'R_repo') WHERE id = ?", f.project); err != nil {
+						t.Fatal(err)
+					}
+				}
+				payload := completeIssueWebhookPayload(t, "No project creation", "2026-09-02T12:00:00Z")
+				if event == "pull_request" {
+					payload = completePullRequestWebhookPayload(t, "No project creation", "2026-09-02T12:00:00Z")
+				}
+				if event == "push" || event == "installation" || event == "installation_repositories" {
+					var body map[string]any
+					if err := json.Unmarshal([]byte(payload), &body); err != nil {
+						t.Fatal(err)
+					}
+					delete(body, "issue")
+					switch event {
+					case "push":
+						delete(body, "action")
+						body["ref"] = "refs/heads/main"
+						body["after"] = "abc123"
+					case "installation", "installation_repositories":
+						body["installation"] = map[string]any{"id": 123, "account": map[string]any{"login": "digitaldrywood"}}
+						key := "repositories"
+						body["action"] = "created"
+						if event == "installation_repositories" {
+							key = "repositories_added"
+							body["action"] = "added"
+						}
+						body[key] = []any{body["repository"]}
+						delete(body, "repository")
+					}
+					encoded, err := json.Marshal(body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					payload = string(encoded)
+				}
+				response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost,
+					target: "/internal/v1/github/webhook?delivery_id=no-project&event_type=" + event, body: payload})
+				requireNativeStatus(t, response, http.StatusAccepted)
+				var projects int
+				var status string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM projects").Scan(&projects); err != nil {
+					t.Fatal(err)
+				}
+				if projects != 1 {
+					t.Fatalf("projects = %d, want only the existing native project", projects)
+				}
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT status FROM github_webhook_inbox WHERE delivery_id = 'no-project'").Scan(&status); err != nil {
+					t.Fatal(err)
+				}
+				if status != "processed" && status != "ignored" {
+					t.Fatalf("webhook status = %q, want processed or ignored", status)
+				}
+			})
+		}
 	}
 }
 
 func TestGitHubWebhookAcknowledgesDurableReceiptWhenProcessingFails(t *testing.T) {
 	t.Parallel()
 
-	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+	now := time.Date(2026, 9, 2, 13, 0, 0, 0, time.UTC)
+	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), func() time.Time { return now }, false)
 	for _, repository := range []struct {
 		nodeID string
 		owner  string
@@ -114,6 +279,11 @@ func TestGitHubWebhookAcknowledgesDurableReceiptWhenProcessingFails(t *testing.T
 			t.Fatalf("insert repository %s: %v", repository.nodeID, err)
 		}
 	}
+	var repositoryID int64
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM repositories WHERE github_name='detent'").Scan(&repositoryID); err != nil {
+		t.Fatal(err)
+	}
+	seedCompatibilityProject(t, service.database.db, repositoryID)
 	payload := strings.Replace(
 		completeIssueWebhookPayload(t, "Issue", "2026-09-02T12:00:00Z"),
 		`"node_id":"R_repo"`,
@@ -152,7 +322,7 @@ func TestGitHubWebhookAcknowledgesDurableReceiptWhenProcessingFails(t *testing.T
 	if checkpointError == "" || !strings.Contains(checkpointState, "last_error_at") {
 		t.Fatalf("webhook checkpoint = error %q state %q, want visible repository error", checkpointError, checkpointState)
 	}
-	freshness, err := service.database.repositoryFreshness(t.Context(), time.Now().UTC(), time.Minute)
+	freshness, err := service.database.repositoryFreshness(t.Context(), now, time.Minute)
 	if err != nil {
 		t.Fatalf("read freshness after webhook failure: %v", err)
 	}
@@ -164,6 +334,50 @@ func TestGitHubWebhookAcknowledgesDurableReceiptWhenProcessingFails(t *testing.T
 	}
 	if exposed == nil || exposed.Message != checkpointError {
 		t.Fatalf("exposed webhook error = %#v, want %q", exposed, checkpointError)
+	}
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE github_webhook_payloads SET expires_at=?", formatWebhookTime(now.Add(-24*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	service.maintainGitHubWebhooks(t.Context())
+	var retained []byte
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT body FROM github_webhook_payloads").Scan(&retained); err != nil {
+		t.Fatalf("read retained failed payload: %v", err)
+	}
+	if string(retained) != payload {
+		t.Fatal("failed delivery payload changed during retention")
+	}
+	if _, err := service.database.db.ExecContext(t.Context(), "DELETE FROM repositories WHERE github_node_id='R_conflicting_node'"); err != nil {
+		t.Fatal(err)
+	}
+	response = sendSignedWebhookRequest(t, service, "processing-failure", "issues", payload)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("resolved delivery status = %d body = %s", response.Code, response.Body.String())
+	}
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT status FROM github_webhook_inbox WHERE delivery_id='processing-failure'").Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "processed" {
+		t.Fatalf("resolved receipt status = %q, want processed", status)
+	}
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE github_webhook_payloads SET expires_at=?", formatWebhookTime(now.Add(-24*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	service.maintainGitHubWebhooks(t.Context())
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM github_webhook_payloads").Scan(&payloadCount); err != nil {
+		t.Fatal(err)
+	}
+	if payloadCount != 1 {
+		t.Fatalf("payloads immediately after resolving failure = %d, want 1", payloadCount)
+	}
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE github_webhook_inbox SET processed_at=? WHERE delivery_id='processing-failure'", formatWebhookTime(now.Add(-7*24*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	service.maintainGitHubWebhooks(t.Context())
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM github_webhook_payloads").Scan(&payloadCount); err != nil {
+		t.Fatal(err)
+	}
+	if payloadCount != 0 {
+		t.Fatalf("payloads after resolved delivery retention = %d, want 0", payloadCount)
 	}
 }
 
@@ -184,7 +398,7 @@ func TestGitHubWebhookSourceOrderingConverges(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), func() time.Time {
 				return time.Date(2026, 9, 2, 13, 0, 0, 0, time.UTC)
-			})
+			}, true)
 			for deliveryIndex, payload := range test.payloads {
 				response := sendSignedWebhookRequest(t, service, fmt.Sprintf("ordering-%d-%d", index, deliveryIndex), "issues", payload)
 				if response.Code != http.StatusAccepted {
@@ -214,7 +428,7 @@ func TestGitHubWebhookEqualTimestampConflictConvergesAndHydrates(t *testing.T) {
 	for index, payloads := range orders {
 		service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), func() time.Time {
 			return time.Date(2026, 9, 2, 13, 0, 0, 0, time.UTC)
-		})
+		}, true)
 		for deliveryIndex, payload := range payloads {
 			response := sendSignedWebhookRequest(t, service, fmt.Sprintf("tie-%d-%d", index, deliveryIndex), "issues", payload)
 			if response.Code != http.StatusAccepted {
@@ -246,7 +460,7 @@ func TestGitHubWebhookEqualTimestampConflictConvergesAndHydrates(t *testing.T) {
 func TestGitHubWebhookPartialPayloadRequestsOnlyTargetedHydration(t *testing.T) {
 	t.Parallel()
 
-	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, false)
 	payload := `{"action":"edited","repository":{"full_name":"digitaldrywood/detent"},"issue":{"number":2069}}`
 	response := sendSignedWebhookRequest(t, service, "partial-issue", "issues", payload)
 	if response.Code != http.StatusAccepted {
@@ -286,7 +500,7 @@ func TestGitHubWebhookCoalescesNewestHydrationSource(t *testing.T) {
 	wantVersion := "1:" + hex.EncodeToString(newerDigest[:])
 	orders := [][]string{{older, newer}, {newer, older}}
 	for orderIndex, payloads := range orders {
-		service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+		service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, true)
 		for deliveryIndex, payload := range payloads {
 			response := sendSignedWebhookRequest(t, service, fmt.Sprintf("partial-order-%d-%d", orderIndex, deliveryIndex), "issues", payload)
 			if response.Code != http.StatusAccepted {
@@ -335,7 +549,7 @@ func TestGitHubWebhookTargetsChecksWithoutRepositoryRefresh(t *testing.T) {
 	}
 	for index, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+			service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, true)
 			response := sendSignedWebhookRequest(t, service, fmt.Sprintf("checks-%d", index), test.event, test.payload)
 			if response.Code != http.StatusAccepted {
 				t.Fatalf("status = %d body = %s, want %d", response.Code, response.Body.String(), http.StatusAccepted)
@@ -355,7 +569,7 @@ func TestGitHubWebhookTargetsChecksWithoutRepositoryRefresh(t *testing.T) {
 func TestGitHubWebhookUpdatesPullRequestWithoutClearingSummaries(t *testing.T) {
 	t.Parallel()
 
-	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, true)
 	initial := completePullRequestWebhookPayload(t, "Initial PR", "2026-09-02T11:00:00Z")
 	response := sendSignedWebhookRequest(t, service, "pr-initial", "pull_request", initial)
 	if response.Code != http.StatusAccepted {
@@ -388,7 +602,7 @@ func TestGitHubWebhookUpdatesPullRequestWithoutClearingSummaries(t *testing.T) {
 func TestGitHubWebhookMapsAndClearsWorkflowStateFromLabels(t *testing.T) {
 	t.Parallel()
 
-	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, true)
 	initial := completeIssueWebhookPayload(t, "Initial issue", "2026-09-02T11:00:00Z")
 	response := sendSignedWebhookRequest(t, service, "workflow-initial", "issues", initial)
 	if response.Code != http.StatusAccepted {
@@ -491,7 +705,7 @@ func TestGitHubWebhookDeletedIssueCannotRemainSchedulable(t *testing.T) {
 	}
 	for testIndex, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+			service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, true)
 			response := sendSignedWebhookRequest(t, service, fmt.Sprintf("deleted-seed-%d", testIndex), "issues", completeIssueWebhookPayload(t, "Seed issue", "2026-09-02T11:00:00Z"))
 			if response.Code != http.StatusAccepted {
 				t.Fatalf("seed status = %d body = %s", response.Code, response.Body.String())
@@ -548,30 +762,61 @@ func TestGitHubWebhookPayloadRetentionPreservesAuditAndProjection(t *testing.T) 
 		WebhookMaintenanceInterval: time.Hour,
 		now:                        func() time.Time { return now },
 	})
+	seedWebhookCompatibilityProject(t, service)
 	payload := completeIssueWebhookPayload(t, "Retained issue", "2026-09-02T12:00:00Z")
 	response := sendSignedWebhookRequest(t, service, "retention", "issues", payload)
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("status = %d body = %s", response.Code, response.Body.String())
 	}
-	pendingPayload := []byte(`{}`)
-	pendingDigest := sha256.Sum256(pendingPayload)
-	if _, err := service.database.recordWebhook(t.Context(), webhookReceipt{
-		DeliveryID:       "pending-retention",
-		EventType:        "issues",
-		HeadersJSON:      "{}",
-		Payload:          pendingPayload,
-		PayloadSHA256:    hex.EncodeToString(pendingDigest[:]),
-		ReceivedAt:       now.Add(-2 * time.Hour),
-		PayloadExpiresAt: now.Add(-time.Hour),
-	}); err != nil {
-		t.Fatalf("record pending retention receipt: %v", err)
+	retainedPayload := []byte(`{}`)
+	retainedDigest := sha256.Sum256(retainedPayload)
+	for _, test := range []struct {
+		deliveryID  string
+		status      string
+		processedAt string
+		wantPayload bool
+	}{
+		{deliveryID: "pending-retention", status: "pending", wantPayload: true},
+		{deliveryID: "processing-retention", status: "processing", wantPayload: true},
+		{deliveryID: "failed-retention", status: "failed", wantPayload: true},
+		{deliveryID: "ignored-retention", status: "ignored", processedAt: now.Format(time.RFC3339)},
+		{deliveryID: "recent-processing", status: "processed", processedAt: formatWebhookTime(now.Add(90 * time.Minute)), wantPayload: true},
+		{deliveryID: "boundary-retention", status: "processed", processedAt: formatWebhookTime(now.Add(time.Hour))},
+	} {
+		t.Run(test.deliveryID, func(t *testing.T) {
+			receipt, err := service.database.recordWebhook(t.Context(), webhookReceipt{
+				DeliveryID:       test.deliveryID,
+				EventType:        "issues",
+				HeadersJSON:      "{}",
+				Payload:          retainedPayload,
+				PayloadSHA256:    hex.EncodeToString(retainedDigest[:]),
+				ReceivedAt:       now.Add(-2 * time.Hour),
+				PayloadExpiresAt: now.Add(-time.Hour),
+			})
+			if err != nil {
+				t.Fatalf("record retention receipt: %v", err)
+			}
+			if _, err := service.database.db.ExecContext(t.Context(), "UPDATE github_webhook_inbox SET status=?,processed_at=NULLIF(?, '') WHERE id=?", test.status, test.processedAt, receipt.InboxID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.database.purgeWebhookPayloads(t.Context(), now.Add(2*time.Hour), service.config.WebhookPayloadRetention); err != nil {
+				t.Fatal(err)
+			}
+			var present bool
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM github_webhook_payloads WHERE inbox_id=?)", receipt.InboxID).Scan(&present); err != nil {
+				t.Fatal(err)
+			}
+			if present != test.wantPayload {
+				t.Fatalf("payload present = %t, want %t", present, test.wantPayload)
+			}
+		})
 	}
-	deleted, err := service.database.purgeWebhookPayloads(t.Context(), now.Add(2*time.Hour))
+	deleted, err := service.database.purgeWebhookPayloads(t.Context(), now.Add(2*time.Hour), service.config.WebhookPayloadRetention)
 	if err != nil {
 		t.Fatalf("purgeWebhookPayloads() error = %v", err)
 	}
-	if deleted != 1 {
-		t.Fatalf("purged payloads = %d, want 1", deleted)
+	if deleted != 0 {
+		t.Fatalf("purged payloads on repeated cleanup = %d, want 0", deleted)
 	}
 
 	var payloads int
@@ -589,7 +834,7 @@ func TestGitHubWebhookPayloadRetentionPreservesAuditAndProjection(t *testing.T) 
 	`).Scan(&payloads, &receipts, &issues, &payloadHash, &payloadBytes); err != nil {
 		t.Fatalf("read retained webhook state: %v", err)
 	}
-	if payloads != 1 || receipts != 2 || issues != 1 || payloadHash == "" || payloadBytes != len(payload) {
+	if payloads != 4 || receipts != 7 || issues != 1 || payloadHash == "" || payloadBytes != len(payload) {
 		t.Fatalf("retained state = payloads %d receipts %d issues %d hash %q bytes %d", payloads, receipts, issues, payloadHash, payloadBytes)
 	}
 }
@@ -599,7 +844,7 @@ func TestGitHubWebhookStartupReplaysPendingReceipt(t *testing.T) {
 
 	databasePath := filepath.Join(t.TempDir(), "hub.db")
 	now := time.Date(2026, 9, 2, 13, 0, 0, 0, time.UTC)
-	service := openWebhookTestService(t, databasePath, func() time.Time { return now })
+	service := openWebhookTestService(t, databasePath, func() time.Time { return now }, true)
 	payload := []byte(completeIssueWebhookPayload(t, "Replayed issue", "2026-09-02T12:00:00Z"))
 	digest := sha256.Sum256(payload)
 	if _, err := service.database.recordWebhook(t.Context(), webhookReceipt{
@@ -617,7 +862,7 @@ func TestGitHubWebhookStartupReplaysPendingReceipt(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	reopened := openWebhookTestService(t, databasePath, func() time.Time { return now.Add(time.Minute) })
+	reopened := openWebhookTestService(t, databasePath, func() time.Time { return now.Add(time.Minute) }, true)
 	var status string
 	var title string
 	if err := reopened.database.db.QueryRowContext(t.Context(), `
@@ -665,14 +910,30 @@ func readIssueProjectionSnapshot(t *testing.T, service *Service) issueProjection
 	return snapshot
 }
 
-func openWebhookTestService(t *testing.T, databasePath string, now func() time.Time) *Service {
+func openWebhookTestService(t *testing.T, databasePath string, now func() time.Time, compatibility bool) *Service {
 	t.Helper()
-	return openTestService(t, Config{
+	service := openTestService(t, Config{
 		DatabasePath:               databasePath,
 		GitHubWebhookSecret:        []byte(testWebhookSecret),
 		WebhookMaintenanceInterval: time.Hour,
 		now:                        now,
 	})
+	if compatibility {
+		seedWebhookCompatibilityProject(t, service)
+	}
+	return service
+}
+
+func seedWebhookCompatibilityProject(t *testing.T, service *Service) {
+	t.Helper()
+	if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO repositories(github_node_id,github_owner,github_name,created_at,updated_at) VALUES ('R_repo','digitaldrywood','detent',?,?) ON CONFLICT DO NOTHING`, testTimestamp, testTimestamp); err != nil {
+		t.Fatal(err)
+	}
+	var repositoryID int64
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM repositories WHERE github_owner='digitaldrywood' AND github_name='detent'").Scan(&repositoryID); err != nil {
+		t.Fatal(err)
+	}
+	seedCompatibilityProject(t, service.database.db, repositoryID)
 }
 
 func sendSignedWebhookRequest(t *testing.T, service *Service, deliveryID string, event string, payload string) *httptest.ResponseRecorder {

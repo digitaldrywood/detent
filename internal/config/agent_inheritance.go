@@ -71,10 +71,15 @@ func (c Config) WithAgentDefaults(instance Agents, budget AgentBudgetDefaults) C
 		routes = append(routes, AgentRoute{Name: "default", Backend: backendID, Default: true})
 		sources["routes.default"] = "project"
 	}
+	modelSelection := ResolveModelSelection(instance.ModelSelection, local.ModelSelection)
+	if c.Agents.ModelSelection.Sources["authority"] == "cloud" {
+		modelSelection = c.Agents.ModelSelection
+	}
 	c.Agents = Agents{
 		Backends: backends, Routes: routes,
-		ModelSelection: ResolveModelSelection(instance.ModelSelection, local.ModelSelection),
-		Sources:        sources, local: &local,
+		ModelSelection:       modelSelection,
+		legacyModelSelection: local.legacyModelSelection,
+		Sources:              sources, local: &local,
 	}
 	c.Agents.normalize()
 	_, pricingConfigured := c.configuredFields["budget.pricing_path"]
@@ -99,4 +104,22 @@ func (c Config) EffectiveModelSelection() ModelSelection {
 		return c.Agents.ModelSelection
 	}
 	return ResolveModelSelection(ModelSelection{}, c.Agents.ModelSelection)
+}
+
+// WithWorkerDefaults preserves the project setting across global-default reloads.
+func (c Config) WithWorkerDefaults(instance WorkerDefaults) Config {
+	local := c.Worker.AllowLocalBinding
+	if c.Worker.localDefaults != nil {
+		local = c.Worker.localDefaults.AllowLocalBinding
+	}
+	c.Worker.localDefaults = &WorkerDefaults{AllowLocalBinding: local}
+	c.Worker.AllowLocalBinding = local
+	if local == nil {
+		c.Worker.AllowLocalBinding = instance.AllowLocalBinding
+	}
+	return c
+}
+
+func (w Worker) EffectiveAllowLocalBinding() bool {
+	return w.AllowLocalBinding != nil && *w.AllowLocalBinding
 }

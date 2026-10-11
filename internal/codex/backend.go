@@ -102,6 +102,8 @@ func (b *AgentBackend) runTurn(
 		if policyErr != nil {
 			return runner.AgentTurnResult{}, policyErr
 		}
+		policy.AllowLocalBinding = req.AllowLocalBinding
+		policy.ExtraNetworkDomains = req.ExtraNetworkDomains
 		policy.WritableRoots = append([]string{req.Workspace, req.TempDir}, req.ExtraWritableRoots...)
 		policy.WritableRoots = appendUniqueStrings(nil, policy.WritableRoots...)
 		cacheOptions := Options{ThreadSandbox: "workspace-write", TurnSandboxPolicy: map[string]any{"type": "workspaceWrite"}}
@@ -316,6 +318,8 @@ func agentUpdateFromCodex(update Update) runner.AgentUpdate {
 		ItemID:              update.ItemID,
 		Tool:                update.Tool,
 		Command:             update.Command,
+		NativeActions:       update.NativeActions,
+		CWD:                 update.CWD,
 		Delta:               update.Delta,
 		Status:              update.Status,
 		ExitCode:            update.ExitCode,

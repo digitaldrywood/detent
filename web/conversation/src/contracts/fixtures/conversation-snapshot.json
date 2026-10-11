@@ -5,7 +5,9 @@
     "project_id": "proj_parable",
     "title": "Flaky checkout lock renewal",
     "visibility": "shared",
+    "origin": "user",
     "status": "active",
+    "archived": false,
     "work_item_id": "wi_3363",
     "linked_at": "2026-09-09T09:41:12Z",
     "work_item": {
@@ -128,5 +130,16 @@
     }
   ],
   "cursor": 40,
-  "has_more": true
+  "has_more": true,
+  "skills": [
+    {
+      "name": "review",
+      "description": "Review this project",
+      "path": "/workspace/.agents/skills/review/SKILL.md",
+      "scope": "project",
+      "enabled": true,
+      "userInvocable": true,
+      "invocation": "$review"
+    }
+  ]
 }

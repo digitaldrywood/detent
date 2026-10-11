@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -45,7 +47,7 @@ const (
 
 var symbolicRefPattern = regexp.MustCompile(`^[a-z][a-z0-9+.-]*:[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 
-var refPattern = regexp.MustCompile(`^(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#([1-9][0-9]*)$`)
+var refPattern = regexp.MustCompile(`^(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|prj_[a-z0-9]+))?#([1-9][0-9]*)$`)
 
 type Signal struct {
 	// UnknownKeys records ignored YAML field paths for diagnostics only.
@@ -153,15 +155,74 @@ func SignalFromComment(body string, commentURL string, repo string) (*Signal, bo
 	return block, true
 }
 
+// SignalFromWorkpad reads a structured receipt only inside the canonical
+// Workpad section. Issue bodies can contain protocol examples in other sections.
+func SignalFromWorkpad(body, url, repo string) (*Signal, bool) {
+	lines := strings.Split(body, "\n")
+	start, level := -1, 0
+	inFence := false
+	for index, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		n := len(line) - len(strings.TrimLeft(line, "#"))
+		if n == 0 || n > 6 || len(line) == n || line[n] != ' ' {
+			continue
+		}
+		if start >= 0 && n <= level {
+			return SignalFromComment(strings.Join(lines[start:index], "\n"), url, repo)
+		}
+		if strings.EqualFold(strings.TrimSpace(strings.TrimRight(line[n:], "#")), "Codex Workpad") {
+			start, level = index+1, n
+		}
+	}
+	if start < 0 {
+		return nil, false
+	}
+	return SignalFromComment(strings.Join(lines[start:], "\n"), url, repo)
+}
+
+const MaxFinalSummaryBytes = 8 << 10
+
+func FinalSummary(body string) string {
+	_, _, start := lastStatusBlock(body)
+	if start >= 0 {
+		body = body[:start]
+	}
+	body = strings.TrimSpace(body)
+	if len(body) > MaxFinalSummaryBytes {
+		body = body[:MaxFinalSummaryBytes-len("…")]
+		for !utf8.ValidString(body) {
+			body = body[:len(body)-1]
+		}
+		body += "…"
+	}
+	return body
+}
+
 func LastStatusBlock(body string) (string, bool) {
+	content, found, _ := lastStatusBlock(body)
+	return content, found
+}
+
+func lastStatusBlock(body string) (string, bool, int) {
 	var last string
+	lastStart, start, offset := -1, -1, 0
 	found := false
 	inFence := false
 	fenceChar := byte(0)
 	fenceLen := 0
 	lines := []string{}
 
-	for _, line := range strings.Split(body, "\n") {
+	for _, line := range strings.SplitAfter(body, "\n") {
+		lineOffset := offset
+		offset += len(line)
+		line = strings.TrimSuffix(line, "\n")
 		trimmed := strings.TrimSpace(line)
 		if !inFence {
 			char, length, ok := statusFenceOpening(trimmed)
@@ -169,6 +230,7 @@ func LastStatusBlock(body string) (string, bool) {
 				continue
 			}
 			inFence = true
+			start = lineOffset
 			fenceChar = char
 			fenceLen = length
 			lines = lines[:0]
@@ -177,13 +239,14 @@ func LastStatusBlock(body string) (string, bool) {
 		if statusFenceClosing(trimmed, fenceChar, fenceLen) {
 			last = strings.Join(lines, "\n")
 			found = true
+			lastStart = start
 			inFence = false
 			continue
 		}
 		lines = append(lines, line)
 	}
 
-	return last, found
+	return last, found, lastStart
 }
 
 func CompletionAuthorizationFromIssueBody(body string) (string, bool, error) {
@@ -591,6 +654,36 @@ func cloneBool(value *bool) *bool {
 	return &cloned
 }
 
+func IssueDependencyRefs(signal *Signal, project string) []string {
+	if signal == nil || signal.Invalid != nil || signal.Status != StatusBlocked || signal.HumanAction != "" || signal.ReasonCode != "" || len(signal.Blockers) == 0 {
+		return nil
+	}
+	var refs []string
+	for _, blocker := range signal.Blockers {
+		predicate := blocker.Predicate
+		if blocker.Owner != BlockerOwnerOrchestrator || blocker.Unverifiable || predicate == nil || predicate.Type != PredicateIssueState {
+			return nil
+		}
+		for _, state := range predicate.States {
+			if !strings.EqualFold(strings.TrimSpace(state), "open") {
+				return nil
+			}
+		}
+		reference := predicate.Identifier
+		if reference == "" {
+			reference = blocker.Ref
+		}
+		ref, err := ParseRef(reference, project)
+		if err != nil || !strings.HasPrefix(ref, project+"#") {
+			return nil
+		}
+		if !slices.Contains(refs, ref) {
+			refs = append(refs, ref)
+		}
+	}
+	return refs
+}
+
 func ParseRef(ref string, repo string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	matches := refPattern.FindStringSubmatch(ref)
@@ -658,6 +751,9 @@ func OperationalCompletion(signal *Signal) (string, bool) {
 // place of pre-dispatch operational authorization. Acceptance results remain in
 // completion_evidence; attempt identity is checked by the completion handler.
 func MergedCompletionEvidence(signal *Signal) bool {
+	if signal == nil {
+		return false
+	}
 	if _, ok := OperationalCompletion(signal); !ok {
 		return false
 	}

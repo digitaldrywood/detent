@@ -171,6 +171,10 @@ func TestIssueExplanationAPIRequiresAuthentication(t *testing.T) {
 }
 
 func TestIssueExplanationAPIAcknowledgesCurrentParkSequence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
@@ -224,6 +228,10 @@ func TestIssueExplanationAPIAcknowledgesCurrentParkSequence(t *testing.T) {
 }
 
 func TestIssueExplanationAPICreditsAcceptedProgress(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})

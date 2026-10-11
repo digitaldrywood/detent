@@ -1,11 +1,14 @@
 package hubserver
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -28,16 +31,46 @@ import (
 )
 
 type browserHostedProvider struct {
-	mu             sync.Mutex
-	base           string
-	organization   auth.Organization
-	members        map[string]auth.Membership
-	sessions       map[string]auth.HostedIdentity
-	invitations    map[string]auth.Invitation
-	inviteRoles    map[string]string
-	authorizations map[string]string
-	codes          map[string]auth.Identity
-	sequence       int
+	mu                 sync.Mutex
+	base               string
+	organization       auth.Organization
+	members            map[string]auth.Membership
+	sessions           map[string]auth.HostedIdentity
+	invitations        map[string]auth.Invitation
+	inviteRoles        map[string]string
+	authorizations     map[string]string
+	codes              map[string]auth.Identity
+	emails             map[string]bool
+	users              map[string]auth.HostedUser
+	sequence           int
+	invitationDelivery func(context.Context, string, string) error
+}
+
+func (p *browserHostedProvider) RevokeInvitation(ctx context.Context, id string) error {
+	return p.deliverInvitation(ctx, id, "revoke")
+}
+
+func (p *browserHostedProvider) ResendInvitation(ctx context.Context, id string) error {
+	return p.deliverInvitation(ctx, id, "resend")
+}
+
+func (p *browserHostedProvider) deliverInvitation(ctx context.Context, id, action string) error {
+	if p.invitationDelivery != nil {
+		if err := p.invitationDelivery(ctx, id, action); err != nil {
+			return err
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	invitation, ok := p.invitations[id]
+	if !ok || invitation.State != "pending" {
+		return auth.ErrHostedIdentity
+	}
+	if action == "revoke" {
+		invitation.State = "revoked"
+		p.invitations[id] = invitation
+	}
+	return nil
 }
 
 func (p *browserHostedProvider) AuthorizationURL(state, _ string, verifier string) string {
@@ -67,6 +100,16 @@ func (p *browserHostedProvider) CurrentSession(_ context.Context, identity auth.
 		return auth.HostedIdentity{}, auth.ErrHostedIdentity
 	}
 	return current, nil
+}
+
+func (p *browserHostedProvider) User(_ context.Context, id string) (auth.HostedUser, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	user, ok := p.users[id]
+	if !ok {
+		return auth.HostedUser{}, auth.ErrHostedIdentity
+	}
+	return user, nil
 }
 
 func (p *browserHostedProvider) Memberships(_ context.Context, user, organization string) ([]auth.Membership, error) {
@@ -159,6 +202,14 @@ func (p *browserHostedProvider) AcceptInvitation(_ context.Context, token, user 
 	return nil
 }
 
+func (p *browserHostedProvider) InvitationByID(ctx context.Context, id string) (auth.Invitation, error) {
+	return p.Invitation(ctx, id)
+}
+
+func (p *browserHostedProvider) AcceptInvitationByID(ctx context.Context, id, user string) error {
+	return p.AcceptInvitation(ctx, id, user)
+}
+
 func (p *browserHostedProvider) RevokeSession(_ context.Context, id string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -170,6 +221,10 @@ func (p *browserHostedProvider) identity(user, email, organization, support stri
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.sequence++
+	if p.users == nil {
+		p.users = map[string]auth.HostedUser{}
+	}
+	p.users[user] = auth.HostedUser{ID: user, Email: email}
 	now := time.Now().UTC()
 	hosted := auth.HostedIdentity{Subject: user, OrganizationID: organization, SessionID: fmt.Sprintf("session_browser_%d", p.sequence), CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(browserHostedPreviewLifetime), SupportActor: support}
 	if support != "" {
@@ -188,6 +243,8 @@ type browserHostedFixture struct {
 	privateProject string
 	conversation   string
 	workItem       string
+	workerChat     string
+	workerItem     string
 	stop           chan struct{}
 	stopOnce       sync.Once
 }
@@ -204,8 +261,17 @@ func newBrowserHostedFixture(t *testing.T, allocated bool) *browserHostedFixture
 
 func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organization string, configure ...func(*Config)) *browserHostedFixture {
 	t.Helper()
-	server := httptest.NewUnstartedServer(http.NotFoundHandler())
-	base := "http://" + server.Listener.Addr().String()
+	return newBrowserHostedFixtureServing(t, allocated, organization, true, configure...)
+}
+
+func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization string, listen bool, configure ...func(*Config)) *browserHostedFixture {
+	t.Helper()
+	server := &httptest.Server{URL: "https://browser.example.test"}
+	base := server.URL
+	if listen {
+		server = httptest.NewUnstartedServer(http.NotFoundHandler())
+		base = "http://" + server.Listener.Addr().String()
+	}
 	provider := &browserHostedProvider{
 		base: base, organization: auth.Organization{ID: "org_browser_provider", ExternalID: organization, Name: "Browser organization"},
 		members: make(map[string]auth.Membership), sessions: make(map[string]auth.HostedIdentity), invitations: make(map[string]auth.Invitation), inviteRoles: make(map[string]string), authorizations: make(map[string]string), codes: make(map[string]auth.Identity),
@@ -222,16 +288,22 @@ func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organizat
 	for _, apply := range configure {
 		apply(&cfg)
 	}
+	seedHubDatabaseTemplate(t, cfg.DatabasePath)
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
-		server.Close()
+		if listen {
+			server.Close()
+		}
 		t.Fatal(err)
 	}
 	fixture := &browserHostedFixture{service: service, server: server, provider: provider, cookies: make(map[string]*http.Cookie), stop: make(chan struct{})}
 	accounts := make(map[string]auth.Identity)
 	t.Cleanup(func() {
-		server.Close()
-		if err := fixture.service.Close(); err != nil {
+		if listen {
+			fixture.server.CloseClientConnections()
+			fixture.server.Close()
+		}
+		if err := fixture.service.CloseContext(context.WithoutCancel(t.Context())); err != nil {
 			t.Error(err)
 		}
 	})
@@ -257,6 +329,12 @@ func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organizat
 		}
 		identity := provider.identity(account.user, account.email, organization, account.support)
 		accounts[account.name] = identity
+		if provider.emails == nil {
+			provider.emails = map[string]bool{}
+		}
+		if account.name != "invitee" {
+			provider.emails[account.email] = true
+		}
 		if allocated && account.role != "" {
 			membership, err := provider.CreateMembership(t.Context(), account.user, organization, account.role)
 			if err != nil {
@@ -332,9 +410,42 @@ func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organizat
 			t.Error(err)
 		}
 	})
-	mux.Handle("/", service.Handler())
-	server.Config.Handler = mux
-	server.Start()
+	mux.HandleFunc("POST /__preview/invite/{state}", func(w http.ResponseWriter, r *http.Request) {
+		state := r.PathValue("state")
+		invited := accounts["invitee"]
+		invitation, err := provider.Invite(r.Context(), provider.organization.ID, invited.Email, "member", accounts["owner"].Subject)
+		if err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		provider.mu.Lock()
+		provider.emails[invited.Email] = state != "new"
+		switch state {
+		case "expired":
+			invitation.ExpiresAt = time.Now().Add(-time.Hour)
+		case "used":
+			invitation.State, invitation.AcceptedUserID = "accepted", invited.Subject
+		}
+		provider.invitations[invitation.ID] = invitation
+		provider.mu.Unlock()
+		if _, err := service.database.db.ExecContext(r.Context(), "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?)", invitation.ID, invited.Email, service.config.Hosted.OrganizationID, "member", formatHubTime(time.Now())); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]string{"url": base + "/invite?invitation_token=" + invitation.ID}); err != nil {
+			t.Error(err)
+		}
+	})
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fixture.service.Handler().ServeHTTP(w, r)
+	}))
+	if listen {
+		server.Config.Handler = mux
+		server.Start()
+	}
 	if allocated {
 		fixture.project = fixture.createProject(t, "Browser collaboration")
 		fixture.privateProject = fixture.createProject(t, "Owner private project")
@@ -405,13 +516,13 @@ func browserHostedStatus(t *testing.T, response *httptest.ResponseRecorder, stat
 }
 
 func TestHostedBrowserHTTPPages(t *testing.T) {
-	t.Parallel()
+	useAppClientFS(t, appClientBundle())
 	f := newBrowserHostedFixture(t, true)
 	tests := []struct {
 		name, account, path, contains, excludes string
 		status                                  int
 	}{
-		{name: "login", path: "/login", status: http.StatusOK, contains: "Continue with WorkOS"},
+		{name: "login", path: "/login", status: http.StatusOK, contains: "<div id=\"root\"></div>"},
 		{name: "owner organization", account: "owner", path: "/organization", status: http.StatusOK, contains: "Members and invitations"},
 		{name: "viewer organization", account: "viewer", path: "/organization", status: http.StatusOK, contains: "Browser collaboration", excludes: "Owner private project"},
 		{name: "ordinary staff", account: "staff", path: "/organization", status: http.StatusOK, contains: "Staff access is limited", excludes: "Browser collaboration"},
@@ -435,7 +546,11 @@ func TestHostedBrowserHTTPPages(t *testing.T) {
 					t.Errorf("hosted response includes %q", forbidden)
 				}
 			}
-			if response.Header().Get("Cache-Control") != "no-store" {
+			wantCache := "no-store"
+			if tt.name == "login" {
+				wantCache = "no-cache"
+			}
+			if response.Header().Get("Cache-Control") != wantCache {
 				t.Error("hosted page is cacheable")
 			}
 		})
@@ -465,24 +580,6 @@ func TestHostedBrowserHTTPForms(t *testing.T) {
 			browserHostedStatus(t, response, tt.status)
 		})
 	}
-	var invitation string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM hosted_invitations WHERE email = 'invitee@example.test'").Scan(&invitation); err != nil {
-		t.Fatal(err)
-	}
-	for _, tt := range []struct {
-		name    string
-		account string
-		status  int
-	}{
-		{name: "wrong invited account", account: "viewer", status: http.StatusForbidden},
-		{name: "invitation accepted", account: "invitee", status: http.StatusSeeOther},
-		{name: "invitation replay", account: "invitee", status: http.StatusForbidden},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			response := f.form(t, tt.account, "/organization/join", url.Values{"token": {invitation}})
-			browserHostedStatus(t, response, tt.status)
-		})
-	}
 }
 
 func TestHostedBrowserFirstOrganization(t *testing.T) {
@@ -490,7 +587,7 @@ func TestHostedBrowserFirstOrganization(t *testing.T) {
 	f := newBrowserHostedFixture(t, false)
 	response := f.page(t, "owner", "/organization")
 	browserHostedStatus(t, response, http.StatusOK)
-	for _, expected := range []string{`action="/organization/create"`, `action="/organization/join"`} {
+	for _, expected := range []string{`action="/organization/create"`, `Ask an owner to send you an invitation.`} {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Errorf("onboarding missing %q", expected)
 		}
@@ -615,6 +712,13 @@ func browserPreviewConfig(cfg *Config) {
 
 func (f *browserHostedFixture) seedPreview(t *testing.T) {
 	t.Helper()
+	if os.Getenv("DETENT_HOSTED_BROWSER_UNSIGNED_MEMBER") != "" {
+		user := auth.HostedUser{ID: "user_browser_unsigned", Email: "unsigned@example.test", Name: "Unsigned Member"}
+		f.provider.users[user.ID] = user
+		if _, err := f.provider.CreateMembership(t.Context(), user.ID, f.provider.organization.ID, "member"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, project := range []string{f.project, f.privateProject} {
 		f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/members/membership_user_browser_owner/grants", map[string]any{
 			"idempotency_key": "preview-owner-runner-" + project, "project_id": project, "write": true, "runner": true,
@@ -657,12 +761,98 @@ func (f *browserHostedFixture) seedConversation(t *testing.T) {
 	if f.workItem == "" {
 		t.Fatal("linked issue has no work item id")
 	}
+	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_ORIGIN") == "" {
+		return
+	}
+	var issue tracker.NativeIssue
+	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{
+		Mutation: tracker.Mutation{IdempotencyKey: "browser-worker-issue"}, Title: "Runner session isolation", State: "Todo",
+	}, http.StatusOK), &issue)
+	store := f.service.conversations.store
+	owner, err := store.readConversationByID(t.Context(), f.service.database.db, f.conversation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback() })
+	worker, err := f.service.conversations.ensureWorkerConversation(t.Context(), tx, nativeScope{organization: owner.OrganizationID, project: owner.ProjectID, credential: apiCredential{ID: owner.OwnerPrincipalID}}, string(issue.WorkItemID), f.service.config.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.database.commit(t.Context(), tx); err != nil {
+		t.Fatal(err)
+	}
+	f.workerChat, f.workerItem = worker.ID, worker.WorkItemID
+}
+
+func (f *browserHostedFixture) sessionRefreshHandler(t *testing.T, next http.Handler) http.Handler {
+	t.Helper()
+	var mu sync.Mutex
+	refreshed := make(map[string]*http.Cookie)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(hostedCookie)
+		if r.Method == http.MethodPost && r.URL.Path == "/__preview/session/expire" {
+			if err != nil {
+				http.Error(w, "session cookie required", http.StatusUnauthorized)
+				return
+			}
+			session, err := f.service.hostedSessions.Authenticate(r.Context(), cookie.Value)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusUnauthorized)
+				return
+			}
+			identity := auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}
+			token, fresh, err := f.service.hostedSessions.CreateIdentitySession(r.Context(), identity)
+			if err != nil {
+				t.Error(err)
+				http.Error(w, "session refresh failed", http.StatusInternalServerError)
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if _, err := f.service.database.db.ExecContext(r.Context(), "UPDATE hosted_sessions SET expires_at = ? WHERE token_hash = ?", formatHubTime(time.Now().Add(-time.Second)), apikey.HashToken(cookie.Value)); err != nil {
+				t.Error(err)
+				http.Error(w, "session expiry failed", http.StatusInternalServerError)
+				return
+			}
+			refreshed[cookie.Value] = &http.Cookie{Name: hostedCookie, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: fresh.ExpiresAt}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if err == nil {
+			mu.Lock()
+			fresh := refreshed[cookie.Value]
+			mu.Unlock()
+			if fresh != nil {
+				cookies := r.Cookies()
+				r.Header.Del("Cookie")
+				for _, current := range cookies {
+					if current.Name == hostedCookie {
+						current = fresh
+					}
+					r.AddCookie(current)
+				}
+				http.SetCookie(w, fresh)
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func TestHostedBrowserPreviewSeed(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
+
 	f.seedPreview(t)
+	if os.Getenv("DETENT_HOSTED_BROWSER_ISSUE_ASK") != "" {
+		f.seedIssueAsk(t)
+	}
+	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_ACTIONS") != "" {
+		f.seedCoordinatorActions(t)
+	}
 	base := browserHostedOrganizationBase + "/projects/" + f.project
 	tests := []struct {
 		name, account, path string
@@ -685,11 +875,41 @@ func TestHostedBrowserPreviewSeed(t *testing.T) {
 }
 
 func TestHostedBrowserPreview(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	if os.Getenv("DETENT_HOSTED_BROWSER_PREVIEW") == "" {
 		t.Skip("set DETENT_HOSTED_BROWSER_PREVIEW=1 to run the isolated browser preview")
 	}
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
+	f.server.Config.Handler = f.sessionRefreshHandler(t, f.server.Config.Handler)
+	if os.Getenv("DETENT_HOSTED_BROWSER_SPRITES") != "" {
+		f.service.config.SecretKeys = secretTestKeys(t, "1", "1")
+		f.service.config.SpritesHTTPClient = &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
+			if request.Header.Get("Authorization") != "Bearer "+spritesSecretSentinel {
+				return spritesTestResponse("", http.StatusUnauthorized), nil
+			}
+			return spritesTestResponse(`{"sprites":[]}`, http.StatusOK), nil
+		})}
+	}
 	f.seedPreview(t)
+	if os.Getenv("DETENT_HOSTED_BROWSER_BOARD_DEFAULTS") != "" {
+		f.seedBoardDefaults(t)
+	}
+	if os.Getenv("DETENT_HOSTED_BROWSER_GITHUB_TRIAGE") != "" {
+		f.seedGitHubTriage(t)
+	}
+	if os.Getenv("DETENT_HOSTED_BROWSER_WORKFLOW_REVISIONS") != "" {
+		f.seedWorkflowRevisions(t, f.project)
+		f.seedWorkflowRevisions(t, f.privateProject)
+	}
+	if os.Getenv("DETENT_HOSTED_BROWSER_ISSUE_ASK") != "" {
+		f.seedIssueAsk(t)
+	}
+	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_ACTIONS") != "" {
+		f.seedCoordinatorActions(t)
+	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_CAPACITY") != "" {
 		if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
 			t.Fatal(err)
@@ -710,6 +930,24 @@ func TestHostedBrowserPreview(t *testing.T) {
 		close(done)
 		f.service.billing = &hostedBillingWorker{service: f.service, cancel: func() {}, done: done}
 	}
+	if os.Getenv("DETENT_HOSTED_BROWSER_AI_CREDITS") != "" {
+		plans := hostedTestPlans(t, f.service, map[string]int64{"projects": 2})
+		base := &hostedBillingProvider{snapshot: billing.Snapshot{Status: "free"}}
+		cfg := f.service.config.Hosted
+		cfg.Plans = &plans
+		cfg.Billing = &HostedBillingConfig{AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_credits_browser"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: base, Prices: []HostedBillingPrice{{PriceID: "price_fixture", Label: "Extended pilot", Plan: plans.Plans[1].PlanReference}}}
+		configureTestCredits(t, f, base)
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE ai_credit_accounts SET balance_micros=1250000,payment_method='pm_credit',failure='automatic payment failed; update the saved payment method'"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES('org_browser_preview','test','fixture-purchase',1250000,'purchase',?)", f.service.config.now().UnixMicro()); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		close(done)
+		f.service.billing = &hostedBillingWorker{service: f.service, cancel: func() {}, done: done}
+	}
+
 	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_USAGE") != "" {
 		err := f.service.database.RecordConversationUsage(t.Context(), ConversationUsage{OrganizationID: "org_browser_preview", ProjectID: tracker.ProjectID(f.project), ConversationID: f.conversation, TurnID: "preview-chat-usage", Provider: "openai", Model: "gpt-6-luna", Tokens: runner.AgentTokenCounts{InputTokens: 1_000_000, CachedInputTokens: 400_000, OutputTokens: 100_000, ReasoningOutputTokens: 30_000}})
 		if err != nil {
@@ -743,10 +981,62 @@ func TestHostedBrowserPreview(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
 			if name == "Settings runner" && os.Getenv("DETENT_HOSTED_BROWSER_RUNNER_PROBLEMS") != "" {
 				problemRunner, problemCredential = binding, credential
-				heartbeat := map[string]any{"display_name": name, "capacity": 2, "version": "test", "backend_isolation": redemption.BackendIsolation, "problems": []runnerauth.Problem{runnerauth.NewProblem("tier_unavailable")}}
+				problem := runnerauth.NewProblem("backend_missing")
+				problem.Subject = "codex"
+				problem.Message = "not signed in"
+				problem.FixHint = "Sign in on this runner, then wait for its next heartbeat."
+				problem.Check = "codex login status"
+				problem.ErrorOutput = "exit status 1: Not logged in"
+				problem.FixCommand = "codex login --device-auth"
+				heartbeat := map[string]any{"display_name": name, "capacity": 2, "version": "test", "backend_isolation": redemption.BackendIsolation, "problems": []runnerauth.Problem{problem}}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/projects/"+f.project+"/machines/"+string(binding.MachineID)+"/heartbeat", credential, heartbeat), http.StatusOK)
 			}
 		}
+	}
+	var restartURL string
+	if os.Getenv("DETENT_HOSTED_BROWSER_RESTART") != "" {
+		controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			if r.URL.Path == "/block" {
+				backend := f.service.conversations.config.Backend.(*fakeCoordinatorBackend)
+				backend.setRun(blockingRun(make(chan struct{}), "Working before restart"))
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			cfg := f.service.config
+			handler := f.server.Config.Handler
+			address := f.server.Listener.Addr().String()
+			ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+			defer cancel()
+			if err := f.shutdownForRestart(ctx); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			cfg.Conversation.Backend = newFakeCoordinatorBackend()
+			service, err := Open(t.Context(), cfg)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			f.service = service
+			var lc net.ListenConfig
+			listener, err := lc.Listen(r.Context(), "tcp", address)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			server := httptest.NewUnstartedServer(handler)
+			_ = server.Listener.Close()
+			server.Listener = listener
+			f.server = server
+			server.Start()
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		t.Cleanup(controller.Close)
+		restartURL = controller.URL
 	}
 	accounts := make(map[string]string, len(f.cookies))
 	for account := range f.cookies {
@@ -762,9 +1052,12 @@ func TestHostedBrowserPreview(t *testing.T) {
 		ProjectID         string             `json:"project_id"`
 		Conversation      string             `json:"conversation"`
 		WorkItem          string             `json:"work_item"`
+		WorkerChat        string             `json:"worker_conversation"`
+		WorkerItem        string             `json:"worker_work_item"`
 		OwnerEmail        string             `json:"owner_email"`
 		Accounts          map[string]string  `json:"accounts"`
 		Stop              string             `json:"stop"`
+		Restart           string             `json:"restart,omitempty"`
 		Expires           time.Time          `json:"expires"`
 		ProblemRunner     runnerauth.Binding `json:"problem_runner"`
 		ProblemCredential string             `json:"problem_credential,omitempty"`
@@ -772,8 +1065,9 @@ func TestHostedBrowserPreview(t *testing.T) {
 		URL: f.server.URL, Login: f.server.URL + "/login", Organization: f.server.URL + "/organization",
 		Project: f.server.URL + "/projects/" + f.project, PrivateProject: f.server.URL + "/projects/" + f.privateProject,
 		Chat: f.server.URL + "/chat", ProjectID: f.project, Conversation: f.conversation, WorkItem: f.workItem,
+		WorkerChat: f.workerChat, WorkerItem: f.workerItem,
 		OwnerEmail: browserHostedOwnerEmail, Accounts: accounts, Stop: f.server.URL + "/__preview/stop", Expires: time.Now().Add(browserHostedPreviewLifetime),
-		ProblemRunner: problemRunner, ProblemCredential: problemCredential,
+		ProblemRunner: problemRunner, ProblemCredential: problemCredential, Restart: restartURL,
 	}
 	encoded, err := json.MarshalIndent(fixture, "", "  ")
 	if err != nil {
@@ -791,5 +1085,201 @@ func TestHostedBrowserPreview(t *testing.T) {
 	case <-f.stop:
 	case <-timer.C:
 	case <-t.Context().Done():
+	}
+}
+
+func (f *browserHostedFixture) shutdownForRestart(ctx context.Context) error {
+	if err := f.service.Shutdown(ctx); err != nil {
+		return err
+	}
+	if err := f.server.Config.Shutdown(ctx); err != nil {
+		return err
+	}
+	f.server.Close()
+	return f.service.CloseContext(ctx)
+}
+
+type browserShutdownFrameWriter struct {
+	http.ResponseWriter
+	done     <-chan struct{}
+	draining <-chan struct{}
+}
+
+func (w browserShutdownFrameWriter) Write(data []byte) (int, error) {
+	if strings.Contains(string(data), `"reason":"server_shutdown"`) {
+		select {
+		case <-w.draining:
+		case <-w.done:
+			return 0, context.Canceled
+		}
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w browserShutdownFrameWriter) Flush() {
+	w.ResponseWriter.(http.Flusher).Flush()
+}
+
+func TestHostedBrowserPreviewRestartDrainsStreams(t *testing.T) {
+	heartbeat := conversationStreamHeartbeat
+	conversationStreamHeartbeat = time.Millisecond
+	t.Cleanup(func() { conversationStreamHeartbeat = heartbeat })
+	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
+	f.seedConversation(t)
+	draining := make(chan struct{})
+	f.server.Config.RegisterOnShutdown(func() { close(draining) })
+	handler := f.server.Config.Handler
+	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(browserShutdownFrameWriter{ResponseWriter: w, done: r.Context().Done(), draining: draining}, r)
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, f.server.URL+browserHostedOrganizationBase+"/projects/"+f.project+"/conversations/"+f.conversation+"/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.AddCookie(f.cookies["owner"])
+	response, err := f.server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = response.Body.Close() })
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("stream status = %d", response.StatusCode)
+	}
+	reader := bufio.NewReader(response.Body)
+	for {
+		frame, err := readSSEFrame(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if frame.Event == "heartbeat" {
+			break
+		}
+	}
+	if err := f.shutdownForRestart(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		frame, err := readSSEFrame(reader)
+		if err != nil {
+			t.Fatalf("stream ended before shutdown frame: %v", err)
+		}
+		if frame.Event == "closed" {
+			requireClosed(t, frame, conversationClosedShutdown)
+			break
+		}
+	}
+	if _, err := readSSEFrame(reader); !errors.Is(err, io.EOF) {
+		t.Fatalf("stream end = %v, want EOF", err)
+	}
+}
+
+func TestHostedBrowserPreviewStopClosesStreams(t *testing.T) {
+	t.Parallel()
+	parent := t
+	transport := &http.Transport{}
+	t.Cleanup(transport.CloseIdleConnections)
+	client := &http.Client{Transport: transport}
+	var streams []io.ReadCloser
+	if !t.Run("stop with active streams", func(t *testing.T) {
+		f := newBrowserHostedFixture(t, true)
+		for range 2 {
+			request, err := http.NewRequestWithContext(parent.Context(), http.MethodGet, f.server.URL+"/projects/"+f.project+"/events", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.AddCookie(f.cookies["owner"])
+			response, err := client.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parent.Cleanup(func() {
+				if err := response.Body.Close(); err != nil {
+					parent.Error(err)
+				}
+			})
+			streams = append(streams, response.Body)
+			if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/event-stream" {
+				t.Fatalf("stream response = %d %s", response.StatusCode, response.Header.Get("Content-Type"))
+			}
+		}
+		request, err := http.NewRequestWithContext(parent.Context(), http.MethodPost, f.server.URL+"/__preview/stop", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := response.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != http.StatusNoContent {
+			t.Fatalf("stop status = %d, want %d", response.StatusCode, http.StatusNoContent)
+		}
+		<-f.stop
+	}) {
+		return
+	}
+	for i, response := range streams {
+		if _, err := io.Copy(io.Discard, response); err == nil {
+			t.Errorf("stream %d ended without the fixture closing its connection", i)
+		}
+	}
+}
+
+func (p *browserHostedProvider) HasUser(_ context.Context, email string) (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.emails[email], nil
+}
+
+func (f *browserHostedFixture) seedBoardDefaults(t *testing.T) {
+	t.Helper()
+	now := f.service.config.now()
+	states := []tracker.NativeState{
+		{Name: "Backlog", Transitions: []string{"Todo"}},
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
+		{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress"}},
+		{Name: "Merging", Transitions: []string{"Done"}},
+		{Name: "Blocked", Transitions: []string{"Todo"}},
+		{Name: "Human Review", Transitions: []string{"Todo"}},
+		{Name: "Triage", Transitions: []string{"Todo"}},
+		{Name: "Done", Terminal: true},
+		{Name: "Cancelled", Terminal: true},
+	}
+	for _, project := range []string{f.project, f.privateProject} {
+		scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: tracker.ProjectID(project)}
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := applyNativeProjectStates(t.Context(), tx, scope, states, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.database.commit(t.Context(), tx); err != nil {
+			t.Fatal(err)
+		}
+		seedArchiveIssues(t, f.service, scope, 130, "Backlog")
+		for _, seed := range []struct {
+			state string
+			age   time.Duration
+		}{
+			{"Done", time.Hour}, {"Done", 60 * time.Hour}, {"Done", 15 * 24 * time.Hour}, {"Cancelled", time.Hour},
+		} {
+			issue := seedArchiveIssues(t, f.service, scope, 1, seed.state)[0]
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: seed.state}, now.Add(-seed.age)); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.database.commit(t.Context(), tx); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }

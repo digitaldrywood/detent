@@ -12,8 +12,10 @@ func TestNativeWorkpadAuthority(t *testing.T) {
 	for _, tt := range []struct {
 		name, source string
 		refs         []BlockedRef
+		recorded     bool
 		want         int
 	}{
+		{name: "recorded native prerequisite without relation", source: BlockedRefSourceNative, recorded: true, want: 2},
 		{name: "native removed", source: BlockedRefSourceNative, want: 1},
 		{name: "native present", source: BlockedRefSourceNative, refs: []BlockedRef{{Identifier: "owner/repo#100", Source: BlockedRefSourceNative}}, want: 2},
 		{name: "prose fallback", source: BlockedRefSourceProse, want: 2},
@@ -23,6 +25,9 @@ func TestNativeWorkpadAuthority(t *testing.T) {
 				{Ref: "#100", Predicate: &workpad.Predicate{Type: workpad.PredicateIssueState, States: []string{"open"}}},
 				{Ref: "#200", Predicate: &workpad.Predicate{Type: workpad.PredicateCheckPresence}},
 			}}}
+			if tt.recorded {
+				issue.Metadata = map[string]string{"hub_disposition_attempt_id": "attempt-current"}
+			}
 			got := issue.WithNativeWorkpadAuthority()
 			if len(got.WorkpadSignal.Blockers) != tt.want || got.WorkpadSignal.HumanAction != "approve access" || got.WorkpadSignal.Status != workpad.StatusBlocked {
 				t.Fatalf("signal = %+v", got.WorkpadSignal)

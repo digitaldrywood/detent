@@ -21,6 +21,10 @@ import (
 )
 
 func TestDurableRecoveryConvergesThroughPublicAPI(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, boundary := range []string{"request", "intent recorded", "tracker applied", "retry queued"} {
 		t.Run(boundary, func(t *testing.T) {
@@ -136,6 +140,10 @@ func TestDurableRecoveryConvergesThroughPublicAPI(t *testing.T) {
 }
 
 func TestDurableRecoveryPreservesCurrentPredicates(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, condition := range []string{"dependency", "budget", "project outage", "stale tracker", "new invalid override", "multiple causes"} {
 		t.Run(condition, func(t *testing.T) {
@@ -194,8 +202,12 @@ func TestDurableRecoveryPreservesCurrentPredicates(t *testing.T) {
 }
 
 func TestDurableRecoveryPreservesDispatchFailureBackoff(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
-	for _, refusal := range []string{"global admission", "project capacity"} {
+	for _, refusal := range []string{"global admission", "project capacity", "first refill"} {
 		t.Run(refusal, func(t *testing.T) {
 			db := openWorkAttemptRecoveryStore(t, t.Context())
 			host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
@@ -219,9 +231,13 @@ func TestDurableRecoveryPreservesDispatchFailureBackoff(t *testing.T) {
 				t.Fatalf("queue recovery = %#v, %v", response, err)
 			}
 			switch refusal {
-			case "global admission":
-				gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
-				slot, acquired, _, err := gate.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "other", Weight: 1}, scheduler.SlotRequest{State: "Todo"}, now)
+			case "global admission", "first refill":
+				if refusal == "first refill" {
+					state = newState(host.cfg)
+					host.connector = completionRefillConnector{hydratingDispatchConnector: hydratingDispatchConnector{issue: issue}, fetch: func(context.Context) ([]connector.Issue, error) { return []connector.Issue{issue}, nil }}
+				}
+				gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+				slot, acquired, _, err := gate.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "other"}, scheduler.SlotRequest{State: "Todo"}, now)
 				if err != nil || !acquired {
 					t.Fatalf("hold global slot = %v, %v", acquired, err)
 				}
@@ -234,10 +250,17 @@ func TestDurableRecoveryPreservesDispatchFailureBackoff(t *testing.T) {
 			case "project capacity":
 				state.Running["other"] = Running{Issue: connector.Issue{ID: "other"}, StartedAt: now}
 			}
-			host.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			if refusal == "first refill" {
+				host.refillProjectSlots(t.Context(), &state, now)
+			} else {
+				host.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			}
 			rescheduled, found := state.Retry[issue.ID]
 			if !found || !rescheduled.DueAt.After(now) {
 				t.Fatalf("dispatch refusal did not schedule backoff: found=%v due=%v blocked=%v decisions=%v", found, rescheduled.DueAt, state.Blocked, state.SchedulerDecisions)
+			}
+			if rescheduled.RecoveryAttemptID != attemptID || rescheduled.RetryMode != runpkg.RetryModeFresh {
+				t.Fatalf("dispatch lost persisted fresh retry intent: %#v", rescheduled)
 			}
 			host.restoreWorkAttemptRetryIntents(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Millisecond))
 			replayed := state.Retry[issue.ID]
@@ -260,6 +283,10 @@ func (s failingRecoveryJournal) RecordWorkflowPhaseEvent(ctx context.Context, ev
 }
 
 func TestRecoveryJournalFailureLeavesHoldsIntact(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	db := openWorkAttemptRecoveryStore(t, t.Context())
 	host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
@@ -279,6 +306,10 @@ func TestRecoveryJournalFailureLeavesHoldsIntact(t *testing.T) {
 }
 
 func TestRecoveryIntentCannotAcknowledgeNewParkGeneration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, cause := range []string{repeatedFailureCircuitBreakerCause, "operator_investigation"} {
 		t.Run(cause, func(t *testing.T) {
@@ -309,6 +340,10 @@ func TestRecoveryIntentCannotAcknowledgeNewParkGeneration(t *testing.T) {
 }
 
 func TestRecoveryIntentDoesNotReplayAfterNewAttempt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	db := openWorkAttemptRecoveryStore(t, t.Context())
 	host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
@@ -337,6 +372,10 @@ func TestRecoveryIntentDoesNotReplayAfterNewAttempt(t *testing.T) {
 }
 
 func TestRecoveryReceiptReportsCurrentState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, status := range []string{"queued", "blocked", "running"} {
 		t.Run(status, func(t *testing.T) {
@@ -383,6 +422,10 @@ func (r recoveryCapacityResolver) DispatchCapacity(context.Context, runpkg.RunRe
 }
 
 func TestRecoveryRevalidatesConfigurationBeforeRecordingIntent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
@@ -419,6 +462,10 @@ func TestRecoveryRevalidatesConfigurationBeforeRecordingIntent(t *testing.T) {
 }
 
 func TestConfigurationCompletionDoesNotRetryOrPoisonProject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, form := range []string{"typed", "wrapped", "restored", "observed lane"} {
 		t.Run(form, func(t *testing.T) {
@@ -457,6 +504,10 @@ func TestConfigurationCompletionDoesNotRetryOrPoisonProject(t *testing.T) {
 }
 
 func TestInvalidConfigurationPreflightDoesNotSpendLaunchAttempts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

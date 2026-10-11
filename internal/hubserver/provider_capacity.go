@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -84,78 +85,137 @@ func sharedProviderAccount(a, b providercapacity.Report) bool {
 	return a.Provider == b.Provider && (a.SharedAccountAlias == "" || b.SharedAccountAlias == "" || a.SharedAccountAlias == b.SharedAccountAlias)
 }
 
-func providerView(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, report providercapacity.Report, now time.Time) (providercapacity.View, error) {
-	view := providercapacity.View{Report: report, State: report.State(now), Reason: "Bounded concurrency available; quota is an observation, not transferable credit"}
-	rows, err := query.QueryContext(ctx, "SELECT provider_reports_json FROM runner_identities WHERE organization_id = ?", organization)
+type providerCapacitySnapshot struct {
+	groups       map[string]providercapacity.Report
+	reports      []providercapacity.Report
+	reservations []providercapacity.Reservation
+}
+
+func readProviderCapacitySnapshot(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, now time.Time) (providerCapacitySnapshot, error) {
+	var snapshot providerCapacitySnapshot
+	rows, err := query.QueryContext(ctx, `SELECT r.provider_reports_json, t.created_at, t.expires_at, t.revoked_at
+FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organization_id = ?`, organization)
 	if err != nil {
-		return view, err
+		return snapshot, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var raw string
+		var raw, created string
+		var expires, revoked sql.NullString
 		var reports []providercapacity.Report
-		if err := rows.Scan(&raw); err != nil {
-			return view, err
+		if err := rows.Scan(&raw, &created, &expires, &revoked); err != nil {
+			return snapshot, err
+		}
+		if revoked.Valid || !runnerTimeValid(now, created, expires.String) {
+			continue
 		}
 		if err := json.Unmarshal([]byte(raw), &reports); err != nil {
-			return view, err
+			return snapshot, err
 		}
-		for _, other := range reports {
-			if !sharedProviderAccount(report, other) {
-				continue
-			}
-			view.MaxConcurrent = min(view.MaxConcurrent, other.MaxConcurrent)
-			if other.State(now) == "exhausted" {
-				view.State = "exhausted"
-				if other.ResetAt.After(view.ResetAt) {
-					view.ResetAt = other.ResetAt
-				}
-			} else if other.State(now) == "unknown" && view.State != "exhausted" {
-				view.State = "unknown"
-			}
-		}
+		snapshot.reports = append(snapshot.reports, reports...)
 	}
 	if err := rows.Err(); err != nil {
-		return view, err
+		return snapshot, err
 	}
 	if err := rows.Close(); err != nil {
-		return view, err
+		return snapshot, err
 	}
-	rows, err = query.QueryContext(ctx, `SELECT p.reservation_json, l.expires_at FROM provider_reservations p JOIN leases l ON l.lease_id = p.lease_id WHERE p.organization_id = ? AND l.released_at IS NULL`, organization)
+	rows, err = query.QueryContext(ctx, `SELECT p.reservation_json, l.expires_at, l.session_id, l.machine_id, `+nativeLandingCapacityProject+` FROM provider_reservations p JOIN leases l ON l.lease_id=p.lease_id JOIN issues i ON i.id=l.issue_id `+nativeLandingCapacityJoins+` WHERE p.organization_id = ? AND l.released_at IS NULL`, organization)
 	if err != nil {
-		return view, err
+		return snapshot, err
 	}
 	defer rows.Close()
+	snapshot.groups = map[string]providercapacity.Report{}
 	for rows.Next() {
-		var raw, expiry string
+		var raw, expiry, session, project string
+		var machine tracker.MachineID
 		var reservation providercapacity.Reservation
-		if err := rows.Scan(&raw, &expiry); err != nil {
-			return view, err
+		if err := rows.Scan(&raw, &expiry, &session, &machine, &project); err != nil {
+			return snapshot, err
 		}
 		end, err := parseTimeValue(expiry)
 		if err != nil {
-			return view, err
+			return snapshot, err
 		}
 		if !end.After(now) {
 			continue
 		}
 		if err := json.Unmarshal([]byte(raw), &reservation); err != nil {
-			return view, err
+			return snapshot, err
 		}
+		if reservation.Backend == "git" && reservation.Role == "merge" {
+			group := landingCapacityKey(machine, project, session)
+			if group != "" {
+				if _, exists := snapshot.groups[group]; exists {
+					continue
+				}
+				snapshot.groups[group] = reservation.Report
+			}
+		}
+		snapshot.reservations = append(snapshot.reservations, reservation)
+	}
+	return snapshot, rows.Err()
+}
+
+func providerView(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, report providercapacity.Report, now time.Time) (providercapacity.View, error) {
+	snapshot, err := readProviderCapacitySnapshot(ctx, query, organization, now)
+	if err != nil {
+		return providercapacity.View{}, err
+	}
+	return snapshot.view(report, now), nil
+}
+
+func (snapshot providerCapacitySnapshot) view(report providercapacity.Report, now time.Time) providercapacity.View {
+	view := providercapacity.View{Report: report, State: report.State(now), Reason: "Bounded concurrency available; quota is an observation, not transferable credit"}
+	var freshReports []providercapacity.Report
+	for _, other := range snapshot.reports {
+		if !now.Before(other.ObservedAt) && now.Before(other.ObservedAt.Add(providercapacity.MaxAge)) {
+			freshReports = append(freshReports, other)
+		}
+		if !sharedProviderAccount(report, other) {
+			continue
+		}
+		view.MaxConcurrent = providerConcurrencyLimit(view.MaxConcurrent, other.MaxConcurrent)
+		if other.State(now) == "exhausted" {
+			view.State = "exhausted"
+			if other.ResetAt.After(view.ResetAt) {
+				view.ResetAt = other.ResetAt
+			}
+		} else if other.State(now) == "unknown" && view.State != "exhausted" {
+			view.State = "unknown"
+		}
+	}
+	for _, reservation := range snapshot.reservations {
 		if sharedProviderAccount(report, reservation.Report) {
 			view.Used++
-			view.MaxConcurrent = min(view.MaxConcurrent, reservation.Report.MaxConcurrent)
+			if !slices.ContainsFunc(freshReports, func(current providercapacity.Report) bool {
+				return current.Provider == reservation.Report.Provider && current.Backend == reservation.Report.Backend && current.AccountAlias == reservation.Report.AccountAlias && current.SharedAccountAlias == reservation.Report.SharedAccountAlias && current.Supports(reservation.Requirement)
+			}) {
+				view.MaxConcurrent = providerConcurrencyLimit(view.MaxConcurrent, reservation.Report.MaxConcurrent)
+			}
 		}
 	}
 	switch {
 	case view.State == "exhausted":
 		view.Reason = "Provider account is exhausted; wait for a fresh observation or reset hint"
-	case view.Used >= view.MaxConcurrent:
+	case view.MaxConcurrent > 0 && view.Used >= view.MaxConcurrent:
 		view.Reason = "Shared provider concurrency is fully reserved; wait for lease release or expiry"
+	case view.MaxConcurrent == 0:
+		view.Reason = "No provider account concurrency limit is configured; runner and host limits apply"
 	case view.State == "unknown":
 		view.Reason = "Quota is unknown or stale; only the declared concurrency bound is available"
 	}
-	return view, rows.Err()
+	return view
+}
+
+func providerConcurrencyLimit(a, b int) int {
+	if a == 0 {
+		return b
+	}
+	if b == 0 {
+		return a
+	}
+	return min(a, b)
 }
 
 func selectProviderCapacity(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, id tracker.WorkItemID, now time.Time) (providercapacity.Reservation, bool, error) {
@@ -188,11 +248,15 @@ func selectProviderCapacity(ctx context.Context, tx *sql.Tx, query claimCandidat
 			if !report.Supports(candidate.Requirement) {
 				continue
 			}
-			view, err := providerView(ctx, tx, query.NativeScope.organization, report, now)
+			snapshot, err := readProviderCapacitySnapshot(ctx, tx, query.NativeScope.organization, now)
 			if err != nil {
 				return providercapacity.Reservation{}, false, err
 			}
-			if view.State == "exhausted" || view.Used >= view.MaxConcurrent {
+			view := snapshot.view(report, now)
+			if group, exists := snapshot.groups[query.LandingBatchGroup]; exists && candidate.Requirement.Backend == "git" && candidate.Requirement.Role == "merge" && sharedProviderAccount(report, group) {
+				view.Used--
+			}
+			if !view.Available() {
 				return providercapacity.Reservation{}, false, providerWait("provider_capacity", view.Reason)
 			}
 			return providercapacity.Reservation{Requirement: candidate.Requirement, Report: report, Reason: view.Reason}, true, nil
@@ -247,7 +311,7 @@ func validateProviderAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope,
 		if err != nil {
 			return err
 		}
-		if view.State == "exhausted" || view.Used > view.MaxConcurrent {
+		if view.State == "exhausted" || view.MaxConcurrent > 0 && view.Used > view.MaxConcurrent {
 			return providerWait("provider_capacity", "Provider capacity changed after reservation; release the lease and wait")
 		}
 		return nil

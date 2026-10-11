@@ -1467,7 +1467,6 @@ func demoRuntimeStoreEvidence(now time.Time, workflowRows int64) telemetry.Runti
 		Tables: []telemetry.RuntimeStoreTableEvidence{
 			{Name: "detent_runs", Scope: "fleet", RowCount: 7},
 			{Name: "codex_sessions", Scope: "fleet", RowCount: 22},
-			{Name: "fair_share_usage", Scope: "project", RowCount: 1},
 			{Name: "usage_events", Scope: "project", RowCount: 18},
 			{Name: "workflow_phase_events", Scope: "project", RowCount: workflowRows},
 			{Name: "work_attempts", Scope: "project", RowCount: 3},

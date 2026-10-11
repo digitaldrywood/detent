@@ -1,5 +1,14 @@
 {
   "tests": {
+    "./tools/cifailure": [
+      "TestParseProblems",
+      "TestReport",
+      "TestReportFailures",
+      "TestCloudReport",
+      "TestCloudTransport",
+      "TestCloudDestinationAuthority",
+      "TestScheduledFinalizer"
+    ],
     "./tools/invariantcheck": [
       "TestBehaviorEvidence"
     ],
@@ -7,13 +16,14 @@
       "TestOperatorRejectionPromotion",
       "TestOperatorRejectionRepairDispatch",
       "TestCompletedActiveReviewRequiresFinishedWork",
+      "TestOperationalBodyCompletionSurvivesRestart",
       "TestUnfinishedCompletionClassification",
       "TestCompletionRebaseProgress",
       "TestCompletionForgeEvidence",
       "TestCompletionForgeEvidenceClassification",
       "TestCompletionForgeEvidenceDispatch",
       "TestCompletionForgeEvidencePreservesReceipt",
-      "TestUnfinishedSessionsExhaustAttemptAllowance",
+      "TestUnfinishedSessionsRetainConfiguredDispatch",
       "TestCompletedReworkCandidatesRemainVisible",
       "TestPolicyMismatchStopsDispatchWithoutAttempt",
       "TestAttemptMetadataRetainsApprovedPolicy",
@@ -25,17 +35,18 @@
       "TestFirstHumanBlockerCompletionReachesBlocked",
       "TestWorkpadHumanActionClearanceRecoversBlockedIssue",
       "TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane",
-      "TestPreTurnFailuresDrainInstance",
+      "TestPreTurnFailuresRetryWithoutPausingProject",
+      "TestWorkspacePreparationRetriesIssueWithoutPausingProject",
       "TestClassifyWorkspaceForgeReadFailure",
       "TestWorkspaceSSHRefusalDoesNotTripProjectBreaker",
       "TestRecoverDurableWorkspaceGitReadWait",
       "TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker",
-      "TestWorkspaceBreakerHonorsFailureCooldown",
       "TestReadyMergeAtWorkerCapacity",
       "TestCheckedMergeUnderForgeCondition",
       "TestPlanCompletionCoordinationDeferral",
       "TestPlanCompletionPublicationRecovery",
       "TestRecordedBlockerDispatchOwnership",
+      "TestNativeChangeRunCompletion",
       "TestWorkpadHumanActionSnapshot",
       "TestObservedLanePreTurnFailureRemainsInstanceOwned",
       "TestHandleRunResultReconcilesDeliverableRecoveryExactHead",
@@ -62,23 +73,33 @@
       "TestQueuedDispatchPreservesRetry",
       "TestStandingDispatchSurvivesProjectRefresh",
       "TestQueuedDispatchPreservesPullRequestEnrichment",
-      "TestAttemptAllowanceCountsIssueJourney",
-      "TestAttemptAllowanceExternalWaits",
-      "TestAttemptAllowanceExternalEvidencePersistence",
-      "TestAttemptAllowanceExternalWaitRestart",
-      "TestAttemptAllowanceDispatchAndRestart",
+      "TestDispatchRetainsConfiguredModeAfterPriorSessions",
+      "TestRetiredAttemptTriageParkRestoresPriorLane",
       "TestAttemptAllowanceTriagePublication",
       "TestAttemptAllowanceNoteFormat",
-      "TestAttemptAllowanceMergeTimeAndRunningOwnership",
       "TestAttemptAllowancePreservesOperatorCompletionLane",
-      "TestTransitionAlreadyMergedCompletion"
+      "TestTransitionAlreadyMergedCompletion",
+      "TestSSHHostLossUsesInstanceRetry",
+      "TestSSHHostLossClearsResumeOnSpillover",
+      "TestSSHQueuedPreferenceAndHostCaps"
+    ],
+    "./internal/hubclient": [
+      "TestNativePlannerAutomaticHandoff",
+      "TestNativeExecutionSettlesFinishedRun"
     ],
     "./internal/runner": [
+      "TestNativeInterruptedCodeRecoversPersistedSession",
+      "TestNativeReworkFinalizesBeforeImmutableEvidence",
       "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
       "TestWorkerCredentialBlockerError",
       "TestRunnerTriageIsReadOnly",
       "TestINV12WorkerInheritsToolchainEnvironment",
-      "TestINV12BackendToolchainEnvironment"
+      "TestINV12BackendToolchainEnvironment",
+      "TestSSHCallbackDoesNotPublishRemotePID"
+    ],
+    "./internal/workspace": [
+      "TestLocalGitNativeReworkOwnsPausedRebase",
+      "TestGitMetadataWritableRootsForLinkedWorktree"
     ],
     "./internal/store": [
       "TestLegacyHumanQuestionReceiptsReadable",
@@ -96,14 +117,15 @@
       "TestVerifyMinisignSignatureRejectsTamper"
     ],
     "./internal/invariants": [
+      "TestRepositoryBrowserTests",
+      "TestBrowserPolicyViolations",
       "TestRepositorySources",
       "TestRepositoryWorkflow",
       "TestRepositoryHasNoPullRequestActions",
       "TestPortabilityStressIsManualOnly",
       "TestSourceViolations",
       "TestWorkflowViolations",
-      "TestMutationDocuments",
-      "TestDoctorInvariantRegistration"
+      "TestMutationDocuments"
     ],
     "./internal/admission": [
       "TestAdmissionRequiresLedgerWriter",
@@ -115,14 +137,12 @@
       "TestDoctorInvariantEvidence",
       "TestDoctorRespectsProjectCIPolicy",
       "TestDoctorLocalGateCommitStatusProducer",
-      "TestDoctorInvariantAdmission",
-      "TestDoctorInvariantAdmissionBatches",
-      "TestDoctorInvariantScopeClassification",
-      "TestDoctorInvariantAdmissionRepeatedEntries",
-      "TestDoctorInvariantAdmissionUnavailableEvidence",
       "TestINV12DoctorNativeCaches",
       "TestINV12DoctorWorkspaceKinds",
-      "TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns"
+      "TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns",
+      "TestSSHLocalTargetIntegration",
+      "TestSSHServiceProxyKeepsCentralAuthority",
+      "TestSSHProbeRequiresProvidedScratch"
     ],
     "./internal/connector/github": [
       "TestRefreshBoardFilterCost",
@@ -159,6 +179,9 @@
     ],
     "./internal/workpad": [
       "TestMergedCompletionEvidence"
+    ],
+    "./internal/hubserver": [
+      "TestClaimCandidatesRequireUnansweredWorkItem"
     ],
     "./internal/web": [
       "TestOperationsWorkpadHumanAction"

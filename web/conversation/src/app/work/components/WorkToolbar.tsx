@@ -1,22 +1,7 @@
-// The board toolbar (artifact screen 1's `.toolbar`).
-//
-// Left to right, exactly the artifact's row: a search field with a `/` hint,
-// Filters, Sort showing its current value, the freshness chip, then the
-// Board/List segmented control and the Lanes menu on the right.
-//
-// Two honesty notes the artifact does not have to make and this does:
-//
-//  - search is over the loaded board. The hub has no text search on work
-//    items, so the field filters what came back and says so in its title
-//    rather than pretending to have asked the server.
-//  - a filter with more than one value is applied here, not there. The hub
-//    rejects a repeated query parameter, so one value is pushed to the server
-//    and the rest are applied to the result; the menu says which.
-import { FilterIcon, KanbanIcon, LayoutListIcon, SearchIcon, XIcon } from "lucide-react";
+import { FilterIcon, KanbanIcon, LayoutListIcon } from "lucide-react";
 import React from "react";
 
 import { Button } from "../../../components/ui/button.tsx";
-import { Kbd } from "../../../components/ui/kbd.tsx";
 import {
   Menu,
   MenuCheckboxItem,
@@ -34,6 +19,7 @@ import {
   activeFilterCount,
   DEFAULT_VIEW_STATE,
   FILTER_KEYS,
+  effectiveSort,
   FILTER_LABELS,
   isDefaultViewState,
   laneVisible,
@@ -62,11 +48,7 @@ export interface WorkToolbarProps {
   readonly onChange: (next: WorkViewState) => void;
   readonly lanes: readonly Lane[];
   readonly facets: ToolbarFacets;
-  readonly searchRef?: React.Ref<HTMLInputElement>;
-  /** The freshness chip, rendered as given so the shell owns its vocabulary. */
-  readonly freshness: React.ReactNode;
-  /** How many issues the facet lists were built from. */
-  readonly loadedCount: number;
+  readonly totals?: Readonly<Record<string, number>>;
 }
 
 export function WorkToolbar({
@@ -74,51 +56,20 @@ export function WorkToolbar({
   onChange,
   lanes,
   facets,
-  searchRef,
-  freshness,
-  loadedCount,
+  totals,
 }: WorkToolbarProps): React.ReactElement {
-  const filters = activeFilterCount(view);
-  const laneNames = React.useMemo(() => lanes.map((lane) => lane.name), [lanes]);
-  const visibleLanes = laneNames.filter((lane) => laneVisible(view, lane)).length;
+  const filters = activeFilterCount(view.view === "list" ? { ...view, state: [] } : view);
+  const boardLanes = React.useMemo(() => lanes.filter((lane) => !lane.terminal), [lanes]);
+  const visibleLanes = boardLanes.filter((lane) => laneVisible(view, lane)).length;
 
-  const values = (key: FilterKey): readonly string[] => facets[key];
+  const values = (key: FilterKey): readonly string[] => [...new Set([...facets[key], ...view[key]])].toSorted();
 
   return (
-    <div data-testid="work-toolbar" className="flex flex-wrap items-center gap-2 px-5 pt-1.5 pb-3">
+    <div data-testid="work-toolbar" className="flex shrink-0 items-center gap-2 overflow-x-auto px-3 pt-1.5 pb-3 sm:px-5">
       <Button size="xs" variant="outline" aria-pressed={view.archived === true}
         data-testid="work-archived" onClick={() => onChange({ ...view, archived: view.archived !== true })}>
         {view.archived === true ? "Archived issues" : "Archived"}
       </Button>
-      <div className="flex h-7 w-full min-w-0 items-center gap-2 rounded-[var(--control-radius)] border border-input bg-popover px-2 text-muted-foreground text-xs shadow-xs/5 sm:h-6 sm:w-80 dark:bg-input/32">
-        <SearchIcon className="size-3.5 shrink-0" />
-        <input
-          ref={searchRef}
-          type="search"
-          value={view.q}
-          placeholder="Search issues…"
-          aria-label="Search the loaded issues"
-          title="Searches the issues already loaded; the hub has no work-item text search."
-          data-testid="work-search"
-          onChange={(event) => onChange({ ...view, q: event.target.value })}
-          className="min-w-0 flex-1 border-0 bg-transparent p-0 text-foreground text-xs outline-none placeholder:text-muted-foreground [&::-webkit-search-cancel-button]:appearance-none"
-        />
-        {view.q.length > 0 ? (
-          <Button
-            size="icon-micro"
-            variant="ghost"
-            aria-label="Clear the search"
-            onClick={() => onChange({ ...view, q: "" })}
-          >
-            <XIcon className="size-3" />
-          </Button>
-        ) : (
-          <Kbd aria-hidden className="shrink-0 bg-transparent">
-            /
-          </Kbd>
-        )}
-      </div>
-
       <Menu>
         <MenuTrigger className={TRIGGER} data-testid="filters-trigger">
           <FilterIcon />
@@ -132,7 +83,7 @@ export function WorkToolbar({
         <MenuPopup align="start" className="w-64">
           {/* Every label is inside a `MenuGroup`: Base UI's `GroupLabel`
               reads its group's context and throws without one. */}
-          {FILTER_KEYS.map((key) => (
+          {FILTER_KEYS.filter((key) => view.view === "board" || key !== "state").map((key) => (
             <React.Fragment key={key}>
               <MenuGroup>
                 <MenuGroupLabel>{FILTER_LABELS[key]}</MenuGroupLabel>
@@ -157,14 +108,13 @@ export function WorkToolbar({
             </React.Fragment>
           ))}
           <p className="px-2 py-1 text-muted-foreground text-xs">
-            Built from the {loadedCount} issues on this board. One value per field is filtered by
-            the hub; any others are applied here.
+            Choices come from loaded issues in this scope. Every selected value filters the full project scope.
           </p>
           {isDefaultViewState(view) ? null : (
             <MenuCheckboxItem
               checked={false}
               data-testid="filters-reset"
-              onCheckedChange={() => onChange({ ...DEFAULT_VIEW_STATE, view: view.view })}
+              onCheckedChange={() => onChange(DEFAULT_VIEW_STATE)}
             >
               Reset everything
             </MenuCheckboxItem>
@@ -175,11 +125,11 @@ export function WorkToolbar({
       <Menu>
         <MenuTrigger className={TRIGGER} data-testid="sort-trigger">
           Sort
-          <span className="text-muted-foreground">{SORT_LABELS[view.sort]}</span>
+          <span className="text-muted-foreground">{SORT_LABELS[effectiveSort(view)]}</span>
         </MenuTrigger>
         <MenuPopup align="start" className="w-52">
           <MenuRadioGroup
-            value={view.sort}
+            value={effectiveSort(view) === "default" ? "priority" : effectiveSort(view)}
             onValueChange={(value) => onChange({ ...view, sort: value as WorkSort })}
           >
             {WORK_SORTS.map((sort) => (
@@ -190,8 +140,6 @@ export function WorkToolbar({
           </MenuRadioGroup>
         </MenuPopup>
       </Menu>
-
-      {freshness}
 
       <span className="flex-1" />
 
@@ -239,29 +187,30 @@ export function WorkToolbar({
         })}
       </div>
 
-      <Menu>
+      {view.view === "board" ? <Menu>
         <MenuTrigger className={TRIGGER} data-testid="lanes-trigger">
           Lanes
           <span className="text-muted-foreground tabular-nums">
-            {visibleLanes}/{laneNames.length}
+            {visibleLanes}/{boardLanes.length}
           </span>
         </MenuTrigger>
         <MenuPopup align="end" className="w-52">
           <MenuGroup>
             <MenuGroupLabel>Show lanes</MenuGroupLabel>
-            {laneNames.map((lane) => (
+            {boardLanes.map((lane) => (
               <MenuCheckboxItem
-                key={lane}
+                key={lane.name}
                 checked={laneVisible(view, lane)}
-                data-testid={`lane-toggle-${lane}`}
-                onCheckedChange={() => onChange(toggleLane(view, lane, laneNames))}
+                data-testid={`lane-toggle-${lane.name}`}
+                onCheckedChange={() => onChange(toggleLane(view, lane.name, lanes))}
               >
-                {lane}
+                {lane.name}
+                {totals === undefined ? null : <span className="ml-auto text-muted-foreground tabular-nums">{totals[lane.name] ?? 0}</span>}
               </MenuCheckboxItem>
             ))}
           </MenuGroup>
         </MenuPopup>
-      </Menu>
+      </Menu> : null}
     </div>
   );
 }

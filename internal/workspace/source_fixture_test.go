@@ -21,6 +21,7 @@ var (
 )
 
 func runWorkspaceTests(m *testing.M) int {
+	stubReapProcessScanner()
 	var err error
 	sourceRepoSeedDir, err = os.MkdirTemp("", "workspace-source-seed-")
 	if err != nil {
@@ -48,6 +49,7 @@ func buildSourceRepoSeed(ctx context.Context, dir string) error {
 		{"config", "core.autocrlf", "false"},
 		{"config", "user.name", "Test User"},
 		{"config", "user.email", "test@example.com"},
+		{"config", "commit.gpgsign", "false"},
 		{"add", "README.md"},
 		{"commit", "-m", "initial"},
 	} {
@@ -61,6 +63,10 @@ func buildSourceRepoSeed(ctx context.Context, dir string) error {
 }
 
 func TestSourceRepoFixturesAreIndependent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, name := range []string{"existing directory", "nested directory"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

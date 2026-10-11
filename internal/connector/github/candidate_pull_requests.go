@@ -301,7 +301,7 @@ func (c *Connector) observeCandidatePullRequestStatus(ctx context.Context, byKey
 				}
 			} else {
 				failures := requiredStatusCheckFailures(nil, nil, c.requiredChecks)
-				status.ci = pullRequestCI{State: combinedCIState(requiredStatusCheckState(failures), combinedCIState(checkRunsState(nil), commitStatusesState(nil))), RequiredFailures: failures}
+				status.ci = pullRequestCI{State: combinedCIState(requiredStatusCheckState(failures, c.localStatus), combinedCIState(checkRunsState(nil), commitStatusesState(nil))), RequiredFailures: failures}
 			}
 		}
 		status.reviews, err = snapshot.reviews()

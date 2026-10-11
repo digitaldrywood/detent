@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,6 +19,9 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/mcp"
+	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -27,28 +31,47 @@ const (
 )
 
 type Service struct {
-	billing           *hostedBillingWorker
-	hostedMutationMu  sync.Mutex
-	hostedAuthLogger  *slog.Logger
-	hostedSessions    *auth.Service
-	echo              *echo.Echo
-	database          *database
-	tracker           tracker.Tracker
-	config            Config
-	outbox            *outboxWorker
-	ready             atomic.Bool
-	workerCancel      context.CancelFunc
-	workerDone        chan struct{}
-	workerStopOnce    sync.Once
-	reconcileCancel   context.CancelFunc
-	reconcileDone     chan struct{}
-	reconcileStopOnce sync.Once
-	pullRequests      *pullRequestCache
-	conversations     *conversationService
-	closeOnce         sync.Once
-	closeErr          error
-	clientBuild       appClientBuild
-	workspaces        *workspaceService
+	issuePages              nativeIssuePageCache
+	writerStatsAt           atomic.Int64
+	writerWaits             atomic.Int64
+	writerWaited            atomic.Int64
+	requestMetrics          *tenantRequestMetrics
+	runnerPublishedReleases sync.Map
+	tokenUse                sync.Map
+	tokenUseWork            sync.WaitGroup
+	mcpHTTP                 *mcp.HTTPHandler
+	operatorChat            *chat.Service
+	administration          *operatoradmin.Executor
+	billing                 *hostedBillingWorker
+	healthDetector          *healthDetector
+	hostedMutationMu        sync.Mutex
+	hostedAuthLogger        *slog.Logger
+	hostedSessions          *auth.Service
+	echo                    *echo.Echo
+	database                *database
+	tracker                 tracker.Tracker
+	config                  Config
+	outbox                  *outboxWorker
+	ready                   atomic.Bool
+	wakeSpriteRunnersAfter  func(nativeScope, json.RawMessage)
+	startSpriteLifecycle    func(nativeScope, string)
+	startSpritePoolForQueue func(nativeScope)
+	spriteWakeMu            sync.Mutex
+	spriteWakes             map[spriteWakeKey]*spriteLifecyclePass
+	spriteWakeWork          sync.WaitGroup
+	workerCancel            context.CancelFunc
+	workerDone              chan struct{}
+	workerStopOnce          sync.Once
+	reconcileCancel         context.CancelFunc
+	reconcileDone           chan struct{}
+	reconcileStopOnce       sync.Once
+	pullRequests            *pullRequestCache
+	notifications           *notificationBroker
+	conversations           *conversationService
+	closeOnce               sync.Once
+	closeErr                error
+	clientBuild             appClientBuild
+	workspaces              *workspaceService
 }
 
 type healthResponse struct {
@@ -78,6 +101,9 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := database.checkProjectSecretKeys(ctx, cfg.SecretKeys); err != nil {
+		return nil, errors.Join(err, database.Close())
+	}
 	if !cfg.CredentialMaintenance {
 		if err := database.ensureInitialAdminToken(ctx, cfg.InitialAdminToken); err != nil {
 			return nil, errors.Join(err, database.Close())
@@ -98,10 +124,12 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	reconcileContext, reconcileCancel := context.WithCancel(context.Background())
 	service := &Service{
 		echo:             e,
+		notifications:    newNotificationBroker(),
 		hostedAuthLogger: hostedAuthLogger,
 		database:         database,
 		tracker:          workTracker,
 		config:           cfg,
+		spriteWakes:      make(map[spriteWakeKey]*spriteLifecyclePass),
 		workerCancel:     workerCancel,
 		workerDone:       make(chan struct{}),
 		reconcileCancel:  reconcileCancel,
@@ -109,9 +137,16 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		clientBuild:      conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
 		pullRequests:     newPullRequestCache(),
 	}
-	if cfg.OutboxBackend != nil {
-		service.outbox = newOutboxWorker(service)
+	service.wakeSpriteRunnersAfter = func(scope nativeScope, result json.RawMessage) {
+		service.scheduleSpriteWake(workerContext, scope, result)
 	}
+	service.startSpriteLifecycle = func(scope nativeScope, state string) {
+		service.scheduleSpriteLifecycle(workerContext, scope, state)
+	}
+	service.startSpritePoolForQueue = func(scope nativeScope) {
+		service.scheduleSpritePoolForQueue(workerContext, scope)
+	}
+	service.outbox = newOutboxWorker(service)
 	if cfg.Hosted != nil {
 		service.hostedSessions, err = auth.NewSessionService(auth.SessionConfig{SessionTTL: 30 * 24 * time.Hour, PublicURL: cfg.Hosted.PublicURL}, service)
 		if err != nil {
@@ -122,11 +157,6 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	if cfg.Conversation != nil && cfg.Conversation.Enabled && !cfg.CredentialMaintenance {
 		service.conversations = newConversationService(service, cfg.Conversation.normalized())
-		if err := service.conversations.start(ctx); err != nil {
-			workerCancel()
-			reconcileCancel()
-			return nil, errors.Join(err, database.Close())
-		}
 	}
 	if cfg.Workspace != nil && cfg.Workspace.Enabled && !cfg.CredentialMaintenance {
 		if err := cfg.Workspace.validate(); err != nil {
@@ -141,7 +171,33 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 			return nil, errors.Join(err, database.Close())
 		}
 	}
+	e.Use(service.measureRequests)
 	service.registerRoutes(e)
+	if service.conversations != nil {
+		if err := service.conversations.start(ctx); err != nil {
+			workerCancel()
+			reconcileCancel()
+			return nil, errors.Join(err, database.Close())
+		}
+	}
+	if cfg.Hosted != nil && !cfg.CredentialMaintenance {
+		service.requestMetrics, err = openRequestMetrics(ctx, database.path+".metrics.sqlite", tracker.OrganizationID(cfg.Hosted.OrganizationID))
+		if err != nil {
+			workerCancel()
+			reconcileCancel()
+			if service.conversations != nil {
+				service.conversations.stop()
+			}
+			if service.workspaces != nil {
+				service.workspaces.StopContext(ctx)
+			}
+			var mcpErr error
+			if service.mcpHTTP != nil {
+				mcpErr = service.mcpHTTP.Shutdown(ctx)
+			}
+			return nil, errors.Join(err, mcpErr, database.Close())
+		}
+	}
 	if cfg.CredentialMaintenance {
 		workerCancel()
 		reconcileCancel()
@@ -158,6 +214,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		service.outbox.start(ctx)
 	}
 	service.startHostedBilling()
+	service.startHealthDetector()
 	return service, nil
 }
 
@@ -318,6 +375,14 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	s.ready.Store(false)
+	s.notifications.closeAll()
+	if s.conversations != nil {
+		s.conversations.stop()
+	}
+	var mcpErr error
+	if s.mcpHTTP != nil {
+		mcpErr = s.mcpHTTP.Shutdown(ctx)
+	}
 	httpErr := s.echo.Shutdown(ctx)
 	if errors.Is(httpErr, http.ErrServerClosed) {
 		httpErr = nil
@@ -325,8 +390,10 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	if httpErr != nil {
 		httpErr = fmt.Errorf("shut down hub server: %w", httpErr)
 	}
+	s.stopSpriteRunners()
 	s.stopHostedBilling()
-	return errors.Join(httpErr, s.stopGitHubWebhookMaintenance(), s.stopGitHubReconciliation())
+	s.stopHealthDetector()
+	return errors.Join(mcpErr, httpErr, s.stopGitHubWebhookMaintenance(), s.stopGitHubReconciliation())
 }
 
 func (s *Service) Backup(ctx context.Context, destination string) error {
@@ -337,18 +404,29 @@ func (s *Service) Backup(ctx context.Context, destination string) error {
 }
 
 func (s *Service) Close() error {
+	return s.CloseContext(context.Background())
+}
+
+func (s *Service) CloseContext(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
 	s.closeOnce.Do(func() {
 		s.ready.Store(false)
+		s.notifications.closeAll()
+		var mcpErr error
+		if s.mcpHTTP != nil {
+			mcpErr = s.mcpHTTP.Shutdown(ctx)
+		}
 		httpErr := s.echo.Close()
 		if errors.Is(httpErr, http.ErrServerClosed) {
 			httpErr = nil
 		}
+		s.stopSpriteRunners()
 		webhookErr := s.stopGitHubWebhookMaintenance()
 		reconcileErr := s.stopGitHubReconciliation()
 		s.stopHostedBilling()
+		s.stopHealthDetector()
 		if s.outbox != nil {
 			s.outbox.stop()
 		}
@@ -356,9 +434,14 @@ func (s *Service) Close() error {
 			s.conversations.stop()
 		}
 		if s.workspaces != nil {
-			s.workspaces.Stop()
+			s.workspaces.StopContext(ctx)
 		}
-		s.closeErr = errors.Join(httpErr, webhookErr, reconcileErr, s.database.Close())
+		s.tokenUseWork.Wait()
+		var metricsErr error
+		if s.requestMetrics != nil {
+			metricsErr = errors.Join(s.requestMetrics.flush(ctx, s.config.now()), s.requestMetrics.db.Close())
+		}
+		s.closeErr = errors.Join(mcpErr, httpErr, webhookErr, reconcileErr, metricsErr, s.database.Close())
 	})
 	return s.closeErr
 }
@@ -382,8 +465,12 @@ func (s *Service) maintainGitHubWebhooks(ctx context.Context) {
 	if err := s.database.processPendingWebhooks(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.Error("process pending GitHub webhooks", "error", err)
 	}
-	if _, err := s.database.purgeWebhookPayloads(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
+	if _, err := s.database.purgeWebhookPayloads(ctx, now, s.config.WebhookPayloadRetention); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.Warn("purge GitHub webhook payloads", "error", err)
+	}
+	s.maintainSpritePools(ctx)
+	if err := s.maintainNativeRetention(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
+		s.config.Logger.Warn("maintain native retention", "error", err)
 	}
 }
 
@@ -399,26 +486,31 @@ func (s *Service) stopGitHubWebhookMaintenance() error {
 }
 
 func (s *Service) health(c echo.Context) error {
-	if !s.ready.Load() || s.database.health(c.Request().Context()) != nil {
-		return c.JSON(http.StatusServiceUnavailable, healthResponse{Status: "unavailable"})
+	response, status := s.readInstanceHealth(c.Request().Context())
+	return c.JSON(status, response)
+}
+
+func (s *Service) readInstanceHealth(ctx context.Context) (healthResponse, int) {
+	if !s.ready.Load() || s.database.health(ctx) != nil {
+		return healthResponse{Status: "unavailable"}, http.StatusServiceUnavailable
 	}
-	outbox, err := s.OutboxHealth(c.Request().Context())
+	outbox, err := s.OutboxHealth(ctx)
 	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, healthResponse{Status: "unavailable"})
+		return healthResponse{Status: "unavailable"}, http.StatusServiceUnavailable
 	}
-	repositories, err := s.database.repositoryFreshness(c.Request().Context(), s.config.now().UTC(), s.config.ReconcileInterval)
+	repositories, err := s.database.repositoryFreshness(ctx, s.config.now().UTC(), s.config.ReconcileInterval)
 	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, healthResponse{Status: "unavailable"})
+		return healthResponse{Status: "unavailable"}, http.StatusServiceUnavailable
 	}
 	status := "ok"
 	if repositories.Summary.Stale > 0 || repositories.Summary.Error > 0 {
 		status = "degraded"
 	}
-	return c.JSON(http.StatusOK, healthResponse{
+	return healthResponse{
 		Status:        status,
 		SchemaVersion: s.database.schemaVersion,
 		Version:       s.config.Version,
 		Outbox:        outbox,
 		Repositories:  repositories.Summary,
-	})
+	}, http.StatusOK
 }

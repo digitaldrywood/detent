@@ -6,22 +6,30 @@
 // when a conversation is linked, and the controls that must carry the attempt
 // the strip is showing.
 import { RegistryProvider } from "@effect/atom-react";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { startMockHub, type CoordinatorMode, type MockHub } from "../../dev/mock-hub.ts";
-import { ClientContext } from "../../src/app/client.ts";
+import { ClientContext, LAST_PROJECT_STORAGE_KEY } from "../../src/app/client.ts";
+import type { Bootstrap } from "../../src/contracts/index.ts";
 import { makeRouter } from "../../src/app/router.tsx";
 import { setComposerText } from "./composerInput.ts";
 import { loadBootstrap, makeClient, type ConversationClient } from "../../src/runtime/bootstrap.ts";
 import { fetchEventStreamTransport } from "../../src/runtime/rpc/sse.ts";
+import * as sharedEntry from "../../src/app/entry/shared.ts";
 
 // The router restores scroll on navigation; jsdom has no scrolling.
 Object.defineProperty(globalThis, "scrollTo", { value: () => {}, writable: true });
 
 let hub: MockHub | undefined;
 let client: ConversationClient | undefined;
+const nativeFetch = globalThis.fetch;
+
+beforeEach(() => {
+  globalThis.localStorage.clear();
+  vi.stubGlobal("fetch", sameRealmFetch);
+});
 
 afterEach(async () => {
   cleanup();
@@ -29,6 +37,8 @@ afterEach(async () => {
   client = undefined;
   await hub?.close();
   hub = undefined;
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 /**
@@ -40,10 +50,12 @@ afterEach(async () => {
  */
 const sameRealmFetch: typeof globalThis.fetch = (input, init) => {
   const { signal: _abort, ...rest } = (init ?? {}) as RequestInit;
-  return globalThis.fetch(input as string, rest);
+  return nativeFetch(input as string, rest);
 };
 
 interface MountOptions {
+  readonly bootstrap?: (bootstrap: Bootstrap) => Bootstrap;
+  readonly storedProject?: string;
   readonly coordinator?: CoordinatorMode;
   /** Flipped on the hub after any setup, before the client boots (§10.11). */
   readonly readOnly?: boolean;
@@ -68,13 +80,22 @@ async function mountApp(options: MountOptions | CoordinatorMode = {}) {
       body: JSON.stringify({ mode: "read_only" }),
     });
   }
-  const bootstrap = await loadBootstrap(hub.url);
+  const loaded = await loadBootstrap(hub.url);
+  const bootstrap = settings.bootstrap?.(loaded) ?? loaded;
+  const streamRequests: URL[] = [];
+  const streamFetch: typeof globalThis.fetch = (input, init) => {
+    streamRequests.push(new URL(input instanceof Request ? input.url : String(input)));
+    return sameRealmFetch(input, init);
+  };
   client = makeClient({
     origin: hub.url,
     bootstrap,
-    transport: fetchEventStreamTransport(sameRealmFetch),
+    transport: fetchEventStreamTransport(streamFetch),
     heartbeatTimeoutMs: 20_000,
   });
+  if (settings.storedProject !== undefined) {
+    globalThis.localStorage.setItem(LAST_PROJECT_STORAGE_KEY, settings.storedProject);
+  }
   const path =
     typeof settings.path === "function" ? settings.path() : (settings.path ?? "/chat");
   const router = makeRouter(createMemoryHistory({ initialEntries: [path] }));
@@ -85,7 +106,7 @@ async function mountApp(options: MountOptions | CoordinatorMode = {}) {
       </ClientContext.Provider>
     </RegistryProvider>,
   );
-  return { router, hub, client };
+  return { router, hub, client, streamRequests };
 }
 
 async function control(path: string, body?: unknown): Promise<void> {
@@ -97,6 +118,160 @@ async function control(path: string, body?: unknown): Promise<void> {
 }
 
 describe("the conversation shell", () => {
+  it("switches sidebar search scope without mixing Work and Chat queries", async () => {
+    const { router } = await mountApp({ path: "/work?q=invitation" });
+    const search = await screen.findByRole<HTMLInputElement>("searchbox", { name: "Search issues" });
+    await waitFor(() => expect(search.value).toBe("invitation"));
+    expect(screen.getAllByRole("searchbox")).toHaveLength(1);
+    expect(search.placeholder).toBe("Search issues");
+    expect(screen.queryByRole("listbox", { name: "Thread search results" })).toBeNull();
+    fireEvent.keyDown(document.body, { key: "/" });
+    expect(document.activeElement).toBe(search);
+    fireEvent.change(search, { target: { value: "lease" } });
+    await waitFor(() => expect(new URLSearchParams(router.state.location.searchStr).get("q")).toBe("lease"));
+    await act(async () => { await router.navigate({ to: "/chat" }); });
+    const chat = await screen.findByRole<HTMLInputElement>("combobox", { name: "Search threads" });
+    expect(chat.value).toBe("");
+    expect(chat.placeholder).toBe("Search chats");
+    fireEvent.change(chat, { target: { value: "a chat title" } });
+    expect(screen.getByText("No threads found")).toBeTruthy();
+    await act(async () => { await router.navigate({ to: "/work/p/$projectId", params: { projectId: "proj_alpha" }, search: { q: "checkout" } }); });
+    await waitFor(() => expect(screen.getByRole<HTMLInputElement>("searchbox", { name: "Search issues" }).value).toBe("checkout"));
+    expect(screen.queryByText("No threads found")).toBeNull();
+    expect(screen.queryByRole("listbox", { name: "Thread search results" })).toBeNull();
+  });
+
+  it.each([
+    ["", "proj_alpha", "alpha"],
+    ["proj_stale", "proj_alpha", "alpha"],
+    ["proj_readonly", "proj_alpha", "alpha"],
+    ["proj_beta", "proj_beta", "beta"],
+  ])("starts a writable chat with stored project %j", async (stored, expectedId, expectedName) => {
+    const { router, hub } = await mountApp({
+      storedProject: stored,
+      bootstrap: (bootstrap) => ({
+        ...bootstrap,
+        projects: [...bootstrap.projects].sort((a, b) => Number(a.can_write) - Number(b.can_write)),
+      }),
+    });
+    const composer = await screen.findByLabelText<HTMLElement>("Message");
+    expect(screen.getByTestId("hero-headline").textContent).toContain(expectedName);
+    expect(screen.queryByText("Project unknown")).toBeNull();
+    expect(screen.queryByText("Choose a project first")).toBeNull();
+    await setComposerText(composer, "Start a writable chat");
+    expect(screen.getByLabelText<HTMLButtonElement>("Send message").disabled).toBe(false);
+    fireEvent.keyDown(composer, { key: "Enter" });
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/chat\/c\/conv_/));
+    const conversationId = router.state.location.pathname.replace("/chat/c/", "");
+    const response = await fetch(`${hub.url}/api/v2/organizations/org_mock/projects/${expectedId}/conversations/${conversationId}`);
+    expect(response.status).toBe(200);
+    expect((await response.json()).conversation.project_id).toBe(expectedId);
+  });
+
+  it("remembers the last real project through Work and All projects", async () => {
+    const { router } = await mountApp({ path: "/chat/p/proj_beta" });
+    await screen.findByLabelText("Message");
+    await waitFor(() => expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("proj_beta"));
+    await router.navigate({ to: "/work" });
+    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All projects"));
+    expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("");
+    await router.navigate({ to: "/chat" });
+    await screen.findByLabelText("Message");
+    expect(screen.getByTestId("hero-headline").textContent).toContain("beta");
+    await router.navigate({ to: "/chat/p/$projectId", params: { projectId: "proj_beta" } });
+    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("beta"));
+    fireEvent.click(screen.getByLabelText("Filter threads by project"));
+    fireEvent.click(await screen.findByRole("option", { name: "All projects" }));
+    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All projects"));
+    expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("");
+    const composer = screen.getByLabelText<HTMLElement>("Message");
+    await setComposerText(composer, "Chat after All projects");
+    expect(screen.getByLabelText<HTMLButtonElement>("Send message").disabled).toBe(false);
+    expect(screen.getByTestId("hero-headline").textContent).toContain("beta");
+  });
+
+  it.each([
+    ["proj_alpha", "alpha", false],
+    ["proj_readonly", "readonly", true],
+  ])("keeps the explicit chat project %s", async (projectId, projectName, readOnly) => {
+    await mountApp({ path: `/chat/p/${projectId}`, storedProject: "proj_beta" });
+    const composer = await screen.findByLabelText<HTMLElement>("Message");
+    expect(screen.getByTestId("hero-headline").textContent).toContain(projectName);
+    await setComposerText(composer, "Use the explicit project");
+    if (readOnly) {
+      expect(screen.getByText("Read-only project")).toBeTruthy();
+      expect(screen.queryByLabelText("Send message")).toBeNull();
+    } else {
+      expect(screen.getByLabelText<HTMLButtonElement>("Send message").disabled).toBe(false);
+    }
+  });
+
+  it.each([false, true])("switches the footer workspace through the authenticated owner (shared entry: %s)", async (shared) => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", { assign, pathname: "/work", search: "", hash: "" });
+    vi.spyOn(sharedEntry, "behindSharedEntry").mockReturnValue(shared);
+    vi.spyOn(sharedEntry, "useSharedOrganizations").mockReturnValue(shared ? [
+      { id: "org_mock", name: "Mock organization", url: "/organizations/org_mock", current: true },
+      { id: "org_second", name: "Second mock organization", url: "/organizations/org_second", current: false },
+    ] : null);
+    const switches: unknown[] = [];
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/switch")) switches.push(JSON.parse(String(init?.body)));
+      return sameRealmFetch(input, init);
+    });
+    await mountApp({ path: "/work" });
+    const trigger = await screen.findByRole("button", { name: "Switch workspace: Mock organization" });
+    const toolbar = trigger.closest("ul")!;
+    expect([...toolbar.querySelectorAll("button")].slice(0, 4).map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Switch workspace: Mock organization", "Settings", "Pull Requests", "Usage",
+    ]);
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Mock organization" }));
+    expect(assign).not.toHaveBeenCalled();
+    expect(switches).toEqual([]);
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Second mock organization" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(shared ? "/organizations/org_second" : "https://second.mock.test/auth/oidc/start"));
+    if (shared) expect(switches).toEqual([]);
+    else expect(switches).toEqual([{ organization: "org_second", idempotency_key: expect.any(String) }]);
+  });
+
+  it("keeps an open chat visible and reconnects after a server_error close", async () => {
+    const { router, streamRequests } = await mountApp();
+    const composer = await screen.findByLabelText<HTMLElement>("Message", undefined, { timeout: 5_000 });
+    await setComposerText(composer, "Keep this chat visible");
+    await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Send message" }).disabled).toBe(false));
+    fireEvent.keyDown(composer, { key: "Enter" });
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/chat\/c\/conv_/), { timeout: 5_000 });
+    await screen.findByTestId("assistant-turn", undefined, { timeout: 5_000 });
+    const chatPath = router.state.location.pathname;
+    const userTurn = screen.getByTestId("user-turn");
+    const conversationId = chatPath.replace("/chat/c/", "");
+    const subscriptions = () => streamRequests.filter((url) => url.pathname.endsWith(`/${conversationId}/events`));
+    await waitFor(() => expect(subscriptions()).toHaveLength(1));
+    const cursor = subscriptions()[0]!.searchParams.get("after");
+    expect(Number(cursor)).toBeGreaterThan(0);
+
+    await control("drop-open-streams", { reason: "server_error" });
+    await screen.findByText(/The live connection dropped\. Reconnecting/, undefined, { timeout: 5_000 });
+    expect(screen.getByTestId("user-turn")).toBe(userTurn);
+    expect(screen.queryByText("Conversation unavailable")).toBeNull();
+    expect(router.state.location.pathname).toBe(chatPath);
+    await waitFor(() => expect(subscriptions()).toHaveLength(2), { timeout: 5_000 });
+    expect(subscriptions()[1]!.searchParams.get("after")).toBe(cursor);
+
+    await setComposerText(screen.getByLabelText<HTMLElement>("Message"), "Still connected");
+    await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Send message" }).disabled).toBe(false));
+    fireEvent.keyDown(screen.getByLabelText("Message"), { key: "Enter" });
+    await waitFor(() => expect(screen.getAllByTestId("user-turn").some((turn) => turn.textContent?.includes("Still connected"))).toBe(true), { timeout: 5_000 });
+    await waitFor(() => expect(screen.queryByText(/The live connection dropped\. Reconnecting/)).toBeNull(), { timeout: 5_000 });
+    expect(screen.getAllByTestId("user-turn")[0]).toBe(userTurn);
+    expect(userTurn.textContent).toContain("Keep this chat visible");
+    expect(router.state.location.pathname).toBe(chatPath);
+    expect(screen.queryByText("Conversation unavailable")).toBeNull();
+  });
+
   it("carries a chat through handoff, a runner and a question", async () => {
     const { router } = await mountApp();
     const composer = await screen.findByLabelText<HTMLElement>("Message", undefined, {
@@ -104,6 +279,7 @@ describe("the conversation shell", () => {
     });
 
     await setComposerText(composer, "Please create an issue for the lock renewal");
+    await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Send message" }).disabled).toBe(false));
     fireEvent.keyDown(composer, { key: "Enter" });
 
     // The conversation opened on its own route and the transcript is live.
@@ -125,6 +301,12 @@ describe("the conversation shell", () => {
     expect(form.textContent).toContain(
       "messages in this chat become readable by everyone who can read project alpha",
     );
+    fireEvent.change(within(form).getByLabelText("Objective"), {
+      target: { value: "Preserve the lock renewal objective" },
+    });
+    fireEvent.change(within(form).getByLabelText("Priority"), {
+      target: { value: "1" },
+    });
     fireEvent.click(
       screen.getByLabelText("Share this conversation's history with the project"),
     );
@@ -139,12 +321,16 @@ describe("the conversation shell", () => {
       { timeout: 5_000 },
     );
     expect(router.state.location.pathname).not.toBe(chatPath);
+    const workItemId = router.state.location.pathname.replace("/work/i/", "");
+    const linkedIssue = await fetch(
+      `${hub!.url}/api/v2/organizations/org_mock/work-items/${workItemId}`,
+    ).then((response) => response.json());
+    expect(linkedIssue.body).toBe("Preserve the lock renewal objective");
+    expect(linkedIssue.priority).toBe(1);
 
     await waitFor(
       () =>
-        expect(screen.getByTestId("composer-context-issue").textContent).not.toBe(
-          "No linked issue",
-        ),
+        expect(router.state.location.search).toMatchObject({ panel: "conversation" }),
       { timeout: 5_000 },
     );
     // The result card arrives as a message on the stream, just behind the

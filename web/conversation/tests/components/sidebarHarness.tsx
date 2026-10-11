@@ -20,6 +20,8 @@ import {
 import { useSettledOverrideStore } from "../../src/app/adapters/settledOverrides.ts";
 import { ToastProvider } from "../../src/components/ui/toast.tsx";
 import type { Conversation } from "../../src/contracts/index.ts";
+import { ClientContext } from "../../src/app/client.ts";
+import type { ConversationClient } from "../../src/runtime/bootstrap.ts";
 
 export const PROJECTS = [
   { id: "proj_alpha", name: "alpha", can_write: true },
@@ -41,7 +43,7 @@ export function resetSidebarState(): void {
 
 export async function renderSidebar(
   overrides: Partial<SidebarShellData> = {},
-  options: { readonly path?: string } = {},
+  options: { readonly path?: string; readonly client?: ConversationClient } = {},
 ): Promise<SidebarHarness> {
   const onSelect = vi.fn();
   const onNewChat = vi.fn();
@@ -66,6 +68,7 @@ export async function renderSidebar(
   publishSidebarData(data);
 
   const Mounted = (): React.ReactElement => (
+    <ClientContext.Provider value={options.client ?? null}>
     <ToastProvider>
       <SidebarDataProvider value={data}>
         <SidebarProvider>
@@ -73,6 +76,7 @@ export async function renderSidebar(
         </SidebarProvider>
       </SidebarDataProvider>
     </ToastProvider>
+    </ClientContext.Provider>
   );
   const root = createRootRoute();
   // Every route the copied sidebar navigates to renders the sidebar, so a

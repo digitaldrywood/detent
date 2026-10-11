@@ -241,18 +241,20 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 			}
 			return decision
 		}
-		if stranded, deferReason := implementProgressUnpushedClassification(running.DiffStats, nil); deferReason != "" {
-			decision.Reason = deferReason
-			return decision
-		} else if stranded {
-			decision.Outcome = store.WorkAttemptTerminalNoProgress
-			decision.Reason = strandedUnpushedWorkReason
-			decision.ConsecutiveNoProgress = 1 + consecutiveImplementStrandedWorkAttempts(attempts, autoPromoteReworkSignature{})
-			decision.Block = decision.NoProgressLimit > 0 && decision.ConsecutiveNoProgress >= decision.NoProgressLimit
-			if decision.Block {
-				decision.BlockReason = strandedUnpushedWorkReason
+		if _, native := o.connector.(connector.WorkflowStateReader); !native {
+			if stranded, deferReason := implementProgressUnpushedClassification(running.DiffStats, nil); deferReason != "" {
+				decision.Reason = deferReason
+				return decision
+			} else if stranded {
+				decision.Outcome = store.WorkAttemptTerminalNoProgress
+				decision.Reason = strandedUnpushedWorkReason
+				decision.ConsecutiveNoProgress = 1 + consecutiveImplementStrandedWorkAttempts(attempts, autoPromoteReworkSignature{})
+				decision.Block = decision.NoProgressLimit > 0 && decision.ConsecutiveNoProgress >= decision.NoProgressLimit
+				if decision.Block {
+					decision.BlockReason = strandedUnpushedWorkReason
+				}
+				return decision
 			}
-			return decision
 		}
 		if !diffStatsPresent(running.DiffStats) {
 			decision.Reason = "workspace_diffstat_unavailable_without_pull_request"
@@ -324,26 +326,15 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 		o.warnImplementProgressHydration(issue, reason, nil)
 		return decision
 	}
-	var workpadCurrent bool
-	if pullRequestMerged(issue.PullRequest) {
-		var refreshed connector.Issue
-		refreshed, workpadCurrent = o.refreshImplementCompletionIssue(ctx, issue)
-		decision.Issue = refreshed
-		decision.TrackerState = strings.TrimSpace(refreshed.State)
-		if workpadCurrent && implementProgressMergedCompletion(refreshed, running.DiffStats) {
-			decision.WorkpadStatus = workpad.StatusComplete
-			decision.CurrentSignature = autoPromoteReworkSignatureFromIssue(refreshed, staleMergedPullRequestSummaryFromIssue(refreshed))
-			decision.Reason = implementMergedCompletionReason
-			return decision
-		}
-		issue = refreshed
-	} else {
-		var refreshed connector.Issue
-		refreshed, workpadCurrent = o.refreshImplementCompletionIssue(ctx, issue)
-		issue = refreshed
-	}
+	issue, workpadCurrent := o.refreshImplementCompletionIssue(ctx, issue)
 	decision.Issue = issue
 	decision.TrackerState = strings.TrimSpace(issue.State)
+	if workpadCurrent && pullRequestMerged(issue.PullRequest) && implementProgressMergedCompletion(issue, running.DiffStats) {
+		decision.WorkpadStatus = workpad.StatusComplete
+		decision.CurrentSignature = autoPromoteReworkSignatureFromIssue(issue, staleMergedPullRequestSummaryFromIssue(issue))
+		decision.Reason = implementMergedCompletionReason
+		return decision
+	}
 	decision.WorkspaceDiffStats = implementProgressReconcilePullRequestEvidence(running.DiffStats, issue.PullRequest)
 	if workpadCurrent {
 		decision.WorkpadStatus = implementProgressArtifactSnapshotFromIssue(issue, true).WorkpadStatus
@@ -601,6 +592,10 @@ func (o *Orchestrator) refreshImplementCompletionIssue(ctx context.Context, issu
 	for _, candidate := range issues {
 		if strings.TrimSpace(candidate.ID) == strings.TrimSpace(issue.ID) {
 			refreshed = mergeIssueTrackerFields(issue, candidate)
+			refreshed.Description = candidate.Description
+			refreshed.Comments = cloneIssueComments(candidate.Comments)
+			refreshed.CommentCount = candidate.CommentCount
+			refreshed.CommentsComplete = candidate.CommentsComplete
 			break
 		}
 	}
@@ -613,20 +608,25 @@ func (o *Orchestrator) refreshImplementCompletionIssue(ctx context.Context, issu
 		refreshed.PRNumber = hydratedPRNumber
 		refreshed.PRRepository = hydratedPRRepository
 	}
-	reader, ok := o.connector.(connector.IssueCommentReader)
-	if !ok {
-		o.warnImplementProgressRefresh(refreshed, "issue comment reader unavailable", nil)
-		return refreshed, false
+	if !refreshed.CommentsComplete {
+		reader, ok := o.connector.(connector.IssueCommentReader)
+		if !ok {
+			o.warnImplementProgressRefresh(refreshed, "issue comment reader unavailable", nil)
+			return refreshed, false
+		}
+		comments, err := reader.FetchIssueComments(ctx, refreshed)
+		if err != nil {
+			o.warnImplementProgressRefresh(refreshed, "fetch workpad comments failed", err)
+			return refreshed, false
+		}
+		refreshed.Comments = comments
 	}
-	comments, err := reader.FetchIssueComments(ctx, refreshed)
-	if err != nil {
-		o.warnImplementProgressRefresh(refreshed, "fetch workpad comments failed", err)
-		return refreshed, false
-	}
-	refreshed.Comments = comments
 	refreshed.WorkpadSignal = nil
 	if signal, ok := autoPromoteIssueWorkpadSignal(refreshed); ok {
 		refreshed.WorkpadSignal = signal
+	}
+	if resolved, ok := o.resolveMergedCompletionPullRequest(ctx, refreshed); ok {
+		refreshed = resolved
 	}
 	return refreshed, true
 }
@@ -665,12 +665,8 @@ func implementProgressMergedCompletion(issue connector.Issue, diffStats DiffStat
 		pullRequestHydrationBlocksProgress(pullRequest) || strings.TrimSpace(pullRequest.HeadSHA) == "" {
 		return false
 	}
-	if pullRequest.CheckRunCount+pullRequest.StatusContextCount == 0 ||
-		len(pullRequest.RunningChecks) > 0 || len(pullRequest.UnstartedChecks) > 0 ||
-		len(pullRequest.RequiredCheckFailures) > 0 {
-		return false
-	}
-	return mergeWorkerCIGreen(pullRequest.CIStatus)
+	decision := staleMergedPullRequestDecision(issue, staleMergedPullRequestSummaryFromIssue(issue))
+	return decision.Reason == AutoPromoteReasonPullRequestMerged
 }
 
 func implementProgressMergedCompletionCandidate(issue connector.Issue, diffStats DiffStats) bool {

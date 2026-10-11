@@ -31,6 +31,20 @@ func ReportProgress(ctx context.Context) {
 	reporter()
 }
 
+type laneTransitionReasonContextKey struct{}
+
+func WithLaneTransitionReason(ctx context.Context, reason string) context.Context {
+	return context.WithValue(ctx, laneTransitionReasonContextKey{}, reason)
+}
+
+func LaneTransitionReason(ctx context.Context) string {
+	reason, ok := ctx.Value(laneTransitionReasonContextKey{}).(string)
+	if !ok {
+		return ""
+	}
+	return reason
+}
+
 var (
 	ErrNotImplemented                = errors.New("connector operation not implemented")
 	ErrCommentNotCreated             = errors.New("comment was not created")
@@ -199,7 +213,7 @@ type PullRequestReferenceRefresher interface {
 }
 
 type PullRequestAssociationRevalidator interface {
-	RevalidatePullRequestAssociation(context.Context, Issue) (Issue, error)
+	RevalidatePullRequestAssociation(context.Context, Issue, bool) (Issue, error)
 }
 
 // BranchHeadLookup resolves a remote branch without requiring a local workspace.
@@ -338,6 +352,10 @@ type IssueStateProber interface {
 	FetchIssueStateProbe(context.Context, []string, int) ([]Issue, error)
 }
 
+type IssueStateIDProber interface {
+	FetchIssueStateProbeByIDs(context.Context, []string) ([]Issue, error)
+}
+
 type StatusDriftReader interface {
 	FetchStatusDrift(context.Context) (StatusDrift, error)
 }
@@ -352,6 +370,12 @@ type IssueReferenceResolver interface {
 
 type IssueStateTransitionReader interface {
 	IssueStateTransition(context.Context, Issue) (IssueStateTransition, bool, error)
+}
+
+// CurrentLaneEntryReader reports when an issue entered its current tracker
+// lane, from the tracker's own history.
+type CurrentLaneEntryReader interface {
+	CurrentLaneEntry(context.Context, Issue) (IssueStateTransition, bool, error)
 }
 
 type IssueStateTransition struct {
@@ -386,4 +410,10 @@ type StatusDrift struct {
 	OpenTerminal         []Issue `json:"open_terminal,omitempty" yaml:"open_terminal,omitempty"`
 	ClosedActive         []Issue `json:"closed_active,omitempty" yaml:"closed_active,omitempty"`
 	LaneSignalCandidates []Issue `json:"-" yaml:"-"`
+}
+
+// ValidationIssueReader bypasses board snapshots for authoritative review input.
+// It preserves the supplied PR provenance and refreshes the task body/comments.
+type ValidationIssueReader interface {
+	FetchValidationIssue(context.Context, Issue) (Issue, error)
 }

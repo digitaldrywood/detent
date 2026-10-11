@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -21,6 +22,30 @@ func TestDescriptorValidation(t *testing.T) {
 		valid  bool
 	}{
 		{"valid", func(*Descriptor) {}, true},
+		{"workflow", func(d *Descriptor) {
+			d.Workflow = &Workflow{Source: "detent.yaml", States: []State{{Name: "Todo", Dispatchable: true}}}
+			*d = d.WithID()
+		}, true},
+		{"empty workflow source", func(d *Descriptor) { d.Workflow = &Workflow{States: []State{{Name: "Todo"}}}; *d = d.WithID() }, false},
+		{"unknown workflow transition", func(d *Descriptor) {
+			d.Workflow = &Workflow{Source: "WORKFLOW.md", States: []State{{Name: "Todo", Transitions: []string{"Missing"}}}}
+			*d = d.WithID()
+		}, false},
+		{"terminal workflow dispatch", func(d *Descriptor) {
+			d.Workflow = &Workflow{Source: "WORKFLOW.md", States: []State{{Name: "Done", Terminal: true, Dispatchable: true}}}
+			*d = d.WithID()
+		}, false},
+		{"forged workflow", func(d *Descriptor) {
+			d.Workflow = &Workflow{Source: "detent.yaml", States: []State{{Name: "Unapproved"}}}
+		}, false},
+		{"invalid workflow revision", func(d *Descriptor) {
+			d.Workflow = &Workflow{Source: "detent.yaml", Revision: "private prose", States: []State{{Name: "Todo"}}}
+			*d = d.WithID()
+		}, false},
+		{"invalid definition digest", func(d *Descriptor) {
+			d.Configuration = &Configuration{DefinitionDigest: "private prose"}
+			*d = d.WithID()
+		}, false},
 		{"schema", func(d *Descriptor) { d.Schema++ }, false},
 		{"forged identity", func(d *Descriptor) { d.Gates.Kind = "human_review" }, false},
 		{"missing source", func(d *Descriptor) { d.SourceDigest = ""; *d = d.WithID() }, false},
@@ -40,6 +65,43 @@ func TestDescriptorValidation(t *testing.T) {
 				t.Fatalf("Validate() = %v, want valid %t", err, test.valid)
 			}
 		})
+	}
+}
+
+func TestLegacyDescriptorWithoutHumanReview(t *testing.T) {
+	t.Parallel()
+	descriptor := testDescriptor()
+	// Computed by the descriptor implementation before HumanReview existed.
+	const legacyID = "policy_04c9b13714beb9260ef3a36518f2646dc6d4525e51f2cef8202ff89bf34510f3"
+	if descriptor.ID != legacyID {
+		t.Fatalf("descriptor ID = %q, want pre-upgrade ID %q", descriptor.ID, legacyID)
+	}
+	raw, err := json.Marshal(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"human_review"`) {
+		t.Fatalf("legacy descriptor unexpectedly includes human_review: %s", raw)
+	}
+	var restored Descriptor
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Validate(); err != nil {
+		t.Fatalf("legacy descriptor rejected after round trip: %v", err)
+	}
+
+	descriptor.Gates.HumanReview = true
+	descriptor = descriptor.WithID()
+	raw, err = json.Marshal(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"human_review":true`) {
+		t.Fatalf("opted-in descriptor is missing human_review: %s", raw)
+	}
+	if err := descriptor.Validate(); err != nil {
+		t.Fatalf("opted-in descriptor rejected: %v", err)
 	}
 }
 
@@ -92,6 +154,50 @@ func TestDescriptorMatch(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			if err := test.actual.Match(test.expected); (err == nil) != test.valid {
 				t.Fatalf("Match() = %v, want valid %t", err, test.valid)
+			}
+		})
+	}
+}
+
+func TestAuthoredDescriptorIdentity(t *testing.T) {
+	t.Parallel()
+	d := testDescriptor()
+	digest := Digest([]byte("canonical authored config"))
+	d.Authored = &Authored{Version: 1, Digest: digest, Files: map[string]string{"WORKFLOW.md": "file bytes"}}
+	d.SourceRevision, d.SourceDigest, d.ConfigDigest = digest, digest, digest
+	d = d.WithID()
+	for _, test := range []struct {
+		name          string
+		change        func(*Descriptor)
+		sameID, match bool
+	}{
+		{"runtime descriptor shape", func(d *Descriptor) {
+			d.Configuration = &Configuration{Behavior: json.RawMessage(`{"new_default":true}`)}
+			d.Gates.AutoPromote = true
+		}, true, true},
+		{"repository commit", func(d *Descriptor) {
+			d.Workflow = &Workflow{Source: "detent.yaml", Revision: strings.Repeat("b", 40), States: []State{{Name: "Todo", Dispatchable: true}}}
+		}, true, true},
+		{"canonical version", func(d *Descriptor) {
+			d.Authored.Version++
+			d.Authored.Digest = Digest([]byte("new canonical form"))
+			d.SourceRevision, d.SourceDigest, d.ConfigDigest = d.Authored.Digest, d.Authored.Digest, d.Authored.Digest
+		}, false, true},
+		{"changed authored inputs", func(d *Descriptor) {
+			d.Authored.Version++
+			d.Authored.Digest = Digest([]byte("changed config"))
+			d.Authored.Files = map[string]string{"WORKFLOW.md": "different bytes"}
+			d.SourceRevision, d.SourceDigest, d.ConfigDigest = d.Authored.Digest, d.Authored.Digest, d.Authored.Digest
+		}, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			actual := d
+			authored := *d.Authored
+			actual.Authored = &authored
+			test.change(&actual)
+			actual = actual.WithID()
+			if (actual.ID == d.ID) != test.sameID || (actual.Match(d) == nil) != test.match {
+				t.Fatalf("identity=%s match=%v", actual.ID, actual.Match(d))
 			}
 		})
 	}

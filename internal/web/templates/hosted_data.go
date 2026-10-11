@@ -7,6 +7,7 @@ import (
 )
 
 type HostedPageData struct {
+	FreeSlotUsed         bool
 	CreationKey          string
 	Provisioning         HostedProvisioning
 	PendingOrganizations []HostedOrganizationChoice
@@ -14,8 +15,10 @@ type HostedPageData struct {
 	SharedOrigin         bool
 	BillingEnabled       bool
 	BillingCanPurchase   bool
+	BillingCheckoutPrice string
 	BillingStatus        string
 	BillingMessage       string
+	AICredits            *HostedAICredits
 	ChatUsage            string
 	ChatUsagePeriod      string
 	BillingCheckedAt     string
@@ -34,6 +37,7 @@ type HostedPageData struct {
 	OrganizationID       string
 	CSRF                 string
 	Error                string
+	RetryURL             string
 	Notice               string
 	Mode                 string
 	CanManage            bool
@@ -49,9 +53,22 @@ type HostedPageData struct {
 	Members              []HostedMember
 }
 
+type HostedAICredits struct {
+	Returned    bool
+	Balance     string
+	Enabled     bool
+	Threshold   string
+	PriceID     string
+	Failure     string
+	InFlight    bool
+	CanAutoFund bool
+	Packs       []HostedBillingPrice
+	History     []HostedBillingAudit
+}
+
 type HostedBillingPrice struct {
-	ID    string
-	Label string
+	ID    string `json:"id"`
+	Label string `json:"label"`
 }
 
 type HostedBillingAudit struct {
@@ -138,13 +155,6 @@ func hostedSignInURL(data HostedPageData) templ.SafeURL {
 		return templ.SafeURL("/organizations")
 	}
 	return templ.SafeURL("/auth/oidc/start")
-}
-
-func hostedJoinURL(data HostedPageData) templ.SafeURL {
-	if data.SharedOrigin {
-		return templ.SafeURL("/invitations/join")
-	}
-	return templ.SafeURL("/auth/oidc/start?unscoped=1")
 }
 
 func hostedProjectPath(project string) string {

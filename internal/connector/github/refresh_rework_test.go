@@ -13,6 +13,10 @@ import (
 )
 
 func TestRefreshAfterStatusFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, change := range []string{"blocker closed", "lane changed", "unchanged"} {
 		t.Run(change, func(t *testing.T) {
 			const stamp = "2026-09-16T20:00:00Z"
@@ -101,6 +105,10 @@ func TestRefreshAfterStatusFailure(t *testing.T) {
 // The server honors the requested connection size, so lowering a limit cannot
 // silently pass with an unrealistically complete fixture.
 func TestCandidatePRLargeCollectionsRemainAuthoritative(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, count := range []int{51, 100} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
 			rest := 0
@@ -165,6 +173,10 @@ func TestCandidatePRLargeCollectionsRemainAuthoritative(t *testing.T) {
 }
 
 func TestRefreshBlockerRevision(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, scenario := range []string{"unchanged", "edited", "deleted", "missing retained timestamp", "interrupted"} {
 		t.Run(scenario, func(t *testing.T) {
 			stamp := "2026-09-16T20:00:00Z"

@@ -60,7 +60,7 @@ export function resolveMediaSource(
   input: ResolveMediaSourceInput,
 ): ResolvedMediaSource | null {
   const classified = classify(source, input);
-  if (classified._tag === "Blocked") return null;
+  if (classified._tag === "Blocked" || classified._tag === "Attachment") return null;
 
   const path =
     classified._tag === "Direct"

@@ -21,6 +21,7 @@
 //    initialise most of them, but `NativeState.transitions` can genuinely
 //    arrive as `null`, so that one is nullable as well as optional.
 import * as Schema from "effect/Schema";
+import { AttemptDiagnostics } from "./diagnostics.ts";
 
 // --- Identities -------------------------------------------------------------
 
@@ -32,10 +33,20 @@ export type NativeWorkItemId = typeof NativeWorkItemId.Type;
 export const Revision = Schema.String;
 export type Revision = typeof Revision.Type;
 
+export const SourceRecovery = Schema.Struct({
+  work_item_id: Schema.String, revision: Revision,
+  source_machine_id: Schema.String, source_runner_name: Schema.String, source_runner_id: Schema.String,
+  attempt_id: Schema.String, version_id: Schema.String,
+  head_sha: Schema.String, base_sha: Schema.String,
+  destination_runner_id: Schema.String,
+  available: Schema.Boolean, quiesced: Schema.Boolean, reason: Schema.String,
+  destinations: Schema.Array(Schema.Struct({ runner_id: Schema.String, name: Schema.String })),
+});
+export type SourceRecovery = typeof SourceRecovery.Type;
+
 // --- Shared members ---------------------------------------------------------
 
-/** `human` for an operator's session, `runner` for a worker credential. */
-export const NativeActorKind = Schema.Literals(["human", "runner"]);
+export const NativeActorKind = Schema.Literals(["human", "runner", "integration"]);
 
 export const NativeActor = Schema.Struct({
   kind: NativeActorKind,
@@ -116,12 +127,22 @@ export const NativeDependency = Schema.Struct({
 export type NativeDependency = typeof NativeDependency.Type;
 
 export const NativeIssue = Schema.Struct({
+	linked_source: Schema.optional(Schema.Struct({
+		url: Schema.String,
+		status: Schema.String,
+		snapshot: Schema.optional(Schema.Struct({
+			title: Schema.String,
+			body: Schema.String,
+			provenance: Provenance,
+		})),
+	})),
   /** Present only when the project does not require dependencies. */
   ignore_dependencies: Schema.optional(Schema.Boolean),
   organization_id: OrganizationId,
   project_id: ProjectId,
   work_item_id: NativeWorkItemId,
   number: Schema.Number,
+  web_url: Schema.String,
   revision: Revision,
   profile: Schema.String,
   title: Schema.String,
@@ -137,6 +158,10 @@ export const NativeIssue = Schema.Struct({
   provenance: Schema.optional(Provenance),
   created_at: Schema.String,
   updated_at: Schema.String,
+  closed_at: Schema.optional(Schema.NullOr(Schema.String)),
+  list_change: Schema.optional(Schema.Struct({ branch: Schema.String, head_sha: Schema.String })),
+  pull_request: Schema.optional(Schema.Struct({ number: Schema.Number, url: Schema.String })),
+  last_activity_at: Schema.optional(Schema.NullOr(Schema.String)),
   dependencies: Schema.Array(NativeWorkItemId),
   /**
    * The same set as `dependencies` with state hydrated, minus any the caller's
@@ -148,7 +173,46 @@ export const NativeIssue = Schema.Struct({
 });
 export type NativeIssue = typeof NativeIssue.Type;
 
-export const WorkItemPage = Page(NativeIssue);
+export const NativeWorkSummary = Schema.Struct({
+  completed: Schema.optional(Schema.Number),
+  items: Schema.Array(NativeIssue),
+  lanes: Schema.Array(Schema.Struct({ state: Schema.String, total: Schema.Number, running: Schema.Number })),
+  truncated: Schema.Boolean,
+  as_of: Schema.String,
+});
+export type NativeWorkSummary = typeof NativeWorkSummary.Type;
+
+export const NativeBoardCard = Schema.Struct({
+  status_line: Schema.optional(Schema.String),
+  issue: NativeIssue,
+  attempt: Schema.NullOr(Schema.Struct({ count: Schema.optional(Schema.Number), attempt_id: Schema.String, status: Schema.String,
+    runner_id: Schema.optional(Schema.String), machine_id: Schema.optional(Schema.String),
+    identity: Schema.optional(Schema.Struct({ role: Schema.String, backend: Schema.String, model: Schema.String })),
+    started_at: Schema.String, expires_at: Schema.optional(Schema.String) })),
+  change: Schema.NullOr(Schema.Struct({ change_id: Schema.String, title: Schema.String, status: Schema.String,
+    external: Schema.optional(Schema.Struct({ provider: Schema.String, id: Schema.String, url: Schema.String })) })),
+});
+export type NativeBoardCard = typeof NativeBoardCard.Type;
+
+export const NativeBoardFrame = Schema.Struct({
+  sequence: Schema.Number,
+  grant_version: Schema.optional(Schema.String),
+  gap: Schema.Boolean,
+  deltas: Schema.Array(Schema.Struct({ sequence: Schema.Number,
+    previous: Schema.NullOr(NativeBoardCard), current: Schema.NullOr(NativeBoardCard) })),
+  work: Schema.optional(NativeWorkSummary),
+});
+export type NativeBoardFrame = typeof NativeBoardFrame.Type;
+
+export const WorkItemPage = Schema.Struct({
+  total: Schema.optional(Schema.Number),
+  items: Schema.Array(NativeIssue),
+  next_cursor: Schema.optional(Schema.String),
+  work: Schema.optional(NativeWorkSummary),
+  cards: Schema.optional(Schema.Array(NativeBoardCard)),
+  sequence: Schema.optional(Schema.Number),
+  grant_version: Schema.optional(Schema.String),
+});
 export type WorkItemPage = typeof WorkItemPage.Type;
 
 /** Priority as the hub numbers it, in the order the tracker ranks it. */
@@ -224,6 +288,7 @@ export const MutationEnvelope = Schema.Struct({
 });
 
 export const CreateIssueRequest = Schema.Struct({
+	github_issue_url: Schema.optional(Schema.String),
   idempotency_key: Schema.String,
   title: Schema.String,
   body: Schema.String,
@@ -368,6 +433,7 @@ export const CollaborationData = Schema.Struct({
   from_state: Schema.optional(Schema.String),
   to_state: Schema.optional(Schema.String),
   reason: Schema.optional(Schema.String),
+  reason_detail: Schema.optional(Schema.String),
 });
 export type CollaborationData = typeof CollaborationData.Type;
 
@@ -420,6 +486,7 @@ export const AttemptStatus = Schema.Literals([
 export type AttemptStatus = typeof AttemptStatus.Type;
 
 export const NativeAttempt = Schema.Struct({
+  ...AttemptDiagnostics,
   sequence: Schema.optional(Schema.String),
   identity: Schema.optional(NativeExecutionIdentity),
   machine_id: Schema.optional(Schema.String),
@@ -550,12 +617,6 @@ export type ChangeRequest = typeof ChangeRequest.Type;
 export const ChangeRequestList = Schema.Array(ChangeRequest);
 export type ChangeRequestList = typeof ChangeRequestList.Type;
 
-/**
- * The code artifact of a version. This is as close to a diff as the API gets:
- * an opaque URI and a digest. The hub serves no file list, no hunks and no
- * per-file counts, so the review dock reports what it has instead of drawing a
- * diff it cannot fetch.
- */
 export const ChangeArtifact = Schema.Struct({
   kind: Schema.String,
   uri: Schema.String,
@@ -638,6 +699,15 @@ export const ChangeVersion = Schema.Struct({
 export type ChangeVersion = typeof ChangeVersion.Type;
 
 export const ChangeReview = Schema.Struct({
+  validator: Schema.optional(Schema.Struct({
+    criteria_evidence: Schema.optional(Schema.Array(Schema.Struct({
+      criterion: Schema.String,
+      kind: Schema.Literals(["receipt", "test", "not_verified"]),
+      reference: Schema.String,
+      behavior: Schema.optional(Schema.String),
+    }))),
+    not_verified: Schema.optional(Schema.Array(Schema.String)),
+  })),
   review_id: Schema.String,
   version_id: Schema.String,
   decision: Schema.String,

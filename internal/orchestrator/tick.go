@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const githubRateLimitResetSkew = 5 * time.Second
@@ -56,6 +58,8 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	defer o.endGlobalProjectCycle()
 	completed := false
 	timing := newRefreshTiming(o.logger, o.cfg.Project.ID, manual != nil)
+	timing.restScope = &connector.RESTScope{ProjectID: o.cfg.Project.ID, RefreshID: timing.refreshID, Name: "refresh"}
+	ctx = connector.WithRESTScope(ctx, timing.restScope)
 	ctx, timing.points = connector.WithGraphQLPoints(ctx)
 	timing.progress = &o.refreshProgress
 	timing.next("preflight")
@@ -80,6 +84,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		}
 	}()
 
+	o.recoverLocalAdmissions(ctx, state)
 	o.expireOrphanedWorkAttempts(ctx, state, now)
 	o.syncGitHubRESTCapacityOutage(state, now)
 	if o.scheduling == nil && o.githubLookupBackoffGate(ctx, state, now) {
@@ -94,13 +99,15 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	if o.trackerAvailabilityPaused(ctx, state, now) && o.scheduling == nil {
 		return
 	}
-	// Give the existing dependency scan first use of the read budget every other
-	// refresh. Configured authorization requires the fresh filtered batch first.
+	// Preserve one rotating dependency priority read every other refresh. The
+	// full blocked scan runs after dispatch; configured authorization still
+	// requires the freshly filtered batch before any priority recovery.
 	earlyDependencyUnblock := state.dependencyUnblockEarly
 	state.dependencyUnblockEarly = !earlyDependencyUnblock
 	var earlyUnblocked map[string]struct{}
+	var priorityDependencyIssue string
 	if earlyDependencyUnblock && !o.cfg.Authorization.Configured() {
-		earlyUnblocked = o.earlyDependencyUnblock(ctx, state, mergeIssueSlices(state.BoardIssues, previous.blockedStatusIssues), now)
+		earlyUnblocked, priorityDependencyIssue = o.earlyDependencyUnblock(ctx, state, mergeIssueSlices(state.BoardIssues, previous.blockedStatusIssues), now)
 	}
 	if !o.retryDeferredCompletions(ctx, state, now) && o.scheduling == nil {
 		return
@@ -134,16 +141,23 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		return
 	}
 	timing.next("tracker_fetch")
+	timing.step("fetch_issues")
 	fetched, ok := o.fetchTickIssues(ctx, state, now, reserve, timing)
 	if !ok {
 		return
 	}
+	timing.step("authorize_candidates")
 	fetched = o.filterAuthorizedTickIssues(ctx, state, fetched, &previous, now)
 	trackerCandidates := cloneIssues(fetched.candidates)
+	var trackerRetryIssues []connector.Issue
+	if o.scheduling != nil {
+		trackerRetryIssues = mergeIssueSlices(fetched.candidates, fetched.status)
+	}
 	if earlyDependencyUnblock && o.cfg.Authorization.Configured() {
-		earlyUnblocked = o.earlyDependencyUnblock(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
+		earlyUnblocked, priorityDependencyIssue = o.earlyDependencyUnblock(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
 	}
 	fetched = filterReconciledTickIssues(state, fetched, earlyUnblocked)
+	timing.step("observe_lanes")
 	for _, issue := range mergeIssueSlices(fetched.candidates, fetched.status) {
 		if _, _, err := o.observeLane(ctx, state, issue, now); err != nil {
 			if o.logger != nil {
@@ -202,12 +216,9 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		o.reconcileClosedCompletedIssueStatuses(ctx, state, transitions.issues, now),
 	)
 	if fetched.statusOK {
-		timing.step("operator_return_retired_parks")
-		fetched = filterReconciledTickIssues(
-			state,
-			fetched,
-			o.operatorReturnRetiredParks(ctx, state, fetched.status, now),
-		)
+		// Capacity recovery can establish an instance outage from tracker
+		// evidence, and blocker promotion can affect current dependencies.
+		// Preserve both admission authorities before dispatch.
 		timing.step("recover_backend_capacity_blocked_issues")
 		fetched = filterReconciledTickIssues(
 			state,
@@ -220,14 +231,6 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			fetched,
 			o.autoPromoteBlockerIssues(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now),
 		)
-		if !earlyDependencyUnblock {
-			timing.step("operator_clear_closed_dependencies")
-			fetched = filterReconciledTickIssues(
-				state,
-				fetched,
-				o.operatorClearClosedDependencies(ctx, state, fetched.status, now),
-			)
-		}
 		timing.step("review_plan_issues")
 		fetched = filterReconciledTickIssues(
 			state,
@@ -308,7 +311,57 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	o.syncGitHubRESTCapacityOutage(state, now)
 	restRateLimitsCaptured = true
 	timing.next("dispatch")
-	o.dispatchTickIssues(ctx, state, fetched, transitions, previous, completedEpics, now)
+	o.dispatchTickIssues(ctx, state, fetched, transitions, previous, completedEpics, now, timing)
+	// Blocked-lane maintenance cannot make an active candidate eligible in this
+	// dispatch pass. Keep its existing owners and alternating recovery priority,
+	// but let unrelated approved work start before provider/history fanout.
+	timing.next("blocked_maintenance")
+	if fetched.statusOK {
+		timing.step("operator_return_retired_parks")
+		fetched = filterReconciledTickIssues(
+			state,
+			fetched,
+			o.operatorReturnRetiredParks(ctx, state, fetched.status, now),
+		)
+		timing.step("operator_clear_closed_dependencies")
+		dependencyIssues := fetched.status
+		if priorityDependencyIssue != "" {
+			dependencyIssues = filterReconciledIssues(dependencyIssues, map[string]struct{}{priorityDependencyIssue: {}})
+		}
+		fetched = filterReconciledTickIssues(
+			state,
+			fetched,
+			o.operatorClearClosedDependencies(ctx, state, dependencyIssues, now),
+		)
+	}
+	o.trackTickBlockedStatuses(ctx, state, fetched, transitions, previous, now, timing)
+	timing.step("release_missing_retries")
+	retryIssues := fetched.candidates
+	if o.scheduling != nil {
+		retryIssues = mergeIssueSlices(mergeIssueSlices(fetched.candidates, fetched.status), trackerRetryIssues)
+		retryIssues = overlayIssueStateSnapshots(retryIssues, state.tickTransitions.boardIssues)
+	}
+	o.dispatchPlanner().releaseInvalidDueRetries(state, retryIssues, dueRetriesByIssue(state, now), dispatchPlanHooks{
+		preserveMissingDueRetry: func(retry Retry) bool { return o.preserveMissingDueRetry(state, retry) },
+	})
+	if _, ok := o.connector.(connector.RESTRateLimitUsageReporter); ok {
+		tail := o.captureConnectorRESTRateLimits(state, now)
+		if tail.HasSummary {
+			if tail.Usage == nil {
+				// A bucket-only observation has no new request counts. Retain
+				// this refresh's pre-dispatch usage, never a previous refresh's.
+				tail.Usage = restCycle.Usage
+				state.RateLimits.RESTUsage = tail.Usage
+			} else {
+				mergeRefreshRESTUsage(tail.Usage, restCycle.Usage)
+			}
+			if state.RateLimits.GitHubREST != nil && tail.Usage != nil {
+				state.RateLimits.GitHubREST.Cost = tail.Usage.BillableRequests
+			}
+			o.logRESTRateLimitCycle(tail)
+			o.syncGitHubRESTCapacityOutage(state, now)
+		}
+	}
 	timing.next("publish")
 	refreshOK := refreshSucceeded(state)
 	if refreshOK {
@@ -446,6 +499,7 @@ func (o *Orchestrator) fetchTickIssues(
 	timing *refreshTiming,
 ) (tickFetchedIssues, bool) {
 	if scanner, ok := o.connector.(connector.RefreshScanSerializer); ok {
+		timing.step("wait_for_scan")
 		finishWait := o.tickWatchdog.excludeScanWait()
 		release, err := scanner.BeginRefreshScan(ctx)
 		wait := finishWait()
@@ -466,9 +520,10 @@ func (o *Orchestrator) fetchTickIssues(
 	fetcher, canRefresh := o.connector.(connector.RefreshIssueFetcher)
 	canRefresh = canRefresh && fetcher.CombinedRefreshEnabled()
 	if o.scheduling == nil && canRefresh && !reserve.degraded {
-		return o.fetchCombinedTickIssues(ctx, state, now, observedStates, fetcher)
+		return o.fetchCombinedTickIssues(ctx, state, now, observedStates, fetcher, timing)
 	}
 
+	timing.step("fetch_candidates")
 	candidateIssues, err := o.fetchCandidateIssuesForTick(ctx, state)
 	if err != nil {
 		o.logger.Warn("fetch candidate issues failed", "error", err)
@@ -502,6 +557,7 @@ func (o *Orchestrator) fetchTickIssues(
 		return fetched, true
 	}
 	if !canRefresh && !tickHasActiveWork(state, candidateIssues) {
+		timing.step("probe_observed_work")
 		exists, probeErr := o.observedWorkExists(ctx, observedStates)
 		if probeErr != nil {
 			o.logger.Warn("fetch observed status probe failed", "error", probeErr)
@@ -521,6 +577,7 @@ func (o *Orchestrator) fetchTickIssues(
 
 	var statusIssues []connector.Issue
 	var statusErr error
+	timing.step("fetch_observed_statuses")
 	if canRefresh {
 		// Hub owns candidate claims; reuse the project read for observed lanes
 		// and diagnostics, including when no configured lane has active work.
@@ -544,6 +601,7 @@ func (o *Orchestrator) fetchTickIssues(
 	o.recordTrackerReadSuccess(state, telemetry.RefreshSourceStatuses, now)
 	fetched.status = cloneIssues(statusIssues)
 	fetched.statusOK = true
+	timing.step("hydrate_plan_comments")
 	if err := o.hydratePlanIssueComments(ctx, &fetched); err != nil {
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, err, now)
 		o.observeTrackerReadFailure(state, telemetry.RefreshSourceStatuses, err, now)
@@ -560,7 +618,13 @@ func (o *Orchestrator) fetchCombinedTickIssues(
 	now time.Time,
 	observedStates []string,
 	fetcher connector.RefreshIssueFetcher,
+	timings ...*refreshTiming,
 ) (tickFetchedIssues, bool) {
+	var timing *refreshTiming
+	if len(timings) != 0 {
+		timing = timings[0]
+	}
+	timing.step("combined_refresh")
 	result := fetcher.FetchRefreshIssues(
 		ctx,
 		o.candidateFetchStatesForTick(state),
@@ -597,6 +661,7 @@ func (o *Orchestrator) fetchCombinedTickIssues(
 	o.recordTrackerReadSuccess(state, telemetry.RefreshSourceStatuses, now)
 	fetched.status = cloneIssues(result.Statuses)
 	fetched.statusOK = true
+	timing.step("hydrate_plan_comments")
 	if err := o.hydratePlanIssueComments(ctx, &fetched); err != nil {
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, err, now)
 		o.observeTrackerReadFailure(state, telemetry.RefreshSourceStatuses, err, now)
@@ -621,15 +686,136 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 	}
 	if o.scheduling != nil {
 		request := SchedulingRequest{
-			Policy:         o.cfg.Policy,
-			ProjectID:      o.cfg.Project.ID,
-			Repository:     o.cfg.SchedulingRepository,
-			WorkflowStates: states,
-			Filter:         o.authorizationFilterHint(),
+			DispatchPriorityByState: append([]string(nil), o.cfg.DispatchPriorityByState...),
+			DispatchPriorityByLabel: append([]string(nil), o.cfg.DispatchPriorityByLabel...),
+			PrioritizeUnblockers:    o.cfg.PrioritizeUnblockers,
+			CandidateLimit:          o.dispatchPlanner().hardAvailableSlots(state) + dispatchCandidateLookahead,
+			AdmissionLimit:          max(1, o.dispatchPlanner().hardAvailableSlots(state)),
+			Policy:                  o.cfg.Policy,
+			ProjectID:               o.cfg.Project.ID,
+			Repository:              o.cfg.SchedulingRepository,
+			WorkflowStates:          states,
+			Filter:                  o.authorizationFilterHint(),
 		}
+		request.NativeLandingBatch = o.nativeWorkflow() && !o.cfg.Policy.Gates.GitHubPullRequest
+		if request.NativeLandingBatch {
+			request.CandidateLimit = max(request.CandidateLimit, 100)
+		}
+		request.CandidateKnownWait = func(issue connector.Issue) bool {
+			now := time.Now()
+			if o.now != nil {
+				now = o.now()
+			}
+			if !o.localIntakeAllows(state, issue) {
+				o.recordLocalAdmission(ctx, state, issue, now, false, dispatchSkipBlocked, "local_intake_disabled", nil)
+				return true
+			}
+			if reason := knownDispatchWaitReason(issue, state, dueRetriesByIssue(state, now), o.cfg.TerminalStates); reason != "" {
+				o.recordLocalAdmission(ctx, state, issue, now, false, reason, reason, nil)
+				return true
+			}
+			return false
+		}
+		var admitted []connector.Issue
+		request.CandidateAdmitted = func(issue connector.Issue) {
+			admitted = append(admitted, issue)
+			if state.localAdmitted == nil {
+				state.localAdmitted = map[string]struct{}{}
+			}
+			state.localAdmitted[issue.ID] = struct{}{}
+		}
+		request.CandidateAdmission = func(issue connector.Issue) (func(), bool) {
+			o.dispatchStartMu.Lock()
+			if !o.localIntakeAllows(state, issue) {
+				o.dispatchStartMu.Unlock()
+				o.recordLocalAdmission(ctx, state, issue, time.Now(), false, dispatchSkipBlocked, "local_intake_disabled", nil)
+				return nil, false
+			}
+			return o.dispatchStartMu.Unlock, true
+		}
+		request.CandidateClaimObserved = func(ctx context.Context, issue connector.Issue, allowed bool, predicate string, requirement *providercapacity.Requirement) {
+			now := time.Now()
+			if o.now != nil {
+				now = o.now()
+			}
+			o.recordLocalAdmission(ctx, state, issue, now, allowed, "", predicate, requirement)
+		}
+		request.CandidateReady = func(ctx context.Context, issue connector.Issue) (ready bool) {
+			now := time.Now()
+			if o.now != nil {
+				now = o.now()
+			}
+			var observedReason, observedPredicate string
+			defer func() {
+				o.recordLocalAdmission(ctx, state, issue, now, ready, observedReason, observedPredicate, nil)
+			}()
+			if !o.localIntakeAllows(state, issue) {
+				observedReason, observedPredicate = dispatchSkipBlocked, "local_intake_disabled"
+				return false
+			}
+			if o.issueContractApplies(issue) && strings.EqualFold(issue.State, firstNonBlank(o.cfg.AdmissionTargetState, "Todo")) {
+				allowed, err := o.enforceIssueContract(ctx, state, issue, issue.State, now)
+				if err != nil && o.logger != nil {
+					o.logger.Warn("issue contract placement failed", "issue_id", issue.ID, "error", err)
+				}
+				if err != nil || !allowed {
+					observedReason, observedPredicate = dispatchSkipBlocked, "issue_contract"
+					return false
+				}
+			}
+
+			if state.MemoryPressure.DispatchHeld || state.IOPressure.DispatchHeld || state.CPUPressure.DispatchHeld {
+				observedReason, observedPredicate = dispatchSkipLocalSlotUnavailable, "host_pressure"
+				// The dispatch stage would refuse this candidate under the host
+				// pressure hold, so a Hub lease taken now would only be released
+				// again this tick.
+				return false
+			}
+			preview := state.clone()
+			planner := o.liveDispatchPlanner(ctx, nil)
+			for _, selected := range admitted {
+				required := planner.modelPermitRequiredAtDispatch(selected)
+				preferredHost := ""
+				if retry, ok := preview.Retry[selected.ID]; ok {
+					required = required || retry.MergePrecheck != nil
+					preferredHost = retry.WorkerHost
+				}
+				host, _ := planner.selectWorkerHost(&preview, preferredHost)
+				planner.markDispatched(&preview, dispatchAction{issue: selected, workerHost: host, modelPermitRequired: required}, now)
+				if request.NativeLandingBatch && mergeWorkerIssue(selected) {
+					planner.nativeLandingBatch = &nativeLandingDispatchBatch{members: 1, host: host}
+				}
+			}
+			if blocked, exists := preview.Blocked[issue.ID]; exists && blockedFromDependency(blocked) && issue.DependencySource == connector.BlockedRefSourceNative && !issueBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
+				delete(preview.Blocked, issue.ID)
+			}
+			if retry, ok := preview.Retry[issue.ID]; ok {
+				if retry.DueAt.After(now) {
+					observedReason, observedPredicate = dispatchSkipRetryPending, "retry_not_due"
+					return false
+				}
+				_, ready, reason := planner.retryAction(&preview, issue, retry, now)
+				observedReason, observedPredicate = reason, reason
+				return ready
+			}
+			decision := planner.dispatchableIssueDecision(issue, &preview, false, now, "")
+			observedReason, observedPredicate = decision.reason, decision.reason
+			return decision.dispatchable
+		}
+
 		if resolver := o.providerCapacity; resolver != nil {
 			request.ProviderRequirement = func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
-				return resolver.DispatchCapacity(ctx, runpkg.RunRequest{Issue: issue, Mode: o.dispatchMode(ctx, state, issue), SelectorContext: o.selectorContext(), ProviderReports: reports})
+				requirement, err := resolver.DispatchCapacity(ctx, runpkg.RunRequest{Issue: issue, Mode: o.dispatchMode(ctx, state, issue), SelectorContext: o.selectorContext(), ProviderReports: reports})
+				predicate := "provider_requirement_resolved"
+				if err != nil {
+					predicate = "provider_requirement_refused"
+				}
+				var observed *providercapacity.Requirement
+				if err == nil {
+					observed = &requirement
+				}
+				o.recordLocalAdmission(ctx, state, issue, time.Now(), err == nil, dispatchSkipBlocked, predicate, observed)
+				return requirement, err
 			}
 		}
 		return o.scheduling.FetchCandidateIssues(ctx, request)
@@ -641,6 +827,37 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 		return fetcher.FetchCandidateIssuesByStates(ctx, states)
 	}
 	return o.connector.FetchCandidateIssues(ctx)
+}
+
+func (o *Orchestrator) NativeAdmissionContext() (tracker.NativeAdmissionContext, bool) {
+	if o == nil {
+		return tracker.NativeAdmissionContext{}, false
+	}
+	state := o.latestState.Load()
+	if state == nil || state.nativeAdmission == nil {
+		return tracker.NativeAdmissionContext{}, false
+	}
+	current := *state.nativeAdmission
+	current.WorkflowStates = slices.Clone(current.WorkflowStates)
+	current.Authors = slices.Clone(current.Authors)
+	current.Assignees = slices.Clone(current.Assignees)
+	current.LabelInclude = slices.Clone(current.LabelInclude)
+	current.LabelExclude = slices.Clone(current.LabelExclude)
+	return current, true
+}
+
+func (o *Orchestrator) snapshotNativeAdmission(state *State) {
+	filter := o.authorizationFilterHint()
+	now := time.Now()
+	if o.now != nil {
+		now = o.now()
+	}
+	state.nativeAdmission = &tracker.NativeAdmissionContext{
+		LastRefreshAt: state.LastRefreshAt, RefreshDuration: state.LastRefreshDuration,
+		ObservedAt: now.UTC(), PolicyID: o.cfg.Policy.ID, WorkflowStates: o.candidateFetchStatesForTick(state),
+		Authors: filter.Authors, Assignees: filter.Assignees,
+		LabelInclude: filter.LabelInclude, LabelExclude: filter.LabelExclude,
+	}
 }
 
 func (o *Orchestrator) authorizationFilterHint() connector.IssueFilterHint {
@@ -773,10 +990,17 @@ func (o *Orchestrator) candidateFetchStatesForTick(state *State) []string {
 	if o.nativeWorkflow() && !stateIn(autoPromoteMergingState, states) {
 		states = append(states, normalizeState(autoPromoteMergingState))
 	}
-	if o.mergeWorkerLocalSlotsAvailable(state) {
-		return states
+	if !o.mergeWorkerLocalSlotsAvailable(state) {
+		states = statesWithoutState(states, autoPromoteMergingState)
 	}
-	return statesWithoutState(states, autoPromoteMergingState)
+	now := time.Now()
+	if o.now != nil {
+		now = o.now()
+	}
+	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused && o.nativeWorkflow() && o.dispatchPlanner().githubRESTDependent(connector.Issue{State: autoPromoteMergingState}) {
+		states = statesWithoutState(states, autoPromoteMergingState)
+	}
+	return states
 }
 
 func markRefreshError(state *State, message string, at time.Time) {
@@ -884,11 +1108,28 @@ func (o *Orchestrator) refreshTransitionSets(
 	previous tickPreviousState,
 ) tickTransitionRefresh {
 	transitionIssues := cloneIssues(fetched.candidates)
-	pipelineIssues, pipelineRefreshOK := o.fetchEpicTransitionIssueStates(ctx, previous.pipeline)
+	fetchedIDs := make(map[string]struct{})
+	if fetched.statusOK {
+		for _, issue := range mergeIssueSlices(fetched.candidates, fetched.status) {
+			if id := strings.TrimSpace(issue.ID); id != "" {
+				fetchedIDs[id] = struct{}{}
+			}
+		}
+	}
+	refreshUnfetched := func(issues []connector.Issue) ([]connector.Issue, bool) {
+		toFetch := make([]connector.Issue, 0, len(issues))
+		for _, issue := range issues {
+			if _, found := fetchedIDs[strings.TrimSpace(issue.ID)]; !found {
+				toFetch = append(toFetch, issue)
+			}
+		}
+		return o.fetchEpicTransitionIssueStates(ctx, toFetch)
+	}
+	pipelineIssues, pipelineRefreshOK := refreshUnfetched(previous.pipeline)
 	transitionIssues = append(transitionIssues, pipelineIssues...)
-	watchedIssues, watchRefreshOK := o.fetchEpicTransitionIssueStates(ctx, previous.epicTransitionWatch)
+	watchedIssues, watchRefreshOK := refreshUnfetched(previous.epicTransitionWatch)
 	transitionIssues = append(transitionIssues, watchedIssues...)
-	blockedIssues, blockedRefreshOK := o.fetchEpicTransitionIssueStates(ctx, previous.blockedStatusIssues)
+	blockedIssues, blockedRefreshOK := refreshUnfetched(previous.blockedStatusIssues)
 	transitionIssues = append(transitionIssues, blockedIssues...)
 	pendingTransitions, pendingParentLookups := o.refreshPendingEpicParentLookups(ctx, previous.pendingEpicParentLookups)
 	transitionIssues = append(transitionIssues, pendingTransitions...)
@@ -1084,24 +1325,35 @@ func (o *Orchestrator) dispatchTickIssues(
 	previous tickPreviousState,
 	completedEpics map[string]struct{},
 	now time.Time,
+	timing *refreshTiming,
 ) {
+	timing.step("prepare_candidates")
 	issues := filterCompletedEpicCandidates(fetched.candidates, completedEpics)
 	planner := o.dispatchPlanner()
 	planner.pruneInactiveIssueBudgetRefusals(state, fetched.candidates)
 	o.pruneBudgetRefusals(ctx, state, now)
 	planner.trackBlockedCandidates(state, issues, now)
+	// Preserve fresh Blocked observations and clear stale project-status holds
+	// for the candidates themselves before admission. Unrelated blocked cards
+	// do not participate in this dispatch decision.
+	timing.step("track_candidate_blocked_statuses")
+	o.trackCandidateBlockedStatusIssues(ctx, state, replaceMatchingIssueSnapshots(issues, fetched.status), now)
+	timing.step("dispatch_ready_issues")
+	maintenanceIssues := issuesInStates(fetched.status, []string{blockedStatusState})
+	o.dispatchReadyIssues(ctx, state, issues, now, maintenanceIssues...)
+}
+
+func (o *Orchestrator) trackTickBlockedStatuses(ctx context.Context, state *State, fetched tickFetchedIssues, transitions tickTransitionRefresh, previous tickPreviousState, now time.Time, timing *refreshTiming) {
 	candidateBlockedStatusIssues := issuesInStates(fetched.candidates, []string{blockedStatusState})
 	if fetched.statusOK {
+		timing.step("track_blocked_statuses")
 		currentBlockedStatusIssues := candidateBlockedStatusIssues
 		currentBlockedStatusIssues = mergeIssueSlices(currentBlockedStatusIssues, issuesInStates(fetched.status, []string{blockedStatusState}))
 		if !transitions.blockedRefreshOK {
 			currentBlockedStatusIssues = mergeIssueSlices(currentBlockedStatusIssues, previous.blockedStatusIssues)
 		}
 		o.trackBlockedStatusIssues(ctx, state, currentBlockedStatusIssues, now)
-	} else {
-		o.trackCandidateBlockedStatusIssues(ctx, state, fetched.candidates, now)
 	}
-	o.dispatchReadyIssues(ctx, state, issues, now)
 }
 
 // Compare identities from this successful tracker read with the published board,
@@ -1124,15 +1376,16 @@ func candidatesMissingFromBoard(candidates, board []connector.Issue) int {
 	return len(missing)
 }
 
-func (o *Orchestrator) earlyDependencyUnblock(ctx context.Context, state *State, issues []connector.Issue, now time.Time) map[string]struct{} {
-	if !o.cfg.DependencyAutoUnblock.Enabled || state.Draining || o.dispatchQuiesced() {
-		return nil
+func (o *Orchestrator) earlyDependencyUnblock(ctx context.Context, state *State, issues []connector.Issue, now time.Time) (map[string]struct{}, string) {
+	if !o.cfg.DependencyAutoUnblock.Enabled || state.Draining || o.dispatchQuiesced() || !o.LocalIntakeEnabled() {
+		return nil, ""
 	}
 	cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
 	issues = dependencyAutoUnblockOrder(issues, cfg.SourceStates, state.dependencyUnblockCursor)
 	if len(issues) == 0 {
-		return nil
+		return nil, ""
 	}
+	issues = issues[:1]
 	for i, issue := range issues {
 		issues[i] = connector.Issue{ID: issue.ID, Identifier: issue.Identifier, State: issue.State}
 	}
@@ -1140,5 +1393,5 @@ func (o *Orchestrator) earlyDependencyUnblock(ctx context.Context, state *State,
 	// Advance even if the first identity cannot fit inside the cap. The late
 	// scan never changes this cursor, so it cannot undo priority progress.
 	state.dependencyUnblockCursor = issues[0].ID
-	return transitioned
+	return transitioned, issues[0].ID
 }

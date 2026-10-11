@@ -22,6 +22,10 @@ import (
 // something the platform cannot do.
 func requirePTY(t *testing.T) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("real pseudo-terminal and shell integration")
+	}
+
 	if !Supported {
 		t.Skip("this platform has no pseudo-terminal")
 	}
@@ -84,7 +88,7 @@ func waitFor(t *testing.T, what string, condition func() bool) {
 
 func newTestService(t *testing.T, worktree string) *Service {
 	t.Helper()
-	service, err := New(worktree, "/bin/sh", workspacesession.IsolationUser,
+	service, err := New(t.Context(), worktree, "/bin/sh", workspacesession.IsolationUser,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -116,7 +120,7 @@ func TestServiceNew(t *testing.T) {
 			isolation: workspacesession.IsolationContainer,
 			wantErr:   ErrContainerIsolation,
 		},
-		{name: "unknown isolation is refused", worktree: directory, isolation: "sandbox"},
+		{name: "unknown isolation is refused", worktree: directory, isolation: "vm"},
 		{name: "missing worktree is refused", worktree: filepath.Join(directory, "absent"), isolation: workspacesession.IsolationUser},
 		{name: "a file is not a worktree", worktree: file, isolation: workspacesession.IsolationUser},
 	}
@@ -125,7 +129,7 @@ func TestServiceNew(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			service, err := New(tt.worktree, "/bin/sh", tt.isolation, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			service, err := New(t.Context(), tt.worktree, "/bin/sh", tt.isolation, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			switch {
 			case tt.wantOK && err != nil:
 				t.Fatalf("New() error = %v, want nil", err)
@@ -334,6 +338,9 @@ func TestServiceOpenRefusals(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(worktree, "go.mod"), []byte("module x\n"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(worktree, "escape")); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name     string
@@ -343,6 +350,7 @@ func TestServiceOpenRefusals(t *testing.T) {
 		{name: "a directory inside the worktree opens", request: workspacesession.TerminalOpen{Cols: 80, Rows: 24, Cwd: "pkg"}},
 		{name: "an absolute cwd is refused", request: workspacesession.TerminalOpen{Cols: 80, Rows: 24, Cwd: "/etc"}, wantCode: workspacesession.CodeForbidden},
 		{name: "a cwd that escapes is refused", request: workspacesession.TerminalOpen{Cols: 80, Rows: 24, Cwd: "../elsewhere"}, wantCode: workspacesession.CodeForbidden},
+		{name: "a symlink cwd escape is refused", request: workspacesession.TerminalOpen{Cwd: "escape"}, wantCode: workspacesession.CodeForbidden},
 		{name: "a home-relative cwd is refused", request: workspacesession.TerminalOpen{Cols: 80, Rows: 24, Cwd: "~/secrets"}, wantCode: workspacesession.CodeForbidden},
 		{name: "a missing cwd is not found", request: workspacesession.TerminalOpen{Cols: 80, Rows: 24, Cwd: "absent"}, wantCode: workspacesession.CodeNotFound},
 		{name: "a file is not a cwd", request: workspacesession.TerminalOpen{Cols: 80, Rows: 24, Cwd: "go.mod"}, wantCode: workspacesession.CodeNotFound},

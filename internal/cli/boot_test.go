@@ -30,16 +30,120 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/toolcache"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/tui"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
+func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
+	if testing.Short() {
+		t.Skip("headless enrolled runner startup integration")
+	}
+	for _, missingCheckout := range []bool{false, true} {
+		name := "enrolled runner"
+		if missingCheckout {
+			name = "enrolled runner with absent checkout"
+		}
+		t.Run(name, func(t *testing.T) {
+			observations := make(chan *runnerauth.UpdateObservation, 1)
+			var identity runnerauth.File
+			hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				var response any
+				switch {
+				case r.URL.Path == "/api/v2/capabilities":
+					response = map[string]any{"version": "dev", "protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeRunnerUpdateCapability, tracker.NativeProviderCapacityCapability}}
+				case strings.HasSuffix(r.URL.Path, "/runners/"+identity.Identity.RunnerID):
+					response = identity.Identity
+				case strings.HasSuffix(r.URL.Path, "/projects/prj_test"):
+					response = tracker.NativeProject{Profile: "native"}
+				case strings.HasSuffix(r.URL.Path, "/heartbeat"):
+					var report struct {
+						Update *runnerauth.UpdateObservation `json:"update"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
+						t.Error(err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					select {
+					case observations <- report.Update:
+					default:
+					}
+					response = runnerauth.RoutingSnapshot{RunnerID: identity.Identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 1}.Normalized()}
+				default:
+					t.Errorf("unexpected Hub request: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				if err := json.NewEncoder(w).Encode(response); err != nil {
+					t.Error(err)
+				}
+			}))
+			t.Cleanup(hub.Close)
+			root := t.TempDir()
+			var err error
+			identity, err = runnerauth.Initialize(filepath.Join(root, "private", "runner.json"), hub.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity.Identity.OrganizationID = "org_test"
+			identity.Identity.ProjectIDs = []tracker.ProjectID{"prj_test"}
+			identity.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
+			if err := runnerauth.Save(filepath.Join(root, "private", "runner.json"), identity); err != nil {
+				t.Fatal(err)
+			}
+			port := 0
+			cfg := BootConfig{Mode: BootModeRunning, Version: "dev", Headless: true, Host: "127.0.0.1", Port: &port, Output: newBootOutput(), Shutdown: NewShutdownController(), Restart: NewRestartRequest()}
+			cfg.Global, err = globalconfig.Default()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Global.Path = filepath.Join(root, "global.yaml")
+			cfg.Global.Client = globalconfig.HubClient{URL: hub.URL, IdentityFile: filepath.Join(root, "private", "runner.json"), OrganizationID: "org_test", NativeProjects: map[string]string{"test": "prj_test"}, ProviderCapacityFile: writeProviderCapacityFixture(t, root)}
+			if missingCheckout {
+				cfg.Global.Projects = []globalconfig.Project{{ID: "test", Workdir: filepath.Join(root, "missing"), Workflow: filepath.Join(root, "missing", "WORKFLOW.md"), Weight: 1, Priority: 3}}
+			}
+			if err := globalconfig.Write(cfg.Global.Path, cfg.Global, globalconfig.WithMissingProjectPaths()); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			done := make(chan error, 1)
+			go func() { done <- startRunning(ctx, cfg) }()
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case err := <-done:
+					if err != nil && !errors.Is(err, context.Canceled) {
+						t.Error(err)
+					}
+				case <-time.After(10 * time.Second):
+					t.Error("headless runtime did not stop")
+				}
+			})
+			select {
+			case observed := <-observations:
+				if observed == nil || !observed.Supported || observed.Validate() != nil {
+					t.Fatalf("headless heartbeat update observation = %+v", observed)
+				}
+			case <-time.After(15 * time.Second):
+				t.Fatal("headless runner did not publish a heartbeat")
+			}
+		})
+	}
+}
+
 func TestMain(m *testing.M) {
+	if strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe") == "gh" && os.Getenv("DETENT_SSH_TEST_HELPER") != "" {
+		sshGitHubCLIHelper()
+	}
 	// Boot and reaper tests use disposable provider state as well as a test
 	// runtime store. They must never pair an empty store with host rollouts.
 	codexHome, err := os.MkdirTemp("", "detent-cli-codex-")
@@ -57,6 +161,7 @@ func TestMain(m *testing.M) {
 			panic("clear " + name + ": " + err.Error())
 		}
 	}
+	defaultInspectCaches = func(context.Context) toolcache.Report { return toolcache.Report{} }
 	exitCode := m.Run()
 	if err := os.RemoveAll(codexHome); err != nil {
 		fmt.Fprintln(os.Stderr, "clean test Codex home:", err)
@@ -66,6 +171,10 @@ func TestMain(m *testing.M) {
 }
 
 func TestAwaitStartupServerRequiresExpectedBuild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	expected := buildinfo.Info{
@@ -202,12 +311,12 @@ func TestBuildGlobalSchedulerFromSettings(t *testing.T) {
 		MaxConcurrentAgents: 2,
 		Scheduling:          globalconfig.SchedulingRoundRobin,
 		FairShare:           map[string]any{"half_life": "30m"},
-	}, nil)
+	})
 	if err != nil {
 		t.Fatalf("buildGlobalScheduler() error = %v", err)
 	}
-	if global.Mode() != scheduler.ModeRoundRobin {
-		t.Fatalf("Mode() = %q, want %q", global.Mode(), scheduler.ModeRoundRobin)
+	if global.Mode() != scheduler.ModeStrictPriority {
+		t.Fatalf("Mode() = %q, want %q", global.Mode(), scheduler.ModeStrictPriority)
 	}
 
 	first, err := global.RequestSlot(context.Background(), scheduler.SlotRequest{State: "Todo"})
@@ -229,7 +338,7 @@ func TestBuildGlobalSchedulerFromSettings(t *testing.T) {
 	}
 }
 
-func TestGlobalPoolConfigsApplySchedulingInheritanceAndOverrides(t *testing.T) {
+func TestGlobalPoolConfigsIgnoreLegacyScheduling(t *testing.T) {
 	t.Parallel()
 
 	pools, err := globalPoolConfigs(globalconfig.Settings{
@@ -240,7 +349,7 @@ func TestGlobalPoolConfigsApplySchedulingInheritanceAndOverrides(t *testing.T) {
 			{Name: "video", MaxConcurrentAgents: 10, BurstTo: 15, Scheduling: globalconfig.SchedulingRoundRobin},
 		},
 		FairShare: map[string]any{"half_life": "30m"},
-	}, nil)
+	})
 	if err != nil {
 		t.Fatalf("globalPoolConfigs() error = %v", err)
 	}
@@ -255,7 +364,7 @@ func TestGlobalPoolConfigsApplySchedulingInheritanceAndOverrides(t *testing.T) {
 	}{
 		{index: 0, name: scheduler.DefaultPoolName, capacity: 1, kind: globalconfig.SchedulingStrict},
 		{index: 1, name: "code", capacity: 5, kind: globalconfig.SchedulingStrict},
-		{index: 2, name: "video", capacity: 10, kind: globalconfig.SchedulingRoundRobin},
+		{index: 2, name: "video", capacity: 10, kind: globalconfig.SchedulingStrict},
 	}
 	for _, tt := range tests {
 		pool := pools[tt.index]
@@ -375,6 +484,7 @@ func TestRedirectDefaultLoggerWritesToFile(t *testing.T) {
 	}
 
 	slog.Info("dashboard log message", "mode", "tui")
+	slog.Warn("runner failure", "err", fmt.Errorf("run: %w", os.ErrPermission))
 	restore()
 
 	raw, err := os.ReadFile(path)
@@ -382,7 +492,7 @@ func TestRedirectDefaultLoggerWritesToFile(t *testing.T) {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
 	logs := string(raw)
-	for _, want := range []string{`"msg":"dashboard log message"`, `"mode":"tui"`} {
+	for _, want := range []string{`"msg":"dashboard log message"`, `"mode":"tui"`, `"source":`, `"error":"run: permission denied"`, `"error_class":"*errors.errorString"`} {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("log file missing %q:\n%s", want, logs)
 		}
@@ -475,6 +585,10 @@ func TestTerminalDashboardError(t *testing.T) {
 }
 
 func TestResolveBootConfigUsesWorkflowRefForServerHost(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	repo := initRuntimeWorkflowRepo(t)
 	writeBootHostWorkflow(t, filepath.Join(repo, "WORKFLOW.md"), "127.0.0.8")
 	commitRuntimeWorkflowRepo(t, repo, "initial workflow")
@@ -761,6 +875,10 @@ func TestRegistryRefresherTargetsBranchOnlyWebhook(t *testing.T) {
 }
 
 func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live dashboard listener and startup integration")
+	}
+
 	port := 0
 	output := newBootOutput()
 	globalPath := filepath.Join(t.TempDir(), "global.yaml")
@@ -800,6 +918,10 @@ func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
 }
 
 func TestStartRunningRefusesSharedRuntimeDatabase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runtime database and listener integration")
+	}
+
 	port := 0
 	root := t.TempDir()
 	global, err := globalconfig.DefaultAt(filepath.Join(root, "global.yaml"))
@@ -999,6 +1121,10 @@ func TestAcquireRuntimeInstanceLockReportsLiveHolder(t *testing.T) {
 }
 
 func TestStartRunningBindsBeforeCreatingRuntimeDatabase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runtime database and listener integration")
+	}
+
 	t.Parallel()
 
 	var listenConfig net.ListenConfig
@@ -1036,6 +1162,10 @@ func TestStartRunningBindsBeforeCreatingRuntimeDatabase(t *testing.T) {
 }
 
 func TestStartRunningUsesWorkflowKanbanModeForFleetActions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("dashboard startup integration")
+	}
+
 	port := 0
 	output := newBootOutput()
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
@@ -1091,6 +1221,10 @@ func TestStartRunningUsesWorkflowKanbanModeForFleetActions(t *testing.T) {
 }
 
 func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service or filesystem watcher integration")
+	}
+
 	port := 0
 	output := newBootOutput()
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
@@ -1192,6 +1326,10 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 }
 
 func TestStartRunningSurvivesTransientConnectorProvisioningFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	tests := []struct {
 		name              string
 		publishSnapshot   bool
@@ -1351,7 +1489,11 @@ func TestStartRunningSurvivesTransientConnectorProvisioningFailure(t *testing.T)
 	}
 }
 
-func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
+func TestStartRunningHotReloadsLocalConfigurationProjects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	port := 0
 	output := newBootOutput()
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
@@ -1384,25 +1526,48 @@ func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
 		return strings.Contains(body, "alpha")
 	})
 
-	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+	writeBootLocalProjects(t, configPath, []globalconfig.Project{
 		{ID: "alpha", Workflow: alpha.workflowPath, Workdir: alpha.workdirPath, Weight: 1},
 		{ID: "bravo", Workflow: bravo.workflowPath, Workdir: bravo.workdirPath, Weight: 1},
 	})
-	body := waitForDashboardCondition(t, settingsURL, done, "bravo added", func(body string) bool {
+	body := waitForDashboardConditionWithTimeout(t, settingsURL, done, "bravo added", 2*globalConfigReconcileInterval, func(body string) bool {
 		return strings.Contains(body, "bravo")
 	})
 	if !strings.Contains(body, "alpha") {
 		t.Fatalf("settings body missing alpha after reload:\n%s", body)
 	}
 
-	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+	updated := global
+	updated.InstanceName = "reloaded-runner"
+	if err := globalconfig.Write(configPath, updated); err != nil {
+		t.Fatal(err)
+	}
+	body = waitForDashboardCondition(t, settingsURL, done, "instance name reloaded", func(body string) bool {
+		return strings.Contains(body, "reloaded-runner")
+	})
+	if !strings.Contains(body, "alpha") || !strings.Contains(body, "bravo") {
+		t.Fatalf("settings projects changed after legacy YAML removal:\n%s", body)
+	}
+
+	writeBootLocalProjects(t, configPath, []globalconfig.Project{
 		{ID: "bravo", Workflow: bravo.workflowPath, Workdir: bravo.workdirPath, Weight: 1},
 	})
-	body = waitForDashboardCondition(t, settingsURL, done, "alpha removed", func(body string) bool {
+	body = waitForDashboardConditionWithTimeout(t, settingsURL, done, "alpha removed", 2*globalConfigReconcileInterval, func(body string) bool {
 		return strings.Contains(body, "bravo") && !strings.Contains(body, "alpha")
 	})
 	if strings.Contains(body, "alpha") {
 		t.Fatalf("settings body still contains alpha after removal:\n%s", body)
+	}
+
+	updated.InstanceName = "renamed-runner"
+	if err := globalconfig.Write(configPath, updated); err != nil {
+		t.Fatal(err)
+	}
+	body = waitForDashboardCondition(t, settingsURL, done, "instance name reloaded again", func(body string) bool {
+		return strings.Contains(body, "renamed-runner")
+	})
+	if strings.Contains(body, "alpha") || !strings.Contains(body, "bravo") {
+		t.Fatalf("settings projects changed after legacy YAML replacement:\n%s", body)
 	}
 
 	cancel()
@@ -1416,7 +1581,11 @@ func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
 	}
 }
 
-func TestStartRunningReconcilesGlobalConfigChangedBeforeWatcherStarts(t *testing.T) {
+func TestStartRunningReconcilesLocalConfigurationChangedBeforeWatcherStarts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	port := 0
 	output := newBootOutput()
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
@@ -1472,14 +1641,19 @@ func TestStartRunningReconcilesGlobalConfigChangedBeforeWatcherStarts(t *testing
 		t.Fatalf("settings body missing alpha:\n%s", body)
 	}
 
-	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+	writeBootLocalProjects(t, configPath, []globalconfig.Project{
 		{ID: "alpha", Workflow: alpha.workflowPath, Workdir: alpha.workdirPath, Weight: 1},
 		{ID: "bravo", Workflow: bravo.workflowPath, Workdir: bravo.workdirPath, Weight: 1},
 	})
+	updated := global
+	updated.InstanceName = "startup-reloaded-runner"
+	if err := globalconfig.Write(configPath, updated); err != nil {
+		t.Fatal(err)
+	}
 	close(provisionRelease)
 
-	body = waitForDashboardCondition(t, settingsURL, done, "bravo added after startup write", func(body string) bool {
-		return strings.Contains(body, "bravo")
+	body = waitForDashboardCondition(t, settingsURL, done, "local projects and machine settings reconciled after startup write", func(body string) bool {
+		return strings.Contains(body, "bravo") && strings.Contains(body, "startup-reloaded-runner")
 	})
 	if !strings.Contains(body, "alpha") {
 		t.Fatalf("settings body missing alpha after startup write:\n%s", body)
@@ -1666,6 +1840,10 @@ func TestAwaitBootDashboardURL(t *testing.T) {
 }
 
 func TestAwaitDashboard(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -1939,7 +2117,13 @@ func dashboardExitError(err error) error {
 func waitForDashboardCondition(t *testing.T, url string, done <-chan error, name string, ok func(string) bool) string {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	return waitForDashboardConditionWithTimeout(t, url, done, name, 15*time.Second, ok)
+}
+
+func waitForDashboardConditionWithTimeout(t *testing.T, url string, done <-chan error, name string, timeout time.Duration, ok func(string) bool) string {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	lastBody := ""
@@ -2127,6 +2311,19 @@ func (m terminalDashboardQuitModel) Init() tea.Cmd {
 
 func (m terminalDashboardQuitModel) Update(tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
+}
+
+func writeBootLocalProjects(t *testing.T, path string, projects []globalconfig.Project) {
+	t.Helper()
+
+	cfg, err := readLocalConfigurationFile(path)
+	if err != nil {
+		t.Fatalf("readLocalConfigurationFile() error = %v", err)
+	}
+	cfg.Projects = projects
+	if err := writeLocalConfigurationFile(path, cfg); err != nil {
+		t.Fatalf("writeLocalConfigurationFile() error = %v", err)
+	}
 }
 
 func writeBootGlobalConfig(t *testing.T, path string, projects []globalconfig.Project) {

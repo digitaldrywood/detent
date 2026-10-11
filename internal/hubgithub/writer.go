@@ -45,7 +45,11 @@ func (w *Writer) Execute(ctx context.Context, item hubserver.OutboxItem) error {
 		if err == nil {
 			var desired hubserver.WorkpadDesired
 			if err = decodeDesired(item, &desired); err == nil && desired.CloseSource {
-				err = w.client.REST(ctx, http.MethodPatch, issuePath(item), map[string]any{"state": "closed"}, nil)
+				body := map[string]any{"state": "closed"}
+				if desired.StateReason != "" {
+					body["state_reason"] = desired.StateReason
+				}
+				err = w.client.REST(ctx, http.MethodPatch, issuePath(item), body, nil)
 			}
 		}
 	case hubserver.MutationMergePullRequest:
@@ -132,8 +136,7 @@ func (w *Writer) upsertWorkpad(ctx context.Context, item hubserver.OutboxItem) e
 		commentID = 0
 		for _, comment := range comments {
 			if comment.ID > 0 && strings.Contains(comment.Body, marker) {
-				commentID = comment.ID
-				break
+				return nil
 			}
 		}
 	}

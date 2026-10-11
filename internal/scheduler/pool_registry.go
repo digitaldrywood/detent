@@ -376,15 +376,11 @@ func (r *PoolRegistry) dispatchPendingLocked() {
 		requests = append(requests, request)
 	}
 	for len(requests) > 0 {
-		index, err := selectDispatchRequest(requests)
+		index := selectDispatchRequest(requests)
 		call := requests[index]
 		gate := call.gate
 		gate.mu.Lock()
-		if err != nil {
-			call.err = err
-		} else {
-			call.slot, call.granted, call.decision, call.err = gate.acquireRequestHostLocked(call)
-		}
+		call.slot, call.granted, call.decision, call.err = gate.acquireRequestHostLocked(call)
 		gate.mu.Unlock()
 		call.slot, call.decision = call.decorate(call.slot, call.decision)
 		gate.mu.Lock()

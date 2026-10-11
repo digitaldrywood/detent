@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -91,7 +92,7 @@ func TestReadConversationConfig(t *testing.T) {
 			}
 			backend := config.Backend
 			config.Backend = nil
-			if config != test.want {
+			if !reflect.DeepEqual(config, test.want) {
 				t.Fatalf("config = %+v, want %+v", config, test.want)
 			}
 			if test.wantCommand == "" {
@@ -119,16 +120,49 @@ func TestReadConversationConfigBackendFailure(t *testing.T) {
 }
 
 func TestReadConversationConfigSelectsOpenAIFromEnvironment(t *testing.T) {
-	section := &hostedConversationFileConfig{Enabled: true, Codex: &hostedConversationCodexFileConfig{}, Workspace: "missing"}
-	config, enabled, err := readConversationConfig(section, func(string, workflowconfig.CodexOptions, string) (runnerpkg.AgentBackend, error) {
-		t.Fatal("Codex backend must not start with an OpenAI key")
-		return nil, errors.New("unexpected Codex backend")
-	}, os.Stat, func(string) string { return "test-key" })
-	if err != nil || !enabled {
-		t.Fatalf("config enabled=%t error=%v", enabled, err)
-	}
-	if _, ok := config.Backend.(*genkitbackend.Backend); !ok || config.Model != genkitbackend.Model || config.ReasoningEffort != "low" {
-		t.Fatalf("OpenAI config = %+v", config)
+	for _, test := range []struct {
+		name      string
+		codex     bool
+		workspace string
+		wantErr   bool
+	}{
+		{name: "Luna only", wantErr: true},
+		{name: "missing Codex workspace stays lazy", codex: true, workspace: "missing", wantErr: true},
+		{name: "configured Codex serves model choices", codex: true, workspace: t.TempDir()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			section := &hostedConversationFileConfig{Enabled: true, Workspace: test.workspace}
+			if test.codex {
+				section.Codex = &hostedConversationCodexFileConfig{}
+			}
+			builds := 0
+			config, enabled, err := readConversationConfig(section, func(command string, _ workflowconfig.CodexOptions, workspace string) (runnerpkg.AgentBackend, error) {
+				builds++
+				if workspace != test.workspace {
+					t.Fatalf("workspace = %q, want %q", workspace, test.workspace)
+				}
+				return stubConversationBackend{command: command}, nil
+			}, os.Stat, func(string) string { return "test-key" })
+			if err != nil || !enabled {
+				t.Fatalf("config enabled=%t error=%v", enabled, err)
+			}
+			if _, ok := config.Backend.(*genkitbackend.Backend); !ok || config.Model != genkitbackend.Model || config.ReasoningEffort != "low" || builds != 0 {
+				t.Fatalf("OpenAI config = %+v builds=%d", config, builds)
+			}
+			for range 2 {
+				backend, workspace, err := config.ModelBackend()
+				if test.wantErr {
+					if err == nil {
+						t.Fatal("expected unavailable model backend")
+					}
+					continue
+				}
+				stub, ok := backend.(stubConversationBackend)
+				if err != nil || !ok || stub.command != defaultCoordinatorCodex || workspace != test.workspace || builds != 1 {
+					t.Fatalf("model backend=%#v workspace=%q builds=%d error=%v", backend, workspace, builds, err)
+				}
+			}
+		})
 	}
 }
 

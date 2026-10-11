@@ -62,7 +62,7 @@ const COPY: Record<string, Copy> = {
   failed: {
     label: "failed",
     tone: "dc-err",
-    explanation: "The message did not reach the hub. Nothing was delivered.",
+    explanation: "The message or its reply failed. Check the conversation error before retrying.",
   },
   unknown: {
     label: "unknown",
@@ -93,6 +93,11 @@ const CHAT_COPY: Record<string, Copy> = {
  * runner, so the chip says so rather than reporting a bare rejection.
  */
 const ERROR_COPY: Record<string, Copy> = {
+  coordinator_error: {
+    label: "Reply failed",
+    tone: "dc-err",
+    explanation: "The hub stored this message, but the coordinator failed to answer. Retry to request another turn.",
+  },
   coordinator_unavailable: {
     label: "No coordinator is available for this project",
     tone: "dc-err",

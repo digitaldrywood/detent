@@ -19,6 +19,10 @@ import (
 )
 
 func TestAgentPoolsFixModesAndPreservation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -138,6 +142,10 @@ func TestAgentPoolsFixModesAndPreservation(t *testing.T) {
 }
 
 func TestAgentPoolsFixDeclinesExistingPools(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	fixture := newAgentPoolsFixFixture(t, true)
@@ -150,6 +158,10 @@ func TestAgentPoolsFixDeclinesExistingPools(t *testing.T) {
 }
 
 func TestAgentPoolsFixPreservesSplitPathForMixedClassPoolBinding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	fixture := newAgentPoolsFixFixtureWithHolder(t, "video")
@@ -186,12 +198,16 @@ func TestApplyAgentPoolsFixDeclinesStalePlan(t *testing.T) {
 }
 
 func TestAgentPoolsFixHotReloadsScheduler(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	fixture := newAgentPoolsFixFixture(t, true)
 	initial, err := globalconfig.Read(fixture.configPath)
 	if err != nil {
 		t.Fatalf("globalconfig.Read() error = %v", err)
 	}
-	registry, err := buildGlobalDispatchPools(initial, nil)
+	registry, err := buildGlobalDispatchPools(initial)
 	if err != nil {
 		t.Fatalf("buildGlobalDispatchPools() error = %v", err)
 	}
@@ -203,7 +219,7 @@ func TestAgentPoolsFixHotReloadsScheduler(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		nil,
 		func(next globalconfig.Config) error {
-			return applyGlobalRuntimeConfig(registry, nil, nil, next)
+			return applyGlobalRuntimeConfig(registry, nil, next)
 		},
 		nil,
 	)

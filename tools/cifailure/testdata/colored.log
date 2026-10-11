@@ -1,0 +1,7 @@
+2026-10-01T09:00:42.7240171Z [36;1mmake test-cover-packages[0m
+2026-10-01T09:03:34.7140456Z --- FAIL: TestScheduledCIFinalizerReportsAndTags (0.00s)
+2026-10-01T09:03:34.7142944Z     ci_workflow_test.go:306: scheduled finalizer script missing "detent:todo"
+2026-10-01T09:03:34.7144766Z     ci_workflow_test.go:306: scheduled finalizer script missing "hotfix"
+2026-10-01T09:03:34.7145721Z FAIL
+2026-10-01T09:03:34.7146246Z coverage: 75.0% of statements
+2026-10-01T09:03:34.7147125Z FAIL	github.com/digitaldrywood/detent	91.277s

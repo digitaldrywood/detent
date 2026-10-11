@@ -126,6 +126,7 @@ interface RightPanelTabsProps {
    * below, which is what a caller with nothing to say gets.
    */
   terminalDisabledReason?: string | null;
+  filesDisabledReason?: string | null;
   pullRequestStatusSeeds?: Readonly<Record<string, PullRequestTabStatusSeed>>;
   /**
    * Running + waiting subagents. Upstream badges the Agents card with this;
@@ -336,6 +337,7 @@ function RightPanelEmptyState(props: {
   pullRequestAvailable: boolean;
   outputAvailable: boolean;
   terminalDisabledReason?: string | null;
+  filesDisabledReason?: string | null;
 }) {
   // -1 means no highlight: it only appears on hover or arrow use.
   const [highlight, setHighlight] = useState(-1);
@@ -367,7 +369,7 @@ function RightPanelEmptyState(props: {
       icon: Files,
       shortcut: "F",
       available: props.filesAvailable,
-      disabledReason: SURFACE_UNAVAILABLE_HINTS.files,
+      disabledReason: props.filesDisabledReason ?? SURFACE_UNAVAILABLE_HINTS.files,
       onClick: props.onAddFiles,
       badgeCount: 0,
     },
@@ -651,6 +653,8 @@ function surfaceTitle(
       return `#${surface.number}`;
     // Detent's own surfaces (decisions.md section 19.3, section 18.12); every
     // other member of this union is upstream's.
+    case "ask":
+      return "Ask";
     case "conversation":
       return "Conversation";
     case "output":
@@ -735,6 +739,8 @@ function SurfaceIcon({
         />
       );
     // Detent's own surfaces (decisions.md section 19.3, section 18.12).
+    case "ask":
+      return <MessageSquare className="size-3 shrink-0" />;
     case "conversation":
       return <MessageSquare className="size-3 shrink-0" />;
     case "output":
@@ -841,7 +847,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       icon: Files,
       shortcut: "F",
       available: props.filesAvailable,
-      disabledReason: SURFACE_DISABLED_REASONS.files,
+      disabledReason: props.filesDisabledReason ?? SURFACE_DISABLED_REASONS.files,
       onClick: props.onAddFiles,
     },
     {
@@ -1153,7 +1159,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                 </div>
               );
             })}
-            {props.surfaces.length > 0 ? (
+            {props.surfaces.length > 0 && !props.surfaces.some((surface) => surface.kind === "ask") ? (
               <Menu open={addSurfaceMenuOpen} onOpenChange={setAddSurfaceMenuOpen}>
                 <MenuTrigger
                   render={
@@ -1309,6 +1315,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
             terminalDisabledReason={props.terminalDisabledReason}
+            filesDisabledReason={props.filesDisabledReason}
             diffAvailable={props.diffAvailable}
             filesAvailable={props.filesAvailable}
             pullRequestAvailable={props.pullRequestAvailable}

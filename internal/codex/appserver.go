@@ -160,6 +160,7 @@ func (e *TurnFailedError) BackendErrorStatus() string {
 }
 
 type AppServer struct {
+	prepareThread    func(context.Context, string) error
 	transportFactory TransportFactory
 	clientInfo       ClientInfo
 	logger           *slog.Logger
@@ -304,6 +305,8 @@ type Update struct {
 	ItemID              string
 	Tool                string
 	Command             string
+	NativeActions       []runner.NativeCommandAction
+	CWD                 string
 	Delta               string
 	Status              string
 	ExitCode            *int
@@ -431,10 +434,30 @@ func WithTurnTimeout(timeout time.Duration) AppServerOption {
 	}
 }
 
+// WithThreadPreparation makes persisted rollouts available before a thread is
+// read or resumed. Fresh threads do not need preparation.
+func WithThreadPreparation(prepare func(context.Context, string) error) AppServerOption {
+	return func(server *AppServer) {
+		server.prepareThread = prepare
+	}
+}
+
 func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate UpdateHandler) (result RunTurnResult, err error) {
 	ctx = contextOrBackground(ctx)
 	if req.ConversationControl != nil {
 		ctx = WithConversationTurn(ctx)
+	}
+	prompt, cleanupPrompt, err := prepareTurnPrompt(req.Prompt, req.TempDir)
+	if err != nil {
+		now := s.now()
+		return RunTurnResult{}, startupStageError(err, "turn/start", now, now, 0)
+	}
+	defer cleanupPrompt()
+	req.Prompt = prompt
+	if threadID := strings.TrimSpace(req.ResumeThreadID); threadID != "" && s.prepareThread != nil {
+		if err := s.prepareThread(ctx, threadID); err != nil {
+			return RunTurnResult{}, fmt.Errorf("prepare Codex thread for resume: %w", err)
+		}
 	}
 
 	transport, err := s.transportFactory.NewTransport(ctx)
@@ -718,6 +741,11 @@ func (s *AppServer) VerifyThread(ctx context.Context, threadID string) (err erro
 	if threadID == "" {
 		return errors.New("codex thread id is required")
 	}
+	if s.prepareThread != nil {
+		if err := s.prepareThread(ctx, threadID); err != nil {
+			return fmt.Errorf("prepare Codex thread for verification: %w", err)
+		}
+	}
 	transport, err := s.transportFactory.NewTransport(ctx)
 	if err != nil {
 		return fmt.Errorf("start codex app-server transport: %w", err)
@@ -782,6 +810,7 @@ func (s *AppServer) initialize(ctx context.Context, transport Transport, onUpdat
 type threadRuntimeResponse struct {
 	Thread struct {
 		ID            string `json:"id"`
+		Path          string `json:"path"`
 		Model         string `json:"model"`
 		ModelID       string `json:"model_id"`
 		ModelIDCamel  string `json:"modelId"`
@@ -955,6 +984,12 @@ func (s *AppServer) resumeThread(
 	}
 	if response.Thread.ID == "" {
 		return "", agentidentity.Identity{}, fmt.Errorf("%w: thread/resume result missing thread id", ErrInvalidResponse)
+	}
+	matchingTools, toolsErr := threadToolsMatch(response.Thread.Path, response.Thread.ID, req.DynamicTools)
+	if !matchingTools {
+		startupComplete = true
+		s.logger.DebugContext(ctx, "starting fresh Codex thread with current tools", "thread_id", response.Thread.ID, "error", toolsErr)
+		return s.startThread(ctx, transport, req, onUpdate)
 	}
 	identity := response.runtimeIdentity()
 	if identity.Model() == "" && req.Model != "" {
@@ -2056,19 +2091,21 @@ func toolLifecycleUpdate(msg Message) (Update, bool, error) {
 		ThreadID string `json:"threadId"`
 		TurnID   string `json:"turnId"`
 		Item     struct {
-			ID               string          `json:"id"`
-			Type             string          `json:"type"`
-			Command          string          `json:"command"`
-			Arguments        json.RawMessage `json:"arguments"`
-			Status           string          `json:"status"`
-			ExitCode         *int            `json:"exitCode"`
-			AggregatedOutput string          `json:"aggregatedOutput"`
-			Server           string          `json:"server"`
-			Tool             string          `json:"tool"`
-			Result           json.RawMessage `json:"result"`
-			Error            json.RawMessage `json:"error"`
-			Changes          json.RawMessage `json:"changes"`
-			ContentItems     json.RawMessage `json:"contentItems"`
+			ID               string                       `json:"id"`
+			Type             string                       `json:"type"`
+			Command          string                       `json:"command"`
+			CommandActions   []runner.NativeCommandAction `json:"commandActions"`
+			CWD              string                       `json:"cwd"`
+			Arguments        json.RawMessage              `json:"arguments"`
+			Status           string                       `json:"status"`
+			ExitCode         *int                         `json:"exitCode"`
+			AggregatedOutput string                       `json:"aggregatedOutput"`
+			Server           string                       `json:"server"`
+			Tool             string                       `json:"tool"`
+			Result           json.RawMessage              `json:"result"`
+			Error            json.RawMessage              `json:"error"`
+			Changes          json.RawMessage              `json:"changes"`
+			ContentItems     json.RawMessage              `json:"contentItems"`
 		} `json:"item"`
 	}
 	if err := json.Unmarshal(msg.Params, &params); err != nil {
@@ -2085,6 +2122,19 @@ func toolLifecycleUpdate(msg Message) (Update, bool, error) {
 		params.Item.Command,
 		compactNonNullJSON(params.Item.Arguments),
 	)
+	if msg.Method == "item/started" && params.Item.Type == "commandExecution" && len(params.Item.CommandActions) > 0 {
+		commands := make([]string, 0, len(params.Item.CommandActions))
+		for _, action := range params.Item.CommandActions {
+			if strings.TrimSpace(action.Command) == "" {
+				commands = nil
+				break
+			}
+			commands = append(commands, action.Command)
+		}
+		if len(commands) > 0 {
+			content = strings.Join(commands, "; ")
+		}
+	}
 	errorBody := ""
 	errorMessage := ""
 	updateType := UpdateToolStarted
@@ -2125,6 +2175,8 @@ func toolLifecycleUpdate(msg Message) (Update, bool, error) {
 		ItemID:              params.Item.ID,
 		Tool:                tool,
 		Command:             strings.TrimSpace(params.Item.Command),
+		NativeActions:       params.Item.CommandActions,
+		CWD:                 params.Item.CWD,
 		Delta:               content,
 		Status:              params.Item.Status,
 		ExitCode:            params.Item.ExitCode,

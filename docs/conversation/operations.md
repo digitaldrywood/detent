@@ -4,11 +4,11 @@
 
 This runbook was written against PR #2635, which was never merged; parts of it have been ported to `main` since. What `main` ships today:
 
-- The React client in `web/conversation` (Vite; `npm run dev`, `dev:mock`, `build`, `typecheck` and `test`) builds into the committed `static/app/conversation/`. `make app`, `make app-dev`, `make app-test` and `make check-app` drive it, and `make check` runs `check-app`.
+- The React client in `web/conversation` (Vite; `npm run dev`, `dev:mock`, `build`, `typecheck` and `test`) builds into ignored `static/app/conversation/`. `make app`, `make app-dev`, `make app-test` and `make check-app` drive it, and `make check` runs `check-app`.
 - A hosted hub (`detent hub serve --hosted-config`) serves the client shell from `internal/hubserver` for every client route the Templ hosted pages do not already own. Behind the shared entry (`detent cloud serve --entry-config`, `internal/cloudentry`) the tenant hub serves under the base path `/organizations/<organization>`, and the entry handles sign-in, the organization chooser and routing to the tenant.
 - The conversation API and worker endpoints (bind, unbind, controls, turn events), turn preferences, references, Settled and its sweep, attachments, provider thread origin, restart normalization and explicit dispatch requests. The `conversation:` section accepts `enabled`, `model`, `question_timeout`, `settle_window` and `control_queue_size`.
 - Stored attempt diffs, the read-only pull request panel (`GET …/work-items/:item/pull-requests`) and the optional `?include=change` surface on a single work item.
-- Hub migrations 00023 and 00025 to 00031; `supportedSchemaVersion` is 31.
+- This milestone introduced Hub migrations 00023 and 00025 to 00031. The current supported version is derived from the embedded migration set.
 
 Described below but not yet on main:
 
@@ -658,25 +658,19 @@ panel's Files tile stays disabled with its reason.
 | `relay.memory` | byte size | `256MB` | The hub process's whole relay budget. Beyond it new streams fail with `relay_busy`. Accepts a bare byte count or a `KB`/`MB`/`GB` suffix. |
 | `files.deny` | list of globs | empty | Extra denylist patterns, applied on top of the fixed list every surface already refuses. Matched against the whole worktree-relative path and each of its segments, so `secrets` denies `secrets/prod/key.txt`. An unparseable glob fails the file at startup, because a pattern that never matches is a hole in the filter. |
 | `terminal.enabled` | bool | `false` | Whether a terminal may be requested at all. An owner turns it on. |
-| `terminal.isolation` | `container` or `user` | `container` | The level a terminal runs at. `user` is the runner account's own authority handed to a person and is allowed only when an organization sets it explicitly. |
+| `terminal.isolation` | `sandbox`, `container` or `user` | `sandbox` | Required terminal confinement. `user` exposes the runner account and requires explicit organization policy plus owner/admin authority. |
 | `terminal.record` | bool | `true` | Whether terminal streams are recorded. |
 
 The terminal keys are live (`decisions.md` §18.3). Three things about them are
 worth saying out loud.
 
-`terminal.enabled` defaults **off**: a terminal is the runner account's shell
-handed to a person, and section 18.3 is explicit that stripping environment
-variables does not confine one. An owner turns it on for the organization.
-
-`terminal.isolation` defaults to `container`, which is the level the setting
-recommends and the one a member with `write` and the `runners` grant may use.
-**No runner in this build can provide it.** There is no container runtime hook
-anywhere in the repository, so a runner reports `user` and a workspace asking
-for a terminal on an organization that requires `container` is claimed and then
-refused at the channel — which is what section 18.3 says such a runner must do
-rather than hand back a plain PTY under the recommended name. An organization
-that wants a working terminal today therefore sets `isolation: user`
-explicitly, and section 18.3 then allows it to owners and admins only.
+`terminal.enabled` defaults **off**. Enabling Files does not enable Terminal.
+An owner must separately authorize the selected organization's terminal policy.
+`terminal.isolation` defaults to `sandbox`. Registration, bind and heartbeat
+report the terminal launcher's measured isolation, independently of the provider
+worker's sandbox. The Hub excludes incompatible runners before terminal launch;
+an unavailable sandbox is never replaced with a user shell. Container-required
+policy remains unavailable because no terminal container runtime is implemented.
 
 `terminal.record` defaults on and cannot distinguish "absent" from "false" in
 Go, so the key is a pointer in the configuration reader and the hub defaults a
@@ -685,6 +679,45 @@ stored by the hub itself, capped at 1 MiB with a `truncated` flag, and read back
 through the two `terminal-recordings` endpoints in section 1.2 — never through
 the issue's own read rule, because a recording can carry what the runner
 account can see.
+
+### Terminal isolation and runtime acceptance
+
+Darwin's confined PTY uses `/usr/bin/sandbox-exec` with a deny-default Seatbelt
+profile. Only the assigned canonical worktree is writable; read access to system
+binaries and libraries permits shell children. The shell receives a clean
+environment, with home and temporary paths inside the worktree. Host credential
+directories, other checkouts, network connections and host IPC services are not
+granted. Nested mounts and a worktree containing the runner home are refused.
+Session/process-group changes and `posix_spawn` are denied; fork/exec children
+are supported, while programs requiring spawn attributes or process-group job
+control are unavailable. Sysctl access is limited to public hardware/OS facts,
+excluding host process arguments and environment. Existing input, output,
+resize, close, cancellation and group teardown remain with the PTY/relay owners.
+Shell exit also tears down surviving children.
+
+A real PTY probe must demonstrate allowed worktree writes, forbidden sibling and
+symlink reads/writes and child inheritance before the runner advertises sandbox.
+Each launch also confirms sandbox application before reporting `opened`. The
+constructor and launcher refuse unavailable enforcement using existing unsupported
+capability/frame semantics. Linux and other platforms have no confined launcher
+in this implementation; Unix user terminals remain available only under their
+existing explicit user policy. A macOS host that forbids nested sandboxing reports
+user-only support; neither platform PTY support nor a skipped regression grants
+sandbox capability. The native #162 worker observed host sandbox refusal with
+exit status 71 (`sandbox_apply: Operation not permitted`), not production support.
+
+After the reviewed source is integrated and deployed by the existing release
+owner, the operator separately authorizes scoped enablement for the selected
+tenant/project. That owner must then use supported workspace API reads and Chrome
+to select a completed attempt, open Terminal, and run a benign `pwd`. Record the
+real workspace/session, attempt, assigned registered runner, canonical worktree,
+reported isolation and deployed source head. Verify input/output, resize and close;
+record refusal evidence for another project/person, missing runners/write grants,
+an actively edited attempt, revoked current authority and stale lease/fencing
+identity. Keep the disabled-policy and incompatible-isolation explanations
+visible. No live enablement, real-workspace shell or browser/API acceptance was
+performed by the source worker. This is pending post-integration acceptance owned
+by the release/operator workflow, with no new tracker or control channel.
 
 Example, added to the hosted configuration described in
 [hosted identity](../hosted-identity.md):
@@ -1027,15 +1060,14 @@ the hub's own dispatch, and `runner:<id>` for a run the runner started itself.
 The partial index is what keeps the dispatch's own read an index scan over the
 queued rows rather than a scan of every run the project has ever made.
 
-The hub pins the schema it supports. `internal/hubserver/migrate.go` sets
-`supportedSchemaVersion = 31` (00031 is `00031_hosted_billing_modes.sql`, and
-00022 `00022_hosted_shared_origin.sql` adds the shared entry's `hosted_tenant`
-columns and `hosted_binding_migrations`;
-there is no 00024), verifies the embedded migration set reaches
-exactly that version, applies any missing migrations when the database is
-opened, checks foreign keys afterwards, and fails to start when the database is
-already at a higher version. Operators do not run a migration command: starting
-the hub is the migration step.
+The Hub derives its supported schema version from the embedded migration set,
+including the historical Go data conversions. New SQL migrations use UTC Goose
+timestamps (`YYYYMMDDHHMMSS_name.sql`); existing numbered files remain unchanged.
+Startup applies pending migrations, including older timestamps that land later,
+and checks foreign keys inside the last pending migration's transaction before
+recording its version. A database above the embedded maximum still fails to
+start. Operators do not run a migration command: starting the Hub is the migration
+step. See [migration authoring](../development.md#concurrent-migrations-and-generated-files).
 
 ### Retention and size
 
@@ -1087,12 +1119,14 @@ make setup      # Go tooling, root npm deps, and npm ci in web/conversation
 make generate   # go generate, templ, sqlc, Tailwind, and the client build
 ```
 
-`make generate` runs `make app`, which runs `npm ci` when `node_modules` is
-missing and then the Vite build, emitting `static/app/conversation/`: the shell
+`make generate` runs `make assets`, including `make app`, which installs the
+locked dependencies with `npm ci` and then runs the Vite build, emitting `static/app/conversation/`: the shell
 `index.html`, the entry `app.js`, `app.css`, code-split `chunks/` and `assets/`,
 and `THIRD_PARTY_LICENSES.txt`.
-That output is committed, following the precedent of `static/css/output.css`,
-so `go build` never needs Node. Run `make app` on its own when only the client
+The client output and `static/css/output.css` are ignored build artifacts.
+Use `make build` to prepare both before compiling a runnable UI, or `make assets`
+before a custom Go build. A plain checkout compiles with Go alone but needs
+prepared assets to serve the UI. Run `make app` on its own when only the client
 changed.
 
 Then start a standalone hosted hub whose configuration file carries the section from
@@ -1311,7 +1345,7 @@ restore that snapshot with the older binary. Verify a snapshot with
 
 | Symptom | Cause | Action |
 |---|---|---|
-| `GET /chat` (or `/organizations/<organization>/chat`) returns 503 `client_unavailable` | `app/conversation/index.html` is missing from the embedded static tree, so the binary was built without the client. | Run `make app` (or `make generate`) and rebuild. The built output is committed, so this normally only follows deleting `static/app/conversation/` or building from a tree where it was never generated. |
+| `GET /chat` (or `/organizations/<organization>/chat`) returns 503 `client_unavailable` | `app/conversation/index.html` is missing from the embedded static tree, so the binary was built without the client. | Run `make build`, or `make assets` before a custom Go build. The client output is ignored, so a plain checkout needs asset preparation before compiling a runnable UI. |
 | An unlinked chat's message stays `saved` and nothing answers it | Main has no coordinator of either kind. | Expected on main. Link the chat to an issue; the saved messages become the first attempt's controls. |
 | Chat message receipt is `queued` and the execution stays `waiting_for_runner` | Not yet on main (coordinator row). No hub-side coordinator is configured, so the message opened a coordinator work item and no enrolled runner with a fresh live-control (`codex`) provider report has claimed it yet. | Check `capabilities.coordinator` in the bootstrap payload and the runners' provider reports (`GET .../runners`). A runner whose codex observation is older than `providercapacity.MaxAge`, whose heartbeat is stale, or that holds no grant on the project will never receive the item. |
 | A coordinator item is never claimed | Not yet on main. The claim loop skips coordinator items for every credential that is not an enrolled runner with a fresh live-control report; legacy machine registrations never receive them. | Enrol the runner, confirm its heartbeat and provider report are fresh, and confirm its grant covers the project. List the items with `include=coordinator`. |
@@ -2048,7 +2082,7 @@ so nothing needed pushing.
 #### The runner
 
 ```sh
-go build -o tmp/detent ./cmd/detent
+make app && go build -o tmp/detent ./cmd/detent
 mkdir -m 700 -p <private>/runner-identity
 tmp/detent hub runner init --hub-url http://127.0.0.1:57864 \
   --identity-file <private>/runner-identity/identity.json
@@ -2396,8 +2430,8 @@ what the run taught about proving them.
    `internal/orchestrator/implement_progress.go` — but it keys on an *empty*
    workspace diffstat, and a one-file configuration diff is not empty, so it
    never fired. Teaching that verdict to treat a diff confined to
-   configuration as no progress is a change to a safety-critical brake with a
-   90% coverage floor and its own fuzz seeds; it is **deliberately left for a
+   configuration as no progress is a change to a safety-critical brake with
+   its own fuzz seeds; it is **deliberately left for a
    follow-up** rather than folded into these two fixes.
 3. **An issue attempt resumed the coordinator's Codex thread and inherited its
    restrictions.** *Fixed.* The chat's coordinator turn was claimed as a
@@ -3010,14 +3044,11 @@ policy `PUT` answered `200` eight seconds later.
 gives a workspace its own lease so the runner's capacity accounting, renewal
 and expiry sweep apply to it with no second mechanism, and nothing runs under
 it but a person reading files, a diff or a preview — no model, no gate, no
-command — so it holds nothing a policy approval could invalidate. The
-approval's unexpired-lease count now excludes leases held on a
-`detent:workspace` item (`executingLeaseCountQuery` in
-`internal/hubserver/policy.go`) and counts only attempt and claim leases. A
-seventh run does **not** need to delete the pre-warm workspace before `PUT
-{nativeBase}/policy`, and the third run's item 1 wait is gone with it; a
-project with a running attempt still answers `409 policy_mismatch`, which is
-the half that has to keep working. Deleting the pre-warm workspace remains
+command — so it holds nothing a policy approval could invalidate. Policy
+approval also leaves running attempts on their recorded policy revisions;
+new claims require the new approval. Neither workspace leases nor executing
+attempts require a project to stop before `PUT {nativeBase}/policy`.
+Deleting the pre-warm workspace remains
 harmless if a run wants the slot back: the fourth run's terminal-state fix
 moved that workspace's own item #4 to `Done` in the same breath, so the third
 run's "move the pre-warmed `detent:workspace` item to Done by hand" is still

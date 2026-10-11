@@ -75,6 +75,10 @@ func TestRefreshStalenessWarningsRecordsDiagnosticWithoutDelivery(t *testing.T) 
 }
 
 func TestRefreshStalenessWarningLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	now := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
 
 	tests := []struct {
@@ -229,6 +233,10 @@ func TestDeliverStalenessWarningsBoundsWorkPerTick(t *testing.T) {
 }
 
 func TestHumanGateConditionNeverDelivers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
 	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})

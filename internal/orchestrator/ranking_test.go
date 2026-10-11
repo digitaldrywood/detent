@@ -1,7 +1,6 @@
 package orchestrator
 
 import (
-	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -24,17 +23,17 @@ func TestSortIssuesForDispatch(t *testing.T) {
 		want                  []string
 	}{
 		{
-			name:                  "keeps merging first then ranks priority across source lanes",
+			name:                  "issue priority precedes merging and source lanes",
 			dispatchStatePriority: []string{"Merging", "Rework"},
 			issues: []connector.Issue{
 				rankingIssue("todo-old-urgent", "Todo", 1, now.Add(-4*time.Hour)),
 				rankingIssue("rework-new-low", "Rework", 4, now.Add(-time.Hour)),
 				rankingIssue("merging-new-low", "Merging", 4, now.Add(-30*time.Minute)),
 			},
-			want: []string{"merging-new-low", "todo-old-urgent", "rework-new-low"},
+			want: []string{"todo-old-urgent", "rework-new-low", "merging-new-low"},
 		},
 		{
-			name:                  "todo hotfix outranks ordinary source work but yields to merging",
+			name:                  "age orders work regardless of hotfix labels or merging",
 			dispatchStatePriority: []string{"Merging", "Rework", "In Progress", "Todo"},
 			dispatchLabelPriority: []string{"hotfix", "priority", "bug"},
 			issues: []connector.Issue{
@@ -43,10 +42,10 @@ func TestSortIssuesForDispatch(t *testing.T) {
 				rankingIssueWithLabels("active-bug", "In Progress", 0, now.Add(-3*time.Hour), "bug"),
 				rankingIssue("merging", " MERGING ", 0, now),
 			},
-			want: []string{"merging", "todo-hotfix", "active-bug", "rework"},
+			want: []string{"rework", "active-bug", "merging", "todo-hotfix"},
 		},
 		{
-			name:                  "equal source priority and labels preserve lane order",
+			name:                  "equal priority follows age across lanes",
 			dispatchStatePriority: []string{"Rework", "In Progress", "Todo"},
 			dispatchLabelPriority: []string{"hotfix"},
 			issues: []connector.Issue{
@@ -54,7 +53,7 @@ func TestSortIssuesForDispatch(t *testing.T) {
 				rankingIssueWithLabels("active", "In Progress", 2, now.Add(-3*time.Hour), "hotfix"),
 				rankingIssueWithLabels("rework", "Rework", 2, now, "hotfix"),
 			},
-			want: []string{"rework", "active", "todo"},
+			want: []string{"todo", "active", "rework"},
 		},
 		{
 			name:                  "tracker priority outranks labels across source lanes",
@@ -86,7 +85,7 @@ func TestSortIssuesForDispatch(t *testing.T) {
 			want: []string{"custom-urgent", "merging-low"},
 		},
 		{
-			name:                  "custom workflow states and configured labels retain urgency",
+			name:                  "custom state and label settings do not change ordering",
 			dispatchStatePriority: []string{"Changes requested", "Building", "Ready"},
 			dispatchLabelPriority: []string{"urgent", "maintenance"},
 			issues: []connector.Issue{
@@ -94,19 +93,19 @@ func TestSortIssuesForDispatch(t *testing.T) {
 				rankingIssueWithLabels("ready-urgent", "Ready", 0, now, "urgent"),
 				rankingIssueWithLabels("building", "Building", 0, now, "maintenance"),
 			},
-			want: []string{"ready-urgent", "building", "changes"},
+			want: []string{"building", "changes", "ready-urgent"},
 		},
 		{
-			name:                  "merging outside the first configured tier follows configured lane ties",
+			name:                  "merging and rework ties follow age",
 			dispatchStatePriority: []string{"Rework", "Merging"},
 			issues: []connector.Issue{
 				rankingIssue("merging", "Merging", 2, now),
 				rankingIssue("rework", "Rework", 2, now),
 			},
-			want: []string{"rework", "merging"},
+			want: []string{"merging", "rework"},
 		},
 		{
-			name:                  "sorts by configured label rank within the same priority",
+			name:                  "age breaks equal priority regardless of labels",
 			dispatchStatePriority: []string{"Todo"},
 			dispatchLabelPriority: []string{"bug", "regression", "enhancement"},
 			issues: []connector.Issue{
@@ -114,7 +113,7 @@ func TestSortIssuesForDispatch(t *testing.T) {
 				rankingIssueWithLabels("todo-enhancement-old", "Todo", 2, now.Add(-3*time.Hour), "enhancement"),
 				rankingIssueWithLabels("todo-bug-new", "Todo", 2, now.Add(-time.Hour), "bug"),
 			},
-			want: []string{"todo-bug-new", "todo-enhancement-old", "todo-unlisted-oldest"},
+			want: []string{"todo-unlisted-oldest", "todo-enhancement-old", "todo-bug-new"},
 		},
 		{
 			name:                  "keeps priority above configured label rank",
@@ -127,14 +126,14 @@ func TestSortIssuesForDispatch(t *testing.T) {
 			want: []string{"todo-enhancement-p1", "todo-bug-p2"},
 		},
 		{
-			name:                  "uses best configured rank for multi label issues",
+			name:                  "label combinations do not replace age ordering",
 			dispatchStatePriority: []string{"Todo"},
 			dispatchLabelPriority: []string{"bug", "regression", "enhancement"},
 			issues: []connector.Issue{
 				rankingIssueWithLabels("todo-regression", "Todo", 2, now.Add(-3*time.Hour), "regression"),
 				rankingIssueWithLabels("todo-multi", "Todo", 2, now.Add(-time.Hour), "enhancement", "bug"),
 			},
-			want: []string{"todo-multi", "todo-regression"},
+			want: []string{"todo-regression", "todo-multi"},
 		},
 		{
 			name:                  "sorts older issues first when priority and label rank match",
@@ -157,7 +156,7 @@ func TestSortIssuesForDispatch(t *testing.T) {
 			want: []string{"todo-old-enhancement", "todo-new-bug"},
 		},
 		{
-			name:                  "normalizes state ranks after source priority",
+			name:                  "issue priority and age ignore configured state ranks",
 			dispatchStatePriority: []string{" Merging ", "Rework"},
 			issues: []connector.Issue{
 				rankingIssue("todo-old-urgent", "Todo", 1, now.Add(-4*time.Hour)),
@@ -165,7 +164,7 @@ func TestSortIssuesForDispatch(t *testing.T) {
 				rankingIssue("merging-low", "merging", 4, now.Add(-30*time.Minute)),
 				rankingIssue("in-progress-high", "In Progress", 2, now.Add(-3*time.Hour)),
 			},
-			want: []string{"merging-low", "todo-old-urgent", "rework-high", "in-progress-high"},
+			want: []string{"todo-old-urgent", "in-progress-high", "rework-high", "merging-low"},
 		},
 		{
 			name: "uses deterministic identifier order after state rank priority and age",
@@ -177,14 +176,14 @@ func TestSortIssuesForDispatch(t *testing.T) {
 			want: []string{"issue-a", "issue-b", "issue-c"},
 		},
 		{
-			name:                  "state rank outranks unblocker boost",
+			name:                  "age ignores state rank and unblocker count",
 			dispatchStatePriority: []string{"Merging", "Todo"},
 			prioritizeUnblockers:  true,
 			issues: []connector.Issue{
 				rankingIssueWithUnblockers("todo-unblocker", "Todo", 0, now.Add(-time.Hour), 5),
 				rankingIssue("merging-peer", "Merging", 0, now),
 			},
-			want: []string{"merging-peer", "todo-unblocker"},
+			want: []string{"todo-unblocker", "merging-peer"},
 		},
 		{
 			name:                 "tracker priority outranks unblocker boost",
@@ -196,7 +195,7 @@ func TestSortIssuesForDispatch(t *testing.T) {
 			want: []string{"p1-peer", "p2-unblocker"},
 		},
 		{
-			name:                  "every configured label tier outranks unblocker boost",
+			name:                  "age ignores label tiers and unblocker count",
 			dispatchLabelPriority: []string{"hotfix", "priority", "bug"},
 			prioritizeUnblockers:  true,
 			issues: []connector.Issue{
@@ -205,17 +204,17 @@ func TestSortIssuesForDispatch(t *testing.T) {
 				rankingIssueWithLabels("priority", "Todo", 0, now.Add(-2*time.Hour), "priority"),
 				rankingIssueWithLabels("hotfix", "Todo", 0, now.Add(-time.Hour), "hotfix"),
 			},
-			want: []string{"hotfix", "priority", "bug", "unlabeled-unblocker"},
+			want: []string{"unlabeled-unblocker", "bug", "priority", "hotfix"},
 		},
 		{
-			name:                 "more direct dependents rank first among unlabeled peers",
+			name:                 "unblocker count does not replace age ordering",
 			prioritizeUnblockers: true,
 			issues: []connector.Issue{
 				rankingIssueWithUnblockers("one", "Todo", 0, now.Add(-3*time.Hour), 1),
 				rankingIssueWithUnblockers("three", "Todo", 0, now.Add(-time.Hour), 3),
 				rankingIssue("plain", "Todo", 0, now.Add(-4*time.Hour)),
 			},
-			want: []string{"three", "one", "plain"},
+			want: []string{"plain", "one", "three"},
 		},
 		{
 			name: "disabled preserves age ordering exactly",
@@ -351,17 +350,16 @@ func TestAnnotateUnblockerCountsIsInputOrderIndependent(t *testing.T) {
 	}
 }
 
-func TestDispatchPlannerRecordsUnblockerSelectionReason(t *testing.T) {
+func TestDispatchPlannerPreservesUnblockerCountsWithoutChangingOrder(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range []struct {
 		name              string
 		count             int
 		otherPrerequisite bool
-		wantReason        string
 	}{
-		{name: "single remaining prerequisite", count: 1, wantReason: "prerequisite_for_1_blocked_issue"},
-		{name: "three dependents with unfinished prerequisites", count: 3, otherPrerequisite: true, wantReason: "prerequisite_for_3_blocked_issues"},
+		{name: "single remaining prerequisite", count: 1},
+		{name: "three dependents with unfinished prerequisites", count: 3, otherPrerequisite: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
@@ -394,14 +392,10 @@ func TestDispatchPlannerRecordsUnblockerSelectionReason(t *testing.T) {
 			if len(decisions) != 2 {
 				t.Fatalf("decisions = %d, want 2", len(decisions))
 			}
-			if !decisions[0].Selected || decisions[0].Issue.ID != blocker.ID || decisions[0].UnblockerCount != tt.count {
-				t.Fatalf("first decision = %#v, want selected blocker with expected dependent count", decisions[0])
+			if !decisions[0].Selected || decisions[0].Issue.ID != peer.ID || decisions[0].UnblockerCount != 0 || decisions[1].Selected || decisions[1].Issue.ID != blocker.ID || decisions[1].UnblockerCount != tt.count {
+				t.Fatalf("decisions = %#v, want older peer selected and blocker count preserved", decisions)
 			}
-			orch := Orchestrator{cfg: cfg}
-			orch.logDispatchPlanDecision(context.Background(), &state, now, decisions[0])
-			if len(state.SchedulerDecisions) != 1 || state.SchedulerDecisions[0].Reason != tt.wantReason {
-				t.Fatalf("scheduler decisions = %#v, want unblocker reason", state.SchedulerDecisions)
-			}
+
 		})
 	}
 }

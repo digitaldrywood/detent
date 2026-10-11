@@ -20,6 +20,7 @@ import { AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
 
 import { createWorkMock } from "./mock-work.ts";
+import reportsFixture from "../src/contracts/fixtures/reports.json";
 import type {
   Conversation,
   ConversationEvent,
@@ -93,7 +94,10 @@ interface IntegrationRow {
   intake: string;
   projection: string;
   repository_enabled: boolean;
+  archive_completed_after_days: number | null;
+  archive_cancelled_after_days: number | null;
   repository?: string;
+  checkout_repository?: string;
   authority: Record<string, string>;
 }
 
@@ -131,6 +135,7 @@ interface RunnerRow {
 }
 
 interface RunnerEligibilityRow {
+  local_checks?: { checkout: string; doctor: string; provider: string; provider_kinds?: string[]; observed_at: string };
   runner: RunnerRow;
   /** Empty is what makes the wizard's third step ready. */
   exclusions: Array<{ code: string; message: string }>;
@@ -181,26 +186,10 @@ const WORKFLOW_STATES = [
  * needs, which does not change with whether it has it, so only `state` moves.
  */
 const ONBOARDING_STEP_TEXT: ReadonlyArray<{ name: string; detail: string }> = [
-  {
-    name: "Repository configuration",
-    detail:
-      "Inspect detent.yaml and WORKFLOW.md on the customer host, then explicitly approve the resolved policy descriptor.",
-  },
-  {
-    name: "Local validation",
-    detail:
-      "User-reported: run detent doctor and sign in to the selected provider on the execution host. Credentials stay local.",
-  },
-  {
-    name: "Execution runner",
-    detail:
-      "Requires approved project access, matching tags and host selectors, a fresh heartbeat and available capacity.",
-  },
-  {
-    name: "Artifact history",
-    detail:
-      "Choose local history or configure the customer S3-compatible service and independent gateway. A binding does not verify storage or promise offline access.",
-  },
+  { name: "Execution runner", detail: "Enroll a host, then prepare its project checkout, detent.yaml and WORKFLOW.md. Enrollment does not require policy approval." },
+  { name: "Local validation", detail: "The runner reports checkout, detent doctor and selected provider sign-in checks. Fix failures on that host, then restart the runner to report fresh results. Credentials stay local." },
+  { name: "Repository configuration", detail: "Review the policy reported by the runner and explicitly approve it before dispatch." },
+  { name: "Artifact history", detail: "Choose local history or configure the customer S3-compatible service and independent gateway. A binding does not verify storage or promise offline access." },
 ];
 
 /**
@@ -302,6 +291,8 @@ const SEED_INTEGRATIONS: Record<string, IntegrationRow> = {
     intake: "manual",
     projection: "summary",
     repository_enabled: true,
+    archive_completed_after_days: 30,
+    archive_cancelled_after_days: 7,
     repository: "mockorg/alpha",
     authority: SEED_AUTHORITY,
   },
@@ -311,6 +302,8 @@ const SEED_INTEGRATIONS: Record<string, IntegrationRow> = {
     intake: "disabled",
     projection: "disabled",
     repository_enabled: false,
+    archive_completed_after_days: 30,
+    archive_cancelled_after_days: 7,
     authority: SEED_AUTHORITY,
   },
   proj_readonly: {
@@ -319,6 +312,8 @@ const SEED_INTEGRATIONS: Record<string, IntegrationRow> = {
     intake: "manual",
     projection: "summary",
     repository_enabled: true,
+    archive_completed_after_days: 30,
+    archive_cancelled_after_days: 7,
     repository: "mockorg/readonly",
     authority: SEED_AUTHORITY,
   },
@@ -388,12 +383,12 @@ const SEED_RUNNERS: RunnerEligibilityRow[] = [
       machine_id: "mac_mock01",
       display_name: "Mock MacBook Pro",
       tags: ["detent:mock"],
-      state: "enabled",
+      state: "active",
       capacity_limit: 2,
       project_ids: ["proj_alpha"],
       revision: 4,
       hostname: "mock-macbook.local",
-      health: "healthy",
+      health: "online",
       os: "darwin",
       architecture: "arm64",
       last_heartbeat_at: "2026-09-10T12:04:31Z",
@@ -429,10 +424,11 @@ const SEED_FLEET = {
   runners: [
     {
       id: "rnr_mock",
+      machine_id: "mac_mock01",
       display_name: "Mock MacBook Pro",
       hostname: "mock-macbook.local",
-      health: "healthy",
-      state: "enabled",
+      health: "online",
+      state: "active",
       os: "darwin",
       architecture: "arm64",
       host_capacity: 2,
@@ -479,6 +475,7 @@ const SEED_FLEET = {
     },
     {
       id: "rnr_mock_mini",
+      machine_id: "mac_mock02",
       display_name: "mock-mini-1",
       hostname: "mock-mini-1.local",
       health: "stale",
@@ -872,6 +869,16 @@ const SEED_SUPPORT: SupportRow = {
 /** The build the bootstrap's About row names. */
 const HOSTED_VERSION = "v0.0.0-mock";
 
+/** What the mock runner reports for a workspace (§18.1); see `dev/mock-work.ts`. */
+const WORKSPACE_CAPABILITIES = {
+  terminal: true,
+  files: true,
+  diff: false,
+  preview: false,
+  exec: true,
+  git: true,
+};
+
 /**
  * Everything the account endpoints mutate. It is a second store beside the
  * conversation one: the two share the read-only switch and the idempotency
@@ -888,6 +895,7 @@ interface AccountState {
   /** False once `POST /__mock/usage {"usage": null}` has run: §17.5's empty report. */
   usage: boolean;
   integrations: Map<string, IntegrationRow>;
+  checkoutReports: Map<string, string>;
   policies: Map<string, PolicyRow>;
   /** What runners last reported they resolved and could not run, per project, newest first. */
   observedPolicies: Map<string, Array<{ policy: Record<string, unknown>; runner_id: string; observed_at: string }>>;
@@ -897,6 +905,11 @@ interface AccountState {
   /** Runner identities already registered; re-enrolling one is a collision. */
   enrolled: Set<string>;
   workItems: number;
+  /**
+   * The organization's project rank (`GET/PUT .../project-rank`). The order
+   * saved last, which a read completes with any project it does not name.
+   */
+  projectRank: { revision: number; project_ids: string[] };
   /**
    * Stored non-GET responses, keyed by method, path and idempotency key. A
    * retry replays the stored response; the same key with a different payload
@@ -921,6 +934,7 @@ function initialAccountState(organization: OrganizationMode = "seeded"): Account
     spend: true,
     usage: true,
     integrations: new Map(empty ? [] : Object.entries(clone(SEED_INTEGRATIONS))),
+    checkoutReports: new Map(empty ? [] : [["proj_beta", "mockorg/private"]]),
     policies: new Map(empty ? [] : [["proj_alpha", clone(SEED_POLICY)]]),
     observedPolicies: new Map(),
     progress: new Map(empty ? [] : Object.entries(clone(SEED_PROGRESS))),
@@ -928,6 +942,10 @@ function initialAccountState(organization: OrganizationMode = "seeded"): Account
     runners: empty ? [] : clone(SEED_RUNNERS),
     enrolled: new Set(empty ? [] : SEED_RUNNERS.map((entry) => entry.runner.runner_id)),
     workItems: 0,
+    projectRank: {
+      revision: 1,
+      project_ids: empty ? [] : SEED_PROJECTS.map((project) => project.id),
+    },
     mutations: new Map(),
   };
 }
@@ -2240,9 +2258,9 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     const services = account.artifactServices.get(projectId) ?? [];
     const artifacts = progress?.artifacts ?? "";
     const met = [
+      account.runners.some((entry) => entry.runner.state === "active" && entry.runner.health === "online"),
+      account.runners.some((entry) => entry.runner.state === "active" && entry.runner.health === "online" && entry.local_checks?.checkout === "passed" && ["passed", "warning"].includes(entry.local_checks.doctor) && entry.local_checks.provider === "passed"),
       policy !== null,
-      progress?.doctor === true && progress.provider === true,
-      policy !== null && account.runners.some((entry) => entry.exclusions.length === 0),
       artifacts === "local" || (artifacts === "customer" && services.length > 0),
     ];
     return {
@@ -2287,13 +2305,18 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         ...(reader ? { can_write: false, can_manage_runners: false } : {}),
         states: WORKFLOW_STATES,
         coordinator,
+        // What the project's enrolled runner reports it can serve a workspace
+        // (§18.1). Diff and preview are never relayed, so they stay false.
+        capabilities: WORKSPACE_CAPABILITIES,
       })),
       support: account.support,
       csrf_token: CSRF_TOKEN,
       capabilities: { coordinator, attachments: false },
       api_base: API_BASE,
       preferences: PREFERENCE_CHOICES,
-      feature: { conversation: true },
+      // Workspace sessions are on: an issue's right panel opens Files, Diff and
+      // Terminal against the ready workspace `dev/mock-work.ts` seeds.
+      feature: { conversation: true, workspaces: true },
       plan: SEED_PLAN_SUMMARY,
       version: HOSTED_VERSION,
     };
@@ -2540,6 +2563,42 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       return true;
     }
 
+    // The organization's project rank (`internal/hubserver/project_rank.go`).
+    // Administrators only, both ways; the write carries `expected_revision`
+    // and no idempotency key, and must name every project exactly once.
+    if (tail === "project-rank" && (method === "GET" || method === "PUT")) {
+      const body = method === "PUT" ? await readBody(request) : {};
+      if (accountMode === "read_only") {
+        forbidden(response, "Only an administrator can rank projects.");
+        return true;
+      }
+      const ids = account.projects.map((project) => project.id);
+      if (method === "GET") {
+        const ranked = account.projectRank.project_ids.filter((id) => ids.includes(id));
+        json(response, 200, {
+          revision: account.projectRank.revision,
+          project_ids: [...ranked, ...ids.filter((id) => !ranked.includes(id))],
+        });
+        return true;
+      }
+      if (Number(body.expected_revision) !== account.projectRank.revision) {
+        json(response, 409, REVISION_CONFLICT);
+        return true;
+      }
+      const requested = Array.isArray(body.project_ids) ? body.project_ids.map(String) : [];
+      if (
+        requested.length !== ids.length ||
+        new Set(requested).size !== requested.length ||
+        requested.some((id) => !ids.includes(id))
+      ) {
+        invalidRequest(response, "Rank must include every organization project once");
+        return true;
+      }
+      account.projectRank = { revision: account.projectRank.revision + 1, project_ids: requested };
+      json(response, 200, clone(account.projectRank));
+      return true;
+    }
+
     if (tail === "projects" && method === "GET") {
       json(response, 200, account.projects.map((project) => projectSummary(project)));
       return true;
@@ -2573,6 +2632,8 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
           intake: "disabled",
           projection: "disabled",
           repository_enabled: false,
+          archive_completed_after_days: 30,
+          archive_cancelled_after_days: 7,
           authority: clone(SEED_AUTHORITY),
         });
         account.progress.set(project.id, {
@@ -2588,6 +2649,11 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     }
 
     if (tail === "fleet" && method === "GET") {
+      if (url.searchParams.get("include") === "names") {
+        const runners = organizationMode === "empty" ? [] : SEED_FLEET.runners;
+        json(response, 200, { runner_names: Object.fromEntries(runners.map((runner) => [runner.id, { display_name: runner.display_name, hostname: runner.hostname }])) });
+        return true;
+      }
       // Any member reads the fleet. Spend is nullable on purpose: an
       // organization with no metering has no number, and the screen says so
       // rather than drawing a zero that looks like a measurement.
@@ -2599,6 +2665,12 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       return true;
     }
 
+    if (segments[0] === "reports" && segments.length === 1 && method === "GET") {
+      const report = structuredClone(reportsFixture);
+      report.analytics.project_id = url.searchParams.get("project") ?? "proj_alpha";
+      json(response, 200, report);
+      return true;
+    }
     if (segments[0] === "usage" && segments.length === 1 && method === "GET") {
       // §17.5. Any member reads usage: it is a report, and there is nothing on
       // it a reader who can load the organization may not see. An unknown
@@ -2798,7 +2870,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       return true;
     }
 
-    if (tail === "integration" && method === "PUT") {
+    if ((tail === "integration" || tail === "onboarding/integration") && method === "PUT") {
       const body = await readBody(request);
       if (refuseReadOnly(response)) return true;
       runMutation(response, method, path, body, () => {
@@ -2814,6 +2886,8 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
           intake: String(body.intake ?? current.intake),
           projection: String(body.projection ?? current.projection),
           repository_enabled: body.repository_enabled === true,
+          archive_completed_after_days: body.archive_completed_after_days === undefined ? current.archive_completed_after_days : body.archive_completed_after_days === null ? null : Number(body.archive_completed_after_days),
+          archive_cancelled_after_days: body.archive_cancelled_after_days === undefined ? current.archive_cancelled_after_days : body.archive_cancelled_after_days === null ? null : Number(body.archive_cancelled_after_days),
           revision: String(Number(current.revision) + 1),
         };
         account.integrations.set(projectId, next);
@@ -2968,18 +3042,21 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
             payload: { code: "invalid_request", message: "A repository is owner/name." },
           };
         }
-        // Already bound to exactly this repository: the wizard's retry is a
-        // no-op, and a no-op must not spend the key it was retried with.
-        if ((current.repository ?? "").toLowerCase() === repository.toLowerCase()) {
+        if (body.source !== "runner_checkout") {
+          return { status: 422, payload: { code: "invalid_request", message: "Use the runner checkout association." } };
+        }
+        if ((current.checkout_repository ?? "").toLowerCase() === repository.toLowerCase()) {
           return { status: 200, payload: clone(current), store: false };
         }
         if (String(body.expected_revision ?? "") !== current.revision) {
           return { status: 409, payload: REVISION_CONFLICT };
         }
+        if (account.checkoutReports.get(projectId)?.toLowerCase() !== repository.toLowerCase()) {
+          return { status: 422, payload: { code: "checkout_unavailable", message: "Start an enrolled runner with this project's Git checkout and matching GitHub origin, then retry." } };
+        }
         const next: IntegrationRow = {
           ...current,
-          repository,
-          repository_enabled: true,
+          checkout_repository: repository,
           revision: String(Number(current.revision) + 1),
         };
         account.integrations.set(projectId, next);
@@ -3041,6 +3118,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
             organization_id: ORGANIZATION.id,
             project_id: projectId,
             work_item_id: `wi_${number}`,
+            web_url: `http://mock.local/work/i/wi_${number}`,
             number,
             revision: "1",
             profile: project?.profile ?? "native",
@@ -3151,7 +3229,14 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
             break;
           case "/__mock/drop-open-streams":
             for (const entry of store.values()) {
-              for (const subscriber of entry.subscribers) subscriber.response.destroy();
+              for (const subscriber of [...entry.subscribers]) {
+                if (body.reason === "server_error" || body.reason === "server_shutdown") {
+                  writeFrame(entry, subscriber, null, { type: "closed", data: { reason: body.reason } });
+                  subscriber.response.end();
+                } else {
+                  subscriber.response.destroy();
+                }
+              }
               entry.subscribers.clear();
             }
             break;
@@ -3298,6 +3383,25 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         // narrower conversation schema ignores the account fields, so a client
         // that has not moved yet reads exactly what it always did.
         json(response, 200, accountBootstrap());
+        return;
+      }
+
+      // The sidebar footer's update check (`UpdatesReport`). Every runner
+      // reports the hub's own build, so nothing is behind.
+      if (path === "/app/updates" && method === "GET") {
+        json(response, 200, {
+          current: HOSTED_VERSION,
+          source: "hub",
+          runners: account.runners.map((entry) => ({
+            runner_id: entry.runner.runner_id,
+            display_name: entry.runner.display_name,
+            version: HOSTED_VERSION,
+            online: entry.runner.health === "online",
+            behind: false,
+          })),
+          behind_count: 0,
+          client: { version: HOSTED_VERSION, build: "mock", served_at: now() },
+        });
         return;
       }
 
@@ -3563,8 +3667,9 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         }
         const issueBody = (body.issue ?? {}) as {
           title?: string;
+          description?: string;
           labels?: string[];
-          priority?: string;
+          priority?: number;
           state?: string;
         };
         // The next step (decisions.md §13.8, §14): the lane the issue lands
@@ -3576,6 +3681,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
           dispatch?: string;
         };
         const lane = nextStep.state ?? issueBody.state ?? "Todo";
+        const priority = nextStep.priority ?? issueBody.priority;
         const number = issues.size + 1000;
         const id = `wi_${number}`;
         const issue = {
@@ -3585,6 +3691,16 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
           state: lane,
         };
         issues.set(id, issue);
+        work.addIssue({
+          work_item_id: id,
+          project_id: entry.conversation.project_id,
+          number,
+          title: issue.title,
+          body: issueBody.description ?? "",
+          state: lane,
+          labels: issueBody.labels ?? [],
+          ...(priority === undefined ? {} : { priority }),
+        });
         entry.issue = issue;
         entry.receipts.set(linkKey, {
           payload: JSON.stringify(body),
@@ -3645,6 +3761,14 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     })().catch((cause: unknown) => {
       json(response, 500, { code: "invalid", message: String(cause) });
     });
+  });
+
+  // The workspace relay is the one WebSocket the client opens (§18.2). The
+  // work mock owns the workspaces, so it owns the upgrade; any other upgrade
+  // is refused rather than left hanging.
+  server.on("upgrade", (request, socket, head) => {
+    if (work.upgrade(request, socket, head)) return;
+    socket.end("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
   });
 
   return new Promise((resolve) => {

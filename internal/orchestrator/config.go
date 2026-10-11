@@ -23,7 +23,12 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		admissionTargetState = cfg.BacklogAdmission.TargetState
 	}
 
+	contract := workflowconfig.DefaultIssueContract()
+	if resolved, err := workflowconfig.ResolvePolicyIssueContract(cfg.Policy); err == nil {
+		contract = resolved
+	}
 	return Config{
+		IssueContract:              &contract,
 		Policy:                     cfg.Policy,
 		PollInterval:               durationFromMillis(cfg.Polling.IntervalMS),
 		RefreshFailureThreshold:    cfg.Polling.RefreshFailureThreshold,
@@ -71,6 +76,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		},
 		AutoPromote: normalizeAutoPromoteConfig(AutoPromoteConfig{
 			Enabled:               cfg.Agent.AutoPromote.Enabled,
+			HumanReview:           &cfg.Review.Human,
 			QuietDuration:         durationFromSeconds(cfg.Agent.AutoPromote.QuietSeconds),
 			OptoutLabel:           cfg.Agent.AutoPromote.OptoutLabel,
 			AllowedIssueLabels:    append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),
@@ -128,6 +134,8 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		Authorization:                 cfg.Tracker.Authorization,
 		SelectorContext:               selector.Context{InstanceLogin: identity.GitHubLogin, Persona: identity.Name},
 		WorkerHosts:                   append([]string(nil), cfg.Worker.SSHHosts...),
+		WorkerHostSelection:           cfg.Worker.HostSelection,
+		WorkerHostCaps:                cfg.Worker.HostCaps,
 		BudgetRefusalCooldown:         durationFromSeconds(cfg.Budget.RefusalCooldownSeconds),
 		WorkspaceCleanupIdleTTL:       durationFromMillis(cfg.Workspace.CleanupIdleTTLMS),
 		WorkspaceCleanupSweepInterval: durationFromMillis(cfg.Workspace.CleanupSweepIntervalMS),
@@ -137,10 +145,6 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		GitHubRESTMinReserve:          int64(cfg.Tracker.GitHubRESTMinReserve),
 		ForgeHost:                     forgeavailability.HostFromEndpoint(cfg.Tracker.Endpoint),
 		OutputTruncationMaxBytes:      cfg.Agent.OutputTruncation.MaxBytes,
-		Lessons: LessonCaptureConfig{
-			Path:       cfg.Agent.Lessons.Path,
-			MaxEntries: cfg.Agent.Lessons.MaxEntries,
-		},
 		EfficiencyThresholds: efficiency.Thresholds{
 			TokensMultiple:   cfg.Observability.Efficiency.AnomalyTokensMultiple,
 			SessionsMultiple: cfg.Observability.Efficiency.AnomalySessionsMultiple,
@@ -280,6 +284,7 @@ func normalizeConfig(cfg Config) Config {
 		cfg.AutoPromote.TerminalStates = append([]string(nil), cfg.TerminalStates...)
 	}
 	cfg.MaxConcurrentAgentsByState = cloneStateLimits(cfg.MaxConcurrentAgentsByState)
+	cfg.WorkerHostCaps = cloneStateLimits(cfg.WorkerHostCaps)
 	cfg.DispatchPriorityByState = normalizedStates(cfg.DispatchPriorityByState)
 	cfg.DispatchPriorityByLabel = normalizeLabels(cfg.DispatchPriorityByLabel)
 	cfg.MergeMethod = workflowconfig.Deliverable{MergeMethod: cfg.MergeMethod}.EffectiveMergeMethod()

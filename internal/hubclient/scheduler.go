@@ -6,54 +6,94 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
-	Problems          func() []runnerauth.Problem
-	IsolationReport   func(context.Context) isolationpolicy.Report
-	ProviderReports   func() ([]providercapacity.Report, error)
-	OrganizationID    tracker.OrganizationID
-	NativeProjects    map[string]tracker.ProjectID
-	Machine           Machine
-	HeartbeatInterval time.Duration
-	LeaseTTL          time.Duration
-	Now               func() time.Time
-	SessionID         func() (string, error)
+	RefreshProjects       func(context.Context, *Scheduler) error
+	Skills                func(project string) []skills.ProviderSkill
+	PrepareProject        func(context.Context, string) error
+	RunnerSetupDeclared   func(context.Context, string) *bool
+	UpdateOwner           func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation
+	CapacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
+	// LocalChecks are startup observations by local project, reused by the heartbeat owner.
+	LocalChecks        map[string]runnerauth.LocalChecks
+	GitHubDiscovery    func(context.Context, tracker.GitHubDiscovery) (tracker.GitHubDiscoveryPage, error)
+	GitHubIntake       func(context.Context, string) (tracker.GitHubIssueSnapshot, error)
+	Problems           func() []runnerauth.Problem
+	IsolationReport    func(context.Context) (isolationpolicy.Report, []runnerauth.Problem)
+	ProviderReports    func() ([]providercapacity.Report, error)
+	OrganizationID     tracker.OrganizationID
+	NativeProjects     map[string]tracker.ProjectID
+	CheckoutRepository func(project string) string
+	Machine            Machine
+	HeartbeatInterval  time.Duration
+	LeaseTTL           time.Duration
+	Now                func() time.Time
+	SessionID          func() (string, error)
+	// LeaseHold keeps the host awake while a native lease is held; nil selects
+	// the Sprite task hold on a Sprite and nothing elsewhere.
+	LeaseHold func(context.Context) (func(), error)
 }
 
 type Scheduler struct {
-	problems          func() []runnerauth.Problem
-	isolationReport   func(context.Context) isolationpolicy.Report
-	providerReports   func() ([]providercapacity.Report, error)
-	claimPolicies     map[string]claimPolicy
-	nativeProjects    map[string]*NativeConnector
-	nativeClaims      map[string]nativeClaim
-	nativeHeartbeats  map[tracker.ProjectID]time.Time
-	reportedPolicies  map[string]string
-	client            *Client
-	machine           Machine
-	heartbeatInterval time.Duration
-	leaseTTL          time.Duration
-	now               func() time.Time
-	sessionID         func() (string, error)
-	mu                sync.Mutex
-	registered        bool
-	lastHeartbeat     time.Time
-	claims            map[string]tracker.Lease
+	hostMetrics           *hostmetrics.Collector
+	hostMetricsMu         sync.Mutex
+	refreshProjects       func(context.Context, *Scheduler) error
+	projectsMu            sync.RWMutex
+	skills                func(project string) []skills.ProviderSkill
+	projectConfiguration  func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration
+	prepareProject        func(context.Context, string) error
+	runnerSetupDeclared   func(context.Context, string) *bool
+	updateOwner           func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation
+	capacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
+	localChecks           map[string]runnerauth.LocalChecks
+	nativeAdmissions      map[string]tracker.NativeAdmissionObservation
+	githubDiscovery       func(context.Context, tracker.GitHubDiscovery) (tracker.GitHubDiscoveryPage, error)
+	githubIntake          func(context.Context, string) (tracker.GitHubIssueSnapshot, error)
+	problems              func() []runnerauth.Problem
+	isolationReport       func(context.Context) (isolationpolicy.Report, []runnerauth.Problem)
+	lastIsolation         isolationpolicy.Report
+	providerReports       func() ([]providercapacity.Report, error)
+	claimPolicies         map[string]claimPolicy
+	nativeProjects        map[string]*NativeConnector
+	nativeClaims          map[string]nativeClaim
+	nativeHeartbeats      map[tracker.ProjectID]time.Time
+	checkoutRepository    func(project string) string
+	reportedPolicies      map[string]string
+	client                *Client
+	machine               Machine
+	heartbeatInterval     time.Duration
+	leaseTTL              time.Duration
+	now                   func() time.Time
+	sessionID             func() (string, error)
+	mu                    sync.Mutex
+	nativeHeartbeatMu     map[tracker.ProjectID]*sync.Mutex
+	registered            bool
+	lastHeartbeat         time.Time
+	claims                map[string]tracker.Lease
+	leaseHold             func(context.Context) (func(), error)
+	leaseHoldRelease      func()
+	leaseHoldPending      bool
 }
 
 func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
@@ -77,18 +117,36 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
-		problems:        config.Problems,
-		isolationReport: config.IsolationReport,
-		providerReports: config.ProviderReports,
-		claimPolicies:   make(map[string]claimPolicy),
-		client:          client, machine: config.Machine, heartbeatInterval: config.HeartbeatInterval,
+		refreshProjects:       config.RefreshProjects,
+		prepareProject:        config.PrepareProject,
+		runnerSetupDeclared:   config.RunnerSetupDeclared,
+		skills:                config.Skills,
+		capacityConfiguration: config.CapacityConfiguration,
+		updateOwner:           config.UpdateOwner,
+		localChecks:           config.LocalChecks,
+		nativeAdmissions:      make(map[string]tracker.NativeAdmissionObservation),
+		githubIntake:          config.GitHubIntake,
+		githubDiscovery:       config.GitHubDiscovery,
+		problems:              config.Problems,
+		isolationReport:       config.IsolationReport,
+		providerReports:       config.ProviderReports,
+		claimPolicies:         make(map[string]claimPolicy),
+		client:                client, machine: config.Machine, heartbeatInterval: config.HeartbeatInterval,
 		leaseTTL: config.LeaseTTL, now: now, sessionID: sessionID, claims: make(map[string]tracker.Lease),
 		nativeProjects: make(map[string]*NativeConnector), nativeClaims: make(map[string]nativeClaim), nativeHeartbeats: make(map[tracker.ProjectID]time.Time),
+		checkoutRepository: config.CheckoutRepository,
+		leaseHold:          config.LeaseHold,
+	}
+	if scheduler.leaseHold == nil {
+		scheduler.leaseHold = defaultLeaseHold()
 	}
 	for project, id := range config.NativeProjects {
 		native, err := client.Native(config.OrganizationID, id)
 		if err != nil {
 			return nil, err
+		}
+		native.githubBatch = func(ctx context.Context, task tracker.GitHubBatchTask) error {
+			return scheduler.processGitHubBatch(ctx, native, task)
 		}
 		scheduler.nativeProjects[project] = &NativeConnector{client: native}
 	}
@@ -106,7 +164,7 @@ func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrat
 	if err := s.CheckProjectPolicy(ctx, request.ProjectID, request.Repository, request.Policy); err != nil {
 		return nil, schedulingError(err)
 	}
-	if source := s.nativeProjects[request.ProjectID]; source != nil {
+	if source := s.nativeProject(request.ProjectID); source != nil {
 		return s.fetchNativeCandidate(ctx, request, source)
 	}
 	if err := s.ensureMachine(ctx); err != nil {
@@ -128,7 +186,18 @@ func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrat
 	if repository := strings.TrimSpace(request.Repository); repository != "" {
 		claimRequest.Repositories = []string{repository}
 	}
+	var releaseAdmission func()
+	if request.CandidateAdmission != nil {
+		var allowed bool
+		releaseAdmission, allowed = request.CandidateAdmission(connector.Issue{})
+		if !allowed {
+			return s.fetchLegacyContinuation(ctx, request, claimRequest)
+		}
+	}
 	lease, err := s.client.Claim(ctx, claimRequest)
+	if releaseAdmission != nil {
+		releaseAdmission()
+	}
 	if errors.Is(err, ErrNoClaimableWork) {
 		return []connector.Issue{}, nil
 	}
@@ -147,7 +216,49 @@ func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrat
 	s.claims[issue.ID] = lease
 	s.claimPolicies[issue.ID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
 	s.mu.Unlock()
+	if request.CandidateAdmitted != nil {
+		request.CandidateAdmitted(issue)
+	}
 	return []connector.Issue{issue}, nil
+}
+
+func (s *Scheduler) PrepareProject(ctx context.Context, project string) error {
+	if s.prepareProject == nil {
+		return nil
+	}
+	err := s.prepareProject(ctx, project)
+	var declared *bool
+	if s.runnerSetupDeclared != nil {
+		declared = s.runnerSetupDeclared(ctx, project)
+	}
+	s.mu.Lock()
+	checks, reported := s.localChecks[project]
+	previous := checks.Setup
+	declarationChanged := false
+	if reported {
+		if s.runnerSetupDeclared != nil {
+			previousDeclaration := checks.RunnerSetupDeclared
+			declarationChanged = (previousDeclaration == nil) != (declared == nil) || previousDeclaration != nil && declared != nil && *previousDeclaration != *declared
+			checks.RunnerSetupDeclared = declared
+		}
+		checks.Setup = "passed"
+		if err != nil {
+			checks.Setup = "failed"
+		}
+		s.localChecks[project] = checks
+	}
+	s.mu.Unlock()
+	if source := s.nativeProject(project); source != nil && reported && (previous != checks.Setup || declarationChanged) {
+		s.mu.Lock()
+		if !s.nativeHeartbeats[source.client.project].IsZero() {
+			s.nativeHeartbeats[source.client.project] = s.now().Add(-s.heartbeatInterval)
+		}
+		s.mu.Unlock()
+		if reportErr := s.ensureNativeMachine(ctx, source); reportErr != nil {
+			return errors.Join(err, reportErr)
+		}
+	}
+	return err
 }
 
 func (s *Scheduler) AdoptClaim(ctx context.Context, issue connector.Issue, _ time.Time) (orchestrator.Claimed, error) {
@@ -216,27 +327,49 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 	lease, ok := s.claims[issueID]
 	s.mu.Unlock()
 	if !ok {
+		// A missing native publisher cannot prove prepared Finish settled.
+		if strings.HasPrefix(issueID, "wi_") {
+			return runner.ErrExecutionAuthorityUnavailable
+		}
 		return nil
 	}
-	var err error
+	var err, finishErr error
 	if isNative {
-		err = native.source.client.Release(ctx, native.lease, "released")
+		if native.execution != nil {
+			if err := native.execution.finishPrepared(ctx); err != nil {
+				if !claimLost(err) && !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+					return err
+				}
+				// Retire the obsolete lease through the same release owner, but
+				// report that its terminal publication never settled.
+				finishErr = errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+			}
+		}
+		retain := false
+		if native.execution != nil {
+			native.execution.mu.Lock()
+			retain = s.client.runner != nil && (native.execution.data.Outcome == "" || native.execution.data.Outcome == "interrupted")
+			native.execution.mu.Unlock()
+		}
+		if !retain {
+			err = native.source.client.Release(ctx, native.lease, "released")
+		}
 	} else {
 		err = s.client.Release(ctx, lease, reason)
 	}
 	if err != nil && !claimLost(err) {
-		return err
+		return errors.Join(finishErr, err)
 	}
 	s.mu.Lock()
 	if current, ok := s.claims[issueID]; ok && current.FencingToken != lease.FencingToken {
 		s.mu.Unlock()
-		return nil
+		return finishErr
 	}
 	delete(s.claims, issueID)
 	delete(s.nativeClaims, issueID)
 	delete(s.claimPolicies, issueID)
 	s.mu.Unlock()
-	return nil
+	return finishErr
 }
 
 func (s *Scheduler) ensureMachine(ctx context.Context) error {
@@ -413,4 +546,125 @@ func cloneTime(value *time.Time) *time.Time {
 
 func intPointer(value int) *int {
 	return &value
+}
+
+func (s *Scheduler) SetUpdateOwner(owner func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.updateOwner = owner
+}
+
+func (s *Scheduler) SetProjectConfigurationOwner(owner func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.projectConfiguration = owner
+}
+
+func (s *Scheduler) fetchLegacyContinuation(ctx context.Context, request orchestrator.SchedulingRequest, claim ClaimRequest) ([]connector.Issue, error) {
+	query := url.Values{"limit": {"200"}}
+	if request.Repository != "" {
+		query.Set("repository", request.Repository)
+	}
+	for _, state := range request.WorkflowStates {
+		query.Add("workflow_state", state)
+	}
+	for {
+		var page struct {
+			Items      []tracker.WorkItem `json:"items"`
+			NextCursor string             `json:"next_cursor"`
+		}
+		if err := s.client.request(ctx, http.MethodGet, "/api/v1/work-items?"+query.Encode(), nil, &page); err != nil {
+			return nil, schedulingError(err)
+		}
+		for _, item := range page.Items {
+			issue := issueFromWorkItem(WorkItem{WorkItem: item})
+			if request.CandidateKnownWait != nil && request.CandidateKnownWait(issue) {
+				continue
+			}
+			if request.CandidateReady != nil && !request.CandidateReady(ctx, issue) {
+				continue
+			}
+			release, allowed := request.CandidateAdmission(issue)
+			if !allowed {
+				continue
+			}
+			claim.WorkItemID = item.ID
+			lease, err := s.client.Claim(ctx, claim)
+			release()
+			if errors.Is(err, ErrNoClaimableWork) {
+				continue
+			}
+			if err != nil {
+				return nil, schedulingError(err)
+			}
+			current, err := s.client.WorkItem(ctx, lease.WorkItemID)
+			if err != nil {
+				return nil, s.releaseAfterCandidateFailure(ctx, lease, "work_item_hydration_failed", schedulingError(err))
+			}
+			issue = issueFromWorkItem(current)
+			if issue.ID == "" {
+				return nil, s.releaseAfterCandidateFailure(ctx, lease, "work_item_identity_missing", errors.New("hub work item has no GitHub node ID"))
+			}
+			s.mu.Lock()
+			s.claims[issue.ID] = lease
+			s.claimPolicies[issue.ID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
+			s.mu.Unlock()
+			if request.CandidateAdmitted != nil {
+				request.CandidateAdmitted(issue)
+			}
+			return []connector.Issue{issue}, nil
+		}
+		if page.NextCursor == "" || page.NextCursor == query.Get("cursor") {
+			return []connector.Issue{}, nil
+		}
+		query.Set("cursor", page.NextCursor)
+	}
+}
+
+func (s *Scheduler) nativeProject(project string) *NativeConnector {
+	s.projectsMu.RLock()
+	defer s.projectsMu.RUnlock()
+	return s.nativeProjects[project]
+}
+
+func (s *Scheduler) nativeProjectSnapshot() map[string]*NativeConnector {
+	s.projectsMu.RLock()
+	defer s.projectsMu.RUnlock()
+	return maps.Clone(s.nativeProjects)
+}
+
+func (s *Scheduler) SetNativeProjects(organization tracker.OrganizationID, projects map[string]tracker.ProjectID, checks map[string]runnerauth.LocalChecks) error {
+	s.projectsMu.Lock()
+	defer s.projectsMu.Unlock()
+	for name := range s.nativeProjects {
+		if _, allowed := projects[name]; !allowed {
+			delete(s.nativeProjects, name)
+		}
+	}
+	for name, id := range projects {
+		if current := s.nativeProjects[name]; current != nil && current.client.project == id {
+			continue
+		}
+		native, err := s.client.Native(organization, id)
+		if err != nil {
+			return err
+		}
+		native.githubBatch = func(ctx context.Context, task tracker.GitHubBatchTask) error {
+			return s.processGitHubBatch(ctx, native, task)
+		}
+		s.nativeProjects[name] = &NativeConnector{client: native}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name, value := range checks {
+		previous, ok := s.localChecks[name]
+		if !ok || !reflect.DeepEqual(previous, value) {
+			if s.localChecks == nil {
+				s.localChecks = make(map[string]runnerauth.LocalChecks)
+			}
+			s.localChecks[name] = value
+			delete(s.nativeHeartbeats, projects[name])
+		}
+	}
+	return nil
 }

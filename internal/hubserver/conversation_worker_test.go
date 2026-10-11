@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -278,6 +280,7 @@ type workerControlEnvelope struct {
 
 type workerBindResponse struct {
 	ConversationID string `json:"conversation_id"`
+	Continuation   bool   `json:"continuation"`
 	Resume         struct {
 		ThreadID string `json:"thread_id"`
 	} `json:"resume"`
@@ -304,6 +307,149 @@ func requireConversationErrorCode(t *testing.T, response *httptest.ResponseRecor
 
 func TestConversationWorkerBind(t *testing.T) {
 	t.Parallel()
+	for _, confirmed := range []bool{false, true} {
+		t.Run("ordinary Continue lease loss confirmed="+strconv.FormatBool(confirmed), func(t *testing.T) {
+			f := newConversationWorkerFixture(t)
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM conversations WHERE id = ?", f.record.ID); err != nil {
+				t.Fatal(err)
+			}
+			var bound workerBindResponse
+			response := f.bind(t, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &bound)
+			f.record.ID = bound.ConversationID
+			if bound.Continuation {
+				t.Fatal("ordinary observation took completion ownership")
+			}
+			originalAttempt := f.attempt
+			operator, _ := conversationOperatorToken(t, f.nativeFixture, "continue-operator")
+			for _, status := range []conversation.ExecutionStatus{conversation.ExecutionStarting, conversation.ExecutionRunning} {
+				if status == conversation.ExecutionRunning {
+					requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "turn_id": "ordinary-turn"}), http.StatusAccepted)
+				}
+				activeContinue := conversation.Command{Key: "continue-active-" + string(status), Kind: conversation.CommandContinue, Expected: conversation.Expected{AttemptID: originalAttempt}}
+				failure := requireNativeError(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+f.record.ID+"/commands", operator, activeContinue), http.StatusConflict, "stale_execution")
+				if failure.Message != "An attempt is still running" {
+					t.Fatalf("active Continue refusal = %q", failure.Message)
+				}
+				if got := f.load(t).Execution; got.Status != status || got.Owner.AttemptID != originalAttempt || len(f.messages(t)) != 0 {
+					t.Fatalf("active Continue changed execution or queued a control: %+v", got)
+				}
+			}
+			requireNativeStatus(t, f.unbind(t, "succeeded"), http.StatusOK)
+			f.release(t)
+			command := conversation.Command{Key: "continue-lease-lost", Kind: conversation.CommandContinue, Text: "Continue implementation", Expected: conversation.Expected{AttemptID: originalAttempt}}
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+f.record.ID+"/commands", operator, command)
+			requireNativeStatus(t, response, http.StatusOK)
+			var receipt conversation.Receipt
+			decodeHubResponse(t, response, &receipt)
+			message := f.messages(t)[receipt.MessageID]
+			requireConversationDelivery(t, f, message, command.Key, conversation.DeliverySaved)
+			f.claim(t)
+			response = f.bind(t, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &bound)
+			if !bound.Continuation || len(bound.Pending) != 1 || bound.Pending[0].MessageID != message.ID {
+				t.Fatal("saved Continue did not retain its execution owner")
+			}
+			interruptedAttempt := f.attempt
+			if confirmed {
+				requireNativeStatus(t, f.controls(t, bound.Cursor, 0), http.StatusOK)
+				requireConversationDelivery(t, f, message, command.Key, conversation.DeliverySent)
+			}
+			f.release(t)
+			record := f.load(t)
+			if record.Execution.Status != conversation.ExecutionInterrupted || record.Execution.Error != conversationLeaseLostError || record.Execution.Owner.AttemptID != interruptedAttempt {
+				t.Fatalf("lease loss settlement = %+v", record.Execution)
+			}
+			wantDelivery := conversation.DeliveryUnknown
+			if confirmed {
+				wantDelivery = conversation.DeliveryInterrupted
+			}
+			requireConversationDelivery(t, f, message, command.Key, wantDelivery)
+			if got := f.messages(t)[message.ID].AttemptID; got != interruptedAttempt {
+				t.Fatalf("Continue intent lost prior attempt: %s", got)
+			}
+			f.claim(t)
+			response = f.bind(t, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &bound)
+			if !bound.Continuation || len(bound.Pending) != 0 {
+				t.Fatalf("replacement lost continuation ownership or replayed control: %+v", bound)
+			}
+			requireConversationDelivery(t, f, message, command.Key, wantDelivery)
+			replacementAttempt := f.attempt
+			f.release(t)
+			record = f.load(t)
+			if record.Execution.Status != conversation.ExecutionInterrupted || record.Execution.Error != conversationLeaseLostError || record.Execution.Owner.AttemptID != replacementAttempt {
+				t.Fatalf("second lease loss settlement = %+v", record.Execution)
+			}
+			f.claim(t)
+			response = f.bind(t, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &bound)
+			if !bound.Continuation || len(bound.Pending) != 0 {
+				t.Fatalf("second replacement lost continuation ownership or replayed control: %+v", bound)
+			}
+			requireConversationDelivery(t, f, message, command.Key, wantDelivery)
+			if got := f.messages(t)[message.ID].AttemptID; got != interruptedAttempt {
+				t.Fatalf("replacement rewrote Continue's original attempt: %s", got)
+			}
+			requireNativeStatus(t, f.unbind(t, "succeeded"), http.StatusOK)
+			f.release(t)
+			for range 2 {
+				f.claim(t)
+				response = f.bind(t, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &bound)
+				if bound.Continuation || len(bound.Pending) != 0 {
+					t.Fatalf("completed Continue reclaimed ordinary completion: %+v", bound)
+				}
+				f.release(t)
+			}
+		})
+	}
+	t.Run("ordinary issue", func(t *testing.T) {
+		f := newConversationWorkerFixture(t)
+		if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM conversations WHERE id = ?", f.record.ID); err != nil {
+			t.Fatal(err)
+		}
+		body := f.bindBody()
+		body["fencing_token"] = f.lease.FencingToken + 1
+		requireConversationErrorCode(t, f.bind(t, body), http.StatusConflict, "stale_execution")
+		var count int
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversations").Scan(&count); err != nil || count != 0 {
+			t.Fatalf("stale owner created conversation: %d, %v", count, err)
+		}
+		response := f.bind(t, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var bound workerBindResponse
+		decodeHubResponse(t, response, &bound)
+		f.record.ID = bound.ConversationID
+		record := f.load(t)
+		if record.Origin != conversationOriginWorker {
+			t.Fatalf("ordinary binding origin = %q, want worker", record.Origin)
+		}
+		if bound.Continuation || record.WorkItemID != string(f.issue.WorkItemID) || record.Visibility != conversation.VisibilityShared || record.Execution.Owner.AttemptID != f.attempt || record.Execution.Owner.RunID != f.run || len(bound.Pending) != 0 || len(f.messages(t)) != 0 {
+			t.Fatalf("ordinary binding = %#v, pending = %#v", record, bound.Pending)
+		}
+		requireConversationErrorCode(t, f.bind(t, nil), http.StatusConflict, "stale_execution")
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversations").Scan(&count); err != nil || count != 1 {
+			t.Fatalf("duplicate conversations: %d, %v", count, err)
+		}
+		before := f.load(t)
+		if before.Execution.Owner != record.Execution.Owner || before.EventSeq != record.EventSeq {
+			t.Fatal("repeated binding changed the selected execution")
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET visibility = 'private' WHERE id = ?", f.record.ID); err != nil {
+			t.Fatal(err)
+		}
+		requireNativeStatus(t, f.bind(t, nil), http.StatusNotFound)
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversations").Scan(&count); err != nil || count != 1 {
+			t.Fatalf("private history replaced: %d, %v", count, err)
+		}
+	})
+
 	f := newConversationWorkerFixture(t)
 	first := f.queue(t, conversation.MessageText, "key-1", "First question", nil)
 	second := f.queue(t, conversation.MessageContinue, "key-2", "Keep going", nil)
@@ -325,6 +471,9 @@ func TestConversationWorkerBind(t *testing.T) {
 		t.Fatalf("expected/cursor = %#v/%d", bound.Pending[0].Expected, bound.Cursor)
 	}
 	record := f.load(t)
+	if record.Origin != conversationOriginUser {
+		t.Fatalf("linked user conversation origin = %q, want user", record.Origin)
+	}
 	if record.Execution.Status != conversation.ExecutionStarting || record.Execution.Owner.AttemptID != f.attempt || record.Execution.Owner.LeaseID != string(f.lease.ID) || record.Execution.Owner.FencingToken != int64(f.lease.FencingToken) || record.Execution.Owner.RunID != f.run || record.Execution.Owner.MachineID != "conversation-machine" {
 		t.Fatalf("execution = %#v", record.Execution)
 	}
@@ -465,10 +614,132 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 		defer func() { f.attempt = attempt }()
 		requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")
 	})
+
+	t.Run("shutdown drains a waiting poll", func(t *testing.T) {
+		var cursor int64
+		for _, message := range f.messages(t) {
+			cursor = max(cursor, message.Seq)
+		}
+		pollResult := make(chan *httptest.ResponseRecorder, 1)
+		go func() { pollResult <- f.controls(t, cursor, 30) }()
+
+		waitContext, cancelWait := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancelWait()
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			f.chat.broker.mu.Lock()
+			waiting := len(f.chat.broker.subscribers[f.record.ID]) > 0
+			f.chat.broker.mu.Unlock()
+			if waiting {
+				break
+			}
+			select {
+			case <-ticker.C:
+			case response := <-pollResult:
+				t.Fatalf("poll returned before shutdown: %s", response.Body.String())
+			case <-waitContext.Done():
+				t.Fatal("poll did not subscribe")
+			}
+		}
+		shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := f.service.Shutdown(shutdownContext); err != nil {
+			t.Fatalf("Shutdown() with waiting poll: %v", err)
+		}
+		select {
+		case response := <-pollResult:
+			requireNativeStatus(t, response, http.StatusOK)
+			var result workerControlsResponse
+			decodeHubResponse(t, response, &result)
+			if len(result.Controls) != 0 || result.Cursor != cursor {
+				t.Fatalf("shutdown poll = %+v", result)
+			}
+		case <-shutdownContext.Done():
+			t.Fatal("Shutdown() left the control poll waiting")
+		}
+	})
 }
 
 func TestConversationWorkerTurnEvents(t *testing.T) {
 	t.Parallel()
+	t.Run("registered runner middleware and fencing", func(t *testing.T) {
+		f := newConversationWorkerFixture(t)
+		f.release(t)
+		r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Collaborate, runnerauth.Events)
+		r.enroll(t)
+		publishCapacity(t, f.nativeFixture, r, capacityReport(f.now))
+		f.worker = r.redemption.Credential
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, providerClaim(r, f.issue, "conversation-registered"))
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &f.lease)
+		f.attempt, f.run = newNativeID("attempt"), newNativeID("run")
+		event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test-model"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy}}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
+		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+		foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-registered")
+		other := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Events)
+		other.enroll(t)
+		unpermitted := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Collaborate)
+		unpermitted.enroll(t)
+		for _, test := range []struct {
+			name, base, token string
+			change            func(map[string]any)
+			status            int
+		}{
+			{name: "wrong project", base: foreign.base, token: f.worker, status: http.StatusNotFound},
+			{name: "wrong runner", token: other.redemption.Credential, status: http.StatusNotFound},
+			{name: "missing events operation", token: unpermitted.redemption.Credential, status: http.StatusForbidden},
+			{name: "wrong lease", change: func(body map[string]any) { body["lease_id"] = newNativeID("lease") }, status: http.StatusConflict},
+			{name: "wrong fence", change: func(body map[string]any) { body["fencing_token"] = f.lease.FencingToken + 1 }, status: http.StatusConflict},
+			{name: "wrong attempt", change: func(body map[string]any) { body["attempt_id"] = newNativeID("attempt") }, status: http.StatusConflict},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				body := f.identity()
+				body["events"] = []map[string]any{{"type": "turn_started", "thread_id": "thread-registered", "turn_id": "turn-registered"}}
+				if test.change != nil {
+					test.change(body)
+				}
+				base, token := test.base, test.token
+				if base == "" {
+					base = f.base
+				}
+				if token == "" {
+					token = f.worker
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/conversations/"+f.record.ID+"/turn-events", token, body), test.status)
+				if f.load(t).Execution.Status != conversation.ExecutionStarting {
+					t.Fatal("refused event changed execution")
+				}
+			})
+		}
+		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-registered", "turn_id": "turn-registered"}, map[string]any{"type": "delta", "provider_item_id": "item-registered", "text": "Authentic runner transcript"}), http.StatusAccepted)
+		owner := f.load(t).Execution.Owner
+		if owner.RunnerID != r.binding.RunnerID || owner.AttemptID != f.attempt || owner.LeaseID != string(f.lease.ID) || owner.FencingToken != int64(f.lease.FencingToken) {
+			t.Fatalf("event lost registered owner: %+v", owner)
+		}
+		found := false
+		for _, message := range f.messages(t) {
+			if message.Text == "Authentic runner transcript" {
+				found = message.Actor.Kind == conversation.ActorRunner && message.AttemptID == f.attempt && message.TurnID == "turn-registered"
+			}
+		}
+		if !found {
+			t.Fatal("registered event did not persist authentic transcript")
+		}
+		f.restart(t)
+		if execution := f.load(t).Execution; execution.Owner != owner || execution.Status != conversation.ExecutionRunning {
+			t.Fatalf("restart lost the registered worker: %+v", execution)
+		}
+		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
+		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-registered", "text": " after restart"}), http.StatusAccepted)
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE id = (SELECT token_id FROM runner_identities WHERE id = ?)", formatHubTime(f.now), r.binding.RunnerID); err != nil {
+			t.Fatal(err)
+		}
+		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusUnauthorized)
+		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-registered", "text": " revoked"}), http.StatusUnauthorized)
+
+	})
 	f := newConversationWorkerFixture(t)
 	prompt := f.queue(t, conversation.MessageText, "prompt-1", "Fix the bug", nil)
 	requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
@@ -769,17 +1040,17 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 		requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")
 	})
 
-	t.Run("restart normalization then fresh bind", func(t *testing.T) {
+	t.Run("restart preserves a current owner then fresh bind", func(t *testing.T) {
 		f.claim(t)
 		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-3"}), http.StatusAccepted)
-		if _, err := f.chat.store.normalizeAfterRestart(t.Context(), f.service.config.now()); err != nil {
+		if err := f.chat.start(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if record := f.load(t); record.Execution.Status != conversation.ExecutionUnknown {
+		if record := f.load(t); record.Execution.Status != conversation.ExecutionRunning {
 			t.Fatalf("execution after restart = %#v", record.Execution)
 		}
-		requireConversationErrorCode(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-9", "text": "late"}), http.StatusConflict, "stale_execution")
+		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-9", "text": "resumed"}), http.StatusAccepted)
 		f.release(t)
 		f.claim(t)
 		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)

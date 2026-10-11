@@ -259,7 +259,7 @@ function ModelPicker(props: ComposerPreferenceControlsProps): React.ReactElement
           aria-label="Model"
           data-testid="composer-model-popup"
           className="w-[26rem] max-w-[calc(100vw-2rem)] [--command-shell-inset:--spacing(2)] [--command-content-inset:--spacing(3)]"
-          viewportClassName="p-0"
+          padding="none"
         >
           {/* `mode="none"` is the palette's own setting: the rows are filtered
               here — by label, identifier and provider, and by the rail — so

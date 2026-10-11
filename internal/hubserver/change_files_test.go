@@ -54,6 +54,9 @@ func TestBoundReviewDecisions(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, r), tt.want)
 		})
 	}
+	worker := f.worker(t, "review-worker")
+	workerReview := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "worker-review"}, Decision: "approved", ExpectedVersionID: first.ID, Bundle: &bundle}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, workerReview), 403)
 	second := f.publish(t, "second", first.ID)
 	for _, tt := range []struct {
 		key  string
@@ -67,8 +70,6 @@ func TestBoundReviewDecisions(t *testing.T) {
 	if detail := f.detail(t); detail.Summary.NativeReview != "stale" || len(detail.Reviews) != 1 {
 		t.Fatalf("stale approval transferred: %#v", detail.Summary)
 	}
-	worker := f.worker(t, "review-worker")
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, r), 403)
 }
 
 func TestViewedFilesVersionActorAndReplay(t *testing.T) {

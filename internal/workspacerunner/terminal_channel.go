@@ -257,6 +257,12 @@ func (s *Session) openTerminal(
 		s.answer(ctx, socket, workspacesession.ErrorFrame(channel, stream, code, terminalRefusalMessage(code)))
 		return
 	}
+	if !s.leaseValid() || ctx.Err() != nil {
+		terminal.Close()
+		s.answer(ctx, socket, workspacesession.ErrorFrame(channel, stream,
+			workspacesession.CodeStaleExecution, refusalMessage(workspacesession.CodeStaleExecution)))
+		return
+	}
 	held.terminal = terminal
 	s.holdTerminal(stream, held)
 

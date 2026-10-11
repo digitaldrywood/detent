@@ -12,7 +12,7 @@ import (
 // hydrateRefreshPage shares the board scan's lifetime. Successful batches survive
 // an interrupted page or later hydration request; unavailable schema fields still
 // use the existing legacy readers after enumeration.
-func (c *Connector) hydrateRefreshPage(ctx context.Context, progress *projectItemsScanProgress, states map[string]struct{}, matches func(connector.Issue) bool) error {
+func (c *Connector) hydrateRefreshPage(ctx context.Context, progress *projectItemsScanProgress, states map[string]struct{}, matches func(connector.Issue) bool, reobserveRetained bool) error {
 	if progress.evidence == nil {
 		progress.evidence = make(map[string]githubIssueNode)
 	}
@@ -61,7 +61,9 @@ func (c *Connector) hydrateRefreshPage(ctx context.Context, progress *projectIte
 		if !progress.hydrated[issue.ID] {
 			nodes = append(nodes, node)
 		}
-		if !progress.hydrated[issue.ID] || progress.evidence[issue.ID].CandidatePR == nil {
+		// A resumed scan retains issue evidence, but checks and mergeability can
+		// change independently. Reobserve retained PRs once on resume.
+		if reobserveRetained || !progress.hydrated[issue.ID] || progress.evidence[issue.ID].CandidatePR == nil {
 			prNodes = append(prNodes, node)
 		}
 	}

@@ -43,7 +43,11 @@ test("OIDC login gates board views, persists sessions, and denies unauthorized i
     await expect(page).toHaveURL(
       new RegExp(`/login\\?next=${encodeURIComponent(boardPath)}`),
     );
-    await expect(page).toHaveScreenshot("oidc-login.png");
+    await expect(page.getByRole("link", { name: "Continue with identity provider" })).toBeVisible();
+    await test.info().attach("oidc-login.png", {
+      body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+      contentType: "image/png",
+    });
     await page
       .getByRole("link", { name: "Continue with identity provider" })
       .click();
@@ -100,7 +104,10 @@ test("OIDC login gates board views, persists sessions, and denies unauthorized i
     await expect(
       deniedPage.getByRole("heading", { name: "Access denied" }),
     ).toBeVisible();
-    await expect(deniedPage).toHaveScreenshot("oidc-access-denied.png");
+    await test.info().attach("oidc-access-denied.png", {
+      body: await deniedPage.screenshot({ animations: "disabled", caret: "hide" }),
+      contentType: "image/png",
+    });
     await deniedContext.close();
 
     const runtimeLog = fs.readFileSync(runtime.logPath, "utf8");

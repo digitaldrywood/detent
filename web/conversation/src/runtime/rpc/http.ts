@@ -115,6 +115,7 @@ export interface DetentHttpClient {
     readonly settled?: boolean;
   }) => Effect.Effect<typeof ConversationListResponse.Type, HttpFailure>;
   readonly listProjectConversations: (input: {
+    readonly subjectWorkItemId?: string;
     readonly projectId: string;
     readonly cursor?: string | null;
     readonly limit?: number;
@@ -133,6 +134,7 @@ export interface DetentHttpClient {
     readonly limit?: number;
   }) => Effect.Effect<typeof MessagePageResponse.Type, HttpFailure>;
   readonly createConversation: (input: {
+    readonly subjectWorkItemId?: string;
     readonly projectId: string;
     /**
      * The create key. Mandatory (decisions.md §10.2): creating a conversation
@@ -181,6 +183,14 @@ export interface DetentHttpClient {
     readonly conversationId: string;
     readonly title: string;
   }) => Effect.Effect<typeof Conversation.Type, HttpFailure>;
+  readonly archiveConversation: (input: {
+    readonly projectId: string;
+    readonly conversationId: string;
+  }) => Effect.Effect<typeof Conversation.Type, HttpFailure>;
+  readonly deleteConversation: (input: {
+    readonly projectId: string;
+    readonly conversationId: string;
+  }) => Effect.Effect<void, HttpFailure>;
   /**
    * `POST {nativeBase}/conversations/:id/attachments` (decisions.md §17.1).
    * Multipart with one `file` part and an `idempotency_key` field, exactly as
@@ -398,6 +408,7 @@ export function makeHttpClient(options: HttpClientOptions): DetentHttpClient {
         ConversationListResponse,
         "GET",
         url(`${projectBase(input.projectId)}/conversations`, {
+          subject_work_item_id: input.subjectWorkItemId,
           cursor: input.cursor ?? undefined,
           limit: input.limit,
           q: input.q,
@@ -428,6 +439,7 @@ export function makeHttpClient(options: HttpClientOptions): DetentHttpClient {
         url(`${projectBase(input.projectId)}/conversations`),
         {
           key: input.key,
+          ...(input.subjectWorkItemId === undefined ? {} : { subject_work_item_id: input.subjectWorkItemId }),
           ...(input.title === undefined ? {} : { title: input.title }),
           ...(input.firstMessage === undefined ? {} : { first_message: input.firstMessage }),
         },
@@ -473,6 +485,10 @@ export function makeHttpClient(options: HttpClientOptions): DetentHttpClient {
         ),
         { title: input.title },
       ),
+    archiveConversation: (input) =>
+      send(Conversation, "POST", url(`${projectBase(input.projectId)}/conversations/${encodeURIComponent(input.conversationId)}/archive`)),
+    deleteConversation: (input) =>
+      send(Schema.Void, "DELETE", url(`${projectBase(input.projectId)}/conversations/${encodeURIComponent(input.conversationId)}`)),
     uploadAttachment: (input) =>
       Effect.flatMap(
         Effect.tryPromise({

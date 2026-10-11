@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -92,7 +93,9 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 		}
 	}
 	lease, err := s.database.claimNext(c.Request().Context(), tracker.ClaimRequest{WorkItemID: id, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}, claimCandidateQuery{
-		PolicyID: request.PolicyID, RequirePolicy: true, ProviderCandidates: request.ProviderCandidates,
+		MinimumRunnerVersion: minimumRunnerVersion(s.config.Version),
+		PolicyID:             request.PolicyID, RequirePolicy: true, ProviderCandidates: request.ProviderCandidates,
+		DispatchPriorityByState: request.DispatchPriorityByState, DispatchPriorityByLabel: request.DispatchPriorityByLabel, PrioritizeUnblockers: request.PrioritizeUnblockers,
 		NativeScope: &scope, Scope: string(scope.project), WorkflowStates: request.WorkflowStates, Authors: request.Authors, Assignees: request.Assignees, LabelInclude: request.LabelInclude, LabelExclude: request.LabelExclude,
 		// Only a lane that declares the workspace capability is offered
 		// workspace items (decisions section 18.1).
@@ -110,10 +113,10 @@ func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tr
 		return s.nativeAPIError(c, err)
 	}
 	var id tracker.NativeWorkItemID
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT native_id FROM issues WHERE id = ? AND organization_id = ? AND project_id = ?", lease.WorkItemID, scope.organization, scope.project).Scan(&id); err != nil {
+	if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT native_id FROM issues WHERE id = ? AND organization_id = ? AND project_id = ?", lease.WorkItemID, scope.organization, scope.project).Scan(&id); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	reservation, reserved, err := readProviderReservation(c.Request().Context(), s.database.db, lease.ID)
+	reservation, reserved, err := readProviderReservation(c.Request().Context(), s.database.reader, lease.ID)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -124,7 +127,7 @@ func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tr
 	var policy *isolation.Policy
 	if scope.credential.Runner.RunnerID != "" {
 		var encoded string
-		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT isolation_policy_json FROM lease_runners WHERE lease_id = ? AND runner_id = ?", lease.ID, scope.credential.Runner.RunnerID).Scan(&encoded); err != nil {
+		if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT isolation_policy_json FROM lease_runners WHERE lease_id = ? AND runner_id = ?", lease.ID, scope.credential.Runner.RunnerID).Scan(&encoded); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		policy = &isolation.Policy{}
@@ -137,7 +140,7 @@ func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tr
 
 func (s *Service) requireNativeLease(c echo.Context) error {
 	scope := nativeRequestScope(c)
-	return requireLeaseRunner(c.Request().Context(), s.database.db, tracker.LeaseID(c.Param("lease")), scope)
+	return requireLeaseRunner(c.Request().Context(), s.database.reader, tracker.LeaseID(c.Param("lease")), scope)
 }
 
 func (s *Service) renewNativeLease(c echo.Context) error {
@@ -173,6 +176,8 @@ func (s *Service) releaseNativeLease(c echo.Context) error {
 	if err := s.database.Release(c.Request().Context(), tracker.ReleaseRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, Reason: request.Reason}); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	s.notifyNativeDispatch(c.Request().Context(), nativeRequestScope(c), request)
+	s.startSpritePoolForQueue(nativeRequestScope(c))
 	if s.conversations != nil {
 		s.conversations.leaseReleased(c.Request().Context(), tracker.LeaseID(c.Param("lease")))
 	}
@@ -196,6 +201,8 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 		// serves no surface and is never handed a workspace item.
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
+		Skills                *[]skills.ProviderSkill        `json:"skills,omitempty"`
+		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
@@ -222,10 +229,21 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 			if err := updateRunnerWorkspaceReport(ctx, tx, scope, request.WorkspaceCapabilities, request.WorkspaceIsolation); err != nil {
 				return nil, err
 			}
+			if err := updateRunnerSkills(ctx, tx, scope, request.Skills, now); err != nil {
+				return nil, err
+			}
+			if err := updateRunnerCheckoutReport(ctx, tx, scope, request.CheckoutRepository, now); err != nil {
+				return nil, err
+			}
 			if err := updateProviderReports(ctx, tx, scope, request.ProviderReports, now); err != nil {
 				return nil, err
 			}
-			return readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID)
+			snapshot, err := readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
+			if err != nil {
+				return nil, err
+			}
+			err = readRunnerClaimState(ctx, tx, scope, &snapshot, now)
+			return snapshot, err
 		})
 	}
 	if request.WorkspaceCapabilities != nil {
@@ -233,6 +251,12 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 	}
 	if len(request.ProviderReports) != 0 {
 		return s.nativeAPIError(c, nativeInvalid("Provider reports require an enrolled runner"))
+	}
+	if request.Skills != nil {
+		return s.nativeAPIError(c, nativeInvalid("Skill reports require an enrolled runner"))
+	}
+	if request.CheckoutRepository != nil && *request.CheckoutRepository != "" {
+		return s.nativeAPIError(c, nativeInvalid("Checkout reports require an enrolled runner"))
 	}
 	result, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartbeat_at, registered_at, updated_at, organization_id, token_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

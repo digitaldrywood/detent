@@ -318,9 +318,6 @@ func (o *Orchestrator) recordProjectFailureBreakerSuccess(state *State, issueID 
 }
 
 func (o *Orchestrator) recordProjectFailureBreakerProgress(state *State, issueID string, at time.Time) {
-	if state != nil && state.FailureBreaker.PreTurn && !state.FailureBreaker.Active() {
-		resetProjectFailureBreaker(&state.FailureBreaker)
-	}
 	if state == nil || !state.FailureBreaker.Active() || strings.TrimSpace(state.FailureBreaker.CanaryIssueID) != strings.TrimSpace(issueID) {
 		return
 	}
@@ -352,14 +349,7 @@ func (o *Orchestrator) recordProjectFailureBreakerEvidence(state *State, failure
 	breaker := &state.FailureBreaker
 	breaker.Config = normalizeFailureBreakerConfig(breaker.Config)
 	limit, cooldown := breaker.Config.SameClassLimit, breaker.Config.Cooldown
-	if breaker.PreTurn {
-		limit = consecutiveRetryCycleLimit
-		if class != workAttemptErrorWorkspace {
-			cooldown = normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery).BreakerCooldown
-		}
-	} else {
-		pruneProjectFailures(breaker, at)
-	}
+	pruneProjectFailures(breaker, at)
 
 	if breaker.Active() && breaker.Class != class {
 		closedClass := breaker.Class
@@ -407,9 +397,6 @@ func (o *Orchestrator) logProjectFailureBreaker(state *State, at time.Time, even
 	recordStateEvent(state, telemetry.ActivityEvent{At: at, Event: event, Message: message})
 	if o.logger != nil {
 		cooldownSource := "agent.failure_breaker.cooldown_seconds"
-		if breaker.PreTurn && breaker.Class != workAttemptErrorWorkspace {
-			cooldownSource = "tracker.blocked_recovery.breaker_cooldown_seconds"
-		}
 		o.logger.Warn(
 			"project failure circuit breaker tripped",
 			"event", event,
@@ -434,7 +421,7 @@ func resetProjectFailureBreaker(breaker *ProjectFailureBreaker) {
 }
 
 func pruneProjectFailures(breaker *ProjectFailureBreaker, now time.Time) {
-	if breaker == nil || breaker.PreTurn {
+	if breaker == nil {
 		return
 	}
 	breaker.Config = normalizeFailureBreakerConfig(breaker.Config)
@@ -460,21 +447,15 @@ func projectAttemptFailureClass(
 	errorClass string,
 	errorMessage string,
 ) string {
-	if issueConfigurationFailure(err, errorClass, errorMessage) {
+	if issueConfigurationFailure(err, errorClass, errorMessage) || instanceFailureClass(normalizeProjectFailureClass(errorClass)) {
 		return ""
 	}
-	combined := strings.ToLower(strings.TrimSpace(errorMessage))
-	if err != nil {
-		combined += "\n" + strings.ToLower(strings.TrimSpace(err.Error()))
+	if capacity, ok := backendcapacity.As(err); ok && capacity != nil {
+		return ""
 	}
-	if errors.Is(err, runpkg.ErrSessionTokenCeilingExceeded) || strings.Contains(combined, "session token ceiling exceeded") {
-		return projectFailureClassSessionTokenCeiling
-	}
-	if command := deliverableFailureCommand(err, combined); command != "" {
-		return projectFailureClassDeliverableCommand + ":" + command
-	}
-	if strings.Contains(combined, "deliverable command failed") {
-		return projectFailureClassDeliverableCommand + ":unknown"
+	var deliverableErr *runpkg.DeliverableCommandError
+	if errors.As(err, &deliverableErr) {
+		return ""
 	}
 	var backendError interface {
 		BackendErrorBody() string
@@ -492,25 +473,18 @@ func projectAttemptFailureClass(
 			return projectFailureClassBackendError + ":" + projectFailureHash(message)
 		}
 	}
-	if class := normalizeProjectFailureClass(errorClass); class == backendcapacity.StartupFailureErrorClass || class == backendcapacity.StartupTimeoutErrorClass {
-		return backendcapacity.StartupFailureErrorClass
-	} else if class != "" && class != workAttemptErrorRunner {
-		return class
+	return ""
+}
+
+// instanceFailureClass reports failures attributed to the runner instance
+// rather than the issue or the project: workspace preparation and backend
+// startup. They retry the issue and never pause project dispatch.
+func instanceFailureClass(class string) bool {
+	switch class {
+	case workAttemptErrorWorkspace, backendcapacity.StartupFailureErrorClass, backendcapacity.StartupTimeoutErrorClass:
+		return true
 	}
-	if terminalState == store.WorkAttemptTerminalNoProgress {
-		return projectFailureClassNoProgress
-	}
-	if err == nil && terminalState == store.WorkAttemptTerminalFailure {
-		return projectFailureClassRunnerFinalState + ":" + projectFailureHash(errorMessage)
-	}
-	message := errorMessage
-	if err != nil {
-		message = err.Error()
-	}
-	if strings.TrimSpace(message) == "" {
-		return ""
-	}
-	return projectFailureClassRunnerError + ":" + projectFailureHash(message)
+	return false
 }
 
 func issueConfigurationFailure(err error, errorClass, message string) bool {
@@ -531,31 +505,6 @@ func issueConfigurationFailure(err error, errorClass, message string) bool {
 		}
 	}
 	return false
-}
-
-func deliverableFailureCommand(err error, message string) string {
-	var deliverableErr *runpkg.DeliverableCommandError
-	if errors.As(err, &deliverableErr) && deliverableErr != nil {
-		return normalizeDeliverableFailureCommand(deliverableErr.Operation)
-	}
-	const prefix = "deliverable command failed ("
-	index := strings.Index(message, prefix)
-	if index < 0 {
-		return ""
-	}
-	command := message[index+len(prefix):]
-	if end := strings.Index(command, ")"); end >= 0 {
-		command = command[:end]
-	}
-	return normalizeDeliverableFailureCommand(command)
-}
-
-func normalizeDeliverableFailureCommand(command string) string {
-	command = strings.Join(strings.Fields(strings.TrimSpace(command)), " ")
-	if len(command) > 160 {
-		command = command[:160]
-	}
-	return command
 }
 
 func normalizeProjectFailureClass(value string) string {

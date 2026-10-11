@@ -28,17 +28,6 @@ export interface ComposerSlashContext {
   readonly stop: (() => void) | null;
 }
 
-/**
- * The rows a runner's own skills and prompts would fill.
- *
- * `ServerProviderSlashCommand` is in the contracts and `runtime/providerSkills.ts`
- * knows how to present them, but the hub serves neither yet. The menu says so
- * in a disabled row rather than dropping the feature silently (decisions.md
- * §16) and rather than inventing entries that would not run.
- */
-export const PROVIDER_SKILLS_NOTICE =
-  "Runner skills and prompts appear here once the hub serves them";
-
 /** The commands the composer provides for itself, in the order the menu shows them. */
 export function builtinSlashCommands(context: ComposerSlashContext): readonly SlashCommand[] {
   const commands: SlashCommand[] = [];
@@ -102,7 +91,7 @@ export function resolveSlashCommands(
 ): readonly SlashCommand[] {
   const resolved = [...builtin];
   for (const command of extra) {
-    const index = resolved.findIndex((candidate) => candidate.name === command.name);
+    const index = resolved.findIndex((candidate) => candidate.name.toLowerCase() === command.name.toLowerCase());
     if (index === -1) resolved.push(command);
     else resolved[index] = command;
   }

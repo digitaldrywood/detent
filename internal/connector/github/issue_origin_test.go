@@ -44,12 +44,16 @@ func TestMachineIssueDuplicate(t *testing.T) {
 			})
 			c := newGitHubTestConnector(t, server, Config{Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel})
 			c.machineIssueStore = &machineTestStore{records: map[string]coordination.Record{}}
-			issue, err := c.CreateIssue(t.Context(), connector.IssueDraft{Title: "Disk space", Body: body})
+			issue, err := c.CreateIssue(t.Context(), connector.IssueDraft{Title: "Disk space", Body: body, Labels: []string{"bug"}})
 			if err != nil || issue.PublicationReused != tt.reused {
 				t.Fatalf("CreateIssue() = %+v, %v", issue, err)
 			}
 			requests := server.requests()
-			posted := requests[1]["body"].(map[string]any)["body"].(string)
+			payload := requests[1]["body"].(map[string]any)
+			if tt.reused && (len(requests) != 2 || len(payload) != 1) {
+				t.Fatalf("reuse requests = %+v", requests)
+			}
+			posted := payload["body"].(string)
 			if tt.reused && (!strings.Contains(posted, "New machine occurrence") || issue.Description != tt.existing) {
 				t.Fatalf("duplicate replaced body or lost occurrence: %+v %s", issue, posted)
 			}

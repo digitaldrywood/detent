@@ -1,7 +1,10 @@
 package hubclient
 
 import (
+	"reflect"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -14,12 +17,23 @@ func TestMergeNativeUsage(t *testing.T) {
 	t.Parallel()
 	codex := tracker.NativeUsage{Provider: "codex", Model: "gpt-6-astra", Input: 100, CachedInput: 60, Output: 20, CostEstimate: 0.01, Currency: "USD"}
 	claude := tracker.NativeUsage{Provider: "claude", Model: "claude-opus-5", Input: 40, CachedInput: 10, Output: 5, CostEstimate: 0.02, Currency: "USD"}
+	paid := int64(1000)
+	doubled := int64(2000)
+	paidEntry := codex
+	paidEntry.BillingMode, paidEntry.ReportedCostMicros, paidEntry.CostSource = "metered", &paid, "runner_report"
+	paidTotal := paidEntry
+	paidTotal.Input, paidTotal.CachedInput, paidTotal.Output, paidTotal.CostEstimate, paidTotal.ReportedCostMicros = 200, 120, 40, 0.02, &doubled
+	incomplete := paidTotal
+	incomplete.BillingMode, incomplete.ReportedCostMicros, incomplete.CostSource, incomplete.CostCoverage = "unknown", &paid, "runner_report", "partial"
 	cases := []struct {
 		name     string
 		existing []tracker.NativeUsage
 		entry    tracker.NativeUsage
 		want     []tracker.NativeUsage
 	}{
+
+		{name: "reported turn costs accumulate separately", existing: []tracker.NativeUsage{paidEntry}, entry: paidEntry, want: []tracker.NativeUsage{paidTotal}},
+		{name: "missing mode and partial cost cannot claim a paid attempt total", existing: []tracker.NativeUsage{paidEntry}, entry: codex, want: []tracker.NativeUsage{incomplete}},
 		{name: "first entry", entry: codex, want: []tracker.NativeUsage{codex}},
 		{
 			name:     "same provider and model adds up",
@@ -52,7 +66,7 @@ func TestMergeNativeUsage(t *testing.T) {
 				t.Fatalf("mergeNativeUsage() = %+v, want %+v", got, test.want)
 			}
 			for i := range got {
-				if got[i] != test.want[i] {
+				if !reflect.DeepEqual(got[i], test.want[i]) {
 					t.Fatalf("mergeNativeUsage()[%d] = %+v, want %+v", i, got[i], test.want[i])
 				}
 			}
@@ -103,4 +117,19 @@ func TestNativeExecutionRecordUsage(t *testing.T) {
 	if len(execution.data.Usage) != 1 {
 		t.Fatalf("usage after a nameless report = %+v, want it unchanged", execution.data.Usage)
 	}
+	first := procgroup.Usage{PeakMemoryBytes: 4096, UserCPUSeconds: 1.25, SystemCPUSeconds: 0.5, WallSeconds: 2}
+	execution.RecordProcessUsage(first)
+	snapshot := execution.data.ProcessUsage
+	if snapshot == nil || *snapshot != first {
+		t.Fatalf("recorded process usage = %+v, want %+v", snapshot, first)
+	}
+	execution.RecordProcessUsage(procgroup.Usage{PeakMemoryBytes: 2048, UserCPUSeconds: 2, SystemCPUSeconds: 0.25, WallSeconds: 3})
+	want := procgroup.Usage{PeakMemoryBytes: 4096, UserCPUSeconds: 3.25, SystemCPUSeconds: 0.75, WallSeconds: 5}
+	if got := execution.data.ProcessUsage; got == nil || *got != want {
+		t.Fatalf("accumulated process usage = %+v, want %+v", got, want)
+	}
+	if *snapshot != first {
+		t.Fatalf("earlier process usage changed to %+v, want %+v", *snapshot, first)
+	}
+
 }

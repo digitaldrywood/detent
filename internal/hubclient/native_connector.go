@@ -5,17 +5,22 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 type NativeConnector struct {
-	client *NativeClient
+	client      *NativeClient
+	laneEntries nativeLaneEntries
 }
 
 func NewNativeConnector(client *NativeClient) (*NativeConnector, error) {
@@ -65,11 +70,28 @@ func (c *NativeConnector) WorkflowStates(ctx context.Context) ([]connector.Workf
 }
 
 func (c *NativeConnector) FetchIssuesByStates(ctx context.Context, states []string) ([]connector.Issue, error) {
+	if native, supported, err := c.client.heartbeatIssues(ctx); supported {
+		if err != nil {
+			return nil, err
+		}
+		var issues []connector.Issue
+		for _, item := range native {
+			if item.Archived || !slices.Contains(states, item.State) {
+				continue
+			}
+			issue, err := c.issueWithLanding(ctx, item)
+			if err != nil {
+				return nil, err
+			}
+			issues = append(issues, issue)
+		}
+		return issues, nil
+	}
 	var issues []connector.Issue
 	for _, state := range states {
 		cursor := ""
 		for {
-			page, err := c.client.Issues(ctx, url.Values{"state": {state}, "limit": {"2"}, "cursor": {cursor}})
+			page, err := c.client.Issues(ctx, url.Values{"state": {state}, "limit": {"200"}, "cursor": {cursor}})
 			if err != nil {
 				return nil, err
 			}
@@ -94,6 +116,23 @@ func (c *NativeConnector) FetchIssuesByStates(ctx context.Context, states []stri
 }
 
 func (c *NativeConnector) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {
+	if native, supported, err := c.client.heartbeatIssues(ctx); supported {
+		if err != nil {
+			return nil, err
+		}
+		var issues []connector.Issue
+		for _, item := range native {
+			if !slices.Contains(ids, string(item.WorkItemID)) {
+				continue
+			}
+			issue, err := c.issueWithLanding(ctx, item)
+			if err != nil {
+				return nil, err
+			}
+			issues = append(issues, issue)
+		}
+		return issues, nil
+	}
 	issues := make([]connector.Issue, 0, len(ids))
 	for _, id := range ids {
 		issue, err := c.client.Issue(ctx, tracker.NativeWorkItemID(id))
@@ -115,29 +154,244 @@ func (c *NativeConnector) FetchIssueStatesByIDs(ctx context.Context, ids []strin
 
 func (c *NativeConnector) issueWithLanding(ctx context.Context, native tracker.NativeIssue) (connector.Issue, error) {
 	issue := issueFromNative(native)
+	version, versioned := c.client.client.reads.observe(native)
+	if native.IssueContract != nil && native.IssueContract.ReturnState != "" {
+		status := workpad.StatusBlocked
+		if native.IssueContract.HumanAction == "" {
+			status = workpad.StatusInProgress
+		}
+		issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: status, HumanAction: native.IssueContract.HumanAction, RecordedAt: cloneTime(&native.IssueContract.RecordedAt)}
+		issue.BlockerReason = workpad.Reason(issue.WorkpadSignal)
+		issue.Metadata["hub_disposition_return_state"] = native.IssueContract.ReturnState
+	}
+	if strings.EqualFold(native.State, "Blocked") && (native.IssueContract == nil || native.IssueContract.ReturnState == "") {
+		attempts, history, cached := c.client.client.reads.blockerContext(native.WorkItemID, version)
+		if !versioned || !cached {
+			var err error
+			attempts, history, err = c.recordedBlockerContext(ctx, native.WorkItemID)
+			if err != nil {
+				return connector.Issue{}, err
+			}
+			if versioned {
+				c.client.client.reads.storeBlockerContext(native.WorkItemID, version, attempts, history)
+			}
+		}
+		if attempt, prior, valid := tracker.RecordedNativeBlockers(native, attempts, history); valid {
+			disposition := attempt.Disposition
+			signal := &workpad.Signal{Source: workpad.SourceStructured, Status: disposition.Status, ReasonCode: disposition.ReasonCode, Blockers: disposition.BlockerEvidence, RecordedAt: &attempt.UpdatedAt}
+			if disposition.HumanAction {
+				signal.HumanAction = disposition.FinalSummary
+				if signal.HumanAction == "" {
+					signal.HumanAction = "Human action remains required"
+				}
+			}
+			issue.WorkpadSignal = workpad.CloneSignal(signal)
+			for index := range issue.WorkpadSignal.Blockers {
+				blocker := &issue.WorkpadSignal.Blockers[index]
+				if blocker.Predicate == nil || blocker.Predicate.Type != workpad.PredicateIssueState {
+					continue
+				}
+				identifier, err := workpad.ParseRef(blocker.Predicate.Identifier, string(native.ProjectID))
+				if err != nil {
+					blocker.Unverifiable = true
+					continue
+				}
+				blocker.Identifier, blocker.Predicate.Identifier = identifier, identifier
+			}
+			issue.BlockerReason = workpad.Reason(issue.WorkpadSignal)
+			issue.Metadata["hub_disposition_attempt_id"] = attempt.AttemptID
+			issue.Metadata["hub_disposition_return_state"] = prior
+		}
+	}
 	if !native.Terminal {
 		return issue, nil
 	}
-	changes, err := c.client.Changes(ctx, native.WorkItemID)
-	if err != nil {
-		return connector.Issue{}, err
+	changes, cached := c.client.client.reads.itemChanges(native.WorkItemID, version)
+	if !versioned || !cached {
+		var err error
+		changes, err = c.client.Changes(ctx, native.WorkItemID)
+		if err != nil {
+			return connector.Issue{}, err
+		}
+		if versioned {
+			c.client.client.reads.storeChanges(native.WorkItemID, version, changes)
+		}
 	}
 	for _, change := range changes {
-		if change.WorkItemID != native.WorkItemID || change.Landed == nil {
+		landed := change.CurrentLanding()
+		if change.WorkItemID != native.WorkItemID || landed == nil {
 			continue
 		}
-		if change.Landed.HeadSHA == "" || change.Landed.MergeSHA == "" {
+		if landed.HeadSHA == "" || landed.MergeSHA == "" {
 			continue
 		}
-		issue.Metadata["hub_landed_head_sha"] = change.Landed.HeadSHA
-		issue.Metadata["hub_landed_merge_sha"] = change.Landed.MergeSHA
+		issue.Metadata["hub_landed_head_sha"] = landed.HeadSHA
+		issue.Metadata["hub_landed_merge_sha"] = landed.MergeSHA
 	}
 	return issue, nil
 }
 
+func (c *NativeConnector) recordedBlockerContext(ctx context.Context, id tracker.NativeWorkItemID) ([]tracker.NativeAttempt, []tracker.CollaborationEvent, error) {
+	var attempts []tracker.NativeAttempt
+	var history []tracker.CollaborationEvent
+	for cursor := ""; ; {
+		var page tracker.Page[tracker.NativeAttempt]
+		err := c.client.blockerPage(ctx, id, "attempts", cursor, &page)
+		if err != nil {
+			return nil, nil, err
+		}
+		attempts = append(attempts, page.Items...)
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	for cursor := ""; ; {
+		var page tracker.Page[tracker.CollaborationEvent]
+		err := c.client.blockerPage(ctx, id, "history", cursor, &page)
+		if err != nil {
+			return nil, nil, err
+		}
+		history = append(history, page.Items...)
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	return attempts, history, nil
+}
+
+func (c *NativeConnector) FetchIssueStatesByIdentifiers(ctx context.Context, identifiers []string) ([]connector.Issue, error) {
+	var issues []connector.Issue
+	for _, identifier := range identifiers {
+		if strings.HasPrefix(identifier, "wi_") {
+			items, supported, err := c.client.heartbeatIssues(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if supported {
+				found := false
+				for _, item := range items {
+					if string(item.WorkItemID) != identifier {
+						continue
+					}
+					converted, err := c.issueWithLanding(ctx, item)
+					if err != nil {
+						return nil, err
+					}
+					issues = append(issues, converted)
+					found = true
+					break
+				}
+				if found {
+					continue
+				}
+			}
+			var native tracker.NativeIssue
+			err = c.client.client.request(ctx, http.MethodGet, "/api/v2/organizations/"+string(c.client.organization)+"/work-items/"+url.PathEscape(identifier), nil, &native)
+			if err != nil {
+				return nil, err
+			}
+			client, err := c.client.client.Native(c.client.organization, native.ProjectID)
+			if err != nil {
+				return nil, err
+			}
+			converted, err := (&NativeConnector{client: client}).issueWithLanding(ctx, native)
+			if err != nil {
+				return nil, err
+			}
+			issues = append(issues, converted)
+			continue
+		}
+		parsed, err := workpad.ParseRef(identifier, string(c.client.project))
+		if err != nil {
+			return nil, err
+		}
+		project, number, _ := strings.Cut(parsed, "#")
+		if !strings.HasPrefix(project, "prj_") {
+			return nil, errors.New("native dependency reference requires a native project")
+		}
+		client, err := c.client.client.Native(c.client.organization, tracker.ProjectID(project))
+		if err != nil {
+			return nil, err
+		}
+		if native, supported, err := client.heartbeatIssues(ctx); supported {
+			if err != nil {
+				return nil, err
+			}
+			for _, item := range native {
+				if strconv.Itoa(item.Number) == number {
+					converted, err := (&NativeConnector{client: client}).issueWithLanding(ctx, item)
+					if err != nil {
+						return nil, err
+					}
+					issues = append(issues, converted)
+				}
+			}
+			continue
+		}
+		for cursor := ""; ; {
+			page, err := client.Issues(ctx, url.Values{"q": {parsed}, "limit": {"100"}, "cursor": {cursor}})
+			if err != nil {
+				return nil, err
+			}
+			for _, native := range page.Items {
+				if strconv.Itoa(native.Number) == number && native.ProjectID == client.project {
+					converted, err := (&NativeConnector{client: client}).issueWithLanding(ctx, native)
+					if err != nil {
+						return nil, err
+					}
+					issues = append(issues, converted)
+				}
+			}
+			if page.NextCursor == "" {
+				break
+			}
+			cursor = page.NextCursor
+		}
+	}
+	return issues, nil
+}
+
 func nativeMutationKey() tracker.Mutation { return tracker.Mutation{IdempotencyKey: uuid.NewString()} }
 
+func nativeMutationKeyForContext(ctx context.Context) tracker.Mutation {
+	return tracker.MutationForContext(ctx, nativeMutationKey().IdempotencyKey)
+}
+
 func (c *NativeConnector) CreateIssue(ctx context.Context, draft connector.IssueDraft) (connector.Issue, error) {
+	return c.createIssue(ctx, intake.IssueDraft{Title: draft.Title, Body: draft.Body, Labels: draft.Labels}, "")
+}
+
+func (c *NativeConnector) createIssue(ctx context.Context, draft intake.IssueDraft, state string) (connector.Issue, error) {
+	var priority *int
+	if draft.Priority != nil {
+		if *draft.Priority < 1 || *draft.Priority > 4 {
+			return connector.Issue{}, errors.New("priority must be an integer creation rank between 1 and 4")
+		}
+		level := *draft.Priority - 1
+		priority = &level
+	}
+	authority, bound := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
+	hostIntake := state == "Backlog" && bound && authority.scope == c.client.base()
+	if origin, machine := issueorigin.Parse(draft.Body); machine && !hostIntake {
+		existing, found, err := c.findIntakeIssue(ctx, func(issue tracker.NativeIssue) bool {
+			previous, ok := issueorigin.Parse(issue.Body)
+			return !issue.Terminal && ok && previous.Fingerprint == origin.Fingerprint
+		})
+		if err != nil {
+			return connector.Issue{}, err
+		}
+		if found {
+			if err := c.CreateComment(ctx, existing.ID, issueorigin.Occurrence(draft.Body)); err != nil {
+				return connector.Issue{}, err
+			}
+			issue, err := c.client.Issue(ctx, tracker.NativeWorkItemID(existing.ID))
+			result := issueFromNative(issue)
+			result.PublicationReused = true
+			return result, err
+		}
+	}
 	project, err := c.client.Project(ctx)
 	if err != nil {
 		return connector.Issue{}, err
@@ -145,8 +399,86 @@ func (c *NativeConnector) CreateIssue(ctx context.Context, draft connector.Issue
 	if len(project.States) == 0 {
 		return connector.Issue{}, errors.New("native project has no workflow states")
 	}
-	issue, err := c.client.CreateIssue(ctx, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: draft.Title, Body: draft.Body, Labels: draft.Labels, State: project.States[0].Name})
-	return issueFromNative(issue), err
+	if state == "" {
+		state = project.States[0].Name
+	}
+	mutation := nativeMutationKeyForContext(ctx)
+	if hostIntake {
+		mutation.LeaseID = authority.lease.ID
+		mutation.FencingToken = authority.lease.FencingToken
+	}
+	issue, err := c.client.CreateIssue(ctx, tracker.CreateIssue{Mutation: mutation, Title: draft.Title, Body: draft.Body, Labels: draft.Labels, State: state, Priority: priority})
+	result := issueFromNative(issue)
+	result.PublicationReused = issue.PublicationReused
+	return result, err
+}
+
+func (c *NativeConnector) FindIntakeIssue(ctx context.Context, marker string) (intake.Issue, bool, error) {
+	marker = strings.TrimSpace(marker)
+	if marker == "" {
+		return intake.Issue{}, false, nil
+	}
+	return c.findIntakeIssue(ctx, func(issue tracker.NativeIssue) bool { return strings.Contains(issue.Body, marker) })
+}
+
+func (c *NativeConnector) findIntakeIssue(ctx context.Context, match func(tracker.NativeIssue) bool) (intake.Issue, bool, error) {
+	var closed intake.Issue
+	cursor := ""
+	for {
+		page, err := c.client.Issues(ctx, url.Values{"limit": {"20"}, "cursor": {cursor}})
+		if err != nil {
+			return intake.Issue{}, false, err
+		}
+		for _, issue := range page.Items {
+			if issue.Archived || !match(issue) {
+				continue
+			}
+			result := nativeIntakeIssue(issueFromNative(issue))
+			if !result.Closed {
+				return result, true, nil
+			}
+			if result.Number > closed.Number {
+				closed = result
+			}
+		}
+		connector.ReportProgress(ctx)
+		if page.NextCursor == "" {
+			return closed, closed.ID != "", nil
+		}
+		if page.NextCursor == cursor {
+			return intake.Issue{}, false, errors.New("hub repeated issue cursor")
+		}
+		cursor = page.NextCursor
+	}
+}
+
+func (c *NativeConnector) CreateIntakeIssue(ctx context.Context, draft intake.IssueDraft) (intake.Issue, error) {
+	issue, err := c.createIssue(ctx, draft, "Backlog")
+	return nativeIntakeIssue(issue), err
+}
+
+func (c *NativeConnector) UpdateIntakeIssue(ctx context.Context, id string, draft intake.IssueDraft) (intake.Issue, error) {
+	issue, err := c.client.Issue(ctx, tracker.NativeWorkItemID(id))
+	if err != nil {
+		return intake.Issue{}, err
+	}
+	labels := slices.Clone(issue.Labels)
+	for _, label := range draft.Labels {
+		if !slices.Contains(labels, label) {
+			labels = append(labels, label)
+		}
+	}
+	body := issueorigin.Preserve(draft.Body, issue.Body)
+	updated, err := c.client.UpdateIssue(ctx, issue.WorkItemID, tracker.UpdateIssue{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: issue.Revision, Title: &draft.Title, Body: &body, Labels: &labels})
+	return nativeIntakeIssue(issueFromNative(updated)), err
+}
+
+func (c *NativeConnector) SetIntakeIssueState(ctx context.Context, id, state string) error {
+	return c.UpdateIssueState(ctx, id, state)
+}
+
+func nativeIntakeIssue(issue connector.Issue) intake.Issue {
+	return intake.Issue{State: issue.State, ID: issue.ID, Identifier: issue.Identifier, Number: issue.Number, URL: issue.URL, Body: issue.Description, Closed: issue.Closed, Reused: issue.PublicationReused}
 }
 
 // ChangeReviewed reports whether the given version is the change's current
@@ -162,7 +494,7 @@ func (c *NativeConnector) ChangeReviewed(ctx context.Context, issueID, changeID,
 }
 
 func (c *NativeConnector) CreateComment(ctx context.Context, id, body string) error {
-	_, err := c.client.CreateComment(ctx, tracker.NativeWorkItemID(id), tracker.CreateComment{Mutation: nativeMutationKey(), Body: body})
+	_, err := c.client.CreateComment(ctx, tracker.NativeWorkItemID(id), tracker.CreateComment{Mutation: nativeMutationKeyForContext(ctx), Body: body})
 	return err
 }
 
@@ -171,10 +503,35 @@ func (c *NativeConnector) UpdateIssueState(ctx context.Context, id, state string
 	if err != nil {
 		return err
 	}
+	expected := tracker.ExpectedRevision(ctx)
+	if expected > 0 && expected != issue.Revision {
+		return errors.New("native issue revision is stale")
+	}
+	if expected <= 0 {
+		expected = issue.Revision
+	}
 	if issue.State == state {
 		return nil
 	}
-	_, err = c.client.Transition(ctx, issue.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: issue.Revision, State: state, Reason: "worker_progress"})
+	request := tracker.Transition{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: expected, State: state, Reason: "worker_progress", ReasonDetail: connector.LaneTransitionReason(ctx)}
+	reason := strings.ReplaceAll(request.ReasonDetail, " ", "_")
+	if reason == "recorded_blocker_recovery" || reason == "dependency_auto_unblock" {
+		attempts, history, readErr := c.recordedBlockerContext(ctx, issue.WorkItemID)
+		if readErr != nil {
+			return readErr
+		}
+		if attempt, prior, valid := tracker.RecordedNativeBlockers(issue, attempts, history); valid && prior == state {
+			approval, err := c.client.ProjectPolicy(ctx)
+			if err != nil {
+				return err
+			}
+			request.Reason = "dependency_ready"
+			request.PolicyID = approval.Policy.ID
+			request.BlockerAttemptID = attempt.AttemptID
+			request.LeaseID, request.FencingToken = attempt.LeaseID, attempt.FencingToken
+		}
+	}
+	_, err = c.client.Transition(ctx, issue.WorkItemID, request)
 	return err
 }
 
@@ -187,7 +544,7 @@ func (c *NativeConnector) SetAssignee(ctx context.Context, id, login string) err
 	if login != "" {
 		assignees = append(assignees, login)
 	}
-	_, err = c.client.UpdateIssue(ctx, issue.WorkItemID, tracker.UpdateIssue{Mutation: nativeMutationKey(), ExpectedRevision: issue.Revision, Assignees: &assignees})
+	_, err = c.client.UpdateIssue(ctx, issue.WorkItemID, tracker.UpdateIssue{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: issue.Revision, Assignees: &assignees})
 	return err
 }
 
@@ -202,7 +559,7 @@ func (c *NativeConnector) SetField(ctx context.Context, id, field, value string)
 	if err != nil {
 		return err
 	}
-	request := tracker.UpdateIssue{Mutation: nativeMutationKey(), ExpectedRevision: issue.Revision}
+	request := tracker.UpdateIssue{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: issue.Revision}
 	switch field {
 	case "title":
 		request.Title = &value
@@ -226,6 +583,10 @@ func (c *NativeConnector) UpdateIssueBody(ctx context.Context, id, body string) 
 }
 
 func (c *NativeConnector) FetchIssueComments(ctx context.Context, issue connector.Issue) ([]connector.IssueComment, error) {
+	cachedComments, version, cached := c.client.client.reads.itemComments(tracker.NativeWorkItemID(issue.ID))
+	if cached {
+		return cachedComments, nil
+	}
 	var comments []connector.IssueComment
 	cursor := ""
 	for {
@@ -252,6 +613,7 @@ func (c *NativeConnector) FetchIssueComments(ctx context.Context, issue connecto
 		}
 		cursor = page.NextCursor
 	}
+	c.client.client.reads.storeComments(tracker.NativeWorkItemID(issue.ID), version, comments)
 	return comments, nil
 }
 
@@ -268,7 +630,7 @@ func (c *NativeConnector) UpdateIssueComment(ctx context.Context, id, commentID,
 		}
 		for _, comment := range page.Items {
 			if comment.ID == commentID {
-				_, err := c.client.UpdateComment(ctx, tracker.NativeWorkItemID(id), commentID, tracker.UpdateComment{Mutation: nativeMutationKey(), ExpectedRevision: comment.Revision, Body: body})
+				_, err := c.client.UpdateComment(ctx, tracker.NativeWorkItemID(id), commentID, tracker.UpdateComment{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: comment.Revision, Body: body})
 				return err
 			}
 		}
@@ -318,7 +680,7 @@ func (c *NativeConnector) dependency(ctx context.Context, id, blockerID, operati
 	if err != nil {
 		return err
 	}
-	_, err = c.client.Dependency(ctx, issue.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: issue.Revision, RelatedWorkItemID: tracker.NativeWorkItemID(blockerID), Operation: operation})
+	_, err = c.client.Dependency(ctx, issue.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: issue.Revision, RelatedWorkItemID: tracker.NativeWorkItemID(blockerID), Operation: operation})
 	return err
 }
 
@@ -330,10 +692,12 @@ func nativeIssueIdentifier(native tracker.NativeIssue) string {
 
 func issueFromNative(native tracker.NativeIssue) connector.Issue {
 	issue := connector.NewIssue()
+	issue.IssueContract = native.IssueContract
 	issue.ID = string(native.WorkItemID)
 	issue.Identifier = nativeIssueIdentifier(native)
 	issue.Number = native.Number
 	issue.Title, issue.Description, issue.State = native.Title, native.Body, native.State
+	issue.DependencySource = connector.BlockedRefSourceNative
 	issue.AuthorID = native.Actor.PrincipalID
 	issue.Closed = native.Terminal
 	issue.Labels, issue.Assignees = native.Labels, native.Assignees
@@ -355,10 +719,30 @@ func issueFromNative(native tracker.NativeIssue) connector.Issue {
 		if blocker.Terminal {
 			state = "closed"
 		}
-		issue.BlockedBy = append(issue.BlockedBy, connector.BlockedRef{ID: string(blocker.ID), Identifier: string(blocker.ID), State: blocker.State, TrackerState: state, Source: connector.BlockedRefSourceNative})
+		identifier := blocker.Identifier
+		if identifier == "" {
+			identifier = string(blocker.ID)
+		}
+		issue.BlockedBy = append(issue.BlockedBy, connector.BlockedRef{ID: string(blocker.ID), Identifier: identifier, State: blocker.State, TrackerState: state, Source: connector.BlockedRefSourceNative})
 	}
 	if native.Provenance != nil {
 		issue.AuthorID = strings.TrimSpace(native.Provenance.AuthorID)
 	}
 	return issue
+}
+
+func (c *NativeConnector) DispatchProjectRank() int {
+	r := c.client.client.runner
+	if r == nil {
+		return 2147483647
+	}
+	r.routingMu.Lock()
+	defer r.routingMu.Unlock()
+	if r.routing == nil {
+		return 2147483647
+	}
+	if rank, ok := r.routing.Routing.ProjectRanks[c.client.project]; ok {
+		return rank
+	}
+	return 2147483647
 }

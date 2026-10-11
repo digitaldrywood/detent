@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -78,6 +79,14 @@ func TestTurnStateEmitsToolContent(t *testing.T) {
 	if updates[1].Type != runner.AgentUpdateToolOutput || updates[1].ItemID != "tool-1" || updates[1].Delta != "ok package" {
 		t.Fatalf("tool output = %#v", updates[1])
 	}
+	var failed runner.AgentUpdate
+	if err := state.emitContentBlock(contentBlock{Type: "tool_result", ToolUseID: "failed", IsError: true, Content: json.RawMessage(`"private command failure"`)}, "", func(u runner.AgentUpdate) error { failed = u; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if failed.Status != "failed" {
+		t.Fatalf("failed result status=%s", failed.Status)
+	}
+
 }
 
 func TestTurnStateDoesNotRepeatPartialToolStart(t *testing.T) {
@@ -151,6 +160,34 @@ func TestTurnStatePreservesShellCommands(t *testing.T) {
 				}
 			} else if len(commands) != 1 || commands[0] != tt.want {
 				t.Fatalf("commands = %v, want %q once", commands, tt.want)
+			}
+		})
+	}
+}
+
+func TestTurnStateResultCost(t *testing.T) {
+	t.Parallel()
+	zero, paid := int64(0), int64(123_456)
+	for _, test := range []struct {
+		name, raw string
+		want      *int64
+	}{
+		{name: "missing is unknown", raw: `{"type":"result"}`},
+		{name: "explicit zero is known", raw: `{"type":"result","total_cost_usd":0}`, want: &zero},
+		{name: "provider amount preserves micros", raw: `{"type":"result","total_cost_usd":0.123456}`, want: &paid},
+		{name: "negative amount is unavailable", raw: `{"type":"result","total_cost_usd":-1}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var event claudeEvent
+			if err := json.Unmarshal([]byte(test.raw), &event); err != nil {
+				t.Fatal(err)
+			}
+			state := turnState{}
+			if err := state.applyResult(event, nil); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(state.reportedCostMicros, test.want) {
+				t.Fatalf("reported cost: %v, want %v", state.reportedCostMicros, test.want)
 			}
 		})
 	}

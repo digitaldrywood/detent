@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -120,6 +121,20 @@ func readConversationConfig(section *hostedConversationFileConfig, buildCodex co
 		config.Backend = backend
 		config.Model = genkitbackend.Model
 		config.ReasoningEffort = "low"
+		if section.Codex != nil {
+			config.Workspace = strings.TrimSpace(section.Workspace)
+		}
+		modelBackend := sync.OnceValues(func() (hubserver.ConversationConfig, error) {
+			if section.Codex == nil {
+				return hubserver.ConversationConfig{}, errors.New("conversation coordinator model backend is unavailable")
+			}
+			modelConfig, _, err := readConversationConfig(section, buildCodex, stat, func(string) string { return "" })
+			return modelConfig, err
+		})
+		config.ModelBackend = func() (runnerpkg.AgentBackend, string, error) {
+			modelConfig, err := modelBackend()
+			return modelConfig.Backend, modelConfig.Workspace, err
+		}
 		return config, true, nil
 	}
 	if section.Codex == nil {

@@ -188,28 +188,38 @@ func (o *Orchestrator) recoverBlockedIssues(
 	transitioned := map[string]struct{}{}
 	autoPromoteCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	recoveryCfg := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery)
-	sourceStates := mergeStateLists([]string{blockedStatusState}, recoveryCfg.SourceStates)
-	for _, issue := range issuesInStates(issues, sourceStates) {
+	sourceStates := mergeStateLists([]string{blockedStatusState, o.cfg.StopRunTargetState}, recoveryCfg.SourceStates)
+	issues = issuesInStates(issues, sourceStates)
+	dependencies := o.resolveBlockedRecoveryDependencies(ctx, state, issues)
+	for _, issue := range issues {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
 			continue
 		}
-		if normalizeState(issue.State) == normalizeState(blockedStatusState) &&
-			o.recoverCauseBlockedIssue(ctx, state, issue, now) {
+		if (normalizeState(issue.State) == normalizeState(blockedStatusState) || issue.IssueContract != nil && issue.IssueContract.ReturnState != "") &&
+			o.recoverCauseBlockedIssue(ctx, state, issue, now, dependencies[issue.ID]) {
 			transitioned[issueID] = struct{}{}
+			dependencies = nil
 			continue
 		}
-		if park, ok := o.latestReworkBreakerPark(ctx, issue); normalizeState(issue.State) == normalizeState(blockedStatusState) && autoPromoteCfg.Enabled && ok {
-			if reworkBreakerAutoUnparkConsumed(park.Timeline, park.Signature) ||
-				!reworkBreakerAutoUnparkReady(issue, park, o.cfg.TerminalStates) ||
-				!o.reworkBreakerAutoPromoteGateReady(ctx, state, issue, autoPromoteCfg, now) {
+		if evidence := dependencies[issue.ID]; evidence != nil {
+			issue = evidence.issue
+			issue.BlockedBy = dependencyResolvedBlockerRefs(evidence.blockers)
+		}
+		if normalizeState(issue.State) == normalizeState(blockedStatusState) && autoPromoteCfg.Enabled {
+			if park, ok := o.latestReworkBreakerPark(ctx, issue); ok {
+				if reworkBreakerAutoUnparkConsumed(park.Timeline, park.Signature) ||
+					!reworkBreakerAutoUnparkReady(issue, park, o.cfg.TerminalStates) ||
+					!o.reworkBreakerAutoPromoteGateReady(ctx, state, issue, autoPromoteCfg, now) {
+					continue
+				}
+				if !o.applyReworkBreakerAutoUnpark(ctx, state, issue, park, autoPromoteCfg.PassState, now) {
+					continue
+				}
+				transitioned[issueID] = struct{}{}
+				dependencies = nil
 				continue
 			}
-			if !o.applyReworkBreakerAutoUnpark(ctx, state, issue, park, autoPromoteCfg.PassState, now) {
-				continue
-			}
-			transitioned[issueID] = struct{}{}
-			continue
 		}
 		if !recoveryCfg.Enabled || !stateIn(issue.State, recoveryCfg.SourceStates) {
 			continue
@@ -244,12 +254,79 @@ func (o *Orchestrator) recoverBlockedIssues(
 			continue
 		}
 		transitioned[issueID] = struct{}{}
+		dependencies = nil
 	}
 	attributeHeldBlockedRecoveryRoots(state)
 	if len(transitioned) == 0 {
 		return nil
 	}
 	return transitioned
+}
+
+type blockedRecoveryDependencyEvidence struct {
+	issue          connector.Issue
+	workpadRefs    []connector.BlockedRef
+	workpadCurrent bool
+	blockers       []dependencyBlocker
+	references     map[string]connector.Issue
+}
+
+func (o *Orchestrator) resolveBlockedRecoveryDependencies(ctx context.Context, state *State, issues []connector.Issue) map[string]*blockedRecoveryDependencyEvidence {
+	if _, ok := o.connector.(connector.IssueReferenceResolver); !ok {
+		return nil
+	}
+	cohort := make(map[string]*blockedRecoveryDependencyEvidence)
+	var refs []connector.BlockedRef
+	for _, issue := range issues {
+		if strings.TrimSpace(issue.ID) == "" || normalizeState(issue.State) != normalizeState(blockedStatusState) || o.currentBlockedOperatorStop(ctx, state, issue) {
+			continue
+		}
+		original := issue
+		issue, workpadRefs, current := o.issueWithCurrentWorkpadDependencyRefs(ctx, o.issueWithDependencyRefs(issue))
+		cohort[issue.ID] = &blockedRecoveryDependencyEvidence{issue: issue, workpadRefs: workpadRefs, workpadCurrent: current}
+		refs = append(refs, issue.BlockedBy...)
+		if signal, _ := rawIssueWorkpadSignal(issue); signal != nil && signal.Invalid == nil && signal.Status == workpad.StatusBlocked && (original.WorkpadSignal == nil || len(original.WorkpadSignal.Blockers) == 0 || current) {
+			authority := issue
+			authority.WorkpadSignal = signal
+			for _, blocker := range authority.WithNativeWorkpadAuthority().WorkpadSignal.Blockers {
+				if blocker.Predicate != nil && normalizedIssueIdentifier(blocker.Predicate.Identifier) != normalizedIssueIdentifier(issue.Identifier) {
+					refs = append(refs, connector.BlockedRef{Identifier: blocker.Predicate.Identifier})
+				}
+			}
+		}
+	}
+	pending := connector.Issue{}
+	for _, ref := range refs {
+		if identifier := strings.TrimSpace(ref.Identifier); identifier != "" {
+			pending.BlockedBy = append(pending.BlockedBy, connector.BlockedRef{Identifier: identifier})
+		}
+	}
+	resolved, err := o.resolveDependencyBlockersWithError(ctx, pending)
+	if err != nil {
+		return nil
+	}
+	var fresh []connector.Issue
+	references := make(map[string]connector.Issue)
+	for _, blocker := range resolved {
+		if blocker.Resolved {
+			fresh = append(fresh, blocker.Issue)
+			references[normalizedIssueIdentifier(blocker.Issue.Identifier)] = blocker.Issue
+		}
+	}
+	for _, evidence := range cohort {
+		evidence.references = references
+		for _, ref := range evidence.issue.BlockedBy {
+			ref.Identifier = strings.TrimSpace(ref.Identifier)
+			ref.ID = strings.TrimSpace(ref.ID)
+			ref.State = strings.TrimSpace(ref.State)
+			if strings.TrimSpace(ref.Identifier) == "" && strings.TrimSpace(ref.ID) == "" {
+				continue
+			}
+			evidence.blockers = append(evidence.blockers, dependencyBlocker{Ref: ref})
+		}
+		evidence.blockers = dependencyBlockersWithIssues(evidence.blockers, fresh)
+	}
+	return cohort
 }
 
 func attributeHeldBlockedRecoveryRoots(state *State) {
@@ -550,7 +627,7 @@ func (o *Orchestrator) reworkBreakerAutoPromoteGateReady(
 	issueID := strings.TrimSpace(issue.ID)
 	summary := AutoPromoteSummaryFromIssue(issue)
 	summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issueID)
-	summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issueID)
+	summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue)
 	summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
 	decision := EvaluateAutoPromote(issue, summary, cfg, now)
 	if decision.Reason == AutoPromoteReasonValidatorMissing {
@@ -623,7 +700,7 @@ func reworkBreakerAutoUnparkComment(issue connector.Issue, park reworkBreakerPar
 	b.WriteString(" after the original merge-path condition cleared.")
 	b.WriteString("\n\nPark reason: ")
 	b.WriteString(string(park.Reason))
-	b.WriteString(fmt.Sprintf("\nLinked PR: #%d", park.PRNumber))
+	fmt.Fprintf(&b, "\nLinked PR: #%d", park.PRNumber)
 	if issue.PullRequest != nil && strings.TrimSpace(issue.PullRequest.URL) != "" {
 		b.WriteString(" ")
 		b.WriteString(strings.TrimSpace(issue.PullRequest.URL))
@@ -742,7 +819,7 @@ func blockedRecoveryComment(issue connector.Issue, targetState string, decision 
 		b.WriteString(")")
 	}
 	if pr := issue.PullRequest; pr != nil && pr.Number > 0 {
-		b.WriteString(fmt.Sprintf("\nLinked PR: #%d", pr.Number))
+		fmt.Fprintf(&b, "\nLinked PR: #%d", pr.Number)
 		if url := strings.TrimSpace(pr.URL); url != "" {
 			b.WriteString(" ")
 			b.WriteString(url)
@@ -774,7 +851,7 @@ func blockedRecoveryExhaustedComment(
 	b.WriteString("\nMatched recovery event: ")
 	b.WriteString(workflowTimelineEventLabel(match.Event))
 	if pr := issue.PullRequest; pr != nil && pr.Number > 0 {
-		b.WriteString(fmt.Sprintf("\nLinked PR: #%d", pr.Number))
+		fmt.Fprintf(&b, "\nLinked PR: #%d", pr.Number)
 		if url := strings.TrimSpace(pr.URL); url != "" {
 			b.WriteString(" ")
 			b.WriteString(url)

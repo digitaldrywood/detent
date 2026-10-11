@@ -17,12 +17,19 @@ func TestLaunchdPlistIncludesRuntimeSettings(t *testing.T) {
 		BinaryPath: "/Applications/Detent & Tools/detent",
 		Arguments:  []string{"--config", "/Users/name/Library/Application Support/Detent/global.yaml", "--headless"},
 		HomeDir:    "/Users/name & operator",
+		ConfigPath: "/Users/name & operator/.config/detent-runner/global.yaml",
 		Path:       "/Users/name/bin:/usr/bin",
 	})
 	for _, want := range []string{
 		"<string>/Applications/Detent &amp; Tools/detent</string>",
 		"<string>--config</string>",
 		"<string>/Users/name/Library/Application Support/Detent/global.yaml</string>",
+		"<key>StandardOutPath</key>",
+		"<string>/Users/name &amp; operator/.config/detent-runner/logs/service.out.log</string>",
+		"<key>StandardErrorPath</key>",
+		"<string>/Users/name &amp; operator/.config/detent-runner/logs/service.err.log</string>",
+		"<key>ThrottleInterval</key>",
+		"<integer>60</integer>",
 		"<key>RunAtLoad</key>",
 		"<key>SuccessfulExit</key>",
 		"<string>/Users/name/bin:/usr/bin</string>",
@@ -118,12 +125,18 @@ func TestLaunchdInstallWritesDefinition(t *testing.T) {
 		UID:              "501",
 		LaunchdPlistPath: path,
 		BinaryPath:       "/usr/local/bin/detent",
-		ConfigPath:       "/Users/name/.config/detent/global.yaml",
+		ConfigPath:       filepath.Join(t.TempDir(), "global.yaml"),
 	})
 	manager := newLaunchdManager(cfg)
 	definition, err := manager.Install(t.Context())
 	if err != nil {
 		t.Fatalf("Install() error = %v", err)
+	}
+	for _, logPath := range []string{definition.StandardOutPath, definition.StandardErrorPath} {
+		info, err := os.Stat(logPath)
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("service log %s: info=%v err=%v", logPath, info, err)
+		}
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -174,5 +187,53 @@ func TestLaunchdState(t *testing.T) {
 		if got := launchdState(tt.output); got != tt.want {
 			t.Errorf("launchdState(%q) = %q, want %q", tt.output, got, tt.want)
 		}
+	}
+}
+
+func TestLaunchdBootstrapFailureDiagnosesDisabledLabel(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, disabled string
+		queryErr       bool
+		wantHint       bool
+	}{
+		{name: "runner disabled", disabled: "disabled services = {\n\t\"com.digitaldrywood.detent.runner\" => disabled\n}", wantHint: true},
+		{name: "board disabled only", disabled: "disabled services = {\n\t\"com.digitaldrywood.detent\" => disabled\n}"},
+		{name: "runner enabled", disabled: "disabled services = {\n\t\"com.digitaldrywood.detent.runner\" => enabled\n}"},
+		{name: "query fails", queryErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			bootstrapErr := errors.New("Bootstrap failed: 5: Input/output error")
+			manager := newLaunchdManager(normalizeConfig(Config{
+				Name: "detent.runner", UID: "501", HomeDir: t.TempDir(),
+				RunCommand: func(_ context.Context, name string, args ...string) (string, error) {
+					switch args[0] {
+					case "print":
+						return "Could not find service", errors.New("exit status 113")
+					case "bootstrap":
+						return "", bootstrapErr
+					case "print-disabled":
+						if !reflect.DeepEqual(args, []string{"print-disabled", "gui/501"}) {
+							t.Fatalf("command = %s %v", name, args)
+						}
+						if test.queryErr {
+							return "", errors.New("query failed")
+						}
+						return test.disabled, nil
+					default:
+						t.Fatalf("unexpected command = %s %v", name, args)
+						return "", nil
+					}
+				},
+			}))
+			err := manager.Start(t.Context())
+			if !errors.Is(err, bootstrapErr) {
+				t.Fatalf("err = %v; lost bootstrap failure", err)
+			}
+			if got := strings.Contains(err.Error(), "launchctl enable gui/501/com.digitaldrywood.detent.runner"); got != test.wantHint {
+				t.Fatalf("err = %v, want disabled hint %v", err, test.wantHint)
+			}
+		})
 	}
 }

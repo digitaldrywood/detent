@@ -96,6 +96,26 @@ func TestRemoveLegacy(t *testing.T) {
 	}
 }
 
+func TestRemoveLegacyContextCancellation(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, ".detent", "cache")
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(cache, "entry")
+	if err := os.WriteFile(entry, []byte("preserved"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, _, err := RemoveLegacyContext(ctx, root); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cleanup error = %v, want cancellation", err)
+	}
+	if content, err := os.ReadFile(entry); err != nil || string(content) != "preserved" {
+		t.Fatalf("cancelled cleanup changed entry: %q, %v", content, err)
+	}
+}
+
 func TestRemoveLegacyReadOnlyDirectories(t *testing.T) {
 	for _, tt := range []struct {
 		name string
@@ -184,7 +204,7 @@ func TestRemoveLegacyChmodFailure(t *testing.T) {
 				}
 			}
 			calls := 0
-			reclaimed, _, err := removeLegacy(root, func(workspace *os.Root, path string, mode os.FileMode) error {
+			reclaimed, _, err := removeLegacy(t.Context(), root, func(workspace *os.Root, path string, mode os.FileMode) error {
 				if path == ".detent/cache/a-blocked" {
 					calls++
 					return &os.PathError{Op: "chmod", Path: path, Err: os.ErrPermission}
@@ -459,7 +479,8 @@ func TestPolicyCapacity(t *testing.T) {
 		capacity       uint64
 		explicit, want int64
 	}{
-		{"reference volume", 1858 << 30, 0, int64(uint64(1858<<30) / 10)},
+		{"reference volume", 1858 << 30, 0, 40 << 30},
+		{"small volume", 256 << 30, 0, int64(uint64(256<<30) / 10)},
 		{"unavailable", 0, 0, 20 << 30}, {"explicit", 1858 << 30, 123, 123}, {"explicit unavailable", 0, 123, 123},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

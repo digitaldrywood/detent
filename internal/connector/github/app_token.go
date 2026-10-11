@@ -11,15 +11,19 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 const (
@@ -32,6 +36,7 @@ type InstallationTokenConfig struct {
 	Endpoint       string
 	AppID          string
 	InstallationID string
+	Repository     string
 	PrivateKey     string
 	PrivateKeyPath string
 	HTTPClient     HTTPClient
@@ -40,16 +45,18 @@ type InstallationTokenConfig struct {
 }
 
 type InstallationTokenSource struct {
-	endpoint       string
-	appID          string
-	installationID string
-	privateKey     string
-	httpClient     HTTPClient
-	now            func() time.Time
-	mu             sync.Mutex
-	cachedToken    string
-	expiresAt      time.Time
-	details        InstallationTokenDetails
+	endpoint          string
+	appID             string
+	installationID    string
+	repository        string
+	privateKey        string
+	httpClient        HTTPClient
+	now               func() time.Time
+	mu                sync.Mutex
+	cachedToken       string
+	expiresAt         time.Time
+	details           InstallationTokenDetails
+	unscopedRESTScope *connector.RESTScope
 }
 
 type InstallationTokenDetails struct {
@@ -64,7 +71,37 @@ type InstallationRepository struct {
 	FullName string
 }
 
+type appTokenSource struct {
+	source *InstallationTokenSource
+}
+
+func NewAppTokenSource(cfg InstallationTokenConfig) (TokenSource, error) {
+	source, err := newAppTokenSource(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return appTokenSource{source: source}, nil
+}
+
+func (s appTokenSource) Token(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return s.source.jwt(s.source.now())
+}
+
 func NewInstallationTokenSource(cfg InstallationTokenConfig) (*InstallationTokenSource, error) {
+	source, err := newAppTokenSource(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if source.installationID == "" && source.repository == "" {
+		return nil, ErrMissingAppConfig
+	}
+	return source, nil
+}
+
+func newAppTokenSource(cfg InstallationTokenConfig) (*InstallationTokenSource, error) {
 	lookupEnv := cfg.LookupEnv
 	if lookupEnv == nil {
 		lookupEnv = os.Getenv
@@ -84,7 +121,7 @@ func NewInstallationTokenSource(cfg InstallationTokenConfig) (*InstallationToken
 	if err != nil {
 		return nil, err
 	}
-	if appID == "" || installationID == "" || privateKey == "" {
+	if appID == "" || privateKey == "" {
 		return nil, ErrMissingAppConfig
 	}
 
@@ -101,6 +138,7 @@ func NewInstallationTokenSource(cfg InstallationTokenConfig) (*InstallationToken
 		endpoint:       endpoint,
 		appID:          appID,
 		installationID: installationID,
+		repository:     strings.TrimSpace(cfg.Repository),
 		privateKey:     normalizePrivateKey(privateKey),
 		httpClient:     httpClient,
 		now:            now,
@@ -142,6 +180,11 @@ func (s *InstallationTokenSource) TokenDetails(ctx context.Context) (Installatio
 		return InstallationTokenDetails{}, err
 	}
 
+	if s.installationID == "" {
+		if err := s.resolveRepositoryInstallation(ctx, jwt); err != nil {
+			return InstallationTokenDetails{}, err
+		}
+	}
 	details, err := s.requestInstallationToken(ctx, jwt)
 	if err != nil {
 		return InstallationTokenDetails{}, err
@@ -177,6 +220,11 @@ func (s *InstallationTokenSource) jwt(now time.Time) (string, error) {
 }
 
 func (s *InstallationTokenSource) requestInstallationToken(ctx context.Context, jwt string) (InstallationTokenDetails, error) {
+	scope := connector.RESTScopeFromContext(ctx)
+	if scope == nil {
+		scope = s.unscopedRESTScope
+	}
+	attribution := scope.Attribution("app installation tokens", "")
 	endpoint, err := installationTokenURL(s.endpoint, s.installationID)
 	if err != nil {
 		return InstallationTokenDetails{}, err
@@ -191,7 +239,7 @@ func (s *InstallationTokenSource) requestInstallationToken(ctx context.Context, 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
 
-	resp, err := s.httpClient.Do(req)
+	resp, finishHTTP, err := timedHTTPAttempt(attribution, s.httpClient, req, true, true)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return InstallationTokenDetails{}, ctxErr
@@ -199,12 +247,14 @@ func (s *InstallationTokenSource) requestInstallationToken(ctx context.Context, 
 		return InstallationTokenDetails{}, fmt.Errorf("%w: %w", ErrTransient, err)
 	}
 	defer func() {
-		if err := drainAndClose(resp.Body); err != nil {
+		if err := resp.Body.Close(); err != nil {
 			return
 		}
 	}()
 
+	finishHTTP.BeginBody()
 	raw, err := io.ReadAll(resp.Body)
+	finishHTTP.BodyConsumed(err)
 	if err != nil {
 		return InstallationTokenDetails{}, fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
@@ -289,6 +339,10 @@ func normalizePrivateKey(privateKey string) string {
 }
 
 func installationTokenURL(endpoint string, installationID string) (string, error) {
+	return appRESTURL(endpoint, "/app/installations/"+url.PathEscape(installationID)+"/access_tokens")
+}
+
+func appRESTURL(endpoint, path string) (string, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
@@ -303,7 +357,7 @@ func installationTokenURL(endpoint string, installationID string) (string, error
 		basePath = before
 	}
 
-	parsed.Path = strings.TrimRight(basePath, "/") + "/app/installations/" + url.PathEscape(installationID) + "/access_tokens"
+	parsed.Path = strings.TrimRight(basePath, "/") + path
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil
@@ -351,4 +405,88 @@ func parseRSAPrivateKey(raw []byte) (*rsa.PrivateKey, error) {
 		return nil, ErrInvalidPrivateKey
 	}
 	return key, nil
+}
+
+func (s *InstallationTokenSource) resolveRepositoryInstallation(ctx context.Context, jwt string) error {
+	parts := strings.Split(s.repository, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(s.repository, "?#%") {
+		return ErrMissingAppConfig
+	}
+	endpoint, err := appRESTURL(s.endpoint, "/repos/"+url.PathEscape(parts[0])+"/"+url.PathEscape(parts[1])+"/installation")
+	if err != nil {
+		return err
+	}
+	var installation struct {
+		ID int64 `json:"id"`
+	}
+	if err := s.appREST(ctx, jwt, endpoint, &installation); err != nil {
+		return err
+	}
+	if installation.ID <= 0 {
+		return ErrInvalidResponse
+	}
+	s.installationID = strconv.FormatInt(installation.ID, 10)
+	return nil
+}
+
+func (s *InstallationTokenSource) AppSlug(ctx context.Context) (string, error) {
+	jwt, err := s.jwt(s.now())
+	if err != nil {
+		return "", err
+	}
+	endpoint, err := appRESTURL(s.endpoint, "/app")
+	if err != nil {
+		return "", err
+	}
+	var app struct {
+		Slug string `json:"slug"`
+	}
+	if err := s.appREST(ctx, jwt, endpoint, &app); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(app.Slug) == "" {
+		return "", ErrInvalidResponse
+	}
+	return app.Slug, nil
+}
+
+func (s *InstallationTokenSource) RepositoryInstalled(ctx context.Context) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	jwt, err := s.jwt(s.now())
+	if err != nil {
+		return false, err
+	}
+	err = s.resolveRepositoryInstallation(ctx, jwt)
+	var status *StatusError
+	if errors.As(err, &status) && status.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *InstallationTokenSource) appREST(ctx context.Context, jwt, endpoint string, output any) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+jwt)
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
+	attribution := connector.RESTScopeFromContext(ctx).Attribution("app installation tokens", "")
+	response, finish, err := timedHTTPAttempt(attribution, s.httpClient, request, true, true)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	finish.BeginBody()
+	body, err := io.ReadAll(response.Body)
+	finish.BodyConsumed(err)
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusOK {
+		return classifyStatus(response.StatusCode, response.Header, body)
+	}
+	return json.Unmarshal(body, output)
 }

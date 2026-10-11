@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 const appShellTestBody = `<!doctype html><html><head><link rel="icon" href="/static/app/conversation/favicon.svg"><script type="module" crossorigin src="/static/app/conversation/app.js"></script><link rel="stylesheet" crossorigin href="/static/app/conversation/app.css"></head><body><div id="root"></div></body></html>`
@@ -72,19 +73,22 @@ func TestAppShellServing(t *testing.T) {
 		{name: "organization members", account: "owner", path: "/organization/members", status: http.StatusOK, shell: true},
 		{name: "settings", account: "owner", path: "/settings/integration", status: http.StatusOK, shell: true},
 		{name: "fleet", account: "owner", path: "/fleet", status: http.StatusOK, shell: true},
+		{name: "diagnostics", account: "viewer", path: "/diagnostics", status: http.StatusOK, shell: true},
 		{name: "chat", account: "owner", path: "/chat", status: http.StatusOK, shell: true},
 		{name: "viewer", account: "viewer", path: "/work", status: http.StatusOK, shell: true},
 		{name: "head", account: "owner", method: http.MethodHead, path: "/work", status: http.StatusOK, shell: true},
 		{name: "root", account: "owner", path: "/", status: http.StatusOK, shell: true},
-		{name: "project", account: "owner", path: "/projects/prj_any", status: http.StatusOK, shell: true},
-		{name: "project issue", account: "owner", path: "/projects/prj_any/issues/wi_any", status: http.StatusOK, shell: true},
-		{name: "project issue change", account: "owner", path: "/projects/prj_any/issues/wi_any/changes/chg_any", status: http.StatusOK, shell: true},
-		{name: "project changes", account: "owner", path: "/projects/prj_any/changes", status: http.StatusOK, shell: true},
+		{name: "project", account: "owner", path: "/projects/" + f.project + "", status: http.StatusOK, shell: true},
+		{name: "project issue", account: "owner", path: "/projects/" + f.project + "/issues/wi_any", status: http.StatusOK, shell: true},
+		{name: "project issue change", account: "owner", path: "/projects/" + f.project + "/issues/wi_any/changes/chg_any", status: http.StatusOK, shell: true},
+		{name: "project changes", account: "owner", path: "/projects/" + f.project + "/changes", status: http.StatusOK, shell: true},
+		{name: "unknown project", account: "owner", path: "/projects/prj_any", status: http.StatusNotFound},
 		{name: "ungranted project events stay with the hub", account: "viewer", path: "/projects/prj_any/events", status: http.StatusForbidden},
 		{name: "anonymous project", path: "/projects/prj_any", status: http.StatusSeeOther, location: "/login"},
 		{name: "templ organization keeps its page", account: "owner", path: "/organization", status: http.StatusOK},
 		{name: "staff root keeps the organization page", account: "staff", path: "/", status: http.StatusOK},
-		{name: "templ login keeps its page", path: "/login", status: http.StatusOK},
+		{name: "anonymous login serves client", path: "/login", status: http.StatusOK, shell: true},
+		{name: "login error serves client", path: "/login?error=no_membership", status: http.StatusOK, shell: true},
 		{name: "unknown api", account: "owner", path: "/api/v2/unknown", status: http.StatusNotFound},
 		{name: "unknown v1 api", account: "owner", path: "/api/v1/unknown", status: http.StatusNotFound},
 		{name: "reserved auth", account: "owner", path: "/auth/unknown", status: http.StatusNotFound},
@@ -165,6 +169,7 @@ func TestAppSharedEntry(t *testing.T) {
 	useAppClientFS(t, appClientBundle())
 	f := newHostedSharedFixture(t)
 	owner := f.member(t, "owner", "owner", "write")
+	member := f.member(t, "member", "member", "write")
 	viewer := f.member(t, "viewer", "viewer", "read")
 	revoked := f.member(t, "revoked", "member", "read")
 	revocation := `{"bindings":["` + cloudassert.AuthorizationBinding("shared-user_revoked", "org_security", "session_revoked") + `"]}`
@@ -192,11 +197,7 @@ func TestAppSharedEntry(t *testing.T) {
 		{name: "unscoped client route", user: &owner, target: "/work", status: http.StatusNotFound},
 		{name: "unscoped bootstrap", user: &owner, target: "/app/bootstrap", status: http.StatusNotFound},
 		{name: "unscoped static", user: &owner, target: "/static/app/conversation/app.js", status: http.StatusNotFound},
-		{name: "scoped entry script", user: &owner, target: prefix + "/static/app/conversation/app.js", status: http.StatusOK},
-		{name: "scoped SVG favicon", user: &owner, target: prefix + "/static/app/conversation/favicon.svg", status: http.StatusOK, contentType: "image/svg+xml"},
-		{name: "scoped PNG favicon", user: &owner, target: prefix + "/static/app/conversation/favicon-32.png", status: http.StatusOK, contentType: "image/png"},
-		{name: "scoped touch icon", user: &owner, target: prefix + "/static/app/conversation/apple-touch-icon.png", status: http.StatusOK, contentType: "image/png"},
-		{name: "scoped font", user: &owner, target: prefix + "/static/fonts/Geist-Variable.woff2", status: http.StatusOK},
+		{name: "scoped font", user: &owner, target: prefix + "/static/fonts/Geist-Variable.woff2", status: http.StatusOK, contentType: "font/woff2"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := f.serve(t, hostedSharedRequest{user: test.user, target: test.target})
@@ -216,7 +217,7 @@ func TestAppSharedEntry(t *testing.T) {
 	}
 	for _, path := range []string{"/app/bootstrap", "/chat/bootstrap"} {
 		t.Run("bootstrap "+path, func(t *testing.T) {
-			response := f.serve(t, hostedSharedRequest{user: &owner, target: prefix + path})
+			response := f.serve(t, hostedSharedRequest{user: &owner, target: prefix + path, mutate: func(claims *cloudassert.Claims) { claims.PlatformRole = "admin" }})
 			if response.Code != http.StatusOK {
 				t.Fatalf("status = %d: %s", response.Code, response.Body.String())
 			}
@@ -225,16 +226,16 @@ func TestAppSharedEntry(t *testing.T) {
 			if payload.BasePath != prefix || payload.SignInPath != "/organizations?switch=1" || payload.APIBase != "/api/v2/organizations/org_security" || payload.CSRFToken != csrf(owner) {
 				t.Fatalf("bootstrap = %#v", payload)
 			}
-			if payload.Actor.Subject != "user_owner" || payload.Actor.Role != "owner" || len(payload.Projects) != 1 || len(payload.Organizations) != 0 {
+			if payload.Actor.PlatformRole != "admin" || payload.Actor.Subject != "user_owner" || payload.Actor.Role != "owner" || len(payload.Projects) != 1 || len(payload.Organizations) != 0 {
 				t.Fatalf("bootstrap = %#v", payload)
 			}
 		})
 	}
 	t.Run("bootstrap per session csrf", func(t *testing.T) {
-		response := f.serve(t, hostedSharedRequest{user: &viewer, target: prefix + "/app/bootstrap"})
+		response := f.serve(t, hostedSharedRequest{user: &viewer, target: prefix + "/app/bootstrap", mutate: func(claims *cloudassert.Claims) { claims.PlatformRole = "admin" }})
 		var payload appBootstrap
 		decodeHubResponse(t, response, &payload)
-		if payload.CSRFToken != csrf(viewer) || payload.CSRFToken == csrf(owner) {
+		if payload.Actor.PlatformRole != "admin" || payload.Actor.Role != "viewer" || payload.Actor.CanManage || payload.Actor.CanManageRunners || payload.CSRFToken != csrf(viewer) || payload.CSRFToken == csrf(owner) {
 			t.Fatalf("viewer csrf = %q", payload.CSRFToken)
 		}
 	})
@@ -244,13 +245,12 @@ func TestAppSharedEntry(t *testing.T) {
 		}
 	})
 	t.Run("updates", func(t *testing.T) {
-		if response := f.serve(t, hostedSharedRequest{user: &owner, target: prefix + "/app/updates"}); response.Code != http.StatusNotFound {
+		if response := f.serve(t, hostedSharedRequest{user: &member, target: prefix + "/app/updates"}); response.Code != http.StatusNotFound {
 			t.Fatalf("ungranted status = %d: %s", response.Code, response.Body.String())
 		}
 		if response := f.serve(t, hostedSharedRequest{user: &revoked, target: prefix + "/app/updates"}); response.Code != http.StatusUnauthorized {
 			t.Fatalf("revoked status = %d: %s", response.Code, response.Body.String())
 		}
-		f.grant(t, owner, true, true)
 		response := f.serve(t, hostedSharedRequest{user: &owner, target: prefix + "/app/updates"})
 		if response.Code != http.StatusOK {
 			t.Fatalf("status = %d: %s", response.Code, response.Body.String())
@@ -321,7 +321,7 @@ func TestAppBootstrapPayload(t *testing.T) {
 			}
 			for field, want := range map[string]string{
 				"capabilities": `{"coordinator":false,"attachments":false}`,
-				"feature":      `{"conversation":false}`,
+				"feature":      `{"conversation":false,"workspaces":false}`,
 				"preferences":  `{"models":[],"efforts":[],"access":[]}`,
 				"support":      `null`,
 			} {
@@ -416,6 +416,7 @@ func TestRunnerBehind(t *testing.T) {
 		current  string
 		reported string
 		want     bool
+		refused  bool
 	}{
 		{name: "same build", current: "v1.2.3", reported: "v1.2.3"},
 		{name: "older build", current: "v1.2.4", reported: "v1.2.3", want: true},
@@ -423,6 +424,9 @@ func TestRunnerBehind(t *testing.T) {
 		{name: "prerelease of the hub's build", current: "v1.2.4", reported: "v1.2.4-rc.1", want: true},
 		{name: "newer build", current: "v1.2.3", reported: "v1.2.4"},
 		{name: "unprefixed versions", current: "1.2.4", reported: "1.2.3", want: true},
+		{name: "older supported release", current: "v0.117.60", reported: "v0.117.57", want: true},
+		{name: "below supported minimum", current: "v0.117.60", reported: "v0.117.55", want: true, refused: true},
+		{name: "unprefixed below supported minimum", current: "0.117.60", reported: "0.117.55", want: true, refused: true},
 		{name: "not a release version", current: "v1.2.3", reported: "abc123"},
 		{name: "runner never reported", current: "v1.2.3", reported: ""},
 		{name: "runner on a development build", current: "v1.2.3", reported: "dev"},
@@ -432,6 +436,14 @@ func TestRunnerBehind(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+			minimum := minimumRunnerVersion(test.current)
+			wantReason := ""
+			if test.refused {
+				wantReason = "Too old to take work, needs " + minimum
+			}
+			if got := runnerClaimRefusal(minimum, test.reported); got != wantReason {
+				t.Fatalf("claim refusal = %q, want %q", got, wantReason)
+			}
 			if got := runnerBehind(test.current, test.reported); got != test.want {
 				t.Fatalf("runnerBehind(%q, %q) = %v, want %v", test.current, test.reported, got, test.want)
 			}
@@ -478,12 +490,12 @@ func TestAppUpdates(t *testing.T) {
 		t.Fatalf("an unenrolled organization reports %#v", payload)
 	}
 
-	f.service.config.Version = "v1.2.4"
-	behind := enrollAppRunner(t, f, "Athens", "v1.2.3")
-	offline := enrollAppRunner(t, f, "Cairo", "v1.2.3")
-	revoked := enrollAppRunner(t, f, "Delhi", "v1.0.0")
-	up := enrollAppRunner(t, f, "Dublin", "v1.2.4")
-	ahead := enrollAppRunner(t, f, "Essen", "v1.3.0")
+	f.service.config.Version = "v0.117.60"
+	behind := enrollAppRunner(t, f, "Athens", "v0.117.55")
+	offline := enrollAppRunner(t, f, "Cairo", "v0.117.57")
+	revoked := enrollAppRunner(t, f, "Delhi", "v0.110.0")
+	up := enrollAppRunner(t, f, "Dublin", "v0.117.60")
+	ahead := enrollAppRunner(t, f, "Essen", "v0.118.0")
 	stale := formatHubTime(f.service.config.now().Add(-2 * runnerauth.HeartbeatTimeout))
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at = ? WHERE id = ?", stale, offline.RunnerID); err != nil {
 		t.Fatal(err)
@@ -493,24 +505,47 @@ func TestAppUpdates(t *testing.T) {
 	}
 
 	payload = read(t, "owner")
-	if payload.Current != "v1.2.4" || payload.BehindCount != 2 || len(payload.Runners) != 4 {
+	if payload.Current != "v0.117.60" || payload.MinimumRunnerVersion != "0.117.56" || payload.BehindCount != 1 || len(payload.Runners) != 4 {
 		t.Fatalf("report = %#v", payload)
 	}
 	for index, want := range []appUpdateRunner{
-		{RunnerID: behind.RunnerID, DisplayName: "Athens", Version: "v1.2.3", Online: true, Behind: true},
-		{RunnerID: offline.RunnerID, DisplayName: "Cairo", Version: "v1.2.3", Behind: true},
-		{RunnerID: up.RunnerID, DisplayName: "Dublin", Version: "v1.2.4", Online: true},
-		{RunnerID: ahead.RunnerID, DisplayName: "Essen", Version: "v1.3.0", Online: true},
+		{RunnerID: behind.RunnerID, DisplayName: "Athens", Version: "v0.117.55", Online: true, Behind: true, ClaimRefusalReason: "Too old to take work, needs 0.117.56"},
+		{RunnerID: offline.RunnerID, DisplayName: "Cairo", Version: "v0.117.57"},
+		{RunnerID: up.RunnerID, DisplayName: "Dublin", Version: "v0.117.60", Online: true},
+		{RunnerID: ahead.RunnerID, DisplayName: "Essen", Version: "v0.118.0", Online: true},
 	} {
 		if payload.Runners[index] != want {
 			t.Fatalf("runner %d = %#v, want %#v", index, payload.Runners[index], want)
 		}
 	}
 
+	var fleet hostedFleetResponse
+	browserHostedDecode(t, f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/fleet", nil, http.StatusOK), &fleet)
+	if fleet.MinimumRunnerVersion != payload.MinimumRunnerVersion {
+		t.Fatalf("fleet and update minimum differ: %#v, %#v", fleet, payload)
+	}
+	for _, update := range payload.Runners {
+		index := slices.IndexFunc(fleet.Runners, func(runner hostedFleetRunner) bool { return runner.ID == update.RunnerID })
+		if index < 0 || fleet.Runners[index].ClaimRefusalReason != update.ClaimRefusalReason {
+			t.Fatalf("fleet and update refusal differ: %#v, %#v", fleet.Runners, update)
+		}
+	}
+
+	f.service.config.Version = "operator-landed-a69c4b1dd060"
+	operator := read(t, "owner")
+	if operator.Current != f.service.config.Version || operator.Source != "hub" || operator.MinimumRunnerVersion != "" || operator.BehindCount != 0 {
+		t.Fatalf("operator Hub build was reported as a runner release: %#v", operator)
+	}
+	browserHostedDecode(t, f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/fleet", nil, http.StatusOK), &fleet)
+	if fleet.Current != operator.Current || fleet.MinimumRunnerVersion != "" {
+		t.Fatalf("fleet operator build = %#v", fleet)
+	}
+	f.service.config.Version = "v0.117.60"
+
 	heartbeat := "/api/v2/organizations/org_browser_preview/projects/" + f.project + "/machines/" + string(behind.MachineID) + "/heartbeat"
-	browserHostedStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, heartbeat, behind.Credential, map[string]any{"display_name": "Athens", "capacity": 1, "version": "v1.2.4"}), http.StatusOK)
+	browserHostedStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, heartbeat, behind.Credential, map[string]any{"display_name": "Athens", "capacity": 1, "version": "v0.117.60"}), http.StatusOK)
 	payload = read(t, "owner")
-	if payload.BehindCount != 1 || payload.Runners[0].Version != "v1.2.4" || payload.Runners[0].Behind {
+	if payload.BehindCount != 0 || payload.Runners[0].Version != "v0.117.60" || payload.Runners[0].Behind {
 		t.Fatalf("after upgrade heartbeat = %#v", payload)
 	}
 }
@@ -527,11 +562,12 @@ func grantAppRunners(t *testing.T, f *browserHostedFixture) {
 	}
 }
 
-func enrollAppRunner(t *testing.T, f *browserHostedFixture, name string, version string) appTestRunner {
+func enrollAppRunner(t *testing.T, f *browserHostedFixture, name string, version string, operations ...string) appTestRunner {
 	t.Helper()
 	organization := "/api/v2/organizations/org_browser_preview"
 	binding := runnerauth.NewBinding()
 	request := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(f.project)}, Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, TTLSeconds: 900}
+	request.Operations = append(request.Operations, operations...)
 	response := f.setupRequest(t, "owner", http.MethodPost, organization+"/runner-enrollments", request)
 	browserHostedStatus(t, response, http.StatusCreated)
 	var enrollment runnerauth.Enrollment
@@ -543,6 +579,75 @@ func enrollAppRunner(t *testing.T, f *browserHostedFixture, name string, version
 	redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: strings.ToLower(name) + ".example.test", DisplayName: name, Capacity: 1, Version: version}
 	browserHostedStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, organization+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
 	return appTestRunner{Binding: binding, Credential: credential}
+}
+
+func TestAppBootstrapWorkspaceAvailability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
+	for _, test := range []struct {
+		name                         string
+		service, terminal            bool
+		isolation, account, mutation string
+		wantFiles, wantTerminal      bool
+	}{
+		{name: "disabled service", isolation: "container"},
+		{name: "terminal disabled", service: true, isolation: "container", wantFiles: true},
+		{name: "supported terminal", service: true, terminal: true, isolation: "container", wantFiles: true, wantTerminal: true},
+		{name: "Mac user under sandbox policy", service: true, terminal: true, isolation: "user", wantFiles: true},
+		{name: "viewer", service: true, terminal: true, isolation: "container", account: "viewer"},
+		{name: "stale report", service: true, terminal: true, isolation: "container", mutation: "UPDATE runner_identities SET last_heartbeat_at = '2000-01-01T00:00:00Z'"},
+		{name: "revoked runner", service: true, terminal: true, isolation: "container", mutation: "UPDATE api_tokens SET revoked_at = created_at WHERE id IN (SELECT token_id FROM runner_identities)"},
+		{name: "missing project grant", service: true, terminal: true, isolation: "container", mutation: "DELETE FROM token_grants WHERE token_id IN (SELECT token_id FROM runner_identities)"},
+		{name: "disabled runner", service: true, terminal: true, isolation: "container", mutation: "UPDATE runner_identities SET state = 'disabled'"},
+		{name: "missing claim operation", service: true, terminal: true, isolation: "container", mutation: `UPDATE runner_identities SET operations_json = '["read","heartbeat"]'`},
+		{name: "missing runner grant", service: true, terminal: true, isolation: "container", mutation: "UPDATE hosted_project_grants SET manage_runner = 0", wantFiles: true},
+		{name: "missing write grant", service: true, terminal: true, isolation: "container", mutation: "UPDATE hosted_project_grants SET can_write = 0"},
+		{name: "split capabilities", service: true, terminal: true, isolation: "container", mutation: `UPDATE runner_identities SET workspace_capabilities_json = '{"files":true,"exec":false,"terminal":true}'`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, func(config *Config) {
+				if test.service {
+					config.Workspace = &WorkspaceConfig{Enabled: true, Terminal: WorkspaceTerminalConfig{Enabled: test.terminal}}
+				}
+			})
+			grantAppRunners(t, f)
+			runner := enrollAppRunner(t, f, "Workspace", "test", runnerauth.Claim)
+			capabilities, err := json.Marshal(workspacesession.Capabilities{Files: true, Exec: true, Terminal: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET workspace_capabilities_json = ?, workspace_isolation = ? WHERE id = ?", string(capabilities), test.isolation, runner.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			if test.mutation != "" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), test.mutation); err != nil {
+					t.Fatal(err)
+				}
+			}
+			account := test.account
+			if account == "" {
+				account = "owner"
+			}
+			response := f.appRequest(t, account, http.MethodGet, "/app/bootstrap")
+			browserHostedStatus(t, response, http.StatusOK)
+			var payload appBootstrap
+			decodeHubResponse(t, response, &payload)
+			if payload.Feature.Workspaces != test.service {
+				t.Fatalf("workspace feature = %t, want %t", payload.Feature.Workspaces, test.service)
+			}
+			for _, project := range payload.Projects {
+				wantFiles, wantTerminal := test.wantFiles, test.wantTerminal
+				if project.ID != f.project {
+					wantFiles, wantTerminal = false, false
+				}
+				if project.Capabilities.Files != wantFiles || project.Capabilities.Terminal != wantTerminal {
+					t.Fatalf("project %s workspace capabilities = %+v, want files=%t terminal=%t", project.ID, project.Capabilities, wantFiles, wantTerminal)
+				}
+			}
+		})
+	}
 }
 
 func sha256Hex(body string) string {

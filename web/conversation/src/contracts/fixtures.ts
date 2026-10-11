@@ -6,6 +6,7 @@
 // decode the same files, so the directory is a stable cross-language contract
 // surface: add a fixture here and the Go test picks it up by name.
 import * as Schema from "effect/Schema";
+import { ReportsReport } from "./reports.ts";
 
 import {
   AccountBootstrap,
@@ -29,6 +30,7 @@ import {
 } from "./account.ts";
 
 import {
+  NativeActor,
   AttemptDiff,
   AttemptPage,
   ChangeDetail,
@@ -61,6 +63,7 @@ import {
   Question,
   Receipt,
 } from "./conversation.ts";
+import { DiagnosticsReport, HealthFindingsRead } from "./diagnostics.ts";
 import { UsageReport } from "./usage.ts";
 
 /** Any schema that decodes from JSON with no services. */
@@ -68,6 +71,9 @@ export type FixtureSchema = Schema.Codec<any, any, never, never>;
 
 export const FIXTURE_SCHEMAS: Readonly<Record<string, FixtureSchema>> = {
   "account-billing.json": BillingReport,
+  "diagnostics.json": DiagnosticsReport,
+  "reports.json": ReportsReport,
+  "health-findings.json": HealthFindingsRead,
   "account-bootstrap.json": AccountBootstrap,
   "account-bootstrap-support.json": AccountBootstrap,
   "account-checkout.json": CheckoutResponse,
@@ -135,6 +141,7 @@ export const FIXTURE_SCHEMAS: Readonly<Record<string, FixtureSchema>> = {
   "work-item-create-request.json": CreateIssueRequest,
   "work-item-list.json": WorkItemPage,
   "work-item-patch-request.json": UpdateIssueRequest,
+  "native-actors.json": Schema.Array(NativeActor),
   "work-item.json": NativeIssue,
   "work-project.json": NativeProject,
   "work-transition-request.json": TransitionRequest,
