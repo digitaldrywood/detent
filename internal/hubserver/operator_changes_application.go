@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -136,6 +137,9 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 		return result, nil
 	case operatortool.GetChangeReviewPolicy:
 		policy, err := readChangePolicy(ctx, s.database.db, scope)
+		if errors.Is(err, sql.ErrNoRows) {
+			err = &operatortool.RequestError{Code: "not_found", Message: "No approved Change review policy exists for this project"}
+		}
 		result.Policy = &policy
 		return result, err
 	case operatortool.ChangeViewedFiles:

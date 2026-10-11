@@ -2,7 +2,9 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,6 +55,11 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		value, err = s.projectIntegration(ctx, s.database.db, scope)
 	case "get_cutover_receipt":
 		value, err = s.readCutoverReceipt(ctx, scope)
+		if errors.Is(err, sql.ErrNoRows) {
+			if _, err = readNativeProject(ctx, s.database.db, scope); err == nil {
+				err = &operatortool.RequestError{Code: "not_found", Message: "No cutover receipt exists for this project"}
+			}
+		}
 	case "get_git_hub_import":
 		if r.ImportID == "" {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
