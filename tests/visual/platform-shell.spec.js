@@ -131,6 +131,7 @@ for (const theme of ["light", "dark"]) {
 
 test("the palette opens tenants and users with keyboard navigation", async ({ page }) => {
   await openPlatform(page);
+  await expect(page.getByRole("table", { name: "Tenants", exact: true })).toBeVisible();
   const navigations = [];
   page.on("request", (request) => { if (request.isNavigationRequest()) navigations.push(request.url()); });
   await page.keyboard.press("Meta+k");
