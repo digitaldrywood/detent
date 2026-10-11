@@ -33,7 +33,8 @@ test("tap paints a full-width card shell while details are pending", async ({
     await route.continue();
   });
 
-  const card = page.locator("#board-lanes article[id^='card-']").first();
+  const card = page.getByRole("button", { name: /Kanban demo backlog intake/ });
+  await expect(card).toBeVisible();
   const title = (await card.locator("[data-board-card-title]").textContent()).trim();
   await card.tap();
 
