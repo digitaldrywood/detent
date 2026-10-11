@@ -14,7 +14,7 @@ class ReleaseCutTest(unittest.TestCase):
     def test_cut_source_and_dispatch(self):
         scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
         self.assertIsNotNone(scratch, "a supplied scratch directory is required")
-        cases = ("green", "no green", "skipped run", "explicit", "outside develop", "existing", "next minor", "invalid version", "api failure", "superseded green")
+        cases = ("green", "no green", "skipped run", "explicit", "outside develop", "existing", "next minor", "invalid version", "api failure", "superseded green", "newer release success", "newer release failure", "release status only", "failed develop publication")
         for case in cases:
             with self.subTest(case=case), tempfile.TemporaryDirectory(dir=scratch) as directory:
                 root = Path(directory)
@@ -46,6 +46,14 @@ class ReleaseCutTest(unittest.TestCase):
                     git("tag", "v1.9.2", green)
                     git("push", "origin", "v1.9.2", "develop:release/v1.10")
                 runs = [] if case == "no green" else [{"head_sha": green, "html_url": "https://github.com/example/repo/actions/runs/1"}, {"head_sha": tip, "html_url": "https://github.com/example/repo/actions/runs/2"}]
+                for run in runs:
+                    run.update(head_branch="develop", event="schedule", conclusion="success")
+                if case == "superseded green":
+                    runs.append({"head_sha": green, "html_url": "https://github.com/example/repo/actions/runs/3", "head_branch": "develop", "event": "workflow_dispatch", "conclusion": "failure"})
+                if case in ("newer release success", "newer release failure", "release status only"):
+                    runs.append({"head_sha": green, "html_url": "https://github.com/example/repo/actions/runs/4", "head_branch": "release/v1.2", "event": "workflow_dispatch", "conclusion": "success"})
+                if case == "failed develop publication":
+                    runs[0]["conclusion"] = "failure"
                 fixture = root / "fixture.json"
                 fixture.write_text(json.dumps({"case": case, "runs": runs, "green": green}))
                 gh = root / "gh"
@@ -59,13 +67,18 @@ fixture = json.loads(Path(os.environ["FIXTURE"]).read_text())
 query = " ".join(args)
 if "workflows/ci.yml/runs?" in query:
     if fixture["case"] == "api failure": sys.exit(1)
+    if "branch=develop" not in query or "status=completed" not in query:
+        sys.exit("release selection must query completed develop runs")
     print(json.dumps([{"workflow_runs": fixture["runs"]}]))
 elif "/statuses?" in query:
     statuses = []
     if fixture["green"] in query and fixture["case"] != "skipped run":
         statuses = [{"context": "scheduled-full-ci", "state": "success", "target_url": fixture["runs"][0]["html_url"]}]
     if fixture["case"] == "superseded green" and statuses:
-        statuses.insert(0, {"context": "scheduled-full-ci", "state": "failure", "target_url": "newer failed run"})
+        statuses.insert(0, {"context": "scheduled-full-ci", "state": "failure", "target_url": "https://github.com/example/repo/actions/runs/3"})
+    if fixture["case"] in ("newer release success", "newer release failure", "release status only") and statuses:
+        release = {"context": "scheduled-full-ci", "state": "failure" if fixture["case"] == "newer release failure" else "success", "target_url": "https://github.com/example/repo/actions/runs/4"}
+        statuses = [release] if fixture["case"] == "release status only" else [release] + statuses
     print(json.dumps([statuses]))
 elif "git/refs" in query or args[:2] == ["workflow", "run"]:
     pass
@@ -86,7 +99,7 @@ else:
                 if not accepted:
                     self.assertEqual(writes + dispatches, [], "rejected cuts must not create a branch or run CI")
                     continue
-                expected = tip if case in ("no green", "skipped run", "explicit", "superseded green") else green
+                expected = tip if case in ("no green", "skipped run", "explicit", "superseded green", "release status only", "failed develop publication") else green
                 branch = "release/v1.11" if case == "next minor" else "release/v1.2"
                 self.assertEqual(len(writes), 1)
                 self.assertIn("sha=" + expected, writes[0])
