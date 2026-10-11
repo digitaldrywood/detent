@@ -27,6 +27,7 @@ type Routing struct {
 	UpdateRequest               *UpdateRequest               `json:"update_request,omitempty"`
 	CapacityRequest             *CapacityRequest             `json:"capacity_request,omitempty"`
 	DisplayName                 string                       `json:"display_name"`
+	MachineUse                  string                       `json:"machine_use"`
 	Tags                        []string                     `json:"tags"`
 	State                       string                       `json:"state"`
 	CapacityLimit               int                          `json:"capacity_limit"`
@@ -157,6 +158,9 @@ type ProjectEligibility struct {
 }
 
 func (r Routing) Normalized() Routing {
+	if r.MachineUse == "" {
+		r.MachineUse = "shared"
+	}
 	if r.Scope == "" {
 		r.Scope = "projects"
 	}
@@ -186,6 +190,9 @@ func (r Routing) Normalized() Routing {
 }
 
 func (r Routing) Validate() error {
+	if r.MachineUse != "" && r.MachineUse != "shared" && r.MachineUse != "dedicated" {
+		return errors.New("machine use must be shared or dedicated")
+	}
 	if r.UpdateRequest != nil {
 		if err := r.UpdateRequest.Validate(); err != nil {
 			return err

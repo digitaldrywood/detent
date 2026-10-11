@@ -55,6 +55,9 @@ func TestRoutingSettingsValidation(t *testing.T) {
 		valid    bool
 	}{
 		{"defaults", func(*Routing) {}, true},
+		{"dedicated machine", func(r *Routing) { r.MachineUse = "dedicated" }, true},
+		{"shared machine", func(r *Routing) { r.MachineUse = "shared" }, true},
+		{"unknown machine use", func(r *Routing) { r.MachineUse = "idle" }, false},
 		{"trusted", func(r *Routing) { r.IsolationTier = "native-trusted" }, true},
 		{"unknown tier", func(r *Routing) { r.IsolationTier = "root" }, false},
 		{"loopback service", func(r *Routing) { r.HostServices = []string{"tcp:127.0.0.1:8080"} }, true},
