@@ -3,13 +3,34 @@ from pathlib import Path
 import sys
 
 
-SMOKE = ("layout", "cloud-reports", "hub-login")
+SMOKE = ("board-navigation", "hub-login", "hub-titles")
+GLOBAL_DEPENDENCIES = (
+    "playwright.config.*",
+    "package.json",
+    "package-lock.json",
+    "web/conversation/package.json",
+    "web/conversation/package-lock.json",
+    "web/conversation/*.config.*",
+    "web/conversation/tsconfig*.json",
+    "web/conversation/index.html",
+    "web/conversation/src/app/App.tsx",
+    "web/conversation/src/app/main.tsx",
+    "web/conversation/src/app/router.tsx",
+    "web/conversation/src/components/ui/*",
+    "web/conversation/src/*.css",
+    "static/css/*",
+    "static/js/templui/*",
+    "internal/hubserver/hosted_browser*_test.go",
+    "internal/cli/board_snapshot_browser_test.go",
+    "internal/cloudentry/pilot_client_preview_test.go",
+    "scripts/check-browser.sh",
+)
 MAPPING = (
     ("web/conversation/src/app/fleet/*", ("providers-runners",)),
     ("web/conversation/src/app/account/*", ("account", "providers-runners")),
     ("web/conversation/src/contracts/account*", ("account", "providers-runners")),
     ("web/conversation/src/contracts/fixtures/account*", ("account", "providers-runners")),
-    ("web/conversation/src/app/components/InlineActionCard.tsx", ("providers-runners",)),
+    ("web/conversation/src/app/components/InlineActionCard.tsx", ("conversation-actions", "providers-runners")),
     ("web/conversation/src/app/settings/*APIKeys*", ("api-mcp",)),
     ("web/conversation/src/app/settings/MCPSettings.tsx", ("api-mcp",)),
     ("web/conversation/src/app/settings/SlackSettings.tsx", ("slack-settings",)),
@@ -42,9 +63,11 @@ MAPPING = (
     ("internal/hubserver/native_*page*.go", ("work", "issue-layout")),
     ("internal/hubserver/hosted_ui.go", ("hub-login",)),
     ("tests/visual/providers-runners-*", ("providers-runners",)),
-    ("tests/visual/platform-*", ("platform-shell", "platform-audit", "platform-users", "platform-staff", "platform-tenants")),
+    ("tests/visual/platform-*", ("platform-shell", "platform-audit", "platform-users", "platform-staff", "platform-tenants", "platform-model-choice")),
     ("tests/visual/slack-settings-*", ("slack-settings",)),
-    ("tests/visual/entry-preview.js", ("hub-login", "entry-fallback")),
+    ("tests/visual/entry-preview.js", ("hub-login", "entry-fallback", "invitations")),
+    ("tests/visual/issue-diagnostics-fixture.js", ("issue-diagnostics",)),
+    ("tests/visual/onboarding-help-server.ts", ("onboarding-help",)),
 )
 
 
@@ -67,10 +90,12 @@ def select_specs(paths, root):
             if (root / path).is_file():
                 selected.add(path)
             continue
-        if not is_ui(path):
-            continue
-        names = next((specs for pattern, specs in MAPPING if fnmatch.fnmatchcase(path, pattern)), SMOKE)
-        selected.update(f"tests/visual/{name}.spec.js" for name in names)
+        names = {name for pattern, specs in MAPPING if fnmatch.fnmatchcase(path, pattern) for name in specs}
+        shared_fixture = not names and path.startswith("tests/visual/") and Path(path).suffix in {".js", ".ts", ".tsx", ".json"}
+        if shared_fixture or any(fnmatch.fnmatchcase(path, pattern) for pattern in GLOBAL_DEPENDENCIES):
+            selected.update(spec.relative_to(root).as_posix() for spec in (root / "tests/visual").rglob("*.spec.js"))
+        elif is_ui(path):
+            selected.update(f"tests/visual/{name}.spec.js" for name in names or SMOKE)
     return sorted(selected)
 
 
