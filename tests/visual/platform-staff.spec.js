@@ -46,21 +46,28 @@ for (const viewport of [{ name: "desktop", width: 1440, height: 1100 }, { name: 
   test(`${viewport.name} staff dialogs, protections and stale reload`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const state = await openStaff(page);
-    const table = page.getByRole("table", { name: "Platform members" });
-    await expect(table).toBeVisible();
+    const staff = page.getByRole("region", { name: "Staff members", exact: true });
+    await expect(staff).toBeVisible();
     await expect(page).toHaveTitle("Staff · Platform · Detent");
     for (const email of ["admin@example.test", "bootstrap@example.test"]) {
-      const row = table.getByRole("row").filter({ has: page.getByRole("combobox", { name: `Role for ${email}` }) });
-      await expect(row.getByRole("combobox")).toBeDisabled();
+      const row = staff.getByRole("group", { name: email, exact: true });
+      if (email === "admin@example.test") {
+        await expect(row.getByText("You", { exact: true })).toBeVisible();
+        await expect(row.getByText("Admin", { exact: true })).toBeVisible();
+        await expect(row.getByText("You can't change your own role", { exact: true })).toBeVisible();
+        await expect(row.getByRole("combobox")).toHaveCount(0);
+      } else {
+        await expect(row.getByRole("combobox")).toBeDisabled();
+        await expect(row.getByLabel("The bootstrap admin cannot be demoted", { exact: true })).toBeVisible();
+      }
       await expect(row.getByRole("button", { name: "Remove" })).toHaveCount(0);
     }
-    await expect(table.getByText("bootstrap", { exact: true }).first()).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
     await page.screenshot({ path: process.env.TMPDIR + `/platform-staff-${viewport.name}.png` });
 
-    const add = page.getByRole("button", { name: "Add member" });
+    const add = page.getByRole("button", { name: "Add staff member", exact: true });
     await add.click();
-    let dialog = page.getByRole("dialog", { name: /^(Add member|Change role for)/ });
+    let dialog = page.getByRole("dialog", { name: /^(Add staff member|Change role for)/ });
     await expect(dialog.getByRole("combobox", { name: "Role", exact: true })).toContainText("Viewer");
     await dialog.getByLabel("Email").fill(" NEW@Example.test ");
     await dialog.getByRole("button", { name: "Add", exact: true }).click();
@@ -68,15 +75,15 @@ for (const viewport of [{ name: "desktop", width: 1440, height: 1100 }, { name: 
     await dialog.getByLabel("Reason").fill("Add teammate");
     await page.screenshot({ path: process.env.TMPDIR + `/platform-staff-add-${viewport.name}.png` });
     await dialog.getByRole("button", { name: "Add", exact: true }).click();
-    const added = table.getByRole("row").filter({ has: page.getByText("new@example.test", { exact: true }) });
+    const added = staff.getByRole("group", { name: "new@example.test", exact: true });
     await expect(added).toBeVisible();
     expect(state.writes[0]).toMatchObject({ method: "POST", email: "new@example.test", role: "viewer", reason: "Add teammate", expected_revision: 4, csrf: "staff-csrf" });
     expect(state.writes[0].idempotency_key).toBeTruthy();
 
-    const role = table.getByRole("combobox", { name: "Role for support@example.test" });
+    const role = staff.getByRole("combobox", { name: "Role for support@example.test" });
     await role.click();
     await page.getByRole("option", { name: "Billing", exact: true }).click();
-    dialog = page.getByRole("dialog", { name: /^(Add member|Change role for)/ });
+    dialog = page.getByRole("dialog", { name: /^(Add staff member|Change role for)/ });
     await expect(dialog.getByRole("heading")).toHaveText("Change role for support@example.test from Support to Billing");
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(role).toContainText("Support");
@@ -119,7 +126,8 @@ for (const viewport of [{ name: "desktop", width: 1440, height: 1100 }, { name: 
 test("non-admin Staff visit is refused in the platform shell", async ({ page }) => {
   await openStaff(page, "support");
   await expect(page.getByText("You don't have access to this page", { exact: true })).toBeVisible();
-  await expect(page.getByRole("table")).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Staff members", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add staff member", exact: true })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Staff", exact: true })).toHaveCount(0);
 });
 
@@ -127,10 +135,10 @@ test("Staff supports keyboard dialog dismissal and dark theme", async ({ page })
   await page.setViewportSize({ width: 390, height: 844 });
   await openStaff(page);
   await page.evaluate(() => document.documentElement.classList.add("dark"));
-  const add = page.getByRole("button", { name: "Add member" });
+  const add = page.getByRole("button", { name: "Add staff member", exact: true });
   await add.focus();
   await page.keyboard.press("Enter");
-  const dialog = page.getByRole("dialog", { name: "Add member", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Add staff member", exact: true });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByLabel("Email")).toBeFocused();
   await page.screenshot({ path: process.env.TMPDIR + "/platform-staff-add-dark-mobile.png" });
