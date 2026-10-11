@@ -54,6 +54,7 @@ func (s *sqliteStore) RecordValidatorVerdict(ctx context.Context, attrs Validato
 		ProjectID:       projectID,
 		IssueID:         issueID,
 		HeadSha:         headSHA,
+		ContextDigest:   strings.TrimSpace(attrs.ContextDigest),
 		Repository:      strings.TrimSpace(attrs.Repository),
 		BaseSha:         strings.TrimSpace(attrs.BaseSHA),
 		DiffDigest:      strings.TrimSpace(attrs.DiffDigest),
@@ -92,9 +93,10 @@ func (s *sqliteStore) ValidatorVerdict(ctx context.Context, key ValidatorVerdict
 	}
 
 	row, err := s.queries.GetValidatorVerdict(ctx, sqlc.GetValidatorVerdictParams{
-		ProjectID: projectID,
-		IssueID:   issueID,
-		HeadSha:   headSHA,
+		ProjectID:     projectID,
+		IssueID:       issueID,
+		HeadSha:       headSHA,
+		ContextDigest: key.ContextDigest, Repository: key.Repository, BaseSha: key.BaseSHA, PrNumber: key.PRNumber,
 	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -157,10 +159,11 @@ func (s *sqliteStore) MarkValidatorVerdictCommented(ctx context.Context, key Val
 	}
 
 	affected, err := s.queries.MarkValidatorVerdictCommented(ctx, sqlc.MarkValidatorVerdictCommentedParams{
-		UpdatedAt: updatedAt,
-		ProjectID: projectID,
-		IssueID:   issueID,
-		HeadSha:   headSHA,
+		UpdatedAt:     updatedAt,
+		ProjectID:     projectID,
+		IssueID:       issueID,
+		HeadSha:       headSHA,
+		ContextDigest: key.ContextDigest, Repository: key.Repository, BaseSha: key.BaseSHA, PrNumber: key.PRNumber,
 	})
 	if err != nil {
 		return fmt.Errorf("marking validator verdict commented: %w", err)
@@ -193,6 +196,7 @@ func validatorVerdictFromRow(row sqlc.ValidatorVerdict) (ValidatorVerdict, error
 		ProjectID:       row.ProjectID,
 		IssueID:         row.IssueID,
 		HeadSHA:         row.HeadSha,
+		ContextDigest:   row.ContextDigest,
 		Repository:      row.Repository,
 		BaseSHA:         row.BaseSha,
 		DiffDigest:      row.DiffDigest,

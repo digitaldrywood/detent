@@ -79,6 +79,9 @@ func (s *stripeProvider) request(ctx context.Context, method, path, key string, 
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		if response.StatusCode == http.StatusPaymentRequired && path == "payment_intents" {
+			return ErrPaymentFailed
+		}
 		return errors.New("stripe could not complete the billing request")
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024+1))

@@ -3,11 +3,13 @@ const { spawn } = require('node:child_process');
 const { mkdirSync } = require('node:fs');
 const { createHash } = require('node:crypto');
 
-let url = process.env.DETENT_REVIEW_BROWSER_URL;
+let url;
 let exited;
 let fixtureOutput = '';
 test.beforeAll(async () => {
   test.setTimeout(120000);
+  url = process.env.DETENT_REVIEW_BROWSER_URL;
+  fixtureOutput = '';
   if (url) return;
   const env = { ...process.env, DETENT_REVIEW_BROWSER: '1' }; delete env.DETENT_API_TOKEN;
   const child = spawn('go', ['test', './internal/web', '-run', '^TestReviewBrowserFixture$', '-count=1', '-v'], { env });
@@ -27,7 +29,10 @@ test.beforeAll(async () => {
 test.afterAll(async ({ request }) => {
   if (!exited) return;
   await request.post(`${url}/fixture/stop`);
-  expect(await exited, fixtureOutput).toBe(0);
+  const code = await exited;
+  exited = undefined;
+  url = undefined;
+  expect(code, fixtureOutput).toBe(0);
 });
 test.beforeEach(async ({ page, request }) => {
   await request.post(`${url}/fixture/reset`);

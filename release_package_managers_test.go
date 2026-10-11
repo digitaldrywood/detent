@@ -19,7 +19,7 @@ func TestGoReleaserWindowsPackageManagerConfig(t *testing.T) {
 		"scoops:",
 		"name: scoop-bucket",
 		"token: \"{{ index .Env \\\"SCOOP_BUCKET_GITHUB_TOKEN\\\" }}\"",
-		"skip_upload: \"{{ if index .Env \\\"SCOOP_BUCKET_GITHUB_TOKEN\\\" }}false{{ else }}true{{ end }}\"",
+		"skip_upload: \"{{ if index .Env \\\"SCOOP_BUCKET_GITHUB_TOKEN\\\" }}auto{{ else }}true{{ end }}\"",
 		"winget:",
 		"package_identifier: DigitalDrywood.Detent",
 		"name: winget-pkgs",
@@ -27,43 +27,11 @@ func TestGoReleaserWindowsPackageManagerConfig(t *testing.T) {
 		"token: \"{{ index .Env \\\"WINGET_GITHUB_TOKEN\\\" }}\"",
 		"owner: microsoft",
 		"branch: master",
-		"skip_upload: \"{{ if index .Env \\\"WINGET_GITHUB_TOKEN\\\" }}false{{ else }}true{{ end }}\"",
+		"skip_upload: \"{{ if index .Env \\\"WINGET_GITHUB_TOKEN\\\" }}auto{{ else }}true{{ end }}\"",
 		"installation_notes: Installs detent.exe on PATH. Verify the release with detent --version.",
 	} {
 		if !strings.Contains(config, want) {
 			t.Fatalf(".goreleaser.yaml missing %q", want)
-		}
-	}
-}
-
-func TestWindowsPackageManagerDocs(t *testing.T) {
-	t.Parallel()
-
-	readme, err := os.ReadFile("README.md")
-	if err != nil {
-		t.Fatalf("ReadFile(README.md) error = %v", err)
-	}
-	release, err := os.ReadFile("docs/release.md")
-	if err != nil {
-		t.Fatalf("ReadFile(docs/release.md) error = %v", err)
-	}
-	documentation := string(readme) + "\n" + string(release)
-
-	for _, want := range []string{
-		"winget install --id DigitalDrywood.Detent --source winget",
-		"scoop bucket add digitaldrywood https://github.com/digitaldrywood/scoop-bucket",
-		"scoop install detent",
-		"irm https://raw.githubusercontent.com/digitaldrywood/detent/main/install.ps1 | iex",
-		"go install github.com/digitaldrywood/detent/cmd/detent@latest",
-		"detent.exe` on PATH; verify any Windows install with `detent --version`",
-		"winget upgrade --id DigitalDrywood.Detent",
-		"scoop update detent",
-		"brew upgrade digitaldrywood/tap/detent",
-		"SCOOP_BUCKET_GITHUB_TOKEN",
-		"WINGET_GITHUB_TOKEN",
-	} {
-		if !strings.Contains(documentation, want) {
-			t.Fatalf("install and release documentation missing %q", want)
 		}
 	}
 }

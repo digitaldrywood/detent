@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ var (
 	ErrInvalidArguments    = errors.New("invalid tool arguments")
 	ErrSnapshotUnavailable = errors.New("operator telemetry snapshot is unavailable")
 	ErrUnknownTool         = errors.New("unknown read-only operator tool")
+	ErrResultTooLarge      = fmt.Errorf("operator tool result exceeds %d bytes", MaxResultBytes)
 )
 
 type Call struct {
@@ -47,18 +49,23 @@ type Explainer interface {
 type Dependencies struct {
 	Snapshots SnapshotSource
 	Explainer Explainer
+	WorkReads WorkReader
 }
 
 type Executor struct {
 	snapshots SnapshotSource
 	explainer Explainer
+	workReads WorkReader
 }
 
 func NewExecutor(deps Dependencies) *Executor {
-	return &Executor{snapshots: deps.Snapshots, explainer: deps.Explainer}
+	return &Executor{snapshots: deps.Snapshots, explainer: deps.Explainer, workReads: deps.WorkReads}
 }
 
 func (e *Executor) Execute(ctx context.Context, call Call) (Result, error) {
+	if IsWorkRead(call.Name) {
+		return e.readWork(ctx, call)
+	}
 	switch call.Name {
 	case BoardState:
 		return e.boardState(ctx, call.Arguments)
@@ -75,12 +82,28 @@ func (e *Executor) Execute(ctx context.Context, call Call) (Result, error) {
 	}
 }
 
+type boardStateArguments struct {
+	ProjectID string `json:"project_id"`
+	State     string `json:"state"`
+	Limit     int    `json:"limit"`
+}
+
+type telemetryUsageArguments struct {
+	ProjectID string `json:"project_id"`
+}
+
+type recentActivityArguments struct {
+	ProjectID string `json:"project_id"`
+	Limit     int    `json:"limit"`
+}
+
+type explainItemArguments struct {
+	ProjectID string `json:"project_id"`
+	Reference string `json:"reference"`
+}
+
 func (e *Executor) boardState(ctx context.Context, raw json.RawMessage) (Result, error) {
-	var request struct {
-		ProjectID string `json:"project_id"`
-		State     string `json:"state"`
-		Limit     int    `json:"limit"`
-	}
+	var request boardStateArguments
 	if err := decodeArguments(raw, &request); err != nil {
 		return Result{}, err
 	}
@@ -125,9 +148,7 @@ func (e *Executor) fleetHealth(ctx context.Context, raw json.RawMessage) (Result
 }
 
 func (e *Executor) telemetryUsage(ctx context.Context, raw json.RawMessage) (Result, error) {
-	var request struct {
-		ProjectID string `json:"project_id"`
-	}
+	var request telemetryUsageArguments
 	if err := decodeArguments(raw, &request); err != nil {
 		return Result{}, err
 	}
@@ -155,10 +176,7 @@ func (e *Executor) telemetryUsage(ctx context.Context, raw json.RawMessage) (Res
 }
 
 func (e *Executor) recentActivity(ctx context.Context, raw json.RawMessage) (Result, error) {
-	var request struct {
-		ProjectID string `json:"project_id"`
-		Limit     int    `json:"limit"`
-	}
+	var request recentActivityArguments
 	if err := decodeArguments(raw, &request); err != nil {
 		return Result{}, err
 	}
@@ -189,10 +207,7 @@ func (e *Executor) recentActivity(ctx context.Context, raw json.RawMessage) (Res
 }
 
 func (e *Executor) explainItem(ctx context.Context, raw json.RawMessage) (Result, error) {
-	var request struct {
-		ProjectID string `json:"project_id"`
-		Reference string `json:"reference"`
-	}
+	var request explainItemArguments
 	if err := decodeArguments(raw, &request); err != nil {
 		return Result{}, err
 	}
@@ -201,12 +216,19 @@ func (e *Executor) explainItem(ctx context.Context, raw json.RawMessage) (Result
 	if request.ProjectID == "" || request.Reference == "" {
 		return Result{}, fmt.Errorf("%w: project_id and reference are required", ErrInvalidArguments)
 	}
-	if e.explainer == nil {
-		return Result{}, errors.New("issue explanation is unavailable")
+	explainer := e.explainer
+	if authority, ok := ctx.Value(authorityKey{}).(Authority); ok && authority.Explainer != nil {
+		explainer = authority.Explainer
 	}
-	result, err := e.explainer.Explain(ctx, explain.Query{ProjectID: request.ProjectID, Reference: request.Reference})
+	if explainer == nil {
+		return Result{}, ErrReadUnavailable
+	}
+	result, err := explainer.Explain(ctx, explain.Query{ProjectID: request.ProjectID, Reference: request.Reference})
 	if err != nil {
 		return Result{}, err
+	}
+	if _, authorized := ctx.Value(authorityKey{}).(Authority); authorized && result.Identity.ProjectID != request.ProjectID {
+		return Result{}, ErrAccessDenied
 	}
 	return encodeResult(result)
 }
@@ -222,7 +244,7 @@ func (e *Executor) snapshot(ctx context.Context) (telemetry.Snapshot, error) {
 	if snapshot.GeneratedAt.IsZero() {
 		return telemetry.Snapshot{}, ErrSnapshotUnavailable
 	}
-	return snapshot, nil
+	return ProjectSnapshot(ctx, snapshot)
 }
 
 func decodeArguments(raw json.RawMessage, target any) error {
@@ -230,21 +252,84 @@ func decodeArguments(raw json.RawMessage, target any) error {
 		raw = json.RawMessage(`{}`)
 	}
 	if len(raw) > MaxArgumentBytes {
-		return fmt.Errorf("%w: payload exceeds %d bytes", ErrInvalidArguments, MaxArgumentBytes)
+		return invalidArgument("arguments", fmt.Sprintf("must not exceed %d bytes", MaxArgumentBytes))
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("%w: %w", ErrInvalidArguments, err)
+		var typeError *json.UnmarshalTypeError
+		if errors.As(err, &typeError) || strings.HasPrefix(err.Error(), "json: invalid use of ,string struct tag") {
+			if detail := quotedArgumentError(raw, reflect.TypeOf(target), ""); detail != nil {
+				return detail
+			}
+		}
+		return argumentDecodeError(err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			err = errors.New("multiple JSON values")
-		}
-		return fmt.Errorf("%w: %w", ErrInvalidArguments, err)
+		return invalidArgument("arguments", "must contain exactly one JSON value")
 	}
 	return nil
+}
+
+func quotedArgumentError(raw json.RawMessage, target reflect.Type, parent string) error {
+	for target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	if target.Kind() != reflect.Struct {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return nil
+	}
+	for i := range target.NumField() {
+		field := target.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		parts := strings.Split(field.Tag.Get("json"), ",")
+		name := parts[0]
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		value, present := fields[name]
+		if !present || string(value) == "null" {
+			continue
+		}
+		path := name
+		if parent != "" {
+			path = parent + "." + name
+		}
+		if slices.Contains(parts[1:], "string") && len(value) > 0 && value[0] != '"' {
+			return invalidArgument(path, "must be a string")
+		}
+		if err := quotedArgumentError(value, field.Type, path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func argumentDecodeError(err error) error {
+	var typeError *json.UnmarshalTypeError
+	if errors.As(err, &typeError) {
+		field := typeError.Field
+		if field == "" {
+			field = "arguments"
+		}
+		return invalidArgument(field, "must have type "+typeError.Type.String())
+	}
+	if field, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
+		var name string
+		if json.Unmarshal([]byte(field), &name) == nil {
+			return invalidArgument(name, "is not an allowed field")
+		}
+	}
+	return invalidArgument("arguments", "must be valid JSON")
 }
 
 func snapshotFreshness(snapshot telemetry.Snapshot) explain.SourceState {
@@ -268,7 +353,7 @@ func encodeResult(value any) (Result, error) {
 		return Result{}, fmt.Errorf("encode operator tool result: %w", err)
 	}
 	if len(data) > MaxResultBytes {
-		return Result{}, fmt.Errorf("operator tool result exceeds %d bytes", MaxResultBytes)
+		return Result{}, ErrResultTooLarge
 	}
 	return Result{Content: data}, nil
 }
@@ -438,3 +523,6 @@ func boardItems(snapshot telemetry.Snapshot, projectID string, state string) []B
 	})
 	return out
 }
+
+// DecodeArguments applies the catalog's bounded strict decoder to shared commands.
+func DecodeArguments(raw json.RawMessage, target any) error { return decodeArguments(raw, target) }

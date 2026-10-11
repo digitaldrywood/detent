@@ -30,7 +30,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/intake"
-	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/publication"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
@@ -86,6 +85,7 @@ type RuntimeError struct {
 	At          time.Time
 	NextRetryAt time.Time
 	Terminal    bool
+	Transient   bool
 }
 
 type WorkflowSourceStatus struct {
@@ -134,6 +134,7 @@ type WorkflowWatcher interface {
 type WorkflowWatcherFactory func(string) (WorkflowWatcher, error)
 
 type startOptions struct {
+	draining      bool
 	provision     bool
 	publishEvents bool
 }
@@ -186,6 +187,7 @@ type Project struct {
 	orchFactory               OrchestratorFactory
 	orchConfig                orchestrator.Config
 	orchDeps                  orchestrator.Dependencies
+	policyScheduling          orchestrator.SchedulingSource
 	runner                    orchestrator.Runner
 	scheduler                 scheduler.Scheduler
 	schedulerFactory          schedulerFactory
@@ -245,7 +247,7 @@ func (s *scheduleFaultState) current() RuntimeError {
 }
 
 func Load(cfg globalconfig.Project, deps Dependencies) (*Project, error) {
-	workflow, err := LoadWorkflow(cfg)
+	workflow, err := loadWorkflowForScheduling(context.Background(), cfg, deps.Scheduling)
 	if err != nil {
 		return nil, fmt.Errorf("load project workflow: %w", err)
 	}
@@ -254,15 +256,19 @@ func Load(cfg globalconfig.Project, deps Dependencies) (*Project, error) {
 }
 
 func New(cfg Config, deps Dependencies) (*Project, error) {
+	return NewContext(context.Background(), cfg, deps)
+}
+
+func NewContext(ctx context.Context, cfg Config, deps Dependencies) (*Project, error) {
 	id := normalizeProjectID(ID(cfg.Project.ID))
 	if id == "" {
 		return nil, ErrMissingProjectID
 	}
 
 	workflow := normalizeWorkflow(cfg.Workflow)
-	workflow.Config = workflow.Config.WithAgentDefaults(cfg.Project.GlobalAgents, cfg.Project.GlobalBudget)
-	workflow.Config = withMappedNativeTracker(workflow.Config, deps.Scheduling, id)
-	if err := configureProjectPolicy(context.Background(), cfg.Project, &workflow, deps.Scheduling); err != nil {
+	workflow.Config = applyProjectAgentDefaults(workflow.Config, cfg.Project)
+	workflow.Config = WithMappedNativeTracker(workflow.Config, deps.Scheduling, id)
+	if err := configureProjectPolicy(ctx, cfg.Project, &workflow, deps.Scheduling); err != nil {
 		return nil, projectDefinitionError{err: err}
 	}
 	workflowActiveHours := workflow.Config.ActiveHours.Normalize()
@@ -289,7 +295,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		}
 		connectorFactory = func(workflowconfig.Config) (connector.Connector, error) { return native, nil }
 	}
-	projectConnector, err := buildConnector(context.Background(), workflow.Config, connectorFactory, cfg.Project.Paused)
+	projectConnector, err := buildConnector(ctx, workflow.Config, connectorFactory, cfg.Project.Paused)
 	if err != nil {
 		return nil, err
 	}
@@ -309,7 +315,12 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if reclaimed, resolvedRoot, err := toolcache.RemoveLegacy(workflow.Config.Workspace.Root); err != nil {
+	for _, warning := range workflow.Config.ValidationWarnings() {
+		if strings.HasPrefix(warning, "tracker.") {
+			logger.Warn("workflow configuration warning", "project_id", id, "warning", warning)
+		}
+	}
+	if reclaimed, resolvedRoot, err := toolcache.RemoveLegacyContext(ctx, workflow.Config.Workspace.Root); err != nil {
 		logger.Warn("remove legacy worker caches", "workspace_root", resolvedRoot, "error", err)
 	} else if reclaimed > 0 {
 		logger.Info("removed legacy worker caches", "bytes_reclaimed", reclaimed, "workspace_root", resolvedRoot)
@@ -364,7 +375,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		return nil, err
 	}
 	releaseCoordinator := releaseBuild.coordinator
-	projectRetroStore, productRetroStore, retroProductConnector, err := buildRetroIssueStores(context.Background(), workflow.Config, projectConnector, connectorFactory)
+	projectRetroStore, productRetroStore, retroProductConnector, err := buildRetroIssueStores(ctx, workflow.Config, projectConnector, connectorFactory)
 	if err != nil {
 		return nil, fmt.Errorf("create project retro: %w", err)
 	}
@@ -415,7 +426,12 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 			}
 		}
 	}
+	issueContract, err := workflowconfig.ResolveIssueContract(workflow.SharedPrompt)
+	if err != nil {
+		return nil, err
+	}
 	projectAdmission, err := admission.New(admission.Settings{
+		IssueContract:       issueContract,
 		ProjectID:           string(id),
 		Config:              workflow.Config.BacklogAdmission,
 		Criteria:            admissionCriteria,
@@ -423,10 +439,13 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		DispatchStates:      workflow.Config.Agent.DispatchPriorityByState,
 		DispatchLabels:      workflow.Config.Agent.DispatchPriorityByLabel,
 		PrioritizeBlockers:  workflow.Config.Agent.PrioritizeUnblockers,
+		DependencyIssues:    admissionDependencyIssues(laneOwner),
+		IntakeEnabled:       admissionIntakeEnabled(laneOwner),
 		DependencyReadiness: workflow.Config.Tracker.DependencyAutoUnblock.Readiness,
 		Runner:              deps.Runner,
 		Issues:              admissionIssueStore(projectConnector),
 		LaneWriter:          admissionLaneWriter(laneOwner),
+		ContractCheck:       admissionContractCheck(laneOwner),
 		Scheduler:           projectScheduler,
 		GlobalDispatchGate:  deps.GlobalDispatchGate,
 		ProjectCandidate:    projectSchedulerCandidate(cfg.Project, workflow.Config),
@@ -509,6 +528,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		orchFactory:               orchestratorFactory,
 		orchConfig:                orchConfig,
 		orchDeps:                  orchDeps,
+		policyScheduling:          deps.Scheduling,
 		runner:                    deps.Runner,
 		scheduler:                 projectScheduler,
 		schedulerFactory:          schedulerFactory,
@@ -535,7 +555,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 			LoadedAt:   time.Now().UTC(),
 		},
 	}
-	project.watcher = resolveWorkflowWatcherFactory(deps, watcherProject, deps.GitHubToken, logger, project.Config)
+	project.watcher = resolveWorkflowWatcherFactory(ctx, deps, watcherProject, deps.GitHubToken, logger, project.Config)
 	retainScheduleOwner = true
 	return project, nil
 }
@@ -599,14 +619,22 @@ func (p *Project) updateLiveConfig(ctx context.Context, cfg globalconfig.Project
 
 	p.mu.Lock()
 	workflow := p.workflow
-	workflow.Config = workflow.Config.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget)
+	workflow.Config = applyProjectAgentDefaults(workflow.Config, cfg)
+	if workflow.Config.Policy.Configuration != nil {
+		resolved, err := workflowconfig.ApplyNativePolicy(workflow, workflow.Config.Policy)
+		if err != nil {
+			p.mu.Unlock()
+			return err
+		}
+		workflow = resolved
+	}
 	if err := workflow.Config.Validate(); err != nil {
 		p.mu.Unlock()
 		return fmt.Errorf("validate inherited agent configuration: %w", err)
 	}
 	workflow.Config.ActiveHours = EffectiveActiveHours(cfg, p.workflowActiveHours)
 	workflow.Config.Agent.RateWindowPacing = effectiveRateWindowPacing(cfg, workflow.Config)
-	if workflow.Config.Policy.ID != "" && (!reflect.DeepEqual(workflow.Config.ActiveHours, p.workflow.Config.ActiveHours) || workflow.Config.Agent.RateWindowPacing != p.workflow.Config.Agent.RateWindowPacing || !reflect.DeepEqual(workflow.Config.Agents, p.workflow.Config.Agents) || workflow.Config.Budget.PricingPath != p.workflow.Config.Budget.PricingPath) {
+	if workflow.Config.Policy.ID != "" && workflow.Config.Policy.Configuration == nil && (!reflect.DeepEqual(workflow.Config.ActiveHours, p.workflow.Config.ActiveHours) || !reflect.DeepEqual(workflow.Config.Agents, p.workflow.Config.Agents) || workflow.Config.Budget.PricingPath != p.workflow.Config.Budget.PricingPath) {
 		p.mu.Unlock()
 		return errors.New("policy_mismatch: host execution overrides changed; approve the effective descriptor and restart Detent before applying them")
 	}
@@ -809,7 +837,13 @@ func (p *Project) start(ctx context.Context, opts startOptions) error {
 		p.publishStarted()
 	}
 
+	if opts.draining {
+		orch.BeginDrain()
+	}
 	go p.run(runCtx, done, orch)
+	if opts.draining {
+		return orch.Drain(ctx)
+	}
 	return nil
 }
 
@@ -855,6 +889,10 @@ func (p *Project) Pause(ctx context.Context) error {
 }
 
 func (p *Project) Unpause(ctx context.Context) error {
+	return p.unpause(ctx, false)
+}
+
+func (p *Project) unpause(ctx context.Context, draining bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -887,7 +925,7 @@ func (p *Project) Unpause(ctx context.Context) error {
 	p.mu.Unlock()
 
 	if !running {
-		if err := p.Start(ctx); err != nil {
+		if err := p.start(ctx, startOptions{provision: true, publishEvents: true, draining: draining}); err != nil {
 			p.mu.Lock()
 			if p.done == nil {
 				p.cfg.Paused = true
@@ -1455,9 +1493,12 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 	p.mu.Lock()
 	projectConfig := p.cfg
 	loadedHash := p.workflowSource.Hash
+	scheduling := p.policyScheduling
+	loadedSelection := p.workflow.Config.Agents.ModelSelection
+	loadedPolicy := p.workflow.Config.Policy
 	p.mu.Unlock()
 
-	workflow, err := LoadWorkflowContext(ctx, projectConfig)
+	workflow, err := loadWorkflowForScheduling(ctx, projectConfig, p.policyScheduling)
 	now := time.Now().UTC()
 	p.mu.Lock()
 	p.workflowSource.LastReconcileAt = now
@@ -1468,7 +1509,14 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 		}
 		return fmt.Errorf("load workflow: %w", err)
 	}
-	if workflow.SourceHash == "" || workflow.SourceHash == loadedHash {
+	workflow.Config = WithMappedNativeTracker(workflow.Config, scheduling, normalizeProjectID(ID(projectConfig.ID)))
+	if workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative {
+		if err := configureProjectPolicy(ctx, projectConfig, &workflow, scheduling); err != nil {
+			return p.workflowReloadError("repository policy reload rejected", workflowSourceDisplayPath(projectConfig), err)
+		}
+	}
+	policyChanged := workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative && workflow.Config.Policy.ID != loadedPolicy.ID
+	if (workflow.SourceHash == "" || workflow.SourceHash == loadedHash) && !policyChanged && reflect.DeepEqual(loadedSelection, workflow.Config.Agents.ModelSelection) {
 		p.clearWorkflowReloadError()
 		return nil
 	}
@@ -1481,6 +1529,10 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher.Update) error {
 	p.configMu.Lock()
 	defer p.configMu.Unlock()
+	return p.applyWorkflowUpdate(ctx, update, false)
+}
+
+func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.Update, managed bool) error {
 
 	if update.Err != nil {
 		return p.workflowReloadError("workflow reload failed", update.Path, update.Err)
@@ -1502,16 +1554,31 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	issueCoordinator := p.issueCoordinator
 	scheduleConfig := p.scheduleConfig
 	globalDispatchGate := p.orchDeps.GlobalDispatchGate
-	scheduling := p.orchDeps.Scheduling
+	scheduling := p.policyScheduling
 	previousPolicy := p.workflow.Config.Policy
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)
-	workflow.Config = workflow.Config.WithAgentDefaults(projectConfig.GlobalAgents, projectConfig.GlobalBudget)
+	workflow.Config = applyProjectAgentDefaults(workflow.Config, projectConfig)
+	workflow.Config = WithMappedNativeTracker(workflow.Config, scheduling, normalizeProjectID(ID(projectConfig.ID)))
 	if err := configureProjectPolicy(ctx, projectConfig, &workflow, scheduling); err != nil {
 		return p.workflowReloadError("repository policy reload rejected", update.Path, err)
 	}
-	if previousPolicy.ID != "" && previousPolicy.ID != workflow.Config.Policy.ID {
-		return p.workflowReloadError("repository policy reload rejected", update.Path, errors.New("policy_mismatch: effective policy changed; finish or cancel active work and restart Detent to load the approved revision"))
+	if managed && update.Workflow.Config.Policy.ID != "" && (workflow.Config.Policy.ID != update.Workflow.Config.Policy.ID || workflow.Config.Policy.SourceRevision != update.Workflow.Config.Policy.SourceRevision) {
+		return errors.New("the approved policy changed during application; read the current policy before retrying")
+	}
+	if previousPolicy.ID != "" && previousPolicy.ID != workflow.Config.Policy.ID && !previousPolicy.SameAuthoredInputs(workflow.Config.Policy) {
+		if !managed && workflow.Config.Policy.Configuration == nil {
+			return p.workflowReloadError("repository policy reload rejected", update.Path, errors.New("policy_mismatch: effective policy changed; apply the approved revision through the selected configuration owner after current work finishes"))
+		}
+		var err error
+		if !managed && workflow.Config.Policy.Configuration != nil {
+			err = p.requireSettledAttempts(ctx)
+		} else {
+			err = p.requireSettledWork(ctx)
+		}
+		if err != nil {
+			return err
+		}
 	}
 	workflowActiveHours := workflow.Config.ActiveHours.Normalize()
 	workflow.Config = workflowConfigWithProjectIdentity(projectConfig, workflow.Config)
@@ -1641,7 +1708,12 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		}
 	}
 	if projectAdmission != nil {
+		issueContract, err := workflowconfig.ResolveIssueContract(workflow.SharedPrompt)
+		if err != nil {
+			return err
+		}
 		if err := projectAdmission.Update(admission.Settings{
+			IssueContract:       issueContract,
 			ProjectID:           string(p.id),
 			Config:              workflow.Config.BacklogAdmission,
 			Criteria:            admissionCriteria,
@@ -1649,10 +1721,13 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			DispatchStates:      workflow.Config.Agent.DispatchPriorityByState,
 			DispatchLabels:      workflow.Config.Agent.DispatchPriorityByLabel,
 			PrioritizeBlockers:  workflow.Config.Agent.PrioritizeUnblockers,
+			DependencyIssues:    admissionDependencyIssues(func() *orchestrator.Orchestrator { return p.Orchestrator() }),
+			IntakeEnabled:       admissionIntakeEnabled(func() *orchestrator.Orchestrator { return p.Orchestrator() }),
 			DependencyReadiness: workflow.Config.Tracker.DependencyAutoUnblock.Readiness,
 			Runner:              runner,
 			Issues:              admissionIssueStore(projectConnector),
 			LaneWriter:          admissionLaneWriter(func() *orchestrator.Orchestrator { return p.Orchestrator() }),
+			ContractCheck:       admissionContractCheck(func() *orchestrator.Orchestrator { return p.Orchestrator() }),
 			Scheduler:           projectScheduler,
 			GlobalDispatchGate:  globalDispatchGate,
 			ProjectCandidate:    projectSchedulerCandidate(projectConfig, workflow.Config),
@@ -1701,6 +1776,11 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		}
 	}
 
+	for _, warning := range workflow.Config.ValidationWarnings() {
+		if strings.HasPrefix(warning, "tracker.") {
+			p.logger.Warn("workflow configuration warning", "project_id", id, "warning", warning)
+		}
+	}
 	p.logger.Info("workflow reloaded", "project_id", p.id, "path", update.Path)
 	if publishEvents {
 		p.publish(Event{
@@ -1753,22 +1833,19 @@ func buildReleaseCoordinator(cfg workflowconfig.Config, projectConnector connect
 	}, releaseBackend)}, nil
 }
 
-// withMappedNativeTracker makes a project that client.native_projects maps to
+// WithMappedNativeTracker makes a project that client.native_projects maps to
 // a Hub project use the Hub instead of the repository's GitHub tracker, so a
 // runner host can reuse a committed detent.yaml without a local override. Any
 // other tracker kind is an explicit local choice and is kept.
-func withMappedNativeTracker(workflow workflowconfig.Config, scheduling orchestrator.SchedulingSource, id ID) workflowconfig.Config {
+func WithMappedNativeTracker(workflow workflowconfig.Config, scheduling orchestrator.SchedulingSource, id ID) workflowconfig.Config {
 	source, ok := scheduling.(interface {
 		ConnectorForProject(string) (connector.Connector, bool)
 	})
 	if !ok {
 		return workflow
 	}
-	repositoryTracker := workflow.Tracker.Kind == workflowconfig.TrackerGitHub || workflow.Tracker.Kind == workflowconfig.TrackerGitHubLocal
-	if _, mapped := source.ConnectorForProject(string(id)); mapped && repositoryTracker {
-		workflow.Tracker.Kind = workflowconfig.TrackerHubNative
-	}
-	return workflow
+	_, mapped := source.ConnectorForProject(string(id))
+	return MapNativeTracker(workflow, mapped)
 }
 
 func projectSchedulingSource(source orchestrator.SchedulingSource, workflow workflowconfig.Config) orchestrator.SchedulingSource {
@@ -1784,6 +1861,7 @@ func projectSchedulingSource(source orchestrator.SchedulingSource, workflow work
 func projectOrchestratorConfig(project globalconfig.Project, workflow workflowconfig.Config) orchestrator.Config {
 	workflow = workflowConfigWithProjectIdentity(project, workflow)
 	cfg := orchestrator.ConfigFromWorkflow(workflow)
+	cfg.LocalIntakeDisabled = !project.LocalIntakeOn()
 	cfg.HostCache = project.GlobalCache.Normalized()
 	memory := project.EffectiveMemory()
 	cfg.MemoryPressureSomeAvg60Max = memory.PressureSomeAvg60Threshold
@@ -1797,23 +1875,13 @@ func projectOrchestratorConfig(project globalconfig.Project, workflow workflowco
 	overrideUntil := activehours.ParsePersistedOverride(project.ActiveHoursOverrideUntil)
 	cfg.Project = scheduler.ProjectCandidate{
 		ID:                       project.ID,
+		Rank:                     project.Priority,
 		Pool:                     project.Pool,
-		Weight:                   project.Weight,
-		Priority:                 project.Priority,
 		Paused:                   project.Paused,
 		ActiveHours:              workflow.ActiveHours,
 		ActiveHoursOverrideUntil: overrideUntil,
 	}
 	cfg.SchedulingRepository = workflow.Tracker.Repository
-	lessonPath := strings.TrimSpace(cfg.Lessons.Path)
-	if lessonPath == "" {
-		lessonPath = lessons.DefaultPath
-	}
-	cfg.Lessons.Path = projectRelativePath(project.Workdir, lessonPath)
-	cfg.Lessons.Enabled = true
-	if cfg.Lessons.MaxEntries <= 0 {
-		cfg.Lessons.MaxEntries = lessons.DefaultMaxEntries
-	}
 	cfg.Authorization = combineAuthorizationSelectors(cfg.Authorization, project.Authorization)
 	return cfg
 }
@@ -1979,11 +2047,10 @@ func buildScheduleOwnership(
 	logger *slog.Logger,
 	state func(error),
 ) (*scheduleowner.Manager, *scheduleowner.IssueCoordinator, scheduleowner.Config, error) {
-	coordinationEndpoint := ""
-	if cfg.Tracker.Kind == workflowconfig.TrackerGitHub || cfg.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
-		coordinationEndpoint = cfg.Tracker.Endpoint
+	if cfg.Tracker.Kind == workflowconfig.TrackerHubNative && cfg.ScheduleOwnership.Enabled && strings.TrimSpace(cfg.ScheduleOwnership.Repository) == "" {
+		return nil, nil, scheduleowner.Config{}, errors.New("native schedule ownership requires an explicit schedule_ownership.repository to opt into GitHub coordination")
 	}
-	ownership := cfg.ScheduleOwnership.Normalized(cfg.Tracker.Repository, coordinationEndpoint)
+	ownership := cfg.NormalizedScheduleOwnership()
 	if !ownership.Enabled {
 		return nil, nil, ownership, nil
 	}
@@ -2083,9 +2150,8 @@ func projectSchedulerCandidate(project globalconfig.Project, workflow workflowco
 	overrideUntil := activehours.ParsePersistedOverride(project.ActiveHoursOverrideUntil)
 	return scheduler.ProjectCandidate{
 		ID:                       project.ID,
+		Rank:                     project.Priority,
 		Pool:                     project.Pool,
-		Weight:                   project.Weight,
-		Priority:                 project.Priority,
 		Paused:                   project.Paused,
 		ActiveHours:              EffectiveActiveHours(project, workflow.ActiveHours),
 		ActiveHoursOverrideUntil: overrideUntil,
@@ -2141,9 +2207,12 @@ func workflowConfigWithProjectPaths(project globalconfig.Project, workflow workf
 	if workflow.Tracker.Kind == workflowconfig.TrackerLocalSQLite || workflow.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
 		workflow.Tracker.LocalSQLite.Path = projectRelativePath(workdir, workflow.Tracker.LocalSQLite.Path)
 	}
+	workflow.Workspace.Root = projectRelativePath(workdir, workflow.Workspace.Root)
+	workflow.Workspace.SourceRoot = projectRelativePath(workdir, workflow.Workspace.SourceRoot)
+	if workflow.Workspace.Kind == workflowconfig.WorkspaceLocalGit && workflow.Workspace.SourceRoot == "" {
+		workflow.Workspace.SourceRoot = workdir
+	}
 	if workflow.Workspace.Kind == workflowconfig.WorkspaceFilesystem {
-		workflow.Workspace.Root = projectRelativePath(workdir, workflow.Workspace.Root)
-		workflow.Workspace.SourceRoot = projectRelativePath(workdir, workflow.Workspace.SourceRoot)
 		workflow.Workspace.OutputRoot = projectRelativePath(workdir, workflow.Workspace.OutputRoot)
 	}
 	if workflow.Deliverable.Kind == workflowconfig.DeliverableArtifact {
@@ -2248,6 +2317,7 @@ func (p *Project) recordRuntimeErrorState(err error, at time.Time, nextRetryAt t
 		At:          at.UTC(),
 		NextRetryAt: nextRetryAt.UTC(),
 		Terminal:    terminal,
+		Transient:   transientStartupError(err),
 	}
 }
 
@@ -2404,6 +2474,7 @@ func defaultConnectorFactoryWithRefresh(cfg workflowconfig.Config, refreshGitHub
 		StateMap:                    trackerStateMap(cfg.Tracker.StateMap),
 		PriorityMap:                 trackerPriorityMap(cfg.Tracker.PriorityMap),
 		RequiredStatusChecks:        cfg.Gate.RequiredStatusChecks,
+		LocalStatus:                 cfg.Gate.LocalStatus,
 		Publication:                 cfg.Tracker.Publication,
 	})
 }
@@ -2451,6 +2522,7 @@ func trackerPriorityMap(value workflowconfig.StringOrMap) map[string]*int {
 }
 
 func resolveWorkflowWatcherFactory(
+	ctx context.Context,
 	deps Dependencies,
 	project globalconfig.Project,
 	githubToken string,
@@ -2467,6 +2539,9 @@ func resolveWorkflowWatcherFactory(
 				return nil, err
 			}
 			watcher.currentProject = currentProject
+			watcher.fallback = func(ctx context.Context) (workflowconfig.Workflow, error) {
+				return loadWorkflowForScheduling(ctx, currentProject(), deps.Scheduling)
+			}
 			return watcher, nil
 		}
 	}
@@ -2474,12 +2549,12 @@ func resolveWorkflowWatcherFactory(
 		return configwatcher.New(path,
 			configwatcher.WithLoader(func(path string) (workflowconfig.Workflow, error) {
 				project := currentProject()
-				workflow, err := workflowconfig.LoadWorkflow(path)
+				workflow, err := loadWorkflowForScheduling(context.WithoutCancel(ctx), project, deps.Scheduling)
 				if err != nil {
 					return workflow, err
 				}
 				workflow = normalizeWorkflow(workflow)
-				workflow.Config = workflow.Config.WithAgentDefaults(project.GlobalAgents, project.GlobalBudget)
+				workflow.Config = applyProjectAgentDefaults(workflow.Config, project)
 				workflow.Config = workflowConfigWithProjectIdentity(project, workflow.Config)
 				workflow.Config = workflowConfigWithGitHubToken(workflow.Config, githubToken)
 				return workflow, nil
@@ -2525,4 +2600,11 @@ func errorString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func applyProjectAgentDefaults(cfg workflowconfig.Config, project globalconfig.Project) workflowconfig.Config {
+	if project.ModelSelection != nil {
+		cfg.Agents.ModelSelection = *project.ModelSelection
+	}
+	return cfg.WithAgentDefaults(project.GlobalAgents, project.GlobalBudget).WithWorkerDefaults(project.GlobalWorker)
 }

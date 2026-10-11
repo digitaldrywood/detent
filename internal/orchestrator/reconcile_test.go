@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestTickReconcilesRunningIssueTrackerState(t *testing.T) {
@@ -553,8 +555,8 @@ func TestTickReapsTerminalRunningIssue(t *testing.T) {
 	cancelled.State = "Cancelled"
 	cancelled.StageUpdatedAt = &terminalAt
 
-	project := scheduler.ProjectCandidate{ID: "detent", Weight: 1}
-	gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
+	project := scheduler.ProjectCandidate{ID: "detent"}
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 	slot, ok, err := gate.TryAcquire(context.Background(), project, scheduler.SlotRequest{State: issue.State}, startedAt)
 	if err != nil {
 		t.Fatalf("TryAcquire() error = %v", err)
@@ -1211,9 +1213,12 @@ func TestMergeIssueTrackerFieldsDistinguishesMissingAndEmptyMetadata(t *testing.
 	t.Parallel()
 
 	current := connector.Issue{
-		ID:        "issue-running",
-		Assignees: []string{"worker-1"},
-		Fields:    map[string]string{"Status": "Todo"},
+		ID:            "issue-running",
+		Assignees:     []string{"worker-1"},
+		Fields:        map[string]string{"Status": "Todo"},
+		Metadata:      map[string]string{"hub_profile": "native", "hub_revision": "4", "hub_disposition_attempt_id": "blocked-attempt", "hub_disposition_return_state": "Todo"},
+		WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked},
+		BlockerReason: "prerequisite must finish",
 	}
 
 	tests := []struct {
@@ -1234,6 +1239,18 @@ func TestMergeIssueTrackerFieldsDistinguishesMissingAndEmptyMetadata(t *testing.
 			wantAssignees: []string{},
 			wantFields:    map[string]string{},
 		},
+		{
+			name:          "interrupted native attempt clears earlier disposition",
+			refreshed:     connector.Issue{ID: current.ID, Metadata: map[string]string{"hub_profile": "native", "hub_revision": "6"}},
+			wantAssignees: []string{"worker-1"},
+			wantFields:    map[string]string{"Status": "Todo"},
+		},
+		{
+			name:          "new native attempt replaces earlier disposition",
+			refreshed:     connector.Issue{ID: current.ID, Metadata: map[string]string{"hub_profile": "native", "hub_revision": "7", "hub_disposition_attempt_id": "new-attempt", "hub_disposition_return_state": "Rework"}, WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, ReasonCode: "permission_wait"}, BlockerReason: "operator approval"},
+			wantAssignees: []string{"worker-1"},
+			wantFields:    map[string]string{"Status": "Todo"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1241,6 +1258,13 @@ func TestMergeIssueTrackerFieldsDistinguishesMissingAndEmptyMetadata(t *testing.
 			t.Parallel()
 
 			got := mergeIssueTrackerFields(current, tt.refreshed)
+			if tt.refreshed.Metadata["hub_profile"] == "native" {
+				if !reflect.DeepEqual(got.WorkpadSignal, workpad.CloneSignal(tt.refreshed.WorkpadSignal)) || !reflect.DeepEqual(got.Metadata, tt.refreshed.Metadata) || got.BlockerReason != tt.refreshed.BlockerReason {
+					t.Fatalf("fresh native snapshot inherited blocked disposition: %+v", got)
+				}
+			} else if got.WorkpadSignal == nil || got.Metadata["hub_disposition_attempt_id"] != "blocked-attempt" || got.BlockerReason != current.BlockerReason {
+				t.Fatalf("partial snapshot lost retained disposition: %+v", got)
+			}
 			if !slices.Equal(got.Assignees, tt.wantAssignees) {
 				t.Fatalf("Assignees = %#v, want %#v", got.Assignees, tt.wantAssignees)
 			}
@@ -1470,6 +1494,34 @@ func TestRefreshHintRoutingStates(t *testing.T) {
 			}
 			if !slices.ContainsFunc(o.observedStatusFetchStates(), func(state string) bool { return normalizeState(state) == normalizeState(tt.state) }) {
 				t.Fatalf("observed state %q omitted from refresh", tt.state)
+			}
+		})
+	}
+}
+
+func TestClearBlockedStatusIssueFollowsTrackerLane(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		source    BlockedSource
+		heldLane  string
+		freshLane string
+		wantHeld  bool
+	}{
+		{name: "project status clears once the lane leaves Blocked", source: BlockedSourceProjectStatus, heldLane: "Blocked", freshLane: "Rework"},
+		{name: "operator stop clears after an operator moves the item", source: BlockedSourceOperatorStop, heldLane: "Blocked", freshLane: "Rework"},
+		{name: "merge duration hold stays while the item is still Merging", source: BlockedSourceMergeDuration, heldLane: "Merging", freshLane: "Merging", wantHeld: true},
+		{name: "merge duration hold clears once the lane moves", source: BlockedSourceMergeDuration, heldLane: "Merging", freshLane: "Rework"},
+		{name: "dependency holds are reconciled by dependency tracking", source: BlockedSourceDependency, heldLane: "Todo", freshLane: "Rework", wantHeld: true},
+		{name: "ownership holds are reconciled by ownership tracking", source: BlockedSourceOwnership, heldLane: "Todo", freshLane: "Rework", wantHeld: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			state := newState(normalizeConfig(Config{}))
+			state.Blocked["issue"] = Blocked{Issue: connector.Issue{ID: "issue", State: test.heldLane}, Source: test.source}
+			clearBlockedStatusIssue(&state, connector.Issue{ID: "issue", State: test.freshLane})
+			if _, held := state.Blocked["issue"]; held != test.wantHeld {
+				t.Fatalf("held = %t, want %t", held, test.wantHeld)
 			}
 		})
 	}

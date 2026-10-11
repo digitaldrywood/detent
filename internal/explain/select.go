@@ -463,6 +463,18 @@ func explanationReasons(identity Identity, snapshot telemetry.Snapshot) []Reason
 			Action: strings.TrimSpace(warning.Action),
 		})
 	}
+	for _, match := range matchingSnapshotIssues(snapshot, Query{ProjectID: identity.ProjectID, IssueID: identity.IssueID, Identifier: identity.Identifier, IssueURL: identity.IssueURL}) {
+		pr := match.issue.PullRequest
+		if pr == nil || strings.TrimSpace(pr.CIStatus) != "" || pr.CheckRunCount != 0 || pr.StatusContextCount != 0 || len(pr.RequiredCheckFailures) != 0 || pr.HydrationUnavailableReason != "" || pr.HydrationDegradedReason != "" {
+			continue
+		}
+		reasons = append(reasons, Reason{
+			Code:   "ci_not_green",
+			Detail: "No CI producer has reported checks or statuses on this head, and native-only CI evaluation is not enabled; aggregate CI is still required.",
+			Action: "Provide CI, or explicitly set gate.required_status_checks: [] to use only native branch requirements.",
+		})
+		break
+	}
 	return reasons
 }
 

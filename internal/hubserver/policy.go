@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -24,7 +26,7 @@ func (s *Service) policyScope(c echo.Context) (string, error) {
 	if c.Param("organization") != "" {
 		scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project"))}
 		var count int
-		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM projects WHERE organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&count); err != nil {
+		if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM projects WHERE organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&count); err != nil {
 			return "", err
 		}
 		if count != 1 {
@@ -34,7 +36,7 @@ func (s *Service) policyScope(c echo.Context) (string, error) {
 	}
 	repository := c.Param("owner") + "/" + c.Param("repo")
 	var count int
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM repositories WHERE github_owner || '/' || github_name = ? COLLATE NOCASE", repository).Scan(&count); err != nil {
+	if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM repositories WHERE github_owner || '/' || github_name = ? COLLATE NOCASE", repository).Scan(&count); err != nil {
 		return "", err
 	}
 	if count != 1 {
@@ -48,7 +50,11 @@ func (s *Service) getProjectPolicy(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	approval, err := readProjectPolicy(c.Request().Context(), s.database.db, scope)
+	limit, err := parsePageLimit(c.QueryParam("limit"))
+	if err != nil {
+		return s.nativeAPIError(c, nativeInvalid(err.Error()))
+	}
+	approval, err := readProjectPolicyWithHistory(c.Request().Context(), s.database.reader, scope, limit, c.QueryParam("after"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -78,17 +84,16 @@ func (s *Service) approveProjectPolicy(c echo.Context) error {
 	return c.JSON(http.StatusOK, approval)
 }
 
-// observeProjectPolicy records the descriptor a runner resolved for a native
-// project when it could not run it. Each runner's latest report is kept; the
-// approved policy is untouched until an owner approves one of them.
 func (s *Service) observeProjectPolicy(c echo.Context) error {
-	var descriptor policy.Descriptor
-	if err := decodeAPIJSON(c, &descriptor); err != nil {
+	var observation policy.Observation
+	if err := decodeAPIJSON(c, &observation); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	if err := descriptor.Validate(); err != nil {
+	descriptor, err := workflowconfig.ResolveSharedPolicy(observation.Descriptor)
+	if err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
+	observation.Descriptor = descriptor
 	scope, err := s.policyScope(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -101,41 +106,75 @@ func (s *Service) observeProjectPolicy(c echo.Context) error {
 	if reporter == "" {
 		reporter = credential.ID
 	}
-	encoded, err := json.Marshal(descriptor)
-	if err != nil {
+	if err := storeObservedPolicy(c.Request().Context(), s.database.db, scope, reporter, observation, s.config.now()); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if _, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO project_observed_policies (scope, policy_id, descriptor_json, runner_id, observed_at) VALUES (?, ?, ?, ?, ?)
-ON CONFLICT(scope, runner_id) DO UPDATE SET policy_id = excluded.policy_id, descriptor_json = excluded.descriptor_json, observed_at = excluded.observed_at`,
-		scope, descriptor.ID, string(encoded), reporter, formatHubTime(s.config.now())); err != nil {
-		return s.nativeAPIError(c, err)
+	if credential.Runner.RunnerID != "" {
+		if err := s.database.applyObservedDefaultBranchPolicy(c.Request().Context(), scope, observation); err != nil {
+			return s.nativeAPIError(c, err)
+		}
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
-// readObservedPolicies returns the distinct descriptors runners reported for
-// scope and could not run, newest first, leaving out approvedID.
-func readObservedPolicies(ctx context.Context, query nativeQueryer, scope, approvedID string) ([]policy.ObservedPolicy, error) {
-	rows, err := query.QueryContext(ctx, "SELECT descriptor_json, runner_id, observed_at, policy_id FROM project_observed_policies WHERE scope = ? AND policy_id <> ? ORDER BY observed_at DESC, runner_id", scope, approvedID)
+func storeObservedPolicy(ctx context.Context, exec hostedExecer, scope, reporter string, observation policy.Observation, now time.Time) error {
+	encoded, err := json.Marshal(observation.Descriptor)
+	if err != nil {
+		return err
+	}
+	source, err := json.Marshal(observation.Source)
+	if err != nil {
+		return err
+	}
+	_, err = exec.ExecContext(ctx, `INSERT INTO project_observed_policies (scope, policy_id, descriptor_json, runner_id, observed_at, source_json) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(scope, runner_id) DO UPDATE SET policy_id = excluded.policy_id, descriptor_json = excluded.descriptor_json, observed_at = excluded.observed_at,
+source_json = CASE WHEN excluded.source_json = 'null' AND project_observed_policies.policy_id = excluded.policy_id THEN project_observed_policies.source_json ELSE excluded.source_json END`, scope, observation.ID, string(encoded), reporter, formatHubTime(now), string(source))
+	return err
+}
+
+func readObservedPolicies(ctx context.Context, query nativeQueryer, scope string, approved policy.Descriptor, now time.Time) ([]policy.ObservedPolicy, error) {
+	rows, err := query.QueryContext(ctx, `WITH current_reports AS (
+SELECT o.* FROM project_observed_policies o
+LEFT JOIN runner_identities i ON i.id = o.runner_id
+JOIN api_tokens t ON t.id = COALESCE(i.token_id, o.runner_id) AND t.revoked_at IS NULL
+AND (t.expires_at IS NULL OR julianday(t.expires_at) > julianday(?))
+JOIN token_grants g ON g.token_id = t.id AND g.organization_id || '/' || g.project_id = o.scope
+WHERE i.removed_at IS NULL
+)
+SELECT o.descriptor_json, o.source_json, o.runner_id, o.observed_at, o.policy_id,
+EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = o.scope AND r.policy_id = o.policy_id),
+(SELECT count(DISTINCT policy_id) FROM current_reports WHERE scope = o.scope)
+FROM current_reports o WHERE o.scope = ? AND o.policy_id <> ? ORDER BY o.observed_at DESC, o.runner_id`, formatHubTime(now), scope, approved.ID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	result := []policy.ObservedPolicy{}
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	for rows.Next() {
-		var raw, id string
+		var raw, source, id string
 		var observed policy.ObservedPolicy
-		if err := rows.Scan(&raw, &observed.RunnerID, &observed.ObservedAt, &id); err != nil {
+		var distinct int
+		if err := rows.Scan(&raw, &source, &observed.RunnerID, &observed.ObservedAt, &id, &observed.PreviouslyApproved, &distinct); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
-		if seen[id] {
+		if index, ok := seen[id]; ok {
+			result[index].RunnerIDs = append(result[index].RunnerIDs, observed.RunnerID)
 			continue
 		}
-		seen[id] = true
+		seen[id] = len(result)
 		if err := json.Unmarshal([]byte(raw), &observed.Policy); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
+		if observed.PreviouslyApproved && observed.Policy.SameAuthoredInputs(approved) && observed.Policy.Authored.Version < approved.Authored.Version {
+			delete(seen, id)
+			continue
+		}
+		if err := json.Unmarshal([]byte(source), &observed.Source); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		observed.Conflict = distinct > 1 || observed.PreviouslyApproved
+		observed.RunnerIDs = []string{observed.RunnerID}
 		result = append(result, observed)
 	}
 	return result, errors.Join(rows.Err(), rows.Close())
@@ -152,38 +191,12 @@ func (s *Service) revokeProjectPolicy(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	result, err := s.database.db.ExecContext(c.Request().Context(), "DELETE FROM project_policies WHERE scope = ? AND policy_id = ?", scope, request.ExpectedID)
+	_, err = revokeProjectPolicyInTx(c.Request().Context(), s.database.db, scope, request.ExpectedID)
 	if err != nil {
 		return s.nativeAPIError(c, err)
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if count != 1 {
-		return s.nativeAPIError(c, policyMismatch("Policy changed or is already revoked; inspect the current approval before revoking it"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
-
-// executingLeaseCountQuery counts the unexpired leases in a scope that would
-// actually run under the policy being replaced: attempt and claim leases, the
-// ones a model or a command executes beneath.
-//
-// A workspace session lease is deliberately not one of them. Section 18.1 gives
-// a workspace its own lease so the runner's capacity accounting, renewal and
-// expiry sweep apply to it with no second mechanism, and section 18.2 says what
-// runs under it: a person reading files, a diff, a preview, a shell. No policy
-// decides any of that -- there is no model, no gate and no command -- so a
-// workspace holds nothing the approval could invalidate. Counting one was worse
-// than merely strict: a workspace renews its lease for as long as it is open,
-// so an open Files panel blocked every policy change in the project until
-// somebody deleted the workspace, with no wait that ended.
-const executingLeaseCountQuery = `SELECT count(*) FROM lease_policies p
-JOIN leases l ON l.lease_id = p.lease_id
-JOIN issues i ON i.id = l.issue_id
-WHERE p.scope = ? AND l.released_at IS NULL AND julianday(l.expires_at) > julianday(?)
- AND ` + notWorkspaceItemClause
 
 func (d *database) approvePolicy(ctx context.Context, scope, actor string, change policy.Change) (result policy.Approval, resultErr error) {
 	tx, err := d.db.BeginTx(ctx, nil)
@@ -195,6 +208,21 @@ func (d *database) approvePolicy(ctx context.Context, scope, actor string, chang
 			resultErr = errors.Join(resultErr, tx.Rollback())
 		}
 	}()
+	result, err = d.approvePolicyInTx(ctx, tx, scope, actor, change)
+	if err != nil {
+		return result, err
+	}
+	return result, d.commit(ctx, tx)
+}
+func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor string, change policy.Change) (result policy.Approval, resultErr error) {
+	resolved, err := workflowconfig.ResolveSharedPolicy(change.Policy)
+	if err != nil {
+		return result, nativeInvalid(err.Error())
+	}
+	change.Policy = resolved
+	if err := validateWorkflowPolicy(ctx, tx, scope, change.Policy); err != nil {
+		return result, err
+	}
 	var current string
 	err = tx.QueryRowContext(ctx, "SELECT policy_id FROM project_policies WHERE scope = ?", scope).Scan(&current)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -207,13 +235,44 @@ func (d *database) approvePolicy(ctx context.Context, scope, actor string, chang
 	if err != nil {
 		return result, err
 	}
-	if current != change.Policy.ID {
-		var active int
-		if err := tx.QueryRowContext(ctx, executingLeaseCountQuery, scope, formatHubTime(now)).Scan(&active); err != nil {
+	carryover := false
+	if current != "" && current != change.Policy.ID {
+		previous, err := readProjectPolicy(ctx, tx, scope)
+		if err != nil {
 			return result, err
 		}
-		if active != 0 {
-			return result, policyMismatch("Active leases retain their approved policy; finish or cancel them before approving a different revision")
+		carryover = change.Policy.SameAuthoredInputs(previous.Policy)
+	}
+	if current != change.Policy.ID && !carryover {
+		organization, project, native := strings.Cut(scope, "/")
+		if native && !strings.HasPrefix(scope, "repository:") {
+			nativeScope := nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project)}
+			var profile, source string
+			if err := tx.QueryRowContext(ctx, "SELECT profile, workflow_source FROM projects WHERE organization_id=? AND id=?", organization, project).Scan(&profile, &source); err != nil {
+				return result, err
+			}
+			if profile == "native" {
+				if change.Policy.Workflow == nil && source != "" {
+					return result, policyMismatch("Repository-controlled workflow requires a resolved workflow in the policy descriptor; inspect the repository definition with an updated runner")
+				}
+				if change.Policy.Workflow != nil {
+					if err := applyNativeProjectStates(ctx, tx, nativeScope, change.Policy.Workflow.States, now); err != nil {
+						return result, err
+					}
+					revision := change.Policy.Workflow.Revision
+					if revision == "" {
+						revision = change.Policy.SourceRevision
+					}
+					if _, err := tx.ExecContext(ctx, "UPDATE projects SET workflow_source=?, workflow_source_revision=?, workflow_markdown='', integration_revision=integration_revision+1 WHERE organization_id=? AND id=?", change.Policy.Workflow.Source, revision, organization, project); err != nil {
+						return result, err
+					}
+				}
+			}
+		}
+	}
+	if current != change.Policy.ID && (change.Policy.Workflow != nil || carryover) {
+		if err := recordWorkflowApply(ctx, tx, scope, actor, current, change.Policy, now); err != nil {
+			return result, err
 		}
 	}
 	raw, err := json.Marshal(change.Policy)
@@ -233,17 +292,11 @@ func (d *database) approvePolicy(ctx context.Context, scope, actor string, chang
 	if err != nil {
 		return result, err
 	}
-	return result, tx.Commit()
+	return result, nil
 }
 
-// defaultChangeReviewPolicy is the review expectation a native project starts
-// with: no CI check is pinned, and a person reviews each version only when
-// the repository gate asks for one. Under any other gate a published version
-// is already reviewed, so the runner lands it without waiting for anybody.
-// It is what approving the repository policy means for a project nobody
-// configured further.
 func defaultChangeReviewPolicy(descriptor policy.Descriptor) tracker.ChangeReviewPolicy {
-	rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: descriptor.Gates.Kind == "human_review", RequiredChecks: []tracker.ChangeCheckSpec{}}
+	rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: descriptor.Gates.HumanReview, RequiredChecks: []tracker.ChangeCheckSpec{}}
 	rules.ID = changerequest.PolicyID(rules)
 	return rules
 }
@@ -344,6 +397,10 @@ FROM project_policies p JOIN policy_revisions r ON r.scope = p.scope AND r.polic
 	if err := json.Unmarshal([]byte(raw), &result.Policy); err != nil {
 		return result, err
 	}
+	if result.Policy.Authored != nil && len(result.Policy.Authored.Files) > 0 {
+		result.Policy, err = workflowconfig.ResolveSharedPolicy(result.Policy)
+		return result, err
+	}
 	return result, result.Policy.Validate()
 }
 
@@ -357,6 +414,37 @@ func claimPolicyScope(query claimCandidateQuery) (string, error) {
 	return "repository:" + strings.ToLower(strings.TrimSpace(query.Repositories[0])), nil
 }
 
+func validateWorkflowPolicy(ctx context.Context, db policyQuerier, scope string, descriptor policy.Descriptor) error {
+	organization, project, native := strings.Cut(scope, "/")
+	if !native || strings.HasPrefix(scope, "repository:") || descriptor.Workflow != nil {
+		return nil
+	}
+	var profile, markdown string
+	if err := db.QueryRowContext(ctx, "SELECT profile, workflow_markdown FROM projects WHERE organization_id=? AND id=?", organization, project).Scan(&profile, &markdown); err != nil {
+		return err
+	}
+	if profile != "native" || markdown == "" {
+		return nil
+	}
+	workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(markdown)})
+	if err != nil {
+		return policyMismatch("Saved Cloud workflow is invalid; correct its Markdown definition before approving execution")
+	}
+	if descriptor.Authored != nil && len(descriptor.Authored.Files) > 0 {
+		workflow.Definition.Layout = workflowconfig.ProjectDefinitionCloud
+		expected, err := workflowconfig.ResolvePolicy(workflow)
+		if err != nil {
+			return err
+		}
+		if descriptor.Authored.Files["WORKFLOW.md"] != expected.Authored.Files["WORKFLOW.md"] {
+			return policyMismatch("Cloud workflow changed; load its current Markdown definition and approve the resolved policy before claiming work")
+		}
+	} else if descriptor.Configuration == nil || descriptor.Configuration.DefinitionDigest != workflow.SourceHash {
+		return policyMismatch("Cloud workflow changed; load its current Markdown definition and approve the resolved policy before claiming work")
+	}
+	return nil
+}
+
 func validateClaimPolicy(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, machine tracker.MachineID) (string, error) {
 	scope, err := claimPolicyScope(query)
 	if err != nil {
@@ -366,8 +454,15 @@ func validateClaimPolicy(ctx context.Context, tx *sql.Tx, query claimCandidateQu
 	if err != nil {
 		return "", err
 	}
-	if query.PolicyID == "" || query.PolicyID != approval.Policy.ID {
+	matches, err := approvedPolicyRevisionMatches(ctx, tx, scope, query.PolicyID, approval.Policy)
+	if err != nil {
+		return "", err
+	}
+	if !matches {
 		return "", policyMismatch("Runner policy is missing or stale; load the approved repository definition and permitted local overrides before claiming work")
+	}
+	if err := validateWorkflowPolicy(ctx, tx, scope, approval.Policy); err != nil {
+		return "", err
 	}
 	var runnerID string
 	if query.NativeScope != nil {
@@ -394,7 +489,7 @@ func validateClaimPolicy(ctx context.Context, tx *sql.Tx, query claimCandidateQu
 
 func (d *database) leasePolicyID(ctx context.Context, lease tracker.LeaseID) (string, error) {
 	var id string
-	err := d.db.QueryRowContext(ctx, "SELECT policy_id FROM lease_policies WHERE lease_id = ?", lease).Scan(&id)
+	err := d.reader.QueryRowContext(ctx, "SELECT policy_id FROM lease_policies WHERE lease_id = ?", lease).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -403,8 +498,10 @@ func (d *database) leasePolicyID(ctx context.Context, lease tracker.LeaseID) (st
 
 func requireApprovedLeasePolicy(ctx context.Context, tx *sql.Tx, lease tracker.LeaseID, required bool) error {
 	var pinned, approved string
-	err := tx.QueryRowContext(ctx, `SELECT l.policy_id, coalesce(p.policy_id, '') FROM lease_policies l
-LEFT JOIN project_policies p ON p.scope = l.scope WHERE l.lease_id = ?`, lease).Scan(&pinned, &approved)
+	var recorded bool
+	err := tx.QueryRowContext(ctx, `SELECT l.policy_id, coalesce(p.policy_id, ''),
+EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = l.scope AND r.policy_id = l.policy_id)
+FROM lease_policies l LEFT JOIN project_policies p ON p.scope = l.scope WHERE l.lease_id = ?`, lease).Scan(&pinned, &approved, &recorded)
 	if errors.Is(err, sql.ErrNoRows) {
 		if required {
 			return policyMismatch("Legacy lease has no pinned policy; release it and request a new approved claim")
@@ -414,10 +511,31 @@ LEFT JOIN project_policies p ON p.scope = l.scope WHERE l.lease_id = ?`, lease).
 	if err != nil {
 		return err
 	}
-	if pinned != approved {
-		return policyMismatch("Pinned policy has been revoked; stop the attempt and obtain administrator approval before restarting")
+	if pinned == "" || approved == "" || !recorded {
+		return policyMismatch("Pinned policy is missing or project approval has been revoked; stop the attempt and obtain administrator approval before restarting")
 	}
 	return requireLeaseRouting(ctx, tx, lease)
+}
+
+func approvedPolicyRevisionMatches(ctx context.Context, query policyQuerier, scope, id string, approved policy.Descriptor) (bool, error) {
+	if id == "" {
+		return false, nil
+	}
+	if id == approved.ID {
+		return true, nil
+	}
+	var raw string
+	if err := query.QueryRowContext(ctx, "SELECT metadata_json FROM policy_revisions WHERE scope=? AND policy_id=?", scope, id).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	var previous policy.Descriptor
+	if err := json.Unmarshal([]byte(raw), &previous); err != nil {
+		return false, err
+	}
+	return previous.Match(approved) == nil, nil
 }
 
 func requireLeaseRouting(ctx context.Context, tx *sql.Tx, lease tracker.LeaseID) error {
@@ -452,4 +570,21 @@ JOIN policy_revisions p ON p.scope = lp.scope AND p.policy_id = lp.policy_id WHE
 		return &nativeError{Code: "selector_no_match", Message: err.Error(), status: http.StatusConflict}
 	}
 	return nil
+}
+
+func revokeProjectPolicyInTx(ctx context.Context, exec hostedExecer, scope, expectedID string) (any, error) {
+	result, err := exec.ExecContext(ctx, "DELETE FROM project_policies WHERE scope = ? AND policy_id = ?", scope, expectedID)
+	if err != nil {
+		return nil, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if count != 1 {
+		return nil, policyMismatch("Policy changed or is already revoked; inspect the current approval before revoking it")
+	}
+	return struct {
+		Status string `json:"status"`
+	}{"revoked"}, nil
 }

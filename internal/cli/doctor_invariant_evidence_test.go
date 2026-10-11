@@ -46,6 +46,10 @@ func doctorInvariantStatus(t *testing.T, checks []doctorCheck, inv string) (doct
 }
 
 func TestDoctorInvariantEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
 	recent := now.Add(-time.Hour).Format(time.RFC3339Nano)
@@ -160,6 +164,10 @@ func TestDoctorInvariantEvidence(t *testing.T) {
 }
 
 func TestDoctorRespectsProjectCIPolicy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, event := range []string{"pull_request", "merge_group", "pull_request_target"} {
 		t.Run(event, func(t *testing.T) {

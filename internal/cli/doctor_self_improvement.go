@@ -535,6 +535,7 @@ func defaultDoctorProposalConnector(cfg workflowconfig.Config) (doctorWorkflowPr
 		StateMap:                    doctorTrackerStateMap(cfg.Tracker.StateMap),
 		PriorityMap:                 doctorTrackerPriorityMap(cfg.Tracker.PriorityMap),
 		RequiredStatusChecks:        cfg.Gate.RequiredStatusChecks,
+		LocalStatus:                 cfg.Gate.LocalStatus,
 	})
 	if err != nil {
 		return nil, err
@@ -611,7 +612,7 @@ func doctorWorkflowProposalIssueBody(proposal doctorWorkflowImprovementProposal)
 			builder.WriteString("\n- ")
 			builder.WriteString(key)
 			builder.WriteString(": ")
-			builder.WriteString(fmt.Sprint(proposal.Evidence[key]))
+			fmt.Fprint(&builder, proposal.Evidence[key])
 		}
 	}
 	builder.WriteString("\n\n## Target\n\n")

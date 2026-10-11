@@ -31,6 +31,7 @@ func TestRestartResumeDispatchCompletionIdentity(t *testing.T) {
 				Project:                scheduler.ProjectCandidate{ID: "detent"},
 				ActiveStates:           []string{"In Progress", "Rework"},
 				ResumeOrphanedSessions: true,
+				WorkerHosts:            []string{"local"},
 			}, Dependencies{
 				Connector:    hydratingDispatchConnector{issue: issue},
 				Runner:       runner,
@@ -41,13 +42,13 @@ func TestRestartResumeDispatchCompletionIdentity(t *testing.T) {
 			}
 			state := newState(orch.cfg)
 			orch.recoverDurableWorkAttempts(t.Context(), &state, now)
-			if !orch.dispatchIssue(t.Context(), &state, issue, state.Retry[issue.ID].Attempt, now, "") {
+			if !orch.dispatchIssue(t.Context(), &state, issue, state.Retry[issue.ID].Attempt, now, "local") {
 				t.Fatal("restart resume dispatch failed")
 			}
 			request := receiveWorkerHostRunRequest(t, runner.started)
 			t.Cleanup(state.Running[issue.ID].cancel)
 			if request.RetryMode != runpkg.RetryModeResume || request.ResumeState.DetentSessionID != session.ResumeState.DetentSessionID {
-				t.Fatalf("dispatched retry = %#v, want orphaned provider resume", request)
+				t.Fatalf("dispatched retry = %q, host = %q, session = %d; want orphaned provider resume", request.RetryMode, request.WorkerHost, request.ResumeState.DetentSessionID)
 			}
 			if request.WorkAttemptID != 2200 || request.Generation == 0 {
 				t.Fatalf("completion identity = %d/%d, want new attempt 2200 and positive generation", request.WorkAttemptID, request.Generation)

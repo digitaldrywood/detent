@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,13 +58,18 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 	}
 
 	wantTables := []string{
+		"ai_credit_accounts", "ai_credit_packs", "ai_credit_purchases", "ai_credit_transactions",
 		"artifact_services",
 		"artifact_references",
 		"artifact_grants",
+		"attachment_references",
+		"attachments",
 		"change_evidence",
 		"change_issue_links",
+		"change_landing_receipts",
 		"change_requests",
 		"change_review_policies",
+		"change_sources",
 		"change_versions",
 		"change_viewed_files",
 		"github_cutovers",
@@ -71,9 +77,12 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"github_imports",
 		"collaboration_events",
 		"collaboration_versions",
+		"event_compactions",
+		"attempt_diff_body_migration",
 		"attempt_diff_files",
 		"attempt_diffs",
 		"attempt_usage",
+		"usage_cost_observations",
 		"hub_identity",
 		"hosted_tenant",
 		"hosted_members",
@@ -94,10 +103,26 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"hosted_complimentary_grants",
 		"hosted_plan_audit",
 		"hosted_usage_windows",
+		"hosted_work_view_preferences",
 		"hosted_member_reservations",
 		"hosted_artifact_usage",
+		"hosted_usage_counters",
 		"native_commands",
 		"native_comments",
+		"native_board_counts",
+		"native_board_deltas",
+		"native_board_dirty",
+		"native_board_items",
+		"native_board_sequences",
+		"native_issue_page_items",
+		"native_issue_pages",
+		"health_findings",
+		"health_finding_issues",
+		"health_detector_ticks",
+		"health_slack_deliveries",
+		"organization_secret_audit",
+		"organization_secrets",
+		"slack_integrations",
 		"organizations",
 		"projects",
 		"token_grants",
@@ -109,26 +134,41 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"hub_schema_version",
 		"issue_dependencies",
 		"issues",
+		"landing_barrier_receipts",
+		"landing_barriers",
 		"leases",
 		"lease_policies",
 		"lease_runners",
+		"monthly_budget_admissions",
+		"monthly_budget_leases",
+		"monthly_budget_policies",
 		"policy_revisions",
 		"project_action_runs",
 		"project_actions",
 		"project_observed_policies",
 		"project_onboarding",
+		"onboarding_issue_intake",
 		"project_policies",
+		"linked_issue_sources",
+		"project_secrets",
+		"project_secret_audit",
+		"organization_sprite_pools",
+		"organization_sprite_members",
+		"project_workflow_applies",
 		"provider_reservations",
 		"machines",
 		"native_attempts",
 		"native_attempt_events",
 		"pull_requests",
+		"quality_landings",
 		"queue_entries",
 		"repositories",
+		"runner_checkout_repositories",
 		"runner_enrollment_projects",
 		"runner_enrollments",
 		"runner_identities",
 		"runner_identity_events",
+		"runner_project_skills",
 		"sync_checkpoints",
 		"work_events",
 		"workflow_states",
@@ -144,6 +184,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"conversation_usage",
 		"conversation_attachments",
 		"conversation_attachment_blobs",
+		"operator_chat_sessions",
 		"message_references",
 		// Workspace sessions and the relay (decisions sections 18.1 and 18.2).
 		"workspace_sessions",
@@ -152,6 +193,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"workspace_relay_tickets",
 		"workspace_relay_sessions",
 		"workspace_terminal_recordings",
+		"runner_host_hours",
 	}
 	sort.Strings(wantTables)
 	if strings.Join(tables, ",") != strings.Join(wantTables, ",") {
@@ -166,7 +208,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		{name: "journal mode", query: "PRAGMA journal_mode", want: "wal"},
 		{name: "foreign keys", query: "PRAGMA foreign_keys", want: "1"},
 		{name: "busy timeout", query: "PRAGMA busy_timeout", want: "2500"},
-		{name: "locking mode", query: "PRAGMA locking_mode", want: "exclusive"},
+		{name: "locking mode", query: "PRAGMA locking_mode", want: "normal"},
 		{name: "synchronous mode", query: "PRAGMA synchronous", want: "2"},
 		{name: "application id", query: "PRAGMA application_id", want: strconv.Itoa(hubApplicationID)},
 	}
@@ -182,8 +224,18 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		})
 	}
 
-	if service.database.schemaVersion != supportedSchemaVersion {
-		t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion)
+	if service.database.schemaVersion != supportedSchemaVersion(t) {
+		t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion(t))
+	}
+
+	reader, err := sql.Open("sqlite", "file:"+filepath.ToSlash(service.database.path)+"?mode=ro&_pragma=busy_timeout(2500)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	var applicationID int
+	if err := reader.QueryRowContext(t.Context(), "PRAGMA application_id").Scan(&applicationID); err != nil || applicationID != hubApplicationID {
+		t.Fatalf("live replication read = %d, %v; want %d while the Hub holds the database", applicationID, err, hubApplicationID)
 	}
 }
 
@@ -211,6 +263,10 @@ func TestOpenRejectsInvalidDatabasePaths(t *testing.T) {
 }
 
 func TestOpenRejectsNetworkFilesystemBeforeTakingOwnership(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	directory := t.TempDir()
@@ -290,6 +346,10 @@ func TestSQLiteDSNEncodesAbsolutePaths(t *testing.T) {
 }
 
 func TestOpenRejectsUnrecognizedDatabase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -338,6 +398,61 @@ func TestOpenRejectsUnrecognizedDatabase(t *testing.T) {
 	}
 }
 
+func TestHubTransactionsWaitForConcurrentReplicationWriter(t *testing.T) {
+	t.Parallel()
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), BusyTimeout: 5 * time.Second})
+	db := service.database.db
+	if _, err := db.ExecContext(t.Context(), "CREATE TABLE _litestream_seq (id INTEGER PRIMARY KEY, seq INTEGER)"); err != nil {
+		t.Fatal(err)
+	}
+	replicator, err := sql.Open("sqlite", "file:"+filepath.ToSlash(service.database.path)+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replicator.Close()
+	tx, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM _litestream_seq").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	replicated := make(chan error, 1)
+	go func() {
+		_, err := replicator.ExecContext(context.Background(), "INSERT INTO _litestream_seq (seq) VALUES (1)")
+		replicated <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+	if _, err := tx.ExecContext(t.Context(), "INSERT INTO _litestream_seq (seq) VALUES (2)"); err != nil {
+		t.Fatalf("hub write after a concurrent replication write: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-replicated; err != nil {
+		t.Fatalf("replication write: %v", err)
+	}
+}
+
+func TestOpenAcceptsLitestreamTablesOnNewDatabase(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "hub.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{"CREATE TABLE _litestream_seq (id INTEGER PRIMARY KEY, seq INTEGER)", "CREATE TABLE _litestream_lock (id INTEGER)"} {
+		if _, err := db.ExecContext(t.Context(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	openTestService(t, Config{DatabasePath: path})
+}
+
 func TestOpenRejectsNewerSchema(t *testing.T) {
 	t.Parallel()
 
@@ -351,7 +466,7 @@ func TestOpenRejectsNewerSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sql.Open() error = %v", err)
 	}
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO hub_schema_version (version_id, is_applied) VALUES (?, 1)", supportedSchemaVersion+1); err != nil {
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO hub_schema_version (version_id, is_applied) VALUES (?, 1)", supportedSchemaVersion(t)+1); err != nil {
 		t.Fatalf("insert future schema version: %v", err)
 	}
 	if err := db.Close(); err != nil {
@@ -441,6 +556,164 @@ func TestOpenMigratesLegacyWebhookPayloads(t *testing.T) {
 	if eventType != "push" || action != "created" || headers != `{"user_agent":"GitHub-Hookshot"}` ||
 		body != `{"ref":"refs/heads/main"}` || payloadSHA != "legacy-sha" || lastReceivedAt != testTimestamp {
 		t.Fatalf("migrated webhook = event %q action %q headers %s body %s sha %q received %q", eventType, action, headers, body, payloadSHA, lastReceivedAt)
+	}
+}
+
+func TestOpenMigratesConversationOriginHistories(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite migration history integration")
+	}
+
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		version       int
+		originVersion int
+	}{
+		{"schema60", 60, 0},
+		{"attachments62", 62, 0},
+		{"origin62", 62, 62},
+		{"origin63", 63, 63},
+		{"references64", 64, 0},
+		{"origin65", 65, 0},
+		{"hostedEvents66", 66, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hub.db")
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			db.SetMaxOpenConns(1)
+			if _, err := db.ExecContext(t.Context(), fmt.Sprintf("PRAGMA application_id = %d", hubApplicationID)); err != nil {
+				t.Fatal(err)
+			}
+			legacy := fstest.MapFS{}
+			entries, err := migrationFiles.ReadDir("migrations")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				version, err := strconv.Atoi(strings.SplitN(entry.Name(), "_", 2)[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if version > test.version || version == test.originVersion {
+					continue
+				}
+				data, err := migrationFiles.ReadFile("migrations/" + entry.Name())
+				if err != nil {
+					t.Fatal(err)
+				}
+				legacy[entry.Name()] = &fstest.MapFile{Data: data}
+			}
+			if test.originVersion != 0 {
+				data, err := os.ReadFile("testdata/legacy_conversation_origin.sql")
+				if err != nil {
+					t.Fatal(err)
+				}
+				legacy[fmt.Sprintf("%05d_conversation_origin.sql", test.originVersion)] = &fstest.MapFile{Data: data}
+			}
+			if test.version >= 64 {
+				data, err := migrationFiles.ReadFile("migration_steps/00064_cloud_attachment_references.sql")
+				if err != nil {
+					t.Fatal(err)
+				}
+				legacy["00064_cloud_attachment_references.sql"] = &fstest.MapFile{Data: data}
+			}
+			goMigrations := []*goose.Migration{hubGoMigrations()[0]}
+			if test.version >= 65 {
+				goMigrations = append(goMigrations, hubGoMigrations()[2])
+			}
+			provider, err := goose.NewProvider(goose.DialectSQLite3, db, legacy,
+				goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable),
+				goose.WithSlog(discardLogger()), goose.WithGoMigrations(goMigrations...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := provider.Up(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(t.Context(), `
+INSERT INTO organizations (id, name, created_at) VALUES ('org_history', 'History', 'now');
+INSERT INTO projects (id, organization_id, name, profile, created_at) VALUES ('prj_history', 'org_history', 'History', 'native', 'now');
+INSERT INTO api_tokens (id, name, token_hash, token_fingerprint, scope, created_at, updated_at)
+VALUES ('tok_history', 'History', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'history', 'operator', 'now', 'now');
+INSERT INTO conversations (id, organization_id, project_id, owner_principal_id, visibility, status, work_item_id, execution_json, created_at, updated_at)
+VALUES ('conv_history', 'org_history', 'prj_history', 'tok_history', 'shared', 'active', 'wi_history', '{}', 'now', 'now');
+`); err != nil {
+				t.Fatal(err)
+			}
+			if test.originVersion != 0 {
+				if _, err := db.ExecContext(t.Context(), "UPDATE conversations SET origin = 'user' WHERE id = 'conv_history'"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.version >= 62 && test.originVersion != 62 {
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO attachments
+(id, organization_id, project_id, uploader, name, content_type, size, sha256, created_at)
+VALUES ('att_history', 'org_history', 'prj_history', 'tok_history', 'preserved.txt', 'text/plain', 1, 'hash', 'now')`); err != nil {
+					t.Fatal(err)
+				}
+				if test.version >= 64 {
+					if _, err := db.ExecContext(t.Context(), "INSERT INTO attachment_references (attachment_id, work_item_id) VALUES ('att_history', 'wi_reference')"); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			service := openTestService(t, Config{DatabasePath: path})
+			if service.database.schemaVersion != supportedSchemaVersion(t) {
+				t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion(t))
+			}
+			var urgentUpdate string
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT urgent_runner_update_json FROM organizations WHERE id = 'org_history'").Scan(&urgentUpdate); err != nil || urgentUpdate != `{"revision":0,"request":null}` {
+				t.Fatalf("initial urgent update = %q, %v", urgentUpdate, err)
+			}
+			for _, object := range []struct{ kind, name string }{
+				{"table", "attachments"}, {"table", "attachment_references"}, {"index", "attachments_retention"},
+				{"index", "collaboration_events_project_idx"},
+				{"trigger", "attachments_issue_deleted"}, {"trigger", "attachments_comment_deleted"},
+			} {
+				var count int
+				if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM sqlite_schema WHERE type = ? AND name = ?", object.kind, object.name).Scan(&count); err != nil || count != 1 {
+					t.Fatalf("schema object %s = %d, %v", object.name, count, err)
+				}
+			}
+			var observation int
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM pragma_table_info('runner_identities') WHERE name = 'update_observation_json'").Scan(&observation); err != nil || observation != 1 {
+				t.Fatalf("runner observation column = %d, %v", observation, err)
+			}
+			var origin string
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT origin FROM conversations WHERE id = 'conv_history'").Scan(&origin); err != nil {
+				t.Fatal(err)
+			}
+			want := conversationOriginWorker
+			if test.originVersion != 0 || test.version >= 65 {
+				want = conversationOriginUser
+			}
+			if origin != want {
+				t.Fatalf("conversation origin = %q, want %q", origin, want)
+			}
+			if test.version >= 62 && test.originVersion != 62 {
+				var name string
+				if err := service.database.db.QueryRowContext(t.Context(), "SELECT name FROM attachments WHERE id = 'att_history'").Scan(&name); err != nil || name != "preserved.txt" {
+					t.Fatalf("preserved attachment = %q, %v", name, err)
+				}
+				if test.version >= 64 {
+					var workItem string
+					if err := service.database.db.QueryRowContext(t.Context(), "SELECT work_item_id FROM attachment_references WHERE attachment_id = 'att_history'").Scan(&workItem); err != nil || workItem != "wi_reference" {
+						t.Fatalf("preserved attachment reference = %q, %v", workItem, err)
+					}
+				}
+			}
+			if _, err := runMigrations(t.Context(), service.database.db, discardLogger()); err != nil {
+				t.Fatalf("repeat unchanged-schema startup: %v", err)
+			}
+		})
 	}
 }
 
@@ -549,66 +822,179 @@ func TestSchemaEnforcesIdentityAndAppendOnlyConstraints(t *testing.T) {
 }
 
 func TestOpenExcludesAnotherHubProcess(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "hub.db")
-	command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestHubOwnerHelperProcess$")
-	command.Env = append(os.Environ(), "DETENT_HUB_OWNER_HELPER="+path)
-	stdin, err := command.StdinPipe()
-	if err != nil {
-		t.Fatalf("StdinPipe() error = %v", err)
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
 	}
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		t.Fatalf("StdoutPipe() error = %v", err)
-	}
-	var stderr strings.Builder
-	command.Stderr = &stderr
-	if err := command.Start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	waited := false
-	t.Cleanup(func() {
-		stdin.Close()
-		if !waited {
-			command.Wait()
-		}
-	})
+	for _, test := range []struct {
+		name                    string
+		shared, cancel, sibling bool
+	}{
+		{name: "standalone refuses contention"},
+		{name: "shared entry waits for previous owner", shared: true},
+		{name: "shared entry cancels ownership wait", shared: true, cancel: true},
+		{name: "shared entry refuses live sibling", shared: true, sibling: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bound, release := context.WithTimeout(t.Context(), 2*time.Minute)
+			defer release()
+			path := filepath.Join(t.TempDir(), "hub.db")
+			command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestHubOwnerHelperProcess$")
+			command.Env = append(os.Environ(), "DETENT_HUB_OWNER_HELPER="+path, "GOCOVERDIR="+t.TempDir())
+			stdin, err := command.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			stdout, err := command.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stderr strings.Builder
+			command.Stderr = &stderr
+			if err := command.Start(); err != nil {
+				t.Fatal(err)
+			}
+			waited := false
+			t.Cleanup(func() {
+				_ = stdin.Close()
+				if !waited {
+					_ = command.Wait()
+				}
+			})
+			ready, err := bufio.NewReader(stdout).ReadString('\n')
+			if err != nil || strings.TrimSpace(ready) != "ready" {
+				t.Fatalf("helper readiness = %q: %v", ready, err)
+			}
 
-	ready, err := bufio.NewReader(stdout).ReadString('\n')
-	if err != nil {
-		t.Fatalf("read helper readiness: %v, stderr = %s", err, stderr.String())
-	}
-	if strings.TrimSpace(ready) != "ready" {
-		t.Fatalf("helper readiness = %q, want ready", ready)
-	}
+			if test.sibling {
+				contender := exec.CommandContext(bound, os.Args[0], "-test.run=^TestHubOwnerHelperProcess$")
+				contender.Env = append(os.Environ(), "DETENT_HUB_OWNER_HELPER="+path, "DETENT_HUB_OWNER_CONTENDER=1", "GOCOVERDIR="+t.TempDir())
+				output, err := contender.CombinedOutput()
+				if err != nil || !strings.Contains(string(output), "held\n") {
+					t.Fatalf("live sibling contender = %v, %s", err, output)
+				}
+				return
+			}
 
-	service, err := Open(t.Context(), Config{DatabasePath: path, Logger: discardLogger()})
-	if err == nil {
-		service.Close()
-		t.Fatal("Open() error = nil, want ownership error")
-	}
-	if !errors.Is(err, instancelock.ErrHeld) {
-		t.Fatalf("Open() error = %v, want instance lock held", err)
-	}
-
-	if err := stdin.Close(); err != nil {
-		t.Fatalf("close helper stdin: %v", err)
-	}
-	if err := command.Wait(); err != nil {
-		t.Fatalf("helper process error = %v, stderr = %s", err, stderr.String())
-	}
-	waited = true
-
-	service = openTestService(t, Config{DatabasePath: path})
-	if service.database.path == "" {
-		t.Fatal("reopened database path is empty")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			cfg := Config{DatabasePath: path, Logger: discardLogger()}
+			waiting := make(chan struct{}, 1)
+			if test.shared {
+				cfg = hostedSharedTestConfig(path, newHostedSecurityProvider(), hostedSharedKey(7), 1)
+				cfg.Logger = slog.New(databaseLockWaitHandler{Handler: slog.DiscardHandler, waiting: waiting})
+			}
+			type opened struct {
+				service *Service
+				err     error
+			}
+			result := make(chan opened, 1)
+			go func() {
+				service, err := Open(ctx, cfg)
+				result <- opened{service: service, err: err}
+			}()
+			if test.shared {
+				select {
+				case <-waiting:
+				case got := <-result:
+					if got.service != nil {
+						_ = got.service.Close()
+					}
+					t.Fatalf("shared tenant exited instead of waiting: %v", got.err)
+				case <-bound.Done():
+					t.Fatal("tenant did not wait on previous owner")
+				}
+				if test.cancel {
+					cancel()
+				} else {
+					_ = stdin.Close()
+				}
+			}
+			var got opened
+			select {
+			case got = <-result:
+			case <-bound.Done():
+				t.Fatal("tenant startup did not finish")
+			}
+			if got.service != nil {
+				t.Cleanup(func() { _ = got.service.Close() })
+			}
+			switch {
+			case !test.shared:
+				if !errors.Is(got.err, instancelock.ErrHeld) {
+					t.Fatalf("Open() = %v, want held", got.err)
+				}
+			case test.cancel:
+				if !errors.Is(got.err, context.Canceled) {
+					t.Fatalf("Open() = %v, want cancellation", got.err)
+				}
+			default:
+				if got.err != nil {
+					t.Fatalf("Open() after holder exit = %v", got.err)
+				}
+				if err := got.service.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := stdin.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+				t.Fatal(err)
+			}
+			if err := command.Wait(); err != nil {
+				t.Fatalf("holder exit = %v, %s", err, stderr.String())
+			}
+			waited = true
+			service := openTestService(t, cfg)
+			if service.database.path == "" {
+				t.Fatal("reopened database path is empty")
+			}
+			if test.shared {
+				_, err := Open(t.Context(), cfg)
+				if !errors.Is(err, instancelock.ErrHeld) {
+					t.Fatalf("same-process contender = %v, want held", err)
+				}
+			}
+		})
 	}
 }
 
+type databaseLockWaitHandler struct {
+	slog.Handler
+	waiting chan struct{}
+}
+
+func (h databaseLockWaitHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h databaseLockWaitHandler) Handle(ctx context.Context, record slog.Record) error {
+	if record.Message == "waiting for previous tenant Hub database ownership" {
+		select {
+		case h.waiting <- struct{}{}:
+		default:
+		}
+	}
+	return h.Handler.Handle(ctx, record)
+}
+
 func TestHubOwnerHelperProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	path := os.Getenv("DETENT_HUB_OWNER_HELPER")
 	if path == "" {
 		return
 	}
+	if os.Getenv("DETENT_HUB_OWNER_CONTENDER") != "" {
+		cfg := hostedSharedTestConfig(path, newHostedSecurityProvider(), hostedSharedKey(7), 1)
+		service, err := Open(t.Context(), cfg)
+		if service != nil {
+			_ = service.Close()
+		}
+		if !errors.Is(err, instancelock.ErrHeld) {
+			t.Fatalf("live sibling contention = %v", err)
+		}
+		fmt.Fprintln(os.Stdout, "held")
+		return
+	}
+
 	service, err := Open(t.Context(), Config{DatabasePath: path, Logger: discardLogger()})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
@@ -664,8 +1050,8 @@ func TestOnlineBackupPreservesSchemaAndData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("backup schema version: %v", err)
 	}
-	if version != supportedSchemaVersion {
-		t.Fatalf("backup schema version = %d, want %d", version, supportedSchemaVersion)
+	if version != supportedSchemaVersion(t) {
+		t.Fatalf("backup schema version = %d, want %d", version, supportedSchemaVersion(t))
 	}
 	var applicationID int64
 	if err := backup.QueryRowContext(t.Context(), "PRAGMA application_id").Scan(&applicationID); err != nil {
@@ -716,6 +1102,13 @@ func TestBackupCancellationRemovesPartialDestination(t *testing.T) {
 
 func openTestService(t *testing.T, cfg Config) *Service {
 	t.Helper()
+	if cfg.RunnerReleaseClient == nil {
+		cfg.RunnerReleaseClient = &runnerReleaseFixture{}
+	}
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	started := time.Now()
 	defer func() { t.Logf("hub_fixture_open_seconds=%.6f", time.Since(started).Seconds()) }()
 	if cfg.Logger == nil {
@@ -724,6 +1117,7 @@ func openTestService(t *testing.T, cfg Config) *Service {
 	if len(cfg.InitialAdminToken) == 0 {
 		cfg.InitialAdminToken = []byte(testHubAdminToken)
 	}
+	seedHubDatabaseTemplate(t, cfg.DatabasePath)
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
@@ -750,6 +1144,7 @@ func seedProjection(t *testing.T, db *sql.DB) (int64, int64) {
 	if err != nil {
 		t.Fatalf("repository id: %v", err)
 	}
+	seedCompatibilityProject(t, db, repositoryID)
 	workflow, err := db.ExecContext(t.Context(), "INSERT INTO workflow_states (repository_id, github_node_id, source_name, detent_state, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)", repositoryID, "WS_todo", "Todo", "Todo", testTimestamp, testTimestamp)
 	if err != nil {
 		t.Fatalf("insert workflow state: %v", err)
@@ -777,4 +1172,180 @@ func seedProjection(t *testing.T, db *sql.DB) (int64, int64) {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func seedCompatibilityProject(t *testing.T, db *sql.DB, repositoryID int64) {
+	t.Helper()
+	var exists bool
+	if err := db.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects')").Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	if !exists {
+		return
+	}
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO projects(organization_id,repository_id,name,profile,created_at)
+SELECT o.id,r.id,r.github_owner || '/' || r.github_name,'github_compatible',r.created_at FROM organizations o CROSS JOIN repositories r WHERE o.local=1 AND r.id=?
+ON CONFLICT(repository_id) DO NOTHING`, repositoryID); err != nil {
+		t.Fatalf("seed compatibility project: %v", err)
+	}
+}
+
+func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
+	t.Parallel()
+
+	type read struct {
+		name string
+		run  func(context.Context, nativeFixture, nativeScope, string) error
+	}
+	health := read{"health", func(ctx context.Context, f nativeFixture, _ nativeScope, _ string) error {
+		if response, status := f.service.readInstanceHealth(ctx); status != http.StatusOK {
+			return fmt.Errorf("health = %d %q", status, response.Status)
+		}
+		return nil
+	}}
+	internalHealth := read{"internal health", func(ctx context.Context, f nativeFixture, _ nativeScope, _ string) error {
+		return f.service.database.health(ctx)
+	}}
+	detail := read{"work item detail", func(ctx context.Context, f nativeFixture, scope nativeScope, item string) error {
+		_, _, err := readNativeIssue(ctx, f.service.database.reader, scope, item)
+		return err
+	}}
+	attempts := read{"attempts", func(ctx context.Context, f nativeFixture, scope nativeScope, item string) error {
+		_, err := f.service.readAttempts(ctx, scope, item, url.Values{})
+		return err
+	}}
+	changes := read{"changes", func(ctx context.Context, f nativeFixture, scope nativeScope, item string) error {
+		_, err := f.service.readChanges(ctx, scope, item)
+		return err
+	}}
+	findings := read{"health findings", func(ctx context.Context, f nativeFixture, scope nativeScope, _ string) error {
+		_, err := f.service.readHealthFindings(ctx, scope, "", "", "", 10)
+		return err
+	}}
+	capabilities := read{"capabilities", func(ctx context.Context, f nativeFixture, _ nativeScope, _ string) error {
+		_, err := f.service.readNativeCapabilities(ctx)
+		return err
+	}}
+	board := read{"board", func(ctx context.Context, f nativeFixture, scope nativeScope, _ string) error {
+		page, err := f.service.readIssues(ctx, scope, url.Values{"limit": {"1"}})
+		if err == nil && page.Total != 2 {
+			err = fmt.Errorf("board total = %d, want 2", page.Total)
+		}
+		return err
+	}}
+
+	tests := []struct {
+		name  string
+		hold  func(*testing.T, *Service) *sql.Tx
+		reads []read
+		write bool
+	}{
+		{
+			name: "writer holds a write transaction",
+			hold: func(t *testing.T, s *Service) *sql.Tx {
+				tx, err := s.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), "UPDATE projects SET name = name"); err != nil {
+					t.Fatal(err)
+				}
+				return tx
+			},
+			reads: []read{health, internalHealth, detail, attempts, changes, findings, capabilities},
+			write: true,
+		},
+		{
+			name: "reader pool holds a long read",
+			hold: func(t *testing.T, s *Service) *sql.Tx {
+				tx, err := s.database.reader.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var count int
+				if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM issues").Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				return tx
+			},
+			reads: []read{health, internalHealth, detail, attempts, changes, findings, capabilities, board},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newDefaultNativeFixture(t, Config{})
+			issue := f.create(t, "first")
+			f.create(t, "second")
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			item := string(issue.WorkItemID)
+
+			held := test.hold(t, f.service)
+			defer func() { _ = held.Rollback() }()
+			for _, read := range test.reads {
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				started := time.Now()
+				err := read.run(ctx, f, scope, item)
+				cancel()
+				if err != nil {
+					t.Fatalf("%s beside a held connection: %v after %s", read.name, err, time.Since(started))
+				}
+			}
+
+			if _, err := f.service.database.reader.ExecContext(t.Context(), "UPDATE projects SET name = name"); err == nil {
+				t.Fatal("reader pool accepted a write")
+			}
+			if !test.write {
+				return
+			}
+			blocked, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+			defer cancel()
+			if _, err := f.service.database.db.ExecContext(blocked, "UPDATE projects SET name = name"); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("second write beside a held write = %v, want it to wait for the writer", err)
+			}
+			if err := held.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET name = name"); err != nil {
+				t.Fatalf("write after the held write committed: %v", err)
+			}
+		})
+	}
+}
+
+func TestHostedWriterLeavesCheckpointsToLitestream(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name            string
+		hosted          bool
+		want            int
+		wantSynchronous int
+	}{
+		{name: "hosted tenant", hosted: true, want: 0, wantSynchronous: 1},
+		{name: "self-managed Hub", hosted: false, want: 1000, wantSynchronous: 2},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			db, err := sql.Open("sqlite", sqliteWriterDSN(filepath.Join(t.TempDir(), "hub.db"), defaultBusyTimeout, test.hosted))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			var got int
+			if err := db.QueryRowContext(t.Context(), "PRAGMA wal_autocheckpoint").Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("wal_autocheckpoint = %d, want %d", got, test.want)
+			}
+			var synchronous int
+			if err := db.QueryRowContext(t.Context(), "PRAGMA synchronous").Scan(&synchronous); err != nil {
+				t.Fatal(err)
+			}
+			if synchronous != test.wantSynchronous {
+				t.Fatalf("synchronous = %d, want %d", synchronous, test.wantSynchronous)
+			}
+		})
+	}
 }

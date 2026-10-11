@@ -217,28 +217,45 @@ func TestDependencyAuthorityIgnoresFencedExamples(t *testing.T) {
 	}
 }
 
-func TestTodoBodyDependencyLookupFailureDoesNotReturnCandidates(t *testing.T) {
+func TestTodoBodyDependencyLookupAuthority(t *testing.T) {
 	t.Parallel()
-	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusNotFound, http.StatusForbidden} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
-			t.Parallel()
-			server := newGraphQLTestServer(t, []graphqlTestResponse{
-				{method: http.MethodGet, body: `[{"node_id":"I_101","number":101,"body":"Depends on: #100","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/101","labels":[{"name":"detent:todo"}]}]`},
-				{method: http.MethodGet, path: "/repos/digitaldrywood/detent/issues/101/dependencies/blocked_by?per_page=100", body: "[]"},
-				{method: http.MethodGet, path: "/repos/digitaldrywood/detent/issues/100", status: status, body: `{"message":"blocker lookup failed"}`},
-			})
-			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "digitaldrywood/detent", ActiveStates: []string{"Todo"}})
-			result, err := c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Todo"}, Limit: 1})
-			if status == http.StatusInternalServerError || status == http.StatusTooManyRequests {
-				if err != nil || len(result.Issues) != 1 || len(result.Issues[0].BlockedBy) != 1 || result.Issues[0].BlockedBy[0].State != "" {
-					t.Fatalf("retryable lookup = %+v, %v; want candidate with unresolved blocker", result.Issues, err)
+	for _, read := range []string{"source", "tracker"} {
+		for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusNotFound, http.StatusForbidden} {
+			t.Run(read+"/"+http.StatusText(status), func(t *testing.T) {
+				t.Parallel()
+				server := newGraphQLTestServer(t, []graphqlTestResponse{
+					{method: http.MethodGet, body: `[{"node_id":"I_101","number":101,"body":"Depends on: #100","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/101","labels":[{"name":"detent:todo"}]}]`},
+					{method: http.MethodGet, path: "/repos/digitaldrywood/detent/issues/101/dependencies/blocked_by?per_page=100", body: "[]"},
+					{method: http.MethodGet, path: "/repos/digitaldrywood/detent/issues/100", status: status, body: `{"message":"blocker lookup failed"}`},
+					{body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_101","closedByPullRequestsReferences":{"nodes":[]}}]}}`},
+					{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all", body: `[]`},
+				})
+				c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "digitaldrywood/detent", ActiveStates: []string{"Todo"}})
+				var issues []connector.Issue
+				var err error
+				if read == "source" {
+					var result connector.CandidateResult
+					result, err = c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Todo"}, Limit: 1})
+					issues = result.Issues
+					for _, request := range server.requests() {
+						if request["path"] == "/repos/digitaldrywood/detent/issues/100" {
+							t.Fatal("source resolved external prerequisite")
+						}
+					}
+				} else {
+					issues, err = c.FetchCandidateIssues(t.Context())
 				}
-				return
-			}
-			if err == nil || len(result.Issues) != 0 {
-				t.Fatalf("candidates = %+v, err = %v; want no candidates and hydration error", result.Issues, err)
-			}
-		})
+				if read == "source" || status == http.StatusInternalServerError || status == http.StatusTooManyRequests {
+					if err != nil || len(issues) != 1 || len(issues[0].BlockedBy) != 1 || issues[0].BlockedBy[0].State != "" || issues[0].BlockedBy[0].Identifier != "digitaldrywood/detent#100" {
+						t.Fatalf("unresolved lookup = %+v, %v; want candidate with unresolved blocker", issues, err)
+					}
+					return
+				}
+				if err == nil || len(issues) != 0 {
+					t.Fatalf("candidates = %+v, err = %v; want no candidates and hydration error", issues, err)
+				}
+			})
+		}
 	}
 }
 

@@ -126,7 +126,7 @@ func hostedAllowanceNames() []string {
 }
 
 func hostedFeatureNames() []string {
-	return []string{"collaboration", "native_execution", "github_integration", "hosted_artifacts"}
+	return []string{"collaboration", "native_execution", "github_integration", "hosted_artifacts", "model_choice"}
 }
 
 func pilotHostedPlans() HostedPlansConfig {
@@ -190,6 +190,25 @@ func defaultHostedPlans(cfg *HostedConfig) HostedPlansConfig {
 		config.Plans[0].Allowances["ingested_events"] = cfg.EventQuota
 	}
 	return config
+}
+
+func CheckoutHostedPlans(plans *HostedPlansConfig) *HostedPlansConfig {
+	config := capacityHostedPlans()
+	if !plans.IsZero() {
+		config = *plans
+	}
+	config.Plans = slices.Clone(config.Plans)
+	config.Base = PlanReference{ID: "payment_pending", Version: 1}
+	allowances := make(map[string]int64)
+	for _, name := range hostedAllowanceNames() {
+		allowances[name] = 0
+	}
+	free := capacityHostedPlans().Plans[0]
+	for _, name := range []string{"api_mutations", "history_records", "collaboration_bytes"} {
+		allowances[name] = free.Allowances[name]
+	}
+	config.Plans = append(config.Plans, HostedPlan{PlanReference: config.Base, Name: "Payment pending", Features: []string{}, Allowances: allowances})
+	return &config
 }
 
 func hostedCapacityPlan(ref PlanReference) bool {
@@ -389,7 +408,7 @@ func (d *database) hostedEntitlement(ctx context.Context, query nativeQueryer, n
 			if value, ok := plan.Allowances[scope]; ok && limited {
 				result.Allowances[scope] = max(result.Allowances[scope], value)
 			}
-			if slices.Contains(plan.Features, scope) && !slices.Contains(result.Features, scope) {
+			if (scope == "model_choice" || slices.Contains(plan.Features, scope)) && !slices.Contains(result.Features, scope) {
 				result.Features = append(result.Features, scope)
 			}
 		}

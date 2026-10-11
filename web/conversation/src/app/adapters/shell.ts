@@ -2,8 +2,13 @@ import type { BootstrapProject } from "../../contracts/conversation.ts";
 import { HUB_ENVIRONMENT_ID } from "../../contracts/index.ts";
 import type { ProjectId } from "../../contracts/ui.ts";
 import type { EnvironmentProject, EnvironmentThread, EnvironmentThreadShell } from "./models.ts";
+import { deriveLogicalProjectKey } from "./projectGrouping.ts";
 
 export type { EnvironmentProject, EnvironmentThread, EnvironmentThreadShell };
+
+export function sidebarProjectScopeKey(project: BootstrapProject): string {
+  return deriveLogicalProjectKey(toEnvironmentProject(project));
+}
 
 export function toEnvironmentProject(project: BootstrapProject): EnvironmentProject {
   return {

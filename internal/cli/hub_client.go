@@ -3,23 +3,37 @@ package cli
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"runtime"
-	"slices"
 	"strings"
+	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/skills"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workspacesession"
+	"github.com/digitaldrywood/detent/internal/workspacerunner"
 )
 
-func newHubScheduling(cfg globalconfig.Config, version string, problems ...func() []runnerauth.Problem) (orchestrator.SchedulingSource, error) {
+type hubSchedulingOptions struct {
+	applyProjects func(context.Context, globalconfig.Config) error
+	setupStore    store.ProjectRunnerSetupStore
+	logger        *slog.Logger
+	runtimeConfig func() globalconfig.Config
+	intakeToken   githubconnector.TokenSource
+	problems      func() []runnerauth.Problem
+}
+
+func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version string, options ...hubSchedulingOptions) (orchestrator.SchedulingSource, error) {
 	clientConfig := cfg.Client
 	if !clientConfig.Configured() {
 		return nil, errors.New("hub client is not configured")
@@ -34,20 +48,22 @@ func newHubScheduling(cfg globalconfig.Config, version string, problems ...func(
 		hostname = "unknown"
 	}
 	machineID := firstNonBlankString(clientConfig.MachineID, cfg.Global.Identity.Name, cfg.InstanceName, hostname)
+	runnerID := machineID
 	if clientConfig.IdentityFile != "" {
 		file, err := runnerauth.Load(clientConfig.IdentityFile)
 		if err != nil {
 			return nil, err
 		}
-		if clientConfig.TokenEnvironment != "" || len(clientConfig.NativeProjects) == 0 || string(file.Identity.OrganizationID) != clientConfig.OrganizationID || clientConfig.MachineID != "" && clientConfig.MachineID != string(file.Identity.MachineID) {
+		if clientConfig.TokenEnvironment != "" || string(file.Identity.OrganizationID) != clientConfig.OrganizationID || clientConfig.MachineID != "" && clientConfig.MachineID != string(file.Identity.MachineID) {
 			return nil, errors.New("hub runner configuration does not match the enrolled identity")
 		}
 		for _, id := range clientConfig.NativeProjects {
-			if !slices.Contains(file.Identity.ProjectIDs, tracker.ProjectID(id)) {
+			if !(runnerauth.Routing{Scope: file.Identity.Scope, ProjectIDs: file.Identity.ProjectIDs}).AllowsProject(tracker.ProjectID(id)) {
 				return nil, errors.New("hub project is outside runner enrollment")
 			}
 		}
 		machineID = string(file.Identity.MachineID)
+		runnerID = file.Identity.RunnerID
 	}
 	displayName := firstNonBlankString(clientConfig.DisplayName, cfg.Global.Identity.Name, cfg.InstanceName, machineID)
 	capacity := clientConfig.Capacity
@@ -70,36 +86,118 @@ func newHubScheduling(cfg globalconfig.Config, version string, problems ...func(
 	for name, id := range clientConfig.NativeProjects {
 		nativeProjects[name] = tracker.ProjectID(id)
 	}
+	checkouts := make(map[string]globalconfig.Project, len(nativeProjects))
+	for _, selected := range project.ManagerConfigFromGlobal(cfg).Projects {
+		checkouts[selected.ID] = selected
+	}
 	var providerReports func() ([]providercapacity.Report, error)
-	if clientConfig.ProviderCapacityFile != "" {
-		providerReports = func() ([]providercapacity.Report, error) {
-			return providercapacity.Load(clientConfig.ProviderCapacityFile)
+	if clientConfig.ProviderCapacityFile != "" || clientConfig.IdentityFile != "" {
+		providerReports = runnerProviderReports(ctx, cfg, firstNonBlankString(cfg.InstanceName, cfg.Global.Identity.Name, machineID), time.Now, runnerProviderModels)
+	}
+	var setupOptions hubSchedulingOptions
+	if len(options) > 0 {
+		setupOptions = options[0]
+	}
+	setup := project.NewRunnerSetup(runnerID, setupOptions.setupStore, setupOptions.logger)
+	projects := &runnerProjects{client: client, cfg: cfg, setup: setup, logger: setupOptions.logger, checks: make(map[string]runnerauth.LocalChecks), apply: setupOptions.applyProjects, runtime: setupOptions.runtimeConfig}
+	if projects.logger == nil {
+		projects.logger = slog.Default()
+	}
+	prepareProject := projects.prepare
+	setupResults := make(map[string]string, len(checkouts))
+	for name := range checkouts {
+		setupResults[name] = "passed"
+		if err := prepareProject(ctx, name); err != nil {
+			setupResults[name] = "failed"
 		}
 	}
+	localChecks, err := collectRunnerSetupReports(ctx, cfg, client)
+	if err != nil {
+		return nil, err
+	}
+	for name, checks := range localChecks {
+		checks.Setup = firstNonBlankString(setupResults[name], "failed")
+		localChecks[name] = checks
+		projects.checks[name] = checks
+	}
+	tokenSource := githubconnector.StaticTokenSource("")
+	if len(options) > 0 && options[0].intakeToken != nil {
+		tokenSource = options[0].intakeToken
+	}
+	github, err := githubconnector.NewClient(githubconnector.ClientConfig{TokenSource: tokenSource, HTTPClient: &http.Client{Timeout: clientConfig.RequestTimeout()}})
+	if err != nil {
+		return nil, err
+	}
+	var capacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
+	if len(options) > 0 {
+		capacityConfiguration = runnerCapacityOwner(cfg, options[0].runtimeConfig)
+	}
 	var reportProblems func() []runnerauth.Problem
-	if len(problems) > 0 {
-		reportProblems = problems[0]
+	if len(options) > 0 {
+		reportProblems = options[0].problems
 	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
-		Problems:        reportProblems,
-		IsolationReport: func(ctx context.Context) isolation.Report { return probeRunnerIsolation(ctx, cfg) },
+		PrepareProject:      prepareProject,
+		RefreshProjects:     projects.refresh,
+		RunnerSetupDeclared: projects.runnerSetupDeclared,
+		Skills: func(name string) []skills.ProviderSkill {
+			projects.mu.Lock()
+			projects.syncRuntimeLocked()
+			selectedProjects := project.ManagerConfigFromGlobal(projects.cfg).Projects
+			projects.mu.Unlock()
+			var workdir string
+			for _, selected := range selectedProjects {
+				if selected.ID == name {
+					workdir = selected.Workdir
+					break
+				}
+			}
+			home, err := os.UserHomeDir()
+			var report []skills.ProviderSkill
+			if err == nil {
+				report, err = skills.DiscoverProviderSkills(workdir, home)
+			}
+			if err != nil {
+				projects.logger.Warn("Runner skill discovery failed", "project", name, "error", err)
+			}
+			return report
+		},
+		CapacityConfiguration: capacityConfiguration,
+		LocalChecks:           localChecks,
+		GitHubIntake:          github.FetchIssueSnapshot,
+		GitHubDiscovery:       github.DiscoverIssues,
+		Problems:              reportProblems,
+		IsolationReport: func(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
+			current := cfg
+			if setupOptions.runtimeConfig != nil {
+				current = setupOptions.runtimeConfig()
+			}
+			return probeRunnerIsolation(ctx, current)
+		},
 		ProviderReports: providerReports,
 		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
+		CheckoutRepository: func(name string) string { return projects.repository(ctx, name) },
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,
 			Capabilities: hubMachineCapabilities(cfg), Capacity: capacity, Version: strings.TrimSpace(version),
-			// What this runner can serve for a workspace session (decisions
-			// section 18.1). The hub's claim gate reads it from the row it
-			// stamps the heartbeat on, so a runner that never reports it is
-			// never offered a workspace item, and the lane is started under
-			// exactly the same condition. Isolation is `user` because every
-			// channel this runner serves runs as the runner's own account.
 			WorkspaceCapabilities: workspaceLaneCapabilities(context.Background(), cfg),
-			WorkspaceIsolation:    workspacesession.IsolationUser,
+			WorkspaceIsolation:    workspacerunner.DefaultSupport().TerminalIsolation(),
 		},
-		HeartbeatInterval: clientConfig.HeartbeatInterval(),
+		HeartbeatInterval: min(clientConfig.HeartbeatInterval(), providercapacity.MaxAge/2),
 		LeaseTTL:          clientConfig.LeaseTTL(),
 	})
+}
+
+func runnerCheckoutRepository(ctx context.Context, selected globalconfig.Project) string {
+	if !runnerCheckoutReady(ctx, selected) {
+		return ""
+	}
+	remote, err := defaultGitRemoteURL(ctx, selected.Workdir)
+	if err != nil {
+		return ""
+	}
+	repository, _ := doctorGitHubRepositoryFromRemoteURL(remote)
+	return repository
 }
 
 func newHubRunnerFleet(cfg globalconfig.Config) (*hubclient.FleetClient, error) {
@@ -141,4 +239,12 @@ func firstNonBlankString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func nativeProjectsFromConfig(projects map[string]string) map[string]tracker.ProjectID {
+	ids := make(map[string]tracker.ProjectID, len(projects))
+	for name, id := range projects {
+		ids[name] = tracker.ProjectID(id)
+	}
+	return ids
 }

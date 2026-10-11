@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -14,14 +15,25 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers(t *testing.T) {
+func TestWorkspacePreparationRetriesIssueWithoutPausingProject(t *testing.T) {
 	t.Parallel()
 
 	const retryLimit = 3
 	tests := []struct {
-		name string
-		err  error
+		name     string
+		err      error
+		postTurn bool
 	}{
+		{
+			name:     "owned process cleanup deadline",
+			err:      errors.Join(runpkg.ErrWorkerProcessReap, context.DeadlineExceeded),
+			postTurn: true,
+		},
+		{
+			name:     "owned process signal failure",
+			err:      errors.Join(runpkg.ErrWorkerProcessReap, errors.New("owned process remained alive")),
+			postTurn: true,
+		},
 		{
 			name: "dangling gitdir",
 			err:  fmt.Errorf("%w: create workspace: dangling gitdir", runpkg.ErrWorkspacePreparation),
@@ -34,16 +46,29 @@ func TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers(t *t
 			name: "after_create database timeout",
 			err:  fmt.Errorf("%w: create workspace: after_create: workspace db: postgresql://127.0.0.1:5432: timeout: context deadline exceeded", runpkg.ErrWorkspacePreparation),
 		},
+		{
+			name:     "native rebase metadata after resolution",
+			err:      fmt.Errorf("%w: finalize native rework: packed-refs.lock: operation not permitted", runpkg.ErrWorkspacePreparation),
+			postTurn: true,
+		},
+		{
+			name:     "native rebase signer infrastructure",
+			err:      fmt.Errorf("%w: finalize native rework: gpg failed to sign the data", runpkg.ErrWorkspacePreparation),
+			postTurn: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			issue := connector.Issue{ID: "issue-workspace", Identifier: "digitaldrywood/detent#1907", State: "In Progress"}
+			if tt.postTurn {
+				issue.State = "Rework"
+			}
 			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
 			attempts := &terminalRetryWorkAttemptStore{}
 			cfg := normalizeConfig(Config{
-				ActiveStates:   []string{"Todo", "In Progress"},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework"},
 				ObservedStates: []string{"Blocked"},
 				TerminalStates: []string{"Done"},
 				FailureBreaker: FailureBreakerConfig{
@@ -67,6 +92,12 @@ func TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers(t *t
 					WorkAttemptID: int64(attempt),
 					StartedAt:     completedAt.Add(-time.Minute),
 				}
+				if tt.postTurn {
+					running.Mode = runpkg.RunModeImplement
+					running.DispatchSourceState = "Rework"
+					running.TurnCount = 1
+					running.Tokens.TotalTokens = 10
+				}
 				state.Running[issue.ID] = running
 				orch.upsertWorkAttemptSnapshot(&state, telemetry.WorkAttempt{
 					AttemptID: int64(attempt), IssueID: issue.ID, Identifier: issue.Identifier,
@@ -79,24 +110,30 @@ func TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers(t *t
 					CompletedAt:  completedAt,
 					RetryAttempt: attempt + 1,
 					RetryDelay:   time.Second,
+					Result:       runpkg.RunResult{TurnStarted: tt.postTurn},
 				})
 
 				if state.InstantFailures[issue.ID].Count != 2 || state.RepeatedFailures[issue.ID].Count != 2 {
 					t.Fatalf("attempt %d failure breakers = instant %#v repeated %#v, want preserved counts", attempt, state.InstantFailures[issue.ID], state.RepeatedFailures[issue.ID])
 				}
-				if len(state.Retry) != 0 || len(state.Blocked) != 0 || len(tracker.comments) != 0 {
-					t.Fatal("workspace failure retained issue retry accounting")
+				if _, retried := state.Retry[issue.ID]; !retried || len(state.Blocked) != 0 || len(tracker.comments) != 0 {
+					t.Fatal("workspace failure did not retry the issue in its lane")
 				}
 				if len(state.ForgeUnavailable) != 0 {
 					t.Fatalf("workspace failure started forge condition or canary: %#v", state.ForgeUnavailable)
 				}
+				if tt.postTurn && tracker.issues[issue.ID].State != "Rework" {
+					t.Fatal("instance finalization failure changed the issue lane")
+				}
+				if !projectFailureBreakerAllowsDispatch(&state, completedAt) {
+					t.Fatal("Git infrastructure failure excluded other runnable work")
+				}
+				if !allowanceInfrastructureAttempt(store.WorkAttempt{ErrorClass: runnerWorkAttemptErrorClass(tt.err), MetricsJSON: `{"turns":1,"total_tokens":10}`}) {
+					t.Fatal("Git infrastructure consumed the issue allowance")
+				}
 			}
-			if !state.FailureBreaker.Active() || projectFailureBreakerAllowsDispatch(&state, base.Add(3*time.Minute)) {
-				t.Fatal("instance did not drain after three failures")
-			}
-
-			if failures := state.FailureBreaker.Failures[workAttemptErrorWorkspace]; len(failures) != retryLimit {
-				t.Fatalf("FailureBreaker.Failures[%q] = %#v, want %d preserved failures", workAttemptErrorWorkspace, failures, retryLimit)
+			if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
+				t.Fatalf("instance failures reached the project breaker: %#v", state.FailureBreaker)
 			}
 
 		})
@@ -201,21 +238,5 @@ func TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker(t *testing.T) {
 		if got := attempts.completions[len(attempts.completions)-1].TerminalState; got != store.WorkAttemptTerminalCapacity {
 			t.Fatalf("attempt %d terminal state = %q, want capacity", attempt, got)
 		}
-	}
-}
-
-func TestWorkspaceBreakerHonorsFailureCooldown(t *testing.T) {
-	t.Parallel()
-	base := time.Date(2026, 9, 24, 15, 35, 0, 0, time.UTC)
-	cfg := normalizeConfig(Config{FailureBreaker: FailureBreakerConfig{SameClassLimit: 3, Window: time.Hour, Cooldown: time.Hour}, BlockedRecovery: BlockedRecoveryConfig{BreakerCooldown: 24 * time.Hour}})
-	orch := &Orchestrator{cfg: cfg}
-	state := newState(cfg)
-	state.FailureBreaker.PreTurn = true
-	for attempt := 1; attempt <= 3; attempt++ {
-		at := base.Add(time.Duration(attempt) * time.Minute)
-		orch.recordProjectFailureBreakerEvidence(&state, ProjectFailure{IssueID: fmt.Sprintf("issue-%d", attempt)}, workAttemptErrorWorkspace, at)
-	}
-	if !state.FailureBreaker.ResumeAt.Equal(base.Add(3*time.Minute + time.Hour)) {
-		t.Fatalf("resume_at = %s, want one hour after third failure", state.FailureBreaker.ResumeAt)
 	}
 }

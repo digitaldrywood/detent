@@ -47,6 +47,10 @@ func BenchmarkProjectStateAPIWarmStoreChangingSnapshot(b *testing.B) {
 }
 
 func TestProjectStateAPIRepresentativeDataCompletesBeforeDeadline(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	server, snapshotHub, snapshot := newProjectStatePerformanceServer(t, 1000, 500)
 
 	warm := projectStatePerformanceRequest(t.Context(), server, 0)

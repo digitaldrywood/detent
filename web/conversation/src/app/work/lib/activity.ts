@@ -50,6 +50,7 @@ export interface ActivityComment {
 }
 
 export interface ActivityRow {
+  readonly reason?: string;
   /** Stable across re-reads: the source record's own id. */
   readonly key: string;
   readonly kind: ActivityKind;
@@ -90,6 +91,7 @@ export function actorLabel(
   runnerNames?: RunnerNames,
 ): string {
   if (actor === undefined) return "Someone";
+  if (actor.kind === "integration" && actor.principal_id === "auto_archive") return "Detent";
   if (viewerPrincipalId !== null && actor.principal_id === viewerPrincipalId) return "You";
   if (actor.kind === "runner") {
     // A runner's principal is its runner id, so the fleet names it directly;
@@ -130,6 +132,13 @@ export function historySentence(event: CollaborationEvent): HistorySentence {
     case "issue.created":
       return { icon: "created", sentence: "created the issue", lowValue: false };
     case "issue.edited":
+      if (data.operation === "archive" || data.operation === "restore") {
+        return {
+          icon: "edited",
+          sentence: data.reason_detail ?? (data.operation === "archive" ? "archived the issue" : "restored the issue"),
+          lowValue: false,
+        };
+      }
       return {
         icon: "edited",
         sentence:
@@ -248,6 +257,7 @@ export function mergeActivity(input: ActivityInput): readonly ActivityRow[] {
     const written = historySentence(event);
     rows.push({
       key: `history:${event.event_id}`,
+      ...(event.data.reason === undefined ? {} : { reason: event.data.reason }),
       kind: "event",
       icon: written.icon,
       at: stamp(event.recorded_at),

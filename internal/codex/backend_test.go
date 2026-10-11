@@ -556,7 +556,7 @@ func TestAgentBackendNativeCommandWait(t *testing.T) {
 				}
 				transport := &quietCommandTransport{fakeAppServerTransport: newFakeAppServerTransport([]Message{
 					responseMessage(t, 1, `{"userAgent":"codex-cli/0.155.1"}`),
-					responseMessage(t, threadRequest, `{"thread":{"id":"thread-1","model":"gpt-6-astra"}}`),
+					rolloutResponseMessage(t, threadRequest, `{"thread":{"id":"thread-1","model":"gpt-6-astra"}}`, nil),
 					responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
 					notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
 				}), delay: duration}

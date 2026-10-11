@@ -24,7 +24,7 @@ var ErrNoPTY = errors.New("workspaceterminal: this platform has no pseudo-termin
 // Supported reports whether this build can open a terminal at all.
 const Supported = false
 
-func startPTY(*exec.Cmd, int, int) (*os.File, error) { return nil, ErrNoPTY }
+func startPTY(*exec.Cmd, int, int, string, string) (*os.File, error) { return nil, ErrNoPTY }
 
 func setWindowSize(*os.File, int, int) error { return ErrNoPTY }
 

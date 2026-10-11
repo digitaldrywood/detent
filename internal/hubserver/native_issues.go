@@ -6,35 +6,106 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/issuecontract"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
+func (s *Service) nativeIssueResponse(issue tracker.NativeIssue) tracker.NativeIssue {
+	issue.WebURL = ""
+	if s.config.Hosted != nil {
+		issue.WebURL = s.config.Hosted.PublicURL + s.hostedPath("/work/i/"+url.PathEscape(string(issue.WorkItemID)))
+	}
+	return issue
+}
+
+func (s *Service) nativeIssueJSON(body json.RawMessage) (json.RawMessage, error) {
+	var issue tracker.NativeIssue
+	if err := json.Unmarshal(body, &issue); err != nil {
+		return nil, err
+	}
+	return json.Marshal(s.nativeIssueResponse(issue))
+}
+
+func (s *Service) executeNativeIssueMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (json.RawMessage, error) {
+	result, err := s.executeNativeMutation(ctx, scope, options, command, input, operation)
+	if err != nil {
+		return nil, err
+	}
+	return s.nativeIssueJSON(result)
+}
+
 func readNativeIssue(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (tracker.NativeIssue, tracker.WorkItemID, error) {
+	return readNativeIssueProjection(ctx, query, scope, id, false)
+}
+
+func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope nativeScope, id string, compact bool) (tracker.NativeIssue, tracker.WorkItemID, error) {
 	var issue tracker.NativeIssue
 	var internalID tracker.WorkItemID
-	var labels, assignees, actor, created, updated, externalID string
+	var labels, assignees, actor, created, updated, activity, externalID, contractJSON string
 	var sourceAuthor, sourceCreated, sourceUpdated, sourceObserved string
-	var provenance sql.NullString
+	var repositoryOwner, repositoryName, importedURL string
+	var sourceNumber int
+	var provenance, closedAt, listChange, pullRequest sql.NullString
 	var priority sql.NullInt64
+	bodyColumn := "i.body"
+	if compact {
+		bodyColumn = "''"
+	}
 	err := query.QueryRowContext(ctx, `SELECT i.id, i.native_id, i.organization_id, i.project_id, i.number, i.revision, p.profile,
- i.title, i.body, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
- i.actor_json, i.provenance_json, i.native_created_at, i.native_updated_at, COALESCE(i.github_node_id, ''),
- i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived
+ i.title, `+bodyColumn+`, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
+ i.actor_json, i.issue_contract_json, i.provenance_json, i.native_created_at, i.native_updated_at, i.last_activity_at, COALESCE(i.github_node_id, ''),
+ i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived,
+ COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(i.github_number, 0), i.url,
+ CASE WHEN ws.terminal = 1 THEN `+nativeTerminalEnteredAt+` ELSE NULL END,
+ (SELECT json_object('branch', CASE WHEN json_extract(c.record_json, '$.landed.version_id') = json_extract(c.record_json, '$.current_version_id') THEN COALESCE(json_extract(c.record_json, '$.landed.base_ref'), '') ELSE '' END,
+ 'head_sha', CASE WHEN json_extract(c.record_json, '$.landed.version_id') = json_extract(c.record_json, '$.current_version_id') THEN COALESCE(json_extract(c.record_json, '$.landed.merge_sha'), '') ELSE COALESCE(json_extract(v.record_json, '$.head_sha'), '') END)
+ FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
+ LEFT JOIN change_versions v ON v.id = json_extract(c.record_json, '$.current_version_id') AND v.change_id = c.id
+ WHERE c.organization_id = i.organization_id AND c.project_id = i.project_id AND l.work_item_id = i.native_id
+ ORDER BY c.rowid DESC LIMIT 1),
+ (SELECT json_extract(v.record_json, '$.external')
+ FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
+ JOIN change_versions v ON v.change_id = c.id
+ WHERE c.organization_id = i.organization_id AND c.project_id = i.project_id AND l.work_item_id = i.native_id
+ AND json_extract(v.record_json, '$.external.provider') = 'github'
+ AND COALESCE(json_extract(v.record_json, '$.external.url'), '') <> ''
+ ORDER BY c.rowid DESC, v.number DESC LIMIT 1)
 FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
+LEFT JOIN repositories r ON r.id = i.repository_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN queue_entries q ON q.id = (SELECT id FROM queue_entries WHERE issue_id = i.id ORDER BY id LIMIT 1)
 WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.organization, scope.project, id).Scan(
 		&internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
-		&issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &provenance, &created, &updated, &externalID,
-		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived)
+		&issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &contractJSON, &provenance, &created, &updated, &activity, &externalID,
+		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived,
+		&repositoryOwner, &repositoryName, &sourceNumber, &importedURL, &closedAt, &listChange, &pullRequest)
 	if err != nil {
 		return issue, 0, err
+	}
+	issue.IssueContract = &issuecontract.State{}
+	if err := json.Unmarshal([]byte(contractJSON), issue.IssueContract); err != nil {
+		return issue, 0, err
+	}
+	var legacyConfirmation struct {
+		Body string `json:"confirmed_body"`
+	}
+	if err := json.Unmarshal([]byte(contractJSON), &legacyConfirmation); err != nil {
+		return issue, 0, err
+	}
+	if legacyConfirmation.Body != "" {
+		issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(legacyConfirmation.Body)
 	}
 	if err := json.Unmarshal([]byte(labels), &issue.Labels); err != nil {
 		return issue, 0, err
@@ -50,7 +121,15 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 			return issue, 0, err
 		}
 	}
-	issue.ExternalReferences = []tracker.ExternalReference{}
+	issue.LinkedSource, err = readLinkedIssueSourceProjection(ctx, query, id, compact)
+	if err != nil {
+		return issue, 0, err
+	}
+	var sourceURL string
+	if issue.LinkedSource != nil {
+		sourceURL = issue.LinkedSource.URL
+	}
+	issue.ExternalReferences = nativeSourceReferences(externalID, repositoryOwner, repositoryName, sourceNumber, sourceURL, importedURL, issue.Provenance)
 	if externalID != "" && issue.Provenance == nil {
 		issue.Provenance = &tracker.Provenance{Provider: "github", ExternalID: externalID, AuthorID: sourceAuthor}
 		if issue.Provenance.CreatedAt, err = parseTimeValue(sourceCreated); err != nil {
@@ -62,9 +141,6 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 		if issue.Provenance.ObservedAt, err = parseTimeValue(sourceObserved); err != nil {
 			return issue, 0, err
 		}
-		issue.ExternalReferences = append(issue.ExternalReferences, tracker.ExternalReference{Provider: "github", Kind: "issue", ID: externalID})
-	} else if issue.Provenance != nil {
-		issue.ExternalReferences = append(issue.ExternalReferences, tracker.ExternalReference{Provider: issue.Provenance.Provider, Kind: "issue", ID: issue.Provenance.ExternalID})
 	}
 	if issue.CreatedAt, err = parseTimeValue(created); err != nil {
 		return issue, 0, err
@@ -72,24 +148,50 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 	if issue.UpdatedAt, err = parseTimeValue(updated); err != nil {
 		return issue, 0, err
 	}
+	if issue.LastActivityAt, err = parseTimeValue(activity); err != nil {
+		return issue, 0, err
+	}
+	if closedAt.Valid {
+		at, err := parseTimeValue(closedAt.String)
+		if err != nil {
+			return issue, 0, err
+		}
+		issue.ClosedAt = &at
+	}
+	if listChange.Valid {
+		if err := json.Unmarshal([]byte(listChange.String), &issue.ListChange); err != nil {
+			return issue, 0, err
+		}
+	}
+	if pullRequest.Valid {
+		var reference tracker.ChangeExternalReference
+		if err := json.Unmarshal([]byte(pullRequest.String), &reference); err != nil {
+			return issue, 0, err
+		}
+		if number := externalPullRequestNumber(reference); number > 0 {
+			issue.PullRequest = &tracker.NativePullRequest{Number: number, URL: reference.URL}
+		}
+	}
 	if priority.Valid {
 		value := int(priority.Int64)
 		issue.Priority = &value
 	}
 	issue.Dependencies = []tracker.NativeWorkItemID{}
 	issue.Blockers = []tracker.NativeDependency{}
-	rows, err := query.QueryContext(ctx, `SELECT i.native_id, i.project_id, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0) FROM issue_dependencies d JOIN issues i ON i.id = d.blocker_issue_id
+	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
+	args := append([]any{internalID, scope.organization}, grantArgs...)
+	rows, err := query.QueryContext(ctx, `SELECT i.native_id, i.project_id, i.project_id || '#' || i.number, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0) FROM issue_dependencies d JOIN issues i ON i.id = d.blocker_issue_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 WHERE d.dependent_issue_id = ? AND i.organization_id = ?
-AND (? = 1 OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = ? AND g.organization_id = i.organization_id AND g.project_id = i.project_id))
-ORDER BY i.native_id`, internalID, scope.organization, scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly, scope.credential.ID)
+AND (`+condition+`)
+ORDER BY i.native_id`, args...)
 	if err != nil {
 		return issue, 0, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var dependency tracker.NativeDependency
-		if err := rows.Scan(&dependency.ID, &dependency.ProjectID, &dependency.State, &dependency.Terminal); err != nil {
+		if err := rows.Scan(&dependency.ID, &dependency.ProjectID, &dependency.Identifier, &dependency.State, &dependency.Terminal); err != nil {
 			return issue, 0, err
 		}
 		issue.Dependencies = append(issue.Dependencies, dependency.ID)
@@ -101,7 +203,18 @@ ORDER BY i.native_id`, internalID, scope.organization, scope.credential.Scope ==
 func (s *Service) getNativeIssue(c echo.Context) error {
 	ctx := c.Request().Context()
 	scope := nativeRequestScope(c)
-	issue, _, err := readNativeIssue(ctx, s.database.db, scope, c.Param("item"))
+	if view := c.QueryParam("view"); view != "" {
+		if view != "recovery" || len(c.QueryParams()) != 1 || len(c.QueryParams()["view"]) != 1 {
+			return s.nativeAPIError(c, nativeInvalid("view supports recovery"))
+		}
+		result, err := s.readNativeRecovery(ctx, scope, c.Param("item"))
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		result.Issue = s.nativeIssueResponse(result.Issue)
+		return c.JSON(http.StatusOK, result)
+	}
+	issue, _, err := readNativeIssue(ctx, s.database.reader, scope, c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -113,11 +226,14 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if included {
-		if issue.Change, err = readNativeIssueChange(ctx, s.database.db, scope, string(issue.WorkItemID)); err != nil {
+		if issue.Change, err = readNativeIssueChange(ctx, s.database.reader, scope, string(issue.WorkItemID)); err != nil {
 			return s.nativeAPIError(c, err)
 		}
+		if issue.Change.Number > 0 && issue.Change.URL != "" {
+			issue.PullRequest = &tracker.NativePullRequest{Number: issue.Change.Number, URL: issue.Change.URL}
+		}
 	}
-	return c.JSON(http.StatusOK, issue)
+	return c.JSON(http.StatusOK, s.nativeIssueResponse(issue))
 }
 
 // nativeIssueChangeIncluded reads the work item resource's include query. The
@@ -164,6 +280,10 @@ func validateNativeProvenance(scope nativeScope, provenance *tracker.Provenance)
 	if scope.credential.Scope == apiScopeWorker {
 		return nativeInvalid("Imported provenance requires an operator")
 	}
+	return validateImportProvenance(provenance)
+}
+
+func validateImportProvenance(provenance *tracker.Provenance) error {
 	if provenance.Provider != "github" || strings.TrimSpace(provenance.ExternalID) == "" || len(provenance.ExternalID) > 200 || strings.TrimSpace(provenance.AuthorID) == "" || len(provenance.AuthorID) > 200 || len(provenance.AuthorDisplayName) > 200 {
 		return nativeInvalid("Import source and author are invalid")
 	}
@@ -178,27 +298,63 @@ func (s *Service) createNativeIssue(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		return createNativeIssueTx(ctx, tx, scope, request, now)
-	})
+	result, err := s.createNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, result)
 }
 
-func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (any, error) {
+func validateNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue) (tracker.NativeProject, error) {
 	if err := validateNativeContent(request.Title, request.Body, request.Labels, request.Assignees, request.Priority); err != nil {
-		return nil, err
+		return tracker.NativeProject{}, err
 	}
 	if err := requireUnreservedLabels(ctx, request.Labels); err != nil {
-		return nil, err
+		return tracker.NativeProject{}, err
 	}
 	if err := validateNativeProvenance(scope, request.Provenance); err != nil {
-		return nil, err
+		return tracker.NativeProject{}, err
 	}
 	project, err := readNativeProject(ctx, tx, scope)
 	if err != nil {
-		return nil, err
+		return tracker.NativeProject{}, err
 	}
 	if project.Profile != "native" {
-		return nil, nativeInvalid("Compatibility project content is externally owned")
+		return tracker.NativeProject{}, nativeInvalid("Compatibility project content is externally owned")
+	}
+	return project, nil
+}
+
+func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
+	return createNativeIssue(ctx, tx, scope, request, now, false)
+}
+
+func defaultNativeIssueState(states []tracker.NativeState) string {
+	for _, state := range states {
+		if state.Name != "Triage" {
+			return state.Name
+		}
+	}
+	return ""
+}
+
+func createNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, machineIntake bool) (tracker.NativeIssue, error) {
+	if request.GitHubIssueURL != "" {
+		return createLinkedIssueTx(ctx, tx, scope, request, now)
+	}
+	if request.State == "Triage" {
+		return tracker.NativeIssue{}, nativeInvalid("Triage is reserved for linked GitHub issue intake")
+	}
+	return createNativeIssueDraft(ctx, tx, scope, request, now, machineIntake)
+}
+
+func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, machineIntake bool) (tracker.NativeIssue, error) {
+	project, err := validateNativeIssueDraft(ctx, tx, scope, request)
+	if err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	if request.State == "" {
+		request.State = defaultNativeIssueState(project.States)
 	}
 	var sourceKey any
 	if request.Provenance != nil {
@@ -210,26 +366,35 @@ func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, req
 			return issue, err
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
+			return tracker.NativeIssue{}, err
 		}
 	}
 	var workflowID int64
 	if err := tx.QueryRowContext(ctx, "SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = ?", scope.project, request.State).Scan(&workflowID); err != nil {
-		return nil, nativeInvalid("Workflow state does not exist")
+		return tracker.NativeIssue{}, nativeInvalid("Workflow state does not exist")
 	}
 	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Revision: 1, Profile: "native"},
 		Title: request.Title, Body: request.Body, State: request.State, Priority: request.Priority, Labels: request.Labels, Assignees: request.Assignees,
-		Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now, UpdatedAt: now, Dependencies: []tracker.NativeWorkItemID{}}
+		Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, Dependencies: []tracker.NativeWorkItemID{}}
 	issue.Blockers = []tracker.NativeDependency{}
 	issue.IgnoreDependencies = !project.RequireDependencies
-	issue.ExternalReferences = []tracker.ExternalReference{}
-	if issue.Provenance != nil {
-		issue.ExternalReferences = append(issue.ExternalReferences, tracker.ExternalReference{Provider: issue.Provenance.Provider, Kind: "issue", ID: issue.Provenance.ExternalID})
+	var importedURL string
+	var sourceNumber sql.NullInt64
+	if issue.Provenance != nil && issue.Provenance.Provider == "github" {
+		importedURL = githubMigrationSourceURL(issue.Body)
+		if importedURL != "" {
+			_, _, number, err := tracker.ParseGitHubIssueURL(importedURL)
+			if err != nil {
+				return tracker.NativeIssue{}, err
+			}
+			sourceNumber = sql.NullInt64{Int64: int64(number), Valid: true}
+		}
 	}
+	issue.ExternalReferences = nativeSourceReferences("", "", "", 0, "", importedURL, issue.Provenance)
 	for _, state := range project.States {
 		if state.Name == issue.State {
-			if state.OperatorOnly && scope.credential.Scope == apiScopeWorker {
-				return nil, nativeInvalid("Workflow target requires an operator")
+			if state.OperatorOnly && scope.credential.Scope == apiScopeWorker && !machineIntake {
+				return tracker.NativeIssue{}, nativeInvalid("Workflow target requires an operator")
 			}
 			issue.Terminal = state.Terminal
 		}
@@ -241,47 +406,74 @@ func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, req
 		issue.Assignees = []string{}
 	}
 	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(number), 0) + 1 FROM issues WHERE organization_id = ? AND project_id = ?", scope.organization, scope.project).Scan(&issue.Number); err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	labels, err := marshalNative(issue.Labels)
 	if err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	assignees, err := marshalNative(issue.Assignees)
 	if err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	actor, err := marshalNative(issue.Actor)
 	if err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	provenance, err := marshalNative(issue.Provenance)
 	if err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	author := issue.Actor.PrincipalID
 	if issue.Provenance != nil {
 		author = issue.Provenance.AuthorID
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO issues (native_id, organization_id, project_id, number, workflow_state_id, title, body, url, github_state, labels_json, assignees_json, source_version, source_updated_at, synchronized_at, created_at, updated_at, author_login, actor_json, provenance_json, native_source_key, native_created_at, native_updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, '', 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?, ?)`, issue.WorkItemID, scope.organization, scope.project, issue.Number, workflowID, issue.Title, issue.Body, labels, assignees, formatHubTime(now), formatHubTime(now), author, actor, provenance, sourceKey, formatHubTime(now), formatHubTime(now))
+	issue.IssueContract = &issuecontract.State{Exempt: workspaceLabelAllowed(ctx)}
+	_, machineOrigin := issueorigin.Parse(issue.Body)
+	if issue.Actor.Kind == "human" && !machineOrigin && !machineIntake && issue.Provenance == nil {
+		issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(issue.Body)
+		if !issue.IssueContract.Exempt {
+			if err := requireNativeIssueContractAtFiling(ctx, tx, scope, issue); err != nil {
+				return tracker.NativeIssue{}, err
+			}
+		}
+	}
+	contractJSON, err := marshalNative(issue.IssueContract)
 	if err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO issues (native_id, organization_id, project_id, number, workflow_state_id, title, body, url, github_number, github_state, labels_json, assignees_json, source_version, source_updated_at, synchronized_at, created_at, updated_at, author_login, actor_json, provenance_json, native_source_key, native_created_at, native_updated_at, issue_contract_json)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?)`, issue.WorkItemID, scope.organization, scope.project, issue.Number, workflowID, issue.Title, issue.Body, importedURL, sourceNumber, labels, assignees, formatHubTime(now), formatHubTime(now), author, actor, provenance, sourceKey, formatHubTime(now), formatHubTime(now), contractJSON)
+	if err != nil {
+		return tracker.NativeIssue{}, err
 	}
 	id, err := result.LastInsertId()
 	if err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO queue_entries (issue_id, workflow_state_id, scope, state, rank, priority_override, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", id, workflowID, scope.project, issue.State, string(issue.WorkItemID), issue.Priority, formatHubTime(now), formatHubTime(now)); err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
+	}
+	if err := bindCloudAttachmentReferences(ctx, tx, scope, string(issue.WorkItemID), "", issue.Body); err != nil {
+		return tracker.NativeIssue{}, err
 	}
 	if err := recordNativeChange(ctx, tx, scope, issue, string(issue.WorkItemID), issue.Revision, "issue.created", tracker.CollaborationData{Revision: issue.Revision}, now); err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	return issue, nil
 }
 
 func recordNativeChange(ctx context.Context, tx *sql.Tx, scope nativeScope, record any, workItemID string, revision tracker.Revision, eventType string, data tracker.CollaborationData, now time.Time) error {
+	switch value := record.(type) {
+	case tracker.NativeIssue:
+		if err := syncCloudAttachmentReferences(ctx, tx, scope, workItemID, "", value.Body); err != nil {
+			return err
+		}
+	case tracker.NativeComment:
+		if err := syncCloudAttachmentReferences(ctx, tx, scope, workItemID, value.ID, value.Body); err != nil {
+			return err
+		}
+	}
 	recordID := workItemID
 	if data.CommentID != "" {
 		recordID = data.CommentID
@@ -340,16 +532,30 @@ func persistNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, issu
 	if err != nil {
 		return issue, err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE issues SET title = ?, body = ?, labels_json = ?, assignees_json = ?, revision = ?, updated_at = ?, native_updated_at = ?, archived = ?,
+	contractJSON, err := marshalNative(issue.IssueContract)
+	if err != nil {
+		return issue, err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE issues SET issue_contract_json = ?, title = ?, body = ?, labels_json = ?, assignees_json = ?, revision = ?, updated_at = ?, native_updated_at = ?, archived = ?,
 workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = ?)
-WHERE organization_id = ? AND project_id = ? AND native_id = ?`, issue.Title, issue.Body, labels, assignees, issue.Revision, formatHubTime(now), formatHubTime(now), issue.Archived, scope.project, issue.State, scope.organization, scope.project, issue.WorkItemID)
+WHERE organization_id = ? AND project_id = ? AND native_id = ?`, contractJSON, issue.Title, issue.Body, labels, assignees, issue.Revision, formatHubTime(now), formatHubTime(now), issue.Archived, scope.project, issue.State, scope.organization, scope.project, issue.WorkItemID)
 	if err != nil {
 		return issue, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE queue_entries SET state = ?, priority_override = ?, updated_at = ? WHERE issue_id = (SELECT id FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?)`, issue.State, issue.Priority, formatHubTime(now), scope.organization, scope.project, issue.WorkItemID); err != nil {
 		return issue, err
 	}
+	if eventType == "workflow.transitioned" && data.FromState != issue.State && issue.State == "Cancelled" {
+		if err := enqueueLinkedSourceSummary(ctx, tx, scope, issue, "cancelled:"+strconv.FormatInt(int64(issue.Revision), 10), true, now); err != nil {
+			return issue, err
+		}
+	}
 	data.Revision = issue.Revision
+	if eventType == "workflow.transitioned" {
+		if err := recordLandingTransition(ctx, tx, scope, issue, data.FromState); err != nil {
+			return issue, err
+		}
+	}
 	issue, _, err = readNativeIssue(ctx, tx, scope, string(issue.WorkItemID))
 	if err != nil {
 		return issue, err
@@ -363,48 +569,11 @@ func (s *Service) updateNativeIssue(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		issue, _, err := readNativeIssue(ctx, tx, scope, c.Param("item"))
-		if err != nil {
-			return nil, err
-		}
-		if err := requireNativeEdit(issue, request.ExpectedRevision); err != nil {
-			return nil, err
-		}
-		fields := []string{}
-		if request.Title != nil {
-			issue.Title = *request.Title
-			fields = append(fields, "title")
-		}
-		if request.Body != nil {
-			issue.Body = *request.Body
-			fields = append(fields, "body")
-		}
-		if request.Labels != nil {
-			if err := requireUnreservedLabels(ctx, *request.Labels); err != nil {
-				return nil, err
-			}
-			issue.Labels = *request.Labels
-			fields = append(fields, "labels")
-		}
-		if request.Assignees != nil {
-			issue.Assignees = *request.Assignees
-			fields = append(fields, "assignees")
-		}
-		// A present patch either sets the level or clears it; an absent one
-		// leaves whatever the issue has (tracker.PriorityPatch).
-		if request.Priority.Present() {
-			issue.Priority = request.Priority.Level()
-			fields = append(fields, "priority")
-		}
-		if len(fields) == 0 {
-			return nil, nativeInvalid("At least one field must be supplied")
-		}
-		if err := validateNativeContent(issue.Title, issue.Body, issue.Labels, issue.Assignees, issue.Priority); err != nil {
-			return nil, err
-		}
-		return persistNativeIssue(ctx, tx, scope, issue, "issue.edited", tracker.CollaborationData{Fields: fields}, now)
-	})
+	result, err := s.updateNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, result)
 }
 
 func (s *Service) transitionNativeIssue(c echo.Context) error {
@@ -412,37 +581,118 @@ func (s *Service) transitionNativeIssue(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		issue, _, err := readNativeIssue(ctx, tx, scope, c.Param("item"))
+	result, err := s.transitionNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, result)
+}
+
+func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope nativeScope, item string, request tracker.Transition) (json.RawMessage, error) {
+	recordedRecovery := request.Reason == "dependency_ready" && request.BlockerAttemptID != ""
+	signal, contractHold := workpad.SignalFromComment(request.ReasonDetail, "", "")
+	contractHold = contractHold && signal != nil && signal.Invalid == nil && signal.Fields["issue_contract_return_state"] != ""
+	contractRecovery := strings.ReplaceAll(request.ReasonDetail, " ", "_") == "recorded_blocker_recovery" && !recordedRecovery
+	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/workflow"), Item: item, RequireLease: !recordedRecovery && !contractHold && !contractRecovery, Feature: "collaboration"}
+	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+		issue, internalID, err := readNativeIssue(ctx, tx, scope, item)
 		if err != nil {
 			return nil, err
 		}
 		if err := requireNativeEdit(issue, request.ExpectedRevision); err != nil {
 			return nil, err
 		}
+		if contractHold || contractRecovery {
+			contract, err := nativeIssueContract(ctx, tx, scope)
+			if err != nil {
+				return nil, err
+			}
+			evaluation := contract.Evaluate(nativeContractIssue(issue))
+			if contractRecovery {
+				if issue.IssueContract.ReturnState != request.State || issue.IssueContract.HumanAction != "" || !evaluation.Satisfied() {
+					return nil, nativeInvalid("Human confirmation is required to clear the issue contract hold")
+				}
+			} else {
+				if issue.IssueContract.Exempt || evaluation.Satisfied() || signal.Status != workpad.StatusBlocked || signal.HumanAction == "" {
+					return nil, nativeInvalid("Issue contract hold does not match the issue")
+				}
+				cfg, err := nativeIssueContractConfig(ctx, tx, scope)
+				if err != nil {
+					return nil, err
+				}
+				returnState := signal.Fields["issue_contract_return_state"]
+				admissionTarget := cfg.BacklogAdmission.TargetState
+				if admissionTarget == "" {
+					admissionTarget = "Todo"
+				}
+				if returnState != admissionTarget || issue.State != admissionTarget && !slices.Contains(cfg.BacklogAdmission.Sources.States, issue.State) {
+					return nil, nativeInvalid("Issue contract hold must return to the configured admission lane")
+				}
+				lease, found, err := readUnreleasedLease(ctx, tx, internalID)
+				if err != nil {
+					return nil, err
+				}
+				if found && lease.session.ExpiresAt.After(now) {
+					return nil, tracker.ErrLeaseConflict
+				}
+				if request.State != cfg.Agent.StopRun.TargetState {
+					return nil, nativeInvalid("Issue contract failure destination does not match the workflow")
+				}
+			}
+		}
+		if recordedRecovery {
+			if err := validateNativeRecordedRecovery(ctx, tx, scope, issue, request, now); err != nil {
+				return nil, err
+			}
+		}
 		if !slices.Contains([]string{"user_requested", "worker_progress", "dependency_ready"}, request.Reason) {
 			return nil, nativeInvalid("Transition reason is invalid")
+		}
+		if len(request.ReasonDetail) > workpad.MaxFinalSummaryBytes || !utf8.ValidString(request.ReasonDetail) {
+			return nil, nativeInvalid("Transition reason detail must be bounded UTF-8 text")
 		}
 		project, err := readNativeProject(ctx, tx, scope)
 		if err != nil {
 			return nil, err
 		}
-		allowed := false
-		for _, state := range project.States {
-			if state.Name == request.State && state.OperatorOnly && scope.credential.Scope == apiScopeWorker {
-				return nil, nativeInvalid("Workflow target requires an operator")
-			}
-			if state.Name == issue.State && slices.Contains(state.Transitions, request.State) {
-				allowed = true
-			}
-		}
-		if !allowed {
-			return nil, &nativeError{Code: "transition_not_allowed", Message: "Workflow transition is not allowed", status: http.StatusUnprocessableEntity}
+		if err := validateNativeWorkflowTransition(project.States, issue.State, request.State, scope.credential.Scope); err != nil {
+			return nil, err
 		}
 		from := issue.State
+		if signal, ok := workpad.SignalFromComment(request.ReasonDetail, "", ""); ok && signal != nil && signal.Invalid == nil && signal.Fields["issue_contract_return_state"] != "" {
+			if signal.Status != workpad.StatusBlocked || signal.HumanAction == "" {
+				return nil, nativeInvalid("Issue contract hold requires a human action")
+			}
+			issue.IssueContract.HumanAction = signal.HumanAction
+			issue.IssueContract.ReturnState = signal.Fields["issue_contract_return_state"]
+			issue.IssueContract.RecordedAt = now
+		}
+		if issue.IssueContract.ReturnState == request.State && issue.IssueContract.HumanAction == "" {
+			issue.IssueContract.ReturnState = ""
+		}
 		issue.State = request.State
-		return persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: issue.State, Reason: request.Reason}, now)
+		return persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{BlockerAttemptID: request.BlockerAttemptID, FromState: from, ToState: issue.State, Reason: request.Reason, ReasonDetail: strings.TrimSpace(request.ReasonDetail)}, now)
 	})
+	if err == nil {
+		s.wakeSpriteRunnersAfter(scope, result)
+	}
+	return result, err
+}
+
+func validateNativeWorkflowTransition(states []tracker.NativeState, current, target string, scope apiScope) error {
+	allowed := false
+	for _, state := range states {
+		if state.Name == target && state.OperatorOnly && scope == apiScopeWorker {
+			return nativeInvalid("Workflow target requires an operator")
+		}
+		if state.Name == current && slices.Contains(state.Transitions, target) {
+			allowed = true
+		}
+	}
+	if !allowed {
+		return &nativeError{Code: "transition_not_allowed", Message: "Workflow transition is not allowed", status: http.StatusUnprocessableEntity}
+	}
+	return nil
 }
 
 func (s *Service) changeNativeDependency(c echo.Context) error {
@@ -450,50 +700,9 @@ func (s *Service) changeNativeDependency(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		issue, dependentID, err := readNativeIssue(ctx, tx, scope, c.Param("item"))
-		if err != nil {
-			return nil, err
-		}
-		if err := requireNativeEdit(issue, request.ExpectedRevision); err != nil {
-			return nil, err
-		}
-		if request.Operation != "add" && request.Operation != "remove" {
-			return nil, nativeInvalid("Dependency operation must be add or remove")
-		}
-		var blockerID tracker.WorkItemID
-		var blockerProject tracker.ProjectID
-		err = tx.QueryRowContext(ctx, `SELECT i.id, i.project_id FROM issues i WHERE i.organization_id = ? AND i.native_id = ?
-AND (? = 1 OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = ? AND g.organization_id = i.organization_id AND g.project_id = i.project_id))`, scope.organization, request.RelatedWorkItemID, scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly, scope.credential.ID).Scan(&blockerID, &blockerProject)
-		if err != nil {
-			return nil, err
-		}
-		if blockerID == dependentID {
-			return nil, nativeInvalid("Dependencies cannot form a cycle")
-		}
-		if request.Operation == "add" {
-			var cycle int
-			err := tx.QueryRowContext(ctx, `WITH RECURSIVE reachable(id) AS (SELECT dependent_issue_id FROM issue_dependencies WHERE blocker_issue_id = ? UNION SELECT d.dependent_issue_id FROM issue_dependencies d JOIN reachable r ON d.blocker_issue_id = r.id) SELECT count(*) FROM reachable WHERE id = ?`, dependentID, blockerID).Scan(&cycle)
-			if err != nil {
-				return nil, err
-			}
-			if cycle != 0 {
-				return nil, nativeInvalid("Dependencies cannot form a cycle")
-			}
-			_, err = tx.ExecContext(ctx, "INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at) VALUES (?, ?, 'native', ?, ?) ON CONFLICT DO NOTHING", blockerID, dependentID, formatHubTime(now), formatHubTime(now))
-			if err != nil {
-				return nil, err
-			}
-			if !slices.Contains(issue.Dependencies, request.RelatedWorkItemID) {
-				issue.Dependencies = append(issue.Dependencies, request.RelatedWorkItemID)
-				slices.Sort(issue.Dependencies)
-			}
-		} else {
-			if _, err := tx.ExecContext(ctx, "DELETE FROM issue_dependencies WHERE blocker_issue_id = ? AND dependent_issue_id = ?", blockerID, dependentID); err != nil {
-				return nil, err
-			}
-			issue.Dependencies = slices.DeleteFunc(issue.Dependencies, func(id tracker.NativeWorkItemID) bool { return id == request.RelatedWorkItemID })
-		}
-		return persistNativeIssue(ctx, tx, scope, issue, "dependency.changed", tracker.CollaborationData{RelatedWorkItemID: request.RelatedWorkItemID, Operation: request.Operation}, now)
-	})
+	result, err := s.changeNativeDependencyCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, result)
 }

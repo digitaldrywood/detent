@@ -3,12 +3,14 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -18,10 +20,12 @@ import (
 )
 
 type sqliteStore struct {
-	laneWriteMu sync.Mutex
-	db          *sql.DB
-	queries     *sqlc.Queries
-	path        string
+	laneWriteMu  sync.Mutex
+	db           *sql.DB
+	queries      *sqlc.Queries
+	path         string
+	generation   atomic.Int64
+	matchProcess func(int, string) (bool, error)
 }
 
 var _ Store = (*sqliteStore)(nil)
@@ -34,7 +38,7 @@ func openSQLite(ctx context.Context, cfg Config) (*sqliteStore, error) {
 		return nil, fmt.Errorf("creating sqlite directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", cfg.Path)
+	db, err := sql.Open("sqlite", sqliteDSN(cfg.Path))
 	if err != nil {
 		return nil, fmt.Errorf("opening sqlite database: %w", err)
 	}
@@ -44,7 +48,7 @@ func openSQLite(ctx context.Context, cfg Config) (*sqliteStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := runMigrations(ctx, db); err != nil {
+	if err := runMigrations(ctx, db, migrationLockPath(cfg.Path)); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -83,7 +87,6 @@ func (s *sqliteStore) RuntimeEvidence(ctx context.Context, query RuntimeEvidence
 	}{
 		{name: "detent_runs"},
 		{name: "codex_sessions"},
-		{name: "fair_share_usage", projectScoped: true},
 		{name: "usage_events", projectScoped: true},
 		{name: "workflow_phase_events", projectScoped: true},
 		{name: "efficiency_receipts", projectScoped: true},
@@ -253,6 +256,7 @@ func (s *sqliteStore) StartSession(ctx context.Context, attrs SessionStart) (int
 		ResumedFromSessionID:         nullPositiveInt64(attrs.ResumedFromSessionID),
 		OrphanRecoveryOutcome:        nullString(attrs.OrphanRecoveryOutcome),
 		OrphanRecoveryFallbackReason: nullString(attrs.OrphanRecoveryFallbackReason),
+		OwnerGeneration:              s.ownerGeneration(),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("starting codex session: %w", err)
@@ -327,8 +331,9 @@ func (s *sqliteStore) ListActiveWorkerProcesses(ctx context.Context) ([]WorkerPr
 				GroupID:   int(row.WorkerPgid),
 				StartedAt: startedAt,
 			},
-			CleanupRoot: strings.TrimSpace(row.WorkerCleanupRoot),
-			CleanupPath: strings.TrimSpace(row.WorkerCleanupPath),
+			CleanupRoot:     strings.TrimSpace(row.WorkerCleanupRoot),
+			CleanupPath:     strings.TrimSpace(row.WorkerCleanupPath),
+			OwnerGeneration: row.OwnerGeneration,
 		})
 	}
 	return processes, nil
@@ -418,6 +423,7 @@ func (s *sqliteStore) FinishSession(ctx context.Context, sessionID int64, attrs 
 	rows, err := s.queries.FinishCodexSession(ctx, sqlc.FinishCodexSessionParams{
 		CompletedAt:           sql.NullString{String: completedAt, Valid: true},
 		Turns:                 nonNegative(attrs.Turns),
+		TurnStartRefused:      boolInt64(attrs.TurnStartRefused),
 		InputTokens:           nonNegative(attrs.InputTokens),
 		CachedInputTokens:     nullNonNegativeInt64(attrs.CachedInputTokens),
 		OutputTokens:          nonNegative(attrs.OutputTokens),
@@ -439,19 +445,20 @@ func (s *sqliteStore) FinishSession(ctx context.Context, sessionID int64, attrs 
 	return requireAffected(rows, "codex session", sessionID)
 }
 
-func (s *sqliteStore) LatestCompletedAgentResumeState(ctx context.Context, attrs AgentResumeLookup) (AgentResumeState, error) {
+func (s *sqliteStore) LatestAgentResumeState(ctx context.Context, attrs AgentResumeLookup) (AgentResumeState, error) {
 	attrs = normalizeAgentResumeLookup(attrs)
-	if attrs.ProjectID == "" || attrs.PRNumber <= 0 || attrs.PRHeadSHA == "" || attrs.PRBaseSHA == "" {
+	if attrs.ProjectID == "" || attrs.WorkAttemptID < 0 || attrs.WorkAttemptID == 0 && (attrs.PRNumber <= 0 || attrs.PRHeadSHA == "" || attrs.PRBaseSHA == "") {
 		return AgentResumeState{}, ErrNotFound
 	}
-	if attrs.RequestedModel == "" || attrs.AgentBackendID == "" || attrs.AgentBackendKind == "" || attrs.AgentRole == "" {
+	if attrs.WorkAttemptID == 0 && attrs.RequestedModel == "" || attrs.AgentBackendID == "" || attrs.AgentBackendKind == "" || attrs.AgentRole == "" {
 		return AgentResumeState{}, ErrNotFound
 	}
 	if attrs.IssueID == "" && attrs.Identifier == "" && attrs.IssueURL == "" {
 		return AgentResumeState{}, ErrNotFound
 	}
 
-	row, err := s.queries.GetLatestCompletedAgentResumeState(ctx, sqlc.GetLatestCompletedAgentResumeStateParams{
+	row, err := s.queries.GetLatestAgentResumeState(ctx, sqlc.GetLatestAgentResumeStateParams{
+		WorkAttemptID:    attrs.WorkAttemptID,
 		ProjectID:        nullString(attrs.ProjectID),
 		PrNumber:         attrs.PRNumber,
 		PrHeadSha:        attrs.PRHeadSHA,
@@ -459,7 +466,7 @@ func (s *sqliteStore) LatestCompletedAgentResumeState(ctx context.Context, attrs
 		AgentBackendID:   nullString(attrs.AgentBackendID),
 		AgentBackendKind: nullString(attrs.AgentBackendKind),
 		AgentRole:        nullString(attrs.AgentRole),
-		RequestedModel:   nullString(attrs.RequestedModel),
+		RequestedModel:   sql.NullString{String: attrs.RequestedModel, Valid: true},
 		IssueID:          attrs.IssueID,
 		Identifier:       attrs.Identifier,
 		IssueURL:         attrs.IssueURL,
@@ -540,7 +547,14 @@ func (s *sqliteStore) ListOrphanedAgentSessions(ctx context.Context, projectID s
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
-	rows, err := s.queries.ListOrphanedAgentSessions(ctx, projectID)
+	excluded, err := s.liveForeignGenerationsJSON(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListOrphanedAgentSessions(ctx, sqlc.ListOrphanedAgentSessionsParams{
+		ProjectID:              projectID,
+		LiveForeignGenerations: excluded,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing orphaned agent sessions: %w", err)
 	}
@@ -602,6 +616,7 @@ func (s *sqliteStore) MarkAgentSessionOrphaned(ctx context.Context, sessionID in
 
 func normalizeAgentResumeLookup(attrs AgentResumeLookup) AgentResumeLookup {
 	return AgentResumeLookup{
+		WorkAttemptID:    attrs.WorkAttemptID,
 		ProjectID:        strings.TrimSpace(attrs.ProjectID),
 		IssueID:          strings.TrimSpace(attrs.IssueID),
 		Identifier:       strings.TrimSpace(attrs.Identifier),
@@ -636,7 +651,18 @@ func (s *sqliteStore) RecordUsageEvent(ctx context.Context, attrs UsageEvent) (i
 		return 0, errors.New("outcome is required")
 	}
 
+	var cpu, memory, wall, computeUSD sql.NullFloat64
+	if c := attrs.Compute; c != nil {
+		cpu = sql.NullFloat64{Float64: c.CPUSeconds, Valid: true}
+		memory = sql.NullFloat64{Float64: c.AvgMemoryBytes, Valid: true}
+		wall = sql.NullFloat64{Float64: c.WallSeconds, Valid: true}
+		computeUSD = sql.NullFloat64{Float64: c.ComputeUSD, Valid: true}
+	}
 	event, err := s.queries.CreateUsageEvent(ctx, sqlc.CreateUsageEventParams{
+		CpuSeconds:             cpu,
+		AvgMemoryBytes:         memory,
+		WallSeconds:            wall,
+		ComputeUsd:             computeUSD,
 		ProjectID:              projectID,
 		RunID:                  nullPositiveInt64(attrs.RunID),
 		SessionID:              nullPositiveInt64(attrs.SessionID),
@@ -682,10 +708,19 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 		return UsageReport{}, errors.New("from date must be on or before to date")
 	}
 
+	var projects sql.NullString
+	if query.ProjectIDs != nil {
+		encoded, err := json.Marshal(query.ProjectIDs)
+		if err != nil {
+			return UsageReport{}, err
+		}
+		projects = sql.NullString{String: string(encoded), Valid: true}
+	}
 	rows, err := s.queries.UsageReportRows(ctx, sqlc.UsageReportRowsParams{
-		BucketBy: string(group),
-		FromDay:  nullString(from),
-		ToDay:    nullString(to),
+		ProjectIdsJson: projects,
+		BucketBy:       string(group),
+		FromDay:        nullString(from),
+		ToDay:          nullString(to),
 	})
 	if err != nil {
 		return UsageReport{}, fmt.Errorf("reading usage report: %w", err)
@@ -719,6 +754,8 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 		}
 
 		model := UsageReportModel{
+			ComputeUSD:            row.ComputeUsd,
+			ComputeEvents:         row.ComputeEvents,
 			Model:                 row.Model,
 			InputTokens:           row.InputTokens,
 			CachedInputTokens:     row.CachedInputTokens,
@@ -733,6 +770,8 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 			model.Model = "unassigned"
 		}
 
+		report.Rows[index].ComputeUSD += model.ComputeUSD
+		report.Rows[index].ComputeEvents += model.ComputeEvents
 		report.Rows[index].InputTokens += model.InputTokens
 		report.Rows[index].CachedInputTokens += model.CachedInputTokens
 		report.Rows[index].OutputTokens += model.OutputTokens
@@ -745,6 +784,8 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 		report.Rows[index].Events += model.Events
 		report.Rows[index].Models = append(report.Rows[index].Models, model)
 
+		report.Totals.ComputeUSD += model.ComputeUSD
+		report.Totals.ComputeEvents += model.ComputeEvents
 		report.Totals.InputTokens += model.InputTokens
 		report.Totals.CachedInputTokens += model.CachedInputTokens
 		report.Totals.OutputTokens += model.OutputTokens
@@ -764,6 +805,8 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 			modelIndex = len(report.Totals.Models) - 1
 			modelTotals[model.Model] = modelIndex
 		}
+		report.Totals.Models[modelIndex].ComputeUSD += model.ComputeUSD
+		report.Totals.Models[modelIndex].ComputeEvents += model.ComputeEvents
 		report.Totals.Models[modelIndex].InputTokens += model.InputTokens
 		report.Totals.Models[modelIndex].CachedInputTokens += model.CachedInputTokens
 		report.Totals.Models[modelIndex].OutputTokens += model.OutputTokens
@@ -780,14 +823,27 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 }
 
 func (s *sqliteStore) DailyDigest(ctx context.Context, windows []DailyDigestWindow) ([]DailyDigestDay, error) {
+	outcomes, err := s.ShippedOutcomes(ctx)
+	if err != nil {
+		return nil, err
+	}
 	days := make([]DailyDigestDay, 0, len(windows))
 	for _, window := range windows {
 		if strings.TrimSpace(window.Date) == "" || window.From.IsZero() || window.To.IsZero() || !window.From.Before(window.To) {
 			return nil, errors.New("daily digest window must have a date and increasing boundaries")
 		}
+		projectJSON := ""
+		if window.ProjectIDs != nil {
+			encoded, err := json.Marshal(window.ProjectIDs)
+			if err != nil {
+				return nil, err
+			}
+			projectJSON = string(encoded)
+		}
 		params := sqlc.DailyDigestRuntimeParams{
-			FromAt: nullString(window.From.UTC().Format(time.RFC3339Nano)),
-			ToAt:   nullString(window.To.UTC().Format(time.RFC3339Nano)),
+			ProjectIdsJson: projectJSON,
+			FromAt:         nullString(window.From.UTC().Format(time.RFC3339Nano)),
+			ToAt:           nullString(window.To.UTC().Format(time.RFC3339Nano)),
 		}
 		runtime, err := s.queries.DailyDigestRuntime(ctx, params)
 		if err != nil {
@@ -802,8 +858,8 @@ func (s *sqliteStore) DailyDigest(ctx context.Context, windows []DailyDigestWind
 			return nil, fmt.Errorf("reading daily digest failures for %s: %w", window.Date, err)
 		}
 		capacityModes, err := s.queries.DailyDigestCapacityModes(ctx, sqlc.DailyDigestCapacityModesParams{
-			FromAt: params.FromAt,
-			ToAt:   params.ToAt.String,
+			ProjectIdsJson: projectJSON, FromAt: params.FromAt,
+			ToAt: params.ToAt.String,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("reading daily digest capacity modes for %s: %w", window.Date, err)
@@ -840,6 +896,9 @@ func (s *sqliteStore) DailyDigest(ctx context.Context, windows []DailyDigestWind
 				TotalTokens:           model.TotalTokens,
 				Events:                model.Sessions,
 			})
+		}
+		if err := s.populateDailyShippedCohort(ctx, &day, window, outcomes); err != nil {
+			return nil, err
 		}
 		days = append(days, day)
 	}
@@ -1157,52 +1216,6 @@ func (s *sqliteStore) CycleTimeReport(ctx context.Context) (CycleTimeReport, err
 	}, nil
 }
 
-func (s *sqliteStore) ListFairShareUsage(ctx context.Context) ([]FairShareUsage, error) {
-	rows, err := s.queries.ListFairShareUsage(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("reading fair-share usage: %w", err)
-	}
-
-	usage := make([]FairShareUsage, 0, len(rows))
-	for _, row := range rows {
-		updatedAt, err := parseTimestamp("updated_at", row.UpdatedAt)
-		if err != nil {
-			return nil, err
-		}
-		usage = append(usage, FairShareUsage{
-			ProjectID:      row.ProjectID,
-			Weight:         int(row.Weight),
-			Dispatches:     row.Dispatches,
-			RuntimeSeconds: row.RuntimeSeconds,
-			UpdatedAt:      updatedAt,
-		})
-	}
-	return usage, nil
-}
-
-func (s *sqliteStore) RecordFairShareDispatch(ctx context.Context, attrs FairShareDispatch) error {
-	projectID := strings.TrimSpace(attrs.ProjectID)
-	if projectID == "" {
-		return errors.New("project_id is required")
-	}
-
-	dispatchedAt, err := requiredTimestamp("dispatched_at", attrs.DispatchedAt)
-	if err != nil {
-		return err
-	}
-
-	_, err = s.queries.UpsertFairShareUsage(ctx, sqlc.UpsertFairShareUsageParams{
-		ProjectID:      projectID,
-		Weight:         int64(positiveWeight(attrs.Weight)),
-		RuntimeSeconds: nonNegative(attrs.RuntimeSeconds),
-		UpdatedAt:      dispatchedAt,
-	})
-	if err != nil {
-		return fmt.Errorf("recording fair-share dispatch: %w", err)
-	}
-	return nil
-}
-
 func normalizeIssueIdentity(identity IssueIdentity) IssueIdentity {
 	return IssueIdentity{
 		ProjectID:  strings.TrimSpace(identity.ProjectID),
@@ -1274,8 +1287,6 @@ func (s *sqliteStore) runtimeTableCount(ctx context.Context, tableName string, p
 	var row *sql.Row
 	if projectScoped && projectID != "" {
 		switch tableName {
-		case "fair_share_usage":
-			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM fair_share_usage WHERE project_id = ?", projectID)
 		case "usage_events":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM usage_events WHERE project_id = ?", projectID)
 		case "workflow_phase_events":
@@ -1315,8 +1326,6 @@ func (s *sqliteStore) runtimeTableCount(ctx context.Context, tableName string, p
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM detent_runs")
 		case "codex_sessions":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM codex_sessions")
-		case "fair_share_usage":
-			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM fair_share_usage")
 		case "usage_events":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM usage_events")
 		case "workflow_phase_events":
@@ -1496,13 +1505,6 @@ func nullableNonNegativeFloat(value *float64) sql.NullFloat64 {
 		return sql.NullFloat64{}
 	}
 	return sql.NullFloat64{Float64: nonNegativeFloat(*value), Valid: true}
-}
-
-func positiveWeight(value int) int {
-	if value <= 0 {
-		return 1
-	}
-	return value
 }
 
 func requireAffected(rows int64, name string, id int64) error {

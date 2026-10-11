@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 )
 
@@ -22,17 +23,25 @@ type ChangeRequest struct {
 	UpdatedAt      time.Time          `json:"updated_at"`
 }
 
+func (c ChangeRequest) CurrentLanding() *ChangeLanding {
+	if c.CurrentVersion != "" && c.Landed != nil && c.Landed.VersionID == c.CurrentVersion {
+		return c.Landed
+	}
+	return nil
+}
+
 // ChangeLanding records that a reviewed version reached the base branch: the
 // commit the runner pushed there, the branch, and the merge method it used.
-// A landed Change Request is finished; no later version is published on it.
 type ChangeLanding struct {
-	VersionID string    `json:"version_id"`
-	HeadSHA   string    `json:"head_sha"`
-	MergeSHA  string    `json:"merge_sha"`
-	BaseRef   string    `json:"base_ref"`
-	Method    string    `json:"method"`
-	Actor     Actor     `json:"actor"`
-	LandedAt  time.Time `json:"landed_at"`
+	Quality   *LandingQualitySnapshot `json:"quality,omitempty"`
+	Rebased   bool                    `json:"rebased,omitempty"`
+	VersionID string                  `json:"version_id"`
+	HeadSHA   string                  `json:"head_sha"`
+	MergeSHA  string                  `json:"merge_sha"`
+	BaseRef   string                  `json:"base_ref"`
+	Method    string                  `json:"method"`
+	Actor     Actor                   `json:"actor"`
+	LandedAt  time.Time               `json:"landed_at"`
 }
 
 // LandChangeVersion is the runner's report that it landed a reviewed version
@@ -40,9 +49,11 @@ type ChangeLanding struct {
 // Hub records it and finishes the primary issue in the same transaction.
 type LandChangeVersion struct {
 	Mutation
-	MergeSHA string `json:"merge_sha"`
-	BaseRef  string `json:"base_ref"`
-	Method   string `json:"method"`
+	Receipt  *NativeLandingReceipt `json:"receipt,omitempty"`
+	Rebased  bool                  `json:"rebased,omitempty"`
+	MergeSHA string                `json:"merge_sha"`
+	BaseRef  string                `json:"base_ref"`
+	Method   string                `json:"method"`
 }
 
 type ChangeArtifact struct {
@@ -81,6 +92,7 @@ type ApproveChangeReviewPolicy struct {
 }
 
 type ChangeVersionInput struct {
+	Validation   *gate.CommandResult      `json:"validation,omitempty"`
 	BaseSHA      string                   `json:"base_sha"`
 	HeadSHA      string                   `json:"head_sha"`
 	MergeBaseSHA string                   `json:"merge_base_sha"`
@@ -91,6 +103,7 @@ type ChangeVersionInput struct {
 	AttemptID    string                   `json:"attempt_id,omitempty"`
 	PolicyID     string                   `json:"policy_id"`
 	External     *ChangeExternalReference `json:"external,omitempty"`
+	Source       *ChangeSource            `json:"source,omitempty"`
 }
 
 type ChangeCheckExpectation struct {
@@ -99,7 +112,9 @@ type ChangeCheckExpectation struct {
 }
 
 type ChangeVersion struct {
+	LandingQuality *LandingQualitySnapshot `json:"landing_quality,omitempty"`
 	ChangeVersionInput
+	Landing      *NativeLandingReceipt    `json:"landing,omitempty"`
 	ID           string                   `json:"version_id"`
 	ChangeID     string                   `json:"change_id"`
 	Number       int64                    `json:"number,string"`
@@ -120,20 +135,24 @@ type CreateChange struct {
 type PublishChangeVersion struct {
 	Mutation
 	ExpectedVersionID string `json:"expected_version_id"`
+	SourceBundle      []byte `json:"source_bundle,omitempty"`
 	ChangeVersionInput
 }
 
 type ChangeReview struct {
-	ID        string    `json:"review_id"`
-	VersionID string    `json:"version_id"`
-	Decision  string    `json:"decision"`
-	Body      string    `json:"body"`
-	Actor     Actor     `json:"actor"`
-	CreatedAt time.Time `json:"created_at"`
+	Validator *gate.ValidatorResult `json:"validator,omitempty"`
+	ID        string                `json:"review_id"`
+	VersionID string                `json:"version_id"`
+	Decision  string                `json:"decision"`
+	Body      string                `json:"body"`
+	Actor     Actor                 `json:"actor"`
+	CreatedAt time.Time             `json:"created_at"`
 }
 
 type ReviewChange struct {
+	Validator *gate.ValidatorResult `json:"validator,omitempty"`
 	Mutation
+	ExpectedRevision  Revision            `json:"expected_revision,string,omitempty"`
 	Decision          string              `json:"decision"`
 	Body              string              `json:"body"`
 	ExpectedVersionID string              `json:"expected_version_id,omitempty"`
@@ -187,15 +206,17 @@ type ChangeCheck struct {
 }
 
 type ChangeDiscussion struct {
-	ID         string      `json:"comment_id"`
-	VersionID  string      `json:"version_id,omitempty"`
-	Body       string      `json:"body"`
-	Actor      Actor       `json:"actor"`
-	Provenance *Provenance `json:"provenance,omitempty"`
-	CreatedAt  time.Time   `json:"created_at"`
+	Escape     *QualityEscape `json:"escape,omitempty"`
+	ID         string         `json:"comment_id"`
+	VersionID  string         `json:"version_id,omitempty"`
+	Body       string         `json:"body"`
+	Actor      Actor          `json:"actor"`
+	Provenance *Provenance    `json:"provenance,omitempty"`
+	CreatedAt  time.Time      `json:"created_at"`
 }
 
 type DiscussChange struct {
+	Escape *QualityEscape `json:"escape,omitempty"`
 	Mutation
 	VersionID  string      `json:"version_id,omitempty"`
 	Body       string      `json:"body"`
@@ -203,13 +224,14 @@ type DiscussChange struct {
 }
 
 type ChangeDetail struct {
-	External   *PullRequestSummary `json:"external_snapshot,omitempty"`
-	Change     ChangeRequest       `json:"change"`
-	Versions   []ChangeVersion     `json:"versions"`
-	Reviews    []ChangeReview      `json:"reviews"`
-	Checks     []ChangeCheck       `json:"checks"`
-	Discussion []ChangeDiscussion  `json:"discussion"`
-	Summary    ChangeSummary       `json:"summary"`
+	SourceIssues []ExternalReference `json:"source_issues,omitempty"`
+	External     *PullRequestSummary `json:"external_snapshot,omitempty"`
+	Change       ChangeRequest       `json:"change"`
+	Versions     []ChangeVersion     `json:"versions"`
+	Reviews      []ChangeReview      `json:"reviews"`
+	Checks       []ChangeCheck       `json:"checks"`
+	Discussion   []ChangeDiscussion  `json:"discussion"`
+	Summary      ChangeSummary       `json:"summary"`
 }
 
 type ChangeSummary struct {

@@ -13,6 +13,10 @@ import (
 )
 
 func TestManagerCandidateWindowOrdersByPersistedEvaluation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name    string
@@ -63,14 +67,18 @@ func TestManagerCandidateWindowOrdersByPersistedEvaluation(t *testing.T) {
 }
 
 func TestManagerCandidateWindowCoverage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
-		name    string
-		count   int
-		blocked bool
+		name     string
+		count    int
+		standing bool
 	}{
 		{name: "new malformed results", count: 21},
-		{name: "standing malformed blocks", count: 21, blocked: true},
+		{name: "standing malformed observations", count: 21, standing: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -86,12 +94,20 @@ func TestManagerCandidateWindowCoverage(t *testing.T) {
 			settings := admissionTestSettings(tracker, agent)
 			settings.Config.MaxCandidatesPerRun = 3
 			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
-			if test.blocked {
-				for _, issue := range issues[:2] {
-					for range malformedAdmissionAttemptLimit {
-						if _, err := manager.recordMalformedResult(t.Context(), settings, issue, malformedEvaluation{errorClass: "parse", errorCode: "invalid_json", output: []byte("{")}, now); err != nil {
+			if test.standing {
+				for attempt := range 4 {
+					at := now.Add(time.Duration(attempt-4) * 15 * time.Minute)
+					record := admissionmodel.RunRecord{ProjectID: settings.ProjectID, ScheduledFor: at, StartedAt: at, CompletedAt: at}
+					for _, issue := range issues[:2] {
+						evidence, err := manager.recordMalformedResult(t.Context(), settings, issue, malformedEvaluation{errorClass: "parse", errorCode: "invalid_json", output: []byte("{")}, at)
+						if err != nil {
 							t.Fatal(err)
 						}
+						record.Malformed = append(record.Malformed, evidence)
+						record.Issues = append(record.Issues, admissionmodel.IssueRecord{ID: issue.ID, Identifier: issue.Identifier, Fingerprint: evidence.ProposalFingerprint, EvaluatedAt: at})
+					}
+					if err := backend.RecordAdmissionRun(t.Context(), record); err != nil {
+						t.Fatal(err)
 					}
 				}
 			}
@@ -99,7 +115,7 @@ func TestManagerCandidateWindowCoverage(t *testing.T) {
 				// Recreate the manager to verify coverage survives worker restart.
 				manager = newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
 				result, err := manager.RunOnce(t.Context())
-				if err != nil || result.Candidates > 3 {
+				if err != nil || result.Candidates > 3 || len(result.Proposals) != 0 {
 					t.Fatalf("run %d = %#v, %v", run, result, err)
 				}
 				record, found, err := backend.LatestAdmissionRun(t.Context(), "detent")
@@ -114,6 +130,22 @@ func TestManagerCandidateWindowCoverage(t *testing.T) {
 						t.Fatalf("missing stale verdict: %#v", evaluated)
 					}
 				}
+				for _, evidence := range result.Malformed {
+					wantAttempts := agent.seen[evidence.IssueID]
+					if test.standing {
+						wantAttempts += 4
+					}
+					if agent.seen[evidence.IssueID] > 1 {
+						for _, fresh := range issues[3:] {
+							if agent.seen[fresh.ID] == 0 {
+								t.Fatalf("malformed candidate repeated before fresh %s was evaluated", fresh.ID)
+							}
+						}
+					}
+					if evidence.Status != admissionmodel.MalformedRetryable || evidence.AttemptCount != wantAttempts {
+						t.Fatalf("malformed rotation evidence = %#v", evidence)
+					}
+				}
 				now = now.Add(15 * time.Minute)
 			}
 			for _, issue := range issues[3:] {
@@ -124,8 +156,8 @@ func TestManagerCandidateWindowCoverage(t *testing.T) {
 			if agent.seen[issues[2].ID] != 0 {
 				t.Fatal("tracking epic reached the agent")
 			}
-			if test.blocked && (agent.seen[issues[0].ID] != 0 || agent.seen[issues[1].ID] != 0) {
-				t.Fatal("unchanged malformed block reached the agent")
+			if agent.seen[issues[0].ID] == 0 || agent.seen[issues[1].ID] == 0 {
+				t.Fatal("malformed candidates did not rotate through the bounded window")
 			}
 			// Changed snapshots re-enter the window for both malformed and stale results.
 			for _, index := range []int{0, 3} {
@@ -147,6 +179,10 @@ func TestManagerCandidateWindowCoverage(t *testing.T) {
 }
 
 func TestManagerCandidateWindowReconsidersRestoredSnapshot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name   string

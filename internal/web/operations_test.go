@@ -102,20 +102,21 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 11, 16, 42, 0, 0, time.UTC)
 	for _, tc := range []struct {
-		name             string
-		snapshot         telemetry.Snapshot
-		wantKind         string
-		wantQuestion     string
-		configureProject bool
-		autoPromote      bool
-		optoutLabel      string
-		allowedLabels    []string
-		gateKind         string
-		sourceState      string
-		passState        string
-		approvalLabel    string
-		terminalStates   []string
-		check            func(*testing.T, operations.Decision)
+		name                string
+		snapshot            telemetry.Snapshot
+		wantKind            string
+		wantQuestion        string
+		configureProject    bool
+		humanReviewDisabled bool
+		autoPromote         bool
+		optoutLabel         string
+		allowedLabels       []string
+		gateKind            string
+		sourceState         string
+		passState           string
+		approvalLabel       string
+		terminalStates      []string
+		check               func(*testing.T, operations.Decision)
 	}{
 		{
 			name: "human-owned prerequisite",
@@ -298,6 +299,14 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 			wantQuestion: "Review pull request #3503, then move the issue to Merging.",
 		},
 		{
+			name:                "disabled Human Review has no synthetic review step",
+			configureProject:    true,
+			humanReviewDisabled: true,
+			snapshot: telemetry.Snapshot{BoardIssues: []telemetry.Issue{
+				{ID: "disabled-review", ProjectID: "parable", State: "Human Review", PullRequest: &telemetry.PullRequest{Number: 3518, State: "OPEN"}},
+			}},
+		},
+		{
 			name:             "configured custom review source state",
 			configureProject: true,
 			sourceState:      "Review",
@@ -363,7 +372,7 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 			t.Parallel()
 			deps := testDeps(t)
 			if tc.configureProject {
-				setOperationsTestProject(t, deps.Registry, "parable", tc.autoPromote, tc.optoutLabel, tc.allowedLabels, tc.gateKind, tc.sourceState, tc.passState, tc.approvalLabel, tc.terminalStates)
+				setOperationsTestProject(t, deps.Registry, "parable", tc.autoPromote, tc.optoutLabel, tc.allowedLabels, tc.gateKind, tc.sourceState, tc.passState, tc.approvalLabel, tc.terminalStates, !tc.humanReviewDisabled)
 			}
 			deps.Store = openWebTestStore(t)
 			if err := deps.Hub.Publish(tc.snapshot); err != nil {
@@ -403,9 +412,10 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 	}
 }
 
-func setOperationsTestProject(t *testing.T, registry *project.Registry, id string, autoPromote bool, optoutLabel string, allowedLabels []string, gateKind string, sourceState string, passState string, approvalLabel string, terminalStates []string) {
+func setOperationsTestProject(t *testing.T, registry *project.Registry, id string, autoPromote bool, optoutLabel string, allowedLabels []string, gateKind string, sourceState string, passState string, approvalLabel string, terminalStates []string, humanReview bool) {
 	t.Helper()
 	workflowCfg := workflowconfig.Default()
+	workflowCfg.Review.Human = humanReview
 	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
 	workflowCfg.Agent.AutoPromote.Enabled = autoPromote
 	if optoutLabel != "" {
@@ -571,7 +581,7 @@ func TestOperationsWorkpadHumanAction(t *testing.T) {
 			now := time.Now().UTC()
 			at := now.Add(-2 * time.Hour)
 			deps := testDeps(t)
-			setOperationsTestProject(t, deps.Registry, "p", true, "", nil, "", "", "", "", []string{"Done"})
+			setOperationsTestProject(t, deps.Registry, "p", true, "", nil, "", "", "", "", []string{"Done"}, true)
 			report := operations.Report{DataTime: now}
 			if tc.existing {
 				report.Decisions = []operations.Decision{{ProjectID: "p", Issue: "owner/repo#1", Question: "existing question", AskedAt: &at}}

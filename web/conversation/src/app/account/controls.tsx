@@ -77,11 +77,11 @@ export function ToggleControl({
 }
 
 /** The artifact's `.pathv`: a monospace value with a copy affordance. */
-export function PathValue({ value }: { readonly value: string }): React.ReactElement {
+export function PathValue({ value, wrap = false }: { readonly value: string; readonly wrap?: boolean }): React.ReactElement {
   const [copied, setCopied] = React.useState(false);
   return (
     <span className="flex items-center gap-2 font-mono text-xs text-muted-foreground">
-      <span className="truncate">{value}</span>
+      <span className={wrap ? "min-w-0 whitespace-pre-wrap break-all" : "truncate"}>{value}</span>
       <button
         type="button"
         className="shrink-0 rounded-sm p-0.5 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"

@@ -81,7 +81,7 @@ func TestQueuedDispatchPreservesRetry(t *testing.T) {
 	for _, refresh := range []bool{false, true} {
 		t.Run(map[bool]string{false: "grant", true: "refresh before grant"}[refresh], func(t *testing.T) {
 			now := time.Now()
-			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "higher", Priority: 1}, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "higher", Rank: 1}, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
 			issue := retryTestIssue("retry", "digitaldrywood/detent#20")
 			gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 			held, ok, err := gate.TryAcquire(t.Context(), scheduler.ProjectCandidate{ID: "holder"}, scheduler.SlotRequest{State: "Todo"}, now)
@@ -185,7 +185,7 @@ func TestStandingDispatchSurvivesProjectRefresh(t *testing.T) {
 	for _, refresh := range []string{"mid-pass", "same candidate", "ineligible", "removed", "failed hydration", "gate without cycle hooks"} {
 		t.Run(refresh, func(t *testing.T) {
 			now := time.Now()
-			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "higher", Priority: 0}, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "higher", Rank: 0}, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
 			issue := retryTestIssue("standing", "digitaldrywood/detent#20")
 			tracker := &standingDispatchConnector{hydratingDispatchConnector: hydratingDispatchConnector{issue: issue}}
 			gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
@@ -201,7 +201,7 @@ func TestStandingDispatchSurvivesProjectRefresh(t *testing.T) {
 			if !exists {
 				t.Fatal("higher request not queued")
 			}
-			lower, cancel, _ := gate.Submit(t.Context(), scheduler.ProjectCandidate{ID: "lower", Priority: 3}, scheduler.SlotRequest{State: "Todo"}, now.Add(time.Minute), nil)
+			lower, cancel, _ := gate.Submit(t.Context(), scheduler.ProjectCandidate{ID: "lower", Rank: 3}, scheduler.SlotRequest{State: "Todo"}, now.Add(time.Minute), nil)
 			defer cancel()
 			if refresh == "gate without cycle hooks" {
 				o.globalDispatchGate = standingGateWithoutCycleHooks{ProjectDispatchGate: gate, QueuedProjectDispatchGate: gate}

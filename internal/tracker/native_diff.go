@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/diffbody"
 )
 
 // Stored attempt diffs (decisions section 18.5). This file is the wire
@@ -71,26 +73,29 @@ type DiffGeneration struct {
 // distinguishable reasons: Binary content, a Denied path, or a patch cut at
 // MaxDiffPatchBytes and reported Truncated. The counts survive all three.
 type AttemptDiffFile struct {
-	Path      string `json:"path"`
-	OldPath   string `json:"old_path,omitempty"`
-	Status    string `json:"status"`
-	Additions int    `json:"additions"`
-	Deletions int    `json:"deletions"`
-	Binary    bool   `json:"binary"`
-	Patch     string `json:"patch"`
-	Truncated bool   `json:"truncated"`
-	Denied    bool   `json:"denied"`
+	PatchBody    *diffbody.Reference `json:"patch_body,omitempty"`
+	PatchExpired bool                `json:"patch_expired,omitempty"`
+	Path         string              `json:"path"`
+	OldPath      string              `json:"old_path,omitempty"`
+	Status       string              `json:"status"`
+	Additions    int                 `json:"additions"`
+	Deletions    int                 `json:"deletions"`
+	Binary       bool                `json:"binary"`
+	Patch        string              `json:"patch"`
+	Truncated    bool                `json:"truncated"`
+	Denied       bool                `json:"denied"`
 }
 
 // AttemptDiffRequest is the body of POST {nativeBase}/attempts/:id/diff. It
 // carries no idempotency key: the generation is the idempotency record, and a
 // seq at or below the stored one is refused as stale_generation.
 type AttemptDiffRequest struct {
-	Producer   DiffProducer      `json:"producer"`
-	Generation DiffGeneration    `json:"generation"`
-	BaseSHA    string            `json:"base_sha"`
-	HeadSHA    string            `json:"head_sha"`
-	Files      []AttemptDiffFile `json:"files"`
+	PostedBytes int64             `json:"posted_bytes,omitempty"`
+	Producer    DiffProducer      `json:"producer"`
+	Generation  DiffGeneration    `json:"generation"`
+	BaseSHA     string            `json:"base_sha"`
+	HeadSHA     string            `json:"head_sha"`
+	Files       []AttemptDiffFile `json:"files"`
 }
 
 // AttemptDiff is one stored generation of one attempt's worktree.
@@ -143,6 +148,7 @@ func FilterDiffFile(file AttemptDiffFile) AttemptDiffFile {
 	if DiffPathDenied(file.Path) || DiffPathDenied(file.OldPath) {
 		file.Denied = true
 		file.Patch = ""
+		file.PatchBody = nil
 		file.Truncated = false
 	}
 	return file
@@ -172,11 +178,15 @@ func NormalizeDiffFiles(files []AttemptDiffFile) ([]AttemptDiffFile, int64) {
 	for _, file := range files {
 		if file.Binary {
 			file.Patch, file.Truncated = "", false
+			file.PatchBody = nil
 		}
 		patch, cut := TruncateDiffPatch(file.Patch)
 		file.Patch, file.Truncated = patch, file.Truncated || cut
 		file = FilterDiffFile(file)
 		total += int64(len(file.Patch))
+		if file.PatchBody != nil {
+			total += file.PatchBody.Bytes
+		}
 		normalized = append(normalized, file)
 	}
 	return normalized, total
@@ -188,6 +198,7 @@ func StripDiffPatches(files []AttemptDiffFile) []AttemptDiffFile {
 	stripped := make([]AttemptDiffFile, 0, len(files))
 	for _, file := range files {
 		file.Patch, file.Truncated = "", file.Truncated || !file.Binary && !file.Denied
+		file.PatchBody = nil
 		stripped = append(stripped, file)
 	}
 	return stripped

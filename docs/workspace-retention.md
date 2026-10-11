@@ -16,8 +16,11 @@ Live processes also protect quarantine and scratch directories. Scratch UUIDs
 are resolved through recorded session cleanup paths, not interpreted as numeric
 work-attempt IDs. Failed tracker or registry reads do not authorize removal.
 Artifact directories cannot redirect cleanup through symlinks.
+Before deleting an expired quarantine tree, retention makes its directories
+writable so read-only module caches can be removed. If a tree still cannot be
+removed, the warning names that tree once per running orchestrator; later
+sweeps continue trying to remove it.
 
-GitHub closure time is preserved separately from the issue's last update time.
 Lane retention uses the lane-entry timestamp, including the existing tracker
 transition reader when needed. If completion time cannot be verified, the
 retention sweep leaves the worktree for ordinary cleanup or a later sweep.
@@ -61,4 +64,5 @@ the most recent in-memory totals for each workdir; they reset on restart until
 the next sweep. Completed-workspace byte totals subtract the new archive size
 and are floored at zero. These are logical file sizes, not filesystem block or
 APFS clone accounting. The sweep never claims an archive failure as reclaimed
-workspace bytes.
+workspace bytes. Cleanup counts describe actual removed worktrees; verify path
+absence before reporting recovered storage.

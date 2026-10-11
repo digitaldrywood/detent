@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -17,9 +18,14 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -49,12 +55,19 @@ func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
 	if got := queryInt(t, sqliteBackend.db, "PRAGMA busy_timeout"); got != 5000 {
 		t.Fatalf("busy_timeout = %d, want 5000", got)
 	}
-	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('detent_runs', 'codex_sessions', 'fair_share_usage', 'usage_events', 'workflow_phase_events', 'work_attempts', 'scheduler_decisions', 'merge_required_check_streaks', 'validator_verdicts', 'api_keys', 'api_usage_logs', 'efficiency_receipts', 'budget_overrides', 'auth_magic_links', 'auth_sessions', 'routine_runs', 'project_dispatch_status')"); got != 17 {
-		t.Fatalf("migrated table count = %d, want 17", got)
+	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('detent_runs', 'codex_sessions', 'usage_events', 'workflow_phase_events', 'work_attempts', 'scheduler_decisions', 'merge_required_check_streaks', 'validator_verdicts', 'api_keys', 'api_usage_logs', 'efficiency_receipts', 'budget_overrides', 'auth_magic_links', 'auth_sessions', 'routine_runs', 'project_dispatch_status')"); got != 16 {
+		t.Fatalf("migrated table count = %d, want 16", got)
+	}
+	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'fair_share_usage'"); got != 0 {
+		t.Fatalf("retired fair-share table count = %d, want 0", got)
 	}
 }
 
 func TestProvenanceAttributionTrustBoundaryPersistsAcrossRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := t.Context()
@@ -89,6 +102,10 @@ func TestProvenanceAttributionTrustBoundaryPersistsAcrossRestart(t *testing.T) {
 }
 
 func TestCostPerOutcomeIndexesMigrationUpDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "detent.db"))
 	if err != nil {
@@ -138,6 +155,10 @@ func TestCostPerOutcomeIndexesMigrationUpDown(t *testing.T) {
 }
 
 func TestDeliveredLaneRevocationMigrationUpDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := t.Context()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "detent.db"))
 	if err != nil {
@@ -232,6 +253,10 @@ INSERT INTO codex_sessions (id, work_attempt_id, identifier, started_at, complet
 }
 
 func TestLaneRevocationDeliveryReceiptMigrationUpDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := t.Context()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "detent.db"))
 	if err != nil {
@@ -385,6 +410,10 @@ func TestCompleteWorkAttemptFinalizesLinkedSessionOutcome(t *testing.T) {
 }
 
 func TestCachedTokenTelemetryMigrationUpDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "detent.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -447,6 +476,10 @@ VALUES ('detent', 'agent_session', 'agent_active', '2026-05-31T13:00:00Z', 5, '2
 }
 
 func TestSkillDraftTelemetryMigrationUpDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "detent.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -493,6 +526,10 @@ func TestSkillDraftTelemetryMigrationUpDown(t *testing.T) {
 }
 
 func TestSessionProjectAttributionMigrationUpDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "detent.db"))
 	if err != nil {
@@ -543,6 +580,10 @@ VALUES (1279, 'digitaldrywood/detent#1279', '2026-07-12T19:00:00Z', '2026-07-12T
 }
 
 func TestAgentResumeStateMigrationUpDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "detent.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -590,6 +631,10 @@ func TestAgentResumeStateMigrationUpDown(t *testing.T) {
 }
 
 func TestRuntimeEvidenceReportsSQLiteTelemetry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -668,6 +713,10 @@ func TestRuntimeEvidenceReportsSQLiteTelemetry(t *testing.T) {
 }
 
 func TestSQLiteValidatorVerdictRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -744,6 +793,10 @@ func TestSQLiteValidatorVerdictRoundTrip(t *testing.T) {
 }
 
 func TestSQLiteListValidatorVerdictsFiltersAndSorts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -823,6 +876,10 @@ func TestSQLiteListValidatorVerdictsFiltersAndSorts(t *testing.T) {
 }
 
 func TestSQLiteQueriesRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -972,6 +1029,27 @@ func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RecordSchedulerDecision() error = %v", err)
 	}
+
+	t.Run("atomic scheduler batch", func(t *testing.T) {
+		writer := backend.(SchedulerDecisionBatchStore)
+		valid := SchedulerDecision{ProjectID: "batch", IssueID: "one", Result: SchedulerDecisionResultSkipped, Reason: "authorization_selector_declined", DecisionAt: base, MetadataJSON: `{"authorization_decision":{"matched":false}}`}
+		for _, last := range []SchedulerDecision{{}, {ProjectID: "batch", IssueID: "two", DecisionAt: base}} {
+			ids, err := writer.RecordSchedulerDecisions(ctx, []SchedulerDecision{valid, last})
+			rows, readErr := backend.ListRecentSchedulerDecisions(ctx, SchedulerDecisionQuery{ProjectID: "batch"})
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if last.ProjectID == "" {
+				if err == nil || len(ids) != 0 || len(rows) != 0 {
+					t.Fatalf("failed batch persisted evidence: %v %v %v", ids, err, rows)
+				}
+			} else {
+				if err != nil || len(ids) != 2 || len(rows) != 2 || ids[0] >= ids[1] || rows[1].MetadataJSON != valid.MetadataJSON {
+					t.Fatalf("batch lost ordered per-issue evidence: %v %v %v", ids, err, rows)
+				}
+			}
+		}
+	})
 
 	active, err := backend.ListActiveWorkAttempts(ctx, WorkAttemptQuery{ProjectID: "detent"})
 	if err != nil {
@@ -1645,13 +1723,18 @@ func TestDailyTokenSpendIsScopedToProject(t *testing.T) {
 	}
 }
 
-func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T) {
+func TestLatestAgentResumeStateMatchesIssueBackendAndModel(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	backend := openTestStore(t, ctx)
 	startedAt := time.Date(2026, 7, 2, 17, 0, 0, 0, time.UTC)
+	failedAttemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{ProjectID: "detent", IssueID: "issue-859", WorkerType: "agent", StartedAt: startedAt})
+	if err != nil {
+		t.Fatal(err)
+	}
 	failedID, err := backend.StartSession(ctx, SessionStart{
+		WorkAttemptID:    failedAttemptID,
 		ProjectID:        "detent",
 		IssueID:          "issue-859",
 		Identifier:       "digitaldrywood/detent#859",
@@ -1674,6 +1757,38 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		ProviderSessionID: "session-failed",
 	}); err != nil {
 		t.Fatalf("FinishSession(failed) error = %v", err)
+	}
+	if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{AttemptID: failedAttemptID, CompletedAt: startedAt.Add(time.Minute), Status: WorkAttemptStatusTerminal, TerminalState: WorkAttemptTerminalFailure}); err != nil {
+		t.Fatal(err)
+	}
+	failedLookup := AgentResumeLookup{WorkAttemptID: failedAttemptID, ProjectID: "detent", IssueID: "issue-859", RequestedModel: "gpt-5-codex", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code"}
+	for _, test := range []struct {
+		name  string
+		edit  func(*AgentResumeLookup)
+		found bool
+	}{
+		{name: "exact failed attempt without PR", found: true},
+		{name: "wrong project", edit: func(lookup *AgentResumeLookup) { lookup.ProjectID = "other" }},
+		{name: "wrong issue", edit: func(lookup *AgentResumeLookup) { lookup.IssueID = "other" }},
+		{name: "wrong attempt", edit: func(lookup *AgentResumeLookup) { lookup.WorkAttemptID++ }},
+		{name: "wrong backend", edit: func(lookup *AgentResumeLookup) { lookup.AgentBackendID = "other" }},
+		{name: "wrong model", edit: func(lookup *AgentResumeLookup) { lookup.RequestedModel = "other" }},
+		{name: "wrong role", edit: func(lookup *AgentResumeLookup) { lookup.AgentRole = "validate" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lookup := failedLookup
+			if test.edit != nil {
+				test.edit(&lookup)
+			}
+			got, err := backend.LatestAgentResumeState(ctx, lookup)
+			if test.found {
+				if err != nil || got.DetentSessionID != failedID || got.ProviderThreadID != "thread-failed" || got.ProviderSessionID != "session-failed" {
+					t.Fatalf("failed continuation=%+v error=%v", got, err)
+				}
+			} else if !errors.Is(err, ErrNotFound) {
+				t.Fatalf("lookup=%+v error=%v, want ErrNotFound", lookup, err)
+			}
+		})
 	}
 
 	firstID, err := backend.StartSession(ctx, SessionStart{
@@ -1778,7 +1893,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		t.Fatalf("FinishSession(validator) error = %v", err)
 	}
 
-	got, err := backend.LatestCompletedAgentResumeState(ctx, AgentResumeLookup{
+	got, err := backend.LatestAgentResumeState(ctx, AgentResumeLookup{
 		ProjectID:        "detent",
 		IssueID:          "issue-859",
 		Identifier:       "digitaldrywood/detent#859",
@@ -1792,7 +1907,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		AgentRole:        "code",
 	})
 	if err != nil {
-		t.Fatalf("LatestCompletedAgentResumeState() error = %v", err)
+		t.Fatalf("LatestAgentResumeState() error = %v", err)
 	}
 	if got.DetentSessionID != secondID || got.ProviderThreadID != "thread-second" || got.ProviderSessionID != "session-second" {
 		t.Fatalf("resume state = %#v, want newest completed second session", got)
@@ -1811,7 +1926,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		t.Fatalf("LatestIssueAgentResumeState() = %#v, want newest completed validator session", latestForIssue)
 	}
 
-	_, err = backend.LatestCompletedAgentResumeState(ctx, AgentResumeLookup{
+	_, err = backend.LatestAgentResumeState(ctx, AgentResumeLookup{
 		ProjectID:        "detent",
 		IssueID:          "issue-859",
 		PRNumber:         42,
@@ -1823,10 +1938,10 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		AgentRole:        "code",
 	})
 	if !errors.Is(err, ErrNotFound) {
-		t.Fatalf("LatestCompletedAgentResumeState(model mismatch) error = %v, want ErrNotFound", err)
+		t.Fatalf("LatestAgentResumeState(model mismatch) error = %v, want ErrNotFound", err)
 	}
 
-	_, err = backend.LatestCompletedAgentResumeState(ctx, AgentResumeLookup{
+	_, err = backend.LatestAgentResumeState(ctx, AgentResumeLookup{
 		ProjectID:        "detent",
 		IssueID:          "issue-859",
 		PRNumber:         42,
@@ -1838,7 +1953,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		AgentRole:        "merge",
 	})
 	if !errors.Is(err, ErrNotFound) {
-		t.Fatalf("LatestCompletedAgentResumeState(role mismatch) error = %v, want ErrNotFound", err)
+		t.Fatalf("LatestAgentResumeState(role mismatch) error = %v, want ErrNotFound", err)
 	}
 
 	for _, tt := range []struct {
@@ -1852,7 +1967,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		{name: "base mismatch", project: "detent", headSHA: "head-current", baseSHA: "base-moved"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := backend.LatestCompletedAgentResumeState(ctx, AgentResumeLookup{
+			_, err := backend.LatestAgentResumeState(ctx, AgentResumeLookup{
 				ProjectID:        tt.project,
 				IssueID:          "issue-859",
 				PRNumber:         42,
@@ -1864,7 +1979,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 				AgentRole:        "code",
 			})
 			if !errors.Is(err, ErrNotFound) {
-				t.Fatalf("LatestCompletedAgentResumeState() error = %v, want ErrNotFound", err)
+				t.Fatalf("LatestAgentResumeState() error = %v, want ErrNotFound", err)
 			}
 		})
 	}
@@ -2691,6 +2806,125 @@ func TestWorkflowMetricsStoreRoundTripAndAggregates(t *testing.T) {
 	if timeline.Events[1].Turns != 3 || timeline.Events[1].TotalTokens != 1250 || timeline.Events[1].MetadataJSON != `{"session_id":42}` {
 		t.Fatalf("timeline agent event = %#v, want turns/tokens/metadata", timeline.Events[1])
 	}
+	// Checkpointing must update one durable profile, not append snapshots that
+	// double-count activity. An independent reader must retain incomplete data.
+	profile := workflowmetrics.ActivityProfile{Schema: 1, SessionID: 42, AttemptID: 3390, StartedAt: base, AsOf: base.Add(time.Minute), Status: "running", Coverage: "partial", Spans: []workflowmetrics.ActivitySpan{{ID: "test", Kind: "local_validation", StartedAt: base.Add(10 * time.Second), FinishedAt: base.Add(30 * time.Second), Outcome: "completed", Repeat: 2}}}
+	data, _ := json.Marshal(profile)
+	event := WorkflowPhaseEvent{ProjectID: "detent", IssueID: "issue-722", Identifier: "digitaldrywood/detent#722", SessionID: 42, PhaseType: workflowmetrics.PhaseTypeAgentActivity, PhaseName: "instruction_activity", StartedAt: base, MetadataJSON: string(data)}
+	writer := backend.(*sqliteStore)
+	id, err := writer.SaveWorkflowActivityProfile(ctx, 0, event, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.AsOf = base.Add(2 * time.Minute)
+	data, _ = json.Marshal(profile)
+	event.MetadataJSON = string(data)
+	if next, err := writer.SaveWorkflowActivityProfile(ctx, id, event, profile); err != nil || next != id {
+		t.Fatalf("checkpoint id=%d err=%v", next, err)
+	}
+	reader, err := Open(ctx, Config{Backend: BackendSQLite, Path: writer.path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	durable, err := reader.IssueWorkflowTimeline(ctx, IssueIdentity{ProjectID: "detent", IssueID: "issue-722"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	audits := workflowmetrics.ActivityAudits(durable.Events, base.Add(3*time.Minute))
+	if len(durable.Events) != 3 || len(audits) != 1 || audits[0].Profile.Instance == "" || audits[0].Profile.AsOf != profile.AsOf || audits[0].Breakdown.ObservedSeconds != 20 || audits[0].UnobservedTailSeconds != 60 {
+		t.Fatalf("durable audit=%+v", audits)
+	}
+	wrongSession := profile
+	wrongSession.SessionID++
+	if _, err := writer.SaveWorkflowActivityProfile(ctx, id, event, wrongSession); err == nil {
+		t.Fatal("cross-session profile accepted")
+	}
+	profile.Status = "ended"
+	profile.FinishedAt = profile.AsOf
+	data, _ = json.Marshal(profile)
+	event.MetadataJSON = string(data)
+	event.FinishedAt = profile.FinishedAt
+	event.Status = profile.Status
+	if _, err := writer.SaveWorkflowActivityProfile(ctx, id, event, profile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.SaveWorkflowActivityProfile(ctx, id+100, event, profile); err == nil {
+		t.Fatal("missing checkpoint accepted")
+	}
+	report, err = backend.WorkflowMetricsReport(ctx, WorkflowMetricsQuery{ProjectID: "detent", From: base.Add(-time.Minute), To: base.Add(2 * time.Hour)})
+	if err != nil || len(report.SubPhases) != 1 {
+		t.Fatalf("activity changed session totals: %+v, %v", report, err)
+	}
+	wantReport, _ := json.Marshal(report)
+	largeMetadata := `{"payload":"` + strings.Repeat("x", 1<<20) + `"}`
+	if err := writer.UpdateWorkflowPhaseEventMetadata(ctx, id, largeMetadata); err != nil {
+		t.Fatal(err)
+	}
+	recorder := &refreshQueryRecorder{DB: writer.db}
+	writer.queries = sqlc.New(recorder)
+	for _, tt := range []struct {
+		name     string
+		from, to time.Time
+		count    int
+	}{
+		{"bounded", base.Add(-time.Minute), base.Add(2 * time.Hour), 3},
+		{"inclusive from exclusive to", base.Add(10 * time.Minute), base.Add(time.Hour + 20*time.Minute), 1},
+		{"from only", base.Add(10 * time.Minute), time.Time{}, 2},
+		{"to only", time.Time{}, base.Add(10 * time.Minute), 1},
+		{"unbounded", time.Time{}, time.Time{}, 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder.reads = nil
+			got, err := backend.WorkflowMetricsReport(ctx, WorkflowMetricsQuery{ProjectID: "detent", From: tt.from, To: tt.to})
+			if err != nil {
+				t.Fatal(err)
+			}
+			read := recorder.reads[0]
+			var count int
+			if err := writer.db.QueryRowContext(ctx, "SELECT count(*) FROM ("+read.query+")", read.args...).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != tt.count {
+				t.Fatalf("duration rows=%d, want %d without activity payload", count, tt.count)
+			}
+			if tt.name == "bounded" {
+				data, _ := json.Marshal(got)
+				if string(data) != string(wantReport) {
+					t.Fatal("activity payload changed report")
+				}
+				rows, err := writer.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+read.query, read.args...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer rows.Close()
+				var bounded bool
+				for rows.Next() {
+					var id, parent, unused int
+					var detail string
+					if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+						t.Fatal(err)
+					}
+					bounded = bounded || strings.Contains(detail, "workflow_phase_events_finished_at_idx (finished_at>? AND finished_at<?)")
+				}
+				if err := rows.Err(); err != nil {
+					t.Fatal(err)
+				}
+				if !bounded {
+					t.Fatal("duration query did not search both finished_at bounds")
+				}
+			}
+		})
+	}
+	timeline, err = backend.IssueWorkflowTimeline(ctx, IssueIdentity{ProjectID: "detent", IssueID: "issue-722"})
+	var retainedActivity bool
+	for _, event := range timeline.Events {
+		retainedActivity = retainedActivity || event.PhaseType == workflowmetrics.PhaseTypeAgentActivity && event.MetadataJSON == largeMetadata
+	}
+	if err != nil || len(timeline.Events) != 3 || !retainedActivity {
+		t.Fatalf("timeline lost activity payload: events=%d err=%v", len(timeline.Events), err)
+	}
+
 }
 
 func TestWorkflowMetricsReportComputesLaneFlowEfficiency(t *testing.T) {
@@ -2805,6 +3039,27 @@ func TestWorkflowMetricsReportIncludesFlowActiveEventsAcrossWindowBoundary(t *te
 			activeSeconds: 60,
 			waitSeconds:   180,
 		},
+		{
+			name:   "active event spans entire lane and ends after upper bound",
+			lane:   workflowMetricTestEvent("detent", "issue-long", WorkflowPhaseTypeLane, "Merging", 8*time.Minute, 4*time.Minute),
+			active: workflowMetricTestEvent("detent", "issue-long", WorkflowPhaseTypeAgentSession, "agent_active", 0, 2*time.Hour),
+			from:   workflowMetricTestBase.Add(9 * time.Minute), to: workflowMetricTestBase.Add(13 * time.Minute),
+			activeSeconds: 240,
+		},
+		{
+			name:   "active event ends exactly at lane start",
+			lane:   workflowMetricTestEvent("detent", "issue-ended", WorkflowPhaseTypeLane, "Merging", 8*time.Minute, 4*time.Minute),
+			active: workflowMetricTestEvent("detent", "issue-ended", WorkflowPhaseTypeCI, "ci", 0, 8*time.Minute),
+			from:   workflowMetricTestBase.Add(9 * time.Minute), to: workflowMetricTestBase.Add(13 * time.Minute),
+			waitSeconds: 240,
+		},
+		{
+			name:   "active event starts exactly at lane end",
+			lane:   workflowMetricTestEvent("detent", "issue-starting", WorkflowPhaseTypeLane, "Merging", 8*time.Minute, 4*time.Minute),
+			active: workflowMetricTestEvent("detent", "issue-starting", WorkflowPhaseTypeCI, "ci", 12*time.Minute, time.Minute),
+			from:   workflowMetricTestBase.Add(9 * time.Minute), to: workflowMetricTestBase.Add(13 * time.Minute),
+			waitSeconds: 240,
+		},
 	}
 
 	for _, tt := range tests {
@@ -2819,6 +3074,9 @@ func TestWorkflowMetricsReportIncludesFlowActiveEventsAcrossWindowBoundary(t *te
 				}
 			}
 
+			writer := backend.(*sqliteStore)
+			recorder := &refreshQueryRecorder{DB: writer.db}
+			writer.queries = sqlc.New(recorder)
 			report, err := backend.WorkflowMetricsReport(ctx, WorkflowMetricsQuery{
 				ProjectID: "detent",
 				From:      tt.from,
@@ -2826,6 +3084,41 @@ func TestWorkflowMetricsReportIncludesFlowActiveEventsAcrossWindowBoundary(t *te
 			})
 			if err != nil {
 				t.Fatalf("WorkflowMetricsReport() error = %v", err)
+			}
+
+			if len(recorder.reads) != 2 {
+				t.Fatalf("report reads=%d, want duration and flow", len(recorder.reads))
+			}
+			read := recorder.reads[1]
+			rows, err := writer.db.QueryContext(ctx, "EXPLAIN "+read.query, read.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			registers := make(map[int]string)
+			var lowerBoundSeek bool
+			for rows.Next() {
+				var address, p1, p2, p3 int
+				var opcode string
+				var p4, p5, comment any
+				if err := rows.Scan(&address, &opcode, &p1, &p2, &p3, &p4, &p5, &comment); err != nil {
+					t.Fatal(err)
+				}
+				if opcode == "Variable" || opcode == "Null" {
+					registers[p2] = opcode
+				}
+				if opcode == "SeekGT" {
+					lowerBoundSeek = registers[p3] == "Variable"
+				}
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if err := rows.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if !lowerBoundSeek {
+				t.Fatal("flow index seeks NULL instead of the bound parameter")
 			}
 
 			lane := workflowMetricTestLane(t, report.Lanes, tt.lane.PhaseName)
@@ -2974,57 +3267,11 @@ func workflowMetricTestTrend(t *testing.T, trends []WorkflowLaneTrend, phaseName
 	return WorkflowLaneTrend{}
 }
 
-func TestFairShareStoreRoundTrip(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	backend := openTestStore(t, ctx)
-	dispatchedAt := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
-
-	if err := backend.RecordFairShareDispatch(ctx, FairShareDispatch{
-		ProjectID:      " alpha ",
-		Weight:         2,
-		RuntimeSeconds: 30,
-		DispatchedAt:   dispatchedAt,
-	}); err != nil {
-		t.Fatalf("RecordFairShareDispatch() first error = %v", err)
-	}
-	if err := backend.RecordFairShareDispatch(ctx, FairShareDispatch{
-		ProjectID:      "alpha",
-		Weight:         2,
-		RuntimeSeconds: 45,
-		DispatchedAt:   dispatchedAt.Add(time.Minute),
-	}); err != nil {
-		t.Fatalf("RecordFairShareDispatch() second error = %v", err)
-	}
-
-	usage, err := backend.ListFairShareUsage(ctx)
-	if err != nil {
-		t.Fatalf("ListFairShareUsage() error = %v", err)
-	}
-	if len(usage) != 1 {
-		t.Fatalf("usage len = %d, want 1: %#v", len(usage), usage)
-	}
-
-	got := usage[0]
-	if got.ProjectID != "alpha" {
-		t.Fatalf("ProjectID = %q, want alpha", got.ProjectID)
-	}
-	if got.Weight != 2 {
-		t.Fatalf("Weight = %d, want 2", got.Weight)
-	}
-	if got.Dispatches != 2 {
-		t.Fatalf("Dispatches = %d, want 2", got.Dispatches)
-	}
-	if got.RuntimeSeconds != 75 {
-		t.Fatalf("RuntimeSeconds = %d, want 75", got.RuntimeSeconds)
-	}
-	if !got.UpdatedAt.Equal(dispatchedAt.Add(time.Minute)) {
-		t.Fatalf("UpdatedAt = %s, want %s", got.UpdatedAt, dispatchedAt.Add(time.Minute))
-	}
-}
-
 func TestUsageLedgerRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	modelContextWindow := int64(128000)
@@ -3329,6 +3576,21 @@ func TestUsageReportAggregates(t *testing.T) {
 		},
 	}
 
+	// These cases catch filtering after aggregation, leaking totals or treating
+	// an empty authorized project set as an unrestricted query.
+	tests = append(tests,
+		struct {
+			name  string
+			query UsageReportQuery
+			want  []UsageReportRow
+		}{name: "no authorized projects", query: UsageReportQuery{By: UsageReportByDay, ProjectIDs: []string{}}, want: []UsageReportRow{}},
+		struct {
+			name  string
+			query UsageReportQuery
+			want  []UsageReportRow
+		}{name: "filtered project totals", query: UsageReportQuery{By: UsageReportByDay, ProjectIDs: []string{"pyroapex"}}, want: []UsageReportRow{{Key: "2026-06-02", InputTokens: 5, OutputTokens: 2, TotalTokens: 7, RuntimeSeconds: 3, Events: 1}}},
+	)
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -3366,10 +3628,10 @@ func TestDailyDigestReconcilesRuntimeTables(t *testing.T) {
 	from := time.Date(2026, 7, 10, 5, 0, 0, 0, time.UTC)
 	to := from.Add(24 * time.Hour)
 
-	seedDigestSession(t, ctx, backend, SessionStart{StartedAt: from.Add(time.Hour), Model: "gpt-a", OrphanRecoveryOutcome: OrphanRecoveryResumed}, SessionFinish{
+	seedDigestSession(t, ctx, backend, SessionStart{ProjectID: "detent", StartedAt: from.Add(time.Hour), Model: "gpt-a", OrphanRecoveryOutcome: OrphanRecoveryResumed}, SessionFinish{
 		CompletedAt: from.Add(2 * time.Hour), InputTokens: 1000, CachedInputTokens: 900, OutputTokens: 100, TotalTokens: 1100, FinalState: "completed", Model: "gpt-a",
 	})
-	seedDigestSession(t, ctx, backend, SessionStart{StartedAt: from.Add(3 * time.Hour), RequestedModel: "gpt-b", OrphanRecoveryOutcome: OrphanRecoveryFresh}, SessionFinish{
+	seedDigestSession(t, ctx, backend, SessionStart{ProjectID: "other", StartedAt: from.Add(3 * time.Hour), RequestedModel: "gpt-b", OrphanRecoveryOutcome: OrphanRecoveryFresh}, SessionFinish{
 		CompletedAt: from.Add(4 * time.Hour), InputTokens: 500, CachedInputTokens: 400, OutputTokens: 50, TotalTokens: 550, FinalState: "failed", Model: "gpt-b",
 	})
 	seedDigestSession(t, ctx, backend, SessionStart{StartedAt: from.Add(-time.Hour), Model: "outside"}, SessionFinish{
@@ -3417,6 +3679,32 @@ func TestDailyDigestReconcilesRuntimeTables(t *testing.T) {
 	if len(day.Models) != 2 || day.Models[0].Model != "gpt-a" || day.Models[1].Model != "gpt-b" {
 		t.Fatalf("models = %#v, want exact gpt-a/gpt-b breakdown", day.Models)
 	}
+	for _, scope := range []struct {
+		name                                 string
+		ids                                  []string
+		sessions, tokens, capacity, breakers int64
+		model                                string
+	}{
+		{"project A", []string{"detent"}, 1, 1100, 1, 1, "gpt-a"},
+		{"project B", []string{"other"}, 1, 550, 0, 0, "gpt-b"},
+		{"two projects", []string{"detent", "other"}, 2, 1650, 1, 1, ""},
+		{"no projects", []string{}, 0, 0, 0, 0, ""},
+	} {
+		t.Run(scope.name, func(t *testing.T) {
+			got, err := backend.DailyDigest(ctx, []DailyDigestWindow{{Date: "2026-07-10", From: from, To: to, ProjectIDs: scope.ids}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			day := got[0]
+			if day.Sessions != scope.sessions || day.TotalTokens != scope.tokens || day.CapacityOutages != scope.capacity || day.BreakerTrips != scope.breakers {
+				t.Fatalf("scope %v leaked totals: %#v", scope.ids, day)
+			}
+			if scope.model != "" && (len(day.Models) != 1 || day.Models[0].Model != scope.model) {
+				t.Fatalf("foreign model: %v", day.Models)
+			}
+		})
+	}
+
 }
 
 func seedDigestSession(t *testing.T, ctx context.Context, backend Store, start SessionStart, finish SessionFinish) {
@@ -3442,6 +3730,10 @@ func seedDigestAttempt(t *testing.T, ctx context.Context, backend Store, issueID
 }
 
 func TestOpenRejectsUnsupportedBackend(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	_, err := Open(context.Background(), Config{
@@ -3454,6 +3746,10 @@ func TestOpenRejectsUnsupportedBackend(t *testing.T) {
 }
 
 func TestOpenUsesSQLiteBackendByDefault(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -3480,6 +3776,10 @@ func TestOpenUsesSQLiteBackendByDefault(t *testing.T) {
 }
 
 func TestOpenSQLiteRejectsMissingPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	_, err := Open(context.Background(), Config{
@@ -3517,6 +3817,9 @@ func TestBusyTimeoutMillis(t *testing.T) {
 
 func openTestStore(t *testing.T, ctx context.Context) Store {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
 
 	database, err := migratedTestDatabase()
 	if err != nil {
@@ -3825,6 +4128,10 @@ func tableIdentifier(t *testing.T, table string) string {
 }
 
 func TestCompletionFenceRevocationMigrationAndAccounting(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := t.Context()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "detent.db"))
 	if err != nil {
@@ -3879,10 +4186,13 @@ func TestCompletionFenceRevocationMigrationAndAccounting(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	backend := &sqliteStore{db: db, queries: sqlc.New(db)}
 	startedAt := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)
+	// Seed the version-54 schema directly: RecordUsageEvent targets the current
+	// schema, including telemetry columns added after this migration.
 	for i := range cases {
-		if _, err := backend.RecordUsageEvent(ctx, UsageEvent{ProjectID: "detent", IssueID: "issue", SessionID: int64(i + 1), CostUSD: 50, InputTokens: 5000, TotalTokens: 5000, StartedAt: startedAt, FinishedAt: startedAt.Add(time.Hour), Outcome: "completed"}); err != nil {
+		if _, err := db.ExecContext(ctx, `INSERT INTO usage_events
+		(project_id, issue_id, session_id, cost_usd, input_tokens, total_tokens, started_at, finished_at, event_day, outcome)
+		VALUES ('detent', 'issue', ?, 50, 5000, 5000, '2026-09-07T10:00:00Z', '2026-09-07T11:00:00Z', '2026-09-07', 'completed')`, i+1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -3900,6 +4210,23 @@ func TestCompletionFenceRevocationMigrationAndAccounting(t *testing.T) {
 			}
 		})
 	}
+	if err := goose.DownToContext(ctx, db, "migrations", 54); err != nil {
+		t.Fatal(err)
+	}
+	for i, tc := range cases {
+		var metadata string
+		if err := db.QueryRowContext(ctx, "SELECT worker_metadata_json FROM work_attempts WHERE id = ?", i+1).Scan(&metadata); err != nil {
+			t.Fatal(err)
+		}
+		if metadata != tc.metadata {
+			t.Fatalf("restored metadata = %s, want %s", metadata, tc.metadata)
+		}
+	}
+	// Current readers require the current schema; migration 55 was checked above.
+	if err := goose.UpContext(ctx, db, "migrations"); err != nil {
+		t.Fatal(err)
+	}
+	backend := &sqliteStore{db: db, queries: sqlc.New(db)}
 	spend, err := backend.IssueSpendSince(ctx, IssueSpendSinceQuery{ProjectID: "detent", IssueID: "issue", Since: startedAt.Add(-time.Second)})
 	if err != nil {
 		t.Fatal(err)
@@ -3931,18 +4258,7 @@ func TestCompletionFenceRevocationMigrationAndAccounting(t *testing.T) {
 	if got := queryInt(t, db, "SELECT COUNT(*) FROM codex_sessions WHERE final_state = 'completed'"); got != int64(len(cases)) {
 		t.Fatal("migration rewrote session history")
 	}
-	if err := goose.DownToContext(ctx, db, "migrations", 54); err != nil {
-		t.Fatal(err)
-	}
-	for i, tc := range cases {
-		var metadata string
-		if err := db.QueryRowContext(ctx, "SELECT worker_metadata_json FROM work_attempts WHERE id = ?", i+1).Scan(&metadata); err != nil {
-			t.Fatal(err)
-		}
-		if metadata != tc.metadata {
-			t.Fatalf("restored metadata = %s, want %s", metadata, tc.metadata)
-		}
-	}
+
 }
 
 func TestPendingCredentialWaitRequiresWriteProof(t *testing.T) {
@@ -3983,6 +4299,78 @@ func TestPendingCredentialWaitRequiresWriteProof(t *testing.T) {
 			}
 			if (len(pending) == 1) != tt.wantWait {
 				t.Fatalf("pending = %#v, want wait %v", pending, tt.wantWait)
+			}
+		})
+	}
+}
+
+func TestLatestAgentResumeStateSeparatesStartupFromContinuation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name            string
+		state           string
+		turns           int64
+		tokens          int64
+		provider        string
+		incomplete      bool
+		found           bool
+		defaultModel    bool
+		cachedTokens    int64
+		reasoningTokens int64
+		metrics         string
+	}{
+		{name: "failed startup", state: "failed", found: true},
+		{name: "historical synthetic turn", state: "failed", turns: 1, metrics: `{"turns":0}`, found: true},
+		{name: "one real observed turn", state: "failed", turns: 1, metrics: `{"turns":1}`},
+		{name: "one turn without metrics", state: "failed", turns: 1},
+		{name: "one turn malformed metrics", state: "failed", turns: 1, metrics: `{"turns":0`},
+		{name: "one turn missing turns", state: "failed", turns: 1, metrics: `{}`},
+		{name: "one turn string turns", state: "failed", turns: 1, metrics: `{"turns":"0"}`},
+		{name: "historical default model", state: "failed", turns: 1, metrics: `{"turns":0}`, defaultModel: true, found: true},
+		{name: "missing identity after real turns", state: "failed", turns: 2},
+		{name: "cached usage without total", state: "failed", cachedTokens: 1},
+		{name: "reasoning usage without total", state: "failed", reasoningTokens: 1},
+		{name: "missing identity after tokens", state: "failed", tokens: 1},
+		{name: "completed without identity", state: "completed"},
+		{name: "attempt still active", state: "failed", incomplete: true},
+		{name: "real continuation", state: "failed", turns: 1, provider: "original-thread", found: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			backend := openTestStore(t, ctx)
+			started := time.Date(2026, 10, 2, 23, 0, 0, 0, time.UTC)
+			model := "original-model"
+			if test.defaultModel {
+				model = ""
+			}
+			attempt, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{ProjectID: "native", IssueID: "work", WorkerType: "agent", StartedAt: started})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := backend.StartSession(ctx, SessionStart{ProjectID: "native", IssueID: "work", WorkAttemptID: attempt, StartedAt: started, RequestedModel: model, Model: model, AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.FinishSession(ctx, session, SessionFinish{CompletedAt: started.Add(time.Second), FinalState: test.state, Turns: test.turns, InputTokens: test.tokens, TotalTokens: test.tokens, CachedInputTokens: test.cachedTokens, ReasoningOutputTokens: test.reasoningTokens, ProviderThreadID: test.provider}); err != nil {
+				t.Fatal(err)
+			}
+			if !test.incomplete {
+				if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{AttemptID: attempt, CompletedAt: started.Add(time.Second), Status: WorkAttemptStatusTerminal, TerminalState: WorkAttemptTerminalFailure, MetricsJSON: test.metrics}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			lookup := AgentResumeLookup{WorkAttemptID: attempt, ProjectID: "native", IssueID: "work", RequestedModel: model, AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code"}
+			got, err := backend.LatestAgentResumeState(ctx, lookup)
+			if test.found {
+				if err != nil || got.DetentSessionID != session || got.ProviderThreadID != test.provider || got.ProviderSessionID != "" {
+					t.Fatalf("exact persisted session=%+v error=%v", got, err)
+				}
+			} else if !errors.Is(err, ErrNotFound) {
+				t.Fatalf("ineligible session=%+v error=%v", got, err)
+			}
+			lookup.WorkAttemptID = 0
+			if got, err := backend.LatestAgentResumeState(ctx, lookup); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("history selected startup/failed continuation=%+v error=%v", got, err)
 			}
 		})
 	}

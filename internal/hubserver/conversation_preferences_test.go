@@ -154,6 +154,37 @@ func TestConversationModelChoicesOfferLunaEfforts(t *testing.T) {
 	requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
 	response = performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+record.ID, f.token, map[string]any{"preferences": map[string]any{"reasoning_effort": "high"}})
 	requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
+	d := f.service.database
+	d.hostedOrganization = f.project.OrganizationID
+	plans := capacityHostedPlans()
+	plans.Base = PlanReference{ID: "starter", Version: 1}
+	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+		t.Fatal(err)
+	}
+	for _, granted := range []bool{false, true} {
+		if granted {
+			if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "grant-model", Action: "grant", ExpectedRevision: 1, GrantID: "model", Plan: plans.Base, Scope: []string{"model_choice"}, Reason: "approved model choice"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		response = performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+record.ID, f.token, map[string]any{"preferences": map[string]any{"model": "unknown-model"}})
+		requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
+		response = performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+record.ID, f.token, map[string]any{"preferences": map[string]any{"model": "gpt-6-astra", "reasoning_effort": "high"}})
+		if !granted {
+			requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
+			continue
+		}
+		requireNativeStatus(t, response, http.StatusOK)
+		var chosen conversationResource
+		decodeHubResponse(t, response, &chosen)
+		if chosen.Preferences.Model != "gpt-6-astra" || chosen.Preferences.ReasoningEffort != "high" {
+			t.Fatalf("granted preferences = %#v", chosen.Preferences)
+		}
+	}
+	conversationPatch(t, f, f.token, record.ID, map[string]any{"preferences": map[string]any{"model": "auto", "reasoning_effort": "low"}})
+	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "revoke-model", Action: "revoke", ExpectedRevision: 2, GrantID: "model", Reason: "revoked model choice"}); err != nil {
+		t.Fatal(err)
+	}
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/link", f.token, map[string]any{
 		"key": "link-luna-choices", "share_history": true,
 		"issue": map[string]any{"title": "Linked runner work", "description": "Keep runner choices"},

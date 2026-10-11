@@ -8,9 +8,9 @@ exist today. The current API reference describes shipped behavior. Review this
 RFC before dependent implementation. The RFC can finish independently of every
 implementation below.
 
-Detent remains a Go agent orchestrator delivered as one binary. Local operation,
-a customer-hosted Hub, and the shared hosted service at `https://hub.detent.build`
-are supported directions. Hosted access has organization free/paid entitlements.
+Detent remains a Go agent orchestrator delivered as one binary. A customer-hosted
+Hub and the shared hosted service at `https://cloud.detent.build` are the
+supported directions. Hosted access has organization free/paid entitlements.
 Self-hosted Detent is free with customer-selected authentication, including WorkOS,
 custom, generic or local options; it never requires a Detent hosted account,
 subscription, or billing connection. WorkOS is optional for self-hosting. Customer
@@ -59,7 +59,7 @@ Reinspected at `fafa74a3` (September 4, 2026):
 | [Tracker model](../internal/tracker/tracker.go), `WorkItem` | GitHub-shaped references and `BodyExcerpt` | Full body, comments, native history and organization/project scope |
 | [Outbox](../internal/hubserver/outbox.go), `WorkEventChange` and `WorkflowStateChange` | Typed mutations retain GitHub mutation/label coupling | Native transactions without an obligatory external projection |
 | [Worker API](../internal/hubserver/api_worker.go), [authentication](../internal/hubserver/api_auth.go) | Scoped worker/operator/admin tokens and fenced lease mutations | Enrollment, renewable identity, authenticated runner binding and tenant isolation |
-| [Project loader](../internal/config/project_definition.go), [configuration](config.md), [multi-project operation](multi-project.md) | Split files, legacy frontmatter, local overrides, definition revisions and external definition roots | Trusted policy provenance, native runner selectors, pinned policy enforcement |
+| [Project loader](../internal/config/project_definition.go), [configuration](config.md) | Split files, legacy frontmatter, local overrides, definition revisions and external definition roots | Trusted policy provenance, native runner selectors, pinned policy enforcement |
 
 This RFC supersedes these assumptions from
 [#2049](https://github.com/digitaldrywood/detent/issues/2049), specifically for
@@ -143,7 +143,7 @@ Each Hub process alone opens its database. Remote clients use authenticated HTTP
 no SQLite file is shared over NFS/SMB, and no replicated writers are added. Hosted
 placement retains one organization per dedicated Hub process and SQLite file.
 The September 8 correction separates that storage boundary from the public site:
-all customer application navigation uses `https://hub.detent.build`
+all customer application navigation uses `https://cloud.detent.build`
 (external identity/payment screens return to this same origin). A shared entry service
 owns authentication, organization selection, provisioning and trusted routing.
 It does not open tenant databases. Tenant filters remain mandatory.
@@ -170,7 +170,7 @@ claim those implementations or any live deployment are complete.
 
 ```mermaid
 flowchart LR
-    Browser[Browser and customer runners] --> Edge[hub.detent.build TLS ingress]
+    Browser[Browser and customer runners] --> Edge[cloud.detent.build TLS ingress]
     Edge --> Entry[Shared entry and authenticated routing]
     Entry --> Registry[(Metadata registry: one SQLite owner)]
     Entry -->|Private authenticated requests for A| A[Tenant A Hub]
@@ -422,8 +422,7 @@ make both systems independently authoritative for the same field.
 | `github_compatible` (proposed profile name) | GitHub owns issue content/lifecycle and configured status fields. Hub mirror, queue/dependency policy and leases retain current documented ownership | Webhooks, targeted hydration and bounded repair maintain external inputs; pending projections and stale required inputs remain visible |
 
 These are design profile names, not accepted `tracker.kind` values today. Preserve
-existing `github_local` operation and current Hub integration while introducing
-them through #2187. Repository/PR/CI access is independent of native issue
+current Hub integration while introducing them through #2187. Repository/PR/CI access is independent of native issue
 ownership. A native project can use GitHub repositories and protected PR merges
 without creating GitHub issues. Native review approval does not impersonate a
 GitHub required review.
@@ -500,7 +499,7 @@ agent:
 The equivalent legacy layout puts the shared mapping without `schema` between
 `---` delimiters in `WORKFLOW.md`, with no `detent.yaml`. The examples do not
 establish all runtime prerequisites or grant permission to weaken a review gate.
-See [configuration](config.md) and [overlay semantics](workflow-overlays.md) for
+See [configuration](config.md) for
 the full current field surface, including named runner requirements and the
 explicit repository-policy approval path and scoped runner enrollment. Authorized
 tag placement remains the separate #2185 deliverable.
@@ -598,19 +597,12 @@ its version alone does not establish socket isolation. Heartbeat probes share a
 bounded aggregate budget and run outside the scheduler mutex. Unsupported hosts
 or configurations retain only the tiers they can deliver; there is no downgrade.
 
-Runner home projects are an administrator-selected subset of authorized project
-access, stored as `home_project_ids`; an empty list keeps ordinary selection.
-At claim time the Hub prefers the first dispatchable Todo/Rework home issue in
-normal queue order, preserving dependencies, approved policies, selectors,
-active leases, and provider eligibility. Planning and other open cards do not
-keep a runner waiting. One nullable `home_dry_since` timestamp starts when home
-work runs dry and clears when eligible home work returns. With spillover `after
-N`, ordinary authorized project work becomes eligible after N idle minutes;
-`never` keeps the runner waiting. Project-scoped claims cannot steal work from
-another project, and active general jobs finish without preemption. The fleet
-row shows home projects and the sampled claim-time status: preferring home work,
-waiting for home work, or spilled over. No background loop or home-work capacity
-reservation is introduced.
+Runner owners set allowed projects in Cloud. An empty allowed list runs no work.
+Organization settings hold one ordered project list shared by every runner.
+When capacity opens, ready requests in the runner's allowed projects sort by
+issue priority, then organization project rank, then issue creation time.
+Priority never reserves capacity or preempts running work. Home preferences,
+spillover timers, weighted rotation and fair-share history are retired.
 
 Actual enrollment binds logical runners to a machine. Checked-in runner profiles
 declare requirements, not physical registrations. Self-reported capabilities and
@@ -934,7 +926,7 @@ services; the RFC author does not configure live customer accounts.
 | Scenario | Evidence required |
 | --- | --- |
 | Local and self-hosted portability | Run custom/local auth with Detent Cloud, WorkOS and Stripe networking denied; auth/claims/recovery work without hosted entitlements. Separately use a WorkOS fixture with Cloud/Stripe blocked and verify auth choice does not enable billing |
-| Shared-site journey | Execute the two-organization, concurrent-tab trace in [onboarding](cloud-onboarding.md#shared-site-acceptance-trace); all customer routes use hub.detent.build |
+| Shared-site journey | Execute the two-organization, concurrent-tab trace in [onboarding](cloud-onboarding.md#shared-site-acceptance-trace); all customer routes use cloud.detent.build |
 | Shared ingress isolation | Spoof headers/paths, replay assertions, bypass the entry service, change allocation generation and reuse cross-tenant cursors/grants; deny before content or mutation |
 | Self-service recovery | Crash between each provider/registry/tenant commit, repeat creation concurrently, exhaust capacity, restore mismatched snapshots and replay deletion; no duplicate owner, tenant, customer or live SQLite writer |
 | Cloud native work | Hosted fixture login, scoped organization/project, full native issue/comment/dependency edits, customer runner execution and Change creation; no external issue identity required |

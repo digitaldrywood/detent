@@ -61,18 +61,11 @@ func ValidatePolicy(rules tracker.ChangeReviewPolicy, approved policy.Descriptor
 		return errors.New("repository human review cannot be disabled")
 	}
 	names := map[string]bool{}
-	independent := 0
 	for _, check := range rules.RequiredChecks {
 		if strings.TrimSpace(check.Name) == "" || len(check.Name) > 128 || names[check.Name] || check.PrincipalID == "" || len(check.PrincipalID) > 128 || strings.TrimSpace(check.WorkflowID) == "" || len(check.WorkflowID) > 256 || !ValidHash(check.WorkflowSHA256, 64) || !slices.Contains([]string{"customer", "independent"}, check.Source) || check.MaxAgeSeconds < 60 || check.MaxAgeSeconds > 7*24*60*60 {
 			return errors.New("checks require unique names, pinned principals and workflows, explicit source, and freshness from 60 seconds to 7 days")
 		}
 		names[check.Name] = true
-		if check.Source == "independent" {
-			independent++
-		}
-	}
-	if approved.Gates.Validator && independent == 0 {
-		return errors.New("repository validator gate requires an independent check")
 	}
 	return nil
 }
@@ -100,6 +93,14 @@ func ValidateResult(version tracker.ChangeVersion, result tracker.ChangeCheckRes
 }
 
 func Summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time) tracker.ChangeSummary {
+	return summarize(detail, policyID, reviewPolicyID, now, false)
+}
+
+func SummarizeCurrentVersion(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool) tracker.ChangeSummary {
+	return summarize(detail, policyID, reviewPolicyID, now, priorApproval)
+}
+
+func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool) tracker.ChangeSummary {
 	summary := tracker.ChangeSummary{NativeReview: "pending", ExternalReview: "not_linked", Checks: "missing", Status: "draft", Messages: []string{}}
 	var current *tracker.ChangeVersion
 	for i := range detail.Versions {
@@ -112,7 +113,7 @@ func Summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 		summary.Messages = append(summary.Messages, "No immutable version has been published.")
 		return summary
 	}
-	if landed := detail.Change.Landed; landed != nil {
+	if landed := detail.Change.CurrentLanding(); landed != nil {
 		summary.NativeReview, summary.Checks, summary.Status = "approved", "not_required", "landed"
 		if !current.ReviewPolicy.RequireReview {
 			summary.NativeReview = "not_required"
@@ -128,9 +129,16 @@ func Summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 	if !current.ReviewPolicy.RequireReview {
 		summary.NativeReview = "not_required"
 	}
+	validatorPassed := !current.Policy.Gates.Validator
 	latest := map[string]string{}
-	staleApproval := false
+	staleApproval := priorApproval
 	for _, review := range detail.Reviews {
+		if review.Validator != nil {
+			if review.VersionID == current.ID {
+				validatorPassed = review.Decision == "approved" && review.Validator.Verdict == "pass"
+			}
+			continue
+		}
 		if review.VersionID == current.ID && review.Decision != "commented" {
 			latest[review.Actor.PrincipalID] = review.Decision
 		} else if review.Decision == "approved" {
@@ -180,7 +188,7 @@ func Summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 	if !checksSatisfied {
 		summary.Messages = append(summary.Messages, "Current version checks are "+summary.Checks+". Missing or stale evidence does not pass review.")
 	}
-	if checksSatisfied && slices.Contains([]string{"approved", "not_required"}, summary.NativeReview) {
+	if validatorPassed && checksSatisfied && slices.Contains([]string{"approved", "not_required"}, summary.NativeReview) {
 		summary.Status = "reviewed"
 	}
 	if policyID != current.PolicyID || reviewPolicyID != current.ReviewPolicy.ID {

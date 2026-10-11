@@ -15,6 +15,8 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 var (
@@ -36,9 +38,11 @@ type gitRefWorkflowWatcher struct {
 	currentProject func() globalconfig.Project
 	agents         workflowconfig.Agents
 	budget         workflowconfig.AgentBudgetDefaults
+	worker         workflowconfig.WorkerDefaults
 	source         workflowGitRefSource
 	interval       time.Duration
 	logger         *slog.Logger
+	fallback       func(context.Context) (workflowconfig.Workflow, error)
 }
 
 func LoadWorkflow(cfg globalconfig.Project) (workflowconfig.Workflow, error) {
@@ -58,7 +62,7 @@ func LoadWorkflowContext(ctx context.Context, cfg globalconfig.Project) (workflo
 			}
 		}
 		if err == nil {
-			workflow.Config = workflow.Config.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget)
+			workflow.Config = applyProjectAgentDefaults(workflow.Config, cfg)
 		}
 	}()
 	if strings.TrimSpace(cfg.WorkflowRef) == "" {
@@ -78,6 +82,33 @@ func LoadWorkflowContext(ctx context.Context, cfg globalconfig.Project) (workflo
 	}
 	workflow, _, err = source.load(ctx)
 	return workflow, err
+}
+
+func loadWorkflowForScheduling(ctx context.Context, cfg globalconfig.Project, scheduling orchestrator.SchedulingSource) (workflowconfig.Workflow, error) {
+	workflow, err := LoadWorkflowContext(ctx, cfg)
+	if !errors.Is(err, workflowconfig.ErrNoProjectDefinition) {
+		return workflow, err
+	}
+	source, ok := scheduling.(interface {
+		ProjectWorkflowMarkdown(context.Context, string) (string, error)
+	})
+	if !ok {
+		return workflow, err
+	}
+	markdown, sourceErr := source.ProjectWorkflowMarkdown(ctx, cfg.ID)
+	if sourceErr != nil {
+		return workflowconfig.Workflow{}, sourceErr
+	}
+	if markdown == "" {
+		return workflow, fmt.Errorf("%w; author a Markdown workflow in Cloud project settings or supply the repository definition", err)
+	}
+	workflow, err = workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(markdown)})
+	if err != nil {
+		return workflowconfig.Workflow{}, err
+	}
+	workflow.Definition.Layout = workflowconfig.ProjectDefinitionCloud
+	workflow.Config = applyProjectAgentDefaults(workflow.Config, cfg)
+	return workflow, nil
 }
 
 func workflowSourceDisplayPath(cfg globalconfig.Project) string {
@@ -199,12 +230,16 @@ func workflowRefPath(sourceRoot string, workflowPath string) (string, error) {
 }
 
 func (s workflowGitRefSource) load(ctx context.Context) (workflowconfig.Workflow, string, error) {
+	return s.loadSource(ctx, true)
+}
+
+func (s workflowGitRefSource) loadSource(ctx context.Context, includeLocal bool) (workflowconfig.Workflow, string, error) {
 	revision, err := s.revision(ctx)
 	if err != nil {
 		return workflowconfig.Workflow{}, "", err
 	}
 
-	raw, err := runWorkflowGit(ctx, s.sourceRoot, "show", revision+":"+s.path)
+	raw, _, err := s.loadOptionalRefFile(ctx, revision, s.path)
 	if err != nil {
 		return workflowconfig.Workflow{}, revision, fmt.Errorf("load workflow from %s: %w", s.displayPath(), err)
 	}
@@ -219,14 +254,18 @@ func (s workflowGitRefSource) load(ctx context.Context) (workflowconfig.Workflow
 		return workflowconfig.Workflow{}, revision, err
 	}
 	localWorkflowPath := s.localPath()
-	localRaw, hasLocalWorkflow, err := readOptionalWorkflowSourceFile(ctx, localWorkflowPath, s.readFile)
-	if err != nil {
-		return workflowconfig.Workflow{}, revision, fmt.Errorf("read local workflow overlay: %w", err)
-	}
 	localConfigPath := s.localConfigPath()
-	localConfigRaw, hasLocalConfig, err := readOptionalWorkflowSourceFile(ctx, localConfigPath, s.readFile)
-	if err != nil {
-		return workflowconfig.Workflow{}, revision, fmt.Errorf("read local project config: %w", err)
+	var localRaw, localConfigRaw []byte
+	var hasLocalWorkflow, hasLocalConfig bool
+	if includeLocal {
+		localRaw, hasLocalWorkflow, err = readOptionalWorkflowSourceFile(ctx, localWorkflowPath, s.readFile)
+		if err != nil {
+			return workflowconfig.Workflow{}, revision, fmt.Errorf("read local workflow overlay: %w", err)
+		}
+		localConfigRaw, hasLocalConfig, err = readOptionalWorkflowSourceFile(ctx, localConfigPath, s.readFile)
+		if err != nil {
+			return workflowconfig.Workflow{}, revision, fmt.Errorf("read local project config: %w", err)
+		}
 	}
 	workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
 		WorkflowPath:      revision + ":" + s.path,
@@ -247,6 +286,12 @@ func (s workflowGitRefSource) load(ctx context.Context) (workflowconfig.Workflow
 	if err != nil {
 		return workflowconfig.Workflow{}, revision, err
 	}
+	if s.ref == "origin/HEAD" && workflow.Config.Workspace.Kind == workspace.KindLocalGit && workflow.Config.Workspace.Root == filepath.Join(os.TempDir(), "detent_workspaces") {
+		workflow.Config.Workspace.Root, err = workspace.ResolveRetainedRoot(ctx, s.sourceRoot, workflow.Config.Workspace.Root)
+		if err != nil {
+			return workflowconfig.Workflow{}, revision, err
+		}
+	}
 	workflow.Definition.Revision = revision
 	return workflow, revision, nil
 }
@@ -256,7 +301,11 @@ func (s workflowGitRefSource) loadOptionalRefFile(ctx context.Context, revision 
 	if err == nil {
 		return raw, true, nil
 	}
-	if _, existsErr := runWorkflowGit(ctx, s.sourceRoot, "cat-file", "-e", revision+":"+refPath); existsErr != nil {
+	files, existsErr := runWorkflowGit(ctx, s.sourceRoot, "ls-tree", "--name-only", "-z", revision, "--", refPath)
+	if existsErr != nil {
+		return nil, false, fmt.Errorf("inspect project definition at %s:%s: %w", revision, refPath, existsErr)
+	}
+	if len(files) == 0 {
 		return nil, false, nil
 	}
 	return nil, false, fmt.Errorf("load project config from %s:%s: %w", revision, refPath, err)
@@ -308,6 +357,23 @@ func (s workflowGitRefSource) localConfigPath() string {
 }
 
 func (s workflowGitRefSource) revision(ctx context.Context) (string, error) {
+	if s.ref == "origin/HEAD" {
+		remote, err := runWorkflowGit(ctx, s.sourceRoot, "ls-remote", "--exit-code", "origin", "HEAD")
+		if err != nil {
+			return "", fmt.Errorf("resolve remote default workflow: %w", err)
+		}
+		fields := strings.Fields(string(remote))
+		if len(fields) != 2 || fields[1] != "HEAD" || (len(fields[0]) != 40 && len(fields[0]) != 64) || strings.Trim(fields[0], "0123456789abcdef") != "" {
+			return "", errors.New("remote returned an invalid default branch revision")
+		}
+		revision := fields[0]
+		if _, err := runWorkflowGit(ctx, s.sourceRoot, "cat-file", "-e", revision+"^{commit}"); err != nil {
+			if _, err := runWorkflowGit(ctx, s.sourceRoot, "fetch", "--no-write-fetch-head", "--no-tags", "origin", revision); err != nil {
+				return "", fmt.Errorf("fetch remote default workflow: %w", err)
+			}
+		}
+		return revision, nil
+	}
 	output, err := runWorkflowGit(ctx, s.sourceRoot, "rev-parse", "--verify", s.ref+"^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("resolve workflow ref %s: %w", s.ref, err)
@@ -347,6 +413,7 @@ func newGitRefWorkflowWatcher(cfg globalconfig.Project, interval time.Duration, 
 	return &gitRefWorkflowWatcher{
 		agents:   cfg.GlobalAgents,
 		budget:   cfg.GlobalBudget,
+		worker:   cfg.GlobalWorker,
 		source:   source,
 		interval: interval,
 		logger:   logger,
@@ -359,14 +426,14 @@ func (w *gitRefWorkflowWatcher) Watch(ctx context.Context) (<-chan configwatcher
 	}
 
 	localWatcher, err := configwatcher.NewFile(w.source.localPath(), func(string) (workflowconfig.Workflow, error) {
-		workflow, _, err := w.source.load(ctx)
+		workflow, _, err := w.load(ctx)
 		if err == nil {
-			agents, budget := w.agents, w.budget
+			agents, budget, worker := w.agents, w.budget, w.worker
 			if w.currentProject != nil {
 				project := w.currentProject()
-				agents, budget = project.GlobalAgents, project.GlobalBudget
+				agents, budget, worker = project.GlobalAgents, project.GlobalBudget, project.GlobalWorker
 			}
-			workflow.Config = workflow.Config.WithAgentDefaults(agents, budget)
+			workflow.Config = workflow.Config.WithAgentDefaults(agents, budget).WithWorkerDefaults(worker)
 			err = workflow.Config.Validate()
 		}
 		return workflow, err
@@ -426,7 +493,7 @@ func (w *gitRefWorkflowWatcher) run(
 }
 
 func (w *gitRefWorkflowWatcher) seed(ctx context.Context, updates chan<- configwatcher.Update) (string, string) {
-	_, revision, err := w.source.load(ctx)
+	_, revision, err := w.load(ctx)
 	if err != nil {
 		message := err.Error()
 		w.send(ctx, updates, configwatcher.Update{Path: w.source.displayPath(), Err: err, At: time.Now()})
@@ -441,7 +508,7 @@ func (w *gitRefWorkflowWatcher) reload(
 	lastRevision string,
 	lastErr string,
 ) (string, string) {
-	workflow, revision, err := w.source.load(ctx)
+	workflow, revision, err := w.load(ctx)
 	if err != nil {
 		message := err.Error()
 		if message != lastErr {
@@ -458,6 +525,15 @@ func (w *gitRefWorkflowWatcher) reload(
 		At:       time.Now(),
 	})
 	return revision, ""
+}
+
+func (w *gitRefWorkflowWatcher) load(ctx context.Context) (workflowconfig.Workflow, string, error) {
+	workflow, revision, err := w.source.load(ctx)
+	if errors.Is(err, workflowconfig.ErrNoProjectDefinition) && w.fallback != nil {
+		workflow, err = w.fallback(ctx)
+		revision = workflow.SourceHash
+	}
+	return workflow, revision, err
 }
 
 func (w *gitRefWorkflowWatcher) send(ctx context.Context, updates chan<- configwatcher.Update, update configwatcher.Update) {

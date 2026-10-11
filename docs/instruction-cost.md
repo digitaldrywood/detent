@@ -1,6 +1,6 @@
 # Writing instructions for lower token cost
 
-[Back to onboarding](ONBOARDING.md) · [Quick start](getting-started.md)
+[Back to Cloud onboarding](cloud-onboarding.md)
 
 Instructions determine how much agents read, test, and repeat. The
 [September 7–14, 2026 token audit](https://github.com/digitaldrywood/detent/issues/2671)
@@ -73,14 +73,14 @@ lines are a useful failure excerpt, not a guaranteed token bound. Use `rg -n`
 to locate a failure and read the relevant log slice if the tail omits it. Avoid
 plain `make check-fast 2>&1 | tail -40`: without pipeline failure handling, the
 successful `tail` can hide a failing gate. Keep logs in the attempt's temporary
-directory and record the command and result in the Workpad before cleanup.
+directory and record the command and result in the final report before cleanup.
 
 ## Scope verification and review
 
 Run browser and end-to-end verification only when the diff touches behavior
 covered by that suite. This includes server routes or responses used by a UI
 journey, not just frontend files. For server-only changes outside that coverage,
-record the reason in the Workpad, for example: “Scheduler-only diff; browser
+record the reason in the final report, for example: “Scheduler-only diff; browser
 journeys do not cover this path. Focused scheduler tests passed.” Documentation
 changes likewise need no browser run unless they change a covered UI artifact.
 
@@ -92,10 +92,11 @@ CI and its current-head evidence intact.
 
 ## Avoid duplicated contracts and repeated reads
 
-Do not copy the Workpad or `detent-status` contract into `WORKFLOW.md`. Detent
-appends it; a short reference to the appended handoff is sufficient. Do not pin
-model names or reasoning effort in instruction files or skills. Those choices
-belong to orchestration configuration, where the operator can change them once.
+Do not copy the `detent-status` or native completion contract into
+`WORKFLOW.md`. Detent appends both; a short reference to the appended handoff is
+sufficient. Do not pin model names or reasoning effort in instruction files or
+skills. Those choices belong to orchestration configuration, where the operator
+can change them once.
 
 Read a needed file once. Use targeted lookups such as
 `rg -n 'gate|validation' Makefile` afterward instead of rereading entire files.

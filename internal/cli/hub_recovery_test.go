@@ -11,6 +11,10 @@ import (
 )
 
 func TestHubRecoveryCommands(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "hub.db")
 	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: path, GitHubDisabled: true})

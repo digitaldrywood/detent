@@ -181,8 +181,7 @@ func backendCapacityProbeDelayForAttempt(attempt int) time.Duration {
 }
 
 func backendCapacityBoundedProbeAt(resumeAt time.Time, probeAt time.Time, now time.Time) time.Time {
-	// The provider resume deadline supersedes speculative probe backoff.
-	if resumeAt.After(now) {
+	if resumeAt.After(now) && resumeAt.Before(probeAt) {
 		return resumeAt
 	}
 	return probeAt

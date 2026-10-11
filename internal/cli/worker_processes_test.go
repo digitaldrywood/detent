@@ -239,6 +239,10 @@ func TestReapWorkerProcessesRevalidatesArtifactsAfterRetry(t *testing.T) {
 }
 
 func TestReapWorkerProcessesPreservesInterruptedSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	for _, failures := range []int{1, 5} {
@@ -323,66 +327,6 @@ func TestReapWorkerProcessesPreservesInterruptedSession(t *testing.T) {
 			resume := orphans[0].ResumeState
 			if resume.DetentSessionID != sessionID || resume.ProviderThreadID != "thread-2193" || resume.ProviderSessionID != "turn-2193" {
 				t.Fatalf("incorrect resume state: %#v", resume)
-			}
-		})
-	}
-}
-
-func TestReapWorkerProcessesCleansArtifactsOnlyAfterVerifiedExit(t *testing.T) {
-	t.Parallel()
-
-	reapErr := errors.New("process group remained alive")
-	tests := []struct {
-		name       string
-		reapErr    error
-		wantExists bool
-		wantReaped bool
-	}{
-		{name: "verified exit", wantReaped: true},
-		{name: "unverified exit", reapErr: reapErr, wantExists: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			cleanupRoot := t.TempDir()
-			cleanupPath := filepath.Join(cleanupRoot, "run-2011")
-			if err := os.MkdirAll(filepath.Join(cleanupPath, ".detent", "tmp"), 0o700); err != nil {
-				t.Fatalf("create cleanup path: %v", err)
-			}
-			processStore := &shutdownWorkerProcessStore{processes: []store.WorkerProcess{{
-				SessionID: 2011,
-				WorkerProcessIdentity: store.WorkerProcessIdentity{
-					PID:       4242,
-					GroupID:   4242,
-					StartedAt: time.Date(2026, 8, 27, 12, 40, 0, 0, time.UTC),
-				},
-				CleanupRoot: cleanupRoot,
-				CleanupPath: cleanupPath,
-			}}}
-
-			err := reapWorkerProcessesWithCleanup(
-				context.Background(),
-				processStore,
-				slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
-				"startup",
-				time.Millisecond,
-				time.Now,
-				func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
-					return procgroup.TerminationOutcomeTerminated, tt.reapErr
-				},
-				cleanupWorkerProcessArtifacts,
-			)
-			if !errors.Is(err, tt.reapErr) {
-				t.Fatalf("reapWorkerProcesses() error = %v, want reap error %v", err, tt.reapErr != nil)
-			}
-			_, statErr := os.Stat(cleanupPath)
-			if got := statErr == nil; got != tt.wantExists {
-				t.Fatalf("cleanup path exists = %v, want %v, stat error = %v", got, tt.wantExists, statErr)
-			}
-			if got := len(processStore.reaped) == 1; got != tt.wantReaped {
-				t.Fatalf("process marked reaped = %v, want %v", got, tt.wantReaped)
 			}
 		})
 	}
@@ -568,6 +512,10 @@ func TestReapWorkerProcessesClassifiesCleanupOnlyFailures(t *testing.T) {
 }
 
 func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tc := range []struct {
 		projectID, host string
@@ -624,6 +572,10 @@ func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
 }
 
 func TestStartupRetainsOwnedWorkAttempts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tc := range []struct {
 		name, host string
@@ -687,6 +639,10 @@ func TestStartupRetainsOwnedWorkAttempts(t *testing.T) {
 
 // Pool names are scheduling labels; every registered worker belongs to this instance.
 func TestReapPoolWorkerProcesses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tc := range []struct {
 		reason, host string

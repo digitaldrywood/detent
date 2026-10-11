@@ -11,13 +11,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
 type workflowSSECountingStore struct {
 	enrichmentQueryCountingStore
-	revision atomic.Int64
+	revision     atomic.Int64
+	shippedCalls atomic.Int64
+}
+
+func (s *workflowSSECountingStore) ShippedOutcomes(context.Context) ([]store.ShippedOutcome, error) {
+	s.shippedCalls.Add(1)
+	return []store.ShippedOutcome{}, nil
 }
 
 type sseMetricsLogWriter chan string
@@ -152,6 +159,9 @@ func TestWorkflowHistorySharedAcrossSSEClients(t *testing.T) {
 			}
 			if got := backend.workflowMetricsCalls.Load(); got != tt.want {
 				t.Fatalf("history queries = %d, want %d", got, tt.want)
+			}
+			if got := backend.shippedCalls.Load(); got != tt.want/6 {
+				t.Fatalf("shipped queries = %d, want %d", got, tt.want/6)
 			}
 		})
 	}

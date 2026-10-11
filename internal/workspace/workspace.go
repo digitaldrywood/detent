@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -166,11 +167,22 @@ type DeliverableState struct {
 	RemoteBranchExists bool
 }
 
+type ReworkPreparer interface {
+	PrepareRework(context.Context, Info, Issue, MergePrepareOptions) (MergePrepareResult, error)
+	VerifyReworkRecovery(context.Context, Info, Issue, string, string, RecoveryState) (bool, error)
+}
+
+type NativeWorkFinalizer interface {
+	FinalizeNativeWork(context.Context, Info, Issue, func(context.Context) error) (string, error)
+}
+
 type MergePreparer interface {
 	PrepareMerge(context.Context, Info, Issue, MergePrepareOptions) (MergePrepareResult, error)
 }
 
 type MergePrepareOptions struct {
+	IssueDescription string
+	LandingMode      string
 	VerifyResolution bool
 	// ValidateHead runs ValidationCommand on a cleanly rebased head before it
 	// is pushed. A resolved merge always runs it.
@@ -182,12 +194,15 @@ type MergePrepareOptions struct {
 }
 
 type MergePrepareResult struct {
-	ConflictPaths []string
-	HeadSHA       string
-	Status        MergePrepareStatus
-	DiffStat      DiffStat
-	Message       string
-	HeadChanged   bool
+	TargetCommitSubjects []string
+	Findings             []string
+	ConflictPaths        []string
+	BaseSHA              string
+	HeadSHA              string
+	Status               MergePrepareStatus
+	DiffStat             DiffStat
+	Message              string
+	HeadChanged          bool
 	// Validated reports that ValidationCommand passed on exactly HeadSHA.
 	Validated bool
 }
@@ -231,18 +246,24 @@ type ResidualReconciler interface {
 }
 
 type Issue struct {
-	ProjectID             string
-	ID                    string
-	Identifier            string
-	Terminal              bool
-	LandedHeadSHA         string
-	BranchName            string
-	BaseRef               string
-	ProgressBaseRef       string
-	PullRequestHeadSHA    string
-	PullRequestRepository string
-	PullRequestNumber     int
-	PullRequestBranch     string
+	Source                  *ChangeSource
+	Checkpoint              *CheckpointRef
+	Landing                 *LandOptions
+	NativeRework            bool
+	FreshCheckout           bool
+	ProjectID               string
+	ID                      string
+	Identifier              string
+	Terminal                bool
+	LandedHeadSHA           string
+	CleanupDeliveredHeadSHA string
+	BranchName              string
+	BaseRef                 string
+	ProgressBaseRef         string
+	PullRequestHeadSHA      string
+	PullRequestRepository   string
+	PullRequestNumber       int
+	PullRequestBranch       string
 	// WorkspaceSession marks a workspace session checkout (decisions 18.1
 	// `worktree: "fresh"`): a worktree opened so a person can look at a
 	// commit, not one an attempt commits into. It takes its own branch
@@ -251,19 +272,21 @@ type Issue struct {
 }
 
 type Info struct {
-	Path    string
-	Key     string
-	Branch  string
-	Created bool
+	Path         string
+	Key          string
+	Branch       string
+	ReviewBranch string
+	Created      bool
 }
 
 type Hooks struct {
-	Shell        string
-	AfterCreate  string
-	BeforeRun    string
-	AfterRun     string
-	BeforeRemove string
-	Timeout      time.Duration
+	Shell             string
+	AfterCreate       string
+	BeforeRun         string
+	AfterRun          string
+	BeforeRemove      string
+	Timeout           time.Duration
+	StripGitHubTokens bool
 }
 
 type LocalGitOptions struct {
@@ -490,6 +513,41 @@ func newSourceOperationLock() *sourceOperationLock {
 	return lock
 }
 
+func ResolveRetainedRoot(ctx context.Context, sourceRoot, fallback string) (string, error) {
+	output, err := runGitAt(ctx, sourceRoot, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return "", withCommandOutput(err)
+	}
+
+	var root string
+	for _, entry := range strings.Split(output, "\x00\x00") {
+		var workdir, branch string
+		for _, field := range strings.Split(entry, "\x00") {
+			if value, ok := strings.CutPrefix(field, "worktree "); ok {
+				workdir = value
+			}
+			if value, ok := strings.CutPrefix(field, "branch refs/heads/"); ok {
+				branch = value
+			}
+		}
+		if !strings.HasPrefix(branch, autoBranchPrefix) || workdir == "" || filepath.Clean(workdir) == sourceRoot {
+			continue
+		}
+		if filepath.Base(workdir) != strings.TrimPrefix(branch, autoBranchPrefix) {
+			continue
+		}
+		candidate := filepath.Dir(filepath.Clean(workdir))
+		if root != "" && root != candidate {
+			return "", fmt.Errorf("retained worktrees for %s have different workspace roots", sourceRoot)
+		}
+		root = candidate
+	}
+	if root == "" {
+		return fallback, nil
+	}
+	return root, nil
+}
+
 func sourceOperationLockFor(sourceRoot string) *sourceOperationLock {
 	key := filepath.Clean(sourceRoot)
 	sourceOperationLocks.Lock()
@@ -547,13 +605,84 @@ func issueKeyDigest(issue Issue) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
+func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, returnErr error) {
 	info, err := l.infoForIssue(issue)
 	if err != nil {
 		return Info{}, err
 	}
+	if issue.Source != nil {
+		release, err := l.acquireSourceOperation(ctx)
+		if err != nil {
+			return Info{}, err
+		}
+		err = l.importChangeSource(ctx, issue.Source)
+		release()
+		if err != nil {
+			return Info{}, err
+		}
+	}
+	if issue.Checkpoint != nil {
+		checkpoint := *issue.Checkpoint
+		release, err := l.acquireSourceOperation(ctx)
+		if err != nil {
+			return Info{}, err
+		}
+		err = l.fetchCheckpointRef(ctx, &checkpoint)
+		release()
+		if err != nil {
+			return Info{}, err
+		}
+		issue.Checkpoint, issue.FreshCheckout = &checkpoint, true
+		exists, isDir, err := pathExists(info.Path)
+		if err != nil {
+			return Info{}, err
+		}
+		if exists && isDir && l.isSourceWorktree(ctx, info.Path) && checkpointMatches(ctx, info.Path, &checkpoint) {
+			issue.Checkpoint, issue.FreshCheckout = nil, false
+		}
+	}
+	if issue.NativeRework && !issue.FreshCheckout {
+		exists, isDir, err := pathExists(info.Path)
+		if err != nil {
+			return Info{}, err
+		}
+		if exists && isDir {
+			release, err := l.acquireSourceOperation(ctx)
+			if err != nil {
+				return Info{}, err
+			}
+			_, err = l.verifyReworkBranch(ctx, info, issue)
+			release()
+			if err != nil {
+				return Info{}, err
+			}
+			if err := l.prepareChangeSourceWorktree(ctx, info, issue); err != nil {
+				return Info{}, err
+			}
+			return info, nil
+		}
+	}
 
-	created, err := l.createWorktree(ctx, info.Path, info.Branch)
+	var created bool
+	if issue.Landing != nil {
+		info, created, err = l.createLandingWorktree(ctx, info, issue)
+	} else {
+		head := "HEAD"
+		if issue.Source != nil {
+			head = issue.Source.Version.HeadSHA
+		}
+		if issue.Checkpoint != nil {
+			head = issue.Checkpoint.HeadSHA
+		}
+		created, err = l.createWorktree(ctx, info.Path, info.Branch, issue.FreshCheckout, head)
+	}
+	if issue.Landing != nil && created {
+		defer func() {
+			if returnErr != nil {
+				returnErr = errors.Join(returnErr, l.CleanupLanding(context.WithoutCancel(ctx), info, issue))
+			}
+		}()
+	}
 	if err != nil {
 		var creationErr *worktreeCreationError
 		if errors.As(err, &creationErr) {
@@ -562,17 +691,29 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 		return Info{}, err
 	}
 	info.Created = created
-	if err := ensureGitInfoExcludes(ctx, info.Path, detentHandoffDiffExcludes); err != nil {
-		if created {
-			err = l.preserveFailedWorkspace(ctx, info.Path, err)
-		}
-		return Info{}, err
-	}
-
 	if created {
 		if err := l.validateCreatedWorktree(ctx, info.Path); err != nil {
 			return Info{}, l.preserveFailedWorkspace(ctx, info.Path, err)
 		}
+	}
+	if issue.Checkpoint != nil {
+		observed, err := runGitAt(ctx, info.Path, "rev-parse", "HEAD")
+		if err != nil || strings.TrimSpace(observed) != issue.Checkpoint.HeadSHA {
+			return Info{}, errors.Join(fmt.Errorf("restored worktree head differs from checkpoint %s", issue.Checkpoint.Ref), err)
+		}
+		if err := restoreCheckpointTree(ctx, info.Path, issue.Checkpoint); err != nil {
+			return Info{}, err
+		}
+	} else if err := l.prepareChangeSourceWorktree(ctx, info, issue); err != nil {
+		return Info{}, err
+	}
+	if issue.Landing != nil {
+		if err := l.recordCleanupOwnership(ctx, info, issue, true); err != nil {
+			return Info{}, err
+		}
+	}
+
+	if created {
 		if err := l.runHook(ctx, "after_create", l.hooks.AfterCreate, info, issue); err != nil {
 			return Info{}, l.preserveFailedWorkspace(ctx, info.Path, err)
 		}
@@ -581,10 +722,43 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 	return info, nil
 }
 
-func (l *LocalGit) createWorktree(ctx context.Context, path string, branch string) (bool, error) {
+func (l *LocalGit) createWorktree(ctx context.Context, path string, branch string, fresh bool, sourceHead ...string) (bool, error) {
 	l.createMu.Lock()
 	defer l.createMu.Unlock()
-	return l.ensureWorktree(ctx, path, branch)
+	baseRef := "HEAD"
+	if len(sourceHead) > 0 {
+		baseRef = sourceHead[0]
+	}
+	if fresh {
+		release, err := l.acquireSourceOperation(ctx)
+		if err != nil {
+			return false, err
+		}
+		defer release()
+		if err := l.releaseBranchHolders(ctx, branch, path); err != nil {
+			return false, err
+		}
+		base, err := l.newBranchStartRef(ctx, branch)
+		if err != nil {
+			return false, err
+		}
+		if baseRef == "HEAD" {
+			baseRef = base
+		}
+		if exists, _, err := pathExists(path); err != nil {
+			return false, err
+		} else if exists {
+			if _, err := l.quarantineWorktree(ctx, path); err != nil {
+				return false, err
+			}
+		}
+		if l.autoBranch {
+			if _, err := l.runGit(ctx, "branch", "-f", branch, baseRef); err != nil {
+				return false, withCommandOutput(err)
+			}
+		}
+	}
+	return l.ensureWorktree(ctx, path, branch, baseRef)
 }
 
 func (l *LocalGit) Cleanup(ctx context.Context, identifier string) error {
@@ -637,6 +811,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		if err := l.removeOwnershipRecord(info.Path); err != nil {
 			return result, err
 		}
+		l.deleteCheckpointRef(ctx, issue)
 		return result, nil
 	}
 	result.Processes = reapWorkspaceProcesses(ctx, info.Path, l.logger)
@@ -666,6 +841,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	if err := l.removeOwnershipRecord(info.Path); err != nil {
 		return result, err
 	}
+	l.deleteCheckpointRef(ctx, issue)
 	return result, nil
 }
 
@@ -690,7 +866,7 @@ func (l *LocalGit) AfterRun(ctx context.Context, info Info, issue Issue) {
 
 func (l *LocalGit) infoForIssue(issue Issue) (Info, error) {
 	key := issueKey(issue)
-	path, err := l.workspacePath(key)
+	path, err := l.workspacePathForIssue(issue, key)
 	if err != nil {
 		return Info{}, err
 	}
@@ -755,7 +931,7 @@ func (l *LocalGit) normalizeInfo(info Info, issue Issue) (Info, error) {
 	path := info.Path
 	if path == "" {
 		var err error
-		path, err = l.workspacePath(key)
+		path, err = l.workspacePathForIssue(issue, key)
 		if err != nil {
 			return Info{}, err
 		}
@@ -781,9 +957,22 @@ func (l *LocalGit) workspacePath(key string) (string, error) {
 	return validateWorkspacePath(l.root, filepath.Join(l.root, key))
 }
 
+func (l *LocalGit) workspacePathForIssue(issue Issue, key string) (string, error) {
+	if issue.Landing == nil {
+		return l.workspacePath(key)
+	}
+	if !validLandingHead(issue.Landing.HeadSHA) {
+		return "", refuse(LandRefusalMissingHead, "landing requires an immutable commit identity")
+	}
+	return validateWorkspacePath(l.root, filepath.Join(l.root, ".detent", "landing", issue.Landing.HeadSHA, key))
+}
+
 func (l *LocalGit) branchName(issue Issue, key string) string {
 	if !l.autoBranch {
 		return ""
+	}
+	if issue.Landing != nil {
+		return autoBranchPrefix + "landing/" + strings.ToLower(key) + "/" + issue.Landing.HeadSHA
 	}
 	if issue.WorkspaceSession {
 		return workspaceSessionBranchName(key)
@@ -794,7 +983,10 @@ func (l *LocalGit) branchName(issue Issue, key string) string {
 	return autoBranchPrefix + strings.ToLower(key)
 }
 
-func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch string) (bool, error) {
+func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch string, baseRef string) (bool, error) {
+	if err := l.checkDanglingSourceWorktree(ctx, path); err != nil {
+		return false, err
+	}
 	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
 		return false, fmt.Errorf("prune stale worktree registrations during preparation: %w", withCommandOutput(err))
 	}
@@ -815,10 +1007,6 @@ func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch strin
 				if err := l.recoverStaleSourceWorktree(ctx, path, current, branch); err != nil {
 					return false, err
 				}
-				exists = false
-			} else if removed, err := l.removeDanglingSourceWorktree(ctx, path); err != nil {
-				return false, err
-			} else if removed {
 				exists = false
 			} else if l.isGitWorkspace(ctx, path) {
 				return false, fmt.Errorf("workspace path is a git worktree not managed by source: %s", path)
@@ -843,14 +1031,14 @@ func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch strin
 	}
 
 	if l.autoBranch {
-		if err := l.addBranchedWorktree(ctx, path, branch); err != nil {
+		if err := l.addBranchedWorktree(ctx, path, branch, baseRef); err != nil {
 			return false, &worktreeCreationError{err: err}
 		}
 		return true, nil
 	}
 
 	err = l.addWorktreeWithPrune(ctx, func() error {
-		_, addErr := l.runGit(ctx, "worktree", "add", "--detach", path, "HEAD")
+		_, addErr := l.runGit(ctx, "worktree", "add", "--detach", path, baseRef)
 		return addErr
 	})
 	if err != nil {
@@ -911,17 +1099,15 @@ func (l *LocalGit) sourceWorktreeRegistered(ctx context.Context, path string) (b
 	return false, nil
 }
 
-func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch string) error {
+func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch string, sourceHead ...string) error {
 	return l.addWorktreeWithPrune(ctx, func() error {
 		exists, err := l.branchExists(ctx, branch)
 		if err != nil {
 			return err
 		}
 		if exists {
-			if holder, held, holdErr := l.branchWorktreePath(ctx, branch, path); holdErr != nil {
-				return holdErr
-			} else if held {
-				return &BranchHeldError{Branch: branch, Path: holder}
+			if err := l.releaseBranchHolders(ctx, branch, path); err != nil {
+				return err
 			}
 			_, err = l.runGit(ctx, "worktree", "add", path, branch)
 			return err
@@ -930,6 +1116,9 @@ func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch 
 		baseRef, err := l.newBranchStartRef(ctx, branch)
 		if err != nil {
 			return err
+		}
+		if len(sourceHead) > 0 && sourceHead[0] != "HEAD" {
+			baseRef = sourceHead[0]
 		}
 		_, err = l.runGit(ctx, "worktree", "add", "-b", branch, path, baseRef)
 		return err
@@ -955,6 +1144,69 @@ func (l *LocalGit) branchWorktreePath(ctx context.Context, branch string, target
 		}
 	}
 	return "", false, nil
+}
+
+func (l *LocalGit) releaseBranchHolders(ctx context.Context, branch string, targetPath string) error {
+	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
+		return fmt.Errorf("prune worktrees before releasing %s: %w", branch, withCommandOutput(err))
+	}
+	output, err := l.runGit(ctx, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return withCommandOutput(err)
+	}
+	wantRef := "refs/heads/" + strings.TrimSpace(branch)
+	targetPath = filepath.Clean(targetPath)
+	type holder struct {
+		path     string
+		rebasing bool
+		attached bool
+	}
+	var holders []*holder
+	var current *holder
+	for _, field := range strings.Split(output, "\x00") {
+		switch {
+		case strings.HasPrefix(field, "worktree "):
+			current = &holder{path: filepath.Clean(strings.TrimPrefix(field, "worktree "))}
+			if current.path == targetPath {
+				current = nil
+				continue
+			}
+			current.rebasing = worktreeRebasingRef(ctx, current.path) == wantRef
+			holders = append(holders, current)
+		case strings.HasPrefix(field, "branch ") && current != nil:
+			current.attached = strings.TrimSpace(strings.TrimPrefix(field, "branch ")) == wantRef
+		}
+	}
+	for _, h := range holders {
+		if h.rebasing {
+			if _, err := runGitAt(ctx, h.path, "rebase", "--quit"); err != nil {
+				return fmt.Errorf("release %s from interrupted rebase at %s: %w", branch, h.path, withCommandOutput(err))
+			}
+		}
+		if h.attached {
+			if _, err := runGitAt(ctx, h.path, "checkout", "--detach", "--quiet"); err != nil {
+				return fmt.Errorf("release %s from worktree %s: %w", branch, h.path, withCommandOutput(err))
+			}
+		}
+	}
+	return nil
+}
+
+func worktreeRebasingRef(ctx context.Context, path string) string {
+	for _, state := range []string{"rebase-merge/head-name", "rebase-apply/head-name"} {
+		location, err := runGitAt(ctx, path, "rev-parse", "--git-path", state)
+		if err != nil {
+			return ""
+		}
+		location = strings.TrimSpace(location)
+		if !filepath.IsAbs(location) {
+			location = filepath.Join(path, location)
+		}
+		if raw, err := os.ReadFile(location); err == nil {
+			return strings.TrimSpace(string(raw))
+		}
+	}
+	return ""
 }
 
 func (l *LocalGit) addWorktreeWithPrune(ctx context.Context, add func() error) error {
@@ -1000,7 +1252,7 @@ func withCommandOutput(err error) error {
 
 // newBranchStartRef restores published work before considering a new branch base.
 func (l *LocalGit) newBranchStartRef(ctx context.Context, branch string) (string, error) {
-	remotes, err := l.runGit(ctx, "remote")
+	remotes, err := l.gitRemotes(ctx)
 	if err != nil {
 		return "", fmt.Errorf("list git remotes: %w", err)
 	}
@@ -1021,7 +1273,7 @@ func (l *LocalGit) newBranchStartRef(ctx context.Context, branch string) (string
 }
 
 func (l *LocalGit) newBranchBaseRef(ctx context.Context) (string, error) {
-	remotes, err := l.runGit(ctx, "remote")
+	remotes, err := l.gitRemotes(ctx)
 	if err != nil {
 		return "", fmt.Errorf("list git remotes: %w", err)
 	}
@@ -1039,6 +1291,10 @@ func (l *LocalGit) newBranchBaseRef(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("fetch remote default branch %s: %w", remoteRef, err)
 	}
 	return remoteRef, nil
+}
+
+func (l *LocalGit) gitRemotes(ctx context.Context) (string, error) {
+	return runGitAtWithEnvCapture(ctx, l.sourceRoot, nil, true, "remote")
 }
 
 func stringListContains(list string, want string) bool {
@@ -1336,31 +1592,27 @@ func detachWorktreeHead(ctx context.Context, path string) error {
 	return nil
 }
 
-func (l *LocalGit) removeDanglingSourceWorktree(ctx context.Context, path string) (bool, error) {
+func (l *LocalGit) checkDanglingSourceWorktree(ctx context.Context, path string) error {
 	gitDir, ok, err := readLinkedWorktreeGitDir(path)
 	if err != nil || !ok {
-		return false, err
+		return err
 	}
 	sourceCommon, err := gitCommonDir(ctx, l.sourceRoot)
 	if err != nil {
-		return false, fmt.Errorf("inspect source for dangling workspace: %w", err)
+		return fmt.Errorf("inspect source for dangling workspace: %w", err)
 	}
 	adminRoot := filepath.Join(sourceCommon, "worktrees")
 	if filepath.Dir(gitDir) != adminRoot {
-		return false, nil
+		return nil
 	}
 	exists, _, err := pathExists(gitDir)
 	if err != nil {
-		return false, fmt.Errorf("inspect linked worktree admin directory: %w", err)
+		return fmt.Errorf("inspect linked worktree admin directory: %w", err)
 	}
 	if exists {
-		return false, nil
+		return nil
 	}
-	if err := removeWorkspacePath(l.root, path); err != nil {
-		return false, fmt.Errorf("remove workspace with dangling gitdir: %w", err)
-	}
-	l.logger.Warn("removed workspace with dangling gitdir", slog.String("path", path), slog.String("git_dir", gitDir))
-	return true, nil
+	return fmt.Errorf("%w at %s: linked worktree admin metadata is unavailable; surviving files retained, source and index cannot be verified", ErrWorkspacePreserved, path)
 }
 
 func relocateWorktreeAdmin(metadata gitMetadata, workspacePath string) error {
@@ -1712,9 +1964,6 @@ func PrepareWorkerScratch(ctx context.Context, workspacePath string) (scratchPat
 	if err != nil {
 		return "", fmt.Errorf("resolve worker workspace: %w", err)
 	}
-	if err := ensureWorkerScratchExcluded(ctx, workspacePath); err != nil {
-		return "", err
-	}
 	scratchRoot := WorkerScratchRoot(workspacePath)
 	scratchPath = filepath.Join(scratchRoot, "attempt-"+uuid.NewString())
 	if err := ensurePrivateDirectories(workerScratchBase(), scratchRoot); err != nil {
@@ -1812,20 +2061,6 @@ func workerScratchParent(workspacePath string, scratchPath string) (string, bool
 		}
 	}
 	return "", false
-}
-
-func ensureWorkerScratchExcluded(ctx context.Context, workspacePath string) error {
-	_, err := os.Lstat(filepath.Join(workspacePath, ".git"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("stat worker workspace git metadata: %w", err)
-	}
-	if err := ensureGitInfoExcludes(ctx, workspacePath, detentHandoffDiffExcludes); err != nil {
-		return fmt.Errorf("exclude worker scratch from git: %w", err)
-	}
-	return nil
 }
 
 func CleanupWorkerScratch(workspacePath string, scratchPath string) error {
@@ -1946,7 +2181,13 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 		return err
 	}
 	defer release()
+	return l.runHookUnderSourceLock(ctx, name, command, info, issue)
+}
 
+func (l *LocalGit) runHookUnderSourceLock(ctx context.Context, name string, command string, info Info, issue Issue) error {
+	if strings.TrimSpace(command) == "" {
+		return nil
+	}
 	timeout := l.hooks.Timeout
 	if timeout == 0 {
 		timeout = defaultHookTimeout
@@ -1959,11 +2200,6 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 	}
 	defer cancel()
 
-	cmd := commandshell.Command(hookCtx, command, l.hooks.Shell)
-	cmd.Dir = info.Path
-	cmd.Env = hookEnv(info, issue)
-	cmd.WaitDelay = workspaceCommandWaitDelay
-
 	l.logger.Info(
 		"running workspace hook",
 		slog.String("hook", name),
@@ -1971,11 +2207,8 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 		slog.String("command", command),
 	)
 
-	output, err := cmd.CombinedOutput()
+	output, err := runHookCommand(hookCtx, command, l.hooks, info, issue)
 	if err == nil {
-		return nil
-	}
-	if errors.Is(err, exec.ErrWaitDelay) && hookCtx.Err() == nil {
 		return nil
 	}
 
@@ -1983,9 +2216,6 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		exitCode = exitErr.ExitCode()
-	}
-	if hookCtx.Err() != nil {
-		err = hookCtx.Err()
 	}
 
 	logPath, logErr := l.writeHookLog(name, command, info, exitCode, err, output)
@@ -2212,17 +2442,16 @@ func GitMetadataWritableRoots(ctx context.Context, workspacePath string) ([]stri
 		return roots, nil
 	}
 
-	refDir, err := canonicalExistingDir(filepath.Dir(filepath.Join(metadata.commonDir, filepath.FromSlash(metadata.headRef))))
-	if err != nil {
-		return nil, fmt.Errorf("git branch ref dir: %w", err)
+	for _, prefix := range []string{"", "logs"} {
+		path := filepath.Join(metadata.commonDir, prefix, filepath.FromSlash(metadata.headRef))
+		parent, err := canonicalGitMetadataPath(filepath.Dir(path))
+		if err != nil {
+			return nil, fmt.Errorf("git branch metadata parent: %w", err)
+		}
+		path = filepath.Join(parent, filepath.Base(path))
+		addRoot(path)
+		addRoot(path + ".lock")
 	}
-	addRoot(refDir)
-
-	logDir, err := canonicalExistingDir(filepath.Dir(filepath.Join(metadata.commonDir, "logs", filepath.FromSlash(metadata.headRef))))
-	if err != nil {
-		return nil, fmt.Errorf("git branch log dir: %w", err)
-	}
-	addRoot(logDir)
 
 	return roots, nil
 }
@@ -2275,10 +2504,14 @@ func inspectGitMetadata(ctx context.Context, dir string) (gitMetadata, error) {
 	}, nil
 }
 
-func canonicalExistingDir(path string) (string, error) {
+func canonicalGitMetadataPath(path string) (string, error) {
+	var missing []string
 	for {
 		canonical, err := canonicalExistingPath(path)
 		if err == nil {
+			for _, component := range slices.Backward(missing) {
+				canonical = filepath.Join(canonical, component)
+			}
 			return canonical, nil
 		}
 		if !errors.Is(err, fs.ErrNotExist) {
@@ -2288,6 +2521,7 @@ func canonicalExistingDir(path string) (string, error) {
 		if parent == path {
 			return "", err
 		}
+		missing = append(missing, filepath.Base(path))
 		path = parent
 	}
 }
@@ -2300,13 +2534,29 @@ func pathWithin(root string, path string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
 }
 
-func hookEnv(info Info, issue Issue) []string {
-	env := append([]string{}, os.Environ()...)
+func hookEnv(info Info, issue Issue, stripGitHubTokens bool) []string {
+	env := make([]string, 0, len(os.Environ())+len(workspaceEnvironmentKeys))
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if stripGitHubTokens && isGitHubTokenKey(key) {
+			continue
+		}
+		env = append(env, entry)
+	}
 	variables := EnvironmentVariables(info, issue)
 	for _, key := range workspaceEnvironmentKeys {
 		env = append(env, key+"="+variables[key])
 	}
 	return env
+}
+
+func isGitHubTokenKey(key string) bool {
+	switch key {
+	case "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN":
+		return true
+	default:
+		return false
+	}
 }
 
 var workspaceEnvironmentKeys = [...]string{
@@ -2367,7 +2617,7 @@ func canonicalExistingPath(path string) (string, error) {
 	}
 	canonical, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return "", fmt.Errorf("canonicalize %s: %w", abs, err)
+		return "", &os.PathError{Op: "canonicalize", Path: abs, Err: err}
 	}
 	return filepath.Clean(canonical), nil
 }

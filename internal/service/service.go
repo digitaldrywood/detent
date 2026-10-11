@@ -88,8 +88,10 @@ type Inspection struct {
 }
 
 type Definition struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
+	Path              string `json:"path"`
+	Content           string `json:"content"`
+	StandardOutPath   string `json:"standard_out_path,omitempty"`
+	StandardErrorPath string `json:"standard_error_path,omitempty"`
 }
 
 type Manager interface {
@@ -174,6 +176,11 @@ func (s Status) Running() bool {
 func ManagerFromProcessEnvironment(goos string, lookupEnv func(string) (string, bool)) ManagerName {
 	if manager, ok := lookupEnv(ManagerEnvironment); ok && strings.TrimSpace(manager) != "" {
 		return ManagerName(strings.TrimSpace(manager))
+	}
+	if goos == "linux" {
+		if invocation, ok := lookupEnv("INVOCATION_ID"); ok && strings.TrimSpace(invocation) != "" {
+			return ManagerSystemd
+		}
 	}
 	if goos == "darwin" {
 		if serviceName, ok := lookupEnv(launchdServiceEnvironment); ok && strings.HasPrefix(strings.TrimSpace(serviceName), launchdLabelPrefix) {

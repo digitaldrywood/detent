@@ -8,28 +8,35 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/digitaldrywood/detent/internal/buildinfo"
+
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry"
+	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
 type cloudFileConfig struct {
-	PublicURL                 string   `yaml:"public_url"`
-	Listen                    string   `yaml:"listen"`
-	StateDirectory            string   `yaml:"state_directory"`
-	StaffEmails               []string `yaml:"staff_emails"`
-	SupportActors             []string `yaml:"support_actors"`
-	EntitlementAdministrators []string `yaml:"entitlement_administrators"`
+	PublicURL                 string                    `yaml:"public_url"`
+	Listen                    string                    `yaml:"listen"`
+	StateDirectory            string                    `yaml:"state_directory"`
+	StaffEmails               []string                  `yaml:"staff_emails"`
+	SupportActors             []string                  `yaml:"support_actors"`
+	EntitlementAdministrators []string                  `yaml:"entitlement_administrators"`
+	Platform                  cloudentry.PlatformConfig `yaml:"platform"`
 	Assertion                 struct {
 		Issuer        string `yaml:"issuer"`
 		SigningKeyEnv string `yaml:"signing_key_env"`
@@ -40,8 +47,9 @@ type cloudFileConfig struct {
 		APIURL    string `yaml:"api_url"`
 		IssuerURL string `yaml:"issuer_url"`
 	} `yaml:"workos"`
-	Allocation *cloudAllocationFileConfig `yaml:"allocation"`
-	Billing    *cloudBillingFileConfig    `yaml:"billing"`
+	Allocation  *cloudAllocationFileConfig `yaml:"allocation"`
+	Billing     *cloudBillingFileConfig    `yaml:"billing"`
+	Attachments *attachment.Config         `yaml:"attachments"`
 }
 
 type cloudBillingFileConfig struct {
@@ -69,7 +77,6 @@ type cloudAllocationFileConfig struct {
 	Binary                   string                       `yaml:"binary"`
 	MaxTenants               int                          `yaml:"max_tenants"`
 	MaxConcurrentProvisions  int                          `yaml:"max_concurrent_provisions"`
-	MaxPerIdentity           int                          `yaml:"max_organizations_per_identity"`
 	RetryLimit               int                          `yaml:"retry_limit"`
 	MinFreeDiskBytes         uint64                       `yaml:"min_free_disk_bytes"`
 	MinAvailableMemoryBytes  uint64                       `yaml:"min_available_memory_bytes"`
@@ -83,8 +90,18 @@ type cloudAllocationFileConfig struct {
 
 func tenantEnvironment(config cloudFileConfig, lookupEnv func(string) string) []string {
 	names := []string{config.WorkOS.APIKeyEnv}
+	for _, name := range []string{"DETENT_HUB_GITHUB_APP_ID", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY", "DETENT_HUB_GITHUB_WEBHOOK_SECRET"} {
+		if lookupEnv(name) != "" {
+			names = append(names, name)
+		}
+	}
 	if lookupEnv("OPENAI_API_KEY") != "" {
 		names = append(names, "OPENAI_API_KEY")
+	}
+	// Tenant Hubs encrypt project provider secrets with the operator's master
+	// keys; without them a hosted project cannot store a Sprites token.
+	if lookupEnv("DETENT_HUB_SECRET_KEYS") != "" {
+		names = append(names, "DETENT_HUB_SECRET_KEYS", "DETENT_HUB_SECRET_KEY_VERSION")
 	}
 	if tenantBilling := config.Allocation.Billing; tenantBilling != nil {
 		names = append(names, tenantBilling.APIKeyEnv, tenantBilling.WebhookSecretEnv)
@@ -94,7 +111,7 @@ func tenantEnvironment(config cloudFileConfig, lookupEnv func(string) string) []
 	}
 	var environment []string
 	for _, name := range names {
-		if validEnvName(name) {
+		if validEnvName(name) && name != "DETENT_ATTACHMENTS_ACCESS_KEY_ID" && name != "DETENT_ATTACHMENTS_SECRET_ACCESS_KEY" {
 			environment = append(environment, name+"="+lookupEnv(name))
 		}
 	}
@@ -106,16 +123,52 @@ func tenantEnvironment(config cloudFileConfig, lookupEnv func(string) string) []
 
 func tenantConfiguration(config cloudFileConfig) func(cloudentry.TenantSpec) ([]byte, error) {
 	return func(spec cloudentry.TenantSpec) ([]byte, error) {
+		preserved, err := preservedTenantConfiguration(spec)
+		if err != nil {
+			return nil, err
+		}
 		tenant := hostedFileConfig{
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL,
-			StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, Plans: config.Allocation.Entitlements, Billing: config.Allocation.Billing,
+			Plans: config.Allocation.Entitlements, Billing: config.Allocation.Billing,
 			Conversation:             &hostedConversationFileConfig{Enabled: true},
+			Workspaces:               preserved.Workspaces,
 			EntitlementAdministrator: config.Allocation.EntitlementAdministrator, EntitlementAdminTokenEnv: config.Allocation.EntitlementAdminTokenEnv,
 			SharedEntry: &hostedSharedEntryFileConfig{Issuer: spec.Issuer, PublicKeys: []string{spec.PublicKey}, AllocationGeneration: spec.Organization.Generation},
+		}
+		if spec.Organization.CheckoutPrice != "" {
+			tenant.Plans = hubserver.CheckoutHostedPlans(tenant.Plans)
 		}
 		tenant.WorkOS.ClientID, tenant.WorkOS.APIKeyEnv, tenant.WorkOS.APIURL, tenant.WorkOS.IssuerURL = config.WorkOS.ClientID, config.WorkOS.APIKeyEnv, config.WorkOS.APIURL, config.WorkOS.IssuerURL
 		return yaml.Marshal(tenant)
 	}
+}
+
+func preservedTenantConfiguration(spec cloudentry.TenantSpec) (hostedFileConfig, error) {
+	if spec.Directory == "" {
+		return hostedFileConfig{}, nil
+	}
+	file, err := os.Open(filepath.Join(spec.Directory, "tenant.yaml"))
+	if errors.Is(err, os.ErrNotExist) {
+		return hostedFileConfig{}, nil
+	}
+	if err != nil {
+		return hostedFileConfig{}, errors.New("tenant workspace policy could not be opened")
+	}
+	decoder := yaml.NewDecoder(io.LimitReader(file, 128*1024))
+	decoder.KnownFields(true)
+	var tenant hostedFileConfig
+	decodeErr := decoder.Decode(&tenant)
+	closeErr := file.Close()
+	if decodeErr != nil || closeErr != nil {
+		return hostedFileConfig{}, errors.New("tenant workspace policy could not be read")
+	}
+	if tenant.OrganizationID != spec.Organization.ID || tenant.WorkOSOrganizationID != spec.Organization.ProviderID {
+		return hostedFileConfig{}, errors.New("tenant workspace policy belongs to another organization")
+	}
+	if _, _, err := readWorkspaceConfig(tenant.Workspaces); err != nil {
+		return hostedFileConfig{}, err
+	}
+	return tenant, nil
 }
 
 func validateTenantConfiguration(config cloudFileConfig, key ed25519.PrivateKey, lookupEnv func(string) string) error {
@@ -170,18 +223,6 @@ func validateEntitlementAdministration(config cloudFileConfig, lookupEnv func(st
 	return nil
 }
 
-func validateEntitlementAdministrators(config cloudFileConfig) error {
-	for _, email := range config.EntitlementAdministrators {
-		if !slices.ContainsFunc(config.StaffEmails, func(staff string) bool { return strings.EqualFold(strings.TrimSpace(staff), strings.TrimSpace(email)) }) {
-			return fmt.Errorf("entitlement_administrators entry %q is not listed in staff_emails; every entitlement administrator must be staff", email)
-		}
-	}
-	if len(config.EntitlementAdministrators) > 0 && (config.Allocation == nil || config.Allocation.EntitlementAdminTokenEnv == "") {
-		return errors.New("entitlement_administrators requires allocation.entitlement_admin_token_env so the entry can reach tenant entitlements")
-	}
-	return nil
-}
-
 func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -204,9 +245,6 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 	}
 	if config.Listen == "" {
 		config.Listen = "127.0.0.1:8017"
-	}
-	if err := validateEntitlementAdministrators(config); err != nil {
-		return cloudentry.Config{}, err
 	}
 	if !validEnvName(config.WorkOS.APIKeyEnv) || !validEnvName(config.Assertion.SigningKeyEnv) {
 		return cloudentry.Config{}, errors.New("shared entry secret environment variable names are invalid")
@@ -231,8 +269,19 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		}
 	}
 	result := cloudentry.Config{
-		PublicURL: config.PublicURL, Issuer: config.Assertion.Issuer, SigningKey: key, Provider: provider,
+		GitHubWebhookSecret: []byte(strings.TrimSpace(lookupEnv("DETENT_HUB_GITHUB_WEBHOOK_SECRET"))),
+		Platform:            config.Platform,
+		PublicURL:           config.PublicURL, Issuer: config.Assertion.Issuer, SigningKey: key, Provider: provider,
 		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, EntitlementAdministrators: config.EntitlementAdministrators, StateDir: config.StateDirectory, ListenAddress: config.Listen, Logger: slog.Default(), ConfigPath: path,
+	}
+	appID, privateKey := lookupEnv("DETENT_HUB_GITHUB_APP_ID"), lookupEnv("DETENT_HUB_GITHUB_APP_PRIVATE_KEY")
+	if appID != "" && privateKey != "" {
+		result.GitHubApp = &connectorgithub.InstallationTokenConfig{AppID: appID, PrivateKey: privateKey, LookupEnv: lookupEnv}
+	}
+	if config.Attachments != nil {
+		config.Attachments.AccessKeyID = lookupEnv("DETENT_ATTACHMENTS_ACCESS_KEY_ID")
+		config.Attachments.SecretAccessKey = lookupEnv("DETENT_ATTACHMENTS_SECRET_ACCESS_KEY")
+		result.Attachments = config.Attachments
 	}
 	if allocation := config.Allocation; allocation != nil {
 		binary := allocation.Binary
@@ -243,9 +292,6 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		}
 		if allocation.MaxConcurrentProvisions == 0 {
 			allocation.MaxConcurrentProvisions = 1
-		}
-		if allocation.MaxPerIdentity == 0 {
-			allocation.MaxPerIdentity = 1
 		}
 		if allocation.RetryLimit == 0 {
 			allocation.RetryLimit = 5
@@ -258,7 +304,7 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		}
 		result.Allocation = &cloudentry.AllocationConfig{
 			TenantRoot: allocation.TenantRoot, SocketRoot: allocation.SocketRoot, MaxTenants: allocation.MaxTenants, MaxConcurrent: allocation.MaxConcurrentProvisions,
-			MaxPerIdentity: allocation.MaxPerIdentity, RetryLimit: allocation.RetryLimit, MinFreeDiskBytes: allocation.MinFreeDiskBytes, MinAvailableMemoryBytes: allocation.MinAvailableMemoryBytes,
+			RetryLimit: allocation.RetryLimit, MinFreeDiskBytes: allocation.MinFreeDiskBytes, MinAvailableMemoryBytes: allocation.MinAvailableMemoryBytes,
 			AllowedEmails: allocation.AllowedEmails, AllowedDomains: allocation.AllowedDomains,
 			Launcher: &cloudentry.ExecLauncher{Binary: binary, Environment: tenantEnvironment(config, lookupEnv), Configure: tenantConfiguration(config), Logger: slog.Default(), RestartLimit: allocation.RetryLimit},
 		}
@@ -266,6 +312,9 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 			result.Allocation.EntitlementAdminToken = []byte(lookupEnv(name))
 		}
 		if tenantBilling := allocation.Billing; tenantBilling != nil {
+			if !tenantBilling.CheckoutDisabled {
+				result.Allocation.Prices = tenantBilling.Prices
+			}
 			if tenantBilling.CustomerID != "" || config.Billing == nil || tenantBilling.Mode != config.Billing.Mode || tenantBilling.AccountID != config.Billing.AccountID {
 				return cloudentry.Config{}, errors.New("allocated tenant billing must match the entry billing mode and account and must not name a customer")
 			}
@@ -298,7 +347,8 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 	return result, nil
 }
 
-func newCloudCommand(lookupEnv func(string) string) *cobra.Command {
+func newCloudCommand(opts options) *cobra.Command {
+	lookupEnv := opts.lookupEnv
 	if lookupEnv == nil {
 		lookupEnv = os.Getenv
 	}
@@ -309,11 +359,11 @@ func newCloudCommand(lookupEnv func(string) string) *cobra.Command {
 		Long:    "Opt-in operator-hosted functionality: one shared public origin for sign-in, organization selection and authenticated routing to dedicated tenant Hubs. Self-hosted Detent never needs it.",
 		Args:    NoArgs,
 	}
-	cmd.AddCommand(newCloudServeCommand(lookupEnv), newCloudRegistryCommand(), newCloudAssertionKeyCommand(lookupEnv))
+	cmd.AddCommand(newCloudServeCommand(lookupEnv, opts.build), newCloudRegistryCommand(), newCloudAssertionKeyCommand(lookupEnv))
 	return cmd
 }
 
-func newCloudServeCommand(lookupEnv func(string) string) *cobra.Command {
+func newCloudServeCommand(lookupEnv func(string) string, build buildinfo.Info) *cobra.Command {
 	var configPath string
 	cmd := &cobra.Command{
 		Use:          "serve",
@@ -343,6 +393,7 @@ func newCloudServeCommand(lookupEnv func(string) string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			config.Build = build
 			return cloudentry.Run(cmd.Context(), config)
 		},
 	}

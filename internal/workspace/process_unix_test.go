@@ -165,6 +165,10 @@ func TestReapProcessesRejectsUnsafePaths(t *testing.T) {
 }
 
 func TestWorkspaceScanOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	tests := []struct {
 		name         string
 		command      string
@@ -280,6 +284,10 @@ func TestWorkspaceScanOutput(t *testing.T) {
 }
 
 func TestWorkspaceScanOutputStderr(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	tests := []struct {
 		name   string
 		stderr string
@@ -327,6 +335,10 @@ func TestWorkspaceScanOutputStderr(t *testing.T) {
 }
 
 func TestLsofWorkspaceProcessIDs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	if _, err := exec.LookPath("lsof"); err != nil {
 		t.Skip("lsof is unavailable")
 	}
@@ -416,11 +428,11 @@ func TestWorkspaceProcessIDsScanBudget(t *testing.T) {
 			wantFactoryCalls: 2,
 		},
 		{
-			name:             "timed out stage stops renewal",
+			name:             "timed out scratch stage retains independent cwd evidence",
 			returnScratchErr: true,
 			wantErr:          context.DeadlineExceeded,
-			wantPIDs:         []int{scratchPID},
-			wantFactoryCalls: 1,
+			wantPIDs:         []int{scratchPID, cwdPID},
+			wantFactoryCalls: 2,
 		},
 		{
 			name:             "caller cancellation stops renewal",
@@ -496,6 +508,10 @@ func TestWorkspaceProcessIDsScanBudget(t *testing.T) {
 }
 
 func TestWorkspaceScanOutputCancellationWithInheritedPipes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	for _, command := range []string{
 		"printf observed; sleep 60 & echo $! >&3; wait",
 		"printf observed; sleep 60 & echo $! >&3; exit 0",

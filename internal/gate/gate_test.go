@@ -711,9 +711,9 @@ func TestInstructionsDescribeOptimizedMergingGate(t *testing.T) {
 	got := Instructions(Config{Kind: KindCommand, Run: "make check", RequireAutomatedReview: new(false)})
 	for _, want := range []string{
 		"Run `make check` from the workspace root; require eligible current-head checks before promotion",
-		"Skipped is not a test pass",
-		"For merge-group-only CI, require passing merge-group checks before merge",
-		"In Merging, use a focused smoke gate only after a clean rebase with unchanged source and known current-head validation",
+		"skips are not passes",
+		"Merge-group-only CI must pass before merge",
+		"Merging smoke gate requires clean rebase, unchanged source, known current-head validation",
 		"otherwise rerun `make check`",
 		"REST backoff",
 	} {
@@ -758,19 +758,65 @@ func TestInstructionsDescribeArtifactWorkpadCompletionField(t *testing.T) {
 func TestInstructionsDescribeRequiredStatusChecks(t *testing.T) {
 	t.Parallel()
 
-	got := Instructions(Config{
-		Kind:                 KindCommand,
-		Run:                  "make check",
-		RequiredStatusChecks: []string{"Windows Core"},
-	})
-
-	for _, want := range []string{
-		"required status checks must be present on the current PR head",
-		"missing, skipped, failed, cancelled, or still-running required checks block promotion",
+	for _, tt := range []struct {
+		name   string
+		checks []string
+		want   []string
+		absent []string
+	}{
+		{
+			name: "omitted aggregate policy",
+			want: []string{
+				"require eligible current-head checks before promotion",
+				"skips are not passes",
+				"Merge-group-only CI must pass before merge",
+			},
+			absent: []string{"do not wait for a CI producer", "required_status_checks is explicitly empty"},
+		},
+		{
+			name:   "explicit empty native policy",
+			checks: []string{},
+			want: []string{
+				"required_status_checks is explicitly empty",
+				"defers to the base branch's native required checks",
+				"When that branch requires no checks, do not wait for a CI producer",
+				"Native required checks and red CI still block promotion and merge",
+			},
+			absent: []string{
+				"require eligible current-head checks before promotion",
+				"Merge-group-only CI must pass before merge",
+				"Required checks: present",
+			},
+		},
+		{
+			name:   "configured required checks",
+			checks: []string{"Windows Core"},
+			want: []string{
+				"Required checks: present, completed, successful on current PR head",
+				"missing/skipped/failed/cancelled/running blocks promotion",
+				"Native required checks and red CI still block promotion and merge",
+			},
+			absent: []string{"do not wait for a CI producer", "required_status_checks is explicitly empty"},
+		},
 	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("Instructions() missing %q:\n%s", want, got)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := Instructions(Config{
+				Kind:                 KindCommand,
+				Run:                  "true",
+				RequiredStatusChecks: tt.checks,
+			})
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("Instructions() missing %q", want)
+				}
+			}
+			for _, absent := range tt.absent {
+				if strings.Contains(got, absent) {
+					t.Errorf("Instructions() contradicts policy with %q", absent)
+				}
+			}
+		})
 	}
 }
 
@@ -853,7 +899,8 @@ func TestEvaluateAutomatedReviewModes(t *testing.T) {
 		{name: "optional present", mode: AutomatedReviewOptional, review: "APPROVED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "optional late review", mode: AutomatedReviewOptional, review: "APPROVED", expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "off absent", mode: AutomatedReviewOff, want: Decision{Action: ActionPass, Reason: ReasonReady}},
-		{name: "legacy disabled pending", required: new(false), pending: true, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
+		{name: "off pending", mode: AutomatedReviewOff, pending: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "legacy disabled pending", required: new(false), pending: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "legacy disabled pending after deadline", required: new(false), pending: true, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "off present", mode: AutomatedReviewOff, review: "COMMENTED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "required p1", mode: AutomatedReviewRequired, review: "P1", want: Decision{Action: ActionRework, Reason: ReasonP1Findings}},
@@ -883,7 +930,7 @@ func TestEvaluatePendingReviewExpiresAfterRepeatedMissingDecisions(t *testing.T)
 	t.Parallel()
 
 	started := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
-	cfg := Config{Kind: KindCommand, RequireAutomatedReview: new(false)}
+	cfg := Config{Kind: KindCommand, AutomatedReview: AutomatedReviewOptional}
 	summary := Summary{
 		PullRequestURL: "https://github.test/pull/3062",
 		CIStatus:       "green",
@@ -934,6 +981,7 @@ func validatorConfigsEqual(left ValidatorConfig, right ValidatorConfig) bool {
 	if left.Enabled != right.Enabled ||
 		left.Model != right.Model ||
 		left.MinScore != right.MinScore ||
+		left.UnverifiedCriteria != right.UnverifiedCriteria ||
 		left.TurnTimeoutMS != right.TurnTimeoutMS ||
 		!intPointerEqual(left.MaxInlineDiffBytes, right.MaxInlineDiffBytes) ||
 		len(left.BlockOn) != len(right.BlockOn) {
@@ -1010,6 +1058,51 @@ func TestLocalStatusConfiguration(t *testing.T) {
 			}
 			if tt.problem != "" && !slices.Contains(problems, tt.problem) {
 				t.Fatalf("Validate() = %v, want %q", problems, tt.problem)
+			}
+		})
+	}
+}
+
+func TestEffectivePreservesRequiredStatusPolicyPresence(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		checks []string
+	}{
+		{name: "omitted"},
+		{name: "explicitly empty", checks: []string{}},
+		{name: "configured", checks: []string{"Checks"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Effective(Effective(Config{RequiredStatusChecks: tt.checks}))
+			if (got.RequiredStatusChecks == nil) != (tt.checks == nil) || !slices.Equal(got.RequiredStatusChecks, tt.checks) {
+				t.Fatalf("required checks=%#v, want %#v", got.RequiredStatusChecks, tt.checks)
+			}
+		})
+	}
+}
+
+func TestLandingMode(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, input, want string
+		invalid           bool
+	}{
+		{"default", "", LandingPerChange, false},
+		{"per change", "per_landing", LandingPerChange, false},
+		{"legacy rolling", " ROLLING_BARRIER ", LandingPerChange, false},
+		{"unknown", "skip", "skip", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Effective(Config{LandingMode: test.input})
+			if cfg.LandingMode != test.want {
+				t.Fatalf("mode=%q", cfg.LandingMode)
+			}
+			invalid := false
+			for _, problem := range Validate("gate", cfg) {
+				invalid = invalid || strings.Contains(problem, ".landing_mode")
+			}
+			if invalid != test.invalid {
+				t.Fatalf("invalid=%v", invalid)
 			}
 		})
 	}

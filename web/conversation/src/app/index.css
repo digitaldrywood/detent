@@ -1,5 +1,6 @@
 /* Detent fonts and theme overrides for the conversation client. */
 @import "./global.css";
+@import "../../../../static/css/sign-in.css";
 
 @font-face {
   font-family: "Geist";
@@ -92,6 +93,28 @@ body,
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
+}
+
+@media (width < 48rem) {
+  .dc-chat-viewport {
+    position: fixed;
+    inset-inline: 0;
+    top: var(--chat-viewport-top, 0px);
+    height: var(--chat-viewport-height, 100dvh);
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .dc-chat-viewport .dc-chat-composer {
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+    padding-left: max(0.75rem, env(safe-area-inset-left));
+    padding-right: max(0.75rem, env(safe-area-inset-right));
+  }
+
+  .dc-chat-viewport [role="textbox"] {
+    min-height: 3rem;
+    max-height: min(12.5rem, calc(var(--chat-viewport-height, 100dvh) * 0.25));
+    font-size: max(var(--font-size-prompt, 1rem), 16px);
+  }
 }
 
 .group\/sidebar-wrapper[data-sidebar-state="expanded"] [data-sidebar-control] {

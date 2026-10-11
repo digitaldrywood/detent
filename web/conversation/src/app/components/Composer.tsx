@@ -3,6 +3,12 @@
 import { PaperclipIcon, PlugZapIcon, XIcon } from "lucide-react";
 import React from "react";
 
+import type { ServerProviderSkill } from "../../contracts/ui.ts";
+import { getProviderSkillsForSlashMenu } from "../../runtime/providerSkills.ts";
+import { keybindingCatalogue } from "../adapters/keybindings.ts";
+import { SHELL_SHORTCUTS } from "../lib/shortcuts.ts";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogPanel } from "../../components/ui/dialog.tsx";
+
 import type { PreferenceChoices, TurnPreferences } from "../../contracts/index.ts";
 import { cn } from "../../lib/utils.ts";
 import { Button } from "../../components/ui/button.tsx";
@@ -42,6 +48,7 @@ import {
 } from "../../components/composerFooterLayout.ts";
 import { formatAttachmentSize } from "../../runtime/state/attachments.ts";
 import type { ComposerAttachments } from "../adapters/attachments.ts";
+import { attachmentInputHandlers } from "../work/components/AttachmentEditor.tsx";
 import type { PendingQuestionState } from "../adapters/pendingQuestions.ts";
 import {
   builtinSlashCommands,
@@ -74,6 +81,10 @@ export interface ComposerProps {
   /** True while a turn is producing output: send becomes stop. */
   readonly streaming: boolean;
   readonly placeholder?: string;
+  readonly promptClassName?: string;
+  readonly promptContext?: React.ReactNode;
+  readonly sendLabel?: string;
+  readonly focusRequest?: number;
   /** Stated reason the send is unavailable, e.g. a lost connection. */
   readonly blockedReason?: string | null;
   /**
@@ -97,6 +108,9 @@ export interface ComposerProps {
   readonly editorRef?: React.Ref<ComposerPromptEditorHandle>;
 
   readonly attachments?: ComposerAttachments;
+  readonly onFiles?: ((files: readonly File[]) => void) | undefined;
+  readonly uploadingFiles?: boolean | undefined;
+  readonly attachmentErrors?: readonly string[] | undefined;
 
   readonly banners?: readonly ComposerBannerEntry[];
 
@@ -117,6 +131,7 @@ export interface ComposerProps {
    * provides for itself. A name that matches a built-in replaces it.
    */
   readonly slashCommands?: readonly SlashCommand[];
+  readonly skills?: readonly ServerProviderSkill[] | undefined;
   /**
    * The element that describes the composer, when the surface renders one.
    * No surface does today — the shortcut hint line that used to sit under the
@@ -150,7 +165,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
   const attachments = props.attachments;
   const staged = attachments?.staged ?? NO_STAGED;
   const attachControl = props.attachControl ?? "attach";
-  const attachingBlocked = attachControl === "none" || attachments === undefined || disabled;
+  const attachingBlocked = attachControl === "none" || (attachments === undefined && props.onFiles === undefined) || disabled;
   const fileInput = React.useRef<HTMLInputElement>(null);
   const formRef = React.useRef<HTMLFormElement>(null);
   // A draft with a staged file is sendable: the first send uploads it.
@@ -160,6 +175,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
     !props.sending &&
     props.blockedReason == null &&
     !disabled &&
+    props.uploadingFiles !== true &&
     attachments?.uploading !== true;
   const label = props.label ?? "Message";
   const domId = props.domId ?? "dc-composer";
@@ -293,6 +309,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
     [],
   );
 
+  const [helpOpen, setHelpOpen] = React.useState(false);
   const extraCommands = props.slashCommands ?? NO_SLASH_COMMANDS;
   const onStop = props.onStop;
   const streaming = props.streaming;
@@ -305,9 +322,16 @@ export function Composer(props: ComposerProps): React.ReactElement {
           clear: disabled ? null : () => onChange(""),
           stop: streaming && onStop !== undefined && !disabled ? () => onStop() : null,
         }),
-        extraCommands,
+        resolveSlashCommands(
+          getProviderSkillsForSlashMenu(props.skills ?? [], true).map((skill) => ({
+            name: skill.name,
+            description: skill.description ?? skill.displayName ?? skill.name,
+            run: () => onChange(`${skill.invocation ?? `$${skill.name}`} `),
+          })).filter((skill) => !["help", "model", "effort", "access", "stop", "attach", "clear"].includes(skill.name.toLowerCase())),
+          [{ name: "help", description: "List commands and keyboard shortcuts", run: () => setHelpOpen(true) }, ...extraCommands],
+        ),
       ),
-    [attachingBlocked, disabled, extraCommands, footerControls, onChange, onStop, openPicker, streaming],
+    [attachingBlocked, disabled, extraCommands, footerControls, onChange, onStop, openPicker, streaming, props.skills],
   );
 
   const slashMatches = React.useMemo(
@@ -383,11 +407,39 @@ export function Composer(props: ComposerProps): React.ReactElement {
 
   return (
     <ComposerSurface.Shell contextStrip={props.contextStrip !== undefined}>
+      <Dialog open={helpOpen} onOpenChange={setHelpOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Commands and keyboard shortcuts</DialogTitle>
+            <DialogDescription>Available on this composer.</DialogDescription>
+          </DialogHeader>
+          <DialogPanel className="max-h-[70vh] overflow-y-auto">
+            <dl className="space-y-2 text-sm">
+              {commands.map((command) => (
+                <div key={command.name}>
+                  <dt className="font-medium">/{command.name}</dt>
+                  <dd className="text-muted-foreground">{command.description}</dd>
+                </div>
+              ))}
+            </dl>
+            <p className="mt-4 font-medium text-sm">Keyboard shortcuts</p>
+            <dl className="mt-2 space-y-2 text-sm">
+              <div><dt>Send message</dt><dd className="text-muted-foreground">Enter</dd></div>
+              <div><dt>New issue</dt><dd className="text-muted-foreground">C</dd></div>
+              <div><dt>New line</dt><dd className="text-muted-foreground">Shift+Enter</dd></div>
+              <div><dt>Choose slash command</dt><dd className="text-muted-foreground">↑ / ↓, Enter · Escape closes the menu</dd></div>
+              {SHELL_SHORTCUTS.map((binding) => <div key={binding.action}><dt>{binding.action}</dt><dd className="text-muted-foreground">{binding.keys.join(" / ")}</dd></div>)}
+              {keybindingCatalogue().filter((binding) => binding.chord !== null).map((binding) => <div key={binding.command}><dt>{binding.label}</dt><dd className="text-muted-foreground">{binding.chord}</dd></div>)}
+            </dl>
+          </DialogPanel>
+        </DialogContent>
+      </Dialog>
 
       <ProviderStatusBanner status={null} onDismiss={() => {}} />
       <ComposerSurface.Host>
         <div className="relative z-10">
           <form
+            {...(props.onFiles === undefined ? {} : attachmentInputHandlers(props.onFiles, disabled || props.sending))}
             ref={formRef}
             data-chat-composer-form="true"
             className="mx-auto w-full min-w-0 max-w-3xl"
@@ -406,6 +458,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
             }}
           >
 
+            {props.attachmentErrors?.map((error, index) => <p key={index} role="alert" className="text-sm text-destructive">{error}</p>)}
             <ComposerBanner.Dock>
               <ComposerBanner.Column>
                 <ComposerBannerStack className="relative z-0" items={banners} />
@@ -632,8 +685,11 @@ export function Composer(props: ComposerProps): React.ReactElement {
                       </div>
                     )}
 
+                    {props.promptContext}
                     <ComposerPromptEditor
                       {...(props.editorRef === undefined ? {} : { editorRef: props.editorRef })}
+                      className={props.promptClassName}
+                      focusRequest={props.focusRequest}
                       id={`${domId}-input`}
                       value={pending === null ? props.value : pending.customAnswer}
                       onChange={pending === null ? props.onChange : pending.onCustomAnswerChange}
@@ -742,7 +798,8 @@ export function Composer(props: ComposerProps): React.ReactElement {
                             onChange={(event) => {
                               const picked = Array.from(event.currentTarget.files ?? []);
                               event.currentTarget.value = "";
-                              attachments?.addFiles(picked);
+                              if (props.onFiles) props.onFiles(picked);
+                              else attachments?.addFiles(picked);
                             }}
                           />
                           <Tooltip>
@@ -767,6 +824,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
                       )}
                       <ComposerPrimaryActions
                         compact={compactActions}
+                        sendLabel={props.sendLabel}
                         pendingAction={pending === null ? null : pending.action}
                         isRunning={props.streaming && props.onStop !== undefined && !disabled}
 
@@ -776,7 +834,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
                         sendDisabledReason={
                           disabled
                             ? (props.blockedReason ?? "Sending is unavailable")
-                            : attachments?.uploading === true
+                            : attachments?.uploading === true || props.uploadingFiles === true
                               ? "Waiting for the upload to finish"
                               : (props.blockedReason ?? null)
                         }

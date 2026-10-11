@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,10 +29,15 @@ import (
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func TestInstallScriptInstallsBinaryAndRefusesExistingLock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -81,6 +87,10 @@ func TestInstallScriptInstallsBinaryAndRefusesExistingLock(t *testing.T) {
 }
 
 func TestInstallScriptDetectsSupportedTargets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -134,6 +144,10 @@ func TestInstallScriptDetectsSupportedTargets(t *testing.T) {
 }
 
 func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -183,6 +197,10 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 }
 
 func TestInstallScriptAuthenticatesLatestReleaseRequest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -252,6 +270,10 @@ func TestInstallScriptAuthenticatesLatestReleaseRequest(t *testing.T) {
 }
 
 func TestInstallScriptDoesNotForwardTokenAcrossLatestReleaseRedirect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -326,6 +348,10 @@ func TestInstallScriptDoesNotForwardTokenAcrossLatestReleaseRedirect(t *testing.
 }
 
 func TestInstallScriptReportsPathGuidanceWhenInstallDirIsMissingFromPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -361,6 +387,10 @@ func TestInstallScriptReportsPathGuidanceWhenInstallDirIsMissingFromPath(t *test
 }
 
 func TestInstallScriptReportsActiveServiceRestartGuidance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -410,6 +440,10 @@ func TestInstallScriptReportsActiveServiceRestartGuidance(t *testing.T) {
 }
 
 func TestInstallScriptAbortsOnChecksumMismatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -449,7 +483,11 @@ func TestInstallScriptAbortsOnChecksumMismatch(t *testing.T) {
 	}
 }
 
-func TestInstallScriptFallsBackToGoInstallWhenReleaseAssetMissing(t *testing.T) {
+func TestInstallScriptBuildsPreparedSourceWhenReleaseAssetMissing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -457,33 +495,54 @@ func TestInstallScriptFallsBackToGoInstallWhenReleaseAssetMissing(t *testing.T) 
 		t.Fatalf("Getwd() error = %v", err)
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/releases/latest" {
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"tag_name":"v1.2.3"}`)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
-
+	archiveName := "detent_1.2.3_source.tar.gz"
+	archive := tarArchive(t, map[string]string{
+		"detent_1.2.3_source/BUILD_LDFLAGS":                                    "-X main.version=1.2.3 -X main.commit=fixture",
+		"detent_1.2.3_source/static/app/conversation/app.js":                   "prepared-client",
+		"detent_1.2.3_source/static/app/conversation/app.css":                  "prepared-style",
+		"detent_1.2.3_source/static/app/conversation/chunks/lazy.js":           "prepared-lazy",
+		"detent_1.2.3_source/static/app/conversation/THIRD_PARTY_LICENSES.txt": "prepared-license",
+		"detent_1.2.3_source/static/css/output.css":                            "prepared-dashboard-style",
+	})
 	tmp := t.TempDir()
+	releaseDir := filepath.Join(tmp, "release")
+	if err := os.MkdirAll(filepath.Join(releaseDir, "v1.2.3"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(releaseDir, "releases"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string][]byte{
+		"releases/latest":                   []byte(`{"tag_name":"v1.2.3"}`),
+		"v1.2.3/" + archiveName:             archive,
+		"v1.2.3/detent_1.2.3_checksums.txt": []byte(archiveChecksum(archive) + "  " + archiveName + "\n"),
+	} {
+		if err := os.WriteFile(filepath.Join(releaseDir, name), content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	releaseURL := (&url.URL{Scheme: "file", Path: releaseDir}).String()
 	fakeBin := filepath.Join(tmp, "fakebin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
 		t.Fatalf("MkdirAll(fakebin) error = %v", err)
 	}
 	fakeGo := filepath.Join(fakeBin, "go")
 	fakeGoScript := `#!/usr/bin/env sh
-if [ "$1" = install ]; then
-mkdir -p "$GOBIN"
-cat > "$GOBIN/detent" <<'EOF'
+set -eu
+[ "$1" = build ]
+[ "$2" = -ldflags ]
+[ "$3" = "-X main.version=1.2.3 -X main.commit=fixture" ]
+[ "$4" = -o ]
+[ "$(cat static/app/conversation/app.js)" = prepared-client ]
+[ "$(cat static/app/conversation/app.css)" = prepared-style ]
+[ "$(cat static/app/conversation/chunks/lazy.js)" = prepared-lazy ]
+[ "$(cat static/app/conversation/THIRD_PARTY_LICENSES.txt)" = prepared-license ]
+[ "$(cat static/css/output.css)" = prepared-dashboard-style ]
+cat > "$5" <<'EOF'
 #!/usr/bin/env sh
-printf 'go-install-ok\n'
+printf 'prepared-source-ok\n'
 EOF
-chmod 755 "$GOBIN/detent"
-exit 0
-fi
-exit 1
+chmod 755 "$5"
 `
 	if err := os.WriteFile(fakeGo, []byte(fakeGoScript), 0o755); err != nil {
 		t.Fatalf("WriteFile(fake go) error = %v", err)
@@ -494,8 +553,8 @@ exit 1
 	env := append(os.Environ(),
 		"HOME="+tmp,
 		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"DETENT_GITHUB_API_BASE="+server.URL,
-		"DETENT_RELEASE_DOWNLOAD_BASE="+server.URL,
+		"DETENT_GITHUB_API_BASE="+releaseURL,
+		"DETENT_RELEASE_DOWNLOAD_BASE="+releaseURL,
 		"DETENT_INSTALL_DIR="+installDir,
 		"DETENT_INSTALL_MODE=release",
 		"DETENT_STATE_DIR="+stateDir,
@@ -517,18 +576,23 @@ exit 1
 	if err != nil {
 		t.Fatalf("installed fallback binary error = %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
 	}
-	if stdout != "go-install-ok\n" {
-		t.Fatalf("installed fallback binary stdout = %q, want go-install-ok", stdout)
+	if stdout != "prepared-source-ok\n" {
+		t.Fatalf("installed fallback binary stdout = %q, want prepared-source-ok", stdout)
 	}
 }
 
 func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	root, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd() error = %v", err)
 	}
 
 	tmp := t.TempDir()
+	root = isolatedInstallCheckout(t, root, filepath.Join(tmp, "checkout"))
 	installDir := filepath.Join(tmp, "bin")
 	stateDir := filepath.Join(tmp, "state")
 	env := append(os.Environ(),
@@ -573,28 +637,80 @@ func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 	runInstalledSubcommands(t, binary, tmp, serverEnv)
 }
 
-func detentArchive(t *testing.T, content string) []byte {
+func isolatedInstallCheckout(t *testing.T, source string, checkout string) string {
 	t.Helper()
 
+	clone := exec.CommandContext(t.Context(), "git", "clone", "--shared", "--no-checkout", "--", source, checkout)
+	if output, err := clone.CombinedOutput(); err != nil {
+		t.Fatalf("clone install checkout: %v\n%s", err, output)
+	}
+	files := exec.CommandContext(t.Context(), "git", "ls-files", "-z")
+	files.Dir = source
+	output, err := files.Output()
+	if err != nil {
+		t.Fatalf("list install source: %v", err)
+	}
+	for _, name := range strings.Split(string(output), "\x00") {
+		if name == "" {
+			continue
+		}
+		path := filepath.Join(source, name)
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(checkout, name)
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(link, target); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, content, info.Mode().Perm()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return checkout
+}
+
+func detentArchive(t *testing.T, content string) []byte {
+	t.Helper()
+	return tarArchive(t, map[string]string{"detent": content})
+}
+
+func tarArchive(t *testing.T, files map[string]string) []byte {
+	t.Helper()
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
-	header := &tar.Header{
-		Name: "detent",
-		Mode: 0o755,
-		Size: int64(len(content)),
-	}
-	if err := tw.WriteHeader(header); err != nil {
-		t.Fatalf("WriteHeader() error = %v", err)
-	}
-	if _, err := tw.Write([]byte(content)); err != nil {
-		t.Fatalf("Write() error = %v", err)
+	for name, content := range files {
+		header := &tar.Header{Name: name, Mode: 0o755, Size: int64(len(content))}
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := tw.Close(); err != nil {
-		t.Fatalf("tar Close() error = %v", err)
+		t.Fatal(err)
 	}
 	if err := gz.Close(); err != nil {
-		t.Fatalf("gzip Close() error = %v", err)
+		t.Fatal(err)
 	}
 	return buf.Bytes()
 }
@@ -819,6 +935,10 @@ func TestInstallerActivityContextCancellation(t *testing.T) {
 }
 
 func TestInstallerCommandActivityRenewsDuringDelayedCompletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	timer := newControlledInstallerActivityTimer()
@@ -875,6 +995,10 @@ func TestInstallerCommandActivityRenewsDuringDelayedCompletion(t *testing.T) {
 }
 
 func TestRunInstallerCommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -1452,8 +1576,8 @@ func runInstalledSubcommands(t *testing.T, binary string, root string, env []str
 		if project.ID != "detent" || project.Workflow != workflowPath || project.Workdir != projectDir {
 			t.Fatalf("project = %#v, want installed detent project", project)
 		}
-		if project.Weight != 2 || project.Priority != 4 {
-			t.Fatalf("project scheduling = weight %d priority %d, want 2/4", project.Weight, project.Priority)
+		if project.Weight != 1 || project.Priority != 0 {
+			t.Fatalf("project scheduling = weight %d priority %d, want 1/0", project.Weight, project.Priority)
 		}
 	})
 
@@ -1473,16 +1597,13 @@ func runInstalledSubcommands(t *testing.T, binary string, root string, env []str
 
 	runDetentCommand(t, binary, workdir, env, "--config", configPath, "promote", "detent", "--priority", "1")
 	assertInstalledProject(t, configPath, func(project globalconfig.Project) {
-		if project.Priority != 1 {
-			t.Fatalf("project Priority = %d, want 1", project.Priority)
+		if project.Priority != 0 {
+			t.Fatalf("project Priority = %d, want 0", project.Priority)
 		}
 	})
 
 	runDetentCommand(t, binary, workdir, env, "--config", configPath, "remove-project", "detent")
-	cfg, err := globalconfig.Read(configPath)
-	if err != nil {
-		t.Fatalf("Read() error = %v", err)
-	}
+	cfg := readInstalledConfiguration(t, configPath)
 	if len(cfg.Projects) != 0 {
 		t.Fatalf("Projects = %#v, want none", cfg.Projects)
 	}
@@ -1523,7 +1644,7 @@ func assertInstalledVersionMetadata(t *testing.T, binary string, root string, en
 	if !ok {
 		t.Skip("git metadata unavailable")
 	}
-	wantCommit, ok := gitOutput(t, root, "rev-parse", "--short", "HEAD")
+	wantCommit, ok := gitOutput(t, root, "rev-parse", "HEAD")
 	if !ok {
 		t.Skip("git metadata unavailable")
 	}
@@ -1577,14 +1698,34 @@ func gitOutput(t *testing.T, root string, args ...string) (string, bool) {
 func assertInstalledProject(t *testing.T, configPath string, check func(globalconfig.Project)) {
 	t.Helper()
 
-	cfg, err := globalconfig.Read(configPath)
-	if err != nil {
-		t.Fatalf("Read() error = %v", err)
-	}
+	cfg := readInstalledConfiguration(t, configPath)
 	if len(cfg.Projects) != 1 {
 		t.Fatalf("Projects length = %d, want 1", len(cfg.Projects))
 	}
 	check(cfg.Projects[0])
+}
+
+func readInstalledConfiguration(t *testing.T, configPath string) globalconfig.Config {
+	t.Helper()
+
+	cfg, err := globalconfig.Read(configPath)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	settings, err := store.Open(t.Context(), store.Config{Path: filepath.Join(filepath.Dir(configPath), "detent.db")})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer func() {
+		if err := settings.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	cfg, err = settings.LocalConfiguration(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("LocalConfiguration() error = %v", err)
+	}
+	return cfg
 }
 
 func gateWorkflowContent() string {

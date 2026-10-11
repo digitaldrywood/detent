@@ -23,6 +23,7 @@ import {
 } from "../../../components/ui/collapsible.tsx";
 import { cn } from "../../../lib/utils.ts";
 import { Markdown } from "../../components/Markdown.tsx";
+import { attachmentInputHandlers, useAttachmentDraft } from "./AttachmentEditor.tsx";
 import {
   type ActivityGroup,
   type ActivityIcon,
@@ -60,16 +61,23 @@ function RowGlyph({ icon }: { readonly icon: ActivityIcon }): React.ReactElement
   );
 }
 
-function EventRow({ row }: { readonly row: ActivityRow }): React.ReactElement {
+function activityId(row: ActivityRow): string {
+  return `issue-${row.key.replace(/:claimed$/, "").replace(/:ended$/, "-ended").replace(":", "-")}`;
+}
+
+function EventRow({ row, highlighted = false }: { readonly row: ActivityRow; readonly highlighted?: boolean }): React.ReactElement {
   return (
     <li
+      id={activityId(row)}
+      data-citation-highlight={highlighted ? "true" : undefined}
       data-testid="issue-activity-row"
       data-activity-icon={row.icon}
-      className="flex items-center gap-3 py-1 text-[13px]"
+      className={cn("flex items-center gap-3 rounded-md py-1 text-[13px]", highlighted && "bg-primary/10 ring-2 ring-primary")}
     >
       <RowGlyph icon={row.icon} />
       <p className="min-w-0 text-muted-foreground">
         <span className="font-medium text-foreground">{row.actor}</span> {row.sentence}
+        {highlighted && row.reason !== undefined ? <span className="text-foreground"> · {row.reason}</span> : null}
         {timeLabel(row.at) === "" ? null : (
           <span className="text-muted-foreground/70"> · {timeLabel(row.at)}</span>
         )}
@@ -89,15 +97,22 @@ function CommentCard({
   row,
   onReply,
   posting,
+  highlighted = false,
+  projectId,
 }: {
   readonly row: ActivityRow;
-  readonly onReply: ((body: string) => void) | null;
+  readonly onReply: ((body: string) => void | Promise<void>) | null;
   readonly posting: boolean;
+  readonly highlighted?: boolean;
+  readonly projectId?: string | undefined;
 }): React.ReactElement {
   const [draft, setDraft] = React.useState("");
+  const upload = useAttachmentDraft(projectId ?? "", setDraft);
+  const input = React.useRef<HTMLInputElement>(null);
+  const [error, setError] = React.useState<string | null>(null);
   const comment = row.comment;
   return (
-    <li className="my-1.5" data-testid="issue-comment">
+    <li id={activityId(row)} data-citation-highlight={highlighted ? "true" : undefined} className={cn("my-1.5 rounded-md", highlighted && "bg-primary/10 ring-2 ring-primary")} data-testid="issue-comment">
       <article className="rounded-[var(--radius)] border border-border bg-card">
         <div className="px-3.5 py-3">
           <div className="flex items-center gap-2 text-[13px]">
@@ -105,17 +120,18 @@ function CommentCard({
             <span className="text-muted-foreground/70">{timeLabel(row.at)}</span>
           </div>
           <div className="mt-2 text-sm" data-testid="issue-comment-body">
-            <Markdown source={comment?.body ?? ""} />
+            <Markdown source={comment?.body ?? ""} projectId={projectId} />
           </div>
         </div>
         {onReply === null ? null : (
           <form
+            {...attachmentInputHandlers(upload.addFiles, posting)}
             className="flex items-center gap-2 border-border border-t px-3 py-2"
             onSubmit={(event) => {
               event.preventDefault();
-              if (draft.trim().length === 0 || posting) return;
-              onReply(draft.trim());
-              setDraft("");
+              if (draft.trim().length === 0 || posting || upload.uploading) return;
+              setError(null);
+              void Promise.resolve(onReply(draft.trim())).then(() => setDraft(""), (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
             }}
           >
             <input
@@ -126,16 +142,21 @@ function CommentCard({
               placeholder="Leave a reply…"
               className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground/70"
             />
+            {projectId === undefined ? null : <>
+              <input ref={input} type="file" multiple hidden data-testid="reply-attachment-input" onChange={(event) => { upload.addFiles(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ""; }} />
+              <Button type="button" variant="ghost" size="icon-xs" aria-label="Attach files to reply" disabled={posting} onClick={() => input.current?.click()}><PaperclipIcon /></Button>
+            </>}
             <Button
               type="submit"
               size="xs"
               variant="outline"
-              disabled={draft.trim().length === 0 || posting}
+              disabled={draft.trim().length === 0 || posting || upload.uploading}
             >
               Reply
             </Button>
           </form>
         )}
+        {[...upload.errors, ...(error === null ? [] : [error])].map((message, index) => <p key={index} role="alert" className="px-3 text-sm text-destructive">{message}</p>)}
       </article>
     </li>
   );
@@ -252,18 +273,26 @@ export function LiveRow(props: LiveRowProps): React.ReactElement {
 }
 
 export interface ActivityFeedProps {
+  readonly projectId?: string | undefined;
   readonly rows: readonly ActivityRow[];
   /** The live row, rendered in its own place in time. Null with no conversation. */
   readonly live: React.ReactElement | null;
   /** Where the live row sits: the epoch millisecond it belongs to. */
   readonly liveAt: number;
   /** Null for a reader who may not write. */
-  readonly onReply: ((body: string) => void) | null;
+  readonly onReply: ((body: string) => void | Promise<void>) | null;
   readonly posting: boolean;
+  readonly highlightedId?: string | null;
 }
 
 export function ActivityFeed(props: ActivityFeedProps): React.ReactElement {
-  const groups = React.useMemo(() => foldActivity(props.rows), [props.rows]);
+  const groups = React.useMemo(() => foldActivity(props.rows).flatMap((group): ActivityGroup[] =>
+    group.kind === "fold" && group.rows.some((row) => activityId(row) === props.highlightedId)
+      ? group.rows.map((row) => ({ kind: "row", key: row.key, row })) : [group]), [props.rows, props.highlightedId]);
+  React.useEffect(() => {
+    if (props.highlightedId == null) return;
+    document.getElementById(props.highlightedId)?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+  }, [props.highlightedId, groups]);
   const before: ActivityGroup[] = [];
   const after: ActivityGroup[] = [];
   for (const group of groups) {
@@ -276,13 +305,15 @@ export function ActivityFeed(props: ActivityFeedProps): React.ReactElement {
       <FoldRow key={group.key} rows={group.rows} />
     ) : group.row.kind === "comment" ? (
       <CommentCard
+        projectId={props.projectId}
         key={group.key}
         row={group.row}
         onReply={props.onReply}
         posting={props.posting}
+        highlighted={activityId(group.row) === props.highlightedId}
       />
     ) : (
-      <EventRow key={group.key} row={group.row} />
+      <EventRow key={group.key} row={group.row} highlighted={activityId(group.row) === props.highlightedId} />
     );
 
   return (

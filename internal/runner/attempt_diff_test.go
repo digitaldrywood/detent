@@ -43,6 +43,10 @@ func attemptDiffFind(files []tracker.AttemptDiffFile, path string) (tracker.Atte
 // The source reports the base it diffed against, the worktree head, and every
 // changed file with its status, counts and patch.
 func TestAttemptDiffSourceComputesWorktreeDiff(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	isolateAttemptDiffGitConfig(t)
 	source := initRunnerSourceRepo(t)
 	base := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
@@ -122,6 +126,10 @@ func TestAttemptDiffSourceReportsNothingWhenUnreadable(t *testing.T) {
 // A diff whose patch output exceeds the bound keeps its counts and loses every
 // patch, rather than posting a patch set that stops partway through.
 func TestAttemptDiffSourceStripsPatchesWhenTruncated(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	source := initRunnerSourceRepo(t)
 	base := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
@@ -167,6 +175,10 @@ func isolateAttemptDiffGitConfig(t *testing.T) {
 // A native run has no pull request base. Its committed work is the change, so
 // the diff is taken against the commit the run started from, not HEAD.
 func TestAttemptDiffSourceWithoutBaseRefKeepsCommittedWork(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	isolateAttemptDiffGitConfig(t)
 	source := initRunnerSourceRepo(t)
 	start := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))

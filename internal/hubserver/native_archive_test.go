@@ -24,17 +24,13 @@ func seedArchiveIssues(t *testing.T, service *Service, scope nativeScope, count 
 	defer tx.Rollback()
 	issues := make([]tracker.NativeIssue, 0, count)
 	for i := range count {
-		created, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: fmt.Sprintf("Seed %d", i), Body: "Preserved body", State: state}, time.Now())
+		issue, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: fmt.Sprintf("Seed %d", i), Body: nativeContractTestBody, State: state}, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
-		issue, ok := created.(tracker.NativeIssue)
-		if !ok {
-			t.Fatalf("created %T", created)
-		}
 		issues = append(issues, issue)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
 	return issues
@@ -46,7 +42,7 @@ func archiveRequest(issue tracker.NativeIssue, key string) archiveIssueRequest {
 
 func TestNativeArchiveLifecycle(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "archive")
+	f := newDefaultNativeFixture(t, Config{})
 	issue := f.create(t, "History retained")
 	path := f.base + "/work-items/" + string(issue.WorkItemID)
 	response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, map[string]any{"idempotency_key": "comment", "body": "Retained comment"})
@@ -127,7 +123,7 @@ func TestNativeArchiveActiveWork(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newNativeFixture(t, nil, "", "active-archive")
+			f := newDefaultNativeFixture(t, Config{})
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			issue := f.create(t, "Active work")
 			worker := f.worker(t, "worker")
@@ -309,7 +305,7 @@ func TestHostedIssueConcurrentAllocation(t *testing.T) {
 
 func TestNativeArchiveSelfHostedNoQuota(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "unlimited")
+	f := newDefaultNativeFixture(t, Config{})
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
 	seedArchiveIssues(t, f.service, scope, 201, "Done")
 	issue := f.create(t, "Beyond hosted allowance")

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,9 +33,7 @@ import (
 
 const (
 	defaultAPIBase           = "https://api.github.com/repos/digitaldrywood/detent"
-	moduleInstallPackage     = "github.com/digitaldrywood/detent/cmd/detent"
-	moduleInstallTarget      = moduleInstallPackage + "@latest"
-	moduleInstallCommand     = "go install " + moduleInstallTarget
+	sourceUpdateCommand      = "detent update --from-release"
 	homebrewUpdateCommand    = "brew upgrade digitaldrywood/tap/detent"
 	defaultChecksumName      = "checksums.txt"
 	provenanceAssetName      = "detent_release_provenance.json"
@@ -99,11 +98,11 @@ type ReleaseAssets struct {
 
 type ReleaseClient interface {
 	ListReleases(context.Context) ([]Release, error)
+	GetRelease(context.Context, string) (Release, error)
 	Download(context.Context, string) ([]byte, error)
 }
 
 type ProcessStarter func(context.Context, string, []string) error
-type CommandRunner func(context.Context, string, []string, io.Writer, io.Writer) error
 type BinaryVerifier func(context.Context, string) (string, error)
 type BinaryPreflight func(context.Context, string) error
 type BinarySigner func(context.Context, string) error
@@ -154,9 +153,25 @@ func (c *GitHubClient) ListReleases(ctx context.Context) ([]Release, error) {
 }
 
 func (c *GitHubClient) listReleases(ctx context.Context, token string) ([]Release, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBase+"/releases?per_page=20", nil)
+	var releases []Release
+	err := c.releaseRequest(ctx, "/releases?per_page=20", token, &releases)
+	return releases, err
+}
+
+func (c *GitHubClient) GetRelease(ctx context.Context, tag string) (Release, error) {
+	var release Release
+	path := "/releases/tags/" + url.PathEscape(tag)
+	err := c.releaseRequest(ctx, path, c.token, &release)
+	if err != nil && c.token != "" && isGitHubAuthStatusError(err) {
+		err = c.releaseRequest(ctx, path, "", &release)
+	}
+	return release, err
+}
+
+func (c *GitHubClient) releaseRequest(ctx context.Context, path string, token string, output any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBase+path, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create releases request: %w", err)
+		return fmt.Errorf("create release request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", defaultRequestUserAgent)
@@ -166,18 +181,17 @@ func (c *GitHubClient) listReleases(ctx context.Context, token string) ([]Releas
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("list releases: %w", err)
+		return fmt.Errorf("read release: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("list releases: GitHub returned %s", resp.Status)
+		return fmt.Errorf("read release: GitHub returned %s", resp.Status)
 	}
 
-	var releases []Release
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
-		return nil, fmt.Errorf("decode releases: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(output); err != nil {
+		return fmt.Errorf("decode release: %w", err)
 	}
-	return releases, nil
+	return nil
 }
 
 func isGitHubAuthStatusError(err error) bool {
@@ -245,24 +259,27 @@ func DetectInstallSource(opts DetectionOptions) InstallInfo {
 		realExecutable = cleanPath(real, goos)
 	}
 
-	if isHomebrewPath(executable) || isHomebrewPath(realExecutable) {
-		return InstallInfo{
-			Source:  InstallSourceHomebrew,
-			Command: homebrewUpdateCommand,
-			Binary:  opts.ExecutablePath,
+	receiptMatches := releaseLockMatches(executable, realExecutable, goos, opts)
+	if explicitInstallLockPath(opts) == "" || receiptMatches {
+		if isHomebrewPath(executable) || isHomebrewPath(realExecutable) {
+			return InstallInfo{
+				Source:  InstallSourceHomebrew,
+				Command: homebrewUpdateCommand,
+				Binary:  opts.ExecutablePath,
+			}
 		}
-	}
-	if releaseLockMatches(executable, realExecutable, goos, opts) || windowsInstallerPathMatches(executable, goos, opts) {
-		return InstallInfo{
-			Source: InstallSourceRelease,
-			Binary: opts.ExecutablePath,
+		if receiptMatches || windowsInstallerPathMatches(executable, goos, opts) {
+			return InstallInfo{
+				Source: InstallSourceRelease,
+				Binary: opts.ExecutablePath,
+			}
 		}
-	}
-	if isGoInstallPath(executable, goos, opts.HomeDir, opts.Env) || isGoInstallPath(realExecutable, goos, opts.HomeDir, opts.Env) {
-		return InstallInfo{
-			Source:  InstallSourceGoInstall,
-			Command: moduleInstallCommand,
-			Binary:  opts.ExecutablePath,
+		if isGoInstallPath(executable, goos, opts.HomeDir, opts.Env) || isGoInstallPath(realExecutable, goos, opts.HomeDir, opts.Env) {
+			return InstallInfo{
+				Source:  InstallSourceGoInstall,
+				Command: sourceUpdateCommand,
+				Binary:  opts.ExecutablePath,
+			}
 		}
 	}
 	if IsDevelopmentVersion(opts.CurrentVersion) {
@@ -294,7 +311,6 @@ type Config struct {
 	GOOS                      string
 	GOARCH                    string
 	Client                    ReleaseClient
-	CommandRunner             CommandRunner
 	BinaryVerifier            BinaryVerifier
 	BinarySigner              BinarySigner
 	ChecksumSignatureVerifier ChecksumSignatureVerifier
@@ -308,6 +324,9 @@ type Service struct {
 }
 
 type ApplyOptions struct {
+	ExpectedVersion       string
+	Urgent                bool
+	FollowHub             bool
 	AssumeYes             bool
 	FromRelease           bool
 	Confirm               func(Status) (bool, error)
@@ -345,18 +364,22 @@ type Replacement struct {
 }
 
 type Status struct {
-	CurrentVersion  string        `json:"current_version"`
-	LatestCommit    string        `json:"latest_commit,omitempty"`
-	LatestVersion   string        `json:"latest_version,omitempty"`
-	LatestTag       string        `json:"latest_tag,omitempty"`
-	UpdateAvailable bool          `json:"update_available"`
-	InstallSource   InstallSource `json:"install_source"`
-	Action          Action        `json:"action"`
-	Message         string        `json:"message,omitempty"`
-	Command         string        `json:"command,omitempty"`
-	Binary          string        `json:"binary,omitempty"`
-	Asset           string        `json:"asset,omitempty"`
-	Critical        bool          `json:"critical,omitempty"`
+	FailureReason      string        `json:"failure_reason,omitempty"`
+	ReplacementPending bool          `json:"replacement_pending,omitempty"`
+	BinarySHA256       string        `json:"binary_sha256,omitempty"`
+	VerifiedRelease    bool          `json:"verified_release"`
+	CurrentVersion     string        `json:"current_version"`
+	LatestCommit       string        `json:"latest_commit,omitempty"`
+	LatestVersion      string        `json:"latest_version,omitempty"`
+	LatestTag          string        `json:"latest_tag,omitempty"`
+	UpdateAvailable    bool          `json:"update_available"`
+	InstallSource      InstallSource `json:"install_source"`
+	Action             Action        `json:"action"`
+	Message            string        `json:"message,omitempty"`
+	Command            string        `json:"command,omitempty"`
+	Binary             string        `json:"binary,omitempty"`
+	Asset              string        `json:"asset,omitempty"`
+	Critical           bool          `json:"critical,omitempty"`
 }
 
 func NewService(cfg Config) *Service {
@@ -368,9 +391,6 @@ func NewService(cfg Config) *Service {
 	}
 	if cfg.Client == nil {
 		cfg.Client = NewGitHubClient(GitHubClientConfig{})
-	}
-	if cfg.CommandRunner == nil {
-		cfg.CommandRunner = runCommand
 	}
 	if cfg.BinaryVerifier == nil {
 		cfg.BinaryVerifier = verifyBinaryVersion
@@ -390,9 +410,22 @@ func (s *Service) Check(ctx context.Context) (Status, error) {
 }
 
 func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) {
-	status, release, err := s.plan(ctx)
+	target := ""
+	if opts.Urgent || opts.FollowHub {
+		if opts.ExpectedVersion == "" {
+			return Status{Action: ActionRefused, FailureReason: "Update target resolution failed"}, ErrRefused
+		}
+		target = opts.ExpectedVersion
+	}
+	status, release, err := s.planForVersion(ctx, target, opts.FollowHub)
 	if err != nil {
+		status.FailureReason = "Update target resolution failed"
 		return status, err
+	}
+	if opts.ExpectedVersion != "" && opts.ExpectedVersion != status.LatestVersion {
+		status.Action = ActionRefused
+		status.FailureReason = "Update was refused"
+		return status, ErrRefused
 	}
 	if !status.UpdateAvailable {
 		status.Action = ActionUpToDate
@@ -402,20 +435,25 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 
 	switch status.InstallSource {
 	case InstallSourceHomebrew:
+		if opts.FollowHub {
+			return s.applyReleaseUpdate(ctx, status, release, opts, true, false)
+		}
 		status.Action = ActionDelegate
 		status.Command = homebrewUpdateCommand
 		status.Message = "Homebrew-managed Detent install detected. Run the Homebrew upgrade command."
 		return status, nil
 	case InstallSourceRelease:
 	case InstallSourceGoInstall:
-		status.Command = moduleInstallCommand
+		status.Command = sourceUpdateCommand
 		return s.applyGoInstallUpdate(ctx, status, release, opts)
 	case InstallSourceDevelopment:
 		status.Action = ActionRefused
+		status.FailureReason = "Update was refused"
 		status.Message = "This Detent binary does not include release version metadata. Install a published release before using self-update."
 		return status, ErrRefused
 	default:
 		status.Action = ActionRefused
+		status.FailureReason = "Update was refused"
 		status.Message = "Detent cannot verify that this binary was installed by the release installer, so it will not overwrite it."
 		return status, ErrRefused
 	}
@@ -423,17 +461,20 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 	if !opts.AssumeYes && !opts.FromRelease {
 		if opts.Confirm == nil {
 			status.Action = ActionRefused
+			status.FailureReason = "Update was refused"
 			status.Message = "Update requires confirmation. Rerun with --yes to update non-interactively."
 			return status, ErrConfirmationRequired
 		}
 		confirmed, err := opts.Confirm(status)
 		if err != nil {
 			status.Action = ActionRefused
+			status.FailureReason = "Update was refused"
 			status.Message = err.Error()
 			return status, err
 		}
 		if !confirmed {
 			status.Action = ActionRefused
+			status.FailureReason = "Update was refused"
 			status.Message = "Update cancelled."
 			return status, ErrConfirmationRequired
 		}
@@ -443,7 +484,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 }
 
 func (s *Service) applyGoInstallUpdate(ctx context.Context, status Status, release Release, opts ApplyOptions) (Status, error) {
-	status.Command = goInstallCommand(status)
+	status.Command = sourceUpdateCommand
 	action, err := goInstallAction(status, opts)
 	if err != nil {
 		status.Action = ActionRefused
@@ -453,7 +494,9 @@ func (s *Service) applyGoInstallUpdate(ctx context.Context, status Status, relea
 
 	switch action {
 	case GoInstallActionRun:
-		return s.runGoInstallUpdate(ctx, status, opts)
+		status.Action = ActionRefused
+		status.Message = "Go module archives no longer contain the conversation assets. Build the prepared release source archive with Go, or run detent update --from-release."
+		return status, ErrRefused
 	case GoInstallActionRelease:
 		return s.applyReleaseUpdate(ctx, status, release, opts, true, opts.FromRelease)
 	case GoInstallActionAbort:
@@ -475,36 +518,9 @@ func goInstallAction(status Status, opts ApplyOptions) (GoInstallAction, error) 
 		return GoInstallActionRun, nil
 	}
 	if opts.SelectGoInstallAction == nil {
-		return GoInstallActionAbort, fmt.Errorf("%w: this Detent binary appears to be managed by go install. Rerun with --yes to run go install, or --from-release to switch to the release binary", ErrConfirmationRequired)
+		return GoInstallActionAbort, fmt.Errorf("%w: this Detent binary appears to be managed by go install. Build the prepared release source archive with Go, or rerun with --from-release to switch to the release binary", ErrConfirmationRequired)
 	}
 	return opts.SelectGoInstallAction(status)
-}
-
-func (s *Service) runGoInstallUpdate(ctx context.Context, status Status, opts ApplyOptions) (Status, error) {
-	target := goInstallTarget(status)
-	status.Command = "go install " + target
-	if err := s.cfg.CommandRunner(ctx, "go", []string{"install", target}, outputWriter(opts.Stdout), outputWriter(opts.Stderr)); err != nil {
-		status.Action = ActionRefused
-		status.Message = fmt.Sprintf("go install failed: %v", err)
-		return status, err
-	}
-
-	versionOutput, err := s.cfg.BinaryVerifier(ctx, s.cfg.ExecutablePath)
-	if err != nil {
-		status.Action = ActionRefused
-		status.Message = fmt.Sprintf("go install completed, but verifying Detent failed: %v", err)
-		return status, err
-	}
-	installed := installedVersion(status, versionOutput)
-	if err := verifyInstalledVersion(status, installed); err != nil {
-		status.Action = ActionRefused
-		status.Message = fmt.Sprintf("go install completed, but installed Detent version is not the planned update: %v", err)
-		return status, err
-	}
-
-	status.Action = ActionUpdated
-	status.Message = goInstallAppliedMessage(status, installed)
-	return status, nil
 }
 
 func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release Release, opts ApplyOptions, releaseSwap bool, emitWarning bool) (Status, error) {
@@ -516,12 +532,14 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		}
 	}
 
+	status.FailureReason = "Update target resolution failed"
 	assets, err := SelectReleaseAssets(release, s.cfg.GOOS, s.cfg.GOARCH)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, err
 	}
+	status.FailureReason = "Update download failed"
 	checksums, err := s.cfg.Client.Download(ctx, assets.Checksum.BrowserDownloadURL)
 	if err != nil {
 		status.Action = ActionRefused
@@ -534,17 +552,20 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		status.Message = err.Error()
 		return status, err
 	}
+	status.FailureReason = "Update signature verification failed"
 	if err := s.cfg.ChecksumSignatureVerifier(ctx, checksums, checksumSignature); err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, err
 	}
+	status.FailureReason = "Update download failed"
 	provenanceBytes, err := s.cfg.Client.Download(ctx, assets.Provenance.BrowserDownloadURL)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, err
 	}
+	status.FailureReason = "Update provenance verification failed"
 	if err := VerifyChecksum(checksums, assets.Provenance.Name, provenanceBytes); err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
@@ -557,18 +578,21 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		return status, err
 	}
 	status.LatestCommit = manifest.Commit
+	status.FailureReason = "Update download failed"
 	archive, err := s.cfg.Client.Download(ctx, assets.Archive.BrowserDownloadURL)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, err
 	}
+	status.FailureReason = "Update checksum verification failed"
 	if err := VerifyChecksum(checksums, assets.Archive.Name, archive); err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, err
 	}
 
+	status.FailureReason = "Update installation failed"
 	binary, mode, err := ExtractBinary(archive, s.cfg.GOOS)
 	if err != nil {
 		status.Action = ActionRefused
@@ -627,6 +651,20 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		return status, err
 	}
 
+	installed := binary
+	if s.cfg.GOOS == "windows" {
+		status.ReplacementPending = true
+	} else {
+		installed, err = os.ReadFile(s.cfg.ExecutablePath)
+		if err != nil {
+			status.Action = ActionUpdated
+			return status, err
+		}
+	}
+	sum := sha256.Sum256(installed)
+	status.BinarySHA256 = hex.EncodeToString(sum[:])
+	status.FailureReason = ""
+	status.VerifiedRelease = true
 	status.Action = ActionUpdated
 	status.Asset = assets.Archive.Name
 	status.Message = updateAppliedMessage(status, s.cfg.GOOS, releaseSwap)
@@ -634,6 +672,10 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 }
 
 func (s *Service) plan(ctx context.Context) (Status, Release, error) {
+	return s.planForVersion(ctx, "", false)
+}
+
+func (s *Service) planForVersion(ctx context.Context, target string, exact bool) (Status, Release, error) {
 	info := DetectInstallSource(DetectionOptions{
 		CurrentVersion: s.cfg.CurrentVersion,
 		ExecutablePath: s.cfg.ExecutablePath,
@@ -649,25 +691,19 @@ func (s *Service) plan(ctx context.Context) (Status, Release, error) {
 		Binary:         s.cfg.ExecutablePath,
 	}
 
-	if IsDevelopmentVersion(s.cfg.CurrentVersion) {
+	if IsDevelopmentVersion(s.cfg.CurrentVersion) && (!exact || info.Source != InstallSourceRelease && info.Source != InstallSourceGoInstall && info.Source != InstallSourceHomebrew) {
 		status.Action = ActionRefused
 		switch info.Source {
 		case InstallSourceGoInstall:
-			status.Message = "This Detent binary appears to be managed by go install and does not include release metadata. Run the Go install command instead."
-			status.Command = moduleInstallCommand
+			status.Message = "This Detent binary appears to be managed by go install and does not include release metadata. Build the prepared release source archive with Go instead."
+			status.Command = ""
 		default:
 			status.Message = "This Detent binary does not include release version metadata. Install a published release before using self-update."
 		}
 		return status, Release{}, ErrRefused
 	}
 
-	releases, err := s.cfg.Client.ListReleases(ctx)
-	if err != nil {
-		status.Action = ActionRefused
-		status.Message = err.Error()
-		return status, Release{}, err
-	}
-	release, ok, err := SelectLatestRelease(s.cfg.CurrentVersion, releases)
+	release, ok, err := s.targetRelease(ctx, target, exact)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
@@ -683,12 +719,12 @@ func (s *Service) plan(ctx context.Context) (Status, Release, error) {
 	status.LatestVersion = displayVersion(release.TagName)
 	status.Critical = releaseCritical(release)
 	cmp, err := CompareVersions(release.TagName, s.cfg.CurrentVersion)
-	if err != nil {
+	if err != nil && (!exact || !IsDevelopmentVersion(s.cfg.CurrentVersion)) {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, Release{}, err
 	}
-	status.UpdateAvailable = cmp > 0
+	status.UpdateAvailable = cmp > 0 || exact && (cmp != 0 || err != nil)
 	if status.UpdateAvailable {
 		status.Action = ActionAvailable
 		status.Message = fmt.Sprintf("Detent %s can be updated to %s.", status.CurrentVersion, status.LatestVersion)
@@ -697,6 +733,33 @@ func (s *Service) plan(ctx context.Context) (Status, Release, error) {
 		status.Message = fmt.Sprintf("Detent %s is up to date.", status.CurrentVersion)
 	}
 	return status, release, nil
+}
+
+func (s *Service) targetRelease(ctx context.Context, target string, exact bool) (Release, bool, error) {
+	if target == "" {
+		releases, err := s.cfg.Client.ListReleases(ctx)
+		if err != nil {
+			return Release{}, false, err
+		}
+		return SelectLatestRelease(s.cfg.CurrentVersion, releases)
+	}
+	target = strings.TrimSpace(target)
+	cmp, err := CompareVersions(target, s.cfg.CurrentVersion)
+	if _, targetErr := CompareVersions(target, target); targetErr != nil || err != nil && !exact {
+		return Release{}, false, fmt.Errorf("invalid Hub update target: %w", errors.Join(err, targetErr))
+	}
+	tag := "v" + strings.TrimPrefix(target, "v")
+	if !exact && cmp <= 0 || exact && err == nil && cmp == 0 {
+		return Release{TagName: tag}, true, nil
+	}
+	release, err := s.cfg.Client.GetRelease(ctx, tag)
+	if err != nil {
+		return Release{}, false, err
+	}
+	if release.Draft || release.TagName != tag {
+		return Release{}, false, fmt.Errorf("hub update target %s did not resolve to its published release", tag)
+	}
+	return release, true, nil
 }
 
 func releaseCritical(release Release) bool {
@@ -1211,16 +1274,6 @@ func startProcess(ctx context.Context, command string, args []string) error {
 	return exec.CommandContext(ctx, command, args...).Start() // #nosec G204 -- updater commands and arguments are resolved internally and bypass a shell.
 }
 
-func runCommand(ctx context.Context, command string, args []string, stdout io.Writer, stderr io.Writer) error {
-	cmd := exec.CommandContext(ctx, command, args...) // #nosec G204 -- updater commands and arguments are resolved internally and bypass a shell.
-	cmd.Stdout = outputWriter(stdout)
-	cmd.Stderr = outputWriter(stderr)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("run %s: %w", strings.Join(append([]string{command}, args...), " "), err)
-	}
-	return nil
-}
-
 func verifyBinaryVersion(ctx context.Context, path string) (string, error) {
 	cmd := exec.CommandContext(ctx, path, "version") // #nosec G204 -- the downloaded binary path is verified before installation and bypasses a shell.
 	output, err := cmd.CombinedOutput()
@@ -1356,26 +1409,6 @@ func updateAppliedMessage(status Status, goos string, releaseSwap bool) string {
 	return fmt.Sprintf("Updated Detent from %s to %s. %s", status.CurrentVersion, status.LatestVersion, restartNote())
 }
 
-func goInstallAppliedMessage(status Status, installed string) string {
-	return fmt.Sprintf("Ran %s. Installed Detent version: %s. %s", status.Command, installed, restartNote())
-}
-
-func goInstallCommand(status Status) string {
-	return "go install " + goInstallTarget(status)
-}
-
-func goInstallTarget(status Status) string {
-	tag := strings.TrimSpace(status.LatestTag)
-	if tag == "" {
-		return moduleInstallTarget
-	}
-	version, err := parseVersion(tag)
-	if err != nil || len(version.prerelease) == 0 {
-		return moduleInstallTarget
-	}
-	return moduleInstallPackage + "@" + tag
-}
-
 func verifyInstalledVersion(status Status, installed string) error {
 	expected := firstNonEmpty(status.LatestTag, status.LatestVersion)
 	if expected == "" {
@@ -1389,23 +1422,6 @@ func verifyInstalledVersion(status Status, installed string) error {
 		return fmt.Errorf("installed version %s does not match expected %s", installed, expected)
 	}
 	return nil
-}
-
-func installedVersion(status Status, versionOutput string) string {
-	for line := range strings.SplitSeq(versionOutput, "\n") {
-		key, value, ok := strings.Cut(line, ":")
-		if ok && strings.EqualFold(strings.TrimSpace(key), "version") {
-			if version := strings.TrimSpace(value); version != "" {
-				return version
-			}
-		}
-	}
-	for line := range strings.SplitSeq(versionOutput, "\n") {
-		if value := strings.TrimSpace(line); value != "" {
-			return value
-		}
-	}
-	return firstNonEmpty(status.LatestVersion, status.LatestTag, "unknown")
 }
 
 func restartNote() string {
@@ -1817,14 +1833,21 @@ func releaseLockMatches(executable string, realExecutable string, goos string, o
 	return false
 }
 
-func installLockCandidates(goos string, opts DetectionOptions) []string {
-	var candidates []string
+func explicitInstallLockPath(opts DetectionOptions) string {
 	if lockPath := envValue(opts.Env, "DETENT_INSTALL_LOCK"); lockPath != "" {
-		candidates = append(candidates, lockPath)
+		return lockPath
 	}
 	if stateDir := envValue(opts.Env, "DETENT_STATE_DIR"); stateDir != "" {
-		candidates = append(candidates, filepath.Join(stateDir, "install.lock"))
+		return filepath.Join(stateDir, "install.lock")
 	}
+	return ""
+}
+
+func installLockCandidates(goos string, opts DetectionOptions) []string {
+	if lockPath := explicitInstallLockPath(opts); lockPath != "" {
+		return []string{lockPath}
+	}
+	var candidates []string
 	home := homeDir(opts.HomeDir, opts.Env)
 	if home != "" {
 		candidates = append(candidates, filepath.Join(home, ".detent", "install.lock"))
@@ -1925,11 +1948,8 @@ func snapshotInstallLock(goos string, opts DetectionOptions) (installLockSnapsho
 }
 
 func installLockPath(goos string, opts DetectionOptions) (string, bool) {
-	if lockPath := envValue(opts.Env, "DETENT_INSTALL_LOCK"); lockPath != "" {
+	if lockPath := explicitInstallLockPath(opts); lockPath != "" {
 		return lockPath, true
-	}
-	if stateDir := envValue(opts.Env, "DETENT_STATE_DIR"); stateDir != "" {
-		return filepath.Join(stateDir, "install.lock"), true
 	}
 	if goos == "windows" {
 		if localAppData := envValue(opts.Env, "LOCALAPPDATA"); localAppData != "" {

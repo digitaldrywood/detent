@@ -5,9 +5,9 @@ supported **customer-operated, free self-hosting** examples. They serve a single
 Hub at the customer's chosen origin with scoped bearer auth. Follow the
 [self-hosting runbook](../../hub-self-hosting.md) for installation, credentials,
 backup and recovery. They require no Detent subscription or billing connectivity.
-Changing their hostname to hub.detent.build does not create the shared product.
+Changing their hostname to cloud.detent.build does not create the shared product.
 
-The operator-hosted product has one public site at `https://hub.detent.build`,
+The operator-hosted product has one public site at `https://cloud.detent.build`,
 a shared identity/provisioning entry and metadata registry, and dedicated private
 tenant Hub processes with separate databases. All use the Detent binary; the
 entry role is additional work in #2341/#2342. The public reverse proxy forwards
@@ -15,6 +15,9 @@ to that entry service, never chooses a tenant with a URL rewrite. The entry uses
 [authenticated private routing](../../cloud-hub-rfc.md#shared-site-control-and-tenant-storage)
 and each tenant verifies its own immutable binding. This directory installs no
 shared-site service and authorizes no deployment, DNS/account change or purchase.
+
+The hosted hostname migration is tracked in the [Cloud domain runbook](../../cloud-domain-migration.md).
+Its provisioning results and pending browser cutover are recorded there.
 
 ## Configuration availability
 
@@ -34,16 +37,15 @@ allocation and billing blocks arrive with #2342/#2343.
 ## Shared entry
 
 `detent cloud serve` runs the shared entry on a loopback port behind the public
-TLS proxy (nginx or Caddy forwards `hub.detent.build` to it unchanged; it never
+TLS proxy (nginx or Caddy forwards `cloud.detent.build` to it unchanged; it never
 rewrites paths to choose a tenant). Its configuration:
 
 ```yaml
-public_url: https://hub.detent.build
+public_url: https://cloud.detent.build
 listen: 127.0.0.1:8017
 state_directory: /var/lib/detent/cloud
-staff_emails: []
-support_actors: []
-entitlement_administrators: []
+platform:
+  bootstrap_admin_email: operator@example.test
 assertion:
   issuer: detent-cloud
   signing_key_env: DETENT_CLOUD_ASSERTION_KEY
@@ -52,10 +54,21 @@ workos:
   api_key_env: WORKOS_API_KEY
 ```
 
-`entitlement_administrators` lists the staff who may grant and revoke
-complimentary plans from `/platform`; each must also appear in `staff_emails`,
-and the list requires `allocation.entitlement_admin_token_env`. The entry refuses
-to start otherwise. See [allowances](../../hosted-allowances.md#granting-from-the-platform-console).
+Platform membership lives in `registry.db`, independently of customer organization
+membership. Set `platform.bootstrap_admin_email` to the operator's verified email;
+startup restores this address to `admin`, and the members API cannot remove it.
+The entry requires this address or an existing registry admin to start.
+`admin` manages platform members and includes support and billing privileges;
+`support` can read the console and start support access; `billing` can read the
+console and grant or revoke complimentary plans; `viewer` can read the console.
+Complimentary plans also require `allocation.entitlement_admin_token_env`.
+See [allowances](../../hosted-allowances.md#granting-from-the-platform-console).
+
+The entry's `staff_emails`, `support_actors`, and `entitlement_administrators` are
+deprecated. They seed an empty registry: remaining staff become viewers, support
+actors become support members, entitlement administrators become billing members,
+and addresses in both privileged lists become admins. After seeding, only registry
+roles grant platform access; configured legacy lists produce one startup warning.
 
 `detent cloud assertion-key` prints a new signing seed and public key; put the seed
 in the entry's private environment and the public key in each tenant's
@@ -89,7 +102,6 @@ allocation:
   socket_root: /run/detent/tenants
   max_tenants: 20
   max_concurrent_provisions: 1
-  max_organizations_per_identity: 1
   retry_limit: 5
   min_free_disk_bytes: 2147483648
   min_available_memory_bytes: 536870912
@@ -100,13 +112,22 @@ allocation:
   entitlement_admin_token_env: DETENT_ENTITLEMENT_ADMIN_TOKEN
 ```
 
+Organization creation has no per-identity count limit. Each owner has one Free
+organization slot; paid, complimentary and legacy pilot organizations do not
+consume it. When the slot is used, creation requires a configured paid plan and
+continues to hosted checkout. Until payment succeeds, the new organization has
+no project or AI execution allowance. Allocation YAML uses strict field
+validation: remove the retired per-identity organization limit from older files
+before starting Cloud. `max_tenants` remains the operator capacity ceiling.
+
 `max_tenants` and the free-memory/disk floors are admission limits: a request that
 does not fit is stored as a retryable `capacity` failure before any provider or
 filesystem effect, and ready tenants are never disturbed. The memory floor reads Linux `MemAvailable`; where memory cannot be measured a configured floor refuses admission, so leave it at 0 on other platforms. Set the limits from measured
 tenant usage (#2308), not guesses. `allowed_domains`/`allowed_emails` bound a pilot;
 empty lists admit any verified account. `entitlements` is the tenant's
 [versioned plan catalog](../../hosted-allowances.md); its `base` plan is the free
-plan every new organization starts on, and no Stripe customer or card is created.
+plan a new organization starts on when its owner has an available Free slot;
+no Stripe customer or card is created for that organization.
 Left empty (`entitlements: {}`, an empty block, or no key at all), tenants use the
 capacity catalog: `free` as the base, with `starter`, `growth`, and `scale` paid
 versions. Legacy `pilot_free` and `comp_team` remain for existing assignments and grants.
@@ -125,8 +146,29 @@ operator can grant complimentary access on the shared deployment.
 For each organization the entry creates `tenant_root/ORG/` (mode 0700) holding the
 generated `tenant.yaml` (no secrets), `hub.db` and a private per-tenant Hub admin
 token, and runs `detent hub serve --hosted-config ... --listen unix:socket_root/ORG.sock`
-as a supervised child (restarted with backoff; stopped when the entry stops). A child
-that exits `retry_limit` times in a row without staying up for five minutes is no
+as a supervised child (restarted with backoff; stopped when the entry stops).
+The same supervisor checks the authenticated tenant health endpoint every five
+seconds. After 30 seconds without a successful check, including initial startup,
+it interrupts and reaps the child before using the existing restart backoff.
+The entry's `/health` returns 503 when its registry or authentication database is
+unavailable or any ready tenant fails its authenticated health check. Allocating,
+failed and deleted organizations are not expected to serve yet. The
+entry interrupts all children together and waits for their exit before releasing
+its own databases. A child has 15 seconds to exit before the launcher kills and
+reaps it. Keep all tenants in the entry's systemd cgroup: use `KillMode=mixed`
+with `TimeoutStopSec=45` (or longer), never `KillMode=process`. This gives the
+entry time to drain requests and join tenants while systemd retains final cgroup
+cleanup authority. Shared-entry tenants wait cancellably for a previous process
+to release their database ownership lock; same-process and live-sibling
+contention still fails immediately.
+
+The restricted release `deploy` command may use `systemctl restart` with these
+shutdown semantics, or stop, wait for the service cgroup to empty, then start.
+Release workflows run the hosted smoke test after deployment and stop promotion
+on failure. Verify repeated restarts with at least two serving tenants and all
+17 hosted smoke checks before accepting a rollout.
+
+A child that exits `retry_limit` times in a row without staying up for five minutes is no
 longer restarted: during setup the organization moves to `failed` with the reason
 shown on the provisioning screen and the platform console, and resuming setup
 starts it again. The
@@ -144,8 +186,15 @@ a failed signup.
 ### Backup and recovery
 
 Back up `state_directory/registry.db` and every `tenant_root/ORG/hub.db` together,
-with the entry and tenants quiesced or through each owner's online backup
-(`detent hub backup` for a stopped tenant). `auth.db` holds only sessions and login
+with the entry and tenants quiesced. `detent hub backup` is offline maintenance:
+it requires the owning tenant to be stopped even though it uses SQLite's backup
+API internally. A scheduled job using this path interrupts all production
+tenants from service stop until entry and tenant health recover. Stop and join
+the whole service cgroup using the shutdown semantics above, then verify the
+entry's `/health` after starting it. Do not copy live database and WAL files to
+avoid the outage; a backup without quiescing requires coordinated snapshots
+through the live database owners, which the shared entry does not expose.
+`auth.db` holds only sessions and login
 transactions and is not restored: a restore starts with no sessions, and every user
 signs in again. To restore one tenant, stop the entry, restore its `hub.db` with
 `detent hub restore`, and if its binding moved, re-register it with a higher
@@ -177,7 +226,7 @@ placeholder strings deliberately prevent treating this as a working deployment.
 schema: 1
 deployment:
   mode: operator_hosted
-public_url: https://hub.detent.build
+public_url: https://cloud.detent.build
 auth:
   provider: workos
   workos:
@@ -189,7 +238,6 @@ allocation:
   tenant_root: /var/lib/detent-tenants
   max_tenants: 2
   max_concurrent_provisions: 1
-  max_organizations_per_identity: 1
   memory_reserve_bytes: REPLACE_WITH_MEASURED_INTEGER
   tenant_memory_budget_bytes: REPLACE_WITH_MEASURED_INTEGER
   disk_reserve_bytes: REPLACE_WITH_MEASURED_INTEGER
@@ -241,8 +289,8 @@ or Stripe key. Never place secrets in the registry, command arguments or reports
 ## WorkOS and Stripe wiring
 
 The common WorkOS callback is exactly
-`https://hub.detent.build/auth/oidc/callback`, with User invitation URL
-`https://hub.detent.build/invite`. Every organization uses these values. Configure
+`https://cloud.detent.build/auth/oidc/callback`, with User invitation URL
+`https://cloud.detent.build/invite`. Every organization uses these values. Configure
 client ID, API key and issuer from the same provider environment. See
 [identity setup](../../hosted-identity.md#workos-application-setup) for invitation
 verification and staging separation. Existing-origin migration must use the
@@ -269,10 +317,10 @@ billing:
 ```
 
 `test` is the billing default, never inferred from auth. Its exact webhook is
-`https://hub.detent.build/webhooks/stripe/test`. Explicit separately authorized
+`https://cloud.detent.build/webhooks/stripe/test`. Explicit separately authorized
 `live` activation instead uses `DETENT_STRIPE_LIVE_KEY`,
 `DETENT_STRIPE_LIVE_WEBHOOK_SECRET`, matching live account/price/customer/portal
-bindings and `https://hub.detent.build/webhooks/stripe/live`. Each environment's
+bindings and `https://cloud.detent.build/webhooks/stripe/live`. Each environment's
 webhook secret, event livemode and account must agree; there is no fallback
 between environments. Staging substitutes its separately configured origin.
 See [billing lifecycle and rollback](../../hosted-billing.md#environment-separation-and-shared-webhooks).

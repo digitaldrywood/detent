@@ -136,39 +136,41 @@ func TestDispatchRecoveryTelemetryUsesAgentPoolCapacity(t *testing.T) {
 	}
 }
 
-func TestPullRequestHydrationRecoveryWaitsThenAdmitsOne(t *testing.T) {
+func TestPullRequestHydrationRecoveryKeepsAdmissionWithFreshEvidence(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 15, 13, 0, 0, 0, time.UTC)
-	retryAt := now.Add(2 * time.Minute)
-	cfg := normalizeConfig(Config{MaxConcurrentAgents: 3})
+	cfg := normalizeConfig(Config{MaxConcurrentAgents: 3, ActiveStates: []string{"Todo", "Rework"}, TerminalStates: []string{"Done"}})
 	orch := &Orchestrator{cfg: cfg}
 	state := newState(cfg)
-	blocked := connector.Issue{
-		ID:    "issue-pr",
-		State: "Rework",
-		PullRequest: &connector.PullRequest{
-			Number:                     42,
-			State:                      "OPEN",
-			HydrationUnavailableReason: "rest_budget_reserved",
-			HydrationNextRetryAt:       &retryAt,
-		},
+	unavailable := dispatchTestIssueWithUnavailablePullRequestHydration("issue-pr", "Rework")
+	unavailable.PullRequest.HydrationUnavailableReason = "rest_budget_reserved"
+	orch.prepareDispatchCandidates(context.Background(), &state, []connector.Issue{unavailable}, now)
+	if decision := orch.dispatchPlanner().dispatchableIssueDecision(unavailable, &state, false, now, ""); decision.dispatchable || decision.reason != dispatchSkipPullRequestHydration {
+		t.Fatalf("unavailable PR decision = %#v, want conservative hydration refusal", decision)
 	}
 
-	orch.observePullRequestHydrationRecovery(&state, []connector.Issue{blocked}, now)
-	waiting := state.DispatchRecoveries[dispatchRecoveryPullRequestHydration]
-	if waiting.Status != dispatchRecoveryStatusWaiting || waiting.Reason != "rest_budget_reserved" || !waiting.ResumeAt.Equal(retryAt) {
-		t.Fatalf("hydration wait = %#v", waiting)
+	recovered := dispatchTestIssueWithPullRequest("issue-pr", "Rework", "OPEN")
+	issues := []connector.Issue{recovered, dispatchTestIssue("issue-next", "Todo"), dispatchTestIssue("issue-last", "Todo")}
+	issues = orch.prepareDispatchCandidates(context.Background(), &state, issues, now.Add(time.Minute))
+	dispatched := []string{}
+	hooks := dispatchPlanHooks{decision: func(decision dispatchPlanDecision) {
+		if decision.SkipReason != "" {
+			t.Logf("%s skipped: %s", decision.Issue.ID, decision.SkipReason)
+		}
+	}, dispatch: func(action dispatchAction) bool {
+		_, allowed, _ := tryReserveDispatchRecovery(&state, action.issue.ID, now.Add(time.Minute))
+		if allowed {
+			dispatched = append(dispatched, action.issue.ID)
+		}
+		return allowed
+	}}
+	orch.dispatchPlanner().plan(&state, issues, now.Add(time.Minute), hooks)
+	if len(dispatched) != len(issues) {
+		t.Fatalf("dispatched = %#v, want all %d fresh candidates admitted", dispatched, len(issues))
 	}
-
-	recovered := blocked
-	recovered.PullRequest = &connector.PullRequest{Number: 42, State: "OPEN"}
-	orch.observePullRequestHydrationRecovery(&state, []connector.Issue{recovered}, retryAt)
-	if _, allowed, reason := tryReserveDispatchRecovery(&state, "issue-pr", retryAt); !allowed || reason != "" {
-		t.Fatalf("canary admission = %v, %q, want allowed", allowed, reason)
-	}
-	if _, allowed, reason := tryReserveDispatchRecovery(&state, "issue-next", retryAt); allowed || reason != "pull_request_hydration_recovery" {
-		t.Fatalf("second admission = %v, %q, want hydration recovery wait", allowed, reason)
+	if len(state.DispatchRecoveries) != 0 {
+		t.Fatalf("DispatchRecoveries = %#v, want hydration readiness owned by each PR", state.DispatchRecoveries)
 	}
 }
 

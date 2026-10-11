@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 )
 
@@ -28,9 +29,17 @@ func (o *Orchestrator) acquireOrQueueGlobalDispatchSlot(ctx context.Context, sta
 		projectCapacity = len(state.Running) + o.dispatchPlanner().availableSlots(state)
 	}
 	stateCapacity := o.projectStateSlotStats(slotIssue, state).capacity
-	hostCapacity := o.cfg.MaxConcurrentAgentsPerHost
+	hostCapacity := o.cfg.workerHostCapacity(workerHost)
 	hosts := make([]scheduler.HostCandidate, 0, len(o.cfg.WorkerHosts))
 	for _, host := range o.cfg.WorkerHosts {
+		if o.cfg.WorkerHostSelection == "preference" || len(o.cfg.WorkerHostCaps) > 0 {
+			if host != workerHost {
+				continue
+			}
+		}
+		if o.workerHostChecker != nil && !o.workerHostChecker.WorkerHostAvailable(ctx, host) {
+			continue
+		}
 		hosts = append(hosts, scheduler.HostCandidate{Host: host})
 	}
 	for _, running := range state.Running {
@@ -50,10 +59,10 @@ func (o *Orchestrator) acquireOrQueueGlobalDispatchSlot(ctx context.Context, sta
 			hostCapacity--
 		}
 	}
-	if projectCapacity <= 0 || stateCapacity <= 0 || (o.cfg.MaxConcurrentAgentsPerHost > 0 && hostCapacity <= 0) {
+	if projectCapacity <= 0 || stateCapacity <= 0 || (o.cfg.workerHostCapacity(workerHost) > 0 && hostCapacity <= 0) {
 		return scheduler.Slot{}, false, scheduler.DispatchGateDecision{Reason: scheduler.DecisionReasonProjectCapacityFull}
 	}
-	if len(hosts) > 0 {
+	if len(hosts) > 0 && o.cfg.WorkerHostSelection != "preference" && len(o.cfg.WorkerHostCaps) == 0 {
 		// A poll-time choice is not affinity. Only a retry has a preferred host.
 		workerHost = ""
 		if action.retryState != nil {
@@ -63,15 +72,20 @@ func (o *Orchestrator) acquireOrQueueGlobalDispatchSlot(ctx context.Context, sta
 	req := scheduler.SlotRequest{
 		ProjectCapacity: projectCapacity, ProjectStateCapacity: stateCapacity, ProjectHostCapacity: hostCapacity,
 		State: slotIssue.State, Host: workerHost, HostCandidates: hosts,
-		Priority: o.dispatchStatePriority(slotIssue.State), PressureCapacity: pressureCapacity,
+		Priority: dispatchpriority.Priority(slotIssue.Priority), PressureCapacity: pressureCapacity,
 	}
+	if slotIssue.CreatedAt != nil {
+		req.CreatedAt = *slotIssue.CreatedAt
+	}
+	req.IssueID = slotIssue.Identifier
+	req.ProjectRank = o.dispatchProjectCandidate().Rank
 	if pending, exists := o.globalDispatchPending[action.issue.ID]; exists {
 		pending.action = action
 		o.globalDispatchPending[action.issue.ID] = pending
 		gate.Update(pending.result, req, now)
 		return scheduler.Slot{}, false, scheduler.DispatchGateDecision{Reason: scheduler.DispatchGateReasonGlobalCapacityFull}
 	}
-	result, cancel, decision := gate.Submit(ctx, o.cfg.Project, req, now, o.globalDispatchReady)
+	result, cancel, decision := gate.Submit(ctx, o.dispatchProjectCandidate(), req, now, o.globalDispatchReady)
 	select {
 	case grant := <-result:
 		cancel()
@@ -126,6 +140,9 @@ func (o *Orchestrator) removePendingGlobalDispatches(remove func(string) bool) {
 }
 
 func (o *Orchestrator) dispatchGrantedRequests(ctx context.Context, state *State, now time.Time) {
+	restScope := &connector.RESTScope{ProjectID: o.cfg.Project.ID, Name: "global_grants"}
+	ctx = connector.WithRESTScope(ctx, restScope)
+	defer connector.LogRESTScope(o.logger, restScope)
 	type readyDispatch struct {
 		pending pendingGlobalDispatch
 		grant   scheduler.DispatchResult
@@ -170,11 +187,16 @@ func (o *Orchestrator) dispatchGrantedRequest(ctx context.Context, state *State,
 	// State reads need not include PR enrichment. Keep fresh tracker fields
 	// authoritative (including an empty lane or assignee), while preserving the
 	// PR identity needed by the existing hydrator to refresh its head and checks.
-	// Lightweight state reads may omit Workpad comments. Retain recorded
-	// predicates so the grant recheck still evaluates their live evidence.
-	if fresh.WorkpadSignal == nil && len(fresh.Comments) == 0 {
-		fresh.WorkpadSignal = cloneIssue(action.issue).WorkpadSignal
-		fresh.Comments = cloneIssue(action.issue).Comments
+	// A lightweight state read can omit comments. Read current Workpad evidence
+	// rather than carrying a predicate from the request that was queued.
+	if action.issue.WorkpadSignal != nil && fresh.WorkpadSignal == nil {
+		if _, canRead := o.connector.(connector.IssueCommentReader); !canRead {
+			return
+		}
+	}
+	fresh, err = o.refreshDependencyAutoUnblockComments(ctx, fresh)
+	if err != nil {
+		return
 	}
 	if fresh.PullRequest == nil {
 		fresh.PullRequest = cloneIssue(action.issue).PullRequest
@@ -185,14 +207,21 @@ func (o *Orchestrator) dispatchGrantedRequest(ctx context.Context, state *State,
 	if fresh.BranchName == "" {
 		fresh.BranchName = action.issue.BranchName
 	}
-	if hydrator, ok := o.connector.(connector.PullRequestHydrator); ok && (fresh.PullRequest != nil || fresh.PRNumber != nil) {
+	if hydrator, ok := o.connector.(connector.PullRequestHydrator); ok && o.dispatchPlanner().githubRESTDependent(fresh) && (fresh.PullRequest != nil || fresh.PRNumber != nil) {
 		fresh, err = hydrator.HydratePullRequest(ctx, fresh)
 		if err != nil {
 			return
 		}
 	}
-	action.issue = o.hydrateDispatchDependencies(ctx, fresh, make(map[string]dependencyBlocker))
+	prepared := o.prepareDispatchCandidates(ctx, state, []connector.Issue{fresh}, now)
+	if len(prepared) == 0 {
+		return
+	}
+	action.issue = o.hydrateDispatchDependencies(ctx, prepared[0], make(map[string]dependencyBlocker))
 	action.workerHost = grant.Slot.Host
+	if o.workerHostChecker != nil && !o.workerHostChecker.WorkerHostAvailable(ctx, action.workerHost) {
+		return
+	}
 	retry, retryQueued := state.Retry[action.issue.ID]
 	if retryQueued {
 		if action.retryState == nil || retry.DueAt.After(now) {
@@ -205,7 +234,7 @@ func (o *Orchestrator) dispatchGrantedRequest(ctx context.Context, state *State,
 			}
 		}()
 	}
-	if !o.liveDispatchPlanner(ctx).dispatchableIssueDecisionForModelRequirement(action.issue, state, action.retryState != nil, now, action.workerHost, action.modelPermitRequired).dispatchable {
+	if !o.liveDispatchPlanner(ctx, nil).dispatchableIssueDecisionForModelRequirement(action.issue, state, action.retryState != nil, now, action.workerHost, action.modelPermitRequired).dispatchable {
 		return
 	}
 	consumed := grant

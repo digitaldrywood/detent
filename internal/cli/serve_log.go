@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/digitaldrywood/detent/internal/logging"
 )
 
 func serveLogger(cmd *cobra.Command, lookupEnv func(string) string, output io.Writer) (*slog.Logger, string, error) {
@@ -21,7 +23,7 @@ func serveLogger(cmd *cobra.Command, lookupEnv func(string) string, output io.Wr
 	if !validSlogLevel(level.Value) {
 		return nil, "", NewValidationError("log level "+level.Value+" from "+level.Source+" is invalid", "Use debug, info, warn, or error.", nil)
 	}
-	return slog.New(slog.NewJSONHandler(output, &slog.HandlerOptions{Level: parseSlogLevel(level.Value)})), strings.ToLower(strings.TrimSpace(level.Value)), nil
+	return slog.New(logging.NewHandler(output, parseSlogLevel(level.Value), false, logging.SourceFromEnv(lookupEnv))), strings.ToLower(strings.TrimSpace(level.Value)), nil
 }
 
 func validSlogLevel(level string) bool {

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
-// The shared entry's screens: chooser, creation, provisioning progress and
-// invitation joins, each against a scripted entry API, plus the entry router.
+// The shared entry's chooser, creation and provisioning screens, each against
+// a scripted entry API, plus the entry router.
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import React from "react";
@@ -19,11 +19,10 @@ import {
 import {
   CreateOrganization,
   EntryApiContext,
-  JoinInvitation,
   OrganizationChooser,
   ProvisioningProgress,
 } from "../../src/app/entry/EntryScreens.tsx";
-import { isEntrySurface, makeEntryRouter } from "../../src/app/entry/router.tsx";
+import { ENTRY_ROUTE_PATHS, isEntrySurface, makeEntryRouter } from "../../src/app/entry/router.tsx";
 
 if (typeof globalThis.PointerEvent === "undefined") {
   globalThis.PointerEvent = globalThis.MouseEvent as unknown as typeof PointerEvent;
@@ -58,9 +57,14 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     provisioning: vi.fn(async () => ({ id: "org_b", name: "Beta", state: "allocating", step: "admission", error: "", can_resume: false })),
     createOrganization: vi.fn(async () => ({ next: "/organizations/org_new/provisioning" })),
     resume: vi.fn(async () => ({ next: "/organizations/org_b/provisioning" })),
-    joinInvitation: vi.fn(async () => ({ next: "/auth/oidc/start?organization=org_a" })),
+    platformTenant: vi.fn(async () => { throw new Error("Tenant not requested"); }),
+    resumePlatformTenant: vi.fn(async () => ({ next: "/platform/tenants" })),
+    platformUsers: vi.fn(async () => ({ users: [], unsearched: [] })),
     platformOrganizations: vi.fn(async () => ({ email: "", csrf: "", can_support: false, organizations: [], unavailable: [] })),
     platformAllowlist: vi.fn(async () => ({ self_service: false, allowed_emails: [], allowed_domains: [], source: { file: "", keys: [] } })),
+    platformMembers: vi.fn(async () => ({ members: [], revision: 1, self: { email: "admin@detent.build", role: "admin" } })),
+    changePlatformMember: vi.fn(async () => ({ email: "new@example.test", role: "viewer", revision: 2 })),
+    platformAudit: vi.fn(async () => ({ rows: [], events: [], tenants: [], next_cursor: "" })),
     platformHealth: vi.fn(async () => ({ registry: { ok: true } })),
     platformEntitlements: vi.fn(async () => ({
       organization_id: "", base: { id: "", version: 1 }, effective_base: { id: "", version: 1 }, source: "base", revision: 1, grants: [], plans: [],
@@ -90,13 +94,30 @@ describe("organization chooser", () => {
     expect((signOut?.querySelector('input[name="csrf"]') as HTMLInputElement).value).toBe("csrf-token");
   });
 
-  it("hides creation where the entry does not offer it", async () => {
+  it.each(["admin", "support", "billing", "viewer", "", undefined])("shows the platform entry point only with a platform role (%s)", async (platform_role) => {
+    const navigate = vi.fn();
+    renderWith(fakeApi({ organizations: vi.fn(async () => ({ ...listing, platform_role })) }), <OrganizationChooser onNavigate={navigate} />);
+    await screen.findByRole("link", { name: "Open Alpha" });
+    const link = screen.queryByRole("link", { name: "Open Platform console" });
+    if (platform_role) {
+      expect(link?.getAttribute("href")).toBe("/platform/tenants");
+      expect(screen.getByText("Platform")).toBeTruthy();
+    } else {
+      expect(link).toBeNull();
+      expect(screen.queryByText("Platform console")).toBeNull();
+    }
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("directs an account with no organization to request an email invitation", async () => {
     renderWith(
-      fakeApi({ organizations: vi.fn(async () => ({ ...listing, can_create: false })) }),
+      fakeApi({ organizations: vi.fn(async () => ({ ...listing, organizations: [], pending: [], can_create: false })) }),
       <OrganizationChooser onNavigate={vi.fn()} />,
     );
-    await screen.findByRole("link", { name: /Alpha/ });
+    await screen.findByText("Ask an owner to send you an invitation.");
     expect(screen.queryByRole("button", { name: "Create organization" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Join with invitation" })).toBeNull();
+    expect(screen.queryByLabelText("Invitation token")).toBeNull();
   });
 
   it("sends an expired session back to sign-in", async () => {
@@ -136,14 +157,14 @@ describe("organization chooser auto-enter", () => {
     expect(replace).not.toHaveBeenCalled();
   });
 
-  it("never enters a customer organization for staff", async () => {
+  it("auto-enters a platform member's single organization", async () => {
     const navigate = vi.fn();
     renderWith(
-      fakeApi({ organizations: vi.fn(async () => ({ ...listing, organizations: [alpha], pending: [], staff: true })) }),
+      fakeApi({ organizations: vi.fn(async () => ({ ...listing, organizations: [alpha], pending: [], platform_role: "admin" })) }),
       <OrganizationChooser onNavigate={navigate} />,
     );
-    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/platform"));
-    expect(replace).not.toHaveBeenCalled();
+    await waitFor(() => expect(replace).toHaveBeenCalledWith(alpha.url));
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it("returns to the chooser without entering from the other entry screens", async () => {
@@ -155,17 +176,25 @@ describe("organization chooser auto-enter", () => {
 });
 
 describe("create organization", () => {
-  it("submits once with the session token and a stable key, then follows the next step", async () => {
-    const api = fakeApi();
+  it.each([false, true])("submits with a stable key and the selected plan when the Free slot is used: %s", async (used) => {
+    const api = fakeApi({ session: vi.fn(async () => ({ email: listing.email, csrf: listing.csrf, can_create: true, free_slot_used: used, creation_prices: [{ id: "price_starter", label: "Starter" }] })) });
     const navigate = vi.fn();
     renderWith(api, <CreateOrganization onNavigate={navigate} />);
     await waitFor(() => expect(api.session).toHaveBeenCalled());
     fireEvent.change(screen.getByLabelText("Organization name"), { target: { value: "  Delta  " } });
+    if (used) {
+      await screen.findByText(/Your Free organization slot is used/);
+      expect((screen.getByRole("button", { name: "Create organization" }) as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(screen.getByRole("combobox", { name: "Paid plan" }));
+      fireEvent.click(await screen.findByRole("option", { name: "Starter" }));
+      await waitFor(() => expect(screen.getByRole("combobox", { name: "Paid plan" }).textContent).toContain("Starter"));
+    }
     await waitFor(() => expect((screen.getByRole("button", { name: "Create organization" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Create organization" }));
     await waitFor(() => expect(navigate).toHaveBeenCalledWith("/organizations/org_new/provisioning"));
     const call = vi.mocked(api.createOrganization).mock.calls[0]![0];
     expect(call.name).toBe("Delta");
+    expect(call.price).toBe(used ? "price_starter" : "");
     expect(call.csrf).toBe("csrf-token");
     expect(call.key.length).toBeGreaterThanOrEqual(16);
   });
@@ -173,8 +202,9 @@ describe("create organization", () => {
   it("shows the entry's refusal", async () => {
     renderWith(
       fakeApi({
+        session: vi.fn().mockResolvedValueOnce({ email: listing.email, csrf: listing.csrf, can_create: true, free_slot_used: false }).mockResolvedValue({ email: listing.email, csrf: listing.csrf, can_create: true, free_slot_used: true, creation_prices: [{ id: "price_starter", label: "Starter" }] }),
         createOrganization: vi.fn(async () => {
-          throw new AccountError({ status: 429, code: "quota_reached", message: "Your account has reached its organization limit." });
+          throw new AccountError({ status: 422, code: "paid_plan_required", message: "Your Free organization slot is used. Choose a paid plan." });
         }),
       }),
       <CreateOrganization onNavigate={vi.fn()} />,
@@ -182,7 +212,8 @@ describe("create organization", () => {
     fireEvent.change(screen.getByLabelText("Organization name"), { target: { value: "Delta" } });
     await waitFor(() => expect((screen.getByRole("button", { name: "Create organization" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Create organization" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("organization limit");
+    expect((await screen.findByRole("alert")).textContent).toContain("Free organization slot");
+    expect(await screen.findByRole("combobox", { name: "Paid plan" })).toBeTruthy();
   });
 });
 
@@ -232,17 +263,6 @@ describe("provisioning progress", () => {
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/organizations/org_b/"));
   });
 
-  it("keeps actions available when the organization list is unavailable", async () => {
-    const api = fakeApi({
-      organizations: vi.fn(async () => {
-        throw new AccountError({ status: 503, code: "membership_unavailable", message: "down" });
-      }),
-    });
-    renderWith(api, <JoinInvitation onNavigate={vi.fn()} />);
-    fireEvent.change(screen.getByLabelText("Invitation token"), { target: { value: "inv_1" } });
-    await waitFor(() => expect((screen.getByRole("button", { name: "Join organization" }) as HTMLButtonElement).disabled).toBe(false));
-  });
-
   it("never overlaps status reads when responses are slower than the poll interval", async () => {
     let inFlight = 0;
     let maxInFlight = 0;
@@ -275,37 +295,47 @@ describe("provisioning progress", () => {
   });
 });
 
-describe("join with invitation", () => {
-  it("joins and follows the organization sign-in", async () => {
-    const api = fakeApi();
-    renderWith(api, <JoinInvitation onNavigate={vi.fn()} />);
-    fireEvent.change(screen.getByLabelText("Invitation token"), { target: { value: " inv_1 " } });
-    await waitFor(() => expect((screen.getByRole("button", { name: "Join organization" }) as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(screen.getByRole("button", { name: "Join organization" }));
-    await waitFor(() => expect(assign).toHaveBeenCalledWith("/auth/oidc/start?organization=org_a"));
-    expect(api.joinInvitation).toHaveBeenCalledWith({ token: "inv_1", csrf: "csrf-token" });
-  });
-});
-
 describe("entry API", () => {
   it("reads JSON and posts forms with the CSRF token", async () => {
     const calls: { url: string; init: RequestInit | undefined }[] = [];
     const api = makeEntryApi({
       fetch: async (url, init) => {
         calls.push({ url, init });
-        return new Response(JSON.stringify(url.startsWith("/api") ? listing : { next: "/next" }), { status: 200 });
+        return new Response(JSON.stringify(url.startsWith("/api/cloud/platform/users?") ? { users: [], unsearched: [] } : url.startsWith("/api") ? { ...listing, platform_role: "admin" } : { next: "/next" }), { status: 200 });
       },
     });
-    await api.organizations();
+    expect((await api.organizations()).platform_role).toBe("admin");
+    expect((await api.session()).platform_role).toBe("admin");
     await api.createOrganization({ name: "Delta", key: "key_0123456789abcdef", csrf: "csrf-token" });
     expect(calls[0]!.url).toBe("/api/cloud/organizations");
     expect((calls[0]!.init!.headers as Record<string, string>).Accept).toBe("application/json");
-    expect(calls[1]!.url).toBe("/organizations");
-    expect((calls[1]!.init!.headers as Record<string, string>)["X-CSRF-Token"]).toBe("csrf-token");
-    const body = new URLSearchParams(calls[1]!.init!.body as string);
+    expect(calls[2]!.url).toBe("/organizations");
+    expect((calls[2]!.init!.headers as Record<string, string>)["X-CSRF-Token"]).toBe("csrf-token");
+    const body = new URLSearchParams(calls[2]!.init!.body as string);
     expect(body.get("name")).toBe("Delta");
     expect(body.get("creation_key")).toBe("key_0123456789abcdef");
     expect(body.get("csrf")).toBe("csrf-token");
+    expect(await api.platformUsers("cory+test@example.test")).toEqual({ users: [], unsearched: [] });
+    expect(calls[3]!.url).toBe("/api/cloud/platform/users?q=cory%2Btest%40example.test");
+    expect(calls[3]!.init?.method).toBe("GET");
+  });
+
+  it.each([
+    { action: "add" as const, method: "POST", suffix: "" },
+    { action: "change" as const, method: "PATCH", suffix: "/member%2Bstaff%40example.test" },
+    { action: "remove" as const, method: "DELETE", suffix: "/member%2Bstaff%40example.test" },
+  ])("sends the $action member command with JSON, CSRF and an encoded target", async ({ action, method, suffix }) => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ email: "member+staff@example.test", role: "viewer", revision: 5 })));
+    const api = makeEntryApi({ fetch });
+    await api.changePlatformMember({ csrf: "staff-csrf", change: {
+      action, email: "member+staff@example.test", ...(action === "remove" ? {} : { role: "viewer" }),
+      reason: "Staffing", expected_revision: 4, idempotency_key: "member-key",
+    } });
+    expect(fetch).toHaveBeenCalledWith("/api/cloud/platform/members" + suffix, expect.objectContaining({
+      method, credentials: "same-origin", headers: { Accept: "application/json", "Content-Type": "application/json", "X-CSRF-Token": "staff-csrf" },
+      body: JSON.stringify({ ...(action === "remove" ? {} : { role: "viewer" }), reason: "Staffing", expected_revision: 4,
+        idempotency_key: "member-key", ...(action === "add" ? { email: "member+staff@example.test" } : {}) }),
+    }));
   });
 
   it("decodes the entry's error body", async () => {
@@ -321,7 +351,7 @@ describe("entry API", () => {
 });
 
 describe("entry router", () => {
-  it.each(["/organizations", "/organizations/new", "/organizations/org_b/provisioning", "/invitations/join", "/platform", "/"])(
+  it.each(ENTRY_ROUTE_PATHS.filter((path) => path !== "/platform").map((path) => path.replace("$organization", "org_b")))(
     "resolves %s",
     async (path) => {
       const router = makeEntryRouter(createMemoryHistory({ initialEntries: [path] }));
@@ -329,6 +359,15 @@ describe("entry router", () => {
       expect(router.state.location.pathname).toBe(path);
     },
   );
+
+  it.each([
+    ["/platform", "/platform/tenants"],
+    ["/platform/accounts", "/platform/users"],
+  ])("redirects %s to %s", async (from, to) => {
+    const router = makeEntryRouter(createMemoryHistory({ initialEntries: [from] }));
+    await router.load();
+    expect(router.state.location.pathname).toBe(to);
+  });
 
   it("keeps the explicit switch flag when returning to the chooser", async () => {
     const router = makeEntryRouter(createMemoryHistory({ initialEntries: ["/organizations/new"] }));

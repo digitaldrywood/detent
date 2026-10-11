@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 var errMissingGlobalConfigManager = errors.New("global config reload manager is required")
@@ -29,6 +31,7 @@ type globalConfigReloader struct {
 	resolveGitHubToken func(context.Context, globalconfig.Config) (string, error)
 	applyRuntime       func(globalconfig.Config) error
 	onReload           func(globalconfig.Config)
+	settings           store.LocalConfigurationStore
 }
 
 type globalConfigChange struct {
@@ -46,6 +49,7 @@ func startGlobalConfigWatcher(
 	githubToken *runtimeGitHubTokenState,
 	applyRuntime func(globalconfig.Config) error,
 	onReload func(globalconfig.Config),
+	settings ...store.LocalConfigurationStore,
 ) <-chan struct{} {
 	if ctx == nil {
 		ctx = context.Background()
@@ -60,7 +64,7 @@ func startGlobalConfigWatcher(
 		return nil
 	}
 
-	watcher, err := configwatcher.NewFile(path, readGlobalConfig, configwatcher.WithFileLogger(logger))
+	watcher, err := configwatcher.NewFile(path, func(path string) (globalconfig.Config, error) { return readRunnerRuntimeConfig(ctx, path) }, configwatcher.WithFileLogger(logger))
 	if err != nil {
 		logger.Warn("create global config watcher failed", "path", path, "error", err)
 		return nil
@@ -79,6 +83,9 @@ func startGlobalConfigWatcher(
 		githubToken:  githubToken,
 		applyRuntime: applyRuntime,
 		onReload:     onReload,
+	}
+	if len(settings) > 0 && !current.Client.Configured() {
+		reloader.settings = settings[0]
 	}
 	syncLatestGlobalConfig(ctx, path, reloader)
 	go func() {
@@ -106,7 +113,10 @@ func syncLatestGlobalConfig(ctx context.Context, path string, reloader *globalCo
 	if reloader == nil {
 		return
 	}
-	latest, err := readGlobalConfig(path)
+	latest, err := readRunnerRuntimeConfig(ctx, path)
+	if reloader.settings != nil {
+		latest, err = readRuntimeConfiguration(ctx, reloader.settings, path)
+	}
 	update := configwatcher.FileUpdate[globalconfig.Config]{
 		Path:  path,
 		Value: latest,
@@ -117,10 +127,6 @@ func syncLatestGlobalConfig(ctx context.Context, path string, reloader *globalCo
 		return
 	}
 	reloader.handle(ctx, update)
-}
-
-func readGlobalConfig(path string) (globalconfig.Config, error) {
-	return globalconfig.Read(path)
 }
 
 func waitGlobalConfigWatcher(done <-chan struct{}) {
@@ -136,7 +142,7 @@ func (r *globalConfigReloader) handle(ctx context.Context, update configwatcher.
 	}
 
 	previous := r.current
-	update = latestGlobalConfigUpdate(update)
+	update = latestGlobalConfigUpdate(ctx, update)
 	logger.Info("global config reconciliation started",
 		"path", update.Path,
 		"configured_projects", globalProjectIDs(update.Value.Projects),
@@ -157,11 +163,18 @@ func (r *globalConfigReloader) handle(ctx context.Context, update configwatcher.
 		applied = true
 		drainedSessions = appendUniqueReconcileSessions(drainedSessions, result.DrainedSessions)
 
-		latest := latestGlobalConfigUpdate(configwatcher.FileUpdate[globalconfig.Config]{
+		latest := latestGlobalConfigUpdate(ctx, configwatcher.FileUpdate[globalconfig.Config]{
 			Path:  update.Path,
 			Value: r.current,
 			At:    time.Now(),
 		})
+		if r.settings != nil {
+			latest.Value, latest.Err = readRuntimeConfiguration(ctx, r.settings, update.Path)
+			if latest.Err != nil {
+				logger.Warn("local configuration reload failed", "error", latest.Err)
+				return
+			}
+		}
 		if reflect.DeepEqual(r.current, latest.Value) {
 			break
 		}
@@ -208,11 +221,11 @@ func appendUniqueReconcileSessions(current []project.ReconcileSession, additions
 	return current
 }
 
-func latestGlobalConfigUpdate(update configwatcher.FileUpdate[globalconfig.Config]) configwatcher.FileUpdate[globalconfig.Config] {
+func latestGlobalConfigUpdate(ctx context.Context, update configwatcher.FileUpdate[globalconfig.Config]) configwatcher.FileUpdate[globalconfig.Config] {
 	if update.WatcherErr || strings.TrimSpace(update.Path) == "" {
 		return update
 	}
-	latest, err := readGlobalConfig(update.Path)
+	latest, err := readRunnerRuntimeConfig(ctx, update.Path)
 	if err != nil {
 		return update
 	}
@@ -236,6 +249,13 @@ func (r *globalConfigReloader) applyCandidate(
 	ctx context.Context,
 	update configwatcher.FileUpdate[globalconfig.Config],
 ) (project.ReconcileResult, error) {
+	if r.settings != nil {
+		latest, err := readRuntimeConfiguration(ctx, r.settings, update.Path)
+		if err != nil {
+			return project.ReconcileResult{}, err
+		}
+		update.Value, update.Err = latest, nil
+	}
 	if update.Err != nil {
 		return project.ReconcileResult{}, update.Err
 	}
@@ -330,6 +350,25 @@ func withoutRuntimeGitHubTokenEnv(lookupEnv func(string) string) func(string) st
 	}
 }
 
+const startupTokenRefreshTimeout = 30 * time.Second
+
+func startupManagerConfig(ctx context.Context, cfg globalconfig.Config, token *runtimeGitHubTokenState, refresh func(context.Context) (string, error), timeout time.Duration) (project.ManagerConfig, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := refresh(ctx)
+		done <- err
+	}()
+	var err error
+	select {
+	case err = <-done:
+	case <-ctx.Done():
+		err = fmt.Errorf("refresh runtime GitHub token: %w", ctx.Err())
+	}
+	return managerConfigWithRuntimeGitHubToken(cfg, token.get()), err
+}
+
 func managerConfigWithRuntimeGitHubToken(cfg globalconfig.Config, token string) project.ManagerConfig {
 	managerConfig := project.ManagerConfigFromGlobal(cfg)
 	managerConfig.RuntimeCredentialVersion = runtimeGitHubTokenVersion(token)
@@ -384,6 +423,9 @@ func changedGlobalConfigFields(previous globalconfig.Config, next globalconfig.C
 	if !reflect.DeepEqual(previous.Notifications, next.Notifications) {
 		fields = append(fields, globalConfigChange{Field: "notifications", RequiresRestart: true})
 	}
+	if previous.Profiling != next.Profiling {
+		fields = append(fields, globalConfigChange{Field: "profiling", Old: previous.Profiling, New: next.Profiling})
+	}
 	if !reflect.DeepEqual(previous.Auth, next.Auth) {
 		fields = append(fields, globalConfigChange{Field: "auth", RequiresRestart: true})
 	}
@@ -399,6 +441,9 @@ func changedGlobalConfigFields(previous globalconfig.Config, next globalconfig.C
 
 func changedGlobalSettings(previous globalconfig.Settings, next globalconfig.Settings) []globalConfigChange {
 	fields := []globalConfigChange{}
+	if !reflect.DeepEqual(previous.LocalIntakeEnabled, next.LocalIntakeEnabled) {
+		fields = append(fields, globalConfigChange{Field: "global.local_intake_enabled", Old: previous.LocalIntakeEnabled, New: next.LocalIntakeEnabled})
+	}
 	if previous.MaxConcurrentAgents != next.MaxConcurrentAgents {
 		fields = append(fields, globalConfigChange{Field: "global.max_concurrent_agents", Old: previous.MaxConcurrentAgents, New: next.MaxConcurrentAgents})
 	}

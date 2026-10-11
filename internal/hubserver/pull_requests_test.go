@@ -111,6 +111,56 @@ func TestPullRequestsWithoutConnector(t *testing.T) {
 	}
 }
 
+func TestWorkItemPullRequestProjection(t *testing.T) {
+	t.Parallel()
+	f := newPullRequestFixture(t, false)
+	var current string
+	var want *tracker.NativePullRequest
+	for _, test := range []struct {
+		name     string
+		external *tracker.ChangeExternalReference
+		terminal bool
+	}{
+		{name: "native version without PR"},
+		{name: "linked PR", external: &tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: pullRequestTestURL}},
+		{name: "new version retains PR"},
+		{name: "latest PR", external: &tracker.ChangeExternalReference{Provider: "github", ID: "42", URL: "https://github.com/example/repo/pull/42"}},
+		{name: "completion retains PR", terminal: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := changeTestInput()
+			input.External = test.external
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.changeFixture.path+"/versions", f.token,
+				tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: test.name}, ExpectedVersionID: current, ChangeVersionInput: input})
+			requireNativeStatus(t, response, http.StatusOK)
+			var version tracker.ChangeVersion
+			decodeHubResponse(t, response, &version)
+			current = version.ID
+			if test.external != nil {
+				number, err := strconv.Atoi(test.external.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want = &tracker.NativePullRequest{Number: number, URL: test.external.URL}
+			}
+			if test.terminal {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = 'Done') WHERE native_id = ?", f.project.ID, f.issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, compact := range []bool{false, true} {
+				issue, _, err := readNativeIssueProjection(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID), compact)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if (want == nil && issue.PullRequest != nil) || (want != nil && (issue.PullRequest == nil || *issue.PullRequest != *want)) || issue.Terminal != test.terminal {
+					t.Fatalf("compact=%v PR=%#v terminal=%v, want PR=%#v terminal=%v", compact, issue.PullRequest, issue.Terminal, want, test.terminal)
+				}
+			}
+		})
+	}
+}
+
 // The connector half fills in state, draft, head, base, mergeability and the
 // review decision, and fetched_at is when the projection was synchronized.
 func TestPullRequestsJoinConnector(t *testing.T) {

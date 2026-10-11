@@ -21,11 +21,12 @@ import (
 
 func TestIsolationSettings(t *testing.T) {
 	for _, test := range []struct {
-		tier  string
-		valid bool
-	}{{"sandbox", true}, {"native-trusted", true}, {"container", false}} {
+		tier         string
+		valid        bool
+		localBinding bool
+	}{{"sandbox", true, false}, {"sandbox", true, true}, {"native-trusted", true, false}, {"container", false, false}} {
 		t.Run(test.tier, func(t *testing.T) {
-			p := isolation.Policy{Tier: test.tier, WritableRoots: []string{"/worktree", "/runtime"}, HostServices: []string{"unix:/var/run/example.sock"}}
+			p := isolation.Policy{ExtraNetworkDomains: []string{"fonts.googleapis.com", "fonts.gstatic.com"}, AllowLocalBinding: test.localBinding, Tier: test.tier, WritableRoots: []string{"/worktree", "/runtime"}, HostServices: []string{"unix:/var/run/example.sock"}}
 			settings, err := IsolationSettings(p)
 			if test.tier == isolation.Sandbox && !isolation.SandboxAvailable() {
 				if !errors.Is(err, isolation.ErrSandboxUnavailable) {
@@ -52,7 +53,11 @@ func TestIsolationSettings(t *testing.T) {
 					t.Fatalf("filesystem = %#v", f)
 				}
 				n := s["network"].(map[string]any)
-				if !reflect.DeepEqual(n["allowUnixSockets"], []string{"/var/run/example.sock"}) || n["strictAllowlist"] != true {
+				domains := n["allowedDomains"].([]string)
+				if !slices.Contains(domains, "fonts.googleapis.com") || !slices.Contains(domains, "fonts.gstatic.com") || slices.Contains(domains, "example.com") {
+					t.Fatalf("project domain grants = %#v", domains)
+				}
+				if !reflect.DeepEqual(n["allowUnixSockets"], []string{"/var/run/example.sock"}) || n["strictAllowlist"] != true || n["allowLocalBinding"] != test.localBinding {
 					t.Fatalf("network = %#v", n)
 				}
 			}

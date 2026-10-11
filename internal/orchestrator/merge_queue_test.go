@@ -253,6 +253,10 @@ func TestDelegateNativeMergeQueueIssuesSerializesOnlyRunningHeads(t *testing.T) 
 }
 
 func TestTickDelegatesNativeMergeQueueTrainWithoutAgentDispatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 13, 18, 0, 0, 0, time.UTC)
@@ -750,7 +754,7 @@ func TestNativeMergeQueueUrgentAdmissionPreservesAging(t *testing.T) {
 			now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 			ordinary := nativeMergeQueueTestIssue(601, "success")
 			urgent := nativeMergeQueueTestIssue(602, "success")
-			urgent.Labels = []string{"hotfix"}
+			urgent.Priority = intPointer(1)
 			recent := now.Add(-time.Minute)
 			ordinary.StageUpdatedAt = &recent
 			urgent.StageUpdatedAt = &recent
@@ -794,7 +798,7 @@ func TestNativeMergeQueueBoundsAdmissionWithoutWorkerFallback(t *testing.T) {
 		t.Fatalf("worker candidates = %v, want no integration fallback", candidates)
 	}
 	urgent := nativeMergeQueueTestIssue(704, "success")
-	urgent.Labels = []string{"hotfix"}
+	urgent.Priority = intPointer(1)
 	tracker.enqueued = nil
 	orch.delegateNativeMergeQueueIssues(context.Background(), &state, []connector.Issue{issues[2], urgent}, now.Add(time.Minute))
 	if want := []string{urgent.ID, issues[2].ID}; !reflect.DeepEqual(tracker.enqueued, want) {
@@ -947,6 +951,8 @@ func TestNativeMergeQueueWorkerHandoff(t *testing.T) {
 			event := runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted}}
 			state.Running[issue.ID] = running
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now}
+			state.Pipeline = []connector.Issue{issue}
+			reserveMergeCandidate(&state, issue, now)
 			event.Err = tt.workerErr
 			orch.handleRunResult(t.Context(), &state, event)
 			wantMerges := 1
@@ -959,8 +965,19 @@ func TestNativeMergeQueueWorkerHandoff(t *testing.T) {
 			if len(state.Retry) != 0 || len(tracker.updates) != 0 {
 				t.Fatalf("retry or lane change: %v %v", state.Retry, tracker.updates)
 			}
-			if tt.inspectErr == nil && len(tracker.enqueued) != 1 {
-				t.Fatalf("enqueued=%v", tracker.enqueued)
+			if len(state.Running) != 0 || len(state.Claimed) != 0 || len(state.mergeReservations) != 0 {
+				t.Fatalf("worker ownership retained: running=%v claimed=%v reservations=%v", state.Running, state.Claimed, state.mergeReservations)
+			}
+			var wantEnqueued []string
+			if tt.inspectErr == nil {
+				wantEnqueued = []string{issue.ID}
+				entry := state.Pipeline[0].PullRequest.MergeQueueEntry
+				if entry == nil || entry.ID != "MQE_"+issue.ID || state.nativeMergeQueueEntries[issue.ID].HeadSHA != issue.PullRequest.HeadSHA {
+					t.Fatalf("current head queue handoff missing: pipeline=%+v cached=%+v", entry, state.nativeMergeQueueEntries[issue.ID])
+				}
+			}
+			if !reflect.DeepEqual(tracker.enqueued, wantEnqueued) {
+				t.Fatalf("enqueued=%v want %v", tracker.enqueued, wantEnqueued)
 			}
 			if tracker.inspections != 1 {
 				t.Fatalf("inspections=%d", tracker.inspections)
@@ -1222,6 +1239,10 @@ func TestNativeMergeQueueRepeatedRemovalRetries(t *testing.T) {
 }
 
 func TestNativeMergeQueueBudgetSurvivesRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, restartBeforeRetry := range []bool{false, true} {
 		t.Run(fmt.Sprintf("restart_before_retry_%t", restartBeforeRetry), func(t *testing.T) {

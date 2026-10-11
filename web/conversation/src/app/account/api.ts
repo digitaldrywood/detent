@@ -1,3 +1,6 @@
+import { AccessKeys, CreatedAccessKey, KeyContext, KeyPolicy, type CreateAccessKey, type PersonalKeyPolicy } from "../../contracts/accessKeys.ts";
+import { CloudModelSelection, type CloudSelection } from "../../contracts/account.ts";
+import { IssueIntake, type IntakeCommand } from "../../contracts/githubIntake.ts";
 // The hosted account API client.
 //
 // `runtime/rpc/http.ts` is the conversation client's own transport and stays
@@ -10,10 +13,14 @@
 import * as Schema from "effect/Schema";
 
 import {
+  CreatedOperatorAPIKey,
+  OperatorAPIKeys,
   BillingReport,
+  BillingUsageReport,
   CheckoutResponse,
   CreateOrganizationResponse,
   FleetResponse,
+  FleetNamesResponse,
   Member,
   MembersResponse,
   NextResponse,
@@ -22,12 +29,23 @@ import {
   PlanReport,
   PolicyApproval,
   ProjectIntegration,
+  ProjectSecretStatus,
+  SlackIntegrationStatus,
+  SpritePool,
   ProjectsResponse,
+  OrganizationProjectRank,
+  type ProjectGrant,
   RunnerEnrollment,
   SupportResponse,
+  type WorkflowState,
 } from "../../contracts/account.ts";
 import { isApiError } from "../../contracts/index.ts";
 import { hubPath } from "../../runtime/basePath.ts";
+import { WorkAttachment } from "../../contracts/workAttachments.ts";
+import { DiagnosticsReport, HealthFindingsRead } from "../../contracts/diagnostics.ts";
+import { ActivityReport, type ActivityFilters } from "../../contracts/activity.ts";
+import { ReportsReport, type ReportsRange } from "../../contracts/reports.ts";
+import { clearBoardCache } from "../work/lib/boardStore.ts";
 
 /** A decoded failure from the hosted API, or the network under it. */
 export class AccountError extends Error {
@@ -106,7 +124,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     body?: unknown,
   ): Promise<A> {
     const headers: Record<string, string> = { Accept: "application/json" };
-    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (body !== undefined && !(body instanceof FormData)) headers["Content-Type"] = "application/json";
     if (MUTATION_METHODS.has(method)) headers["X-CSRF-Token"] = options.csrfToken;
     let response: Response;
     try {
@@ -114,7 +132,7 @@ export function makeAccountApi(options: AccountApiOptions) {
         method,
         credentials: "same-origin",
         headers,
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(body === undefined ? {} : { body: body instanceof FormData ? body : JSON.stringify(body) }),
       });
     } catch (cause) {
       throw new AccountError({
@@ -149,17 +167,58 @@ export function makeAccountApi(options: AccountApiOptions) {
 
   const project = (projectId: string) => `${base}/projects/${encodeURIComponent(projectId)}`;
 
+  const organizationId = base.split("/organizations/")[1]?.split("/")[0] ?? "";
+  const cloudOrganization = `/api/cloud/organizations/${organizationId}`;
   return {
+    personalKeys: () => send(AccessKeys, "GET", "/api/cloud/account/api-keys"),
+    keyContext: () => send(KeyContext, "GET", "/api/cloud/account/key-context"),
+    createPersonalKey: (input: CreateAccessKey) => send(CreatedAccessKey, "POST", "/api/cloud/account/api-keys", input),
+    rotatePersonalKey: (id: string) => send(CreatedAccessKey, "POST", `/api/cloud/account/api-keys/${encodeURIComponent(id)}/rotate`, {}),
+    revokePersonalKey: (id: string) => send(null, "DELETE", `/api/cloud/account/api-keys/${encodeURIComponent(id)}`),
+    serviceKeys: () => send(AccessKeys, "GET", `${cloudOrganization}/service-keys`),
+    createServiceKey: (input: CreateAccessKey) => send(CreatedAccessKey, "POST", `${cloudOrganization}/service-keys`, input),
+    revokeServiceKey: (id: string) => send(null, "DELETE", `${cloudOrganization}/service-keys/${encodeURIComponent(id)}`),
+    memberKeys: (cursor = "") => send(AccessKeys, "GET", `${cloudOrganization}/external-keys${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+    keyPolicy: () => send(KeyPolicy, "GET", `${cloudOrganization}/key-policy`),
+    saveKeyPolicy: (policy: PersonalKeyPolicy) => send(KeyPolicy, "PUT", `${cloudOrganization}/key-policy`, { personal_keys: policy }),
+    blockMemberKey: (id: string) => send(null, "PUT", `${cloudOrganization}/external-keys/${encodeURIComponent(id)}/block`, {}),
+    approveMemberKey: (id: string) => send(null, "PUT", `${cloudOrganization}/external-keys/${encodeURIComponent(id)}/approve`, {}),
+    apiKeys: () => send(OperatorAPIKeys, "GET", `${base}/api-keys`),
+    createAPIKey: (input: { name: string; scope: string; expires_days: number; never_expires?: boolean; project_access?: "all" | "selected"; project_ids?: readonly string[] }) =>
+      send(CreatedOperatorAPIKey, "POST", `${base}/api-keys`, input),
+    revokeAPIKey: (id: string) => send(null, "DELETE", `${base}/api-keys/${encodeURIComponent(id)}`),
     origin: options.origin,
     apiBase: base,
     csrfToken: options.csrfToken,
+    attachmentUrl: (projectId: string, id: string) => `${project(projectId)}/attachments/${encodeURIComponent(id)}`,
+    attachment: (projectId: string, id: string) =>
+      send(WorkAttachment, "GET", `${project(projectId)}/attachments/${encodeURIComponent(id)}/metadata`),
+    uploadWorkAttachment: (projectId: string, file: File) => {
+      const body = new FormData();
+      body.append("file", file);
+      return send(WorkAttachment, "POST", `${project(projectId)}/attachments`, body);
+    },
 
     // --- Organization -------------------------------------------------------
+    modelSelection: (projectId?: string) => send(CloudModelSelection, "GET", `${projectId === undefined ? base : project(projectId)}/model-selection`),
+    saveModelSelection: (input: { projectId?: string; revision: string; selection: CloudSelection | null; key: string }) =>
+      send(CloudModelSelection, "PUT", `${input.projectId === undefined ? base : project(input.projectId)}/model-selection`, {
+        expected_revision: input.revision, selection: input.selection, idempotency_key: input.key,
+      }),
+    slackIntegration: () => send(SlackIntegrationStatus, "GET", `${base}/integrations/slack`),
+    saveSlackIntegration: (input: { webhook?: string; channel_name: string }) => send(SlackIntegrationStatus, "PUT", `${base}/integrations/slack`, input),
+    testSlackIntegration: () => send(SlackIntegrationStatus, "POST", `${base}/integrations/slack/test`, {}),
     members: () => send(MembersResponse, "GET", `${base}/members`),
-    invite: (input: { email: string; role: string; key: string }) =>
+    invite: (input: { email: string; role: string; key: string; grants?: readonly ProjectGrant[] }) =>
       send(Schema.Unknown, "POST", `${base}/members/invitations`, {
         email: input.email,
         role: input.role,
+        grants: input.grants ?? [],
+        idempotency_key: input.key,
+      }),
+    setInvitationGrants: (input: { invitation: string; grants: readonly ProjectGrant[]; key: string }) =>
+      send(null, "PUT", `${base}/members/invitations/${encodeURIComponent(input.invitation)}`, {
+        grants: input.grants,
         idempotency_key: input.key,
       }),
     revokeInvitation: (input: { invitation: string; key: string }) =>
@@ -167,6 +226,13 @@ export function makeAccountApi(options: AccountApiOptions) {
         null,
         "DELETE",
         `${base}/members/invitations/${encodeURIComponent(input.invitation)}`,
+        { idempotency_key: input.key },
+      ),
+    resendInvitation: (input: { invitation: string; key: string }) =>
+      send(
+        null,
+        "POST",
+        `${base}/members/invitations/${encodeURIComponent(input.invitation)}/resend`,
         { idempotency_key: input.key },
       ),
     removeMember: (input: { member: string; key: string }) =>
@@ -203,17 +269,25 @@ export function makeAccountApi(options: AccountApiOptions) {
         token: input.token,
         idempotency_key: input.key,
       }),
-    switchOrganization: (input: { organization: string; key: string }) =>
-      send(NextResponse, "POST", `${base}/switch`, {
+    switchOrganization: async (input: { organization: string; key: string }) => {
+      const next = await send(NextResponse, "POST", `${base}/switch`, {
         organization: input.organization,
         idempotency_key: input.key,
-      }),
+      });
+      clearBoardCache();
+      return next;
+    },
     startSupport: (input: { key: string }) =>
       send(SupportResponse, "POST", `${base}/support/start`, { idempotency_key: input.key }),
     /** `POST /logout` answers 204 for a JSON caller (§12, "Serving"). */
-    logout: () => send(null, "POST", hubPath("/logout"), {}),
+    logout: async () => {
+      await send(null, "POST", hubPath("/logout"), {});
+      clearBoardCache();
+    },
 
     // --- Projects -----------------------------------------------------------
+    projectRank: () => send(OrganizationProjectRank, "GET", `${base}/project-rank`),
+    updateProjectRank: (input: { expectedRevision: number; projectIds: readonly string[] }) => send(OrganizationProjectRank, "PUT", `${base}/project-rank`, { expected_revision: input.expectedRevision, project_ids: input.projectIds }),
     projects: () => send(ProjectsResponse, "GET", `${base}/projects`),
     createProject: (input: { name: string; grantAccess: boolean; key: string }) =>
       send(Schema.Unknown, "POST", `${base}/projects`, {
@@ -223,8 +297,20 @@ export function makeAccountApi(options: AccountApiOptions) {
       }),
 
     // --- Project settings ---------------------------------------------------
+    spritesSecret: (projectId: string) =>
+      send(ProjectSecretStatus, "GET", `${projectId ? project(projectId) : base}/secrets/fly_sprites_token`),
+    spritePool: (_projectId: string) =>
+      send(SpritePool, "GET", `${base}/sprite-pool`),
+    setSpritePool: (_projectId: string, settings: { min_runners: number; max_runners: number; idle_seconds: number; bootstrap: string; revision: number }) =>
+      send(SpritePool, "PUT", `${base}/sprite-pool`, settings),
+    setSpritesSecret: (projectId: string, token: string) =>
+      send(ProjectSecretStatus, "PUT", `${projectId ? project(projectId) : base}/secrets/fly_sprites_token`, { token }),
+    removeSpritesSecret: (projectId: string) =>
+      send(ProjectSecretStatus, "DELETE", `${projectId ? project(projectId) : base}/secrets/fly_sprites_token`),
     integration: (projectId: string) =>
       send(ProjectIntegration, "GET", `${project(projectId)}/integration`),
+    deleteProject: (input: { projectId: string; name: string; key: string }) =>
+      send(null, "DELETE", project(input.projectId), { idempotency_key: input.key, confirm_name: input.name }),
     /**
      * `expected_revision` is the revision the screen was showing, sent back as
      * the string the hub marshalled. In hosted mode a `409` carries no current
@@ -235,18 +321,26 @@ export function makeAccountApi(options: AccountApiOptions) {
       projectId: string;
       key: string;
       revision: string;
-      intake: string;
+      intake?: string;
       projection: string;
       repositoryEnabled: boolean;
+      archiveCompletedAfterDays?: number | null;
+      archiveCancelledAfterDays?: number | null;
+      states?: readonly WorkflowState[];
+      workflowMarkdown?: string;
     }) =>
-      send(ProjectIntegration, "PUT", `${project(input.projectId)}/integration`, {
+      send(ProjectIntegration, "PUT", `${project(input.projectId)}/onboarding/integration`, {
         expected_revision: input.revision,
-        intake: input.intake,
+        ...(input.intake !== undefined ? { intake: input.intake } : {}),
         projection: input.projection,
         repository_enabled: input.repositoryEnabled,
+        ...(input.archiveCompletedAfterDays !== undefined ? { archive_completed_after_days: input.archiveCompletedAfterDays } : {}),
+        ...(input.archiveCancelledAfterDays !== undefined ? { archive_cancelled_after_days: input.archiveCancelledAfterDays } : {}),
+        ...(input.states !== undefined ? { states: input.states } : {}),
+        ...(input.workflowMarkdown !== undefined ? { workflow_markdown: input.workflowMarkdown } : {}),
         idempotency_key: input.key,
       }),
-    policy: (projectId: string) => send(PolicyApproval, "GET", `${project(projectId)}/policy`),
+    policy: (projectId: string, after?: string) => send(PolicyApproval, "GET", `${project(projectId)}/policy${after ? `?after=${encodeURIComponent(after)}` : ""}`),
     /**
      * Approval is by identity: the descriptor the reader was shown goes back
      * verbatim, and `expected_policy_id` is the approval it replaces (empty on
@@ -267,6 +361,8 @@ export function makeAccountApi(options: AccountApiOptions) {
       ),
 
     // --- Onboarding (the first-run wizard) ----------------------------------
+    issueIntake: (projectId: string) => send(IssueIntake, "GET", `${project(projectId)}/onboarding/issue-intake`),
+    commandIssueIntake: (projectId: string, command: IntakeCommand, key: string) => send(IssueIntake, "POST", `${project(projectId)}/onboarding/issue-intake`, { ...command, idempotency_key: key }),
     onboarding: (projectId: string) => send(Onboarding, "GET", `${project(projectId)}/onboarding`),
     /**
      * The progress save. The response is the stored `Progress` alone, with the
@@ -294,12 +390,14 @@ export function makeAccountApi(options: AccountApiOptions) {
       }),
     createFirstIssue: (input: {
       projectId: string;
+	  githubIssueUrl?: string;
       title: string;
       body: string;
       state: string;
       key: string;
     }) =>
       send(Schema.Unknown, "POST", `${project(input.projectId)}/work-items`, {
+	    github_issue_url: input.githubIssueUrl,
         title: input.title,
         body: input.body,
         state: input.state,
@@ -318,6 +416,7 @@ export function makeAccountApi(options: AccountApiOptions) {
      * identifiers is made safe by the hub's identity collision (409).
      */
     enrollRunner: (input: {
+      scope?: "projects" | "organization";
       projectIds: readonly string[];
       runnerId?: string;
       machineId?: string;
@@ -327,12 +426,14 @@ export function makeAccountApi(options: AccountApiOptions) {
       send(RunnerEnrollment, "POST", `${base}/runner-enrollments`, {
         ...(input.runnerId === undefined ? {} : { runner_id: input.runnerId }),
         ...(input.machineId === undefined ? {} : { machine_id: input.machineId }),
+        scope: input.scope ?? "projects",
         project_ids: [...input.projectIds],
         operations: [
           ...(input.operations ?? ["read", "collaborate", "claim", "heartbeat", "events"]),
         ],
         ttl_seconds: input.ttlSeconds ?? 900,
       }),
+    removeRunner: (runner: string) => send(Empty, "DELETE", `${base}/runners/${encodeURIComponent(runner)}`),
     runners: () => send(Schema.Array(Schema.Unknown), "GET", `${base}/runners`),
     /**
      * Routing is a read-modify-write: only the tags come from the form, and
@@ -340,6 +441,8 @@ export function makeAccountApi(options: AccountApiOptions) {
      * conflict cannot be recovered from its own response.
      */
     setRunnerRouting: (input: {
+      scope?: "projects" | "organization";
+      projectRanks?: Readonly<Record<string, number>>;
       runner: string;
       revision: number;
       displayName: string;
@@ -347,11 +450,9 @@ export function makeAccountApi(options: AccountApiOptions) {
       state: string;
       capacityLimit: number;
       projectIds: readonly string[];
-      homeProjectIds?: readonly string[];
       isolationTier?: string;
       hostServices?: readonly string[];
       availability?: { timezone: string; windows: readonly string[]; hard_deadline: string };
-      spillover?: { mode: string; after_minutes: number };
     }) =>
       send(Schema.Unknown, "PUT", `${base}/runners/${encodeURIComponent(input.runner)}/routing`, {
         expected_revision: input.revision,
@@ -360,11 +461,11 @@ export function makeAccountApi(options: AccountApiOptions) {
         state: input.state,
         capacity_limit: input.capacityLimit,
         project_ids: input.projectIds,
-        ...(input.homeProjectIds !== undefined ? { home_project_ids: input.homeProjectIds } : {}),
+        ...(input.scope !== undefined ? { scope: input.scope } : {}),
+        ...(input.projectRanks !== undefined ? { project_ranks: input.projectRanks } : {}),
         ...(input.isolationTier !== undefined ? { isolation_tier: input.isolationTier } : {}),
         ...(input.hostServices !== undefined ? { host_services: input.hostServices } : {}),
         ...(input.availability !== undefined ? { availability: input.availability } : {}),
-        ...(input.spillover !== undefined ? { spillover: input.spillover } : {}),
       }),
     bindRepository: (input: {
       projectId: string;
@@ -375,6 +476,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       send(ProjectIntegration, "POST", `${project(input.projectId)}/onboarding/repository`, {
         expected_revision: input.revision,
         repository: input.repository,
+        source: "runner_checkout",
         idempotency_key: input.key,
       }),
     bindArtifactService: (input: {
@@ -396,14 +498,52 @@ export function makeAccountApi(options: AccountApiOptions) {
       ),
 
     // --- Fleet, plan and billing --------------------------------------------
+    activity: (filters: ActivityFilters = {}) => {
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(filters)) {
+        if (value !== undefined) params.set(key, String(value));
+      }
+      return send(ActivityReport, "GET", `${base}/activity?${params.toString()}`);
+    },
     fleet: () => send(FleetResponse, "GET", `${base}/fleet`),
+    diagnostics: (range: string) => send(DiagnosticsReport, "GET", `${base}/diagnostics?range=${encodeURIComponent(range)}`),
+    reports: (project: string, range: ReportsRange) => send(ReportsReport, "GET", `${base}/reports?project=${encodeURIComponent(project)}&range=${encodeURIComponent(range)}`),
+    healthFindings: async (projects: readonly string[], options: { state?: "open" | "resolved"; since?: string } = {}): Promise<HealthFindingsRead> => {
+      const reads = await Promise.all(projects.map(async (project) => {
+        const items: HealthFindingsRead["items"][number][] = [];
+        let cursor = "";
+        let lastTick: string | null = null;
+        do {
+          const page = await send(HealthFindingsRead, "GET", `${base}/projects/${encodeURIComponent(project)}/health/findings?state=${options.state ?? "open"}${options.since ? `&since=${encodeURIComponent(options.since)}` : ""}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+          items.push(...page.items);
+          lastTick = page.last_tick_at;
+          cursor = page.next_cursor ?? "";
+        } while (cursor);
+        return { items, last_tick_at: lastTick };
+      }));
+      const ticks = reads.map((read) => read.last_tick_at).filter((tick): tick is string => tick !== null);
+      return {
+        items: [...new Map(reads.flatMap((read) => read.items).map((finding) => [finding.id, finding])).values()],
+        last_tick_at: ticks.length > 0 && ticks.length === reads.length
+          ? ticks.toSorted((left, right) => Date.parse(left) - Date.parse(right))[0]!
+          : null,
+      };
+    },
+    fleetNames: () => send(FleetNamesResponse, "GET", `${base}/fleet?include=names`),
     plan: () => send(PlanReport, "GET", `${base}/plan`),
     billing: () => send(BillingReport, "GET", `${base}/billing`),
+    billingUsage: () => send(BillingUsageReport, "GET", `${base}/billing?view=usage`),
     checkout: (input: { price: string; key: string }) =>
       send(CheckoutResponse, "POST", `${base}/billing/checkout`, {
         price: input.price,
         idempotency_key: input.key,
       }),
+    creditCheckout: (input: { price: string; key: string }) =>
+      send(CheckoutResponse, "POST", `${base}/billing/credits/checkout`, {
+        price: input.price, idempotency_key: input.key,
+      }),
+    creditAutoFund: (input: { enabled: boolean; threshold_cents: number; price: string }) =>
+      send(Empty, "PUT", `${base}/billing/credits/auto-fund`, input),
     portal: (input: { key: string }) =>
       send(CheckoutResponse, "POST", `${base}/billing/portal`, { idempotency_key: input.key }),
   };

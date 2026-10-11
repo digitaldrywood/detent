@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   ageLabel,
-  boardScopeMeta,
   dayLabel,
   elapsedLabel,
   issueNumber,
@@ -81,20 +80,5 @@ describe("the remaining formatters", () => {
     expect(issueNumber("anything", 41)).toBe("#41");
     expect(issueNumber("no-number-here")).toBe("no-number-here");
     expect(issueNumber(null)).toBe("");
-  });
-});
-
-describe("boardScopeMeta", () => {
-  it("counts projects in the all-projects scope even when none has issues", () => {
-    expect(boardScopeMeta(null, 3, 0)).toBe("3 projects");
-    expect(boardScopeMeta(null, 1, 0)).toBe("1 project");
-    expect(boardScopeMeta(null, 0, 0)).toBe("0 projects");
-    expect(boardScopeMeta(null, 2, 7)).toBe("2 projects");
-  });
-
-  it("counts issues in a single-project scope", () => {
-    expect(boardScopeMeta("p1", 3, 0)).toBe("0 issues");
-    expect(boardScopeMeta("p1", 3, 1)).toBe("1 issue");
-    expect(boardScopeMeta("p1", 3, 5)).toBe("5 issues");
   });
 });

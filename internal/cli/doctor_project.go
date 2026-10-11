@@ -53,10 +53,14 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 		project.GlobalActiveHours = cfg.Global.ActiveHours
 		project.GlobalAgents = cfg.Global.Agents
 		project.GlobalBudget = cfg.Global.Budget
+		project.GlobalWorker = cfg.Global.Worker
 		project.Identity = cfg.Global.Identity
 		checks = append(checks, checkDoctorProjectWithStore(ctx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes)...)
 		if cfg.Client.Configured() {
 			checks = append(checks, checkDoctorHubPolicy(ctx, cfg, project, deps))
+			if check, ok := checkDoctorNativeHumanReviewLane(ctx, cfg, project, deps); ok {
+				checks = append(checks, check)
+			}
 		}
 	}
 
@@ -235,6 +239,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 		project.GlobalActiveHours = cfg.Global.ActiveHours
 		project.GlobalAgents = cfg.Global.Agents
 		project.GlobalBudget = cfg.Global.Budget
+		project.GlobalWorker = cfg.Global.Worker
 		project.Identity = cfg.Global.Identity
 		id := doctorProjectID(project)
 		progress := newDoctorCheckProgress()
@@ -383,6 +388,10 @@ func checkDoctorProjectWithProgress(
 		}
 	}
 	checks = append(checks, workflowCheck)
+	if laneCheck, ok := checkDoctorWorkflowLanes(id, workflow.Config); ok {
+		checks = append(checks, laneCheck)
+	}
+
 	setDoctorCurrentCheck("Project " + id + " workflow_source_drift")
 	checks = append(checks, checkDoctorWorkflowSourceDrift(ctx, id, project, workflow.Config, deps))
 	instructionWorkflowPath, instructionWorkflowErr := resolveDoctorProjectPath(project, project.Workflow)
@@ -490,6 +499,10 @@ func checkDoctorProjectWithProgress(
 			setDoctorCurrentCheck("Project " + id + " validator health")
 			checks = append(checks, checkDoctorValidatorHealth(ctx, id, storePath, deps, time.Now()))
 		}
+	}
+	if !workflow.Config.Review.Human && workflow.Config.Tracker.Kind != workflowconfig.TrackerHubNative {
+		setDoctorCurrentCheck("Project " + id + " Human Review policy")
+		checks = append(checks, checkDoctorHumanReviewLane(ctx, id, workflow.Config, deps))
 	}
 	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) && workflow.Config.Deliverable.Kind == workflowconfig.DeliverablePullRequest {
 		setDoctorCurrentCheck("Project " + id + " repository merge policy")
@@ -1224,7 +1237,7 @@ func checkDoctorIssueEffortGuidance(id string, sourceRoot string) doctorCheck {
 		Name:   name,
 		Status: doctorWarn,
 		Detail: "AGENTS.md and CLAUDE.md contain no detent-agent guidance",
-		Hint:   "Add a project-specific effort-selection rubric; see docs/ONBOARDING.md#per-issue-agent-overrides.",
+		Hint:   "Add a project-specific effort-selection rubric; see docs/admission.md#issue-effort-selection.",
 	}
 }
 
@@ -1299,7 +1312,7 @@ func checkDoctorProjectSkills(id string, sourceRoot string, cfg workflowconfig.S
 		}
 	}
 
-	detail += fmt.Sprintf("; loaded=%d; dropped=%d", len(result.Skills), len(result.Dropped))
+	detail += fmt.Sprintf("; files=%d; loaded=%d; dropped=%d", len(result.Skills)+len(result.Dropped), len(result.Skills), len(result.Dropped))
 	if len(result.Dropped) == 0 {
 		return doctorCheck{Name: name, Status: doctorOK, Detail: detail}
 	}
@@ -1316,7 +1329,7 @@ func checkDoctorProjectSkills(id string, sourceRoot string, cfg workflowconfig.S
 		Name:   name,
 		Status: doctorWarn,
 		Detail: detail + "; drops: " + strings.Join(drops, "; "),
-		Hint:   "Fix invalid or duplicate skill files, or raise agent.skills.max_skills_in_prompt.",
+		Hint:   "Remove or consolidate excess skills, fix invalid or duplicate files, or raise agent.skills.max_skills_in_prompt.",
 	}
 }
 
@@ -1793,10 +1806,6 @@ func doctorWorkflowSessionGuardDetail(cfg workflowconfig.Config) string {
 	if cfg.Agent.MaxSessionDurationMS > 0 {
 		sessionDuration = strconv.Itoa(cfg.Agent.MaxSessionDurationMS)
 	}
-	noProgressTimeout := "disabled"
-	if cfg.Agent.NoProgressTimeoutMS > 0 {
-		noProgressTimeout = strconv.Itoa(cfg.Agent.NoProgressTimeoutMS)
-	}
 	mergeDuration := "disabled"
 	if cfg.Agent.MergeWorkerMaxDurationMS > 0 {
 		mergeDuration = strconv.Itoa(cfg.Agent.MergeWorkerMaxDurationMS)
@@ -1810,11 +1819,10 @@ func doctorWorkflowSessionGuardDetail(cfg workflowconfig.Config) string {
 		multiplier = strconv.FormatFloat(cfg.Agent.MaxSessionContextMultiplier, 'g', -1, 64)
 	}
 	return fmt.Sprintf(
-		"session-guard=max_turns=%s, max_turn_duration_ms=%s, max_session_duration_ms=%s, no_progress_timeout_ms=%s, merge_worker_max_duration_ms=%s, max_session_tokens=%s, max_session_context_multiplier=%s",
+		"session-guard=max_turns=%s, max_turn_duration_ms=%s, max_session_duration_ms=%s, merge_worker_max_duration_ms=%s, max_session_tokens=%s, max_session_context_multiplier=%s",
 		maxTurns,
 		turnDuration,
 		sessionDuration,
-		noProgressTimeout,
 		mergeDuration,
 		tokens,
 		multiplier,
@@ -1909,4 +1917,12 @@ func loadDoctorProjectWorkflowUncached(ctx context.Context, project globalconfig
 		return workflow, err
 	}
 	return projectpkg.LoadWorkflowContext(ctx, project)
+}
+
+func checkDoctorWorkflowLanes(id string, cfg workflowconfig.Config) (doctorCheck, bool) {
+	warnings := validationWarningsWithPrefix(cfg.ValidationWarnings(), "tracker.")
+	if len(warnings) == 0 {
+		return doctorCheck{}, false
+	}
+	return doctorCheck{Name: "Project " + id + " workflow lanes", Status: doctorWarn, Detail: strings.Join(warnings, "; "), Hint: "Run detent config migrate on the project configuration file."}, true
 }

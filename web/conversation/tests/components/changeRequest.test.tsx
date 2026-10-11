@@ -55,6 +55,7 @@ function renderView(overrides: Partial<ChangeRequestViewProps> = {}) {
     diff: ATTEMPT_DIFF,
     diffLoading: false,
     canWrite: true,
+    canReview: true,
     busy: false,
     now: NOW,
     viewerPrincipalId: "tok_mock",
@@ -75,6 +76,37 @@ describe("the Change Request page", () => {
       `Round ${currentVersion(CHANGE)!.number}`,
     );
     expect(screen.getAllByTestId("change-round").length).toBe(CHANGE.versions.length);
+  });
+
+  it.each([true, false])("shows criterion evidence and disclosed gaps on its round (gap: %s)", (gap) => {
+    const version = currentVersion(CHANGE)!;
+    const change: ChangeDetail = {
+      ...CHANGE,
+      reviews: [{
+        review_id: "review_evidence", version_id: version.version_id, decision: "approved", body: "Reviewed",
+        actor: CHANGE.reviews[0]!.actor, created_at: "2026-09-09T11:00:00Z",
+        validator: {
+          criteria_evidence: [
+            { criterion: "Reject invalid input", kind: "receipt", reference: "make check", behavior: "Invalid input errors" },
+            { criterion: "Return valid input", kind: gap ? "not_verified" : "test", reference: gap ? "No behavioral assertion" : "input_test.go:TestValid", behavior: gap ? "Not exercised" : "Valid input is returned" },
+          ],
+          not_verified: gap ? ["Return valid input"] : [],
+        },
+      }],
+    };
+    renderView({ change });
+    const evidence = screen.getByRole("region", { name: "Acceptance evidence" });
+    expect(within(evidence).getByText("Reject invalid input")).toBeTruthy();
+    expect(within(evidence).getByText("make check")).toBeTruthy();
+    if (gap) {
+      expect(within(screen.getByRole("region", { name: "Not verified criteria" })).getByText("Return valid input")).toBeTruthy();
+    } else {
+      expect(within(evidence).getByText("input_test.go:TestValid")).toBeTruthy();
+      expect(screen.queryByRole("region", { name: "Not verified criteria" })).toBeNull();
+    }
+    cleanup();
+    renderView({ change, version: { ...version, version_id: "older_round" } });
+    expect(screen.queryByRole("region", { name: "Acceptance evidence" })).toBeNull();
   });
 
   it("approves the current round with the note typed", async () => {
@@ -103,9 +135,19 @@ describe("the Change Request page", () => {
   });
 
   it("offers no decision to a reader who may not write", () => {
-    renderView({ canWrite: false });
+    renderView({ canWrite: false, canReview: false });
     expect(screen.queryByTestId("change-review-actions")).toBeNull();
     expect(screen.getByTestId("change-reviews")).not.toBeNull();
+  });
+
+  it("lets a member with a write grant discuss without deciding", async () => {
+    const { onComment, onReview } = renderView({ canWrite: true, canReview: false });
+    expect(screen.queryByTestId("change-approve")).toBeNull();
+    expect(screen.queryByTestId("change-request-changes")).toBeNull();
+    await userEvent.type(screen.getByLabelText("Review comment"), "Please check the docs.");
+    fireEvent.click(screen.getByTestId("change-comment"));
+    expect(onComment).toHaveBeenCalledWith("Please check the docs.");
+    expect(onReview).not.toHaveBeenCalled();
   });
 
   it("only approves the current round", () => {

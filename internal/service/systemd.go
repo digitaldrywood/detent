@@ -41,7 +41,8 @@ func (m *systemdManager) Info() ManagerInfo {
 }
 
 func (m *systemdManager) Definition() Definition {
-	return Definition{Path: m.userPath, Content: systemdUnit(m.cfg)}
+	stdout, stderr := serviceLogPaths(m.cfg)
+	return Definition{Path: m.userPath, Content: systemdUnit(m.cfg), StandardOutPath: stdout, StandardErrorPath: stderr}
 }
 
 func (m *systemdManager) Inspect(ctx context.Context) (Inspection, error) {
@@ -166,6 +167,7 @@ func (m *systemdManager) systemctlArgs(args ...string) []string {
 }
 
 func systemdUnit(cfg Config) string {
+	stdout, stderr := serviceLogPaths(cfg)
 	execStartParts := make([]string, 0, len(cfg.Arguments)+1)
 	execStartParts = append(execStartParts, systemdQuote(cfg.BinaryPath))
 	for _, argument := range cfg.Arguments {
@@ -180,9 +182,12 @@ func systemdUnit(cfg Config) string {
 		"[Service]",
 		"Type=simple",
 		"Environment=\"PATH=" + systemdEscape(cfg.Path) + "\"",
+		"Environment=" + systemdQuote(ManagerEnvironment+"="+string(ManagerSystemd)),
 		"ExecStart=" + strings.Join(execStartParts, " "),
 		"Restart=on-failure",
-		"RestartSec=5",
+		"RestartSec=60",
+		"StandardOutput=" + systemdQuote("append:"+stdout),
+		"StandardError=" + systemdQuote("append:"+stderr),
 		"KillMode=mixed",
 		"TimeoutStopSec=infinity",
 		"",

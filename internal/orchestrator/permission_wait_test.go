@@ -1,7 +1,7 @@
 package orchestrator
 
 import (
-	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -15,68 +15,67 @@ import (
 
 func TestHandleRunResultPermissionWait(t *testing.T) {
 	t.Parallel()
+	complete := "## Codex Workpad\n```detent-status\nschema: 1\nstatus: complete\nfields:\n  completion_work_attempt_id: \"5112\"\n  completion_generation: \"169\"\nblockers: []\nhuman_action: null\n```"
+	blocked := "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Choose the storage architecture\n```"
 	for _, tt := range []struct {
-		name     string
-		output   string
-		question string
-		kind     string
+		name        string
+		output      string
+		workpad     string
+		commentErr  error
+		refreshErr  error
+		noUsage     bool
+		wantBlocked bool
+		wantReview  bool
 	}{
-		{"assigned edits", "May I make the coordinated scheduling, connector, CI, test, and migration-documentation changes for #2346?\nNo implementation or tests have run.", "May I make the coordinated scheduling, connector, CI, test, and migration-documentation changes for #2346?", "implementation_permission"},
-		{"explicit gate", "May I deploy these changes to production?", "May I deploy these changes to production?", "approval_or_input"},
-		{"structured input", "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Choose the storage architecture\n```", "Choose the storage architecture", "approval_or_input"},
+		{name: "complete canonical workpad with final question", output: "May I merge?", workpad: complete, wantReview: true},
+		{name: "complete canonical workpad with contradictory final status", output: blocked, workpad: complete, wantReview: true, noUsage: true},
+		{name: "canonical human action with final question", output: "May I deploy these changes to production?", workpad: blocked, wantBlocked: true},
+		{name: "canonical human action with final completion", output: complete, workpad: blocked, wantBlocked: true},
+		{name: "unfinished canonical workpad with final completion", output: complete, workpad: strings.Replace(complete, "status: complete", "status: in_progress", 1)},
+		{name: "missing current evidence with final completion", output: complete, refreshErr: errors.New("tracker unavailable")},
+		{name: "unreadable current workpad with final completion", output: complete, workpad: strings.Replace(complete, "status: complete", "status: in_progress", 1), commentErr: errors.New("comments unavailable")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			issue := connector.Issue{ID: "issue-2415", Identifier: "digitaldrywood/detent#2415", State: "In Progress"}
-			tracker := &implementProgressConnector{refreshed: issue}
+			issue := implementProgressIssue("ready-head")
+			if tt.commentErr != nil {
+				issue.Comments = []connector.IssueComment{{Body: strings.Replace(complete, "status: complete", "status: in_progress", 1)}}
+			}
+			current := cloneIssue(issue)
+			current.Comments = []connector.IssueComment{{Body: tt.workpad}}
+			tracker := &implementProgressConnector{refreshed: current, hydrated: current, refreshErr: tt.refreshErr, commentErr: tt.commentErr}
 			attempts := &implementProgressAttemptStore{}
 			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress", "Rework"}, ObservedStates: []string{"Blocked"}})
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			state := newState(cfg)
 			state.TokenTotals.TotalTokens = 10
-			resultTokens := TokenTotals{TotalTokens: 42}
-			if tt.name == "structured input" {
-				resultTokens = TokenTotals{}
-			}
 			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: 5112, Generation: 169, SessionID: "session-5898", Mode: runpkg.RunModeImplement, Tokens: TokenTotals{TotalTokens: 42}, DiffStats: DiffStats{HeadSHA: "previous"}, StartedAt: time.Now()}
-			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: time.Now(), Request: runpkg.RunRequest{WorkAttemptID: 5112, Generation: 169}, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, FinalMessage: tt.output, Tokens: resultTokens, DiffStats: DiffStats{Status: "clean", HeadSHA: "53c6b1c"}}})
-			if len(attempts.completions) != 1 {
-				t.Fatalf("completions = %d", len(attempts.completions))
+			state.Claimed[issue.ID] = Claimed{Issue: issue}
+			tokens := TokenTotals{TotalTokens: 42}
+			if tt.noUsage {
+				tokens = TokenTotals{}
+			}
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: time.Now(), Request: runpkg.RunRequest{WorkAttemptID: 5112, Generation: 169}, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, FinalMessage: tt.output, Tokens: tokens, DiffStats: DiffStats{Status: "clean", HeadSHA: "53c6b1c"}}})
+			if tt.refreshErr != nil {
+				if _, deferred := state.deferredCompletions[issue.ID]; !deferred || len(attempts.completions) != 0 || len(tracker.updates) != 0 || !state.Retry[issue.ID].CompletionDeferred {
+					t.Fatalf("unavailable tracker completion was not deferred: %#v", attempts.completions)
+				}
+				return
+			}
+			if len(attempts.completions) != 1 || attempts.completions[0].ErrorClass == permissionWaitReason || strings.Contains(attempts.completions[0].WorkerMetadataJSON, `"permission_wait"`) {
+				t.Fatalf("final prose classified completion: %#v", attempts.completions)
 			}
 			if state.TokenTotals.TotalTokens != 52 || state.DiffStats[issue.ID].HeadSHA != "53c6b1c" {
 				t.Fatalf("completion telemetry lost: tokens=%#v diff=%#v", state.TokenTotals, state.DiffStats[issue.ID])
 			}
-			completion := attempts.completions[0]
-			if completion.ErrorClass != "permission_wait" || !strings.Contains(completion.ErrorMessage, tt.question) {
-				t.Fatalf("completion lost question: %#v", completion)
+			if _, claimed := state.Claimed[issue.ID]; claimed {
+				t.Fatal("completion retained claim")
 			}
-			var metadata struct {
-				PermissionWait struct {
-					Kind          string
-					WorkAttemptID int64  `json:"work_attempt_id"`
-					SessionID     string `json:"session_id"`
-				} `json:"permission_wait"`
+			if got, ok := state.Blocked[issue.ID]; ok != tt.wantBlocked || ok && got.Reason != workpadBlockedUnactionedReason {
+				t.Fatalf("canonical blocked outcome = %#v, present = %t, want %t", got, ok, tt.wantBlocked)
 			}
-			if err := json.Unmarshal([]byte(completion.WorkerMetadataJSON), &metadata); err != nil {
-				t.Fatal(err)
-			}
-			if metadata.PermissionWait.Kind != tt.kind || metadata.PermissionWait.WorkAttemptID != 5112 || metadata.PermissionWait.SessionID != "session-5898" {
-				t.Fatalf("handoff = %#v", metadata.PermissionWait)
-			}
-			blocked, ok := state.Blocked[issue.ID]
-			if !ok || blocked.Recovery.Owner != blockedRecoveryOwnerHuman || !strings.Contains(blocked.RecoveryRemedy, tt.question) {
-				t.Fatalf("blocked = %#v", blocked)
-			}
-			for _, elapsed := range []time.Duration{time.Minute, 24 * time.Hour} {
-				if orch.recoverCauseBlockedIssue(t.Context(), &state, blocked.Issue, time.Now().Add(elapsed)) {
-					t.Fatal("unchanged question recovered automatically")
-				}
-			}
-			if !strings.Contains(blocked.Recovery.AttemptError, "terminal_") || blocked.Recovery.WorkAttemptID != 5112 {
-				t.Fatalf("durable recovery lost provenance: %#v", blocked.Recovery)
-			}
-			if _, ok := state.Retry[issue.ID]; ok {
-				t.Fatal("permission wait scheduled a retry")
+			if got := len(tracker.updates) > 0 && tracker.updates[len(tracker.updates)-1].state == "Human Review"; got != tt.wantReview {
+				t.Fatalf("review transition = %t, want %t; updates = %#v", got, tt.wantReview, tracker.updates)
 			}
 		})
 	}

@@ -2,14 +2,19 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const defaultGitRemote = "origin"
@@ -111,10 +116,15 @@ func (l *LocalGit) PrepareMerge(
 				abortErr,
 			)
 		}
+		subjects, subjectErr := mergeTargetCommitSubjects(ctx, normalized.Path, originalHead, targetRef, conflictPaths)
+		if subjectErr != nil {
+			subjects = nil
+		}
 		return MergePrepareResult{
-			ConflictPaths: conflictPaths,
-			Status:        MergePrepareStatusConflict,
-			Message:       commandErrorOutput(err),
+			TargetCommitSubjects: subjects,
+			ConflictPaths:        conflictPaths,
+			Status:               MergePrepareStatusConflict,
+			Message:              commandErrorOutput(err),
 		}, nil
 	}
 
@@ -125,7 +135,7 @@ func (l *LocalGit) PrepareMerge(
 			abortRebaseIfInProgress(ctx, normalized.Path),
 		)
 	}
-	if diffStat != (DiffStat{}) {
+	if !diffStat.IsEmpty() {
 		return MergePrepareResult{Status: MergePrepareStatusDirty, DiffStat: diffStat}, nil
 	}
 
@@ -158,7 +168,7 @@ func (l *LocalGit) PrepareMerge(
 		if err != nil {
 			return MergePrepareResult{}, fmt.Errorf("workspace diff stat after gate: %w", err)
 		}
-		if strings.TrimSpace(current) != localHead || after != (DiffStat{}) {
+		if strings.TrimSpace(current) != localHead || !after.IsEmpty() {
 			return MergePrepareResult{}, fmt.Errorf("%w: workspace changed while the gate ran", ErrMergeResolutionInvalid)
 		}
 		validated = true
@@ -324,6 +334,17 @@ func (l *LocalGit) prepareResolvedMerge(ctx context.Context, info Info, issue Is
 		}
 		return MergePrepareResult{}, err
 	}
+	prHead := strings.TrimSpace(opts.ExpectedRemoteHead)
+	if prHead == "" {
+		prHead = remoteHead
+	}
+	findings, err := missingMergeGoDeclarations(ctx, info.Path, head, base, prHead, opts.IssueDescription)
+	if err != nil {
+		return MergePrepareResult{}, err
+	}
+	if len(findings) > 0 {
+		return MergePrepareResult{Status: MergePrepareStatusConflict, Message: "merge resolution removes unexplained Go declarations", Findings: findings}, nil
+	}
 	if err := l.validateMergeResolution(ctx, info, issue, opts.ValidationCommand); err != nil {
 		return MergePrepareResult{}, err
 	}
@@ -364,7 +385,7 @@ func (l *LocalGit) resolvedMergeHeads(ctx context.Context, info Info, issue Issu
 	if err != nil {
 		return "", "", "", err
 	}
-	if diff != (DiffStat{}) {
+	if !diff.IsEmpty() {
 		return "", "", "", fmt.Errorf("%w: merge resolution workspace is not source-clean", ErrMergeResolutionInvalid)
 	}
 	ref := "refs/remotes/" + remote + "/" + target
@@ -396,29 +417,77 @@ func (l *LocalGit) resolvedMergeHeads(ctx context.Context, info Info, issue Issu
 	return strings.TrimSpace(head), strings.TrimSpace(base), remoteHead, nil
 }
 
-func (l *LocalGit) validateMergeResolution(ctx context.Context, info Info, issue Issue, command string) (err error) {
+func (l *LocalGit) validateMergeResolution(ctx context.Context, info Info, issue Issue, command string) error {
 	if strings.TrimSpace(command) == "" {
 		return nil
 	}
-	scratch, err := PrepareWorkerScratch(ctx, info.Path)
+	result, err := l.runValidationCommand(ctx, info, issue, command)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		err = errors.Join(err, CleanupWorkerScratch(info.Path, scratch))
-	}()
+	if result.ExitCode != 0 {
+		return newValidationError(ValidationStageMergeFallbackVerification, result, fmt.Errorf("exit status %d", result.ExitCode))
+	}
+	return nil
+}
+
+func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {
+	result.Command = command
+	result.ExitCode = -1
+	scratch, err := PrepareWorkerScratch(ctx, info.Path)
+	if err != nil {
+		return result, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, CleanupWorkerScratch(info.Path, scratch)) }()
 	cmd := commandshell.Command(ctx, command, l.hooks.Shell)
 	cmd.Dir = info.Path
-	cmd.Env = hookEnv(info, issue)
+	cmd.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)
 	cmd.WaitDelay = workspaceCommandWaitDelay
 	procgroup.SetTempDir(cmd, scratch)
 	procgroup.Configure(ctx, cmd)
-	l.logger.Info("validating merge resolution", "workspace_path", info.Path, "command", command)
+	result.Evidence = validationEnvironment(ctx, cmd)
+	l.logger.Info("validating workspace", "workspace_path", info.Path, "command", command)
+	started := time.Now()
+	result.StartedAt = started.UTC()
+	result.Execution = "executed"
 	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("merge resolution gate failed: %w: %s", errors.Join(ctx.Err(), err), output)
+	result.FinishedAt = time.Now().UTC()
+	result.DurationNS = time.Since(started).Nanoseconds()
+	result.Output = string(output)
+	result.Evidence.Checks = gate.CheckObservations(result.Output)
+	if ctx.Err() != nil {
+		return result, ctx.Err()
 	}
-	return nil
+	if err != nil {
+		var exited *exec.ExitError
+		if errors.As(err, &exited) && exited.Exited() {
+			result.ExitCode = exited.ExitCode()
+			return result, nil
+		}
+		return result, fmt.Errorf("validation command failed: %w: %s", err, output)
+	}
+	result.ExitCode = 0
+	return result, nil
+}
+
+func validationEnvironment(ctx context.Context, command *exec.Cmd) *gate.CommandEvidence {
+	evidence := &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
+	probe := exec.CommandContext(ctx, "go", "env", "-json", "GOHOSTOS", "GOHOSTARCH", "GOVERSION")
+	probe.Dir, probe.Env = command.Dir, command.Env
+	probe.WaitDelay = workspaceCommandWaitDelay
+	var observed struct {
+		OS           string `json:"GOHOSTOS"`
+		Architecture string `json:"GOHOSTARCH"`
+		Version      string `json:"GOVERSION"`
+	}
+	output, err := probe.Output()
+	if err == nil && json.Unmarshal(output, &observed) == nil {
+		environment := gate.CheckEnvironment{OS: observed.OS, Architecture: observed.Architecture, GoVersion: observed.Version}
+		if environment.Valid() {
+			evidence.Environment = environment
+		}
+	}
+	return evidence
 }
 
 // mergeRemoteAncestor applies the checkpoint path's no-dropped-commits rule.
@@ -449,3 +518,36 @@ func rejectMergeHistory(ctx context.Context, path, remoteHead string, cause erro
 	}
 	return MergePrepareResult{Status: MergePrepareStatusConflict, Message: cause.Error()}, nil
 }
+
+type ValidationError struct {
+	Stage  string             `json:"stage"`
+	Result gate.CommandResult `json:"result"`
+	Output string             `json:"output"`
+	Err    error              `json:"-"`
+}
+
+const (
+	ValidationStageSourceFinalization        = gate.StageSourceFinalization
+	ValidationStageMergeFallbackVerification = gate.StageMergeFallbackVerification
+	ValidationStageLanding                   = gate.StageLanding
+)
+
+func newValidationError(stage string, result gate.CommandResult, err error) *ValidationError {
+	result.Stage = stage
+	result = tracker.PublicGateResult(result)
+	return &ValidationError{Stage: stage, Result: result, Output: result.Output, Err: err}
+}
+
+func (e *ValidationError) Error() string {
+	stage := "merge-fallback verification"
+	switch e.Stage {
+	case ValidationStageSourceFinalization:
+		stage = "source finalization"
+	case ValidationStageLanding:
+		stage = "landing"
+	case ValidationStageMergeFallbackVerification:
+		stage = "merge-fallback verification"
+	}
+	return fmt.Sprintf("%s gate failed: %v", stage, e.Err)
+}
+func (e *ValidationError) Unwrap() error { return e.Err }

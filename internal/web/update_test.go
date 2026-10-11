@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 
 	"github.com/digitaldrywood/detent/internal/update"
@@ -54,6 +55,12 @@ func TestUpdateApplyEndpoint(t *testing.T) {
 			applier:    &updateApplierStub{status: update.Status{LatestVersion: "1.2.4"}},
 			form:       url.Values{"confirm": {"true"}, "release": {"true"}, "from_release": {"true"}},
 			wantStatus: http.StatusAccepted, want: "Detent is restarting", wantCalls: 1,
+		},
+		{
+			name:       "unknown installer owner",
+			applier:    &updateApplierStub{status: update.Status{Action: update.ActionRefused, InstallSource: update.InstallSourceUnknown}, err: update.ErrRefused},
+			form:       url.Values{"confirm": {"true"}, "release": {"true"}},
+			wantStatus: http.StatusConflict, want: "DETENT_INSTALL_LOCK", wantCalls: 1,
 		},
 		{
 			name:       "applies update",
@@ -192,6 +199,32 @@ func TestAPIStateUpdateProjectionStaysSmallForLargeFleet(t *testing.T) {
 			}
 			if got.Update.ActiveAttempts != count || got.Counts.Running != count || strings.Contains(projected.Body.String(), "projects") {
 				t.Fatalf("projected state = %s", projected.Body.String())
+			}
+			combined := httptest.NewRecorder()
+			server.Handler().ServeHTTP(combined, httptest.NewRequest(http.MethodGet, "/api/v1/state?fields=update,counts&projection=cli", nil))
+			if combined.Code != projected.Code || combined.Body.String() != projected.Body.String() {
+				t.Fatal("CLI projection changed the updater's fields projection")
+			}
+			// The CLI projection must coexist with the updater's specialized
+			// projection, and Echo's pretty option must not expand its bound.
+			cliState := httptest.NewRecorder()
+			server.Handler().ServeHTTP(cliState, httptest.NewRequest(http.MethodGet, "/api/v1/state?projection=cli&pretty=1", nil))
+			var cliResponse struct {
+				Counts struct {
+					Running int `json:"running"`
+				} `json:"counts"`
+				Truncation serviceapi.StateTruncation `json:"truncation"`
+			}
+			if err := json.Unmarshal(cliState.Body.Bytes(), &cliResponse); err != nil {
+				t.Fatal(err)
+			}
+			if cliState.Code != http.StatusOK || cliState.Body.Len() > serviceapi.StateResponseBytes || cliResponse.Counts.Running != count || !cliResponse.Truncation.Truncated {
+				t.Fatalf("CLI state: status=%d bytes=%d response=%+v", cliState.Code, cliState.Body.Len(), cliResponse)
+			}
+			fullAfter := httptest.NewRecorder()
+			server.Handler().ServeHTTP(fullAfter, httptest.NewRequest(http.MethodGet, "/api/v1/state", nil))
+			if fullAfter.Code != http.StatusOK || fullAfter.Body.Len() <= 1<<20 || strings.Contains(fullAfter.Body.String(), "\"truncation\"") {
+				t.Fatal("CLI projection changed ordinary dashboard response")
 			}
 		})
 	}

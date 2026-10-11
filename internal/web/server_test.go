@@ -11,6 +11,7 @@ import (
 	"errors"
 	"html"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -28,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	detent "github.com/digitaldrywood/detent"
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/budget"
@@ -41,10 +43,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/healthnotify"
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/pause"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
@@ -52,6 +56,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web"
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 const sseTestOperationTimeout = 30 * time.Second
@@ -422,6 +427,30 @@ func TestLibraryPageListsLocalArtifactsAndPullRequestRecords(t *testing.T) {
 	if strings.Contains(body, "javascript:alert") {
 		t.Fatalf("library page rendered unsafe review URL:\n%s", body)
 	}
+
+	// Catches the daemon MCP library reaching another registered project or
+	// returning an unbounded list when the native hub service is absent.
+	for _, test := range []struct {
+		project string
+		want    int
+	}{{"video", 2}, {"detent", 1}} {
+		t.Run("operator library/"+test.project, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/operator-tools/artifact_library", strings.NewReader(`{"project_id":"`+test.project+`","limit":1}`))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("library status %d: %s", response.Code, response.Body)
+			}
+			var result operatortool.ChangeResult
+			if json.Unmarshal(response.Body.Bytes(), &result) != nil || len(result.Library) != 1 || result.Library[0].ProjectID != test.project {
+				t.Fatalf("incorrect library page: %s", response.Body)
+			}
+			if (result.NextOffset != nil) != (test.want > 1) {
+				t.Fatal("missing pagination")
+			}
+		})
+	}
 }
 
 func TestLibraryPageFiltersRows(t *testing.T) {
@@ -479,19 +508,18 @@ func TestAPITokenAuthProtectsAPIRoutes(t *testing.T) {
 
 	server, err := newServerWithLaneWriter(web.Config{
 		GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"},
+		LookupEnv:    func(string) string { return "" },
 	}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
 	requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
-	requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusUnauthorized)
-	requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/state", http.StatusUnauthorized, map[string]string{
-		"Authorization": "Bearer wrong",
-	})
-	requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/state", http.StatusOK, map[string]string{
-		"X-API-Key": "detent_test_token",
-	})
+	for _, path := range []string{"/api/v1/state", "/api/v1/state?projection=cli", "/api/v1/projects/detent/state?projection=cli"} {
+		requestJSON(t, server, http.MethodGet, path, http.StatusUnauthorized)
+		requestJSONWithHeaders(t, server, http.MethodGet, path, http.StatusUnauthorized, map[string]string{"Authorization": "Bearer wrong"})
+		requestJSONWithHeaders(t, server, http.MethodGet, path, http.StatusOK, map[string]string{"X-API-Key": "detent_test_token"})
+	}
 }
 
 func TestAPITokenEnvOverride(t *testing.T) {
@@ -5544,19 +5572,51 @@ func TestServerServesDefaultStaticAssetsFromArbitraryWorkingDirectory(t *testing
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/static/css/output.css", nil)
-
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	var paths []string
+	chunks := 0
+	clientPrepared := false
+	if err := fs.WalkDir(detent.StaticFS(), ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() && name == "app/conversation" {
+			clientPrepared = true
+		}
+		if !entry.IsDir() {
+			paths = append(paths, name)
+			if strings.HasPrefix(name, "app/conversation/chunks/") {
+				chunks++
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/css") {
-		t.Fatalf("Content-Type = %q, want text/css", got)
+	if len(paths) == 0 {
+		t.Fatal("embedded static assets are missing")
 	}
-	if !strings.Contains(rec.Body.String(), "tailwindcss") {
-		t.Fatalf("body missing embedded CSS marker:\n%s", rec.Body.String())
+	if clientPrepared {
+		paths = append(paths, "app/conversation/app.js", "app/conversation/app.css", "app/conversation/THIRD_PARTY_LICENSES.txt", "app/conversation/index.html")
+		if chunks == 0 {
+			t.Fatal("conversation lazy chunks are missing")
+		}
+	}
+	for _, name := range slices.Compact(slices.Sorted(slices.Values(paths))) {
+		t.Run(name, func(t *testing.T) {
+			expected, err := fs.ReadFile(detent.StaticFS(), name)
+			if err != nil || len(expected) == 0 {
+				t.Fatalf("embedded asset %s: %v", name, err)
+			}
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/static/"+name, nil)
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), expected) {
+				t.Fatalf("served asset %s: status %d, bytes %d, want %d", name, rec.Code, rec.Body.Len(), len(expected))
+			}
+			if got := rec.Header().Get("Content-Type"); strings.HasSuffix(name, ".css") && !strings.HasPrefix(got, "text/css") {
+				t.Fatalf("Content-Type = %q, want text/css", got)
+			}
+		})
 	}
 }
 
@@ -6975,6 +7035,10 @@ func TestStateAPIIncludesGitHubGraphQLRateLimitStatus(t *testing.T) {
 }
 
 func TestStateAndHealthReportWorkspaceCleanupFailures(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service integration")
+	}
+
 	t.Parallel()
 
 	deps := testDeps(t)
@@ -7009,6 +7073,10 @@ func TestStateAndHealthReportWorkspaceCleanupFailures(t *testing.T) {
 }
 
 func TestStateAPIIncludesProjectFailureBreakerEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service integration")
+	}
+
 	t.Parallel()
 
 	deps := testDeps(t)
@@ -7180,6 +7248,10 @@ func TestHealthReportsCICondition(t *testing.T) {
 }
 
 func TestHealthReportsUnevaluablePauseExitCondition(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service integration")
+	}
+
 	t.Parallel()
 
 	deps := testDeps(t)
@@ -9211,7 +9283,58 @@ func TestServerEventsStreamsSidebarGitHubAPIHealth(t *testing.T) {
 	}
 }
 
+func TestServerEventsBuildDashboardScopeOnce(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name      string
+		project   string
+		wantCalls int64
+	}{
+		{name: "fleet", wantCalls: 1},
+		{name: "project", project: "detent", wantCalls: 1},
+		{name: "unknown project falls back to fleet", project: "missing", wantCalls: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			backend := &enrichmentQueryCountingStore{}
+			deps := testDeps(t)
+			deps.Store = backend
+			mustSetWebProject(t, deps.Registry, "detent", false)
+			if err := deps.Hub.Publish(telemetry.Snapshot{
+				GeneratedAt: time.Now().UTC(),
+				Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Projects:    []telemetry.ProjectSnapshot{{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requestDashboardEnrichment(t, server)
+			before := backend.budgetCostCalls.Load()
+			addr := startWebServer(t, server)
+			conn, reader := openRawEventStream(t, addr, "/events?project="+tt.project+"&view=kanban")
+			event := readRawSSEEvent(t, conn, reader)
+			if event.name != "snapshot" {
+				t.Fatalf("event name = %q, want snapshot", event.name)
+			}
+			if tt.project == "detent" && !strings.Contains(event.data, `data-board-key="project.detent"`) {
+				t.Fatal("project snapshot lost project board scope")
+			}
+			if got := backend.budgetCostCalls.Load() - before; got != tt.wantCalls {
+				t.Fatalf("dashboard spend queries = %d, want %d", got, tt.wantCalls)
+			}
+		})
+	}
+}
+
 func TestServerEventsPreserveProjectKanbanVisibilityMetadata(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	deps := testDeps(t)
@@ -9999,6 +10122,10 @@ func TestServerEventsSendsTickEvents(t *testing.T) {
 }
 
 func TestServerEventsStreamsPastHTTPTimeouts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	// Header parsing needs a realistic scheduling budget even though this test
@@ -11508,6 +11635,14 @@ func TestServerAPIErrorRoutes(t *testing.T) {
 			wantCode:   "snapshot_unavailable",
 		},
 		{
+			name: "CLI fleet state unavailable", method: http.MethodGet,
+			path: "/api/v1/state?projection=cli", wantStatus: http.StatusOK, wantCode: "snapshot_unavailable",
+		},
+		{
+			name: "CLI project state unavailable", method: http.MethodGet,
+			path: "/api/v1/projects/detent/state?projection=cli", wantStatus: http.StatusOK, wantCode: "snapshot_unavailable",
+		},
+		{
 			name:       "refresh unavailable",
 			method:     http.MethodPost,
 			path:       "/api/v1/refresh",
@@ -11529,6 +11664,10 @@ func TestServerAPIErrorRoutes(t *testing.T) {
 }
 
 func TestServerUsageAPIReportsAggregates(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -11638,6 +11777,15 @@ func TestServerWorkflowTimelineAPI(t *testing.T) {
 		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
 	}
 
+	profile := workflowmetrics.ActivityProfile{Schema: 1, SessionID: 42, AttemptID: 3390, Stage: "implementation", StartedAt: startedAt, AsOf: finishedAt, Coverage: "partial", Spans: []workflowmetrics.ActivitySpan{{ID: "test", Kind: "local_validation", StartedAt: startedAt, FinishedAt: startedAt.Add(time.Minute), Outcome: "completed", Fingerprint: "safe-fingerprint", Repeat: 2}}}
+	data, _ := json.Marshal(profile)
+	writer := backend.(interface {
+		SaveWorkflowActivityProfile(context.Context, int64, store.WorkflowPhaseEvent, workflowmetrics.ActivityProfile) (int64, error)
+	})
+	if _, err := writer.SaveWorkflowActivityProfile(ctx, 0, store.WorkflowPhaseEvent{ProjectID: "detent", IssueID: "issue-722", Identifier: "digitaldrywood/detent#722", SessionID: 42, PhaseType: workflowmetrics.PhaseTypeAgentActivity, PhaseName: "instruction_activity", StartedAt: startedAt, MetadataJSON: string(data)}, profile); err != nil {
+		t.Fatal(err)
+	}
+
 	deps := testDeps(t)
 	deps.Store = backend
 	server, err := newServerWithLaneWriter(web.Config{}, deps)
@@ -11656,12 +11804,21 @@ func TestServerWorkflowTimelineAPI(t *testing.T) {
 
 	payload := requestJSON(t, server, http.MethodGet, "/api/v1/workflow/timeline?project_id=detent&identifier=digitaldrywood/detent%23722", http.StatusOK)
 	events := payload["events"].([]any)
-	if len(events) != 1 {
-		t.Fatalf("events len = %d, want 1", len(events))
+	if len(events) != 2 {
+		t.Fatalf("events len = %d, want 2", len(events))
 	}
 	event := events[0].(map[string]any)
 	if event["phase_type"] != "lane" || event["phase_name"] != "Todo" || event["duration_seconds"] != float64(1800) {
 		t.Fatalf("timeline event = %#v, want Todo lane duration", event)
+	}
+	activity := payload["activity"].([]any)
+	if len(activity) != 1 {
+		t.Fatalf("activity=%+v", activity)
+	}
+	audit := activity[0].(map[string]any)
+	breakdown := audit["breakdown"].(map[string]any)
+	if breakdown["observed_seconds"] != float64(60) || breakdown["unknown_seconds"] != float64(1740) || audit["unobserved_tail_seconds"].(float64) <= 0 {
+		t.Fatalf("audit=%+v", audit)
 	}
 }
 
@@ -11722,6 +11879,10 @@ func TestWorkflowMetricsStateAPIIncludesLaneTrendComparisons(t *testing.T) {
 }
 
 func TestProjectDiagnosticsRendersRuntimeStoreEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -12056,6 +12217,8 @@ func TestReportsDailyDigestReconcilesSeededDay(t *testing.T) {
 		"50%",
 		"$0.80",
 		"1 reattached · 0 fresh",
+		"Release history is unavailable; external releases are not observed.",
+		"Lifetime unknown dwell",
 		`data-digest-project="detent"`,
 	} {
 		if !strings.Contains(html, want) {
@@ -12259,6 +12422,9 @@ func newLibraryTestServer(t *testing.T) *web.Server {
 
 func newWorkItemAPITestServer(t *testing.T, apiToken string) (*web.Server, *local.Connector, *refreshProbe) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("durable local SQLite integration")
+	}
 
 	conn, err := local.New(local.Config{
 		Path:           filepath.Join(t.TempDir(), "work-items.db"),
@@ -13163,6 +13329,13 @@ type storeProbe struct {
 	validatorVerdicts func(context.Context, store.ValidatorVerdictQuery) ([]store.ValidatorVerdict, error)
 }
 
+func (p storeProbe) LocalProjectRank(ctx context.Context, change *projectsettings.RankChange) (projectsettings.Rank, error) {
+	if p.Store != nil {
+		return p.Store.LocalProjectRank(ctx, change)
+	}
+	return projectsettings.Rank{}, sql.ErrNoRows
+}
+
 type healthNotificationFailureReader struct {
 	failures []healthnotify.Failure
 }
@@ -13227,6 +13400,10 @@ func (s *renderBlockingStore) ListEfficiencyReceipts(ctx context.Context, _ effi
 
 func (storeProbe) LifetimeTotals(context.Context) (store.LifetimeTotals, error) {
 	return store.LifetimeTotals{}, nil
+}
+
+func (storeProbe) ListRecentTerminalWorkAttempts(context.Context, store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
+	return nil, nil
 }
 
 func (storeProbe) UsageReport(_ context.Context, query store.UsageReportQuery) (store.UsageReport, error) {
@@ -13778,7 +13955,7 @@ func kanbanPendingMutationCount(t *testing.T, server *web.Server, field string) 
 	t.Helper()
 
 	serverValue := reflect.ValueOf(server)
-	if serverValue.Kind() != reflect.Ptr || serverValue.IsNil() {
+	if serverValue.Kind() != reflect.Pointer || serverValue.IsNil() {
 		t.Fatalf("server value = %v, want non-nil pointer", serverValue.Kind())
 	}
 	mutations := serverValue.Elem().FieldByName("kanbanMutations")
@@ -13971,6 +14148,9 @@ func openEventStream(t *testing.T, server *web.Server) io.ReadCloser {
 
 func startWebServer(t *testing.T, server *web.Server) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
 
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -14228,6 +14408,10 @@ func int64Pointer(value int64) *int64 {
 }
 
 func TestCapacityClearEndpointRecoveryMode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		mode, project string

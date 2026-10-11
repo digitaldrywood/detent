@@ -63,6 +63,34 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 	if err := s.database.db.QueryRowContext(ctx, "SELECT coalesce(max(sequence),0) FROM hosted_billing_events").Scan(&through); err != nil {
 		return err
 	}
+	rows, err := s.database.db.QueryContext(ctx, "SELECT event_id,event_type FROM hosted_billing_events WHERE credit_processed=0 AND sequence<=? ORDER BY sequence", through)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type pendingEvent struct{ id, kind string }
+	var events []pendingEvent
+	for rows.Next() {
+		var event pendingEvent
+		if err := rows.Scan(&event.id, &event.kind); err != nil {
+			return err
+		}
+		events = append(events, event)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	var creditErr error
+	for _, event := range events {
+		if err := w.creditEvent(ctx, event.id, event.kind); err != nil {
+			creditErr = errors.Join(creditErr, err)
+			continue
+		}
+		if _, err := s.database.db.ExecContext(ctx, "UPDATE hosted_billing_events SET credit_processed=1 WHERE event_id=?", event.id); err != nil {
+			return err
+		}
+	}
+	creditErr = errors.Join(creditErr, w.autoFund(ctx))
 	previous, err := s.database.readHostedBilling(ctx)
 	if err != nil {
 		return err
@@ -80,7 +108,7 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 		return err
 	}
 	now := s.config.now().UTC()
-	return s.database.commitHostedBilling(ctx, resolveHostedBilling(cfg, previous, snapshot, now), through, now)
+	return errors.Join(creditErr, s.database.commitHostedBilling(ctx, resolveHostedBilling(cfg, previous, snapshot, now), through, now))
 }
 
 func (s *Service) hostedStripeWebhook(c echo.Context) error {

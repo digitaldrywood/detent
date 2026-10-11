@@ -20,6 +20,10 @@ import (
 )
 
 func TestRunnerTerminalSessionReapsEscapedWorkspaceProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	tests := []struct {
 		name         string
 		subdirectory string

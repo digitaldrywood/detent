@@ -428,7 +428,7 @@ detent --format json config path`),
 				LogLevel: runtimeStringFlag{Value: logLevel, Set: flagChanged(cmd, "log-level")},
 				Port:     runtimeIntFlag{Value: port, Set: flagChanged(cmd, "port")},
 			}
-			boot, err := resolveBootConfigWithRuntimeDeps(cmd.Context(), configPath, host, flags, opts, bootRuntimeDeps(opts))
+			boot, err := resolveBootConfigWithRuntimeDeps(cmd.Context(), configPath, host, flags, opts, bootRuntimeDeps(opts), true)
 			if err != nil {
 				return err
 			}
@@ -483,8 +483,9 @@ detent --format json config path`),
 		newCITriggerLabelCommand(opts),
 		newDevRuntimeCommand(&host, &port, opts),
 		newHubCommand(opts),
-		newCloudCommand(opts.lookupEnv),
+		newCloudCommand(opts),
 		newArtifactCommand(opts.lookupEnv),
+		newAttachCommand(opts.lookupEnv, nil),
 		newInitCommand(&configPath, opts),
 		newAddProjectCommand(&configPath, opts),
 		newRefreshProjectCommand(&configPath, opts),
@@ -522,22 +523,26 @@ func defaultOptions() options {
 	return options{
 		resolvePath: globalconfig.ResolvePath,
 		read: func(path string) (globalconfig.Config, error) {
-			return globalconfig.Read(path)
+			return readLocalConfigurationFile(path)
 		},
 		readProject: func(path string, projectID string) (globalconfig.Config, []string, error) {
-			return globalconfig.ReadProject(path, projectID)
+			return readLocalConfigurationProjectFile(path, projectID)
 		},
 		readDoctor: func(path string) (globalconfig.Config, error) {
-			return globalconfig.Read(path, globalconfig.WithMissingWorkflowFiles())
+			return readLocalConfigurationFile(path, globalconfig.WithMissingWorkflowFiles())
 		},
 		readDoctorProject: func(path string, projectID string) (globalconfig.Config, []string, error) {
-			return globalconfig.ReadProject(path, projectID, globalconfig.WithMissingWorkflowFiles())
+			return readLocalConfigurationProjectFile(path, projectID, globalconfig.WithMissingWorkflowFiles())
 		},
 		readOrDefault: func(path string) (globalconfig.Config, error) {
-			return globalconfig.ReadOrDefault(path, globalconfig.WithProjectPathLiterals())
+			cfg, err := readLocalConfigurationFile(path, globalconfig.WithProjectPathLiterals())
+			if err != nil && errors.Is(err, os.ErrNotExist) {
+				return globalconfig.ReadOrDefault(path, globalconfig.WithProjectPathLiterals())
+			}
+			return cfg, err
 		},
 		write: func(path string, cfg globalconfig.Config) error {
-			return globalconfig.Write(path, cfg, globalconfig.WithProjectPathLiterals())
+			return writeLocalConfigurationFile(path, cfg)
 		},
 		boot:        defaultBoot,
 		signal:      noSignal,
@@ -826,6 +831,15 @@ func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 			if err := opts.write(path, global); err != nil {
 				return err
 			}
+			global, err = opts.readOrDefault(path)
+			if err != nil {
+				return err
+			}
+			index := projectIndex(global.Projects, cfg.ID)
+			if index < 0 {
+				return projectNotFoundError(cfg.ID, global.Projects)
+			}
+			cfg = global.Projects[index]
 			gitStatus := inspectGlobalConfigGit(cmd.Context(), path, opts.runCommand)
 			if err := opts.signal(cmd.Context(), Signal{
 				Operation: OperationAddProject,
@@ -1045,10 +1059,10 @@ func newEditProjectCommand(configPath *string, opts options, operation Operation
 func newConfigCommand(configPath *string, opts options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "config",
-		Short:   "Inspect global config settings",
+		Short:   "Inspect and migrate config settings",
 		Example: "detent config path",
 	}
-	cmd.AddCommand(newConfigPathCommand(configPath, opts))
+	cmd.AddCommand(newConfigPathCommand(configPath, opts), newConfigMigrateCommand())
 	return cmd
 }
 
@@ -1145,8 +1159,21 @@ func updateProject(
 			return globalconfig.Project{}, err
 		}
 	}
-	if err := opts.write(path, cfg); err != nil {
+	if operation == OperationPromoteProject && !cfg.Client.Configured() {
+		err = writeLocalConfigurationRank(ctx, path, cfg, id, cfg.Projects[index].Priority)
+	} else {
+		err = opts.write(path, cfg)
+	}
+	if err != nil {
 		return globalconfig.Project{}, err
+	}
+	cfg, err = opts.readOrDefault(path)
+	if err != nil {
+		return globalconfig.Project{}, err
+	}
+	index = projectIndex(cfg.Projects, id)
+	if index < 0 {
+		return globalconfig.Project{}, projectNotFoundError(id, cfg.Projects)
 	}
 
 	if err := opts.signal(ctx, Signal{

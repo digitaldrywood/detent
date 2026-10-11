@@ -25,7 +25,6 @@ const (
 	DecisionReasonForgeUnavailableRecovery         = "forge_unavailable_recovery"
 	DecisionReasonGitHubRESTCapacityPaused         = "github_rest_capacity_paused"
 	DecisionReasonGitHubRESTRecovery               = "github_rest_recovery"
-	DecisionReasonGitHubMonitor                    = "worker_github_budget_monitor_unavailable"
 	DecisionReasonGlobalCapacityFull               = DispatchGateReasonGlobalCapacityFull
 	DecisionReasonHydrateFailed                    = "hydrate_failed"
 	DecisionReasonInactiveState                    = "inactive_state"
@@ -70,7 +69,6 @@ var emittedDecisionReasons = []string{
 	DecisionReasonForgeUnavailableRecovery,
 	DecisionReasonGitHubRESTCapacityPaused,
 	DecisionReasonGitHubRESTRecovery,
-	DecisionReasonGitHubMonitor,
 	DecisionReasonHydrateFailed,
 	DecisionReasonInactiveState,
 	DecisionReasonInvalidCandidate,

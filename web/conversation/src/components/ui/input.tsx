@@ -4,9 +4,12 @@ import { Input as InputPrimitive } from "@base-ui/react/input";
 import type * as React from "react";
 
 import { cn } from "~/lib/utils";
+import { useSidebarSearchInput } from "~/app/adapters/sidebarData";
 
 type InputProps = Omit<InputPrimitive.Props & React.RefAttributes<HTMLInputElement>, "size"> & {
   size?: "sm" | "compact" | "default" | "lg" | number;
+  /** Monospace with tabular digits, for paths, commands, colors and numbers. */
+  font?: "default" | "mono";
   unstyled?: boolean;
   nativeInput?: boolean;
 };
@@ -14,10 +17,12 @@ type InputProps = Omit<InputPrimitive.Props & React.RefAttributes<HTMLInputEleme
 function Input({
   className,
   size = "default",
+  font = "default",
   unstyled = false,
   nativeInput = false,
   ...props
 }: InputProps) {
+  const sidebarSearchProps = useSidebarSearchInput(nativeInput && props.type === "search" && props["aria-label"] === "Search threads");
   const inputClassName = cn(
     "h-8.5 w-full min-w-0 rounded-[inherit] px-[calc(--spacing(3)-1px)] leading-8.5 outline-none placeholder:text-placeholder sm:h-7.5 sm:leading-7.5 [transition:background-color_5000000s_ease-in-out_0s]",
     size === "compact" && "h-7 px-[calc(--spacing(2.5)-1px)] text-xs leading-7 sm:h-7 sm:leading-7",
@@ -25,6 +30,9 @@ function Input({
     size === "lg" && "h-9.5 leading-9.5 sm:h-8.5 sm:leading-8.5",
     props.type === "search" &&
       "[&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none [&::-webkit-search-results-button]:appearance-none [&::-webkit-search-results-decoration]:appearance-none",
+    // Number fields are typed into; browser spin buttons crowd narrow fields and step by 1.
+    props.type === "number" &&
+      "[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
     props.type === "file" &&
       "text-muted-foreground file:me-3 file:bg-transparent file:font-medium file:text-foreground file:text-sm",
   );
@@ -41,6 +49,7 @@ function Input({
         size={typeof size === "number" ? size : undefined}
         style={nativeStyle}
         {...(nativeInputProps as React.ComponentProps<"input">)}
+        {...sidebarSearchProps}
       />
     );
   } else {
@@ -63,6 +72,7 @@ function Input({
           !unstyled &&
             size === "compact" &&
             "rounded-md before:rounded-[calc(var(--radius-md)-1px)]",
+          font === "mono" && "font-mono tabular-nums",
           className,
         ) || undefined
       }

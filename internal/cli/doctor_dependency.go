@@ -359,10 +359,11 @@ func doctorBlockedRecoveryTimelinePredicate(
 		return false
 	}
 	var phaseName string
+	var reason string
 	var enteredAtRaw string
 	var metadataJSON string
 	err := timelineStore.QueryRowContext(ctx, `
-SELECT phase_name, started_at, metadata_json
+SELECT phase_name, COALESCE(reason, ''), started_at, metadata_json
 FROM workflow_phase_events
 WHERE (issue_id = ? OR identifier = ? OR issue_url = ?)
   AND phase_type = 'lane'
@@ -372,7 +373,7 @@ LIMIT 1`,
 		doctorBlockedRecoveryIdentity(issue.ID),
 		doctorBlockedRecoveryIdentity(issue.Identifier),
 		doctorBlockedRecoveryIdentity(issue.URL),
-	).Scan(&phaseName, &enteredAtRaw, &metadataJSON)
+	).Scan(&phaseName, &reason, &enteredAtRaw, &metadataJSON)
 	if err != nil {
 		return false
 	}
@@ -380,7 +381,7 @@ LIMIT 1`,
 	if err != nil {
 		return false
 	}
-	return orchestrator.BlockedIssueHasCurrentRecoveryPredicate(issue, phaseName, enteredAt, metadataJSON)
+	return orchestrator.BlockedIssueHasCurrentRecoveryPredicate(issue, phaseName, reason, enteredAt, metadataJSON)
 }
 
 func doctorBlockedRecoveryIdentity(value string) sql.NullString {

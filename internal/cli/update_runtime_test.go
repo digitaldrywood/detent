@@ -2,16 +2,164 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
+	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
+
+type urgentRuntimeUpdater struct {
+	apply func(context.Context, detentupdate.ApplyOptions) (detentupdate.Status, error)
+}
+
+func (u urgentRuntimeUpdater) Check(context.Context) (detentupdate.Status, error) {
+	return detentupdate.Status{}, nil
+}
+
+func (u urgentRuntimeUpdater) Apply(ctx context.Context, opts detentupdate.ApplyOptions) (detentupdate.Status, error) {
+	return u.apply(ctx, opts)
+}
+
+func TestEnrolledUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		follow bool
+		active int
+	}{
+		{name: "urgent finishes active leases", active: 2},
+		{name: "heartbeat target finishes active leases", follow: true, active: 2},
+		{name: "heartbeat target updates idle runner", follow: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			follow := test.follow
+			runtimeCtx, cancelRuntime := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancelRuntime()
+			requestCtx, cancelRequest := context.WithCancel(t.Context())
+			defer cancelRequest()
+			completed := make(chan struct{})
+			restarted := make(chan struct{})
+			waiting := make(chan int)
+			drains, applies, restarts := 0, 0, 0
+			running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: "none", Source: "unknown", OS: "linux", Architecture: "amd64", ObservedAt: time.Now()}
+			scheduler, err := detentupdate.NewScheduler(detentupdate.SchedulerConfig{
+				Enabled: true, CheckInterval: time.Hour, StatePath: filepath.Join(t.TempDir(), "update.json"), RunningBuild: running,
+				Updater: urgentRuntimeUpdater{apply: func(ctx context.Context, opts detentupdate.ApplyOptions) (detentupdate.Status, error) {
+					applies++
+					if ctx.Err() != nil || opts.Urgent != !follow || opts.FollowHub != follow || opts.ExpectedVersion != "1.2.4" {
+						t.Errorf("invalid update context/options: %v %+v", ctx.Err(), opts)
+					}
+					return detentupdate.Status{Action: detentupdate.ActionUpdated, LatestVersion: "1.2.4", LatestCommit: strings.Repeat("c", 40), BinarySHA256: strings.Repeat("d", 64), VerifiedRelease: true}, nil
+				}},
+				ReserveDrain: func(ctx context.Context) (func(), error) {
+					drains++
+					for remaining := test.active; remaining > 0; remaining-- {
+						waiting <- remaining
+						select {
+						case <-completed:
+						case <-ctx.Done():
+							return nil, ctx.Err()
+						}
+					}
+					return func() {}, nil
+				},
+				RequestRestart: func(string) bool { restarts++; close(restarted); return true },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner := enrolledUpdateOwner(runtimeCtx, scheduler, running)
+			request := &runnerauth.UpdateRequest{RequestedAt: time.Now(), ID: "urgent-test", Service: "detent", Version: "1.2.4", Release: true, Urgent: !follow, FollowHub: follow}
+			if follow {
+				request.ExpectedBuildRevision = owner(t.Context(), nil).Revision
+			}
+			owner(requestCtx, request)
+			cancelRequest()
+			for range test.active {
+				select {
+				case <-waiting:
+				case <-runtimeCtx.Done():
+					t.Fatal("urgent delivery did not wait for both sessions")
+				}
+				observed := owner(t.Context(), request)
+				if observed.Receipt == nil || observed.Receipt.Status != "draining" || drains != 1 || applies != 0 || restarts != 0 {
+					t.Fatalf("heartbeat during active sessions: %+v drains/applies/restarts=%d/%d/%d", observed, drains, applies, restarts)
+				}
+				completed <- struct{}{}
+			}
+			select {
+			case <-restarted:
+			case <-runtimeCtx.Done():
+				t.Fatal("heartbeat update did not restart")
+			}
+			if _, err := scheduler.ApplyPending(t.Context()); !errors.Is(err, detentupdate.ErrNoPendingUpdate) {
+				t.Fatalf("pending apply after completed urgent update: %v", err)
+			}
+			observed := owner(t.Context(), nil)
+			if drains != 1 || applies != 1 || restarts != 1 || observed.Receipt.Status != "restart_requested" {
+				t.Fatalf("finished drain: %+v drains/applies/restarts=%d/%d/%d", observed, drains, applies, restarts)
+			}
+		})
+	}
+}
+
+func TestHubRuntimeUpdateSchedule(t *testing.T) {
+	t.Parallel()
+	identityPath := filepath.Join(t.TempDir(), "private", "runner.json")
+	identity, err := runnerauth.Initialize(identityPath, "https://hub.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity.Identity.OrganizationID = "org_example"
+	if err := runnerauth.Save(identityPath, identity); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name     string
+		client   globalconfig.HubClient
+		hours    int
+		interval time.Duration
+		enrolled bool
+	}{
+		{name: "Hub heartbeat default", client: globalconfig.HubClient{URL: "https://hub.example.test"}, interval: 6 * time.Hour},
+		{name: "Hub configured heartbeat", client: globalconfig.HubClient{URL: "https://hub.example.test", HeartbeatIntervalSeconds: 45}, interval: 6 * time.Hour},
+		{name: "Hub explicit check interval", client: globalconfig.HubClient{URL: "https://hub.example.test"}, hours: 2, interval: 2 * time.Hour},
+		{name: "enrolled follows Hub through heartbeat owner", client: globalconfig.HubClient{URL: "https://hub.example.test", IdentityFile: identityPath}, interval: 30 * time.Second, enrolled: true},
+		{name: "standalone default", interval: 6 * time.Hour},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := BootConfig{Version: "0.117.35", Global: globalconfig.Config{
+				Path:   filepath.Join(t.TempDir(), "config.yaml"),
+				Client: test.client,
+				Update: globalconfig.Update{AutoCheckEnabled: true, AutoApplyEnabled: true, CheckIntervalHours: test.hours},
+			}}
+			scheduler, err := newRuntimeUpdateScheduler(cfg, nil,
+				func(context.Context) (func(), bool) { return func() {}, true },
+				func(context.Context) (func(), error) { return func() {}, nil },
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status := scheduler.Status(); status.Enabled == test.enrolled || status.AutoApplyEnabled == test.enrolled || status.CheckInterval != test.interval {
+				t.Fatalf("Status() = %#v, want automatic update interval %s", status, test.interval)
+			}
+		})
+	}
+}
 
 func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 	t.Parallel()
@@ -22,15 +170,75 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 	if !runtimeUpdateIdle(context.Background(), project.NewRegistry()) {
 		t.Fatal("runtimeUpdateIdle() with empty registry = false, want true")
 	}
+	t.Run("restored completion still owns pending work", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("durable completion restore integration")
+		}
+		now := time.Now()
+		runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = runtimeStore.Close() })
+		issue := connector.Issue{ID: "completed-provider", State: "In Progress"}
+		attemptID, err := runtimeStore.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "fixture", IssueID: issue.ID, WorkerType: "implement", Lane: issue.State, AttemptNumber: 1, StartedAt: now, LeaseExpiresAt: now.Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadata, err := json.Marshal(map[string]any{"deferred_completion": map[string]any{"schema": 1, "running": orchestrator.Running{Issue: issue, WorkAttemptID: attemptID, Attempt: 1}, "completed_at": now, "deferred_at": now, "fence_retry_at": now.Add(time.Hour)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runtimeStore.RecordWorkAttemptHeartbeat(t.Context(), store.WorkAttemptHeartbeat{AttemptID: attemptID, HeartbeatAt: now, Phase: "completion_deferred", WorkerMetadataJSON: string(metadata)}); err != nil {
+			t.Fatal(err)
+		}
+		cfg := workflowconfig.Default()
+		cfg.Tracker.Kind = workflowconfig.TrackerMemory
+		tracked, err := project.New(project.Config{Project: globalconfig.Project{ID: "fixture", Workdir: t.TempDir(), Weight: 1}, Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."}}, project.Dependencies{WorkAttempts: runtimeStore})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tracked.Start(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := tracked.Stop(ctx); err != nil {
+				t.Error(err)
+			}
+		})
+		registry := project.NewRegistry()
+		if err := registry.Set(tracked); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		var state orchestrator.State
+		for {
+			state, err = tracked.Orchestrator().State(ctx)
+			if err != nil || state.UnsettledWork() > 0 {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatal("completion owner was not restored")
+			case <-time.After(time.Millisecond):
+			}
+		}
+		if err != nil || len(state.Snapshot(now).Running) != 0 || state.UnsettledWork() != 1 {
+			t.Fatalf("completion owner unavailable: unsettled=%d err=%v", state.UnsettledWork(), err)
+		}
+		if runtimeUpdateIdle(t.Context(), registry) {
+			t.Fatal("updater treated pending completion as idle")
+		}
+	})
 }
 
 func TestRuntimeUpdateIdleReservationBlocksDispatch(t *testing.T) {
 	t.Parallel()
 
-	candidates := []scheduler.ProjectCandidate{
-		{ID: "detent", Weight: 1},
-		{ID: "video", Pool: "video", Weight: 1},
-	}
+	candidates := []scheduler.ProjectCandidate{{ID: "detent"}, {ID: "video", Pool: "video"}}
 	gate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{
 		{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 1}},
 		{Name: "video", Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 1}},

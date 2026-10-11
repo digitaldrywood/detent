@@ -2,12 +2,23 @@
 
 Detent is a Go agent orchestrator delivered as a single binary. Keep changes small, scoped to the issue or pull request, and aligned with the existing project conventions.
 
+## Contributor License Agreement (CLA)
+
+The CLA bot asks first-time contributors to read and sign the [individual
+Contributor License Agreement](CLA.md) on their first pull request. Sign by
+replying to that pull request with this exact phrase:
+
+> I have read the CLA Document and I hereby sign the CLA
+
+The bot records your signature, so you do not need to sign again on later pull
+requests.
+
 ## Prerequisites
 
 - Go 1.26.
 - Git.
 - Node.js and npm for Tailwind CSS.
-- GitHub CLI for issue and pull request workflow.
+- GitHub CLI when the selected project's tracker or PR workflow uses it.
 
 Install the project tools with:
 
@@ -60,7 +71,7 @@ The OS-native config directory is `%AppData%\detent\global.yaml` on Windows, `~/
 
 `DETENT_CONFIG` and `DETENT_HOME` remain deprecated fallbacks for one release. Detent uses `CONFIG_HOME` instead of `HOME` because `HOME` is standard process state, not Detent configuration.
 
-After global config lookup fails, startup may fall back to a valid `WORKFLOW.md` in the current working directory for single-project mode. `detent config path` should continue to report both the selected path and the matching rule.
+`detent config path` should continue to report both the selected path and the matching rule.
 
 ## Validation
 
@@ -170,12 +181,24 @@ test(scheduler): cover fair-share selection
 
 ## Branch And Pull Request Flow
 
+For new work, follow [AGENTS.md issue authoring](AGENTS.md#issue-authoring)
+and let Detent dogfood implementation unless direct changes are explicitly
+authorized. File through the selected project's supplied tracker owner;
+a GitHub repository or PR landing path alone does not authorize GitHub issues.
+
 1. Start from current `origin/develop`.
 2. Create a focused branch for the issue.
 3. Make the smallest complete change that satisfies the issue.
 4. Run focused tests for touched packages.
-5. Run `make check-fast` in the dedicated worktree before merging.
+5. Follow [AGENTS.md validation](AGENTS.md#validation); focused diagnostics do not become merge gates, local-gate statuses or a blocking CI wait.
 6. Open a pull request against `develop` with a clear summary, a `Fixes #N` line, and the exact test plan.
 7. Address review feedback with follow-up commits on the same branch.
+
+For native Cloud work items, commit on the assigned Detent branch; Detent records
+the Change Request and owns publication and lane state. Follow the
+[deployment and release failure reporting policy](AGENTS.md#deployment-and-release-failure-reporting)
+for genuine source blockers: High in Backlog, preserving Urgent and operator
+holds, with fingerprint and pinned occurrence evidence retained. The retired
+private hourly producer must remain retired for Detent.
 
 Do not commit directly to `develop` or `main`. Scheduled full validation tags passing `develop` commits; production releases use those tags. `develop` always deploys to staging; see [Branching](docs/branching.md). Do not bypass hooks. If validation fails, fix the blocker before requesting review.

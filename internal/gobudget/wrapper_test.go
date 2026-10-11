@@ -118,6 +118,10 @@ func TestAcquireUsesAnyFreeSlot(t *testing.T) {
 }
 
 func TestRunWrapperPassesThroughToolResult(t *testing.T) {
+	if testing.Short() {
+		t.Skip("toolchain subprocess wrapper integration")
+	}
+
 	script := filepath.Join(t.TempDir(), "compile")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"out:$*\"\necho err >&2\nexit 3\n"), 0o755); err != nil {
 		t.Fatal(err)

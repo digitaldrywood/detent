@@ -3,11 +3,13 @@ package admission
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
@@ -22,7 +24,7 @@ func (m *Manager) orderCandidateWindow(ctx context.Context, settings Settings, c
 	out := make([]connector.Issue, 0, len(candidates))
 	for _, candidate := range candidates {
 		if len(admissionDependencyReferences(candidate)) > 0 {
-			settings.dependencies[candidate.ID] = resolveAdmissionDependencies(ctx, settings, candidate, at)
+			settings.dependencies[candidate.ID] = resolveAdmissionDependenciesWithEvidence(ctx, settings, candidate, at, settings.dependencies)
 		}
 		previous := history[candidate.ID]
 		if previous.Fingerprint == admissionEvaluationFingerprints(settings, candidate).proposal {
@@ -53,6 +55,28 @@ func (m *Manager) orderCandidateWindow(ctx context.Context, settings Settings, c
 	}
 	// Existing dispatch ordering breaks ties within the same evaluation time.
 	// Unseen or changed candidates sort first, followed by least recently evaluated.
+	if settings.PrioritizeBlockers && settings.DependencyIssues != nil {
+		dependents := slices.Clone(settings.DependencyIssues(ctx))
+		dependents = slices.DeleteFunc(dependents, func(issue connector.Issue) bool {
+			return issue.Closed || connector.NonExecutableReason(issue) != "" ||
+				(!containsFold(settings.DispatchStates, issue.State) && !strings.EqualFold(strings.TrimSpace(issue.State), "Blocked"))
+		})
+		ranking := slices.Clone(out)
+		for index, candidate := range ranking {
+			if evidence := settings.dependencies[candidate.ID]; evidence != nil {
+				ranking[index].BlockedBy = nil
+				for _, ref := range evidence.References {
+					if !ref.Ready || ref.Error != "" {
+						ranking[index].BlockedBy = append(ranking[index].BlockedBy, connector.BlockedRef{Identifier: ref.Identifier})
+					}
+				}
+			}
+		}
+		dispatchpriority.AnnotateUnblockerCounts(ranking, dependents, settings.Config.Sources.States, settings.TerminalStates, true)
+		for index := range out {
+			out[index].UnblockerCount = ranking[index].UnblockerCount
+		}
+	}
 	sortCandidates(out, settings)
 	sort.SliceStable(out, func(i, j int) bool {
 		return lastEvaluated[out[i].ID].Before(lastEvaluated[out[j].ID])

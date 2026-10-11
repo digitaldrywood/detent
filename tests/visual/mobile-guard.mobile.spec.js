@@ -2,7 +2,6 @@ const { test, expect } = require("@playwright/test");
 const { startDetentRuntime } = require("./detent-runtime");
 
 test.describe.configure({ mode: "serial" });
-test.skip(({ isMobile }) => !isMobile, "mobile project only");
 test.setTimeout(120_000);
 
 const portraitViewports = [

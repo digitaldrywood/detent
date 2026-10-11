@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -116,10 +117,19 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 		default:
 			return s.nativeAPIError(c, nativeNotFound())
 		}
-		if internal != (claims.Kind == cloudassert.KindService) {
+		keyInternal := claims.Kind == cloudassert.KindKey && (path == "/internal/v1/keys/catalog" || path == "/internal/v1/keys/call")
+		if internal != (claims.Kind == cloudassert.KindService || keyInternal) {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
 		c.Set(hostedSharedClaimsKey, claims)
+		if claims.Kind == cloudassert.KindKey {
+			if claims.Key == nil || bearer {
+				return c.NoContent(http.StatusUnauthorized)
+			}
+			if err := s.auditEntryKey(c, claims); err != nil {
+				return s.internalAPIError(c, "audit_unavailable", "Key audit is unavailable", err)
+			}
+		}
 		return next(c)
 	}
 }
@@ -129,7 +139,7 @@ func hostedSharedClaims(c echo.Context) (cloudassert.Claims, bool) {
 	return claims, ok
 }
 
-func (s *Service) sharedHostedSession(c echo.Context) (auth.Session, string, error) {
+func (s *Service) sharedHostedSession(ctx context.Context, c echo.Context) (auth.Session, string, error) {
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindBrowser {
 		return auth.Session{}, "", auth.ErrInvalidSession
@@ -142,13 +152,16 @@ func (s *Service) sharedHostedSession(c echo.Context) (auth.Session, string, err
 	if err != nil {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
-	ctx := c.Request().Context()
 	now := s.config.now()
 	if !claims.AccessExpiresAt.After(now) || !auth.ValidOrganizationRole(claims.Role) {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
-	if identity.SupportActor != "" && (!hostedEmailListed(s.config.Hosted.StaffEmails, identity.SupportActor) || !hostedEmailListed(s.config.Hosted.SupportActors, identity.SupportActor) || !auth.ValidSupportReason(identity.SupportReason)) {
+	if identity.SupportActor != "" && !auth.ValidSupportReason(identity.SupportReason) {
 		return auth.Session{}, "", auth.ErrInvalidSession
+	}
+	if session, err := s.storedWebSession(ctx, claims.Binding, now); err == nil && sharedSessionMatches(session, identity, claims.Email) {
+		c.Set("hosted_session", session)
+		return session, claims.Binding, nil
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -166,11 +179,15 @@ func (s *Service) sharedHostedSession(c echo.Context) (auth.Session, string, err
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
 	session, err := s.storedWebSession(ctx, claims.Binding, now)
-	if err != nil || session.Identity == nil || session.Identity.Subject != identity.Subject || session.Identity.SessionID != identity.SessionID || session.Identity.OrganizationID != identity.OrganizationID || session.Identity.SupportActor != identity.SupportActor || session.Identity.SupportReason != identity.SupportReason || !strings.EqualFold(session.Email, claims.Email) {
+	if err != nil || !sharedSessionMatches(session, identity, claims.Email) {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
 	c.Set("hosted_session", session)
 	return session, claims.Binding, nil
+}
+
+func sharedSessionMatches(session auth.Session, identity auth.HostedIdentity, email string) bool {
+	return session.Identity != nil && session.Identity.Subject == identity.Subject && session.Identity.SessionID == identity.SessionID && session.Identity.OrganizationID == identity.OrganizationID && session.Identity.SupportActor == identity.SupportActor && session.Identity.SupportReason == identity.SupportReason && strings.EqualFold(session.Email, email)
 }
 
 func (s *Service) hostedSharedCSRF(c echo.Context) string {
@@ -186,22 +203,38 @@ func (s *Service) hostedSharedCSRFValid(c echo.Context, value string) bool {
 }
 
 func (s *Service) registerHostedSharedRoutes(e *echo.Echo) {
+	e.POST("/internal/v1/keys/catalog", s.entryKeyCatalog, s.operatorAuthority)
+	e.POST("/internal/v1/keys/call", s.entryKeyCall, s.operatorAuthority)
+	e.POST("/internal/v1/keys/admin", s.entryKeyAdmin)
+	e.POST("/internal/v1/keys/context", s.entryKeyContext)
+	e.POST("/internal/v1/keys/audit", s.entryKeyAudit)
+	e.POST("/internal/v1/github/repositories", s.hostedGitHubRepositories)
+	e.POST("/internal/v1/github/receipt", s.hostedGitHubReceipt)
+	e.POST("/internal/v1/github/webhook", s.hostedGitHubWebhook)
 	e.POST("/internal/v1/sessions/revoke", s.revokeHostedSharedSessions)
 	e.POST("/internal/v1/invitations/accept", s.acceptHostedSharedInvitation)
 	e.POST("/internal/v1/health", s.hostedSharedHealth)
+	e.POST("/internal/v1/platform/members", s.platformTenantMembers)
+	e.POST("/internal/v1/platform/runners", s.platformTenantRunners)
+	e.POST("/internal/v1/platform/projects", s.platformTenantProjects)
+	e.POST("/internal/v1/platform/users", s.hostedPlatformUsers)
+	e.POST("/internal/v1/platform/ai-credits", s.adjustPlatformAICredits)
 	e.POST("/internal/v1/owner/bootstrap", s.bootstrapHostedSharedOwner)
 	e.POST("/internal/v1/billing/binding", s.hostedSharedBillingBinding)
 	e.POST("/internal/v1/billing/events", s.hostedSharedBillingEvent)
 }
 
 type hostedSharedBilling struct {
-	Enabled         bool      `json:"enabled"`
-	AccountID       string    `json:"account_id,omitempty"`
-	Mode            string    `json:"mode,omitempty"`
-	CustomerID      string    `json:"customer_id,omitempty"`
-	Status          string    `json:"status"`
-	AccessUntil     time.Time `json:"access_until,omitzero"`
-	CheckoutPending bool      `json:"checkout_pending"`
+	FreeOrganization bool      `json:"free_organization"`
+	Enabled          bool      `json:"enabled"`
+	AccountID        string    `json:"account_id,omitempty"`
+	Mode             string    `json:"mode,omitempty"`
+	CustomerID       string    `json:"customer_id,omitempty"`
+	Status           string    `json:"status"`
+	Plan             string    `json:"plan,omitempty"`
+	PriceLabel       string    `json:"price_label,omitempty"`
+	AccessUntil      time.Time `json:"access_until,omitzero"`
+	CheckoutPending  bool      `json:"checkout_pending"`
 }
 
 type hostedSharedBillingQuery struct {
@@ -211,6 +244,16 @@ type hostedSharedBillingQuery struct {
 func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 	cfg := s.config.Hosted.Billing
 	result := hostedSharedBilling{Status: "free"}
+	entitlement, err := s.database.hostedEntitlement(c.Request().Context(), s.database.db, s.config.now())
+	if err != nil {
+		return s.internalAPIError(c, "entitlements_unavailable", "Organization entitlements are unavailable", err)
+	}
+	result.FreeOrganization = entitlement.EffectiveBase.ID == "free"
+	for _, grant := range entitlement.Grants {
+		if grant.RevokedAt == nil && !grant.StartsAt.After(s.config.now()) && (grant.ExpiresAt == nil || grant.ExpiresAt.After(s.config.now())) && grant.Plan.ID != "free" && (slices.Contains(grant.Scope, "projects") || slices.Contains(grant.Scope, "native_execution")) {
+			result.FreeOrganization = false
+		}
+	}
 	if cfg != nil {
 		result.Enabled, result.AccountID, result.Mode = true, cfg.AccountID, cfg.mode()
 		binding, err := s.database.hostedBillingBinding(c.Request().Context(), cfg)
@@ -240,6 +283,13 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 			return s.internalAPIError(c, "billing_unavailable", "Billing binding is unavailable", err)
 		}
 		result.Status, result.AccessUntil = state.Status, state.AccessUntil
+		result.Plan = state.Plan.ID
+		for _, price := range cfg.Prices {
+			if price.PriceID == state.Snapshot.PriceID {
+				result.PriceLabel = price.Label
+				break
+			}
+		}
 	}
 	return c.JSON(http.StatusOK, result)
 }
@@ -284,7 +334,7 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err == nil {
 		name = strings.TrimSpace(request.OrganizationName)
 	}
-	if claims.Subject == "" || claims.Email == "" || name == "" || len(name) > 120 || hostedEmailListed(s.config.Hosted.StaffEmails, claims.Email) {
+	if claims.Subject == "" || claims.Email == "" || name == "" || len(name) > 120 {
 		return invalidAPIRequest(c, errors.New("invalid owner bootstrap"))
 	}
 	ctx := c.Request().Context()
@@ -358,7 +408,8 @@ func (s *Service) revokeHostedSharedBinding(ctx context.Context, binding, now st
 }
 
 type hostedSharedInvitation struct {
-	Token string `json:"token"`
+	InvitationID string `json:"invitation_id"`
+	Token        string `json:"token"`
 }
 
 func (s *Service) acceptHostedSharedInvitation(c echo.Context) error {
@@ -367,12 +418,16 @@ func (s *Service) acceptHostedSharedInvitation(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil || claims.Subject == "" || claims.Email == "" {
 		return invalidAPIRequest(c, errors.New("invalid invitation"))
 	}
-	if hostedEmailListed(s.config.Hosted.StaffEmails, claims.Email) {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "invitation_unavailable", Message: "This invitation is unavailable"})
-	}
 	identity := auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: claims.Subject, SessionID: claims.ProviderSession}}
 	s.hostedMutationMu.Lock()
-	err := s.acceptHostedInvitationFor(c.Request().Context(), identity, request.Token)
+	var err error
+	if request.InvitationID != "" && request.Token == "" {
+		err = s.acceptHostedInvitationIDFor(c.Request().Context(), identity, request.InvitationID)
+	} else if request.InvitationID == "" {
+		err = s.acceptHostedInvitationFor(c.Request().Context(), identity, request.Token)
+	} else {
+		err = auth.ErrHostedIdentity
+	}
 	s.hostedMutationMu.Unlock()
 	if err != nil {
 		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "invitation_unavailable", Message: "This invitation is expired, already used, or intended for another account or organization"})

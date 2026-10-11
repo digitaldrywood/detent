@@ -12,6 +12,10 @@ import (
 )
 
 func TestOpenAIResponsesStream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-key" {
 			t.Error("authorization header missing")
@@ -56,6 +60,10 @@ func TestOpenAIResponsesStream(t *testing.T) {
 }
 
 func TestOpenAIResponsesErrors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, test := range []struct {
 		name   string
 		status int

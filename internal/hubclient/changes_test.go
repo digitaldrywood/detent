@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -29,6 +30,10 @@ func TestChangeClientIdentityValidation(t *testing.T) {
 }
 
 func TestChangeClientFencingAndConnectorRead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	lease := tracker.NativeLease{ID: "lease", WorkItemID: "wi_item", FencingToken: 10}
 	base := "/api/v2/organizations/org_example/projects/prj_example"
@@ -96,33 +101,67 @@ func TestChangeClientFencingAndConnectorRead(t *testing.T) {
 
 func TestNativeRecoveryUsesPublishedVersion(t *testing.T) {
 	t.Parallel()
-	for _, published := range []bool{false, true} {
-		name := "legacy checkpoint"
-		if published {
-			name = "published version supersedes stale checkpoint"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		noChange    bool
+		draft       bool
+		unavailable bool
+		unscoped    bool
+	}{
+		{name: "current detail supersedes stale history and checkpoint"},
+		{name: "no Change", noChange: true},
+		{name: "draft Change", draft: true},
+		{name: "current recovery unavailable", unavailable: true},
+		{name: "missing scoped recovery on older Hub", unscoped: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			previous := &tracker.NativeChangeReference{ChangeID: "change_example", VersionID: "version_old", HeadSHA: strings.Repeat("a", 40)}
 			current := &tracker.NativeChangeReference{ChangeID: "change_example", VersionID: "version_current", HeadSHA: strings.Repeat("b", 40)}
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			detail := tracker.ChangeDetail{
+				Change: tracker.ChangeRequest{ID: current.ChangeID, WorkItemID: "wi_item", CurrentVersion: current.VersionID},
+				Versions: []tracker.ChangeVersion{
+					{ID: current.VersionID, ChangeID: current.ChangeID, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: current.HeadSHA}},
+				},
+				Discussion: []tracker.ChangeDiscussion{
+					{ID: "cmt_current", VersionID: current.VersionID, Body: "Global config loses concurrent updates", Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, Provenance: &tracker.Provenance{Provider: "native", ExternalID: "original"}},
+					{ID: "cmt_general", Body: "General discussion"},
+				},
+				Reviews: []tracker.ChangeReview{
+					{ID: "review_current", VersionID: current.VersionID, Decision: "changes_requested", Body: "Serialize config updates", Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer"}},
+				},
+			}
+			if test.draft {
+				detail.Change.CurrentVersion, detail.Versions = "", nil
+			}
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				switch {
-				case strings.HasSuffix(r.URL.Path, "/comments"):
-					json.NewEncoder(w).Encode(tracker.Page[tracker.NativeComment]{})
-				case strings.HasSuffix(r.URL.Path, "/attempts"):
-					json.NewEncoder(w).Encode(tracker.Page[tracker.NativeAttempt]{Items: []tracker.NativeAttempt{{Checkpoint: &tracker.NativeCheckpoint{Change: previous}}}})
-				case strings.HasSuffix(r.URL.Path, "/history"):
-					page := tracker.Page[tracker.CollaborationEvent]{}
-					if published {
-						page.Items = []tracker.CollaborationEvent{{Data: tracker.CollaborationData{Change: current}}, {Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: "change_draft"}}}}
-					}
-					json.NewEncoder(w).Encode(page)
-				default:
-					json.NewEncoder(w).Encode(tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_item"}})
+				if !strings.HasSuffix(r.URL.Path, "/work-items/wi_item") || r.URL.Query().Get("view") != "recovery" {
+					t.Errorf("recovery fetched historical resource: %s", r.URL)
+					http.Error(w, "unexpected historical read", http.StatusBadRequest)
+					return
 				}
-			}))
-			t.Cleanup(server.Close)
-			client, err := New(Config{URL: server.URL, TokenSource: func() string { return "token" }})
+				if test.unavailable {
+					http.Error(w, "current recovery unavailable", http.StatusForbidden)
+					return
+				}
+				result := tracker.NativeRecovery{
+					Issue:      tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_item"}},
+					Discussion: []tracker.NativeComment{{Body: "Issue discussion"}},
+					Attempts:   []tracker.NativeAttempt{{Checkpoint: &tracker.NativeCheckpoint{Change: previous}}},
+				}
+				if !test.noChange {
+					result.ChangeDetail = &detail
+					if !test.draft {
+						result.Change = current
+					}
+				}
+				if test.unscoped {
+					json.NewEncoder(w).Encode(result.Issue)
+					return
+				}
+				json.NewEncoder(w).Encode(result)
+			})
+			client, err := New(Config{URL: "http://native-hub.test", TokenSource: func() string { return "token" }, HTTPClient: providerHandlerClient(handler)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -131,12 +170,33 @@ func TestNativeRecoveryUsesPublishedVersion(t *testing.T) {
 				t.Fatal(err)
 			}
 			recovery, err := native.Recovery(t.Context(), "wi_item")
-			want := previous
-			if published {
-				want = current
+			if test.unavailable || test.unscoped {
+				if err == nil {
+					t.Fatal("missing scoped Change evidence allowed recovery")
+				}
+				return
 			}
-			if err != nil || recovery.Change == nil || *recovery.Change != *want {
-				t.Fatalf("recovered change = %#v, error = %v", recovery.Change, err)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.noChange {
+				if recovery.Change != nil || recovery.ChangeDetail != nil {
+					t.Fatal("historical reference became current Change")
+				}
+			} else {
+				if recovery.ChangeDetail == nil || !reflect.DeepEqual(*recovery.ChangeDetail, detail) {
+					t.Fatalf("recovery omitted scoped Change detail: %+v", recovery.ChangeDetail)
+				}
+				if test.draft {
+					if recovery.Change != nil {
+						t.Fatal("draft reused historical version")
+					}
+				} else if recovery.Change == nil || *recovery.Change != *current {
+					t.Fatalf("recovered current change = %#v", recovery.Change)
+				}
+			}
+			if len(recovery.Discussion) != 1 || len(recovery.History) != 0 || len(recovery.Attempts) != 1 {
+				t.Fatal("existing issue recovery context lost")
 			}
 		})
 	}

@@ -94,6 +94,10 @@ func TestRuntimeCanceledDialShutdown(t *testing.T) {
 }
 
 func TestRuntimeHTTPHelpersCloseConnections(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	tests := []struct {
 		name    string
 		status  int

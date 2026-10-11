@@ -1104,6 +1104,7 @@ where project_id = ?`
 			return nil, err
 		}
 		issues[i].Comments = comments
+		issues[i].CommentsComplete = true
 		fieldUpdatedAt, err := c.fetchFieldUpdatedAt(ctx, issues[i].ID)
 		if err != nil {
 			return nil, err

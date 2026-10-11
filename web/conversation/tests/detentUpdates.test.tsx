@@ -11,15 +11,12 @@ import {
 } from "../src/app/adapters/detentUpdates.ts";
 import {
   RUNNER_SETTINGS_PATH,
-  RUNNER_UPGRADE_COMMAND,
   behindCount,
   getUpdateButtonTooltip,
   initialUpdateCheckState,
   resolveUpdateButtonAction,
-  runnerUpdateLabel,
   updateIconStatus,
 } from "../src/app/lib/detentUpdates.ts";
-import { hostIsBehind } from "../src/app/fleet/HostCard.tsx";
 import { renderSidebar, resetSidebarState } from "./components/sidebarHarness.tsx";
 
 const CLIENT = {
@@ -31,6 +28,7 @@ const CLIENT = {
 function report(behind: number) {
   return {
     current: "v1.2.4",
+    minimum_runner_version: "v1.2.4",
     source: "hub",
     runners: [
       {
@@ -96,9 +94,9 @@ describe("what the pill says", () => {
     expect(getUpdateButtonTooltip(upToDate)).toBe("All runners up to date");
 
     const one = { ...initialUpdateCheckState, status: "behind", report: report(1) } as const;
-    expect(getUpdateButtonTooltip(one)).toBe("1 runner behind · Update");
+    expect(getUpdateButtonTooltip(one)).toBe("1 runner too old to take work, needs v1.2.4");
     const two = { ...initialUpdateCheckState, status: "behind", report: report(2) } as const;
-    expect(getUpdateButtonTooltip(two)).toBe("2 runners behind · Update");
+    expect(getUpdateButtonTooltip(two)).toBe("2 runners too old to take work, needs v1.2.4");
     expect(behindCount(two)).toBe(2);
     expect(resolveUpdateButtonAction(two)).toBe("show");
 
@@ -108,25 +106,6 @@ describe("what the pill says", () => {
     expect(getUpdateButtonTooltip(failed)).toBe("Couldn't check for updates · Retry");
 
     expect(resolveUpdateButtonAction(failed)).toBe("check");
-  });
-
-  it("names the two builds on a behind row, and says nothing it does not know", () => {
-    expect(runnerUpdateLabel("v1.2.3", "v1.2.4")).toBe("Update available: v1.2.3 → v1.2.4");
-    expect(runnerUpdateLabel("", "v1.2.4")).toBe("Update available: v1.2.4");
-    expect(RUNNER_UPGRADE_COMMAND).toBe("detent update");
-  });
-
-  it("only marks a host behind when both builds are real versions", () => {
-    for (const [reported, current, want] of [
-      ["v1.2.3", "v1.2.4", true],
-      ["v1.2.4", "v1.2.4", false],
-      ["", "v1.2.4", false],
-      ["v1.2.3", "", false],
-      ["dev", "v1.2.4", false],
-      ["v1.2.3", "dev", false],
-    ] as const) {
-      expect(hostIsBehind(reported, current), `${reported} vs ${current}`).toBe(want);
-    }
   });
 });
 
@@ -180,7 +159,7 @@ describe("the check against the hub", () => {
 /** The footer's update control, whatever it currently says. */
 function updateControl(): HTMLElement {
   return screen.getByRole("button", {
-    name: /Check for updates|All runners up to date|Couldn't check for updates|behind . Update|Checking for updates/,
+    name: /Check for updates|All runners up to date|Couldn't check for updates|too old to take work, needs|Checking for updates/,
   });
 }
 
@@ -208,14 +187,14 @@ describe("the pill", () => {
     vi.stubGlobal("fetch", hubReporting(2));
     await renderSidebar();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "2 runners behind · Update" })).toBeTruthy(),
+      expect(screen.getByRole("button", { name: "2 runners too old to take work, needs v1.2.4" })).toBeTruthy(),
     );
   });
 
   it("sends a press on the behind state to Providers & runners", async () => {
     vi.stubGlobal("fetch", hubReporting(1));
     const { onNavigate } = await renderSidebar();
-    const button = await screen.findByRole("button", { name: "1 runner behind · Update" });
+    const button = await screen.findByRole("button", { name: "1 runner too old to take work, needs v1.2.4" });
     fireEvent.click(button);
     expect(onNavigate).toHaveBeenCalledWith(RUNNER_SETTINGS_PATH);
   });

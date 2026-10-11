@@ -512,17 +512,6 @@ func applyOnboardingWorkflowDecisions(
 	if err != nil {
 		return "", err
 	}
-	noProgressTimeout, noProgressTimeoutProvenance, noProgressTimeoutWhy, err := onboardingWorkflowIntDecision(
-		answers,
-		nil,
-		"NO_PROGRESS_TIMEOUT_MS",
-		workflowconfig.DefaultNoProgressTimeoutMS,
-		"preset",
-		"stops a session whose workspace and workpad remain unchanged",
-	)
-	if err != nil {
-		return "", err
-	}
 	dayBudget, dayBudgetProvenance, dayBudgetWhy, err := onboardingWorkflowFloatDecision(answers, "BUDGET_PER_DAY_MAX_USD", 50.0, "preset", "recommended daily spend cap")
 	if err != nil {
 		return "", err
@@ -568,14 +557,14 @@ func applyOnboardingWorkflowDecisions(
 	decisions.set(root, "agent.max_concurrent_agents", maxConcurrentAgents, maxConcurrentProvenance, maxConcurrentWhy)
 	decisions.set(root, "agent.max_turns", maxTurns, maxTurnsProvenance, maxTurnsWhy)
 	decisions.set(root, "agent.max_session_duration_ms", maxSessionDuration, maxSessionDurationProvenance, maxSessionDurationWhy)
-	decisions.set(root, "agent.no_progress_timeout_ms", noProgressTimeout, noProgressTimeoutProvenance, noProgressTimeoutWhy)
+	deleteOnboardingYAMLPath(root, []string{"agent", "no_progress_timeout_ms"})
 	decisions.set(root, "agent.max_retry_backoff_ms", 300000, "preset", "recommended retry backoff ceiling")
 	decisions.set(root, "agent.max_session_tokens", sessionTokens, sessionTokensProvenance, sessionTokensWhy)
 	if sessionMultiplierSet {
 		decisions.set(root, "agent.max_session_context_multiplier", sessionMultiplier, "answer", "MAX_SESSION_CONTEXT_MULTIPLIER explicitly opts into a coarse context ceiling")
 	} else {
 		deleteOnboardingYAMLPath(root, []string{"agent", "max_session_context_multiplier"})
-		decisions.add("agent.max_session_context_multiplier", "omitted", "preset", "wall-clock, turn, and no-progress brakes are the primary catastrophe bounds; the coarse context multiplier is opt-in")
+		decisions.add("agent.max_session_context_multiplier", "omitted", "preset", "wall-clock and turn bounds are the primary catastrophe bounds; the coarse context multiplier is opt-in")
 	}
 	decisions.set(root, "agent.max_session_token_override_label", sessionOverride, sessionOverrideProvenance, sessionOverrideWhy)
 	decisions.set(root, "agent.max_concurrent_agents_by_state.Merging", mergingConcurrency, mergingProvenance, mergingWhy)

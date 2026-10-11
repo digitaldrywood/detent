@@ -29,7 +29,6 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 		tokens = running.Tokens
 	}
 	running.Tokens = tokens
-	releaseWorkerGitHubMonitorProbe(state, event.IssueID, "deferred", "worker completed after lane transition", event.CompletedAt)
 	if event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 {
 		o.recoverBackendCapacity(state, running, event.CompletedAt)
 	} else {
@@ -45,7 +44,9 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 		return
 	}
 	if event.Err == nil && stateIn(running.Issue.State, o.cfg.TerminalStates) {
-		o.completeTerminalRunning(ctx, state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens)
+		if err := o.completeTerminalRunning(ctx, state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens, event.CompletedAt); err != nil {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		}
 		return
 	}
 	errorClass := ""
@@ -55,8 +56,18 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 	terminal := terminalStateForRun(event.Err, event.Result.FinalState)
 	cleanliness := o.evaluateCompletionCleanliness(ctx, running, running.Issue, running.DiffStats)
 	metadata := completionCleanlinessMetadata(cleanliness)
+	if event.Result.NativeChange != nil {
+		metadata = mergeWorkAttemptMetadata(metadata, nativeChangeMetadata(event.Result.NativeChange))
+	}
+	if event.Result.NativeLanding != nil {
+		metadata = mergeWorkAttemptMetadata(metadata, nativeLandingMetadata(event.Result.NativeLanding))
+	}
 	if terminal == store.WorkAttemptTerminalSuccess && (!cleanliness.Attempted || cleanliness.Outcome == completionCleanlinessAccepted) {
 		resetWorkerFailureBreakers(state, event.IssueID)
+	}
+	if err := o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt); err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		return
 	}
 	if !o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, errorClass, errorString(event.Err), "completed", string(terminal), metadata) && o.workAttempts != nil && running.WorkAttemptID > 0 {
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, errors.New("persist completed work attempt failed"))
@@ -71,10 +82,10 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 		}
 		state.Completed[event.IssueID] = Completed{Issue: cloneIssue(running.Issue), SessionID: running.SessionID, StartedAt: running.StartedAt, CompletedAt: event.CompletedAt, FinalState: finalState, Tokens: tokens, RuntimeIdentity: running.RuntimeIdentity}
 	}
-	o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt)
 }
 
 func (o *Orchestrator) writeTrackerLane(ctx context.Context, issueID, target string, metadata workflowLaneMetadata) error {
+	ctx = connector.WithLaneTransitionReason(ctx, firstNonBlank(metadata.ReasonDetail, strings.ReplaceAll(o.laneWrites[issueID].Reason, "_", " ")))
 	if metadata.StateFieldID > 0 {
 		setter, ok := o.connector.(connector.IssueFieldSetter)
 		if !ok {
@@ -226,11 +237,6 @@ func (o *Orchestrator) observeLane(ctx context.Context, state *State, issue conn
 		o.recordLaneTransition(ctx, before, issue.State, enteredAt, "operator_move", workflowLaneMetadata{Provenance: attribution})
 		o.handleOperatorMove(state, OperatorMoveRequest{IssueID: issue.ID, Identifier: issue.Identifier, FromState: previous.State, ToState: strings.TrimSpace(issue.State)}, enteredAt)
 	}
-	if !same && normalizeState(issue.State) == normalizeState(autoPromoteReworkState) {
-		observed := cloneIssue(issue)
-		observed.State = ""
-		o.captureReworkLesson(observed, enteredAt, "tracker_state_observed")
-	}
 	return observation, attribution, nil
 }
 
@@ -284,4 +290,21 @@ func latestLedgerBaseline(events []store.WorkflowPhaseEvent) (store.WorkflowPhas
 		}
 	}
 	return latest, !latest.StartedAt.IsZero()
+}
+
+// programmaticMergeDelivery is called only after a successful merge API return.
+// ActivityAt records that observation; MergedAt remains immutable forge evidence.
+func (o *Orchestrator) programmaticMergeDelivery(issue connector.Issue) (connector.Issue, time.Time) {
+	merged := cloneIssue(issue)
+	observedAt := o.clockNow().UTC()
+	merged.PullRequest.State = "MERGED"
+	merged.PullRequest.ActivityAt = &observedAt
+	return merged, mergedDeliveryAt(merged, observedAt)
+}
+
+func mergedDeliveryAt(issue connector.Issue, fallback time.Time) time.Time {
+	if pr := issue.PullRequest; pr != nil && normalizePullRequestState(pr.State) == "merged" && pr.MergedAt != nil && !pr.MergedAt.IsZero() {
+		return pr.MergedAt.UTC()
+	}
+	return fallback.UTC()
 }

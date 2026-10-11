@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -32,9 +33,22 @@ func (s *Server) apiSecurityAuditDisposition(c echo.Context) error {
 		return c.JSON(http.StatusPreconditionRequired, errorResponse("confirmation_required", "Confirm the false-positive disposition with confirm=true"))
 	}
 
-	projectID := strings.TrimSpace(c.Param("project_id"))
+	disposition, err := s.recordSecurityDisposition(c.Request().Context(), c.Param("project_id"), payload)
+	if err != nil {
+		var problem *echo.HTTPError
+		if errors.As(err, &problem) {
+			return c.JSON(problem.Code, problem.Message)
+		}
+		return c.JSON(http.StatusServiceUnavailable, errorResponse("disposition_failed", "security audit disposition could not be recorded"))
+	}
+	return c.JSON(http.StatusCreated, disposition)
+}
+
+func (s *Server) securityDispositionRun(ctx context.Context, projectID string, payload securityAuditDispositionRequest) (securityaudit.Run, error) {
+
+	projectID = strings.TrimSpace(projectID)
 	if _, ok := s.registry.Get(project.ID(projectID)); !ok {
-		return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "project not found"))
+		return securityaudit.Run{}, echo.NewHTTPError(http.StatusNotFound, errorResponse("project_not_found", "project not found"))
 	}
 	payload.Repository = strings.TrimSpace(payload.Repository)
 	payload.BaseSHA = strings.TrimSpace(payload.BaseSHA)
@@ -43,13 +57,13 @@ func (s *Server) apiSecurityAuditDisposition(c echo.Context) error {
 	payload.Status = strings.ToLower(strings.TrimSpace(payload.Status))
 	payload.Evidence = strings.TrimSpace(payload.Evidence)
 	if payload.Repository == "" || payload.PullRequest <= 0 || payload.BaseSHA == "" || payload.HeadSHA == "" || payload.FindingID == "" || payload.Evidence == "" {
-		return c.JSON(http.StatusUnprocessableEntity, errorResponse("invalid_disposition", "repository, pull_request, base_sha, head_sha, finding_id, and evidence are required"))
+		return securityaudit.Run{}, echo.NewHTTPError(http.StatusUnprocessableEntity, errorResponse("invalid_disposition", "repository, pull_request, base_sha, head_sha, finding_id, and evidence are required"))
 	}
 	if payload.Status != securityaudit.DispositionFalsePositive {
-		return c.JSON(http.StatusUnprocessableEntity, errorResponse("invalid_disposition", "status must be false_positive"))
+		return securityaudit.Run{}, echo.NewHTTPError(http.StatusUnprocessableEntity, errorResponse("invalid_disposition", "status must be false_positive"))
 	}
 	if len(payload.Evidence) > securityaudit.MaxDispositionEvidenceBytes {
-		return c.JSON(http.StatusUnprocessableEntity, errorResponse("invalid_disposition", "evidence is too large"))
+		return securityaudit.Run{}, echo.NewHTTPError(http.StatusUnprocessableEntity, errorResponse("invalid_disposition", "evidence is too large"))
 	}
 
 	key := securityaudit.Key{
@@ -59,18 +73,18 @@ func (s *Server) apiSecurityAuditDisposition(c echo.Context) error {
 		BaseSHA:    payload.BaseSHA,
 		HeadSHA:    payload.HeadSHA,
 	}
-	run, err := s.store.LatestSecurityAuditRun(c.Request().Context(), key)
+	run, err := s.store.LatestSecurityAuditRun(ctx, key)
 	if errors.Is(err, store.ErrNotFound) {
-		return c.JSON(http.StatusNotFound, errorResponse("audit_not_found", "trusted exact-head security audit not found"))
+		return securityaudit.Run{}, echo.NewHTTPError(http.StatusNotFound, errorResponse("audit_not_found", "trusted exact-head security audit not found"))
 	}
 	if err != nil {
 		s.logger.Warn("security audit disposition lookup failed", "project_id", projectID, "error", err)
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("audit_lookup_failed", "security audit lookup failed"))
+		return securityaudit.Run{}, echo.NewHTTPError(http.StatusServiceUnavailable, errorResponse("audit_lookup_failed", "security audit lookup failed"))
 	}
 	serviceIdentity := securityaudit.ServiceIdentity(projectID)
 	evaluation := securityaudit.Evaluate(run, nil, key, serviceIdentity, []string{"p1", "p2", "p3"})
 	if evaluation.Reason != securityaudit.ReasonUnresolvedFindings {
-		return c.JSON(http.StatusConflict, errorResponse("audit_not_disposable", "security audit is not a trusted successful run with unresolved findings"))
+		return securityaudit.Run{}, echo.NewHTTPError(http.StatusConflict, errorResponse("audit_not_disposable", "security audit is not a trusted successful run with unresolved findings"))
 	}
 	found := false
 	for _, finding := range run.Findings {
@@ -80,10 +94,20 @@ func (s *Server) apiSecurityAuditDisposition(c echo.Context) error {
 		}
 	}
 	if !found {
-		return c.JSON(http.StatusNotFound, errorResponse("finding_not_found", "finding does not belong to the exact-head audit run"))
+		return securityaudit.Run{}, echo.NewHTTPError(http.StatusNotFound, errorResponse("finding_not_found", "finding does not belong to the exact-head audit run"))
 	}
 
-	disposition, err := s.store.RecordSecurityAuditDisposition(c.Request().Context(), securityaudit.Disposition{
+	return run, nil
+}
+
+func (s *Server) recordSecurityDisposition(ctx context.Context, projectID string, payload securityAuditDispositionRequest) (securityaudit.Disposition, error) {
+	run, err := s.securityDispositionRun(ctx, projectID, payload)
+	if err != nil {
+		return securityaudit.Disposition{}, err
+	}
+
+	serviceIdentity := securityaudit.ServiceIdentity(projectID)
+	disposition, err := s.store.RecordSecurityAuditDisposition(ctx, securityaudit.Disposition{
 		AuditRunID:      run.ID,
 		FindingID:       payload.FindingID,
 		Status:          securityaudit.DispositionFalsePositive,
@@ -93,8 +117,8 @@ func (s *Server) apiSecurityAuditDisposition(c echo.Context) error {
 	})
 	if err != nil {
 		s.logger.Warn("security audit disposition persistence failed", "project_id", projectID, "audit_run_id", run.ID, "finding_id", payload.FindingID, "error", err)
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("disposition_failed", "security audit disposition could not be recorded"))
+		return securityaudit.Disposition{}, echo.NewHTTPError(http.StatusServiceUnavailable, errorResponse("disposition_failed", "security audit disposition could not be recorded"))
 	}
 	s.logger.Info("security audit finding disposition recorded", "project_id", projectID, "audit_run_id", run.ID, "finding_id", payload.FindingID, "service_identity", serviceIdentity)
-	return c.JSON(http.StatusCreated, disposition)
+	return disposition, nil
 }

@@ -2,21 +2,74 @@ package github
 
 import (
 	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
 
+func TestBranchPolicyProjectsApplicablePendingChecks(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		configured []string
+		required   []string
+		ci         string
+		wantCI     string
+		wantNames  []string
+	}{
+		{name: "optional cleanup on dirty Rework", configured: []string{}, ci: "pending", wantCI: "success"},
+		{name: "native pending", configured: []string{}, required: []string{"Verify"}, ci: "pending", wantCI: "pending", wantNames: []string{"Verify"}},
+		{name: "reported red remains red", configured: []string{}, ci: "failure", wantCI: "failure"},
+		{name: "omitted retains aggregate", ci: "pending", wantCI: "pending", wantNames: []string{"cleanup", "Verify"}},
+		{name: "named retains existing policy", configured: []string{"Verify"}, ci: "pending", wantCI: "pending", wantNames: []string{"cleanup", "Verify"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newGitHubTestConnector(t, newGraphQLTestServer(t, nil), Config{RequiredStatusChecks: tt.configured})
+			c.cacheBranchMergePolicy("example/repo", BranchMergePolicy{Branch: "main", RequiredStatusChecks: tt.required, Strict: true})
+			checks := []connector.PullRequestCheck{{Name: "cleanup", Status: "queued"}, {Name: "Verify", Status: "in_progress"}}
+			original := &connector.PullRequest{Number: 42, State: "open", BaseRef: "main", HeadSHA: "head", MergeableState: "dirty", CIStatus: tt.ci, Checks: checks, CheckRunCount: 2, RunningChecks: []string{"cleanup", "Verify"}, UnstartedChecks: checks}
+			issue := connector.Issue{Identifier: "example/repo#1", State: "Rework", PullRequest: original}
+			if err := c.attachRequiredBranchChecks(t.Context(), &issue); err != nil {
+				t.Fatal(err)
+			}
+			got := issue.PullRequest
+			if got.CIStatus != tt.wantCI || !slices.Equal(got.RunningChecks, tt.wantNames) {
+				t.Fatalf("CI=%q running=%v, want CI=%q running=%v", got.CIStatus, got.RunningChecks, tt.wantCI, tt.wantNames)
+			}
+			var pendingNames []string
+			for _, check := range got.UnstartedChecks {
+				pendingNames = append(pendingNames, check.Name)
+			}
+			if !slices.Equal(pendingNames, tt.wantNames) || !slices.Equal(got.Checks, checks) || got.CheckRunCount != 2 {
+				t.Fatalf("pending=%v raw checks=%v count=%d", pendingNames, got.Checks, got.CheckRunCount)
+			}
+			if tt.configured != nil && len(tt.configured) == 0 && !got.BaseBranchStrict {
+				t.Fatal("lost native strict branch policy")
+			}
+			if !slices.Equal(original.RunningChecks, []string{"cleanup", "Verify"}) || !slices.Equal(original.UnstartedChecks, checks) {
+				t.Fatal("mutated shared raw observation")
+			}
+		})
+	}
+}
+
 func TestHydrateMergingRulesetStatus(t *testing.T) {
 	for _, tt := range []struct {
 		name, statuses string
+		localStatus    string
+		configured     []string
 		classic        bool
 		wantMissing    bool
 	}{
-		{"missing", `[]`, false, true},
-		{"legacy status present", `[{"context":"Full CI","state":"success"}]`, false, false},
-		{"classic missing", `[]`, true, true},
-		{"classic present", `[{"context":"Full CI","state":"success"}]`, true, false},
+		{name: "missing", statuses: `[]`, wantMissing: true},
+		{name: "legacy status present", statuses: `[{"context":"Full CI","state":"success"}]`},
+		{name: "classic missing", statuses: `[]`, classic: true, wantMissing: true},
+		{name: "classic present", statuses: `[{"context":"Full CI","state":"success"}]`, classic: true},
+
+		{name: "missing owned native context", statuses: `[]`, localStatus: "Full CI", wantMissing: true},
+		{name: "missing owned configured context", statuses: `[]`, localStatus: "Full CI", configured: []string{"Full CI"}, wantMissing: true},
+		{name: "missing owned context with native-only policy", statuses: `[]`, localStatus: "Full CI", configured: []string{}, wantMissing: true},
+		{name: "different missing context", statuses: `[]`, localStatus: "local-gate", wantMissing: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			rules, protection := `[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"Full CI"}]}}]`, `{}`
@@ -32,7 +85,7 @@ func TestHydrateMergingRulesetStatus(t *testing.T) {
 				{method: http.MethodGet, path: "/repos/example/repo/rules/branches/main?per_page=100&page=1", body: rules},
 				{method: http.MethodGet, path: "/repos/example/repo/branches/main/protection/required_status_checks", body: protection},
 			})
-			c := newGitHubTestConnector(t, server, Config{})
+			c := newGitHubTestConnector(t, server, Config{LocalStatus: tt.localStatus, RequiredStatusChecks: tt.configured})
 			issue := connector.Issue{ID: "issue-1", Identifier: "example/repo#1", State: "Merging", PRNumber: new(42), PRRepository: "example/repo"}
 			got, err := c.HydratePullRequest(t.Context(), issue)
 			if err != nil {
@@ -40,6 +93,14 @@ func TestHydrateMergingRulesetStatus(t *testing.T) {
 			}
 			if got.PullRequest == nil {
 				t.Fatal("missing PR")
+			}
+
+			wantCI := "success"
+			if tt.wantMissing && tt.localStatus != "Full CI" {
+				wantCI = "pending"
+			}
+			if got.PullRequest.CIStatus != wantCI {
+				t.Fatalf("CIStatus=%q, want %q", got.PullRequest.CIStatus, wantCI)
 			}
 			checks := got.PullRequest.RequiredCheckFailures
 			if (len(checks) > 0) != tt.wantMissing {
@@ -55,16 +116,18 @@ func TestHydrateMergingRulesetStatus(t *testing.T) {
 func TestCandidateMergingRulesetStatus(t *testing.T) {
 	for _, tt := range []struct {
 		name, state string
+		localStatus string
 		present     bool
 		wantMissing bool
 	}{
 		{name: "complete ProjectV2 observation", state: "Merging", wantMissing: true},
 		{name: "status already present", state: "Merging", present: true},
 		{name: "other lane", state: "Human Review"},
+		{name: "missing owned native context", state: "Merging", localStatus: "Full CI", wantMissing: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			server := newGraphQLTestServer(t, nil)
-			c := newGitHubTestConnector(t, server, Config{})
+			c := newGitHubTestConnector(t, server, Config{LocalStatus: tt.localStatus})
 			c.cacheBranchMergePolicy("example/repo", BranchMergePolicy{Branch: "main", RequiredStatusChecks: []string{"Full CI"}})
 			pr := &pullRequestNode{Number: 42, State: "open", HeadSHA: "head", BaseRefName: "main", CI: pullRequestCI{State: "none"}}
 			if tt.present {
@@ -80,6 +143,9 @@ func TestCandidateMergingRulesetStatus(t *testing.T) {
 				if got.PullRequest == nil {
 					t.Fatal("missing PR")
 				}
+				if tt.localStatus != "" && got.PullRequest.CIStatus == "pending" {
+					t.Fatal("owned context reintroduced pending CI on candidate hydration")
+				}
 				checks := got.PullRequest.RequiredCheckFailures
 				if (len(checks) > 0) != tt.wantMissing {
 					t.Fatalf("checks=%+v", checks)
@@ -90,6 +156,73 @@ func TestCandidateMergingRulesetStatus(t *testing.T) {
 			}
 			if len(pr.CI.RequiredFailures) != 0 {
 				t.Fatal("mutated shared observation")
+			}
+		})
+	}
+}
+
+func TestExplicitEmptyRequiredStatusChecksUsesBranchPolicy(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		lane       string
+		ci         string
+		required   []string
+		checks     []connector.PullRequestCheck
+		wantCI     string
+		wantFailed int
+	}{
+		{name: "no CI producer", lane: "In Progress", wantCI: "success"},
+		{name: "reported failed optional CI", lane: "Rework", ci: "failure", checks: []connector.PullRequestCheck{{Name: "Old CI", Status: "completed", Conclusion: "failure"}}, wantCI: "failure"},
+		{name: "optional CI still running", lane: "Human Review", ci: "pending", wantCI: "success"},
+		{name: "native check missing before merging", lane: "Human Review", required: []string{"Required"}, wantCI: "pending", wantFailed: 1},
+		{name: "native check failed", lane: "Merging", required: []string{"Required"}, checks: []connector.PullRequestCheck{{Name: "Required", Status: "completed", Conclusion: "failure"}}, wantCI: "failure", wantFailed: 1},
+		{name: "native check running", lane: "In Progress", required: []string{"Required"}, checks: []connector.PullRequestCheck{{Name: "Required", Status: "in_progress"}}, wantCI: "pending", wantFailed: 1},
+		{name: "native check passes but reported failure remains", lane: "Merging", ci: "failure", required: []string{"Required"}, checks: []connector.PullRequestCheck{{Name: "Required", Status: "completed", Conclusion: "success"}, {Name: "Optional", Status: "completed", Conclusion: "failure"}}, wantCI: "failure"},
+		{name: "native legacy status failed", lane: "Merging", required: []string{"Required"}, checks: []connector.PullRequestCheck{{Name: "Required", Status: "failure", Conclusion: "failure"}}, wantCI: "failure", wantFailed: 1},
+		{name: "native legacy status passed", lane: "Merging", required: []string{"Required"}, checks: []connector.PullRequestCheck{{Name: "Required", Status: "success", Conclusion: "success"}}, wantCI: "success"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newGitHubTestConnector(t, newGraphQLTestServer(t, nil), Config{RequiredStatusChecks: []string{}})
+			c.cacheBranchMergePolicy("example/repo", BranchMergePolicy{Branch: "main", RequiredStatusChecks: tt.required})
+			original := &connector.PullRequest{Number: 42, State: "open", BaseRef: "main", HeadSHA: "head", CIStatus: tt.ci, Checks: tt.checks}
+			issue := connector.Issue{Identifier: "example/repo#1", State: tt.lane, PullRequest: original}
+			if err := c.attachRequiredBranchChecks(t.Context(), &issue); err != nil {
+				t.Fatal(err)
+			}
+			if issue.PullRequest.CIStatus != tt.wantCI || len(issue.PullRequest.RequiredCheckFailures) != tt.wantFailed {
+				t.Fatalf("CI=%q failures=%+v, want CI=%q failures=%d", issue.PullRequest.CIStatus, issue.PullRequest.RequiredCheckFailures, tt.wantCI, tt.wantFailed)
+			}
+			if original.CIStatus != tt.ci || len(original.RequiredCheckFailures) != 0 {
+				t.Fatal("mutated shared PR observation")
+			}
+		})
+	}
+}
+
+func TestExplicitEmptyRequiredChecksCandidateObservation(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		checks []string
+		want   string
+	}{
+		{name: "omitted keeps aggregate wait"},
+		{name: "explicit empty advances", checks: []string{}, want: "success"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newGitHubTestConnector(t, newGraphQLTestServer(t, nil), Config{RequiredStatusChecks: tt.checks})
+			c.cacheBranchMergePolicy("example/repo", BranchMergePolicy{Branch: "main"})
+			pr := &pullRequestNode{Number: 42, State: "open", HeadSHA: "head", BaseRefName: "main", CI: pullRequestCI{State: ""}}
+			node := githubIssueNode{CandidatePR: &candidatePullRequestEvidence{complete: true, repo: pullRequestRepo{Owner: "example", Name: "repo"}, pullRequest: pr}}
+			issue := connector.Issue{ID: "issue", Identifier: "example/repo#1", State: "Human Review"}
+			got, err := c.hydratePullRequestWithEvidence(t.Context(), issue, node, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.PullRequest == nil || got.PullRequest.CIStatus != tt.want {
+				t.Fatalf("PR=%+v, want CI %q", got.PullRequest, tt.want)
+			}
+			if pr.CI.State != "" {
+				t.Fatal("mutated cached candidate")
 			}
 		})
 	}

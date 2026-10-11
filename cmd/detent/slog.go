@@ -4,12 +4,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
-	"runtime/debug"
 	"strings"
-	"time"
 
-	"github.com/lmittmann/tint"
+	"github.com/digitaldrywood/detent/internal/logging"
 
 	"github.com/digitaldrywood/detent/internal/cli"
 )
@@ -84,21 +81,7 @@ func newLogHandlerForTerminalWithLevel(env string, envSet bool, parsedLevel slog
 		w = io.Discard
 	}
 
-	source := addSource.enabled(parsedLevel)
-	if useTextLogs(env, envSet, stdoutTTY) {
-		return tint.NewHandler(w, &tint.Options{
-			Level:       level,
-			TimeFormat:  time.Kitchen,
-			AddSource:   source,
-			ReplaceAttr: textLogReplaceAttr,
-		})
-	}
-
-	return slog.NewJSONHandler(w, &slog.HandlerOptions{
-		Level:       level,
-		AddSource:   source,
-		ReplaceAttr: sourceLogReplaceAttr,
-	})
+	return logging.NewHandler(w, level, useTextLogs(env, envSet, stdoutTTY), logging.SourceSetting{Value: addSource.value, Set: addSource.set})
 }
 
 func useTextLogs(env string, envSet bool, stdoutTTY bool) bool {
@@ -152,13 +135,6 @@ type logSourceSetting struct {
 	set   bool
 }
 
-func (s logSourceSetting) enabled(level slog.Level) bool {
-	if s.set {
-		return s.value
-	}
-	return level == slog.LevelDebug
-}
-
 func logSourceSettingFromEnv() logSourceSetting {
 	value, ok := envValueWithPresence("LOG_ADD_SOURCE", "DETENT_LOG_ADD_SOURCE")
 	if !ok {
@@ -176,80 +152,7 @@ func parseLogBool(value string) bool {
 	}
 }
 
-func textLogReplaceAttr(groups []string, attr slog.Attr) slog.Attr {
-	attr = sourceLogReplaceAttr(groups, attr)
-	if err, ok := attr.Value.Any().(error); ok {
-		errAttr := tint.Err(err)
-		errAttr.Key = attr.Key
-		return errAttr
-	}
-	return attr
-}
-
-func sourceLogReplaceAttr(_ []string, attr slog.Attr) slog.Attr {
-	if attr.Key != slog.SourceKey {
-		return attr
-	}
-	source, ok := attr.Value.Any().(*slog.Source)
-	if !ok || source == nil {
-		return attr
-	}
-	copied := *source
-	copied.File = cleanSourcePath(copied.File)
-	return slog.Any(slog.SourceKey, &copied)
-}
-
-func cleanSourcePath(path string) string {
-	path = filepath.Clean(strings.TrimSpace(path))
-	if path == "." || path == "" {
-		return path
-	}
-	if rel, ok := relativeSourcePath(path, mustGetwdForLogSource()); ok {
-		return rel
-	}
-	if rel, ok := moduleRelativeSourcePath(path); ok {
-		return rel
-	}
-	return filepath.ToSlash(path)
-}
-
-func relativeSourcePath(path string, base string) (string, bool) {
-	if strings.TrimSpace(base) == "" {
-		return "", false
-	}
-	rel, err := filepath.Rel(base, path)
-	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
-		return "", false
-	}
-	return filepath.ToSlash(rel), true
-}
-
-func moduleRelativeSourcePath(path string) (string, bool) {
-	info, ok := debug.ReadBuildInfo()
-	if !ok || strings.TrimSpace(info.Main.Path) == "" {
-		return "", false
-	}
-	parts := strings.Split(strings.Trim(info.Main.Path, "/"), "/")
-	if len(parts) == 0 {
-		return "", false
-	}
-	module := parts[len(parts)-1]
-	normalized := filepath.ToSlash(path)
-	marker := "/" + module + "/"
-	index := strings.LastIndex(normalized, marker)
-	if index == -1 {
-		return "", false
-	}
-	return normalized[index+len(marker):], true
-}
-
-func mustGetwdForLogSource() string {
-	wd, err := os.Getwd()
-	if err != nil {
-		return string(filepath.Separator)
-	}
-	return wd
-}
+func cleanSourcePath(path string) string { return logging.CleanSourcePath(path) }
 
 func isDevelopment(env string) bool {
 	switch strings.ToLower(strings.TrimSpace(env)) {

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 )
 
@@ -14,8 +15,27 @@ func runDoctorStartupPreflight(ctx context.Context, cfg doctorConfig, opts optio
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	opts = doctorOptions(opts)
 	deps = deps.withDefaults()
 	report := doctorReport{}
+	selected := strings.TrimSpace(cfg.ProjectID)
+	if selected != "" {
+		_, scoped, scope, scopeCheck, configCheck := checkDoctorConfig(ctx, cfg.ConfigPath, selected, opts)
+		report.Scope = scope
+		if scoped == nil {
+			report.Add(configCheck)
+			return report
+		}
+		if scopeCheck != nil {
+			report.Add(*scopeCheck)
+			return report
+		}
+		opts.read = func(string) (globalconfig.Config, error) {
+			snapshot := *scoped
+			snapshot.WorkspaceRoot = ""
+			return snapshot, nil
+		}
+	}
 	boot, err := resolveBootConfig(ctx, cfg.ConfigPath, cfg.Host, cfg.Flags, opts)
 	if err != nil {
 		report.Add(doctorCheck{
@@ -39,21 +59,34 @@ func runDoctorStartupPreflight(ctx context.Context, cfg doctorConfig, opts optio
 	for _, configuredProject := range boot.Global.Projects {
 		id := doctorProjectID(configuredProject)
 		workflow, loadErr := loadDoctorProjectWorkflow(ctx, configuredProject, deps)
+		var migrationErr error
 		if loadErr == nil {
+			workflow.Config = projectpkg.MapNativeTracker(workflow.Config, boot.Global.Client.NativeProjects[id] != "")
 			workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, githubToken)
-			if configuredProject.Identity.Configured() {
-				identity := configuredProject.Identity
-				identity.Normalize()
-				workflow.Config.Identity = identity
-			}
-			workflow.Config.ActiveHours = projectpkg.EffectiveActiveHours(configuredProject, workflow.Config.ActiveHours)
-			loadErr = errors.Join(workflow.Config.Validate(), workflowconfig.ValidateWorkflowAdmission(workflow))
+			workflow.Config = projectpkg.EffectivePolicyConfig(configuredProject, workflow.Config)
+			migrationErr = projectpkg.ValidateNativeTrackerFeatures(workflow.Config)
+			loadErr = errors.Join(migrationErr, workflow.Config.Validate(), workflowconfig.ValidateWorkflowAdmission(workflow))
 		}
 		if loadErr != nil {
+			if migrationErr != nil {
+				report.Add(doctorCheck{
+					Name:   "Project " + id + " startup",
+					Status: doctorFail,
+					Detail: "mapped native project cannot start: " + strings.TrimSpace(loadErr.Error()),
+					Hint:   "Migrate unsupported intake or scheduled routines before approving this native project policy.",
+				})
+				continue
+			}
+			status := doctorWarn
+			detail := "candidate will isolate this project as degraded: "
+			if selected != "" {
+				status = doctorFail
+				detail = "selected project cannot start: "
+			}
 			report.Add(doctorCheck{
 				Name:   "Project " + id + " startup",
-				Status: doctorWarn,
-				Detail: "candidate will isolate this project as degraded: " + strings.TrimSpace(loadErr.Error()),
+				Status: status,
+				Detail: detail + strings.TrimSpace(loadErr.Error()),
 				Hint:   "Fix the project definition independently; it does not prevent the Detent host from booting.",
 			})
 			continue

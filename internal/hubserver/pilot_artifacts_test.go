@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -157,7 +158,11 @@ func TestPilotHostedArtifactGatewayWithoutRunners(t *testing.T) {
 			}
 			var grant artifact.Grant
 			decodeHubResponse(t, response, &grant)
-			manifestPath := grant.Origin + "/v1/artifacts/" + ref.ArtifactID + "/manifests/" + strconv.FormatInt(ref.Revision, 10)
+			download, err := operatortool.DownloadResult(grant)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifestPath := download.ManifestURL
 			raw := pilotArtifactDownload(t, manifestPath, grant.Token, http.StatusOK)
 			if artifact.Digest(raw) != grant.SHA256 {
 				t.Fatal("manifest does not match hosted receipt")
@@ -167,7 +172,7 @@ func TestPilotHostedArtifactGatewayWithoutRunners(t *testing.T) {
 				t.Fatalf("manifest objects = %d: %v", len(manifest.Objects), err)
 			}
 			object := manifest.Objects[0]
-			raw = pilotArtifactDownload(t, manifestPath+"/objects/"+object.ID, grant.Token, http.StatusOK)
+			raw = pilotArtifactDownload(t, strings.Replace(download.ObjectURLTemplate, "{object_id}", object.ID, 1), grant.Token, http.StatusOK)
 			if artifact.Digest(raw) != object.SHA256 || !strings.Contains(string(raw), "Pilot uploaded log remains readable") {
 				t.Fatal("uploaded bytes changed")
 			}

@@ -25,6 +25,10 @@ import (
 )
 
 func TestRestartScratchCleanupWaitsForEscapedDescendant(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	for _, tt := range []struct {
 		legacy  bool
 		outside bool
@@ -195,6 +199,10 @@ func scratchHandshakePipe(t *testing.T) (*os.File, *os.File) {
 }
 
 func TestScratchDescendantProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	role := os.Getenv("DETENT_SCRATCH_HELPER")
 	if role == "" {
 		return

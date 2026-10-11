@@ -180,7 +180,7 @@ func selectGoInstallAction(cmd *cobra.Command) func(detentupdate.Status) (detent
 		if _, err := fmt.Fprintf(out, "Update Detent from %s to %s?\n", status.CurrentVersion, status.LatestVersion); err != nil {
 			return "", err
 		}
-		if _, err := fmt.Fprintf(out, "  1) Run the Go install for me: %s\n", status.Command); err != nil {
+		if _, err := fmt.Fprintln(out, "  1) Build the prepared source archive manually (Go only)"); err != nil {
 			return "", err
 		}
 		if _, err := fmt.Fprintln(out, "  2) Switch to the release binary"); err != nil {

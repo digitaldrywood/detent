@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"slices"
 	"strings"
@@ -20,11 +21,38 @@ func isolationProblems(report isolation.Report, tier string) []runnerauth.Proble
 		if len(tiers) == 0 && strings.HasSuffix(backend, "/workflow") {
 			problems = append(problems, runnerauth.NewProblem("settings_invalid"))
 		} else if len(tiers) == 0 {
-			problems = append(problems, runnerauth.NewProblem("backend_missing"))
+			p := runnerauth.NewProblem("backend_missing")
+			p.Subject = backend
+			problems = append(problems, p)
 		}
 	}
 	if !report.Supports(tier) {
-		problems = append(problems, runnerauth.NewProblem("tier_unavailable"))
+		problem := runnerauth.NewProblem("tier_unavailable")
+		problem.Subject = tier
+		unavailable := []string{}
+		for backend, tiers := range report {
+			if !slices.Contains(tiers, tier) {
+				unavailable = append(unavailable, backend)
+			}
+		}
+		slices.Sort(unavailable)
+		if len(unavailable) == 0 {
+			problem.Message = fmt.Sprintf("Agent access %s is unavailable: no backend has reported isolation support.", tier)
+		} else {
+			problem.Message = fmt.Sprintf("Agent access %s is unavailable: %s did not report support for this tier.", tier, strings.Join(unavailable, ", "))
+		}
+		if len(problem.Message) > 1000 {
+			problem.Message = strings.ToValidUTF8(problem.Message[:997], "") + "..."
+		}
+		problem.FixHint = "Repair the listed backend or its sandbox support, then let the runner refresh."
+		other, label := isolation.NativeTrusted, "Full access"
+		if tier == isolation.NativeTrusted {
+			other, label = isolation.Sandbox, "Sandbox"
+		}
+		if report.Supports(other) {
+			problem.FixHint += " Or switch Agent access to " + label + " in the runner sheet."
+		}
+		problems = append(problems, problem)
 	}
 	return runnerauth.MergeProblems(nil, problems, time.Time{})
 }
@@ -63,7 +91,23 @@ func (r *runnerCredentialSource) heartbeatProblems(ctx context.Context, machine 
 		problems = append(problems, runnerauth.NewProblem("settings_invalid"))
 		routing.IsolationTier = isolation.Sandbox
 	}
-	problems = append(problems, isolationProblems(machine.BackendIsolation, routing.IsolationTier)...)
+	for _, generic := range isolationProblems(machine.BackendIsolation, routing.IsolationTier) {
+		matched := false
+		for i := range problems {
+			if problems[i].Code == generic.Code && (problems[i].Subject == generic.Subject || generic.Subject == routing.IsolationTier) {
+				if generic.Code == "tier_unavailable" {
+					problems[i].FixHint = generic.FixHint
+				}
+				matched = true
+			}
+		}
+		if !matched {
+			problems = append(problems, generic)
+		}
+	}
+	for i := range problems {
+		problems[i].ReportedAt = time.Now()
+	}
 	if !runnerHostServicesReachable(ctx, routing.HostServices) {
 		problems = append(problems, runnerauth.NewProblem("host_service_unreachable"))
 	}

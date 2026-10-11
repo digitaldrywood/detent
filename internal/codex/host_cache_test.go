@@ -45,6 +45,10 @@ func TestHostCacheWritableRoots(t *testing.T) {
 }
 
 func TestHostCacheDiscoveryAcrossTurns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	if os.Getenv("DETENT_TEST_CACHE_TURNS") != "1" {
 		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestHostCacheDiscoveryAcrossTurns$")
 		cmd.Env = append(os.Environ(), "DETENT_TEST_CACHE_TURNS=1")

@@ -4,10 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"time"
 )
 
-func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, now time.Time) (map[string]int64, error) {
+func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, now time.Time, metrics ...string) (map[string]int64, error) {
 	result := make(map[string]int64)
 	if d.hostedPlans == nil {
 		return result, nil
@@ -16,23 +17,18 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 		"artifact_retained_bytes": "SELECT coalesce(sum(json_extract(usage_json,'$.retained_bytes')),0) FROM hosted_artifact_usage",
 		"artifact_reserved_bytes": "SELECT coalesce(sum(json_extract(usage_json,'$.reserved_bytes')),0) FROM hosted_artifact_usage",
 		"members":                 "SELECT count(*) FROM hosted_members WHERE active = 1",
-		"projects":                "SELECT count(*) FROM projects",
-		"unarchived_issues":       "SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.organization_id = ? AND p.profile = 'native' AND i.archived = 0",
+		"projects":                "SELECT count(*) FROM projects WHERE deleted_at IS NULL",
+		"unarchived_issues":       "SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.organization_id = ? AND p.deleted_at IS NULL AND p.profile = 'native' AND i.archived = 0",
 		"repositories":            "SELECT count(*) FROM repositories",
 		"registered_runners":      `SELECT (SELECT count(*) FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE t.revoked_at IS NULL) + (SELECT count(*) FROM machines m JOIN api_tokens t ON t.id = m.token_id WHERE t.revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_identities r WHERE r.machine_id = m.id))`,
-		"history_records":         "SELECT (SELECT count(*) FROM collaboration_events) + (SELECT count(*) FROM collaboration_versions) + (SELECT count(*) FROM native_attempt_events)",
-		"events_total":            "SELECT count(*) FROM collaboration_events",
-		"collaboration_bytes": `SELECT
-		(SELECT coalesce(sum(length(CAST(title AS BLOB))+length(CAST(body AS BLOB))+length(CAST(labels_json AS BLOB))+length(CAST(assignees_json AS BLOB))),0) FROM issues) +
-		(SELECT coalesce(sum(length(CAST(body AS BLOB))),0) FROM native_comments) +
-		(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM collaboration_versions) +
-		(SELECT coalesce(sum(length(CAST(data_json AS BLOB))+length(CAST(actor_json AS BLOB))),0) FROM collaboration_events) +
-		(SELECT coalesce(sum(length(CAST(response_json AS BLOB))),0) FROM native_commands) +
-		(SELECT coalesce(sum(length(CAST(data_json AS BLOB))),0) FROM native_attempts) +
-		(SELECT coalesce(sum(length(CAST(reference_json AS BLOB))),0) FROM artifact_references) +
-		(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM github_import_records)`,
+		"history_records":         "SELECT value FROM hosted_usage_counters WHERE name = 'history_records'",
+		"events_total":            "SELECT value FROM hosted_usage_counters WHERE name = 'events_total'",
+		"collaboration_bytes":     "SELECT value FROM hosted_usage_counters WHERE name = 'collaboration_bytes'",
 	}
 	for name, statement := range queries {
+		if len(metrics) > 0 && !slices.Contains(metrics, name) {
+			continue
+		}
 		var count int64
 		var args []any
 		if name == "unarchived_issues" {
@@ -50,17 +46,25 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 		{"concurrent_work", "SELECT expires_at FROM leases WHERE released_at IS NULL", now},
 		{"connected_runners", `SELECT r.last_heartbeat_at FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE t.revoked_at IS NULL UNION ALL SELECT m.last_heartbeat_at FROM machines m JOIN api_tokens t ON t.id = m.token_id WHERE t.revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_identities r WHERE r.machine_id = m.id)`, now.Add(-time.Duration(d.hostedPlans.ConnectedSeconds) * time.Second)},
 	} {
+		if len(metrics) > 0 && !slices.Contains(metrics, sample.name) {
+			continue
+		}
 		count, err := countHostedAfter(ctx, query, sample.statement, sample.after)
 		if err != nil {
 			return nil, err
 		}
 		result[sample.name] = count
 	}
-	var reserved int64
-	if err := query.QueryRowContext(ctx, "SELECT count(*) FROM hosted_member_reservations WHERE expires_at > ?", now.Unix()).Scan(&reserved); err != nil {
-		return nil, err
+	if len(metrics) == 0 || slices.Contains(metrics, "members") {
+		var reserved int64
+		if err := query.QueryRowContext(ctx, "SELECT count(*) FROM hosted_member_reservations WHERE expires_at > ?", now.Unix()).Scan(&reserved); err != nil {
+			return nil, err
+		}
+		result["members"] += reserved
 	}
-	result["members"] += reserved
+	if len(metrics) > 0 && !slices.Contains(metrics, "usage_windows") {
+		return result, nil
+	}
 	window := now.Unix() / d.hostedPlans.WindowSeconds * d.hostedPlans.WindowSeconds
 	rows, err := query.QueryContext(ctx, "SELECT metric,amount FROM hosted_usage_windows WHERE window_start = ?", window)
 	if err != nil {
@@ -113,14 +117,18 @@ func (d *database) recordHostedUsage(ctx context.Context, tx *sql.Tx, now time.T
 	return err
 }
 
-func (d *database) checkHostedGrowth(ctx context.Context, tx *sql.Tx, before map[string]int64, now time.Time, completion bool) error {
+func (d *database) checkHostedGrowth(ctx context.Context, tx *sql.Tx, before map[string]int64, now time.Time, completion bool, metrics ...string) error {
 	if d.hostedPlans == nil {
 		return nil
 	}
-	after, err := d.hostedConsumption(ctx, tx, now)
+	after, err := d.hostedConsumption(ctx, tx, now, metrics...)
 	if err != nil {
 		return err
 	}
+	return d.checkHostedConsumptionGrowth(ctx, tx, before, after, now, completion)
+}
+
+func (d *database) checkHostedConsumptionGrowth(ctx context.Context, tx *sql.Tx, before, after map[string]int64, now time.Time, completion bool) error {
 	entitlement, err := d.hostedEntitlement(ctx, tx, now)
 	if err != nil {
 		return err
@@ -140,6 +148,9 @@ func (d *database) checkHostedGrowth(ctx context.Context, tx *sql.Tx, before map
 	}{
 		{"api_mutations", 1}, {"ingested_events", max(int64(0), after["events_total"]-before["events_total"])},
 	} {
+		if sample.name == "api_mutations" && ctx.Value(runnerRequestBudgetContext{}) == true {
+			continue
+		}
 		if !completion && sample.amount > 0 && sample.amount > entitlement.Allowances[sample.name]-after[sample.name] {
 			return &hostedLimitError{Resource: sample.name, Allowance: entitlement.Allowances[sample.name], Consumption: after[sample.name]}
 		}
@@ -156,6 +167,9 @@ func (d *database) checkHostedClaim(ctx context.Context, tx *sql.Tx, now time.Ti
 	}
 	if err := d.requireHostedFeature(ctx, tx, "native_execution", now); err != nil {
 		return err
+	}
+	if ctx.Value(runnerRequestBudgetContext{}) == true {
+		return nil
 	}
 	entitlement, err := d.hostedEntitlement(ctx, tx, now)
 	if err != nil {

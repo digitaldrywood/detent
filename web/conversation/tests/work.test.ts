@@ -1,19 +1,21 @@
 // The work API client, against the mock hub.
 //
 // These are the rules that are easy to get wrong and expensive to get wrong
-// late: the revision is a string, a filter may not repeat, a cursor is opaque,
+// late: the revision is a string, filters preserve every selected value, a cursor is opaque,
 // and a refused move is a `409` whose body — in hosted mode — cannot tell the
 // client what the current revision is.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import * as Schema from "effect/Schema";
 
 import { startMockHub, type MockHub } from "../dev/mock-hub.ts";
 import { loadBootstrap } from "../src/runtime/bootstrap.ts";
-import { toWorkItemView, transitionsFrom } from "../src/app/work/lib/fromWire.ts";
-import { boardStats, searchItems, sortItems } from "../src/app/work/lib/model.ts";
+import { NativeIssue } from "../src/contracts/work.ts";
+import { toAttemptView, toWorkItemView, transitionsFrom } from "../src/app/work/lib/fromWire.ts";
+import { boardStats, searchItems, sortItems, type WorkItemView } from "../src/app/work/lib/model.ts";
+import type { WorkSort } from "../src/app/work/lib/viewState.ts";
 import { moveItem } from "../src/app/work/lib/useWork.ts";
 import {
   makeWorkHttp,
-  serverFilter,
   WorkApiError,
   type WorkHttp,
 } from "../src/app/work/lib/workHttp.ts";
@@ -22,6 +24,7 @@ const PROJECT = "proj_alpha";
 
 let hub: MockHub;
 let http: WorkHttp;
+const confirmed: NativeIssue[] = [];
 
 beforeAll(async () => {
   hub = await startMockHub({ port: 0 });
@@ -30,6 +33,7 @@ beforeAll(async () => {
     origin: hub.url,
     apiBase: bootstrap.api_base,
     csrfToken: bootstrap.csrf_token,
+    onConfirmed: (issue) => { confirmed.push(issue); },
   });
 });
 
@@ -38,6 +42,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  confirmed.length = 0;
   await fetch(`${hub.url}/__mock/work/reset`, { method: "POST" });
 });
 
@@ -90,16 +95,11 @@ describe("listing work items", () => {
     expect(page.items.every((issue) => issue.state === "In Review")).toBe(true);
   });
 
-  it("never sends two values for one filter, because the hub refuses them", async () => {
-    expect(serverFilter([])).toBeUndefined();
-    expect(serverFilter(["Todo"])).toBe("Todo");
-    expect(serverFilter(["Todo", "Blocked"])).toBeUndefined();
-
-    // Proof the refusal is real, and not an assumption this client makes.
-    const direct = await fetch(
-      `${hub.url}/api/v2/organizations/org_mock/projects/${PROJECT}/work-items?state=Todo&state=Blocked`,
-    );
-    expect(direct.status).toBe(422);
+  it("sends multiple state selections to the scoped API", async () => {
+    const page = await http.listWorkItems({ projectId: PROJECT, state: ["Todo", "In Review"], includeWork: true });
+    expect(page.work).toBeDefined();
+    expect(page.items.length).toBeGreaterThan(0);
+    expect(new Set(page.items.map((issue) => issue.state))).toEqual(new Set(["Todo", "In Review"]));
   });
 
   it("carries the revision as a string, not a number", async () => {
@@ -109,7 +109,7 @@ describe("listing work items", () => {
 });
 
 describe("the derived board", () => {
-  it("counts every issue exactly once", async () => {
+  it("counts every open and terminal issue without claiming queue eligibility", async () => {
     const project = await http.getProject(PROJECT);
     const page = await http.listWorkItems({ projectId: PROJECT, limit: 200 });
     const items = page.items.map((issue) => toWorkItemView(issue, project.name));
@@ -117,22 +117,65 @@ describe("the derived board", () => {
       id: state.name,
       name: state.name,
       terminal: state.terminal,
+      dispatchable: state.dispatchable,
       category: state.terminal ? "completed" : state.dispatchable ? "unstarted" : "started",
     }));
     const stats = boardStats(items, lanes);
     expect(stats.total).toBe(items.length);
-    expect(stats.running + stats.ready + stats.waiting + stats.blocked + stats.completed).toBe(
-      items.length,
-    );
+    expect(stats.open + stats.completed).toBe(items.length);
+    expect(stats.open).toBe(28);
+    expect(stats.waiting).toBe(5);
+    expect(stats.running + stats.waiting + stats.needAttention + stats.backlog).toBe(stats.open);
   });
 
-  it("gives the board and the list the same order", async () => {
+  it.each(["default", "priority", "updated", "created", "title"] as const)("gives the board and the list the same %s order", async (sort) => {
     const project = await http.getProject(PROJECT);
     const page = await http.listWorkItems({ projectId: PROJECT, limit: 200 });
     const items = page.items.map((issue) => toWorkItemView(issue, project.name));
-    const once = sortItems(items, "priority").map((item) => item.id);
-    const twice = sortItems([...items].reverse(), "priority").map((item) => item.id);
+    const once = sortItems(items, sort).map((item) => item.id);
+    const twice = sortItems([...items].reverse(), sort).map((item) => item.id);
     expect(twice).toEqual(once);
+  });
+
+  it.each([
+    { name: "non-terminal priority before activity", terminal: false, priorities: ["Low", "High", "Urgent", "Normal", null], activity: ["2026-10-05", "2026-10-04", "2026-10-03", "2026-10-02", "2026-10-06"], expected: [3, 2, 4, 1, 5] },
+    { name: "non-terminal activity ties", terminal: false, priorities: ["High", "High", "High"], activity: ["2026-10-03", "2026-10-05", "2026-10-04"], expected: [2, 3, 1] },
+    { name: "terminal activity before priority", terminal: true, priorities: ["Urgent", "Low", null], activity: ["2026-10-03", "2026-10-04", "2026-10-05"], expected: [3, 2, 1] },
+    { name: "terminal identifier ties", terminal: true, priorities: ["Low", "Urgent", "High"], activity: ["2026-10-05", "2026-10-05", "2026-10-05"], expected: [1, 2, 3] },
+    { name: "non-terminal identifier ties", terminal: false, priorities: ["High", "High", "High"], activity: ["2026-10-05", "2026-10-05", "2026-10-05"], expected: [1, 2, 3] },
+    { name: "terminal missing and invalid activity", terminal: true, priorities: ["Urgent", "High", "Low", null], activity: [null, "invalid", "2026-10-05", undefined], expected: [3, 1, 2, 4] },
+    { name: "non-terminal missing and invalid activity", terminal: false, priorities: [null, null, null, null], activity: [null, "invalid", "2026-10-05", undefined], expected: [3, 1, 2, 4] },
+    { name: "offset timestamps compared as instants", terminal: true, priorities: ["High", "High", "High"], activity: ["2026-10-05T12:00:00+02:00", "2026-10-05T11:00:00Z", "2026-10-05T10:00:00Z"], expected: [2, 1, 3] },
+  ])("defaults to $name", async ({ terminal, priorities, activity, expected }) => {
+    const page = await http.listWorkItems({ projectId: PROJECT, limit: 1 });
+    const items = priorities.map((priority, index) => {
+      const issue = Schema.decodeUnknownSync(NativeIssue)({ ...page.items[0]!, last_activity_at: activity[index] });
+      const item = toWorkItemView(issue, "alpha");
+      expect(item.lastActivityAt).toBe(activity[index] ?? null);
+      return { ...item, identifier: `alpha#${index + 1}`, priority, terminal };
+    });
+    for (const input of [items, [...items].reverse()]) {
+      expect(sortItems(input, "default").map((item) => item.identifier)).toEqual(expected.map((number) => `alpha#${number}`));
+    }
+  });
+
+  it.each([
+    { sort: "default", expected: [2, 1, 3] },
+    { sort: "priority", expected: [3, 1, 2] },
+    { sort: "updated", expected: [1, 2, 3] },
+    { sort: "created", expected: [3, 2, 1] },
+    { sort: "title", expected: [2, 1, 3] },
+    { sort: "closed", expected: [3, 2, 1] },
+  ] satisfies { sort: WorkSort; expected: number[] }[])("keeps $sort ordering independent of other timestamps", async ({ sort, expected }) => {
+    const page = await http.listWorkItems({ projectId: PROJECT, state: "In Progress", limit: 1 });
+    const attempts = await http.listAttempts(PROJECT, page.items[0]!.work_item_id);
+    const base = toWorkItemView(page.items[0]!, "alpha");
+    const items: WorkItemView[] = [
+      { ...base, identifier: "alpha#1", priority: "High", title: "B", terminal: false, lastActivityAt: "2026-10-03", updatedAt: "2026-10-05", createdAt: "2026-10-03", attempt: toAttemptView(attempts.items) },
+      { ...base, identifier: "alpha#2", closedAt: "2026-10-01", priority: "High", title: "A", terminal: false, lastActivityAt: "2026-10-04", updatedAt: "2026-10-04", createdAt: "2026-10-04", attempt: null },
+      { ...base, identifier: "alpha#3", closedAt: "2026-10-02", priority: "Urgent", title: "C", terminal: true, lastActivityAt: "2026-10-05", updatedAt: "2026-10-03", createdAt: "2026-10-05", attempt: null },
+    ];
+    expect(sortItems(items, sort).map((item) => item.identifier)).toEqual(expected.map((number) => `alpha#${number}`));
   });
 
   it("searches title, identifier and label over the loaded board", async () => {
@@ -313,6 +356,7 @@ describe("moving an issue", () => {
     });
     expect(moved.state).toBe("In Progress");
     expect(Number(moved.revision)).toBe(Number(issue.revision) + 1);
+    expect(confirmed).toEqual([moved]);
   });
 
   it("refuses a move the workflow does not allow", async () => {

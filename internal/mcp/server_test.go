@@ -1,11 +1,13 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"reflect"
 	"sort"
 	"strings"
@@ -14,7 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -34,12 +38,13 @@ func TestInitializeNegotiatesProtocolVersions(t *testing.T) {
 		{name: "June 2025", requested: "2025-06-18", want: "2025-06-18"},
 		{name: "March 2025", requested: "2025-03-26", want: "2025-03-26"},
 		{name: "November 2024", requested: "2024-11-05", want: "2024-11-05"},
-		{name: "unsupported", requested: "2099-01-01", want: ProtocolVersion},
+		{name: "modern version requires metadata, not handshake", requested: ProtocolVersion, want: LegacyProtocolVersion},
+		{name: "unsupported", requested: "2099-01-01", want: LegacyProtocolVersion},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			request := strings.Replace(initializeRequest, ProtocolVersion, test.requested, 1)
+			request := strings.Replace(initializeRequest, LegacyProtocolVersion, test.requested, 1)
 			responses := exchange(t, nil, request)
 			if len(responses) != 1 {
 				t.Fatalf("responses = %d, want 1", len(responses))
@@ -104,6 +109,7 @@ func TestProtocolErrors(t *testing.T) {
 	}{
 		{name: "malformed JSON", messages: []string{`{"jsonrpc":`}, wantCode: codeParseError, wantID: "null"},
 		{name: "non-object request", messages: []string{`[]`}, wantCode: codeInvalidRequest, wantID: "null"},
+		{name: "fractional request ID", messages: []string{`{"jsonrpc":"2.0","id":1.5,"method":"ping"}`}, wantCode: codeInvalidRequest, wantID: "null"},
 		{name: "invalid request ID", messages: []string{`{"jsonrpc":"2.0","id":{},"method":"ping"}`}, wantCode: codeInvalidRequest, wantID: "null"},
 		{name: "operation before initialized", messages: []string{`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`}, wantCode: codeNotInitialized, wantID: "2"},
 		{name: "unknown method", messages: []string{initializeRequest, initializedNotice, `{"jsonrpc":"2.0","id":2,"method":"resources/list"}`}, wantCode: codeMethodNotFound, wantID: "2"},
@@ -128,30 +134,67 @@ func TestProtocolErrors(t *testing.T) {
 	}
 }
 
-func TestToolCallReturnsStructuredContentOnce(t *testing.T) {
+func TestToolCallReturnsStructuredAndTextContent(t *testing.T) {
 	t.Parallel()
 
 	observedAt := time.Date(2026, 8, 8, 2, 30, 0, 0, time.UTC)
-	executor := &staticExecutor{result: operatortool.Result{Content: json.RawMessage(fmt.Sprintf(`{"generated_at":%q,"freshness":"live","items":[]}`, observedAt.Format(time.RFC3339)))}}
-	client := startLiveServer(t, executor)
-	client.write(initializeRequest)
-	client.read()
-	client.write(initializedNotice)
-	client.write(`{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"board_state","arguments":{"limit":1}}}`)
-	response := client.read()
-	client.close()
+	stored := &tracker.AttemptDiff{ID: "diff_a", AttemptID: "attempt_a", Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: "attempt_a"}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 2}, CreatedAt: observedAt.Add(-time.Hour), Files: []tracker.AttemptDiffFile{}}
+	for _, test := range []struct {
+		name string
+		diff *tracker.AttemptDiff
+	}{
+		{"absent stored generation", nil},
+		{"stored generation", stored},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			content, err := operatortool.BoundedChangeResult(operatortool.ChangeResult{ProjectID: "prj_p", WorkItemID: "wi_i", GeneratedAt: observedAt, Freshness: "live", Diff: test.diff})
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := startLiveServer(t, &staticExecutor{result: content})
+			client.write(initializeRequest)
+			client.read()
+			client.write(initializedNotice)
+			client.write(`{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"get_work_item_diff","arguments":{"project_id":"prj_p","work_item_id":"wi_i"}}}`)
+			response := client.read()
+			client.close()
 
-	var result struct {
-		Content           []json.RawMessage          `json:"content"`
-		StructuredContent map[string]json.RawMessage `json:"structuredContent"`
-		IsError           bool                       `json:"isError"`
-	}
-	decodeResult(t, response, &result)
-	if result.IsError || len(result.Content) != 0 || string(result.StructuredContent["freshness"]) != `"live"` {
-		t.Fatalf("tool result = %#v", result)
-	}
-	if _, wrapped := result.StructuredContent["content"]; wrapped {
-		t.Fatalf("structured result was wrapped: %#v", result.StructuredContent)
+			var result struct {
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+				StructuredContent map[string]json.RawMessage `json:"structuredContent"`
+				IsError           bool                       `json:"isError"`
+			}
+			decodeResult(t, response, &result)
+			if result.IsError || len(result.Content) != 1 || string(result.StructuredContent["freshness"]) != `"live"` {
+				t.Fatalf("tool result = %#v", result)
+			}
+			if _, wrapped := result.StructuredContent["content"]; wrapped {
+				t.Fatalf("structured result was wrapped: %#v", result.StructuredContent)
+			}
+			if result.Content[0].Type != "text" || result.Content[0].Text != string(content.Content) {
+				t.Fatalf("text result = %#v", result.Content)
+			}
+			raw, present := result.StructuredContent["diff"]
+			if !present {
+				t.Fatal("nullable diff field omitted")
+			}
+			if test.diff == nil {
+				if string(raw) != "null" {
+					t.Fatalf("absent diff = %s, want null", raw)
+				}
+			} else {
+				var diff tracker.AttemptDiff
+				if err := json.Unmarshal(raw, &diff); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(diff, *test.diff) {
+					t.Fatalf("stored diff = %#v, want %#v", diff, *test.diff)
+				}
+			}
+		})
 	}
 }
 
@@ -172,7 +215,7 @@ func TestToolCallReturnsTextContentForLegacyVersions(t *testing.T) {
 
 			executor := &staticExecutor{result: operatortool.Result{Content: content}}
 			client := startLiveServer(t, executor)
-			client.write(strings.Replace(initializeRequest, ProtocolVersion, test.version, 1))
+			client.write(strings.Replace(initializeRequest, LegacyProtocolVersion, test.version, 1))
 			client.read()
 			client.write(initializedNotice)
 			client.write(`{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"board_state","arguments":{"limit":1}}}`)
@@ -194,26 +237,84 @@ func TestToolCallReturnsTextContentForLegacyVersions(t *testing.T) {
 func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 	t.Parallel()
 
-	executor := &staticExecutor{err: errors.New("dashboard API is unreachable")}
-	client := startLiveServer(t, executor)
-	client.write(initializeRequest)
-	client.read()
-	client.write(initializedNotice)
-	client.write(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fleet_health","arguments":{}}}`)
-	response := client.read()
-	client.close()
+	for _, test := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"internal", errors.New("credential-sensitive-value invitation-secret prompt-body support-token billing-secret sentinel"), "Operator tool is unavailable"},
+		{"missing", explain.ErrNotFound, "work item not found in this project"},
+		{"unauthorized project", operatortool.ErrProjectScopeRequired, operatortool.ErrProjectScopeRequired.Error()},
+		{"read fault", &operatortool.ReadUnavailableError{Err: errors.New("database fault sentinel")}, "Operator tool is unavailable"},
+		{"argument validation", nativeMoveArgumentError(), `{"code":"invalid_request","message":"expected_revision: is required"}`},
+		{"request", &operatortool.RequestError{Code: "invalid_request", Message: "Read get_project_integration"}, `{"code":"invalid_request","message":"Read get_project_integration"}`},
+		{"oversized Change record", operatortool.ChangeRecordTooLarge(), `{"code":"change_record_too_large","message":"A Change record with its required evidence envelope exceeds the 262144-byte result budget. Inspect the exact version or artifact through its scoped read; the record requires an operator repair. No evidence was reported as passing."}`},
+		{"revision", &operatortool.ConflictError{Code: "revision_conflict", CurrentRevision: 4}, `{"code":"revision_conflict","current_revision":"4"}`},
+		{"policy mismatch", &operatortool.ConflictError{Code: "policy_mismatch", Message: "Approved policy changed; inspect the current policy and supply its expected_policy_id"}, `{"code":"policy_mismatch","message":"Approved policy changed; inspect the current policy and supply its expected_policy_id"}`},
+		{"stale", &operatortool.ConflictError{Code: "stale_execution", Details: &operatortool.ConflictDetails{}}, `{"code":"stale_execution","details":{"expected_attempt_id":null,"current_attempt_id":null}}`},
+	} {
+		for _, version := range []string{"2024-11-05", "2025-11-25"} {
+			t.Run(test.name+"/"+version, func(t *testing.T) {
+				executor := &staticExecutor{err: fmt.Errorf("internal secret: %w", test.err)}
+				var logs bytes.Buffer
+				client := startLiveServerContext(t, executor, t.Context(), WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+				client.write(strings.Replace(initializeRequest, "2025-11-25", version, 1))
+				client.read()
+				client.write(initializedNotice)
+				client.write(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fleet_health","arguments":{}}}`)
+				response := client.read()
+				client.close()
 
-	var result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		StructuredContent json.RawMessage `json:"structuredContent"`
-		IsError           bool            `json:"isError"`
-	}
-	decodeResult(t, response, &result)
-	if !result.IsError || len(result.Content) != 1 || result.Content[0].Text != "dashboard API is unreachable" || len(result.StructuredContent) != 0 {
-		t.Fatalf("tool error result = %#v", result)
+				var result struct {
+					Content []struct {
+						Type string `json:"type"`
+						Text string `json:"text"`
+					} `json:"content"`
+					StructuredContent json.RawMessage `json:"structuredContent"`
+					IsError           bool            `json:"isError"`
+				}
+				decodeResult(t, response, &result)
+				if !result.IsError || len(result.Content) != 1 {
+					t.Fatalf("tool error result = %#v", result)
+				}
+				if test.want == "Operator tool is unavailable" {
+					var entry struct {
+						Tool          string `json:"tool"`
+						CorrelationID string `json:"correlation_id"`
+						ErrorClass    string `json:"error_class"`
+						RequestID     string `json:"request_id"`
+						Error         string `json:"error"`
+					}
+					if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
+						t.Fatalf("fault log=%s: %v", logs.Bytes(), err)
+					}
+					cause := test.err
+					var unavailable *operatortool.ReadUnavailableError
+					if errors.As(cause, &unavailable) {
+						cause = unavailable.Err
+					}
+					if entry.Tool != "fleet_health" || entry.CorrelationID == "" || entry.ErrorClass != "*errors.errorString" || entry.RequestID != "2" || !strings.Contains(entry.Error, cause.Error()) {
+						t.Fatalf("fault log=%s", logs.Bytes())
+					}
+					if want := test.want + " (reason_code service_unavailable, correlation_id " + entry.CorrelationID + ")"; result.Content[0].Text != want {
+						t.Fatalf("tool error text = %q, want %q", result.Content[0].Text, want)
+					}
+				} else if result.Content[0].Text != test.want {
+					t.Fatalf("tool error result = %#v", result)
+				} else if logs.Len() != 0 {
+					t.Fatalf("expected tool error logged as a fault: %s", logs.Bytes())
+				}
+				var conflict *operatortool.ConflictError
+				var request *operatortool.RequestError
+				if !errors.As(test.err, &conflict) && !errors.As(test.err, &request) || version == "2024-11-05" {
+					if len(result.StructuredContent) != 0 {
+						t.Fatalf("unexpected structured error=%s", result.StructuredContent)
+					}
+				} else if string(result.StructuredContent) != test.want {
+					t.Fatalf("structured error=%s", result.StructuredContent)
+				}
+			})
+		}
 	}
 }
 
@@ -235,7 +336,7 @@ func TestToolCallReturnsArgumentValidationError(t *testing.T) {
 		IsError bool `json:"isError"`
 	}
 	decodeResult(t, response, &result)
-	if !result.IsError || len(result.Content) != 1 || !strings.Contains(result.Content[0].Text, operatortool.ErrInvalidArguments.Error()) {
+	if !result.IsError || len(result.Content) != 1 || result.Content[0].Text != `{"code":"invalid_request","message":"limit: must have type int"}` {
 		t.Fatalf("tool argument result = %#v", result)
 	}
 }
@@ -267,17 +368,27 @@ func TestDuplicateRequestIDCancelsOriginal(t *testing.T) {
 func TestCancellationSuppressesResponse(t *testing.T) {
 	t.Parallel()
 
-	executor := newBlockingExecutor()
-	client := startLiveServer(t, executor)
-	client.write(initializeRequest)
-	client.read()
-	client.write(initializedNotice)
-	client.write(`{"jsonrpc":"2.0","id":"slow","method":"tools/call","params":{"name":"recent_activity","arguments":{}}}`)
-	executor.waitStarted(t)
-	client.write(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"slow","reason":"test"}}`)
-	executor.waitCancelled(t)
-	client.close()
-	client.requireNoFrames()
+	for _, version := range []string{LegacyProtocolVersion, ProtocolVersion} {
+		t.Run(version, func(t *testing.T) {
+			executor := newBlockingExecutor()
+			client := startLiveServer(t, executor)
+			if version == LegacyProtocolVersion {
+				client.write(initializeRequest)
+				client.read()
+				client.write(initializedNotice)
+			}
+			meta := ""
+			if version == ProtocolVersion {
+				meta = `,"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}`
+			}
+			client.write(`{"jsonrpc":"2.0","id":"slow","method":"tools/call","params":{"name":"recent_activity","arguments":{}` + meta + `}}`)
+			executor.waitStarted(t)
+			client.write(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"slow","reason":"test"}}`)
+			executor.waitCancelled(t)
+			client.close()
+			client.requireNoFrames()
+		})
+	}
 }
 
 func TestConcurrentCallsAreRaceSafe(t *testing.T) {
@@ -488,11 +599,16 @@ type liveClient struct {
 
 func startLiveServer(t *testing.T, executor Executor) *liveClient {
 	t.Helper()
+	return startLiveServerContext(t, executor, t.Context())
+}
+
+func startLiveServerContext(t *testing.T, executor Executor, ctx context.Context, options ...ServerOption) *liveClient {
+	t.Helper()
 	reader, writer := io.Pipe()
 	frames := make(chan []byte, 64)
 	done := make(chan error, 1)
 	go func() {
-		done <- NewServer(executor, "test-version").Serve(t.Context(), reader, frameWriter{frames: frames})
+		done <- NewServer(executor, "test-version", options...).Serve(ctx, reader, frameWriter{frames: frames})
 	}()
 	t.Cleanup(func() {
 		_ = writer.Close()
@@ -577,4 +693,33 @@ func waitChannel(t *testing.T, channel <-chan struct{}, operation string) {
 
 func bytesTrimSpace(value []byte) []byte {
 	return []byte(strings.TrimSpace(string(value)))
+}
+
+func nativeMoveArgumentError() error {
+	_, err := operatortool.DecodeNativeMoveItem(json.RawMessage(`{"project_id":"detent","request_id":"move","identifier":"295","target_state":"Done"}`))
+	return err
+}
+
+type codedTestError struct{ code int }
+
+func (e codedTestError) Error() string { return "coded" }
+func (e codedTestError) Code() int     { return e.code }
+
+func TestErrorClass(t *testing.T) {
+	sentinel := errors.New("sentinel")
+	for _, tt := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"plain", errors.New("tenant text"), "*errors.errorString"},
+		{"deadline", fmt.Errorf("query: %w", context.DeadlineExceeded), "deadline_exceeded"},
+		{"canceled", fmt.Errorf("query: %w", context.Canceled), "canceled"},
+		{"sqlite code", fmt.Errorf("insert: %w", codedTestError{5}), "sqlite_5"},
+		{"multi wrap reaches the cause", fmt.Errorf("%w: %w", sentinel, &json.SyntaxError{}), "*json.SyntaxError"},
+	} {
+		if got := ErrorClass(tt.err); got != tt.want {
+			t.Errorf("%s: ErrorClass = %q, want %q", tt.name, got, tt.want)
+		}
+	}
 }

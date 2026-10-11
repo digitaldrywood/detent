@@ -35,6 +35,10 @@ func (s *blockedHeartbeatStore) RecordWorkAttemptHeartbeat(ctx context.Context, 
 }
 
 func TestHeartbeatWriteDeadlineRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, path := range []string{"dedicated", "tick", "progress"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()

@@ -17,6 +17,10 @@ import (
 )
 
 func TestOnboardingValidateAnswersCommandRejectsMissingGitHubMode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
@@ -38,6 +42,10 @@ func TestOnboardingValidateAnswersCommandRejectsMissingGitHubMode(t *testing.T) 
 }
 
 func TestOnboardingValidateAnswersCommandAcceptsIdentityPhase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t))
@@ -194,6 +202,10 @@ func onboardingValidationGitRunner(t *testing.T, sourceRoot string, remote strin
 }
 
 func TestOnboardingValidateAnswersCommandRequiresFinalMutationConfirmation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
@@ -218,6 +230,10 @@ func TestOnboardingValidateAnswersCommandRequiresFinalMutationConfirmation(t *te
 }
 
 func TestOnboardingValidateAnswersCommandRequiresModeSpecificMutationAnswers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
@@ -240,6 +256,10 @@ func TestOnboardingValidateAnswersCommandRequiresModeSpecificMutationAnswers(t *
 }
 
 func TestOnboardingValidateAnswersCommandRejectsMissingDeliveryProfileExpansionBeforeMutation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
@@ -270,6 +290,10 @@ func TestOnboardingValidateAnswersCommandRejectsMissingDeliveryProfileExpansionB
 }
 
 func TestOnboardingValidateAnswersCommandAcceptsDecisionPhase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+"GITHUB_MODE=issue_field\n")
@@ -298,6 +322,10 @@ func TestOnboardingValidateAnswersCommandAcceptsDecisionPhase(t *testing.T) {
 }
 
 func TestOnboardingValidateAnswersCommandAcceptsLabelMode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
@@ -332,6 +360,10 @@ func TestOnboardingValidateAnswersCommandAcceptsLabelMode(t *testing.T) {
 }
 
 func TestOnboardingValidateAnswersCommandExpandsFullAutopilotProfile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	profileAnswers := fullAutopilotProfileAnswers()
@@ -415,6 +447,10 @@ func TestOnboardingValidateAnswersCommandExpandsFullAutopilotProfile(t *testing.
 }
 
 func TestOnboardingExplainAnswersCommandSummarizesFullAutopilot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
@@ -468,6 +504,10 @@ func TestOnboardingExplainAnswersCommandSummarizesFullAutopilot(t *testing.T) {
 }
 
 func TestOnboardingValidateAnswersCommandSummarizesReviewGateProfile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
@@ -535,6 +575,10 @@ func TestOnboardingValidateAnswersCommandSummarizesReviewGateProfile(t *testing.
 }
 
 func TestOnboardingValidateAnswersCommandSummarizesConservativeManualProfile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
@@ -581,6 +625,10 @@ func TestOnboardingValidateAnswersCommandSummarizesConservativeManualProfile(t *
 }
 
 func TestOnboardingNormalizeAnswersCommandWritesFullAutopilotProfileExpansion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
@@ -631,6 +679,10 @@ func TestOnboardingNormalizeAnswersCommandWritesFullAutopilotProfileExpansion(t 
 }
 
 func TestOnboardingNormalizeAnswersCommandWritesAutonomousIntakeProfileExpansion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
@@ -685,6 +737,10 @@ func TestOnboardingNormalizeAnswersCommandWritesAutonomousIntakeProfileExpansion
 }
 
 func TestOnboardingNormalizeAnswersCommandPreservesFinalMutationConfirmationWhenAlreadyCanonical(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	profileAnswers := fullAutopilotProfileAnswers()
@@ -738,6 +794,10 @@ func TestOnboardingNormalizeAnswersCommandPreservesFinalMutationConfirmationWhen
 }
 
 func TestOnboardingNormalizeAnswersCommandRejectsStaleMutationConfirmation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	content := validIdentityOnboardingAnswers(t) + strings.Join([]string{
@@ -776,6 +836,10 @@ func TestOnboardingNormalizeAnswersCommandRejectsStaleMutationConfirmation(t *te
 }
 
 func TestOnboardingNormalizeAnswersCommandRejectsDeliveryProfileExpansionConflict(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	content := validIdentityOnboardingAnswers(t) + strings.Join([]string{
@@ -809,6 +873,10 @@ func TestOnboardingNormalizeAnswersCommandRejectsDeliveryProfileExpansionConflic
 }
 
 func TestOnboardingDraftAnswersCommandUsesCurrentNonDetentCheckoutAsTarget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
 	wantTargetRoot := canonicalOnboardingTestPath(t, targetRoot)
 	t.Chdir(targetRoot)
@@ -858,6 +926,10 @@ func TestOnboardingDraftAnswersCommandUsesCurrentNonDetentCheckoutAsTarget(t *te
 }
 
 func TestOnboardingDraftAnswersCommandPrefersRepoPrefixForSharedOwner(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/creswoodcorners-phone.git")
 	t.Chdir(targetRoot)
 
@@ -912,6 +984,10 @@ func TestOnboardingDraftAnswersCommandPrefersRepoPrefixForSharedOwner(t *testing
 }
 
 func TestOnboardingDraftAnswersCommandKeepsNormalOwnerForProductSuffixRepo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/payments-api.git")
 	t.Chdir(targetRoot)
 
@@ -954,6 +1030,10 @@ func TestOnboardingDraftAnswersCommandKeepsNormalOwnerForProductSuffixRepo(t *te
 }
 
 func TestOnboardingDraftAnswersCommandMarksSharedOwnerAmbiguity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/service.git")
 	t.Chdir(targetRoot)
 
@@ -994,6 +1074,10 @@ func TestOnboardingDraftAnswersCommandMarksSharedOwnerAmbiguity(t *testing.T) {
 }
 
 func TestOnboardingDraftAnswersCommandPrettyExplainsCustomerChoice(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/creswoodcorners-phone.git")
 	wantTargetRoot := canonicalOnboardingTestPath(t, targetRoot)
 	t.Chdir(targetRoot)
@@ -1030,6 +1114,10 @@ func TestOnboardingDraftAnswersCommandPrettyExplainsCustomerChoice(t *testing.T)
 }
 
 func TestOnboardingDraftAnswersCommandReportsStaleDetentSourceAndBinary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
 	sourceRoot, sourceHead, canonicalMain := initOnboardingDetentSourceCheckout(t, true)
 	t.Chdir(targetRoot)
@@ -1094,6 +1182,10 @@ func TestOnboardingDraftAnswersCommandReportsStaleDetentSourceAndBinary(t *testi
 }
 
 func TestOnboardingDraftAnswersCommandReportsCurrentDetentSourceAndBinary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
 	sourceRoot, sourceHead, canonicalMain := initOnboardingDetentSourceCheckout(t, false)
 	t.Chdir(targetRoot)
@@ -1152,6 +1244,10 @@ func TestOnboardingDraftAnswersCommandReportsCurrentDetentSourceAndBinary(t *tes
 }
 
 func TestOnboardingDraftAnswersCommandUsesRemoteDetentDocsWithoutLocalCheckout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
 	canonicalMain := "b6b8fc5d8f0f5ed413f6b0b9694970c0f02c6d7d"
 	t.Chdir(targetRoot)
@@ -1243,6 +1339,10 @@ func TestOnboardingDraftAnswersCommandUsesRemoteDetentDocsWithoutLocalCheckout(t
 }
 
 func TestOnboardingDraftAnswersCommandBlocksFailedRemoteDetentDocsWithoutLocalCheckout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
 	t.Chdir(targetRoot)
 
@@ -1322,6 +1422,10 @@ func TestOnboardingDraftAnswersCommandBlocksFailedRemoteDetentDocsWithoutLocalCh
 }
 
 func TestOnboardingDraftAnswersCommandBlocksUnprovenDetentBinary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
 	sourceRoot, _, canonicalMain := initOnboardingDetentSourceCheckout(t, false)
 	t.Chdir(targetRoot)
@@ -1375,6 +1479,10 @@ func TestOnboardingDraftAnswersCommandBlocksUnprovenDetentBinary(t *testing.T) {
 }
 
 func TestOnboardingDraftAnswersCommandAcceptsIdentityOverrides(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/creswoodcorners-phone.git")
 	answersPath := filepath.Join(t.TempDir(), "answers.env")
 	t.Chdir(targetRoot)
@@ -1439,6 +1547,10 @@ func TestOnboardingDraftAnswersCommandAcceptsIdentityOverrides(t *testing.T) {
 }
 
 func TestOnboardingDraftAnswersCommandRequiresExplicitTargetFromDetentSourceCheckout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	sourceRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/detent.git")
 	t.Chdir(sourceRoot)
 
@@ -1458,6 +1570,10 @@ func TestOnboardingDraftAnswersCommandRequiresExplicitTargetFromDetentSourceChec
 }
 
 func TestOnboardingDraftAnswersCommandParsesGitHubRemoteFormats(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Chdir(t.TempDir())
 
 	tests := []struct {
@@ -1502,6 +1618,10 @@ func TestOnboardingDraftAnswersCommandParsesGitHubRemoteFormats(t *testing.T) {
 }
 
 func TestOnboardingDraftAnswersCommandNotesProjectIDCollision(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
 	otherRoot := initOnboardingGitRepository(t, "https://github.com/acme/other.git")
 	configPath := writeOnboardingGlobalConfig(t, []globalconfig.Project{{
@@ -1544,6 +1664,10 @@ func TestOnboardingDraftAnswersCommandNotesProjectIDCollision(t *testing.T) {
 }
 
 func TestOnboardingDraftAnswersCommandWritesUnconfirmedAnswers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
 	wantTargetRoot := canonicalOnboardingTestPath(t, targetRoot)
 	answersPath := filepath.Join(t.TempDir(), "answers.env")
@@ -1588,6 +1712,10 @@ func TestOnboardingDraftAnswersCommandWritesUnconfirmedAnswers(t *testing.T) {
 }
 
 func TestOnboardingDiagnoseGateDetectsEnvPollutedFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	tests := []struct {
 		name string
 		file string
@@ -1679,6 +1807,10 @@ func TestOnboardingDiagnoseGateDetectsEnvPollutedFailure(t *testing.T) {
 }
 
 func TestOnboardingDiagnoseGateKeepsPassingCommandRecommended(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
 	const gateCommand = "echo gate-passed"
 

@@ -8,6 +8,7 @@ import type {
   ChangeDetail,
   ChangeRequest,
   NativeAttempt,
+  NativeBoardCard,
   NativeIssue,
   NativeProject,
 } from "../../../contracts/work.ts";
@@ -34,6 +35,7 @@ export function toLanes(project: NativeProject): readonly Lane[] {
     id: state.name,
     name: state.name,
     terminal: state.terminal,
+    dispatchable: state.dispatchable,
     category: laneCategory(state.terminal, state.dispatchable),
   }));
 }
@@ -151,6 +153,7 @@ export function toChangeView(
 }
 
 export interface ItemExtras {
+  readonly observations?: WorkItemView["observations"];
   readonly attempts?: readonly NativeAttempt[];
   readonly change?: ChangeView | null;
   readonly conversationId?: string | null;
@@ -175,6 +178,10 @@ export function toWorkItemView(
   const labels = [...issue.labels];
   return {
     id: issue.work_item_id,
+    observations: extras.observations ?? {
+      worker: extras.attempts === undefined ? "unchecked" : "known",
+      change: extras.change === undefined ? "unchecked" : "known",
+    },
     archived: issue.archived ?? false,
     projectId: issue.project_id,
     projectName,
@@ -184,6 +191,14 @@ export function toWorkItemView(
     body: issue.body,
     state: issue.state,
     stateId: issue.state,
+    terminal: issue.terminal,
+    sourceProvider: issue.provenance?.provider ?? null,
+    source: issue.provenance === undefined ? null : {
+      externalId: issue.provenance.external_id,
+      createdAt: issue.provenance.created_at ?? null,
+      updatedAt: issue.provenance.updated_at ?? null,
+      observedAt: issue.provenance.observed_at ?? null,
+    },
     priority: priorityName(issue.priority),
     labels,
     assignees: [...issue.assignees],
@@ -191,6 +206,10 @@ export function toWorkItemView(
     epic: labelValue(labels, "epic"),
     createdAt: issue.created_at,
     updatedAt: issue.updated_at,
+    lastActivityAt: issue.last_activity_at ?? null,
+    closedAt: issue.closed_at ?? null,
+    listChange: issue.list_change === undefined ? null : { branch: issue.list_change.branch, headSha: issue.list_change.head_sha },
+    pullRequest: issue.pull_request ?? null,
     revision: issue.revision,
     // Only a blocker that has not reached a terminal state still blocks. The
     // hub filters out blockers the reader cannot see, so this list is what
@@ -202,5 +221,23 @@ export function toWorkItemView(
       extras.attempts === undefined ? null : toAttemptView(extras.attempts, extras.runnerNames),
     change: extras.change ?? null,
     conversationId: extras.conversationId ?? null,
+  };
+}
+
+export function toBoardCardView(card: NativeBoardCard, projectName: string): WorkItemView {
+  const item = toWorkItemView(card.issue, projectName, { observations: { worker: "known", change: "known" } });
+  const attempt = card.attempt;
+  const change = card.change;
+  const externalNumber = change?.external === undefined ? null : Number.parseInt(change.external.id, 10);
+  return { ...item, reserveWorkerSpace: attempt !== null,
+    attempt: attempt === null ? null : {
+      id: attempt.attempt_id, status: attempt.status, running: attempt.status === "running",
+      runner: runnerDisplay(undefined, attempt.runner_id ?? attempt.machine_id ?? null),
+      backend: attempt.identity?.backend ?? null, model: attempt.identity?.model ?? null,
+      effort: null, access: null, startedAt: attempt.started_at, tokens: null, progress: null, attemptNumber: attempt.count ?? 1,
+    },
+    change: change === null ? null : { id: change.change_id,
+      number: externalNumber !== null && Number.isFinite(externalNumber) ? externalNumber : null,
+      title: change.title, state: change.status, review: reviewWord(change.status), url: change.external?.url ?? null },
   };
 }

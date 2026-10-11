@@ -12,11 +12,14 @@ import (
 
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 type NativeClient struct {
+	githubBatch  func(context.Context, tracker.GitHubBatchTask) error
 	client       *Client
 	organization tracker.OrganizationID
 	project      tracker.ProjectID
@@ -34,15 +37,51 @@ func (c *NativeClient) base() string {
 }
 
 type nativeCapabilities struct {
-	ProtocolMajors []int    `json:"protocol_majors"`
-	EventSchemas   []int    `json:"event_schema_versions"`
-	Features       []string `json:"features"`
+	MinimumRunnerVersion string   `json:"minimum_runner_version"`
+	Version              string   `json:"version"`
+	ProtocolMajors       []int    `json:"protocol_majors"`
+	EventSchemas         []int    `json:"event_schema_versions"`
+	Features             []string `json:"features"`
+}
+
+const capabilitiesTTL = 30 * time.Second
+
+func (c *Client) cachedCapabilities(ctx context.Context) (nativeCapabilities, error) {
+	c.capabilitiesMu.Lock()
+	defer c.capabilitiesMu.Unlock()
+	if !c.capabilitiesAt.IsZero() && (c.capabilitiesDigest != "" || time.Since(c.capabilitiesAt) < capabilitiesTTL) {
+		return c.capabilities, nil
+	}
+	var capabilities nativeCapabilities
+	if err := c.request(ctx, http.MethodGet, "/api/v2/capabilities", nil, &capabilities); err != nil {
+		return nativeCapabilities{}, err
+	}
+	c.capabilities, c.capabilitiesAt = capabilities, time.Now()
+	return capabilities, nil
+}
+
+func (c *Client) Version(ctx context.Context) (string, error) {
+	capabilities, err := c.cachedCapabilities(ctx)
+	if err != nil {
+		return "", err
+	}
+	version := strings.TrimSpace(capabilities.Version)
+	if version == "" {
+		return "", errors.New("hub did not report its version")
+	}
+	return version, nil
+}
+
+func (c *Client) MinimumRunnerVersion(ctx context.Context) (string, error) {
+	capabilities, err := c.cachedCapabilities(ctx)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(capabilities.MinimumRunnerVersion), nil
 }
 
 func (c *NativeClient) capabilities(ctx context.Context) (nativeCapabilities, error) {
-	var capabilities nativeCapabilities
-	err := c.client.request(ctx, http.MethodGet, "/api/v2/capabilities", nil, &capabilities)
-	return capabilities, err
+	return c.client.cachedCapabilities(ctx)
 }
 
 // HubFeature reports whether the hub advertises a feature on its capability
@@ -105,7 +144,12 @@ func (c *NativeClient) Issue(ctx context.Context, id tracker.NativeWorkItemID) (
 }
 
 func (c *NativeClient) Issues(ctx context.Context, query url.Values) (tracker.Page[tracker.NativeIssue], error) {
-	var result tracker.Page[tracker.NativeIssue]
+	result, err := c.IssuesPage(ctx, query)
+	return result.Page, err
+}
+
+func (c *NativeClient) IssuesPage(ctx context.Context, query url.Values) (tracker.NativeIssuePage, error) {
+	var result tracker.NativeIssuePage
 	err := c.client.request(ctx, http.MethodGet, c.base()+"/work-items?"+query.Encode(), nil, &result)
 	return result, err
 }
@@ -135,7 +179,7 @@ func (c *NativeClient) Transition(ctx context.Context, id tracker.NativeWorkItem
 		return result, err
 	}
 	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/workflow", request, &result)
-	return result, err
+	return result, nativeMutationError(err)
 }
 
 func (c *NativeClient) Dependency(ctx context.Context, id tracker.NativeWorkItemID, request tracker.DependencyMutation) (tracker.NativeIssue, error) {
@@ -150,13 +194,7 @@ func (c *NativeClient) Dependency(ctx context.Context, id tracker.NativeWorkItem
 }
 
 func (c *NativeClient) Comments(ctx context.Context, id tracker.NativeWorkItemID, cursor string) (tracker.Page[tracker.NativeComment], error) {
-	var result tracker.Page[tracker.NativeComment]
-	path, err := nativeItemPath(id)
-	if err != nil {
-		return result, err
-	}
-	err = c.client.request(ctx, http.MethodGet, c.base()+path+"/comments?limit=10&cursor="+url.QueryEscape(cursor), nil, &result)
-	return result, err
+	return c.CommentsPage(ctx, id, cursor, 10)
 }
 
 func (c *NativeClient) CreateComment(ctx context.Context, id tracker.NativeWorkItemID, request tracker.CreateComment) (tracker.NativeComment, error) {
@@ -167,7 +205,14 @@ func (c *NativeClient) CreateComment(ctx context.Context, id tracker.NativeWorkI
 		return result, err
 	}
 	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/comments", request, &result)
-	return result, err
+	return result, nativeMutationError(err)
+}
+
+func nativeMutationError(err error) error {
+	if claimLost(err) {
+		return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+	}
+	return err
 }
 
 func (c *NativeClient) UpdateComment(ctx context.Context, id tracker.NativeWorkItemID, commentID string, request tracker.UpdateComment) (tracker.NativeComment, error) {
@@ -185,13 +230,7 @@ func (c *NativeClient) UpdateComment(ctx context.Context, id tracker.NativeWorkI
 }
 
 func (c *NativeClient) History(ctx context.Context, id tracker.NativeWorkItemID, cursor string) (tracker.Page[tracker.CollaborationEvent], error) {
-	var result tracker.Page[tracker.CollaborationEvent]
-	path, err := nativeItemPath(id)
-	if err != nil {
-		return result, err
-	}
-	err = c.client.request(ctx, http.MethodGet, c.base()+path+"/history?limit=100&cursor="+url.QueryEscape(cursor), nil, &result)
-	return result, err
+	return c.HistoryPage(ctx, id, cursor, 100)
 }
 
 func (c *NativeClient) AppendEvent(ctx context.Context, id tracker.NativeWorkItemID, request tracker.NativeRunEvent) error {
@@ -221,7 +260,9 @@ func (c *NativeClient) RegisterMachine(ctx context.Context, machine Machine) err
 		// so a restarted runner is eligible before its first heartbeat.
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
-	}{machine.BackendIsolation, machine.ProviderReports, machine.ID, machine.Hostname, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation}
+		Skills                *[]skills.ProviderSkill        `json:"skills,omitempty"`
+		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
+	}{machine.BackendIsolation, machine.ProviderReports, machine.ID, machine.Hostname, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.Skills, machine.CheckoutRepository}
 	return c.client.request(ctx, http.MethodPost, c.base()+"/machines/register", request, nil)
 }
 
@@ -232,11 +273,11 @@ func (c *NativeClient) Claim(ctx context.Context, request tracker.NativeClaim) (
 		if err != nil {
 			return result, err
 		}
-		status, err := availability.Evaluate(time.Now())
+		capacity, err := availability.Capacity(time.Now(), 1)
 		if err != nil {
 			return result, err
 		}
-		if !status.Open {
+		if capacity == 0 {
 			return result, ErrNoClaimableWork
 		}
 	}
@@ -250,6 +291,9 @@ func (c *NativeClient) Claim(ctx context.Context, request tracker.NativeClaim) (
 	}
 	if err == nil {
 		c.client.nativeLeases.Store(c.base()+"/"+string(result.WorkItemID), result)
+		if c.client.runner != nil {
+			c.client.runner.claimSlot(result, true)
+		}
 	}
 	return result, err
 }
@@ -261,5 +305,29 @@ func (c *NativeClient) Renew(ctx context.Context, lease tracker.NativeLease, ttl
 }
 
 func (c *NativeClient) Release(ctx context.Context, lease tracker.NativeLease, reason string) error {
-	return c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/release", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: reason}, nil)
+	err := c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/release", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: reason}, nil)
+	if (err == nil || claimLost(err)) && c.client.runner != nil {
+		c.client.runner.claimSlot(lease, false)
+		c.slotFreed()
+	}
+	return err
+}
+
+// SetArchived calls the existing native archive/restore command with its revision.
+func (c *NativeClient) SetArchived(ctx context.Context, id tracker.NativeWorkItemID, revision tracker.Revision, archived bool, command tracker.Mutation) (tracker.NativeIssue, error) {
+	var result tracker.NativeIssue
+	path, err := nativeItemPath(id)
+	if err != nil {
+		return result, err
+	}
+	operation := "restore"
+	if archived {
+		operation = "archive"
+	}
+	request := struct {
+		tracker.Mutation
+		ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	}{c.fencedMutation(ctx, id, command), revision}
+	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/"+operation, request, &result)
+	return result, err
 }

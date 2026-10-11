@@ -55,8 +55,8 @@ func exerciseNativeExecution(t *testing.T, scheduler *Scheduler, native *NativeC
 		t.Fatal(err)
 	}
 	defer stop()
-	if len(execution.Recovery().Discussion) != 23 {
-		t.Fatal("native recovery omitted discussion")
+	if len(execution.Recovery().Discussion) != 1 {
+		t.Fatal("native recovery replayed historical worker discussion")
 	}
 	identity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
 	// The stored attempt diff rides every checkpoint and the finish
@@ -82,9 +82,28 @@ func exerciseNativeExecution(t *testing.T, scheduler *Scheduler, native *NativeC
 		{"finish", func() error { return execution.Finish(guarded, "succeeded") }},
 	} {
 		t.Run("lost "+test.name+" acknowledgment", func(t *testing.T) {
+			if test.name == "finish" {
+				execution.(*nativeExecution).ProviderCompleted(scheduler.now())
+			}
 			transport.drop.Store(true)
-			if err := test.operation(); err == nil {
+			err := test.operation()
+			if test.name == "checkpoint" {
+				if err != nil || execution.(*nativeExecution).pending == nil {
+					t.Fatalf("checkpoint lost pending acknowledgment: %v", err)
+				}
+			} else if err == nil {
 				t.Fatal("acknowledgment loss was not injected")
+			}
+			if test.name == "finish" {
+				owner := execution.(*nativeExecution)
+				pending, sequence := owner.pending, owner.data.Sequence
+				claims := scheduler.projectDiagnosticClaims(owner.claim.source)
+				if len(claims) != 1 || claims[0].HostOperation != "append.run.finished" || !claims[0].OperationPending || claims[0].ProviderCompletedAt.IsZero() || claims[0].LatestError == "" {
+					t.Fatalf("completion diagnostic=%+v", claims)
+				}
+				if owner.pending != pending || owner.data.Sequence != sequence {
+					t.Fatal("diagnostic advanced completion")
+				}
 			}
 			if err := test.operation(); err != nil {
 				t.Fatal(err)
@@ -132,15 +151,15 @@ func exerciseNativeExecution(t *testing.T, scheduler *Scheduler, native *NativeC
 		t.Fatal("run.started carries no stored diff")
 	}
 	transport.down.Store(true)
-	if err := execution.Validate(guarded); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+	if err := execution.Validate(guarded); err != nil {
 		t.Fatalf("outage validation = %v", err)
 	}
-	if !errors.Is(context.Cause(guarded), runner.ErrExecutionAuthorityUnavailable) {
-		t.Fatal("outage did not cancel provider context")
+	if guarded.Err() != nil {
+		t.Fatal("temporary outage cancelled provider context")
 	}
 	transport.down.Store(false)
-	if err := execution.Validate(guarded); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-		t.Fatal("stopped execution resumed after reconnect")
+	if err := execution.Validate(guarded); err != nil {
+		t.Fatalf("reconnected validation = %v", err)
 	}
 }
 
@@ -151,16 +170,20 @@ func (f executionRoundTrip) RoundTrip(request *http.Request) (*http.Response, er
 }
 
 func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
-	for _, renew := range []bool{false, true} {
-		name := "expire"
-		if renew {
-			name = "renew"
-		}
+	for _, name := range []string{"expire", "renew", "renewal outage", "renew during native finish"} {
+		renew := name == "renew"
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				descriptor := clientTestPolicy()
+				var offline atomic.Bool
 				transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if offline.Load() {
+						return nil, errors.New("renewal disconnected")
+					}
 					body := []byte(`{}`)
+					if strings.HasSuffix(request.URL.Path, "/renew") {
+						return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"stale_fencing_token"}`)), Request: request}, nil
+					}
 					if strings.HasSuffix(request.URL.Path, "/policy") {
 						var err error
 						body, err = json.Marshal(policy.Approval{Policy: descriptor})
@@ -188,12 +211,103 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 				scheduler.nativeClaims[id] = nativeClaim{source: source, lease: tracker.NativeLease{WorkItemID: tracker.NativeWorkItemID(id), ID: "lease", FencingToken: 1, PolicyID: descriptor.ID}, deadline: time.Now().Add(time.Minute)}
 				scheduler.claimPolicies[id] = claimPolicy{project: "project", descriptor: descriptor}
 				execution := scheduler.RunExecution(id)
-				guarded, stop, err := execution.Guard(t.Context())
-				if err != nil {
-					t.Fatal(err)
+				guarded := t.Context()
+				if name != "renew during native finish" {
+					var stop func()
+					guarded, stop, err = execution.Guard(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer stop()
 				}
-				defer stop()
+				if name == "renew during native finish" {
+					claim := scheduler.nativeClaims[id]
+					scheduler.claims[id] = nativeTrackerLease(claim.lease)
+					scheduler.nativeHeartbeats[native.project] = time.Now()
+					nativeExecution := execution.(*nativeExecution)
+					nativeExecution.data.Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
+					nativeExecution.preparedOutcome = "failed"
+					started, allowFinish := make(chan struct{}), make(chan struct{})
+					defer func() {
+						select {
+						case <-allowFinish:
+						default:
+							close(allowFinish)
+						}
+					}()
+					original := client.httpClient.Transport
+					finishedEvents := 0
+					client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+						if strings.HasSuffix(request.URL.Path, "/renew") {
+							lease := claim.lease
+							lease.ServerTime, lease.RenewedAt = time.Now(), time.Now()
+							lease.ExpiresAt = time.Now().Add(time.Minute)
+							body, err := json.Marshal(lease)
+							if err != nil {
+								return nil, err
+							}
+							return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: request}, nil
+						}
+						if strings.HasSuffix(request.URL.Path, "/events") {
+							var event tracker.NativeRunEvent
+							if err := json.NewDecoder(request.Body).Decode(&event); err != nil {
+								return nil, err
+							}
+							if event.Type == "run.finished" {
+								finishedEvents++
+								close(started)
+								<-allowFinish
+							}
+						}
+						return original.RoundTrip(request)
+					})
+					finished := make(chan error, 1)
+					go func() { finished <- scheduler.ReleaseClaim(guarded, id, "released") }()
+					<-started
+					for range 7 {
+						time.Sleep(20 * time.Second)
+						renewed := make(chan error, 1)
+						go func() {
+							_, err := scheduler.RenewClaim(guarded, id, time.Now())
+							renewed <- err
+						}()
+						synctest.Wait()
+						select {
+						case err := <-renewed:
+							if err != nil {
+								t.Fatalf("renew existing native lease during Finish: %v", err)
+							}
+						default:
+							t.Fatal("renewal waited for completion publication")
+						}
+						current := scheduler.nativeClaims[id]
+						if current.lease.ID != claim.lease.ID || current.lease.FencingToken != claim.lease.FencingToken {
+							t.Fatal("slow Finish replaced existing lease authority")
+						}
+						if guarded.Err() != nil || nativeExecution.remaining() <= 0 {
+							t.Fatal("slow Finish lost the existing fenced owner")
+						}
+					}
+					close(allowFinish)
+					if err := <-finished; err != nil || finishedEvents != 1 {
+						t.Fatalf("Finish publication: events=%d error=%v", finishedEvents, err)
+					}
+					if nativeExecution.remaining() != 0 || len(scheduler.nativeClaims) != 0 || len(scheduler.claims) != 0 {
+						t.Fatal("terminal acknowledgement retained lease ownership")
+					}
+					return
+				}
 				time.Sleep(30 * time.Second)
+				if name == "renewal outage" {
+					offline.Store(true)
+					_, err := scheduler.renewNativeClaim(t.Context(), id, scheduler.nativeClaims[id])
+					if err == nil || errors.Is(err, orchestrator.ErrSchedulingClaimLost) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+						t.Fatalf("transient renewal revoked current lease: %v", err)
+					}
+					if err := execution.Validate(guarded); err != nil || guarded.Err() != nil {
+						t.Fatalf("outage ended valid worker: %v", err)
+					}
+				}
 				if renew {
 					scheduler.mu.Lock()
 					claim := scheduler.nativeClaims[id]
@@ -207,6 +321,16 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 					if guarded.Err() != nil {
 						t.Fatal("renewed owner stopped at old deadline")
 					}
+					time.Sleep(30 * time.Second)
+					synctest.Wait()
+				}
+				if name == "renewal outage" {
+					time.Sleep(4 * time.Minute)
+					synctest.Wait()
+					if guarded.Err() != nil {
+						t.Fatalf("outage canceled worker: %v", context.Cause(guarded))
+					}
+					offline.Store(false)
 					time.Sleep(30 * time.Second)
 					synctest.Wait()
 				}
@@ -251,6 +375,12 @@ func TestNativeMissingClaimNeverRunsUnguarded(t *testing.T) {
 	if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 		t.Fatalf("guard = %v", err)
 	}
+	if err := scheduler.ReleaseClaim(t.Context(), "wi_"+strings.Repeat("a", 32), "completed"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("missing native completion owner reported settlement: %v", err)
+	}
+	if err := scheduler.ReleaseClaim(t.Context(), "github-node", "completed"); err != nil {
+		t.Fatalf("legacy idempotent release = %v", err)
+	}
 	if scheduler.RunExecution("github-node") != nil {
 		t.Fatal("legacy execution acquired a native guard")
 	}
@@ -288,7 +418,7 @@ func TestNativeExecutionContextKeepsItsOriginalFence(t *testing.T) {
 
 func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 	t.Parallel()
-	for _, operation := range []string{"renew", "release", "lost"} {
+	for _, operation := range []string{"renew", "release", "release_finish_lost", "release_finish_ack_retry", "lost"} {
 		t.Run(operation, func(t *testing.T) {
 			descriptor := clientTestPolicy()
 			id := "wi_" + strings.Repeat("a", 32)
@@ -296,9 +426,25 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 			next := lease
 			next.ID, next.FencingToken = "new", 2
 			var scheduler *Scheduler
+			var releaseCalls, finishedEvents int
 			transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 				var payload any = policy.Approval{Policy: descriptor}
-				if strings.HasSuffix(request.URL.Path, "/"+operation) {
+				if strings.HasSuffix(request.URL.Path, "/events") {
+					var event tracker.NativeRunEvent
+					if err := json.NewDecoder(request.Body).Decode(&event); err != nil {
+						t.Fatal(err)
+					}
+					if event.Type == "run.finished" {
+						finishedEvents++
+					}
+				}
+				if strings.HasSuffix(request.URL.Path, "/release") && operation == "release_finish_ack_retry" {
+					releaseCalls++
+					if releaseCalls == 1 {
+						return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"tenant_unavailable"}`)), Request: request}, nil
+					}
+				}
+				if strings.HasSuffix(request.URL.Path, "/"+strings.Split(operation, "_finish_")[0]) {
 					scheduler.mu.Lock()
 					claim := scheduler.nativeClaims[id]
 					claim.lease = next
@@ -337,8 +483,42 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
 					t.Fatalf("old renewal = %v", err)
 				}
-			case "release":
+			case "release_finish_ack_retry":
+				claim := scheduler.nativeClaims[id]
+				claim.deadline = time.Now().Add(time.Minute)
+				scheduler.nativeClaims[id] = claim
+				execution := scheduler.RunExecution(id).(*nativeExecution)
+				execution.preparedOutcome = "failed"
+				execution.data.Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
+				if err := scheduler.ReleaseClaim(t.Context(), id, "released"); err == nil || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+					t.Fatalf("release outage = %v", err)
+				}
+				if execution.data.Outcome != "failed" || finishedEvents != 1 {
+					t.Fatalf("Finish acknowledgement = %q, events = %d", execution.data.Outcome, finishedEvents)
+				}
+				claim = scheduler.nativeClaims[id]
+				claim.deadline = time.Now().Add(-time.Second)
+				scheduler.nativeClaims[id] = claim
 				if err := scheduler.ReleaseClaim(t.Context(), id, "released"); err != nil {
+					t.Fatalf("acknowledged Finish lost on release retry: %v", err)
+				}
+				if finishedEvents != 1 {
+					t.Fatalf("Finish published again: %d events", finishedEvents)
+				}
+			case "release", "release_finish_lost":
+				if operation == "release_finish_lost" {
+					claim := scheduler.nativeClaims[id]
+					claim.deadline = time.Now().Add(-time.Second)
+					scheduler.nativeClaims[id] = claim
+					execution := scheduler.RunExecution(id).(*nativeExecution)
+					execution.preparedOutcome = "failed"
+				}
+				err := scheduler.ReleaseClaim(t.Context(), id, "released")
+				if operation == "release_finish_lost" {
+					if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+						t.Fatalf("failed Finish reported settlement: %v", err)
+					}
+				} else if err != nil {
 					t.Fatal(err)
 				}
 			case "lost":
@@ -424,6 +604,10 @@ func TestNativeAvailabilityDeadline(t *testing.T) {
 }
 
 func TestNativeAvailabilityDeadlineRefresh(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	for _, change := range []string{"remove", "extend", "add", "shorten", "closed"} {
 		t.Run(change, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -504,6 +688,146 @@ func TestNativeAvailabilityDeadlineRefresh(t *testing.T) {
 					t.Fatalf("interruption cause = %v", context.Cause(guarded))
 				}
 			})
+		})
+	}
+}
+
+func TestNativeExecutionTransportKeepsCurrentWorker(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
+	t.Parallel()
+	for _, test := range []struct {
+		name         string
+		path         string
+		status       int
+		body         string
+		fatal        bool
+		interruption error
+		expired      bool
+	}{
+		{name: "already canceled", interruption: context.Canceled},
+		{name: "already timed out", interruption: context.DeadlineExceeded},
+		{name: "canceled lease request", path: "/validate", interruption: context.Canceled},
+		{name: "timed out lease request", path: "/validate", interruption: context.DeadlineExceeded},
+		{name: "canceled renewal retains expired lease", interruption: context.Canceled, expired: true},
+		{name: "canceled revoked authority", interruption: runner.ErrExecutionAuthorityUnavailable, fatal: true},
+		{name: "transport"},
+		{name: "server", status: http.StatusServiceUnavailable, body: `{"code":"tenant_unavailable"}`},
+		{name: "unauthorized lease", path: "/validate", status: http.StatusUnauthorized, body: `{"code":"unauthorized"}`, fatal: true},
+		{name: "revoked lease", path: "/validate", status: http.StatusForbidden, body: `{"code":"forbidden"}`, fatal: true},
+		{name: "malformed unauthorized", path: "/validate", status: http.StatusUnauthorized, body: "unauthorized", fatal: true},
+		{name: "permanent protocol", path: "/validate", status: http.StatusBadRequest, body: `{"code":"invalid_request"}`, fatal: true},
+		{name: "stale fencing", path: "/validate", status: http.StatusConflict, body: `{"code":"stale_fencing_token"}`, fatal: true},
+		{name: "policy mismatch", path: "/validate", status: http.StatusConflict, body: `{"code":"policy_mismatch"}`, fatal: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Transport survival")
+			h.claim(t, issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			guarded, stop, err := execution.Guard(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stop()
+			identity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
+			if err := execution.Start(guarded, identity); err != nil {
+				t.Fatal(err)
+			}
+			observation := tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: "implementation", HeartbeatAt: time.Now()}
+			if err := execution.ObserveRuntime(guarded, observation); err != nil {
+				t.Fatal(err)
+			}
+			before := execution.data
+			validationCtx := guarded
+			if test.interruption != nil && test.path == "" {
+				if errors.Is(test.interruption, context.DeadlineExceeded) {
+					var cancel context.CancelFunc
+					validationCtx, cancel = context.WithDeadline(guarded, time.Now().Add(-time.Second))
+					defer cancel()
+				} else {
+					var cancel context.CancelCauseFunc
+					validationCtx, cancel = context.WithCancelCause(guarded)
+					cancel(test.interruption)
+				}
+			}
+			if test.expired {
+				h.scheduler.mu.Lock()
+				claim := h.scheduler.nativeClaims[issue.ID]
+				claim.deadline = time.Now().Add(-time.Second)
+				h.scheduler.nativeClaims[issue.ID] = claim
+				h.scheduler.mu.Unlock()
+			}
+			original := h.native.client.httpClient.Transport
+			h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if test.path != "" && !strings.HasSuffix(request.URL.Path, test.path) {
+					return original.RoundTrip(request)
+				}
+				if test.interruption != nil {
+					return nil, test.interruption
+				}
+				if test.status == 0 {
+					return nil, errors.New("bounded disconnect")
+				}
+				return &http.Response{StatusCode: test.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(test.body)), Request: request}, nil
+			})
+			err = execution.Validate(validationCtx)
+			if test.fatal != errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || !test.fatal && test.interruption == nil && err != nil {
+				t.Fatalf("validation=%v, fatal=%t", err, test.fatal)
+			}
+			if test.interruption != nil && !errors.Is(err, test.interruption) {
+				t.Fatalf("validation=%v, want interruption %v", err, test.interruption)
+			}
+			if test.fatal {
+				if !errors.Is(context.Cause(guarded), runner.ErrExecutionAuthorityUnavailable) {
+					t.Fatal("real refusal retained worker authority")
+				}
+				return
+			}
+			if test.interruption != nil {
+				h.native.client.httpClient.Transport = original
+				if guarded.Err() != nil || execution.data.LeaseID != before.LeaseID || execution.data.FencingToken != before.FencingToken || h.scheduler.RunExecution(issue.ID) != execution {
+					t.Fatal("interruption replaced current worker authority")
+				}
+				if err := execution.Validate(guarded); err != nil {
+					t.Fatalf("interruption prevented validation with original lease: %v", err)
+				}
+				return
+			}
+			observation.Phase = "rework"
+			if err := execution.ObserveRuntime(guarded, observation); err != nil {
+				t.Fatalf("report ended worker: %v", err)
+			}
+			if execution.pending == nil || execution.pending.Data.Sequence != before.Sequence+1 {
+				t.Fatal("outage lost pending event")
+			}
+			pending := *execution.pending
+			if err := execution.ObserveRuntime(guarded, observation); err != nil {
+				t.Fatal(err)
+			}
+			if execution.pending.IdempotencyKey != pending.IdempotencyKey || guarded.Err() != nil {
+				t.Fatal("outage replaced worker or pending event")
+			}
+			h.native.client.httpClient.Transport = original
+			if err := execution.Validate(guarded); err != nil {
+				t.Fatal(err)
+			}
+			if err := execution.FlushRuntime(guarded); err != nil {
+				t.Fatal(err)
+			}
+			if err := execution.FlushRuntime(guarded); err != nil {
+				t.Fatal(err)
+			}
+			if execution.pending != nil || execution.data.Sequence != pending.Data.Sequence || execution.data.AttemptID != before.AttemptID || execution.data.LeaseID != before.LeaseID || *execution.data.Identity != identity || guarded.Err() != nil {
+				t.Fatal("reconnect replaced worker or duplicated event")
+			}
+			recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Sequence != pending.Data.Sequence || recovery.Attempts[0].Status != "running" {
+				t.Fatalf("recovery=%+v error=%v", recovery.Attempts, err)
+			}
 		})
 	}
 }

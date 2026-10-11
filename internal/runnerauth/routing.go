@@ -3,6 +3,7 @@ package runnerauth
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"path"
 	"slices"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/activehours"
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -19,33 +21,66 @@ import (
 const HeartbeatTimeout = 2 * time.Minute
 
 type Routing struct {
-	DisplayName    string              `json:"display_name"`
-	Tags           []string            `json:"tags"`
-	State          string              `json:"state"`
-	CapacityLimit  int                 `json:"capacity_limit"`
-	ProjectIDs     []tracker.ProjectID `json:"project_ids"`
-	HomeProjectIDs []tracker.ProjectID `json:"home_project_ids"`
-	IsolationTier  string              `json:"isolation_tier"`
-	HostServices   []string            `json:"host_services"`
-	Availability   Availability        `json:"availability"`
-	Spillover      Spillover           `json:"spillover"`
+	ProjectRankOverrides        map[tracker.ProjectID]int    `json:"-"`
+	Scope                       string                       `json:"scope,omitempty"`
+	ProjectConfigurationCommand *ProjectConfigurationCommand `json:"-"`
+	UpdateRequest               *UpdateRequest               `json:"update_request,omitempty"`
+	CapacityRequest             *CapacityRequest             `json:"capacity_request,omitempty"`
+	DisplayName                 string                       `json:"display_name"`
+	Tags                        []string                     `json:"tags"`
+	State                       string                       `json:"state"`
+	CapacityLimit               int                          `json:"capacity_limit"`
+	ProjectRanks                map[tracker.ProjectID]int    `json:"project_ranks,omitempty"`
+	ProjectIDs                  []tracker.ProjectID          `json:"project_ids"`
+	IsolationTier               string                       `json:"isolation_tier"`
+	HostServices                []string                     `json:"host_services"`
+	Availability                Availability                 `json:"availability"`
 }
 
 type Availability struct {
-	Timezone     string   `json:"timezone"`
-	Windows      []string `json:"windows"`
-	HardDeadline string   `json:"hard_deadline"`
+	Timezone     string         `json:"timezone"`
+	Windows      []string       `json:"windows"`
+	WindowSlots  map[string]int `json:"window_slots,omitempty"`
+	HardDeadline string         `json:"hard_deadline"`
 }
 
-type Spillover struct {
-	Mode         string `json:"mode"`
-	AfterMinutes int    `json:"after_minutes"`
+type ClaimSlot struct {
+	ID       tracker.LeaseID `json:"lease_id"`
+	RunnerID string          `json:"runner_id"`
+}
+
+type ClaimState struct {
+	HostCapacity   int                          `json:"host_capacity"`
+	RunnerCapacity int                          `json:"runner_capacity"`
+	Slots          []ClaimSlot                  `json:"slots"`
+	PolicyIDs      map[tracker.ProjectID]string `json:"policy_ids"`
 }
 
 type RoutingSnapshot struct {
-	RunnerID string  `json:"runner_id"`
-	Revision int64   `json:"revision"`
-	Routing  Routing `json:"routing"`
+	HostMetricsAcknowledged     []hostmetrics.Acknowledgment `json:"host_metrics_acknowledged,omitempty"`
+	Changes                     *HeartbeatChanges            `json:"changes,omitempty"`
+	TargetRunnerVersion         string                       `json:"target_runner_version,omitempty"`
+	ClaimState                  *ClaimState                  `json:"claim_state,omitempty"`
+	ProjectConfigurationRequest *ProjectConfigurationRequest `json:"project_configuration_request,omitempty"`
+	GitHubIntake                *tracker.GitHubBatchTask     `json:"github_intake,omitempty"`
+	RunnerID                    string                       `json:"runner_id"`
+	Revision                    int64                        `json:"revision"`
+	Routing                     Routing                      `json:"routing"`
+}
+
+type HeartbeatChanges struct {
+	Cursor             string          `json:"cursor"`
+	Reset              bool            `json:"reset"`
+	Items              []HeartbeatItem `json:"items"`
+	PolicyID           string          `json:"policy_id"`
+	CapabilitiesDigest string          `json:"capabilities_digest"`
+	Claimable          bool            `json:"claimable"`
+}
+
+type HeartbeatItem struct {
+	ID             tracker.NativeWorkItemID `json:"work_item_id"`
+	Revision       tracker.Revision         `json:"revision,string"`
+	LastActivityAt time.Time                `json:"last_activity_at"`
 }
 
 type RoutingChange struct {
@@ -60,9 +95,10 @@ type HostChange struct {
 }
 
 type Runner struct {
+	BackendIsolation map[string][]string     `json:"backend_isolation,omitempty"`
+	Update           *UpdateObservation      `json:"update,omitempty"`
+	CapacityConfig   *CapacityConfig         `json:"capacity_configuration,omitempty"`
 	Problems         []Problem               `json:"problems"`
-	HomeDrySince     *time.Time              `json:"home_dry_since"`
-	HomeStatus       string                  `json:"home_status"`
 	ProviderCapacity []providercapacity.View `json:"provider_capacity,omitempty"`
 	Binding
 	Routing
@@ -87,6 +123,7 @@ type Runner struct {
 type RunnerLease struct {
 	ProviderReservation *providercapacity.Reservation `json:"provider_reservation,omitempty"`
 	ID                  tracker.LeaseID               `json:"lease_id"`
+	FencingToken        tracker.FencingToken          `json:"fencing_token,string"`
 	WorkItemID          tracker.NativeWorkItemID      `json:"work_item_id"`
 	Title               string                        `json:"title"`
 	ProjectID           tracker.ProjectID             `json:"project_id"`
@@ -101,8 +138,9 @@ type Exclusion struct {
 }
 
 type Eligibility struct {
-	Runner     Runner      `json:"runner"`
-	Exclusions []Exclusion `json:"exclusions"`
+	LocalChecks *LocalChecks `json:"local_checks,omitempty"`
+	Runner      Runner       `json:"runner"`
+	Exclusions  []Exclusion  `json:"exclusions"`
 }
 
 type Fleet struct {
@@ -119,6 +157,9 @@ type ProjectEligibility struct {
 }
 
 func (r Routing) Normalized() Routing {
+	if r.Scope == "" {
+		r.Scope = "projects"
+	}
 	r.DisplayName = strings.TrimSpace(r.DisplayName)
 	r.Tags = (policy.Requirements{RequiredTags: r.Tags}).Normalized().RequiredTags
 	if r.Tags == nil {
@@ -126,11 +167,6 @@ func (r Routing) Normalized() Routing {
 	}
 	r.ProjectIDs = slices.Clone(r.ProjectIDs)
 	slices.Sort(r.ProjectIDs)
-	r.HomeProjectIDs = slices.Clone(r.HomeProjectIDs)
-	if r.HomeProjectIDs == nil {
-		r.HomeProjectIDs = []tracker.ProjectID{}
-	}
-	slices.Sort(r.HomeProjectIDs)
 	if r.IsolationTier == "" {
 		r.IsolationTier = "sandbox"
 	}
@@ -144,14 +180,22 @@ func (r Routing) Normalized() Routing {
 	config := (activehours.Config{Timezone: r.Availability.Timezone, Windows: r.Availability.Windows}).Normalize()
 	r.Availability.Timezone = config.Timezone
 	r.Availability.Windows = config.Windows
+	r.Availability.WindowSlots = maps.Clone(r.Availability.WindowSlots)
 	r.Availability.HardDeadline = strings.TrimSpace(r.Availability.HardDeadline)
-	if r.Spillover.Mode == "" {
-		r.Spillover.Mode = "never"
-	}
 	return r
 }
 
 func (r Routing) Validate() error {
+	if r.UpdateRequest != nil {
+		if err := r.UpdateRequest.Validate(); err != nil {
+			return err
+		}
+	}
+	if r.CapacityRequest != nil {
+		if err := r.CapacityRequest.Validate(); err != nil {
+			return err
+		}
+	}
 	if r.DisplayName == "" || len(r.DisplayName) > 200 || strings.ContainsAny(r.DisplayName, "\r\n\x00") {
 		return errors.New("runner display name must contain 1 to 200 characters on one line")
 	}
@@ -161,6 +205,9 @@ func (r Routing) Validate() error {
 	if !slices.Contains([]string{"active", "draining", "disabled"}, r.State) || r.CapacityLimit < 0 || r.CapacityLimit > 10000 {
 		return errors.New("runner state must be active, draining or disabled and capacity must be between 0 and 10000")
 	}
+	if r.Scope != "" && r.Scope != "projects" && r.Scope != "organization" || r.Scope == "organization" && len(r.ProjectIDs) != 0 {
+		return errors.New("runner scope must be projects or organization; organization scope has no project list")
+	}
 	if len(r.ProjectIDs) > 100 {
 		return errors.New("runner access is limited to 100 projects")
 	}
@@ -169,9 +216,9 @@ func (r Routing) Validate() error {
 			return errors.New("runner project access must contain unique project IDs")
 		}
 	}
-	for i, id := range r.HomeProjectIDs {
-		if !slices.Contains(r.ProjectIDs, id) || slices.Contains(r.HomeProjectIDs[:i], id) {
-			return errors.New("home projects must be unique authorized project IDs")
+	for id, rank := range r.ProjectRanks {
+		if id == "" || rank < 0 || int64(rank) > 2147483647 {
+			return errors.New("runner project ranks require project IDs and nonnegative 32-bit ranks")
 		}
 	}
 	if r.IsolationTier != "sandbox" && r.IsolationTier != "native-trusted" {
@@ -192,14 +239,16 @@ func (r Routing) Validate() error {
 	if problems := config.ValidateNonOverlapping("availability"); len(problems) > 0 {
 		return errors.New(strings.Join(problems, "; "))
 	}
+	for window, slots := range r.Availability.WindowSlots {
+		if !slices.Contains(r.Availability.Windows, window) || slots < 0 || slots > 10000 {
+			return errors.New("availability.window_slots must name an existing window with a count between 0 and 10000")
+		}
+	}
 	if r.Availability.HardDeadline != "" {
 		deadline, err := time.ParseDuration(r.Availability.HardDeadline)
 		if err != nil || deadline <= 0 || config.IsZero() {
 			return errors.New("availability.hard_deadline requires a positive duration and a window")
 		}
-	}
-	if r.Spillover.Mode != "never" && r.Spillover.Mode != "after" || r.Spillover.AfterMinutes < 0 || r.Spillover.Mode == "never" && r.Spillover.AfterMinutes != 0 {
-		return errors.New("spillover must be never or after a nonnegative number of minutes")
 	}
 	return nil
 }
@@ -229,8 +278,8 @@ func validateHostService(service string) error {
 func (r Runner) Exclusions(project tracker.ProjectID, requirements policy.Requirements, activeLease bool) []Exclusion {
 	result := []Exclusion{}
 	add := func(code, message string) { result = append(result, Exclusion{Code: code, Message: message}) }
-	if !slices.Contains(r.ProjectIDs, project) {
-		add("project_access_denied", "Runner has no administrator-approved access to this project")
+	if !r.AllowsProject(project) {
+		add("project_access_denied", "Runner owner has not allowed this project")
 	}
 	if !slices.Contains(r.Operations, Claim) {
 		add("claim_not_permitted", "Runner credential does not permit claims")
@@ -258,7 +307,7 @@ func (r Runner) Exclusions(project tracker.ProjectID, requirements policy.Requir
 	}
 	if !activeLease && len(r.ProviderCapacity) > 0 {
 		available := slices.ContainsFunc(r.ProviderCapacity, func(view providercapacity.View) bool {
-			return view.State != "exhausted" && view.Used < view.MaxConcurrent
+			return view.Available()
 		})
 		if !available {
 			add("provider_capacity", "All reported provider accounts are exhausted or fully reserved; work stays queued")
@@ -267,26 +316,29 @@ func (r Runner) Exclusions(project tracker.ProjectID, requirements policy.Requir
 	return result
 }
 
-func (r Runner) SpilloverEligible(now time.Time) bool {
-	return len(r.HomeProjectIDs) > 0 && r.HomeDrySince != nil && r.Spillover.Mode == "after" && now.Sub(*r.HomeDrySince).Minutes() >= float64(r.Spillover.AfterMinutes)
-}
-
-func (r Runner) HomeWorkStatus(now time.Time) string {
-	if len(r.HomeProjectIDs) == 0 {
-		return ""
-	}
-	if r.SpilloverEligible(now) {
-		return "Spilled over"
-	}
-	if r.HomeDrySince == nil {
-		return "Preferring home work"
-	}
-	minutes := max(0, int(now.Sub(*r.HomeDrySince).Minutes()))
-	return fmt.Sprintf("Waiting for home work (%dm)", minutes)
-}
-
 func (a Availability) Evaluate(now time.Time) (activehours.Status, error) {
 	return activehours.Evaluate(activehours.Config{Timezone: a.Timezone, Windows: a.Windows}, now, time.Time{})
+}
+
+func (a Availability) Capacity(now time.Time, capacity int) (int, error) {
+	status, err := a.Evaluate(now)
+	if err != nil || !status.Open {
+		return 0, err
+	}
+	for _, window := range a.Windows {
+		slots, counted := a.WindowSlots[window]
+		if !counted {
+			continue
+		}
+		status, err := activehours.Evaluate(activehours.Config{Timezone: a.Timezone, Windows: []string{window}}, now, time.Time{})
+		if err != nil {
+			return 0, err
+		}
+		if status.Open {
+			capacity = min(capacity, slots)
+		}
+	}
+	return capacity, nil
 }
 
 func (a Availability) Deadline(started time.Time) (time.Time, error) {
@@ -334,4 +386,8 @@ func (r Runner) Status(now time.Time) string {
 		}
 	}
 	return r.Health
+}
+
+func (r Routing) AllowsProject(project tracker.ProjectID) bool {
+	return project != "" && (r.Scope == "organization" || slices.Contains(r.ProjectIDs, project))
 }

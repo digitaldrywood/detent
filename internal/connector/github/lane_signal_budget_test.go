@@ -14,6 +14,10 @@ import (
 )
 
 func TestIssueFieldDiagnosticsPreserveRefreshRESTBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, count := range []int{80, 101} {
 		for _, conditional := range []bool{false, true} {

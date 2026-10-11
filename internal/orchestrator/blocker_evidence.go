@@ -51,14 +51,41 @@ type recordedBlockerEvaluation struct {
 	HumanOwned   bool
 }
 
+// instanceOnly reports blockers that all belong to the instance. They never
+// hold an issue: the instance retries the work instead.
+func (e recordedBlockerEvaluation) instanceOnly() bool {
+	if !e.Found || e.HumanOwned || len(e.Evidence) == 0 {
+		return false
+	}
+	for _, evidence := range e.Evidence {
+		if evidence.Owner != workpad.BlockerOwnerInstance && evidence.Status != blockerEvidenceStatusCleared {
+			return false
+		}
+	}
+	return true
+}
+
 func (o *Orchestrator) evaluateRecordedBlockers(
 	ctx context.Context,
 	state *State,
 	issue connector.Issue,
 	resolvedReferences map[string]connector.Issue,
 	now time.Time,
+	referencesAttempted ...bool,
 ) recordedBlockerEvaluation {
 	signal, _ := rawIssueWorkpadSignal(issue)
+	return o.evaluateRecordedBlockerSignal(ctx, state, issue, signal, resolvedReferences, now, referencesAttempted...)
+}
+
+func (o *Orchestrator) evaluateRecordedBlockerSignal(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	signal *workpad.Signal,
+	resolvedReferences map[string]connector.Issue,
+	now time.Time,
+	referencesAttempted ...bool,
+) recordedBlockerEvaluation {
 	if signal == nil {
 		return recordedBlockerEvaluation{}
 	}
@@ -91,7 +118,7 @@ func (o *Orchestrator) evaluateRecordedBlockers(
 		issue:           issue,
 		state:           state,
 		now:             now,
-		references:      o.resolveBlockerPredicateReferences(ctx, issue, issue.WithNativeWorkpadAuthority().WorkpadSignal.Blockers, resolvedReferences),
+		references:      o.resolveBlockerPredicateReferences(ctx, issue, issue.WithNativeWorkpadAuthority().WorkpadSignal.Blockers, resolvedReferences, len(referencesAttempted) > 0 && referencesAttempted[0]),
 		hydrated:        map[string]connector.Issue{},
 		hydrationErrors: map[string]error{},
 	}
@@ -125,6 +152,31 @@ func (o *Orchestrator) evaluateRecordedBlockers(
 	return result
 }
 
+// workpadHoldSupersededByLaneEntry reports a blocked Workpad recorded before
+// the issue entered its current tracker lane. The tracker lane is authoritative:
+// moving the issue into a dispatchable lane after the hold releases it.
+func (o *Orchestrator) workpadHoldSupersededByLaneEntry(ctx context.Context, issue connector.Issue) bool {
+	reader, ok := o.connector.(connector.CurrentLaneEntryReader)
+	if !ok {
+		return false
+	}
+	signal, _ := rawIssueWorkpadSignal(issue)
+	if signal == nil || strings.TrimSpace(signal.Status) != workpad.StatusBlocked {
+		return false
+	}
+	if signal.RecordedAt == nil || signal.RecordedAt.IsZero() {
+		return false
+	}
+	entry, found, err := reader.CurrentLaneEntry(ctx, issue)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("read current lane entry failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+		return false
+	}
+	return found && entry.EnteredAt.After(*signal.RecordedAt)
+}
+
 // recordedHumanActionEvidence is shared by dispatch evaluation and the Needs-you snapshot.
 func recordedHumanActionEvidence(state *State, issue connector.Issue, now time.Time) *telemetry.BlockerEvidence {
 	signal, _ := rawIssueWorkpadSignal(issue)
@@ -143,8 +195,34 @@ func recordedHumanActionEvidence(state *State, issue connector.Issue, now time.T
 // Workpad park. The newest authorized Workpad must explicitly clear the action
 // after the Blocked entry; an ordinary reply cannot silently release it.
 func clearedHumanActionEvidence(issue connector.Issue, parkedAt, now time.Time) *telemetry.BlockerEvidence {
-	for index := len(issue.Comments) - 1; index >= 0; index-- {
-		comment := issue.Comments[index]
+	recordedAt := clearedHumanActionRecordedAt(issue, parkedAt, false)
+	if recordedAt == nil {
+		return nil
+	}
+	evidence := newBlockerEvidence("free_text", workpad.BlockerOwnerHuman, blockerEvidenceStatusCleared,
+		"", "human_action", "authorized Workpad cleared human_action after Blocked entry",
+		recordedAt, nil, "", now)
+	return &evidence
+}
+
+func clearedHumanActionRecordedAt(issue connector.Issue, parkedAt time.Time, preserveCompleted bool) *time.Time {
+	if issue.Metadata["hub_profile"] == "native" && issue.IssueContract != nil && issue.IssueContract.ReturnState != "" && issue.IssueContract.HumanAction == "" && issue.WorkpadSignal != nil && issue.WorkpadSignal.Status == workpad.StatusInProgress {
+		at := issue.IssueContract.RecordedAt
+		if at.After(parkedAt) {
+			return &at
+		}
+		return nil
+	}
+	comments := issue.Comments
+	if !preserveCompleted {
+		index := currentWorkpadCommentIndex(comments)
+		if index < 0 {
+			return nil
+		}
+		comments = comments[index : index+1]
+	}
+	for index := len(comments) - 1; index >= 0; index-- {
+		comment := comments[index]
 		if !autoPromoteIsWorkpadComment(comment.Body) {
 			continue
 		}
@@ -153,8 +231,13 @@ func clearedHumanActionEvidence(issue connector.Issue, parkedAt, now time.Time) 
 		}
 		signal, ok := workpad.SignalFromComment(comment.Body, comment.URL, dependencyIssueRepo(issue.Identifier))
 		if !ok || signal.Invalid != nil || signal.Source != workpad.SourceStructured ||
-			strings.TrimSpace(signal.Status) != workpad.StatusInProgress ||
 			strings.TrimSpace(signal.HumanAction) != "" || strings.TrimSpace(signal.ReasonCode) != "" || len(signal.Blockers) != 0 {
+			return nil
+		}
+		if preserveCompleted && strings.TrimSpace(signal.Status) == workpad.StatusComplete {
+			continue
+		}
+		if strings.TrimSpace(signal.Status) != workpad.StatusInProgress {
 			return nil
 		}
 		recordedAt := autoPromoteWorkpadRecordedAt(comment)
@@ -163,10 +246,7 @@ func clearedHumanActionEvidence(issue connector.Issue, parkedAt, now time.Time) 
 		if recordedAt == nil || recordedAt.Before(parkedAt.Truncate(time.Second)) {
 			return nil
 		}
-		evidence := newBlockerEvidence("free_text", workpad.BlockerOwnerHuman, blockerEvidenceStatusCleared,
-			"", "human_action", "authorized Workpad cleared human_action after Blocked entry",
-			recordedAt, nil, "", now)
-		return &evidence
+		return recordedAt
 	}
 	return nil
 }
@@ -298,6 +378,7 @@ func (o *Orchestrator) resolveBlockerPredicateReferences(
 	issue connector.Issue,
 	blockers []workpad.Blocker,
 	seed map[string]connector.Issue,
+	attempted bool,
 ) map[string]connector.Issue {
 	resolved := map[string]connector.Issue{}
 	for identifier, resolvedIssue := range seed {
@@ -306,6 +387,11 @@ func (o *Orchestrator) resolveBlockerPredicateReferences(
 	self := normalizedIssueIdentifier(issue.Identifier)
 	if self != "" {
 		resolved[self] = issue
+	}
+	if attempted {
+		// The phase already attempted the whole cohort. Missing results remain
+		// unknown instead of triggering another per-root resolver call.
+		return resolved
 	}
 	refs := []connector.BlockedRef{}
 	seen := map[string]struct{}{}
@@ -637,6 +723,22 @@ func (o *Orchestrator) applyRecordedBlockerRecovery(
 	now time.Time,
 ) bool {
 	targetState := dependencyAutoUnblockTargetState(state, issue, normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock).TargetState)
+	if prior := issue.Metadata["hub_disposition_return_state"]; prior != "" {
+		targetState = prior
+	}
+	if len(workpad.IssueDependencyRefs(issue.WorkpadSignal, dependencyIssueRepo(issue.Identifier))) > 0 && len(dependencies) > 0 {
+		cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
+		if !dependencyBlockersReady(dependencies, cfg, o.cfg.TerminalStates) {
+			return false
+		}
+		signature := dependencyAutoUnblockBlockerSignature(dependencies, cfg, o.cfg.TerminalStates)
+		return o.applyDependencyAutoUnblock(ctx, state, issue, dependencies, signature, targetState, now)
+	}
+	if entry, ok := o.latestWorkflowLaneEntry(ctx, issue); ok && entry.Metadata.BlockedRecovery == nil {
+		if park, found := o.currentBlockedRecoveryPark(ctx, state, issue); found && park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason {
+			targetState = park.TargetState
+		}
+	}
 	encoded, err := json.Marshal(evidence)
 	if err != nil {
 		if o.logger != nil {
@@ -646,6 +748,9 @@ func (o *Orchestrator) applyRecordedBlockerRecovery(
 	}
 	signature := workpad.ContentHash(strings.TrimSpace(issue.Identifier) + "\n" + string(encoded))
 	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionRecordedBlockerRecovery, signature)
+	if park, found := o.currentBlockedRecoveryPark(ctx, state, issue); found && park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason {
+		metadata.BlockedRecovery = &park
+	}
 	if err := o.updateIssueStateByIDStrictWithMetadata(
 		ctx,
 		state,
@@ -709,9 +814,10 @@ func recordedBlockerRecoveryComment(
 	return b.String()
 }
 
-// completeRecordedInstanceBlockers leaves cause-based dispatch to the existing
-// live Workpad evaluator. Reporting an instance blocker is not issue no-progress.
-func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, state *State, event runpkg.Completion, running Running) bool {
+// completeRecordedInstanceBlockers retries a run whose only blockers belong to
+// the instance. Reporting an instance blocker is not issue no-progress, so the
+// issue keeps its lane and retries with backoff instead of moving to Blocked.
+func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, state *State, event runpkg.Completion, running Running, reports ...*workpad.Signal) bool {
 	if event.Err != nil || running.Mode == runpkg.RunModePlan || event.Result.FinalState != "" && event.Result.FinalState != FinalStateCompleted {
 		return false
 	}
@@ -720,6 +826,18 @@ func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, sta
 		return false
 	}
 	signal := issue.WorkpadSignal
+	if len(reports) > 0 {
+		signal = workpad.CloneSignal(reports[0])
+		if signal == nil || signal.HumanAction != "" {
+			return false
+		}
+		signal.RecordedAt = &event.CompletedAt
+		for _, blocker := range signal.Blockers {
+			if blocker.Owner != workpad.BlockerOwnerInstance {
+				return false
+			}
+		}
+	}
 	if signal == nil || signal.Invalid != nil || signal.Status != workpad.StatusBlocked {
 		return false
 	}
@@ -730,7 +848,7 @@ func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, sta
 	if !instance {
 		return false
 	}
-	evidence := o.evaluateRecordedBlockers(ctx, state, issue, nil, event.CompletedAt)
+	evidence := o.evaluateRecordedBlockerSignal(ctx, state, issue, signal, nil, event.CompletedAt)
 	running.Issue = issue
 	if diffStatsPresent(event.Result.DiffStats) {
 		running.DiffStats = event.Result.DiffStats
@@ -740,9 +858,13 @@ func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, sta
 	}
 	o.recordCompletionUsage(ctx, state, event, issue)
 	detail := workpad.Reason(signal)
-	if o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", detail, map[string]any{"blocker_evidence": evidence.Evidence}) {
-		o.releaseCompletedAttemptClaim(ctx, state, issue)
-		delete(state.mergeReservations, issue.ID)
+	metadata := map[string]any{"blocker_evidence": evidence.Evidence}
+	if len(reports) > 0 && event.Result.NativeChange != nil {
+		metadata = mergeWorkAttemptMetadata(metadata, nativeChangeMetadata(event.Result.NativeChange))
 	}
+	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", detail, metadata)
+	delete(state.mergeReservations, issue.ID)
+	running.CompletionLane = issue.State
+	o.retryInstanceFailure(ctx, state, running, event.CompletedAt, detail)
 	return true
 }

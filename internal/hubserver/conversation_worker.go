@@ -111,6 +111,7 @@ type conversationBindRequest struct {
 
 type conversationBindResponse struct {
 	ConversationID string `json:"conversation_id"`
+	Continuation   bool   `json:"continuation"`
 	// Preferences are the conversation's turn preferences. The runner
 	// applies the explicit ones to its turn request and leaves "auto" to the
 	// project's configured defaults (decisions section 14).
@@ -273,18 +274,27 @@ func conversationWorkerError(err error) error {
 // attempt to that lease and fencing token. With allowReleased the lease may
 // already be released or expired, which lets a finishing worker unbind.
 func (c *conversationService) requireWorkerOwner(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, identity conversationWorkerIdentity, runID string, allowReleased bool, now time.Time) (leaseRecord, error) {
-	if err := identity.validate(); err != nil {
-		return leaseRecord{}, err
-	}
 	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
 		return leaseRecord{}, err
 	}
-	if allowReleased {
-		if err := requireLeaseRunner(ctx, tx, identity.LeaseID, scope); err != nil {
+	if err := requireLeaseRunner(ctx, tx, identity.LeaseID, scope); err != nil {
+		return leaseRecord{}, err
+	}
+	lease, err := c.requireExecutionOwner(ctx, tx, scope, item, identity, runID, allowReleased, now)
+	if err != nil {
+		return leaseRecord{}, err
+	}
+	if !allowReleased {
+		if err := requireApprovedLeasePolicy(ctx, tx, identity.LeaseID, true); err != nil {
 			return leaseRecord{}, err
 		}
-	} else if err := requireNativeMutationLease(ctx, tx, scope, item, tracker.Mutation{LeaseID: identity.LeaseID, FencingToken: identity.FencingToken}, now); err != nil {
-		return leaseRecord{}, conversationWorkerError(err)
+	}
+	return lease, nil
+}
+
+func (c *conversationService) requireExecutionOwner(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, identity conversationWorkerIdentity, runID string, allowReleased bool, now time.Time) (leaseRecord, error) {
+	if err := identity.validate(); err != nil {
+		return leaseRecord{}, err
 	}
 	lease, found, err := readLeaseByID(ctx, tx, identity.LeaseID)
 	if err != nil {
@@ -293,7 +303,7 @@ func (c *conversationService) requireWorkerOwner(ctx context.Context, tx *sql.Tx
 	if !found {
 		return leaseRecord{}, nativeNotFound()
 	}
-	_, id, err := readNativeIssue(ctx, tx, scope, item)
+	id, err := nativeIssueRowID(ctx, tx, scope, item)
 	if err != nil {
 		return leaseRecord{}, err
 	}
@@ -302,6 +312,11 @@ func (c *conversationService) requireWorkerOwner(ctx context.Context, tx *sql.Tx
 	}
 	if lease.session.FencingToken != identity.FencingToken {
 		return leaseRecord{}, conversationStale("The lease fencing token does not match")
+	}
+	if !allowReleased {
+		if err := requireCurrentLease(lease, identity.FencingToken, now); err != nil {
+			return leaseRecord{}, conversationWorkerError(err)
+		}
 	}
 	query := "SELECT count(*) FROM native_attempts WHERE id = ? AND organization_id = ? AND project_id = ? AND work_item_id = ? AND lease_id = ? AND fencing_token = ?"
 	args := []any{identity.AttemptID, scope.organization, scope.project, item, identity.LeaseID, identity.FencingToken}
@@ -353,6 +368,37 @@ func (c *conversationService) readLinkedConversation(ctx context.Context, tx *sq
 	}
 	if err := c.authorizeRead(scope, record); err != nil {
 		return record, err
+	}
+	return record, nil
+}
+
+func (c *conversationService) ensureWorkerConversation(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, now time.Time) (conversationRecord, error) {
+	record, err := c.readLinkedConversation(ctx, tx, scope, item)
+	if err == nil {
+		return record, nil
+	}
+	var failure *nativeError
+	if !errors.As(err, &failure) || failure.Code != "not_found" || record.ID != "" {
+		return conversationRecord{}, err
+	}
+	issue, _, err := readNativeIssue(ctx, tx, scope, item)
+	if err != nil {
+		return conversationRecord{}, err
+	}
+	record = conversationRecord{
+		ID: conversation.NewConversationID(), OrganizationID: scope.organization, ProjectID: scope.project,
+		OwnerPrincipalID: scope.credential.ID, Title: deriveConversationTitle(issue.Title),
+		Origin:     conversationOriginWorker,
+		Visibility: conversation.VisibilityShared, Status: conversation.StatusActive,
+		WorkItemID: item, LinkedAt: &now,
+		Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now},
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if issue.Actor.PrincipalID != "" {
+		record.OwnerPrincipalID = issue.Actor.PrincipalID
+	}
+	if err := c.store.createConversation(ctx, tx, &record); err != nil {
+		return conversationRecord{}, err
 	}
 	return record, nil
 }
@@ -642,7 +688,7 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 		if err != nil {
 			return err
 		}
-		record, err = c.readLinkedConversation(ctx, tx, scope, item)
+		record, err = c.ensureWorkerConversation(ctx, tx, scope, item, now)
 		if err != nil {
 			return err
 		}
@@ -654,6 +700,23 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 			return err
 		}
 		previous := record.Execution
+		operation := nativeOperation(scope, "POST", "/conversations/"+record.ID+"/link")
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+SELECT 1 FROM native_commands WHERE organization_id = ? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ')
+) OR EXISTS (
+SELECT 1 FROM conversation_messages WHERE conversation_id = ? AND role = 'user' AND kind = 'continue'
+AND delivery IN ('saved', 'queued', 'sending')
+) OR EXISTS (
+SELECT 1 FROM conversation_events WHERE conversation_id = ? AND type = 'message.updated'
+AND json_extract(body_json, '$.role') = 'user' AND json_extract(body_json, '$.kind') = 'continue'
+AND COALESCE(json_extract(body_json, '$.attempt_id'), '') <> ''
+AND seq > COALESCE((
+SELECT MAX(seq) FROM conversation_events WHERE conversation_id = ? AND type = 'execution.updated'
+AND json_extract(body_json, '$.status') = 'completed'
+), 0)
+)`, scope.organization, operation, operation, operation, record.ID, record.ID, record.ID).Scan(&response.Continuation); err != nil {
+			return err
+		}
 		if !previous.Status.Terminal() && previous.Owner.AttemptID != "" && previous.Owner.AttemptID != request.AttemptID {
 			// The earlier owner lost its lease without unbinding; the new
 			// claim proves that. Settle it before the new attempt takes over.
@@ -1068,19 +1131,18 @@ func (c *conversationService) applyDelta(ctx context.Context, tx *sql.Tx, turn *
 		return nativeInvalid("delta text is too long")
 	}
 	owner := turn.execution.Owner
-	query, args := conversationMessageQuery+"conversation_id = ? AND role = 'assistant' AND attempt_id = ? AND provider_item_id = ? ORDER BY seq", []any{turn.record.ID, owner.AttemptID, item}
+	// Only the message identity and its stored length are needed: the
+	// delta is appended in place, never by reading and rewriting the text.
+	query, args := "SELECT id, length(CAST(text AS BLOB)) FROM conversation_messages WHERE conversation_id = ? AND role = 'assistant' AND attempt_id = ? AND provider_item_id = ? ORDER BY seq LIMIT 1", []any{turn.record.ID, owner.AttemptID, item}
 	if event.MessageID != "" {
-		query, args = conversationMessageQuery+"conversation_id = ? AND role = 'assistant' AND attempt_id = ? AND id = ? ORDER BY seq", []any{turn.record.ID, owner.AttemptID, event.MessageID}
+		query, args = "SELECT id, length(CAST(text AS BLOB)) FROM conversation_messages WHERE conversation_id = ? AND role = 'assistant' AND attempt_id = ? AND id = ? ORDER BY seq LIMIT 1", []any{turn.record.ID, owner.AttemptID, event.MessageID}
 	}
-	existing, err := c.queryMessages(ctx, tx, query, args...)
-	if err != nil {
-		return err
-	}
-	var message conversationMessageRecord
-	if len(existing) > 0 {
-		message = existing[0]
-	} else {
-		message = conversationMessageRecord{
+	var messageID string
+	var offset int64
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&messageID, &offset)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		message := conversationMessageRecord{
 			Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding,
 			AttemptID: owner.AttemptID, ThreadID: owner.ThreadID, TurnID: owner.TurnID, ProviderItemID: item,
 			Actor: conversationActorFor(turn.scope),
@@ -1088,11 +1150,14 @@ func (c *conversationService) applyDelta(ctx context.Context, tx *sql.Tx, turn *
 		if err := c.appendMessage(ctx, tx, turn.record, &message, turn.now); err != nil {
 			return err
 		}
+		messageID, offset = message.ID, int64(len(message.Text))
+	case err != nil:
+		return fmt.Errorf("query messages: %w", err)
 	}
 	if event.Text == "" {
 		return nil
 	}
-	return c.appendDelta(ctx, tx, &message, event.Text, turn.now)
+	return c.appendDeltaAt(ctx, tx, turn.record.ID, messageID, offset, event.Text, turn.now)
 }
 
 func (c *conversationService) applyItem(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
@@ -1401,14 +1466,15 @@ func (c *conversationService) settleLostExecution(ctx context.Context, ref conve
 			// stopped reporting; it must not interrupt a live in-process turn.
 			return nil
 		}
-		if execution.Owner.LeaseID != "" {
-			lease, found, err := readLeaseByID(ctx, tx, tracker.LeaseID(execution.Owner.LeaseID))
-			if err != nil {
-				return err
-			}
-			if found && lease.session.FencingToken == tracker.FencingToken(execution.Owner.FencingToken) && lease.session.ReleasedAt == nil && lease.session.ExpiresAt.After(now) {
-				return nil
-			}
+		identity := conversationWorkerIdentity{LeaseID: tracker.LeaseID(execution.Owner.LeaseID), FencingToken: tracker.FencingToken(execution.Owner.FencingToken), AttemptID: execution.Owner.AttemptID}
+		_, err = c.requireExecutionOwner(ctx, tx, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, record.WorkItemID, identity, execution.Owner.RunID, false, now)
+		if err == nil {
+			return nil
+		}
+		var failure *nativeError
+		lostOwner := errors.Is(err, sql.ErrNoRows) || (errors.As(err, &failure) && failure.status >= http.StatusBadRequest && failure.status < http.StatusInternalServerError)
+		if !lostOwner {
+			return err
 		}
 		changed = true
 		if execution.Status.Terminal() {

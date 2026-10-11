@@ -303,12 +303,16 @@ func (s *Server) apiDemoScenarios(c echo.Context) error {
 	if s.demo == nil {
 		return c.JSON(http.StatusNotFound, errorResponse("demo_scenarios_unavailable", "Demo scenarios are not enabled"))
 	}
-	return c.JSON(http.StatusOK, demoScenariosResponse{
+	return c.JSON(http.StatusOK, s.demoSetupScenarios())
+}
+
+func (s *Server) demoSetupScenarios() demoScenariosResponse {
+	return demoScenariosResponse{
 		GeneratedAt: demoBaseTime,
 		Header:      DemoScenarioHeader,
 		Clock:       s.demo.clock,
 		Scenarios:   append([]DemoScenarioManifest(nil), s.demo.manifest...),
-	})
+	}
 }
 
 func (s *Server) demoDashboard(c echo.Context, scenario demoScenario) error {

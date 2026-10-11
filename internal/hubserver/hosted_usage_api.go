@@ -40,7 +40,11 @@ const defaultUsageRange = "7d"
 // authenticates the hosted session itself, and usageSessionOnly refuses a
 // bearer credential so the route never answers anything but that session.
 func (s *Service) registerHostedUsageRoutes(e *echo.Echo) {
+	e.GET("/api/v2/organizations/:organization/activity", s.hostedActivity, s.operatorAuthority)
 	e.GET("/api/v2/organizations/:organization/usage", s.hostedUsageReport, s.usageSessionOnly)
+	e.GET("/api/v2/organizations/:organization/diagnostics/requests", s.hostedRequestMetrics, s.operatorAuthority)
+	e.GET("/api/v2/organizations/:organization/diagnostics", s.hostedDiagnostics, s.usageSessionOnly, s.operatorAuthority)
+	e.GET("/api/v2/organizations/:organization/reports", s.hostedReports, s.usageSessionOnly, s.operatorAuthority)
 }
 
 // usageSessionOnly refuses a bearer credential on the session-authenticated
@@ -195,16 +199,17 @@ type usageRunner struct {
 }
 
 type usageReport struct {
-	Chat      chatUsageSummary      `json:"chat"`
-	Range     usageWindow           `json:"range"`
-	Total     usageTotal            `json:"total"`
-	Providers []usageProvider       `json:"providers"`
-	Daily     []usageDay            `json:"daily"`
-	Totals    usageTotals           `json:"totals"`
-	Breakdown usageBreakdown        `json:"breakdown"`
-	Limits    map[string]usageLimit `json:"limits"`
-	Runners   []usageRunner         `json:"runners"`
-	Currency  string                `json:"currency"`
+	MonthlyCosts *monthlyCostReport    `json:"monthly_costs,omitempty"`
+	Chat         chatUsageSummary      `json:"chat"`
+	Range        usageWindow           `json:"range"`
+	Total        usageTotal            `json:"total"`
+	Providers    []usageProvider       `json:"providers"`
+	Daily        []usageDay            `json:"daily"`
+	Totals       usageTotals           `json:"totals"`
+	Breakdown    usageBreakdown        `json:"breakdown"`
+	Limits       map[string]usageLimit `json:"limits"`
+	Runners      []usageRunner         `json:"runners"`
+	Currency     string                `json:"currency"`
 }
 
 // usageRow is one stored attempt_usage row joined with what the report needs
@@ -230,48 +235,16 @@ func (r usageRow) tokens() int64 { return r.Input + r.Output }
 
 // hostedUsageReport implements GET /api/v2/organizations/:organization/usage.
 func (s *Service) hostedUsageReport(c echo.Context) error {
-	credential, _, err := s.hostedCredential(c)
+	credential, _, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		return s.usageCredentialError(c, err)
 	}
 	ctx := c.Request().Context()
-	window, err := usageRangeWindow(c.QueryParam("range"), s.config.now())
+	report, err := s.readHostedUsage(ctx, credential, c.QueryParam("range"), c.QueryParam("project"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	projects, err := s.usageReadableProjects(ctx, credential)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if requested := strings.TrimSpace(c.QueryParam("project")); requested != "" {
-		if !slices.Contains(projects, requested) {
-			// A project the member cannot read is indistinguishable from one
-			// that does not exist.
-			return s.nativeAPIError(c, nativeNotFound())
-		}
-		projects = []string{requested}
-	}
-	rows, err := s.usageRows(ctx, window, projects)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	limits, err := s.usageLimits(ctx)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	capacity, err := s.usageRunnerCapacity(ctx)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	chatRows, err := s.chatUsageRows(ctx, window, projects)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	report := buildUsageReport(window, append(rows, chatRows...), limits, capacity, s.usagePrices())
-	report.Chat, err = s.database.chatUsageSummary(ctx, s.database.hostedOrganization, window, projects)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
+
 	if err := s.hostedAudit(ctx, credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -283,12 +256,18 @@ func (s *Service) hostedUsageReport(c echo.Context) error {
 // visible instead of showing the wrong week.
 func usageRangeWindow(value string, now time.Time) (usageWindow, error) {
 	name := strings.TrimSpace(value)
+	if strings.HasPrefix(name, "month:") {
+		if name == "month:" {
+			return usageWindow{}, nativeInvalid("Month must be YYYY-MM in UTC")
+		}
+		return costMonth(strings.TrimPrefix(name, "month:"), now)
+	}
 	if name == "" {
 		name = defaultUsageRange
 	}
 	span, known := usageRanges[name]
 	if !known {
-		return usageWindow{}, nativeInvalid("Range must be one of 24h, 7d, 30d or 90d")
+		return usageWindow{}, nativeInvalid("Range must be 24h, 7d, 30d, 90d or month:YYYY-MM in UTC")
 	}
 	// Usage is stored per UTC hour, so the window starts on an hour boundary:
 	// the current partial hour plus the full hours before it, span in all.
@@ -304,6 +283,10 @@ func usageRangeWindow(value string, now time.Time) (usageWindow, error) {
 // every runner that shares it. Periods are compared as fixed-width UTC
 // timestamps in the stored T format, not as dates.
 func (s *Service) usageRows(ctx context.Context, window usageWindow, projects []string) ([]usageRow, error) {
+	return readUsageRows(ctx, s.database.db, s.config.Hosted.OrganizationID, window, projects, int(^uint(0)>>1))
+}
+
+func readUsageRows(ctx context.Context, database nativeQueryer, organization string, window usageWindow, projects []string, limit int) ([]usageRow, error) {
 	if len(projects) == 0 {
 		return nil, nil
 	}
@@ -319,13 +302,13 @@ LEFT JOIN lease_runners lr ON lr.lease_id = a.lease_id
 LEFT JOIN runner_identities r ON r.id = lr.runner_id AND r.organization_id = u.organization_id
 WHERE u.organization_id = ? AND u.period >= ? AND u.period <= ?
  AND u.project_id IN (SELECT value FROM json_each(?))
-ORDER BY u.period, u.provider, u.model, u.attempt_id`
-	result, err := s.database.db.QueryContext(ctx, query,
-		s.config.Hosted.OrganizationID, window.From.UTC().Format(usagePeriodLayout), window.To.UTC().Format(usagePeriodLayout), encoded)
+ORDER BY u.period, u.provider, u.model, u.attempt_id LIMIT ? OFFSET ?`
+	result, err := queryAnalyticsRows(ctx, database, query,
+		organization, window.From.UTC().Format(usagePeriodLayout), window.To.UTC().Format(usagePeriodLayout), encoded, limit, analyticsPopulationOffset(ctx, "usage"))
 	if err != nil {
 		return nil, fmt.Errorf("read usage: %w", err)
 	}
-	defer func() { _ = result.Close() }()
+	defer result.Close()
 	rows := []usageRow{}
 	for result.Next() {
 		var row usageRow
@@ -341,8 +324,14 @@ ORDER BY u.period, u.provider, u.model, u.attempt_id`
 		row.Period = parsed.UTC()
 		row.BusySeconds = usageBusySeconds(started, updated, window)
 		rows = append(rows, row)
+		if len(rows) > maxAnalyticsPopulation && limit == maxAnalyticsPopulation+1 && row.Period.Before(window.To) {
+			if paging, ok := ctx.Value(analyticsPagingKey{}).(*analyticsPaging); ok {
+				paging.next["usage"] = fmt.Sprintf("usage:%d:0", analyticsPopulationOffset(ctx, "usage")+maxAnalyticsPopulation)
+			}
+		}
 	}
-	if err := errors.Join(result.Err(), result.Close()); err != nil {
+	result.Close()
+	if err := result.Err(); err != nil {
 		return nil, fmt.Errorf("read usage: %w", err)
 	}
 	return rows, nil
@@ -403,7 +392,7 @@ func (s *Service) usageLimits(ctx context.Context) (map[string]usageLimit, error
 // leases it is allowed, which is what capacity_used is a fraction of.
 func (s *Service) usageRunnerCapacity(ctx context.Context) (map[string]runnerCapacity, error) {
 	capacity := map[string]runnerCapacity{}
-	rows, err := s.database.db.QueryContext(ctx, "SELECT id FROM runner_identities WHERE organization_id = ? ORDER BY display_name, id",
+	rows, err := s.database.db.QueryContext(ctx, "SELECT id FROM runner_identities WHERE organization_id = ? AND removed_at IS NULL ORDER BY display_name, id",
 		tracker.OrganizationID(s.config.Hosted.OrganizationID))
 	if err != nil {
 		return nil, fmt.Errorf("list runners: %w", err)
@@ -421,7 +410,7 @@ func (s *Service) usageRunnerCapacity(ctx context.Context) (map[string]runnerCap
 		return nil, fmt.Errorf("list runners: %w", err)
 	}
 	for _, id := range ids {
-		runner, err := readRunner(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID), id, s.config.now())
+		runner, err := readRunnerWithClock(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID), id, s.config.now)
 		if err != nil {
 			return nil, fmt.Errorf("read runner %s: %w", id, err)
 		}
@@ -622,4 +611,61 @@ func usageRank(leftCost, rightCost float64, leftID, rightID string) int {
 	default:
 		return strings.Compare(leftID, rightID)
 	}
+}
+
+func (s *Service) readHostedUsage(ctx context.Context, credential apiCredential, rangeName, project string) (usageReport, error) {
+	window, err := usageRangeWindow(rangeName, s.config.now())
+	if err != nil {
+		return usageReport{}, err
+	}
+	projects, err := s.usageReadableProjects(ctx, credential)
+	if err != nil {
+		return usageReport{}, err
+	}
+	if requested := strings.TrimSpace(project); requested != "" {
+		if !slices.Contains(projects, requested) {
+			// A project the member cannot read is indistinguishable from one
+			// that does not exist.
+			return usageReport{}, nativeNotFound()
+		}
+		projects = []string{requested}
+	}
+	rows, err := s.usageRows(ctx, window, projects)
+	if err != nil {
+		return usageReport{}, err
+	}
+	limits, err := s.usageLimits(ctx)
+	if err != nil {
+		return usageReport{}, err
+	}
+	capacity, err := s.usageRunnerCapacity(ctx)
+	if err != nil {
+		return usageReport{}, err
+	}
+	chatRows, err := s.chatUsageRows(ctx, window, projects)
+	if err != nil {
+		return usageReport{}, err
+	}
+	report := buildUsageReport(window, append(rows, chatRows...), limits, capacity, s.usagePrices())
+	report.Chat, err = s.database.chatUsageSummary(ctx, s.database.hostedOrganization, window, projects)
+	if err != nil {
+		return usageReport{}, err
+	}
+	month, err := costMonth("", s.config.now())
+	if strings.HasPrefix(strings.TrimSpace(rangeName), "month:") {
+		month = window
+	}
+	if err != nil {
+		return usageReport{}, err
+	}
+	costScope := "readable_projects"
+	if strings.TrimSpace(project) != "" {
+		costScope = "project"
+	}
+	costs, err := s.database.monthlyCosts(ctx, s.config.Hosted.OrganizationID, costScope, projects, month, s.config.now())
+	if err != nil {
+		return usageReport{}, err
+	}
+	report.MonthlyCosts = &costs
+	return report, nil
 }

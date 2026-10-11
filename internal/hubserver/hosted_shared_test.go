@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/platformusers"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -93,6 +95,7 @@ func (f hostedSharedFixture) claims(user *hostedSecurityUser, kind, method, targ
 }
 
 type hostedSharedRequest struct {
+	headers  map[string]string
 	user     *hostedSecurityUser
 	kind     string
 	method   string
@@ -116,6 +119,9 @@ func (f hostedSharedFixture) serve(t *testing.T, r hostedSharedRequest) *httptes
 		r.kind = cloudassert.KindBrowser
 	}
 	request := httptest.NewRequest(r.method, r.target, strings.NewReader(r.body))
+	for name, value := range r.headers {
+		request.Header.Set(name, value)
+	}
 	if r.form {
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	} else if r.body != "" {
@@ -205,6 +211,7 @@ func TestHostedSharedEntryRejectsBypass(t *testing.T) {
 		{"empty segment", hostedSharedRequest{user: &owner, target: "/organizations/org_security//organization"}, http.StatusNotFound},
 		{"duplicate scope parameter", hostedSharedRequest{user: &owner, target: "/organizations/org_security/organization?cursor=a&cursor=b"}, http.StatusNotFound},
 		{"browser assertion on internal route", hostedSharedRequest{user: &owner, method: http.MethodPost, target: "/internal/v1/sessions/revoke", body: `{"bindings":["x"]}`}, http.StatusNotFound},
+		{"browser assertion on user search", hostedSharedRequest{user: &owner, method: http.MethodPost, target: "/internal/v1/platform/users", body: `{"q":"owner"}`}, http.StatusNotFound},
 		{"service assertion on customer route", hostedSharedRequest{kind: cloudassert.KindService, target: "/organizations/org_security/organization"}, http.StatusNotFound},
 	}
 	for _, test := range tests {
@@ -529,13 +536,13 @@ func TestHostedSharedSupportSessionAudit(t *testing.T) {
 	}
 	unlisted := support
 	unlistedHosted := *support.identity.Hosted
-	unlistedHosted.SupportActor, unlistedHosted.SessionID = "outsider@example.test", "session_outsider"
+	unlistedHosted.SupportActor, unlistedHosted.SessionID, unlistedHosted.SupportReason = "outsider@example.test", "session_outsider", "invalid"
 	unlisted.identity.Hosted = &unlistedHosted
 	f.provider.mu.Lock()
 	f.provider.sessions["session_outsider"] = unlistedHosted
 	f.provider.mu.Unlock()
 	if response := f.serve(t, hostedSharedRequest{user: &unlisted, target: "/organizations/org_security/organization"}); response.Code == http.StatusOK {
-		t.Fatal("tenant accepted a support actor it does not list")
+		t.Fatal("tenant accepted an invalid support reason")
 	}
 	binding := cloudassert.AuthorizationBinding("shared-user_owner", "org_security", "session_support")
 	if response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/sessions/revoke", body: `{"bindings":["` + binding + `"]}`}); response.Code != http.StatusNoContent {
@@ -601,5 +608,73 @@ func TestHostedSharedOwnerBootstrap(t *testing.T) {
 	}
 	if response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/health", body: `{}`}); response.Code != http.StatusNoContent {
 		t.Fatalf("health = %d", response.Code)
+	}
+}
+
+func TestHostedPlatformUsers(t *testing.T) {
+	t.Parallel()
+	f := newHostedSharedFixture(t)
+	f.member(t, "match", "owner", "")
+	f.member(t, "match-extra", "viewer", "")
+	f.member(t, "inactive-match", "member", "")
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET active=0 WHERE user_id='user_inactive-match'"); err != nil {
+		t.Fatal(err)
+	}
+	now := f.service.config.now()
+	for _, item := range []struct{ id, email, accepted, expires string }{
+		{"pending", "match@example.test", "", formatHubTime(now.Add(time.Hour))},
+		{"invitation-only", "match-invited@example.test", "", formatHubTime(now.Add(time.Hour))},
+		{"expired", "match-expired@example.test", "", formatHubTime(now.Add(-time.Hour))},
+		{"accepted", "match-accepted@example.test", "user_accepted", formatHubTime(now.Add(time.Hour))},
+	} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_invitations(id,email,organization_id,role,accepted_user_id,created_at,expires_at) VALUES(?,?,'org_security','member',?,?,?)", item.id, item.email, item.accepted, formatHubTime(now), item.expires); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range 55 {
+		email := fmt.Sprintf("cap%02d@example.test", i)
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at,expires_at) VALUES(?,?,'org_security','member',?,?)", email, email, formatHubTime(now), formatHubTime(now.Add(time.Hour))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		query                        string
+		status, members, invitations int
+	}{
+		{"MATCH@example.test", 200, 1, 1},
+		{"match", 200, 2, 2},
+		{"match@example.test.extra", 200, 0, 0},
+		{"cap", 200, 0, 50},
+		{"missing", 200, 0, 0},
+		{"ab", 400, 0, 0},
+	} {
+		t.Run(test.query, func(t *testing.T) {
+			body, err := json.Marshal(platformusers.Query{Text: test.query})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/platform/users", body: string(body)})
+			if response.Code != test.status {
+				t.Fatalf("search = %d %s", response.Code, response.Body)
+			}
+			if test.status != 200 {
+				return
+			}
+			var result platformusers.TenantResult
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Members) != test.members || len(result.Invitations) != test.invitations {
+				t.Fatalf("result = %+v", result)
+			}
+			for _, member := range result.Members {
+				if member.JoinedAt == "" || member.Subject == "" || member.Role == "" {
+					t.Fatalf("member = %+v", member)
+				}
+			}
+			if strings.Contains(response.Body.String(), "private-project-sentinel") {
+				t.Fatalf("customer content leaked: %s", response.Body)
+			}
+		})
 	}
 }

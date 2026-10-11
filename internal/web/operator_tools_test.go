@@ -47,6 +47,36 @@ func TestOperatorToolAPIUsesSharedReadOnlyExecutor(t *testing.T) {
 	if result.Freshness != explain.SourceLastKnown || result.ExpiresAt == nil || !result.ExpiresAt.Equal(expiresAt) || len(result.Items) != 1 {
 		t.Fatalf("result = %#v", result)
 	}
+	t.Run("dashboard commands have registered MCP tools", func(t *testing.T) {
+		recorder := performJSON(t, server.Handler(), http.MethodGet, "/api/v1/operator-tools", "", map[string]string{
+			"Authorization": "Bearer read-token",
+		})
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("catalog status = %d; body = %s", recorder.Code, recorder.Body.String())
+		}
+		var catalog struct {
+			Tools []operatortool.Definition `json:"tools"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &catalog); err != nil {
+			t.Fatal(err)
+		}
+		registered := make(map[string]bool)
+		for _, definition := range operatortool.Registry() {
+			registered[definition.Name] = true
+		}
+		commands := 0
+		for _, definition := range catalog.Tools {
+			if !definition.Annotations.ReadOnly {
+				commands++
+			}
+			if !registered[definition.Name] {
+				t.Errorf("dashboard tool %s has no registered MCP tool", definition.Name)
+			}
+		}
+		if commands == 0 {
+			t.Fatal("dashboard catalog did not expose any commands")
+		}
+	})
 }
 
 func TestOperatorToolAPIRejectsMutationAndMalformedCalls(t *testing.T) {

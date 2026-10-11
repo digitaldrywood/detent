@@ -5,11 +5,14 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/update"
 )
 
 const (
@@ -40,14 +43,20 @@ var (
 )
 
 type Config struct {
-	CredentialMaintenance bool
-	Hosted                *HostedConfig
-	Conversation          *ConversationConfig
-	Usage                 *UsageConfig
+	RunnerReleaseClient            update.ReleaseClient
+	runnerReleaseSignatureVerifier update.ChecksumSignatureVerifier
+	SecretKeys                     *hubsecrets.Keyring
+	SpritesHTTPClient              *http.Client
+	SlackHTTPClient                *http.Client
+	CredentialMaintenance          bool
+	Hosted                         *HostedConfig
+	Conversation                   *ConversationConfig
+	Usage                          *UsageConfig
 	// Workspace enables workspace sessions and the relay (decisions section
 	// 18.1). Nil means the surfaces stay disabled with their reason.
 	Workspace                  *WorkspaceConfig
 	GitHubRequestCounts        func() []GitHubRequestCount
+	GitHubAppInstallation      func(context.Context, string) (GitHubAppInstallation, error)
 	GitHubDisabled             bool
 	ImportBackend              ImportBackend
 	DatabasePath               string
@@ -84,6 +93,12 @@ type Config struct {
 }
 
 func (c Config) normalized() Config {
+	if c.runnerReleaseSignatureVerifier == nil {
+		c.runnerReleaseSignatureVerifier = update.VerifyChecksumSignature
+	}
+	if c.RunnerReleaseClient == nil {
+		c.RunnerReleaseClient = update.NewGitHubClient(update.GitHubClientConfig{})
+	}
 	if c.Usage != nil {
 		normalized := c.Usage.normalized()
 		c.Usage = &normalized
@@ -98,6 +113,7 @@ func (c Config) normalized() Config {
 	if c.GitHubDisabled {
 		c.ImportBackend, c.OutboxBackend, c.ReconcileBackend = nil, nil, nil
 		c.GitHubWebhookSecret, c.GitHubRequestCounts = nil, nil
+		c.GitHubAppInstallation = nil
 	}
 	if c.ListenAddress == "" {
 		c.ListenAddress = DefaultListenAddress

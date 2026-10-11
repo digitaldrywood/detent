@@ -1,12 +1,14 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 )
@@ -24,45 +26,59 @@ func (s *Server) apiCapacityClear(c echo.Context) error {
 	projectID := strings.TrimSpace(c.FormValue("project_id"))
 	scope := strings.TrimSpace(c.FormValue("scope"))
 	mode := strings.TrimSpace(c.FormValue("recovery"))
+	response, err := s.clearCapacity(c.Request().Context(), projectID, scope, mode)
+	if err != nil {
+		return writeControlProblem(c, err)
+	}
+	if htmxRequest(c) {
+		c.Response().Header().Set("HX-Trigger", "capacityCleared")
+		return c.NoContent(http.StatusNoContent)
+	}
+	return c.JSON(http.StatusAccepted, response)
+}
+
+func (s *Server) clearCapacity(ctx context.Context, projectID, scope, mode string) (capacityClearResponse, error) {
 	if mode == "" {
 		mode = "ramping"
 	}
 	if mode != "ramping" && mode != "immediate" {
-		return c.JSON(http.StatusBadRequest, errorResponse("invalid_recovery", "recovery must be ramping or immediate"))
+		return capacityClearResponse{}, &controlProblem{http.StatusBadRequest, "invalid_recovery", "recovery must be ramping or immediate"}
+	}
+	if s.registry == nil {
+		return capacityClearResponse{}, errOperatorCommandUnavailable
 	}
 	projects := s.registry.List()
 	if projectID != "" {
 		selected, ok := s.registry.Get(project.ID(projectID))
 		if !ok {
-			return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "project not found"))
+			return capacityClearResponse{}, &controlProblem{http.StatusNotFound, "project_not_found", "project not found"}
 		}
 		projects = []*project.Project{selected}
 	}
 
 	requested := 0
 	for _, candidate := range projects {
-		err := candidate.Orchestrator().RequestBackendCapacityClear(c.Request().Context(), scope, mode == "immediate")
+		if candidate.Orchestrator() == nil {
+			continue
+		}
+		err := candidate.Orchestrator().RequestBackendCapacityClear(ctx, scope, mode == "immediate")
 		if err != nil {
 			if errors.Is(err, orchestrator.ErrStopped) {
 				continue
 			}
-			s.logger.Warn("capacity clear failed", "project_id", candidate.ID(), "scope", scope, "error", err)
-			return c.JSON(http.StatusServiceUnavailable, errorResponse("capacity_clear_failed", "capacity outage clear failed"))
+			s.logger.Warn("capacity clear failed", "project_id", candidate.ID(), "scope", scope, "error", mutation.ErrorText(ctx, err))
+			return capacityClearResponse{}, &controlProblem{http.StatusServiceUnavailable, "capacity_clear_failed", "capacity outage clear failed"}
 		}
 		requested++
 	}
 
 	s.logger.Info("capacity clear requested", "project_id", projectID, "scope", scope, "requested", requested)
-	if c.Request().Header.Get("HX-Request") == "true" {
-		c.Response().Header().Set("HX-Trigger", "capacityCleared")
-		return c.NoContent(http.StatusNoContent)
-	}
-	return c.JSON(http.StatusAccepted, capacityClearResponse{
+	return capacityClearResponse{
 		Status:            "requested",
 		RecoveryRequested: mode,
 		RecoveryApplied:   "pending",
 		Project:           projectID,
 		Scope:             scope,
 		Requested:         requested,
-	})
+	}, nil
 }

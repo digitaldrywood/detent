@@ -510,12 +510,14 @@ export function FilesSurface({
 export function FileSurface({
   path,
   files,
+  error = null,
   onOpenFile,
   projectName = DEFAULT_PROJECT_NAME,
   theme = "dark",
 }: {
   readonly path: string;
   readonly files: FilesClient | null;
+  readonly error?: string | null;
   readonly onOpenFile?: ((path: string) => void) | undefined;
   readonly projectName?: string | undefined;
   readonly theme?: "light" | "dark";
@@ -540,7 +542,7 @@ export function FileSurface({
     [onOpenFile, path],
   );
 
-  if (files === null) {
+  if (files === null || error !== null) {
     const header = (
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <PierreEntryIcon
@@ -556,7 +558,7 @@ export function FileSurface({
       <DiffPanelShell mode="sheet" header={header}>
         <div className="flex min-h-0 flex-1 flex-col" data-testid="file-surface">
           <EmptyState testId="file-surface-unavailable">
-            This file needs an open workspace. Open the Files tab first.
+            {error ?? "This file needs an open workspace. Open the Files tab first."}
           </EmptyState>
         </div>
       </DiffPanelShell>

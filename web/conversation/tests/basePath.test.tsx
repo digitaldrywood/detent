@@ -7,6 +7,7 @@ import { checkForUpdates, resetUpdateCheckState } from "../src/app/adapters/dete
 import { makeRouter } from "../src/app/router.tsx";
 import { makeWorkHttp } from "../src/app/work/lib/workHttp.ts";
 import bootstrapFixture from "../src/contracts/fixtures/bootstrap.json";
+import conversationFixture from "../src/contracts/fixtures/conversation-snapshot.json";
 import {
   applyHubPaths,
   basePath,
@@ -163,6 +164,20 @@ describe("bootstrap under a base", () => {
     const work = makeWorkHttp({ origin: "", apiBase: "/api/v2/organizations/org_a", csrfToken: "csrf" });
     expect(work.eventsUrl("prj a")).toBe(`${base}/projects/prj%20a/events`);
   });
+});
+
+it("reads the canonical worker conversation through the scoped work-item API", async () => {
+  const recorded = recordingFetch(() => new Response(JSON.stringify(conversationFixture), {
+    headers: { "Content-Type": "application/json" },
+  }));
+  const work = makeWorkHttp({
+    origin: "https://hub.example", apiBase: "/api/v2/organizations/org_a",
+    csrfToken: "csrf", fetch: recorded.fetchImpl,
+  });
+  const snapshot = await work.getWorkItemConversation("prj a", "wi/current");
+  expect(recorded.urls).toEqual(["https://hub.example/api/v2/organizations/org_a/projects/prj%20a/work-items/wi%2Fcurrent/conversation"]);
+  expect(snapshot.conversation.id).toBe(conversationFixture.conversation.id);
+  expect(snapshot.conversation.execution.turn_id).toBe(conversationFixture.conversation.execution.turn_id);
 });
 
 describe("router basepath", () => {

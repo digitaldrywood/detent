@@ -23,22 +23,23 @@ type NativeWorkData struct {
 }
 
 type NativeFormData struct {
-	FormToken string
-	Dashboard DashboardData
-	Project   tracker.NativeProject
-	Issue     tracker.NativeIssue
-	Action    string
-	Revision  string
-	Key       string
-	Title     string
-	Body      string
-	State     string
-	Priority  string
-	Related   string
-	Operation string
-	CommentID string
-	Error     string
-	Conflict  bool
+	GitHubIssueURL string
+	FormToken      string
+	Dashboard      DashboardData
+	Project        tracker.NativeProject
+	Issue          tracker.NativeIssue
+	Action         string
+	Revision       string
+	Key            string
+	Title          string
+	Body           string
+	State          string
+	Priority       string
+	Related        string
+	Operation      string
+	CommentID      string
+	Error          string
+	Conflict       bool
 }
 
 func NativeNewIssuePath(projectID string) string {

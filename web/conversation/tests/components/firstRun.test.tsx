@@ -2,7 +2,7 @@
 import { RegistryProvider } from "@effect/atom-react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   startMockHub,
@@ -44,6 +44,9 @@ Object.defineProperty(globalThis, "scrollTo", { value: () => {}, writable: true 
 
 let hub: MockHub | undefined;
 let client: ConversationClient | undefined;
+const nativeFetch = globalThis.fetch;
+
+beforeEach(() => vi.stubGlobal("fetch", sameRealmFetch));
 
 afterEach(async () => {
   cleanup();
@@ -51,11 +54,12 @@ afterEach(async () => {
   client = undefined;
   await hub?.close();
   hub = undefined;
+  vi.unstubAllGlobals();
 });
 
 const sameRealmFetch: typeof globalThis.fetch = (input, init) => {
   const { signal: _abort, ...rest } = (init ?? {}) as RequestInit;
-  return globalThis.fetch(input as string, rest);
+  return nativeFetch(input as string, rest);
 };
 
 async function startHub(options: {
@@ -93,7 +97,7 @@ async function mountShell(
     </RegistryProvider>,
   );
   if (!path.startsWith("/settings")) {
-    await screen.findByLabelText("Search threads", undefined, { timeout: 10_000 });
+    await screen.findByLabelText(path.startsWith("/work") ? "Search issues" : "Search threads", undefined, { timeout: 10_000 });
   }
   return { router };
 }
@@ -105,6 +109,7 @@ function step(id: "project" | "runner" | "issue"): HTMLElement {
 const FACTS: FirstRunFacts = {
   projects: 0,
   runners: 0,
+  runnerState: "action_required",
   issues: 0,
   setupStepsLeft: 4,
   canManageProjects: true,
@@ -131,15 +136,22 @@ describe("firstRunSteps", () => {
       notes: [null, null, LEFT, null],
     },
     {
-      name: "a project and a runner",
-      facts: { ...FACTS, projects: 1, runners: 1, canWriteIssues: true },
+      name: "a project with a ready execution runner",
+      facts: { ...FACTS, projects: 1, runners: 1, runnerState: "ready" as const, canWriteIssues: true },
       done: [true, true, false, false],
       blocked: [null, null, null, null],
       notes: [null, null, LEFT, null],
     },
     {
+      name: "an organization runner that does not serve this project",
+      facts: { ...FACTS, projects: 1, runners: 1, canWriteIssues: true },
+      done: [true, false, false, false],
+      blocked: [null, null, null, null],
+      notes: [null, null, LEFT, null],
+    },
+    {
       name: "everything done",
-      facts: { ...FACTS, projects: 2, runners: 1, issues: 3, setupStepsLeft: 0, canWriteIssues: true },
+      facts: { ...FACTS, projects: 2, runners: 1, runnerState: "ready" as const, issues: 3, setupStepsLeft: 0, canWriteIssues: true },
       done: [true, true, true, true],
       blocked: [null, null, null, null],
       notes: [null, null, null, null],
@@ -170,10 +182,12 @@ describe("firstRunSteps", () => {
     { setupStepsLeft: "loading" as const, reason: SETUP_LOADING },
     { setupStepsLeft: "unavailable" as const, reason: SETUP_UNAVAILABLE },
   ])("holds the setup step while onboarding is $setupStepsLeft", ({ setupStepsLeft, reason }) => {
-    const setup = firstRunSteps({ ...FACTS, projects: 1, setupStepsLeft })[2];
-    expect(setup?.done).toBe(false);
-    expect(setup?.blockedReason).toBe(reason);
-    expect(setup?.note).toBeNull();
+    const steps = firstRunSteps({ ...FACTS, projects: 1, runners: 1, runnerState: setupStepsLeft, setupStepsLeft });
+    for (const index of [1, 2]) {
+      expect(steps[index]?.done).toBe(false);
+      expect(steps[index]?.blockedReason).toBe(reason);
+      expect(steps[index]?.note).toBeNull();
+    }
   });
 
   it("uses the wording Settings → Projects uses for the count", () => {
@@ -207,9 +221,9 @@ describe("firstRunSteps", () => {
 describe("FirstRunChecklist", () => {
   it.each([
     { facts: FACTS, progress: "0 of 4 done", doneCount: 0 },
-    { facts: { ...FACTS, projects: 1, canWriteIssues: true }, progress: "1 of 4 done", doneCount: 1 },
+    { facts: { ...FACTS, projects: 1, runners: 1, canWriteIssues: true }, progress: "1 of 4 done", doneCount: 1 },
     {
-      facts: { ...FACTS, projects: 1, runners: 1, issues: 1, setupStepsLeft: 0, canWriteIssues: true },
+      facts: { ...FACTS, projects: 1, runners: 1, runnerState: "ready" as const, issues: 1, setupStepsLeft: 0, canWriteIssues: true },
       progress: "4 of 4 done",
       doneCount: 4,
     },
@@ -227,7 +241,7 @@ describe("FirstRunChecklist", () => {
 
   it("runs a step's action and refuses a blocked one", () => {
     const onAction = vi.fn();
-    render(<FirstRunChecklist steps={firstRunSteps(FACTS)} onAction={onAction} />);
+    render(<FirstRunChecklist steps={firstRunSteps({ ...FACTS, runners: 1 })} onAction={onAction} />);
     fireEvent.click(within(step("project")).getByRole("button", { name: "New project" }));
     expect(onAction).toHaveBeenCalledWith("project");
 
@@ -240,7 +254,7 @@ describe("FirstRunChecklist", () => {
 });
 
 describe("firstIssueState", () => {
-  it("picks the first dispatchable lane, then the first lane", () => {
+  it("stages native work in the first lane and preserves compatibility defaults", () => {
     const project = {
       id: "proj_example",
       name: "Example Studio",
@@ -253,7 +267,8 @@ describe("firstIssueState", () => {
         { name: "Done", terminal: true, dispatchable: false },
       ],
     } satisfies AccountProject;
-    expect(firstIssueState(project)).toBe("Todo");
+    expect(firstIssueState(project)).toBe("Backlog");
+    expect(firstIssueState({ ...project, profile: "github_compatible" })).toBe("Todo");
     expect(
       firstIssueState({ ...project, states: project.states.filter((s) => !s.dispatchable) }),
     ).toBe("Backlog");
@@ -410,8 +425,8 @@ describe("where a new issue goes", () => {
 
   it.each([
     { name: "the lane it was started from", requested: "Backlog", want: "Backlog" },
-    { name: "the first working lane without a request", requested: null, want: "Todo" },
-    { name: "the first working lane for a lane the project lacks", requested: "Review", want: "Todo" },
+    { name: "the native backlog without a request", requested: null, want: "Backlog" },
+    { name: "the native backlog for a lane the project lacks", requested: "Review", want: "Backlog" },
   ])("starts in $name", ({ requested, want }) => {
     expect(newIssueState(project("a", true), requested)).toBe(want);
   });

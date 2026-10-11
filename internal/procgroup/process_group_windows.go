@@ -49,11 +49,18 @@ func Cleanup(int) error {
 }
 
 func inspectProcess(pid int) (Identity, error) {
-	handle, err := openProcess(pid, windows.PROCESS_QUERY_LIMITED_INFORMATION)
+	handle, err := openProcess(pid, windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE)
 	if err != nil {
 		return Identity{}, err
 	}
 	defer windows.CloseHandle(handle)
+	event, err := windows.WaitForSingleObject(handle, 0)
+	if err != nil {
+		return Identity{}, fmt.Errorf("inspect process %d exit state: %w", pid, err)
+	}
+	if event == windows.WAIT_OBJECT_0 {
+		return Identity{}, ErrProcessNotRunning
+	}
 	startedAt, err := processStartedAt(handle)
 	if err != nil {
 		return Identity{}, fmt.Errorf("inspect process %d start time: %w", pid, err)

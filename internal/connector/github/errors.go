@@ -77,12 +77,15 @@ func (e *GraphQLErrorList) Unwrap() error {
 }
 
 type StatusError struct {
-	StatusCode    int
-	Body          string
-	Err           error
-	RateLimitKind string
-	RetryAfter    time.Duration
-	ResetAt       time.Time
+	CredentialIdentity string
+	ObservedAt         time.Time
+	RateLimit          connector.RESTRateLimit
+	StatusCode         int
+	Body               string
+	Err                error
+	RateLimitKind      string
+	RetryAfter         time.Duration
+	ResetAt            time.Time
 }
 
 func (e *StatusError) HTTPStatus() int { return e.StatusCode }

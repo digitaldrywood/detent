@@ -126,6 +126,7 @@ func TestCheckDoctorConfiguredLabelsReportsInventoryFailure(t *testing.T) {
 	cfg := workflowconfig.Default()
 	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
 	cfg.Tracker.Repository = "digitaldrywood/detent"
+	cfg.Agent.AutoPromote.OptoutLabel = "requires-human-review"
 	check := checkDoctorConfiguredLabels(context.Background(), "detent", globalconfig.Project{}, cfg, doctorDeps{
 		githubLabels: func(context.Context, workflowconfig.Config, string) ([]string, error) {
 			return nil, errors.New("permission denied")
@@ -184,6 +185,10 @@ func TestDoctorConfiguredLabelFixTerminatesFlagParsing(t *testing.T) {
 }
 
 func TestCheckDoctorProjectIncludesConfiguredLabelCheck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	t.Parallel()
 
 	cfg := validDoctorWorkflow("/repo")
@@ -191,6 +196,7 @@ func TestCheckDoctorProjectIncludesConfiguredLabelCheck(t *testing.T) {
 	cfg.Tracker.APIKey = "token"
 	cfg.Tracker.ProjectSlug = "PVT_1"
 	cfg.Tracker.Repository = "digitaldrywood/detent"
+	cfg.Agent.AutoPromote.OptoutLabel = "requires-human-review"
 	deps := successfulDoctorDeps()
 	deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
 		return workflowconfig.Workflow{Config: cfg}, nil

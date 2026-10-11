@@ -13,9 +13,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -131,7 +133,7 @@ type coordinatorFixture struct {
 func newCoordinatorFixture(t *testing.T, name string) *coordinatorFixture {
 	t.Helper()
 	backend := newFakeCoordinatorBackend()
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Conversation: &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir()}})
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), GitHubDisabled: true, Conversation: &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir()}})
 	var organization tracker.OrganizationID
 	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM organizations WHERE local = 1").Scan(&organization); err != nil {
 		t.Fatal(err)
@@ -420,7 +422,7 @@ func TestConversationCoordinatorAnswersPendingMessages(t *testing.T) {
 	for _, tool := range f.backend.tools[0] {
 		names[tool.Name] = true
 	}
-	for _, name := range []string{"list_attention", "explain_issue", "propose_issue"} {
+	for _, name := range []string{"list_attention", "explain_issue", "propose_issue", "read_skill"} {
 		if !names[name] {
 			t.Fatalf("tools = %v, missing %s", names, name)
 		}
@@ -452,32 +454,42 @@ func TestConversationCoordinatorAnswersPendingMessages(t *testing.T) {
 func TestConversationCoordinatorPromptTranscriptOnlyWithoutThread(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name     string
-		threadID string
-		want     bool
+		name             string
+		threadID         string
+		want             bool
+		question, answer string
+		followup         string
 	}{
-		{name: "no thread includes transcript", threadID: "", want: true},
-		{name: "thread carries context", threadID: "thread-existing", want: false},
+		{name: "no thread includes transcript", threadID: "", want: true, question: "earlier question", answer: "earlier answer", followup: "follow-up"},
+		{name: "thread carries context", threadID: "thread-existing", want: false, question: "earlier question", answer: "earlier answer", followup: "follow-up"},
+		{name: "Sprite answers survive fresh turn", want: true, question: "I want to add sprites to this project", answer: "How many runners? Default floor 1, ceiling 1.", followup: "no extra steps, 2 and 2"},
+		{name: "Sprite answers stay in resumed thread", threadID: "thread-sprites", question: "I want to add sprites to this project", answer: "How many runners? Default floor 1, ceiling 1.", followup: "no extra steps, 2 and 2"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newCoordinatorFixture(t, "transcript-"+strings.ReplaceAll(test.name, " ", "-"))
 			record := f.seed(t, "Earlier chat", func(record *conversationRecord) { record.ProviderThreadID = test.threadID })
-			f.history(t, &record, conversation.RoleUser, "earlier question", conversation.DeliveryDelivered)
-			f.history(t, &record, conversation.RoleAssistant, "earlier answer", conversation.DeliveryCompleted)
-			f.say(t, &record, "follow-up")
+			f.history(t, &record, conversation.RoleUser, test.question, conversation.DeliveryDelivered)
+			f.history(t, &record, conversation.RoleAssistant, test.answer, conversation.DeliveryCompleted)
+			f.say(t, &record, test.followup)
 			f.backend.waitStarted(t)
 			f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
 			request := f.backend.request(t, 0)
-			if got := strings.Contains(request.Prompt, "earlier answer"); got != test.want {
+			if !strings.Contains(request.Prompt, "## Available skills") || !strings.Contains(request.Prompt, "split-issue: Break one large Detent issue") || !strings.Contains(request.Prompt, "decompose-issue") || strings.Contains(request.Prompt, "# Split a large issue into dependent issues") {
+				t.Fatalf("prompt should list built-in metadata without the skill body: %q", request.Prompt)
+			}
+			if got := strings.Contains(request.Prompt, test.answer); got != test.want {
 				t.Fatalf("prompt transcript present = %v, want %v: %q", got, test.want, request.Prompt)
 			}
-			if !strings.Contains(request.Prompt, "follow-up") {
+			if !strings.Contains(request.Prompt, test.followup) {
 				t.Fatalf("prompt = %q, want the pending message", request.Prompt)
 			}
-			if test.want && (!strings.Contains(request.Prompt, "<transcript>") || strings.Index(request.Prompt, "earlier answer") > strings.Index(request.Prompt, "follow-up")) {
+			if test.want && (!strings.Contains(request.Prompt, "<transcript>") || !strings.Contains(request.Prompt, test.question) || strings.Index(request.Prompt, test.answer) > strings.Index(request.Prompt, test.followup)) {
 				t.Fatalf("prompt = %q, want delimited transcript before the new messages", request.Prompt)
+			}
+			if strings.HasPrefix(test.name, "Sprite") && (!strings.Contains(request.ToolInstructions, "never repeat an answered question") || !strings.Contains(request.ToolInstructions, "use min_runners 2, max_runners 2 and omit bootstrap")) {
+				t.Fatal("provider request must carry guidance to use earlier Sprite answers")
 			}
 			if request.Resume.ThreadID != test.threadID {
 				t.Fatalf("resume = %q, want %q", request.Resume.ThreadID, test.threadID)
@@ -588,36 +600,131 @@ func TestConversationCoordinatorCancel(t *testing.T) {
 	}
 }
 
-func TestConversationCoordinatorStopPersistsUnknown(t *testing.T) {
+func TestConversationCoordinatorStop(t *testing.T) {
 	t.Parallel()
-	f := newCoordinatorFixture(t, "stop")
-	release := make(chan struct{})
-	f.backend.setRun(blockingRun(release, ""))
-	record := f.seed(t, "stop", nil)
-	f.say(t, &record, "hang")
-	f.backend.waitStarted(t)
-	done := make(chan struct{})
-	go func() {
-		f.coordinator().Stop()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Stop() did not return")
+	for _, test := range []struct {
+		name              string
+		finish            bool
+		ignoreCancelError bool
+		ignoreCancel      bool
+	}{
+		{name: "finishes during grace", finish: true},
+		{name: "fails after grace"},
+		{name: "backend ignores cancellation", ignoreCancel: true},
+		{name: "cancelled backend returns success", ignoreCancelError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCoordinatorFixture(t, test.name)
+			release := make(chan struct{})
+			backendDone := make(chan struct{})
+			run := blockingRun(release, "partial answer")
+			f.backend.setRun(func(ctx context.Context, turn int, handle runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+				defer close(backendDone)
+				result, err := run(ctx, turn, handle, update)
+				if test.ignoreCancel {
+					<-release
+					if late := update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "too late"}); !errors.Is(late, context.Canceled) {
+						t.Errorf("late update error = %v, want cancellation", late)
+					}
+				}
+				if test.ignoreCancelError {
+					return result, nil
+				}
+				return result, err
+			})
+			record := f.seed(t, "stop", nil)
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/commands", f.token,
+				conversation.Command{Key: "first-turn", Kind: conversation.CommandMessage, Text: "hang"})
+			requireNativeStatus(t, response, http.StatusOK)
+			f.backend.waitStarted(t)
+			done := make(chan error, 1)
+			go func() {
+				ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
+				defer cancel()
+				done <- f.service.Shutdown(ctx)
+			}()
+			waitUntil(t, "coordinator draining", func() bool {
+				c := f.coordinator().(*conversationTurnCoordinator)
+				c.mu.Lock()
+				defer c.mu.Unlock()
+				return c.stopped
+			})
+			f.coordinator().Wake(record.ID)
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/commands", f.token,
+				conversation.Command{Key: "during-shutdown", Kind: conversation.CommandMessage, Text: "Do not start a new turn"})
+			requireNativeStatus(t, response, http.StatusServiceUnavailable)
+			if test.finish {
+				close(release)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(12 * time.Second):
+				t.Fatal("Shutdown() did not return")
+			}
+			wantAssistant, wantUser, wantExecution := conversation.DeliveryFailed, conversation.DeliveryFailed, conversation.ExecutionFailed
+			if test.finish {
+				wantAssistant, wantUser, wantExecution = conversation.DeliveryCompleted, conversation.DeliveryDelivered, conversation.ExecutionIdle
+			}
+			messages := f.messages(t, record.ID)
+			assistant, ok := lastReply(messages)
+			if !ok || assistant.Delivery != wantAssistant || assistant.Text != "partial answer" {
+				t.Fatalf("assistant = %#v, want %s with partial answer", assistant, wantAssistant)
+			}
+			if messages[0].Delivery != wantUser {
+				t.Fatalf("user message = %s, want %s", messages[0].Delivery, wantUser)
+			}
+			if got := f.conversation(t, record.ID).Execution.Status; got != wantExecution {
+				t.Fatalf("execution = %s, want %s", got, wantExecution)
+			}
+			if !test.finish {
+				var encoded string
+				err := f.service.database.db.QueryRowContext(t.Context(), "SELECT receipt_json FROM conversation_commands WHERE conversation_id = ? AND key = ?", record.ID, messages[0].CommandKey).Scan(&encoded)
+				if err != nil {
+					t.Fatal(err)
+				}
+				receipt, err := decodeConversationReceipt(encoded)
+				if err != nil || receipt.Status != conversation.DeliveryFailed || receipt.Error == nil || receipt.Error.Code != "coordinator_error" {
+					t.Fatalf("receipt = %#v, error = %v", receipt, err)
+				}
+			}
+			f.coordinator().Stop()
+			if got := f.backend.turns(); got != 1 {
+				t.Fatalf("turns = %d, want 1", got)
+			}
+			if test.ignoreCancel {
+				close(release)
+			}
+			select {
+			case <-backendDone:
+			case <-time.After(time.Second):
+				t.Fatal("test backend did not exit")
+			}
+			if !test.finish {
+				cfg := f.service.config
+				if err := f.service.Close(); err != nil {
+					t.Fatal(err)
+				}
+				cfg.Conversation.Backend = newFakeCoordinatorBackend()
+				restarted, err := Open(t.Context(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = restarted.Close() })
+				f.service, f.conversations = restarted, restarted.conversations
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/commands", f.token,
+					conversation.Command{Key: "retry-after-restart", Kind: conversation.CommandRetry, MessageID: messages[0].ID})
+				requireNativeStatus(t, response, http.StatusOK)
+				f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
+				if got := f.messages(t, record.ID); len(got) != 3 || got[0].ID != messages[0].ID || got[0].Delivery != conversation.DeliveryDelivered {
+					t.Fatalf("messages after Retry = %#v", got)
+				}
+			}
+		})
 	}
-	assistant, ok := lastReply(f.messages(t, record.ID))
-	if !ok || assistant.Delivery != conversation.DeliveryUnknown {
-		t.Fatalf("assistant = %#v, want unknown after Stop", assistant)
-	}
-	if messages := f.messages(t, record.ID); messages[0].Delivery != conversation.DeliveryUnknown {
-		t.Fatalf("user message = %s, want unknown after Stop", messages[0].Delivery)
-	}
-	if got := f.conversation(t, record.ID).Execution.Status; got != conversation.ExecutionUnknown {
-		t.Fatalf("execution = %s, want unknown after Stop", got)
-	}
-	f.coordinator().Wake(record.ID)
-	f.coordinator().Stop()
 }
 
 // TestConversationCoordinatorIgnoresLinked proves the hub-side coordinator
@@ -730,7 +837,7 @@ func TestConversationCoordinatorListAttention(t *testing.T) {
 		}
 		return nil
 	}
-	if item := find(got.Blocked, blocked.WorkItemID); item == nil || !strings.Contains(item.Reason, string(blocker.WorkItemID)) || item.URL != "/chat/issues/"+string(blocked.WorkItemID) || item.Title != "blocked" {
+	if item := find(got.Blocked, blocked.WorkItemID); item == nil || !strings.Contains(item.Reason, string(blocker.WorkItemID)) || item.URL != "/work/i/"+string(blocked.WorkItemID) || item.Title != "blocked" {
 		t.Fatalf("blocked = %#v, want the dependency-blocked issue with reason and url", got.Blocked)
 	}
 	if item := find(got.Running, running.WorkItemID); item == nil || item.Reason == "" {
@@ -759,7 +866,13 @@ func TestConversationCoordinatorToolArgumentsAndScope(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "scope")
 	own := f.create(t, "own issue")
+	done := f.create(t, "done issue")
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Done') WHERE native_id=?", f.project.ID, done.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
 	other := newNativeFixture(t, f.service, "", "other-project")
+	other.create(t, "foreign first")
+	other.create(t, "foreign second")
 	foreign := other.create(t, "foreign issue")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(own.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "comment"}, Body: "first comment"}), http.StatusOK)
 
@@ -769,11 +882,31 @@ func TestConversationCoordinatorToolArgumentsAndScope(t *testing.T) {
 		arguments string
 		success   bool
 		contains  string
+		issue     *tracker.NativeIssue
 	}{
-		{name: "explain own issue", tool: "explain_issue", arguments: `{"work_item_id":"` + string(own.WorkItemID) + `"}`, success: true, contains: `"first comment"`},
+		{name: "explain own issue", tool: "explain_issue", arguments: `{"work_item_id":"` + string(own.WorkItemID) + `"}`, success: true, contains: `"first comment"`, issue: &own},
+		{name: "resolve open issue number", tool: "explain_issue", arguments: `{"work_item_id":"#1"}`, success: true, contains: `"first comment"`, issue: &own},
+		{name: "resolve bare issue number", tool: "explain_issue", arguments: `{"work_item_id":"1"}`, success: true, contains: `"first comment"`, issue: &own},
+		{name: "resolve Done issue number", tool: "explain_issue", arguments: `{"work_item_id":"#2"}`, success: true, contains: `"terminal":true`, issue: &done},
+		{name: "unknown issue number", tool: "explain_issue", arguments: `{"work_item_id":"#999"}`, contains: `no issue #999 in this project`},
+		{name: "number exists only in foreign project", tool: "explain_issue", arguments: `{"work_item_id":"#3"}`, contains: `no issue #3 in this project`},
+		{name: "invalid issue number", tool: "explain_issue", arguments: `{"work_item_id":"#0"}`, contains: `no issue #0 in this project`},
+		{name: "read open issue history by number", tool: "read_issue_history", arguments: `{"work_item_id":"#1","section":"work_comments"}`, success: true, contains: `"first comment"`},
+		{name: "read Done issue by number", tool: "read_issue_history", arguments: `{"work_item_id":"#2","section":"work_item"}`, success: true, contains: string(done.WorkItemID)},
+		{name: "read unknown issue number", tool: "read_issue_history", arguments: `{"work_item_id":"#999","section":"work_item"}`, contains: `no issue #999 in this project`},
+		{name: "read foreign issue denied", tool: "read_issue_history", arguments: `{"work_item_id":"` + string(foreign.WorkItemID) + `","section":"work_item"}`, contains: `"error"`},
 		{name: "explain foreign issue denied", tool: "explain_issue", arguments: `{"work_item_id":"` + string(foreign.WorkItemID) + `"}`, success: false, contains: `"error"`},
 		{name: "unknown field rejected", tool: "list_attention", arguments: `{"scope":"project","bogus":1}`, success: false, contains: `"error"`},
 		{name: "unknown tool", tool: "delete_everything", arguments: `{}`, success: false, contains: `"error"`},
+		{name: "read built-in skill by name", tool: "read_skill", arguments: `{"name":"split-issue"}`, success: true, contains: `# Split a large issue into dependent issues`},
+		{name: "read built-in skill by alias", tool: "read_skill", arguments: `{"name":"decompose-issue"}`, success: true, contains: `# Split a large issue into dependent issues`},
+		{name: "read built-in skill by second alias", tool: "read_skill", arguments: `{"name":"break-down-issue"}`, success: true, contains: `# Split a large issue into dependent issues`},
+		{name: "unknown built-in skill", tool: "read_skill", arguments: `{"name":"unknown"}`, success: false, contains: `unknown built-in skill`},
+		{name: "missing skill name", tool: "read_skill", arguments: `{}`, success: false, contains: `invalid tool arguments`},
+		{name: "unknown skill field", tool: "read_skill", arguments: `{"name":"split-issue","path":"/etc/passwd"}`, success: false, contains: `invalid tool arguments`},
+		{name: "load split skill from built-in catalog", tool: "load_split_issue_skill", arguments: `{}`, success: true, contains: `"instructions"`},
+		{name: "unknown split skill field", tool: "load_split_issue_skill", arguments: `{"path":"/etc/passwd"}`, success: false, contains: `invalid tool arguments`},
+		{name: "non-object split skill arguments", tool: "load_split_issue_skill", arguments: `[]`, success: false, contains: `invalid tool arguments`},
 		{name: "all projects lists only granted", tool: "list_attention", arguments: `{"scope":"all_projects"}`, success: true, contains: `"blocked"`},
 	}
 	for index, test := range tests {
@@ -782,6 +915,11 @@ func TestConversationCoordinatorToolArgumentsAndScope(t *testing.T) {
 			record := f.seed(t, test.name, nil)
 			f.say(t, &record, "go")
 			f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
+			select {
+			case <-f.backend.started:
+			default:
+				t.Fatal("backend turn did not start")
+			}
 			results := f.backend.toolResults()
 			if len(results) != index+1 {
 				t.Fatalf("tool results = %d, want %d", len(results), index+1)
@@ -790,17 +928,38 @@ func TestConversationCoordinatorToolArgumentsAndScope(t *testing.T) {
 			if result.Success != test.success || !strings.Contains(result.Content, test.contains) {
 				t.Fatalf("result = %#v, want success=%v containing %s", result, test.success, test.contains)
 			}
-			if test.tool == "explain_issue" && test.success {
-				var explained struct {
-					Title          string `json:"title"`
-					State          string `json:"state"`
-					ConversationID any    `json:"conversation_id"`
-					Comments       []struct {
-						Body string `json:"body"`
-					} `json:"comments"`
+			if test.tool == "read_skill" && test.success {
+				var skill struct {
+					Name string `json:"name"`
+					Body string `json:"body"`
 				}
+				decodeToolResult(t, result, &skill)
+				if skill.Name != "split-issue" || !strings.Contains(skill.Body, "Read the graph back and confirm every child") {
+					t.Fatalf("skill result = %#v", skill)
+				}
+			}
+			if test.tool == "load_split_issue_skill" && test.success {
+				var loaded struct {
+					Name         string `json:"name"`
+					Instructions string `json:"instructions"`
+				}
+				decodeToolResult(t, result, &loaded)
+				skill, body, err := skills.ReadBuiltin("split-issue")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if loaded.Name != skill.Name || loaded.Instructions != body {
+					t.Fatalf("split skill loader differs from built-in skill %q", skill.Name)
+				}
+			}
+			if test.tool == "explain_issue" && test.success {
+				var explained coordinatorIssue
 				decodeToolResult(t, result, &explained)
-				if explained.Title != "own issue" || explained.State != "Todo" || len(explained.Comments) != 1 || explained.ConversationID != nil {
+				wantState, wantComments := "Todo", 1
+				if test.issue.WorkItemID == done.WorkItemID {
+					wantState, wantComments = "Done", 0
+				}
+				if explained.WorkItemID != string(test.issue.WorkItemID) || explained.Number != int64(test.issue.Number) || explained.ProjectID != f.project.ID || explained.Title != test.issue.Title || explained.State != wantState || len(explained.Comments) != wantComments || explained.ConversationID != nil {
 					t.Fatalf("explained = %#v", explained)
 				}
 			}
@@ -865,37 +1024,101 @@ func TestConversationCoordinatorProposeIssue(t *testing.T) {
 
 func TestConversationCoordinatorToolMessagesFromUpdates(t *testing.T) {
 	t.Parallel()
-	f := newCoordinatorFixture(t, "toolmessages")
-	f.backend.setRun(func(_ context.Context, _ int, _ runner.AgentToolHandler, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
-		for _, update := range []runner.AgentUpdate{
-			{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-early"},
-			{Type: runner.AgentUpdateToolStarted, ItemID: "item-1", Tool: "shell", Command: "git status " + strings.Repeat("x", 1000)},
-			{Type: runner.AgentUpdateToolCompleted, ItemID: "item-1", Tool: "shell", Status: "completed"},
-			{Type: runner.AgentUpdateMessageDelta, Delta: "done"},
-		} {
-			if err := onUpdate(update); err != nil {
-				return runner.AgentTurnResult{}, err
+	for _, test := range []struct {
+		name        string
+		before      string
+		after       []string
+		toolUpdates bool
+		toolCalls   int
+		want        string
+	}{
+		{name: "tool updates before text", after: []string{"done"}, toolUpdates: true, want: "done"},
+		{name: "text around tool updates", before: "Checking.", after: []string{"All ", "done."}, toolUpdates: true, want: "Checking.\n\nAll done."},
+		{name: "text around Luna tool call", before: "All 6 children will be created in Blocked, matching #32.", after: []string{"Children 1 and 2 can run in parallel. ", "The parent waits for all children."}, toolCalls: 1, want: "All 6 children will be created in Blocked, matching #32.\n\nChildren 1 and 2 can run in parallel. The parent waits for all children."},
+		{name: "consecutive tool calls", before: "Checking.", after: []string{"Done."}, toolCalls: 2, want: "Checking.\n\nDone."},
+		{name: "tool call without preceding text", after: []string{"Done."}, toolCalls: 1, want: "Done."},
+		{name: "tool call without following text", before: "Checking.", toolCalls: 1, want: "Checking."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCoordinatorFixture(t, "toolmessages")
+			f.backend.setRun(func(ctx context.Context, _ int, handle runner.AgentToolHandler, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+				updates := []runner.AgentUpdate{
+					{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-early"},
+					{Type: runner.AgentUpdateMessageDelta, Delta: test.before},
+				}
+				if test.toolUpdates {
+					updates = append(updates,
+						runner.AgentUpdate{Type: runner.AgentUpdateToolStarted, ItemID: "item-1", Tool: "shell", Command: "git status " + strings.Repeat("x", 1000)},
+						runner.AgentUpdate{Type: runner.AgentUpdateToolCompleted, ItemID: "item-1", Tool: "shell", Status: "completed"},
+					)
+				}
+				for _, update := range updates {
+					if err := onUpdate(update); err != nil {
+						return runner.AgentTurnResult{}, err
+					}
+				}
+				for range test.toolCalls {
+					result, err := handle(ctx, runner.AgentToolCall{Name: "load_split_issue_skill", Arguments: json.RawMessage(`{}`)})
+					if err != nil {
+						return runner.AgentTurnResult{}, err
+					}
+					if !result.Success {
+						return runner.AgentTurnResult{}, errors.New(result.Content)
+					}
+				}
+				for _, delta := range test.after {
+					if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: delta}); err != nil {
+						return runner.AgentTurnResult{}, err
+					}
+				}
+				return runner.AgentTurnResult{ThreadID: "thread-early"}, nil
+			})
+			record := f.seed(t, "tools", nil)
+			f.say(t, &record, "check")
+			assistant := f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
+			if assistant.Text != test.want {
+				t.Fatalf("assistant text = %q, want %q", assistant.Text, test.want)
 			}
-		}
-		return runner.AgentTurnResult{ThreadID: "thread-early"}, nil
-	})
-	record := f.seed(t, "tools", nil)
-	f.say(t, &record, "check")
-	f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
-	var tools []conversationMessageRecord
-	for _, message := range f.messages(t, record.ID) {
-		if message.Kind == conversation.MessageTool {
-			tools = append(tools, message)
-		}
-	}
-	if len(tools) != 1 || tools[0].Role != conversation.RoleSystem || tools[0].Delivery != conversation.DeliveryCompleted || !strings.Contains(tools[0].Text, "shell") {
-		t.Fatalf("tool messages = %#v, want one completed system tool message", tools)
-	}
-	if len([]rune(tools[0].Text)) > 500 {
-		t.Fatalf("tool summary length = %d, want at most 500 runes", len([]rune(tools[0].Text)))
-	}
-	if got := f.conversation(t, record.ID).ProviderThreadID; got != "thread-early" {
-		t.Fatalf("thread id = %q, want persisted from the turn update", got)
+			var streamed strings.Builder
+			for _, event := range f.events(t, record.ID) {
+				if event.Type != conversation.EventMessageDelta {
+					continue
+				}
+				var body struct {
+					MessageID string `json:"message_id"`
+					Text      string `json:"text"`
+				}
+				if err := json.Unmarshal(event.Data, &body); err != nil {
+					t.Fatal(err)
+				}
+				if body.MessageID == assistant.ID {
+					streamed.WriteString(body.Text)
+				}
+			}
+			if streamed.String() != test.want {
+				t.Fatalf("streamed text = %q, want %q", streamed.String(), test.want)
+			}
+			var tools []conversationMessageRecord
+			for _, message := range f.messages(t, record.ID) {
+				if message.Kind == conversation.MessageTool {
+					tools = append(tools, message)
+				}
+			}
+			if test.toolUpdates {
+				if len(tools) != 1 || tools[0].Role != conversation.RoleSystem || tools[0].Delivery != conversation.DeliveryCompleted || !strings.Contains(tools[0].Text, "shell") {
+					t.Fatalf("tool messages = %#v, want one completed system tool message", tools)
+				}
+				if len([]rune(tools[0].Text)) > 500 {
+					t.Fatalf("tool summary length = %d, want at most 500 runes", len([]rune(tools[0].Text)))
+				}
+			} else if len(tools) != 0 {
+				t.Fatalf("tool messages = %#v, want none without tool updates", tools)
+			}
+			if got := f.conversation(t, record.ID).ProviderThreadID; got != "thread-early" {
+				t.Fatalf("thread id = %q, want persisted from the turn update", got)
+			}
+		})
 	}
 }
 
@@ -993,28 +1216,143 @@ func TestConversationCoordinatorHonoursPreferences(t *testing.T) {
 
 func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 	t.Parallel()
-	f := newCoordinatorFixture(t, "luna-legacy")
-	f.conversations.config.Model = genkitbackend.Model
-	f.conversations.config.ReasoningEffort = "low"
-
-	legacy := f.seed(t, "legacy", func(record *conversationRecord) {
-		record.Preferences = conversation.Preferences{Model: "gpt-6-astra", ReasoningEffort: conversation.EffortHigh, Access: conversation.AccessFull}
-	})
-	f.say(t, &legacy, "What changed?")
-	f.waitAssistant(t, legacy.ID, conversation.DeliveryCompleted)
-	if request := f.backend.request(t, 0); request.Model != genkitbackend.Model || request.ReasoningEffort != "low" {
-		t.Fatalf("legacy turn = model %q effort %q", request.Model, request.ReasoningEffort)
+	for _, test := range []struct {
+		name        string
+		model       string
+		effort      string
+		hosted      bool
+		granted     bool
+		revoked     bool
+		free        bool
+		credits     bool
+		adjust      bool
+		balance     int64
+		unavailable bool
+		usage       bool
+		wantModel   string
+		wantEffort  string
+		wantFailure string
+	}{
+		{name: "legacy without hosted plans", model: "gpt-6-astra", effort: "high", wantModel: genkitbackend.Model, wantEffort: "low"},
+		{name: "ungranted choice", hosted: true, model: "gpt-6-astra", effort: "high", wantModel: genkitbackend.Model, wantEffort: "low"},
+		{name: "Luna medium", model: genkitbackend.Model, effort: "medium", wantModel: genkitbackend.Model, wantEffort: "medium"},
+		{name: "granted choice", hosted: true, granted: true, usage: true, model: "gpt-6-astra", effort: "high", wantModel: "gpt-6-astra", wantEffort: "high"},
+		{name: "granted auto", hosted: true, granted: true, wantModel: genkitbackend.Model, wantEffort: "low"},
+		{name: "granted Luna medium", hosted: true, granted: true, model: genkitbackend.Model, effort: "medium", wantModel: genkitbackend.Model, wantEffort: "medium"},
+		{name: "revoked choice", hosted: true, granted: true, revoked: true, model: "gpt-6-astra", effort: "high", wantModel: "gpt-6-astra", wantEffort: "high"},
+		{name: "ungranted unknown", hosted: true, model: "unknown-model", wantFailure: "not one of the available choices"},
+		{name: "granted unknown", hosted: true, granted: true, model: "unknown-model", wantFailure: "not one of the available choices"},
+		{name: "granted without execution", hosted: true, granted: true, free: true, model: "gpt-6-astra", wantFailure: "Upgrade"},
+		{name: "granted with exhausted credits", hosted: true, granted: true, credits: true, model: "gpt-6-astra", wantFailure: "AI credits are exhausted"},
+		{name: "complimentary credits resume Luna", hosted: true, credits: true, adjust: true, wantModel: genkitbackend.Model, wantEffort: "low"},
+		{name: "granted with purchased credits", hosted: true, granted: true, free: true, credits: true, balance: 1000000, model: "gpt-6-astra", effort: "high", wantModel: "gpt-6-astra", wantEffort: "high"},
+		{name: "granted without model backend", hosted: true, granted: true, unavailable: true, model: "gpt-6-astra", wantFailure: "model backend is unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCoordinatorFixture(t, "luna-preferences")
+			f.conversations.config.Model = genkitbackend.Model
+			f.conversations.config.ReasoningEffort = "low"
+			reportConversationModels(t, conversationAPIFixture{nativeFixture: f.nativeFixture}, "gpt-6-astra")
+			d := f.service.database
+			if test.hosted {
+				d.hostedOrganization = f.organization
+				plans := capacityHostedPlans()
+				if !test.free {
+					plans.Base = PlanReference{ID: "starter", Version: 1}
+				}
+				if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+					t.Fatal(err)
+				}
+				if test.granted {
+					if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "grant-model", Action: "grant", GrantID: "model", ExpectedRevision: 1, Plan: plans.Base, Scope: []string{"model_choice"}, Reason: "approved model choice"}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if test.credits {
+				d.aiCreditMode = "test"
+				if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'test',?)", f.organization, test.balance); err != nil {
+					t.Fatal(err)
+				}
+			}
+			chosen := newFakeCoordinatorBackend()
+			sink := recordingConversationUsageSink{usage: make(chan ConversationUsage, 1)}
+			if test.usage {
+				luna, err := genkitbackend.NewOpenAI("test-key")
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.conversations.config.Backend = luna
+				f.conversations.config.UsageSink = sink
+				chosen.setRun(func(_ context.Context, _ int, _ runner.AgentToolHandler, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+					return runner.AgentTurnResult{}, onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 20, OutputTokens: 10, TotalTokens: 30}})
+				})
+			}
+			if !test.unavailable {
+				f.conversations.config.ModelBackend = func() (runner.AgentBackend, string, error) { return chosen, "chosen-workspace", nil }
+			}
+			record := f.seed(t, "preferences", func(record *conversationRecord) {
+				record.Preferences = conversation.Preferences{Model: test.model, ReasoningEffort: test.effort, Access: conversation.AccessFull}
+			})
+			if test.adjust {
+				f.say(t, &record, "Before the credit grant")
+				reply := f.waitAssistant(t, record.ID, conversation.DeliveryFailed)
+				if !strings.Contains(reply.Text+string(reply.Data), "AI credits are exhausted") || f.backend.turns() != 0 {
+					t.Fatalf("exhausted reply=%#v backend calls=%d", reply, f.backend.turns())
+				}
+				if _, err := d.adjustAICredits(t.Context(), "staff@example.test", billing.CreditAdjustment{IdempotencyKey: "luna-comp", AmountUSD: "5", Reason: "complimentary pilot"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.say(t, &record, "What changed?")
+			delivery := conversation.DeliveryCompleted
+			if test.wantFailure != "" {
+				delivery = conversation.DeliveryFailed
+			}
+			reply := f.waitAssistant(t, record.ID, delivery)
+			if test.wantFailure != "" {
+				if !strings.Contains(reply.Text+string(reply.Data), test.wantFailure) || f.backend.turns() != 0 || chosen.turns() != 0 {
+					t.Fatalf("reply=%#v Luna calls=%d chosen calls=%d", reply, f.backend.turns(), chosen.turns())
+				}
+				return
+			}
+			backend, other := f.backend, chosen
+			if test.wantModel != genkitbackend.Model {
+				backend, other = chosen, f.backend
+			}
+			request := backend.request(t, 0)
+			if request.Model != test.wantModel || request.ReasoningEffort != test.wantEffort || !request.ReadOnly || other.turns() != 0 {
+				t.Fatalf("request=%#v other calls=%d", request, other.turns())
+			}
+			if backend == chosen && request.Workspace != "chosen-workspace" {
+				t.Fatalf("chosen workspace = %q", request.Workspace)
+			}
+			if test.usage {
+				select {
+				case usage := <-sink.usage:
+					if usage.Provider != "codex" || usage.Model != test.wantModel || usage.TurnID != reply.ID || usage.Tokens.InputTokens != 20 {
+						t.Fatalf("chosen backend usage = %#v", usage)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("chosen backend usage was not reported")
+				}
+			}
+			if test.revoked {
+				if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "revoke-model", Action: "revoke", GrantID: "model", ExpectedRevision: 2, Reason: "revoked model choice"}); err != nil {
+					t.Fatal(err)
+				}
+				f.say(t, &record, "And now?")
+				f.backend.waitStarted(t)
+				f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
+				request := f.backend.request(t, 0)
+				if request.Model != genkitbackend.Model || request.ReasoningEffort != "low" || chosen.turns() != 1 {
+					t.Fatalf("revoked turn=%#v chosen calls=%d", request, chosen.turns())
+				}
+			}
+			f.coordinator().Stop()
+		})
 	}
-
-	medium := f.seed(t, "medium", func(record *conversationRecord) {
-		record.Preferences = conversation.Preferences{Model: genkitbackend.Model, ReasoningEffort: "medium", Access: conversation.AccessFull}
-	})
-	f.say(t, &medium, "And now?")
-	f.waitAssistant(t, medium.ID, conversation.DeliveryCompleted)
-	if request := f.backend.request(t, 1); request.Model != genkitbackend.Model || request.ReasoningEffort != "medium" {
-		t.Fatalf("medium turn = model %q effort %q", request.Model, request.ReasoningEffort)
-	}
-	f.coordinator().Stop()
 }
 
 func TestCoordinatorAttachmentBlock(t *testing.T) {
@@ -1112,6 +1450,11 @@ func TestConversationCoordinatorToolsHonourReadAccess(t *testing.T) {
 		contains string
 		absent   bool
 	}{
+		{
+			name: "built-in skill requires current project read access",
+			tool: "read_skill", args: func(tracker.NativeWorkItemID) string { return `{"name":"split-issue"}` }, revoke: "grant",
+			contains: "can no longer read this project",
+		},
 		{
 			name: "a blocker in the owner's project is named",
 			tool: "list_attention", args: func(tracker.NativeWorkItemID) string { return `{"scope":"project"}` },
@@ -1444,23 +1787,72 @@ func TestConversationCoordinatorRefusesWritesOnceLinked(t *testing.T) {
 }
 
 func TestCoordinatorFreeRefusesLuna(t *testing.T) {
-	f := newCoordinatorFixture(t, "free-chat")
-	f.service.database.hostedOrganization = f.organization
-	if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
-		t.Fatal(err)
-	}
-	f.conversations.config.Model = "gpt-6-luna"
-	record := f.seed(t, "Free chat", nil)
-	f.say(t, &record, "Can you explain this project?")
-	waitUntil(t, "Free refusal", func() bool {
-		reply, ok := lastReply(f.messages(t, record.ID))
-		return ok && reply.Delivery != conversation.DeliveryResponding
-	})
-	if f.backend.turns() != 0 {
-		t.Fatalf("Free invoked Luna %d times", f.backend.turns())
-	}
-	reply, _ := lastReply(f.messages(t, record.ID))
-	if !strings.Contains(reply.Text, "Free") || !strings.Contains(reply.Text, "Upgrade") {
-		t.Fatalf("refusal = %#v", reply)
+	for _, test := range []struct {
+		name         string
+		credits      bool
+		balance      int64
+		owner        bool
+		overrun      bool
+		wantBalance  int64
+		wantCalls    int
+		want, hidden string
+	}{
+		{name: "Free without credits", want: "Upgrade", hidden: "Auto-fund"},
+		{name: "purchased credits permit chat", credits: true, balance: 1000000, wantCalls: 1},
+		{name: "marked-up turn overruns then refuses", credits: true, balance: 120000, overrun: true, wantBalance: -30000, wantCalls: 1},
+		{name: "exact charged balance exhausts then refuses", credits: true, balance: 150000, overrun: true, wantBalance: 0, wantCalls: 1},
+		{name: "exhausted owner sees failure", credits: true, owner: true, want: "Auto-fund is disabled", hidden: "Ask an organization owner"},
+		{name: "exhausted viewer sees owner action", credits: true, want: "Ask an organization owner", hidden: "Auto-fund"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newCoordinatorFixture(t, "free-chat")
+			d := f.service.database
+			d.hostedOrganization = f.organization
+			if err := d.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+				t.Fatal(err)
+			}
+			f.conversations.config.Model = "gpt-6-luna"
+			if test.credits {
+				d.aiCreditMode = "test"
+				if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros,failure) VALUES(?,'test',?,'update the saved payment method')", f.organization, test.balance); err != nil {
+					t.Fatal(err)
+				}
+				role := "viewer"
+				if test.owner {
+					role = "owner"
+				}
+				if _, err := d.db.ExecContext(t.Context(), "INSERT INTO hosted_members(user_id,email,membership_id,role,principal_id,created_at,updated_at) VALUES('user_credit','credit@example.test','member_credit',?,?,?,?)", role, f.owner, formatHubTime(d.now()), formatHubTime(d.now())); err != nil {
+					t.Fatal(err)
+				}
+			}
+			record := f.seed(t, "Free chat", nil)
+			f.say(t, &record, "Can you explain this project?")
+			delivery := conversation.DeliveryFailed
+			if test.wantCalls > 0 {
+				delivery = conversation.DeliveryCompleted
+			}
+			reply := f.waitAssistant(t, record.ID, delivery)
+			if test.overrun {
+				usage := ConversationUsage{OrganizationID: f.organization, ProjectID: f.project.ID, ConversationID: record.ID, TurnID: reply.ID, Provider: "openai", Model: "gpt-6-luna", Tokens: runner.AgentTokenCounts{InputTokens: 1000000}, Outcome: conversation.DeliveryCompleted, OccurredAt: d.now()}
+				if err := d.RecordConversationUsage(t.Context(), usage); err != nil {
+					t.Fatal(err)
+				}
+				var balance int64
+				if err := d.db.QueryRowContext(t.Context(), "SELECT balance_micros FROM ai_credit_accounts").Scan(&balance); err != nil || balance != test.wantBalance {
+					t.Fatalf("charged balance=%d want=%d err=%v", balance, test.wantBalance, err)
+				}
+				f.say(t, &record, "One more question")
+				reply = f.waitAssistant(t, record.ID, conversation.DeliveryFailed)
+				if !strings.Contains(reply.Text, "Ask an organization owner") {
+					t.Fatalf("exhaustion refusal=%#v", reply)
+				}
+			}
+			if f.backend.turns() != test.wantCalls {
+				t.Fatalf("backend calls=%d want=%d", f.backend.turns(), test.wantCalls)
+			}
+			if test.want != "" && !strings.Contains(reply.Text, test.want) || test.hidden != "" && strings.Contains(reply.Text, test.hidden) {
+				t.Fatalf("refusal=%#v", reply)
+			}
+		})
 	}
 }

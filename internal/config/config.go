@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/url"
 	"os"
@@ -18,9 +19,11 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/activehours"
+	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/pathsafe"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/publication"
@@ -29,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/skills"
 )
 
 const (
@@ -83,7 +87,7 @@ const (
 	DefaultMergeWorkerMaxDurationMS          = 6 * 60 * 60 * 1000
 	DefaultMergeFairnessAgeSeconds           = 2 * 60 * 60
 	DefaultMaxSessionDurationMS              = 2 * 60 * 60 * 1000
-	DefaultNoProgressTimeoutMS               = 90 * 60 * 1000
+	DefaultNoProgressTimeoutMS               = 90 * 60 * 1000 // Retained only to preserve existing policy IDs.
 
 	DefaultPollingIntervalMS               = 120000
 	DefaultRefreshFailureThreshold         = 3
@@ -132,13 +136,16 @@ const (
 )
 
 type Workflow struct {
-	Config       Config
-	Prompt       string
-	SharedPrompt string
-	AgentsPrompt string
-	SourceHash   string
-	Overlay      WorkflowOverlay
-	Definition   ProjectDefinition
+	machinePrompt     string
+	Authored          *policy.Authored
+	DefinitionSources *ProjectDefinitionSources
+	Config            Config
+	Prompt            string
+	SharedPrompt      string
+	AgentsPrompt      string
+	SourceHash        string
+	Overlay           WorkflowOverlay
+	Definition        ProjectDefinition
 }
 
 type WorkflowOverlay struct {
@@ -148,6 +155,7 @@ type WorkflowOverlay struct {
 
 type Config struct {
 	Policy            policy.Descriptor    `yaml:"-" json:"-"`
+	Review            Review               `yaml:"review,omitempty" json:",omitzero"`
 	Runners           Runners              `yaml:"runners,omitempty"`
 	Identity          Identity             `yaml:"identity,omitempty"`
 	ActiveHours       activehours.Config   `yaml:"active_hours,omitempty"`
@@ -176,7 +184,12 @@ type Config struct {
 	Operator          Operator             `yaml:"operator,omitempty"`
 	BacklogAdmission  BacklogAdmission     `yaml:"backlog_admission,omitempty"`
 
-	configuredFields map[string]struct{}
+	configuredFields                    map[string]struct{}
+	scheduleOwnershipRepositoryExplicit bool
+}
+
+type Review struct {
+	Human bool `yaml:"human"`
 }
 
 type Recovery struct {
@@ -199,6 +212,7 @@ func (r Recovery) TerminalAttemptFailureLimit() int {
 }
 
 type Tracker struct {
+	legacyStates                bool
 	Kind                        string                `yaml:"kind"`
 	Endpoint                    string                `yaml:"endpoint"`
 	APIKey                      string                `yaml:"api_key"`
@@ -224,9 +238,10 @@ type Tracker struct {
 	StatusLabelPrefix           string                `yaml:"status_label_prefix,omitempty"`
 	WriteProbeIssue             string                `yaml:"write_probe_issue,omitempty"`
 	Assignee                    string                `yaml:"assignee"`
-	ActiveStates                []string              `yaml:"active_states"`
-	ObservedStates              []string              `yaml:"observed_states"`
-	TerminalStates              []string              `yaml:"terminal_states"`
+	Lanes                       []Lane                `yaml:"lanes"`
+	ActiveStates                []string              `yaml:"-"`
+	ObservedStates              []string              `yaml:"-"`
+	TerminalStates              []string              `yaml:"-"`
 	StateMap                    StringOrMap           `yaml:"state_map"`
 	PriorityMap                 StringOrMap           `yaml:"priority_map"`
 	DependencyAutoUnblock       DependencyAutoUnblock `yaml:"dependency_auto_unblock"`
@@ -312,6 +327,7 @@ type Workpad struct {
 type Deliverable struct {
 	Kind                  string `yaml:"kind"`
 	MergeMethod           string `yaml:"merge_method,omitempty"`
+	GitHubPullRequest     bool   `yaml:"github_pull_request,omitempty" json:"github_pull_request,omitempty"`
 	OutputRoot            string `yaml:"output_root,omitempty"`
 	ReviewURL             string `yaml:"review_url,omitempty"`
 	mergeMethodConfigured bool
@@ -323,13 +339,24 @@ type DeliverableElicitationRule struct {
 	Repository string `yaml:"repository"`
 }
 
+type WorkerDefaults struct {
+	AllowLocalBinding *bool `yaml:"allow_local_binding,omitempty"`
+}
+
 type Worker struct {
-	SSHHosts                       []string `yaml:"ssh_hosts"`
-	MaxConcurrentAgentsPerHost     *int     `yaml:"max_concurrent_agents_per_host"`
-	GitHubToken                    string   `yaml:"github_token,omitempty"`
-	GitHubTokenResolutionTimeoutMS int      `yaml:"github_token_resolution_timeout_ms"`
-	GitHubRESTMinReserve           int      `yaml:"github_rest_min_remaining_reserve"`
-	GitHubRESTPollIntervalMS       int      `yaml:"github_rest_poll_interval_ms"`
+	ExtraNetworkDomains []string `yaml:"extra_network_domains,omitempty" json:"ExtraNetworkDomains,omitempty"`
+	AllowLocalBinding   *bool    `yaml:"allow_local_binding,omitempty" json:"AllowLocalBinding,omitempty"`
+	localDefaults       *WorkerDefaults
+
+	ComputeRates                   map[string]compute.Rates `yaml:"compute_rates,omitempty" json:"ComputeRates,omitempty"`
+	SSHHosts                       []string                 `yaml:"ssh_hosts"`
+	HostSelection                  string                   `yaml:"host_selection,omitempty" json:"HostSelection,omitempty"`
+	HostCaps                       map[string]int           `yaml:"host_caps,omitempty" json:"HostCaps,omitempty"`
+	MaxConcurrentAgentsPerHost     *int                     `yaml:"max_concurrent_agents_per_host"`
+	GitHubToken                    string                   `yaml:"github_token,omitempty"`
+	GitHubTokenResolutionTimeoutMS int                      `yaml:"github_token_resolution_timeout_ms"`
+	GitHubRESTMinReserve           int                      `yaml:"github_rest_min_remaining_reserve"`
+	GitHubRESTPollIntervalMS       int                      `yaml:"github_rest_poll_interval_ms"`
 }
 
 type Agent struct {
@@ -338,7 +365,7 @@ type Agent struct {
 	MaxTurns                     int                          `yaml:"max_turns"`
 	MaxTurnDurationMS            int                          `yaml:"max_turn_duration_ms"`
 	MaxSessionDurationMS         int                          `yaml:"max_session_duration_ms"`
-	NoProgressTimeoutMS          int                          `yaml:"no_progress_timeout_ms"`
+	NoProgressTimeoutMS          int                          `yaml:"no_progress_timeout_ms"` // Legacy input; ignored since the session no-progress timer was removed.
 	CheckpointIntervalMS         int                          `yaml:"checkpoint_interval_ms"`
 	MergeWorkerStartupTimeoutMS  int                          `yaml:"merge_worker_startup_timeout_ms"`
 	MergeWorkerMaxDurationMS     int                          `yaml:"merge_worker_max_duration_ms"`
@@ -417,12 +444,13 @@ type MergeFastPath struct {
 }
 
 type Agents struct {
-	Backends       []AgentBackend    `yaml:"backends"`
-	Routes         []AgentRoute      `yaml:"routes"`
-	ModelSelection ModelSelection    `yaml:"model_selection"`
-	Sources        map[string]string `yaml:"-"`
-	local          *Agents
-	pricingPath    string
+	Backends             []AgentBackend    `yaml:"backends"`
+	Routes               []AgentRoute      `yaml:"routes"`
+	ModelSelection       ModelSelection    `yaml:"-"`
+	Sources              map[string]string `yaml:"-"`
+	local                *Agents
+	pricingPath          string
+	legacyModelSelection bool
 }
 
 type AgentBackend struct {
@@ -578,6 +606,10 @@ func (c Config) USDBrakes() USDBrakes {
 
 func (c Config) ValidationWarnings() []string {
 	var warnings []string
+	warnings = append(warnings, c.Agents.ModelSelectionWarnings()...)
+	if c.Tracker.legacyStates {
+		warnings = append(warnings, LegacyLaneWarning)
+	}
 	if c.Workspace.legacyCacheStrategy {
 		warnings = append(warnings, "workspace.cache_strategy is unknown and ignored; remove it before the next release, which will reject it")
 	}
@@ -804,6 +836,11 @@ func (b *AgentBackend) decodeOptions() {
 		}
 		b.codexOptions = options
 		b.codexOptionsSet = true
+	case AgentBackendPiAgent:
+		_, err := b.decodedPiAgentOptions()
+		if err != nil {
+			b.optionsProblem = err.Error()
+		}
 	case AgentBackendClaudeCode:
 		options, err := b.decodedClaudeCodeOptions()
 		if err != nil {
@@ -945,6 +982,7 @@ func (r Release) validate(prefix string, problems *[]string) {
 
 type Hooks struct {
 	Shell        string `yaml:"shell"`
+	RunnerSetup  string `yaml:"runner_setup" json:"RunnerSetup,omitempty"`
 	AfterCreate  string `yaml:"after_create"`
 	BeforeRun    string `yaml:"before_run"`
 	AfterRun     string `yaml:"after_run"`
@@ -1264,10 +1302,12 @@ func ParseWorkflow(raw []byte) (Workflow, error) {
 
 	sum := sha256.Sum256(raw)
 	return Workflow{
-		Config:       cfg,
-		Prompt:       string(prompt),
-		SharedPrompt: string(prompt),
-		SourceHash:   hex.EncodeToString(sum[:]),
+		Authored:          &policy.Authored{Version: PolicyCanonicalizationVersion},
+		DefinitionSources: &ProjectDefinitionSources{Workflow: raw},
+		Config:            cfg,
+		Prompt:            string(prompt),
+		SharedPrompt:      string(prompt),
+		SourceHash:        hex.EncodeToString(sum[:]),
 	}, nil
 }
 
@@ -1307,10 +1347,12 @@ func ParseWorkflowOverlay(sharedRaw []byte, localRaw []byte, localPath string) (
 	combined = append(combined, localRaw...)
 	sum := sha256.Sum256(combined)
 	return Workflow{
-		Config:       cfg,
-		Prompt:       mergeWorkflowPrompts(sharedPrompt, localPrompt),
-		SharedPrompt: string(sharedPrompt),
-		SourceHash:   hex.EncodeToString(sum[:]),
+		Authored:          &policy.Authored{Version: PolicyCanonicalizationVersion},
+		DefinitionSources: &ProjectDefinitionSources{Workflow: sharedRaw, LocalWorkflow: localRaw, HasLocalWorkflow: true},
+		Config:            cfg,
+		Prompt:            mergeWorkflowPrompts(sharedPrompt, localPrompt),
+		SharedPrompt:      string(sharedPrompt),
+		SourceHash:        hex.EncodeToString(sum[:]),
 		Overlay: WorkflowOverlay{
 			Path:           strings.TrimSpace(localPath),
 			OverriddenKeys: overridden,
@@ -1362,6 +1404,11 @@ func decodeWorkflowConfig(root *yaml.Node) (Config, error) {
 		cfg.Budget.perDayMaxUSDConfigured = perDayMaxUSDConfigured
 		cfg.Budget.perIssueMaxUSDConfigured = perIssueMaxUSDConfigured
 		cfg.configuredFields = configuredFieldPaths(root)
+		// Capture the opt-in before normalization can fill a blank repository.
+		cfg.scheduleOwnershipRepositoryExplicit = strings.TrimSpace(cfg.ScheduleOwnership.Repository) != ""
+	}
+	for _, warning := range cfg.Agents.ModelSelectionWarnings() {
+		slog.Warn(warning)
 	}
 	cfg.normalize()
 	if err := cfg.validateEffectiveSandboxPolicies(); err != nil {
@@ -1500,6 +1547,7 @@ func Default() Config {
 		},
 		Worker: Worker{
 			SSHHosts:                       []string{},
+			HostSelection:                  "least_loaded",
 			GitHubTokenResolutionTimeoutMS: 15000,
 			GitHubRESTMinReserve:           1250,
 			GitHubRESTPollIntervalMS:       60000,
@@ -1538,7 +1586,7 @@ func Default() Config {
 			PrioritizeUnblockers:       true,
 			AutoPromote: AutoPromote{
 				QuietSeconds:           600,
-				OptoutLabel:            "requires-human-review",
+				OptoutLabel:            "",
 				AllowedIssueLabels:     []string{},
 				GateWaitState:          AutoPromoteGateWaitStateSource,
 				GateWaitTimeoutSeconds: DefaultAutoPromoteGateWaitTimeoutSeconds,
@@ -1651,6 +1699,9 @@ func StringValue(value string) StringOrMap {
 
 func (c *Config) Validate() error {
 	var problems []string
+	if err := isolation.ValidateExtraNetworkDomains(c.Worker.ExtraNetworkDomains); err != nil {
+		problems = append(problems, "worker.extra_network_domains: "+err.Error())
+	}
 	problems = append(problems, c.Runners.Validate()...)
 
 	problems = append(problems, c.Identity.Validate("identity")...)
@@ -1662,6 +1713,22 @@ func (c *Config) Validate() error {
 	validatePollingInterval(c.Polling.IntervalMS, &problems)
 	validatePositive("polling.refresh_failure_threshold", c.Polling.RefreshFailureThreshold, &problems)
 	c.Workspace.validate(&problems)
+	if c.Worker.HostSelection != "" && c.Worker.HostSelection != "least_loaded" && c.Worker.HostSelection != "preference" {
+		problems = append(problems, "worker.host_selection must be least_loaded or preference")
+	}
+	seenHosts := make(map[string]bool)
+	for _, host := range c.Worker.SSHHosts {
+		if host == "" || strings.TrimSpace(host) != host || strings.HasPrefix(host, "-") || strings.ContainsAny(host, " \t\r\n/\\;\"'`$") || seenHosts[host] {
+			problems = append(problems, "worker.ssh_hosts must contain unique SSH destinations or local")
+		}
+		seenHosts[host] = true
+	}
+	for host, cap := range c.Worker.HostCaps {
+		validatePositive("worker.host_caps."+host, cap, &problems)
+		if !seenHosts[host] {
+			problems = append(problems, "worker.host_caps."+host+" must name a configured worker.ssh_hosts entry")
+		}
+	}
 	if c.Worker.MaxConcurrentAgentsPerHost != nil {
 		validatePositive("worker.max_concurrent_agents_per_host", *c.Worker.MaxConcurrentAgentsPerHost, &problems)
 	}
@@ -1669,6 +1736,11 @@ func (c *Config) Validate() error {
 	validatePositive("worker.github_rest_min_remaining_reserve", c.Worker.GitHubRESTMinReserve, &problems)
 	if c.Worker.GitHubRESTPollIntervalMS < 60000 {
 		problems = append(problems, "worker.github_rest_poll_interval_ms must be greater than or equal to 60000")
+	}
+	for host, rates := range c.Worker.ComputeRates {
+		if err := rates.Validate(); err != nil {
+			problems = append(problems, "worker.compute_rates."+host+": "+err.Error())
+		}
 	}
 	c.Agent.validate("agent", &problems)
 	c.validateStopRun(&problems)
@@ -1700,11 +1772,10 @@ func (c *Config) Validate() error {
 	}
 	c.Budget.validate("budget", &problems)
 	c.Hooks.validate(&problems)
-	coordinationEndpoint := ""
-	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal {
-		coordinationEndpoint = c.Tracker.Endpoint
+	if c.Tracker.Kind == TrackerHubNative && c.ScheduleOwnership.Enabled && strings.TrimSpace(c.ScheduleOwnership.Repository) == "" {
+		problems = append(problems, "native schedule ownership requires an explicit schedule_ownership.repository to opt into GitHub coordination")
 	}
-	c.ScheduleOwnership = c.ScheduleOwnership.Normalized(c.Tracker.Repository, coordinationEndpoint)
+	c.ScheduleOwnership = c.NormalizedScheduleOwnership()
 	problems = append(problems, c.ScheduleOwnership.Validate("schedule_ownership")...)
 	states := make([]string, 0, len(c.configuredWorkflowStates()))
 	for _, state := range c.configuredWorkflowStates() {
@@ -1935,19 +2006,33 @@ func (c *Config) normalize() {
 	c.Plan = gate.EffectivePlan(c.Plan)
 	if c.Plan.Enabled {
 		c.Tracker.ObservedStates = appendStateUnique(c.Tracker.ObservedStates, c.Plan.Stop)
+		if c.Tracker.legacyStates {
+			c.Tracker.Lanes = nil
+			c.Tracker.Lanes = c.Tracker.WorkflowLanes()
+		} else if c.Tracker.Lanes != nil && !stateListContains(c.KanbanStateNames(), c.Plan.Stop) {
+			c.Tracker.Lanes = append(c.Tracker.Lanes, Lane{Name: c.Plan.Stop, Role: LaneHolding})
+		}
 	}
 	c.Server.Normalize()
 	c.Observability.Normalize()
 	c.Hooks.Shell = commandshell.Normalize(c.Hooks.Shell)
-	coordinationEndpoint := ""
-	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal {
-		coordinationEndpoint = c.Tracker.Endpoint
-	}
-	c.ScheduleOwnership = c.ScheduleOwnership.Normalized(c.Tracker.Repository, coordinationEndpoint)
+	c.ScheduleOwnership = c.NormalizedScheduleOwnership()
 	c.Intake.Normalize()
 	c.Retro.Normalize()
 	c.Routines = NormalizeRoutines(c.Routines)
 	c.BacklogAdmission.Normalize()
+}
+
+func (c Config) NormalizedScheduleOwnership() scheduleowner.Config {
+	endpoint := ""
+	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal {
+		endpoint = c.Tracker.Endpoint
+	}
+	repository := c.Tracker.Repository
+	if c.Tracker.Kind == TrackerHubNative {
+		repository = ""
+	}
+	return c.ScheduleOwnership.Normalized(repository, endpoint)
 }
 
 func (c Config) SchedulersEnabled() bool {
@@ -1960,6 +2045,16 @@ func (c Config) SchedulersEnabled() bool {
 		}
 	}
 	return false
+}
+
+// ForNativeTracker applies a Hub mapping without carrying an implicit GitHub
+// coordination repository from a committed GitHub workflow into native mode.
+func (c Config) ForNativeTracker() Config {
+	c.Tracker.Kind = TrackerHubNative
+	if c.configuredFields != nil && !c.scheduleOwnershipRepositoryExplicit {
+		c.ScheduleOwnership.Repository = ""
+	}
+	return c
 }
 
 func (c *Config) validateTracker(problems *[]string) {
@@ -1982,18 +2077,23 @@ func (c *Config) validateTracker(problems *[]string) {
 		*problems = append(*problems, "tracker.kind must be one of github, github_local, hub_native, linear, memory, local_sqlite")
 	}
 
-	validateStateList("tracker.active_states", c.Tracker.ActiveStates, problems)
-	validateStateList("tracker.observed_states", c.Tracker.ObservedStates, problems)
-	validateStateList("tracker.terminal_states", c.Tracker.TerminalStates, problems)
+	if c.Tracker.Lanes != nil {
+		if err := validateLanes(c.Tracker.Lanes); err != nil {
+			*problems = append(*problems, err.Error())
+		}
+	}
+	validateStateList(c.Tracker.roleField(LaneActive), c.Tracker.ActiveStates, problems)
+	validateStateList(c.Tracker.roleField(LaneHolding), c.Tracker.ObservedStates, problems)
+	validateStateList(c.Tracker.roleField(LaneTerminal), c.Tracker.TerminalStates, problems)
 	validateStateMap("tracker.state_map", c.Tracker.StateMap, problems)
 	validatePriorityMap("tracker.priority_map", c.Tracker.PriorityMap, problems)
 	*problems = append(*problems, c.Tracker.DependencyAutoUnblock.Validate("tracker.dependency_auto_unblock")...)
 	if c.Tracker.DependencyAutoUnblock.Enabled && !stateListContains(c.Tracker.ActiveStates, "Rework") {
-		*problems = append(*problems, "tracker.active_states must include Rework when tracker.dependency_auto_unblock.enabled is true")
+		*problems = append(*problems, c.Tracker.roleField(LaneActive)+" must include Rework when tracker.dependency_auto_unblock.enabled is true")
 	}
 	*problems = append(*problems, c.Tracker.BlockedRecovery.Validate("tracker.blocked_recovery")...)
 	if c.Tracker.BlockedRecovery.Enabled && !stateListContains(c.Tracker.ActiveStates, c.Tracker.BlockedRecovery.TargetState) {
-		*problems = append(*problems, "tracker.active_states must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true")
+		*problems = append(*problems, c.Tracker.roleField(LaneActive)+" must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true")
 	}
 	*problems = append(*problems, c.Tracker.BlockerAutoPromote.Validate("tracker.blocker_auto_promote")...)
 	validatePositive("tracker.http_max_idle_conns", c.Tracker.HTTPMaxIdleConns, problems)
@@ -2053,7 +2153,7 @@ func (c *Config) validateStopRun(problems *[]string) {
 		*problems = append(*problems, "agent.stop_run.target_state must not be a terminal state")
 	}
 	if !stateListContains(c.Tracker.ObservedStates, target) {
-		*problems = append(*problems, "agent.stop_run.target_state must be included in tracker.observed_states")
+		*problems = append(*problems, "agent.stop_run.target_state must be included in "+c.Tracker.roleField(LaneHolding))
 	}
 }
 
@@ -2391,6 +2491,14 @@ func (a *Agents) normalize() {
 		if backend.Command == "" && backend.Kind == AgentBackendClaudeCode {
 			backend.Command = defaultClaudeCodeCommand
 		}
+		if backend.Kind == AgentBackendPiAgent {
+			if backend.Protocol == "" {
+				backend.Protocol = "rpc"
+			}
+			if backend.Command == "" {
+				backend.Command = "pi"
+			}
+		}
 		backend.decodeOptions()
 	}
 	for index := range a.Routes {
@@ -2438,14 +2546,18 @@ func (a *Agents) validate(problems *[]string) {
 		switch backend.Kind {
 		case "":
 			*problems = append(*problems, "agents.backends.kind is required")
-		case AgentBackendCodex, AgentBackendClaudeCode:
+		case AgentBackendCodex, AgentBackendClaudeCode, AgentBackendPiAgent:
 		default:
-			*problems = append(*problems, "agents.backends.kind must be one of codex, claude_code")
+			*problems = append(*problems, "agents.backends.kind must be one of codex, claude_code, pi_agent")
 		}
 		switch backend.Kind {
 		case AgentBackendCodex:
 			if backend.Protocol != defaultCodexProtocol {
 				*problems = append(*problems, "agents.backends.protocol must be app-server for codex")
+			}
+		case AgentBackendPiAgent:
+			if backend.Protocol != "rpc" {
+				*problems = append(*problems, "agents.backends.protocol must be rpc for pi_agent")
 			}
 		case AgentBackendClaudeCode:
 			if backend.Protocol != defaultClaudeCodeProtocol {
@@ -2492,6 +2604,13 @@ func normalizeAgentRouteRole(role string) string {
 
 func (b AgentBackend) validateOptions(prefix string, problems *[]string) {
 	switch b.Kind {
+	case AgentBackendPiAgent:
+		options, err := b.decodedPiAgentOptions()
+		if err != nil {
+			*problems = append(*problems, prefix+" must decode for pi_agent: "+err.Error())
+			return
+		}
+		options.validate(prefix, problems)
 	case AgentBackendCodex:
 		options, err := b.decodedCodexOptions()
 		if err != nil {
@@ -2715,9 +2834,6 @@ func validatePriorityValues(field string, priorities []int, problems *[]string) 
 func (a *AutoPromote) validate(prefix string, problems *[]string) {
 	if a.QuietSeconds < 0 {
 		*problems = append(*problems, prefix+".quiet_seconds must be greater than or equal to 0")
-	}
-	if strings.TrimSpace(a.OptoutLabel) == "" {
-		*problems = append(*problems, prefix+".optout_label must not be blank")
 	}
 	for _, label := range a.AllowedIssueLabels {
 		if strings.TrimSpace(label) == "" {
@@ -2951,7 +3067,7 @@ func (c Config) KanbanAllowedTransitionTargets(source string) []string {
 	if len(states) == 0 {
 		return nil
 	}
-	if c.defaultKanbanTransitionRestricted(source) {
+	if c.Tracker.Kind != TrackerHubNative && c.defaultKanbanTransitionRestricted(source) {
 		targets := defaultKanbanExceptionTargets(states)
 		if sameKanbanPolicyState(source, "Rework") {
 			targets = append(targets, "Merging")
@@ -2978,9 +3094,9 @@ func (c Config) KanbanStateNames() []string {
 			states = append(states, value)
 		}
 	}
-	add(c.Tracker.ObservedStates...)
-	add(c.Tracker.ActiveStates...)
-	add(c.Tracker.TerminalStates...)
+	for _, lane := range c.Tracker.WorkflowLanes() {
+		add(lane.Name)
+	}
 	return states
 }
 
@@ -3144,6 +3260,9 @@ func (s StalenessObservability) validate(problems *[]string) {
 
 func (h *Hooks) validate(problems *[]string) {
 	validatePositive("hooks.timeout_ms", h.TimeoutMS, problems)
+	if h.RunnerSetup != "" && !filepath.IsLocal(h.RunnerSetup) {
+		*problems = append(*problems, "hooks.runner_setup must be a repository-relative file path")
+	}
 }
 
 func splitFrontmatter(raw []byte) ([]byte, []byte, error) {
@@ -3269,7 +3388,7 @@ func configuredFieldPaths(root *yaml.Node) map[string]struct{} {
 }
 
 func mappingValue(node *yaml.Node, key string) *yaml.Node {
-	if node.Kind != yaml.MappingNode {
+	if node == nil || node.Kind != yaml.MappingNode {
 		return nil
 	}
 
@@ -3401,7 +3520,7 @@ func defaultSkills() Skills {
 	return Skills{
 		Enabled:           true,
 		Path:              ".detent/skills",
-		MaxSkillsInPrompt: 50,
+		MaxSkillsInPrompt: skills.DefaultMaxSkillsInPrompt,
 		Creation: SkillCreation{
 			Enabled:         true,
 			MaxDraftsPerRun: 1,

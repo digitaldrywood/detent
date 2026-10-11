@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -273,6 +274,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 	finish := checkpoint
 	finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 3, "succeeded"
 	finish.Data.Handoff = nil
+	finish.Data.ProcessUsage = &procgroup.Usage{PeakMemoryBytes: 2097152, UserCPUSeconds: 1.25, SystemCPUSeconds: 0.25, WallSeconds: 3}
 	finish.Data.Usage = []tracker.NativeUsage{
 		{Provider: "codex", Model: "gpt-6-astra", Input: 3000, CachedInput: 1200, Output: 300, CostEstimate: 0.75, Currency: "USD"},
 		// A model the runner could not price is priced by the hub table:
@@ -280,6 +282,16 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 		{Provider: "claude_code", Model: "claude-opus-5", Input: 200, Output: 50},
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, finish), http.StatusOK)
+	var receipt tracker.NativeRuntimeEvidence
+	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/runtime", worker, nil), &receipt)
+	if receipt.Attempt == nil || receipt.Attempt.ProcessUsage == nil || *receipt.Attempt.ProcessUsage != *finish.Data.ProcessUsage {
+		t.Fatalf("attempt resource receipt = %+v, want %+v", receipt.Attempt, finish.Data.ProcessUsage)
+	}
+	var attempts tracker.Page[tracker.NativeAttempt]
+	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts", worker, nil), &attempts)
+	if len(attempts.Items) != 1 || attempts.Items[0].ProcessUsage == nil || *attempts.Items[0].ProcessUsage != *finish.Data.ProcessUsage {
+		t.Fatalf("attempt usage read = %+v", attempts.Items)
+	}
 	stored = read()
 	if len(stored) != 2 {
 		t.Fatalf("stored usage = %+v, want two rows", stored)
@@ -297,7 +309,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 
 func TestNativeRunEventRejectsInvalidUsage(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "usage-invalid")
+	f := newDefaultNativeFixture(t, Config{})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "work")
 	worker := f.worker(t, "worker")
@@ -362,6 +374,87 @@ func TestHostedUsageReportAccess(t *testing.T) {
 	f.usage(t, "owner", browserHostedOrganizationBase+"/usage?range=1y", http.StatusUnprocessableEntity)
 	f.usage(t, "owner", browserHostedOrganizationBase+"/usage?project=proj_missing", http.StatusNotFound)
 	f.usage(t, "", browserHostedOrganizationBase+"/usage", http.StatusUnauthorized)
+	t.Run("reports", func(t *testing.T) {
+		for _, account := range []string{"owner", "viewer"} {
+			for _, window := range []string{"24h", "48h", "7d", "30d"} {
+				var report hostedReportsReport
+				usageDecode(t, f.usage(t, account, browserHostedOrganizationBase+"/reports?project="+f.project+"&range="+window, http.StatusOK), &report)
+				if report.Analytics.ProjectID != f.project || len(report.Throughput) == 0 || len(report.Coverage) == 0 {
+					t.Fatalf("reports scope or coverage = %+v", report)
+				}
+			}
+		}
+		for _, request := range []struct {
+			account, query string
+			status         int
+		}{
+			{"", "?project=" + f.project + "&range=24h", http.StatusUnauthorized},
+			{"staff", "?project=" + f.project + "&range=24h", http.StatusForbidden},
+			{"owner", "?project=other&range=24h", http.StatusNotFound},
+			{"owner", "?project=" + f.project + "&range=1y", http.StatusUnprocessableEntity},
+		} {
+			f.usage(t, request.account, browserHostedOrganizationBase+"/reports"+request.query, request.status)
+		}
+	})
+	t.Run("diagnostics", func(t *testing.T) {
+		for _, account := range []string{"owner", "viewer"} {
+			var report diagnosticsReport
+			usageDecode(t, f.usage(t, account, browserHostedOrganizationBase+"/diagnostics?range=30d", http.StatusOK), &report)
+			if report.Findings != nil || report.Ready != nil || report.DetectorTick != nil || report.Refused != nil {
+				t.Fatalf("unrecorded diagnostics became measurements: %+v", report)
+			}
+			var slots float64
+			for _, bucket := range report.Capacity {
+				slots += bucket.Slots
+			}
+			if slots <= 0 || len(report.Coverage) != 9 {
+				t.Fatalf("missing recorded lease capacity or coverage: %+v", report)
+			}
+		}
+		f.usage(t, "", browserHostedOrganizationBase+"/diagnostics", http.StatusUnauthorized)
+		f.usage(t, "staff", browserHostedOrganizationBase+"/diagnostics", http.StatusForbidden)
+		f.usage(t, "owner", browserHostedOrganizationBase+"/diagnostics?range=1y", http.StatusUnprocessableEntity)
+		now := f.service.config.now().UTC().Add(-time.Minute)
+		var item string
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE organization_id=? AND project_id=? ORDER BY id LIMIT 1", "org_browser_preview", f.project).Scan(&item); err != nil {
+			t.Fatal(err)
+		}
+		scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		for _, outcome := range []string{"ready", "skipped"} {
+			data := tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: outcome, Reason: "host_capacity", At: now}}
+			if err := appendNativeHistory(t.Context(), tx, scope, item, "scheduler.decision", data, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime.landing',json(?)),updated_at=? WHERE id='attempt_browser_usage_0_0'`, fmt.Sprintf(`{"landed":false,"refusal_kind":"conflict","observed_at":%q}`, formatHubTime(now)), formatHubTime(now)); err != nil {
+			t.Fatal(err)
+		}
+		var report diagnosticsReport
+		usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/diagnostics?range=24h", http.StatusOK), &report)
+		if report.Ready == nil || *report.Ready != 1 || report.Skipped == nil || *report.Skipped != 1 || len(report.SkipReasons) != 1 || report.SkipReasons[0].Reason != "host_capacity" {
+			t.Fatalf("recorded scheduler decisions missing: %+v", report)
+		}
+		if len(report.Refused) != 1 || report.Refused[0].Reason != "conflict" || report.Refused[0].Count != 1 || report.Coverage[7].Observed == nil || *report.Coverage[7].Observed != 1 {
+			t.Fatalf("recorded landing refusal missing: %+v", report)
+		}
+		t.Run("repeated refusal remains counted after retry storm classification", func(t *testing.T) {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime.landing',json(?)),updated_at=?`, fmt.Sprintf(`{"landed":false,"refusal_kind":"conflict","observed_at":%q}`, formatHubTime(now)), formatHubTime(now)); err != nil {
+				t.Fatal(err)
+			}
+			usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/diagnostics?range=24h", http.StatusOK), &report)
+			if len(report.Refused) != 1 || report.Refused[0].Count != browserUsageDays*len(browserUsageEntries) {
+				t.Fatalf("repeated refusal missing: %+v", report.Refused)
+			}
+		})
+	})
 }
 
 // The endpoint aggregates the rows the store holds: the seeded days fold

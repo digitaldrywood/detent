@@ -37,11 +37,6 @@ var (
 	// that keeps failing repeats every backoff, so logging each one buries the
 	// runner log; one line a minute says the same thing and carries the count.
 	conversationPollWarnInterval = time.Minute
-	// conversationBindTimeout bounds the bind every native run makes before
-	// its first turn. The runner cannot tell a conversation-linked run from
-	// an ordinary one before asking, so a slow hub may delay an ordinary run
-	// by at most this much; a bind that fails runs without a conversation.
-	conversationBindTimeout = 2 * time.Second
 	// conversationMaxQueuedBytes bounds the event text a session holds while
 	// posting is slow or failing. Past it the oldest streamed deltas are
 	// dropped; every other event is kept.
@@ -75,6 +70,7 @@ type ConversationBindRequest struct {
 // bounded transcript for the runner to prepend as data.
 type ConversationBindResponse struct {
 	ConversationID string `json:"conversation_id"`
+	Continuation   *bool  `json:"continuation"`
 	// Preferences are the conversation's turn preferences: the runner
 	// applies the explicit ones to every turn it runs for this attempt.
 	Preferences runner.ConversationPreferences `json:"preferences"`
@@ -220,14 +216,12 @@ func (e *nativeExecution) BindConversation(ctx context.Context, capabilities run
 		return nil, runner.ErrNoConversation
 	}
 	identity := ConversationIdentity{LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken, AttemptID: e.data.AttemptID}
-	bindCtx, cancel := context.WithTimeout(ctx, conversationBindTimeout)
-	response, err := e.claim.source.client.BindConversation(bindCtx, e.claim.lease.WorkItemID, ConversationBindRequest{ConversationIdentity: identity, RunID: e.data.RunID, Capabilities: capabilities, ThreadID: strings.TrimSpace(resumeThreadID)})
-	cancel()
+	response, err := e.claim.source.client.BindConversation(ctx, e.claim.lease.WorkItemID, ConversationBindRequest{ConversationIdentity: identity, RunID: e.data.RunID, Capabilities: capabilities, ThreadID: strings.TrimSpace(resumeThreadID)})
 	if err != nil {
 		return nil, err
 	}
 	e.mu.Lock()
-	e.conversation = true
+	e.conversationContinuation = response.Continuation == nil || *response.Continuation
 	e.mu.Unlock()
 	logger := slog.Default().With("work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID)
 	return newConversationSession(ctx, e.claim.source.client, e.claim.lease.WorkItemID, identity, response, e.leaseCheck, logger), nil

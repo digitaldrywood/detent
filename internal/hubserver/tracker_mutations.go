@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -39,13 +40,13 @@ func (d *database) Claim(ctx context.Context, request tracker.ClaimRequest) (lea
 	if err != nil {
 		return tracker.Lease{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := d.commit(ctx, tx); err != nil {
 		return tracker.Lease{}, fmt.Errorf("commit hub claim: %w", err)
 	}
 	return lease, nil
 }
 
-func (d *database) claimInTransaction(ctx context.Context, tx *sql.Tx, request tracker.ClaimRequest, now time.Time) (tracker.Lease, error) {
+func (d *database) claimInTransaction(ctx context.Context, tx *sql.Tx, request tracker.ClaimRequest, now time.Time, exposures ...budget.CostExposure) (tracker.Lease, error) {
 	if err := requireWorkItem(ctx, tx, request.WorkItemID); err != nil {
 		return tracker.Lease{}, err
 	}
@@ -60,6 +61,9 @@ func (d *database) claimInTransaction(ctx context.Context, tx *sql.Tx, request t
 	}
 	if found && current.session.ExpiresAt.After(now) {
 		if current.session.Machine.ID == request.MachineID && current.session.SessionID == request.SessionID {
+			if err := checkMonthlyLease(ctx, tx, current, now); err != nil {
+				return tracker.Lease{}, err
+			}
 			return leaseFromRecord(current), nil
 		}
 		return tracker.Lease{}, fmt.Errorf("%w: work item %d is held by lease %s", tracker.ErrLeaseConflict, request.WorkItemID, current.session.ID)
@@ -92,6 +96,47 @@ func (d *database) claimInTransaction(ctx context.Context, tx *sql.Tx, request t
 		}
 	}
 
+	var scope nativeScope
+	var profile string
+	if err := tx.QueryRowContext(ctx, `SELECT i.organization_id,i.project_id,p.profile FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.id=? AND i.organization_id IS NOT NULL`, request.WorkItemID).Scan(&scope.organization, &scope.project, &profile); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return tracker.Lease{}, err
+	}
+	var exposure budget.CostExposure
+	if profile == "native" {
+		if len(exposures) > 0 {
+			exposure = exposures[0]
+		} else {
+			exposure, err = monthlyClaimExposure(ctx, tx, scope, request.MachineID, false)
+			if err != nil {
+				exposureErr := err
+				exposure.RunnerAPI = true
+				orgScope := scope
+				orgScope.project = ""
+				orgPolicy, err := readMonthlyBudgetSettings(ctx, tx, orgScope)
+				if err != nil {
+					return tracker.Lease{}, err
+				}
+				projectPolicy, err := readMonthlyBudgetSettings(ctx, tx, scope)
+				if err != nil {
+					return tracker.Lease{}, err
+				}
+				if orgPolicy.Policy.Enabled || projectPolicy.Policy.Enabled {
+					return tracker.Lease{}, exposureErr
+				}
+			}
+		}
+		admitted, err := monthlyIssueAdmitted(ctx, tx, request.WorkItemID)
+		if err != nil {
+			return tracker.Lease{}, err
+		}
+		decision, err := checkMonthlyIssueBudget(ctx, tx, scope, request.WorkItemID, exposure, admitted, now)
+		if err != nil {
+			return tracker.Lease{}, err
+		}
+		if !decision.Allowed {
+			return tracker.Lease{}, providerWait("provider_capacity", monthlyBudgetRefusal(decision))
+		}
+	}
 	if err := d.checkHostedClaim(ctx, tx, now); err != nil {
 		return tracker.Lease{}, err
 	}
@@ -120,6 +165,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT revision FROM issues WHERE id = ?))`,
 	token, err := result.LastInsertId()
 	if err != nil {
 		return tracker.Lease{}, fmt.Errorf("read hub fencing token: %w", err)
+	}
+	if profile == "native" {
+		if err := recordMonthlyAdmission(ctx, tx, request.WorkItemID, tracker.LeaseID(leaseID), exposure, now); err != nil {
+			return tracker.Lease{}, err
+		}
 	}
 	if err := heartbeatMachine(ctx, tx, request.MachineID, now); err != nil {
 		return tracker.Lease{}, err
@@ -169,8 +219,9 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 	if !found {
 		return tracker.Lease{}, fmt.Errorf("%w: %s", tracker.ErrLeaseNotFound, request.LeaseID)
 	}
-	if err := requireCurrentLease(record, request.FencingToken, now); err != nil {
-		return tracker.Lease{}, err
+	if record.session.FencingToken != request.FencingToken || record.session.ReleasedAt != nil ||
+		!record.session.ExpiresAt.After(now) && (!policyRequired || len(scopes) == 0) {
+		return tracker.Lease{}, fmt.Errorf("%w: lease %s", tracker.ErrStaleFencingToken, record.session.ID)
 	}
 	if err := requireApprovedLeasePolicy(ctx, tx, request.LeaseID, policyRequired); err != nil {
 		return tracker.Lease{}, err
@@ -184,6 +235,9 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 		}
 	}
 
+	if err := checkMonthlyLease(ctx, tx, record, now); err != nil {
+		return tracker.Lease{}, err
+	}
 	expiresAt := now.Add(request.TTL)
 	if err := renewLeaseRow(ctx, tx, request.LeaseID, request.FencingToken, expiresAt, now); err != nil {
 		return tracker.Lease{}, err
@@ -191,7 +245,7 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 	if err := heartbeatMachine(ctx, tx, record.session.Machine.ID, now); err != nil {
 		return tracker.Lease{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := d.commit(ctx, tx); err != nil {
 		return tracker.Lease{}, fmt.Errorf("commit hub lease renewal: %w", err)
 	}
 	record.session.RenewedAt = now
@@ -235,7 +289,7 @@ func (d *database) Release(ctx context.Context, request tracker.ReleaseRequest) 
 	if err := heartbeatMachine(ctx, tx, record.session.Machine.ID, now); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := d.commit(ctx, tx); err != nil {
 		return fmt.Errorf("commit hub lease release: %w", err)
 	}
 	return nil
@@ -296,7 +350,7 @@ func (d *database) appendEvent(ctx context.Context, event tracker.WorkEvent, pol
 	if err := heartbeatMachine(ctx, tx, current.session.Machine.ID, now); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := d.commit(ctx, tx); err != nil {
 		return fmt.Errorf("commit hub work event: %w", err)
 	}
 	return nil
@@ -407,7 +461,7 @@ func requireUnusedSession(ctx context.Context, tx *sql.Tx, sessionID string) err
 	return fmt.Errorf("%w: session %s already belongs to lease %s", tracker.ErrLeaseConflict, sessionID, leaseID)
 }
 
-func readUnreleasedLease(ctx context.Context, tx *sql.Tx, workItemID tracker.WorkItemID) (leaseRecord, bool, error) {
+func readUnreleasedLease(ctx context.Context, tx nativeQueryer, workItemID tracker.WorkItemID) (leaseRecord, bool, error) {
 	return scanLeaseRecord(tx.QueryRowContext(ctx, `
 SELECT l.issue_id, l.lease_id, l.fencing_token, l.machine_id, m.hostname, m.display_name, l.session_id, l.acquired_at, l.renewed_at, l.expires_at, l.released_at
 FROM leases l

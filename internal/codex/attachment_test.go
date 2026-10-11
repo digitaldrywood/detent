@@ -1,13 +1,47 @@
 package codex
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
+
+func TestPrepareTurnPromptScratchFailure(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name string
+		file bool
+	}{
+		{name: "missing directory"},
+		{name: "regular file", file: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "unavailable")
+			if test.file {
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			prompt, cleanup, err := prepareTurnPrompt(strings.Repeat("x", maxTurnInputBytes), path)
+			cleanup()
+			var pathErr *os.PathError
+			if prompt != "" || !errors.As(err, &pathErr) {
+				t.Fatalf("failed prompt write returned inline input: bytes = %d, error = %v", len(prompt), err)
+			}
+			now := time.Now()
+			details, ok := ClassifyCapacityError(startupStageError(err, "turn/start", now, now, 0), nil, now)
+			if !ok || details.Kind != backendcapacity.StartupFailureKind {
+				t.Fatalf("prompt scratch failure lost instance attribution: %+v, classified = %v", details, ok)
+			}
+		})
+	}
+}
 
 // Attachment input items (decisions section 17.1). Text attachments already
 // reached the prompt as a data block before the backend is called; what the

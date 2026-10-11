@@ -5,6 +5,14 @@
     "profile": "native",
     "can_write": true,
     "can_manage_runners": true,
+    "capabilities": {
+      "terminal": false,
+      "files": false,
+      "diff": false,
+      "preview": false,
+      "exec": false,
+      "git": false
+    },
     "states": [
       { "name": "Todo", "terminal": false, "dispatchable": true, "transitions": ["In Progress"] },
       { "name": "In Progress", "terminal": false, "dispatchable": false, "transitions": ["Done"] },
@@ -42,6 +50,14 @@
     "profile": "github_compatible",
     "can_write": false,
     "can_manage_runners": false,
+    "capabilities": {
+      "terminal": false,
+      "files": false,
+      "diff": false,
+      "preview": false,
+      "exec": false,
+      "git": false
+    },
     "states": [
       { "name": "Todo", "terminal": false, "dispatchable": true, "transitions": ["Done"] },
       { "name": "Done", "terminal": true, "dispatchable": false, "transitions": [] }

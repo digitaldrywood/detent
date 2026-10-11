@@ -274,6 +274,10 @@ func TestOutboxReclaimsInterruptedProcessingAfterTimeout(t *testing.T) {
 }
 
 func TestServiceCloseCancelsAndDrainsOutboxWorker(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	for _, holdConnection := range []bool{false, true} {
@@ -441,6 +445,7 @@ func (b *blockingOutboxBackend) VerifyAndExecute(ctx context.Context, item Outbo
 func openManualOutboxService(t *testing.T, cfg Config, backend OutboxBackend) *Service {
 	t.Helper()
 	service := openTestService(t, cfg)
+	service.outbox.stop()
 	service.config.OutboxBackend = backend
 	return service
 }

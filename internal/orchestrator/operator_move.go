@@ -14,20 +14,23 @@ import (
 var ErrMissingOperatorMoveIssueID = errors.New("operator move issue id is required")
 
 type OperatorMoveRequest struct {
-	Tracker         connector.Connector
-	Attribution     provenance.Attribution
-	WriteTracker    bool
-	Reason          string
-	StateFieldID    int
-	StateFieldValue string
-	ProjectID       string
-	IssueID         string
-	Identifier      string
-	FromState       string
-	ToState         string
+	CheckIssueContract bool
+	Tracker            connector.Connector
+	Attribution        provenance.Attribution
+	Remove             bool
+	WriteTracker       bool
+	Reason             string
+	StateFieldID       int
+	StateFieldValue    string
+	ProjectID          string
+	IssueID            string
+	Identifier         string
+	FromState          string
+	ToState            string
 }
 
 type OperatorMoveResult struct {
+	ContractSatisfied    bool
 	err                  error
 	Reconciled           bool
 	BlockedCleared       bool
@@ -35,6 +38,11 @@ type OperatorMoveResult struct {
 	RetryCleared         bool
 	FailureMemoryCleared bool
 	DispatchLoopCleared  bool
+}
+
+type operatorMoveOutcome struct {
+	OperatorMoveResult
+	ready bool
 }
 
 type operatorMoveRequest struct {
@@ -73,8 +81,49 @@ func (o *Orchestrator) ReconcileOperatorMove(ctx context.Context, request Operat
 	}
 }
 
-func (o *Orchestrator) applyOperatorMove(ctx context.Context, state *State, request OperatorMoveRequest, at time.Time) OperatorMoveResult {
+func (o *Orchestrator) applyOperatorMove(ctx context.Context, state *State, request OperatorMoveRequest, at time.Time) operatorMoveOutcome {
+	if request.CheckIssueContract {
+		issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{request.IssueID})
+		if err != nil {
+			return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{err: err}}
+		}
+		for _, issue := range issues {
+			if issue.ID == request.IssueID {
+				satisfied, err := o.enforceIssueContract(ctx, state, issue, request.ToState, at)
+				return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{ContractSatisfied: satisfied, err: err}}
+			}
+		}
+		return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{err: errors.New("admission issue is unavailable")}}
+	}
+	if request.Remove {
+		if !request.WriteTracker {
+			return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{err: connector.ErrNotImplemented}}
+		}
+		unlock := o.lockLaneWrites()
+		defer unlock()
+		backend := o.connector
+		if request.Tracker != nil {
+			backend = request.Tracker
+		}
+		if request.StateFieldID > 0 {
+			clearer, ok := backend.(connector.IssueFieldClearer)
+			if !ok {
+				return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{err: connector.ErrNotImplemented}}
+			}
+			err := clearer.ClearIssueField(ctx, request.IssueID, request.StateFieldID)
+			return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{err: err, Reconciled: err == nil}}
+		}
+		remover, ok := backend.(connector.ProjectRemover)
+		if !ok {
+			return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{err: connector.ErrNotImplemented}}
+		}
+		err := remover.RemoveIssueFromProject(ctx, request.IssueID)
+		return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{err: err, Reconciled: err == nil}}
+	}
+
+	ready := false
 	if request.WriteTracker {
+
 		owner := o
 		ownerState := state
 		if request.Tracker != nil {
@@ -82,15 +131,17 @@ func (o *Orchestrator) applyOperatorMove(ctx context.Context, state *State, requ
 			ownerState = nil
 		}
 		issue := connector.Issue{ID: request.IssueID, Identifier: request.Identifier, State: request.FromState}
-		if current, found := findRecoveryIssue(ownerState, issue); found {
+		current, currentKnown := findRecoveryIssue(ownerState, issue)
+		if currentKnown {
 			issue = current
 		} else {
 			issues, err := owner.connector.FetchIssueStatesByIDs(ctx, []string{issue.ID})
 			if err != nil {
-				return OperatorMoveResult{err: err}
+				return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{err: err}}
 			}
 			for _, current := range issues {
 				if current.ID == issue.ID {
+					currentKnown = true
 					issue = current
 					break
 				}
@@ -105,12 +156,25 @@ func (o *Orchestrator) applyOperatorMove(ctx context.Context, state *State, requ
 		if reason == "operator_move" && metadata.Provenance.Origin == "" {
 			metadata.Provenance = provenance.Prepare(provenance.Attribution{Origin: provenance.OriginHuman})
 		}
-		if err := owner.updateIssueStateByIDStrictWithMetadata(ctx, ownerState, issue.ID, issue, request.ToState, at, reason, metadata); err != nil {
-			return OperatorMoveResult{err: err}
+		scheduledAdmission := reason == "backlog_admission" || reason == "intake" || reason == "routine" || reason == "retro"
+		if scheduledAdmission {
+			o.dispatchStartMu.Lock()
+			if !o.LocalIntakeEnabled() {
+				o.dispatchStartMu.Unlock()
+				return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{err: errors.New("local intake disabled")}}
+			}
+		}
+		err := owner.updateIssueStateByIDStrictWithMetadata(ctx, ownerState, issue.ID, issue, request.ToState, at, reason, metadata)
+		if scheduledAdmission {
+			o.dispatchStartMu.Unlock()
+		}
+		if err != nil {
+			return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{err: err}}
 		}
 		if request.Tracker != nil {
-			return OperatorMoveResult{Reconciled: true}
+			return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{Reconciled: true}}
 		}
+		ready = currentKnown && normalizeState(issue.State) != normalizeState(request.ToState) && stateIn(request.ToState, o.cfg.ActiveStates)
 		if state != nil && normalizeState(issue.State) != normalizeState(request.ToState) {
 			if running, ok := state.Running[issue.ID]; ok {
 				applyIssueStateSnapshot(&running.Issue, request.ToState, at)
@@ -120,7 +184,7 @@ func (o *Orchestrator) applyOperatorMove(ctx context.Context, state *State, requ
 			}
 		}
 	}
-	return o.handleOperatorMove(state, request, at)
+	return operatorMoveOutcome{OperatorMoveResult: o.handleOperatorMove(state, request, at), ready: ready}
 }
 
 func (o *Orchestrator) handleOperatorMove(state *State, request OperatorMoveRequest, at time.Time) OperatorMoveResult {
@@ -202,13 +266,6 @@ func (o *Orchestrator) operatorMoveTargetConfigured(state string) bool {
 
 func clearProjectFailureBreakerIssue(breaker *ProjectFailureBreaker, issueID string) bool {
 	if breaker == nil || strings.TrimSpace(issueID) == "" {
-		return false
-	}
-	if breaker.PreTurn {
-		if breaker.CanaryIssueID == strings.TrimSpace(issueID) {
-			breaker.CanaryIssueID = ""
-			return true
-		}
 		return false
 	}
 	changed := false

@@ -1,13 +1,15 @@
 # In-repository invariant checks
 
-Per Cory's September 11 scope decision on #2417, this is repository-local
-behavioral enforcement. Detent uses the operator's own GitHub login. No separate
-account, token, App, server-side trust boundary, or approval workflow is required.
+This is repository-local behavioral enforcement. Detent uses the operator's
+own GitHub login. No separate account, token, App, server-side trust boundary,
+or approval workflow is required.
 This tool does not protect itself against edits or authenticate policy exceptions.
 
-Run `go run ./tools/invariantcheck` (also `make check-invariants`). `make check`
-and CI run this gate. Doctor runs the same command for configured source
-repositories containing `invariants/policy.json`; an absent manifest means the
+Run `go run ./tools/invariantcheck` (also `make check-invariants`). The optional
+`make check` targets and scheduled CI include this check; ordinary submission
+and merge follow [AGENTS.md validation](../AGENTS.md#validation). Doctor runs
+the same command for configured source repositories containing
+`invariants/policy.json`; an absent manifest means the
 repository has not opted in, and produces no invariant success claim.
 
 The only option is `-policy <path>`, defaulting to `invariants/policy.json`.
@@ -21,9 +23,12 @@ human-readable diagnostics; consumers should use the exit code.
 
 The [repository invariants](../docs/invariants.md) register package-boundary,
 reason-vocabulary, retired-mechanism, and workflow tests from `internal/invariants`
-through this same interface. The current manifest reuses question persistence/concurrency,
-scoped replies, independent rework, bounded retry, retained work, and release and
-update verification tests. These tests exercise specific behavior; they cannot
-prove every natural-language product decision or prevent an operator credential
+through this same interface. The manifest names the behavioral tests to execute;
+it does not require or inspect a per-change `docs/invariants.md` edit. Only a
+change to an invariant's rule or its enforcing check edits that document.
+Per-change rationale, evidence and verification belong in the Change/PR
+description or issue comments through the authorized tracker owner (INV-16).
+These tests exercise specific behavior; they cannot prove every
+natural-language product decision or prevent an operator credential
 from changing repository controls. Release and deployment paths retain their
-existing enforcement; this issue adds no server-side guarantee.
+existing enforcement.

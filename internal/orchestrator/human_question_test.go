@@ -15,6 +15,10 @@ import (
 )
 
 func TestINV14DispatchQuestionTool(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tc := range []struct {
 		name, gateKind, passState string
@@ -52,6 +56,10 @@ func TestINV14DispatchQuestionTool(t *testing.T) {
 }
 
 func TestINV14LegacyQuestionRowDispatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tc := range []struct {
 		name, gateKind, commentID string

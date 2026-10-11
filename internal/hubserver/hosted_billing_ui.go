@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,13 +18,15 @@ import (
 )
 
 type hostedBillingReport struct {
-	ChatUsage      chatUsageSummary               `json:"chat_usage"`
-	OrganizationID string                         `json:"organization_id"`
-	State          hostedBillingState             `json:"state"`
-	Entitlement    HostedEntitlement              `json:"entitlement"`
-	ReconciledAt   string                         `json:"reconciled_at"`
-	PendingEvents  int64                          `json:"pending_events"`
-	Audit          []templates.HostedBillingAudit `json:"recent_audit"`
+	ChargedAIMicros int64                          `json:"charged_ai_micros"`
+	AICredits       *aiCreditView                  `json:"ai_credits,omitempty"`
+	ChatUsage       chatUsageSummary               `json:"chat_usage"`
+	OrganizationID  string                         `json:"organization_id"`
+	State           hostedBillingState             `json:"state"`
+	Entitlement     HostedEntitlement              `json:"entitlement"`
+	ReconciledAt    string                         `json:"reconciled_at"`
+	PendingEvents   int64                          `json:"pending_events"`
+	Audit           []templates.HostedBillingAudit `json:"recent_audit"`
 }
 
 func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport, error) {
@@ -40,6 +43,17 @@ func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport,
 	report.ChatUsage, err = s.database.chatUsageSummary(ctx, s.database.hostedOrganization, chatBillingWindow(s.config.now(), report.State.Snapshot), nil)
 	if err != nil {
 		return report, err
+	}
+	if s.database.aiCreditMode != "" {
+		report.AICredits, err = s.readAICredits(ctx)
+		if err != nil {
+			return report, err
+		}
+		window := report.ChatUsage.Range
+		if err := s.database.db.QueryRowContext(ctx, `SELECT coalesce(-sum(amount_micros),0) FROM ai_credit_transactions
+ WHERE organization_id=? AND mode=? AND kind='usage' AND recorded_at>=? AND recorded_at<?`, s.database.hostedOrganization, s.database.aiCreditMode, window.From.UnixMicro(), window.To.UnixMicro()).Scan(&report.ChargedAIMicros); err != nil {
+			return report, err
+		}
 	}
 	var checked sql.NullString
 	err = s.database.db.QueryRowContext(ctx, "SELECT reconciled_at FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&checked)
@@ -75,7 +89,7 @@ func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport,
 }
 
 func (s *Service) hostedBillingExport(c echo.Context) error {
-	credential, err := s.hostedBillingOwner(c)
+	credential, err := s.hostedBillingOwner(c.Request().Context(), c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -90,7 +104,7 @@ func (s *Service) hostedBillingExport(c echo.Context) error {
 }
 
 func (s *Service) hostedBillingPage(c echo.Context) error {
-	credential, err := s.hostedBillingOwner(c)
+	credential, err := s.hostedBillingOwner(c.Request().Context(), c)
 	if err != nil {
 		return s.hostedError(c, http.StatusForbidden, "Billing requires an organization owner without support impersonation")
 	}
@@ -109,9 +123,27 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 		used, limit := report.Entitlement.Usage[name], report.Entitlement.Allowances[name]
 		data.Allowances = append(data.Allowances, templates.HostedAllowanceRow{Label: strings.ReplaceAll(name, "_", " "), Consumption: strconv.FormatInt(used, 10), Allowance: strconv.FormatInt(limit, 10), Remaining: strconv.FormatInt(max(limit-used, 0), 10), OverLimit: used > limit})
 	}
+	if credits := report.AICredits; credits != nil {
+		data.AICredits = &templates.HostedAICredits{Returned: c.QueryParam("credits") == "returned", Balance: fmt.Sprintf("$%.6f USD", float64(credits.BalanceMicros)/1000000), Enabled: credits.AutoEnabled, Threshold: strconv.FormatInt(credits.ThresholdCents, 10), PriceID: credits.PriceID, Failure: credits.Failure, InFlight: credits.InFlight, CanAutoFund: credits.CanAutoFund}
+		for _, pack := range credits.Packs {
+			data.AICredits.Packs = append(data.AICredits.Packs, templates.HostedBillingPrice{ID: pack.PriceID, Label: fmt.Sprintf("%s · $%.2f USD", pack.Label, float64(pack.USDCents)/100)})
+		}
+		for _, item := range credits.History {
+			summary := fmt.Sprintf("$%.6f USD", float64(item.AmountMicros)/1000000)
+			if item.Kind == "complimentary" {
+				summary += " · " + item.Actor + " · " + item.Reason
+			}
+			data.AICredits.History = append(data.AICredits.History, templates.HostedBillingAudit{Action: item.Kind, Summary: summary, At: item.At.Format(time.RFC3339)})
+		}
+	}
 	data.BillingStatus, data.BillingMessage = hostedBillingMessage(report.State, now)
 	if (report.State.Status == "free" || report.State.Status == "") && report.Entitlement.EffectiveBase.ID != "free" {
-		data.BillingStatus, data.BillingMessage = "Complimentary access", "Your existing plan access is complimentary. No paid subscription is active."
+		if report.Entitlement.EffectiveBase.ID == "payment_pending" {
+			data.BillingStatus, data.BillingMessage = "Payment pending", "Complete checkout to activate this organization's paid plan."
+			data.PlanPrice = "Paid access starts after checkout"
+		} else {
+			data.BillingStatus, data.BillingMessage = "Complimentary access", "Your existing plan access is complimentary. No paid subscription is active."
+		}
 	}
 	data.BillingAudit = report.Audit
 	data.BillingCheckedAt = report.ReconciledAt
@@ -138,8 +170,9 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 	if cfg := s.config.Hosted.Billing; cfg != nil {
 		data.BillingEnabled = true
 		data.BillingCanPurchase = report.State.Snapshot.SubscriptionID == "" && report.State.Status != "multiple_subscriptions"
+		data.BillingCheckoutPrice = c.QueryParam("checkout_price")
 		for _, price := range cfg.Prices {
-			data.BillingPrices = append(data.BillingPrices, templates.HostedBillingPrice{ID: price.PriceID, Label: s.hostedPriceLabel(price)})
+			data.BillingPrices = append(data.BillingPrices, templates.HostedBillingPrice{ID: price.PriceID, Label: s.hostedPriceLabel(c.Request().Context(), price)})
 		}
 	}
 	return s.renderHosted(c, http.StatusOK, data)
@@ -183,14 +216,36 @@ type hostedBillingPriceView struct {
 
 type hostedBillingView struct {
 	hostedBillingReport
+	ComparisonPlans []hostedComparisonPlan   `json:"comparison_plans"`
 	Prices          []hostedBillingPriceView `json:"prices"`
 	CanCheckout     bool                     `json:"can_checkout"`
 	CanManage       bool                     `json:"can_manage"`
 	CheckoutPending bool                     `json:"checkout_pending"`
 }
 
+type hostedComparisonPlan struct {
+	HostedPlan
+	PriceID string `json:"price_id"`
+}
+
+type hostedBillingUsageView struct {
+	OrganizationID  string                 `json:"organization_id"`
+	RenewsAt        time.Time              `json:"renews_at"`
+	ChatUsage       chatUsageSummary       `json:"chat_usage"`
+	ChargedAIMicros int64                  `json:"charged_ai_micros"`
+	AICredits       *aiCreditView          `json:"ai_credits,omitempty"`
+	ComparisonPlans []hostedComparisonPlan `json:"comparison_plans"`
+	CanCheckout     bool                   `json:"can_checkout"`
+	CanManage       bool                   `json:"can_manage"`
+	CanBuyCredits   bool                   `json:"can_buy_credits"`
+	CheckoutPending bool                   `json:"checkout_pending"`
+}
+
 func (s *Service) hostedBillingJSON(c echo.Context) error {
-	credential, err := s.hostedBillingOwner(c)
+	if c.QueryParam("view") == "usage" {
+		return s.hostedBillingUsageJSON(c)
+	}
+	credential, err := s.hostedBillingOwner(c.Request().Context(), c)
 	if err != nil {
 		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Billing requires an organization owner without support impersonation"})
 	}
@@ -198,14 +253,83 @@ func (s *Service) hostedBillingJSON(c echo.Context) error {
 	if err := s.hostedAudit(ctx, credential.Hosted, "billing_viewed", c.Path(), "", http.StatusOK); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	report, err := s.hostedBillingReport(ctx)
+	view, err := s.readBillingView(ctx)
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "billing_unavailable", Message: "Billing information is temporarily unavailable"})
 	}
+
+	return c.JSON(http.StatusOK, view)
+}
+
+func (s *Service) hostedBillingUsageJSON(c echo.Context) error {
+	credential, err := s.hostedAdministrator(c)
+	if err != nil {
+		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Plan and usage require owner or admin access"})
+	}
+	view, err := s.readBillingView(c.Request().Context())
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "billing_unavailable", Message: "Billing usage is temporarily unavailable"})
+	}
+	canBill := credential.HostedRole == "owner" && credential.Hosted.SupportActor == ""
+	if view.AICredits != nil {
+		view.AICredits.History = []aiCreditTransaction{}
+		view.AICredits.CanAutoFund = false
+	}
+	renewsAt := time.Time{}
+	subscription := view.State.Snapshot
+	if (subscription.Status == "active" || subscription.Status == "trialing") && !subscription.CancelAtPeriodEnd && subscription.CancelAt.IsZero() {
+		renewsAt = subscription.PeriodEnd
+	}
+	return c.JSON(http.StatusOK, hostedBillingUsageView{
+		OrganizationID: view.OrganizationID, RenewsAt: renewsAt,
+		ChatUsage: view.ChatUsage, ChargedAIMicros: view.ChargedAIMicros, AICredits: view.AICredits,
+		ComparisonPlans: view.ComparisonPlans, CanCheckout: canBill && view.CanCheckout,
+		CanManage:       canBill && view.CanManage,
+		CanBuyCredits:   canBill && s.config.Hosted.Billing != nil && !s.config.Hosted.Billing.CheckoutDisabled && view.AICredits != nil && len(view.AICredits.Packs) > 0,
+		CheckoutPending: view.CheckoutPending,
+	})
+}
+
+func (s *Service) hostedPriceLabel(ctx context.Context, price HostedBillingPrice) string {
+	plan, err := readHostedPlan(ctx, s.database.db, price.Plan)
+	if err != nil || plan.MonthlyUSDCents == nil {
+		return price.Label
+	}
+	return plan.Name + " · " + hostedPlanPrice(plan.MonthlyUSDCents)
+}
+
+func (s *Service) readBillingView(ctx context.Context) (hostedBillingView, error) {
+	report, err := s.hostedBillingReport(ctx)
+	if err != nil {
+		return hostedBillingView{}, err
+	}
+
 	view := hostedBillingView{hostedBillingReport: report, Prices: []hostedBillingPriceView{}}
+	view.ComparisonPlans = []hostedComparisonPlan{}
+	if s.database.hostedPlans != nil {
+		for _, configured := range s.database.hostedPlans.Plans {
+			if !slices.Contains([]string{"starter", "growth", "scale"}, configured.ID) {
+				continue
+			}
+			plan, err := readHostedPlan(ctx, s.database.db, configured.PlanReference)
+			if err != nil {
+				return hostedBillingView{}, err
+			}
+			comparison := hostedComparisonPlan{HostedPlan: plan}
+			if cfg := s.config.Hosted.Billing; cfg != nil {
+				for _, price := range cfg.Prices {
+					if price.Plan == plan.PlanReference {
+						comparison.PriceID = price.PriceID
+						break
+					}
+				}
+			}
+			view.ComparisonPlans = append(view.ComparisonPlans, comparison)
+		}
+	}
 	if cfg := s.config.Hosted.Billing; cfg != nil {
 		for _, price := range cfg.Prices {
-			view.Prices = append(view.Prices, hostedBillingPriceView{ID: price.PriceID, Label: s.hostedPriceLabel(price)})
+			view.Prices = append(view.Prices, hostedBillingPriceView{ID: price.PriceID, Label: s.hostedPriceLabel(ctx, price)})
 		}
 		view.CanCheckout = !cfg.CheckoutDisabled && report.State.Snapshot.SubscriptionID == "" && report.State.Status != "multiple_subscriptions"
 		if _, err := s.database.hostedBillingBinding(ctx, cfg); err == nil {
@@ -220,13 +344,5 @@ func (s *Service) hostedBillingJSON(c echo.Context) error {
 	if view.Audit == nil {
 		view.Audit = []templates.HostedBillingAudit{}
 	}
-	return c.JSON(http.StatusOK, view)
-}
-
-func (s *Service) hostedPriceLabel(price HostedBillingPrice) string {
-	plan, err := readHostedPlan(context.Background(), s.database.db, price.Plan)
-	if err != nil || plan.MonthlyUSDCents == nil {
-		return price.Label
-	}
-	return plan.Name + " · " + hostedPlanPrice(plan.MonthlyUSDCents)
+	return view, nil
 }

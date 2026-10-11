@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -24,33 +25,75 @@ func TestStateReadersCrossPublicationBoundaries(t *testing.T) {
 	for _, tt := range []struct {
 		name       string
 		starting   bool
+		refresh    bool
 		completion bool
+		canceled   bool
+		stopped    bool
+		nilContext bool
 	}{
-		{name: "refresh starts with reader waiting"},
+		{name: "initialized idle actor"},
+		{name: "nil context", nilContext: true},
+		{name: "refresh in progress", refresh: true},
 		{name: "reader precedes initial publication", starting: true},
-		{name: "completion starts with reader waiting", completion: true},
+		{name: "completion in progress", completion: true},
+		{name: "canceled initial reader", starting: true, canceled: true},
+		{name: "stopped initial reader", starting: true, stopped: true},
+		{name: "canceled initialized reader", canceled: true},
+		{name: "stopped initialized reader", stopped: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				state := newState(normalizeConfig(Config{}))
-				orch := &Orchestrator{done: make(chan struct{}), initialStateReady: make(chan struct{}), snapshotAvailable: make(chan struct{}), stateRequests: make(chan stateRequest)}
+				orch := &Orchestrator{done: make(chan struct{}), initialStateReady: make(chan struct{})}
 				if !tt.starting {
-					orch.publishState(&state)
+					orch.publishState(t.Context(), &state)
+				}
+				if tt.refresh {
+					orch.startTick(&state, time.Now())
+				}
+				if tt.completion {
+					orch.startCompletion(t.Context(), &state)
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if !tt.starting && tt.canceled {
+					cancel()
+				}
+				if !tt.starting && tt.stopped {
+					close(orch.done)
+				}
+				if tt.nilContext {
+					ctx = nil
 				}
 				done := make(chan error, 1)
 				go func() {
-					_, err := orch.State(t.Context())
+					_, err := orch.State(ctx)
 					done <- err
 				}()
 				synctest.Wait()
-				if tt.completion {
-					orch.startCompletion(&state)
-				} else {
-					orch.startTick(&state, time.Now())
-					orch.publishState(&state)
+				if tt.starting {
+					select {
+					case err := <-done:
+						t.Fatalf("reader returned before first publication: %v", err)
+					default:
+					}
+					switch {
+					case tt.canceled:
+						cancel()
+					case tt.stopped:
+						close(orch.done)
+					default:
+						orch.publishState(t.Context(), &state)
+					}
 				}
-				if err := <-done; err != nil {
-					t.Fatal(err)
+				var want error
+				if tt.canceled {
+					want = context.Canceled
+				} else if tt.stopped {
+					want = ErrStopped
+				}
+				if err := <-done; !errors.Is(err, want) {
+					t.Fatalf("State() = %v, want %v", err, want)
 				}
 			})
 		})
@@ -88,32 +131,147 @@ func TestRefreshProgressPreservesTrackerFreshness(t *testing.T) {
 }
 
 func TestCompletionSnapshotExcludesPartialMutations(t *testing.T) {
-	for _, publishRuntime := range []bool{false, true} {
-		t.Run(fmt.Sprintf("runtime publication=%t", publishRuntime), func(t *testing.T) {
-			state := newState(normalizeConfig(Config{}))
-			issue := connector.Issue{ID: "worker", State: "In Progress", Labels: []string{"original"}}
-			state.Running[issue.ID] = Running{Issue: issue}
-			state.Claimed[issue.ID] = Claimed{Issue: issue}
-			orch := &Orchestrator{done: make(chan struct{})}
-			orch.publishState(&state)
-			orch.startCompletion(&state)
-			delete(state.Running, issue.ID)
-			state.Claimed[issue.ID].Issue.Labels[0] = "partial"
-			if publishRuntime {
-				orch.publishRuntimeState(&state)
-			}
-			got, err := orch.State(t.Context())
+	for _, publication := range []string{"none", "runtime", "full"} {
+		for _, mutation := range []string{"removed worker", "terminal attempt", "active attempt", "replacement attempt", "worker without durable attempt"} {
+			t.Run(publication+"/"+mutation, func(t *testing.T) {
+				state := newState(normalizeConfig(Config{}))
+				issue := connector.Issue{ID: "worker", State: "In Progress", Labels: []string{"original"}}
+				running := Running{Issue: issue, WorkAttemptID: 5}
+				if mutation == "worker without durable attempt" {
+					running.WorkAttemptID = 0
+				}
+				state.Running[issue.ID] = running
+				state.WorkAttempts = []telemetry.WorkAttempt{{AttemptID: 5, Status: string(store.WorkAttemptStatusActive)}}
+				state.Claimed[issue.ID] = Claimed{Issue: issue}
+				orch := &Orchestrator{done: make(chan struct{})}
+				orch.publishState(t.Context(), &state)
+				orch.startCompletion(t.Context(), &state)
+				switch mutation {
+				case "removed worker":
+					delete(state.Running, issue.ID)
+				case "terminal attempt", "worker without durable attempt":
+					state.WorkAttempts[0].Status = string(store.WorkAttemptStatusTerminal)
+				case "replacement attempt":
+					state.WorkAttempts[0].Status = string(store.WorkAttemptStatusTerminal)
+					running.WorkAttemptID = 6
+					state.Running[issue.ID] = running
+				}
+				state.Claimed[issue.ID].Issue.Labels[0] = "partial"
+				switch publication {
+				case "runtime":
+					orch.publishRuntimeState(&state)
+				case "full":
+					orch.publishState(t.Context(), &state)
+				}
+				got, err := orch.State(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantRunning := 1
+				if publication != "none" && (mutation == "removed worker" || mutation == "terminal attempt") {
+					wantRunning = 0
+				}
+				if len(got.Running) != wantRunning || got.Claimed[issue.ID].Issue.Labels[0] != "original" {
+					t.Fatalf("completion snapshot exposes partial mutation: running %#v, claimed %#v", got.Running, got.Claimed)
+				}
+				wantStatus := string(store.WorkAttemptStatusActive)
+				if publication != "none" {
+					wantStatus = state.WorkAttempts[0].Status
+				}
+				if got.WorkAttempts[0].Status != wantStatus {
+					t.Fatalf("work attempt status = %q, want %q", got.WorkAttempts[0].Status, wantStatus)
+				}
+				if _, retained := state.Running[issue.ID]; retained != (mutation != "removed worker") {
+					t.Fatal("publication changed actor worker ownership")
+				}
+			})
+		}
+	}
+}
+
+func TestCompletionSnapshotRetainsTerminalAttemptDuringHandoff(t *testing.T) {
+	for _, stage := range []string{"lane", "refill"} {
+		t.Run(stage, func(t *testing.T) {
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, ActiveStates: []string{"Todo", "In Progress"}})
+			issue := connector.Issue{ID: "failed", Identifier: "project#1", State: "In Progress"}
+			tracker := &completionRuntimeConnector{terminalRetryConnector: terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: issue}}, stage: stage, entered: make(chan struct{}), release: make(chan struct{})}
+			backend := &terminalRetryWorkAttemptStore{}
+			orch, err := New(cfg, Dependencies{Connector: tracker, WorkAttempts: backend})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(got.Running) != 1 || got.Claimed[issue.ID].Issue.Labels[0] != "original" {
-				t.Fatalf("completion snapshot exposes partial mutation: running %#v, claimed %#v", got.Running, got.Claimed)
+			state := newState(cfg)
+			now := time.Now()
+			failed := Running{Issue: issue, WorkAttemptID: 5, StartedAt: now.Add(-3 * time.Second), DispatchSourceState: "Todo", DispatchTargetState: "In Progress"}
+			live := Running{Issue: connector.Issue{ID: "live", State: "In Progress"}, WorkAttemptID: 6, StartedAt: now.Add(-time.Minute)}
+			state.Running[issue.ID] = failed
+			state.Running[live.Issue.ID] = live
+			state.WorkAttempts = []telemetry.WorkAttempt{{AttemptID: 5, Status: "active"}, {AttemptID: 6, Status: "active"}}
+			orch.publishState(t.Context(), &state)
+			orch.startCompletion(t.Context(), &state)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				orch.handleQueuedRunResults(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Request: RunRequest{WorkAttemptID: 5}, CompletedAt: now, Err: errors.New("native checkpoint requires recovery: persisted native session: store record not found")})
+			}()
+			defer func() { close(tracker.release); <-done }()
+			select {
+			case <-tracker.entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("completion did not reach the blocked handoff")
+			}
+			observed, err := orch.State(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, active := observed.Running[issue.ID]; active {
+				t.Fatal("terminal failed attempt still appears to be running during handoff")
+			}
+			if observed.Running[live.Issue.ID].WorkAttemptID != 6 {
+				t.Fatal("completion removed the unrelated live worker")
+			}
+			if len(observed.WorkAttempts) != 2 || observed.WorkAttempts[0].Status != "terminal" || observed.WorkAttempts[0].TerminalState != "failure" || observed.WorkAttempts[0].ErrorMessage == "" {
+				t.Fatalf("terminal receipt was hidden during handoff: %#v", observed.WorkAttempts)
+			}
+			if observed.RuntimeObservation.Source != telemetry.SnapshotSourceCached || orch.completionState.Load() == nil {
+				t.Fatal("completion discarded the cached tracker and dispatch fence")
 			}
 		})
 	}
 }
 
-func TestCompletionSnapshotFreezesWorkerProgress(t *testing.T) {
+type completionRuntimeConnector struct {
+	terminalRetryConnector
+	stage   string
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *completionRuntimeConnector) UpdateIssueState(ctx context.Context, id, state string) error {
+	if c.stage == "lane" {
+		close(c.entered)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-c.release:
+		}
+	}
+	return c.terminalRetryConnector.UpdateIssueState(ctx, id, state)
+}
+
+func (c *completionRuntimeConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	if c.stage == "refill" {
+		close(c.entered)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-c.release:
+		}
+	}
+	return nil, nil
+}
+
+func TestCompletionSnapshotPreservesLiveWorkerProgress(t *testing.T) {
 	t.Parallel()
 	for _, persisted := range []bool{false, true} {
 		t.Run(fmt.Sprintf("persisted heartbeat=%t", persisted), func(t *testing.T) {
@@ -143,25 +301,29 @@ func TestCompletionSnapshotFreezesWorkerProgress(t *testing.T) {
 				return got
 			}
 			orch := &Orchestrator{done: make(chan struct{})}
-			orch.publishState(&state)
+			orch.publishState(t.Context(), &state)
 			observe("before completion")
-			orch.startCompletion(&state)
+			orch.startCompletion(t.Context(), &state)
 			before := read(orch)
 			if before.Running[running.Issue.ID].LastMessage != "before completion" || (persisted && before.WorkAttempts[0].StatusMessage != "before completion") {
 				t.Fatal("completion snapshot omitted existing worker progress")
 			}
 			observe("during completion")
+			orch.publishRuntimeState(&state)
+			orch.publishState(t.Context(), &state)
 			after := read(orch)
-			if before.Running[running.Issue.ID].LastMessage != after.Running[running.Issue.ID].LastMessage || !reflect.DeepEqual(before.WorkAttempts, after.WorkAttempts) || before.RuntimeObservation != after.RuntimeObservation {
-				t.Fatal("cached completion snapshot changed after worker progress")
+			if after.Running[running.Issue.ID].LastMessage != "during completion" || (persisted && after.WorkAttempts[0].StatusMessage != "during completion") || before.RuntimeObservation != after.RuntimeObservation {
+				t.Fatal("completion snapshot omitted live worker progress")
+			}
+			if before.Running[running.Issue.ID].LastMessage != "before completion" || (persisted && before.WorkAttempts[0].StatusMessage != "before completion") {
+				t.Fatal("live publication mutated an earlier completion observation")
 			}
 			after.Running = cloneRunning(after.Running)
-			if before.Running[running.Issue.ID].LastMessage != after.Running[running.Issue.ID].LastMessage {
-				t.Fatal("cloning cached running state reloaded worker progress")
+			if after.Running[running.Issue.ID].LastMessage != "during completion" {
+				t.Fatal("cloning current running state lost worker progress")
 			}
-			orch.publishState(&state)
+			orch.publishState(t.Context(), &state)
 			orch.completionState.Store(nil)
-			orch.refreshInProgress.Store(true)
 			resumed := read(orch)
 			if resumed.Running[running.Issue.ID].LastMessage != "during completion" || (persisted && resumed.WorkAttempts[0].StatusMessage != "during completion") || !resumed.RuntimeObservation.IsZero() {
 				t.Fatal("live publication did not resume worker progress after completion")
@@ -194,8 +356,8 @@ func TestStatePreservesPublishedRunningAttemptsDuringRefresh(t *testing.T) {
 				state.Running[id] = Running{Issue: connector.Issue{ID: id}}
 			}
 			orch := &Orchestrator{cfg: cfg, done: make(chan struct{})}
-			orch.publishState(&state)
-			orch.refreshInProgress.Store(true)
+			orch.publishState(t.Context(), &state)
+			orch.startTick(&state, time.Now())
 
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
@@ -1849,14 +2011,19 @@ func TestTelemetryPullRequestMergeQueueIdentities(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name  string
+		draft bool
 		entry *connector.PullRequestMergeQueueEntry
 	}{
 		{name: "not queued"},
+		{name: "draft", draft: true},
 		{name: "awaiting integration", entry: &connector.PullRequestMergeQueueEntry{ID: "entry"}},
 		{name: "integrated", entry: &connector.PullRequestMergeQueueEntry{ID: "entry", HeadSHA: "group-head", BaseSHA: "group-base"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got := telemetryPullRequest(connector.Issue{PullRequest: &connector.PullRequest{HeadSHA: "pr-head", BaseSHA: "pr-base", MergeQueueEntry: tt.entry}}, 0, 0)
+			got := telemetryPullRequest(connector.Issue{PullRequest: &connector.PullRequest{HeadSHA: "pr-head", BaseSHA: "pr-base", Draft: tt.draft, MergeQueueEntry: tt.entry}}, 0, 0)
+			if got.Draft != tt.draft {
+				t.Fatalf("draft = %v, want %v", got.Draft, tt.draft)
+			}
 			if tt.entry == nil {
 				if got.MergeQueueEntry != nil {
 					t.Fatalf("unexpected queue entry: %#v", got.MergeQueueEntry)
@@ -1894,5 +2061,112 @@ func TestTelemetryIssuePreservesRoutingFields(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Replays the reported nine active attempts with an older empty board snapshot
+// while promotion waits on GitHub. The runtime overlay must stay live.
+func TestPromotionReadKeepsRecoveredWorkersObservable(t *testing.T) {
+	for _, refresh := range []bool{false, true} {
+		t.Run(fmt.Sprintf("refresh=%t", refresh), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				o, tracker, issue := mergingSecurityAuditFixture()
+				issue.State = "Human Review"
+				slow := &slowPromotionHydrator{mergingSecurityAuditConnector: tracker, started: make(chan struct{}), release: make(chan struct{})}
+				o.connector = slow
+				o.done = make(chan struct{})
+				state := newState(o.cfg)
+				state.LastRefreshAt = time.Now().Add(-time.Minute)
+				o.publishState(t.Context(), &state)
+				for i := range 9 {
+					id := fmt.Sprintf("recovered-%d", i)
+					running := Running{Issue: connector.Issue{ID: id, State: "In Progress"}, WorkAttemptID: int64(i + 1)}
+					running.progress = newWorkerProgress(running, store.WorkAttemptHeartbeat{AttemptID: running.WorkAttemptID}, nil, 4096)
+					state.Running[id] = running
+					state.WorkAttempts = append(state.WorkAttempts, telemetry.WorkAttempt{AttemptID: running.WorkAttemptID})
+				}
+				if refresh {
+					o.startTick(&state, time.Now())
+				} else {
+					o.publishRuntimeState(&state)
+				}
+				done := make(chan struct{})
+				go func() {
+					o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, time.Now())
+					close(done)
+				}()
+				<-slow.started
+				defer func() { close(slow.release); <-done; o.securityAuditWG.Wait() }()
+				for _, message := range []string{"working", "still working"} {
+					progress := state.Running["recovered-0"].progress
+					if err := progress.observe(t.Context(), runpkg.UsageUpdate{LastMessage: message}); err != nil {
+						t.Fatal(err)
+					}
+					heartbeat := progress.heartbeat(store.WorkAttemptHeartbeat{AttemptID: 1}, time.Now())
+					progress.persisted.Store(&heartbeat)
+					ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+					snapshot, err := o.State(ctx)
+					cancel()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !snapshot.LastRefreshAt.Equal(state.LastRefreshAt) {
+						t.Fatal("runtime observation advanced tracker freshness")
+					}
+					if len(snapshot.Running) != 9 || len(snapshot.WorkAttempts) != 9 {
+						t.Fatalf("runtime during promotion: workers=%d attempts=%d, want 9 each", len(snapshot.Running), len(snapshot.WorkAttempts))
+					}
+					if snapshot.Running["recovered-0"].LastMessage != message || snapshot.WorkAttempts[0].StatusMessage != message {
+						t.Fatalf("stale worker progress during promotion: %+v", snapshot.WorkAttempts[0])
+					}
+					delete(snapshot.Running, "recovered-1")
+					snapshot.WorkAttempts[0].StatusMessage = "reader mutation"
+					unchanged, err := o.State(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(unchanged.Running) != 9 || unchanged.WorkAttempts[0].StatusMessage != message {
+						t.Fatal("reader mutated published runtime ownership or persisted progress")
+					}
+				}
+			})
+		})
+	}
+}
+
+type slowPromotionHydrator struct {
+	*mergingSecurityAuditConnector
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *slowPromotionHydrator) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
+	close(c.started)
+	select {
+	case <-c.release:
+		return issue, errors.New("profile read finished")
+	case <-ctx.Done():
+		return issue, ctx.Err()
+	}
+}
+
+func TestDependencyIssuesUsesPublishedCohortWithoutWaiting(t *testing.T) {
+	t.Parallel()
+	o := &Orchestrator{}
+	if got := o.DependencyIssues(); got != nil {
+		t.Fatalf("unpublished=%+v", got)
+	}
+	issue := connector.Issue{ID: "issue", Identifier: "owner/repo#1", State: "Rework"}
+	issue.BlockedBy = []connector.BlockedRef{{ID: "blocker", State: "Backlog"}}
+	o.latestState.Store(&State{BoardIssues: []connector.Issue{issue}})
+	got := o.DependencyIssues()
+	if len(got) != 1 || got[0].ID != issue.ID {
+		t.Fatalf("published=%+v", got)
+	}
+	got[0].State = "Done"
+	got[0].BlockedBy[0].State = "Done"
+	retained := o.DependencyIssues()
+	if len(retained) != 1 || retained[0].State != "Rework" || len(retained[0].BlockedBy) != 1 || retained[0].BlockedBy[0].State != "Backlog" {
+		t.Fatalf("modified owner=%+v", retained)
 	}
 }

@@ -1,30 +1,27 @@
 # Comparing Detent With Adjacent Agent Tools
 
-We build Detent as a self-hosted, board-native agent orchestrator for software delivery; this is how we stack it against nearby tools.
+We build Detent as a board-native agent orchestrator for software delivery, available as Detent Cloud or as a self-hosted Hub; this is how we stack it against nearby tools.
 
 ## Feature Matrix
 
-| Capability | Detent | OpenAI Symphony | Copilot agent | Cursor | Hermes | OpenClaw | Hyperagent |
-|---|---|---|---|---|---|---|---|
-| Self-hosted, no vendor control plane | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ hosted |
-| Runs fully local / air-gappable | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ cloud |
-| Board/tracker-native (issue→PR) | ✅ GH Projects, issue fields, or labels | ✅ Linear | ✅ GH Issues | ❌ | ❌ | ❌ | ❌ own workspace |
-| Deterministic gated merge train | ✅ | 🟡 per spec | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Budget / cost caps | ✅ | ❌ | 🟡 | 🟡 | ❌ | ❌ | ✅ hosted controls |
-| Multi-project | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | 🟡 workspace-scoped |
-| Multi-instance fleet governance | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | 🟡 hosted agent controls |
-| Model-agnostic, BYO incl. local | 🟡 codex now, seam shipped | ❌ Codex | ✅ vendor-managed | ✅ vendor-managed | ✅ | ✅ | ❌ cloud-managed |
-| Local skills / workflows (your e2e etc.) | ✅ | 🟡 | ❌ | 🟡 | ✅ | ✅ | ✅ hosted skills/knowledge |
-| Multi-channel triggers | 🟡 tracker-driven | 🟡 Linear | 🟡 GitHub | 🟡 IDE/cloud tasks | ✅ messaging gateway | ✅ local gateway | ✅ Slack, schedules, webhooks, email, Telegram, Live Mode |
-| Open source | ✅ MIT | ✅ Apache-2.0 | ❌ | ❌ | ✅ MIT | ✅ MIT | ❌ closed-source |
-| Free (BYO model cost) | ✅ | ✅ | ❌ paid | ❌ paid | ✅ | ✅ | ❌ usage-billed |
-| Single static binary | ✅ | ❌ Elixir/BEAM | — SaaS | — SaaS | ❌ gateway | ❌ gateway | — SaaS |
-| ~5-min setup | ✅ | ❌ | ✅ zero-install | ✅ | 🟡 | 🟡 | 🟡 hosted onboarding |
+| Capability | Detent | Copilot agent | Cursor | Hermes | OpenClaw | Hyperagent |
+|---|---|---|---|---|---|---|
+| Self-hosted, no vendor control plane | ✅ self-hosted Hub | ❌ | ❌ | ✅ | ✅ | ❌ hosted |
+| Agents run on your own machines | ✅ enrolled runners | ❌ | 🟡 self-hosted workers | ✅ | ✅ | ❌ cloud |
+| Board/tracker-native (issue→change) | ✅ native tracker, optional GitHub | ✅ GH Issues | ❌ | ❌ | ❌ | ❌ own workspace |
+| Deterministic gated landing | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Budget / cost caps | ✅ | 🟡 | 🟡 | ❌ | ❌ | ✅ hosted controls |
+| Multi-project | ✅ | ✅ | ✅ | ❌ | ❌ | 🟡 workspace-scoped |
+| Runner fleet routing and capacity | ✅ | ❌ | ❌ | ❌ | ❌ | 🟡 hosted agent controls |
+| Model choice, BYO subscription | ✅ Codex and Claude Code | ✅ vendor-managed | ✅ vendor-managed | ✅ | ✅ | ❌ cloud-managed |
+| Local skills / workflows (your e2e etc.) | ✅ | ❌ | 🟡 | ✅ | ✅ | ✅ hosted skills/knowledge |
+| Multi-channel triggers | 🟡 tracker, conversations, MCP | 🟡 GitHub | 🟡 IDE/cloud tasks | ✅ messaging gateway | ✅ local gateway | ✅ Slack, schedules, webhooks, email, Telegram, Live Mode |
+| Source available | ✅ FSL-1.1-ALv2 | ❌ | ❌ | ✅ MIT | ✅ MIT | ❌ closed-source |
+| Single static binary | ✅ | — SaaS | — SaaS | ❌ gateway | ❌ gateway | — SaaS |
 
 ## What Each One Is
 
-- **Detent**: [digitaldrywood/detent](https://github.com/digitaldrywood/detent) is our single-binary Go orchestrator for GitHub-native issue-to-PR work using ProjectV2 or boardless status sources.
-- **OpenAI Symphony**: [openai/symphony](https://github.com/openai/symphony) is our origin point: an Apache-2.0 spec plus Elixir reference implementation for Codex on Linear.
+- **Detent**: [digitaldrywood/detent](https://github.com/digitaldrywood/detent) is our single-binary Go orchestrator: a Hub (Detent Cloud or self-hosted) holds the board and policy, and enrolled runners execute issues as gated changes.
 - **GitHub Copilot coding agent**: [GitHub Copilot cloud agent](https://docs.github.com/en/copilot/concepts/agents/cloud-agent/about-cloud-agent) is GitHub's paid issue/prompt-to-branch-and-PR agent.
 - **Cursor**: [Cursor cloud agents](https://cursor.com/cloud) is an IDE-first agent product with cloud/background agents, automations, and optional self-hosted workers.
 - **Hermes**: [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) is Nous's MIT personal assistant with memory, skills, model providers, and messaging gateway.
@@ -33,6 +30,6 @@ We build Detent as a self-hosted, board-native agent orchestrator for software d
 
 ## Where We're Different
 
-We own the orchestration loop: no Detent vendor control plane, GitHub-native status sources, Detent's own Kanban board, deterministic gates, and a serialized merge train. We also care about operating fleets, not just launching one agent: multi-instance ownership, budget checks, local skills, and a single static binary with a setup path we expect to be measured in minutes. Copilot and Cursor have closed much of the "runs near my code" gap and win zero-install inside their platforms, but they do not give us the same board-native release runtime under our control.
+We own the orchestration loop: a native board, deterministic gates, and serialized landing, with the Hub either hosted by us or run by you. Agents run on runners you enroll, under your own Codex or Claude Code sign-in, next to your code and tools. We also build for operating fleets of agents, with runner routing and capacity, budget checks, and local skills. Copilot and Cursor have closed much of the "runs near my code" gap and win zero-install inside their platforms, but they do not give us the same board-native release runtime under our control.
 
-_Last updated: July 6, 2026; verify vendor pricing/models before relying on them._
+_Last updated: October 7, 2026; verify vendor pricing/models before relying on them._

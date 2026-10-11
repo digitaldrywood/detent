@@ -167,9 +167,8 @@ export function SnapShotContentsButton({
         side={side}
         align="center"
         className="w-[min(24rem,calc(100vw-2rem))]"
-        viewportClassName="max-h-[min(28rem,70vh)]"
       >
-        <div className="space-y-2">
+        <div className="max-h-[min(28rem,70vh)] space-y-2 overflow-y-auto">
           <PopoverTitle className="text-sm leading-5">Accessibility data</PopoverTitle>
           {accessibilityDetails ? (
             <SnapShotAccessibilityData

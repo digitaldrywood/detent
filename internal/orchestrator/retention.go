@@ -2,9 +2,16 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -18,6 +25,12 @@ func (o *Orchestrator) sweepRetention(ctx context.Context, state *State, now tim
 	for _, issue := range active {
 		request.Active = append(request.Active, workspace.Issue{ProjectID: o.cfg.Project.ID, ID: issue.ID, Identifier: issue.Identifier})
 	}
+	foreign, err := o.liveForeignWorkspaceIssues(ctx)
+	if err != nil {
+		o.logger.Warn("workspace retention skipped; live worker generation lookup failed", "project_id", o.cfg.Project.ID, "error", err)
+		return
+	}
+	request.Active = append(request.Active, foreign...)
 	request.Completed = func(ctx context.Context, owned []workspace.Issue) (map[string]time.Time, error) {
 		completed := map[string]time.Time{}
 		var ids []string
@@ -27,7 +40,7 @@ func (o *Orchestrator) sweepRetention(ctx context.Context, state *State, now tim
 			}
 		}
 		for start := 0; start < len(ids); start += 100 {
-			issues, err := o.connector.FetchIssueStatesByIDs(ctx, ids[start:min(start+100, len(ids))])
+			issues, err := o.fetchWorkspaceCleanupIssueStatesByIDs(ctx, ids[start:min(start+100, len(ids))])
 			if err != nil {
 				return nil, err
 			}
@@ -73,6 +86,60 @@ func (o *Orchestrator) sweepRetention(ctx context.Context, state *State, now tim
 		state.WorkspaceRetention = []workspace.RetentionTotals{totals}
 	}
 	if err != nil {
-		o.logger.Warn("workspace retention failed", "error", err)
+		o.warnRetentionFailure(err)
 	}
+}
+
+func (o *Orchestrator) liveForeignWorkspaceIssues(ctx context.Context) ([]workspace.Issue, error) {
+	generations, ok := o.workAttempts.(store.LiveForeignGenerationReader)
+	if !ok {
+		return nil, nil
+	}
+	foreign, err := generations.LiveForeignWorkerGenerations(ctx)
+	var unknown *store.WorkerGenerationLivenessError
+	if errors.As(err, &unknown) {
+		unknown.Log(o.logger)
+	} else if err != nil {
+		return nil, err
+	}
+	if len(foreign) == 0 {
+		return nil, nil
+	}
+	attempts, err := o.workAttempts.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: o.cfg.Project.ID})
+	if err != nil {
+		return nil, fmt.Errorf("list live worker generation attempts: %w", err)
+	}
+	var issues []workspace.Issue
+	for _, attempt := range attempts {
+		if slices.Contains(foreign, attempt.OwnerGeneration) {
+			issues = append(issues, workspace.Issue{ProjectID: o.cfg.Project.ID, ID: attempt.IssueID, Identifier: attempt.Identifier})
+		}
+	}
+	return issues, nil
+}
+
+func (o *Orchestrator) warnRetentionFailure(err error) {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, failure := range joined.Unwrap() {
+			o.warnRetentionFailure(failure)
+		}
+		return
+	}
+	var pathError *os.PathError
+	if errors.As(err, &pathError) {
+		parent := filepath.Join(".detent", "quarantine")
+		path := filepath.Clean(pathError.Path)
+		if relative, ok := strings.CutPrefix(path, parent+string(filepath.Separator)); ok {
+			name, _, _ := strings.Cut(relative, string(filepath.Separator))
+			key := filepath.Join(parent, name)
+			if o.quarantineWarnings == nil {
+				o.quarantineWarnings = make(map[string]struct{})
+			}
+			if _, warned := o.quarantineWarnings[key]; warned {
+				return
+			}
+			o.quarantineWarnings[key] = struct{}{}
+		}
+	}
+	o.logger.Warn("workspace retention failed", "error", err)
 }

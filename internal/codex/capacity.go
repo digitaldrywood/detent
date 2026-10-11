@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -78,6 +79,17 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 		startupCause = startupErr.Err
 	}
 	startupText := strings.ToLower(codexCapacityErrorText(startupCause))
+	var pathErr *os.PathError
+	var responseErr *ResponseError
+	if errors.As(startupCause, &responseErr) && responseErr != nil && responseErr.Request == "turn/start" && responseErr.NativeTerminalFailure().ProviderCode == "input_too_large" {
+		return backendcapacity.Details{
+			Type:    backendcapacity.ErrorTypeTransientOverload,
+			Kind:    backendcapacity.StartupFailureKind,
+			Reason:  "backend turn input exceeds provider limit",
+			Trigger: boundedCapacityTrigger(text),
+			Startup: startupEvidencePointer(startup, hasStartupEvidence),
+		}, true
+	}
 	if hasStartupEvidence || codexStartupOperation(text) {
 		switch {
 		case errors.Is(startupCause, context.DeadlineExceeded):
@@ -88,7 +100,7 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 				Trigger: boundedCapacityTrigger(text),
 				Startup: startupEvidencePointer(startup, hasStartupEvidence),
 			}, true
-		case errors.Is(startupCause, io.EOF), strings.Contains(startupText, "process exited"), strings.Contains(startupText, "start codex app-server transport"):
+		case errors.Is(startupCause, io.EOF), strings.Contains(startupText, "process exited"), strings.Contains(startupText, "start codex app-server transport"), errors.As(startupCause, &pathErr):
 			return backendcapacity.Details{
 				Type:    backendcapacity.ErrorTypeTransientOverload,
 				Kind:    backendcapacity.StartupFailureKind,
@@ -100,7 +112,6 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 	}
 	// Transport and JSON-RPC failures belong to the same instance-owned wait as
 	// provider outages, even when the backend has already emitted turn usage.
-	var responseErr *ResponseError
 	protocolFailure := false
 	if errors.As(startupCause, &responseErr) && responseErr != nil {
 		switch responseErr.Code {

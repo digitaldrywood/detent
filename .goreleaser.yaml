@@ -5,8 +5,8 @@ dist: tmp/goreleaser
 before:
   hooks:
     - go mod download
-    - make check-generated
-    - make test
+    - make assets generate-docs
+    - make source-metadata VERSION={{ .Version }} COMMIT={{ .FullCommit }} DATE={{ .Date }}
 
 builds:
   - id: detent
@@ -25,6 +25,25 @@ builds:
     goarch:
       - amd64
       - arm64
+    hooks:
+      post:
+        - cmd: '{{ if and (eq .Os "darwin") (not .IsSnapshot) }}quill sign-and-notarize "{{ .Path }}" --identity build.detent.detent --ad-hoc=false --wait=false -vv{{ end }}'
+          output: true
+          env:
+            - QUILL_LOG_FILE={{ if and (eq .Os "darwin") (not .IsSnapshot) }}{{ .Env.RUNNER_TEMP }}/quill-{{ .Target }}.log{{ end }}
+
+source:
+  enabled: true
+  name_template: "{{ .ProjectName }}_{{ .Version }}_source"
+  prefix_template: "{{ .ProjectName }}_{{ .Version }}_source/"
+  files:
+    - static/app/conversation
+    - static/css/output.css
+    - docs/config.md
+    - config.reference.yaml
+    - src: tmp/source-metadata/BUILD_LDFLAGS
+      dst: .
+      strip_parent: true
 
 archives:
   - id: detent
@@ -40,12 +59,14 @@ archives:
     files:
       - README.md
       - LICENSE
+      - NOTICE
       - docs/*.md
       - docs/**/*
       - scripts/hub-smoke.py
 
 brews:
   - name: detent
+    skip_upload: auto
     ids:
       - detent
     repository:
@@ -56,7 +77,7 @@ brews:
     url_template: "https://github.com/digitaldrywood/detent/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
     homepage: https://github.com/digitaldrywood/detent
     description: Agent orchestrator for tracker-backed work queues
-    license: MIT
+    license: FSL-1.1-ALv2
     install: |
       bin.install "detent"
     test: |
@@ -72,7 +93,7 @@ nfpms:
     homepage: https://github.com/digitaldrywood/detent
     maintainer: Cory LaNou <cory@lanou.com>
     description: Agent orchestrator for tracker-backed work queues
-    license: MIT
+    license: FSL-1.1-ALv2
     bindir: /usr/bin
     section: utils
     priority: optional
@@ -89,6 +110,11 @@ nfpms:
         dst: /usr/share/doc/detent/scripts/hub-smoke.py
       - src: LICENSE
         dst: /usr/share/doc/detent/copyright
+        file_info:
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+      - src: NOTICE
+        dst: /usr/share/doc/detent/NOTICE
         file_info:
           mode: 0644
           mtime: "{{ .CommitDate }}"
@@ -109,9 +135,9 @@ scoops:
     url_template: "https://github.com/digitaldrywood/detent/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
     homepage: https://github.com/digitaldrywood/detent
     description: Agent orchestrator for tracker-backed work queues
-    license: MIT
+    license: FSL-1.1-ALv2
     commit_msg_template: "scoop: update detent to {{ .Tag }}"
-    skip_upload: "{{ if index .Env \"SCOOP_BUCKET_GITHUB_TOKEN\" }}false{{ else }}true{{ end }}"
+    skip_upload: "{{ if index .Env \"SCOOP_BUCKET_GITHUB_TOKEN\" }}auto{{ else }}true{{ end }}"
 
 winget:
   - name: Detent
@@ -136,12 +162,12 @@ winget:
     commit_msg_template: "{{ .PackageIdentifier }}: {{ .Tag }}"
     ids:
       - detent
-    skip_upload: "{{ if index .Env \"WINGET_GITHUB_TOKEN\" }}false{{ else }}true{{ end }}"
+    skip_upload: "{{ if index .Env \"WINGET_GITHUB_TOKEN\" }}auto{{ else }}true{{ end }}"
     url_template: "https://github.com/digitaldrywood/detent/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
     short_description: Agent orchestrator for tracker-backed work queues
     description: Detent is status-driven agentic work orchestration for tracker-backed work queues.
     homepage: https://github.com/digitaldrywood/detent
-    license: MIT
+    license: FSL-1.1-ALv2
     license_url: https://github.com/digitaldrywood/detent/blob/{{ .Tag }}/LICENSE
     release_notes_url: https://github.com/digitaldrywood/detent/releases/tag/{{ .Tag }}
     installation_notes: Installs detent.exe on PATH. Verify the release with detent --version.
@@ -158,6 +184,8 @@ checksum:
     - glob: ./tmp/detent_release_provenance.json
 
 release:
+  prerelease: auto
+  make_latest: "{{ if .Prerelease }}false{{ else }}true{{ end }}"
   extra_files:
     - glob: ./tmp/detent_release_provenance.json
 
@@ -176,6 +204,15 @@ signs:
       - -t
       - "detent checksums {{ .Version }}"
     stdin: "{{ .Env.MINISIGN_PASSWORD }}"
+  - id: cosign
+    artifacts: checksum
+    cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - --yes
+      - "--bundle=${signature}"
+      - "${artifact}"
 
 snapshot:
   version_template: "{{ incpatch .Version }}-snapshot"

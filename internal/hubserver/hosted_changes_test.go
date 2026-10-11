@@ -15,6 +15,31 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestHostedChangeReviewRequiresAdminAndWriteGrant(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, role, grant string
+		want              int
+	}{
+		{"owner", "owner", "write", http.StatusUnprocessableEntity},
+		{"admin", "admin", "write", http.StatusUnprocessableEntity},
+		{"member with write grant", "member", "write", http.StatusNotFound},
+		{"viewer with write grant", "viewer", "write", http.StatusNotFound},
+		{"owner with read grant", "owner", "read", http.StatusNotFound},
+		{"admin without grant", "admin", "", http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newHostedSecurityFixture(t)
+			user := f.user(t, "reviewer", test.role, "reviewer@example.test", test.grant, "")
+			// An empty body is rejected by JSON decoding after authorization.
+			// Unauthorized reviewers never reach that handler.
+			response := f.request(t, user, http.MethodPost, f.base+"/work-items/wi_example/changes/change_example/versions/version_example/reviews", nil)
+			requireNativeStatus(t, response, test.want)
+		})
+	}
+}
+
 func TestHostedChangePolicyAuthorization(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -91,7 +116,6 @@ func TestHostedChangePolicyJourney(t *testing.T) {
 			}{
 				{"review floor", func(p *tracker.ChangeReviewPolicy) { p.RequireReview = false }},
 				{"check floor", func(p *tracker.ChangeReviewPolicy) { p.RequiredChecks = nil }},
-				{"validator floor", func(p *tracker.ChangeReviewPolicy) { p.RequiredChecks[0].Source = "customer" }},
 				{"unpinned workflow", func(p *tracker.ChangeReviewPolicy) { p.RequiredChecks[0].WorkflowSHA256 = "" }},
 				{"ungranted principal", func(p *tracker.ChangeReviewPolicy) { p.RequiredChecks[0].PrincipalID = "ungranted-ci" }},
 				{"stale repository policy", func(p *tracker.ChangeReviewPolicy) { p.PolicyID = hubTestPolicy().ID }},
@@ -118,7 +142,7 @@ func TestHostedChangePolicyJourney(t *testing.T) {
 			}
 			approve.IdempotencyKey = "stale-expected"
 			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/change-review-policy", approve), http.StatusConflict)
-			response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Publish a Change", State: "Todo"})
+			response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Publish a Change", Body: nativeContractTestBody, State: "Todo"})
 			requireNativeStatus(t, response, http.StatusOK)
 			var issue tracker.NativeIssue
 			decodeHubResponse(t, response, &issue)
@@ -134,12 +158,13 @@ func TestHostedChangePolicyJourney(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var version tracker.ChangeVersion
 			decodeHubResponse(t, response, &version)
-			if version.PolicyID != descriptor.ID || version.ReviewPolicy.ID != rules.ID || len(version.Checks) != 1 || version.Checks[0].PrincipalID != principal {
+			if version.PolicyID != descriptor.ID || !version.Policy.Gates.Validator || version.ReviewPolicy.ID != rules.ID || len(version.Checks) != 1 || version.Checks[0].PrincipalID != principal {
 				t.Fatalf("published policy snapshot = %+v", version)
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/checks", "credential-"+project, changeTestResult(version)), http.StatusOK)
 			approve.IdempotencyKey, approve.ExpectedID = "update", rules.ID
 			approve.Policy.RequiredChecks[0].MaxAgeSeconds = 7200
+			approve.Policy.RequiredChecks[0].Source = "customer"
 			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/change-review-policy", approve), http.StatusOK)
 			response = f.setupRequest(t, "owner", http.MethodGet, path, nil)
 			requireNativeStatus(t, response, http.StatusOK)
@@ -233,7 +258,7 @@ func TestHostedChangePolicyBoundaries(t *testing.T) {
 		{"bearer with cookie", f.base + "/change-review-policy", "", "admin-bearer", http.StatusNotFound},
 		{"unrelated organization", strings.Replace(f.base, "org_security", "org_unrelated", 1) + "/change-review-policy", hostedCSRF(owner.token), "", http.StatusNotFound},
 		{"unknown project", strings.Replace(f.base, string(f.project), "prj_unknown", 1) + "/change-review-policy", hostedCSRF(owner.token), "", http.StatusNotFound},
-		{"generic policy administration", f.base + "/policy", hostedCSRF(owner.token), "", http.StatusNotFound},
+		{"generic policy administration", f.base + "/policy", hostedCSRF(owner.token), "", http.StatusUnprocessableEntity},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPut, test.path, strings.NewReader(`{}`))

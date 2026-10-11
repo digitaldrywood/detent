@@ -10,6 +10,10 @@ import (
 )
 
 func TestIsBusy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	busyErr := generateBusyError(t)

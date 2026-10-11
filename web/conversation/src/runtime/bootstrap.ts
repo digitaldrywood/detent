@@ -6,6 +6,7 @@ import * as Stream from "effect/Stream";
 import { Atom } from "effect/unstable/reactivity";
 
 import { AccountBootstrap } from "../contracts/account.ts";
+import { authorizeBoardCache, boardAccountKey, clearBoardCache } from "../app/work/lib/boardStore.ts";
 import {
   type Answers,
   Bootstrap,
@@ -115,6 +116,7 @@ export async function loadBootstrap(
   let response = await request("/app/bootstrap");
   if (response.status === 404) response = await request("/chat/bootstrap");
   if (!response.ok) {
+    if ([401, 403].includes(response.status)) clearBoardCache();
     let body: unknown = undefined;
     try {
       body = await response.json();
@@ -155,6 +157,7 @@ export interface RetryMessageInput {
 
 export function makeClient(options: ClientOptions) {
   const origin = options.origin ?? "";
+  authorizeBoardCache(boardAccountKey({ http: { origin, apiBase: options.bootstrap.api_base }, bootstrap: options.bootstrap }));
   const http = makeHttpClient({
     origin,
     apiBase: options.bootstrap.api_base,
@@ -609,11 +612,24 @@ export function makeClient(options: ClientOptions) {
         withoutPending(detail, input.key),
       ),
     createConversation: (input: {
+      subjectWorkItemId?: string;
       projectId: string;
       key: string;
       title?: string;
       firstMessage?: { key: string; text: string };
     }) => http.createConversation(input).pipe(Effect.result),
+    archiveConversation: (input: { projectId: string; conversationId: string }) =>
+      http.archiveConversation(input).pipe(
+        Effect.tap((conversation) => Effect.sync(() => conversationBus.publish(conversation))),
+        Effect.andThen(cache.removeThread(HUB_ENVIRONMENT_ID, input.conversationId)),
+        Effect.result,
+      ),
+    deleteConversation: (input: { projectId: string; conversationId: string }) =>
+      http.deleteConversation(input).pipe(
+        Effect.tap(() => Effect.sync(() => conversationBus.remove(input.conversationId))),
+        Effect.andThen(cache.removeThread(HUB_ENVIRONMENT_ID, input.conversationId)),
+        Effect.result,
+      ),
     loadOlder: (input: { projectId: string; conversationId: string }) =>
       Effect.suspend(() => {
         const handle = handles.get(keyOf(input.projectId, input.conversationId));
@@ -684,6 +700,8 @@ export function makeClient(options: ClientOptions) {
     createConversation: runtime.fn(effects.createConversation),
     loadOlder: runtime.fn(effects.loadOlder),
     refreshList: runtime.fn(effects.refreshList),
+    archiveConversation: runtime.fn(effects.archiveConversation),
+    deleteConversation: runtime.fn(effects.deleteConversation),
     searchConversations: runtime.fn(effects.searchConversations),
     link: runtime.fn(effects.link),
   };

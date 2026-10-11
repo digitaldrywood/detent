@@ -106,7 +106,7 @@ templ Settings(data SettingsData) {
 					@settingsRow("Server host:port", data.Runtime.ServerAddress, true, true)
 				}
 				@settingsSection("settings-reload", "Configuration reload") {
-					@settingsRow("Live reload", "project list and settings · credentials · startup · instance_name · identity · max_concurrent_agents · scheduling · fair_share · log_level", false, false)
+					@settingsRow("Live reload", "project list and settings · credentials · startup · instance_name · identity · max_concurrent_agents · log_level", false, false)
 					@settingsRow("Restart required", "port · env · log rotation", false, true)
 				}
 				<p class="flex-none font-mono text-2xs text-dim">{ settingsBuildFooter(data) }</p>

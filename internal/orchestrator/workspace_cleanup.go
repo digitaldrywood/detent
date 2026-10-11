@@ -28,15 +28,21 @@ func (o *Orchestrator) startWorkspaceCleanup(ctx context.Context, state *State, 
 	before := state.clone()
 	after := before.clone()
 	after.RecentEvents = nil
-	worker := &Orchestrator{cfg: o.cfg, connector: o.connector, reaper: o.reaper, logger: o.logger, trimHostCache: o.trimHostCache}
+	if o.quarantineWarnings == nil {
+		o.quarantineWarnings = make(map[string]struct{})
+	}
+	worker := &Orchestrator{cfg: o.cfg, connector: o.connector, reaper: o.reaper, logger: o.logger, trimHostCache: o.trimHostCache, quarantineWarnings: o.quarantineWarnings}
 	remaining := workspaceCleanupBatchSize
 	worker.workspaceCleanupRemaining = &remaining
 	cleanupCtx, cancel := context.WithCancel(ctx)
+	restScope := &connector.RESTScope{ProjectID: o.cfg.Project.ID, Name: "async_workspace_cleanup"}
+	cleanupCtx = connector.WithRESTScope(cleanupCtx, restScope)
 	cleanupCtx = workspace.WithCleanupBatch(cleanupCtx, workspaceCleanupBatchSize)
 	o.workspaceCleanupCancel = cancel
 	o.workspaceCleanupWG.Add(1)
 	go func() {
 		defer o.workspaceCleanupWG.Done()
+		defer connector.LogRESTScope(o.logger, restScope)
 		worker.reapWorkspacesIfDue(cleanupCtx, &after, now)
 		if cleanupCtx.Err() == nil {
 			worker.reapDueWorkspacesAfterRefresh(cleanupCtx, &after, now)
@@ -98,7 +104,8 @@ func (o *Orchestrator) stopWorkspaceCleanup() {
 }
 
 func cleanupIssueOrder(issues []connector.Issue, cursor string) []connector.Issue {
-	ordered := append([]connector.Issue(nil), issues...)
+	ordered := make([]connector.Issue, len(issues))
+	copy(ordered, issues)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
 	next := sort.Search(len(ordered), func(i int) bool { return ordered[i].ID > cursor })
 	return append(ordered[next:], ordered[:next]...)

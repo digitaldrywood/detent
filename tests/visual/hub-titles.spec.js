@@ -32,7 +32,7 @@ test("Hub routes update the browser tab title on navigation", async ({ page }) =
   await sidebar.getByTestId("nav-chat").click();
   await expect(page).toHaveTitle("Chat · Browser organization · Detent");
   await sidebar.getByTestId("nav-work").click();
-  await expect(page).toHaveTitle("Work · Browser collaboration · Detent");
+  await expect(page).toHaveTitle("Work · Browser organization · Detent");
 
   await page.goto(new URL(`/work/i/${hub.fixture.work_item}`, hub.fixture.url).toString(), {
     waitUntil: "domcontentloaded",

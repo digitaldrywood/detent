@@ -19,12 +19,12 @@ const (
 	platformTenantWorkers   = 8
 )
 
-func (s *Service) platformIdentity(email string, identity auth.HostedIdentity) bool {
-	return s.staff(email) && identity.SupportActor == "" && identity.OrganizationID == ""
+func (s *Service) platformIdentity(ctx context.Context, email string, identity auth.HostedIdentity) bool {
+	return s.platformRole(ctx, email) != "" && identity.SupportActor == ""
 }
 
-func (s *Service) platformStaff(session accountSession) bool {
-	return s.platformIdentity(session.Email, session.Identity)
+func (s *Service) platformStaff(ctx context.Context, session accountSession) bool {
+	return s.platformIdentity(ctx, session.Email, session.Identity)
 }
 
 func (s *Service) platformSession(c echo.Context, event string) (accountSession, bool, error) {
@@ -32,7 +32,7 @@ func (s *Service) platformSession(c echo.Context, event string) (accountSession,
 	if err != nil {
 		return accountSession{}, false, c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
 	}
-	if !s.platformStaff(session) {
+	if !s.platformStaff(c.Request().Context(), session) {
 		return accountSession{}, false, c.JSON(http.StatusForbidden, map[string]string{"code": "forbidden", "message": "The platform console is limited to Detent staff"})
 	}
 	if err := s.auth.audit(c.Request().Context(), session.Subject, "", event); err != nil {
@@ -46,7 +46,7 @@ func (s *Service) platformPage(c echo.Context) error {
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Fplatform")
 	}
-	if !s.platformStaff(session) {
+	if !s.platformStaff(c.Request().Context(), session) {
 		return s.denied(c, http.StatusForbidden, "The platform console is limited to Detent staff")
 	}
 	if err := s.auth.audit(c.Request().Context(), session.Subject, "", "platform_opened"); err != nil {
@@ -59,8 +59,11 @@ func (s *Service) platformPage(c echo.Context) error {
 }
 
 type platformBilling struct {
-	Available bool   `json:"available"`
-	Status    string `json:"status,omitempty"`
+	Available  bool   `json:"available"`
+	Status     string `json:"status,omitempty"`
+	CustomerID string `json:"customer_id,omitempty"`
+	Plan       string `json:"plan,omitempty"`
+	PriceLabel string `json:"price_label,omitempty"`
 }
 
 type platformOrganization struct {
@@ -152,20 +155,29 @@ func (s *Service) platformOrganizationsJSON(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "registry_unavailable", "message": "The organization registry is temporarily unavailable"})
 	}
-	canSupport := s.supportActor(session.Email)
+	canSupport := s.supportActor(c.Request().Context(), session.Email)
 	ids := make([]string, len(organizations))
 	for index, organization := range organizations {
 		ids[index] = organization.ID
 		organizations[index].CanSupport = canSupport && organization.State == "ready"
 	}
 	s.eachReadyTenant(ctx, ids, func(call context.Context, index int, organization Organization) {
-		if state, err := s.tenantBillingState(call, organization, false); err == nil {
-			organizations[index].Billing = platformBilling{Available: true, Status: state.Status}
-		}
+		sections, billing := s.platformTenantSections(call, organization, false)
+		organizations[index].applySections(sections, billing)
 	})
+	unavailable := []string{}
+	for _, field := range platformUnavailable {
+		for _, organization := range organizations {
+			missing := field == "plan" && organization.Plan == nil || field == "grants" && organization.Grants == nil || field == "member_count" && organization.MemberCount == nil || field == "runner_count" && organization.RunnerCount == nil
+			if missing {
+				unavailable = append(unavailable, field)
+				break
+			}
+		}
+	}
 	return c.JSON(http.StatusOK, map[string]any{
-		"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_support": canSupport, "can_grant": s.entitlementAdministrator(session),
-		"organizations": organizations, "unavailable": platformUnavailable,
+		"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_support": canSupport, "can_grant": s.entitlementAdministrator(ctx, session),
+		"organizations": organizations, "unavailable": unavailable,
 	})
 }
 
@@ -213,24 +225,8 @@ func (s *Service) platformHealthJSON(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusOK, result)
 	}
-	var ids []string
-	for _, organization := range organizations {
-		if organization.State == "ready" {
-			ids = append(ids, organization.ID)
-		}
-	}
-	healthy := make([]bool, len(ids))
-	s.eachReadyTenant(ctx, ids, func(call context.Context, index int, organization Organization) {
-		status, err := s.serviceRequest(call, organization, "/internal/v1/health", map[string]string{}, nil)
-		healthy[index] = err == nil && status == http.StatusNoContent
-	})
-	running := 0
-	for _, ok := range healthy {
-		if ok {
-			running++
-		}
-	}
-	result["tenants"] = map[string]int{"expected": len(ids), "running": running}
+	expected, running := s.servingTenants(ctx, organizations)
+	result["tenants"] = map[string]int{"expected": expected, "running": running}
 	if allocation := s.config.Allocation; allocation != nil {
 		holding, allocating, err := s.admissionLoad(ctx, "")
 		if err != nil {

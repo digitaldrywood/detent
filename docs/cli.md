@@ -128,14 +128,9 @@ Structured command objects:
 | --- | --- |
 | `detent version` | `{"version":"v0.55.0","commit":"abc1234","build_date":"2026-08-01T00:00:00Z","go_version":"go1.26.4","os":"linux","arch":"amd64"}` |
 | `detent update` | The update status object, including `current_version`, `latest_version`, `latest_tag`, `update_available`, `install_source`, `action`, `message`, and `command` when present. |
-| `detent init` | `{"status":"ok","path":"/path/global.yaml","rule":"--config"}` |
-| `detent add-project` | `{"id":"api","workflow":"/repo/WORKFLOW.md","workdir":"/repo","weight":1,"priority":0,"paused":false,"credential_ref":"github"}` |
-| `detent refresh-project api` | A review-only proposal containing `files`, `preserved_settings`, `default_updates`, `opt_in_features`, and a unified `diff`; rerun with `--yes` to apply it. |
 | `detent pause api --reason "maintenance"` / `detent unpause api` | `{"status":"ok","project":"api","paused":true,"paused_reason":"maintenance"}` |
 | `detent resume api --for 2h` | `{"status":"ok","project":"api","active_hours_override_until":"2026-08-07T21:00:00Z"}` |
 | `detent promote api --priority 1` | `{"status":"ok","project":"api","priority":1}` |
-| `detent remove-project api` | `{"status":"ok","project":"api","removed":true}` |
-| `detent work-item add api --title "..." --body "..."` | `{"id":"wi-...","identifier":"wi-...","url":"/projects/api/kanban"}` |
 | `detent config path` | `{"path":"/path/global.yaml","rule":"--config"}` |
 | `detent exposure [--project api]` | `{"findings":[{"source_project":"api","source_repository":"private/api","destination_repository":"public/detent","issue_number":42,"issue_url":"https://github.com/public/detent/issues/42","matched_identifier":"private/api"}],"warnings":[]}` |
 | `detent auth token enable` / `detent auth token rotate` | `{"url":"https://detent.example.com/?token=..."}` |
@@ -169,45 +164,39 @@ unfinished attempts); window-crossing sessions can produce differences. Use
 `usage_events` as the reconciled reporting source. Unavailable database evidence
 warns; these diagnostics do not change policy, tracker lanes, or runtime state.
 
-### Project refresh proposals
-
-`detent refresh-project <project-id>` reads the registered project's split
-`WORKFLOW.md` and `detent.yaml`, derives its existing onboarding choices, and
-reconciles them with the current onboarding preset. It also preserves existing
-`AGENTS.md` content and proposes the current issue-effort rubric when missing.
-
-The command is read-only by default. Its output separates configured values
-that differ from current defaults, generated default additions or updates, and
-new opt-in capabilities with their effects. The unified diff is the proposed
-file change. Existing YAML comments and configured values remain authoritative;
-newly generated defaults carry a content marker so a later refresh can update
-an untouched default while treating an operator edit as explicit.
-
-Run the preview first, then pass `--yes` to apply that proposal. A refresh of
-the resulting files produces an empty diff. Legacy `WORKFLOW.md` frontmatter
-must first be migrated with `detent fix workflow-layout`.
-
 ### MCP stdio server
 
-`detent mcp` serves the shared read-only operator catalog to MCP-native clients.
-It supports the initialization-based MCP revisions `2024-11-05`, `2025-03-26`,
-`2025-06-18`, and `2025-11-25`, negotiating `2025-11-25` when a client requests
-another revision. The process reads newline-delimited JSON-RPC messages from
-stdin and reserves stdout for protocol frames. Logs and command diagnostics go
-to stderr. Successful calls use structured content for the 2025-06-18 and
-2025-11-25 revisions and one JSON text content block for the older revisions.
+`detent mcp` serves the shared typed operator catalog to any MCP client. Modern
+`2026-07-28` requests carry protocol version and client capabilities in `_meta`,
+without an initialization handshake. Clients can probe `server/discover` first.
+Older clients use `initialize` and `notifications/initialized` with
+`2025-11-25`, `2025-06-18`, `2025-03-26`, or `2024-11-05`; an unsupported
+initialization revision negotiates `2025-11-25`, never a modern handshake.
 
-The MCP process is an HTTP client of the already-running Detent daemon. It uses
-the same config, host, port, wildcard-to-loopback mapping, API-token precedence,
-timeouts, and read-scoped authentication bridge as `detent issue --explain`.
-It does not open SQLite, start a daemon, or call the tracker. Daemon transport
-failures return tool errors rather than empty results. Snapshot-backed results
-include `generated_at` and `freshness`; last-known results also include
-`expires_at`.
+The process reads newline-delimited JSON-RPC from stdin and reserves stdout for
+protocol frames. Diagnostics use stderr. Successful results include serialized
+JSON text; versions from `2025-06-18` also receive `structuredContent`, and modern
+results include `resultType: "complete"`. Arguments, results, frames and catalog
+responses are bounded. `tools/list` returns the complete current authorized
+catalog by default; each shared definition has `_meta["detent/toolset"]` for
+grouping. Request smaller groups with `params._meta["detent/toolsets"]`, an
+array such as `["board", "connection"]`. Discovery never authorizes a call.
 
-The exposed tools are `board_state`, `fleet_health`, `telemetry_usage`,
-`recent_activity`, and `explain_item`. Names, descriptions, input schemas,
-limits, and result shapes come from the shared operator catalog and executor.
+The MCP process uses the already-running daemon's authenticated application
+bridge, with the same config, host, port, wildcard-to-loopback mapping and
+API-token precedence as `detent issue --explain`. Set `DETENT_API_TOKEN` to an
+existing scoped credential when needed. Discovery and execution recheck current
+authority in the daemon; a legacy loopback read bridge does not gain write access.
+The bridge opens a default-confirmation application connection and forwards its
+server-issued handle on fixed typed-tool endpoints. Client metadata cannot
+select identity, organization or YOLO, and no arbitrary HTTP path is accepted.
+
+The five existing reads remain `board_state`, `fleet_health`, `telemetry_usage`,
+`recent_activity`, and `explain_item`. Available shared application commands and
+connection/approval reads are permission-filtered by the daemon. Snapshot results
+include `generated_at`, `freshness`, and `expires_at` for last-known results.
+See [generic MCP setup](mcp-capabilities.md#generic-client-setup) for authority,
+organization selection, approval URLs, explicit YOLO and trusted remote access.
 
 ### Operator skill installation
 
@@ -269,16 +258,25 @@ remain on stderr.
 
 ### Fleet state reads
 
-`detent state` reads the public `/api/v1/state` model from the running service.
+`detent state` reads the public `/api/v1/state` model from the running service
+with `projection=cli`, bounding the response before the client reads it.
 `--project <project-id>` selects the existing project-scoped state route. The
 CLI projection does not expose the fuller internal snapshot's `board_issues`
 array. It preserves `generated_at`, refresh freshness and source degradation,
 and snapshot-unavailable degraded responses.
 
-Every JSON array is limited to its first 100 entries in service order. The
+Every state data array is limited to its first 100 entries in service order. The
 top-level `truncation` object always reports that limit and contains
-`truncated` plus a `collections` array of JSON Pointer paths and omitted counts.
-The one-MiB shared-client response limit also bounds non-collection content.
+`truncated` plus a `collections` array of JSON Pointer paths, original `total`,
+`returned`, and `omitted` counts. The service limits compact JSON, including
+metadata, to 768 KiB (`max_bytes`), and individual encoded scalar values to
+16 KiB (`value_max_bytes`). The byte budget can return fewer than 100 entries.
+Oversized fields or subtrees appear in `omitted_fields` with a JSON Pointer
+`path` and `reason: byte_limit`; an omitted array also records its original
+`total`. Counts and freshness come from the complete scoped snapshot.
+The shared client's hard one-MiB transport limit remains unchanged. Older
+services remain compatible for small states, but large states require updating
+the service to support this projection.
 JSON is written to stdout, pretty output is only a human-readable projection,
 and diagnostics remain on stderr.
 

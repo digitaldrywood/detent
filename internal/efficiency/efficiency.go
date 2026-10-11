@@ -137,14 +137,18 @@ type CostPerOutcomeQuery struct {
 }
 
 type CostPerOutcomeMetrics struct {
-	TotalTokens            int64
-	SpendUSD               float64
-	MergedPRs              int64
-	ClosedIssues           int64
-	TokensPerMergedPR      float64
-	SpendPerMergedPRUSD    float64
-	TokensPerClosedIssue   float64
-	SpendPerClosedIssueUSD float64
+	ComputeUSD               float64
+	ComputeEvents            int64
+	ComputePerMergedPRUSD    float64
+	ComputePerClosedIssueUSD float64
+	TotalTokens              int64
+	SpendUSD                 float64
+	MergedPRs                int64
+	ClosedIssues             int64
+	TokensPerMergedPR        float64
+	SpendPerMergedPRUSD      float64
+	TokensPerClosedIssue     float64
+	SpendPerClosedIssueUSD   float64
 }
 
 type CostPerOutcomePoint struct {

@@ -1,33 +1,13 @@
-// `/login`.
-//
-// The artifact's wizard card (screen 5) with one job instead of four: a 640px
-// panel on a dimmed shell, the Detent Cloud logo, the two ways in, and the
-// invitation token for somebody who was sent one. There is no sidebar — the
-// reader is not signed in, so there is nothing to navigate.
-//
-// The hub serves the application shell for `/login` without a session
-// (decisions.md §12, "Serving"), which is why this route never reads the
-// bootstrap payload: it has to render for a reader the hub could not identify.
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
-import { Input } from "../../components/ui/input.tsx";
-import { Label } from "../../components/ui/label.tsx";
 import { cn } from "../../lib/utils.ts";
-import { useAccountApi, useAccountBootstrap } from "./context.ts";
-import { newKey } from "./idempotency.ts";
-import { useMutation } from "./useResource.ts";
 import { hubPath } from "../../runtime/basePath.ts";
 
 /** Where the browser goes to start a sign-in. */
 export const OIDC_START = "/auth/oidc/start";
-/**
- * The same start, unscoped: the reader is joining an organization they were
- * invited to rather than signing in to one they already belong to, so the hub
- * must not scope the authorization request to the organization this host
- * serves.
- */
-export const OIDC_START_UNSCOPED = "/auth/oidc/start?unscoped=1";
+/** Starts the existing OIDC flow on the account creation screen. */
+export const OIDC_SIGN_UP = "/auth/oidc/start?screen_hint=sign-up";
 
 /**
  * The friendly half of `?error=`. The hub puts a code in the query string
@@ -69,108 +49,63 @@ export function DetentCloudLogo(): React.ReactElement {
   );
 }
 
-/**
- * The card itself, with no data access of its own so it can be rendered by the
- * route, by the no-session entry path, and by a test.
- */
+/** Public navigation mirrors detent.build and always leaves the Hub for the site. */
+function SiteHeader(): React.ReactElement {
+  const links = [
+    ["How it works", "/how-it-works"],
+    ["Why Detent", "/why-detent"],
+    ["Dashboard", "/dashboard"],
+    ["Install", "/install"],
+    ["Docs", "/docs"],
+    ["Videos", "/videos"],
+    ["Open source", "/open-source"],
+  ] as const;
+  return (
+    <header className="shrink-0 border-b border-border bg-background/85 backdrop-blur">
+      <nav aria-label="Primary" className="mx-auto flex min-h-14 max-w-[1280px] flex-wrap items-center gap-x-6 gap-y-2 px-6 py-3 md:px-8 lg:h-14 lg:flex-nowrap lg:py-0">
+        <a href="https://detent.build/" aria-label="detent.build home" className="flex shrink-0 items-center gap-2.5 rounded-sm">
+          <svg viewBox="0 0 100 100" role="img" aria-label="Detent" className="size-6 text-[#4338ca] dark:text-[#818cf8]">
+            <path fill="currentColor" fillRule="evenodd" d="M22 15 H50 C73 15 87 31 87 50 C87 69 73 85 50 85 H22 Z M41 32 H50 C63 32 70 41 70 50 C70 59 63 68 50 68 H41 Z" />
+            <circle cx="51.5" cy="55.5" r="7.4" fill="currentColor" />
+          </svg>
+          <span className="font-mono text-[15px] font-semibold tracking-tight">detent<span className="text-primary">.</span>build</span>
+        </a>
+        <div className="order-last flex w-full gap-7 overflow-x-auto text-sm text-muted-foreground lg:order-none lg:ml-2 lg:w-auto">
+          {links.map(([label, path]) => (
+            <a key={path} href={`https://detent.build${path}`} className="inline-flex min-h-6 shrink-0 items-center whitespace-nowrap py-1 transition-colors hover:text-primary">{label}</a>
+          ))}
+        </div>
+        <a href="https://github.com/digitaldrywood/detent" className="ml-auto shrink-0 rounded-md border border-border px-3 py-1.5 font-mono text-xs transition-colors hover:border-primary hover:text-primary">GitHub ↗</a>
+      </nav>
+    </header>
+  );
+}
+
+/** Shared by the organization login route and the unauthenticated entry. */
 export function LoginCard({
   error,
-  onAcceptInvitation,
-  accepting = false,
-  acceptError = null,
   className,
 }: {
   readonly error?: string | null;
-  /** Absent where no session exists to accept an invitation with. */
-  readonly onAcceptInvitation?: ((token: string) => void) | null;
-  readonly accepting?: boolean;
-  readonly acceptError?: string | null;
   readonly className?: string;
 }): React.ReactElement {
-  const [token, setToken] = React.useState("");
   const message = typeof error === "string" ? loginErrorMessage(error) : null;
-
   return (
-    <div className="grid flex-1 place-items-center p-10">
-      <div
-        className={cn(
-          "w-full max-w-[640px] overflow-hidden rounded-2xl border border-border bg-card shadow-[0_30px_80px_rgb(0_0_0/45%)]",
-          className,
-        )}
-      >
-        <div className="border-b border-border/60 px-7 pt-[26px] pb-[18px]">
-          <DetentCloudLogo />
-        </div>
-        <div className="px-7 pt-6 pb-[26px]">
-          <h1 className="mb-2 text-2xl font-semibold tracking-[-0.02em] text-balance">
-            Sign in to Detent
-          </h1>
-          <p className="mb-[18px] text-sm text-muted-foreground">
-            Detent runs your work on your own machines, with your own provider login. Sign in to
-            reach your organization's board, runners and spend.
-          </p>
-
+    <div className="detent-sign-in flex min-h-full flex-1 flex-col bg-background text-foreground">
+      <SiteHeader />
+      <main className="grid flex-1 place-items-center px-4 py-12 sm:px-6">
+        <section aria-labelledby="login-title" className={cn("w-full max-w-[400px] rounded-xl border border-border bg-card p-7 shadow-lg", className)}>
+          <h1 id="login-title" className="mb-2 text-2xl font-semibold tracking-tight">Sign in to Detent</h1>
+          <p className="mb-6 text-sm text-muted-foreground">Open your workspace or create an account to get started.</p>
           {message === null ? null : (
-            <div
-              role="alert"
-              className="mb-4 rounded-[10px] border border-destructive/30 bg-destructive/8 px-3.5 py-3 text-[13px] text-destructive-foreground"
-            >
-              {message}
-            </div>
+            <div role="alert" className="mb-4 rounded-lg border border-destructive/30 bg-destructive/8 px-3.5 py-3 text-sm text-destructive-foreground">{message}</div>
           )}
-
           <div className="flex flex-col gap-2.5">
-            <Button
-              size="lg"
-              className="w-full justify-center"
-              render={<a href={hubPath(OIDC_START)}>Continue with WorkOS</a>}
-            />
-            <Button
-              size="lg"
-              variant="outline"
-              className="w-full justify-center"
-              render={<a href={hubPath(OIDC_START_UNSCOPED)}>Join with invitation</a>}
-            />
+            <Button size="lg" className="w-full justify-center" render={<a href={hubPath(OIDC_START)}>Sign in</a>} />
+            <Button size="lg" variant="outline" className="w-full justify-center" render={<a href={hubPath(OIDC_SIGN_UP)}>Create account</a>} />
           </div>
-
-          <form
-            className="mt-6 border-t border-border/60 pt-5"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const value = token.trim();
-              if (value.length === 0) return;
-              if (onAcceptInvitation != null) onAcceptInvitation(value);
-              else globalThis.location?.assign(hubPath(`/invite?token=${encodeURIComponent(value)}`));
-            }}
-          >
-            <Label htmlFor="login-invitation-token" className="text-sm font-medium">
-              Have an invitation token?
-            </Label>
-            <p className="mt-1 mb-2.5 text-[13px] text-muted-foreground">
-              Paste the token from your invitation email to join the organization it names.
-            </p>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Input
-                id="login-invitation-token"
-                name="token"
-                autoComplete="one-time-code"
-                placeholder="inv_…"
-                value={token}
-                onChange={(event) => setToken(event.currentTarget.value)}
-                className="flex-1"
-              />
-              <Button type="submit" variant="secondary" disabled={accepting}>
-                {accepting ? "Joining…" : "Join"}
-              </Button>
-            </div>
-            {acceptError === null ? null : (
-              <p role="alert" className="mt-2 text-[13px] text-destructive-foreground">
-                {acceptError}
-              </p>
-            )}
-          </form>
-        </div>
-      </div>
+        </section>
+      </main>
     </div>
   );
 }
@@ -182,27 +117,7 @@ export function locationError(search?: string): string | null {
   return new URLSearchParams(raw).get("error");
 }
 
-/**
- * The route. Where a session already exists the invitation token is accepted
- * through the API and the browser follows the `next` the hub names — it is
- * always a fresh sign-in against whichever organization now owns the session,
- * so the client never guesses the destination (§12, "Organization").
- */
+/** The login route needs no bootstrap or session to render. */
 export function LoginRoute(): React.ReactElement {
-  const api = useAccountApi();
-  const bootstrap = useAccountBootstrap();
-  const accept = useMutation(async (token: string) => {
-    const result = await api.acceptInvitation({ token, key: newKey() });
-    globalThis.location?.assign(result.next);
-    return result;
-  });
-
-  return (
-    <LoginCard
-      error={locationError()}
-      onAcceptInvitation={bootstrap === null ? null : (token) => void accept.call(token)}
-      accepting={accept.pending}
-      acceptError={accept.error?.message ?? null}
-    />
-  );
+  return <LoginCard error={locationError()} />;
 }

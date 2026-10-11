@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // The issue page's activity feed: the merge, the fold and what the rows draw.
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import attemptsFixture from "../../src/contracts/fixtures/work-attempt-list.json";
@@ -20,6 +20,7 @@ import {
   mergeActivity,
   type ActivityRow,
 } from "../../src/app/work/lib/activity.ts";
+import { useActivityCitation } from "../../src/app/work/lib/useActivityCitation.ts";
 import { ActivityFeed, LiveRow } from "../../src/app/work/components/ActivityFeed.tsx";
 
 afterEach(cleanup);
@@ -48,6 +49,9 @@ describe("the activity merge", () => {
       { type: "change.created", sentence: "opened a change request", lowValue: false },
       { type: "run.checkpointed", sentence: "checkpointed the attempt", lowValue: true },
       { type: "comment.edited", sentence: "edited a comment", lowValue: true },
+      { type: "issue.edited", data: { operation: "archive", fields: ["archived"], reason_detail: "Archived automatically after 30 days" }, sentence: "Archived automatically after 30 days", lowValue: false },
+      { type: "issue.edited", data: { operation: "archive", fields: ["archived"] }, sentence: "archived the issue", lowValue: false },
+      { type: "issue.edited", data: { operation: "restore", fields: ["archived"] }, sentence: "restored the issue", lowValue: false },
       // The log is append-only and the hub grows it: an unknown type is still
       // a row, named by its own type, rather than a dropped page.
       { type: "nothing.we.know", sentence: "recorded nothing.we.know", lowValue: true },
@@ -56,7 +60,7 @@ describe("the activity merge", () => {
       const written = historySentence({
         ...(HISTORY[0] as CollaborationEvent),
         type: testCase.type,
-        data: {},
+        data: "data" in testCase ? testCase.data : {},
       });
       expect(written.sentence, testCase.type).toBe(testCase.sentence);
       expect(written.lowValue, testCase.type).toBe(testCase.lowValue);
@@ -180,6 +184,7 @@ describe("the activity merge", () => {
 
   it("names a runner by its own id and a stranger by a shortened principal", () => {
     expect(actorLabel({ kind: "runner", principal_id: "tok_r" }, null, "rnr_mac")).toBe("rnr_mac");
+    expect(actorLabel({ kind: "integration", principal_id: "auto_archive" }, null, null)).toBe("Detent");
     expect(actorLabel({ kind: "runner", principal_id: "tok_r" }, null, null)).toBe("tok_r");
     expect(
       actorLabel({ kind: "runner", principal_id: "runner_be4aaeec1c424bb6afbe94aea6d605d6" }, null, null),
@@ -305,4 +310,24 @@ describe("the live row", () => {
     screen.getByTestId("view-conversation").click();
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
+});
+
+it("reveals and highlights a cited folded event and leaves unrelated links alone", () => {
+  function CitedFeed() {
+    const highlightedId = useActivityCitation("wi_subject");
+    return <><a href="#issue-history-evt_old">Lane history</a><a href="#unrelated">Other section</a><ActivityFeed
+      rows={[row({ key: "history:evt_old", lowValue: true, reason: "approval missing" }), row({ key: "history:evt_next", lowValue: true })]}
+      live={null} liveAt={Number.MAX_SAFE_INTEGER} onReply={null} posting={false} highlightedId={highlightedId}
+    /></>;
+  }
+  window.history.replaceState(null, "", "/work/i/wi_subject");
+  render(<CitedFeed />);
+  expect(screen.getByTestId("activity-fold")).not.toBeNull();
+  fireEvent.click(screen.getByRole("link", { name: "Lane history" }));
+  const target = document.getElementById("issue-history-evt_old");
+  expect(target?.getAttribute("data-citation-highlight")).toBe("true");
+  expect(target?.textContent).toContain("approval missing");
+  expect(screen.queryByTestId("activity-fold")).toBeNull();
+  expect(screen.getByRole("link", { name: "Other section" }).getAttribute("href")).toBe("#unrelated");
+  window.history.replaceState(null, "", "/");
 });

@@ -9,6 +9,10 @@ import (
 )
 
 func TestOpenUsesIsolatedMigratedDatabase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	first := Open(t)

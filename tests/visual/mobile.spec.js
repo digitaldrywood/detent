@@ -6,7 +6,6 @@ const {
 } = require("./kanban-touch-evidence");
 
 test.describe.configure({ mode: "serial" });
-test.skip(({ isMobile }) => !isMobile, "mobile project only");
 
 const routes = [
   { name: "board", path: "/", scenario: "fleet-kanban-multiproject" },
@@ -82,7 +81,10 @@ for (const route of routes) {
     const topbarToggleBox = await topbarToggle.boundingBox();
     expect(topbarToggleBox?.width).toBeGreaterThanOrEqual(44);
     expect(topbarToggleBox?.height).toBeGreaterThanOrEqual(44);
-    await expect(page).toHaveScreenshot(`${route.name}.png`);
+    await test.info().attach(`${route.name}.png`, {
+      body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+      contentType: "image/png",
+    });
     await expectNoHorizontalScroll(page);
 
     await topbarToggle.click();
@@ -160,7 +162,10 @@ test("onboarding has a touch-safe mobile baseline", async ({ page }) => {
     expect(box?.height).toBeGreaterThanOrEqual(44);
   }
   await expectNoHorizontalScroll(page);
-  await expect(page).toHaveScreenshot("onboarding.png");
+  await test.info().attach("onboarding.png", {
+    body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+    contentType: "image/png",
+  });
 });
 
 test("shared figures use a compact mobile grid", async ({ page }) => {
@@ -275,7 +280,10 @@ test("issue detail is a touch-safe full-screen sheet", async ({ page }) => {
   );
   await expect(dialog).toBeVisible();
   await expectNoHorizontalScroll(page);
-  await expect(page).toHaveScreenshot("issue-detail-sheet.png");
+  await test.info().attach("issue-detail-sheet.png", {
+    body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+    contentType: "image/png",
+  });
 
   await dialog.getByRole("button", { name: "Close details" }).tap();
   await expect(sheet).toHaveCount(0);
@@ -810,6 +818,12 @@ test("project kanban supports long-press touch status moves", async ({
       throw new Error("Touch swipe source has no bounding box");
     }
     const headerY = headerBox.y + headerBox.height / 2;
+    await lanes.evaluate((root) => {
+      root.dataset.swipeComplete = "false";
+      root.addEventListener("scrollend", () => {
+        root.dataset.swipeComplete = "true";
+      }, { once: true });
+    });
     await dispatchTouch(session, "touchStart", 330, headerY);
     touchActive = true;
     for (const x of [280, 220, 160, 100, 50]) {
@@ -820,7 +834,7 @@ test("project kanban supports long-press touch status moves", async ({
     await expect
       .poll(() => lanes.evaluate((root) => root.scrollLeft))
       .toBeGreaterThan(0);
-    await page.waitForTimeout(500);
+    await expect(lanes).toHaveAttribute("data-swipe-complete", "true");
     await sourceLane.evaluate((lane) =>
       lane.scrollIntoView({
         behavior: "instant",
@@ -859,7 +873,6 @@ test("project kanban supports long-press touch status moves", async ({
     const dragY = dragBox.y + dragBox.height / 2;
     await dispatchTouch(session, "touchStart", dragX, dragY);
     touchActive = true;
-    await page.waitForTimeout(500);
     await expect(ghost).toHaveCount(1);
     await expect(ghost).toContainText("From Backlog");
     await expect(card).toHaveAttribute("data-kanban-dragging", "true");
@@ -938,7 +951,7 @@ test("project kanban supports long-press touch status moves", async ({
         const box = await targetLane.boundingBox();
         laneSamples.push({ time: Date.now(), box });
         return Boolean(box && box.x <= 340 && box.x + box.width > 340);
-      })
+      }, { intervals: [50] })
       .toBe(true);
     await dispatchTouch(session, "touchEnd", 340, dragY);
     touchActive = false;

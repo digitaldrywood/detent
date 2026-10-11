@@ -26,6 +26,8 @@ const (
 )
 
 type githubWebhookPayload struct {
+	Sender      *githubWebhookActor       `json:"sender"`
+	Comment     *githubWebhookComment     `json:"comment"`
 	Repository  *githubWebhookRepository  `json:"repository"`
 	Issue       *githubWebhookIssue       `json:"issue"`
 	PullRequest *githubWebhookPullRequest `json:"pull_request"`
@@ -48,19 +50,28 @@ type githubWebhookActor struct {
 	Login *string `json:"login"`
 }
 
+type githubWebhookComment struct {
+	NodeID    string              `json:"node_id"`
+	Body      string              `json:"body"`
+	User      *githubWebhookActor `json:"user"`
+	CreatedAt time.Time           `json:"created_at"`
+	UpdatedAt time.Time           `json:"updated_at"`
+}
+
 type githubWebhookIssue struct {
-	DatabaseID *int64              `json:"id"`
-	NodeID     *string             `json:"node_id"`
-	Number     *int                `json:"number"`
-	Title      *string             `json:"title"`
-	Body       json.RawMessage     `json:"body"`
-	HTMLURL    *string             `json:"html_url"`
-	State      *string             `json:"state"`
-	User       *githubWebhookActor `json:"user"`
-	Labels     json.RawMessage     `json:"labels"`
-	Assignees  json.RawMessage     `json:"assignees"`
-	CreatedAt  json.RawMessage     `json:"created_at"`
-	UpdatedAt  json.RawMessage     `json:"updated_at"`
+	PullRequest json.RawMessage     `json:"pull_request"`
+	DatabaseID  *int64              `json:"id"`
+	NodeID      *string             `json:"node_id"`
+	Number      *int                `json:"number"`
+	Title       *string             `json:"title"`
+	Body        json.RawMessage     `json:"body"`
+	HTMLURL     *string             `json:"html_url"`
+	State       *string             `json:"state"`
+	User        *githubWebhookActor `json:"user"`
+	Labels      json.RawMessage     `json:"labels"`
+	Assignees   json.RawMessage     `json:"assignees"`
+	CreatedAt   json.RawMessage     `json:"created_at"`
+	UpdatedAt   json.RawMessage     `json:"updated_at"`
 }
 
 type githubWebhookPullRequest struct {
@@ -159,6 +170,9 @@ func applyWebhook(ctx context.Context, tx *sql.Tx, delivery storedWebhook, now t
 	if err := json.Unmarshal(delivery.Payload, &payload); err != nil {
 		return webhookProcessResult{}, fmt.Errorf("decode GitHub webhook payload: %w", err)
 	}
+	if result, handled, err := applyNativeIssueWebhook(ctx, tx, delivery, payload, now); handled || err != nil {
+		return result, err
+	}
 	if id, found, err := resolveWebhookRepositoryID(ctx, tx, webhookRepositoryFullName(payload.Repository)); err != nil {
 		return webhookProcessResult{}, err
 	} else if found {
@@ -166,7 +180,7 @@ func applyWebhook(ctx context.Context, tx *sql.Tx, delivery storedWebhook, now t
 		if err != nil {
 			return webhookProcessResult{}, err
 		}
-		if (delivery.EventType == "issues" && profile == "native") || (delivery.EventType != "issues" && !enabled) {
+		if profile == "" || (delivery.EventType == "issues" && profile == "native") || (delivery.EventType != "issues" && !enabled) {
 			return webhookProcessResult{Outcome: webhookOutcomeIgnored, RepositoryID: &id}, nil
 		}
 	}
@@ -412,7 +426,7 @@ func applyRepositoryProjection(ctx context.Context, tx *sql.Tx, repository norma
 	return repositoryID, result, nil
 }
 
-func resolveWebhookRepositoryID(ctx context.Context, tx *sql.Tx, fullName string) (int64, bool, error) {
+func resolveWebhookRepositoryID(ctx context.Context, tx nativeQueryer, fullName string) (int64, bool, error) {
 	owner, name, ok := splitRepositoryFullName(fullName)
 	if !ok {
 		return 0, false, nil
@@ -440,7 +454,7 @@ func applyIssueProjection(ctx context.Context, tx *sql.Tx, repositoryID int64, i
 	if err != nil {
 		return projectionApplyResult{}, err
 	}
-	if profile == "native" {
+	if profile != "github_compatible" {
 		return projectionApplyResult{Stale: true}, nil
 	}
 	var issueID int64

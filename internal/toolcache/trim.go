@@ -37,13 +37,13 @@ func (p Policy) Normalized() Policy {
 	return p.NormalizedForCapacity(capacity)
 }
 
-// NormalizedForCapacity uses total volume capacity; zero selects the fallback.
+// NormalizedForCapacity uses a tenth of total volume capacity, at most 40 GiB; zero selects the fallback.
 func (p Policy) NormalizedForCapacity(capacity uint64) Policy {
 	if p.MaxAge == 0 {
 		p.MaxAge = 48 * time.Hour
 	}
 	if p.MaxBytes == 0 {
-		p.MaxBytes = int64(capacity / 10)
+		p.MaxBytes = min(int64(capacity/10), 40<<30)
 		if p.MaxBytes == 0 {
 			p.MaxBytes = 20 << 30
 		}

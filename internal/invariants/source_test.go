@@ -25,6 +25,10 @@ type sourcePolicy struct {
 }
 
 func TestRepositorySources(t *testing.T) {
+	if testing.Short() {
+		t.Skip("repository-wide package loading and type checking")
+	}
+
 	root := repositoryRoot(t)
 	data, err := os.ReadFile(filepath.Join(root, "internal/invariants/source_policy.json"))
 	if err != nil {
@@ -192,8 +196,10 @@ func laneReasonArgument(name string) (int, bool) {
 	return 0, false
 }
 
+var retiredSymbolNormalizer = strings.NewReplacer("_", "", "-", "", " ", "")
+
 func retiredSymbol(text string) bool {
-	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "").Replace(text))
+	normalized := strings.ToLower(retiredSymbolNormalizer.Replace(text))
 	for _, forbidden := range []string{"workerlanerevocation", "indeterminatelanestop", "laneindeterminatestop", "stopindeterminatelane", "laneoriginindeterminate"} {
 		if strings.Contains(normalized, forbidden) {
 			return true
@@ -208,8 +214,10 @@ func historicalPriorityReader(file string) bool {
 	return file == "internal/store/pool_contention.go" || file == "internal/store/capacity_constraints.go" || file == "internal/config/historical_decision_reasons.go"
 }
 
+var retiredPrioritySymbolNormalizer = strings.NewReplacer("_", "", "-", "", " ", "", ".", "")
+
 func retiredPrioritySymbol(text string) bool {
-	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "", ".", "").Replace(text))
+	normalized := strings.ToLower(retiredPrioritySymbolNormalizer.Replace(text))
 	for _, forbidden := range []string{
 		"mergefairnessblocks", "mergefairnessheadreserved",
 		"setpreempt", "preemptions", "preemptablerunningproject", "preemptionweightlocked", "preemptprojectslocked", "preemptprojectlocked",

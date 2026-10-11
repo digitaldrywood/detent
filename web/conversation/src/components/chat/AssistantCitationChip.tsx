@@ -148,35 +148,37 @@ export function AssistantCitationChip({
               }}
               aria-label="Edit citation comment"
               className="w-72 max-w-[calc(100vw-1rem)]"
-              viewportClassName="p-3"
+              padding="none"
               onPointerDown={(event) => event.stopPropagation()}
             >
-              <AssistantCitationCommentEditor
-                key={serializeAssistantCitation(citation)}
-                citation={citation}
-                inputRef={commentInputRef}
-                onSubmit={(comment) => {
-                  if (!commentEditor.onSave(comment)) return false;
-                  commentEditor.onOpenChange(false);
-                  return true;
-                }}
-                {...(commentEditor.onSaveAndSend
-                  ? {
-                      onSubmitAndSend: (comment: string) => {
-                        if (!commentEditor.onSaveAndSend?.(comment)) return false;
-                        commentEditor.onOpenChange(false);
-                        return true;
-                      },
-                    }
-                  : {})}
-                onCancel={() => {
-                  if (commentEditor.onCancel) {
-                    commentEditor.onCancel();
-                  } else {
+              <div className="p-3">
+                <AssistantCitationCommentEditor
+                  key={serializeAssistantCitation(citation)}
+                  citation={citation}
+                  inputRef={commentInputRef}
+                  onSubmit={(comment) => {
+                    if (!commentEditor.onSave(comment)) return false;
                     commentEditor.onOpenChange(false);
-                  }
-                }}
-              />
+                    return true;
+                  }}
+                  {...(commentEditor.onSaveAndSend
+                    ? {
+                        onSubmitAndSend: (comment: string) => {
+                          if (!commentEditor.onSaveAndSend?.(comment)) return false;
+                          commentEditor.onOpenChange(false);
+                          return true;
+                        },
+                      }
+                    : {})}
+                  onCancel={() => {
+                    if (commentEditor.onCancel) {
+                      commentEditor.onCancel();
+                    } else {
+                      commentEditor.onOpenChange(false);
+                    }
+                  }}
+                />
+              </div>
             </PopoverPopup>
           ) : null}
         </Popover>

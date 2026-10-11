@@ -183,7 +183,16 @@ import {
 import { resolveLinkTarget } from "../browser/browserLinkTarget";
 import { PullRequestLinkPreview } from "./pullRequest/PullRequestLinkPreview";
 
+type AttachmentRenderer = (
+  id: string,
+  label: React.ReactNode,
+  image: boolean,
+  expand?: (preview: ExpandedImagePreview) => void,
+) => React.ReactNode;
+const AttachmentRendererContext = React.createContext<AttachmentRenderer | undefined>(undefined);
+
 interface ChatMarkdownProps {
+  renderAttachment?: AttachmentRenderer | undefined;
   text: string;
   cwd: string | undefined;
   threadRef?: ScopedThreadRef | undefined;
@@ -451,8 +460,8 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
   },
   protocols: {
     ...defaultSchema.protocols,
-    href: [...(defaultSchema.protocols?.href ?? []), "file", "t3-citation"],
-    src: [...(defaultSchema.protocols?.src ?? []), "file"],
+    href: [...(defaultSchema.protocols?.href ?? []), "file", "t3-citation", "attachment"],
+    src: [...(defaultSchema.protocols?.src ?? []), "file", "attachment"],
   },
 } satisfies Parameters<typeof rehypeSanitize>[0];
 
@@ -2316,6 +2325,7 @@ function useChatMarkdownState({
     return buildFileLinkParentSuffixByPath(filePaths);
   }, [inlineCodeFileLinkMetaByText, markdownFileLinkMetaByHref]);
   const markdownUrlTransform = useCallback((href: string) => {
+    if (classifyMarkdownImageSource(href)._tag === "Attachment") return href;
     if (parseAssistantCitationHref(href)) return href;
     if (isWindowsDrivePathHref(href)) return href;
     return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
@@ -2744,6 +2754,9 @@ const CHAT_MARKDOWN_COMPONENTS = {
       updateThreadPullRequestLink,
       fileLinkChip,
     } = use(ChatMarkdownRendererContext);
+    const renderAttachment = use(AttachmentRendererContext);
+    const attachment = classifyMarkdownImageSource(href);
+    if (attachment._tag === "Attachment") return renderAttachment?.(attachment.id, children, false) ?? <span>Attachment unavailable</span>;
     const citation = href ? parseAssistantCitationHref(href) : null;
     if (citation) return <AssistantCitationChip citation={citation} />;
     const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
@@ -3003,6 +3016,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
   },
   img: function MarkdownImage({ node, title, src, alt, ...props }) {
     const { expandMedia, cwd, imageBaseDir, threadRef } = use(ChatMarkdownRendererContext);
+    const renderAttachment = use(AttachmentRendererContext);
     const imageExpand = use(MarkdownLinkContext) ? undefined : expandMedia;
     const localSrc = node?.properties?.dataLocalSrc;
     const markdownTitle = node?.properties?.dataMarkdownTitle;
@@ -3018,6 +3032,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
     const { className, style: _style, width, height, ...imageProps } = props;
     const authoredSizeStyle = authoredImageSizeStyle(width, height);
     const imageSource = classifyMarkdownImageSource(classifiedSrc, imageBaseDir ?? cwd);
+    if (imageSource._tag === "Attachment") return renderAttachment?.(imageSource.id, altText, true, imageExpand) ?? <span>Attachment unavailable</span>;
     const kind = mediaKindFromPath(classifiedSrc) ?? "image";
     if (imageSource._tag === "Direct") {
       const mediaSrc = resolveProtocolRelativeMediaUrl(imageSource.uri);
@@ -3125,6 +3140,7 @@ function ChatMarkdown({
   className,
   lineBreaks = false,
   parseRawHtml = true,
+  renderAttachment,
   extraRemarkPlugins = EMPTY_REMARK_PLUGINS,
   ...props
 }: ChatMarkdownProps) {
@@ -3156,17 +3172,19 @@ function ChatMarkdown({
       )}
       onCopy={handleCopy}
     >
-      <ChatMarkdownRendererContext value={componentState}>
-        <ReactMarkdown
-          remarkPlugins={remarkPlugins}
-          rehypePlugins={parseRawHtml ? CHAT_MARKDOWN_REHYPE_PLUGINS : undefined}
-          skipHtml={false}
-          components={CHAT_MARKDOWN_COMPONENTS}
-          urlTransform={markdownUrlTransform}
-        >
-          {text}
-        </ReactMarkdown>
-      </ChatMarkdownRendererContext>
+      <AttachmentRendererContext value={renderAttachment}>
+        <ChatMarkdownRendererContext value={componentState}>
+          <ReactMarkdown
+            remarkPlugins={remarkPlugins}
+            rehypePlugins={parseRawHtml ? CHAT_MARKDOWN_REHYPE_PLUGINS : undefined}
+            skipHtml={false}
+            components={CHAT_MARKDOWN_COMPONENTS}
+            urlTransform={markdownUrlTransform}
+          >
+            {text}
+          </ReactMarkdown>
+        </ChatMarkdownRendererContext>
+      </AttachmentRendererContext>
       {localMediaPreview ? (
         <ExpandedImageDialog
           preview={localMediaPreview}

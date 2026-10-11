@@ -91,19 +91,17 @@ func (o *Orchestrator) operatorMergeWedgedPullRequests(ctx context.Context, stat
 				}
 				continue
 			}
-			merged := cloneIssue(issue)
-			merged.PullRequest.State = "MERGED"
-			activityAt := now.UTC()
-			merged.PullRequest.ActivityAt = &activityAt
-			if err := o.updateIssueState(ctx, state, merged, doneStateName(o.cfg.TerminalStates), now, "merge_worker_programmatic_merge"); err != nil {
+			merged, deliveredAt := o.programmaticMergeDelivery(issue)
+			if err := o.updateIssueState(ctx, state, merged, doneStateName(o.cfg.TerminalStates), deliveredAt, "merge_worker_programmatic_merge"); err != nil {
 				if o.logger != nil {
 					o.logger.Warn("operator_merge_when_wedged_state_update_failed", mergeWorkerLogAttrs(issue, "error", err)...)
 				}
 				continue
 			}
+			o.recordMergeCompleted(state, merged, deliveredAt, doneStateName(o.cfg.TerminalStates))
 			transitioned[strings.TrimSpace(issue.ID)] = struct{}{}
 			recordStateEvent(state, telemetry.ActivityEvent{
-				At:      now,
+				At:      deliveredAt,
 				Event:   "merge_worker_programmatic_merge",
 				Message: fmt.Sprintf("operator routine merged %s after the merge path stayed wedged for %s", issueLabel(issue), o.cfg.Operator.mergeWedgeAge()),
 			})

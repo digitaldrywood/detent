@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -86,53 +87,117 @@ func TestBackendWithFakeModel(t *testing.T) {
 }
 
 func TestBackendToolRoundTrip(t *testing.T) {
-	calls := 0
-	backend := newBackend(func(ctx context.Context, request *ai.ModelRequest, stream ai.ModelStreamCallback) (*ai.ModelResponse, error) {
-		calls++
-		if calls == 1 {
-			if len(request.Tools) != 1 || request.Tools[0].Name != "list_attention" {
-				t.Fatalf("tools = %+v", request.Tools)
-			}
-			return &ai.ModelResponse{Message: ai.NewModelMessage(ai.NewToolRequestPart(&ai.ToolRequest{Name: "list_attention", Ref: "call-1", Input: map[string]any{"scope": "project"}})),
-				FinishReason: ai.FinishReasonStop, Usage: &ai.GenerationUsage{InputTokens: 10, OutputTokens: 3, TotalTokens: 13}}, nil
-		}
-		found := false
-		for _, message := range request.Messages {
-			for _, part := range message.Content {
-				if part.IsToolResponse() && part.ToolResponse.Ref == "call-1" {
-					found = true
+	attention := runner.AgentTool{Name: "list_attention", Description: "List attention", InputSchema: json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string"}}}`)}
+	split := runner.AgentTool{Name: "propose_issue_split", Description: "Propose split", InputSchema: json.RawMessage(`{"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"object","required":["title","state"],"properties":{"title":{"type":"string"},"state":{"type":"string"}}}}}}`)}
+	valid := map[string]any{"children": []any{
+		map[string]any{"title": "Storage", "state": "Todo"}, map[string]any{"title": "API", "state": "Todo"},
+		map[string]any{"title": "Runner", "state": "Todo"}, map[string]any{"title": "Tests", "state": "Todo"},
+		map[string]any{"title": "Docs", "state": "Todo"}, map[string]any{"title": "Acceptance", "state": "Todo"},
+	}}
+	invalid := map[string]any{"children": []any{
+		map[string]any{"title": "Storage", "state": "Todo"}, map[string]any{"title": "API", "state": "Todo"},
+		map[string]any{"title": "Runner", "state": "Todo"}, map[string]any{"title": "Tests", "state": "Todo"},
+		map[string]any{"title": "Docs"}, map[string]any{"title": "Acceptance"},
+	}}
+	for _, test := range []struct {
+		name        string
+		tool        runner.AgentTool
+		inputs      []any
+		toolError   string
+		handlerErr  error
+		wantCalls   int
+		wantHandled int
+		wantError   string
+		wantResults []string
+		resultCall  int
+	}{
+		{name: "valid call", tool: attention, inputs: []any{map[string]any{"scope": "project"}}, wantCalls: 2, wantHandled: 1},
+		{name: "schema invalid then valid", tool: split, inputs: []any{invalid, valid}, wantCalls: 3, wantHandled: 1, wantResults: []string{"children.4: state is required", "children.5: state is required"}, resultCall: 2},
+		{name: "schema invalid exhausts limit", tool: split, inputs: []any{map[string]any{"children": []any{map[string]any{"state": "Todo"}}}, invalid}, wantCalls: 9, wantError: "children.5: state is required", wantResults: []string{"children.4: state is required", "children.5: state is required"}, resultCall: 3},
+		{name: "handler validation then valid", tool: split, inputs: []any{valid, valid}, toolError: "Each child requires a bounded title, description and target state", wantCalls: 3, wantHandled: 2},
+		{name: "handler validation exhausts limit", tool: split, inputs: []any{valid}, toolError: "Each child requires a bounded title, description and target state", wantCalls: 9, wantHandled: 8, wantError: "Each child requires a bounded title, description and target state"},
+		{name: "backend error ends turn", tool: attention, inputs: []any{map[string]any{"scope": "project"}}, handlerErr: errors.New("database unavailable"), wantCalls: 1, wantHandled: 1, wantError: "database unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls, handled := 0, 0
+			backend := newBackend(func(ctx context.Context, request *ai.ModelRequest, stream ai.ModelStreamCallback) (*ai.ModelResponse, error) {
+				calls++
+				if calls == 1 {
+					if len(request.Tools) != 1 || request.Tools[0].Name != test.tool.Name {
+						t.Fatalf("tools = %+v", request.Tools)
+					}
+				} else {
+					last := request.Messages[len(request.Messages)-1]
+					if len(last.Content) != 1 || !last.Content[0].IsToolResponse() || last.Content[0].ToolResponse.Ref != fmt.Sprintf("call-%d", calls-1) {
+						t.Fatalf("tool result absent from model call %d: %+v", calls, last)
+					}
+					output, err := json.Marshal(last.Content[0].ToolResponse.Output)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if calls == test.resultCall {
+						for _, message := range test.wantResults {
+							if !strings.Contains(string(output), message) {
+								t.Fatalf("tool result = %s, want %q", output, message)
+							}
+						}
+					}
+					if test.toolError != "" && (calls == 2 || test.wantError != "") && !strings.Contains(string(output), test.toolError) {
+						t.Fatalf("tool result = %s, want %q", output, test.toolError)
+					}
 				}
+				if calls <= len(test.inputs) || test.wantError != "" {
+					input := test.inputs[min(calls-1, len(test.inputs)-1)]
+					return &ai.ModelResponse{Message: ai.NewModelMessage(ai.NewToolRequestPart(&ai.ToolRequest{Name: test.tool.Name, Ref: fmt.Sprintf("call-%d", calls), Input: input})),
+						FinishReason: ai.FinishReasonStop, Usage: &ai.GenerationUsage{InputTokens: 10, OutputTokens: 3, TotalTokens: 13}}, nil
+				}
+				if err := stream(ctx, &ai.ModelResponseChunk{Role: ai.RoleModel, Content: []*ai.Part{ai.NewTextPart("One issue.")}}); err != nil {
+					return nil, err
+				}
+				return &ai.ModelResponse{Message: ai.NewModelTextMessage("One issue."), FinishReason: ai.FinishReasonStop,
+					Usage: &ai.GenerationUsage{InputTokens: 20, CachedContentTokens: 5, OutputTokens: 4, ThoughtsTokens: 1, TotalTokens: 24}}, nil
+			})
+			var usage runner.AgentTokenCounts
+			var text strings.Builder
+			_, err := backend.RunTurnWithTools(t.Context(), runner.AgentTurnRequest{Prompt: "What needs attention?"}, []runner.AgentTool{test.tool},
+				func(_ context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
+					handled++
+					if call.Name != test.tool.Name {
+						t.Fatalf("tool call = %+v", call)
+					}
+					if test.handlerErr != nil {
+						return runner.AgentToolResult{}, test.handlerErr
+					}
+					if test.toolError != "" && (handled == 1 || test.wantError != "") {
+						output, err := json.Marshal(map[string]string{"error": test.toolError})
+						return runner.AgentToolResult{Content: string(output)}, err
+					}
+					return runner.AgentToolResult{Content: `{"issues":["one"]}`, Success: true}, nil
+				}, func(update runner.AgentUpdate) error {
+					if update.Type == runner.AgentUpdateMessageDelta {
+						text.WriteString(update.Delta)
+					}
+					if update.Type == runner.AgentUpdateTokenUsage {
+						usage = *update.Tokens.ThreadTotal
+					}
+					return nil
+				})
+			if calls != test.wantCalls || handled != test.wantHandled {
+				t.Fatalf("model calls=%d handled=%d, want %d/%d, error=%v", calls, handled, test.wantCalls, test.wantHandled, err)
 			}
-		}
-		if !found {
-			t.Fatal("tool result absent from second model call")
-		}
-		if err := stream(ctx, &ai.ModelResponseChunk{Role: ai.RoleModel, Content: []*ai.Part{ai.NewTextPart("One issue.")}}); err != nil {
-			return nil, err
-		}
-		return &ai.ModelResponse{Message: ai.NewModelTextMessage("One issue."), FinishReason: ai.FinishReasonStop,
-			Usage: &ai.GenerationUsage{InputTokens: 20, CachedContentTokens: 5, OutputTokens: 4, ThoughtsTokens: 1, TotalTokens: 24}}, nil
-	})
-	tool := runner.AgentTool{Name: "list_attention", Description: "List attention", InputSchema: json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string"}}}`)}
-	var usage runner.AgentTokenCounts
-	var text strings.Builder
-	_, err := backend.RunTurnWithTools(t.Context(), runner.AgentTurnRequest{Prompt: "What needs attention?"}, []runner.AgentTool{tool},
-		func(_ context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
-			if call.Name != "list_attention" || !strings.Contains(string(call.Arguments), "project") {
-				t.Fatalf("tool call = %+v", call)
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("error = %v, want %q", err, test.wantError)
+				}
+				if test.handlerErr == nil && !errors.Is(err, ai.ErrMaxTurnsExceeded) {
+					t.Fatalf("error = %v, want tool-turn limit", err)
+				}
+				return
 			}
-			return runner.AgentToolResult{Content: `{"issues":["one"]}`, Success: true}, nil
-		}, func(update runner.AgentUpdate) error {
-			if update.Type == runner.AgentUpdateMessageDelta {
-				text.WriteString(update.Delta)
+			if err != nil || text.String() != "One issue." || usage.InputTokens != int64(10*(calls-1)+20) || usage.CachedInputTokens != 5 || usage.OutputTokens != int64(3*(calls-1)+4) || usage.ReasoningOutputTokens != 1 {
+				t.Fatalf("turn calls=%d text=%q usage=%+v error=%v", calls, text.String(), usage, err)
 			}
-			if update.Type == runner.AgentUpdateTokenUsage {
-				usage = *update.Tokens.ThreadTotal
-			}
-			return nil
 		})
-	if err != nil || calls != 2 || text.String() != "One issue." || usage.InputTokens != 30 || usage.CachedInputTokens != 5 || usage.OutputTokens != 7 || usage.ReasoningOutputTokens != 1 {
-		t.Fatalf("turn calls=%d text=%q usage=%+v error=%v", calls, text.String(), usage, err)
 	}
 }
 

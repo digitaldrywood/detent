@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -65,13 +67,26 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	worker := f.worker(t, "worker")
 	issue := f.create(t, "work")
 	descriptor := hubTestPolicy()
+	descriptor.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(nativeFixtureStates(), tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Done"}})}
+	descriptor = descriptor.WithID()
 	claim := tracker.NativeClaim{WorkItemID: issue.WorkItemID, MachineID: "machine_abc", SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": claim.MachineID, "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
-	for _, token := range []string{worker, f.token} {
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": claim.MachineID, "hostname": "runner", "capacity": 2, "version": "test"}), http.StatusOK)
+	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+	runner.enroll(t)
+	for _, token := range []string{worker, f.token, runner.redemption.Credential} {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", token, policy.Change{Policy: descriptor}), http.StatusForbidden)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusConflict)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+	for _, field := range []string{"states", "workflow_markdown"} {
+		request := map[string]any{"idempotency_key": "repository-override-" + field, "expected_revision": "2", "intake": "disabled", "projection": "disabled"}
+		if field == "states" {
+			request[field] = nativeFixtureStates()
+		} else {
+			request[field] = "---\ntracker:\n  kind: hub_native\n---\nWork\n"
+		}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, request), http.StatusUnprocessableEntity)
+	}
 	for _, test := range []struct{ name, id string }{{"missing", ""}, {"stale", "policy_" + strings.Repeat("b", 64)}} {
 		t.Run(test.name, func(t *testing.T) {
 			claim.PolicyID = test.id
@@ -90,14 +105,36 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	if lease.PolicyID != descriptor.ID {
 		t.Fatalf("lease lost policy: %#v", lease)
 	}
+	event := nativeStartedEvent(lease)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, event), http.StatusOK)
 	changed := descriptor
 	changed.Gates.AutoPromote = true
+	changed.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(append([]tracker.NativeState(nil), descriptor.Workflow.States...), tracker.NativeState{Name: "QA"})}
 	changed = changed.WithID()
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptor.ID, Policy: changed}), http.StatusConflict)
-	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "forged"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{RunID: newNativeID("run"), AttemptID: newNativeID("attempt"), PolicyID: changed.ID, LeaseID: lease.ID, FencingToken: lease.FencingToken}}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptor.ID, Policy: changed}), http.StatusOK)
+	pinned, err := f.service.database.leasePolicyID(t.Context(), lease.ID)
+	if err != nil || pinned != descriptor.ID {
+		t.Fatalf("approval changed existing lease policy: %s %v", pinned, err)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
+	newIssue := f.create(t, "new policy work")
+	claim.WorkItemID, claim.SessionID = newIssue.WorkItemID, "new-policy-session"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusConflict)
+	claim.PolicyID = changed.ID
+	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim)
+	requireNativeStatus(t, response, http.StatusOK)
+	var newLease tracker.NativeLease
+	decodeHubResponse(t, response, &newLease)
+	if newLease.PolicyID != changed.ID || newLease.ID == lease.ID {
+		t.Fatalf("new claim lost current approval: %+v", newLease)
+	}
+	event.Type, event.Data.Sequence, event.Data.Handoff = "run.checkpointed", 2, nativeTestCheckpoint()
+	event.IdempotencyKey, event.Data.PolicyID = "forged", changed.ID
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, event), http.StatusConflict)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/policy", worker, map[string]string{"expected_policy_id": descriptor.ID}), http.StatusForbidden)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/policy", testHubAdminToken, map[string]string{"expected_policy_id": descriptor.ID}), http.StatusNoContent)
+	event.Data.PolicyID, event.IdempotencyKey = descriptor.ID, "pinned"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, event), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/policy", worker, map[string]string{"expected_policy_id": changed.ID}), http.StatusForbidden)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/policy", testHubAdminToken, map[string]string{"expected_policy_id": changed.ID}), http.StatusNoContent)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusConflict)
 	event.Data.PolicyID = descriptor.ID
 	event.IdempotencyKey = "revoked"
@@ -113,9 +150,11 @@ func TestProjectPolicyIsolationAndRestart(t *testing.T) {
 	b := newNativeFixture(t, service, a.project.OrganizationID, "automatic")
 	human := hubTestPolicy()
 	human.Gates.Kind, human.Gates.AutomatedReview = "human_review", ""
+	human.Workflow = &policy.Workflow{Source: "WORKFLOW.md", States: append(nativeFixtureStates(), tracker.NativeState{Name: "Plan Review"})}
 	human = human.WithID()
 	automatic := hubTestPolicy()
 	automatic.Gates.AutoPromote, automatic.Gates.MergeMethod = true, "rebase"
+	automatic.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(nativeFixtureStates(), tracker.NativeState{Name: "Repair", Dispatchable: true})}
 	automatic = automatic.WithID()
 	approveHubTestPolicy(t, service, a.base+"/policy", human)
 	approveHubTestPolicy(t, service, b.base+"/policy", automatic)
@@ -140,6 +179,13 @@ func TestProjectPolicyIsolationAndRestart(t *testing.T) {
 			}
 			if approval.ApprovedBy == "" || approval.ApprovedAt == "" {
 				t.Fatalf("provenance missing: %#v", approval)
+			}
+			response = performHubAPIRequest(t, service, http.MethodGet, test.path, test.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var project tracker.NativeProject
+			decodeHubResponse(t, response, &project)
+			if !reflect.DeepEqual(project.States, test.want.Workflow.States) {
+				t.Fatalf("reopened project workflow = %#v", project.States)
 			}
 		})
 	}
@@ -209,43 +255,6 @@ func TestPolicyRequirementsNeverEnrollOrGrantCapabilities(t *testing.T) {
 	}
 }
 
-func TestPolicyClaimChecksUseDatabaseTime(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	for _, test := range []struct {
-		name, expires string
-		status        int
-	}{
-		{"active offset", "2026-09-05T07:00:01-05:00", http.StatusConflict},
-		{"exact expiry", "2026-09-05T07:00:00-05:00", http.StatusOK},
-		{"expired fractional", "2026-09-05T11:59:59.9Z", http.StatusOK},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}), "", "expiry")
-			worker := f.worker(t, "worker")
-			f.create(t, "work")
-			descriptor := hubTestPolicy()
-			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "machine_abc", "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: descriptor.ID, MachineID: "machine_abc", SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
-			requireNativeStatus(t, response, http.StatusOK)
-			var lease tracker.NativeLease
-			decodeHubResponse(t, response, &lease)
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at = ? WHERE lease_id = ?", test.expires, lease.ID); err != nil {
-				t.Fatal(err)
-			}
-			changed := descriptor
-			changed.Gates.MergeMethod = "rebase"
-			changed = changed.WithID()
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptor.ID, Policy: changed}), test.status)
-			pinned, err := f.service.database.leasePolicyID(t.Context(), lease.ID)
-			if err != nil || pinned != descriptor.ID {
-				t.Fatalf("historical lease pin changed: %s %v", pinned, err)
-			}
-		})
-	}
-}
-
 // TestProjectPolicyApprovalSeedsChangeReviewPolicy checks what approving a
 // repository policy means for a native project's review expectation: a project
 // with none gets the default, which asks for a person only under a
@@ -310,6 +319,7 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 	reviewed := newNativeFixture(t, nil, "", "reviewed")
 	gated := hubTestPolicy()
 	gated.Gates.Kind, gated.Gates.AutomatedReview = "human_review", ""
+	gated.Gates.HumanReview = true
 	gated = gated.WithID()
 	approveHubTestPolicy(t, reviewed.service, reviewed.base+"/policy", gated)
 	response = performHubAPIRequest(t, reviewed.service, http.MethodGet, reviewed.base+"/change-review-policy", reviewed.token, nil)
@@ -319,4 +329,21 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 	if asked.PolicyID != gated.ID || !asked.RequireReview {
 		t.Fatalf("a human-review gate seeded %#v, want a review requirement", asked)
 	}
+	for _, humanReview := range []bool{false, true} {
+		t.Run(fmt.Sprintf("validator human review=%t", humanReview), func(t *testing.T) {
+			f := newNativeFixture(t, nil, "", "validator")
+			descriptor := hubTestPolicy()
+			descriptor.Gates.Validator, descriptor.Gates.HumanReview = true, humanReview
+			descriptor = descriptor.WithID()
+			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/change-review-policy", f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var rules tracker.ChangeReviewPolicy
+			decodeHubResponse(t, response, &rules)
+			if rules.PolicyID != descriptor.ID || rules.RequireReview != humanReview || len(rules.RequiredChecks) != 0 {
+				t.Fatalf("validator default policy = %+v", rules)
+			}
+		})
+	}
+
 }

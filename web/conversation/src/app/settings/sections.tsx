@@ -7,15 +7,18 @@ import {
   GitBranchIcon,
   InfoIcon,
   KeyboardIcon,
+  KeyRoundIcon,
   Link2Icon,
   PaletteIcon,
   PanelsTopLeftIcon,
+  PlugIcon,
   ReceiptTextIcon,
   Settings2Icon,
   UsersIcon,
 } from "lucide-react";
 
 import type { ComponentType } from "react";
+import { basePath } from "../../runtime/basePath.ts";
 
 export interface SettingsNavItem {
   readonly id: string;
@@ -44,10 +47,12 @@ const SnapShotIcon = createLucideIcon("snap-shot", [
 /** The sections this client serves, by path segment. */
 export const SETTINGS_SECTION_IDS = [
   "general",
+  "api-keys",
   "organization",
   "projects",
   "runners",
   "integrations",
+  "mcp",
   "plan",
   "billing",
   "keybindings",
@@ -64,11 +69,13 @@ export function isSettingsSectionId(value: string): value is SettingsSectionId {
 /** What the breadcrumb's second item says, per section. */
 export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsSectionId, string>> = {
   general: "General",
+  "api-keys": "API keys",
   organization: "Organization",
   projects: "Projects",
   runners: "Providers & runners",
   integrations: "Integrations",
-  plan: "Plan",
+  mcp: "API & MCP",
+  plan: "Plan & usage",
   billing: "Billing",
   keybindings: "Keybindings",
   about: "About",
@@ -92,12 +99,14 @@ export function settingsNavItems({
 }): readonly SettingsNavItem[] {
   const items: SettingsNavItem[] = [
     { id: "general", label: SETTINGS_SECTION_LABELS.general, icon: Settings2Icon },
+    ...(basePath() ? [{ id: "api-keys", label: SETTINGS_SECTION_LABELS["api-keys"], icon: KeyRoundIcon }] : []),
     { id: "organization", label: SETTINGS_SECTION_LABELS.organization, icon: UsersIcon },
 
     { id: "appearance", label: "Appearance", icon: PaletteIcon, disabled: true, reason: WHY_DISABLED },
     { id: "projects", label: SETTINGS_SECTION_LABELS.projects, icon: PanelsTopLeftIcon },
     { id: "runners", label: SETTINGS_SECTION_LABELS.runners, icon: BotIcon },
     { id: "integrations", label: SETTINGS_SECTION_LABELS.integrations, icon: BlocksIcon },
+    { id: "mcp", label: SETTINGS_SECTION_LABELS.mcp, icon: PlugIcon },
   ];
   if (canManage) {
     items.push({ id: "plan", label: SETTINGS_SECTION_LABELS.plan, icon: ReceiptTextIcon });

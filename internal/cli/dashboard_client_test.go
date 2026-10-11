@@ -18,12 +18,17 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestDashboardReadClientExecutesSharedOperatorTool(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	want := json.RawMessage(`{"generated_at":"2026-08-08T02:30:00Z","freshness":"last_known","expires_at":"2026-08-08T02:45:00Z","items":[]}`)
@@ -59,6 +64,10 @@ func TestDashboardReadClientExecutesSharedOperatorTool(t *testing.T) {
 }
 
 func TestDashboardReadClientOperatorToolFailures(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	t.Run("mutation rejected before HTTP", func(t *testing.T) {
@@ -76,6 +85,31 @@ func TestDashboardReadClientOperatorToolFailures(t *testing.T) {
 			t.Fatalf("error = %v, requests = %d", err, requests.Load())
 		}
 	})
+
+	for _, test := range []struct {
+		code   string
+		status int
+		want   error
+	}{
+		{"access_denied", http.StatusForbidden, operatortool.ErrAccessDenied},
+		{"invalid_arguments", http.StatusBadRequest, operatortool.ErrInvalidArguments},
+		{"idempotency_conflict", http.StatusConflict, mutation.ErrConflict},
+		{"idempotency_in_progress", http.StatusConflict, mutation.ErrUncertain},
+	} {
+		t.Run(test.code, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(test.status)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": test.code, "message": "raw-service-secret-sentinel"}})
+			}))
+			t.Cleanup(server.Close)
+			_, err := dashboardClientForServer(t, server, "read-token").Execute(t.Context(), operatortool.Call{Name: operatortool.SetPriority, Arguments: json.RawMessage(`{"project_id":"detent","request_id":"retry-1","identifier":"#3339","priority":"high"}`)})
+			var problem *DashboardResponseError
+			if !errors.Is(err, test.want) || !errors.As(err, &problem) || problem.StatusCode != test.status {
+				t.Fatalf("bridge lost safe category: %#v", err)
+			}
+		})
+	}
 
 	t.Run("daemon unavailable", func(t *testing.T) {
 		t.Parallel()
@@ -110,6 +144,10 @@ func jsonEqualBytes(left []byte, right []byte) bool {
 }
 
 func TestDashboardReadClientExplainIssueReferences(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -164,6 +202,10 @@ func TestDashboardReadClientExplainIssueReferences(t *testing.T) {
 }
 
 func TestDashboardReadClientAcknowledgesIssueParks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	want := dashboardExplanationFixture(false)
@@ -189,6 +231,10 @@ func TestDashboardReadClientAcknowledgesIssueParks(t *testing.T) {
 }
 
 func TestDashboardReadClientCreditsIssueProgress(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	want := store.IssueProgressCredit{
@@ -219,6 +265,10 @@ func TestDashboardReadClientCreditsIssueProgress(t *testing.T) {
 }
 
 func TestDashboardReadClientCredentialPrecedence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -264,6 +314,10 @@ func TestDashboardReadClientCredentialPrecedence(t *testing.T) {
 }
 
 func TestDashboardReadClientSuppliedBadCredentialIsNotMasked(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	const badToken = "supplied-bad-token"
@@ -300,6 +354,10 @@ func TestDashboardReadClientSuppliedBadCredentialIsNotMasked(t *testing.T) {
 }
 
 func TestDashboardReadClientTransportAndCancellation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	t.Run("unreachable", func(t *testing.T) {
@@ -349,6 +407,10 @@ func TestDashboardReadClientTransportAndCancellation(t *testing.T) {
 }
 
 func TestDashboardReadClientRejectsUnsupportedSuccessfulModel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	result := dashboardExplanationFixture(false)
@@ -486,6 +548,10 @@ func dashboardExplanationFixture(degraded bool) explain.IssueExplanation {
 }
 
 func TestIssueCommandOutputAndScoping(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -575,6 +641,10 @@ func TestIssueCommandOutputAndScoping(t *testing.T) {
 }
 
 func TestIssueCommandCreditsProgress(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	credit := store.IssueProgressCredit{
@@ -672,6 +742,10 @@ func (s issueCommandSnapshot) Snapshot(context.Context) (explain.SnapshotObserva
 }
 
 func TestIssueCommandMissingNumberReferences(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	issue := telemetry.Issue{ID: "I_example", Identifier: "digitaldrywood/detent#2337", ProjectID: "detent", State: "Merging"}
 	service := explain.New(explain.Dependencies{Snapshots: issueCommandSnapshot{observation: explain.SnapshotObservation{

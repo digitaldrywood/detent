@@ -9,6 +9,8 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 // nativeWorkflow reports whether the tracker is a hub-native project, whose
@@ -30,15 +32,6 @@ func withNativeLandingLane(cfg Config, tracker connector.Connector) Config {
 	return cfg
 }
 
-// completeNativeLandingRun finishes a hub-native landing run. A landed
-// version was finished by the hub in the same write that recorded its merge
-// commit, so the item is read back rather than moved; a refused landing
-// moves the item back to the review lane with the reason, where a person
-// decides what to change. Either way the run is complete: a refusal is the
-// repository's answer, not a failure of the runner.
-//
-// It reports false for a run with no landing to settle, and hands the
-// completion off (INV-2) when the lane cannot be read or written.
 func (o *Orchestrator) completeNativeLandingRun(
 	ctx context.Context,
 	state *State,
@@ -46,11 +39,16 @@ func (o *Orchestrator) completeNativeLandingRun(
 	running Running,
 ) bool {
 	landing := event.Result.NativeLanding
-	if landing == nil || state.Draining || !o.nativeWorkflow() {
+	if landing == nil || !o.nativeWorkflow() {
 		return false
 	}
 	issue := running.Issue
 	issueID := strings.TrimSpace(event.IssueID)
+	if !landing.Landed && (landing.Waiting || landing.Path == "batch_member" && landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved && landing.BaseSHA == "") {
+		o.waitForMergeWorkerRetry(ctx, state, event, running, issue, running.Attempt, landing.Refusal,
+			"merge_worker_waiting", "waiting to retry landing of ")
+		return true
+	}
 	handoff := func(err error) bool {
 		o.warnNativeCompletion(issue, err)
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
@@ -83,18 +81,29 @@ func (o *Orchestrator) completeNativeLandingRun(
 		if err != nil {
 			return handoff(fmt.Errorf("read native workflow states: %w", err))
 		}
-		review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState
-		lane, ok := connector.CompletionLane(states, issue.State, review, true)
-		if !ok {
-			return handoff(fmt.Errorf("native workflow allows no move from %s back to the review lane %s", strings.TrimSpace(issue.State), review))
+		cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+		destination := cfg.reviewTargetState()
+		if autoPromoteOptoutLabel(issue, cfg) {
+			destination = cfg.SourceState
 		}
-		if err := o.updateIssueStateByID(ctx, state, issueID, issue, lane, event.CompletedAt, "completed_active_review_transition"); err != nil {
+		rework := landing.CI != nil && landing.CI.State == "failure" || landing.GateFailed || landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == workspace.LandRefusalBaseMoved || landing.RefusalKind == workspace.LandRefusalProtected && workspace.ReviewConversationsRefusal(landing.Refusal)
+		if rework {
+			destination = cfg.ReworkState
+		}
+		lane, ok := connector.LandingRefusalLane(states, issue.State, destination, rework)
+		if !ok {
+			return handoff(fmt.Errorf("native workflow allows no move from %s to the landing refusal lane %s", strings.TrimSpace(issue.State), destination))
+		}
+		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, lane, event.CompletedAt, "completed_active_review_transition", workflowLaneMetadata{ReasonDetail: workpad.FinalSummary(landing.Refusal)}); err != nil {
 			return handoff(fmt.Errorf("move native item to %s: %w", lane, err))
 		}
 		target = lane
 	}
 	if err := o.connector.CreateComment(ctx, issueID, nativeLandingComment(landing, issue.State, target)); err != nil {
 		o.warnNativeCompletion(issue, fmt.Errorf("comment on the landing: %w", err))
+	}
+	if err := o.abandonClaim(ctx, issueID); err != nil {
+		return handoff(err)
 	}
 	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker completed", nativeLandingMetadata(landing))
 	completed := Completed{
@@ -107,9 +116,8 @@ func (o *Orchestrator) completeNativeLandingRun(
 		Tokens:                     event.Result.Tokens,
 		RuntimeIdentity:            running.RuntimeIdentity,
 	}
-	state.Completed[issueID] = completed
 	o.recordCompletionUsage(ctx, state, event, issue)
-	o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, target)
+	o.recordCompletedActiveReviewTransition(state, issue, completed, target)
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
 		Event:   "completed_native_landing",
@@ -125,7 +133,22 @@ func (o *Orchestrator) completeNativeLandingRun(
 }
 
 func nativeLandingMetadata(landing *runpkg.NativeLanding) map[string]any {
-	metadata := map[string]any{"native_landed": landing.Landed, "native_change_id": landing.ChangeID, "native_version_id": landing.VersionID}
+	if landing == nil {
+		return nil
+	}
+	metadata := map[string]any{"native_landing_path": landing.Path, "native_landing_packages": landing.Packages, "native_landed": landing.Landed, "native_change_id": landing.ChangeID, "native_version_id": landing.VersionID, "native_head_sha": landing.HeadSHA}
+	if landing.CI != nil {
+		metadata["native_ci"] = landing.CI
+	}
+	if landing.Rebased {
+		metadata["rebased"] = true
+	}
+	if landing.BaseSHA != "" {
+		metadata["native_base_sha"] = landing.BaseSHA
+	}
+	if landing.GateFailed {
+		metadata["native_gate_failed"] = true
+	}
 	if landing.MergeSHA != "" {
 		metadata["native_merge_sha"] = landing.MergeSHA
 		metadata["native_base_ref"] = landing.BaseRef

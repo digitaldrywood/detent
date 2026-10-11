@@ -542,7 +542,7 @@ func Settings(data SettingsData) templ.Component {
 					}()
 				}
 				ctx = templ.InitializeContext(ctx)
-				templ_7745c5c3_Err = settingsRow("Live reload", "project list and settings · credentials · startup · instance_name · identity · max_concurrent_agents · scheduling · fair_share · log_level", false, false).Render(ctx, templ_7745c5c3_Buffer)
+				templ_7745c5c3_Err = settingsRow("Live reload", "project list and settings · credentials · startup · instance_name · identity · max_concurrent_agents · log_level", false, false).Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}

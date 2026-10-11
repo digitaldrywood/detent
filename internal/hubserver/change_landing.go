@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -224,8 +225,8 @@ func (s *Service) landChange(c echo.Context) error {
 		if strings.TrimSpace(request.BaseRef) == "" || len(request.BaseRef) > 256 || !slices.Contains([]string{"squash", "merge", "rebase"}, request.Method) {
 			return nil, nativeInvalid("Landing names the base branch and a merge method of squash, merge or rebase")
 		}
-		if change.Landed != nil {
-			if change.Landed.VersionID == version.ID && change.Landed.MergeSHA == request.MergeSHA {
+		if landed := change.CurrentLanding(); landed != nil {
+			if landed.VersionID == version.ID && landed.MergeSHA == request.MergeSHA {
 				return change, nil
 			}
 			return nil, nativeConflict(change.Revision)
@@ -240,7 +241,18 @@ func (s *Service) landChange(c echo.Context) error {
 		if detail.Summary.Status != "reviewed" {
 			return nil, &nativeError{Code: "not_reviewed", Message: "Only a reviewed current version lands: " + strings.Join(detail.Summary.Messages, " "), status: 409}
 		}
-		change.Landed = &tracker.ChangeLanding{VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: request.MergeSHA, BaseRef: request.BaseRef, Method: request.Method, Actor: scope.actor(), LandedAt: now}
+		quality, err := readLandingQualitySnapshot(ctx, tx, scope, change, version, now)
+		if err != nil {
+			return nil, err
+		}
+		change.Landed = &tracker.ChangeLanding{Quality: quality, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: request.MergeSHA, BaseRef: request.BaseRef, Method: request.Method, Actor: scope.actor(), LandedAt: now, Rebased: request.Rebased}
+		qualityRaw, err := marshalNative(change.Landed)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO quality_landings (version_id,record_json) VALUES (?,?)", version.ID, qualityRaw); err != nil {
+			return nil, err
+		}
 		change.UpdatedAt = now
 		change.Revision++
 		raw, err := marshalNative(change)
@@ -271,4 +283,82 @@ func (s *Service) landChange(c echo.Context) error {
 		}
 		return change, nil
 	})
+}
+
+func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nativeScope, id tracker.WorkItemID, machine tracker.MachineID, now time.Time, routeStale bool) (ready, evaluated bool, err error) {
+	if scope == nil {
+		return true, false, nil
+	}
+	var item, state string
+	if err := query.QueryRowContext(ctx, "SELECT i.native_id, ws.detent_state FROM issues i JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.id = ?", id).Scan(&item, &state); err != nil {
+		return false, false, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(state), "Merging") {
+		return true, false, nil
+	}
+	change, found, err := readLatestNativeChangeRequest(ctx, query, *scope, item)
+	if err != nil || !found {
+		return false, true, err
+	}
+	if change.CurrentLanding() != nil || change.CurrentVersion == "" {
+		return false, true, nil
+	}
+	detail, err := readCurrentChangeDetail(ctx, query, *scope, change, now)
+	if err != nil {
+		return false, true, err
+	}
+	if detail.Summary.Status == "stale_policy" {
+		if !routeStale {
+			return true, true, nil
+		}
+		issue, _, err := readNativeIssue(ctx, query, *scope, item)
+		if err != nil {
+			return false, true, err
+		}
+		project, err := readNativeProject(ctx, query, *scope)
+		if err != nil {
+			return false, true, err
+		}
+		states := make([]connector.WorkflowState, len(project.States))
+		for i, lane := range project.States {
+			states[i] = connector.WorkflowState{Name: lane.Name, Dispatchable: lane.Dispatchable, Terminal: lane.Terminal, OperatorOnly: lane.OperatorOnly, Transitions: lane.Transitions}
+		}
+		target, ok := connector.LandingRefusalLane(states, issue.State, "Rework", true)
+		if !ok {
+			return false, true, nativeInvalid("The workflow allows no move from " + issue.State + " to a landing refusal lane")
+		}
+		from := issue.State
+		issue.State = target
+		_, err = persistNativeIssue(ctx, query, *scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: target, Reason: "completed_active_review_transition"}, now)
+		return false, true, err
+	}
+	if !nativeChangeLandingReady(state, &detail) {
+		return false, true, nil
+	}
+	version, err := readChangeVersion(ctx, query, change.ID, change.CurrentVersion)
+	if err != nil {
+		return false, true, err
+	}
+	if version.External != nil || version.AttemptID == "" {
+		return true, true, nil
+	}
+	attempt, err := readNativeAttempt(ctx, query, *scope, item, version.AttemptID, now)
+	if err != nil {
+		return false, true, err
+	}
+	checkpoint := attempt.Checkpoint
+	if checkpoint == nil || checkpoint.Storage != "local_only" || checkpoint.WorktreeState != "unpushed" || checkpoint.HeadSHA != version.HeadSHA {
+		return true, true, nil
+	}
+	if stored, err := nativeChangeSourceStored(ctx, query, version); err != nil || stored {
+		return stored, true, err
+	}
+	return attempt.MachineID == machine && (attempt.RunnerID == "" || attempt.RunnerID == scope.credential.Runner.RunnerID), true, nil
+}
+
+func nativeChangeLandingReady(state string, detail *tracker.ChangeDetail) bool {
+	if !strings.EqualFold(strings.TrimSpace(state), "Merging") {
+		return true
+	}
+	return detail != nil && detail.Change.CurrentLanding() == nil && detail.Change.CurrentVersion != "" && detail.Summary.Status == "reviewed"
 }

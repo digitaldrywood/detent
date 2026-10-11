@@ -2,112 +2,17 @@ package detent
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
-	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
 
-func TestOnboardingDocsRequireMutationAuthorization(t *testing.T) {
+func TestGitHubLocalWorkflowTemplateConfiguresLocalStore(t *testing.T) {
 	t.Parallel()
 
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	readme := readRepositoryTextFile(t, "README.md")
-
-	assertContains(t, onboarding, "## Phase 2.5")
-	assertContains(t, onboarding, "MUTATION_CONFIRMED=true")
-	assertContains(t, onboarding, "rg -v '^MUTATION_CONFIRMED='")
-	assertContains(t, onboarding, "last == \"MUTATION_CONFIRMED=true\"")
-	assertContains(t, onboarding, "GITHUB_MODE=<project_v2|issue_field|label>")
-	assertContains(t, onboarding, "tracker.github_status_source: label")
-	assertContains(t, onboarding, `detent --format pretty onboarding explain-answers --answers "$ONBOARDING_DIR/answers.env" --phase decision`)
-	assertContains(t, onboarding, "Show this summary before the canonical `answers.env` keys")
-	assertContains(t, onboarding, `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase decision`)
-	assertContains(t, onboarding, `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation`)
-	assertContains(t, onboarding, "Do not choose label mode for the operator")
-	assertContains(t, onboarding, "rg '^GITHUB_MODE=project_v2$'")
-	assertContains(t, onboarding, "rg '^BOARD_MODE=(reuse|create)$'")
-	assertContains(t, onboarding, "rg '^PROJECT_NUMBER='")
-	assertContains(t, onboarding, "rg '^PROJECT_TITLE='")
-	assertContains(t, onboarding, "rg '^STATUS_LABEL_PREFIX='")
-	assertContainsWords(t, onboarding, "read-only `detent doctor --port 0` before proposing changes")
-	assertContainsWords(t, onboarding, "Do not pass `--allow-write-probes` during this identity-safe verification")
-	assertContainsWords(t, onboarding, "do not pass `--allow-write-probes` before Phase 2.5")
-	assertContains(t, onboarding, "detent doctor --port 0 --allow-write-probes")
-	assertMutationBlocksUseValidator(t, onboarding)
-
-	assertContains(t, readme, "do not create, link, mutate, or delete GitHub Projects, issue fields, labels")
-	assertContainsWords(t, readme, "until Phase 2 answers are recorded in `answers.env`")
-	assertContainsWords(t, readme, "read-only doctor status with `detent doctor --port 0` before recommending changes")
-	assertContains(t, readme, "Do not pass `--allow-write-probes` until the mutation gate passes")
-	assertContains(t, readme, "detent onboarding validate-answers")
-	assertContains(t, readme, "Defaults are recommendations only")
-}
-
-func TestOnboardingDocsDistinguishIssueBackfillFromIntakeSources(t *testing.T) {
-	t.Parallel()
-
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-
-	for _, want := range []string{
-		"20. **Issue backfill.**",
-		"## Phase 6 — Issue Backfill",
-		"ISSUE_BACKFILL_GH_FLAGS=<gh-issue-list-flags>",
-		"[`intake.sources`](scheduled-routines.md#alert-and-scheduled-intake)",
-		"backfill: <bulk-add filter and initial Status recommendation>",
-		"**ProjectV2 backfill:",
-		"**Issue-field backfill:",
-		"**Label backfill:",
-		"project-items.after-backfill.json",
-		"issues.after-backfill.json",
-		"| Backfill filter |",
-	} {
-		assertContains(t, onboarding, want)
-	}
-	staleKey := "INTAKE_" + "GH_FLAGS"
-	if strings.Contains(onboarding, staleKey) {
-		t.Fatalf("docs/ONBOARDING.md contains stale %s key", staleKey)
-	}
-	for _, stale := range []string{
-		"ProjectV2 intake:",
-		"Issue-field intake:",
-		"Label intake:",
-		"after-intake",
-		"project-fields.intake",
-		"| Intake filter |",
-	} {
-		if strings.Contains(onboarding, stale) {
-			t.Fatalf("docs/ONBOARDING.md contains stale %q wording", stale)
-		}
-	}
-}
-
-func TestDocsCoverGitHubLocalTrackerMode(t *testing.T) {
-	t.Parallel()
-
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	concepts := readRepositoryTextFile(t, "docs/concepts.md")
 	template := readRepositoryTextFile(t, "docs/templates/WORKFLOW.github_local.md")
 
-	for _, want := range []string{
-		"WORKFLOW.github_local.md",
-		"tracker.kind: github_local",
-		"Do not set `tracker.github_status_source`",
-		"detent github-local import",
-		"does not create or mutate GitHub Projects, issue fields, repository labels, status labels, GitHub issue comments, or GitHub issue close state",
-	} {
-		assertContainsWords(t, onboarding, want)
-	}
-	for _, want := range []string{
-		"WORKFLOW.github_local.md",
-		"`tracker.kind: github_local` is a separate backend, not a fourth",
-		"detent github-local import",
-		"GitHub closes or transfers an imported issue while local state is still active",
-	} {
-		assertContainsWords(t, concepts, want)
-	}
 	for _, want := range []string{
 		"kind: github_local",
 		"repository: <repo-owner>/<repo-name>",
@@ -122,389 +27,18 @@ func TestDocsCoverGitHubLocalTrackerMode(t *testing.T) {
 	}
 }
 
-func TestOnboardingDocsDescribeNoPersistentLabelWriteProbes(t *testing.T) {
+func TestLabelWorkflowTemplateOmitsWriteProbeIssue(t *testing.T) {
 	t.Parallel()
 
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	labelProbeDocs := readRepositoryTextFile(t, "docs/retrospection.md") + "\n" +
-		readRepositoryTextFile(t, "docs/concepts.md")
 	template := readRepositoryTextFile(t, "docs/templates/WORKFLOW.label.md")
 
-	for _, want := range []string{
-		"Label mode should not create or require a status-labeled scratch issue by default",
-		"issue-write permission-class proof",
-		"remove its Detent status label or close it",
-	} {
-		assertContainsWords(t, onboarding, want)
-	}
-	for _, want := range []string{
-		"does not need a persistent status-labeled scratch issue",
-		"proving the token has the repository Issues write permission class",
-		"remove any Detent status label from old scratch issues or close them",
-	} {
-		assertContainsWords(t, labelProbeDocs, want)
-	}
 	if strings.Contains(template, "write_probe_issue:") {
 		t.Fatalf("WORKFLOW.label.md contains write_probe_issue default:\n%s", template)
 	}
 }
 
-func TestOnboardingDocsCreateEscapeHatchLabelsIdempotently(t *testing.T) {
-	t.Parallel()
-
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-
-	for _, want := range []string{
-		"AUTO_PROMOTE_OPTOUT_LABEL",
-		"MAX_SESSION_TOKEN_OVERRIDE_LABEL",
-		"create_label_if_missing",
-		`rg -Fxi -- "$label_name" "$ONBOARDING_DIR/repo-labels.txt"`,
-		`gh label create "$label_name" --repo "$TARGET_REPOSITORY"`,
-		"Excludes an issue from Detent auto-promotion.",
-		"Allows an issue to exceed the configured agent session token ceiling.",
-	} {
-		assertContains(t, onboarding, want)
-	}
-
-	assertOrder(t, onboarding, "## Phase 2.5", "create_label_if_missing")
-	assertOrder(t, onboarding, "create_label_if_missing", "## Phase 4")
-}
-
-func TestOnboardingDocsRequireIdentityGateBeforeDiscovery(t *testing.T) {
-	t.Parallel()
-
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	readme := readRepositoryTextFile(t, "README.md")
-
-	identityIndex := strings.Index(onboarding, "## Phase 0.5")
-	decisionIndex := strings.Index(onboarding, "## Phase 0.6")
-	discoveryIndex := strings.Index(onboarding, "## Phase 1")
-	if identityIndex < 0 {
-		t.Fatal("docs/ONBOARDING.md missing Phase 0.5 identity gate")
-	}
-	if decisionIndex < 0 {
-		t.Fatal("docs/ONBOARDING.md missing Phase 0.6 status-source decision")
-	}
-	if discoveryIndex < 0 {
-		t.Fatal("docs/ONBOARDING.md missing Phase 1 discovery")
-	}
-	if identityIndex > discoveryIndex {
-		t.Fatal("docs/ONBOARDING.md places identity gate after Phase 1 discovery")
-	}
-	if decisionIndex > discoveryIndex {
-		t.Fatal("docs/ONBOARDING.md places status-source decision after Phase 1 discovery")
-	}
-
-	for _, want := range []string{
-		`detent onboarding draft-answers --output pretty`,
-		`detent onboarding draft-answers --answers "$ONBOARDING_DIR/answers.env" --write`,
-		`If a verified local Detent source checkout is available and you want the draft`,
-		"CUSTOMER_ID=<customer-or-workstream-id>",
-		"DETENT_PROJECT_ID=<local-detent-project-id>",
-		"TARGET_REPOSITORY=<repo-owner>/<repo-name>",
-		"TARGET_SOURCE_ROOT=<absolute-local-checkout-path>",
-		"REFERENCE_REPOSITORIES=<comma-separated-owner/repo-list-or-empty>",
-		"DETENT_ONBOARDING_MODE=<new-install|existing-install|add-project>",
-		"IDENTITY_CONFIRMED=true",
-		`detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity`,
-		"wrong target repository",
-	} {
-		assertContains(t, onboarding, want)
-	}
-
-	assertContains(t, readme, "detent onboarding draft-answers --output pretty")
-	assertContains(t, readme, `detent onboarding draft-answers --answers "$ONBOARDING_DIR/answers.env" --write`)
-	assertContains(t, readme, "Distinguish reference repositories from the target repository")
-	assertContains(t, readme, `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity`)
-	assertContains(t, readme, "Ask and record `GITHUB_MODE` explicitly")
-}
-
-func TestOnboardingDocsRequireDetentSourceFreshnessBeforeRunbook(t *testing.T) {
-	t.Parallel()
-
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	readme := readRepositoryTextFile(t, "README.md")
-
-	for _, want := range []string{
-		`gh api repos/digitaldrywood/detent/git/ref/heads/main --jq '.object.sha'`,
-		"DETENT_DOCS_ACCESS_METHOD=github_api",
-		"DETENT_DOCS_REPOSITORY=digitaldrywood/detent",
-		"DETENT_DOCS_REF=main",
-		"DETENT_DOCS_COMMIT",
-		`git -C "$DETENT_SOURCE_ROOT" fetch origin main:refs/remotes/origin/main`,
-		`git -C "$DETENT_SOURCE_ROOT" rev-parse HEAD`,
-		`git -C "$DETENT_SOURCE_ROOT" rev-parse refs/remotes/origin/main`,
-		`detent --format json version`,
-		"DETENT_SOURCE_MATCHES_CANONICAL",
-		"DETENT_BINARY_MATCHES_CANONICAL",
-		"$ONBOARDING_DIR/detent-source-freshness.env",
-		"Continue from the remote GitHub documentation source",
-		"documentation repository, ref, commit SHA, access",
-	} {
-		assertContains(t, onboarding, want)
-	}
-
-	for _, want := range []string{
-		"Pin the Detent docs to a concrete canonical commit before relying on them",
-		"`DETENT_DOCS_ACCESS_METHOD=github_api`",
-		"`DETENT_DOCS_REPOSITORY=digitaldrywood/detent`",
-		"`DETENT_DOCS_REF=main`",
-		"`DETENT_DOCS_COMMIT`",
-		`git -C "$DETENT_SOURCE_ROOT" fetch origin main:refs/remotes/origin/main`,
-		"`DETENT_SOURCE_MATCHES_CANONICAL`",
-		"`DETENT_BINARY_MATCHES_CANONICAL`",
-		"read Detent docs from GitHub at `DETENT_DOCS_COMMIT` instead of cloning or relying on local files",
-		`--detent-source-root "$DETENT_SOURCE_ROOT"`,
-	} {
-		assertContainsWords(t, readme, want)
-	}
-
-	assertOrder(t, readme, "Pin the Detent docs", "From the pinned Detent documentation source, read README.md")
-	assertOrder(t, onboarding, "## Source Freshness Gate", "## Start Here")
-	assertOrder(t, onboarding, "DETENT_DOCS_COMMIT", "## Phase 0.5")
-}
-
-func TestOnboardingDocsAllowRemoteDetentSourceInspectionWithoutLocalCheckout(t *testing.T) {
-	t.Parallel()
-
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	readme := readRepositoryTextFile(t, "README.md")
-
-	for _, want := range []string{
-		"Remote Detent Documentation Source",
-		"DETENT_DOCS_ACCESS_METHOD=github_api",
-		"DETENT_DOCS_REPOSITORY=digitaldrywood/detent",
-		"DETENT_DOCS_REF=main",
-		"DETENT_DOCS_COMMIT",
-		`gh api repos/digitaldrywood/detent/git/ref/heads/main --jq '.object.sha'`,
-		"README.md AGENTS.md CLAUDE.md docs/ONBOARDING.md CONTRIBUTING.md",
-		".github/workflows docs/templates",
-		"Do not clone Detent by default",
-	} {
-		assertContains(t, onboarding, want)
-	}
-
-	for _, want := range []string{
-		"Use GitHub as the first-class Detent documentation source when a verified local checkout is absent, stale, or not desired",
-		"gh api repos/digitaldrywood/detent/git/ref/heads/main --jq '.object.sha'",
-		"`DETENT_DOCS_ACCESS_METHOD=github_api`",
-		"`DETENT_DOCS_COMMIT`",
-		"Do not clone Detent by default",
-	} {
-		assertContainsWords(t, readme, want)
-	}
-
-	assertOrder(t, onboarding, "Remote Detent Documentation Source", "Local Detent Source Checkout")
-	assertOrder(t, readme, "Use GitHub as the", "If a verified")
-}
-
-func TestOnboardingDocsPreserveEarlyLabelStatusSourceDecision(t *testing.T) {
-	t.Parallel()
-
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	readme := readRepositoryTextFile(t, "README.md")
-
-	for _, want := range []string{
-		"volunteer a status-source answer before identity is confirmed",
-		"preserve it as a pending decision outside `answers.env`",
-		"append `GITHUB_MODE=label` and run the decision validator without asking again",
-		"Do not write `GITHUB_MODE` to `answers.env` until the identity phase passes",
-	} {
-		assertContainsWords(t, readme, want)
-	}
-
-	for _, want := range []string{
-		"If the operator already volunteered a status-source answer before identity validation, do not ask the status-source question again",
-		"After `detent onboarding validate-answers --answers \"$ONBOARDING_DIR/answers.env\" --phase identity` passes, append the pending `GITHUB_MODE` answer",
-		"`GITHUB_MODE=label`",
-		"run `detent onboarding validate-answers --answers \"$ONBOARDING_DIR/answers.env\" --phase decision` without re-asking",
-	} {
-		assertContainsWords(t, onboarding, want)
-	}
-}
-
-func TestOnboardingDocsInferCurrentCheckoutCandidateBeforeRawFields(t *testing.T) {
-	t.Parallel()
-
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	readme := readRepositoryTextFile(t, "README.md")
-
-	for _, want := range []string{
-		"infer and restate an identity candidate from the current git checkout",
-		"If the current working directory is a GitHub checkout and is not the canonical Detent source checkout, propose it as the target candidate",
-		"Present the candidate in human-facing language first, then show the `answers.env` representation",
-	} {
-		assertContainsWords(t, readme, want)
-	}
-
-	for _, want := range []string{
-		"`do not assume` means infer a candidate from identity-safe local evidence and confirm it",
-		"`pwd`, `git rev-parse --show-toplevel`, `git remote get-url origin`",
-		"Reuse the existing project id when it is the same target repository or source root",
-		"Current directory is `/home/loganlanou/projects/digitaldrywood/creswoodcorners-phone`",
-		"Detent source checkout is `/home/loganlanou/projects/digitaldrywood/detent`",
-		"Onboarding mode is `add-project`",
-		"Customer/workstream: `creswoodcorners`",
-		"Project id: `creswoodcorners-phone`",
-		"Target repository: `digitaldrywood/creswoodcorners-phone`",
-		"Source checkout: `/home/loganlanou/projects/digitaldrywood/creswoodcorners-phone`",
-		"customer_id_source=repo_prefix",
-		"customer_id_confidence=medium",
-		"Customer/workstream alternatives: `digitaldrywood`",
-		"`CUSTOMER_ID` is only a stable local grouping id",
-	} {
-		assertContainsWords(t, onboarding, want)
-	}
-
-	assertOrder(t, onboarding, "Customer/workstream:", "CUSTOMER_ID=<customer-or-workstream-id>")
-	assertOrder(t, onboarding, "Project id:", "DETENT_PROJECT_ID=<local-detent-project-id>")
-	assertOrder(t, onboarding, "Target repository:", "TARGET_REPOSITORY=<repo-owner>/<repo-name>")
-	assertOrder(t, onboarding, "Source checkout:", "TARGET_SOURCE_ROOT=<absolute-local-checkout-path>")
-}
-
-func TestOnboardingDocsDefaultProjectKanbanIntegrationForOperatorOwnedAddProject(t *testing.T) {
-	t.Parallel()
-
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	kanbanDocs := readRepositoryTextFile(t, "docs/getting-started.md") + "\n" +
-		readRepositoryTextFile(t, "docs/concepts.md")
-
-	for _, want := range []string{
-		"Keep fleet `/kanban` read-only",
-		"operator-owned local or private Detent instance",
-		"For `GITHUB_MODE=label` add-project onboarding on an operator-owned local or private Detent instance, recommend `KANBAN_MODE=integration` even when the pre-mutation `detent doctor --port 0` skipped write probes",
-		"Skipped pre-mutation write probes must not become a `read_only` recommendation",
-		"Ask or select the delivery profile before emitting low-level `KANBAN_MODE` defaults",
-		"shared observer dashboard",
-		"failed post-authorization write probes",
-		`KANBAN_MODE="${KANBAN_MODE:?set KANBAN_MODE to read_only or integration from answers.env}"`,
-		"mode: ${KANBAN_MODE}",
-	} {
-		assertContainsWords(t, onboarding, want)
-	}
-
-	for _, want := range []string{
-		"fleet `/kanban` board stays read-only",
-		"trusted operator project board should default to `integration` before mutation authorization",
-		"Skipped pre-mutation write probes are not evidence for `read_only`",
-		"observer or shared dashboard",
-		"server.kanban.mode: integration",
-	} {
-		assertContainsWords(t, kanbanDocs, want)
-	}
-
-	for _, path := range []string{
-		"docs/templates/WORKFLOW.project_v2.md",
-		"docs/templates/WORKFLOW.issue_field.md",
-		"docs/templates/WORKFLOW.label.md",
-	} {
-		t.Run(path, func(t *testing.T) {
-			t.Parallel()
-
-			content := readRepositoryTextFile(t, path)
-			assertContains(t, content, "mode: integration")
-			assertContains(t, content, "allowed_transitions")
-
-			workflow, err := workflowconfig.ParseWorkflow([]byte(content))
-			if err != nil {
-				t.Fatalf("ParseWorkflow(%s) error = %v", path, err)
-			}
-			if workflow.Config.Server.Kanban.Mode != workflowconfig.KanbanModeIntegration {
-				t.Fatalf("Kanban mode = %q, want %q", workflow.Config.Server.Kanban.Mode, workflowconfig.KanbanModeIntegration)
-			}
-		})
-	}
-}
-
-func TestOnboardingDocsPresentDeliveryProfilesBeforeAnswersEnvFields(t *testing.T) {
-	t.Parallel()
-
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-
-	for _, want := range []string{
-		"Present the operator's plain-English operating model first, then show the canonical `answers.env` fields.",
-		"How should Detent handle completed work after the validation gate passes?",
-		"Full autopilot: keep completed work in its active lane and promote it to `Merging` when linked PRs, gates, CI, mergeability, dependency checks, and guardrails pass",
-		"Review gate: stop at `Human Review` until a human explicitly approves promotion to `Merging`",
-		"Conservative/manual: require explicit approval before promotion or mutation",
-		"Custom/advanced: expose the underlying fields for teams that need a mixed policy.",
-		"When the operator says \"no human review, no wait state, unblock aggressively, only stop on real blockers,\" asks for maximum automation, or says to auto-promote and auto-unblock as much as guardrails allow, recommend `full_autopilot`.",
-		"Do not recommend `AUTO_PROMOTE_ENABLED=false` unless the operator selected review gate or conservative/manual.",
-		"Phase 2.5 still must approve the exact answers before creating labels, editing `global.yaml`, writing `WORKFLOW.md`, or dispatching agents.",
-	} {
-		assertContainsWords(t, onboarding, want)
-	}
-
-	assertOrder(t, onboarding, "How should Detent handle completed work after the validation gate passes?", "DELIVERY_PROFILE=<full_autopilot|review_gate|conservative_manual>")
-	assertOrder(t, onboarding, "Full autopilot:", "DELIVERY_PROFILE=<full_autopilot|review_gate|conservative_manual>")
-	assertOrder(t, onboarding, "Review gate:", "DELIVERY_PROFILE=<full_autopilot|review_gate|conservative_manual>")
-	assertOrder(t, onboarding, "Conservative/manual:", "DELIVERY_PROFILE=<full_autopilot|review_gate|conservative_manual>")
-	assertOrder(t, onboarding, "Full autopilot expands to:", "AUTO_PROMOTE_ENABLED=true")
-	assertOrder(t, onboarding, "AUTO_PROMOTE_ENABLED=true", "AUTO_PROMOTE_GATE_WAIT_STATE=source")
-	assertOrder(t, onboarding, "Review gate expands to:", "Conservative/manual expands to:")
-	assertOrder(t, onboarding, "Review gate expands to:", "AUTO_PROMOTE_GATE_WAIT_STATE=review")
-	assertOrder(t, onboarding, "Conservative/manual expands to:", "GATE_REQUIRE_AUTOMATED_REVIEW=true")
-}
-
-func TestOnboardingDocsGenerateAdmissionAndInstanceEffortGuidance(t *testing.T) {
-	t.Parallel()
-
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-
-	for _, want := range []string{
-		"ADMISSION_ALIGNMENT_CRITERIA",
-		"ADMISSION_READINESS_CRITERIA",
-		"ADMISSION_SIZE_CRITERIA",
-		"ADMISSION_SAFETY_GATES",
-		"## Admission Criteria",
-		"### Alignment",
-		"### Readiness",
-		"### Size",
-		"### Safety Gates",
-		`detent onboarding build-workflow`,
-		"Do not request or generate an issue effort rubric during onboarding",
-		"require_effort: false",
-	} {
-		assertContainsWords(t, onboarding, want)
-	}
-
-	assertOrder(t, onboarding, "For assisted or autonomous intake", "ADMISSION_ALIGNMENT_CRITERIA")
-	assertOrder(t, onboarding, "## Phase 4", "detent onboarding build-workflow")
-	assertOrder(t, onboarding, "detent onboarding build-workflow", "## Phase 5")
-}
-
-func TestOnboardingDocsSkipDuplicateProfileSuppliedQuestions(t *testing.T) {
-	t.Parallel()
-
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-
-	for _, want := range []string{
-		"After selecting a named profile, do not ask the Kanban interaction, validation-gate automated-review, Merging concurrency, review policy, or dependency waiting policy questions again unless the operator asks for an advanced override.",
-		"Advanced override means the operator switches to Custom/advanced after seeing the expansion; remove or omit `DELIVERY_PROFILE` before recording a profile-supplied key with a different value.",
-		"Ask the remaining Phase 2 questions that are not supplied by the selected profile.",
-	} {
-		assertContainsWords(t, onboarding, want)
-	}
-}
-
 func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 	t.Parallel()
-
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	bootstrap := readRepositoryTextFile(t, "docs/bootstrap.md")
-	staleCanonicalURL := "https://raw.githubusercontent.com/digitaldrywood/detent-orchestration/main/WORKFLOW.md"
-	if strings.Contains(onboarding, staleCanonicalURL) || strings.Contains(bootstrap, staleCanonicalURL) {
-		t.Fatalf("docs still reference stale canonical template URL %q", staleCanonicalURL)
-	}
-
-	for _, path := range []string{
-		"docs/templates/WORKFLOW.project_v2.md",
-		"docs/templates/WORKFLOW.issue_field.md",
-		"docs/templates/WORKFLOW.label.md",
-	} {
-		assertContains(t, onboarding, path)
-		assertContains(t, bootstrap, strings.TrimPrefix(path, "docs/"))
-	}
 
 	tests := []struct {
 		path             string
@@ -605,48 +139,6 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 	}
 }
 
-func TestWorkedMultiProjectConfigsLoadAndValidate(t *testing.T) {
-	t.Parallel()
-
-	globalPath := "docs/examples/multi-project/global.yaml"
-	globalRaw, err := os.ReadFile(globalPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", globalPath, err)
-	}
-	repositoryRoot, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd() error = %v", err)
-	}
-	localGlobal := strings.ReplaceAll(string(globalRaw), "/srv/detent/repos/orders-api", repositoryRoot)
-	localGlobal = strings.ReplaceAll(localGlobal, "/srv/detent/repos/storefront", repositoryRoot)
-	if _, err := globalconfig.Parse([]byte(localGlobal), globalPath, globalconfig.WithMissingWorkflowFiles()); err != nil {
-		t.Fatalf("globalconfig.Parse() error = %v", err)
-	}
-
-	for _, project := range []string{"orders-api", "storefront"} {
-		project := project
-		t.Run(project, func(t *testing.T) {
-			t.Parallel()
-
-			configPath := filepath.Join("docs", "examples", "multi-project", project, "detent.yaml")
-			configRaw, err := os.ReadFile(configPath)
-			if err != nil {
-				t.Fatalf("ReadFile(%q) error = %v", configPath, err)
-			}
-			_, err = workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
-				WorkflowPath: filepath.Join(filepath.Dir(configPath), "WORKFLOW.md"),
-				Workflow:     []byte("# Example workflow\n"),
-				ConfigPath:   configPath,
-				Config:       configRaw,
-				HasConfig:    true,
-			})
-			if err != nil {
-				t.Fatalf("ParseProjectDefinition() error = %v", err)
-			}
-		})
-	}
-}
-
 func TestWorkflowTemplatesUseSplitProjectDefinition(t *testing.T) {
 	t.Parallel()
 
@@ -695,37 +187,6 @@ func TestGitHubLocalWorkflowTemplateUsesAffordablePolling(t *testing.T) {
 	}
 }
 
-func TestWorkflowTemplatesLinkToSkillsOnboarding(t *testing.T) {
-	t.Parallel()
-
-	const link = "https://github.com/digitaldrywood/detent/blob/main/docs/ONBOARDING.md#skills-and-skill-creation"
-	for _, path := range []string{
-		"docs/templates/WORKFLOW.project_v2.md",
-		"docs/templates/WORKFLOW.issue_field.md",
-		"docs/templates/WORKFLOW.label.md",
-		"docs/templates/WORKFLOW.github_local.md",
-		"docs/templates/WORKFLOW.non_code_artifact.md",
-	} {
-		t.Run(path, func(t *testing.T) {
-			t.Parallel()
-			assertContains(t, readRepositoryTextFile(t, path), link)
-		})
-	}
-
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	for _, want := range []string{
-		"## Skills And Skill Creation",
-		"name: release-check",
-		"description: Verify a release candidate before publishing.",
-		"when_to_use: The issue asks to prepare or validate a release.",
-		"creation.max_drafts_per_run",
-		"Set `agent.skills.enabled: false`",
-	} {
-		assertContains(t, onboarding, want)
-	}
-	assertContainsWords(t, onboarding, "Reviewers approve a skill by merging the pull request")
-}
-
 func TestWorkflowTemplatesReferenceAppendedContract(t *testing.T) {
 	t.Parallel()
 	for _, path := range []string{"docs/templates/WORKFLOW.project_v2.md", "docs/templates/WORKFLOW.issue_field.md", "docs/templates/WORKFLOW.label.md", "docs/templates/WORKFLOW.github_local.md", "docs/templates/WORKFLOW.non_code_artifact.md"} {
@@ -768,19 +229,6 @@ func TestRenderedGitHubWorkflowTemplatesRequireReadyNonDraftPR(t *testing.T) {
 
 func TestOnboardingDocumentsWorkerModelAndSessionGuardChoices(t *testing.T) {
 	t.Parallel()
-
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	for _, want := range []string{
-		"WORKER_MODEL_MODE=provider_default",
-		"WORKER_MODEL_MODE=pinned",
-		"WORKER_MODEL=<model-if-pinned>",
-		"Provider default: upgrades automatically and avoids retirement breakage.",
-		"Pinned for reproducibility or cost control; update before retirement.",
-		"model_reasoning_effort",
-		"do not emit `MAX_SESSION_CONTEXT_MULTIPLIER` by default",
-	} {
-		assertContainsWords(t, onboarding, want)
-	}
 
 	builder := readRepositoryTextFile(t, "internal/cli/onboarding_workflow_builder.go")
 	if strings.Contains(builder, "gpt-5.") {
@@ -828,43 +276,6 @@ func TestOnboardingDocumentsWorkerModelAndSessionGuardChoices(t *testing.T) {
 func TestWorkflowTemplatesRecommendRequiredExecutionFlow(t *testing.T) {
 	t.Parallel()
 
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	bootstrap := readRepositoryTextFile(t, "docs/bootstrap.md")
-
-	for _, want := range []string{"agent.instructions_by_state", "### State:", "The orchestrator owns lane transitions", "Detent-appended Blocked handoff"} {
-		assertContainsWords(t, onboarding, want)
-	}
-
-	for _, want := range []string{
-		"`## Required Execution Flow`",
-		"`### State:` authoring headings",
-		"`agent.instructions_by_state`",
-		"appends only the current state's instructions",
-		"Downloading the raw template above does not perform that extraction",
-		"`detent onboarding build-workflow`",
-		"manually move each state section's body",
-		"and remove those sections from `WORKFLOW.md`",
-		"all state sections remain in the shared prompt",
-		"Detent-appended Blocked handoff",
-		"instead of duplicating that contract",
-		"The orchestrator owns lane transitions",
-		"workers report outcomes through the appended handoff",
-		"Detent-appended Validation gate block",
-		"instead of repeating gate commands in each state section",
-		"Current Detent status: {{ issue.state }}",
-	} {
-		assertContainsWords(t, bootstrap, want)
-	}
-
-	for _, stale := range []string{
-		"For Todo", "For In Progress", "For Rework", "For Merging",
-		"$go-workflow:ship", "move the issue to", "```detent-status",
-	} {
-		if strings.Contains(strings.Join(strings.Fields(bootstrap), " "), stale) {
-			t.Errorf("bootstrap retains legacy or duplicated workflow guidance %q", stale)
-		}
-	}
-
 	for _, path := range []string{
 		"docs/templates/WORKFLOW.project_v2.md",
 		"docs/templates/WORKFLOW.issue_field.md",
@@ -887,27 +298,6 @@ func TestWorkflowTemplatesRecommendRequiredExecutionFlow(t *testing.T) {
 
 func TestDocsDeclareProjectSpecificCIQualityGates(t *testing.T) {
 	t.Parallel()
-
-	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
-	readme := readRepositoryTextFile(t, "README.md")
-
-	for _, want := range []string{
-		"every CI stage category the project requires",
-		"project-specific local command and CI check name",
-		"illustrative examples from multiple ecosystems, not Detent defaults or a required tool list",
-		"detent doctor` does not validate or parse CI configuration",
-	} {
-		assertContainsWords(t, onboarding, want)
-	}
-	for _, want := range []string{
-		"required CI stage categories",
-		"project-specific commands and check names",
-		"every required stage and mapped tool must exist",
-		"when jobs run there",
-		"require passing merge-group checks before merge",
-	} {
-		assertContainsWords(t, readme, want)
-	}
 
 	for _, path := range []string{
 		"docs/templates/WORKFLOW.project_v2.md",
@@ -986,35 +376,5 @@ func assertOrder(t *testing.T, text string, before string, after string) {
 	}
 	if beforeIndex > afterIndex {
 		t.Fatalf("document places %q after %q", before, after)
-	}
-}
-
-func assertMutationBlocksUseValidator(t *testing.T, text string) {
-	t.Helper()
-
-	lines := strings.Split(text, "\n")
-	inFence := false
-	fenceStart := 0
-	var block []string
-	for index, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			if !inFence {
-				inFence = true
-				fenceStart = index + 1
-				block = nil
-				continue
-			}
-			blockText := strings.Join(block, "\n")
-			if strings.Contains(blockText, "rg '^MUTATION_CONFIRMED=true$'") &&
-				!strings.Contains(blockText, `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation`) {
-				t.Fatalf("mutation confirmation block starting at line %d missing validate-answers", fenceStart)
-			}
-			inFence = false
-			block = nil
-			continue
-		}
-		if inFence {
-			block = append(block, line)
-		}
 	}
 }

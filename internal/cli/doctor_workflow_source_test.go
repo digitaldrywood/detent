@@ -15,6 +15,10 @@ import (
 )
 
 func TestDefaultDoctorWorkflowSourcePolicy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -140,6 +144,10 @@ func TestDefaultDoctorWorkflowSourcePolicy(t *testing.T) {
 }
 
 func TestCheckDoctorWorkflowRefDrift(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -252,6 +260,10 @@ func TestCheckDoctorWorkflowRefDrift(t *testing.T) {
 }
 
 func TestCheckDoctorProjectReportsWorkflowRefDriftWhenEffectiveConfigIsInvalid(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	repo, _ := initDoctorWorkflowSourceRepository(t)
@@ -307,6 +319,10 @@ func TestCheckDoctorWorkflowSourcePolicyUsesGitHubDefaultBranch(t *testing.T) {
 }
 
 func TestCheckDoctorProjectRunsWorkflowSourcePolicyBeforeMutableKinds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service or filesystem watcher integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {

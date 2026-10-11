@@ -18,6 +18,10 @@ import (
 )
 
 func TestArtifactJournalReplay(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, scenario := range []string{"lost reply", "restart after short chunk", "unicode boundary", "disconnected"} {
 		t.Run(scenario, func(t *testing.T) {

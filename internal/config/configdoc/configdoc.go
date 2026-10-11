@@ -65,10 +65,11 @@ func Generate(root string, check bool) error {
 
 func generateArtifacts(root string, check bool, fields []fieldDetails, nodes []*schemaNode) error {
 	docsPath := filepath.Join(root, "docs", "config.md")
+	templatePath := filepath.Join(root, "docs", "config.md.in")
 	referencePath := filepath.Join(root, "config.reference.yaml")
-	currentDocs, err := os.ReadFile(docsPath)
+	currentDocs, err := os.ReadFile(templatePath)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", docsPath, err)
+		return fmt.Errorf("read %s: %w", templatePath, err)
 	}
 	normalizedDocs := normalizeLineEndings(currentDocs)
 	renderedDocs, err := renderDocs(normalizedDocs, renderMarkdown(fields))
@@ -79,7 +80,11 @@ func generateArtifacts(root string, check bool, fields []fieldDetails, nodes []*
 
 	if check {
 		var stale []string
-		if !bytes.Equal(normalizedDocs, renderedDocs) {
+		publishedDocs, readErr := os.ReadFile(docsPath)
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return fmt.Errorf("read %s: %w", docsPath, readErr)
+		}
+		if !bytes.Equal(normalizeLineEndings(publishedDocs), renderedDocs) {
 			stale = append(stale, filepath.ToSlash(filepath.Join("docs", "config.md")))
 		}
 		currentReference, readErr := os.ReadFile(referencePath)
@@ -90,7 +95,7 @@ func generateArtifacts(root string, check bool, fields []fieldDetails, nodes []*
 			stale = append(stale, filepath.Base(referencePath))
 		}
 		if len(stale) > 0 {
-			return fmt.Errorf("generated config documentation is stale: %s; run go generate ./... to refresh it", strings.Join(stale, ", "))
+			return fmt.Errorf("generated config documentation is stale: %s; run make generate-docs to refresh it", strings.Join(stale, ", "))
 		}
 		return nil
 	}
@@ -252,6 +257,7 @@ func backendOptionNodes(prefix string) []*schemaNode {
 	types := []reflect.Type{
 		reflect.TypeFor[config.CodexOptions](),
 		reflect.TypeFor[config.ClaudeCodeOptions](),
+		reflect.TypeFor[config.PiAgentOptions](),
 	}
 	byKey := map[string]*schemaNode{}
 	var order []string
@@ -385,6 +391,9 @@ func fieldDefault(defaultConfig config.Config, node *schemaNode) (string, string
 	if node.synthetic {
 		return optionDefault(node.path)
 	}
+	if node.path == "worker.allow_local_binding" {
+		return "global.worker.allow_local_binding, otherwise false", "null"
+	}
 	if node.path == "worker.github_token" {
 		return "top-level github_token", `""`
 	}
@@ -473,50 +482,57 @@ func trackerEndpointDefault() (string, string) {
 
 func optionDefault(path string) (string, string) {
 	key := path[strings.LastIndex(path, ".")+1:]
-	codexBackend := config.CodexAgentBackend(config.Default().Codex)
-	codexValue, codexOK := yamlFieldValue(reflect.ValueOf(codexBackend.CodexOptions()), key)
-
 	claudeConfig := config.Default()
-	claudeConfig.Agents.Backends = []config.AgentBackend{{
-		ID:      "claude",
-		Kind:    config.AgentBackendClaudeCode,
-		Command: "claude",
-	}}
-	var claudeValue reflect.Value
-	claudeOK := false
-	normalizedClaude, err := normalized(claudeConfig)
-	if err == nil {
-		claudeBackends := normalizedClaude.AgentBackendConfigs()
-		if len(claudeBackends) > 0 {
-			claudeValue, claudeOK = yamlFieldValue(reflect.ValueOf(claudeBackends[0].ClaudeCodeOptions()), key)
-		}
+	claudeConfig.Agents.Backends = []config.AgentBackend{{ID: "claude", Kind: config.AgentBackendClaudeCode, Command: "claude"}}
+	claude := config.ClaudeCodeOptions{}
+	if cfg, err := normalized(claudeConfig); err == nil {
+		claude = cfg.AgentBackendConfigs()[0].ClaudeCodeOptions()
 	}
-
-	switch {
-	case codexOK && claudeOK:
-		codexDescription, codexLiteral := describeValue(codexValue)
-		claudeDescription, _ := describeValue(claudeValue)
+	variants := []struct {
+		name  string
+		value any
+	}{
+		{"Codex", config.CodexAgentBackend(config.Default().Codex).CodexOptions()},
+		{"Claude Code", claude},
+		{"Pi", (config.AgentBackend{Kind: config.AgentBackendPiAgent}).PiAgentOptions()},
+	}
+	descriptions := make([]string, 0, len(variants))
+	names := make([]string, 0, len(variants))
+	literal := "null"
+	for _, variant := range variants {
+		value, ok := yamlFieldValue(reflect.ValueOf(variant.value), key)
+		if !ok {
+			continue
+		}
+		description, currentLiteral := describeValue(value)
 		if key == "shell" {
-			codexDescription = "platform default shell"
-			codexLiteral = "null"
+			description, currentLiteral = "platform default shell", "null"
 		}
-		if codexDescription == claudeDescription {
-			return codexDescription, codexLiteral
+		if len(descriptions) == 0 {
+			literal = currentLiteral
 		}
-		return "Codex: " + codexDescription + "; Claude Code: " + claudeDescription, codexLiteral
-	case codexOK:
-		description, literal := describeValue(codexValue)
-		if key == "shell" {
-			description = "platform default shell"
-			literal = "null"
-		}
-		return description + " for Codex", literal
-	case claudeOK:
-		description, literal := describeValue(claudeValue)
-		return description + " for Claude Code", literal
-	default:
+		descriptions = append(descriptions, description)
+		names = append(names, variant.name)
+	}
+	if len(descriptions) == 0 {
 		return "backend-dependent", "null"
 	}
+	if len(descriptions) == 1 {
+		return descriptions[0] + " for " + names[0], literal
+	}
+	same := true
+	for _, description := range descriptions[1:] {
+		if description != descriptions[0] {
+			same = false
+		}
+	}
+	if same {
+		return descriptions[0], literal
+	}
+	for i := range descriptions {
+		descriptions[i] = names[i] + ": " + descriptions[i]
+	}
+	return strings.Join(descriptions, "; "), literal
 }
 
 func yamlFieldValue(value reflect.Value, key string) (reflect.Value, bool) {
@@ -613,7 +629,11 @@ func validationRules(fields []fieldDetails) (map[string][]string, error) {
 			}
 			problems = append(problems, collected...)
 		}
-		for _, candidate := range candidates(field.node.typ) {
+		values := candidates(field.node.typ)
+		if field.Path == "hooks.runner_setup" {
+			values = append(values, reflect.ValueOf("../setup.sh"))
+		}
+		for _, candidate := range values {
 			cfg := probeBase()
 			target, ok := locate(reflect.ValueOf(&cfg), field.node.steps, true)
 			if !ok || !target.CanSet() || !candidate.Type().AssignableTo(target.Type()) {
@@ -849,7 +869,7 @@ func candidates(typ reflect.Type) []reflect.Value {
 	case reflect.String:
 		values := []string{
 			"", " ", "\n", "__invalid__", "github", "github_local", "linear",
-			"local_sqlite", "memory", "command", "artifact", "codex", "claude_code",
+			"local_sqlite", "memory", "command", "artifact", "codex", "claude_code", "pi_agent",
 			"plan", "invalid/value/extra", "0 0",
 		}
 		out := make([]reflect.Value, 0, len(values))
@@ -934,6 +954,19 @@ func candidates(typ reflect.Type) []reflect.Value {
 
 func backendOptionProblems() ([]string, error) {
 	documents := []string{
+		`tracker:
+  kind: memory
+agents:
+  backends:
+    - id: pi
+      kind: pi_agent
+      protocol: invalid
+      options:
+        thinking_level: invalid
+        tools: [invalid]
+        turn_timeout_ms: -1
+        stall_timeout_ms: -1
+`,
 		`tracker:
   kind: memory
 agents:

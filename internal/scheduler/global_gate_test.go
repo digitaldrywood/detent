@@ -14,7 +14,7 @@ import (
 func TestGlobalDispatchGateActiveHoursAdmission(t *testing.T) {
 	t.Parallel()
 	config := activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Fri 22:00-06:00"}}
-	project := scheduler.ProjectCandidate{ID: "overnight", Weight: 1, ActiveHours: config}
+	project := scheduler.ProjectCandidate{ID: "overnight", ActiveHours: config}
 	tests := []struct {
 		name       string
 		now        time.Time
@@ -51,7 +51,7 @@ func TestGlobalDispatchGateActiveHoursAdmission(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
+			gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 			candidate := project
 			candidate.ActiveHoursOverrideUntil = test.override
 			slot, ok, decision, err := gate.TryAcquireWithDecision(t.Context(), candidate, scheduler.SlotRequest{State: "Todo"}, test.now)
@@ -72,7 +72,7 @@ func TestGlobalDispatchGateActiveHoursAdmission(t *testing.T) {
 
 func TestGlobalDispatchGateRejectsInvalidActiveHours(t *testing.T) {
 	t.Parallel()
-	gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 	project := scheduler.ProjectCandidate{
 		ID:          "invalid-schedule",
 		ActiveHours: activehours.Config{Timezone: "not/a-zone", Windows: []string{"Mon-Fri 22:00-06:00"}},
@@ -86,10 +86,9 @@ func TestGlobalDispatchGateRejectsInvalidActiveHours(t *testing.T) {
 
 func TestGlobalDispatchGateDrainsAtActiveHoursClose(t *testing.T) {
 	t.Parallel()
-	gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 2}))
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}))
 	project := scheduler.ProjectCandidate{
 		ID:          "overnight",
-		Weight:      1,
 		ActiveHours: activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Fri 22:00-06:00"}},
 	}
 	inside := time.Date(2026, time.August, 7, 23, 59, 0, 0, time.UTC)
@@ -117,10 +116,10 @@ func TestGlobalDispatchGateClosedProjectDoesNotReserveCapacity(t *testing.T) {
 	now := time.Date(2026, time.August, 7, 12, 0, 0, 0, time.UTC)
 	closed := scheduler.ProjectCandidate{
 		ID:          "urgent",
-		Priority:    0,
+		Rank:        0,
 		ActiveHours: activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Fri 22:00-23:00"}},
 	}
-	open := scheduler.ProjectCandidate{ID: "normal", Priority: 2}
+	open := scheduler.ProjectCandidate{ID: "normal", Rank: 2}
 	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}), closed, open)
 	gate.MarkReady(closed)
 
@@ -143,7 +142,7 @@ func TestGlobalDispatchGateManualPauseIsStrongerThanOpenWindow(t *testing.T) {
 		Paused:      true,
 		ActiveHours: activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}},
 	}
-	gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 
 	_, ok, err := gate.TryAcquire(t.Context(), project, scheduler.SlotRequest{State: "Todo"}, time.Now())
 	if !errors.Is(err, scheduler.ErrNoCandidates) || ok {
@@ -179,14 +178,14 @@ func TestGlobalDispatchGateConfiguredPauseRejectsStaleCandidate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			project := scheduler.ProjectCandidate{ID: "paused", Weight: 1, Priority: 0, Paused: true}
+			project := scheduler.ProjectCandidate{ID: "paused", Rank: 0, Paused: true}
 			gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 			tt.configure(gate, project)
 
 			project.Paused = false
 			gate.BeginProjectCycle(project)
 			gate.MarkReady(project)
-			active := scheduler.ProjectCandidate{ID: "active", Weight: 1, Priority: 2}
+			active := scheduler.ProjectCandidate{ID: "active", Rank: 2}
 			slot, ok, decision, err := gate.TryAcquireWithDecision(
 				t.Context(),
 				active,
@@ -234,7 +233,7 @@ func TestGlobalDispatchGateReleaseIsIdempotentWhenSlotIsNotHeld(t *testing.T) {
 
 			global := scheduler.NewStrictPriority(scheduler.Config{Capacity: 1})
 			gate := scheduler.NewGlobalDispatchGate(global)
-			project := scheduler.ProjectCandidate{ID: "alpha", Weight: 1}
+			project := scheduler.ProjectCandidate{ID: "alpha"}
 			slot, acquired, err := gate.TryAcquire(
 				t.Context(),
 				project,
@@ -271,8 +270,8 @@ func TestGlobalDispatchGatePauseBlocksNewSlotsUntilEveryReservationReleases(t *t
 
 	ctx := context.Background()
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
-	gate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
-	project := scheduler.ProjectCandidate{ID: "alpha", Weight: 1}
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+	project := scheduler.ProjectCandidate{ID: "alpha"}
 	firstRelease := gate.PauseDispatch()
 	secondRelease := gate.PauseDispatch()
 
@@ -308,9 +307,9 @@ func TestSchedulersAllowOneMergeLanePerProject(t *testing.T) {
 
 	ctx := context.Background()
 	now := time.Date(2026, 6, 25, 12, 30, 0, 0, time.UTC)
-	gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 2}))
-	alphaProject := scheduler.ProjectCandidate{ID: "alpha", Weight: 1}
-	bravoProject := scheduler.ProjectCandidate{ID: "bravo", Weight: 1}
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}))
+	alphaProject := scheduler.ProjectCandidate{ID: "alpha"}
+	bravoProject := scheduler.ProjectCandidate{ID: "bravo"}
 	alphaLocal := scheduler.NewCountingSemaphore(scheduler.Config{
 		Capacity:        2,
 		CapacityByState: map[string]int{"Merging": 1},
@@ -369,8 +368,8 @@ func TestGlobalDispatchGatePressureCapacityDoesNotPreemptRunningWork(t *testing.
 	ctx := context.Background()
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
-	low := scheduler.ProjectCandidate{ID: "low", Weight: 1, Priority: 4}
-	urgent := scheduler.ProjectCandidate{ID: "urgent", Weight: 1, Priority: 1}
+	low := scheduler.ProjectCandidate{ID: "low", Rank: 4}
+	urgent := scheduler.ProjectCandidate{ID: "urgent", Rank: 1}
 
 	lowSlot, acquired, err := gate.TryAcquire(ctx, low, scheduler.SlotRequest{State: "Todo"}, now)
 	if err != nil || !acquired {
@@ -420,8 +419,8 @@ func TestGlobalDispatchGateStrictPriorityNeverHoldsIdleCapacity(t *testing.T) {
 			ctx := t.Context()
 			now := time.Date(2026, 7, 10, 14, 7, 38, 0, time.Local)
 			projects := map[string]scheduler.ProjectCandidate{
-				"higher": {ID: "detent", Weight: 1, Priority: 0},
-				"lower":  {ID: "gopher-ai", Weight: 1, Priority: 3},
+				"higher": {ID: "detent", Rank: 0},
+				"lower":  {ID: "gopher-ai", Rank: 3},
 			}
 			gate := scheduler.NewGlobalDispatchGate(
 				scheduler.NewStrictPriority(scheduler.Config{Capacity: 5}),
@@ -483,8 +482,8 @@ func TestGlobalDispatchGateStrictProjectPriorityUsesLeftoverCapacity(t *testing.
 
 			ctx := t.Context()
 			now := time.Date(2026, 7, 10, 14, 8, 0, 0, time.Local)
-			higher := scheduler.ProjectCandidate{ID: "detent", Weight: 1, Priority: 0}
-			lower := scheduler.ProjectCandidate{ID: "gopher-ai", Weight: 1, Priority: 3}
+			higher := scheduler.ProjectCandidate{ID: "detent", Rank: 0}
+			lower := scheduler.ProjectCandidate{ID: "gopher-ai", Rank: 3}
 			gate := scheduler.NewGlobalDispatchGate(
 				scheduler.NewStrictPriority(scheduler.Config{Capacity: 5}),
 				higher,
@@ -607,8 +606,8 @@ func TestGlobalDispatchGateStrictPriorityDoesNotReserveIdleCapacity(t *testing.T
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			higher := scheduler.ProjectCandidate{ID: "detent", Weight: 1, Priority: 0}
-			lower := scheduler.ProjectCandidate{ID: "gopher-ai", Weight: 1, Priority: 3}
+			higher := scheduler.ProjectCandidate{ID: "detent", Rank: 0}
+			lower := scheduler.ProjectCandidate{ID: "gopher-ai", Rank: 3}
 			gate := scheduler.NewGlobalDispatchGate(
 				scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}),
 				higher,
@@ -641,47 +640,6 @@ func TestGlobalDispatchGateStrictPriorityDoesNotReserveIdleCapacity(t *testing.T
 				if err := gate.Release(slot); err != nil {
 					t.Fatalf("lower Release() error = %v", err)
 				}
-			}
-		})
-	}
-}
-
-func TestGlobalDispatchGateNonStrictModesDoNotReserveForProjectPriority(t *testing.T) {
-	t.Parallel()
-
-	for _, tt := range []struct {
-		name string
-		new  func(scheduler.Config) scheduler.GlobalScheduler
-	}{
-		{name: "weighted", new: scheduler.NewWeightedFair},
-		{name: "round robin", new: scheduler.NewRoundRobin},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			higher := scheduler.ProjectCandidate{ID: "detent", Weight: 1, Priority: 0}
-			lower := scheduler.ProjectCandidate{ID: "gopher-ai", Weight: 1, Priority: 3}
-			gate := scheduler.NewGlobalDispatchGate(
-				tt.new(scheduler.Config{Capacity: 1}),
-				higher,
-				lower,
-			)
-			gate.BeginProjectCycle(lower)
-			slot, ok, decision, err := gate.TryAcquireWithDecision(
-				t.Context(),
-				lower,
-				scheduler.SlotRequest{State: "Todo"},
-				time.Date(2026, 7, 10, 14, 9, 0, 0, time.Local),
-			)
-			gate.EndProjectCycle(lower.ID)
-			if err != nil {
-				t.Fatalf("TryAcquireWithDecision() error = %v", err)
-			}
-			if !ok || decision.Reason != scheduler.DispatchGateReasonGranted {
-				t.Fatalf("TryAcquireWithDecision() ok = %t decision = %#v, want granted", ok, decision)
-			}
-			if err := gate.Release(slot); err != nil {
-				t.Fatalf("Release() error = %v", err)
 			}
 		})
 	}
@@ -739,8 +697,8 @@ func TestGlobalDispatchGatePriorityOnlyPicksNextJob(t *testing.T) {
 	for _, kind := range []string{"strict", "weighted", "round_robin"} {
 		t.Run(kind, func(t *testing.T) {
 			global := newGlobalScheduler(t, scheduler.Config{Kind: kind, Capacity: 1})
-			higher := scheduler.ProjectCandidate{ID: "higher", Priority: 1}
-			lower := scheduler.ProjectCandidate{ID: "lower", Priority: 4}
+			higher := scheduler.ProjectCandidate{ID: "higher", Rank: 1}
+			lower := scheduler.ProjectCandidate{ID: "lower", Rank: 4}
 			gate := scheduler.NewGlobalDispatchGate(global, higher, lower)
 			gate.BeginProjectCycle(higher)
 			slot, ok, err := gate.TryAcquire(t.Context(), lower, scheduler.SlotRequest{State: "Todo"}, time.Time{})

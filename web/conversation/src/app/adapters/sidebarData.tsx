@@ -6,6 +6,8 @@ import type {
   PreferenceChoices,
 } from "../../contracts/index.ts";
 
+import type { SidebarFinding } from "./sidebarFindings.ts";
+
 export interface SidebarNavigation {
   /** The path of the current route, e.g. `/work/p/proj_1`. */
   readonly activePath: string;
@@ -32,6 +34,7 @@ export interface SidebarShellData {
   readonly onNewChat: (shiftKey: boolean) => void;
   readonly onRename: (conversationId: string, title: string) => Promise<void>;
   readonly attention: ReadonlySet<string>;
+  readonly findings?: readonly SidebarFinding[];
   /** The picker choices the hover card names the model from (§14). */
   readonly preferenceChoices?: PreferenceChoices | undefined;
   /** Navigation for the Work destination and the Browse group (A.1, A.6). */
@@ -82,7 +85,7 @@ export function useSidebarSearchQuery(): string {
     const read = (event: Event): void => {
       const target = event.target;
       if (!(target instanceof HTMLInputElement)) return;
-      if (!target.matches(SIDEBAR_SEARCH_SELECTOR)) return;
+      if (!target.matches(SIDEBAR_SEARCH_SELECTOR) || target.getAttribute("role") === "searchbox") return;
       queueMicrotask(() => {
         if (!disposed) setQuery(target.value);
       });
@@ -103,4 +106,58 @@ export function focusSidebarSearch(): boolean {
   input.focus();
   input.select();
   return true;
+}
+
+interface WorkSidebarSearch {
+  readonly query: string;
+  readonly onChange: (query: string) => void;
+}
+
+const SidebarSearchContext = React.createContext<{
+  readonly work: boolean;
+  readonly search: WorkSidebarSearch | null;
+  readonly setSearch: React.Dispatch<React.SetStateAction<WorkSidebarSearch | null>>;
+} | null>(null);
+
+export function SidebarSearchProvider({ work, children }: {
+  readonly work: boolean;
+  readonly children: React.ReactNode;
+}): React.ReactElement {
+  const [search, setSearch] = React.useState<WorkSidebarSearch | null>(null);
+  const value = React.useMemo(() => ({ work, search, setSearch }), [work, search]);
+  return <SidebarSearchContext.Provider value={value}>{children}</SidebarSearchContext.Provider>;
+}
+
+export function useWorkSidebarSearch(query: string, onChange: (query: string) => void): void {
+  const setSearch = React.use(SidebarSearchContext)?.setSearch;
+  React.useEffect(() => {
+    setSearch?.({ query, onChange });
+  }, [setSearch, query, onChange]);
+  React.useEffect(() => () => setSearch?.(null), [setSearch]);
+}
+
+export function useSidebarSearchInput(enabled: boolean): React.ComponentProps<"input"> {
+  const context = React.use(SidebarSearchContext);
+  if (!enabled) return {};
+  if (!context?.work) return { placeholder: "Search chats" };
+  return {
+    value: context.search?.query ?? "",
+    placeholder: "Search issues",
+    "aria-label": "Search issues",
+    role: "searchbox",
+    "aria-autocomplete": undefined,
+    "aria-expanded": undefined,
+    "aria-controls": undefined,
+    "aria-activedescendant": undefined,
+    onChange: (event) => context.search?.onChange(event.currentTarget.value),
+    onKeyDown: (event) => {
+      if (event.key === "Escape") context.search?.onChange("");
+    },
+  };
+}
+
+export function useSidebarThreadSearch(): readonly [string, React.Dispatch<React.SetStateAction<string>>] {
+  const [query, setQuery] = React.useState("");
+  const work = React.use(SidebarSearchContext)?.work === true;
+  return [work ? "" : query, work ? () => {} : setQuery];
 }

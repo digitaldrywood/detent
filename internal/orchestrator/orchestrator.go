@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/toolcache"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -76,6 +77,9 @@ var (
 )
 
 type Config struct {
+	IssueContract                 *workflowconfig.IssueContract
+	IssueContractRolloutAt        time.Time
+	LocalIntakeDisabled           bool
 	Policy                        policy.Descriptor
 	PollInterval                  time.Duration
 	RefreshFailureThreshold       int
@@ -129,6 +133,8 @@ type Config struct {
 	Authorization                 selector.Selector
 	SelectorContext               selector.Context
 	WorkerHosts                   []string
+	WorkerHostSelection           string
+	WorkerHostCaps                map[string]int
 	BudgetRefusalCooldown         time.Duration
 	WorkspaceCleanupIdleTTL       time.Duration
 	WorkspaceCleanupSweepInterval time.Duration
@@ -143,7 +149,6 @@ type Config struct {
 	ServiceIdentity               string
 	OutputTruncationMaxBytes      int
 	EfficiencyThresholds          efficiency.Thresholds
-	Lessons                       LessonCaptureConfig
 	Staleness                     staleness.Config
 	StalenessDelivery             staleness.DeliveryConfig
 	StrandedActiveThreshold       time.Duration
@@ -156,12 +161,6 @@ type Config struct {
 	CPUPressureSomeAvg10Max       float64
 	CPUPressureDegradedMaxAgents  int
 	CPUPressurePollInterval       time.Duration
-}
-
-type LessonCaptureConfig struct {
-	Enabled    bool
-	Path       string
-	MaxEntries int
 }
 
 type FailureBreakerConfig struct {
@@ -184,12 +183,23 @@ type ClaimingConfig struct {
 }
 
 type SchedulingRequest struct {
-	ProviderRequirement func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error)
-	Policy              policy.Descriptor
-	ProjectID           string
-	Repository          string
-	WorkflowStates      []string
-	Filter              connector.IssueFilterHint
+	NativeLandingBatch      bool
+	DispatchPriorityByState []string
+	DispatchPriorityByLabel []string
+	PrioritizeUnblockers    bool
+	CandidateReady          func(context.Context, connector.Issue) bool
+	CandidateKnownWait      func(connector.Issue) bool
+	CandidateAdmitted       func(connector.Issue)
+	CandidateAdmission      func(connector.Issue) (func(), bool)
+	CandidateClaimObserved  func(context.Context, connector.Issue, bool, string, *providercapacity.Requirement)
+	CandidateLimit          int
+	AdmissionLimit          int
+	ProviderRequirement     func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error)
+	Policy                  policy.Descriptor
+	ProjectID               string
+	Repository              string
+	WorkflowStates          []string
+	Filter                  connector.IssueFilterHint
 }
 
 type SchedulingSource interface {
@@ -198,6 +208,14 @@ type SchedulingSource interface {
 	AdoptClaim(context.Context, connector.Issue, time.Time) (Claimed, error)
 	RenewClaim(context.Context, string, time.Time) (Claimed, error)
 	ReleaseClaim(context.Context, string, string) error
+}
+
+type nativeAdmissionObserver interface {
+	ObserveNativeAdmission(string, tracker.NativeAdmissionContext)
+}
+
+type candidateChangeWaiter interface {
+	WaitCandidateChanges(context.Context, string, chan<- struct{})
 }
 
 type Dependencies struct {
@@ -271,6 +289,7 @@ type RuntimeUpdate struct {
 }
 
 type Orchestrator struct {
+	nativeLandingBatch      *nativeLandingDispatchBatch
 	cfg                     Config
 	connector               connector.Connector
 	scheduling              SchedulingSource
@@ -296,6 +315,7 @@ type Orchestrator struct {
 	validator               Validator
 	securityAuditor         SecurityAuditor
 	reaper                  WorkspaceReaper
+	quarantineWarnings      map[string]struct{}
 	trimHostCache           func(context.Context, toolcache.Policy, time.Time) error
 	logger                  *slog.Logger
 	globalDispatchGate      scheduler.ProjectDispatchGate
@@ -320,6 +340,7 @@ type Orchestrator struct {
 	release                 releasepkg.Coordinator
 	capacityController      runpkg.CapacityController
 	providerCapacity        runpkg.ProviderCapacityResolver
+	workerHostChecker       runpkg.WorkerHostChecker
 	capacityStatus          runpkg.CapacityStatusController
 	validatorCapacity       runpkg.ValidatorCapacityController
 	recoveryInspector       runpkg.BlockedRecoveryInspector
@@ -342,18 +363,17 @@ type Orchestrator struct {
 	hydrationWarned         bool
 	ownershipStartupLogged  bool
 	dispatchStartMu         sync.Mutex
+	dispatchLifecycleMu     sync.Mutex
 	capacityClearMu         sync.Mutex
 	dispatchStarts          int
 	dispatchStartsDone      chan struct{}
 	dispatchClosed          atomic.Bool
+	localIntakeDisabled     atomic.Bool
 	projectID               string
 	dispatchGateSampleMu    sync.Mutex
 	dispatchGateSamples     map[dispatchGateSampleKey]time.Time
 	ciTriggerLabelMu        sync.Mutex
 	ciTriggerLabelHeads     map[string]ciTriggerLabelHead
-	stateRequests           chan stateRequest
-	snapshotSignalMu        sync.Mutex
-	snapshotAvailable       chan struct{}
 	initialStateReady       chan struct{}
 	initialStatePublished   sync.Once
 	drainRequests           chan drainRequest
@@ -383,7 +403,6 @@ type Orchestrator struct {
 	latestState             atomic.Pointer[State]
 	completionState         atomic.Pointer[State]
 	latestRuntimeState      atomic.Pointer[runtimeState]
-	refreshInProgress       atomic.Bool
 	refreshProgress         atomic.Pointer[telemetry.RefreshProgress]
 	tickWatchdog            *tickWatchdog
 
@@ -408,10 +427,6 @@ type validatorStageFailure struct {
 	Attempt     int
 	NextRetryAt time.Time
 	Error       string
-}
-
-type stateRequest struct {
-	reply chan State
 }
 
 type modelPermitRequest struct {
@@ -479,6 +494,15 @@ type failureBreakerCanaryRequest struct {
 
 func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	cfg = normalizeConfig(cfg)
+	if rollout, ok := deps.WorkflowMetrics.(interface {
+		IssueContractRolloutAt(context.Context) (time.Time, error)
+	}); ok && cfg.IssueContract != nil {
+		var err error
+		cfg.IssueContractRolloutAt, err = rollout.IssueContractRolloutAt(context.Background())
+		if err != nil {
+			return nil, err
+		}
+	}
 	if deps.Connector == nil {
 		return nil, ErrMissingConnector
 	}
@@ -489,6 +513,10 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		runner = FakeRunner{}
 	}
 	reaper := deps.WorkspaceReaper
+	var workerHostChecker runpkg.WorkerHostChecker
+	if candidate, ok := runner.(runpkg.WorkerHostChecker); ok {
+		workerHostChecker = candidate
+	}
 	if reaper == nil {
 		if candidate, ok := runner.(WorkspaceReaper); ok {
 			reaper = candidate
@@ -720,6 +748,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		projectID:               cfg.Project.ID,
 		capacityController:      capacityController,
 		providerCapacity:        providerCapacity,
+		workerHostChecker:       workerHostChecker,
 		capacityStatus:          capacityStatus,
 		validatorCapacity:       validatorCapacity,
 		recoveryInspector:       blockedRecoveryInspector,
@@ -731,8 +760,6 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		now:                     now,
 		dispatchGateSamples:     map[dispatchGateSampleKey]time.Time{},
 		ciTriggerLabelHeads:     map[string]ciTriggerLabelHead{},
-		stateRequests:           make(chan stateRequest),
-		snapshotAvailable:       make(chan struct{}),
 		initialStateReady:       make(chan struct{}),
 		drainRequests:           make(chan drainRequest),
 		forceRequests:           make(chan forceRequest),
@@ -758,6 +785,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		completedStops:          map[string]StopRunResult{},
 		tickWatchdog:            newTickWatchdog(cfg.Project.ID, cfg.PollInterval, logger),
 	}
+	orchestrator.setLocalIntakeDisabled(cfg.LocalIntakeDisabled)
 	orchestrator.heartbeats = newHeartbeatManager(cfg, deps.Connector, deps.WorkAttempts, now, logger, deps.Scheduling)
 	return orchestrator, nil
 }
@@ -807,6 +835,21 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 	ticker := time.NewTicker(o.cfg.PollInterval)
 	defer ticker.Stop()
+	candidateChanges := make(chan struct{}, 1)
+	waitCtx, stopCandidateWait := context.WithCancel(ctx)
+	waitDone := make(chan struct{})
+	if waiter, ok := o.scheduling.(candidateChangeWaiter); ok {
+		go func() {
+			defer close(waitDone)
+			waiter.WaitCandidateChanges(waitCtx, o.projectID, candidateChanges)
+		}()
+	} else {
+		close(waitDone)
+	}
+	defer func() {
+		stopCandidateWait()
+		<-waitDone
+	}()
 
 	state := newState(o.cfg)
 	defer o.stopWorkspaceCleanup()
@@ -814,22 +857,22 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	defer o.securityAuditWG.Wait()
 	defer o.releaseRunningSlots(&state)
 	o.startTick(&state, time.Now())
-	o.publishState(&state)
+	o.publishState(ctx, &state)
 	recoveryTiming := newRefreshTiming(o.logger, o.cfg.Project.ID, false)
 	recoveryTiming.message = "project startup recovery timing"
 	recoveryTiming.progress = &o.refreshProgress
 	recoveryTiming.next("recovery")
 	o.recoverDurableWorkAttempts(ctx, &state, time.Now())
 	recoveryTiming.log(ctx, ctx.Err() == nil, &state)
-	o.publishState(&state)
+	o.publishState(ctx, &state)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	initialTickAt := time.Now()
 	o.startTick(&state, initialTickAt)
 	o.tick(ctx, &state, initialTickAt)
-	o.finishTick(&state)
-	o.publishState(&state)
+	o.finishTick(ctx, &state)
+	o.publishState(ctx, &state)
 	resetTicker(ticker, state.PollInterval)
 
 	for {
@@ -840,19 +883,29 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			state.syncWorkerProgress()
 			o.startTick(&state, now)
 			o.tick(ctx, &state, now)
-			o.finishTick(&state)
+			o.finishTick(ctx, &state)
+			resetTicker(ticker, state.PollInterval)
+		case <-candidateChanges:
+			if state.Draining {
+				continue
+			}
+			state.syncWorkerProgress()
+			now := o.clockNow()
+			o.startTick(&state, now)
+			o.tick(ctx, &state, now)
+			o.finishTick(ctx, &state)
 			resetTicker(ticker, state.PollInterval)
 		case request := <-o.refreshes:
 			state.syncWorkerProgress()
 			o.startTick(&state, time.Now())
 			o.tickManual(ctx, &state, request)
-			o.finishTick(&state)
+			o.finishTick(ctx, &state)
 			resetTicker(ticker, state.PollInterval)
 		case request := <-o.reconciles:
 			state.syncWorkerProgress()
 			o.startTick(&state, time.Now())
 			o.reconcileTarget(ctx, &state, request)
-			o.finishTick(&state)
+			o.finishTick(ctx, &state)
 			resetTicker(ticker, state.PollInterval)
 		case request := <-o.capacityClearRequests:
 			state.syncWorkerProgress()
@@ -867,7 +920,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			if scheduled {
 				o.startTick(&state, request.at)
 				o.tick(ctx, &state, request.at)
-				o.finishTick(&state)
+				o.finishTick(ctx, &state)
 				resetTicker(ticker, state.PollInterval)
 			}
 		case request := <-o.trackerClearRequests:
@@ -883,12 +936,16 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			if result.Requested {
 				o.startTick(&state, time.Now())
 				o.tick(ctx, &state, request.at)
-				o.finishTick(&state)
+				o.finishTick(ctx, &state)
 				resetTicker(ticker, state.PollInterval)
 			}
 		case request := <-o.stopRequests:
 			state.syncWorkerProgress()
+			before := len(state.Running)
 			o.handleStopRunRequest(ctx, &state, request)
+			if len(state.Running) < before {
+				o.refillProjectSlotsExcluding(ctx, &state, o.clockNow(), request.request.IssueID)
+			}
 		case request := <-o.modelPermitRequests:
 			state.syncWorkerProgress()
 			request.reply <- o.handleModelPermitRequest(&state, request.issueID)
@@ -899,9 +956,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.finishWorkspaceCleanup(&state, result)
 		case result := <-o.runResults:
 			state.syncWorkerProgress()
-			o.startCompletion(&state)
-			o.handleRunResult(ctx, &state, result)
-			o.publishState(&state)
+			o.startCompletion(ctx, &state)
+			o.handleQueuedRunResults(ctx, &state, result)
+			o.publishState(ctx, &state)
 			o.completionState.Store(nil)
 			continue
 		case update := <-o.runUpdates:
@@ -912,20 +969,31 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			}
 		case result := <-heartbeatResults:
 			state.syncWorkerProgress()
+			before := len(state.Running)
 			o.handleHeartbeatResult(&state, result)
+			if len(state.Running) < before {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
 		case event := <-o.validatorCapacityEvents:
 			state.syncWorkerProgress()
 			o.handleValidatorCapacityEvent(&state, event)
 		case request := <-o.drainRequests:
+			stopCandidateWait()
 			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
 			o.startDrain(&state, request.at)
+			o.publishState(ctx, &state)
 			request.reply <- struct{}{}
+			continue
 		case request := <-o.forceRequests:
 			state.syncWorkerProgress()
-			request.reply <- o.forceQuit(request.ctx, &state, request.at)
+			err := o.forceQuit(request.ctx, &state, request.at)
+			o.publishState(ctx, &state)
+			request.reply <- err
+			continue
 		case request := <-o.recoveryRequests:
 			state.syncWorkerProgress()
+			before := len(state.Running)
 			var response WorkAttemptRecoveryResponse
 			var err error
 			if request.receiptOnly {
@@ -937,24 +1005,33 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 				response, err = o.handleWorkAttemptRecovery(ctx, &state, request.request, request.at)
 			}
 			request.reply <- workAttemptRecoveryReply{response: response, err: err}
+			if len(state.Running) < before {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
 			if !request.receiptOnly && err == nil && response.Queued {
 				resetTicker(ticker, time.Millisecond)
 			}
 		case request := <-o.operatorMoves:
 			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
-			request.reply <- o.applyOperatorMove(ctx, &state, request.request, request.at)
+			before := len(state.Running)
+			result := o.applyOperatorMove(ctx, &state, request.request, request.at)
+			request.reply <- result.OperatorMoveResult
+			if result.ready || len(state.Running) < before {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
 		case update := <-o.configUpdates:
 			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
+			previousCapacity := state.MaxConcurrentAgents
 			o.applyRuntimeUpdate(&state, update.update, ticker)
-			o.finishTick(&state)
+			if state.MaxConcurrentAgents > previousCapacity {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
+			o.finishTick(ctx, &state)
 			update.reply <- struct{}{}
-		case request := <-o.stateRequests:
-			state.syncWorkerProgress()
-			request.reply <- state.clone()
 		}
-		o.publishState(&state)
+		o.publishState(ctx, &state)
 	}
 }
 
@@ -970,8 +1047,9 @@ func (o *Orchestrator) startTick(state *State, at time.Time) {
 		return
 	}
 	state.syncWorkerProgress()
-	o.refreshInProgress.Store(true)
-	o.signalSnapshotAvailable()
+	// Publish recovered and updated runtime ownership before tracker reads can
+	// block the actor. Existing progress pointers keep heartbeats observable.
+	o.publishRuntimeState(state)
 	if o.tickWatchdog == nil || state == nil {
 		return
 	}
@@ -982,33 +1060,24 @@ func (o *Orchestrator) startTick(state *State, at time.Time) {
 	o.tickWatchdog.Advance(at, nextRefreshAt, state.PollInterval)
 }
 
-func (o *Orchestrator) finishTick(state *State) {
+func (o *Orchestrator) finishTick(ctx context.Context, state *State) {
 	if o == nil {
 		return
 	}
 	if state != nil && state.PollInterval > 0 {
 		state.NextRefreshAt = o.clockNow().Add(state.PollInterval)
 	}
-	o.publishState(state)
+	o.publishState(ctx, state)
 	o.refreshProgress.Store(nil)
-	o.refreshInProgress.Store(false)
 	if o.tickWatchdog == nil || state == nil {
 		return
 	}
 	o.tickWatchdog.Schedule(state.NextRefreshAt, state.PollInterval)
 }
 
-func (o *Orchestrator) signalSnapshotAvailable() {
-	o.snapshotSignalMu.Lock()
-	defer o.snapshotSignalMu.Unlock()
-	if o.snapshotAvailable != nil {
-		close(o.snapshotAvailable)
-	}
-	o.snapshotAvailable = make(chan struct{})
-}
-
-func (o *Orchestrator) startCompletion(state *State) {
+func (o *Orchestrator) startCompletion(ctx context.Context, state *State) {
 	cloned := o.observableDispatchState(state.clone())
+	o.snapshotDispatchModes(ctx, &cloned)
 	for id, running := range cloned.Running {
 		running.progress = nil
 		cloned.Running[id] = running
@@ -1019,7 +1088,6 @@ func (o *Orchestrator) startCompletion(state *State) {
 		Complete:   true,
 	}
 	o.completionState.Store(&cloned)
-	o.signalSnapshotAvailable()
 }
 
 func (o *Orchestrator) ClearBackendCapacity(ctx context.Context, scope string) ([]BackendOutage, error) {
@@ -1144,17 +1212,30 @@ func (o *Orchestrator) UpdateRuntime(ctx context.Context, update RuntimeUpdate) 
 		ctx = context.Background()
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	previousIntakeDisabled := o.localIntakeDisabled.Load()
+	if update.Config.LocalIntakeDisabled {
+		o.setLocalIntakeDisabled(true)
+	}
 	request := configUpdateRequest{
 		update: update,
 		reply:  make(chan struct{}, 1),
 	}
 	select {
 	case <-ctx.Done():
+		o.setLocalIntakeDisabled(previousIntakeDisabled)
 		return ctx.Err()
 	case <-o.done:
+		o.setLocalIntakeDisabled(previousIntakeDisabled)
 		return ErrStopped
 	case o.configUpdates <- request:
+		return o.waitRuntimeUpdate(ctx, request)
 	}
+}
+
+func (o *Orchestrator) waitRuntimeUpdate(ctx context.Context, request configUpdateRequest) error {
 
 	select {
 	case <-ctx.Done():
@@ -1166,16 +1247,21 @@ func (o *Orchestrator) UpdateRuntime(ctx context.Context, update RuntimeUpdate) 
 	}
 }
 
+func (o *Orchestrator) DependencyIssues() []connector.Issue {
+	state := o.latestState.Load()
+	if state == nil {
+		return nil
+	}
+	issues := make([]connector.Issue, len(state.BoardIssues))
+	for i, issue := range state.BoardIssues {
+		issues[i] = cloneIssue(issue)
+	}
+	return issues
+}
+
 func (o *Orchestrator) State(ctx context.Context) (State, error) {
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	select {
-	case <-ctx.Done():
-		return State{}, ctx.Err()
-	case <-o.done:
-		return State{}, ErrStopped
-	default:
 	}
 	if o.latestState.Load() == nil {
 		select {
@@ -1186,43 +1272,34 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 		case <-o.initialStateReady:
 		}
 	}
-	o.snapshotSignalMu.Lock()
-	snapshotAvailable := o.snapshotAvailable
-	o.snapshotSignalMu.Unlock()
-	if o.completionState.Load() != nil || o.refreshInProgress.Load() {
-		return o.publishedState(), nil
-	}
-	request := stateRequest{reply: make(chan State, 1)}
 	select {
 	case <-ctx.Done():
 		return State{}, ctx.Err()
 	case <-o.done:
 		return State{}, ErrStopped
-	case <-snapshotAvailable:
+	default:
 		return o.publishedState(), nil
-	case o.stateRequests <- request:
-	}
-	select {
-	case <-ctx.Done():
-		return State{}, ctx.Err()
-	case <-o.done:
-		return State{}, ErrStopped
-	case <-snapshotAvailable:
-		return o.publishedState(), nil
-	case state := <-request.reply:
-		return o.observableState(state), nil
 	}
 }
 
 func (o *Orchestrator) publishedState() State {
-	if state := o.completionState.Load(); state != nil {
-		return o.observableValidatorState(state.clone())
+	completion := o.completionState.Load()
+	var state State
+	if completion != nil {
+		state = completion.clone()
+	} else {
+		state = o.latestState.Load().clone()
 	}
-	state := o.latestState.Load().clone()
+	state.LocalIntake.Enabled = o.LocalIntakeEnabled()
 	if runtime := o.latestRuntimeState.Load(); runtime != nil {
 		state.Running = cloneRunning(runtime.Running)
-		state.Claimed = cloneClaimed(runtime.Claimed)
 		state.WorkAttempts = cloneTelemetryWorkAttempts(runtime.WorkAttempts)
+		if completion == nil {
+			state.Claimed = cloneClaimed(runtime.Claimed)
+		}
+	}
+	if completion != nil {
+		return o.observableValidatorState(state)
 	}
 	return o.observableState(state)
 }
@@ -1232,6 +1309,13 @@ func (o *Orchestrator) observableState(state State) State {
 }
 
 func (o *Orchestrator) observableValidatorState(state State) State {
+	for _, running := range state.Running {
+		if running.progress != nil {
+			if heartbeat := running.progress.persisted.Load(); heartbeat != nil {
+				o.applyWorkAttemptHeartbeatSnapshot(&state, running.WorkAttemptID, *heartbeat, running.LastMessageTruncation)
+			}
+		}
+	}
 	// Validator stages already own their lifecycle in validatorRuns. Include their
 	// progress in observations without adding them to the dispatch state machine.
 	o.validatorMu.Lock()
@@ -1255,41 +1339,55 @@ func (o *Orchestrator) observableDispatchState(state State) State {
 	if progress := o.refreshProgress.Load(); progress != nil {
 		state.RefreshProgress = *progress
 	}
-	for _, running := range state.Running {
-		if running.progress != nil {
-			if heartbeat := running.progress.persisted.Load(); heartbeat != nil {
-				o.applyWorkAttemptHeartbeatSnapshot(&state, running.WorkAttemptID, *heartbeat, running.LastMessageTruncation)
-			}
-		}
-	}
 	return state
 }
 
-func (o *Orchestrator) publishState(state *State) {
+func (o *Orchestrator) publishState(ctx context.Context, state *State) {
 	if o == nil || state == nil {
 		return
 	}
+	o.snapshotLocalIntake(state)
 	cloned := state.clone()
-	o.latestState.Store(&cloned)
-	if o.initialStateReady != nil {
-		o.initialStatePublished.Do(func() { close(o.initialStateReady) })
+	o.snapshotDispatchModes(ctx, &cloned)
+	o.snapshotNativeAdmission(&cloned)
+	if observer, ok := o.scheduling.(nativeAdmissionObserver); ok {
+		observer.ObserveNativeAdmission(o.cfg.Project.ID, *cloned.nativeAdmission)
 	}
-	o.latestRuntimeState.Store(&runtimeState{
+	o.publishRuntimeSnapshot(&runtimeState{
 		WorkAttempts: cloned.WorkAttempts,
 		Running:      cloned.Running,
 		Claimed:      cloned.Claimed,
 	})
+	o.latestState.Store(&cloned)
+	if o.initialStateReady != nil {
+		o.initialStatePublished.Do(func() { close(o.initialStateReady) })
+	}
 }
 
 func (o *Orchestrator) publishRuntimeState(state *State) {
 	if o == nil || state == nil {
 		return
 	}
-	o.latestRuntimeState.Store(&runtimeState{
+	o.publishRuntimeSnapshot(&runtimeState{
 		WorkAttempts: cloneTelemetryWorkAttempts(state.WorkAttempts),
 		Running:      cloneRunning(state.Running),
 		Claimed:      cloneClaimed(state.Claimed),
 	})
+}
+
+func (o *Orchestrator) publishRuntimeSnapshot(runtime *runtimeState) {
+	terminalAttempts := make(map[int64]struct{})
+	for _, attempt := range runtime.WorkAttempts {
+		if attempt.Status == string(store.WorkAttemptStatusTerminal) && attempt.AttemptID > 0 {
+			terminalAttempts[attempt.AttemptID] = struct{}{}
+		}
+	}
+	for issueID, running := range runtime.Running {
+		if _, terminal := terminalAttempts[running.WorkAttemptID]; terminal {
+			delete(runtime.Running, issueID)
+		}
+	}
+	o.latestRuntimeState.Store(runtime)
 }
 
 func (o *Orchestrator) Drain(ctx context.Context) error {
@@ -1360,15 +1458,12 @@ func (o *Orchestrator) BeginDrain() {
 		return
 	}
 
-	o.dispatchStartMu.Lock()
+	o.dispatchLifecycleMu.Lock()
 	if o.dispatchClosed.Swap(true) {
-		o.dispatchStartMu.Unlock()
+		o.dispatchLifecycleMu.Unlock()
 		return
 	}
-	o.dispatchStartMu.Unlock()
-	if gate, ok := o.globalDispatchGate.(interface{ PauseDispatch() func() }); ok {
-		gate.PauseDispatch()
-	}
+	o.dispatchLifecycleMu.Unlock()
 	if o.globalDispatchGate != nil {
 		o.globalDispatchGate.MarkIdle(scheduler.ProjectCandidate{ID: o.projectID})
 	}
@@ -1382,9 +1477,9 @@ func (o *Orchestrator) WaitForDispatchQuiesced(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
-	o.dispatchStartMu.Lock()
+	o.dispatchLifecycleMu.Lock()
 	done := o.dispatchStartsDone
-	o.dispatchStartMu.Unlock()
+	o.dispatchLifecycleMu.Unlock()
 	if done == nil {
 		return nil
 	}
@@ -1398,8 +1493,8 @@ func (o *Orchestrator) WaitForDispatchQuiesced(ctx context.Context) error {
 }
 
 func (o *Orchestrator) beginDispatchStart() bool {
-	o.dispatchStartMu.Lock()
-	defer o.dispatchStartMu.Unlock()
+	o.dispatchLifecycleMu.Lock()
+	defer o.dispatchLifecycleMu.Unlock()
 	if o.dispatchQuiesced() {
 		return false
 	}
@@ -1411,8 +1506,8 @@ func (o *Orchestrator) beginDispatchStart() bool {
 }
 
 func (o *Orchestrator) finishDispatchStart() {
-	o.dispatchStartMu.Lock()
-	defer o.dispatchStartMu.Unlock()
+	o.dispatchLifecycleMu.Lock()
+	defer o.dispatchLifecycleMu.Unlock()
 	o.dispatchStarts--
 	if o.dispatchStarts == 0 {
 		close(o.dispatchStartsDone)
@@ -1427,6 +1522,7 @@ func (o *Orchestrator) dispatchQuiesced() bool {
 func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ticker *time.Ticker) {
 	cfg := normalizeConfig(update.Config)
 	previousCfg := o.cfg
+	cfg.IssueContractRolloutAt = previousCfg.IssueContractRolloutAt
 	if o.cfg.Claiming.OwnershipMode != cfg.Claiming.OwnershipMode ||
 		o.cfg.Claiming.AssigneeRequired != cfg.Claiming.AssigneeRequired {
 		o.ownershipStartupLogged = false
@@ -1435,6 +1531,7 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 		o.connector = update.Connector
 	}
 	cfg = withNativeLandingLane(cfg, o.connector)
+	o.setLocalIntakeDisabled(cfg.LocalIntakeDisabled)
 	o.cfg = cfg
 	now := time.Now
 	if o.now != nil {
@@ -1533,7 +1630,11 @@ func (o *Orchestrator) forceQuit(ctx context.Context, state *State, now time.Tim
 
 func (o *Orchestrator) abandonClaim(ctx context.Context, issueID string) error {
 	if o.scheduling != nil {
-		return o.scheduling.ReleaseClaim(ctx, issueID, "orchestrator_release")
+		err := o.scheduling.ReleaseClaim(ctx, issueID, "orchestrator_release")
+		if err == nil || errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) || errors.Is(err, ErrSchedulingClaimLost) {
+			o.heartbeats.remove(issueID)
+		}
+		return err
 	}
 	if !o.cfg.Claiming.Enabled || strings.TrimSpace(o.cfg.Claiming.LeaseField) == "" {
 		return nil
@@ -1541,6 +1642,7 @@ func (o *Orchestrator) abandonClaim(ctx context.Context, issueID string) error {
 	if strings.TrimSpace(issueID) == "" || o.connector == nil {
 		return nil
 	}
+	o.heartbeats.remove(issueID)
 	if err := o.connector.SetField(ctx, issueID, o.cfg.Claiming.LeaseField, ""); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("abandon claim lease failed", "issue_id", issueID, "error", err)
