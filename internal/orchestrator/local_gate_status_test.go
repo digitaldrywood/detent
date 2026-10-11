@@ -46,11 +46,13 @@ func TestPostValidatedGateStatusOnlyForTheValidatedHead(t *testing.T) {
 		validatedRun  string
 		prHead        string
 		prChecks      []connector.PullRequestCheck
+		prRequired    []connector.PullRequestCheck
 		postErr       error
 		wantPosted    []string
 		wantRefreshed bool
 		wantErr       bool
 	}{
+		{name: "missing owned required status", localStatus: "local-gate", validatedHead: head, prHead: head, prRequired: []connector.PullRequestCheck{{Name: "local-gate", Status: "missing", Conclusion: "missing"}}, wantPosted: []string{"example/repo@" + head + "=local-gate"}, wantRefreshed: true},
 		{name: "validated current head", localStatus: "local-gate", validatedHead: head, prHead: head, wantPosted: []string{"example/repo@" + head + "=local-gate"}, wantRefreshed: true},
 		{name: "head changed after validation", localStatus: "local-gate", validatedHead: head, prHead: other},
 		{name: "gate not run by Detent", localStatus: "local-gate", validatedHead: "", prHead: head},
@@ -67,7 +69,19 @@ func TestPostValidatedGateStatusOnlyForTheValidatedHead(t *testing.T) {
 			cfg := Config{}
 			cfg.AutoPromote.Gate = gate.Config{Kind: gate.KindCommand, Run: "make check-fast", LocalStatus: tt.localStatus}
 			orch := &Orchestrator{cfg: cfg, connector: fake, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-			issue := connector.Issue{ID: "1", Identifier: "example/repo#7", PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: 7, HeadSHA: tt.prHead, Checks: tt.prChecks}}
+			issue := connector.Issue{ID: "1", Identifier: "example/repo#7", PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: 7, HeadSHA: tt.prHead, Checks: tt.prChecks, RequiredCheckFailures: tt.prRequired}}
+
+			if tt.prRequired != nil {
+				if missing := mergeWorkerMissingRequiredChecks(issue, tt.localStatus); len(missing) != 0 {
+					t.Fatalf("owned context entered missing-check accounting: %v", missing)
+				}
+				if mergeWorkerMissingRequiredChecksPropagating(issue, 1, tt.localStatus) {
+					t.Fatal("owned context waited for external propagation")
+				}
+				if pending := mergeWorkerCurrentHeadCIPendingChecks(issue, tt.localStatus); len(pending) != 0 {
+					t.Fatalf("owned context entered current-head CI wait: %v", pending)
+				}
+			}
 			event := runpkg.Completion{Result: runpkg.RunResult{GateValidatedHead: tt.validatedHead, GateValidatedRun: tt.validatedRun}}
 			if tt.validatedRun == "" && tt.validatedHead != "" {
 				event.Result.GateValidatedRun = "make check-fast"

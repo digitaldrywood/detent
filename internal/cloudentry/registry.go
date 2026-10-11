@@ -22,6 +22,7 @@ type Organization struct {
 	Endpoint       string    `json:"endpoint"`
 	Generation     int64     `json:"generation"`
 	Managed        bool      `json:"managed"`
+	CheckoutPrice  string    `json:"-"`
 	CreatorSubject string    `json:"-"`
 	CreatorEmail   string    `json:"-"`
 	Step           string    `json:"step,omitempty"`
@@ -117,7 +118,7 @@ func (r *Registry) Register(ctx context.Context, organization Organization) (boo
 	return true, tx.Commit()
 }
 
-const organizationSelect = "SELECT id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,step,attempts,next_attempt_at,error_code,error_detail,updated_at FROM organizations"
+const organizationSelect = "SELECT id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,step,attempts,next_attempt_at,error_code,error_detail,checkout_price,updated_at FROM organizations"
 
 type rowScanner interface {
 	Scan(...any) error
@@ -127,7 +128,7 @@ func scanOrganization(row rowScanner) (Organization, error) {
 	var organization Organization
 	var updated string
 	if err := row.Scan(&organization.ID, &organization.ProviderID, &organization.Name, &organization.State, &organization.Endpoint, &organization.Generation, &organization.Managed,
-		&organization.CreatorSubject, &organization.CreatorEmail, &organization.Step, &organization.Attempts, &organization.NextAttemptAt, &organization.ErrorCode, &organization.ErrorDetail, &updated); err != nil {
+		&organization.CreatorSubject, &organization.CreatorEmail, &organization.Step, &organization.Attempts, &organization.NextAttemptAt, &organization.ErrorCode, &organization.ErrorDetail, &organization.CheckoutPrice, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Organization{}, ErrOrganizationNotFound
 		}

@@ -26,6 +26,9 @@ func Configure(ctx context.Context, cmd *exec.Cmd) {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.Setpgid = true
+	if err := configureSandboxCapabilities(ctx, cmd); err != nil {
+		cmd.Err = errors.Join(cmd.Err, err)
+	}
 	terminationCtx := context.WithoutCancel(ctx)
 	cmd.Cancel = func() error {
 		identity, err := Inspect(cmd)

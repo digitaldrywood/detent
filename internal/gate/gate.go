@@ -11,6 +11,9 @@ import (
 )
 
 const (
+	LandingPerChange      = "per_landing"
+	LandingRollingBarrier = "rolling_barrier"
+
 	KindCommand     = "command"
 	KindHumanReview = "human_review"
 	KindArtifact    = "artifact"
@@ -41,6 +44,7 @@ const (
 )
 
 type Config struct {
+	LandingMode                  string   `yaml:"landing_mode" json:"LandingMode,omitempty"`
 	Kind                         string   `yaml:"kind"`
 	Run                          string   `yaml:"run"`
 	ApprovalLabel                string   `yaml:"approval_label"`
@@ -69,6 +73,7 @@ type ArtifactConfig struct {
 }
 
 type ValidatorConfig struct {
+	UnverifiedCriteria string   `yaml:"unverified_criteria"`
 	Enabled            bool     `yaml:"enabled"`
 	Model              string   `yaml:"model"`
 	MinScore           float64  `yaml:"min_score"`
@@ -116,18 +121,48 @@ type Finding struct {
 	Line     int
 }
 
+type CommandResult struct {
+	TimingStage     string            `json:"timing_stage,omitempty"`
+	ReceiptID       string            `json:"receipt_id,omitempty"`
+	Stage           string            `json:"stage,omitempty"`
+	Execution       string            `json:"execution,omitempty"`
+	ReusedReceiptID string            `json:"reused_receipt_id,omitempty"`
+	StartedAt       time.Time         `json:"started_at,omitzero"`
+	FinishedAt      time.Time         `json:"finished_at,omitzero"`
+	Pipeline        *PipelineEvidence `json:"pipeline,omitzero"`
+	Evidence        *CommandEvidence  `json:"evidence,omitempty"`
+	DurationNS      int64             `json:"duration_ns,omitempty"`
+	Command         string            `json:"command"`
+	HeadSHA         string            `json:"head_sha"`
+	TreeSHA         string            `json:"tree_sha"`
+	ExitCode        int               `json:"exit_code"`
+	Output          string            `json:"output"`
+	OutputTruncated bool              `json:"output_truncated,omitempty"`
+}
+
+const (
+	StageSourceFinalization        = "source_finalization"
+	StageMergeFallbackVerification = "merge_fallback_verification"
+	StageLanding                   = "landing"
+)
+
 type ValidatorResult struct {
-	Submitted  bool
-	Verdict    string
-	Score      float64
-	Summary    string
-	Findings   []Finding
-	Repository string
-	PRNumber   int
-	BaseSHA    string
-	HeadSHA    string
-	DiffDigest string
-	DiffFiles  []string
+	CriteriaEvidence []CriterionEvidence `json:"criteria_evidence,omitempty"`
+	NotVerified      []string            `json:"not_verified,omitempty"`
+	Commands         []CommandResult     `json:"commands,omitempty"`
+	VersionID        string              `json:"version_id,omitempty"`
+	SessionID        int64               `json:"session_id,string,omitempty"`
+	Submitted        bool
+	Verdict          string
+	Score            float64
+	Summary          string
+	Findings         []Finding
+	Repository       string
+	PRNumber         int
+	BaseSHA          string
+	HeadSHA          string
+	DiffDigest       string
+	DiffFiles        []string
 }
 
 type EvaluationOptions struct {
@@ -187,6 +222,7 @@ type Decision struct {
 
 func DefaultConfig() Config {
 	return Config{
+		LandingMode:            LandingPerChange,
 		Kind:                   KindCommand,
 		Run:                    DefaultCommand,
 		ApprovalLabel:          DefaultApprovalLabel,
@@ -214,6 +250,7 @@ func newInt(value int) *int {
 func Effective(cfg Config) Config {
 	ciFailureActionSpecified := strings.TrimSpace(cfg.CIFailureAction) != ""
 	cfg.Kind = NormalizeKind(cfg.Kind)
+	cfg.LandingMode = NormalizeLandingMode(cfg.LandingMode)
 	cfg.Run = strings.TrimSpace(cfg.Run)
 	cfg.ApprovalLabel = normalizeLabel(cfg.ApprovalLabel)
 	cfg.AutomatedReview = NormalizeAutomatedReview(cfg.AutomatedReview)
@@ -356,6 +393,9 @@ func AutomatedReviewMode(cfg Config) string {
 }
 
 func NormalizeRequiredStatusChecks(checks []string) []string {
+	if checks == nil {
+		return nil
+	}
 	normalized := make([]string, 0, len(checks))
 	seen := make(map[string]struct{}, len(checks))
 	for _, check := range checks {
@@ -372,8 +412,19 @@ func NormalizeRequiredStatusChecks(checks []string) []string {
 	return normalized
 }
 
+func NormalizeLandingMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" || mode == LandingRollingBarrier {
+		return LandingPerChange
+	}
+	return mode
+}
+
 func Validate(prefix string, cfg Config) []string {
 	var problems []string
+	if mode := NormalizeLandingMode(cfg.LandingMode); mode != LandingPerChange {
+		problems = append(problems, prefix+".landing_mode must be per_landing")
+	}
 	switch NormalizeKind(cfg.Kind) {
 	case KindCommand, KindHumanReview, KindArtifact:
 	default:
@@ -455,14 +506,14 @@ func InstructionsForGitHubHost(cfg Config, hostname string) string {
 			"```\n\n" +
 			"Allowed pass statuses: " + strings.Join(cfg.Artifact.PassStatuses, ", ") + ". Allowed wait statuses: " + strings.Join(cfg.Artifact.WaitStatuses, ", ") + ". Allowed rework statuses: " + strings.Join(cfg.Artifact.ReworkStatuses, ", ") + "."
 	default:
-		instructions := "Run `" + cfg.Run + "` from the workspace root; require eligible current-head checks before promotion. Skipped is not a test pass. For merge-group-only CI, require passing merge-group checks before merge. " +
+		instructions := "Run `" + cfg.Run + "` from the workspace root; " +
 			requiredStatusCheckInstructions(cfg.RequiredStatusChecks) + ciTriggerLabelInstructions(cfg, hostname) +
-			"In Merging, use a focused smoke gate only after a clean rebase with unchanged source and known current-head validation; otherwise rerun `" + cfg.Run + "`. " +
-			"Use REST backoff for CI. Record quiet-window, gate/CI, slow-check, and post-merge main-CI timings in Workpad."
+			"Merging smoke gate requires clean rebase, unchanged source, known current-head validation; otherwise rerun `" + cfg.Run + "`. " +
+			"Use REST backoff for CI. Workpad timings: applicable quiet-window, gate, CI, merge."
 
 		switch AutomatedReviewMode(cfg) {
 		case AutomatedReviewRequired:
-			instructions += " Automated review is required on the current pull request head before promotion."
+			instructions += " Current-head automated review is required before promotion."
 		case AutomatedReviewOptional:
 			instructions += " Automated review is optional: wait for it until the configured gate deadline, then promote when the remaining checks pass. Any P1 automated review findings still block promotion."
 		default:
@@ -499,10 +550,13 @@ func encodeCITriggerLabelArgument(value string) string {
 
 func requiredStatusCheckInstructions(checks []string) string {
 	checks = NormalizeRequiredStatusChecks(checks)
-	if len(checks) == 0 {
-		return ""
+	if checks == nil {
+		return "require eligible current-head checks before promotion; skips are not passes. Merge-group-only CI must pass before merge. "
 	}
-	return "Configured required status checks must be present on the current PR head, completed, and successful; missing, skipped, failed, cancelled, or still-running required checks block promotion. "
+	if len(checks) == 0 {
+		return "required_status_checks is explicitly empty: Detent defers to the base branch's native required checks. When that branch requires no checks, do not wait for a CI producer or require aggregate CI to turn green. Native required checks and red CI still block promotion and merge. "
+	}
+	return "Required checks: present, completed, successful on current PR head; missing/skipped/failed/cancelled/running blocks promotion. Native required checks and red CI still block promotion and merge. "
 }
 
 func EvaluatePlan(cfg PlanConfig, labels []string, summary Summary) Decision {
@@ -559,10 +613,10 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 	if out, ok := EvaluateSecurityAudit(cfg.SecurityAudit, summary.SecurityAudit); ok {
 		return out
 	}
-	if out, ok := evaluateValidator(cfg.Validator, summary.Validator); ok {
+	if out, ok := EvaluateValidator(cfg.Validator, summary.Validator); ok {
 		return out
 	}
-	if !opts.AutomatedReviewWaitExpired && (summary.ReviewPending || (automatedReviewWaits(cfg) && !automatedReviewSubmitted(summary.ReviewState))) {
+	if !opts.AutomatedReviewWaitExpired && automatedReviewWaits(cfg) && (summary.ReviewPending || !automatedReviewSubmitted(summary.ReviewState)) {
 		return decision(ActionWait, ReasonAutomatedReviewMissing)
 	}
 	if remaining := quietRemaining(summary, opts, now); remaining > 0 {
@@ -727,6 +781,9 @@ func cloneFindings(findings []Finding) []Finding {
 }
 
 func effectiveValidatorConfig(cfg ValidatorConfig) ValidatorConfig {
+	if cfg.UnverifiedCriteria == "" {
+		cfg.UnverifiedCriteria = UnverifiedCriteriaRework
+	}
 	cfg.Model = strings.TrimSpace(cfg.Model)
 	if cfg.MinScore == 0 {
 		cfg.MinScore = DefaultValidatorMinScore
@@ -784,6 +841,9 @@ func effectiveArtifactConfig(cfg ArtifactConfig) ArtifactConfig {
 
 func validateValidator(prefix string, cfg ValidatorConfig) []string {
 	var problems []string
+	if cfg.UnverifiedCriteria != "" && cfg.UnverifiedCriteria != UnverifiedCriteriaRework && cfg.UnverifiedCriteria != UnverifiedCriteriaDisclose {
+		problems = append(problems, prefix+".unverified_criteria must be rework or pass-with-disclosure")
+	}
 	invalidScore := false
 	if cfg.MinScore < 0 || cfg.MinScore > 1 {
 		problems = append(problems, prefix+".min_score must be greater than 0 and less than or equal to 1")
@@ -904,7 +964,7 @@ func normalizeSeverity(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-func evaluateValidator(cfg ValidatorConfig, result ValidatorResult) (Decision, bool) {
+func EvaluateValidator(cfg ValidatorConfig, result ValidatorResult) (Decision, bool) {
 	cfg = effectiveValidatorConfig(cfg)
 	if !cfg.Enabled {
 		return Decision{}, false
@@ -922,6 +982,11 @@ func evaluateValidator(cfg ValidatorConfig, result ValidatorResult) (Decision, b
 	if validatorHasBlockedSeverity(cfg, findings) {
 		out := decision(ActionRework, ReasonValidatorBlockedSeverity)
 		out.Findings = findings
+		return out, true
+	}
+	if cfg.UnverifiedCriteria != UnverifiedCriteriaDisclose && len(result.NotVerified) > 0 {
+		out := decision(ActionRework, ReasonValidatorRework)
+		out.Findings = append(findings, Finding{Severity: "p2", Body: "Acceptance criteria not verified: " + strings.Join(result.NotVerified, "; ")})
 		return out, true
 	}
 

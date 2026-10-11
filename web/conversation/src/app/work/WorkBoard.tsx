@@ -1,10 +1,3 @@
-// The Work board and list (artifact screen 1, design inventory A.1, task W01).
-//
-// One surface, two shapes. The filters, the search, the sort and the result
-// set are shared; `?view=board|list` chooses whether they are stacked into
-// lanes or into rows. That is deliberate: a reader who switches views is
-// asking to see the same issues differently, not to run a different query.
-//
 // Moving a card is optimistic and conflict-aware. The card lands in the new
 // lane immediately, the transition goes to the hub with the revision the card
 // was rendered from, and a `409` puts the card back where it was, reloads, and
@@ -13,18 +6,21 @@
 // into a silent overwrite.
 import React from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { PlusIcon } from "lucide-react";
+import { ChevronDownIcon, HistoryIcon, LoaderCircleIcon, PlusIcon, SparklesIcon } from "lucide-react";
 
-import { Button } from "../../components/ui/button.tsx";
-import { useAccountBootstrap } from "../account/context.ts";
+import { ToggleGroup, ToggleGroupItem } from "../../components/ui/toggle-group.tsx";
+import { Button, InlineButton, SplitButton } from "../../components/ui/button.tsx";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuShortcut, MenuTrigger } from "../../components/ui/menu.tsx";
+import { useSidebar } from "../../components/ui/sidebar.tsx";
+import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
+import { useResource } from "../account/useResource.ts";
 import { useClient } from "../client.ts";
 import { usePageTitle } from "../pageTitle.ts";
-import { boardScopeMeta } from "./lib/format.ts";
 import { transitionsFrom } from "./lib/fromWire.ts";
-import { boardStats, searchItems, sortItems, type Lane, type WorkItemView } from "./lib/model.ts";
-import { moveItem, useBoard, useNow, useWorkHttp } from "./lib/useWork.ts";
+import { boardStats, sortItems, type WorkItemView } from "./lib/model.ts";
+import { moveItem, useBoard, useWorkHttp } from "./lib/useWork.ts";
 import { useViewState } from "./lib/useViewState.ts";
-import { laneVisible, type WorkViewState } from "./lib/viewState.ts";
+import { effectiveSort, laneVisible, tabMatches, toggleCollapsed, WORK_TABS, type WorkTab, type WorkViewState } from "./lib/viewState.ts";
 import { BoardLane } from "./components/BoardLane.tsx";
 import { FirstRunPanel } from "./components/FirstRun.tsx";
 import {
@@ -33,22 +29,25 @@ import {
   useNewIssue,
   useNewIssueScope,
 } from "./NewIssue.tsx";
-import { NEW_ISSUE_KEYSHORTCUTS } from "../lib/shortcuts.ts";
-import { StatsRow } from "./components/StatsRow.tsx";
+import { NEW_CHAT_KEYSHORTCUTS, NEW_ISSUE_KEYSHORTCUTS } from "../lib/shortcuts.ts";
+import { CompletedCounter } from "./components/CompletedCounter.tsx";
+import { LiveCounter } from "./components/LiveCounter.tsx";
 import { toastManager } from "../../components/ui/toast.tsx";
 import { WorkList } from "./components/WorkList.tsx";
 import { WorkToolbar } from "./components/WorkToolbar.tsx";
-import { FreshnessChip, WorkTopBar } from "./components/WorkTopBar.tsx";
+import { WorkTopBar } from "./components/WorkTopBar.tsx";
 import { useShell } from "../App.tsx";
+import { useWorkSidebarSearch } from "../adapters/sidebarData.tsx";
 import { boardConnectionChip } from "./lib/freshness.ts";
 
-/** The client-side half of the filters the hub could not take (single-valued). */
 function applyFilters(
   items: readonly WorkItemView[],
   view: WorkViewState,
 ): readonly WorkItemView[] {
   return items.filter((item) => {
-    if (view.state.length > 0 && !view.state.includes(item.state)) return false;
+    if (view.view === "board" && view.lanes !== null && !view.lanes.includes(item.state)) return false;
+    if (view.view === "list" && !tabMatches(view.tab, item)) return false;
+    if (view.view === "board" && view.state.length > 0 && !view.state.includes(item.state)) return false;
     if (view.priority.length > 0 && (item.priority === null || !view.priority.includes(item.priority)))
       return false;
     if (view.label.length > 0 && !view.label.some((label) => item.labels.includes(label)))
@@ -60,6 +59,13 @@ function applyFilters(
       return false;
     return true;
   });
+}
+
+function archivePeriodsHint(completed: number | null, cancelled: number | null): string | null {
+  if (completed !== null && cancelled !== null) return `Closed issues archive after ${completed} days, cancelled after ${cancelled}.`;
+  if (completed !== null) return `Completed issues archive after ${completed} days.`;
+  if (cancelled !== null) return `Cancelled issues archive after ${cancelled} days.`;
+  return null;
 }
 
 function narrowed(view: WorkViewState): boolean {
@@ -76,16 +82,24 @@ function narrowed(view: WorkViewState): boolean {
 export function WorkBoard({ projectId }: { projectId: string | null }): React.ReactElement {
   const navigate = useNavigate();
   const shell = useShell();
+  const { setOpenMobile } = useSidebar();
   const client = useClient();
   const project = client.bootstrap.projects.find((candidate) => candidate.id === projectId);
   usePageTitle("Work", project?.name);
   const http = useWorkHttp();
-  const now = useNow();
   const [view, setView] = useViewState(projectId);
   const board = useBoard(projectId, view);
-  const searchRef = React.useRef<HTMLInputElement>(null);
+  const currentView = React.useRef(view);
+  currentView.current = view;
+  const setQuery = React.useCallback((q: string) => setView({ ...currentView.current, q }), [setView]);
+  useWorkSidebarSearch(view.q, setQuery);
   const newIssue = useNewIssue();
   const accountBootstrap = useAccountBootstrap();
+  const accountApi = useAccountApi();
+  const integration = useResource(async () => projectId === null ? null : accountApi.integration(projectId), [accountApi, projectId]);
+  const archiveHint = integration.value?.profile === "native"
+    ? archivePeriodsHint(integration.value.archive_completed_after_days, integration.value.archive_cancelled_after_days)
+    : null;
   useNewIssueScope(projectId);
 
   // An issue created from any entry point, this board's or the palette's,
@@ -104,43 +118,6 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const [moved, setMoved] = React.useState<ReadonlyMap<string, string>>(new Map());
   const [moving, setMoving] = React.useState<ReadonlySet<string>>(new Set());
   const [dragging, setDragging] = React.useState<WorkItemView | null>(null);
-
-  // Collapsed lanes are a local reading preference, not a filter: a collapsed
-  // lane still counts, still accepts a drop, and is still in the URL's lane
-  // set. Terminal lanes start collapsed, which is the artifact's dimmed
-  // `Merging` treatment, and the reader can open any of them.
-  const [expanded, setExpanded] = React.useState<ReadonlySet<string>>(new Set());
-  const [collapsed, setCollapsed] = React.useState<ReadonlySet<string>>(new Set());
-  const laneCollapsed = React.useCallback(
-    (lane: Lane) =>
-      collapsed.has(lane.name) || (lane.terminal && !expanded.has(lane.name)),
-    [collapsed, expanded],
-  );
-  const toggleCollapsed = React.useCallback(
-    (lane: Lane) => {
-      if (lane.terminal) {
-        setExpanded((current) => {
-          const next = new Set(current);
-          if (next.has(lane.name)) next.delete(lane.name);
-          else next.add(lane.name);
-          return next;
-        });
-        setCollapsed((current) => {
-          const next = new Set(current);
-          next.delete(lane.name);
-          return next;
-        });
-        return;
-      }
-      setCollapsed((current) => {
-        const next = new Set(current);
-        if (next.has(lane.name)) next.delete(lane.name);
-        else next.add(lane.name);
-        return next;
-      });
-    },
-    [],
-  );
 
   // An optimistic move stays on the card until the hub's own copy agrees
   // with it; a reload that still carries the old state (the activity tick can
@@ -162,10 +139,15 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const items = React.useMemo(() => {
     const overridden = board.items.map((item) => {
       const state = moved.get(item.id);
-      return state === undefined ? item : { ...item, state, stateId: state };
+      return state === undefined ? item : {
+        ...item,
+        state,
+        stateId: state,
+        terminal: board.lanes.find((lane) => lane.name === state)?.terminal ?? item.terminal,
+      };
     });
-    return sortItems(searchItems(applyFilters(overridden, view), view.q), view.sort);
-  }, [board.items, moved, view]);
+    return sortItems(applyFilters(overridden, view), effectiveSort(view));
+  }, [board.items, board.lanes, moved, view]);
 
   const stats = React.useMemo(() => boardStats(items, board.lanes), [items, board.lanes]);
   const projects = React.useMemo(
@@ -177,36 +159,10 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   // workflow, which in the all-projects scope is not one workflow — so a card
   // whose project was not the one loaded for lanes gets the lanes it can reach
   // through its own state's transitions or, failing that, none.
-  const [transitions, setTransitions] = React.useState<
-    ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>
-  >(new Map());
-  React.useEffect(() => {
-    let cancelled = false;
-    const ids = [...new Set(board.items.map((item) => item.projectId))];
-    void Promise.all(
-      ids.map(async (id) => {
-        const project = await http.getProject(id).catch(() => null);
-        return project === null ? null : ([id, project] as const);
-      }),
-    ).then((loaded) => {
-      if (cancelled) return;
-      const moves = new Map<string, ReadonlyMap<string, readonly string[]>>();
-      for (const entry of loaded) {
-        if (entry === null) continue;
-        const [id, project] = entry;
-        moves.set(
-          id,
-          new Map(
-            project.states.map((state) => [state.name, transitionsFrom(project, state.name)]),
-          ),
-        );
-      }
-      setTransitions(moves);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [http, board.items]);
+  const transitions = React.useMemo(() => new Map(board.workflows.map((project) => [
+    project.project_id,
+    new Map(project.states.map((state) => [state.name, transitionsFrom(project, state.name)])),
+  ])), [board.workflows]);
 
   const movesFor = React.useCallback(
     (item: WorkItemView): readonly string[] =>
@@ -264,26 +220,6 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
     [http, projects, board],
   );
 
-  // `/` focuses the board's own search, the way it focuses the sidebar's in
-  // the chat surfaces — and never while the reader is typing somewhere else.
-  React.useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
-      const target = event.target as HTMLElement | null;
-      if (
-        target !== null &&
-        (target.isContentEditable ||
-          ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
-      )
-        return;
-      event.preventDefault();
-      searchRef.current?.focus();
-      searchRef.current?.select();
-    };
-    globalThis.document?.addEventListener("keydown", onKeyDown);
-    return () => globalThis.document?.removeEventListener("keydown", onKeyDown);
-  }, []);
-
   // One source of truth for both chips: the sidebar footer shows the app's
   // own connection state and so does this one, with the board's own stream as
   // the extra fact only this surface has (`lib/freshness.ts`).
@@ -291,6 +227,8 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
     app: shell.connection,
     streaming: board.live,
     loading: board.loading,
+    refreshing: board.refreshing,
+    cached: board.cached,
     asOf: board.asOf,
     onReload: board.reload,
   });
@@ -299,7 +237,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
       ? "All projects"
       : (board.project?.name ?? projects.get(projectId) ?? projectId);
   const laneNames = board.lanes.map((lane) => lane.name);
-  const visible = board.lanes.filter((lane) => laneVisible(view, lane.name));
+  const visible = board.lanes.filter((lane) => laneVisible(view, lane));
   const noProjects = client.bootstrap.projects.length === 0;
   // A project board creates into its own project only; the all-projects board
   // into any project the reader can write to.
@@ -310,31 +248,82 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const canCreateHere = newIssue.canCreate && creatable.length > 0;
   const firstRun =
     noProjects ||
-    (!board.loading && board.error === null && board.items.length === 0 && !narrowed(view));
+    (board.resolved && board.error === null && board.items.length === 0 && !narrowed(view) &&
+      !board.hasMore && !board.backlogHasMore && (board.totals?.total ?? 0) === 0);
   const firstRunPanel = firstRun ? (
     <FirstRunPanel projectId={projectId} issues={board.items.length} onIssueCreated={board.reload} />
   ) : null;
+
+  const ask = () => {
+    if (projectId === null) void navigate({ to: "/chat" });
+    else void navigate({ to: "/chat/p/$projectId", params: { projectId } });
+  };
 
   const topBar = (
     <WorkTopBar
       context="Work"
       title={scopeName}
-      meta={boardScopeMeta(projectId, client.bootstrap.projects.length, items.length)}
+      completed={noProjects ? null : (
+        <div className="flex shrink-0 items-center gap-1">
+          <LiveCounter count={board.resolved ? stats.running : null} loading={board.loading} />
+          <CompletedCounter
+            count={board.totals?.completed ?? (view.completedWindow === "all" ? stats.completed : null)}
+            completedWindow={view.completedWindow}
+            onCompletedWindowChange={(completedWindow) => setView({ ...view, completedWindow })}
+            loading={board.loading}
+          />
+        </div>
+      )}
       connection={chip}
-      actions={
-        noProjects ? null : (
-          <Button
-            size="sm"
-            data-testid="board-new-issue"
-            aria-keyshortcuts={NEW_ISSUE_KEYSHORTCUTS}
-            disabled={!canCreateHere}
-            title={canCreateHere ? "New issue (C)" : ISSUE_CREATION_NEEDS_WRITE}
-            onClick={() => newIssue.openNewIssue({ projectId })}
-          >
-            <PlusIcon />
-            New issue
+      actions={noProjects ? null : (
+        <Button
+          size="sm"
+          className="hidden md:inline-flex"
+          data-testid="board-new-issue"
+          aria-keyshortcuts={NEW_ISSUE_KEYSHORTCUTS}
+          disabled={!canCreateHere}
+          title={canCreateHere ? "New issue (C)" : ISSUE_CREATION_NEEDS_WRITE}
+          onClick={() => newIssue.openNewIssue({ projectId })}
+        >
+          <PlusIcon />
+          New issue
+        </Button>
+      )}
+      mobileActions={
+        <SplitButton className="md:hidden" aria-label="Work actions">
+          <Button aria-keyshortcuts={NEW_CHAT_KEYSHORTCUTS} onClick={ask}>
+            <SparklesIcon />
+            Ask
           </Button>
-        )
+          <Menu>
+            <MenuTrigger render={<Button size="icon" aria-label="More work actions" />}>
+              <ChevronDownIcon />
+            </MenuTrigger>
+            <MenuPopup align="end">
+              <MenuItem className="min-h-11 sm:min-h-11" onClick={ask} aria-keyshortcuts={NEW_CHAT_KEYSHORTCUTS}>
+                <SparklesIcon />
+                Ask Detent
+                <MenuShortcut>⇧⌘N</MenuShortcut>
+              </MenuItem>
+              <MenuItem
+                className="min-h-11 sm:min-h-11"
+                disabled={!canCreateHere}
+                title={canCreateHere ? "New issue (C)" : ISSUE_CREATION_NEEDS_WRITE}
+                aria-keyshortcuts={NEW_ISSUE_KEYSHORTCUTS}
+                onClick={() => newIssue.openNewIssue({ projectId })}
+              >
+                <PlusIcon />
+                New issue
+                <MenuShortcut>C</MenuShortcut>
+              </MenuItem>
+              <MenuSeparator />
+              <MenuItem className="min-h-11 sm:min-h-11" onClick={() => setOpenMobile(true)}>
+                <HistoryIcon />
+                Recent chats
+              </MenuItem>
+            </MenuPopup>
+          </Menu>
+        </SplitButton>
       }
     />
   );
@@ -348,26 +337,52 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
     );
   }
 
+  const backlog = Object.entries(board.totals?.lanes ?? {}).reduce(
+    (total, [lane, count]) => total + (lane.toLowerCase() === "backlog" ? count : 0), 0,
+  );
+  const tabCounts = board.totals === null ? null : {
+    active: board.totals.open - backlog,
+    backlog,
+    closed: board.totals.total - board.totals.open,
+    all: board.totals.total,
+  };
+
   return (
     <>
       {topBar}
 
-      <WorkToolbar
+      {board.workflows.length > 0 ? <WorkToolbar
         view={view}
         onChange={setView}
         lanes={board.lanes}
+        totals={board.totals?.lanes}
         facets={{
           state: laneNames,
           label: board.labels,
           assignee: board.assignees,
           priority: board.priorities,
         }}
-        searchRef={searchRef}
-        freshness={<FreshnessChip chip={chip} testId="board-freshness" />}
-        loadedCount={board.items.length}
-      />
+      /> : null}
 
-      <StatsRow stats={stats} truncated={board.truncated} enriched={board.enriched} />
+      {view.view === "list" ? (
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 px-3 pb-3 sm:px-5">
+          <ToggleGroup size="segmented" aria-label="Issue list tabs" value={[view.tab]}
+            onValueChange={(values) => { if (values[0]) setView({ ...view, tab: values[0] as WorkTab }); }}>
+            {WORK_TABS.map((tab) => (
+              <ToggleGroupItem key={tab} value={tab} data-testid={`list-tab-${tab}`}>
+                {tab[0]!.toUpperCase() + tab.slice(1)} <span className="text-muted-foreground tabular-nums">{tabCounts?.[tab] ?? "—"}</span>
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-x-1 text-xs text-muted-foreground">
+            {archiveHint === null ? null : <span>{archiveHint}</span>}
+            <InlineButton className="shrink-0 text-xs" aria-pressed={view.archived === true}
+              onClick={() => setView({ ...view, archived: view.archived !== true })}>
+              {view.archived === true ? "Hide archived" : "Show archived"}
+            </InlineButton>
+          </div>
+        </div>
+      ) : null}
 
       {board.error === null ? null : (
         <div className="mx-5 mb-3 rounded-lg border border-error/32 bg-error-surface px-3 py-2 text-error-foreground text-sm">
@@ -378,12 +393,20 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-auto">
-        {firstRunPanel ?? (view.view === "list" ? (
+      <div className="min-h-0 flex-1 overflow-auto" aria-busy={!board.resolved && board.loading}>
+        {!board.resolved ? (board.loading ? (
+          <div className="flex items-center justify-center gap-2 py-12 text-muted-foreground text-sm" role="status">
+            <LoaderCircleIcon aria-hidden="true" className="size-4 animate-spin motion-reduce:animate-none" />
+            Loading work…
+          </div>
+        ) : null) : firstRunPanel ?? (view.view === "list" ? (
           <WorkList
             items={items}
+            tab={view.tab}
+            hasMore={board.hasMore}
+            loading={board.loading}
+            onLoadMore={board.loadMore}
             showProject={projectId === null}
-            now={now}
             onOpen={open}
             movesFor={movesFor}
             onMove={move}
@@ -399,9 +422,13 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
                 <BoardLane
                   key={lane.name}
                   lane={lane}
+                  collapsed={view.collapsed.includes(lane.name)}
+                  onToggleCollapsed={() => setView(toggleCollapsed(view, lane.name))}
                   items={items.filter((item) => item.state === lane.name)}
+                  total={lane.name.toLowerCase() === "backlog" ? board.backlogTotal : board.totals?.lanes[lane.name] ?? (board.totals === null ? undefined : 0)}
+                  onShowMore={lane.name.toLowerCase() === "backlog" && board.backlogHasMore ? board.loadBacklog : null}
+                  loadingMore={board.backlogLoading}
                   showProject={projectId === null}
-                  now={now}
                   onOpen={open}
                   movesFor={movesFor}
                   onMove={move}
@@ -417,8 +444,6 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
                         }
                       : null
                   }
-                  collapsed={laneCollapsed(lane)}
-                  onToggleCollapsed={() => toggleCollapsed(lane)}
                   onCreate={
                     newIssue.canCreate &&
                     !lane.terminal &&

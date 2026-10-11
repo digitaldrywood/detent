@@ -30,6 +30,10 @@ func hostedReviewLaneStates() []tracker.NativeState {
 // template onto the template with Human Review, and leaves every other
 // workflow as it was. Applying it again changes nothing.
 func TestHostedReviewLaneMigration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	hostedLaneMigrationTest(t, hostedLaneMigration{
 		from: 35, to: 36, file: "migrations/00036_hosted_review_lane.sql", lane: "Human Review", dispatchable: false,
@@ -54,11 +58,25 @@ func hostedLandingLaneStates() []tracker.NativeState {
 	}
 }
 
+func hostedDirectLandingStates() []tracker.NativeState {
+	return []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Merging", "Done"}},
+		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Merging"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "In Progress"}},
+		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+	}
+}
+
 // TestHostedLandingLaneMigration moves projects on the review-lane template
 // onto the template with Merging, where an approved Change Request waits for
 // the runner that lands it, and leaves every other workflow as it was.
 // Migration 37 (observed policies) lies between them and touches no lanes.
 func TestHostedLandingLaneMigration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	hostedLaneMigrationTest(t, hostedLaneMigration{
 		from: 37, to: 38, file: "migrations/00038_hosted_landing_lane.sql", lane: "Merging", dispatchable: true,
@@ -71,10 +89,27 @@ func TestHostedLandingLaneMigration(t *testing.T) {
 // move from In Progress straight to Merging when its version needs no
 // review, and leaves every other workflow as it was.
 func TestHostedDirectLandingMigration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	hostedLaneMigrationTest(t, hostedLaneMigration{
 		from: 38, to: 39, file: "migrations/00039_hosted_direct_landing.sql", lane: "Merging", dispatchable: true,
 		before: hostedLandingLaneStates(),
+		after:  hostedDirectLandingStates(),
+	})
+}
+
+func TestHostedBlockedLaneMigration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
+	t.Parallel()
+	hostedLaneMigrationTest(t, hostedLaneMigration{
+		from: 47, to: 48, file: "migrations/00048_hosted_blocked_lane.sql", lane: "Blocked", dispatchable: false,
+		before: hostedDirectLandingStates(),
 		after:  HostedProjectStates(),
 	})
 }

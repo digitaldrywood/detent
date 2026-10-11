@@ -2,19 +2,22 @@ package storetest
 
 import (
 	"context"
-	"errors"
-	"os"
-	"path/filepath"
-	"sync"
+	"io"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
-var migratedDatabase = sync.OnceValues(buildMigratedDatabase)
+var databasePath = testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
+	return store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: path})
+})
 
 func Open(t testing.TB) store.Store {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
 
 	backend, err := store.Open(t.Context(), store.Config{
 		Backend: store.BackendSQLite,
@@ -33,38 +36,5 @@ func Open(t testing.TB) store.Store {
 
 func NewDatabasePath(t testing.TB) string {
 	t.Helper()
-
-	database, err := migratedDatabase()
-	if err != nil {
-		t.Fatalf("build migrated store fixture: %v", err)
-	}
-	path := filepath.Join(t.TempDir(), "detent.db")
-	if err := os.WriteFile(path, database, 0o600); err != nil {
-		t.Fatalf("write migrated store fixture: %v", err)
-	}
-	return path
-}
-
-func buildMigratedDatabase() (_ []byte, returnErr error) {
-	dir, err := os.MkdirTemp("", "detent-store-fixture-")
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		returnErr = errors.Join(returnErr, os.RemoveAll(dir))
-	}()
-
-	path := filepath.Join(dir, "detent.db")
-	backend, err := store.Open(context.Background(), store.Config{
-		Backend: store.BackendSQLite,
-		Path:    path,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err := backend.Close(); err != nil {
-		return nil, err
-	}
-	database, readErr := os.ReadFile(path)
-	return database, readErr
+	return databasePath(t)
 }

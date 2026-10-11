@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -12,18 +13,25 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestCompletionFenceDeferralOutcomes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
 		name     string
 		fenceErr error
+		retired  bool
 	}{
 		{name: "503", fenceErr: completionDeferralAvailabilityError()},
 		{name: "403", fenceErr: &github.StatusError{StatusCode: 403, Err: github.ErrAuthenticationFailed}},
@@ -34,6 +42,7 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 		{name: "timeout", fenceErr: context.DeadlineExceeded},
 		{name: "canceled read", fenceErr: context.Canceled},
 		{name: "transport", fenceErr: errors.New("connection reset by peer")},
+		{name: "retired native fencing token", fenceErr: fmt.Errorf("%w: stale_fencing_token", runpkg.ErrExecutionAuthorityUnavailable), retired: true},
 	}
 
 	for _, tt := range tests {
@@ -53,7 +62,21 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			state.Running[issue.ID] = completionDeferralRunning(issue, attemptID, now)
 			state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
 
-			orch.handleRunResult(t.Context(), &state, completionDeferralEvent(issue, attemptID, now))
+			orch.handleQueuedRunResults(t.Context(), &state, completionDeferralEvent(issue, attemptID, now))
+			if tt.retired {
+				if len(state.deferredCompletions) != 0 || len(state.Retry) != 0 || len(state.Running) != 0 || len(state.Claimed) != 0 {
+					t.Fatal("obsolete native completion retained live state")
+				}
+				receipt, err := runtimeStore.WorkAttempt(t.Context(), attemptID)
+				if err != nil || receipt.TerminalState != store.WorkAttemptTerminalAbandoned {
+					t.Fatalf("obsolete native completion receipt = %+v, %v", receipt, err)
+				}
+				orch.retryDeferredCompletions(t.Context(), &state, now.Add(time.Hour))
+				if tracker.fetchCount() != 1 {
+					t.Fatal("retired token was retried")
+				}
+				return
+			}
 
 			record, deferred := state.deferredCompletions[issue.ID]
 			if !deferred {
@@ -90,6 +113,10 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 }
 
 func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -99,7 +126,20 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 		wantDeferred       bool
 		wantTerminal       store.WorkAttemptTerminalState
 		wantAcceptedTokens int64
+		forgeClass         string
+		approvalDenied     bool
+		intakeOff          bool
+		native             bool
+		mixed              bool
+		nativeAuthority    bool
+		restoreError       error
+		restoreTransient   bool
+		wantRestores       int
 	}{
+		{name: "native final checkpoint authority survives restart", nativeAuthority: true, wantRestores: 1, recoveredState: "In Progress", retryCount: 2, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
+		{name: "native completion waits for restoration transport", nativeAuthority: true, wantRestores: 2, restoreTransient: true, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
+		{name: "invalid restored authority cannot release another claim", nativeAuthority: true, wantRestores: 2, restoreError: runpkg.ErrExecutionAuthorityUnavailable, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalAbandoned},
+		{name: "intake off preserves deferred completion through restart", intakeOff: true, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
 		{
 			name:           "deferral survives restart",
 			recoveredState: "In Progress",
@@ -126,6 +166,12 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			wantTerminal:       store.WorkAttemptTerminalSuccess,
 			wantAcceptedTokens: 37,
 		},
+		{name: "canonical server wrapper", recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalCapacity, forgeClass: forgeavailability.ClassServer},
+		{name: "native server wrapper", recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalCapacity, forgeClass: forgeavailability.ClassServer, native: true},
+		{name: "canonical approval wrapper", recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalCapacity, forgeClass: forgeavailability.ClassTransport, approvalDenied: true},
+		{name: "native approval wrapper", recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalCapacity, forgeClass: forgeavailability.ClassTransport, approvalDenied: true, native: true},
+		{name: "canonical mixed wrapper", recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalCapacity, forgeClass: forgeavailability.ClassServer, mixed: true},
+		{name: "native mixed wrapper", recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalCapacity, forgeClass: forgeavailability.ClassServer, mixed: true, native: true},
 	}
 
 	for _, tt := range tests {
@@ -139,13 +185,57 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 				firstErr:                     completionDeferralAvailabilityError(),
 			}
 			cfg := completionDeferralConfig()
+			cfg.ForgeHost = "github.com"
+			var trackerOwner connector.Connector = tracker
+			var nativeTracker *nativeWorkflowConnector
+			if tt.native {
+				nativeTracker = &nativeWorkflowConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}, states: []connector.WorkflowState{
+					{Name: "In Progress", Dispatchable: true, Transitions: []string{"Blocked", "Done"}},
+					{Name: "Blocked"}, {Name: "Done", Terminal: true},
+				}}
+				trackerOwner = nativeTracker
+			}
 			initialStore := openCompletionDeferralStoreWithoutCleanup(t, dbPath)
 			attemptID := startCompletionDeferralAttempt(t, initialStore, issue, now)
-			initialOrch := Orchestrator{cfg: cfg, connector: tracker, workAttempts: initialStore, now: func() time.Time { return now }}
+			initialOrch := Orchestrator{cfg: cfg, connector: trackerOwner, workAttempts: initialStore, now: func() time.Time { return now }}
+			var initialAuthority *completionRestartScheduling
+			if tt.nativeAuthority {
+				initialAuthority = &completionRestartScheduling{hubSchedulingSource: &hubSchedulingSource{}, restored: true}
+				initialAuthority.execution = &completionRestartExecution{owner: initialAuthority}
+				initialOrch.scheduling = initialAuthority
+			}
+			initialOrch.localIntakeDisabled.Store(tt.intakeOff)
 			initialState := newState(cfg)
 			initialState.Running[issue.ID] = completionDeferralRunning(issue, attemptID, now)
 			initialState.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
-			initialOrch.handleRunResult(t.Context(), &initialState, completionDeferralEvent(issue, attemptID, now))
+			event := completionDeferralEvent(issue, attemptID, now)
+			if tt.nativeAuthority {
+				event.Result.NativeChange = &runpkg.NativeChange{Error: "publication unavailable"}
+			}
+			if tt.forgeClass != "" {
+				message := "HTTP 503: upstream unavailable"
+				if tt.approvalDenied {
+					message = "tool approval declined"
+				}
+				delivery := &runpkg.DeliverableRecoveryError{Branch: "detent/1869", Err: &runpkg.DeliverableCommandError{
+					OperationClass: "pull_request", Operation: "gh pr create", Message: message, ApprovalDenied: tt.approvalDenied,
+					Command: "command-only-unrecorded", Arguments: `{"head":"detent/1869"}`, Body: "opaque backend detail",
+				}}
+				event.Err = forgeavailability.NewError(forgeavailability.Scope{Host: "forge.example.test", Operation: "gh pr create"}, tt.forgeClass, delivery)
+				if tt.mixed {
+					event.Err = errors.Join(event.Err, runpkg.ErrWorkspacePreparation)
+				}
+				event.Result.FinalState = runpkg.FinalStateNeedsHumanAttention
+				event.Result.FinalMessage = "May I merge?"
+				event.Result.PullRequestHeadPushed = true
+				event.Result.WorkspaceBranch = "detent/1869"
+			}
+			if tt.nativeAuthority {
+				tracker.firstErr = nil
+				initialOrch.deferTrackerUnavailableCompletion(t.Context(), &initialState, event, initialState.Running[issue.ID], completionDeferralAvailabilityError())
+			} else {
+				initialOrch.handleRunResult(t.Context(), &initialState, event)
+			}
 			if err := initialStore.Close(); err != nil {
 				t.Fatalf("Close(initial store) error = %v", err)
 			}
@@ -154,16 +244,48 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			recoveredIssue := cloneIssue(issue)
 			recoveredIssue.State = tt.recoveredState
 			tracker.setIssue(recoveredIssue)
+			if nativeTracker != nil {
+				nativeTracker.stateIssues = []connector.Issue{recoveredIssue}
+			}
 			restartAt := now.Add(2 * time.Minute)
-			restartedOrch := Orchestrator{cfg: cfg, connector: tracker, workAttempts: restartedStore, now: func() time.Time { return restartAt }}
+			restartedOrch := Orchestrator{cfg: cfg, connector: trackerOwner, workAttempts: restartedStore, now: func() time.Time { return restartAt }}
+			var restoredAuthority *completionRestartScheduling
+			if tt.nativeAuthority {
+				restoredAuthority = &completionRestartScheduling{hubSchedulingSource: &hubSchedulingSource{}, restoreError: tt.restoreError, restoreTransient: tt.restoreTransient}
+				restoredAuthority.execution = &completionRestartExecution{owner: restoredAuthority}
+				restartedOrch.scheduling = restoredAuthority
+				restartedOrch.heartbeats = newHeartbeatManager(cfg, trackerOwner, restartedStore, restartedOrch.now, nil, restoredAuthority)
+			}
+			restartedOrch.localIntakeDisabled.Store(tt.intakeOff)
 			restartedState := newState(cfg)
 			restartedOrch.recoverDurableWorkAttempts(t.Context(), &restartedState, restartAt)
 
 			if _, ok := restartedState.deferredCompletions[issue.ID]; !ok {
 				t.Fatalf("deferred completion missing after restart: %#v", restartedState.deferredCompletions)
 			}
+			if restartedState.UnsettledWork() != 1 || len(restartedState.Snapshot(restartAt).Running) != 0 {
+				t.Fatal("restored completion must remain unsettled without running a provider")
+			}
+			if tt.nativeAuthority && tt.restoreError == nil && !tt.restoreTransient {
+				if target, ok := restartedOrch.heartbeats.targets[issue.ID]; !ok || target.workAttemptHeartbeat.Phase != deferredCompletionPhase {
+					t.Fatal("restored completion lost its existing lease heartbeat owner")
+				}
+			}
 			if retry, ok := restartedState.Retry[issue.ID]; !ok || !retry.CompletionDeferred {
 				t.Fatalf("Retry[%q] = %#v, want recovered completion deferral", issue.ID, retry)
+			}
+			if tt.forgeClass != "" {
+				decoded := restartedState.deferredCompletions[issue.ID].completion()
+				availability, typed := forgeavailability.As(decoded.Err)
+				if !typed || availability.Scope.Host != "forge.example.test" || availability.Scope.Operation != "gh pr create" || availability.Class != tt.forgeClass {
+					t.Fatalf("restored worker availability = %+v, want original forge scope/class", availability)
+				}
+				if !tt.mixed {
+					var command *runpkg.DeliverableCommandError
+					if !errors.As(decoded.Err, &command) || command.ApprovalDenied != tt.approvalDenied || command.Arguments != "" || command.Command != "" || command.Body != "" {
+						t.Fatalf("restored summarized command = %+v", command)
+					}
+				}
 			}
 			if _, ok := restartedState.Claimed[issue.ID]; !ok {
 				t.Fatalf("Claimed[%q] missing after restart", issue.ID)
@@ -212,14 +334,88 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			if receipt.TerminalState != tt.wantTerminal {
 				t.Fatalf("terminal state = %q, want %q", receipt.TerminalState, tt.wantTerminal)
 			}
+			if tt.forgeClass != "" {
+				wantClass := tt.forgeClass
+				if tt.approvalDenied {
+					wantClass = forgeavailability.ClassWorkerGitHubCredentialUnavailable
+				}
+				retry := restartedState.Retry[issue.ID]
+				condition := restartedState.ForgeUnavailable["forge.example.test"]
+				if receipt.ErrorClass != forgeUnavailableErrorClass || !allowanceInfrastructureAttempt(receipt) || !retry.ForgeUnavailable || retry.Attempt != 2 || retry.ForgeRetry == nil || retry.ForgeRetry.Branch != "detent/1869" || !retry.ForgeRetry.WorkProductPushed || condition.Operation != "gh pr create" || condition.ErrorClass != wantClass {
+					t.Fatalf("receipt = %+v, retry = %+v, condition = %+v, want same-attempt instance %s wait", receipt, retry, condition, wantClass)
+				}
+				if _, blocked := restartedState.Blocked[issue.ID]; blocked {
+					t.Fatal("instance outage became a human hold")
+				}
+				if nativeTracker != nil && (len(nativeTracker.updates) != 0 || len(nativeTracker.comments) != 0) || len(tracker.updates) != 0 || len(tracker.comments) != 0 {
+					t.Fatal("instance outage mutated tracker state")
+				}
+			}
 			if _, ok := restartedState.deferredCompletions[issue.ID]; ok {
 				t.Fatalf("deferred completion remains after fence decision")
 			}
 			if restartedState.TokenTotals.TotalTokens != tt.wantAcceptedTokens {
 				t.Fatalf("accepted tokens = %d, want %d", restartedState.TokenTotals.TotalTokens, tt.wantAcceptedTokens)
 			}
+			if tt.nativeAuthority {
+				wantPrepared, wantReleases := 1, 1
+				if tt.restoreError != nil {
+					wantPrepared, wantReleases = 0, 0
+				}
+				if restoredAuthority.restores != tt.wantRestores || restoredAuthority.prepared != wantPrepared || restoredAuthority.releases != wantReleases || restartedState.UnsettledWork() != 0 {
+					t.Fatalf("native completion ownership: %+v", restoredAuthority)
+				}
+			}
 		})
 	}
+}
+
+type completionRestartScheduling struct {
+	*hubSchedulingSource
+	restored         bool
+	restores         int
+	prepared         int
+	restoreError     error
+	restoreTransient bool
+}
+
+func (s *completionRestartScheduling) RestoreCompletion(_ context.Context, _ SchedulingRequest, issue connector.Issue, saved json.RawMessage) (Claimed, error) {
+	s.restores++
+	if s.restoreError != nil {
+		return Claimed{}, s.restoreError
+	}
+	if s.restoreTransient && s.restores == 1 {
+		return Claimed{}, completionDeferralAvailabilityError()
+	}
+	if string(saved) != `{"attempt":"native-attempt","checkpoint":"final","diff_sequence":3}` {
+		return Claimed{}, runpkg.ErrExecutionAuthorityUnavailable
+	}
+	s.restored = true
+	return Claimed{Issue: issue}, nil
+}
+
+type completionRestartExecution struct {
+	nativeCompletionPublisher
+	owner *completionRestartScheduling
+}
+
+func (e *completionRestartExecution) Validate(context.Context) error {
+	if !e.owner.restored {
+		return runpkg.ErrExecutionAuthorityUnavailable
+	}
+	return nil
+}
+
+func (e *completionRestartExecution) CompletionState() json.RawMessage {
+	return json.RawMessage(`{"attempt":"native-attempt","checkpoint":"final","diff_sequence":3}`)
+}
+
+func (e *completionRestartExecution) PrepareFinish(ctx context.Context, _, _ string, _ *tracker.NativeTerminalFailure) error {
+	if err := e.Validate(ctx); err != nil {
+		return err
+	}
+	e.owner.prepared++
+	return nil
 }
 
 type completionDeferralConnector struct {
@@ -381,6 +577,10 @@ func TestCompletionFenceUnchangedOrUnknownLaneDefers(t *testing.T) {
 }
 
 func TestCompletionFenceRateLimitDeadlineSurvivesRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name  string
@@ -434,4 +634,63 @@ func TestCompletionFenceMissingLaneDefers(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDeferredCompletionsRetryIndependently(t *testing.T) {
+	t.Parallel()
+
+	unavailable := completionDeferralAvailabilityError()
+	superseded := runpkg.ErrExecutionAuthorityUnavailable
+	tests := []struct {
+		name        string
+		restore     map[string]error
+		wantSettled bool
+		wantPending []string
+	}{
+		{name: "unavailable first record does not starve a superseded one", restore: map[string]error{"issue-a": unavailable, "issue-b": superseded}, wantPending: []string{"issue-a"}},
+		{name: "superseded first record does not stop later records", restore: map[string]error{"issue-a": superseded, "issue-b": superseded}, wantSettled: true},
+		{name: "every unavailable record backs off on its own", restore: map[string]error{"issue-a": unavailable, "issue-b": unavailable}, wantPending: []string{"issue-a", "issue-b"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 10, 8, 8, 0, 0, 0, time.UTC)
+			cfg := completionDeferralConfig()
+			source := &perIssueRestoreScheduling{hubSchedulingSource: &hubSchedulingSource{}, errs: tt.restore}
+			orch := Orchestrator{cfg: cfg, connector: &backendCapacityTestConnector{}, scheduling: source, now: func() time.Time { return now }}
+			state := newState(cfg)
+			for id := range tt.restore {
+				issue := completionDeferralIssue(id, "In Progress")
+				state.deferredCompletions[id] = deferredCompletion{Schema: deferredCompletionSchema, Running: completionDeferralRunning(issue, 0, now), Persisted: true}
+				state.Retry[id] = Retry{Issue: issue, DueAt: now, CompletionDeferred: true, TrackerUnavailable: true}
+			}
+
+			if settled := orch.retryDeferredCompletions(t.Context(), &state, now); settled != tt.wantSettled {
+				t.Fatalf("retryDeferredCompletions() = %t, want %t", settled, tt.wantSettled)
+			}
+			if len(source.restored) != len(tt.restore) {
+				t.Fatalf("restored %v, want every due record attempted once", source.restored)
+			}
+			pending := sortedKeys(state.deferredCompletions)
+			if strings.Join(pending, ",") != strings.Join(tt.wantPending, ",") {
+				t.Fatalf("pending deferrals = %v, want %v", pending, tt.wantPending)
+			}
+			for _, id := range tt.wantPending {
+				if due := state.Retry[id].DueAt; !due.Equal(now.Add(cfg.PollInterval)) {
+					t.Fatalf("Retry[%q].DueAt = %v, want one poll interval later", id, due)
+				}
+			}
+		})
+	}
+}
+
+type perIssueRestoreScheduling struct {
+	*hubSchedulingSource
+	errs     map[string]error
+	restored []string
+}
+
+func (s *perIssueRestoreScheduling) RestoreCompletion(_ context.Context, _ SchedulingRequest, issue connector.Issue, _ json.RawMessage) (Claimed, error) {
+	s.restored = append(s.restored, issue.ID)
+	return Claimed{}, s.errs[issue.ID]
 }

@@ -1,10 +1,3 @@
-// Runner display names.
-//
-// The hub stamps a runner's actions with its principal id — `runner_be4a…` —
-// and serves no name with them. The one place it does name runners is the
-// fleet (`GET /fleet`), which any member can read, so the work surfaces read
-// that once and resolve ids through it, falling back to a short id when the
-// fleet has no entry (a runner since removed) or could not be read.
 import React from "react";
 
 import { makeAccountApi } from "../../account/api.ts";
@@ -42,6 +35,7 @@ export function runnerDisplay(
 const FLEET_TTL_MS = 60_000;
 let cached: { readonly at: number; readonly names: RunnerNames } | null = null;
 let inflight: Promise<RunnerNames> | null = null;
+let owner = "";
 
 /**
  * The fleet's runner names, read at most once a minute per session and shared
@@ -53,9 +47,13 @@ export function useRunnerNames(): RunnerNames {
   // where no client is mounted: a surface drawn on its own (tests, previews)
   // shows short ids instead of failing.
   const client = React.useContext(ClientContext);
-  const [names, setNames] = React.useState<RunnerNames>(() => cached?.names ?? NO_RUNNER_NAMES);
+  const scope = client === null ? "" : JSON.stringify([client.http.origin, client.http.apiBase,
+    client.bootstrap.organization.id, client.bootstrap.actor?.principal_id]);
+  const [state, setState] = React.useState(() => ({ scope, names: scope === owner ? cached?.names ?? NO_RUNNER_NAMES : NO_RUNNER_NAMES }));
+  const setNames = (names: RunnerNames) => setState({ scope, names });
   React.useEffect(() => {
     if (client === null) return;
+    if (scope !== owner) { owner = scope; cached = null; inflight = null; }
     let cancelled = false;
     const refresh = () => {
       if (cached !== null && Date.now() - cached.at < FLEET_TTL_MS) {
@@ -67,21 +65,22 @@ export function useRunnerNames(): RunnerNames {
         apiBase: client.http.apiBase,
         csrfToken: client.http.csrfToken,
       })
-        .fleet()
+        .fleetNames()
         .then((fleet) => {
+          if (scope !== owner) return NO_RUNNER_NAMES;
           const next = new Map<string, RunnerName>();
-          for (const runner of fleet.runners) {
-            next.set(runner.id, { display: runner.display_name, host: runner.hostname });
+          for (const [id, runner] of Object.entries(fleet.runner_names ?? {})) {
+            next.set(id, { display: runner.display_name, host: runner.hostname });
           }
           cached = { at: Date.now(), names: next };
           return next as RunnerNames;
         })
-        .catch(() => cached?.names ?? NO_RUNNER_NAMES)
+        .catch(() => scope === owner ? cached?.names ?? NO_RUNNER_NAMES : NO_RUNNER_NAMES)
         .finally(() => {
-          inflight = null;
+          if (scope === owner) inflight = null;
         });
       void inflight.then((next) => {
-        if (!cancelled) setNames(next);
+        if (!cancelled && scope === owner) setNames(next);
       });
     };
     refresh();
@@ -93,12 +92,13 @@ export function useRunnerNames(): RunnerNames {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [client]);
-  return names;
+  }, [client, scope]);
+  return state.scope === scope ? state.names : NO_RUNNER_NAMES;
 }
 
 /** For tests: forget the cached fleet. */
 export function resetRunnerNamesForTests(): void {
+  owner = "";
   cached = null;
   inflight = null;
 }

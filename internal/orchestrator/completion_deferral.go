@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -26,25 +27,33 @@ const (
 )
 
 type deferredCompletion struct {
-	Schema              int                            `json:"schema"`
-	Running             Running                        `json:"running"`
-	Request             deferredCompletionRequest      `json:"request"`
-	Result              runpkg.RunResult               `json:"result"`
-	Error               string                         `json:"error,omitempty"`
-	CompletedAt         time.Time                      `json:"completed_at"`
-	Retryable           bool                           `json:"retryable,omitempty"`
-	RetryAttempt        int                            `json:"retry_attempt,omitempty"`
-	RetryDelay          time.Duration                  `json:"retry_delay,omitempty"`
-	FenceRetryAt        time.Time                      `json:"fence_retry_at,omitzero"`
-	DeferredAt          time.Time                      `json:"deferred_at"`
-	Availability        deferredCompletionAvailability `json:"availability"`
-	DeliverableRecovery *deferredDeliverableRecovery   `json:"deliverable_recovery,omitempty"`
-	Persisted           bool                           `json:"-"`
+	Schema                 int                            `json:"schema"`
+	Running                Running                        `json:"running"`
+	Request                deferredCompletionRequest      `json:"request"`
+	Result                 runpkg.RunResult               `json:"result"`
+	Error                  string                         `json:"error,omitempty"`
+	TerminalState          store.WorkAttemptTerminalState `json:"terminal_state,omitempty"`
+	WorkerProcessReap      bool                           `json:"worker_process_reap,omitempty"`
+	NativeRecoveryRequired bool                           `json:"native_recovery_required,omitempty"`
+	CompletedAt            time.Time                      `json:"completed_at"`
+	Retryable              bool                           `json:"retryable,omitempty"`
+	RetryAttempt           int                            `json:"retry_attempt,omitempty"`
+	RetryDelay             time.Duration                  `json:"retry_delay,omitempty"`
+	FenceRetryAt           time.Time                      `json:"fence_retry_at,omitzero"`
+	DeferredAt             time.Time                      `json:"deferred_at"`
+	Availability           deferredCompletionAvailability `json:"availability"`
+	DeliverableRecovery    *deferredDeliverableRecovery   `json:"deliverable_recovery,omitempty"`
+	ForgeAvailability      *forgeWaitMetadata             `json:"worker_forge_availability,omitempty"`
+	GitHubRESTQuota        *github.StatusError            `json:"github_rest_quota,omitempty"`
+	Persisted              bool                           `json:"-"`
+	Execution              json.RawMessage                `json:"execution,omitempty"`
+	AuthorityRestored      bool                           `json:"-"`
 }
 
 type deferredDeliverableRecovery struct {
-	Branch string `json:"branch,omitempty"`
-	Cause  string `json:"cause,omitempty"`
+	Branch     string                          `json:"branch,omitempty"`
+	Cause      string                          `json:"cause,omitempty"`
+	TypedCause *runpkg.DeliverableCommandError `json:"typed_cause,omitempty"`
 }
 
 type deferredCompletionRequest struct {
@@ -60,6 +69,7 @@ type deferredCompletionRequest struct {
 	StartedAt           time.Time              `json:"started_at,omitzero"`
 	WorkerHost          string                 `json:"worker_host,omitempty"`
 	RetryMode           runpkg.RetryMode       `json:"retry_mode,omitempty"`
+	RecoveryAttemptID   int64                  `json:"recovery_attempt_id,omitempty"`
 	ResumeState         store.AgentResumeState `json:"resume_state,omitzero"`
 	MergePrecheck       *runpkg.MergePrecheck  `json:"merge_precheck,omitempty"`
 }
@@ -73,25 +83,50 @@ type deferredCompletionAvailability struct {
 func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr error, deferredAt time.Time) deferredCompletion {
 	running.CompletionOwnershipReleased = true
 	record := deferredCompletion{
-		Schema:       deferredCompletionSchema,
-		Running:      running,
-		Request:      deferredCompletionRequestFromRun(event.Request),
-		Result:       event.Result,
-		Error:        errorString(event.Err),
-		CompletedAt:  event.CompletedAt,
-		Retryable:    event.Retryable,
-		RetryAttempt: event.RetryAttempt,
-		RetryDelay:   event.RetryDelay,
-		DeferredAt:   deferredAt,
+		Schema:                 deferredCompletionSchema,
+		TerminalState:          terminalStateForRun(event.Err, event.Result.FinalState),
+		WorkerProcessReap:      errors.Is(event.Err, runpkg.ErrWorkerProcessReap),
+		NativeRecoveryRequired: errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired),
+		Running:                running,
+		Request:                deferredCompletionRequestFromRun(event.Request),
+		Result:                 event.Result,
+		Error:                  errorString(event.Err),
+		CompletedAt:            event.CompletedAt,
+		Retryable:              event.Retryable,
+		RetryAttempt:           event.RetryAttempt,
+		RetryDelay:             event.RetryDelay,
+		DeferredAt:             deferredAt,
 	}
+	// Error interfaces do not round-trip through JSON. Retain actual quota
+	// response evidence so completion replay uses the same capacity owner.
+	var quota *github.StatusError
+	if errors.Is(event.Err, github.ErrRateLimited) && errors.As(event.Err, &quota) && quota != nil {
+		copy := *quota
+		copy.Err = nil
+		record.GitHubRESTQuota = &copy
+	}
+	record.ForgeAvailability = &forgeWaitMetadata{}
 	if fenceErr != nil {
 		record.Availability = deferredCompletionAvailability{Class: "completion_fence_unavailable", Message: fenceErr.Error()}
 	}
+	if availabilityErr, unavailable := forgeavailability.As(event.Err); unavailable {
+		record.ForgeAvailability = &forgeWaitMetadata{
+			Host:       availabilityErr.Scope.Host,
+			Operation:  availabilityErr.Scope.Operation,
+			ErrorClass: availabilityErr.Class,
+		}
+	}
 	var recoveryErr *runpkg.DeliverableRecoveryError
-	if errors.As(event.Err, &recoveryErr) && recoveryErr != nil {
+	if commandErr, deliveryFailure := runpkg.PullRequestDeliverableFailure(event.Err); deliveryFailure && errors.As(event.Err, &recoveryErr) && recoveryErr != nil {
 		record.DeliverableRecovery = &deferredDeliverableRecovery{
 			Branch: strings.TrimSpace(recoveryErr.Branch),
 			Cause:  errorString(recoveryErr.Err),
+			TypedCause: &runpkg.DeliverableCommandError{
+				OperationClass: commandErr.OperationClass,
+				Operation:      commandErr.Operation,
+				Message:        errorString(recoveryErr.Err),
+				ApprovalDenied: commandErr.ApprovalDenied,
+			},
 		}
 	}
 	if availabilityErr, ok := connector.AsTrackerAvailability(fenceErr); ok {
@@ -118,6 +153,7 @@ func deferredCompletionRequestFromRun(request runpkg.RunRequest) deferredComplet
 		StartedAt:           request.StartedAt,
 		WorkerHost:          request.WorkerHost,
 		RetryMode:           request.RetryMode,
+		RecoveryAttemptID:   request.RecoveryAttemptID,
 		ResumeState:         request.ResumeState,
 		MergePrecheck:       cloneMergePrecheck(request.MergePrecheck),
 	}
@@ -139,6 +175,7 @@ func (r deferredCompletion) completion() runpkg.Completion {
 			StartedAt:           r.Request.StartedAt,
 			WorkerHost:          r.Request.WorkerHost,
 			RetryMode:           r.Request.RetryMode,
+			RecoveryAttemptID:   r.Request.RecoveryAttemptID,
 			ResumeState:         r.Request.ResumeState,
 			MergePrecheck:       cloneMergePrecheck(r.Request.MergePrecheck),
 		},
@@ -148,14 +185,42 @@ func (r deferredCompletion) completion() runpkg.Completion {
 		RetryAttempt: r.RetryAttempt,
 		RetryDelay:   r.RetryDelay,
 	}
-	if r.DeliverableRecovery != nil {
-		var cause error
-		if strings.TrimSpace(r.DeliverableRecovery.Cause) != "" {
-			cause = errors.New(r.DeliverableRecovery.Cause)
-		}
-		event.Err = &runpkg.DeliverableRecoveryError{Branch: r.DeliverableRecovery.Branch, Err: cause}
-	} else if strings.TrimSpace(r.Error) != "" {
+	if strings.TrimSpace(r.Error) != "" {
 		event.Err = errors.New(r.Error)
+	}
+	if r.NativeRecoveryRequired {
+		event.Err = fmt.Errorf("%w: %s", runpkg.ErrNativeRecoveryRequired, strings.TrimPrefix(r.Error, runpkg.ErrNativeRecoveryRequired.Error()+": "))
+	}
+	if r.GitHubRESTQuota != nil {
+		quota := *r.GitHubRESTQuota
+		quota.Err = errors.Join(github.ErrRateLimited, event.Err)
+		event.Err = &quota
+	}
+	workerAvailabilityKnown := r.ForgeAvailability != nil && (*r.ForgeAvailability == (forgeWaitMetadata{}) || validForgeAvailabilityClass(r.ForgeAvailability.ErrorClass))
+	if r.DeliverableRecovery != nil {
+		if commandErr, deliveryFailure := runpkg.PullRequestDeliverableFailure(r.DeliverableRecovery.TypedCause); workerAvailabilityKnown && deliveryFailure && commandErr != nil {
+			event.Err = &runpkg.DeliverableRecoveryError{Branch: r.DeliverableRecovery.Branch, Err: r.DeliverableRecovery.TypedCause}
+		} else if event.Err == nil {
+			event.Err = &runpkg.DeliverableRecoveryError{Branch: r.DeliverableRecovery.Branch, Err: errors.New(r.DeliverableRecovery.Cause)}
+		}
+	}
+	if r.ForgeAvailability != nil && validForgeAvailabilityClass(r.ForgeAvailability.ErrorClass) {
+		event.Err = forgeavailability.NewError(forgeavailability.Scope{
+			Host: r.ForgeAvailability.Host, Operation: r.ForgeAvailability.Operation,
+		}, r.ForgeAvailability.ErrorClass, event.Err)
+	}
+	if event.Err != nil {
+		if r.WorkerProcessReap {
+			event.Err = errors.Join(runpkg.ErrWorkerProcessReap, event.Err)
+		}
+		switch r.TerminalState {
+		case store.WorkAttemptTerminalCancelled:
+			if !r.NativeRecoveryRequired {
+				event.Err = errors.Join(event.Err, context.Canceled)
+			}
+		case store.WorkAttemptTerminalTimedOut:
+			event.Err = errors.Join(event.Err, context.DeadlineExceeded)
+		}
 	}
 	return event
 }
@@ -167,6 +232,12 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 	running Running,
 	fenceErr error,
 ) {
+	// A retired native lease is an obsolete completion, not a tracker outage.
+	// Reuse completion rejection rather than enqueueing the same dead token.
+	if errors.Is(fenceErr, runpkg.ErrExecutionAuthorityUnavailable) {
+		o.rejectUnavailableCompletion(ctx, state, event, running, fenceErr, true)
+		return
+	}
 	deferredAt := o.clockNow().UTC()
 	if deferredAt.IsZero() {
 		deferredAt = event.CompletedAt.UTC()
@@ -176,6 +247,8 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 	}
 	o.observeTrackerReadFailure(state, "", fenceErr, deferredAt)
 	record := newDeferredCompletion(event, running, fenceErr, deferredAt)
+	o.captureDeferredExecution(&record)
+	record.AuthorityRestored = true
 	record.FenceRetryAt = o.completionFenceRetryAt(state, fenceErr, deferredAt, event.RetryDelay)
 	record.Persisted = o.persistDeferredCompletion(ctx, state, record)
 
@@ -193,7 +266,6 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 			running.cancel()
 		}
 	}
-	o.heartbeats.remove(event.IssueID)
 	delete(state.Running, event.IssueID)
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
 	if state.deferredCompletions == nil {
@@ -220,6 +292,17 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 			Event:   "completion_deferral_persist_failed",
 			Message: "retained completed result in memory for " + issueLabel(running.Issue) + " after durable persistence failed",
 		})
+	}
+}
+
+func (o *Orchestrator) rejectUnavailableCompletion(ctx context.Context, state *State, event runpkg.Completion, running Running, cause error, release bool) {
+	o.rejectWorkerCompletion(ctx, state, event, running, "worker lease is no longer active", cause)
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalAbandoned, workAttemptErrorInterrupted, cause.Error(), "interrupted", "native execution authority ended")
+	o.clearLiveWorkAttemptState(state, telemetry.WorkAttempt{IssueID: event.IssueID, AttemptID: running.WorkAttemptID})
+	if release {
+		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
+			o.logger.Warn("release obsolete completion claim failed", "issue_id", event.IssueID, "error", err)
+		}
 	}
 }
 
@@ -279,6 +362,20 @@ func (o *Orchestrator) persistDeferredCompletion(ctx context.Context, state *Sta
 		ProviderSessionID:      record.Running.SessionID,
 		RuntimeIdentity:        record.Running.RuntimeIdentity,
 	}
+	if record.Running.progress != nil {
+		record.Running.progress.mu.Lock()
+		defer record.Running.progress.mu.Unlock()
+	}
+	if o.heartbeats != nil {
+		o.heartbeats.upsert(heartbeatTarget{
+			progress:             record.Running.progress,
+			issueID:              record.Running.Issue.ID,
+			claimOwner:           firstNonBlank(state.Claimed[record.Running.Issue.ID].Owner, o.claimOwner()),
+			workAttemptHeartbeat: heartbeat,
+			workerProcess:        record.Running.WorkerProcess,
+			workspacePath:        record.Running.WorkspacePath,
+		})
+	}
 	if err := o.workAttempts.RecordWorkAttemptHeartbeat(ctx, heartbeat); err != nil {
 		if o.logger != nil {
 			o.logger.Error("deferred completion persistence failed", "attempt_id", record.Running.WorkAttemptID, "issue_id", record.Running.Issue.ID, "error", err)
@@ -295,6 +392,9 @@ func deferredCompletionMetadataJSON(record deferredCompletion) (string, error) {
 		"issue_title":                 strings.TrimSpace(record.Running.Issue.Title),
 		"work_product_pushed":         record.Running.WorkProductPushed,
 		deferredCompletionMetadataKey: record,
+	}
+	if record.Running.Policy.ID != "" {
+		metadata["policy"] = record.Running.Policy
 	}
 	payload, err := json.Marshal(metadata)
 	if err != nil {
@@ -342,6 +442,10 @@ func (o *Orchestrator) recoverDeferredCompletions(ctx context.Context, state *St
 			continue
 		}
 		issueID := record.Running.Issue.ID
+		claim, restoreErr := o.restoreDeferredExecution(ctx, record)
+		if restoreErr == nil {
+			record.AuthorityRestored = true
+		}
 		state.deferredCompletions[issueID] = record
 		dueAt := now
 		if record.FenceRetryAt.IsZero() {
@@ -360,6 +464,14 @@ func (o *Orchestrator) recoverDeferredCompletions(ctx context.Context, state *St
 			CompletionDeferred: true,
 		}
 		state.Claimed[issueID] = recoveredDeferredCompletionClaim(o, record.Running.Issue, now)
+		if claim.Issue.ID != "" {
+			state.Claimed[issueID] = claim
+		}
+		if record.AuthorityRestored && o.captureDeferredExecution(&record) {
+			record.DeferredAt = now
+			record.Persisted = o.persistDeferredCompletion(ctx, state, record)
+			state.deferredCompletions[issueID] = record
+		}
 		o.upsertWorkAttemptSnapshot(state, telemetryWorkAttempt(attempt, now))
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now,
@@ -414,18 +526,44 @@ func recoveryIssueFromStoreAttempt(attempt store.WorkAttempt) connector.Issue {
 }
 
 func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *State, now time.Time) bool {
+	settled := true
 	for _, issueID := range sortedKeys(state.deferredCompletions) {
 		retry := state.Retry[issueID]
 		if !retry.DueAt.IsZero() && now.Before(retry.DueAt) {
 			continue
 		}
 		record := state.deferredCompletions[issueID]
+		if !record.AuthorityRestored {
+			claim, err := o.restoreDeferredExecution(ctx, record)
+			if err != nil {
+				if errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) {
+					state.Running[issueID] = record.Running
+					o.rejectUnavailableCompletion(ctx, state, record.completion(), record.Running, err, false)
+					continue
+				}
+				o.observeTrackerReadFailure(state, "", err, now)
+				retry.DueAt = now.Add(o.cfg.PollInterval)
+				state.Retry[issueID] = retry
+				settled = false
+				continue
+			}
+			record.AuthorityRestored = true
+			state.deferredCompletions[issueID] = record
+			if claim.Issue.ID != "" {
+				state.Claimed[issueID] = claim
+			}
+			if o.captureDeferredExecution(&record) {
+				record.DeferredAt = now
+				record.Persisted = false
+			}
+		}
 		if !record.Persisted {
 			record.DeferredAt = now
 			if !o.persistDeferredCompletion(ctx, state, record) {
 				retry.DueAt = now.Add(o.cfg.PollInterval)
 				state.Retry[issueID] = retry
-				return false
+				settled = false
+				continue
 			}
 			record.Persisted = true
 			state.deferredCompletions[issueID] = record
@@ -436,12 +574,60 @@ func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *Stat
 		if _, ok := state.Claimed[issueID]; !ok {
 			state.Claimed[issueID] = recoveredDeferredCompletionClaim(o, record.Running.Issue, now)
 		}
-		o.handleRunResult(ctx, state, record.completion())
+		completion := record.completion()
+		if completion.Err == nil && completion.Result.NativeChange != nil {
+			if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
+				execution := source.RunExecution(issueID)
+				if publisher, ok := execution.(runpkg.CompletionExecution); ok {
+					err := execution.Validate(ctx)
+					if err == nil {
+						err = publisher.PrepareFinish(ctx, "succeeded", completion.Result.FinalMessage, nil)
+					}
+					if err != nil {
+						o.deferTrackerUnavailableCompletion(ctx, state, completion, record.Running, err)
+						if _, deferred := state.deferredCompletions[issueID]; deferred {
+							settled = false
+						}
+						continue
+					}
+					if changes, ok := execution.(runpkg.ChangeExecution); ok {
+						completion.Result.NativeChange = changes.NativeChange()
+					}
+				}
+			}
+		}
+		o.handleRunResult(ctx, state, completion)
 		if _, deferred := state.deferredCompletions[issueID]; deferred {
-			return false
+			settled = false
 		}
 	}
-	return true
+	return settled
+}
+
+func (o *Orchestrator) restoreDeferredExecution(ctx context.Context, record deferredCompletion) (Claimed, error) {
+	if source, ok := o.scheduling.(interface {
+		RestoreCompletion(context.Context, SchedulingRequest, connector.Issue, json.RawMessage) (Claimed, error)
+	}); ok {
+		policy := record.Running.Policy
+		if policy.ID == "" {
+			policy = o.cfg.Policy
+		}
+		return source.RestoreCompletion(ctx, SchedulingRequest{ProjectID: o.cfg.Project.ID, Repository: o.cfg.SchedulingRepository, Policy: policy}, record.Running.Issue, record.Execution)
+	}
+	return Claimed{}, nil
+}
+
+func (o *Orchestrator) captureDeferredExecution(record *deferredCompletion) bool {
+	if record == nil {
+		return false
+	}
+	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
+		if execution, ok := source.RunExecution(record.Running.Issue.ID).(interface{ CompletionState() json.RawMessage }); ok {
+			record.Execution = execution.CompletionState()
+			return true
+		}
+	}
+	return false
 }
 
 func cloneDeferredCompletions(source map[string]deferredCompletion) map[string]deferredCompletion {

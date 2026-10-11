@@ -20,16 +20,24 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
-	return newDispatchPlanner(o.cfg)
+	planner := newDispatchPlanner(o.cfg)
+	planner.nativeWorkflow = o.nativeWorkflow()
+	planner.nativeLandingBatch = o.nativeLandingBatch
+	planner.boundedAdmission = o.scheduling != nil
+	return planner
 }
 
 // liveDispatchPlanner shares recorded blocker evidence with recovery. The plain
 // planner remains usable for previews that cannot perform remote reads.
-func (o *Orchestrator) liveDispatchPlanner(ctx context.Context) dispatchPlanner {
+func (o *Orchestrator) liveDispatchPlanner(ctx context.Context, blockerCache map[string]dependencyBlocker) dispatchPlanner {
 	planner := o.dispatchPlanner()
+	if o.workerHostChecker != nil {
+		planner.workerHostAvailable = func(host string) bool { return o.workerHostChecker.WorkerHostAvailable(ctx, host) }
+	}
 	planner.operatorRejectedHead = func(issue connector.Issue) (bool, error) {
 		return o.operatorRejectedHead(ctx, issue)
 	}
@@ -40,7 +48,16 @@ func (o *Orchestrator) liveDispatchPlanner(ctx context.Context) dispatchPlanner 
 			markRefreshError(state, "fetch dispatch Workpad comments failed: "+err.Error(), now)
 			return recordedBlockerEvaluation{}, err
 		}
-		return o.evaluateRecordedBlockers(ctx, state, issue, nil, now), nil
+		if o.workpadHoldSupersededByLaneEntry(ctx, issue) {
+			return recordedBlockerEvaluation{}, nil
+		}
+		resolved := make(map[string]connector.Issue, len(blockerCache))
+		for _, blocker := range blockerCache {
+			if identifier := normalizedIssueIdentifier(blocker.Issue.Identifier); blocker.Resolved && identifier != "" {
+				resolved[identifier] = blocker.Issue
+			}
+		}
+		return o.evaluateRecordedBlockers(ctx, state, issue, resolved, now, false), nil
 	}
 	return planner
 }
@@ -149,23 +166,29 @@ func normalizeWorkerHosts(hosts []string) []string {
 	return normalized
 }
 
-func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
+func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time, maintenanceIssues ...connector.Issue) {
 	o.beginGlobalProjectCycle()
 	defer o.endGlobalProjectCycle()
 	if state.Draining || o.dispatchQuiesced() {
 		o.cancelPendingGlobalDispatches()
 		return
 	}
+	if err := o.prepareDispatchProject(ctx); err != nil {
+		o.cancelPendingGlobalDispatches()
+		return
+	}
+	issues = o.localIntakeIssues(state, issues)
+	if o.nativeWorkflow() && !o.cfg.Policy.Gates.GitHubPullRequest {
+		batch := &nativeLandingDispatchBatch{batch: workspace.NewLandingBatch(ctx)}
+		o.nativeLandingBatch = batch
+		defer func() { batch.batch.Seal(); o.nativeLandingBatch = nil }()
+	}
+	rankingIssues := issues
 	// Refresh retains closed snapshots for lane reconciliation, not dispatch.
 	issues = slices.DeleteFunc(slices.Clone(issues), func(issue connector.Issue) bool { return issue.Closed })
-	rankingIssues := issues
-	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
-	issues = o.filterImplementDependencyDeferrals(ctx, issues)
-	o.retainUnacknowledgedRecoveryParks(ctx, state, issues)
-	o.enforceLifetimeLimits(ctx, state, issues, now)
-	o.observePullRequestHydrationRecovery(state, issues, now)
-	planner := o.liveDispatchPlanner(ctx)
+	issues = o.prepareDispatchCandidates(ctx, state, issues, now)
 	blockerCache := make(map[string]dependencyBlocker)
+	planner := o.liveDispatchPlanner(ctx, blockerCache)
 	o.logOwnershipEligibilityStartup(planner, issues)
 	var lastDispatchFailure string
 	decisions := make([]dispatchPlanDecision, 0, len(issues))
@@ -190,6 +213,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			return waitForDispatchBackoff(ctx, continuationDelay(continuationIndex))
 		},
 		dispatch: func(action dispatchAction) bool {
+			defer clear(blockerCache)
 			outcome := o.dispatchIssueWithAction(ctx, state, action, now)
 			if identity := workflowIssueIdentityKey(action.issue); identity != "" {
 				outcomes[identity] = outcome
@@ -215,7 +239,6 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 				return
 			}
 			releaseForgeAvailabilityProbe(state, issue.ID, "deferred", dispatchFailureRetryReason(lastDispatchFailure), now)
-			releaseWorkerGitHubMonitorProbe(state, issue.ID, "deferred", dispatchFailureRetryReason(lastDispatchFailure), now)
 			planner.scheduleRetry(state, issue, retry.Attempt, now, dispatchFailureRetryReason(lastDispatchFailure), false, retry.WorkerHost)
 			rescheduled := state.Retry[issue.ID]
 			rescheduled.RecoveryAttemptID = retry.RecoveryAttemptID
@@ -225,20 +248,23 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			rescheduled.ForgeUnavailable = retry.ForgeUnavailable
 			rescheduled.ForgeHost = retry.ForgeHost
 			rescheduled.ForgeRetry = cloneForgeRetry(retry.ForgeRetry)
-			rescheduled.GitHubMonitor = retry.GitHubMonitor
-			rescheduled.GitHubCredential = retry.GitHubCredential
 			rescheduled.Wait = retry.Wait
 			rescheduled.Wait.PendingChecks = append([]string(nil), retry.Wait.PendingChecks...)
 			state.Retry[issue.ID] = rescheduled
 		},
 		pollRetryWait: func(issue connector.Issue, retry Retry) (Retry, bool, string) {
+			defer clear(blockerCache)
 			if retry.Wait.Kind == retryWaitWorkspaceBranchHeld {
 				return o.pollWorkspaceBranchHold(ctx, state, issue, retry, now)
 			}
 			return o.pollMergeWorkerCurrentHeadCI(ctx, state, issue, retry, now)
 		},
 		preserveMissingDueRetry: func(retry Retry) bool {
-			return o.preserveMissingDueRetry(state, retry)
+			// The tick's existing blocked maintenance still needs retry ownership
+			// to distinguish started work from new work. Its missing-retry cleanup
+			// runs after maintenance; refill and other callers clean up here.
+			return slices.ContainsFunc(maintenanceIssues, func(issue connector.Issue) bool { return issue.ID == retry.Issue.ID }) ||
+				o.preserveMissingDueRetry(state, retry)
 		},
 		decision: func(decision dispatchPlanDecision) {
 			decisions = append(decisions, decision)
@@ -254,6 +280,48 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	o.reconcileMergeControlDemand(decisions, outcomes)
 	o.releaseDeferredSchedulingClaims(ctx, state, issues)
 	o.observeProjectDispatchStatus(ctx, state, issues, decisions, outcomes, now)
+}
+
+func (o *Orchestrator) prepareDispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) []connector.Issue {
+	issues = o.localIntakeIssues(state, issues)
+	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
+	issues = o.filterIssueContracts(ctx, state, issues, now)
+	issues = o.filterImplementDependencyDeferrals(ctx, issues)
+	o.retainUnacknowledgedRecoveryParks(ctx, state, issues)
+	o.enforceLifetimeLimits(ctx, state, issues, now)
+	return issues
+}
+
+// refillProjectSlots runs on the event loop, using the same planner and
+// pre-dispatch checks as a tick.
+func (o *Orchestrator) refillProjectSlots(ctx context.Context, state *State, now time.Time) {
+	o.refillProjectSlotsExcluding(ctx, state, now, "")
+}
+
+func (o *Orchestrator) refillProjectSlotsExcluding(ctx context.Context, state *State, now time.Time, excludedIssueIDs ...string) {
+	if o.dispatchPlanner().hardAvailableSlots(state) == 0 ||
+		state.Draining || o.dispatchQuiesced() {
+		return
+	}
+	o.publishState(ctx, state)
+	fresh, err := o.fetchCandidateIssuesForTick(ctx, state)
+	if err != nil {
+		o.observeTrackerReadFailure(state, telemetry.RefreshSourceCandidates, err, now)
+		if o.logger != nil {
+			o.logger.Warn("refill candidate read failed", "error", err)
+		}
+		return
+	}
+	candidates := make([]connector.Issue, 0, len(fresh))
+	for _, current := range fresh {
+		if slices.Contains(excludedIssueIDs, current.ID) {
+			o.releaseDeferredSchedulingClaims(ctx, state, []connector.Issue{current})
+			continue
+		}
+		candidates = append(candidates, current)
+	}
+	candidates = overlayIssueStateSnapshots(candidates, o.restoreWorkAttemptRetryIntents(ctx, state, candidates, now))
+	o.dispatchReadyIssues(ctx, state, candidates, now)
 }
 
 func (o *Orchestrator) releaseDeferredSchedulingClaims(ctx context.Context, state *State, issues []connector.Issue) {
@@ -311,11 +379,6 @@ func dispatchFailureRetryReason(reason string) string {
 }
 
 func (o *Orchestrator) preserveMissingDueRetry(state *State, retry Retry) bool {
-	if retry.GitHubMonitor {
-		if _, exists := state.GitHubMonitors[strings.TrimSpace(retry.GitHubCredential)]; exists {
-			return true
-		}
-	}
 	if normalizeState(retry.Issue.State) != normalizeState(autoPromoteMergingState) {
 		return false
 	}
@@ -378,14 +441,14 @@ func (o *Orchestrator) hydrateDispatchIssue(ctx context.Context, state *State, i
 		if o.logger != nil {
 			o.logger.Warn("hydrate dispatch issue failed", "issue_id", issue.ID, "error", err)
 		}
-		return connector.Issue{}, false
+		return issue, false
 	}
 	for _, hydrated := range issues {
 		if hydrated.ID == issue.ID {
 			return mergeIssueTrackerFields(issue, hydrated), true
 		}
 	}
-	return connector.Issue{}, false
+	return issue, false
 }
 
 func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
@@ -394,6 +457,7 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 	if state.Draining || o.dispatchQuiesced() {
 		return
 	}
+	issues = o.localIntakeIssues(state, issues)
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
 	o.enforceLifetimeLimits(ctx, state, issues, now)
 	blockerCache := make(map[string]dependencyBlocker)
@@ -406,7 +470,7 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 			continue
 		}
 		issue = o.hydrateDispatchDependencies(ctx, issue, blockerCache)
-		if !o.liveDispatchPlanner(ctx).dispatchable(issue, state, now) {
+		if !o.liveDispatchPlanner(ctx, nil).dispatchable(issue, state, now) {
 			continue
 		}
 
@@ -441,7 +505,6 @@ const (
 	dispatchIssueFailureGitHubLookupPaused    = "github_lookup_backoff"
 	dispatchIssueFailureTrackerUnavailable    = "tracker_unavailable"
 	dispatchIssueFailureForgeUnavailable      = "forge_unavailable"
-	dispatchIssueFailureGitHubMonitor         = "worker_github_budget_monitor_unavailable"
 	dispatchIssueFailureCIUnavailable         = "ci_unavailable"
 	dispatchIssueFailureMemoryPressure        = "memory_pressure_high"
 	dispatchIssueFailureIOPressure            = "io_pressure_high"
@@ -555,11 +618,26 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if err := o.checkDispatchPolicy(ctx); err != nil {
 		return dispatchIssueOutcome{reason: "policy_mismatch", waitReason: err.Error()}
 	}
+	if err := o.prepareDispatchProject(ctx); err != nil {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureWorkerHostUnavailable, waitReason: err.Error()}
+	}
+	if o.issueContractApplies(issue) && strings.EqualFold(issue.State, firstNonBlank(o.cfg.AdmissionTargetState, "Todo")) {
+		allowed, err := o.enforceIssueContract(ctx, state, issue, issue.State, now)
+		if err != nil {
+			return dispatchIssueOutcome{reason: dispatchIssueFailureTrackerUnavailable, waitReason: err.Error()}
+		}
+		if !allowed {
+			return dispatchIssueOutcome{reason: dispatchSkipBlockedByDependency, waitReason: "issue contract requires human action"}
+		}
+	}
 	if reason := connector.NonExecutableReason(issue); reason != "" {
 		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: reason}
 	}
 	if reason := humanDependencyWaitReason(issue.BlockedBy); reason != "" {
 		return dispatchIssueOutcome{reason: dispatchSkipBlockedByDependency, waitReason: reason}
+	}
+	if !o.localIntakeAllows(state, issue) {
+		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: "local intake disabled"}
 	}
 	if !o.beginDispatchStart() {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}
@@ -585,13 +663,10 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if o.dispatchPlanner().forgeAvailabilityBlocks(state, issue, queuedRetry, now) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureForgeUnavailable}
 	}
-	if workerGitHubMonitorBlocks(state, issue.ID, queuedRetry, now) {
-		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubMonitor}
-	}
-	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
+	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused && o.dispatchPlanner().githubRESTDependent(issue) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubRESTPaused}
 	}
-	if !projectFailureBreakerAllowsDispatch(state, now) && !o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) {
+	if !projectFailureBreakerAllowsDispatch(state, now) {
 		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
 	}
 	o.observeHostPressure(ctx, state, o.clockNow())
@@ -615,52 +690,9 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		return dispatchIssueOutcome{reason: reason}
 	}
 	runMode := o.dispatchMode(ctx, state, issue)
-	var allowance attemptAllowance
-	var triageContext string
-	if (runMode == runpkg.RunModeImplement || (runMode == runpkg.RunModeMerge && !mergeWorkerIssue(issue))) && o.cfg.DeliverableKind != "artifact" {
-		var err error
-		allowance, err = o.issueAttemptAllowance(ctx, issue)
-		if err != nil {
-			return dispatchIssueOutcome{reason: "attempt_history_lookup_failed", waitReason: err.Error()}
-		}
-		if allowance.exhausted() {
-			if allowance.Triage != nil {
-				if err := o.publishAttemptTriage(ctx, state, issue, *allowance.Triage, now); err != nil {
-					return dispatchIssueOutcome{reason: attemptAllowanceExhaustedReason, waitReason: err.Error()}
-				}
-				return dispatchIssueOutcome{reason: attemptAllowanceExhaustedReason}
-			}
-			if hydrator, ok := o.connector.(connector.PullRequestHydrator); ok {
-				var err error
-				issue, err = hydrator.HydratePullRequest(ctx, issue)
-				if err != nil {
-					return dispatchIssueOutcome{reason: "pull_request_hydration_unavailable", waitReason: err.Error()}
-				}
-			}
-			// A merge observed during hydration replenishes the allowance.
-			allowance, err = o.issueAttemptAllowance(ctx, issue)
-			if err != nil {
-				return dispatchIssueOutcome{reason: "attempt_history_lookup_failed", waitReason: err.Error()}
-			}
-			if allowance.exhausted() {
-				var hydrated bool
-				issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
-				if !hydrated {
-					return dispatchIssueOutcome{reason: "pull_request_hydration_unavailable"}
-				}
-				if reader, ok := o.connector.(connector.IssueCommentReader); ok {
-					issue.Comments, err = reader.FetchIssueComments(ctx, issue)
-					if err != nil {
-						return dispatchIssueOutcome{reason: "tracker_unavailable", waitReason: err.Error()}
-					}
-				}
-				triageContext, err = attemptTriageContext(issue, allowance)
-				if err != nil {
-					return dispatchIssueOutcome{reason: "attempt_history_lookup_failed", waitReason: err.Error()}
-				}
-				runMode = runpkg.RunModeTriage
-			}
-
+	if runMode == runpkg.RunModePlan && o.nativeWorkflow() {
+		if _, err := o.nativePlanLanes(ctx, issue); err != nil {
+			return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: err.Error()}
 		}
 	}
 	capacityRequest := runpkg.RunRequest{Issue: issue, Mode: runMode, SelectorContext: o.selectorContext()}
@@ -680,16 +712,18 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 			return dispatchIssueOutcome{reason: dispatchIssueFailureLocalSlotUnavailable}
 		}
 	}
+	batchMember := o.dispatchPlanner().joinsNativeLandingBatch(issue)
 	mergeControlEligible := allowMergeControl && !modelPermitRequired && queuedRetry.MergePrecheck == nil && o.dispatchPlanner().readyMergeControlCandidate(state, issue)
-	mergeControl := mergeControlEligible && (o.dispatchPlanner().hardAvailableSlots(state) == 0 ||
-		o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) ||
-		o.dispatchPlanner().forgeReadAllowsMerge(state, issue))
-	if !mergeControlEligible && o.dispatchPlanner().hardAvailableSlots(state) == 0 {
+	mergeControl := mergeControlEligible
+	if !batchMember && !mergeControlEligible && o.dispatchPlanner().hardAvailableSlots(state) == 0 {
 		return dispatchIssueOutcome{reason: dispatchSkipProjectCapacityFull}
 	}
 	projectStats := o.projectStateSlotStats(slotIssue, state)
 
-	workerHost, ok := o.selectWorkerHost(state, preferredWorkerHost)
+	workerHost, ok := o.liveDispatchPlanner(ctx, nil).selectWorkerHost(state, preferredWorkerHost)
+	if batchMember {
+		workerHost, ok = o.nativeLandingBatch.host, true
+	}
 	if !ok && !mergeControlEligible {
 		o.logMergeWorkerFailure(issue, "worker_host_unavailable", nil)
 		o.recordMergeFailed(state, issue, now, "worker_host_unavailable", nil)
@@ -709,6 +743,8 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 		globalSlot, decision, ok = grant.Slot, grant.Decision, grant.Err == nil
 		grant.Slot = scheduler.Slot{}
+	} else if batchMember {
+		ok = true
 	} else {
 		action := dispatchAction{issue: issue, attempt: attempt, workerHost: preferredWorkerHost, modelPermitRequired: modelPermitRequired, allowMergeControl: allowMergeControl, retryState: retryState}
 		globalSlot, ok, decision = o.acquireOrQueueGlobalDispatchSlot(ctx, state, action, slotIssue, workerHost, now, pressureCapacity, mergeControlEligible)
@@ -775,10 +811,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 		return dispatchIssueOutcome{reason: recoveryReason}
 	}
-	canary, allowed := false, true
-	if !o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) {
-		canary, allowed = tryReserveProjectFailureBreakerCanary(state, issue.ID, now)
-	}
+	canary, allowed := tryReserveProjectFailureBreakerCanary(state, issue.ID, now)
 	if !allowed {
 		if recovery {
 			releaseDispatchRecoveryAdmission(state, issue.ID)
@@ -787,8 +820,21 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
 	}
 
+	o.dispatchStartMu.Lock()
+	if !o.localIntakeAllows(state, issue) {
+		o.dispatchStartMu.Unlock()
+		if recovery {
+			releaseDispatchRecoveryAdmission(state, issue.ID)
+		}
+		if canary {
+			releaseProjectFailureBreakerCanary(state, issue.ID)
+		}
+		o.releaseGlobalDispatchSlot(globalSlot)
+		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: "local intake disabled"}
+	}
 	claimedIssue, claim, ok := o.claimIssue(runCtx, issue, now)
 	if !ok {
+		o.dispatchStartMu.Unlock()
 		if recovery {
 			releaseDispatchRecoveryAdmission(state, issue.ID)
 		}
@@ -819,6 +865,13 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		dispatchLoopStart.PRMergeableState = issue.PullRequest.MergeableState
 	}
 	workAttemptID, ok := o.startDurableWorkAttempt(runCtx, state, issue, attempt, now, workerHost, runMode, dispatchLoopStart)
+	if ok {
+		if state.localAdmitted == nil {
+			state.localAdmitted = map[string]struct{}{}
+		}
+		state.localAdmitted[issue.ID] = struct{}{}
+	}
+	o.dispatchStartMu.Unlock()
 	if !ok {
 		if recovery {
 			releaseDispatchRecoveryAdmission(state, issue.ID)
@@ -982,7 +1035,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		CapacityScope:          capacityScope,
 		CapacityProbe:          capacityProbeKey != "",
 		ForgeProbeHost:         reservedForgeProbeHost(state, issue.ID),
-		GitHubCredential:       reservedGitHubCredential(state, issue.ID),
 		ModelPermitExempt:      !modelPermitRequired,
 		StopDestination:        o.cfg.StopRunTargetState,
 		StopPriorityOptions:    stopRunPriorityOptions(o.cfg.StopRunPriorityNames),
@@ -1026,20 +1078,24 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		MergeRefreshHeadSHA: reservation.RefreshHeadSHA,
 		ForgeRetry:          cloneForgeRetry(queuedRetry.ForgeRetry),
 	}
-	if runMode == runpkg.RunModeTriage {
-		request.TriageContext = triageContext
-	} else {
+	if runMode != runpkg.RunModeTriage {
 		o.attachMachineIssueTool(&request)
 	}
 	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
 		request.Execution = source.RunExecution(issue.ID)
+		_, request.DeferExecutionFinish = request.Execution.(runpkg.CompletionExecution)
 	}
 	if !modelPermitRequired {
 		request.AcquireModelPermit = o.modelPermitAcquirer(issue.ID)
 	}
 	if retryQueued {
 		request.RetryMode = queuedRetry.RetryMode
+		request.RecoveryAttemptID = queuedRetry.RecoveryAttemptID
 		request.ResumeState = queuedRetry.ResumeState
+		if queuedRetry.WorkerHost != workerHost && !o.nativeWorkflow() {
+			request.RetryMode = runpkg.RetryModeFresh
+			request.ResumeState = store.AgentResumeState{}
+		}
 	}
 	if priorAttempt.ExplainBeforeRetry {
 		delete(state.PriorAttempts, issue.ID)
@@ -1061,6 +1117,11 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 			Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: mergeControlCheckedHeadOutput},
 		})
 		return dispatchIssueOutcome{dispatched: true, mergeControl: true}
+	}
+	if o.nativeLandingBatch != nil && mergeWorkerIssue(issue) && o.nativeWorkflow() && !o.cfg.Policy.Gates.GitHubPullRequest {
+		request.LandingBatch = o.nativeLandingBatch.batch.Add()
+		o.nativeLandingBatch.host = workerHost
+		o.nativeLandingBatch.members++
 	}
 	running.done = o.supervisor.Dispatch(runCtx, request, o.runResults)
 	state.Running[issue.ID] = running
@@ -1116,7 +1177,7 @@ func (o *Orchestrator) dispatchMode(ctx context.Context, state *State, issue con
 	// Conflict repair uses the merge precheck and verified fallback even before
 	// the card is ready for Merging, independently of programmatic merge policy.
 	switch normalizeState(issue.State) {
-	case "rework", "in progress":
+	case "in progress":
 		if issue.PullRequest != nil && !issue.PullRequest.Draft && connector.PullRequestConflicts(issue.PullRequest.MergeableState) {
 			return runpkg.RunModeMerge
 		}
@@ -1202,9 +1263,13 @@ func (o *Orchestrator) acquireGlobalDispatchSlot(
 	req := scheduler.SlotRequest{
 		State:            issue.State,
 		Host:             workerHost,
-		Priority:         o.dispatchStatePriority(issue.State),
+		Priority:         dispatchpriority.Priority(issue.Priority),
 		PressureCapacity: pressureCapacity,
 	}
+	if issue.CreatedAt != nil {
+		req.CreatedAt = *issue.CreatedAt
+	}
+	req.IssueID = issue.Identifier
 	var (
 		slot     scheduler.Slot
 		ok       bool
@@ -1212,9 +1277,9 @@ func (o *Orchestrator) acquireGlobalDispatchSlot(
 		err      error
 	)
 	if detailed, hasDecision := o.globalDispatchGate.(detailedProjectDispatchGate); hasDecision {
-		slot, ok, decision, err = detailed.TryAcquireWithDecision(ctx, o.cfg.Project, req, now)
+		slot, ok, decision, err = detailed.TryAcquireWithDecision(ctx, o.dispatchProjectCandidate(), req, now)
 	} else {
-		slot, ok, err = o.globalDispatchGate.TryAcquire(ctx, o.cfg.Project, req, now)
+		slot, ok, err = o.globalDispatchGate.TryAcquire(ctx, o.dispatchProjectCandidate(), req, now)
 		if ok {
 			decision.Reason = scheduler.DispatchGateReasonGranted
 		}
@@ -1255,10 +1320,6 @@ func (o *Orchestrator) dispatchPoolSnapshot() scheduler.PoolSnapshot {
 		}
 	}
 	return fallback
-}
-
-func (o *Orchestrator) dispatchStatePriority(state string) int {
-	return dispatchpriority.New(o.cfg.DispatchPriorityByState, nil).State(state)
 }
 
 func (o *Orchestrator) projectStateSlotStats(issue connector.Issue, state *State) projectStateSlotStats {
@@ -1424,7 +1485,7 @@ func validCandidate(issue connector.Issue) bool {
 		issue.AssignedToWorker
 }
 
-func duplicatePullRequestWork(issue connector.Issue) bool {
+func duplicatePullRequestWork(issue connector.Issue, localStatus string) bool {
 	if issue.PullRequest == nil {
 		return false
 	}
@@ -1432,7 +1493,7 @@ func duplicatePullRequestWork(issue connector.Issue) bool {
 	case "merged":
 		return !staleMergedPullRequestHasFailedCIEvidence(issue.PullRequest, staleMergedPullRequestSummaryFromIssue(issue))
 	case "open":
-		return normalizeState(issue.State) == "todo"
+		return normalizeState(issue.State) == "todo" && !issue.PullRequest.HasMissingLocalStatus(localStatus)
 	default:
 		return false
 	}

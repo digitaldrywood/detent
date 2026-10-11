@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 // filterAuthorizedTickIssues is the authorization boundary for fetched work.
@@ -17,6 +18,7 @@ func (o *Orchestrator) filterAuthorizedTickIssues(ctx context.Context, state *St
 	}
 	decisions := make(map[string]bool)
 	skipped := 0
+	var refusals []store.SchedulerDecision
 	planner := o.dispatchPlanner()
 	filter := func(issues []connector.Issue) []connector.Issue {
 		out := make([]connector.Issue, 0, len(issues))
@@ -41,7 +43,7 @@ func (o *Orchestrator) filterAuthorizedTickIssues(ctx context.Context, state *St
 					// Only dispatch lanes need per-card evidence; all exclusions still
 					// contribute to the aggregate and release retry ownership.
 					if !issue.Closed && stateIn(issue.State, o.cfg.ActiveStates) && !stateIn(issue.State, o.cfg.TerminalStates) {
-						o.recordSchedulerDecision(ctx, state, now, decision, "skipped", dispatchSkipAuthorizationSelector)
+						refusals = append(refusals, o.schedulerDecisionRecord(state, now, decision, "skipped", dispatchSkipAuthorizationSelector))
 					}
 				}
 			}
@@ -64,6 +66,7 @@ func (o *Orchestrator) filterAuthorizedTickIssues(ctx context.Context, state *St
 	}
 	state.Pipeline = filter(state.Pipeline)
 	state.LaneSignalCandidates = filter(state.LaneSignalCandidates)
+	o.recordSchedulerDecisions(ctx, state, refusals, true)
 	if skipped > 0 && o.logger != nil {
 		o.logger.Info("authorization_selector_declined", "skipped_count", skipped)
 	}

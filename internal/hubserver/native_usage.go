@@ -52,6 +52,12 @@ func validateNativeRunUsage(request tracker.NativeRunEvent) error {
 			return nativeInvalid("Usage requires a provider and a model of at most 128 bytes each")
 		}
 		key := tracker.UsageProviderID(provider) + "\x00" + model
+		if entry.UsageKind == "incremental" {
+			key += "\x00" + entry.SourceID
+		}
+		if err := validateRunnerCostUsage(entry); err != nil {
+			return err
+		}
 		if seen[key] {
 			return nativeInvalid("Usage names " + provider + " " + model + " twice")
 		}
@@ -75,6 +81,9 @@ func recordAttemptUsage(ctx context.Context, tx *sql.Tx, scope nativeScope, requ
 	period := usagePeriod(now)
 	currency := prices.currency()
 	for _, entry := range usage {
+		if entry.UsageKind == "incremental" {
+			continue
+		}
 		provider := tracker.UsageProviderID(entry.Provider)
 		model := strings.TrimSpace(entry.Model)
 		var recorded tracker.NativeUsage
@@ -98,7 +107,7 @@ func recordAttemptUsage(ctx context.Context, tx *sql.Tx, scope nativeScope, requ
 			return fmt.Errorf("record attempt usage: %w", err)
 		}
 	}
-	return nil
+	return recordRunnerUsageCosts(ctx, tx, scope, request, prices, now)
 }
 
 // usageDelta is the part of a reported running total the hub has not yet

@@ -3,14 +3,17 @@ package cloudentry
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +21,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/mcp"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 var strippedRequestHeaders = []string{
@@ -62,8 +67,14 @@ func (s *Service) claims(organization Organization, kind, method, path string, b
 	}, nil
 }
 
-func (s *Service) browserDenied(c echo.Context, organization string, status int) error {
+func (s *Service) browserFailure(c echo.Context, organization string, status int) error {
 	request := c.Request()
+	if status == http.StatusServiceUnavailable {
+		if strings.HasPrefix(request.URL.Path, "/api/") || request.Header.Get("Accept") == "application/json" {
+			return c.JSON(status, map[string]string{"code": "unavailable", "message": "Service is temporarily unavailable"})
+		}
+		return s.browserUnavailable(c, status)
+	}
 	if (request.Method == http.MethodGet || request.Method == http.MethodHead) && !strings.HasPrefix(request.URL.Path, "/api/") && status == http.StatusUnauthorized {
 		query := url.Values{"organization": {organization}}
 		if validReturnPath(request.URL.Path, organization) {
@@ -78,6 +89,27 @@ func (s *Service) browserDenied(c echo.Context, organization string, status int)
 		return s.denied(c, status, "Sign in again to continue")
 	}
 	return s.denied(c, status, "This organization is unavailable to your account. Choose another organization.")
+}
+
+func wantsHTMLNavigation(c echo.Context) bool {
+	request := c.Request()
+	if (request.Method != http.MethodGet && request.Method != http.MethodHead) || strings.Contains(request.URL.Path, "/api/") || request.Header.Get(echo.HeaderAuthorization) != "" || wantsJSON(c) {
+		return false
+	}
+	for value := range strings.SplitSeq(request.Header.Get(echo.HeaderAccept), ",") {
+		mediaType, params, err := mime.ParseMediaType(value)
+		if err != nil || mediaType != echo.MIMETextHTML {
+			continue
+		}
+		if quality, ok := params["q"]; ok {
+			q, err := strconv.ParseFloat(quality, 64)
+			if err != nil || !(q > 0 && q <= 1) {
+				continue
+			}
+		}
+		return true
+	}
+	return false
 }
 
 const (
@@ -106,7 +138,7 @@ func (s *Service) browserClaims(c echo.Context, organization Organization, claim
 	}
 	subject, email := session.Subject, session.Email
 	if authorized.Support {
-		if !s.supportActor(session.Email) || authorized.EffectiveEmail == "" {
+		if !s.supportActor(ctx, session.Email) || authorized.EffectiveEmail == "" {
 			s.dropAuthorization(ctx, authorized)
 			return http.StatusForbidden, "", errNoSession
 		}
@@ -130,6 +162,9 @@ func (s *Service) browserClaims(c echo.Context, organization Organization, claim
 	claims.SupportActor, claims.SupportReason = identity.SupportActor, identity.SupportReason
 	claims.SessionCreatedAt, claims.SessionExpiresAt = identity.CreatedAt, identity.ExpiresAt
 	claims.Role, claims.AccessExpiresAt = access.Role, access.ExpiresAt
+	if !authorized.Support {
+		claims.PlatformRole = s.platformRole(ctx, email)
+	}
 	claims.Binding, claims.CSRF = authorized.Binding, cloudassert.CSRFToken(session.CSRFSecret, organization.ID)
 	return http.StatusOK, verification, nil
 }
@@ -220,6 +255,9 @@ func (s *Service) proxy(c echo.Context) error {
 	started := time.Now()
 	request := c.Request()
 	ctx := request.Context()
+	if strings.Contains(request.URL.Path, "/attachment-metadata") {
+		return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
+	}
 	organization, err := s.readyOrganization(ctx, c.Param("organization"))
 	if err != nil {
 		if pending, lookupErr := s.registry.Organization(ctx, c.Param("organization")); lookupErr == nil && pending.Managed && (pending.State == "requested" || pending.State == "allocating" || pending.State == "failed") && request.Method == http.MethodGet && !strings.HasPrefix(request.URL.Path, "/api/") {
@@ -227,11 +265,15 @@ func (s *Service) proxy(c echo.Context) error {
 		}
 		return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
 	}
-	body, err := io.ReadAll(io.LimitReader(request.Body, cloudassert.MaxBodyBytes+1))
+	limit := int64(cloudassert.MaxBodyBytes)
+	if diffUploadRequest(request) {
+		limit = 6*tracker.MaxDiffBytes + (1 << 20)
+	}
+	body, err := io.ReadAll(io.LimitReader(request.Body, limit+1))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"code": "invalid_request", "message": "Request body could not be read"})
 	}
-	if len(body) > cloudassert.MaxBodyBytes {
+	if int64(len(body)) > limit {
 		return c.JSON(http.StatusRequestEntityTooLarge, map[string]string{"code": "payload_too_large", "message": "Request body is too large"})
 	}
 	claims, err := s.claims(organization, cloudassert.KindMachine, request.Method, request.URL.RequestURI(), body)
@@ -239,13 +281,48 @@ func (s *Service) proxy(c echo.Context) error {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "Service is temporarily unavailable"})
 	}
 	verification := "machine"
-	if request.Header.Get(echo.HeaderAuthorization) == "" {
+	if request.Header.Get(echo.HeaderAuthorization) != "" {
+		hash, err := keyBearer(c)
+		if err != nil {
+			return keyError(c, err)
+		}
+		key, err := s.activeAccessKey(ctx, hash)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return keyError(c, err)
+		}
+		if err == nil {
+			claims, err = s.keyClaims(ctx, key, organization, request.Method, request.URL.RequestURI(), body)
+			if err != nil {
+				return keyError(c, err)
+			}
+			if err := s.recordKeyUse(ctx, key.ID, organization.ID); err != nil {
+				return keyError(c, err)
+			}
+			verification = "key"
+		}
+	} else {
 		status, verified, err := s.browserClaims(c, organization, &claims)
 		verification = verified
 		if err != nil {
 			defer s.logProxied(c, organization.ID, verification, started)
-			return s.browserDenied(c, organization.ID, status)
+			return s.browserFailure(c, organization.ID, status)
 		}
+	}
+	if diffUploadRequest(request) {
+		replacement, status, result, err := s.uploadAttemptDiff(c, organization, claims, body)
+		if status != 0 || err != nil {
+			if len(result) > 0 {
+				return c.Blob(status, echo.MIMEApplicationJSON, result)
+			}
+			if status == 0 {
+				status = http.StatusBadGateway
+			}
+			return c.JSON(status, map[string]string{"code": "diff_unavailable", "message": "Diff could not be stored"})
+		}
+		body = replacement
+		claims.BodyDigest = cloudassert.BodyDigest(body)
+		claims.IssuedAt = s.config.now()
+		claims.ExpiresAt = claims.IssuedAt.Add(assertionLifetime)
 	}
 	authorized := time.Since(started)
 	defer func() { s.logProxied(c, organization.ID, verification, started, "auth_ms", authorized.Milliseconds()) }()
@@ -255,6 +332,10 @@ func (s *Service) proxy(c echo.Context) error {
 	}
 	transport, err := s.config.transport(organization)
 	if err != nil {
+		s.config.Logger.WarnContext(ctx, "shared entry tenant transport unavailable", "organization", organization.ID, "error", err)
+		if wantsHTMLNavigation(c) {
+			return s.browserUnavailable(c, http.StatusBadGateway)
+		}
 		return c.JSON(http.StatusBadGateway, map[string]string{"code": "tenant_unavailable", "message": "The organization is temporarily unavailable"})
 	}
 	proxy := &httputil.ReverseProxy{
@@ -266,16 +347,37 @@ func (s *Service) proxy(c echo.Context) error {
 				r.Out.Header.Del(header)
 			}
 			r.Out.Header.Set(cloudassert.Header, assertion)
+			if claims.Kind == cloudassert.KindKey {
+				r.Out.Header.Del(echo.HeaderAuthorization)
+			}
 			r.Out.Body = io.NopCloser(bytes.NewReader(body))
 			r.Out.ContentLength = int64(len(body))
 		},
 		ModifyResponse: func(response *http.Response) error {
+			if request.Method != http.MethodGet && request.Method != http.MethodHead && response.StatusCode < http.StatusBadRequest {
+				if err := s.refreshGitHubRoutes(c.Request().Context(), organization); err != nil {
+					return err
+				}
+			}
+			if err := s.attemptDiffResponse(c, organization, body, response); err != nil {
+				return err
+			}
+			if err := s.attachmentMCPResponse(c, body, response); err != nil {
+				return err
+			}
 			response.Header.Del("Set-Cookie")
 			response.Header.Set("Cache-Control", "no-store")
 			response.Header.Set("Content-Security-Policy", contentSecurity)
 			return nil
 		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			s.config.Logger.Warn("shared entry tenant proxy failed", "organization", organization.ID, "error", err)
+			if wantsHTMLNavigation(c) {
+				if err := s.browserUnavailable(c, http.StatusBadGateway); err != nil {
+					c.Error(err)
+				}
+				return
+			}
 			w.Header().Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write([]byte(`{"code":"tenant_unavailable","message":"The organization is temporarily unavailable"}`))
@@ -318,6 +420,10 @@ func (s *Service) machineCall(ctx context.Context, organization Organization, me
 }
 
 func (s *Service) signedCall(ctx context.Context, organization Organization, claims cloudassert.Claims, body []byte, bearer string) (int, []byte, error) {
+	return s.signedCallCSRF(ctx, organization, claims, body, bearer, "")
+}
+
+func (s *Service) signedCallCSRF(ctx context.Context, organization Organization, claims cloudassert.Claims, body []byte, bearer, csrf string) (int, []byte, error) {
 	assertion, err := cloudassert.Sign(s.config.SigningKey, claims)
 	if err != nil {
 		return 0, nil, err
@@ -337,25 +443,36 @@ func (s *Service) signedCall(ctx context.Context, organization Organization, cla
 		request.Header.Set(echo.HeaderAuthorization, "Bearer "+bearer)
 	}
 	request.Header.Set(cloudassert.Header, assertion)
-	response, err := (&http.Client{Transport: transport, Timeout: 15 * time.Second}).Do(request)
+	if csrf != "" {
+		request.Header.Set("X-CSRF-Token", csrf)
+	}
+	timeout := 15 * time.Second
+	if claims.Path == "/internal/v1/diff-bodies/vacuum" {
+		timeout = 5 * time.Minute
+	}
+	response, err := (&http.Client{Transport: transport, Timeout: timeout}).Do(request)
 	if err != nil {
 		return 0, nil, err
 	}
 	defer response.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(response.Body, tenantCallResponseLimit+1))
+	limit := int64(tenantCallResponseLimit)
+	if claims.Path == "/internal/v1/keys/catalog" || claims.Path == "/internal/v1/keys/call" {
+		limit = mcp.MaxHTTPResponseBytes
+	}
+	if claims.Path == "/internal/v1/diff-bodies/batch" {
+		limit = 6*tracker.MaxDiffPatchBytes + (1 << 20)
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
 		return 0, nil, err
 	}
-	if len(raw) > tenantCallResponseLimit {
-		return 0, nil, fmt.Errorf("tenant %s %s response exceeds %d bytes", request.Method, request.URL.Path, tenantCallResponseLimit)
+	if int64(len(raw)) > limit {
+		return 0, nil, fmt.Errorf("tenant %s %s response exceeds %d bytes", request.Method, request.URL.Path, limit)
 	}
 	return response.StatusCode, raw, nil
 }
 
 func (s *Service) acceptInvitation(ctx context.Context, organization Organization, subject, email, providerSession, token string) error {
-	if s.staff(email) {
-		return errors.New("staff accounts cannot accept customer invitations")
-	}
 	status, err := s.serviceRequest(ctx, organization, "/internal/v1/invitations/accept", map[string]string{"token": token}, func(claims *cloudassert.Claims) {
 		claims.Subject, claims.Email, claims.ProviderSession = subject, email, providerSession
 	})
@@ -382,4 +499,14 @@ func (s *Service) revokeAtTenants(parent context.Context, items []authorization)
 			s.config.Logger.Warn("shared entry could not confirm tenant session revocation", "organization", id)
 		}
 	}
+}
+
+func (s *Service) acceptInvitationID(ctx context.Context, organization Organization, subject, email, providerSession, id string) error {
+	status, err := s.serviceRequest(ctx, organization, "/internal/v1/invitations/accept", map[string]string{"invitation_id": id}, func(claims *cloudassert.Claims) {
+		claims.Subject, claims.Email, claims.ProviderSession = subject, email, providerSession
+	})
+	if err != nil || status != http.StatusNoContent {
+		return errors.Join(errors.New("tenant rejected the invitation"), err)
+	}
+	return nil
 }

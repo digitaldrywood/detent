@@ -8,12 +8,11 @@ test("open board disables moves and recovers after runtime restart", async ({
   let runtime = await startDetentRuntime("board-restart", args);
 
   try {
+    await runtime.waitForProjectsReady();
     await page.goto(`${runtime.url}/`, { waitUntil: "domcontentloaded" });
     await page.locator("#board-lanes").waitFor({ state: "visible" });
-    const cards = page.locator('[data-kanban-action="move"]');
-    await expect(cards.first()).toBeVisible();
-    const cardCount = await cards.count();
-    expect(cardCount).toBeGreaterThan(0);
+    const card = page.getByRole("button", { name: /Kanban demo backlog intake/ });
+    await expect(card).toHaveAttribute("data-kanban-action", "move");
     await expect(page.locator("html")).toHaveAttribute(
       "data-detent-sse-status",
       "open",
@@ -30,9 +29,7 @@ test("open board disables moves and recovers after runtime restart", async ({
       "data-detent-connection",
       "disconnected",
     );
-    await expect(page.locator('[data-kanban-connection-disabled="true"]')).toHaveCount(
-      cardCount,
-    );
+    await expect(card).toHaveAttribute("data-kanban-connection-disabled", "true");
     await expect(page.locator('[data-kanban-action="move"]')).toHaveCount(0);
     const notice = page.locator("[data-detent-connection-notice]");
     await expect(notice).toBeVisible();
@@ -45,22 +42,19 @@ test("open board disables moves and recovers after runtime restart", async ({
       home,
       port: Number(port),
     });
+    await runtime.waitForProjectsReady();
 
     await expect(page.locator("html")).toHaveAttribute(
       "data-detent-connection",
       "connected",
     );
-    await expect(page.locator('[data-kanban-action="move"]')).toHaveCount(
-      cardCount,
-    );
+    await expect(card).toHaveAttribute("data-kanban-action", "move");
+    await expect(page.locator('[data-kanban-connection-disabled="true"]')).toHaveCount(0);
     await expect(notice).toBeHidden();
     expect(
       await page.evaluate(() => window.__detentRestartMarker === true),
     ).toBe(true);
 
-    const card = page.locator("[data-kanban-card]", {
-      hasText: "Kanban demo backlog intake",
-    });
     const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
     const moveRequest = page.waitForRequest((request) => {
       if (
@@ -100,6 +94,7 @@ test("open board disables moves and recovers after runtime restart", async ({
     );
     await page.mouse.up();
     await moveRequest;
+    await expect(card).toHaveAttribute("data-kanban-current-state", "Todo");
   } finally {
     await runtime.stop();
   }

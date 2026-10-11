@@ -26,6 +26,10 @@ func reviewBrowserPatch() string {
 }
 
 func TestReviewBrowserFixture(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	if os.Getenv("DETENT_REVIEW_BROWSER") != "1" {
 		t.Skip("browser fixture is opt-in")
 	}

@@ -23,6 +23,10 @@ func TestMain(m *testing.M) {
 }
 
 func TestStaleTODOScanner(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	tests := []struct {
 		name      string
 		setup     func(*testing.T, string)
@@ -203,6 +207,10 @@ func scannerGit(t *testing.T, root string, args ...string) string {
 }
 
 func TestStaleTODOScannerRevision(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, branch := range []string{"main", "trunk"} {
 		t.Run(branch, func(t *testing.T) {
 			remote, root := t.TempDir(), t.TempDir()
@@ -266,6 +274,10 @@ func TestStaleTODOScannerRevision(t *testing.T) {
 }
 
 func TestScanTODOFilesBatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, count := range []int{0, 1, 2000} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
 			root := t.TempDir()

@@ -1,5 +1,5 @@
 // The shared entry's JSON surface: the organization chooser, self-service
-// creation and its provisioning status, and invitation joins. These live on
+// creation and its provisioning status. These live on
 // the shared origin itself, outside any organization's base path, and use the
 // entry session's CSRF token from the chooser payload.
 import * as Schema from "effect/Schema";
@@ -21,15 +21,18 @@ export const EntryOrganizations = Schema.Struct({
   organizations: Schema.Array(EntryOrganization),
   pending: Schema.optional(Schema.Array(EntryOrganization)),
   can_create: Schema.optional(Schema.Boolean),
-  staff: Schema.optional(Schema.Boolean),
+  platform_role: Schema.optional(Schema.String),
 });
 export type EntryOrganizations = typeof EntryOrganizations.Type;
 
+export const CreationPrice = Schema.Struct({ id: Schema.String, label: Schema.String });
 export const EntrySession = Schema.Struct({
+  free_slot_used: Schema.optional(Schema.Boolean),
+  creation_prices: Schema.optional(Schema.Array(CreationPrice)),
   email: Schema.String,
   csrf: Schema.String,
   can_create: Schema.optional(Schema.Boolean),
-  staff: Schema.optional(Schema.Boolean),
+  platform_role: Schema.optional(Schema.String),
 });
 export type EntrySession = typeof EntrySession.Type;
 
@@ -59,7 +62,7 @@ export const PlatformOrganization = Schema.Struct({
   creator_email: Schema.String,
   created_at: Schema.String,
   updated_at: Schema.String,
-  billing: Schema.Struct({ available: Schema.Boolean, status: Schema.optional(Schema.String) }),
+  billing: Schema.Struct({ available: Schema.Boolean, status: Schema.optional(Schema.String), customer_id: Schema.optional(Schema.String), plan: Schema.optional(Schema.String), price_label: Schema.optional(Schema.String) }),
   can_support: Schema.Boolean,
   plan: Schema.NullOr(Schema.String),
   grants: Schema.NullOr(Schema.Number),
@@ -77,6 +80,41 @@ export const PlatformOrganizations = Schema.Struct({
   unavailable: Schema.Array(Schema.String),
 });
 export type PlatformOrganizations = typeof PlatformOrganizations.Type;
+
+export const PlatformAuditRow = Schema.Struct({
+  at: Schema.String,
+  actor: Schema.String,
+  event: Schema.String,
+  organization_id: Schema.String,
+  organization_name: Schema.String,
+  organization_deleted: Schema.Boolean,
+  detail: Schema.String,
+  source: Schema.String,
+  id: Schema.String,
+});
+export type PlatformAuditRow = typeof PlatformAuditRow.Type;
+
+export const PlatformAudit = Schema.Struct({
+  rows: Schema.Array(PlatformAuditRow),
+  events: Schema.Array(Schema.String),
+  tenants: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, deleted: Schema.Boolean })),
+  next_cursor: Schema.String,
+});
+export type PlatformAudit = typeof PlatformAudit.Type;
+
+const UserOrganization = { organization_id: Schema.String, organization_name: Schema.String };
+export const PlatformUsers = Schema.Struct({
+  users: Schema.Array(Schema.Struct({
+    email: Schema.String,
+    subject: Schema.String,
+    platform_role: Schema.String,
+    last_sign_in_at: Schema.String,
+    memberships: Schema.Array(Schema.Struct({ ...UserOrganization, role: Schema.String, joined_at: Schema.String })),
+    invitations: Schema.Array(Schema.Struct({ ...UserOrganization, expires_at: Schema.String })),
+  })),
+  unsearched: Schema.Array(Schema.Struct(UserOrganization)),
+});
+export type PlatformUsers = typeof PlatformUsers.Type;
 
 export const PlanReference = Schema.Struct({ id: Schema.String, version: Schema.Number });
 export type PlanReference = typeof PlanReference.Type;
@@ -107,12 +145,35 @@ export const OrganizationEntitlements = Schema.Struct({
   effective_base: PlanReference,
   source: Schema.String,
   revision: Schema.Number,
+  features: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
   grants: Schema.Array(EntitlementGrant),
   plans: Schema.Array(EntitlementPlan),
 });
 export type OrganizationEntitlements = typeof OrganizationEntitlements.Type;
 
+export const PlatformTenantDetail = Schema.Struct({
+  organization: PlatformOrganization,
+  csrf: Schema.String,
+  can_grant: Schema.Boolean,
+  can_resume: Schema.Boolean,
+  unavailable: Schema.Array(Schema.String),
+  members: Schema.NullOr(Schema.Array(Schema.Struct({ id: Schema.String, email: Schema.String, role: Schema.String }))),
+  runners: Schema.NullOr(Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, health: Schema.String }))),
+  projects: Schema.NullOr(Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String }))),
+  entitlements: Schema.NullOr(OrganizationEntitlements),
+  events: Schema.Array(Schema.Struct({ event: Schema.String, generation: Schema.Number, recorded_at: Schema.String })),
+});
+export type PlatformTenantDetail = typeof PlatformTenantDetail.Type;
+
 export type EntitlementChange =
+  | {
+      readonly action: "grant";
+      readonly feature: "model_choice";
+      readonly idempotency_key: string;
+      readonly expected_revision: number;
+      readonly expires_at: string | null;
+      readonly reason: string;
+    }
   | {
       readonly action: "grant";
       readonly idempotency_key: string;
@@ -131,6 +192,34 @@ export type EntitlementChange =
 
 export const EntitlementChangeResult = Schema.Struct({ action: Schema.String, grant_id: Schema.String });
 export type EntitlementChangeResult = typeof EntitlementChangeResult.Type;
+
+export const PlatformMember = Schema.Struct({
+  email: Schema.String,
+  role: Schema.String,
+  added_by: Schema.String,
+  added_at: Schema.String,
+  updated_at: Schema.String,
+  bootstrap: Schema.Boolean,
+});
+export type PlatformMember = typeof PlatformMember.Type;
+
+export const PlatformMembers = Schema.Struct({
+  members: Schema.Array(PlatformMember),
+  revision: Schema.Number,
+  self: Schema.Struct({ email: Schema.String, role: Schema.String }),
+});
+export type PlatformMembers = typeof PlatformMembers.Type;
+
+export type PlatformMemberChange = {
+  readonly action: "add" | "change" | "remove";
+  readonly email: string;
+  readonly role?: string;
+  readonly reason: string;
+  readonly idempotency_key: string;
+  readonly expected_revision: number;
+};
+
+export const PlatformMemberChangeResult = Schema.Struct({ email: Schema.String, role: Schema.String, revision: Schema.Number });
 
 export const PlatformAllowlist = Schema.Struct({
   self_service: Schema.Boolean,
@@ -161,7 +250,7 @@ export const PlatformHealth = Schema.Struct({
 });
 export type PlatformHealth = typeof PlatformHealth.Type;
 
-export const PLATFORM = "/platform";
+export const PLATFORM = "/platform/tenants";
 export const SUPPORT_REASONS = ["customer-request", "account-recovery", "troubleshooting"] as const;
 
 export const CHOOSE_ORGANIZATION = "/organizations?switch=1";
@@ -226,9 +315,9 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
     return Schema.decodeUnknownSync(schema)(await response.json());
   }
 
-  async function post<A>(schema: Schema.Codec<A, any, never, never>, path: string, csrf: string, body: unknown): Promise<A> {
+  async function post<A>(schema: Schema.Codec<A, any, never, never>, path: string, csrf: string, body: unknown, method = "POST"): Promise<A> {
     const response = await fetchImpl(`${origin}${path}`, {
-      method: "POST",
+      method,
       credentials: "same-origin",
       headers: { Accept: "application/json", "Content-Type": "application/json", "X-CSRF-Token": csrf },
       body: JSON.stringify(body),
@@ -245,15 +334,26 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
     session: () => read(EntrySession, "/api/cloud/session"),
     provisioning: (organization: string) =>
       read(Provisioning, `/api/cloud/organizations/${encodeURIComponent(organization)}/provisioning`),
-    createOrganization: (input: { name: string; key: string; csrf: string }) =>
-      submit(NextResult, "/organizations", input.csrf, { name: input.name, creation_key: input.key }),
+    createOrganization: (input: { name: string; key: string; csrf: string; price?: string }) =>
+      submit(NextResult, "/organizations", input.csrf, { name: input.name, creation_key: input.key, price: input.price ?? "" }),
     resume: (input: { organization: string; csrf: string }) =>
       submit(NextResult, `/organizations/${encodeURIComponent(input.organization)}/provisioning/resume`, input.csrf, {}),
-    joinInvitation: (input: { token: string; csrf: string }) =>
-      submit(NextResult, "/invitations/join", input.csrf, { token: input.token }),
     platformOrganizations: () => read(PlatformOrganizations, "/api/cloud/platform/organizations"),
+    platformTenant: (organization: string) => read(PlatformTenantDetail, `/api/cloud/platform/organizations/${encodeURIComponent(organization)}`),
+    resumePlatformTenant: (input: { organization: string; csrf: string }) =>
+      submit(NextResult, `/api/cloud/platform/organizations/${encodeURIComponent(input.organization)}/resume`, input.csrf, {}),
     platformAllowlist: () => read(PlatformAllowlist, "/api/cloud/platform/allowlist"),
+    platformMembers: () => read(PlatformMembers, "/api/cloud/platform/members"),
+    changePlatformMember: (input: { csrf: string; change: PlatformMemberChange }) => {
+      const { action, email, ...body } = input.change;
+      return post(PlatformMemberChangeResult,
+        "/api/cloud/platform/members" + (action === "add" ? "" : `/${encodeURIComponent(email)}`),
+        input.csrf, action === "add" ? { ...body, email } : body,
+        action === "add" ? "POST" : action === "change" ? "PATCH" : "DELETE");
+    },
     platformHealth: () => read(PlatformHealth, "/api/cloud/platform/health"),
+    platformUsers: (query: string) => read(PlatformUsers, `/api/cloud/platform/users?q=${encodeURIComponent(query)}`),
+    platformAudit: (query: string) => read(PlatformAudit, `/api/cloud/platform/audit${query === "" ? "" : `?${query}`}`),
     platformEntitlements: (organization: string) => read(OrganizationEntitlements, entitlementsPath(organization)),
     changePlatformEntitlement: (input: { organization: string; csrf: string; change: EntitlementChange }) =>
       post(EntitlementChangeResult, entitlementsPath(input.organization), input.csrf, input.change),

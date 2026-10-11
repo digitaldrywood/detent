@@ -110,6 +110,10 @@ func TestAuditEvidenceRequiresBaseAndHeadTogether(t *testing.T) {
 }
 
 func TestRunAuditDispositionUsesAuthenticatedExactHeadServicePath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
@@ -171,6 +175,10 @@ func TestRunAuditDispositionUsesAuthenticatedExactHeadServicePath(t *testing.T) 
 }
 
 func TestRunAuditDispositionUsesWorkerServiceConnection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	listener := nonLoopbackListener(t)

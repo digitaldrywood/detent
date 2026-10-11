@@ -39,6 +39,7 @@ type Event struct {
 }
 
 type Issue struct {
+	State      string `json:"state,omitempty"`
 	Reused     bool   `json:"-"`
 	ID         string `json:"id,omitempty"`
 	Identifier string `json:"identifier,omitempty"`
@@ -49,9 +50,10 @@ type Issue struct {
 }
 
 type IssueDraft struct {
-	Title  string
-	Body   string
-	Labels []string
+	Title    string
+	Body     string
+	Labels   []string
+	Priority *int
 }
 
 type IssueStore interface {

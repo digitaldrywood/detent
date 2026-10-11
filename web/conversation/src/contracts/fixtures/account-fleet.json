@@ -2,9 +2,13 @@
   "runners": [
     {
       "id": "rnr_macbook",
+      "editable": false,
+      "can_convert_scope": false,
+      "machine_id": "machine_macbook",
       "display_name": "Michael's MacBook Pro",
       "hostname": "michaels-macbook-pro.local",
       "health": "healthy",
+      "connection_health": "online",
       "problems": [],
       "state": "enabled",
       "os": "darwin",
@@ -48,10 +52,8 @@
         }
       ],
       "last_heartbeat_at": "2026-09-10T12:04:31Z",
-      "home_project_ids": [],
-      "home_status": "",
-      "home_dry_since": null,
       "isolation_tier": "sandbox",
+      "backend_isolation": { "codex": ["sandbox", "native-trusted"] },
       "availability": { "timezone": "", "windows": [], "hard_deadline": "" },
       "leases": [
         {
@@ -61,13 +63,25 @@
           "project_id": "proj_parable",
           "expires_at": "2026-09-10T12:09:31Z"
         }
-      ]
+      ],
+      "claim_refusal_reason": "Too old to take work, needs v0.9.1",
+      "update": {
+        "runner_id": "rnr_macbook",
+        "revision": 1,
+        "status": "unavailable",
+        "desired": null,
+        "observation": null
+      }
     },
     {
       "id": "rnr_macmini",
+      "editable": false,
+      "can_convert_scope": false,
+      "machine_id": "machine_macmini",
       "display_name": "mac-mini-1",
       "hostname": "mac-mini-1.local",
       "health": "stale",
+      "connection_health": "offline",
       "problems": [],
       "state": "paused",
       "os": "darwin",
@@ -79,12 +93,18 @@
       "reported_capacity": 0,
       "provider_capacity": [],
       "last_heartbeat_at": "2026-09-10T10:02:00Z",
-      "home_project_ids": [],
-      "home_status": "",
-      "home_dry_since": null,
       "isolation_tier": "sandbox",
+      "backend_isolation": { "codex": ["sandbox", "native-trusted"] },
       "availability": { "timezone": "", "windows": [], "hard_deadline": "" },
-      "leases": []
+      "leases": [],
+      "claim_refusal_reason": "Too old to take work, needs v0.9.1",
+      "update": {
+        "runner_id": "rnr_macmini",
+        "revision": 1,
+        "status": "unavailable",
+        "desired": null,
+        "observation": null
+      }
     }
   ],
   "editable": false,
@@ -162,5 +182,6 @@
       }
     ]
   },
-  "current": "v0.9.1"
+  "current": "v0.9.1",
+  "minimum_runner_version": "v0.9.1"
 }

@@ -18,6 +18,8 @@ const (
 
 type timeSeriesAPIResponse struct {
 	GeneratedAt     time.Time           `json:"generated_at"`
+	LastKnown       bool                `json:"snapshot_last_known"`
+	LastKnownUntil  time.Time           `json:"snapshot_last_known_until,omitzero"`
 	Scope           string              `json:"scope"`
 	ProjectID       string              `json:"project_id,omitempty"`
 	Labels          []string            `json:"labels"`
@@ -71,6 +73,7 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 	out.Queue = scopedQueue(snapshot.Queue, selectedProjectID, fallbackProjectID)
 	out.Blocked = scopedBlocked(snapshot.Blocked, selectedProjectID, fallbackProjectID)
 	out.Completed = scopedCompleted(snapshot.Completed, selectedProjectID, fallbackProjectID)
+	out.Shipped = scopedCompleted(snapshot.Shipped, selectedProjectID, fallbackProjectID)
 	out.TrackerUnavailable = scopedTrackerUnavailable(snapshot.TrackerUnavailable, selectedProjectID, fallbackProjectID)
 	out.ForgeUnavailable = scopedForgeUnavailable(snapshot.ForgeUnavailable, selectedProjectID, fallbackProjectID)
 	out.CIUnavailable = scopedCIUnavailable(snapshot.CIUnavailable, selectedProjectID, fallbackProjectID)

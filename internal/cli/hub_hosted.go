@@ -12,9 +12,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/profiling"
 )
 
 type hostedFileConfig struct {
+	SMTP                     *hostedSMTPFileConfig         `yaml:"smtp"`
+	Profiling                profiling.Config              `yaml:"profiling,omitempty"`
 	Billing                  *hostedBillingFileConfig      `yaml:"billing"`
 	EntitlementAdministrator string                        `yaml:"entitlement_administrator"`
 	EntitlementAdminTokenEnv string                        `yaml:"entitlement_admin_token_env"`
@@ -39,6 +42,35 @@ type hostedFileConfig struct {
 		APIURL    string `yaml:"api_url"`
 		IssuerURL string `yaml:"issuer_url"`
 	} `yaml:"workos"`
+}
+
+type hostedSMTPFileConfig struct {
+	Host        string `yaml:"host"`
+	Port        int    `yaml:"port"`
+	Username    string `yaml:"username"`
+	PasswordEnv string `yaml:"password_env"`
+	From        string `yaml:"from"`
+}
+
+func readHostedSMTPSender(config *hostedSMTPFileConfig, lookupEnv func(string) string) (auth.EmailSender, error) {
+	if config == nil {
+		return nil, errors.New("SMTP is not configured")
+	}
+	var password string
+	if config.PasswordEnv != "" {
+		if !validEnvName(config.PasswordEnv) {
+			return nil, errors.New("SMTP password environment variable name is invalid")
+		}
+		password = lookupEnv(config.PasswordEnv)
+		if password == "" {
+			return nil, errors.New("SMTP password is unavailable")
+		}
+	}
+	port := config.Port
+	if port == 0 {
+		port = 587
+	}
+	return auth.NewSMTPSender(auth.SMTPConfig{Host: config.Host, Port: port, Username: config.Username, Password: password, From: config.From})
 }
 
 type hostedSharedEntryFileConfig struct {
@@ -69,6 +101,8 @@ type hostedBillingFileConfig struct {
 	WebhookSecretEnv      string                         `yaml:"webhook_secret_env"`
 	GraceSeconds          int64                          `yaml:"grace_seconds"`
 	ReconcileSeconds      int64                          `yaml:"reconcile_seconds"`
+	CreditCostMultiplier  float64                        `yaml:"credit_cost_multiplier,omitempty"`
+	CreditPacks           []hubserver.HostedCreditPack   `yaml:"credit_packs"`
 	Prices                []hubserver.HostedBillingPrice `yaml:"prices"`
 }
 
@@ -90,7 +124,7 @@ func readHostedBillingConfig(config *hostedBillingFileConfig, lookupEnv func(str
 	return &hubserver.HostedBillingConfig{
 		Mode: config.Mode, CheckoutDisabled: config.CheckoutDisabled, AccountID: config.AccountID, CustomerID: config.CustomerID, PortalConfigurationID: config.PortalConfigurationID,
 		WebhookSecret: []byte(secret), GraceSeconds: config.GraceSeconds, ReconcileSeconds: config.ReconcileSeconds,
-		Prices: config.Prices, Provider: provider,
+		Prices: config.Prices, CreditPacks: config.CreditPacks, CreditCostMultiplier: config.CreditCostMultiplier, Provider: provider,
 	}, nil
 }
 
@@ -161,7 +195,15 @@ func parseHostedConfig(reader io.Reader, lookupEnv func(string) string) (*hubser
 			return nil, err
 		}
 	}
+	var sender auth.EmailSender
+	if config.SMTP != nil {
+		sender, err = readHostedSMTPSender(config.SMTP, lookupEnv)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &hubserver.HostedConfig{
+		EmailSender:              sender,
 		Billing:                  billingConfig,
 		EntitlementAdministrator: config.EntitlementAdministrator, EntitlementAdminToken: entitlementToken,
 		Plans:          config.Plans,

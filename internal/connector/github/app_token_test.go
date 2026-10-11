@@ -18,9 +18,15 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 func TestInstallationTokenSourceMintsAndCachesToken(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
@@ -79,8 +85,12 @@ func TestInstallationTokenSourceMintsAndCachesToken(t *testing.T) {
 		t.Fatalf("NewInstallationTokenSource() error = %v", err)
 	}
 
+	scope := &connector.RESTScope{Name: "refresh"}
+	ctx := connector.WithRESTScope(context.Background(), scope)
+	client := &Client{tokenSource: source}
+	attribution := scope.Attribution("graphql", graphQLQueryAuthenticate)
 	for range 2 {
-		token, err := source.Token(context.Background())
+		token, err := client.resolveRequestToken(ctx, attribution)
 		if err != nil {
 			t.Fatalf("Token() error = %v", err)
 		}
@@ -89,12 +99,28 @@ func TestInstallationTokenSourceMintsAndCachesToken(t *testing.T) {
 		}
 	}
 
+	installTiming := assertScopeTiming(t, scope, "http_transport", "app installation tokens", "200", 1)
+	tokenTiming := assertScopeTiming(t, scope, "token_resolution_inclusive", "graphql", "200", 2)
+	if tokenTiming.ElapsedSumNS < installTiming.ElapsedSumNS {
+		t.Fatalf("token timing excludes nested installation HTTP: token=%#v installation=%#v", tokenTiming, installTiming)
+	}
+	if len(scope.Timings()) != 2 {
+		t.Fatalf("cached token manufactured HTTP: %#v", scope.Timings())
+	}
+
 	if got := atomic.LoadInt64(&requests); got != 1 {
 		t.Fatalf("requests = %d, want 1", got)
+	}
+	if got := scope.Counts(); len(got) != 1 || got[0].EndpointFamily != "app installation tokens" || got[0].Outcome != "200" || got[0].Count != 1 {
+		t.Fatalf("REST scope counts = %#v, want one installation token request", got)
 	}
 }
 
 func TestInstallationTokenSourceRefreshesNearExpiry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
@@ -149,6 +175,10 @@ func TestInstallationTokenSourceRefreshesNearExpiry(t *testing.T) {
 }
 
 func TestInstallationTokenSourceLoadsPrivateKeyPathAndGHESURL(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
@@ -221,6 +251,10 @@ func TestInstallationTokenSourceReportsInvalidPrivateKey(t *testing.T) {
 }
 
 func TestTokenResolverUsesConfiguredGitHubApp(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
@@ -359,4 +393,110 @@ func decodeJWTSegment(t *testing.T, segment string) map[string]any {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
 	return decoded
+}
+
+func TestRepositoryInstallationTokenSource(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		status    int
+		id        int64
+		wantError bool
+	}{
+		{"repository installation", http.StatusOK, 987, false},
+		{"repository has no installation", http.StatusNotFound, 0, true},
+		{"invalid installation response", http.StatusOK, 0, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var discoveries atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+					t.Error("missing App authentication")
+				}
+				switch r.URL.Path {
+				case "/repos/acme/orders/installation":
+					discoveries.Add(1)
+					w.WriteHeader(test.status)
+					if err := json.NewEncoder(w).Encode(map[string]int64{"id": test.id}); err != nil {
+						t.Error(err)
+					}
+				case "/app/installations/987/access_tokens":
+					if err := json.NewEncoder(w).Encode(map[string]any{"token": "product-installation-token", "expires_at": time.Now().Add(time.Hour)}); err != nil {
+						t.Error(err)
+					}
+				default:
+					t.Errorf("unexpected path %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(server.Close)
+			source, err := NewInstallationTokenSource(InstallationTokenConfig{Endpoint: server.URL + "/graphql", AppID: "123", PrivateKey: testPrivateKeyPEM(t), Repository: "acme/orders", HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			token, err := source.Token(t.Context())
+			if (err != nil) != test.wantError {
+				t.Fatalf("Token error = %v", err)
+			}
+			if !test.wantError {
+				if token != "product-installation-token" {
+					t.Fatalf("token = %q", token)
+				}
+				if _, err := source.Token(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if discoveries.Load() != 1 {
+					t.Fatalf("installation discovery repeated %d times", discoveries.Load())
+				}
+			}
+		})
+	}
+}
+
+func TestAppTokenSource(t *testing.T) {
+	t.Parallel()
+	privateKey := testPrivateKeyPEM(t)
+	for _, test := range []struct {
+		name      string
+		key       string
+		cancelled bool
+		wantError error
+	}{
+		{name: "App JWT without installation or repository", key: privateKey},
+		{name: "invalid key", key: "invalid", wantError: ErrInvalidPrivateKey},
+		{name: "cancelled", key: privateKey, cancelled: true, wantError: context.Canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+			source, err := NewAppTokenSource(InstallationTokenConfig{AppID: "123", PrivateKey: test.key, Now: func() time.Time { return now }, LookupEnv: func(string) string { return "" }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if test.cancelled {
+				cancel()
+			}
+			for range 2 {
+				token, err := source.Token(ctx)
+				if !errors.Is(err, test.wantError) {
+					t.Fatalf("Token error = %v, want %v", err, test.wantError)
+				}
+				if test.wantError != nil {
+					return
+				}
+				segments := strings.Split(token, ".")
+				if len(segments) != 3 {
+					t.Fatalf("JWT segments = %d", len(segments))
+				}
+				claims := decodeJWTSegment(t, segments[1])
+				if claims["iss"] != "123" || claims["exp"] != float64(now.Add(10*time.Minute).Unix()) {
+					t.Fatalf("JWT claims = %v", claims)
+				}
+				now = now.Add(time.Hour)
+			}
+		})
+	}
 }

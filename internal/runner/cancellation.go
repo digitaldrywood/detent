@@ -51,7 +51,6 @@ func NewCancellationCause(cause error, source string) *CancellationCause {
 		{ErrSessionDurationExceeded, "session_duration_exceeded"},
 		{ErrTurnDurationExceeded, "turn_duration_exceeded"},
 		{ErrSessionMemoryCeilingExceeded, "session_memory_ceiling_exceeded"},
-		{ErrSessionNoProgress, "session_no_progress"},
 		{context.DeadlineExceeded, "deadline_exceeded"},
 	} {
 		if errors.Is(cause, candidate.err) {
@@ -76,10 +75,21 @@ func preserveCancellation(ctx context.Context, err error, source string) error {
 	if cause := context.Cause(ctx); cause != nil {
 		return errors.Join(NewCancellationCause(cause, source), err)
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if !errors.Is(err, ErrWorkerProcessReap) && !errors.Is(err, ErrWorkspacePreparation) && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		return errors.Join(NewCancellationCause(err, source), err)
 	}
 	return err
+}
+
+func executionCancellation(req RunRequest) error {
+	if req.executionCancellation == nil {
+		return nil
+	}
+	cause := req.executionCancellation()
+	if errors.Is(cause, ErrOperatorStopped) {
+		return cause
+	}
+	return nil
 }
 
 func cancellationAttrs(err error) []any {

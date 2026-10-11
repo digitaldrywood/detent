@@ -87,6 +87,17 @@ func (s *Service) hasLunaCoordinator() bool {
 	return s.conversations != nil && s.conversations.config.Backend != nil && s.conversations.config.Model == genkitbackend.Model
 }
 
+func (s *Service) conversationModelChoiceGranted(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, now time.Time) (bool, error) {
+	if s.database.hostedPlans == nil || s.database.hostedOrganization != organization {
+		return false, nil
+	}
+	entitlement, err := s.database.hostedEntitlement(ctx, query, now)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(entitlement.Features, "model_choice"), nil
+}
+
 // conversationModelValidationChoices is what ValidatePreferences checks
 // against: the identifier plus the effort ladder the model published, so an
 // effort the picker offered is not then refused.
@@ -130,8 +141,8 @@ WHERE r.organization_id = ? AND r.state = 'active' AND t.revoked_at IS NULL`
 		if err != nil {
 			return nil, fmt.Errorf("encode project list: %w", err)
 		}
-		statement += ` AND EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = r.token_id AND g.organization_id = r.organization_id
- AND g.project_id IN (SELECT value FROM json_each(?)))`
+		statement += ` AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = r.token_id AND g.organization_id = r.organization_id
+ AND g.project_id IN (SELECT value FROM json_each(?))))`
 		args = append(args, string(encoded))
 	}
 	rows, err := query.QueryContext(ctx, statement, args...)
@@ -269,26 +280,11 @@ type conversationWorkItemReferencePage struct {
 // issue read proves the issue exists in it, and the conversation read rule
 // drops entries from private chats the reader does not own.
 func (s *Service) listWorkItemReferences(c echo.Context) error {
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	if _, _, err := readNativeIssue(ctx, s.database.db, scope, c.Param("item")); err != nil {
-		return s.nativeAPIError(c, translateConversationError(err))
-	}
-	stored, err := s.conversations.store.listWorkItemReferences(ctx, s.database.db, scope.organization, scope.project, c.Param("item"), conversationReferencePage)
+	value, err := s.readWorkItemReferences(c.Request().Context(), nativeRequestScope(c), c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	page := conversationWorkItemReferencePage{References: make([]conversationWorkItemReference, 0, len(stored))}
-	for _, reference := range stored {
-		if reference.Visibility == conversation.VisibilityPrivate && reference.OwnerPrincipalID != scope.credential.ID {
-			continue
-		}
-		page.References = append(page.References, conversationWorkItemReference{
-			MessageID: reference.MessageID, ConversationID: reference.ConversationID,
-			Excerpt: conversationExcerpt(reference.Excerpt, conversationReferenceExcerptRunes), CreatedAt: reference.CreatedAt,
-		})
-	}
-	return c.JSON(http.StatusOK, page)
+	return c.JSONBlob(http.StatusOK, value)
 }
 
 // Settle sweep.
@@ -360,4 +356,25 @@ func (c *conversationService) settleConversation(ctx context.Context, id string,
 		c.broker.notify(id)
 	}
 	return changed, nil
+}
+
+func (s *Service) readWorkItemReferences(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {
+	if _, _, err := readNativeIssue(ctx, s.database.db, scope, id); err != nil {
+		return nil, translateConversationError(err)
+	}
+	stored, err := s.conversations.store.listWorkItemReferences(ctx, s.database.db, scope.organization, scope.project, id, conversationReferencePage)
+	if err != nil {
+		return nil, err
+	}
+	page := conversationWorkItemReferencePage{References: make([]conversationWorkItemReference, 0, len(stored))}
+	for _, reference := range stored {
+		if reference.Visibility == conversation.VisibilityPrivate && reference.OwnerPrincipalID != scope.credential.ID {
+			continue
+		}
+		page.References = append(page.References, conversationWorkItemReference{
+			MessageID: reference.MessageID, ConversationID: reference.ConversationID,
+			Excerpt: conversationExcerpt(reference.Excerpt, conversationReferenceExcerptRunes), CreatedAt: reference.CreatedAt,
+		})
+	}
+	return json.Marshal(page)
 }

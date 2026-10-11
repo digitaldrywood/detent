@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,7 +59,7 @@ const (
 	admissionRESTFanoutScope               = "backlog_admission"
 	maxRationaleSize                       = 16 * 1024
 	maxEffortRationaleSize                 = 2 * 1024
-	malformedAdmissionAttemptLimit         = 4
+	maxReceiptCriteria                     = 32
 	malformedAdmissionExcerptSize          = 512
 	admissionCandidateFingerprintVersion   = "admission-candidate-v1"
 	admissionPromptFingerprintVersion      = "admission-prompt-v2"
@@ -94,8 +95,7 @@ type Store interface {
 	RecordAdmissionRun(context.Context, admissionmodel.RunRecord) error
 	LatestAdmissionRun(context.Context, string) (admissionmodel.RunRecord, bool, error)
 	AdmissionCandidateHistory(context.Context, string) (map[string]admissionmodel.IssueRecord, error)
-	RecordAdmissionMalformedResult(context.Context, admissionmodel.MalformedResult, int) (admissionmodel.MalformedResult, error)
-	BlockedAdmissionMalformedResult(context.Context, string, string) (admissionmodel.MalformedResult, bool, error)
+	RecordAdmissionMalformedResult(context.Context, admissionmodel.MalformedResult) (admissionmodel.MalformedResult, error)
 	ResolveAdmissionMalformedResults(context.Context, string, string, time.Time) error
 }
 
@@ -107,6 +107,9 @@ type IssueStore interface {
 }
 
 type Settings struct {
+	IssueContract       config.IssueContract
+	ContractCheck       func(context.Context, string, string) (bool, error)
+	IntakeEnabled       func() bool
 	LaneWriter          func(context.Context, string, string) error
 	DependencyReadiness string
 	dependencies        map[string]*runner.AdmissionDependencies
@@ -117,6 +120,7 @@ type Settings struct {
 	DispatchStates      []string
 	DispatchLabels      []string
 	PrioritizeBlockers  bool
+	DependencyIssues    func(context.Context) []connector.Issue
 	Runner              runner.Backend
 	Issues              IssueStore
 	Scheduler           scheduler.Scheduler
@@ -301,7 +305,7 @@ func (m *Manager) run(ctx context.Context, scheduledFor time.Time, scheduled boo
 	settings := cloneSettings(m.settings)
 	baseline := m.baseline
 	m.mu.RUnlock()
-	if !settings.Config.Enabled {
+	if !settings.Config.Enabled || settings.IntakeEnabled != nil && !settings.IntakeEnabled() {
 		return newResult(), nil
 	}
 	if scheduled {
@@ -333,6 +337,9 @@ func (m *Manager) run(ctx context.Context, scheduledFor time.Time, scheduled boo
 }
 
 func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor time.Time, scheduled bool) (result Result, runErr error) {
+	restScope := &connector.RESTScope{ProjectID: settings.ProjectID, Name: "admission"}
+	ctx = connector.WithRESTScope(ctx, restScope)
+	defer connector.LogRESTScope(m.logger, restScope)
 	settings.dependencies = make(map[string]*runner.AdmissionDependencies)
 	result = newResult()
 	result.ProjectID = strings.TrimSpace(settings.ProjectID)
@@ -474,7 +481,6 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		commentsRemaining,
 		startedAt,
 		settings.Config.MaxCandidatesPerRun,
-		&result,
 	)
 	if err != nil {
 		return result, err
@@ -490,15 +496,25 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		return result, err
 	}
 	if open >= settings.Config.MaxOpenProposals {
-		result.Skipped["open_proposal_cap"] += len(candidates)
+		candidates = slices.DeleteFunc(candidates, func(candidate connector.Issue) bool {
+			if settings.Config.AutoAdmitForLabels(candidate.Labels) {
+				return false
+			}
+			result.Skipped["open_proposal_cap"]++
+			return true
+		})
+	}
+	if len(candidates) == 0 {
 		return result, nil
 	}
 	if commentsRemaining == 0 {
 		result.Skipped["comment_cap"] += len(candidates)
 		return result, nil
 	}
-	available := settings.Config.MaxOpenProposals - open
-	evaluationLimit := min(settings.Config.MaxProposalsPerRun, commentsRemaining, available)
+	evaluationLimit := min(settings.Config.MaxProposalsPerRun, commentsRemaining)
+	if !settings.Config.AutoAdmit && len(settings.Config.AutoAdmitByLabel) == 0 {
+		evaluationLimit = min(evaluationLimit, settings.Config.MaxOpenProposals-open)
+	}
 	if len(candidates) > evaluationLimit {
 		result.Truncated["candidates"] += len(candidates) - evaluationLimit
 		candidates = candidates[:evaluationLimit]
@@ -523,7 +539,7 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 	validCandidates := make([]connector.Issue, 0, len(candidates))
 	evaluations := make([]AgentEvaluation, 0, len(candidates))
 	for _, candidate := range candidates {
-		evaluation, failure, deferredReason, err := m.evaluateCandidate(ctx, settings, candidate, startedAt)
+		evaluation, failure, deferredReason, err := m.evaluateCandidate(ctx, settings, candidate)
 		if err != nil {
 			return result, fmt.Errorf(
 				"evaluate backlog admission candidate %s: transport runner_error: %w",
@@ -548,7 +564,7 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 				return result, err
 			}
 			result.Malformed = append(result.Malformed, evidence)
-			result.Skipped[malformedSkipReason(evidence.Status)]++
+			result.Skipped["malformed_output_retryable"]++
 			continue
 		}
 		fingerprints := admissionEvaluationFingerprints(settings, candidate)
@@ -588,13 +604,11 @@ func (m *Manager) evaluateCandidate(
 	ctx context.Context,
 	settings Settings,
 	candidate connector.Issue,
-	startedAt time.Time,
 ) (AgentEvaluation, *malformedEvaluation, string, error) {
-	collector := &proposalCollector{}
+	collector := &proposalCollector{settings: settings, candidate: candidate}
 	runResult, err := settings.Runner.Run(ctx, runner.RunRequest{
 		Issue:            admissionIssue(settings.ProjectID),
 		Mode:             runner.RunModeRoutine,
-		StartedAt:        startedAt,
 		Admission:        admissionRequest(settings, []connector.Issue{candidate}),
 		AgentTools:       []runner.AgentTool{proposalTool(settings.Config.RequireEffort)},
 		AgentToolHandler: collector.handle,
@@ -622,6 +636,9 @@ func (m *Manager) evaluateCandidate(
 	if len(evaluations) == 0 && proposalErr == nil {
 		raw = []byte(runResult.Output)
 		evaluations, proposalErr = parseEvaluations(runResult.Output)
+		if proposalErr == nil && len(evaluations) == 1 {
+			evaluations[0], proposalErr = validateCandidateEvaluation(settings, candidate, evaluations[0])
+		}
 	}
 	if proposalErr != nil {
 		class, code := classifyMalformedEvaluation(proposalErr)
@@ -634,15 +651,7 @@ func (m *Manager) evaluateCandidate(
 			output:     raw,
 		}, "", nil
 	}
-	evaluation, err := validateCandidateEvaluation(settings, candidate, evaluations[0])
-	if err != nil {
-		return AgentEvaluation{}, &malformedEvaluation{
-			errorClass: "schema",
-			errorCode:  "invalid_evaluation",
-			output:     raw,
-		}, "", nil
-	}
-	return evaluation, nil, "", nil
+	return evaluations[0], nil, "", nil
 }
 
 func (m *Manager) recordMalformedResult(
@@ -667,7 +676,7 @@ func (m *Manager) recordMalformedResult(
 		OutputExcerpt:        redactAdmissionOutput(failure.output),
 		LastSeenAt:           at,
 	}
-	stored, err := m.store.RecordAdmissionMalformedResult(ctx, record, malformedAdmissionAttemptLimit)
+	stored, err := m.store.RecordAdmissionMalformedResult(ctx, record)
 	if err != nil {
 		return admissionmodel.MalformedEvidence{}, err
 	}
@@ -689,13 +698,6 @@ func malformedEvidence(record admissionmodel.MalformedResult) admissionmodel.Mal
 		AttemptCount:         record.AttemptCount,
 		Status:               record.Status,
 	}
-}
-
-func malformedSkipReason(status admissionmodel.MalformedStatus) string {
-	if status == admissionmodel.MalformedBlocked {
-		return "malformed_output_blocked"
-	}
-	return "malformed_output_retryable"
 }
 
 func candidateReadLimit(maxCandidates int) int {
@@ -833,13 +835,16 @@ func (m *Manager) reconcileOpenProposals(
 		}
 		comments, loaded := commentsByIssue[proposal.IssueID]
 		if !loaded {
-			comments, err = commentReader.FetchIssueComments(ctx, issue)
-			if err != nil {
-				return commentsRemaining, autoAdmitsRemaining, fmt.Errorf("read backlog admission decision comments: %w", err)
+			comments = issue.Comments
+			if !issue.CommentsComplete {
+				comments, err = commentReader.FetchIssueComments(ctx, issue)
+				if err != nil {
+					return commentsRemaining, autoAdmitsRemaining, fmt.Errorf("read backlog admission decision comments: %w", err)
+				}
 			}
 			commentsByIssue[proposal.IssueID] = comments
 		}
-		if classification, declined := classifyNonDeliverable(issue); declined {
+		if classification, declined := classifyNonDeliverable(issue, settings.IssueContract); declined {
 			decline, created, err := m.createAdmissionDecline(ctx, settings, issue, classification, at)
 			if err != nil {
 				return commentsRemaining, autoAdmitsRemaining, err
@@ -1093,7 +1098,6 @@ func (m *Manager) unproposedCandidates(
 	commentsRemaining int,
 	at time.Time,
 	candidateLimit int,
-	result *Result,
 ) ([]connector.Issue, int, int, error) {
 	if settings.dependencies == nil {
 		settings.dependencies = make(map[string]*runner.AdmissionDependencies)
@@ -1102,6 +1106,16 @@ func (m *Manager) unproposedCandidates(
 	processed := 0
 	truncated := 0
 	for _, candidate := range candidates {
+		if settings.ContractCheck != nil && !strings.Contains(strings.ToLower(candidate.Description), admissionOptOutMarker) {
+			ok, err := settings.ContractCheck(ctx, candidate.ID, settings.Config.TargetState)
+			if err != nil {
+				return nil, commentsRemaining, truncated, err
+			}
+			if !ok {
+				skipped["human_action"]++
+				continue
+			}
+		}
 		if settings.dependencies[candidate.ID] == nil && len(admissionDependencyReferences(candidate)) > 0 {
 			settings.dependencies[candidate.ID] = resolveAdmissionDependencies(ctx, settings, candidate, at)
 		}
@@ -1124,22 +1138,6 @@ func (m *Manager) unproposedCandidates(
 			}
 		}
 		if suppress {
-			continue
-		}
-		fingerprints := admissionEvaluationFingerprints(settings, candidate)
-		malformed, blocked, err := m.store.BlockedAdmissionMalformedResult(
-			ctx,
-			settings.ProjectID,
-			fingerprints.proposal,
-		)
-		if err != nil {
-			return nil, commentsRemaining, truncated, err
-		}
-		if blocked {
-			skipped["malformed_output_blocked"]++
-			if result != nil {
-				result.Malformed = append(result.Malformed, malformedEvidence(malformed))
-			}
 			continue
 		}
 		decline, found, err := m.store.AdmissionDecline(ctx, settings.ProjectID, candidate.ID, issueFingerprint(candidate))
@@ -1165,7 +1163,7 @@ func (m *Manager) unproposedCandidates(
 		var classification admissionDeclineClassification
 		classified := false
 		if !found {
-			classification, classified = classifyNonDeliverable(candidate)
+			classification, classified = classifyNonDeliverable(candidate, settings.IssueContract)
 		}
 		if !found && !classified {
 			if processed >= candidateLimit {
@@ -1289,7 +1287,7 @@ func (m *Manager) ensureAdmissionDeclineComment(
 	return true, nil
 }
 
-func classifyNonDeliverable(issue connector.Issue) (admissionDeclineClassification, bool) {
+func classifyNonDeliverable(issue connector.Issue, contracts ...config.IssueContract) (admissionDeclineClassification, bool) {
 	body := strings.TrimSpace(issue.Description)
 	if strings.Contains(strings.ToLower(body), admissionOptOutMarker) {
 		return admissionDeclineClassification{
@@ -1297,7 +1295,11 @@ func classifyNonDeliverable(issue connector.Issue) (admissionDeclineClassificati
 			detail: "the issue contains the " + admissionOptOutMarker + " operator opt-out marker",
 		}, true
 	}
-	if hasCompletionContract(body) {
+	contract := config.DefaultIssueContract()
+	if len(contracts) > 0 && len(contracts[0].Sections) > 0 {
+		contract = contracts[0]
+	}
+	if contract.Evaluate(issue).Satisfied() {
 		return admissionDeclineClassification{}, false
 	}
 	if kind := selfIdentifiedArtifact(issue.Title, body); kind != "" {
@@ -1313,22 +1315,6 @@ func classifyNonDeliverable(issue connector.Issue) (admissionDeclineClassificati
 		}, true
 	}
 	return admissionDeclineClassification{}, false
-}
-
-func hasCompletionContract(body string) bool {
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
-		heading := strings.TrimSpace(strings.TrimLeft(line, "#"))
-		heading = strings.TrimSuffix(strings.ToLower(heading), ":")
-		switch heading {
-		case "acceptance criteria", "completion criteria", "definition of done", "deliverable", "expected behavior", "what good looks like":
-			return true
-		}
-		if key, value, found := strings.Cut(line, ":"); found && strings.EqualFold(strings.TrimSpace(key), "deliverable") && strings.TrimSpace(value) != "" {
-			return true
-		}
-	}
-	return false
 }
 
 func selfIdentifiedArtifact(title string, body string) string {
@@ -1467,6 +1453,10 @@ func (m *Manager) executeEvaluations(
 	if err != nil {
 		return result, err
 	}
+	receiptByID := make(map[string]int, len(result.Issues))
+	for i, receipt := range result.Issues {
+		receiptByID[receipt.ID] = i
+	}
 	for _, original := range candidates {
 		issueID := strings.TrimSpace(original.ID)
 		evaluation := evaluationByID[issueID]
@@ -1486,7 +1476,7 @@ func (m *Manager) executeEvaluations(
 		settings.dependencies[issueID] = dependencies
 		evaluation = admissionDependencyFindings(evaluation, dependencies)
 		var classification *admissionDeclineClassification
-		if declineClassification, declined := classifyNonDeliverable(current); declined {
+		if declineClassification, declined := classifyNonDeliverable(current, settings.IssueContract); declined {
 			classification = &declineClassification
 		} else if evaluation.Disposition == admissionDispositionDeclined {
 			failed := evaluation.Findings[0]
@@ -1499,6 +1489,13 @@ func (m *Manager) executeEvaluations(
 				failedCriterion: failed.CriterionQuote,
 			}
 			classification = &declineClassification
+		}
+		qualified := classification == nil && autoAdmitProposal(settings.Config, settings.Criteria, admissionmodel.Proposal{
+			Confidence: *evaluation.Confidence,
+			Findings:   evaluation.Findings,
+		}, current.Labels)
+		if index, ok := receiptByID[issueID]; ok {
+			result.Issues[index].Evaluation = admissionEvaluationOutcome(evaluation, settings.Config.AutoAdmitMinConfidence, qualified)
 		}
 		if classification != nil {
 			decline, created, err := m.createAdmissionDecline(ctx, settings, current, *classification, at)
@@ -1526,9 +1523,6 @@ func (m *Manager) executeEvaluations(
 			result.Skipped["non_deliverable"]++
 			continue
 		}
-		if open >= settings.Config.MaxOpenProposals {
-			return result, errors.New("backlog admission proposal capacity changed during evaluation")
-		}
 		proposal := admissionmodel.Proposal{
 			ID:                proposalID(settings.ProjectID, current.ID, issueFingerprint(current, dependencies), at),
 			ProjectID:         settings.ProjectID,
@@ -1547,6 +1541,11 @@ func (m *Manager) executeEvaluations(
 			CreatedAt:         at,
 			ExpiresAt:         at.AddDate(0, 0, settings.Config.ProposalExpiryDays),
 		}
+		automatic := autoAdmitsRemaining > 0 && qualified
+		if open >= settings.Config.MaxOpenProposals && !automatic {
+			result.Skipped["open_proposal_cap"]++
+			continue
+		}
 		created, err := m.store.CreateAdmissionProposal(ctx, proposal)
 		if err != nil {
 			return result, err
@@ -1563,7 +1562,7 @@ func (m *Manager) executeEvaluations(
 			}
 			commentsRemaining--
 		}
-		if autoAdmitsRemaining > 0 && autoAdmitProposal(settings.Config, settings.Criteria, proposal, current.Labels) {
+		if automatic {
 			if err := m.admitProposal(
 				ctx,
 				settings,
@@ -1574,10 +1573,13 @@ func (m *Manager) executeEvaluations(
 				return result, err
 			}
 			autoAdmitsRemaining--
+			open--
 		}
 	}
 	if len(result.Proposals) == 0 {
 		switch {
+		case result.Skipped["open_proposal_cap"] > 0:
+			result.ProposalReason = "open_proposal_cap"
 		case result.Skipped[admissionDeclineCriteriaNotMet] > 0:
 			result.ProposalReason = admissionDeclineCriteriaNotMet
 		case result.Skipped["unchanged_open_proposal"] > 0:
@@ -1593,6 +1595,27 @@ func (m *Manager) executeEvaluations(
 	return result, nil
 }
 
+func admissionEvaluationOutcome(evaluation AgentEvaluation, threshold float64, qualified bool) *admissionmodel.EvaluationOutcome {
+	count := min(len(evaluation.Findings), maxReceiptCriteria)
+	outcome := &admissionmodel.EvaluationOutcome{
+		Disposition:            evaluation.Disposition,
+		Confidence:             *evaluation.Confidence,
+		AutoAdmitMinConfidence: threshold,
+		AutoQualified:          qualified,
+		Criteria:               make([]admissionmodel.CriterionOutcome, 0, count),
+		CriteriaTotal:          len(evaluation.Findings),
+		CriteriaTruncated:      count < len(evaluation.Findings),
+	}
+	for index, finding := range evaluation.Findings[:count] {
+		outcome.Criteria = append(outcome.Criteria, admissionmodel.CriterionOutcome{
+			Index:       index,
+			Fingerprint: stableAdmissionFingerprint(strings.ToLower(finding.Dimension), finding.CriterionQuote),
+			Matched:     finding.Matched,
+		})
+	}
+	return outcome
+}
+
 func validateCandidateEvaluation(
 	settings Settings,
 	candidate connector.Issue,
@@ -1600,27 +1623,27 @@ func validateCandidateEvaluation(
 ) (AgentEvaluation, error) {
 	issueID := strings.TrimSpace(evaluation.IssueID)
 	if issueID != strings.TrimSpace(candidate.ID) {
-		return AgentEvaluation{}, fmt.Errorf("%w: evaluation references unknown candidate %q", ErrInvalidOutput, issueID)
+		return AgentEvaluation{}, fmt.Errorf("%w: %w: issue_id must identify the supplied candidate", ErrInvalidOutput, ErrInvalidProposal)
 	}
 	evaluation.IssueID = issueID
 	evaluation.Disposition = strings.TrimSpace(evaluation.Disposition)
 	if evaluation.Disposition != admissionDispositionProposed && evaluation.Disposition != admissionDispositionDeclined {
-		return AgentEvaluation{}, fmt.Errorf("%w: invalid disposition for candidate %q", ErrInvalidOutput, issueID)
+		return AgentEvaluation{}, fmt.Errorf("%w: %w: disposition must be proposed or declined", ErrInvalidOutput, ErrInvalidProposal)
 	}
 	if err := validateAdmissionConfidence(evaluation.Confidence); err != nil {
-		return AgentEvaluation{}, fmt.Errorf("%w: invalid confidence for candidate %q", ErrInvalidOutput, issueID)
+		return AgentEvaluation{}, fmt.Errorf("%w: %w: confidence must be a number between 0 and 1", ErrInvalidOutput, ErrInvalidProposal)
 	}
 	if evaluation.Disposition == admissionDispositionDeclined {
 		findings, matched, err := validateEvaluationFindings(evaluation.Findings, settings.Criteria)
 		if err != nil || matched || strings.TrimSpace(evaluation.RecommendedEffort) != "" || strings.TrimSpace(evaluation.EffortRationale) != "" {
-			return AgentEvaluation{}, fmt.Errorf("%w: invalid decline for candidate %q", ErrInvalidOutput, issueID)
+			return AgentEvaluation{}, fmt.Errorf("%w: %w: decline requires complete unmatched findings and no effort", ErrInvalidOutput, ErrInvalidProposal)
 		}
 		evaluation.Findings = findings
 		return evaluation, nil
 	}
 	findings, err := validateFindings(evaluation.Findings, settings.Criteria)
 	if err != nil {
-		return AgentEvaluation{}, fmt.Errorf("%w: invalid proposal for candidate %q", ErrInvalidOutput, issueID)
+		return AgentEvaluation{}, fmt.Errorf("%w: %w: findings must cover each configured dimension once with a verbatim quote and rationale, including at least one match", ErrInvalidOutput, ErrInvalidProposal)
 	}
 	evaluation.Findings = findings
 	evaluation.RecommendedEffort, evaluation.EffortRationale, err = validateRecommendedEffort(
@@ -1630,7 +1653,7 @@ func validateCandidateEvaluation(
 		settings.Config.RequireEffort,
 	)
 	if err != nil {
-		return AgentEvaluation{}, fmt.Errorf("%w: invalid effort for candidate %q", ErrInvalidOutput, issueID)
+		return AgentEvaluation{}, fmt.Errorf("%w: %w: effort and rationale must satisfy the configured rubric", ErrInvalidOutput, ErrInvalidProposal)
 	}
 	return evaluation, nil
 }
@@ -1664,10 +1687,13 @@ func (m *Manager) commentProposal(
 func (m *Manager) admitProposal(
 	ctx context.Context,
 	settings Settings,
-	issue connector.Issue,
+	_ connector.Issue,
 	proposal admissionmodel.Proposal,
 	decision admissionmodel.Decision,
 ) error {
+	if settings.IntakeEnabled != nil && !settings.IntakeEnabled() {
+		return nil
+	}
 	issues, err := settings.Issues.FetchIssueStatesByIDs(ctx, []string{proposal.IssueID})
 	if err != nil {
 		return fmt.Errorf("revalidate admitted backlog issue %s: %w", proposal.IssueIdentifier, err)
@@ -1695,7 +1721,19 @@ func (m *Manager) admitProposal(
 		}
 		return nil
 	}
-	issue = current
+	issue := current
+	if settings.ContractCheck != nil {
+		ok, err := settings.ContractCheck(ctx, current.ID, proposal.TargetState)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+	}
+	if settings.IntakeEnabled != nil && !settings.IntakeEnabled() {
+		return nil
+	}
 	if settings.Config.RequireEffort {
 		if err := m.writeRecommendedEffort(ctx, settings, issue, proposal, &decision); err != nil {
 			return err
@@ -1930,7 +1968,7 @@ func (m *Manager) nextScheduledAttempt(ctx context.Context) (scheduledAttempt, b
 	settings := cloneSettings(m.settings)
 	baseline := m.baseline
 	m.mu.RUnlock()
-	if !settings.Config.Enabled {
+	if !settings.Config.Enabled || settings.IntakeEnabled != nil && !settings.IntakeEnabled() {
 		return scheduledAttempt{}, false, nil
 	}
 	latest, ok, err := m.store.LatestAdmissionRun(ctx, settings.ProjectID)
@@ -2349,6 +2387,9 @@ func stableAdmissionFingerprint(parts ...string) string {
 }
 
 func classifyMalformedEvaluation(err error) (string, string) {
+	if errors.Is(err, ErrInvalidProposal) {
+		return "schema", "invalid_evaluation"
+	}
 	var syntaxError *json.SyntaxError
 	if errors.As(err, &syntaxError) || errors.Is(err, io.ErrUnexpectedEOF) || strings.Contains(err.Error(), "unexpected EOF") {
 		return "parse", "invalid_json"
@@ -2553,6 +2594,8 @@ func proposalTool(requireEffort bool) runner.AgentTool {
 }
 
 type proposalCollector struct {
+	settings    Settings
+	candidate   connector.Issue
 	mu          sync.Mutex
 	evaluations []AgentEvaluation
 	raw         []byte
@@ -2563,18 +2606,26 @@ func (c *proposalCollector) handle(_ context.Context, call runner.AgentToolCall)
 	if call.Name != ProposalToolName {
 		return runner.AgentToolResult{Content: "unsupported tool", Success: false}, nil
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.raw = appendAdmissionRaw(c.raw, call.Arguments)
 	var evaluation AgentEvaluation
 	if err := decodeStrictJSON(call.Arguments, &evaluation); err != nil {
-		c.mu.Lock()
-		c.raw = appendAdmissionRaw(c.raw, call.Arguments)
-		c.err = errors.Join(c.err, fmt.Errorf("%w: %w", ErrInvalidOutput, err))
-		c.mu.Unlock()
-		return runner.AgentToolResult{Content: "invalid evaluation", Success: false}, nil
+		c.err = fmt.Errorf("%w: %w", ErrInvalidOutput, err)
+		class, code := classifyMalformedEvaluation(c.err)
+		return runner.AgentToolResult{Content: "invalid evaluation JSON: " + class + "/" + code, Success: false}, nil
 	}
-	c.mu.Lock()
-	c.raw = appendAdmissionRaw(c.raw, call.Arguments)
+	var err error
+	evaluation, err = validateCandidateEvaluation(c.settings, c.candidate, evaluation)
+	if err != nil {
+		c.err = err
+		return runner.AgentToolResult{Content: err.Error(), Success: false}, nil
+	}
+	c.err = nil
 	c.evaluations = append(c.evaluations, evaluation)
-	c.mu.Unlock()
+	if len(c.evaluations) != 1 {
+		return runner.AgentToolResult{Content: "exactly one accepted evaluation is required per candidate", Success: false}, nil
+	}
 	return runner.AgentToolResult{Content: "evaluation received", Success: true}, nil
 }
 
@@ -2666,6 +2717,7 @@ func normalizeSettings(settings Settings) Settings {
 }
 
 func cloneSettings(settings Settings) Settings {
+	settings.IssueContract.Sections = append([]string(nil), settings.IssueContract.Sections...)
 	settings.Config.Sources.States = append([]string(nil), settings.Config.Sources.States...)
 	settings.Config.Sources.Labels = append([]string(nil), settings.Config.Sources.Labels...)
 	settings.Config.ExcludeLabels = append([]string(nil), settings.Config.ExcludeLabels...)

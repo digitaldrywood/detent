@@ -101,7 +101,7 @@ export function PropertyPicker(props: PropertyPickerProps): React.ReactElement {
         aria-label={props.label}
         data-testid={props.testId}
         className={cn("max-w-[calc(100vw-2rem)]", props.width ?? "w-[264px]")}
-        viewportClassName="p-0"
+        padding="none"
       >
         <Command
           mode="none"

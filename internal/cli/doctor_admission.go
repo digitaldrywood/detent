@@ -515,8 +515,7 @@ func doctorAdmissionCheck(name string, diagnostic doctorAdmissionDiagnostic, una
 		details = append(details, "awaiting_decision="+doctorAdmissionOpenProposals(diagnostic.OpenProposals))
 	}
 	if len(diagnostic.MalformedBlocked) > 0 {
-		check.Status = doctorWarn
-		details = append(details, "blocked_malformed="+doctorAdmissionMalformedResults(diagnostic.MalformedBlocked))
+		details = append(details, "historical blocked malformed output (no current admission veto)="+doctorAdmissionMalformedResults(diagnostic.MalformedBlocked))
 	}
 	if counts := doctorAdmissionCounts(diagnostic.Origins); counts != "" {
 		details = append(details, "origins="+counts)

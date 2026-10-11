@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 func (s *sqliteStore) RecordWorkflowPhaseEvent(ctx context.Context, attrs WorkflowPhaseEvent) (int64, error) {
@@ -129,11 +130,20 @@ func (s *sqliteStore) WorkflowMetricsReport(ctx context.Context, query WorkflowM
 		return WorkflowMetricsReport{}, errors.New("from must be before to")
 	}
 
-	rows, err := s.queries.WorkflowPhaseDurationRows(ctx, sqlc.WorkflowPhaseDurationRowsParams{
-		ProjectID: nullString(query.ProjectID),
-		FromTime:  from,
-		ToTime:    to,
-	})
+	var rows []sqlc.WorkflowPhaseEvent
+	if from.Valid && to.Valid {
+		rows, err = s.queries.WorkflowPhaseDurationRowsWithinWindow(ctx, sqlc.WorkflowPhaseDurationRowsWithinWindowParams{
+			ProjectID: nullString(query.ProjectID),
+			FromTime:  from,
+			ToTime:    to,
+		})
+	} else {
+		rows, err = s.queries.WorkflowPhaseDurationRows(ctx, sqlc.WorkflowPhaseDurationRowsParams{
+			ProjectID: nullString(query.ProjectID),
+			FromTime:  from,
+			ToTime:    to,
+		})
+	}
 	if err != nil {
 		return WorkflowMetricsReport{}, fmt.Errorf("reading workflow metrics report: %w", err)
 	}
@@ -162,11 +172,20 @@ func (s *sqliteStore) WorkflowMetricsReport(ctx context.Context, query WorkflowM
 	if err != nil {
 		return WorkflowMetricsReport{}, err
 	}
-	activeRows, err := s.queries.WorkflowPhaseFlowRows(ctx, sqlc.WorkflowPhaseFlowRowsParams{
-		ProjectID: nullString(query.ProjectID),
-		FromTime:  flowFromTime,
-		ToTime:    flowToTime,
-	})
+	var activeRows []sqlc.WorkflowPhaseEvent
+	if flowFromTime.Valid {
+		activeRows, err = s.queries.WorkflowPhaseFlowRowsFrom(ctx, sqlc.WorkflowPhaseFlowRowsFromParams{
+			ProjectID: nullString(query.ProjectID),
+			FromTime:  flowFromTime,
+			ToTime:    flowToTime,
+		})
+	} else {
+		activeRows, err = s.queries.WorkflowPhaseFlowRows(ctx, sqlc.WorkflowPhaseFlowRowsParams{
+			ProjectID: nullString(query.ProjectID),
+			FromTime:  flowFromTime,
+			ToTime:    flowToTime,
+		})
+	}
 	if err != nil {
 		return WorkflowMetricsReport{}, fmt.Errorf("reading workflow flow metrics: %w", err)
 	}
@@ -287,6 +306,9 @@ func workflowMetricsReport(rows []workflowMetricRow, flowRows []workflowMetricRo
 	buckets := map[string]*workflowMetricBucket{}
 	for _, row := range rows {
 		event := row.event
+		if event.PhaseType == workflowmetrics.PhaseTypeAgentActivity {
+			continue
+		}
 		if event.DurationSeconds < 0 {
 			continue
 		}

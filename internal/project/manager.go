@@ -17,6 +17,8 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/hub"
 )
 
@@ -130,8 +132,13 @@ type Manager struct {
 func ManagerConfigFromGlobal(cfg globalconfig.Config) ManagerConfig {
 	projects := append([]globalconfig.Project(nil), cfg.Projects...)
 	for index := range projects {
+		projects[index].GlobalLocalIntakeEnabled = cfg.Global.LocalIntakeEnabled
 		projects[index].GlobalAgents = cfg.Global.Agents
+		if projects[index].ModelSelection != nil {
+			projects[index].GlobalAgents.ModelSelection = *projects[index].ModelSelection
+		}
 		projects[index].GlobalBudget = cfg.Global.Budget
+		projects[index].GlobalWorker = cfg.Global.Worker
 		projects[index].GlobalKnowledge = cfg.Global.Knowledge
 		projects[index].GlobalRateWindowPacing = cfg.Global.RateWindowPacing
 		projects[index].GlobalMemory = cfg.Global.Memory
@@ -386,10 +393,12 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 			result.Removed = append(result.Removed, id)
 			continue
 		}
-		if !runtimeCredentialChanged && sameProjectConfig(health.Project, next) {
+		if !runtimeCredentialChanged && sameProjectConfig(health.Project, next) && !health.RetryStopped {
 			result.Unchanged = append(result.Unchanged, id)
 			continue
 		}
+		// A terminally unavailable project has no workflow watcher. Retry it
+		// on explicit reconciliation even when only its workflow file changed.
 		result.Changed = append(result.Changed, id)
 	}
 
@@ -686,6 +695,10 @@ func (m *Manager) Unpause(ctx context.Context, id ID) error {
 	m.operationMu.Lock()
 	defer m.operationMu.Unlock()
 
+	return m.unpauseLocked(ctx, id, false)
+}
+
+func (m *Manager) unpauseLocked(ctx context.Context, id ID, draining bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -694,14 +707,30 @@ func (m *Manager) Unpause(ctx context.Context, id ID) error {
 		return ErrProjectNotFound
 	}
 	if !project.Paused() {
-		return nil
+		orch := project.Orchestrator()
+		if draining || orch == nil || !project.Running() {
+			return nil
+		}
+		state, err := orch.State(ctx)
+		if err != nil {
+			return err
+		}
+		if !state.Draining {
+			return nil
+		}
+		if err := project.requireSettledAttempts(ctx); err != nil {
+			return err
+		}
+		if err := pauseSettledConfiguration(ctx, project, ManagedConfigView{UnsettledAttempts: state.UnsettledWork()}); err != nil {
+			return err
+		}
 	}
 	if m.running {
 		if err := m.waitBeforeSpawn(ctx); err != nil {
 			return err
 		}
 	}
-	if err := project.Unpause(ctx); err != nil {
+	if err := project.unpause(ctx, draining); err != nil {
 		return err
 	}
 	m.spawned = true
@@ -1190,6 +1219,7 @@ func (m *Manager) recordPendingFailure(
 		At:          m.nowUTC(),
 		NextRetryAt: nextRetryAt,
 		Terminal:    terminal,
+		Transient:   transientStartupError(err),
 	}
 	if pendingErr := m.registry.SetPending(cfg, runtimeErr); pendingErr != nil {
 		m.logger.Warn("record pending project startup failed", "project_id", cfg.ID, "error", pendingErr)
@@ -1198,7 +1228,11 @@ func (m *Manager) recordPendingFailure(
 
 func (m *Manager) retryRuntimeError(err error, delay time.Duration) RuntimeError {
 	at := m.nowUTC()
-	return RuntimeError{Message: err.Error(), At: at, NextRetryAt: at.Add(delay)}
+	return RuntimeError{Message: err.Error(), At: at, NextRetryAt: at.Add(delay), Transient: transientStartupError(err)}
+}
+
+func transientStartupError(err error) bool {
+	return errors.Is(err, githubconnector.ErrTransient) || errors.Is(err, forgeavailability.ErrUnavailable)
 }
 
 func (m *Manager) retryDelay(attempt int) time.Duration {
@@ -1385,6 +1419,8 @@ func sameProjectConfig(left globalconfig.Project, right globalconfig.Project) bo
 func sameProjectConfigExceptLiveFields(left globalconfig.Project, right globalconfig.Project) bool {
 	left = normalizeManagerProjectConfig(left)
 	right = normalizeManagerProjectConfig(right)
+	left.LocalIntakeEnabled = right.LocalIntakeEnabled
+	left.GlobalLocalIntakeEnabled = right.GlobalLocalIntakeEnabled
 	left.ActiveHours = right.ActiveHours
 	left.GlobalActiveHours = right.GlobalActiveHours
 	left.ActiveHoursOverrideUntil = right.ActiveHoursOverrideUntil
@@ -1394,6 +1430,8 @@ func sameProjectConfigExceptLiveFields(left globalconfig.Project, right globalco
 	left.GlobalIO = right.GlobalIO
 	left.GlobalCPU = right.GlobalCPU
 	left.GlobalAgents = right.GlobalAgents
+	left.ModelSelection = right.ModelSelection
+	left.Priority = right.Priority
 	left.GlobalBudget = right.GlobalBudget
 	return reflect.DeepEqual(left, right)
 }

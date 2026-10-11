@@ -105,19 +105,20 @@ test("only dashboard lifecycle events gate moves and recovery", async ({ page })
   const args = ["--demo", "kanban", "--demo-project", "demo-project"];
   let runtime = await startDetentRuntime("sheet-sse-recovery", args);
   try {
+    await runtime.waitForProjectsReady();
     await page.goto(runtime.url, { waitUntil: "domcontentloaded" });
     const html = page.locator("html");
     const moves = page.locator('[data-kanban-action="move"]');
     await expect(html).toHaveAttribute("data-detent-connection", "connected");
-    await expect(moves.first()).toBeVisible();
-    const count = await moves.count();
-    expect(count).toBeGreaterThan(0);
-    await moves.first().click();
+    const card = page.getByRole("button", { name: /Kanban demo backlog intake/ });
+    await expect(card).toHaveAttribute("data-kanban-action", "move");
+    await card.click();
     await expect(page.locator("#board-activity-stream[sse-connect]")).toBeAttached();
     await page.getByRole("button", { name: "Close details", exact: true }).click();
     await expect(page.locator("#board-activity-stream")).toHaveCount(0);
     await expect(html).toHaveAttribute("data-detent-connection", "connected");
-    await expect(moves).toHaveCount(count);
+    await expect(card).toHaveAttribute("data-kanban-action", "move");
+    await expect(page.locator('[data-kanban-connection-disabled="true"]')).toHaveCount(0);
     for (const density of ["compact", "cozy"]) await chooseDensity(page, density);
     for (const type of ["sseOpen", "sseError", "sseClose", "sseBeforeMessage"]) {
       await page.evaluate((type) => {
@@ -131,7 +132,8 @@ test("only dashboard lifecycle events gate moves and recovery", async ({ page })
       }, type);
       await expect(html).toHaveAttribute("data-detent-connection", "connected");
       await expect(html).toHaveAttribute("data-detent-sse-status", "open");
-      await expect(moves).toHaveCount(count);
+      await expect(card).toHaveAttribute("data-kanban-action", "move");
+      await expect(page.locator('[data-kanban-connection-disabled="true"]')).toHaveCount(0);
       await expect(page.locator("#detent-connection-notice")).toBeHidden();
     }
     await page.evaluate(() => document.querySelector("[data-detent-dashboard-stream]")
@@ -143,10 +145,12 @@ test("only dashboard lifecycle events gate moves and recovery", async ({ page })
     await runtime.stop();
     await expect(html).toHaveAttribute("data-detent-sse-status", "error");
     await expect(page.locator("#detent-connection-notice")).toBeVisible();
-    await expect(page.locator('[data-kanban-connection-disabled="true"]')).toHaveCount(count);
+    await expect(card).toHaveAttribute("data-kanban-connection-disabled", "true");
     runtime = await startDetentRuntime("sheet-sse-recovered", args, { home, port: Number(port) });
+    await runtime.waitForProjectsReady();
     await expect(html).toHaveAttribute("data-detent-connection", "connected");
-    await expect(moves).toHaveCount(count);
+    await expect(card).toHaveAttribute("data-kanban-action", "move");
+    await expect(page.locator('[data-kanban-connection-disabled="true"]')).toHaveCount(0);
     await expect(page.locator("#detent-connection-notice")).toBeHidden();
   } finally {
     await runtime.stop();

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,14 +24,20 @@ import (
 )
 
 func TestAgentBackendRunTurnSuccess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	backend := newTestBackend(t, Options{
 		CommandFactory: fixtureCommand(t, "success.jsonl", "", 0),
 	})
 
+	usage := make(chan procgroup.Usage, 2)
+	ctx := procgroup.WithUsageHandler(context.Background(), func(entry procgroup.Usage) { usage <- entry })
 	var updates []runner.AgentUpdate
-	result, err := backend.RunTurn(context.Background(), runner.AgentTurnRequest{
+	result, err := backend.RunTurn(ctx, runner.AgentTurnRequest{
 		Workspace: t.TempDir(),
 		Prompt:    "ship it",
 		Model:     "fable",
@@ -42,6 +49,21 @@ func TestAgentBackendRunTurnSuccess(t *testing.T) {
 		t.Fatalf("RunTurn() result = %#v, want session-success IDs", result)
 	}
 
+	if result.ReportedCostMicros == nil || *result.ReportedCostMicros != 1000 || result.CostSource != "backend_result" {
+		t.Fatalf("reported result cost = %+v", result)
+	}
+	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+		if len(usage) != 1 {
+			t.Fatalf("resource captures = %d, want one", len(usage))
+		}
+		entry := <-usage
+		if entry.PeakMemoryBytes <= 0 || entry.WallSeconds <= 0 || entry.UserCPUSeconds+entry.SystemCPUSeconds <= 0 {
+			t.Fatalf("process resource usage = %+v", entry)
+		}
+		t.Logf("reaped Claude fixture resource usage: %+v", entry)
+	} else if len(usage) != 0 {
+		t.Fatalf("unsupported platform reported process usage")
+	}
 	wantTypes := []runner.AgentUpdateType{
 		runner.AgentUpdateProcessStarted,
 		runner.AgentUpdateTurnStarted,
@@ -80,6 +102,10 @@ func TestAgentBackendRunTurnSuccess(t *testing.T) {
 }
 
 func TestAgentBackendEmitsLaterAssistantModelChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	fixture := strings.Join([]string{
@@ -189,6 +215,10 @@ func TestClaudeUsageAgentUsageNormalizesCacheTokens(t *testing.T) {
 }
 
 func TestAgentBackendRunTurnErrorResult(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	backend := newTestBackend(t, Options{
@@ -212,6 +242,9 @@ func TestAgentBackendRunTurnErrorResult(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("RunTurn() error = %q, want %q", err.Error(), want)
 		}
+	}
+	if result.ReportedCostMicros == nil || *result.ReportedCostMicros != 200 || result.CostSource != "backend_result" {
+		t.Fatalf("failed turn lost reported cost: %+v", result)
 	}
 	if result.SessionID != "session-error" {
 		t.Fatalf("RunTurn() result SessionID = %q, want session-error", result.SessionID)
@@ -267,6 +300,10 @@ func TestFinalTurnErrorAfterStreamClose(t *testing.T) {
 }
 
 func TestAgentBackendRunTurnSkipsMalformedLines(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	backend := newTestBackend(t, Options{
@@ -291,6 +328,10 @@ func TestAgentBackendRunTurnSkipsMalformedLines(t *testing.T) {
 }
 
 func TestAgentBackendRunTurnReadsOversizedLine(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	longText := strings.Repeat("x", 70*1024)
@@ -322,6 +363,10 @@ func TestAgentBackendRunTurnReadsOversizedLine(t *testing.T) {
 }
 
 func TestAgentBackendRunTurnMissingSessionID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	backend := newTestBackend(t, Options{
@@ -351,6 +396,10 @@ func TestAgentBackendRunTurnMissingSessionID(t *testing.T) {
 }
 
 func TestAgentBackendRunTurnPartialMessages(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	backend := newTestBackend(t, Options{
@@ -376,6 +425,10 @@ func TestAgentBackendRunTurnPartialMessages(t *testing.T) {
 }
 
 func TestAgentBackendBuildsCommandArgumentsAndWritesPromptToStdin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	observedPath := filepath.Join(t.TempDir(), "observed.json")
@@ -465,6 +518,10 @@ func TestAgentBackendBuildsCommandArgumentsAndWritesPromptToStdin(t *testing.T) 
 }
 
 func TestAgentBackendReadOnlyTurnOverridesWritableConfiguration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	observedPath := filepath.Join(t.TempDir(), "observed.json")
@@ -520,6 +577,10 @@ func TestAgentBackendReadOnlyTurnOverridesWritableConfiguration(t *testing.T) {
 }
 
 func TestAgentBackendAddsResumeSessionArgument(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	observedPath := filepath.Join(t.TempDir(), "observed.json")
@@ -569,6 +630,10 @@ func TestAgentBackendAddsResumeSessionArgument(t *testing.T) {
 }
 
 func TestAgentBackendRequestTurnTimeoutOverridesOptions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	observedPath := filepath.Join(t.TempDir(), "observed.json")

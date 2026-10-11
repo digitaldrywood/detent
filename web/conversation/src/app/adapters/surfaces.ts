@@ -8,6 +8,7 @@ import {
   type AgentPanelModel,
   type AttemptActivity,
 } from "./subagentRuntime.ts";
+import { subscribeProjectEvents } from "../work/lib/projectEvents.ts";
 import { useWorkHttp } from "../work/lib/useWork.ts";
 import type { WorkHttp } from "../work/lib/workHttp.ts";
 
@@ -253,9 +254,6 @@ export function useIssueSurfaces(
   React.useEffect(() => {
     if (projectId === null || workItemId === null) return;
     if (typeof globalThis.EventSource !== "function") return;
-    const source = new globalThis.EventSource(http.eventsUrl(projectId), {
-      withCredentials: true,
-    });
     let previous: number | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const onActivity = (event: MessageEvent<string>) => {
@@ -267,11 +265,10 @@ export function useIssueSurfaces(
       clearTimeout(timer);
       timer = setTimeout(() => setNonce((value) => value + 1), REFRESH_COALESCE_MS);
     };
-    source.addEventListener("activity", onActivity as EventListener);
+    const unsubscribe = subscribeProjectEvents(http, projectId, { activity: onActivity as EventListener });
     return () => {
       clearTimeout(timer);
-      source.removeEventListener("activity", onActivity as EventListener);
-      source.close();
+      unsubscribe();
     };
   }, [http, projectId, workItemId]);
 

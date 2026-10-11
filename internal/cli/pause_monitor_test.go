@@ -344,7 +344,6 @@ func TestPauseExitEvaluationFailureKeepsDispatchPaused(t *testing.T) {
 				},
 			}}, []scheduler.ProjectCandidate{{
 				ID:     "video",
-				Weight: 1,
 				Paused: true,
 			}})
 			if err != nil {
@@ -373,7 +372,7 @@ func TestPauseExitEvaluationFailureKeepsDispatchPaused(t *testing.T) {
 				logger:         slog.New(slog.NewTextHandler(&logs, nil)),
 			})
 
-			staleCandidate := scheduler.ProjectCandidate{ID: "video", Weight: 1}
+			staleCandidate := scheduler.ProjectCandidate{ID: "video"}
 			_, acquired, decision, err := gate.TryAcquireWithDecision(
 				t.Context(),
 				staleCandidate,

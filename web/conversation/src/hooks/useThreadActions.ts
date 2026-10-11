@@ -1,10 +1,15 @@
 import React from "react";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
+import * as Effect from "effect/Effect";
 
 import type { AtomCommandResult } from "../runtime/state/runtime.ts";
 import type { ScopedThreadRef } from "../environment/scoped.ts";
 import { useSettledOverrideStore } from "../app/adapters/settledOverrides.ts";
+import { useSidebarData, readSidebarData } from "../app/adapters/sidebarData.tsx";
+import { ClientContext } from "../app/client.ts";
+import { HUB_ENVIRONMENT_ID } from "../contracts/index.ts";
+import { settlePromise } from "../runtime/state/runtime.ts";
 
 type Result = AtomCommandResult<unknown, Error>;
 
@@ -42,6 +47,29 @@ export function useThreadActions(): {
 } {
   const settle = useSettledOverrideStore((store) => store.settle);
   const unsettle = useSettledOverrideStore((store) => store.unsettle);
+  const client = React.useContext(ClientContext);
+  const sidebar = useSidebarData();
+  const removeThread = React.useCallback(
+    async (ref: ScopedThreadRef, action: "archive" | "delete", onArchived?: () => void): Promise<Result> =>
+      settlePromise(async () => {
+        const data = readSidebarData() ?? sidebar;
+        const conversation = [...(data?.conversations ?? []), ...(data?.serverResults ?? [])]
+          .find((candidate) => candidate.id === ref.threadId);
+        if (client === null || ref.environmentId !== HUB_ENVIRONMENT_ID || conversation === undefined) {
+          throw new Error("That conversation is not available.");
+        }
+        const input = { projectId: conversation.project_id, conversationId: conversation.id };
+        const result = await Effect.runPromise(action === "archive"
+          ? client.effects.archiveConversation(input) : client.effects.deleteConversation(input));
+        if (result._tag === "Failure") throw result.failure;
+        onArchived?.();
+        const current = readSidebarData() ?? sidebar;
+        if (current?.activeConversationId === conversation.id) {
+          current.navigation?.onNavigate(`/chat/p/${conversation.project_id}`);
+        }
+      }),
+    [client, sidebar],
+  );
 
   const settleThread = React.useCallback(
     async (ref: ScopedThreadRef): Promise<Result> => {
@@ -70,9 +98,9 @@ export function useThreadActions(): {
       confirmAndUnpinThread: async () => unsupported("pinning a conversation"),
       reorderPinnedThread: async () => unsupported("reordering conversations"),
       reorderActiveThread: async () => unsupported("reordering conversations"),
-      archiveThread: async () => unsupported("archiving a conversation"),
-      deleteThread: async () => unsupported("deleting a conversation"),
+      archiveThread: (ref, options) => removeThread(ref, "archive", options?.onArchived),
+      deleteThread: (ref) => removeThread(ref, "delete"),
     }),
-    [settleThread, unsettleThread],
+    [settleThread, unsettleThread, removeThread],
   );
 }

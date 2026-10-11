@@ -112,6 +112,33 @@ func TestChatUsagePriceVersionsAndPeriods(t *testing.T) {
 			}
 		})
 	}
+
+	period := usageWindow{From: start, To: next}
+	infrastructure := costTestObservation("cpu", start, next)
+	if _, err := recordTestCost(t, f.service.database.db, string(f.organization), string(f.project.ID), infrastructure, next); err != nil {
+		t.Fatal(err)
+	}
+	paid, quantity := int64(70_000), 100.0
+	runnerCost := costObservation{Provider: "codex", ProviderAccount: "runner", ResourceID: "attempt", AttemptID: "attempt", WorkItemID: "issue", Model: "gpt-6-sol", BillingMode: "metered", UsageKind: "cumulative", Bucket: runnerCostBucket, Metric: "gpt-6-sol", SourceID: "runner-source", Revision: 1, From: start, To: next, Quantity: &quantity, Unit: "token", QuantityBasis: "provider_reported", AmountMicros: &paid, ReportedAmountMicros: &paid, Currency: "USD", Basis: "runner_reported", EvidenceSource: "runner_report", ObservedAt: next, FreshUntil: next, Coverage: "complete"}
+	if _, err := recordTestCost(t, f.service.database.db, string(f.organization), string(f.project.ID), runnerCost, next); err != nil {
+		t.Fatal(err)
+	}
+	report, err := f.service.database.monthlyCosts(t.Context(), string(f.organization), "organization", nil, period, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	amounts := map[string]int64{}
+	for _, total := range report.Totals {
+		if total.KnownMicros != nil {
+			amounts[total.Bucket] = *total.KnownMicros
+		}
+	}
+	if amounts[lunaCostBucket] != 456_000 || amounts[runnerCostBucket] != 70_000 || amounts[spriteCostBucket] != 20_000 {
+		t.Fatalf("distinct charges combined incorrectly: %+v", report.Totals)
+	}
+	if len(report.ByProject) != 1 || len(report.ByProject[0].Totals) != 3 {
+		t.Fatalf("project breakdown: %+v", report.ByProject)
+	}
 }
 
 func TestChatBillingWindow(t *testing.T) {
@@ -147,6 +174,15 @@ func TestChatUsageUnknownPriceAndInvalidAttribution(t *testing.T) {
 	got, err := f.service.database.chatUsageSummary(t.Context(), f.organization, usageWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour)}, nil)
 	if err != nil || got.UnpricedTurns != 1 || got.Tokens != 15 || got.CostUSD != 0 {
 		t.Fatalf("summary = %+v, %v", got, err)
+	}
+
+	month, _ := costMonth(now.Format("2006-01"), now)
+	report, err := f.service.database.monthlyCosts(t.Context(), string(f.organization), "organization", nil, month, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Totals) != 1 || report.Totals[0].Bucket != lunaCostBucket || report.Totals[0].KnownMicros != nil || report.Totals[0].Unknown != 1 {
+		t.Fatalf("unpriced Luna usage became free: %+v", report)
 	}
 	for _, test := range []struct {
 		name   string
@@ -211,6 +247,10 @@ func (f chatUsageTransport) RoundTrip(request *http.Request) (*http.Response, er
 }
 
 func TestGenkitCoordinatorPersistsPricedUsage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Done."}]}],"usage":{"input_tokens":1000000,"output_tokens":100000,"total_tokens":1100000,"input_tokens_details":{"cached_tokens":400000},"output_tokens_details":{"reasoning_tokens":30000}}}}

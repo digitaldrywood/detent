@@ -666,6 +666,15 @@ func TestMergeReservationRecoversCurrentWaitingHead(t *testing.T) {
 			if restored && restarted.mergeReservations[reservation.IssueID].ExpiresAt != reservation.ExpiresAt {
 				t.Fatal("restart renewed reservation")
 			}
+			if restored {
+				timing := restarted.MergeTimings[issue.ID]
+				if !timing.CIWaitStartedAt.Equal(reservation.StartedAt) || !timing.CIWaitActiveAt.Equal(attempt.CompletedAt) {
+					t.Fatalf("restored CI wait = %+v, want timeout at %s and observed at %s", timing, reservation.StartedAt, attempt.CompletedAt)
+				}
+				if got := timing.finishObservedCIWait(now).CIWaitSeconds; got != 9*60 {
+					t.Fatalf("observed CI wait = %d seconds, want 540", got)
+				}
+			}
 		})
 	}
 }
@@ -809,8 +818,10 @@ func TestMergeTrainDrainsWhileOtherHeadsWait(t *testing.T) {
 			now := time.Date(2026, 9, 5, 15, 12, 53, 0, time.UTC)
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 3, MaxConcurrentAgentsByState: map[string]int{"Merging": 1}, ActiveStates: []string{"Merging", "Todo"}, TerminalStates: []string{"Done"}, MergeFastPathEnabled: true, PrioritizeUnblockers: true, ContinuationRetryDelay: time.Second, FailureRetryBaseDelay: time.Second})
 			selected := nativeMergeQueueTestIssue(2221, "success")
+			selected.Priority = new(1)
 			selected.StageUpdatedAt = timePointer(now.Add(-3 * time.Minute))
 			other := nativeMergeQueueTestIssue(2220, "success")
+			other.Priority = new(2)
 			other.StageUpdatedAt = timePointer(now.Add(-15 * time.Minute))
 			for _, issue := range []*connector.Issue{&selected, &other} {
 				issue.PullRequest.BaseSHA = "old-base"

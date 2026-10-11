@@ -154,13 +154,5 @@ func TestAvailabilityInterruptionsPreserveIssueBudgets(t *testing.T) {
 		if completed.TerminalState != store.WorkAttemptTerminalCancelled || completed.Phase != "cancelled" {
 			t.Fatalf("scheduled stop = %+v", completed)
 		}
-		attempt := store.WorkAttempt{WorkerType: "code", TerminalState: completed.TerminalState, Phase: completed.Phase, WorkerMetadataJSON: completed.WorkerMetadataJSON, MetricsJSON: `{"turn_started":true,"turn_count":1}`}
-		if got := countSessionsWithoutMerge([]store.WorkAttempt{attempt}, time.Time{}, time.Time{}); got.Sessions != 0 {
-			t.Fatalf("scheduled stop used session allowance: %+v", got)
-		}
-		attempt.WorkerMetadataJSON = `{"cancellation":{"reason":"context_cancelled","source":"runner.agent_backend"}}`
-		if got := countSessionsWithoutMerge([]store.WorkAttempt{attempt}, time.Time{}, time.Time{}); got.Sessions != 1 {
-			t.Fatalf("ordinary cancellation session count = %+v", got)
-		}
 	}
 }

@@ -13,6 +13,8 @@ func runtimeIdentitySystemName(kind string) string {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "codex":
 		return "Codex"
+	case "pi_agent":
+		return "Pi"
 	case "claude_code":
 		return "Claude Code"
 	default:

@@ -10,6 +10,10 @@ import (
 )
 
 func TestMergeRequiredCheckStreakLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -133,6 +137,10 @@ type mergeRequiredCheckTestStep struct {
 }
 
 func TestMergeRequiredCheckStreakValidation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	backend, err := Open(context.Background(), Config{Path: filepath.Join(t.TempDir(), "detent.db")})
@@ -168,6 +176,10 @@ func TestMergeRequiredCheckStreakValidation(t *testing.T) {
 }
 
 func TestMergeRequiredCheckLegacyStreakDoesNotCarryToCurrentHead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	backend, err := Open(t.Context(), Config{Path: filepath.Join(t.TempDir(), "detent.db")})
@@ -212,6 +224,10 @@ INSERT INTO merge_required_check_streaks (
 }
 
 func TestMergeRequiredCheckStreakPersistsAcrossStoreRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "detent.db")

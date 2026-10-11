@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -59,6 +60,7 @@ func conversationFixtureLinkedRecord() conversationRecord {
 		ProjectID:        tracker.ProjectID("proj_parable"),
 		OwnerPrincipalID: "tok_7b21",
 		OwnerSubject:     "usr_michael",
+		Origin:           conversationOriginUser,
 		Title:            "Flaky checkout lock renewal",
 		Visibility:       conversation.VisibilityShared,
 		Status:           conversation.StatusActive,
@@ -91,6 +93,7 @@ func conversationFixturePrivateRecord() conversationRecord {
 		ProjectID:        tracker.ProjectID("proj_port_app"),
 		OwnerPrincipalID: "tok_7b21",
 		OwnerSubject:     "usr_michael",
+		Origin:           conversationOriginUser,
 		Title:            conversationDefaultTitle,
 		Visibility:       conversation.VisibilityPrivate,
 		Status:           conversation.StatusActive,
@@ -277,6 +280,21 @@ func conversationFixtureCases(t *testing.T) map[string]conversationFixtureCase {
 		}
 	}
 	return map[string]conversationFixtureCase{
+		"native-actors.json": {decode: func(t *testing.T, raw []byte) {
+			var want []tracker.Actor
+			if err := json.Unmarshal(raw, &want); err != nil {
+				t.Fatal(err)
+			}
+			got := []tracker.Actor{
+				(nativeScope{credential: apiCredential{ID: "actor-contract", Scope: apiScopeOperator}}).actor(),
+				(nativeScope{credential: apiCredential{ID: "actor-contract", Scope: apiScopeWorker}}).actor(),
+				*nativeIntegrationActor("github"),
+				healthIssueScope("", "").actor(),
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("server actors = %+v, client fixture = %+v", got, want)
+			}
+		}},
 		"command-answer.json":       {decode: command},
 		"command-cancel.json":       {decode: command},
 		"command-continue.json":     {decode: command},
@@ -288,6 +306,7 @@ func conversationFixtureCases(t *testing.T) map[string]conversationFixtureCase {
 			Conversations: []conversationResource{projectConversation(linked)}, NextCursor: &nextCursor,
 		}, extra: conversationSection14Fields("conversations[]")},
 		"conversation-snapshot.json": {value: conversationSnapshot{
+			Skills:       []skills.ProviderSkill{{Name: "review", Description: "Review this project", Path: "/workspace/.agents/skills/review/SKILL.md", Scope: "project", Enabled: true, UserInvocable: true, Invocation: "$review"}},
 			Conversation: projectConversation(linked), Messages: messages,
 			Questions: []conversation.Question{conversationFixtureQuestion()}, Cursor: 40, HasMore: true,
 		}, extra: append(conversationSection14Fields("conversation"), conversationSection14Fields("messages[]")...)},

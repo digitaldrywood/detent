@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -91,11 +90,11 @@ func TestMergeWorkerStartupDeadlineExpiresWithoutPollTick(t *testing.T) {
 	if _, ok := state.Running[issue.ID]; ok {
 		t.Fatalf("Running[%q] present after startup timeout", issue.ID)
 	}
-	if len(state.Retry) != 0 || len(state.Blocked) != 0 {
-		t.Fatal("startup timer failure was attributed to issue")
+	if _, retried := state.Retry[issue.ID]; !retried || len(state.Blocked) != 0 {
+		t.Fatalf("startup timer failure did not retry the issue: retry=%v blocked=%v", state.Retry, state.Blocked)
 	}
-	if !state.FailureBreaker.PreTurn || len(state.FailureBreaker.Failures[backendcapacity.StartupTimeoutErrorClass]) != 1 {
-		t.Fatalf("FailureBreaker = %#v, want instance startup timeout", state.FailureBreaker)
+	if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
+		t.Fatalf("FailureBreaker = %#v, want instance startup timeout kept out of the project breaker", state.FailureBreaker)
 	}
 	issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
 	if err != nil || len(issues) != 1 || issues[0].State != "Merging" {

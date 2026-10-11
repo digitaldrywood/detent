@@ -2,7 +2,7 @@
 import { RegistryProvider } from "@effect/atom-react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { startMockHub, type AccountMode, type MockHub } from "../../dev/mock-hub.ts";
 import { ClientContext } from "../../src/app/client.ts";
@@ -11,7 +11,7 @@ import { PROJECT_CREATION_UNAVAILABLE } from "../../src/app/projects/NewProject.
 import { HUB_ENVIRONMENT_ID } from "../../src/contracts/index.ts";
 import { DETENT_SERVER_CONFIG } from "../../src/state/server.ts";
 import { makeRouter } from "../../src/app/router.tsx";
-import { loadBootstrap, makeClient, type ConversationClient } from "../../src/runtime/bootstrap.ts";
+import { lastAccountBootstrap, loadBootstrap, makeClient, type ConversationClient } from "../../src/runtime/bootstrap.ts";
 import { fetchEventStreamTransport } from "../../src/runtime/rpc/sse.ts";
 
 Object.defineProperty(globalThis, "scrollTo", { value: () => {}, writable: true });
@@ -23,6 +23,7 @@ afterEach(async () => {
   cleanup();
   client?.handles.clear();
   client = undefined;
+  vi.unstubAllGlobals();
   await hub?.close();
   hub = undefined;
 });
@@ -48,7 +49,7 @@ async function seedConversation(hubUrl: string, key: string, text: string): Prom
   if (!response.ok) throw new Error(`seed failed: ${response.status}`);
 }
 
-async function mountShell(path = "/chat", options: { readonly account?: AccountMode } = {}) {
+async function mountShell(path = "/chat", options: { readonly account?: AccountMode; readonly platformRole?: string } = {}) {
   hub = await startMockHub({ deltaDelayMs: 0, heartbeatMs: 5_000, coordinator: "hub" });
   await seedConversation(hub.url, "cmd_palette_lease", "Lease renewal under load");
   await seedConversation(hub.url, "cmd_palette_gate", "Explain the admission gate to me");
@@ -63,6 +64,10 @@ async function mountShell(path = "/chat", options: { readonly account?: AccountM
   client = makeClient({
     origin: hub.url,
     bootstrap,
+    account: lastAccountBootstrap() === null ? null : {
+      ...lastAccountBootstrap()!,
+      actor: { ...lastAccountBootstrap()!.actor, platform_role: options.platformRole },
+    },
     transport: fetchEventStreamTransport(sameRealmFetch),
     heartbeatTimeoutMs: 20_000,
   });
@@ -100,6 +105,21 @@ function paletteInput(): HTMLInputElement {
 }
 
 describe("the command palette", () => {
+  it.each(["admin", "support", "billing", "viewer", "", undefined])("offers the platform command only with a platform role (%s)", async (platformRole) => {
+    await mountShell("/chat", { platformRole });
+    const assign = vi.fn();
+    vi.stubGlobal("location", { assign });
+    const dialog = await openPalette();
+    fireEvent.change(paletteInput(), { target: { value: "Platform console" } });
+    if (platformRole) {
+      const command = await within(dialog).findByRole("option", { name: /Platform console/ });
+      fireEvent.click(command);
+      await waitFor(() => expect(assign).toHaveBeenCalledWith("/platform/tenants"));
+    } else {
+      await waitFor(() => expect(within(dialog).queryByRole("option", { name: /Platform console/ })).toBeNull());
+    }
+  });
+
   it("opens on Mod+K and closes on the same shortcut", async () => {
     await mountShell();
 

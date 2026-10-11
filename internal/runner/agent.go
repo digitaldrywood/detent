@@ -21,13 +21,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
-	"github.com/digitaldrywood/detent/internal/lessons"
-	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -44,7 +44,7 @@ const (
 	liveDiffStatsInterval          = 2 * time.Second
 	recentActivityLimit            = 5
 	defaultProjectID               = "default"
-	orphanResumePrompt             = "The Detent process restarted while this session was running. Continue from your last state and complete the assigned work."
+	orphanResumePrompt             = "The Detent process restarted while this session was running. Continue from your last state and complete the assigned work.\n\n" + repositoryHandoffContract
 	implausibleUsageRuntimeSeconds = int64(1800)
 	implausibleUsageOutputTokens   = int64(1000)
 )
@@ -137,7 +137,6 @@ type Dependencies struct {
 	ReapWorkspaceProcesses workspaceProcessReapFunc
 	sessionLimit           durationLimitContextFactory
 	turnLimit              durationLimitContextFactory
-	progressTicker         sessionProgressTickerFactory
 	lookupEnv              func(string) string
 }
 
@@ -174,8 +173,8 @@ type Runner struct {
 	waitWorkerArtifactCleanup func(context.Context, time.Duration) error
 	sessionLimit              durationLimitContextFactory
 	turnLimit                 durationLimitContextFactory
-	progressTicker            sessionProgressTickerFactory
 	admissionLeaks            admissionWorkspaceLeakTracker
+	startCompute              func(compute.Rates) func() *compute.Usage
 	lookupEnv                 func(string) string
 	goBudget                  gobudget.Budget
 }
@@ -216,9 +215,6 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	}
 	if deps.turnLimit == nil {
 		deps.turnLimit = withAgentDurationLimit
-	}
-	if deps.progressTicker == nil {
-		deps.progressTicker = newSessionProgressTicker
 	}
 	if deps.lookupEnv == nil {
 		deps.lookupEnv = os.Getenv
@@ -278,7 +274,6 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		waitWorkerArtifactCleanup: waitForPathRemovalRetry,
 		sessionLimit:              deps.sessionLimit,
 		turnLimit:                 deps.turnLimit,
-		progressTicker:            deps.progressTicker,
 		lookupEnv:                 deps.lookupEnv,
 		goBudget:                  deps.GoBudget,
 	}, nil
@@ -550,6 +545,8 @@ func configuredRuntimeIdentity(selection RouteSelection, backend config.AgentBac
 			provider = options.ModelProvider
 		}
 		serviceTier = options.ServiceTier
+	case config.AgentBackendPiAgent:
+		effort = backend.PiAgentOptions().ThinkingLevel
 	case config.AgentBackendClaudeCode:
 		effort = backend.ClaudeCodeOptions().Effort
 	}
@@ -571,6 +568,8 @@ func agentTurnIdentityOptions(backend config.AgentBackend) (modelProvider string
 	case config.AgentBackendCodex:
 		options := backend.CodexOptions()
 		return options.ModelProvider, options.ServiceTier, ""
+	case config.AgentBackendPiAgent:
+		return backend.Provider, "", backend.PiAgentOptions().ThinkingLevel
 	case config.AgentBackendClaudeCode:
 		return "", "", backend.ClaudeCodeOptions().Effort
 	default:
@@ -655,7 +654,7 @@ func runRole(mode string, issue connector.Issue) string {
 	}
 }
 
-func extraWritableRootsForWorkspace(ctx context.Context, workspaceKind string, workspacePath string, logger *slog.Logger) []string {
+func extraWritableRootsForWorkspace(ctx context.Context, workspaceKind string, workspacePath string, hostCommits bool, logger *slog.Logger) []string {
 	if workspaceKind == config.WorkspaceFilesystem {
 		return nil
 	}
@@ -666,7 +665,17 @@ func extraWritableRootsForWorkspace(ctx context.Context, workspaceKind string, w
 		}
 		return nil
 	}
-	return roots
+	if !hostCommits {
+		return roots
+	}
+	directories := roots[:0]
+	for _, root := range roots {
+		info, err := os.Stat(root)
+		if err == nil && info.IsDir() {
+			directories = append(directories, root)
+		}
+	}
+	return directories
 }
 
 func (r *Runner) prepareMergeFastPath(
@@ -682,12 +691,18 @@ func (r *Runner) prepareMergeFastPath(
 	}
 	// With a local status to post, the clean path runs the gate on the head
 	// it pushes, so the status names a head Detent validated itself.
-	opts := workspace.MergePrepareOptions{ValidationCommand: gateConfig.Run, ValidateHead: gateConfig.LocalStatus != ""}
+	opts := workspace.MergePrepareOptions{IssueDescription: req.Issue.Description, LandingMode: gateConfig.LandingMode, ValidationCommand: gateConfig.Run, ValidateHead: gateConfig.LocalStatus != ""}
 	if req.Issue.PullRequest != nil {
 		opts.TargetBranch = strings.TrimSpace(req.Issue.PullRequest.BaseRef)
 		opts.ExpectedRemoteHead = strings.TrimSpace(req.Issue.PullRequest.HeadSHA)
 	}
+	started := r.now()
 	precheck, err := preparer.PrepareMerge(ctx, info, issue, opts)
+	outcome := "clean"
+	if err != nil || precheck.Status != workspace.MergePrepareStatusClean {
+		outcome = "conflict"
+	}
+	r.recordPipeline(req, gate.Interval("rebase", started, r.now(), outcome))
 	if err != nil {
 		return RunResult{}, precheck, false, fmt.Errorf("merge fast-path precheck: %w", err)
 	}
@@ -722,12 +737,13 @@ func (r *Runner) prepareMergeFastPath(
 
 func mergePrecheckFromWorkspace(precheck workspace.MergePrepareResult) MergePrecheck {
 	return MergePrecheck{
-		ConflictPaths: append([]string(nil), precheck.ConflictPaths...),
-		Status:        string(precheck.Status),
-		Message:       precheck.Message,
-		DiffStats:     diffStatsFromWorkspace(precheck.DiffStat),
-		HeadChanged:   precheck.HeadChanged,
-		HeadSHA:       precheck.HeadSHA,
+		ConflictPaths:        append([]string(nil), precheck.ConflictPaths...),
+		TargetCommitSubjects: append([]string(nil), precheck.TargetCommitSubjects...),
+		Status:               string(precheck.Status),
+		Message:              precheck.Message,
+		DiffStats:            diffStatsFromWorkspace(precheck.DiffStat),
+		HeadChanged:          precheck.HeadChanged,
+		HeadSHA:              precheck.HeadSHA,
 	}
 }
 
@@ -777,6 +793,12 @@ func (r *Runner) verifyMergeFallback(
 		result.MergeFallbackFindings += "\nDeterministic validation failed: " + err.Error()
 		return result, nil
 	}
+	if len(precheck.Findings) > 0 {
+		result.MergeFallbackFindings += "\n" + strings.Join(precheck.Findings[:min(len(precheck.Findings), 50)], "\n")
+		if len(precheck.Findings) > 50 {
+			result.MergeFallbackFindings += fmt.Sprintf("\n%d more findings", len(precheck.Findings)-50)
+		}
+	}
 	converted := mergePrecheckFromWorkspace(precheck)
 	result.MergePrecheck = &converted
 	if precheck.Status != workspace.MergePrepareStatusClean || strings.TrimSpace(precheck.HeadSHA) == "" {
@@ -811,6 +833,7 @@ func cloneMergePrecheck(precheck *MergePrecheck) *MergePrecheck {
 	}
 	cloned := *precheck
 	cloned.ConflictPaths = append([]string(nil), precheck.ConflictPaths...)
+	cloned.TargetCommitSubjects = append([]string(nil), precheck.TargetCommitSubjects...)
 	return &cloned
 }
 
@@ -1117,8 +1140,7 @@ func withAgentDurationLimit(ctx context.Context, duration time.Duration, limit e
 func durationLimitError(err error) bool {
 	return errors.Is(err, ErrTurnDurationExceeded) ||
 		errors.Is(err, ErrSessionDurationExceeded) ||
-		errors.Is(err, ErrSessionTurnLimitExceeded) ||
-		errors.Is(err, ErrSessionNoProgress)
+		errors.Is(err, ErrSessionTurnLimitExceeded)
 }
 
 func (r *Runner) runAgentTurn(
@@ -1144,7 +1166,9 @@ func (r *Runner) runAgentTurn(
 			return agentTurnExecution{err: err}
 		}
 	}
+	workflow, _, _, _ := r.runtimeSnapshot()
 	result := RunResult{
+		BillingMode:      strings.ToLower(strings.TrimSpace(workflow.Config.Budget.BillingMode)),
 		FinalState:       FinalStateCompleted,
 		RuntimeIdentity:  initialIdentity.Normalize(),
 		budgetProjection: budgetProjection,
@@ -1157,7 +1181,6 @@ func (r *Runner) runAgentTurn(
 		runRequest.deliverableRecoveryBranch,
 		runRequest.sessionTurnOffset,
 	)
-	usage := newSessionTokenUsage(!agentResumeEmpty(turnRequest.Resume))
 	if !result.RuntimeIdentity.IsZero() {
 		eventAt := r.now()
 		progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: result.RuntimeIdentity}, eventAt)
@@ -1169,8 +1192,13 @@ func (r *Runner) runAgentTurn(
 	workerProcessObserved := false
 	conversation := conversationRunFromContext(ctx)
 	turnRequest = conversation.prepareTurn(turnRequest)
+	providerResume := turnRequest.Resume
+	usage := newSessionTokenUsage(!agentResumeEmpty(providerResume))
+	activityProfile := runRequest.activityProfile
+	stopCompute := r.meterCompute(runRequest.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
+		activityProfile.observe(update, eventAt, progress.diffStats.HeadSHA, progress.diffStatsHeadObservedAt)
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)
 		}
@@ -1184,6 +1212,9 @@ func (r *Runner) runAgentTurn(
 			workerProcessObserved = true
 		}
 		r.logAgentUpdate(runRequest, detentSessionID, update)
+		if update.Type == AgentUpdateTurnCompleted && !update.AuxiliaryTurn {
+			runRequest.checkpointRefs.requestPush()
+		}
 		if artifacts, ok := runRequest.Execution.(ArtifactExecution); ok && update.Delta != "" {
 			if err := artifacts.ArtifactLog(updateCtx, update.Delta); err != nil {
 				r.logger.Warn("artifact log upload deferred", "issue_id", runRequest.Issue.ID)
@@ -1193,6 +1224,14 @@ func (r *Runner) runAgentTurn(
 			return err
 		}
 		r.persistSessionProviderIdentity(updateCtx, detentSessionID, update)
+		if !update.AuxiliaryTurn {
+			if strings.TrimSpace(update.ThreadID) != "" {
+				providerResume.ThreadID = strings.TrimSpace(update.ThreadID)
+			}
+			if strings.TrimSpace(update.ProviderSessionID) != "" {
+				providerResume.SessionID = strings.TrimSpace(update.ProviderSessionID)
+			}
+		}
 		if err := publishAgentActivity(runRequest, detentSessionID, update, eventAt); err != nil {
 			return err
 		}
@@ -1217,7 +1256,7 @@ func (r *Runner) runAgentTurn(
 		}
 		ceilingUpdate := update
 		ceilingUpdate.Tokens.TotalTokens += runRequest.sessionTokenOffset
-		if err := r.enforceSessionTokenCeiling(agentConfig, runRequest.Issue, info.Path, ceilingUpdate, eventAt); err != nil {
+		if err := r.enforceSessionTokenCeiling(agentConfig, runRequest.Issue, ceilingUpdate); err != nil {
 			return err
 		}
 		observedModel := effectiveModel(result.RuntimeIdentity.ResolvedModel.Value, result.Model, sessionModel)
@@ -1229,6 +1268,13 @@ func (r *Runner) runAgentTurn(
 		}
 		return nil
 	}), r.turnLimit)
+	if strings.TrimSpace(turnResult.ThreadID) == "" {
+		turnResult.ThreadID = providerResume.ThreadID
+	}
+	if strings.TrimSpace(turnResult.SessionID) == "" {
+		turnResult.SessionID = providerResume.SessionID
+	}
+	result.Compute = stopCompute()
 	conversation.finishTurn(ctx, turnResult, turnErr)
 	workerReapErr := r.reapSessionWorkerProcessWithWorkspace(
 		ctx,
@@ -1283,6 +1329,9 @@ func (r *Runner) runAgentTurn(
 		result.FinalState = finalStateForTurnError(turnErr)
 	}
 	result.TurnStarted = turnStarted
+	failure := nativeTerminalFailure(turnErr, time.Time{}, false)
+	result.TurnStartRefused = !turnStarted && turnResult.TurnID == "" && failure != nil && failure.Provider == "codex" && failure.Operation == "turn/start" && failure.RPCCode != nil
+	result.ReportedCostMicros, result.CostSource = turnResult.ReportedCostMicros, turnResult.CostSource
 	reportTurnUsage(ctx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, r.logger)
 	return agentTurnExecution{
 		turnResult:  turnResult,
@@ -1311,7 +1360,7 @@ func (r *Runner) agentResumeState(
 	if !ok {
 		return store.AgentResumeState{}
 	}
-	state, err := resumeStore.LatestCompletedAgentResumeState(ctx, lookup)
+	state, err := resumeStore.LatestAgentResumeState(ctx, lookup)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
 			r.logger.Warn(
@@ -1454,15 +1503,54 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, err
 		}
 	}
+	mode := normalizeRunMode(req.Mode)
+	landing, nativeLanding := req.Execution.(LandingExecution)
+	nativeLanding = nativeLanding && mode == RunModeMerge
+	if nativeLanding {
+		identity := NativeLandingIdentity(r.now())
+		defer func() { returnValue.RuntimeIdentity = identity }()
+		req.ResumeState = store.AgentResumeState{}
+		req.RetryMode = RetryModeFresh
+	}
+	freshCheckout := req.Execution != nil && !nativeLanding && nativeCheckpointPolicyChanged(req.Execution.Recovery())
+	if freshCheckout {
+		recovery := req.Execution.Recovery()
+		action, reason := nativeRecoveryAction(recovery, nil, false, store.AgentResumeState{}, tracker.NativeExecutionIdentity{}, false, nil)
+		if action == "manual_recovery" {
+			return RunResult{}, fmt.Errorf("%w: %s", ErrNativeRecoveryRequired, reason)
+		}
+		req.ResumeState = store.AgentResumeState{}
+		req.RetryMode = RetryModeFresh
+	}
+	publicationRecovery := false
+	if req.Execution != nil && mode == RunModeImplement && runRole(mode, req.Issue) == RoleRework {
+		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil {
+			publicationRecovery = previous.Checkpoint.UncertainForgeEffect()
+		}
+	}
+	if req.Execution != nil && !nativeLanding && !publicationRecovery && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
+		if !freshCheckout && !req.operatorFreshRetry() {
+			resume, err := r.nativeInterruptedResumeState(ctx, req, agentRuntime)
+			if err != nil {
+				return RunResult{}, err
+			}
+			req.ResumeState = resume
+			if !agentResumeStateEmpty(resume) {
+				req.RetryMode = RetryModeResume
+			} else {
+				req.RetryMode = RetryModeFresh
+			}
+		}
+		req.retainCheckpoint = true
+	}
 	if err := r.checkResumePolicy(ctx, req, req.ResumeState); err != nil {
 		return RunResult{}, err
 	}
 	forgeHost := forgeavailability.HostFromEndpoint(workflow.Config.Tracker.Endpoint)
-	mode := normalizeRunMode(req.Mode)
 	if mode == RunModeTriage {
 		return r.runTriage(ctx, req)
 	}
-	if mode == RunModeMerge && mergeFastPathCheckedHead(req.Issue) && req.MergeRefreshHeadSHA != req.Issue.PullRequest.HeadSHA {
+	if !nativeLanding && mode == RunModeMerge && mergeFastPathCheckedHead(req.Issue) && req.MergeRefreshHeadSHA != req.Issue.PullRequest.HeadSHA {
 		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_checked_head",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 			"workspace_branch", strings.TrimSpace(req.Issue.BranchName),
@@ -1476,7 +1564,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			Output:     RunOutputMergeFastPathCheckedHead,
 		}, nil
 	}
-	workerGitHub, err := r.workerGitHubPolicy(ctx, workflow.Config, req.Issue.Identifier)
+	var workerGitHub workerGitHubPolicy
+	var err error
+	if !nativeLanding {
+		workerGitHub, err = r.workerGitHubPolicy(ctx, workflow.Config, req.Issue.Identifier)
+	}
 	if err != nil {
 		r.logWorkerGitHubPolicyError(req.Issue, err, telemetry.WorkAttemptIDKey, req.WorkAttemptID)
 		return RunResult{}, err
@@ -1488,6 +1580,73 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		runWorkspace = &admissionWorkspace{logger: r.logger, leaks: &r.admissionLeaks}
 	}
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
+	workspaceIssue.FreshCheckout = freshCheckout
+	landingRework := req.Execution != nil && mode == RunModeImplement && nativeLandingRework(req.Execution.Recovery())
+	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework)
+	if source, ok := req.Execution.(ChangeSourceExecution); ok && (workspaceIssue.NativeRework || nativeLanding) {
+		if local, ok := runWorkspace.(interface {
+			Existing(workspace.Issue) (workspace.Info, error)
+		}); ok {
+			if existing, existingErr := local.Existing(workspaceIssue); existingErr == nil {
+				source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+					return workspace.CaptureChangeSource(ctx, existing.Path, base, head)
+				})
+			}
+		}
+
+		recovered, recoverErr := source.RecoverChangeSource(ctx)
+		if recoverErr != nil && !checkpointRefCoversChangeSource(recoverErr, req.Execution.Recovery(), nativeLanding, freshCheckout) {
+			return RunResult{}, fmt.Errorf("recover native Change source: %w", recoverErr)
+		}
+		if recoverErr != nil {
+			r.logWorkerEvent(req.Issue, "worker_change_source_from_checkpoint_ref", "error", recoverErr)
+		}
+		if recovered.Version.ID != "" {
+			workspaceIssue.Source = &recovered
+		}
+	}
+	if req.Execution != nil && !nativeLanding && !freshCheckout && !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), workspaceIssue) {
+		workspaceIssue.Checkpoint = nativeRestorableCheckpoint(req.Execution.Recovery(), workspaceIssue.Source)
+	}
+	var landingTarget NativeLandingTarget
+	if nativeLanding {
+		if runtime, ok := req.Execution.(LandingRuntimeExecution); ok {
+			if err := runtime.StartLanding(ctx, req.WorkAttemptID, req.Generation); err != nil {
+				return RunResult{}, err
+			}
+		}
+		if err := req.Execution.Validate(ctx); err != nil {
+			return RunResult{}, err
+		}
+		landingTarget, err = landing.LandingTarget(ctx)
+		if errors.Is(err, ErrLandingNotReviewed) {
+			return r.refusedLanding(req, landingTarget, workspace.LandRefusalNothing, err.Error()), nil
+		}
+		if err != nil {
+			return RunResult{}, fmt.Errorf("resolve landing target: %w", err)
+		}
+		if landingTarget.External != nil && !landingTarget.GitHubPullRequest {
+			return r.refusedLanding(req, landingTarget, workspace.LandRefusalProtected, "the approved policy does not enable GitHub pull request landing"), nil
+		}
+		workspaceIssue.Landing = &workspace.LandOptions{HeadSHA: landingTarget.HeadSHA, Repository: landingTarget.Repository, External: landingTarget.External}
+		if landingTarget.GitHubPullRequest {
+			started := time.Now()
+			scope := &connector.RESTScope{Name: "native_landing", ProjectID: r.projectID}
+			scope.Set("merging", "prepare")
+			ctx = connector.WithRESTScope(ctx, scope)
+			defer func() { returnValue.GitHubScope = nativeGitHubScope(scope, started) }()
+			client, policy, err := r.nativeLandingGitHubClient(ctx, req, workerGitHub)
+			if err != nil {
+				return RunResult{}, err
+			}
+			workspaceIssue.Landing.GitHubClient = client
+			defer func() {
+				usage := client.FlushRESTRateLimitUsage()
+				returnValue.GitHubRESTUsage = &usage
+				returnValue.GitHubRESTConsumer = policy.budgetConsumer()
+			}()
+		}
+	}
 	if usage, ok := runWorkspace.(workspace.Usage); ok {
 		release, err := usage.Use(ctx, workspaceIssue)
 		if err != nil {
@@ -1499,8 +1658,27 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if err := r.publishWorkspaceCreateStarted(req); err != nil {
 		return RunResult{}, err
 	}
+	if freshCheckout {
+		if err := req.Execution.Validate(ctx); err != nil {
+			return RunResult{}, err
+		}
+	}
 	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
+		if workspaceIssue.NativeRework && errors.Is(err, workspace.ErrMergeResolutionInvalid) {
+			return RunResult{}, fmt.Errorf("%w: %w", ErrNativeRecoveryRequired, err)
+		}
+		var sourceRefusal *workspace.LandRefusal
+		if workspaceIssue.NativeRework && workspaceIssue.Source != nil && errors.As(err, &sourceRefusal) {
+			return RunResult{}, fmt.Errorf("%w: recover reviewed source: %w", ErrNativeRecoveryRequired, err)
+		}
+		if nativeLanding && (IsCapacityError(err) || errors.Is(err, github.ErrRateLimited)) {
+			return RunResult{NativeLanding: &NativeLanding{ChangeID: landingTarget.ChangeID, VersionID: landingTarget.VersionID, HeadSHA: landingTarget.HeadSHA}}, err
+		}
+		var refusal *workspace.LandRefusal
+		if nativeLanding && errors.As(err, &refusal) {
+			return r.refusedLanding(req, landingTarget, refusal.Kind, refusal.Reason), nil
+		}
 		if heldErr, held := workspaceBranchHeldError(err, req.Issue); held {
 			return RunResult{}, heldErr
 		}
@@ -1511,11 +1689,26 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		"workspace_path", info.Path,
 		"workspace_branch", info.Branch,
 	)
+	if nativeLanding {
+		if cleaner, ok := runWorkspace.(workspace.LandingWorkspaceCleaner); ok {
+			defer func() {
+				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+				defer cancel()
+				if err := cleaner.CleanupLanding(cleanupCtx, info, workspaceIssue); err != nil {
+					r.logger.Warn("landing workspace left behind", "path", info.Path, "error", err)
+				}
+			}()
+		}
+	}
 
 	if req.Execution != nil {
 		if err := req.Execution.Validate(ctx); err != nil {
 			return RunResult{}, err
 		}
+	}
+	if freshCheckout {
+		recovery := req.Execution.Recovery()
+		r.logWorkerEventLevel(slog.LevelInfo, req.Issue, "worker_native_checkpoint_discarded", "previous_policy_id", recovery.Attempts[len(recovery.Attempts)-1].PolicyID, "approved_policy_id", recovery.Lease.PolicyID)
 	}
 	if err := runWorkspace.BeforeRun(ctx, info, workspaceIssue); err != nil {
 		return RunResult{}, fmt.Errorf("workspace before_run: %w", err)
@@ -1525,10 +1718,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		"workspace_path", info.Path,
 	)
 
-	afterRunPending := true
+	afterRunPending := req.Execution == nil
 	defer func() {
 		if afterRunPending {
-			if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
+			if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState), false); err != nil {
 				r.logger.Warn("native execution epilogue deferred", "issue_id", req.Issue.ID, "error", err)
 			}
 		}
@@ -1536,12 +1729,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 
 	mergePrecheck := MergePrecheck{}
 	mergeFallback := false
-	if landing, ok := req.Execution.(LandingExecution); ok && mode == RunModeMerge {
-		// A hub-native landing has no pull request to prepare and no agent to
-		// run: the runner lands the reviewed version itself.
+	if nativeLanding {
 		afterRunPending = false
-		result, err := r.landNativeChange(ctx, req, landing, runWorkspace, info, workspaceIssue)
-		if afterErr := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); afterErr != nil && err == nil {
+		result, err := r.landNativeChange(ctx, req, landing, runWorkspace, info, workspaceIssue, workerGitHub, &landingTarget)
+		if afterErr := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState), false); afterErr != nil && err == nil {
 			err = afterErr
 		}
 		return result, err
@@ -1561,7 +1752,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			mergePrecheck = mergePrecheckFromWorkspace(precheck)
 			if handled {
 				afterRunPending = false
-				if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
+				if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState), false); err != nil {
 					return precheckResult, err
 				}
 				r.logWorkerEvent(req.Issue, "worker_after_run_finished",
@@ -1582,15 +1773,25 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, err
 		}
 	}
-	var recoveryState *workspace.RecoveryState
+	recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "initial")
+	if !nativeLanding && (mode == RunModeImplement || mode == RunModePlan) {
+		req.checkpointRefs = newCheckpointRefs(runWorkspace, req.Execution, info, workspaceIssue, recoveryState)
+		defer req.checkpointRefs.halt()
+	}
+	var promptRecoveryState *workspace.RecoveryState
 	initialDeliverableState := workspaceDeliverableStateObservation{}
 	initialArtifactEvidence := workspaceArtifactEvidenceObservation{}
 	var targetRefObserver func(context.Context) *DeliverableTargetRefEvidence
 	if mode == RunModeImplement {
-		recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "initial")
+		promptRecoveryState = recoveryState
 		initialDeliverableState = r.observeWorkspaceDeliverableState(runWorkspace, ctx, info, workspaceIssue, "initial")
 		if workflow.Config.Deliverable.Kind == config.DeliverableArtifact {
 			initialArtifactEvidence = r.observeWorkspaceArtifactEvidence(runWorkspace, ctx, info, workspaceIssue, "initial")
+		}
+		if req.Execution != nil && recoveryState != nil && recoveryState.HeadSHA != "" {
+			evidenceIssue := workspaceIssue
+			evidenceIssue.BaseRef = recoveryState.HeadSHA
+			req.validationEvidenceSource = r.attemptDiffSource(ctx, info, evidenceIssue)
 		}
 		r.publishDispatchLoopStart(req, recoveryState)
 		targetRefObserver = func(observerCtx context.Context) *DeliverableTargetRefEvidence {
@@ -1599,44 +1800,23 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	promptOptions := PromptOptions{
-		Attempt:              &attempt,
-		WorkAttemptID:        req.WorkAttemptID,
-		Generation:           req.Generation,
-		PlanOnly:             mode == RunModePlan,
-		MergeFallback:        mergeFallback,
-		MergePrecheckStatus:  mergePrecheck.Status,
-		MergePrecheckMessage: mergePrecheck.Message,
-		WorkspacePath:        info.Path,
-		Branch:               info.Branch,
-		DispatchSourceState:  req.DispatchSourceState,
-		DispatchTargetState:  req.DispatchTargetState,
-		AvailableSkills:      availableSkills,
-		PriorAttempt:         req.PriorAttempt,
-		RecoveryState:        recoveryState,
-	}
-	var prompt string
-	if mode == RunModeRoutine && req.Admission != nil {
-		prompt, err = BuildAdmissionPrompt(req.Issue, *req.Admission, promptOptions)
-	} else if mode == RunModeRoutine && req.Routine != nil {
-		prompt, err = BuildRoutinePrompt(workflow, req.Issue, *req.Routine, promptOptions)
-	} else {
-		prompt, err = BuildPrompt(workflow, req.Issue, promptOptions)
-	}
-	if err != nil {
-		return RunResult{}, fmt.Errorf("build prompt: %w", err)
-	}
-	if req.ForgeRetry != nil && !forgeRetryReadOperation(req.ForgeRetry.Operation) {
-		prompt = forgeRetryPrompt(*req.ForgeRetry, req.Issue)
-		if strings.TrimSpace(req.ForgeRetry.Branch) != "" && req.Issue.PullRequest == nil {
-			req.deliverableRecoveryBranch = strings.TrimSpace(req.ForgeRetry.Branch)
-		}
+		Attempt:                   &attempt,
+		WorkAttemptID:             req.WorkAttemptID,
+		Generation:                req.Generation,
+		PlanOnly:                  mode == RunModePlan,
+		MergeFallback:             mergeFallback,
+		MergePrecheckStatus:       mergePrecheck.Status,
+		MergePrecheckMessage:      mergePrecheck.Message,
+		MergeTargetCommitSubjects: mergePrecheck.TargetCommitSubjects,
+		WorkspacePath:             info.Path,
+		Branch:                    info.Branch,
+		DispatchSourceState:       req.DispatchSourceState,
+		DispatchTargetState:       req.DispatchTargetState,
+		AvailableSkills:           availableSkills,
+		PriorAttempt:              req.PriorAttempt,
+		RecoveryState:             promptRecoveryState,
 	}
 	role := runRole(req.Mode, req.Issue)
-	recoveryPrompt, err := nativeRecoveryPrompt(req.Execution)
-	if err != nil {
-		return RunResult{}, err
-	}
-	prompt += recoveryPrompt
 	routeRole := agentRuntime.effectiveRunRole(role)
 	selection, backend, backendConfig, err := agentRuntime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), routeRole)
 	if err != nil {
@@ -1651,6 +1831,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	modelProvider, serviceTier, configuredEffort := agentTurnIdentityOptions(backendConfig)
 	baseModel := effectiveModel("", selection.Model, agentRuntime.defaultModelForRole(role))
 	baseEnvironment := r.withGoBudget(info.Path, workerServiceEnvironment(mode, r.serviceConnection, info, workspaceIssue))
+	if mergeFallback {
+		baseEnvironment.Variables["GIT_CONFIG_PARAMETERS"] = strings.TrimSpace(r.lookupEnv("GIT_CONFIG_PARAMETERS") + " 'merge.conflictStyle'='zdiff3'")
+	}
 	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
 		Workspace:   info.Path,
 		Environment: baseEnvironment,
@@ -1731,11 +1914,14 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, err
 		}
 	}
-	resumeState, err = r.nativeResume(ctx, req, backend, processRequest, recoveryState, resumeState, executionIdentity)
+	resumeState, err = r.nativeResume(ctx, req, backend, processRequest, recoveryState, resumeState, executionIdentity, runWorkspace, info, workspaceIssue)
 	if err != nil {
 		return RunResult{}, err
 	}
 	if req.Execution != nil {
+		if evidence, ok := req.Execution.(EvidenceSourceExecution); ok {
+			evidence.SetEvidenceSource(workspaceEvidenceSource(info.Path))
+		}
 		// The stored attempt diff rides every checkpoint and the finish
 		// (decisions section 18.5).
 		if diffs, ok := req.Execution.(DiffExecution); ok {
@@ -1744,9 +1930,31 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if repository, ok := req.Execution.(RepositoryExecution); ok {
 			repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
 		}
+		if source, ok := req.Execution.(ChangeSourceExecution); ok {
+			source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+				return workspace.CaptureChangeSource(ctx, info.Path, base, head)
+			})
+		}
+		if source, ok := req.Execution.(IntegrationSourceExecution); ok {
+			if verifier, supported := runWorkspace.(workspace.IntegrationVerifier); supported {
+				source.SetIntegrationSource(func(ctx context.Context, version tracker.ChangeVersion, base string) (workspace.LandResult, error) {
+					method := version.Policy.Gates.MergeMethod
+					if method == "" {
+						method = "squash"
+					}
+					return verifier.VerifyIntegratedChange(ctx, info, workspaceIssue, workspace.LandOptions{HeadSHA: version.HeadSHA, Repository: version.Repository, Method: method}, version.BaseSHA, base)
+				})
+			}
+		}
+		if runtime, ok := req.Execution.(RuntimeExecution); ok {
+			if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Identity: runtimeIdentity}); err != nil {
+				return RunResult{}, err
+			}
+		}
 		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
 			return RunResult{}, err
 		}
+		afterRunPending = true
 		if conversation := r.bindConversation(ctx, req, backend, resumeState.ProviderThreadID); conversation != nil {
 			ctx = conversation.attach(ctx)
 			defer func() { conversation.close(ctx, returnValue, returnErr) }()
@@ -1756,11 +1964,110 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				return RunResult{}, err
 			}
 		}
-		checkpoint := executionCheckpoint(recoveryState)
-		checkpoint.WorktreeState = "unknown"
+		checkpoint := executionCheckpointPreservingPublication(req.Execution, recoveryState)
+		if !agentResumeEmpty(agentResumeFromState(resumeState)) {
+			checkpoint.Resume = "resume_session"
+		}
+		req.checkpointRefs.apply(&checkpoint)
 		if err := req.Execution.Checkpoint(ctx, checkpoint); err != nil {
 			return RunResult{}, err
 		}
+	}
+	if publicationRecovery {
+		if !nativePublicationRecovery(req.Execution.Recovery(), recoveryState, executionIdentity, workspaceIssue.Source) {
+			return RunResult{}, fmt.Errorf("%w: publication source changed before reconciliation", ErrNativeRecoveryRequired)
+		}
+		req.finalizeNativeWork = true
+		afterRunPending = false
+		err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, AgentResume{}, false)
+		return RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}, err
+	}
+	reworkPrecheck := workspace.MergePrepareResult{}
+	if workspaceIssue.NativeRework {
+		if err := req.Execution.Validate(ctx); err != nil {
+			return RunResult{}, err
+		}
+		if preparer, ok := runWorkspace.(workspace.ReworkPreparer); ok {
+			started := r.now()
+			precheck, err := preparer.PrepareRework(ctx, info, workspaceIssue, workspace.MergePrepareOptions{TargetBranch: workspaceIssue.ProgressBaseRef})
+			outcome := "clean"
+			if precheck.Status == workspace.MergePrepareStatusConflict {
+				outcome = "conflict"
+			}
+			if err != nil {
+				outcome = "rework"
+			}
+			r.recordPipeline(req, gate.Interval("rebase", started, r.now(), outcome))
+			if precheck.Status == workspace.MergePrepareStatusConflict {
+				resolutionStarted := r.now()
+				defer func() {
+					outcome := "agent-resolved"
+					if returnErr != nil || returnValue.FinalState != FinalStateCompleted {
+						outcome = "rework"
+					}
+					r.recordPipeline(req, gate.Interval("conflict_resolution", resolutionStarted, r.now(), outcome))
+				}()
+			}
+			if err != nil {
+				return RunResult{}, nativeGitError("prepare native rework", err)
+			}
+			if landingRework && precheck.Status == workspace.MergePrepareStatusConflict {
+				resumeState = store.AgentResumeState{}
+				req.ResumeState = store.AgentResumeState{}
+				req.RetryMode = RetryModeFresh
+				r.logWorkerEvent(req.Issue, "worker_native_recovery", "action", "fresh_checkout", "reason", "session_restart_required")
+			}
+			recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "rework_prepared")
+			if recoveryState == nil {
+				return RunResult{}, ErrNativeRecoveryRequired
+			}
+			if diffs, ok := req.Execution.(DiffExecution); ok {
+				diffIssue := workspaceIssue
+				if precheck.BaseSHA != "" {
+					diffIssue.BaseRef = precheck.BaseSHA
+				}
+				diffs.SetDiffSource(r.attemptDiffSource(ctx, info, diffIssue))
+			}
+			evidenceIssue := workspaceIssue
+			evidenceIssue.BaseRef = recoveryState.HeadSHA
+			req.validationEvidenceSource = r.attemptDiffSource(ctx, info, evidenceIssue)
+			checkpoint := executionCheckpointPreservingPublication(req.Execution, recoveryState)
+			if !agentResumeEmpty(agentResumeFromState(resumeState)) {
+				checkpoint.Resume = "resume_session"
+			}
+			r.pushCheckpointRef(ctx, req.checkpointRefs, req, "rework_started")
+			req.checkpointRefs.apply(&checkpoint)
+			if err := req.Execution.Checkpoint(ctx, checkpoint); err != nil {
+				return RunResult{}, err
+			}
+			reworkPrecheck = precheck
+			promptOptions.RecoveryState = recoveryState
+		}
+	}
+	var prompt string
+	if mode == RunModeRoutine && req.Admission != nil {
+		prompt, err = BuildAdmissionPrompt(req.Issue, *req.Admission, promptOptions)
+	} else if mode == RunModeRoutine && req.Routine != nil {
+		prompt, err = BuildRoutinePrompt(workflow, req.Issue, *req.Routine, promptOptions)
+	} else {
+		prompt, err = BuildPrompt(workflow, req.Issue, promptOptions)
+	}
+	if err != nil {
+		return RunResult{}, fmt.Errorf("build prompt: %w", err)
+	}
+	if req.ForgeRetry != nil && !forgeRetryReadOperation(req.ForgeRetry.Operation) {
+		prompt = forgeRetryPrompt(*req.ForgeRetry, req.Issue)
+		if strings.TrimSpace(req.ForgeRetry.Branch) != "" && req.Issue.PullRequest == nil {
+			req.deliverableRecoveryBranch = strings.TrimSpace(req.ForgeRetry.Branch)
+		}
+	}
+	recoveryPrompt, err := nativeRecoveryPrompt(req.Execution)
+	if err != nil {
+		return RunResult{}, err
+	}
+	prompt += recoveryPrompt
+	if reworkPrecheck.Status != "" {
+		prompt += "\n\nThe runner owns native rebase preparation and finalization. Resolve source conflicts in this worktree and stage the resolved files with git add. Do not run rebase, rebase --continue, branch/ref updates, or signing workarounds. During a paused rebase, leave the resolved index for the runner to finalize; leave additional changes staged for the runner when no rebase is paused.\n" + reworkPrecheck.Message
 	}
 	orphanRecovery := resumeState.Orphaned
 	orphanRecoveryOutcome := ""
@@ -1813,10 +2120,24 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	checkpoint := r.prepareWorkerCheckpoint(ctx, req, runWorkspace, info, workspaceIssue)
+	r.startCheckpointRefs(ctx, req.checkpointRefs, req, runWorkspace)
 	sessionID, sessionStarted, err := r.startSession(ctx, req, startedAt, runtimeIdentity, resumeState, orphanRecoveryOutcome, orphanRecoveryFallbackReason)
 	if err != nil {
 		return RunResult{}, err
 	}
+	profileStage := "implementation"
+	switch role {
+	case RoleRework:
+		profileStage = "rework"
+	case RolePlan:
+		profileStage = "planning"
+	case RoleMerge:
+		profileStage = "merging"
+	}
+	profileRequest := req
+	profileRequest.StartedAt = startedAt
+	req.activityProfile = r.startActivityProfile(ctx, profileRequest, sessionID, info.Path, workflow, profileStage)
+	defer req.activityProfile.finish()
 	sessionDuration := durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS)
 	sessionCtx, cancelSession := r.sessionLimit(
 		ctx,
@@ -1831,18 +2152,15 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		runStartedAt,
 		sessionDuration,
 		workflow.Config.Agent.MaxTurns,
-		durationFromMillis(workflow.Config.Agent.NoProgressTimeoutMS),
 		cancelSessionBrake,
 		func(probeCtx context.Context) (sessionProgressSnapshot, error) {
 			return r.sessionProgressSnapshot(probeCtx, runWorkspace, info, workspaceIssue, req.ProgressProbe)
 		},
 		r.now,
-		r.progressTicker,
 		r.logger,
 		req.Issue,
 		r.sessionProgressJournal(sessionID, resumeState.DetentSessionID),
 	)
-	defer sessionBrake.Stop()
 	req.sessionBrake = sessionBrake
 
 	commandStartedAttrs := []any{
@@ -1865,15 +2183,22 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			turnPrompt = appendNativeIssueInstructions(turnPrompt, req.Issue)
 		}
 		if workflow.Config.Tracker.Kind == config.TrackerHubNative {
+			followups := workflow.Config.Agent.Followups
+			if promptOptions.PlanOnly {
+				followups.Enabled = false
+			}
+			turnPrompt = appendFollowupsBlock(turnPrompt, followups)
 			turnPrompt = appendNativeCompletionContract(turnPrompt)
 		}
 	}
 	var extraWritableRoots []string
 	if req.Admission == nil {
-		extraWritableRoots = extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, r.logger)
+		extraWritableRoots = extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, req.Execution != nil && mode == RunModeImplement, r.logger)
 	}
 	deliverableKind, deliverableRepository := agentTurnDeliverable(workflow.Config, req.Issue, mode)
 	turnRequest := AgentTurnRequest{
+		AllowLocalBinding:     workflow.Config.Worker.EffectiveAllowLocalBinding(),
+		ExtraNetworkDomains:   workflow.Config.Worker.ExtraNetworkDomains,
 		Workspace:             info.Path,
 		Prompt:                turnPrompt,
 		ReadOnly:              mode == RunModeRoutine,
@@ -1918,7 +2243,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
 	execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
 	execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
-	if execution.err != nil && !IsCapacityError(execution.err) && !durationLimitError(execution.err) && !errors.Is(execution.err, ErrWorkerProcessReap) && !agentResumeEmpty(turnRequest.Resume) && !execution.turnStarted {
+	if req.Execution == nil && execution.err != nil && !IsCapacityError(execution.err) && !durationLimitError(execution.err) && !errors.Is(execution.err, ErrWorkerProcessReap) && !agentResumeEmpty(turnRequest.Resume) && !execution.turnStarted {
 		r.logWorkerEvent(req.Issue, "worker_resume_failed_fallback",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 			telemetry.DetentSessionIDKey, sessionID,
@@ -1943,7 +2268,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if targetRefObserver != nil {
 			initialDeliverableState = r.observeWorkspaceDeliverableState(runWorkspace, sessionCtx, info, workspaceIssue, "resume_fallback_initial")
 		}
+		resumeRefused := execution.result.TurnStartRefused
+		resumeCompute := execution.result.Compute
 		execution = runWithCheckpoint(turnRequest, req, runtimeIdentity, 0)
+		execution.result.Compute = compute.Add(resumeCompute, execution.result.Compute)
+		execution.result.TurnStartRefused = resumeRefused && execution.result.TurnStartRefused
 		r.rememberPrompt(promptKey, prompt, execution)
 		execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
 		execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
@@ -1958,7 +2287,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if mode == RunModeImplement {
 		execution = r.reconcileFailedPushPublication(sessionCtx, runWorkspace, info, workspaceIssue, initialDeliverableState, execution, req)
 	}
-	turns := int64(max(execution.turnCount, 1))
 	if deliverableErr, ok := recoverablePullRequestDeliverable(execution); ok {
 		branch := strings.TrimSpace(info.Branch)
 		if branch == "" {
@@ -1990,9 +2318,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		recovery.err = classifyAgentCapacityError(backend, selection, backendConfig, recovery.result.RuntimeIdentity, recovery.err, recovery.result.RateLimits, runStartedAt)
 		initialErr := execution.err
 		execution = mergeAgentTurnExecutions(execution, recovery)
-		turns = int64(max(execution.turnCount, 1))
 		if recovery.err != nil {
-			if recoveryFailure, exhausted := pullRequestDeliverableFailure(recovery.err); exhausted {
+			if recoveryFailure, exhausted := PullRequestDeliverableFailure(recovery.err); exhausted {
 				execution.err = &DeliverableRecoveryError{Branch: branch, Err: errors.Join(initialErr, recovery.err)}
 				execution.result.FinalState = FinalStateNeedsHumanAttention
 				r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_deliverable_recovery_failed",
@@ -2024,7 +2351,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			)
 		}
 	}
-	sessionBrake.Stop()
+	turns := int64(execution.turnCount)
+	if execution.turnStarted && turns == 0 {
+		turns = 1
+	}
+
 	var checkpointBrake *SessionBrakeError
 	if errors.As(execution.err, &checkpointBrake) {
 		checkpointBrake.Checkpoint = execution.result.Checkpoint
@@ -2033,7 +2364,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	turnErr := execution.err
 	cleanupErr := execution.cleanupErr
 	result := execution.result
+	result.TokenUSD = r.usageCostUSD(effectiveModel(result.RuntimeIdentity.ResolvedModel.Value, result.Model, sessionModel), result.Tokens.InputTokens, result.Tokens.CachedInputTokens, result.Tokens.OutputTokens, backendConfig.Kind)
 	result.TurnCount = execution.turnCount
+	result.TurnStarted = execution.turnStarted
+	result.TurnStartRefused = result.TurnStartRefused && !execution.turnStarted && turns == 0
 	result.WorkspaceBranch = strings.TrimSpace(info.Branch)
 	if mergeFallback && turnErr == nil {
 		targetBranch := ""
@@ -2045,9 +2379,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if req.Issue.PullRequest != nil {
 			expectedRemoteHead = req.Issue.PullRequest.HeadSHA
 		}
-		result, turnErr = r.verifyMergeFallback(ctx, runWorkspace, info, workspaceIssue, workspace.MergePrepareOptions{
+		result, turnErr = r.verifyMergeFallback(context.WithoutCancel(ctx), runWorkspace, info, workspaceIssue, workspace.MergePrepareOptions{
 			TargetBranch:       targetBranch,
 			VerifyResolution:   true,
+			IssueDescription:   req.Issue.Description,
+			LandingMode:        gate.Effective(workflow.Config.Gate).LandingMode,
 			ValidationCommand:  gate.Effective(workflow.Config.Gate).Run,
 			ExpectedRemoteHead: expectedRemoteHead,
 		}, result)
@@ -2093,14 +2429,30 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	} else {
 		r.logWorkerEvent(req.Issue, "worker_command_finished", commandFinishedAttrs...)
 	}
-	failureNoteRecorded := false
-	if strings.EqualFold(strings.TrimSpace(result.FinalState), FinalStateFailed) {
-		r.recordFailedRunNote(info.Path, req.Issue, result, turnErr, r.now().UTC())
-		failureNoteRecorded = true
+	if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok {
+		diagnostics.ProviderCompleted(r.now())
 	}
-
 	afterRunPending = false
-	req.retainCheckpoint = result.Checkpoint != nil && turnErr != nil
+	afterRunCtx := ctx
+	afterRunCancel := func() {}
+	if turnErr == nil {
+		timeout := r.afterRunTimeout
+		if req.Execution != nil && mode == RunModeImplement {
+			// Native finalization runs the configured source gate on the
+			// finalized head. It needs the work budget, not the cleanup budget.
+			workBudget := durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS)
+			if workBudget <= 0 {
+				workBudget = durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS)
+			}
+			timeout = max(timeout, workBudget)
+		}
+		afterRunCtx, afterRunCancel = context.WithTimeoutCause(context.WithoutCancel(ctx), timeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+	}
+	defer afterRunCancel()
+	disposition := NativeDispositionFromMessage(result.FinalMessage)
+	blocked := req.Execution != nil && disposition != nil && disposition.Status == "blocked"
+	req.retainCheckpoint = (turnErr != nil || blocked) && (req.Execution != nil || result.Checkpoint != nil)
+	req.finalizeNativeWork = req.Execution != nil && mode == RunModeImplement && turnErr == nil && !blocked
 	if errors.Is(turnErr, ErrWorkerProcessReap) {
 		preserveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 		_, preserveErr := r.PreserveWorkspace(preserveCtx, req.Issue)
@@ -2113,7 +2465,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			"error", turnErr,
 		)
 	} else {
-		if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
+		if err := r.afterExecution(afterRunCtx, req, runWorkspace, info, workspaceIssue, AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}, result.TurnStarted); err != nil {
 			turnErr = errors.Join(turnErr, err)
 		}
 		r.logWorkerEvent(req.Issue, "worker_after_run_finished",
@@ -2122,8 +2474,14 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			"workspace_path", info.Path,
 		)
 	}
+	finalizationCtx := ctx
+	finalizationCancel := func() {}
+	if turnErr == nil {
+		finalizationCtx, finalizationCancel = context.WithTimeoutCause(context.WithoutCancel(ctx), r.afterRunTimeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+	}
+	defer finalizationCancel()
 	if mode == RunModeImplement && workflow.Config.Deliverable.Kind == config.DeliverableArtifact {
-		finalArtifactEvidence := r.observeWorkspaceArtifactEvidence(runWorkspace, context.WithoutCancel(ctx), info, workspaceIssue, "final")
+		finalArtifactEvidence := r.observeWorkspaceArtifactEvidence(runWorkspace, finalizationCtx, info, workspaceIssue, "final")
 		result.ArtifactEvidence = artifactProgressEvidence(initialArtifactEvidence, finalArtifactEvidence)
 	}
 
@@ -2136,7 +2494,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		)
 	}
 
-	diffStat, err := runWorkspace.DiffStat(ctx, info, workspaceIssue)
+	diffStat, err := runWorkspace.DiffStat(finalizationCtx, info, workspaceIssue)
 	if err != nil {
 		if workspace.IsMissingWorkspaceError(err) {
 			r.logger.Info(
@@ -2155,13 +2513,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return result, nil
 		}
 		result.FinalState = FinalStateFailed
-		if !failureNoteRecorded {
-			r.recordFailedRunNote(info.Path, req.Issue, result, err, r.now().UTC())
-		}
 		finishedAt := r.now().UTC()
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
-			classifyForgeOperationError(fmt.Errorf("workspace diff stat: %w", err), "git fetch", forgeHost),
+			classifyForgeOperationError(fmt.Errorf("%w: workspace diff stat: %w", ErrWorkspacePreparation, err), "git fetch", forgeHost),
 			r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, turns, turnResult, resumeState.DetentSessionID),
 		)
 	}
@@ -2169,7 +2524,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	result.DiffStats = diffStatsFromWorkspace(diffStat)
 	if mode == RunModeImplement {
 		_, result.DiffStats.RecoveryStateExpected = runWorkspace.(workspace.RecoveryStateProvider)
-		if recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "final"); recoveryState != nil {
+		if recoveryState := r.workspaceRecoveryState(runWorkspace, finalizationCtx, info, workspaceIssue, "final"); recoveryState != nil {
 			applyRecoveryState(&result.DiffStats, recoveryState)
 		}
 	}
@@ -2186,7 +2541,7 @@ func recoverablePullRequestDeliverable(execution agentTurnExecution) (*Deliverab
 	if execution.err == nil || !execution.result.PullRequestHeadPushed {
 		return nil, false
 	}
-	return pullRequestDeliverableFailure(execution.err)
+	return PullRequestDeliverableFailure(execution.err)
 }
 
 func (r *Runner) reconcileFailedPushPublication(
@@ -2480,7 +2835,7 @@ func forgeRetryReadOperation(operation string) bool {
 	return strings.Contains(operation, "git fetch") || strings.Contains(operation, "git ls-remote")
 }
 
-func pullRequestDeliverableFailure(err error) (*DeliverableCommandError, bool) {
+func PullRequestDeliverableFailure(err error) (*DeliverableCommandError, bool) {
 	errorsFound, onlyDeliverableErrors := deliverableCommandErrors(err)
 	if !onlyDeliverableErrors || len(errorsFound) == 0 {
 		return nil, false
@@ -2636,6 +2991,8 @@ func mergeAgentTurnExecutions(initial agentTurnExecution, recovery agentTurnExec
 	result.Model = effectiveModel(recovery.result.Model, initial.result.Model)
 	result.RuntimeIdentity = initial.result.RuntimeIdentity.Merge(recovery.result.RuntimeIdentity)
 	result.Tokens = addAgentTokenTotals(initial.result.Tokens, recovery.result.Tokens)
+	result.Compute = compute.Add(initial.result.Compute, recovery.result.Compute)
+	result.TurnStartRefused = initial.result.TurnStartRefused && recovery.result.TurnStartRefused
 	result.RateLimits = mergeAgentRateLimits(initial.result.RateLimits, recovery.result.RateLimits)
 	result.SkillDraftProposed = initial.result.SkillDraftProposed || recovery.result.SkillDraftProposed
 	result.PullRequestUpdated = initial.result.PullRequestUpdated || recovery.result.PullRequestUpdated
@@ -3014,10 +3371,14 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := verifyValidatorDiff(req.Issue, req.Diff); err != nil {
+	if err := verifyValidatorRequest(req); err != nil {
 		return gate.ValidatorResult{}, err
 	}
 	workflow, agentRuntime, _, _ := r.runtimeSnapshot()
+	contract, contractErr := config.ResolveIssueContract(workflow.SharedPrompt)
+	if contractErr != nil {
+		return gate.ValidatorResult{}, fmt.Errorf("%w: resolve validator issue contract: %w", ErrValidatorInfrastructure, contractErr)
+	}
 	workerGitHub, err := r.workerGitHubPolicy(ctx, workflow.Config, req.Issue.Identifier)
 	if err != nil {
 		r.logWorkerGitHubPolicyError(req.Issue, err)
@@ -3025,6 +3386,15 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}
 
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
+	if req.NativeVersion != nil {
+		if _, ok := r.workspace.(workspace.HeadProvider); !ok {
+			return gate.ValidatorResult{}, fmt.Errorf("%w: native validation requires immutable head verification", ErrValidatorInfrastructure)
+		}
+		if _, ok := r.workspace.(workspace.ReviewTreeVerifier); !ok {
+			return gate.ValidatorResult{}, fmt.Errorf("%w: native validation requires a clean review tree", ErrValidatorInfrastructure)
+		}
+		workspaceIssue.PullRequestHeadSHA = req.NativeVersion.HeadSHA
+	}
 	if usage, ok := r.workspace.(workspace.Usage); ok {
 		release, err := usage.Use(ctx, workspaceIssue)
 		if err != nil {
@@ -3041,7 +3411,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		"workspace_path", info.Path,
 		"workspace_branch", info.Branch,
 	)
-	if seeder, ok := r.workspace.(workspace.ReviewHeadSeeder); ok {
+	if seeder, ok := r.workspace.(workspace.ReviewHeadSeeder); ok && req.NativeVersion == nil {
 		if err := seeder.SeedReviewHead(ctx, info, workspaceIssue); err != nil {
 			return gate.ValidatorResult{}, fmt.Errorf("%w: seed validation review head: %w", ErrValidatorInfrastructure, err)
 		}
@@ -3077,8 +3447,36 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		}
 	}
 
+	var commands *validatorCommands
+	var validationTools []AgentTool
+	var validationHandler AgentToolHandler
+	if req.NativeVersion != nil {
+		commandRunner, ok := r.workspace.(workspace.ReviewCommandRunner)
+		if !ok {
+			return gate.ValidatorResult{}, fmt.Errorf("%w: native validation requires host command execution", ErrValidatorInfrastructure)
+		}
+		commands = &validatorCommands{run: commandRunner, info: info, issue: workspaceIssue}
+		configured := gate.Effective(workflow.Config.Gate)
+		if configured.Kind == gate.KindCommand {
+			if _, err := commands.execute(ctx, configured.Run); err != nil {
+				return gate.ValidatorResult{}, err
+			}
+		}
+		validationTools, validationHandler = commands.tools()
+	}
 	validator := gate.Effective(workflow.Config.Gate).Validator
 	promptOptions := validatorPromptOptionsForPR(info, *req.Diff, validatorMaxInlineDiffBytes(validator))
+	if commands != nil {
+		var commandErr error
+		promptOptions.Commands, commandErr = commands.evidence()
+		if commandErr != nil {
+			return gate.ValidatorResult{}, commandErr
+		}
+	}
+	if req.NativeVersion != nil {
+		promptOptions.VersionID = req.NativeVersion.ID
+		promptOptions.DiffTruncated = promptOptions.DiffTruncated || req.Diff.Patch == ""
+	}
 	prompt := BuildValidatorPrompt(workflow, req.Issue, promptOptions)
 	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
 	if err != nil {
@@ -3129,6 +3527,9 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if err != nil {
 		return gate.ValidatorResult{}, err
 	}
+	runReq.StartedAt = startedAt
+	activityProfile := r.startActivityProfile(ctx, runReq, sessionID, info.Path, workflow, "validation")
+	defer activityProfile.finish()
 	sessionDuration := durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS)
 	sessionCtx, cancelSession := r.sessionLimit(
 		ctx,
@@ -3143,18 +3544,15 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runStartedAt,
 		durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS),
 		workflow.Config.Agent.MaxTurns,
-		durationFromMillis(workflow.Config.Agent.NoProgressTimeoutMS),
 		cancelSessionBrake,
 		func(probeCtx context.Context) (sessionProgressSnapshot, error) {
 			return r.sessionProgressSnapshot(probeCtx, r.workspace, info, workspaceIssue, nil)
 		},
 		r.now,
-		r.progressTicker,
 		r.logger,
 		req.Issue,
 		r.sessionProgressJournal(sessionID, 0),
 	)
-	defer sessionBrake.Stop()
 	runReq.sessionBrake = sessionBrake
 
 	checkStartedAttrs := []any{
@@ -3179,24 +3577,30 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if resolvedSelection.Effort != "" {
 		effort = resolvedSelection.Effort
 	}
+	stopCompute := r.meterCompute(runReq.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
-		Workspace:          info.Path,
-		Prompt:             prompt,
-		Model:              selectedModel,
-		ModelProvider:      modelProvider,
-		ServiceTier:        serviceTier,
-		ReasoningEffort:    effort,
-		MaxTurns:           workflow.Config.Agent.MaxTurns,
-		TurnTimeout:        durationFromMillis(validator.TurnTimeoutMS),
-		MaxDuration:        durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
-		ExtraWritableRoots: extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, r.logger),
-		Environment:        baseEnvironment,
-		MaxRSSBytes:        r.maxAgentRSSBytes,
-		RSSPollInterval:    r.rssPollInterval,
-		workerGitHub:       workerGitHub,
-		processRSS:         r.processRSS,
-	}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
+		ReadOnly:            req.NativeVersion != nil,
+		SupplementalTools:   req.NativeVersion != nil,
+		AllowLocalBinding:   workflow.Config.Worker.EffectiveAllowLocalBinding(),
+		ExtraNetworkDomains: workflow.Config.Worker.ExtraNetworkDomains,
+		Workspace:           info.Path,
+		Prompt:              prompt,
+		Model:               selectedModel,
+		ModelProvider:       modelProvider,
+		ServiceTier:         serviceTier,
+		ReasoningEffort:     effort,
+		MaxTurns:            workflow.Config.Agent.MaxTurns,
+		TurnTimeout:         durationFromMillis(validator.TurnTimeoutMS),
+		MaxDuration:         durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
+		ExtraWritableRoots:  extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, false, r.logger),
+		Environment:         baseEnvironment,
+		MaxRSSBytes:         r.maxAgentRSSBytes,
+		RSSPollInterval:     r.rssPollInterval,
+		workerGitHub:        workerGitHub,
+		processRSS:          r.processRSS,
+	}, validationTools, validationHandler, func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
+		activityProfile.observe(update, eventAt, workspaceIssue.PullRequestHeadSHA, runStartedAt)
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)
 		}
@@ -3231,7 +3635,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		if err := r.publishRunUpdate(updateCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID); err != nil {
 			return err
 		}
-		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, info.Path, update, eventAt); err != nil {
+		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, update); err != nil {
 			return err
 		}
 		if err := sessionBrake.observe(updateCtx, progress.turnCount(), runResult.Tokens.TotalTokens); err != nil {
@@ -3239,6 +3643,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		}
 		return nil
 	}, r.turnLimit)
+	runResult.Compute = stopCompute()
 	workerReapErr := r.reapSessionWorkerProcessWithWorkspace(
 		sessionCtx,
 		sessionID,
@@ -3262,7 +3667,6 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}
 	turnErr = sessionBrake.wrapTurnLimit(ctx, turnErr)
 	turnErr = sessionBrake.wrapDuration(ctx, turnErr, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
-	sessionBrake.Stop()
 	if brakeDiff := sessionBrake.resultDiffStats(); !diffStatsEmpty(brakeDiff) {
 		runResult.DiffStats = brakeDiff
 	}
@@ -3332,6 +3736,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
 		)
 	}
+	if commands != nil {
+		_, commandErr := commands.evidence()
+		treeErr = errors.Join(treeErr, commandErr)
+	}
 	if treeErr != nil {
 		return gate.ValidatorResult{}, errors.Join(treeErr,
 			r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0))
@@ -3365,13 +3773,46 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if err := r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0); err != nil {
 		return gate.ValidatorResult{}, err
 	}
+	if commands != nil {
+		validation.Commands, err = commands.evidence()
+		if err != nil {
+			return gate.ValidatorResult{}, err
+		}
+		for _, command := range validation.Commands {
+			if command.ExitCode != 0 && validation.Verdict == gate.ValidatorVerdictPass {
+				validation.Verdict = gate.ValidatorVerdictWait
+				validation.Summary += "\nHost validation command failed; passing test evidence is required."
+			}
+		}
+	}
+	if req.NativeVersion != nil {
+		validation.VersionID = req.NativeVersion.ID
+	}
+	validation.SessionID = sessionID
 	validation.Repository = req.Diff.Repository
 	validation.PRNumber = req.Diff.PRNumber
 	validation.BaseSHA = req.Diff.BaseSHA
 	validation.HeadSHA = req.Diff.HeadSHA
 	validation.DiffDigest = req.Diff.Digest
 	validation.DiffFiles = append([]string(nil), req.Diff.Files...)
+	tree := ""
+	if req.NativeVersion != nil && req.NativeVersion.Validation != nil {
+		tree = req.NativeVersion.Validation.TreeSHA
+	}
+	gate.NormalizeCriterionEvidence(&validation, contract.AcceptanceCriteria(req.Issue.Description), tree)
+	gate.ApplyCriterionPolicy(validator, &validation)
 	return validation, nil
+}
+
+func verifyValidatorRequest(req ValidatorRequest) error {
+	if req.NativeVersion == nil {
+		return verifyValidatorDiff(req.Issue, req.Diff)
+	}
+	version, diff := req.NativeVersion, req.Diff
+	if diff == nil || version.ID == "" || !version.Policy.Gates.Validator || diff.Repository != version.Repository || diff.BaseSHA != version.BaseSHA || diff.HeadSHA != version.HeadSHA || diff.Digest == "" {
+		return fmt.Errorf("%w: validator diff differs from immutable native version", ErrValidatorInfrastructure)
+	}
+	return nil
 }
 
 func verifyValidatorDiff(issue connector.Issue, diff *connector.ValidationDiff) error {
@@ -3427,12 +3868,13 @@ func validatorMaxInlineDiffBytes(cfg gate.ValidatorConfig) int {
 }
 
 type validatorJSONResult struct {
-	Verdict    string                 `json:"verdict"`
-	Score      float64                `json:"score"`
-	Confidence float64                `json:"confidence"`
-	TrustScore float64                `json:"trust_score"`
-	Summary    string                 `json:"summary"`
-	Findings   []validatorJSONFinding `json:"findings"`
+	CriteriaEvidence []gate.CriterionEvidence `json:"criteria_evidence"`
+	Verdict          string                   `json:"verdict"`
+	Score            float64                  `json:"score"`
+	Confidence       float64                  `json:"confidence"`
+	TrustScore       float64                  `json:"trust_score"`
+	Summary          string                   `json:"summary"`
+	Findings         []validatorJSONFinding   `json:"findings"`
 }
 
 type validatorJSONFinding struct {
@@ -3479,11 +3921,12 @@ func parseValidatorResult(output string) (gate.ValidatorResult, error) {
 	}
 
 	return gate.ValidatorResult{
-		Submitted: true,
-		Verdict:   strings.TrimSpace(decoded.Verdict),
-		Score:     score,
-		Summary:   strings.TrimSpace(decoded.Summary),
-		Findings:  findings,
+		CriteriaEvidence: decoded.CriteriaEvidence,
+		Submitted:        true,
+		Verdict:          strings.TrimSpace(decoded.Verdict),
+		Score:            score,
+		Summary:          strings.TrimSpace(decoded.Summary),
+		Findings:         findings,
 	}, nil
 }
 
@@ -3583,44 +4026,6 @@ func (r *Runner) afterRun(backend workspace.Backend, info workspace.Info, issue 
 	defer cancel()
 
 	backend.AfterRun(ctx, info, issue)
-}
-
-func (r *Runner) recordFailedRunNote(workspacePath string, issue connector.Issue, result RunResult, runErr error, at time.Time) {
-	notesPath, err := notes.WorkspacePath(workspacePath)
-	if err != nil {
-		r.logger.Warn("resolve failed run note path failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		return
-	}
-	if err := notes.Append(notesPath, notes.Entry{
-		Title: "Failed run output tail",
-		Body:  failedRunNoteBody(result, runErr),
-	}, notes.AppendOptions{Now: at, MaxBytes: notes.DefaultMaxBytes}); err != nil {
-		r.logger.Warn("record failed run note failed", "issue_id", issue.ID, "identifier", issue.Identifier, "path", notesPath, "error", err)
-	}
-}
-
-func failedRunNoteBody(result RunResult, runErr error) string {
-	var b strings.Builder
-	finalState := strings.TrimSpace(result.FinalState)
-	if finalState == "" {
-		finalState = FinalStateFailed
-	}
-	b.WriteString("- final_state: ")
-	b.WriteString(finalState)
-	if runErr != nil {
-		b.WriteString("\n- error: ")
-		b.WriteString(strings.TrimSpace(runErr.Error()))
-	}
-	output := strings.TrimSpace(notes.Tail(result.Output, notes.DefaultTailBytes))
-	if output != "" {
-		b.WriteString("\n\nOutput tail:\n\n```text\n")
-		b.WriteString(output)
-		if !strings.HasSuffix(output, "\n") {
-			b.WriteString("\n")
-		}
-		b.WriteString("```")
-	}
-	return b.String()
 }
 
 func (r *Runner) startSession(
@@ -3879,8 +4284,6 @@ func workerProcessReapReason(ctx context.Context, turnErr error) string {
 	switch {
 	case errors.Is(combined, ErrSessionDurationExceeded):
 		return "maximum_session_lifetime_exceeded"
-	case errors.Is(combined, ErrSessionNoProgress):
-		return SessionBrakeReasonNoProgress
 	case errors.Is(combined, ErrTurnDurationExceeded):
 		return "maximum_turn_lifetime_exceeded"
 	case errors.As(combined, &cancellation):
@@ -3955,6 +4358,7 @@ func (r *Runner) finishSession(
 	if err := r.store.FinishSession(ctx, sessionID, store.SessionFinish{
 		CompletedAt:           finishedAt,
 		Turns:                 turns,
+		TurnStartRefused:      result.TurnStartRefused,
 		InputTokens:           result.Tokens.InputTokens,
 		CachedInputTokens:     result.Tokens.CachedInputTokens,
 		OutputTokens:          result.Tokens.OutputTokens,
@@ -3979,6 +4383,7 @@ func (r *Runner) finishSession(
 		"provider_session_id", turnResult.SessionID,
 		"final_state", result.FinalState,
 		"turns", turns,
+		"turn_start_refused", result.TurnStartRefused,
 		"skill_draft_proposed", result.SkillDraftProposed,
 	}
 	attrs = append(attrs, runtimeIdentityLogAttrs(result.RuntimeIdentity)...)
@@ -4009,6 +4414,7 @@ func (r *Runner) finishSession(
 		TotalTokens:            result.Tokens.TotalTokens,
 		ModelContextWindow:     result.Tokens.ModelContextWindow,
 		CostUSD:                actualCostUSD,
+		Compute:                result.Compute,
 		ProjectedCostUSD:       projectedCostUSD,
 		ProjectionOvershootUSD: projectionOvershootUSD,
 		RuntimeSeconds:         int64(math.Round(result.Tokens.RuntimeSeconds)),
@@ -4116,7 +4522,7 @@ type sessionTokenCeiling struct {
 	contextMultiplier  float64
 }
 
-func (r *Runner) enforceSessionTokenCeiling(cfg config.Agent, issue connector.Issue, workspacePath string, update AgentUpdate, eventAt time.Time) error {
+func (r *Runner) enforceSessionTokenCeiling(cfg config.Agent, issue connector.Issue, update AgentUpdate) error {
 	if update.Type != AgentUpdateTokenUsage || sessionTokenCeilingBypassed(cfg, issue) {
 		return nil
 	}
@@ -4126,18 +4532,13 @@ func (r *Runner) enforceSessionTokenCeiling(cfg config.Agent, issue connector.Is
 		return nil
 	}
 
-	err := &SessionTokenCeilingError{
+	return &SessionTokenCeilingError{
 		TotalTokens:        observedTokens,
 		CeilingTokens:      ceiling.tokens,
 		Source:             ceiling.source,
 		ModelContextWindow: ceiling.modelContextWindow,
 		ContextMultiplier:  ceiling.contextMultiplier,
 	}
-	if appendErr := appendSessionTokenCeilingLesson(cfg.Lessons, issue, workspacePath, err, eventAt); appendErr != nil {
-		r.logger.Warn("session token ceiling lesson append failed", "error", appendErr)
-		return errors.Join(err, appendErr)
-	}
-	return err
 }
 
 func (r *Runner) enforceSessionBudgetProjection(
@@ -4242,29 +4643,6 @@ func tokenCeilingOverrideEnabled(value string) bool {
 	}
 }
 
-func appendSessionTokenCeilingLesson(cfg config.Lessons, issue connector.Issue, workspacePath string, ceilingErr *SessionTokenCeilingError, eventAt time.Time) error {
-	if strings.TrimSpace(workspacePath) == "" {
-		return nil
-	}
-	path := cfg.Path
-	if strings.TrimSpace(path) == "" {
-		path = lessons.DefaultPath
-	}
-	lessonPath, err := promptWorkspaceRelativePath(workspacePath, path)
-	if err != nil {
-		return err
-	}
-	return lessons.Append(lessonPath, lessons.Entry{
-		IssueNumber: githubIssueNumber(issue.Identifier),
-		IssueRef:    issue.Identifier,
-		Title:       issue.Title,
-		FailureKind: FinalStateTokenCeilingExceeded,
-		Symptom:     fmt.Sprintf("session reached %d tokens, above configured ceiling %d", ceilingErr.TotalTokens, ceilingErr.CeilingTokens),
-		Hypothesis:  "the agent session is consuming tokens faster than the configured per-session ceiling permits",
-		Hint:        "retry with a narrower task split, stronger stop conditions, or a deliberate per-issue token ceiling override",
-	}, lessons.AppendOptions{Date: eventAt.UTC(), MaxEntries: cfg.MaxEntries})
-}
-
 func finalStateForTurnError(err error) string {
 	if errors.Is(err, ErrOperatorStopped) {
 		return FinalStateOperatorStopped
@@ -4295,9 +4673,6 @@ func finalStateForTurnError(err error) string {
 	}
 	if errors.Is(err, ErrSessionTurnLimitExceeded) {
 		return FinalStateTurnLimitExceeded
-	}
-	if errors.Is(err, ErrSessionNoProgress) {
-		return FinalStateNoProgress
 	}
 	return FinalStateFailed
 }
@@ -4334,9 +4709,6 @@ func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 	if issue.PullRequest != nil {
 		switch strings.ToUpper(strings.TrimSpace(issue.PullRequest.State)) {
 		case "MERGED":
-			if landedHeadSHA == "" {
-				landedHeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
-			}
 			issue.PullRequest = nil
 		case "CLOSED":
 			issue.PullRequest = nil
@@ -4349,18 +4721,19 @@ func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 		progressBaseRef = strings.TrimSpace(issue.PullRequest.BaseRef)
 	}
 	return workspace.Issue{
-		ProjectID:             projectID,
-		ID:                    issue.ID,
-		Identifier:            issue.Identifier,
-		Terminal:              issue.Closed,
-		LandedHeadSHA:         landedHeadSHA,
-		BranchName:            issue.BranchName,
-		BaseRef:               baseRef,
-		ProgressBaseRef:       progressBaseRef,
-		PullRequestHeadSHA:    pullRequestHeadSHA(issue.PullRequest),
-		PullRequestRepository: strings.TrimSpace(issue.PRRepository),
-		PullRequestNumber:     workspacePullRequestNumber(issue.PullRequest),
-		PullRequestBranch:     pullRequestBranch(issue.PullRequest),
+		ProjectID:               projectID,
+		ID:                      issue.ID,
+		Identifier:              issue.Identifier,
+		Terminal:                issue.Closed,
+		LandedHeadSHA:           landedHeadSHA,
+		CleanupDeliveredHeadSHA: issue.CleanupDeliveredHeadSHA,
+		BranchName:              issue.BranchName,
+		BaseRef:                 baseRef,
+		ProgressBaseRef:         progressBaseRef,
+		PullRequestHeadSHA:      pullRequestHeadSHA(issue.PullRequest),
+		PullRequestRepository:   strings.TrimSpace(issue.PRRepository),
+		PullRequestNumber:       workspacePullRequestNumber(issue.PullRequest),
+		PullRequestBranch:       pullRequestBranch(issue.PullRequest),
 	}
 }
 
@@ -4488,6 +4861,7 @@ type agentRunProgress struct {
 	diffStats                 DiffStats
 	diffStatsCollected        bool
 	diffStatsCheckedAt        time.Time
+	diffStatsHeadObservedAt   time.Time
 	toolInvocations           map[string]deliverableToolInvocation
 	toolOutputTails           map[string]string
 	deliverableFailures       map[string]error
@@ -5334,6 +5708,11 @@ func (r *Runner) publishRunUpdate(
 	runStartedAt time.Time,
 	detentSessionID int64,
 ) error {
+	if runtime, ok := req.Execution.(RuntimeExecution); ok {
+		if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: eventAt, Identity: result.RuntimeIdentity}); err != nil {
+			return err
+		}
+	}
 	if req.OnUsageUpdate == nil {
 		return nil
 	}
@@ -5443,6 +5822,7 @@ func (r *Runner) liveDiffStats(
 	diffStats := diffStatsFromWorkspace(stat)
 	diffStats.Status = "ok"
 	progress.diffStats = diffStats
+	progress.diffStatsHeadObservedAt = stat.HeadObservedAt
 	progress.diffStatsCollected = true
 	return diffStats, true
 }
@@ -5509,6 +5889,7 @@ func diffStatsFromWorkspace(stat workspace.DiffStat) DiffStats {
 		AddedLines:   stat.Added,
 		RemovedLines: stat.Removed,
 		Fingerprint:  strings.TrimSpace(stat.Fingerprint),
+		HeadSHA:      stat.HeadSHA,
 		Status:       status,
 	}
 }
@@ -5774,7 +6155,7 @@ func (r *Runner) logRuntimeIdentity(req RunRequest, detentSessionID int64, updat
 func runtimeIdentityProviderSessionID(backendKind string, threadID string, turnID string) string {
 	threadID = strings.TrimSpace(threadID)
 	turnID = strings.TrimSpace(turnID)
-	if strings.EqualFold(strings.TrimSpace(backendKind), config.AgentBackendClaudeCode) {
+	if strings.EqualFold(strings.TrimSpace(backendKind), config.AgentBackendClaudeCode) || strings.EqualFold(strings.TrimSpace(backendKind), config.AgentBackendPiAgent) {
 		return threadID
 	}
 	if threadID == "" || turnID == "" {
@@ -5888,4 +6269,16 @@ func runtimeSeconds(startedAt, completedAt time.Time) float64 {
 		return 0
 	}
 	return completedAt.Sub(startedAt).Seconds()
+}
+
+func (r *Runner) meterCompute(host string) func() *compute.Usage {
+	if host == "" {
+		host = "local"
+	}
+	workflow, _, _, _ := r.runtimeSnapshot()
+	rates := workflow.Config.Worker.ComputeRates[host]
+	if r.startCompute != nil {
+		return r.startCompute(rates)
+	}
+	return compute.Start(rates)
 }

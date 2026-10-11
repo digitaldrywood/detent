@@ -16,6 +16,10 @@ import (
 )
 
 func TestMergeRequiredCheckStreakEscalation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -114,6 +118,10 @@ func TestMergeRequiredCheckStreakEscalation(t *testing.T) {
 }
 
 func TestPersistentlyMissingRequiredCheckParkRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -122,6 +130,7 @@ func TestPersistentlyMissingRequiredCheckParkRecovery(t *testing.T) {
 		mutateConfig func(*Config)
 		wantMerging  bool
 	}{
+		{name: "missing context now owned by Detent", recovery: mergeRequiredCheckEvaluationStep{missing: true, headSHA: "head-b", requiredChecks: []string{"Test"}}, mutateConfig: func(cfg *Config) { cfg.AutoPromote.Gate.LocalStatus = "Test" }, wantMerging: true},
 		{
 			name:        "check appears on current head",
 			recovery:    mergeRequiredCheckEvaluationStep{headSHA: "head-b", requiredChecks: []string{"Test"}},
@@ -186,6 +195,10 @@ func TestPersistentlyMissingRequiredCheckParkRecovery(t *testing.T) {
 }
 
 func TestMergeRequiredCheckStreakClearsOnTerminalCompletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	orch, tracker, state, closeStore := newMergeRequiredCheckTestOrchestrator(t, true)
@@ -202,7 +215,7 @@ func TestMergeRequiredCheckStreakClearsOnTerminalCompletion(t *testing.T) {
 		Attempt:   1,
 		StartedAt: now.Add(2 * time.Minute),
 		Mode:      runpkg.RunModeMerge,
-	}, now.Add(3*time.Minute), TokenTotals{})
+	}, now.Add(3*time.Minute), TokenTotals{}, now.Add(3*time.Minute))
 	runMergeRequiredCheckEvaluation(t, orch, tracker, &state, step, now.Add(4*time.Minute))
 
 	if _, ok := state.Blocked[mergeRequiredCheckTestIssueID]; ok {
@@ -214,6 +227,10 @@ func TestMergeRequiredCheckStreakClearsOnTerminalCompletion(t *testing.T) {
 }
 
 func TestMergeRequiredCheckStreakClearsWhenBlocked(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	orch, tracker, state, closeStore := newMergeRequiredCheckTestOrchestrator(t, true)
@@ -274,7 +291,7 @@ func TestMergeWorkerCurrentHeadCIWaitReason(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			issue := connector.Issue{PullRequest: tt.pullRequest}
-			if got := mergeWorkerCurrentHeadCIWaitReason(issue); got != tt.want {
+			if got := mergeWorkerCurrentHeadCIWaitReason(issue, ""); got != tt.want {
 				t.Fatalf("mergeWorkerCurrentHeadCIWaitReason() = %q, want %q", got, tt.want)
 			}
 		})

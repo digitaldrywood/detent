@@ -11,6 +11,10 @@ import (
 )
 
 func TestDoctorParkReviewThreshold(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -40,6 +44,10 @@ func TestDoctorParkReviewThreshold(t *testing.T) {
 }
 
 func TestDoctorParkReviewListsEveryIssue(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	path := createDoctorParkStore(t)
@@ -57,6 +65,10 @@ func TestDoctorParkReviewListsEveryIssue(t *testing.T) {
 }
 
 func TestDoctorParkReviewAcknowledgementClearsAndRearms(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	path := createDoctorParkStore(t)

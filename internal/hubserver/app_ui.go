@@ -17,11 +17,14 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent"
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/update"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 // conversationClientFS holds the built client under app/conversation. It is
@@ -40,7 +43,7 @@ const conversationClientEntry = "app/conversation/app.js"
 // is a client route (decisions section 12).
 var (
 	appReservedNamespaces = []string{"/api", "/app", "/auth", "/webhooks", "/static"}
-	appReservedPaths      = []string{"/health", "/invite", "/logout", "/metrics"}
+	appReservedPaths      = []string{"/health", "/invite", "/logout", "/metrics", "/chat/approval"}
 )
 
 // appReserved reports whether a path belongs to the hub rather than the
@@ -83,8 +86,19 @@ func (s *Service) appShell(c echo.Context) error {
 		// The shell itself carries no customer data; every screen reads the
 		// JSON API, which enforces membership. A session is enough here, so
 		// a staff account can still reach the support screen.
-		if _, _, err := s.hostedSession(c); err != nil {
+		if _, _, err := s.hostedSession(c.Request().Context(), c); err != nil {
 			return c.Redirect(http.StatusSeeOther, s.hostedSignInPath())
+		}
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(parts) >= 2 && parts[0] == "projects" {
+			credential, _, err := s.hostedCredential(c.Request().Context(), c)
+			if err != nil {
+				return s.nativeAPIError(c, nativeNotFound())
+			}
+			scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(parts[1]), credential: credential}
+			if err := s.database.authorizeNativeProject(c.Request().Context(), scope); err != nil {
+				return s.nativeAPIError(c, err)
+			}
 		}
 	}
 	content, err := fs.ReadFile(conversationClientFS, conversationClientShell)
@@ -163,8 +177,9 @@ func conversationClientIdentity(fsys fs.FS, version string, at time.Time) appCli
 // hub's version is a host somebody has to go and upgrade.
 
 type appUpdateRunner struct {
-	RunnerID    string `json:"runner_id"`
-	DisplayName string `json:"display_name"`
+	ClaimRefusalReason string `json:"claim_refusal_reason"`
+	RunnerID           string `json:"runner_id"`
+	DisplayName        string `json:"display_name"`
 	// Version is what the host's heartbeat last reported, empty for a runner
 	// that has never reported one.
 	Version string `json:"version"`
@@ -173,6 +188,7 @@ type appUpdateRunner struct {
 }
 
 type appUpdates struct {
+	MinimumRunnerVersion string `json:"minimum_runner_version"`
 	// Current is the version every runner is expected to be on.
 	Current string `json:"current"`
 	// Source names where Current came from, so a reader is never left guessing
@@ -214,23 +230,32 @@ func runnerBehind(current string, reported string) bool {
 // reads one row per runner. A revoked enrolment is not in the answer: it is
 // not a runner anybody is going to upgrade.
 func (s *Service) appUpdates(c echo.Context) error {
-	credential, status, err := s.hostedCredential(c)
+	credential, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		if status == http.StatusForbidden {
 			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
 		}
 		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
-	if credential.HostedRole == "viewer" || !s.hostedAllRunnerGrants(c.Request().Context(), credential) {
-		return s.nativeAPIError(c, nativeNotFound())
+	payload, err := s.readAppUpdates(c.Request().Context(), credential)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, payload)
+}
+
+func (s *Service) readAppUpdates(ctx context.Context, credential apiCredential) (appUpdates, error) {
+	if credential.Hosted == nil || credential.HostedRole == "viewer" || !s.appAllRunnerGrants(ctx, credential) {
+		return appUpdates{}, nativeNotFound()
 	}
 	current := detentVersion(s.config.Version)
-	payload := appUpdates{Current: current, Source: "hub", Runners: []appUpdateRunner{}, Client: s.clientBuild}
-	rows, err := s.database.db.QueryContext(c.Request().Context(), `SELECT r.id, r.display_name, m.version, r.last_heartbeat_at
+	minimum := minimumRunnerVersion(current)
+	payload := appUpdates{MinimumRunnerVersion: minimum, Current: current, Source: "hub", Runners: []appUpdateRunner{}, Client: s.clientBuild}
+	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id, r.display_name, m.version, r.last_heartbeat_at
 FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id
 WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.id`, s.config.Hosted.OrganizationID)
 	if err != nil {
-		return s.nativeAPIError(c, fmt.Errorf("list runner versions: %w", err))
+		return appUpdates{}, fmt.Errorf("list runner versions: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	now := s.config.now()
@@ -238,24 +263,25 @@ WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.
 		var runner appUpdateRunner
 		var heartbeat string
 		if err := rows.Scan(&runner.RunnerID, &runner.DisplayName, &runner.Version, &heartbeat); err != nil {
-			return s.nativeAPIError(c, fmt.Errorf("scan runner version: %w", err))
+			return appUpdates{}, fmt.Errorf("scan runner version: %w", err)
 		}
 		at, err := parseTimeValue(heartbeat)
 		if err != nil {
-			return s.nativeAPIError(c, fmt.Errorf("read runner heartbeat: %w", err))
+			return appUpdates{}, fmt.Errorf("read runner heartbeat: %w", err)
 		}
 		// The same window readRunner calls "offline".
 		runner.Online = !now.Before(at) && now.Before(at.Add(runnerauth.HeartbeatTimeout))
-		runner.Behind = runnerBehind(current, runner.Version)
+		runner.ClaimRefusalReason = runnerClaimRefusal(minimum, runner.Version)
+		runner.Behind = runner.ClaimRefusalReason != ""
 		if runner.Behind {
 			payload.BehindCount++
 		}
 		payload.Runners = append(payload.Runners, runner)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return s.nativeAPIError(c, fmt.Errorf("list runner versions: %w", err))
+		return appUpdates{}, fmt.Errorf("list runner versions: %w", err)
 	}
-	return c.JSON(http.StatusOK, payload)
+	return payload, nil
 }
 
 // Bootstrap payload (decisions section 12).
@@ -268,6 +294,7 @@ type appBootstrapOrganization struct {
 }
 
 type appBootstrapActor struct {
+	PlatformRole     string `json:"platform_role"`
 	PrincipalID      string `json:"principal_id"`
 	Subject          string `json:"subject"`
 	Email            string `json:"email"`
@@ -277,12 +304,13 @@ type appBootstrapActor struct {
 }
 
 type appBootstrapProject struct {
-	ID               string                `json:"id"`
-	Name             string                `json:"name"`
-	Profile          string                `json:"profile"`
-	CanWrite         bool                  `json:"can_write"`
-	CanManageRunners bool                  `json:"can_manage_runners"`
-	States           []tracker.NativeState `json:"states"`
+	ID               string                        `json:"id"`
+	Name             string                        `json:"name"`
+	Profile          string                        `json:"profile"`
+	CanWrite         bool                          `json:"can_write"`
+	CanManageRunners bool                          `json:"can_manage_runners"`
+	States           []tracker.NativeState         `json:"states"`
+	Capabilities     workspacesession.Capabilities `json:"capabilities"`
 }
 
 type appBootstrapSupport struct {
@@ -307,10 +335,11 @@ type appBootstrapCapabilities struct {
 
 type appBootstrapFeature struct {
 	Conversation bool `json:"conversation"`
+	Workspaces   bool `json:"workspaces"`
 }
 
 func (s *Service) appBootstrapFeature() appBootstrapFeature {
-	return appBootstrapFeature{Conversation: s.conversations != nil}
+	return appBootstrapFeature{Conversation: s.conversations != nil, Workspaces: s.workspaces != nil}
 }
 
 // appBootstrapChoice is one option of a turn preference picker. Default
@@ -354,7 +383,7 @@ type appBootstrap struct {
 	Actor         appBootstrapActor          `json:"actor"`
 	Projects      []appBootstrapProject      `json:"projects"`
 	Support       *appBootstrapSupport       `json:"support"`
-	CSRFToken     string                     `json:"csrf_token"`
+	CSRFToken     string                     `json:"csrf_token,omitempty"`
 	Capabilities  appBootstrapCapabilities   `json:"capabilities"`
 	Preferences   appBootstrapPreferences    `json:"preferences"`
 	Feature       appBootstrapFeature        `json:"feature"`
@@ -383,7 +412,7 @@ type appBootstrapRefusalDetails struct {
 }
 
 func (s *Service) appBootstrapPayload(c echo.Context) error {
-	credential, status, err := s.hostedCredential(c)
+	credential, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		if status == http.StatusForbidden {
 			return c.JSON(http.StatusForbidden, appBootstrapRefusal{Code: "forbidden", Message: "This account has no access to this organization", Details: appBootstrapRefusalDetails{Organization: s.config.Hosted.OrganizationID, CSRFToken: s.hostedPageCSRF(c)}})
@@ -398,54 +427,65 @@ func (s *Service) appBootstrapPayload(c echo.Context) error {
 	if csrf == "" {
 		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
-	ctx := c.Request().Context()
+	payload, err := s.readAppBootstrap(c.Request().Context(), credential, session)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	payload.CSRFToken = csrf
+	payload.Actor.PlatformRole = sharedPlatformRole(c)
+	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, payload)
+}
+
+func (s *Service) readAppBootstrap(ctx context.Context, credential apiCredential, session auth.Session) (appBootstrap, error) {
 	organization := s.config.Hosted.OrganizationID
 	manage := credential.HostedRole == "owner" || credential.HostedRole == "admin"
 	payload := appBootstrap{
 		Organization:  appBootstrapOrganization{ID: organization, Name: organization, PublicURL: s.config.Hosted.PublicURL, Current: true},
 		Organizations: []appBootstrapOrganization{},
 		Actor: appBootstrapActor{
-			PrincipalID: credential.ID, Subject: credential.Hosted.Subject, Email: session.Email, Role: credential.HostedRole,
+			PrincipalID: operatorIdentity(credential, organization).PrincipalID, Subject: credential.Hosted.Subject, Email: session.Email, Role: credential.HostedRole,
 			CanManage:        manage,
-			CanManageRunners: credential.HostedRole != "viewer" && s.hostedAllRunnerGrants(ctx, credential),
+			CanManageRunners: credential.HostedRole != "viewer" && s.appAllRunnerGrants(ctx, credential),
 		},
 		Projects:   []appBootstrapProject{},
-		CSRFToken:  csrf,
 		APIBase:    "/api/v2/organizations/" + organization,
 		BasePath:   s.hostedBase(),
 		SignInPath: s.hostedSignInPath(),
 		Version:    s.config.Version,
 	}
 	if err := s.database.db.QueryRowContext(ctx, "SELECT name FROM organizations WHERE id = ?", organization).Scan(&payload.Organization.Name); err != nil {
-		return s.nativeAPIError(c, fmt.Errorf("read organization name: %w", err))
+		return appBootstrap{}, fmt.Errorf("read organization name: %w", err)
 	}
 	if identity := credential.Hosted; identity.SupportActor != "" {
 		payload.Support = &appBootstrapSupport{Actor: identity.SupportActor, Reason: identity.SupportReason, ExpiresAt: identity.ExpiresAt.UTC().Format(time.RFC3339)}
 	}
+	var err error
 	payload.Projects, err = s.hostedReadableProjects(ctx, credential)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return appBootstrap{}, err
 	}
-	payload.Organizations, err = s.hostedOrganizationChoices(ctx, session)
+	if credential.HostedKeyScope == "" {
+		payload.Organizations, err = s.hostedOrganizationChoices(ctx, session)
+	}
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return appBootstrap{}, err
 	}
 	for index := range payload.Organizations {
 		if payload.Organizations[index].Current {
 			payload.Organizations[index].Name = payload.Organization.Name
 		}
 	}
-	payload.Capabilities.Coordinator = s.conversations != nil && s.conversations.coordinator.Available()
+	payload.Capabilities.Coordinator = s.conversations != nil && s.conversations.coordinator != nil && s.conversations.coordinator.Available()
 	payload.Feature = s.appBootstrapFeature()
 	payload.Preferences, err = s.appBootstrapPreferences(ctx, organization, payload.Projects)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return appBootstrap{}, err
 	}
 	payload.Plan = s.appBootstrapPlan(ctx)
-	if err := s.hostedAudit(ctx, credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, payload)
+	return payload, nil
 }
 
 // appBootstrapPreferences publishes the turn preference choices: every model
@@ -556,9 +596,31 @@ func (s *Service) appBootstrapPlan(ctx context.Context) *appBootstrapPlan {
 // capabilities the client needs to render them.
 func (s *Service) hostedReadableProjects(ctx context.Context, credential apiCredential) ([]appBootstrapProject, error) {
 	projects := []appBootstrapProject{}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT p.id, p.name, p.profile, p.states_json, g.can_write, g.manage_runner
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.id, p.name, p.profile, p.states_json, g.can_write, g.manage_runner
 FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id
-WHERE g.user_id = ? AND p.organization_id = ? ORDER BY p.name, p.id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
+WHERE p.deleted_at IS NULL AND g.user_id = ? AND p.organization_id = ? ORDER BY p.name, p.id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
+	if credential.EntryKey != nil {
+		if rows != nil {
+			_ = rows.Close()
+		}
+		projects, encodeErr := json.Marshal(credential.EntryKey.Projects)
+		if encodeErr != nil {
+			return nil, encodeErr
+		}
+		blocked, encodeErr := json.Marshal(credential.EntryKey.BlockedProjects)
+		if encodeErr != nil {
+			return nil, encodeErr
+		}
+		kind, owner := credential.EntryKey.Kind, credential.Hosted.Subject
+		rows, err = s.database.reader.QueryContext(ctx, `SELECT p.id,p.name,p.profile,p.states_json,
+CASE WHEN ?='service' THEN 1 ELSE COALESCE((SELECT g.can_write FROM hosted_project_grants g WHERE g.user_id=? AND g.project_id=p.id),0) END,
+CASE WHEN ?='service' THEN 1 ELSE COALESCE((SELECT g.manage_runner FROM hosted_project_grants g WHERE g.user_id=? AND g.project_id=p.id),0) END
+FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=?
+AND (?='service' OR EXISTS (SELECT 1 FROM hosted_project_grants g JOIN hosted_members m ON m.user_id=g.user_id JOIN api_tokens t ON t.id=m.principal_id WHERE g.user_id=? AND g.organization_id=p.organization_id AND g.project_id=p.id AND m.active=1 AND t.revoked_at IS NULL))
+AND (?='all' OR p.id IN (SELECT value FROM json_each(?) WHERE type='text'))
+AND p.id NOT IN (SELECT value FROM json_each(?) WHERE type='text')
+ORDER BY p.name,p.id`, kind, owner, kind, owner, s.config.Hosted.OrganizationID, kind, owner, credential.EntryKey.Access, string(projects), string(blocked))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("list project grants: %w", err)
 	}
@@ -575,6 +637,11 @@ WHERE g.user_id = ? AND p.organization_id = ? ORDER BY p.name, p.id`, credential
 		// Viewers never write or manage runners regardless of the grant flag
 		// (requireHostedProject, requireHostedAdministration).
 		viewer := credential.HostedRole == "viewer"
+		if credential.EntryKey != nil {
+			project.CanWrite = project.CanWrite && hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeWrite)
+			project.CanManageRunners = project.CanManageRunners && hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeAdmin)
+		}
+
 		project.CanWrite = project.CanWrite && !viewer
 		project.CanManageRunners = project.CanManageRunners && !viewer
 		projects = append(projects, project)
@@ -582,7 +649,81 @@ WHERE g.user_id = ? AND p.organization_id = ? ORDER BY p.name, p.id`, credential
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("list project grants: %w", err)
 	}
+	if credential.HostedKeyScope != "" {
+		filtered := projects[:0]
+		for _, project := range projects {
+			scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project.ID), credential: credential}
+			if err := s.database.authorizeNativeProject(ctx, scope); err != nil {
+				var native *nativeError
+				if errors.As(err, &native) && native.Code == "not_found" {
+					continue
+				}
+				return nil, err
+			}
+			filtered = append(filtered, project)
+		}
+		projects = filtered
+	}
+	for index := range projects {
+		project := &projects[index]
+		project.Capabilities, err = s.hostedWorkspaceCapabilities(ctx, credential, *project)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return projects, nil
+}
+
+func (s *Service) hostedWorkspaceCapabilities(ctx context.Context, credential apiCredential, project appBootstrapProject) (workspacesession.Capabilities, error) {
+	result := workspacesession.Capabilities{}
+	if s.workspaces == nil || !project.CanWrite || credential.Hosted == nil || credential.HostedRole == "viewer" {
+		return result, nil
+	}
+	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id FROM runner_identities r
+JOIN token_grants g ON g.token_id = r.token_id AND g.organization_id = r.organization_id
+WHERE r.organization_id = ? AND r.removed_at IS NULL AND g.project_id = ?`, s.config.Hosted.OrganizationID, project.ID)
+	if err != nil {
+		return result, fmt.Errorf("list workspace runners: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return result, errors.Join(err, rows.Close())
+		}
+		ids = append(ids, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return result, err
+	}
+	now := s.config.now()
+	for _, id := range ids {
+		runner, err := readRunnerWithClock(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID), id, s.config.now)
+		if err != nil {
+			return result, err
+		}
+		if runner.Health != "online" || runner.State != "active" || !slices.Contains(runner.Operations, "claim") {
+			continue
+		}
+		capabilities, isolation, fresh, err := runnerWorkspaceCapabilities(ctx, s.database.db, id, now)
+		if err != nil {
+			return result, err
+		}
+		if !fresh {
+			continue
+		}
+		files := capabilities.Satisfies([]string{workspacesession.CapabilityFiles, workspacesession.CapabilityExec})
+		result.Files = result.Files || files
+		result.Exec = result.Exec || files
+		terminal := files && capabilities.Terminal && project.CanManageRunners && s.workspaces.config.Terminal.Enabled &&
+			terminalIsolationAllowed([]string{workspacesession.CapabilityTerminal}, s.workspaces.config.Terminal.Isolation, isolation)
+		if s.workspaces.config.Terminal.Isolation == workspacesession.IsolationUser && credential.HostedRole != "owner" && credential.HostedRole != "admin" {
+			terminal = false
+		}
+		result.Terminal = result.Terminal || terminal
+	}
+	return result, nil
 }
 
 // hostedOrganizationChoices lists the directory destinations the signed-in
@@ -609,4 +750,12 @@ func (s *Service) hostedOrganizationChoices(ctx context.Context, session auth.Se
 		}
 	}
 	return choices, nil
+}
+
+func sharedPlatformRole(c echo.Context) string {
+	claims, ok := hostedSharedClaims(c)
+	if !ok || claims.Kind != cloudassert.KindBrowser || claims.SupportActor != "" {
+		return ""
+	}
+	return claims.PlatformRole
 }

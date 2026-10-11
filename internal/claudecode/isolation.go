@@ -36,7 +36,12 @@ func IsolationSettings(p isolation.Policy) (map[string]any, error) {
 	sandbox["enableWeakerNestedSandbox"] = false
 	sandbox["allowAppleEvents"] = false
 	sandbox["filesystem"] = map[string]any{"allowWrite": p.WritableRoots, "denyRead": []string{"~/.ssh", "~/.aws", "~/Library/Keychains", "/Library/Keychains"}, "disabled": false}
-	sandbox["network"] = map[string]any{"allowedDomains": isolation.Domains(), "allowUnixSockets": sockets, "allowAllUnixSockets": false, "allowLocalBinding": false, "strictAllowlist": true}
+	domains := isolation.Domains()
+	domains = append(domains, p.ExtraNetworkDomains...)
+	if p.AllowLocalBinding {
+		domains = append(domains, "localhost", "127.0.0.1", "::1")
+	}
+	sandbox["network"] = map[string]any{"allowedDomains": domains, "allowUnixSockets": sockets, "allowAllUnixSockets": false, "allowLocalBinding": p.AllowLocalBinding, "strictAllowlist": true}
 	settings["permissions"] = map[string]any{"disableBypassPermissionsMode": "disable", "deny": []string{"Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/Library/Keychains/**)", "Read(//Library/Keychains/**)"}}
 	return settings, nil
 }

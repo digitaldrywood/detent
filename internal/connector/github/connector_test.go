@@ -16,6 +16,10 @@ import (
 )
 
 func TestConnectorAuthenticateValidatesViewerAndProject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	requests := make(chan map[string]any, 1)
@@ -67,6 +71,10 @@ func TestConnectorAuthenticateValidatesViewerAndProject(t *testing.T) {
 }
 
 func TestConnectorProjectURLResolvesAndCachesMetadata(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	var requests atomic.Int64
@@ -109,6 +117,10 @@ func TestConnectorProjectURLResolvesAndCachesMetadata(t *testing.T) {
 }
 
 func TestConnectorUsesDefaultLoggerForClientDiagnostics(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	var logs bytes.Buffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
@@ -155,6 +167,10 @@ func TestConnectorUsesDefaultLoggerForClientDiagnostics(t *testing.T) {
 }
 
 func TestConnectorInstanceLoginConcurrentAuthenticateAndRead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	var count atomic.Int64
@@ -203,6 +219,10 @@ func TestConnectorInstanceLoginConcurrentAuthenticateAndRead(t *testing.T) {
 }
 
 func TestConnectorAuthenticateReportsProjectProblems(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {

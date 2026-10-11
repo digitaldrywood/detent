@@ -181,6 +181,13 @@ func (s *Service) collectParkSummary(ctx context.Context, identity store.IssueId
 		return nil
 	}
 	collected.configuredSources++
+	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		collected.sources = append(collected.sources, failedSource("park_summary", err))
+		return nil
+	}
 	summary, err := s.parks.IssueParkSummary(ctx, identity)
 	if errors.Is(err, store.ErrNotFound) {
 		collected.successfulSources++
@@ -188,8 +195,8 @@ func (s *Service) collectParkSummary(ctx context.Context, identity store.IssueId
 		return nil
 	}
 	if err != nil {
-		if contextError(err) != nil {
-			return contextError(err)
+		if errors.Is(err, context.Canceled) {
+			return context.Canceled
 		}
 		collected.sources = append(collected.sources, failedSource("park_summary", err))
 		return nil
@@ -207,10 +214,17 @@ func (s *Service) collectProvenanceBoundary(ctx context.Context, collected *coll
 		return nil
 	}
 	collected.configuredSources++
+	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		collected.sources = append(collected.sources, failedSource("provenance_boundary", err))
+		return nil
+	}
 	boundary, err := s.provenance.ProvenanceAttributionTrustBoundary(ctx)
 	if err != nil {
-		if contextError(err) != nil {
-			return contextError(err)
+		if errors.Is(err, context.Canceled) {
+			return context.Canceled
 		}
 		collected.sources = append(collected.sources, failedSource("provenance_boundary", err))
 		return nil
@@ -227,10 +241,17 @@ func (s *Service) collectSnapshot(ctx context.Context, now time.Time, query Quer
 		return nil
 	}
 	collected.configuredSources++
+	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		collected.sources = append(collected.sources, failedSource("snapshot", err))
+		return nil
+	}
 	observation, err := s.snapshots.Snapshot(ctx)
 	if err != nil {
-		if contextError(err) != nil {
-			return contextError(err)
+		if errors.Is(err, context.Canceled) {
+			return context.Canceled
 		}
 		collected.sources = append(collected.sources, failedSource("snapshot", err))
 		return nil
@@ -257,10 +278,17 @@ func (s *Service) collectWorkflow(ctx context.Context, identity store.IssueIdent
 		return nil
 	}
 	collected.configuredSources++
+	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		collected.sources = append(collected.sources, failedSource("workflow", err))
+		return nil
+	}
 	timeline, err := s.workflow.IssueWorkflowTimeline(ctx, identity)
 	if err != nil {
-		if contextError(err) != nil {
-			return contextError(err)
+		if errors.Is(err, context.Canceled) {
+			return context.Canceled
 		}
 		collected.sources = append(collected.sources, failedSource("workflow", err))
 		return nil
@@ -281,10 +309,18 @@ func (s *Service) collectAttempts(ctx context.Context, identity store.IssueIdent
 	}
 
 	collected.configuredSources += 2
+	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		collected.sources = append(collected.sources, failedSource("active_attempt", err))
+		collected.sources = append(collected.sources, failedSource("terminal_attempt", err))
+		return nil
+	}
 	active, err := s.attempts.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: identity.ProjectID})
 	if err != nil {
-		if contextError(err) != nil {
-			return contextError(err)
+		if errors.Is(err, context.Canceled) {
+			return context.Canceled
 		}
 		collected.sources = append(collected.sources, failedSource("active_attempt", err))
 	} else {
@@ -293,6 +329,13 @@ func (s *Service) collectAttempts(ctx context.Context, identity store.IssueIdent
 		collected.sources = append(collected.sources, availableSource("active_attempt"))
 	}
 
+	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		collected.sources = append(collected.sources, failedSource("terminal_attempt", err))
+		return nil
+	}
 	terminal, err := s.attempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
 		ProjectID:  identity.ProjectID,
 		IssueID:    identity.IssueID,
@@ -301,8 +344,8 @@ func (s *Service) collectAttempts(ctx context.Context, identity store.IssueIdent
 		Limit:      50,
 	})
 	if err != nil {
-		if contextError(err) != nil {
-			return contextError(err)
+		if errors.Is(err, context.Canceled) {
+			return context.Canceled
 		}
 		collected.sources = append(collected.sources, failedSource("terminal_attempt", err))
 	} else {
@@ -319,10 +362,17 @@ func (s *Service) collectScheduler(ctx context.Context, identity store.IssueIden
 		return nil
 	}
 	collected.configuredSources++
+	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		collected.sources = append(collected.sources, failedSource("scheduler", err))
+		return nil
+	}
 	decisions, err := s.scheduler.ListIssueSchedulerDecisions(ctx, store.IssueSchedulerDecisionQuery{Identity: identity, Limit: 50})
 	if err != nil {
-		if contextError(err) != nil {
-			return contextError(err)
+		if errors.Is(err, context.Canceled) {
+			return context.Canceled
 		}
 		collected.sources = append(collected.sources, failedSource("scheduler", err))
 		return nil
@@ -339,6 +389,13 @@ func (s *Service) collectSession(ctx context.Context, identity store.IssueIdenti
 		return nil
 	}
 	collected.configuredSources++
+	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		collected.sources = append(collected.sources, failedSource("session", err))
+		return nil
+	}
 	session, err := s.sessions.LatestIssueAgentSession(ctx, identity)
 	if errors.Is(err, store.ErrNotFound) {
 		collected.successfulSources++
@@ -346,8 +403,8 @@ func (s *Service) collectSession(ctx context.Context, identity store.IssueIdenti
 		return nil
 	}
 	if err != nil {
-		if contextError(err) != nil {
-			return contextError(err)
+		if errors.Is(err, context.Canceled) {
+			return context.Canceled
 		}
 		collected.sources = append(collected.sources, failedSource("session", err))
 		return nil
@@ -370,10 +427,17 @@ func (s *Service) collectAdmission(ctx context.Context, identity store.IssueIden
 		return nil
 	}
 	collected.configuredSources++
+	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		collected.sources = append(collected.sources, failedSource("admission", err))
+		return nil
+	}
 	proposals, err := s.admission.AdmissionProposalHistory(ctx, identity.ProjectID, identity.IssueID)
 	if err != nil {
-		if contextError(err) != nil {
-			return contextError(err)
+		if errors.Is(err, context.Canceled) {
+			return context.Canceled
 		}
 		collected.sources = append(collected.sources, failedSource("admission", err))
 		return nil
@@ -463,14 +527,4 @@ func failedSource(name string, err error) SourceStatus {
 		return SourceStatus{Name: name, State: SourceCorrupt, Code: "corrupt_source"}
 	}
 	return unavailableSource(name, "read_failed")
-}
-
-func contextError(err error) error {
-	if errors.Is(err, context.Canceled) {
-		return context.Canceled
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return context.DeadlineExceeded
-	}
-	return nil
 }

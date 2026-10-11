@@ -19,6 +19,7 @@ func TestIssueIdentityReadsAreProjectScoped(t *testing.T) {
 			ProjectID:    projectID,
 			IssueID:      "same-id",
 			Identifier:   "owner/repo#1",
+			IssueURL:     "https://example.com/1",
 			PhaseType:    WorkflowPhaseTypeLane,
 			PhaseName:    projectID,
 			Status:       "entered",
@@ -30,6 +31,8 @@ func TestIssueIdentityReadsAreProjectScoped(t *testing.T) {
 		if _, err := backend.RecordSchedulerDecision(ctx, SchedulerDecision{
 			ProjectID:  projectID,
 			IssueID:    "same-id",
+			Identifier: "owner/repo#1",
+			IssueURL:   "https://example.com/1",
 			Result:     SchedulerDecisionResultSkipped,
 			Reason:     projectID,
 			DecisionAt: at,
@@ -40,6 +43,7 @@ func TestIssueIdentityReadsAreProjectScoped(t *testing.T) {
 			ProjectID:        projectID,
 			IssueID:          "same-id",
 			Identifier:       "owner/repo#1",
+			IssueURL:         "https://example.com/1",
 			StartedAt:        at,
 			AgentBackendKind: "codex",
 		})
@@ -57,22 +61,60 @@ func TestIssueIdentityReadsAreProjectScoped(t *testing.T) {
 		}
 	}
 
-	identity := IssueIdentity{ProjectID: "project-a", IssueID: "same-id"}
-	timeline, err := backend.IssueWorkflowTimeline(ctx, identity)
-	if err != nil || len(timeline.Events) != 1 || timeline.Events[0].ProjectID != "project-a" {
-		t.Fatalf("IssueWorkflowTimeline() = %#v, %v", timeline, err)
+	for _, identity := range []IssueIdentity{
+		{ProjectID: "project-a", IssueID: "same-id"},
+		{ProjectID: "project-a", Identifier: "owner/repo#1"},
+		{ProjectID: "project-a", IssueURL: "https://example.com/1"},
+		{ProjectID: "project-a", IssueID: "same-id", Identifier: "owner/repo#1", IssueURL: "https://example.com/1"},
+	} {
+		timeline, err := backend.IssueWorkflowTimeline(ctx, identity)
+		if err != nil || len(timeline.Events) != 1 || timeline.Events[0].ProjectID != "project-a" {
+			t.Fatalf("IssueWorkflowTimeline() = %#v, %v", timeline, err)
+		}
+		decisions, err := backend.(IssueSchedulerDecisionStore).ListIssueSchedulerDecisions(ctx, IssueSchedulerDecisionQuery{Identity: identity})
+		if err != nil || len(decisions) != 1 || decisions[0].ProjectID != "project-a" {
+			t.Fatalf("ListIssueSchedulerDecisions() = %#v, %v", decisions, err)
+		}
+		session, err := backend.(ActivityStore).LatestIssueAgentSession(ctx, identity)
+		if err != nil || session.ProjectID != "project-a" || session.ProviderSessionID != "project-a-provider" {
+			t.Fatalf("LatestIssueAgentSession() = %#v, %v", session, err)
+		}
+		spend, err := backend.IssueTokenSpend(ctx, identity)
+		if err != nil || spend.TotalTokens != 100 || spend.Sessions != 1 {
+			t.Fatalf("IssueTokenSpend() = %#v, %v", spend, err)
+		}
+
 	}
-	decisions, err := backend.(IssueSchedulerDecisionStore).ListIssueSchedulerDecisions(ctx, IssueSchedulerDecisionQuery{Identity: identity})
-	if err != nil || len(decisions) != 1 || decisions[0].ProjectID != "project-a" {
-		t.Fatalf("ListIssueSchedulerDecisions() = %#v, %v", decisions, err)
-	}
-	session, err := backend.(ActivityStore).LatestIssueAgentSession(ctx, identity)
-	if err != nil || session.ProjectID != "project-a" || session.ProviderSessionID != "project-a-provider" {
-		t.Fatalf("LatestIssueAgentSession() = %#v, %v", session, err)
-	}
-	spend, err := backend.IssueTokenSpend(ctx, identity)
-	if err != nil || spend.TotalTokens != 100 || spend.Sessions != 1 {
-		t.Fatalf("IssueTokenSpend() = %#v, %v", spend, err)
+	for _, test := range []struct {
+		name         string
+		refused      bool
+		turns        int64
+		active       bool
+		wantSessions int64
+	}{
+		{name: "confirmed refusal", refused: true},
+		{name: "real failed turn", turns: 1, wantSessions: 1},
+		{name: "turn contradicts refusal", refused: true, turns: 1, wantSessions: 1},
+		{name: "active session", active: true, wantSessions: 1},
+		{name: "unknown zero-turn failure", wantSessions: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			identity := IssueIdentity{ProjectID: "project-a", IssueID: test.name}
+			sessionID, err := backend.StartSession(ctx, SessionStart{ProjectID: identity.ProjectID, IssueID: identity.IssueID, StartedAt: base, Model: "gpt-6.1-sol"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantTokens := int64(67)
+			if test.active {
+				wantTokens = 0
+			} else if err := backend.FinishSession(ctx, sessionID, SessionFinish{CompletedAt: base.Add(time.Minute), FinalState: "failed", Turns: test.turns, TurnStartRefused: test.refused, InputTokens: 60, OutputTokens: 7, TotalTokens: wantTokens}); err != nil {
+				t.Fatal(err)
+			}
+			spend, err := backend.IssueTokenSpend(ctx, identity)
+			if err != nil || spend.Sessions != test.wantSessions || spend.TotalTokens != wantTokens || len(spend.ByModel) != 1 || spend.ByModel[0].Sessions != test.wantSessions || spend.ByModel[0].TotalTokens != wantTokens {
+				t.Fatalf("IssueTokenSpend() = %+v, %v; want sessions=%d tokens=%d", spend, err, test.wantSessions, wantTokens)
+			}
+		})
 	}
 }
 

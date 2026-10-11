@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   DraftStore,
+  LAST_CHAT_PROJECT_STORAGE_KEY,
   LAST_PROJECT_STORAGE_KEY,
   MAX_STORED_CHARACTERS,
   type DraftScope,
@@ -132,10 +133,12 @@ describe("drafts", () => {
     const store = new DraftStore(storage);
     store.reconcileAccount("org_1:tok_1");
     storage.setItem(LAST_PROJECT_STORAGE_KEY, "proj_alpha");
+    storage.setItem(LAST_CHAT_PROJECT_STORAGE_KEY, "proj_alpha");
     store.writeDraft(scope("conv_a"), "private text");
 
     new DraftStore(storage).reconcileAccount("org_2:tok_2");
     expect(storage.getItem(LAST_PROJECT_STORAGE_KEY)).toBeNull();
+    expect(storage.getItem(LAST_CHAT_PROJECT_STORAGE_KEY)).toBeNull();
     expect(new DraftStore(storage).readDraft(scope("conv_a"))).toBe("");
   });
 });

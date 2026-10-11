@@ -25,8 +25,9 @@ type ConversationConfig struct {
 	// Backend runs coordinator turns for conversations without a linked
 	// issue. When nil ordinary chat reports the coordinator as unavailable
 	// and messages in unlinked conversations are saved until a link.
-	Backend   runner.AgentBackend
-	UsageSink ConversationUsageSink
+	Backend      runner.AgentBackend
+	UsageSink    ConversationUsageSink
+	ModelBackend func() (runner.AgentBackend, string, error)
 	// Workspace is the directory coordinator turns run in. It must exist
 	// when Backend is set.
 	Workspace string
@@ -103,7 +104,7 @@ func (c ConversationConfig) normalized() ConversationConfig {
 type conversationService struct {
 	server *Service
 	store  *conversationStore
-	broker *conversationBroker
+	broker *notificationBroker
 	config ConversationConfig
 	logger *slog.Logger
 	// coordinator answers messages in conversations without a linked
@@ -113,9 +114,10 @@ type conversationService struct {
 	// conversation. It is woken after a control committed.
 	controls conversationControlRouter
 	// settle stops the settle sweep; settled waits for it to exit.
-	settle  chan struct{}
-	settled chan struct{}
-	once    sync.Once
+	settle              chan struct{}
+	settled             chan struct{}
+	monthlyBudgetPeriod string
+	once                sync.Once
 }
 
 // conversationCoordinator runs model turns for unlinked conversations. The
@@ -147,7 +149,7 @@ func newConversationService(server *Service, cfg ConversationConfig) *conversati
 	service := &conversationService{
 		server: server,
 		store:  newConversationStore(server.database.db),
-		broker: newConversationBroker(),
+		broker: server.notifications,
 		config: cfg,
 		logger: server.config.Logger.With("component", "conversation"),
 	}
@@ -170,8 +172,6 @@ func (c *conversationService) committed(record conversationRecord) {
 	c.controls.Wake(record.ID)
 }
 
-// start normalizes state left behind by a previous process so that no
-// in-flight delivery or execution is reported as live after a restart.
 func (c *conversationService) start(ctx context.Context) error {
 	now, err := c.server.database.currentTime()
 	if err != nil {
@@ -184,6 +184,9 @@ func (c *conversationService) start(ctx context.Context) error {
 	c.logger.Info("conversation.restart_normalized",
 		"conversations", summary.Conversations, "messages", summary.Messages,
 		"questions", summary.Questions, "receipts", summary.Receipts)
+	if err := c.reconcileExecutions(ctx); err != nil {
+		return err
+	}
 	return c.wakePending(ctx)
 }
 
@@ -204,6 +207,13 @@ func (c *conversationService) settleLoop() {
 			if err != nil {
 				c.logger.Warn("conversation.settle_sweep_failed", "error", err)
 				continue
+			}
+			period := now.UTC().Format("2006-01")
+			if c.monthlyBudgetPeriod != period {
+				c.monthlyBudgetPeriod = period
+				if err := c.wakePending(context.Background()); err != nil {
+					c.logger.Warn("conversation.budget_rollover", "error", err)
+				}
 			}
 			settled, err := c.settleIdleConversations(context.Background(), now)
 			if err != nil {
@@ -279,31 +289,33 @@ func (c *conversationService) stop() {
 	c.broker.closeAll()
 }
 
-// conversationBroker wakes subscribers when a conversation gained events.
+// notificationBroker wakes subscribers when a conversation gained events.
 // It carries no payload: subscribers read the durable event log from their
 // cursor, so a slow subscriber can never lose or reorder events.
-type conversationBroker struct {
+type notificationBroker struct {
 	mu          sync.Mutex
 	closed      bool
-	subscribers map[string]map[*conversationSubscription]struct{}
+	epoch       string
+	revisions   map[string]uint64
+	subscribers map[string]map[*notificationSubscription]struct{}
 }
 
-type conversationSubscription struct {
+type notificationSubscription struct {
 	conversationID string
 	wake           chan struct{}
 	closed         chan struct{}
 	once           sync.Once
 }
 
-func newConversationBroker() *conversationBroker {
-	return &conversationBroker{subscribers: map[string]map[*conversationSubscription]struct{}{}}
+func newNotificationBroker() *notificationBroker {
+	return &notificationBroker{epoch: newNativeID("wait"), revisions: make(map[string]uint64), subscribers: map[string]map[*notificationSubscription]struct{}{}}
 }
 
 // subscribe registers interest in a conversation. The returned wake channel
 // receives at most one pending signal; closed is closed when the broker
 // shuts down. Call cancel when done.
-func (b *conversationBroker) subscribe(conversationID string) (subscription *conversationSubscription, cancel func()) {
-	subscription = &conversationSubscription{conversationID: conversationID, wake: make(chan struct{}, 1), closed: make(chan struct{})}
+func (b *notificationBroker) subscribe(conversationID string) (subscription *notificationSubscription, cancel func()) {
+	subscription = &notificationSubscription{conversationID: conversationID, wake: make(chan struct{}, 1), closed: make(chan struct{})}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
@@ -312,7 +324,7 @@ func (b *conversationBroker) subscribe(conversationID string) (subscription *con
 	}
 	set, ok := b.subscribers[conversationID]
 	if !ok {
-		set = map[*conversationSubscription]struct{}{}
+		set = map[*notificationSubscription]struct{}{}
 		b.subscribers[conversationID] = set
 	}
 	set[subscription] = struct{}{}
@@ -329,15 +341,18 @@ func (b *conversationBroker) subscribe(conversationID string) (subscription *con
 	}
 }
 
-func (s *conversationSubscription) close() {
+func (s *notificationSubscription) close() {
 	s.once.Do(func() { close(s.closed) })
 }
 
 // notify wakes every subscriber of the conversation. Call it after the
 // transaction that appended events has committed.
-func (b *conversationBroker) notify(conversationID string) {
+func (b *notificationBroker) notify(conversationID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if _, tracked := b.revisions[conversationID]; tracked {
+		b.revisions[conversationID]++
+	}
 	for subscription := range b.subscribers[conversationID] {
 		select {
 		case subscription.wake <- struct{}{}:
@@ -346,7 +361,7 @@ func (b *conversationBroker) notify(conversationID string) {
 	}
 }
 
-func (b *conversationBroker) closeAll() {
+func (b *notificationBroker) closeAll() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.closed = true
@@ -355,7 +370,7 @@ func (b *conversationBroker) closeAll() {
 			subscription.close()
 		}
 	}
-	b.subscribers = map[string]map[*conversationSubscription]struct{}{}
+	b.subscribers = map[string]map[*notificationSubscription]struct{}{}
 }
 
 // Error codes specific to conversations, in addition to the shared native
@@ -547,20 +562,23 @@ type conversationResource struct {
 	ProjectID      tracker.ProjectID       `json:"project_id"`
 	Title          string                  `json:"title"`
 	Visibility     conversation.Visibility `json:"visibility"`
+	Origin         string                  `json:"origin"`
 	Status         conversation.Status     `json:"status"`
+	Archived       bool                    `json:"archived"`
 	// Preferences are the conversation's turn preferences; each field is
 	// "auto" or an explicit value (decisions section 14).
-	Preferences   conversation.Preferences      `json:"preferences"`
-	WorkItemID    *string                       `json:"work_item_id"`
-	LinkedAt      *time.Time                    `json:"linked_at"`
-	WorkItem      *conversationWorkItemResource `json:"work_item"`
-	Owner         conversationOwnerResource     `json:"owner"`
-	Execution     conversationExecutionResource `json:"execution"`
-	Revision      int64                         `json:"revision"`
-	EventSeq      int64                         `json:"event_seq"`
-	CreatedAt     time.Time                     `json:"created_at"`
-	UpdatedAt     time.Time                     `json:"updated_at"`
-	LastMessageAt *time.Time                    `json:"last_message_at"`
+	Preferences       conversation.Preferences      `json:"preferences"`
+	SubjectWorkItemID *string                       `json:"subject_work_item_id,omitempty"`
+	WorkItemID        *string                       `json:"work_item_id"`
+	LinkedAt          *time.Time                    `json:"linked_at"`
+	WorkItem          *conversationWorkItemResource `json:"work_item"`
+	Owner             conversationOwnerResource     `json:"owner"`
+	Execution         conversationExecutionResource `json:"execution"`
+	Revision          int64                         `json:"revision"`
+	EventSeq          int64                         `json:"event_seq"`
+	CreatedAt         time.Time                     `json:"created_at"`
+	UpdatedAt         time.Time                     `json:"updated_at"`
+	LastMessageAt     *time.Time                    `json:"last_message_at"`
 	// MessageCount is the whole history, so the share confirmation can say
 	// how much becomes readable (decisions section 10.5).
 	MessageCount int64 `json:"message_count"`
@@ -746,24 +764,27 @@ func conversationWorkItemKey(organization, project, workItem string) string {
 
 func projectConversation(record conversationRecord) conversationResource {
 	return conversationResource{
-		ID:             record.ID,
-		OrganizationID: record.OrganizationID,
-		ProjectID:      record.ProjectID,
-		Title:          record.Title,
-		Visibility:     record.Visibility,
-		Status:         record.Status,
-		Preferences:    record.Preferences.Normalized(),
-		WorkItemID:     conversationOptional(record.WorkItemID),
-		LinkedAt:       record.LinkedAt,
-		WorkItem:       projectWorkItem(record),
-		Owner:          conversationOwnerResource{PrincipalID: record.OwnerPrincipalID, Subject: record.OwnerSubject},
-		Execution:      projectExecution(record.Execution),
-		Revision:       record.Revision,
-		EventSeq:       record.EventSeq,
-		CreatedAt:      record.CreatedAt,
-		UpdatedAt:      record.UpdatedAt,
-		LastMessageAt:  record.LastMessageAt,
-		MessageCount:   record.MessageCount,
+		ID:                record.ID,
+		OrganizationID:    record.OrganizationID,
+		ProjectID:         record.ProjectID,
+		Title:             record.Title,
+		Visibility:        record.Visibility,
+		Origin:            record.Origin,
+		Status:            record.Status,
+		Archived:          record.Archived,
+		Preferences:       record.Preferences.Normalized(),
+		SubjectWorkItemID: conversationOptional(record.SubjectWorkItemID),
+		WorkItemID:        conversationOptional(record.WorkItemID),
+		LinkedAt:          record.LinkedAt,
+		WorkItem:          projectWorkItem(record),
+		Owner:             conversationOwnerResource{PrincipalID: record.OwnerPrincipalID, Subject: record.OwnerSubject},
+		Execution:         projectExecution(record.Execution),
+		Revision:          record.Revision,
+		EventSeq:          record.EventSeq,
+		CreatedAt:         record.CreatedAt,
+		UpdatedAt:         record.UpdatedAt,
+		LastMessageAt:     record.LastMessageAt,
+		MessageCount:      record.MessageCount,
 	}
 }
 
@@ -988,18 +1009,33 @@ func (c *conversationService) updateMessage(ctx context.Context, tx *sql.Tx, mes
 // appendDelta records streamed assistant text. The message row keeps the
 // accumulated text so a snapshot is complete without replaying deltas.
 func (c *conversationService) appendDelta(ctx context.Context, tx *sql.Tx, message *conversationMessageRecord, text string, now time.Time) error {
-	offset := int64(len(message.Text))
+	if err := c.appendDeltaAt(ctx, tx, message.ConversationID, message.ID, int64(len(message.Text)), text, now); err != nil {
+		return err
+	}
 	// The caller's record is only advanced once the write succeeded: a
 	// failed write must not leave the accumulated text double-counted on
 	// the next attempt.
-	appended := *message
-	appended.Text += text
-	appended.UpdatedAt = now
-	if err := c.store.updateMessage(ctx, tx, appended); err != nil {
-		return err
+	message.Text += text
+	message.UpdatedAt = now
+	return nil
+}
+
+// appendDeltaAt appends text to a stored message in place. offset is the
+// message's byte length before the append; the stored text is never read
+// back and rewritten, so a long streamed message costs only its new bytes.
+func (c *conversationService) appendDeltaAt(ctx context.Context, tx *sql.Tx, conversationID, messageID string, offset int64, text string, now time.Time) error {
+	result, err := tx.ExecContext(ctx, "UPDATE conversation_messages SET text = text || ?, updated_at = ? WHERE id = ? AND conversation_id = ?", text, conversationTime(now), messageID, conversationID)
+	if err != nil {
+		return fmt.Errorf("append message delta: %w", err)
 	}
-	*message = appended
-	if _, err := c.store.appendEvent(ctx, tx, message.ConversationID, conversation.EventMessageDelta, conversationDeltaBody(message.ID, offset, text), now); err != nil {
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("append message delta: %w", err)
+	}
+	if affected == 0 {
+		return nativeNotFound()
+	}
+	if _, err := c.store.appendEvent(ctx, tx, conversationID, conversation.EventMessageDelta, conversationDeltaBody(messageID, offset, text), now); err != nil {
 		return err
 	}
 	return nil

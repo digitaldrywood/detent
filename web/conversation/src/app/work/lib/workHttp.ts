@@ -13,6 +13,8 @@
 // `X-CSRF-Token` from the bootstrap payload, which the hosted boundary
 // requires of any non-GET without an `Authorization` header.
 import * as Schema from "effect/Schema";
+import { HealthFindingsRead, IssueExplanation } from "../../../contracts/diagnostics.ts";
+import { ConversationSnapshot } from "../../../contracts/conversation.ts";
 
 import {
   Action,
@@ -36,6 +38,7 @@ import {
   PullRequestActionAccepted,
   RelayTicket,
   REVISION_CONFLICT,
+  SourceRecovery,
   type TransitionReason,
   WorkItemPage,
   WorkItemPullRequestList,
@@ -127,43 +130,48 @@ export interface WorkHttpOptions {
   readonly apiBase: string;
   readonly csrfToken: string;
   readonly fetch?: FetchLike;
-}
-
-/**
- * The hub's list filters are strictly single-valued: `validateNativeQuery`
- * rejects a repeated parameter with `422`. A multi-select filter therefore
- * pushes exactly one value to the server and the rest are applied to what came
- * back; `serverFilter` is where that decision is made, in one place, so no
- * call site can accidentally send two.
- */
-export function serverFilter(values: readonly string[]): string | undefined {
-  return values.length === 1 ? values[0] : undefined;
+  readonly onAuthorizationRejected?: () => void;
+  readonly onConfirmed?: (issue: NativeIssue) => void;
 }
 
 export interface ListWorkItemsInput {
+  readonly signal?: AbortSignal;
   readonly projectId: string;
-  readonly state?: string | undefined;
-  readonly label?: string | undefined;
-  readonly assignee?: string | undefined;
-  readonly priority?: string | undefined;
+  readonly state?: string | readonly string[] | undefined;
+  readonly label?: string | readonly string[] | undefined;
+  readonly assignee?: string | readonly string[] | undefined;
+  readonly priority?: string | readonly string[] | undefined;
+  readonly q?: string;
   readonly cursor?: string | undefined;
   readonly limit?: number | undefined;
   /** Coordinator work items are excluded unless this is on. */
   readonly includeCoordinator?: boolean;
-  readonly archived?: boolean;
+  readonly includeWork?: boolean;
+  readonly includeBoard?: boolean;
+  readonly open?: boolean | undefined;
+  readonly completedWindow?: string;
+  readonly sort?: "closed";
+  readonly archived?: boolean | "all";
 }
 
 export interface WorkHttp {
+  readonly getSourceRecovery: (projectId: string, itemId: string) => Promise<SourceRecovery>;
+  readonly transferSource: (input: { projectId: string; itemId: string; key: string; expectedRevision: string; versionId: string; destinationRunnerId: string }) => Promise<SourceRecovery>;
+  readonly getViewPreference: (projectId: string | null, signal?: AbortSignal) => Promise<{ readonly query: string | null }>;
+  readonly setViewPreference: (projectId: string | null, query: string | null) => Promise<{ readonly query: string | null }>;
   readonly origin: string;
   readonly apiBase: string;
   /**
    * The hosted activity stream. It is a page route, not an API route, and it
-   * emits `event: activity` with a bare decimal sequence as its data.
+   * emits `event: activity` with a sequence or a requested board delta frame as its data.
    */
-  readonly eventsUrl: (projectId: string) => string;
-  readonly getProject: (projectId: string) => Promise<NativeProject>;
+  readonly eventsUrl: (projectId: string, workspaceId?: string, workItemId?: string, board?: { readonly since: number; readonly filters: ListWorkItemsInput }) => string;
+  readonly listHealthFindings: (projectId: string, cursor?: string, signal?: AbortSignal) => Promise<HealthFindingsRead>;
+  readonly getProject: (projectId: string, signal?: AbortSignal) => Promise<NativeProject>;
   readonly listWorkItems: (input: ListWorkItemsInput) => Promise<WorkItemPage>;
   readonly getWorkItem: (projectId: string, itemId: string) => Promise<NativeIssue>;
+  readonly getWorkItemById: (itemId: string) => Promise<NativeIssue>;
+  readonly getWorkItemConversation: (projectId: string, itemId: string) => Promise<ConversationSnapshot>;
   readonly patchWorkItem: (input: {
     projectId: string;
     itemId: string;
@@ -210,7 +218,10 @@ export interface WorkHttp {
     projectId: string,
     itemId: string,
     limit?: number,
+    signal?: AbortSignal,
+    cursor?: string,
   ) => Promise<AttemptPage>;
+  readonly getExplanation: (projectId: string, itemId: string) => Promise<IssueExplanation>;
   /**
    * The latest stored diff on one issue (decisions.md §18.5), or `{diff: null}`
    * where no attempt has posted one. Issue-addressed rather than
@@ -242,11 +253,12 @@ export interface WorkHttp {
     key: string;
     body: string;
   }) => Promise<NativeComment>;
-  readonly listChanges: (projectId: string, itemId: string) => Promise<ChangeRequestList>;
+  readonly listChanges: (projectId: string, itemId: string, signal?: AbortSignal) => Promise<ChangeRequestList>;
   readonly getChange: (
     projectId: string,
     itemId: string,
     changeId: string,
+    signal?: AbortSignal,
   ) => Promise<ChangeDetail>;
   /**
    * One attempt's stored diff (decisions.md §18.5), attempt-addressed. A
@@ -430,6 +442,9 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   const doFetch: FetchLike = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
   const projectBase = (projectId: string) =>
     `${options.apiBase}/projects/${encodeURIComponent(projectId)}`;
+  const viewPreferenceUrl = (projectId: string | null) =>
+    `${options.origin}${projectId === null ? options.apiBase : projectBase(projectId)}/work-view-preference`;
+  const viewPreferenceSchema = Schema.Struct({ query: Schema.NullOr(Schema.String) });
   const itemBase = (projectId: string, itemId: string) =>
     `${projectBase(projectId)}/work-items/${encodeURIComponent(itemId)}`;
   const workspaceBase = (projectId: string, workspaceId: string) =>
@@ -437,11 +452,11 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   const actionBase = (projectId: string, actionId: string) =>
     `${projectBase(projectId)}/actions/${encodeURIComponent(actionId)}`;
 
-  const url = (path: string, query?: Record<string, string | number | boolean | undefined>) => {
+  const url = (path: string, query?: Record<string, string | readonly string[] | number | boolean | undefined>) => {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries(query ?? {})) {
       if (value === undefined) continue;
-      search.set(key, String(value));
+      for (const entry of Array.isArray(value) ? value : [value]) search.append(key, String(entry));
     }
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `${options.origin}${path}${suffix}`;
@@ -452,6 +467,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     method: string,
     target: string,
     body?: unknown,
+    signal?: AbortSignal,
+    keepalive = false,
   ): Promise<A> {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -462,7 +479,9 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         method,
         credentials: "same-origin",
         headers,
+        ...(signal === undefined ? {} : { signal }),
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(keepalive ? { keepalive } : {}),
       });
     } catch (cause) {
       throw new WorkApiError({
@@ -480,9 +499,16 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         parsed = undefined;
       }
     }
-    if (!response.ok) throw errorFromBody(response.status, parsed);
+    if (!response.ok) {
+      if (!signal?.aborted && [401, 403].includes(response.status)) options.onAuthorizationRejected?.();
+      throw errorFromBody(response.status, parsed);
+    }
     try {
-      return Schema.decodeUnknownSync(schema)(parsed);
+      const decoded = Schema.decodeUnknownSync(schema)(parsed);
+      if (MUTATIONS.has(method) && schema.ast === NativeIssue.ast) {
+        options.onConfirmed?.(Schema.decodeUnknownSync(NativeIssue)(decoded));
+      }
+      return decoded;
     } catch (cause) {
       throw new WorkApiError({
         status: response.status,
@@ -530,26 +556,43 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   return {
     origin: options.origin,
     apiBase: options.apiBase,
-    eventsUrl: (projectId) =>
-      `${options.origin}${hubPath(`/projects/${encodeURIComponent(projectId)}/events`)}`,
-    getProject: (projectId) => send(NativeProject, "GET", url(projectBase(projectId))),
+    getViewPreference: (projectId, signal) => send(viewPreferenceSchema, "GET", viewPreferenceUrl(projectId), undefined, signal),
+    setViewPreference: (projectId, query) => send(viewPreferenceSchema, query === null ? "DELETE" : "PUT", viewPreferenceUrl(projectId), query === null ? undefined : { query }, undefined, true),
+    eventsUrl: (projectId, workspaceId, workItemId, board) =>
+      url(hubPath(`/projects/${encodeURIComponent(projectId)}/events`), { workspace: workspaceId, work_item: workItemId,
+        board: board === undefined ? undefined : "true", since: board?.since,
+        q: board?.filters.q || undefined, label: board?.filters.label, assignee: board?.filters.assignee,
+        priority: board?.filters.priority, archived: board?.filters.archived === true ? "true" : undefined,
+        completed_window: board?.filters.completedWindow }),
+    listHealthFindings: (projectId, cursor, signal) => send(HealthFindingsRead, "GET", url(`${projectBase(projectId)}/health/findings`, { cursor }), undefined, signal),
+    getProject: (projectId, signal) => send(NativeProject, "GET", url(projectBase(projectId)), undefined, signal),
     listWorkItems: (input) =>
       send(
         WorkItemPage,
         "GET",
         url(`${projectBase(input.projectId)}/work-items`, {
+          q: input.q?.trim() || undefined,
           state: input.state,
-          archived: input.archived === true ? "true" : undefined,
+          open: input.open === undefined ? undefined : String(input.open),
+          sort: input.sort,
+          archived: input.archived === "all" ? "all" : input.archived === true ? "true" : undefined,
           label: input.label,
           assignee: input.assignee,
           priority: input.priority,
           cursor: input.cursor,
           limit: input.limit,
-          include: input.includeCoordinator === true ? "coordinator" : undefined,
+          completed_window: input.completedWindow,
+          include: input.includeBoard === true ? "board" : input.includeWork === true ? "work" : input.includeCoordinator === true ? "coordinator" : undefined,
         }),
+        undefined,
+        input.signal,
       ),
     getWorkItem: (projectId, itemId) =>
       send(NativeIssue, "GET", url(itemBase(projectId, itemId))),
+    getWorkItemById: (itemId) =>
+      send(NativeIssue, "GET", url(`${options.apiBase}/work-items/${encodeURIComponent(itemId)}`)),
+    getWorkItemConversation: (projectId, itemId) =>
+      send(ConversationSnapshot, "GET", url(`${itemBase(projectId, itemId)}/conversation`)),
     listLabels: (projectId) =>
       send(NativeLabelList, "GET", url(`${projectBase(projectId)}/labels`)),
     patchWorkItem: (input) =>
@@ -584,8 +627,17 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         related_work_item_id: input.relatedWorkItemId,
         operation: input.operation,
       }),
-    listAttempts: (projectId, itemId, limit) =>
-      send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit })),
+    listAttempts: (projectId, itemId, limit, signal, cursor) =>
+      send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit, cursor }), undefined, signal),
+    getExplanation: (projectId, itemId) =>
+      send(IssueExplanation, "GET", url(`${itemBase(projectId, itemId)}/explanation`)),
+    getSourceRecovery: (projectId, itemId) =>
+      send(SourceRecovery, "GET", url(`${itemBase(projectId, itemId)}/source-recovery`)),
+    transferSource: (input) =>
+      send(SourceRecovery, "POST", url(`${itemBase(input.projectId, input.itemId)}/source-recovery`), {
+        idempotency_key: input.key, expected_revision: input.expectedRevision,
+        version_id: input.versionId, destination_runner_id: input.destinationRunnerId,
+      }),
     getWorkItemDiff: (projectId, itemId) =>
       send(WorkItemDiff, "GET", url(`${itemBase(projectId, itemId)}/diff`)),
     listHistory: (input) =>
@@ -604,13 +656,15 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         body: input.body,
       }),
     // The one native list with no envelope: a bare array, no cursor.
-    listChanges: (projectId, itemId) =>
-      send(ChangeRequestList, "GET", url(`${itemBase(projectId, itemId)}/changes`)),
-    getChange: (projectId, itemId, changeId) =>
+    listChanges: (projectId, itemId, signal) =>
+      send(ChangeRequestList, "GET", url(`${itemBase(projectId, itemId)}/changes`), undefined, signal),
+    getChange: (projectId, itemId, changeId, signal) =>
       send(
         ChangeDetail,
         "GET",
         url(`${itemBase(projectId, itemId)}/changes/${encodeURIComponent(changeId)}`),
+        undefined,
+        signal,
       ),
     getAttemptDiff: (projectId, attemptId) =>
       send(

@@ -14,6 +14,10 @@ import (
 )
 
 func TestCandidatePageObservation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, scenario := range []struct {
 		name          string
 		failScheduler bool

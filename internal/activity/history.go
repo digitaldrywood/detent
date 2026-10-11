@@ -73,7 +73,18 @@ func (r *rolloutHistoryReader) Page(ctx context.Context, query HistoryQuery) (Hi
 	if root == "" || sessionID == "" {
 		return HistoryPage{}, ErrHistoryNotFound
 	}
-	path, err := newestMatchingHistoryFile(ctx, root, sessionID)
+	var path string
+	var err error
+	if !strings.Contains(strings.ToLower(query.BackendKind), "claude") {
+		for _, candidate := range codexHistoryRoots(r.codexRoot) {
+			path, err = newestMatchingHistoryFile(ctx, candidate, sessionID)
+			if !errors.Is(err, ErrHistoryNotFound) {
+				break
+			}
+		}
+	} else {
+		path, err = newestMatchingHistoryFile(ctx, root, sessionID)
+	}
 	if err != nil {
 		return HistoryPage{}, err
 	}
@@ -90,6 +101,10 @@ func (r *rolloutHistoryReader) Page(ctx context.Context, query HistoryQuery) (Hi
 }
 
 func (r *rolloutHistoryReader) historyLocation(query HistoryQuery) (string, string) {
+	// Pi currently supplies live activity only; never search Codex logs for its IDs.
+	if strings.EqualFold(strings.TrimSpace(query.BackendKind), "pi_agent") {
+		return "", ""
+	}
 	if strings.Contains(strings.ToLower(query.BackendKind), "claude") {
 		return filepath.Join(r.claudeRoot, "projects"), strings.TrimSpace(query.ProviderSessionID)
 	}
@@ -285,4 +300,25 @@ func firstHistoryValue(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// Prefer isolated profiles, while retaining read access to pre-isolation history.
+func codexHistoryRoots(home string) []string {
+	profiles := []string{".detent-worker", ".detent-launchd"}
+	var roots []string
+	preferred := ""
+	if base := filepath.Base(home); base == profiles[0] || base == profiles[1] {
+		preferred = base
+		roots = append(roots, filepath.Join(home, "sessions"), filepath.Join(home, "archived_sessions"))
+		home = filepath.Dir(home)
+	}
+	for _, profile := range profiles {
+		if profile == preferred {
+			continue
+		}
+		for _, directory := range []string{"sessions", "archived_sessions"} {
+			roots = append(roots, filepath.Join(home, profile, directory))
+		}
+	}
+	return append(roots, filepath.Join(home, "sessions"))
 }

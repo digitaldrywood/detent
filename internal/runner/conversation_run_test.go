@@ -24,11 +24,13 @@ import (
 // conversationAgentBackend is a live backend that consumes one control from
 // the turn's command queue, asks one question and streams a short turn.
 type conversationAgentBackend struct {
-	mu       sync.Mutex
-	requests []AgentTurnRequest
-	consumed []AgentControl
-	inputErr error
-	turnErr  error
+	mu            sync.Mutex
+	requests      []AgentTurnRequest
+	consumed      []AgentControl
+	inputErr      error
+	turnErr       error
+	beforeTurnErr error
+	tokenUsage    []AgentTokenUsage
 }
 
 func (*conversationAgentBackend) SupportsLiveControl() bool { return true }
@@ -37,6 +39,9 @@ func (b *conversationAgentBackend) RunTurn(_ context.Context, req AgentTurnReque
 	b.mu.Lock()
 	b.requests = append(b.requests, req)
 	b.mu.Unlock()
+	if b.beforeTurnErr != nil {
+		return AgentTurnResult{}, b.beforeTurnErr
+	}
 	if err := onUpdate(AgentUpdate{Type: AgentUpdateTurnStarted, ThreadID: "thread-1", TurnID: "turn-1"}); err != nil {
 		return AgentTurnResult{}, err
 	}
@@ -51,6 +56,11 @@ func (b *conversationAgentBackend) RunTurn(_ context.Context, req AgentTurnReque
 		}
 		if req.ConversationControl.InputRequested != nil {
 			b.inputErr = req.ConversationControl.InputRequested(AgentInputRequest{ID: "req-1", ThreadID: "thread-1", TurnID: "turn-1", Questions: json.RawMessage(`[{"id":"color","header":"Color","question":"Which color?","options":[{"label":"Blue","description":"calm"}],"isOther":true}]`)})
+		}
+	}
+	for _, tokens := range b.tokenUsage {
+		if err := onUpdate(AgentUpdate{Type: AgentUpdateTokenUsage, ThreadID: "thread-1", TurnID: "turn-1", Tokens: tokens}); err != nil {
+			return AgentTurnResult{}, err
 		}
 	}
 	for _, update := range []AgentUpdate{
@@ -221,7 +231,15 @@ func TestRunWithoutConversationStillSucceeds(t *testing.T) {
 
 func TestRunBindsConversationAndReportsTurn(t *testing.T) {
 	t.Parallel()
-	agent := &conversationAgentBackend{}
+	firstUsage := AgentTokenUsage{
+		ThreadTotal: &AgentTokenCounts{InputTokens: 1000, CachedInputTokens: 800, OutputTokens: 100, ReasoningOutputTokens: 50, TotalTokens: 1100},
+		Last:        &AgentTokenCounts{InputTokens: 100, CachedInputTokens: 80, OutputTokens: 10, ReasoningOutputTokens: 5, TotalTokens: 110},
+	}
+	laterUsage := AgentTokenUsage{
+		ThreadTotal: &AgentTokenCounts{InputTokens: 1200, CachedInputTokens: 900, OutputTokens: 130, ReasoningOutputTokens: 60, TotalTokens: 1330},
+		Last:        &AgentTokenCounts{InputTokens: 200, CachedInputTokens: 100, OutputTokens: 30, ReasoningOutputTokens: 10, TotalTokens: 230},
+	}
+	agent := &conversationAgentBackend{tokenUsage: []AgentTokenUsage{firstUsage, firstUsage, laterUsage, laterUsage}}
 	session := newFakeConversationSession()
 	session.pending = "Please also update the docs."
 	session.pendingKeys = []string{"k1", "k2"}
@@ -229,12 +247,40 @@ func TestRunBindsConversationAndReportsTurn(t *testing.T) {
 	session.commands <- AgentControl{Kind: AgentControlMessage, ThreadID: "thread-1", TurnID: "turn-1", MessageID: "msg_1", Text: "steer", Check: func(context.Context) error { return nil }, Reply: make(chan error, 1)}
 	execution := &conversationTestExecution{session: session}
 	r := newConversationRunner(t, agent)
-	result, err := r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
+	var reported []AgentTokenCounts
+	result, err := r.Run(t.Context(), RunRequest{
+		Execution: execution,
+		Issue:     connector.Issue{ID: "native", Identifier: "native#1"},
+		Mode:      RunModePlan,
+		OnUsageUpdate: func(update UsageUpdate) error {
+			if update.LastEvent == string(AgentUpdateTokenUsage) {
+				reported = append(reported, AgentTokenCounts{
+					InputTokens:           update.Tokens.InputTokens,
+					CachedInputTokens:     update.Tokens.CachedInputTokens,
+					OutputTokens:          update.Tokens.OutputTokens,
+					ReasoningOutputTokens: update.Tokens.ReasoningOutputTokens,
+					TotalTokens:           update.Tokens.TotalTokens,
+				})
+			}
+			return nil
+		},
+	})
 	if err != nil {
 		t.Fatalf("run error = %v", err)
 	}
 	if result.FinalState != FinalStateCompleted {
 		t.Fatalf("final state = %s", result.FinalState)
+	}
+	firstDelta := *firstUsage.Last
+	laterDelta := AgentTokenCounts{InputTokens: 300, CachedInputTokens: 180, OutputTokens: 40, ReasoningOutputTokens: 15, TotalTokens: 340}
+	if want := []AgentTokenCounts{firstDelta, firstDelta, laterDelta, laterDelta}; !slices.Equal(reported, want) {
+		t.Fatalf("canonical resume usage updates = %#v, want attempt deltas %#v without prior thread history or replay accumulation", reported, want)
+	}
+	if result.Tokens.TotalTokens != laterDelta.TotalTokens || result.Tokens.Last == nil || *result.Tokens.Last != *laterUsage.Last {
+		t.Fatalf("canonical resume result = %#v, want attempt total %d with unchanged last-call usage", result.Tokens, laterDelta.TotalTokens)
+	}
+	if execution.resumeThread != "" {
+		t.Fatalf("initial resume thread = %q, want no resume before canonical conversation binding", execution.resumeThread)
 	}
 	if !execution.capabilities.Steer || !execution.capabilities.Interrupt || !execution.capabilities.Answer {
 		t.Fatalf("capabilities = %#v", execution.capabilities)
@@ -300,6 +346,30 @@ func TestRunBindsConversationAndReportsTurn(t *testing.T) {
 	}
 	if execution.finish != "succeeded" {
 		t.Fatalf("execution finish = %q", execution.finish)
+	}
+}
+
+func TestConversationStartupRetainsBoundProviderIdentity(t *testing.T) {
+	t.Parallel()
+	for _, thread := range []string{"", "bound-thread"} {
+		t.Run(thread, func(t *testing.T) {
+			t.Parallel()
+			startupErr := errors.New("provider startup failed before updates")
+			agent := &conversationAgentBackend{beforeTurnErr: startupErr}
+			session := newFakeConversationSession()
+			session.resume = thread
+			execution := &conversationTestExecution{session: session}
+			r := newConversationRunner(t, agent)
+			r.workspace.(*retainedExecutionWorkspace).recoveryStates = []workspace.RecoveryState{{HeadSHA: "actual-head", WorkspaceFingerprint: "actual-digest"}}
+			result, err := r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
+			want := "fresh_checkout"
+			if thread != "" {
+				want = "resume_session"
+			}
+			if !errors.Is(err, startupErr) || !execution.bound || len(agent.requests) != 1 || agent.requests[0].Resume.ThreadID != thread || execution.checkpoint == nil || execution.checkpoint.Resume != want || execution.checkpoint.HeadSHA != "actual-head" || execution.checkpoint.WorkspaceDigest != "actual-digest" || result.NativeChange != nil || result.TurnCount != 0 {
+				t.Fatalf("startup identity: error=%v requests=%d checkpoint=%+v turns=%d", err, len(agent.requests), execution.checkpoint, result.TurnCount)
+			}
+		})
 	}
 }
 
@@ -640,6 +710,10 @@ func (s *syncBuffer) String() string {
 // that a run continued from a transcript rather than the provider thread. It
 // never carries conversation text.
 func TestBindConversationLogsResumeMode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name   string

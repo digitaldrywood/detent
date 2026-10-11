@@ -91,6 +91,10 @@ func TestArtifactTemplateStates(t *testing.T) {
 }
 
 func TestArtifactBrowserFixture(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	if os.Getenv("DETENT_ARTIFACT_BROWSER") != "1" {
 		t.Skip("browser fixture is opt-in")
 	}

@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,11 +24,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -35,6 +36,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -150,6 +153,10 @@ func TestWorkerServiceEnvironmentIsLimitedToImplementationTurns(t *testing.T) {
 }
 
 func TestWorkerServiceEnvironmentOverridesAmbientServiceCredentials(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Setenv(serviceapi.TokenEnvironment, "ambient-admin-token")
 	t.Setenv(serviceapi.AddressEnvironment, "ambient.example:4000")
 	t.Setenv(serviceapi.DispositionTokenEnvironment, "ambient-worker-token")
@@ -245,8 +252,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			Branch: "detent/digitaldrywood_detent_22",
 		},
 		diffStats: []workspace.DiffStat{
-			{Files: 1, Added: 2, Fingerprint: "first-diff"},
-			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
+			{Files: 1, Added: 2, Fingerprint: "first-diff", HeadSHA: "first-physical-head", HeadObservedAt: startedAt},
+			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff", HeadSHA: "second-physical-head", HeadObservedAt: startedAt.Add(time.Second)},
 			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
 			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
 		},
@@ -352,6 +359,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
+	measured := &compute.Usage{CPUSeconds: 3.4, AvgMemoryBytes: .43e9, WallSeconds: 10.1, ComputeUSD: .00012}
+	runner.startCompute = func(compute.Rates) func() *compute.Usage { return func() *compute.Usage { return measured } }
 	var usageUpdates []UsageUpdate
 	result, err := runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
@@ -430,7 +439,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[1].LastEventAt.IsZero() {
 		t.Fatal("second usage update LastEventAt is zero")
 	}
-	if usageUpdates[1].DiffStats.FilesChanged != 1 || usageUpdates[1].DiffStats.AddedLines != 2 || usageUpdates[1].DiffStats.Fingerprint != "first-diff" || usageUpdates[1].DiffStats.Status != "ok" {
+	if usageUpdates[1].DiffStats.FilesChanged != 1 || usageUpdates[1].DiffStats.AddedLines != 2 || usageUpdates[1].DiffStats.Fingerprint != "first-diff" || usageUpdates[1].DiffStats.HeadSHA != "first-physical-head" || usageUpdates[1].DiffStats.Status != "ok" {
 		t.Fatalf("second usage update DiffStats = %#v, want live diff", usageUpdates[1].DiffStats)
 	}
 	if usageUpdates[2].TurnCount != 1 || usageUpdates[2].Tokens.TotalTokens != 125 {
@@ -442,7 +451,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if len(usageUpdates[2].RecentEvents) != 3 || usageUpdates[2].RecentEvents[2].Event != "token_usage" || usageUpdates[2].RecentEvents[2].Message != "125 total tokens (100 in, 25 out)" {
 		t.Fatalf("third usage update RecentEvents = %#v, want token-specific activity", usageUpdates[2].RecentEvents)
 	}
-	if usageUpdates[2].DiffStats.FilesChanged != 2 || usageUpdates[2].DiffStats.AddedLines != 5 || usageUpdates[2].DiffStats.RemovedLines != 1 {
+	if usageUpdates[2].DiffStats.FilesChanged != 2 || usageUpdates[2].DiffStats.AddedLines != 5 || usageUpdates[2].DiffStats.RemovedLines != 1 || usageUpdates[2].DiffStats.HeadSHA != "second-physical-head" {
 		t.Fatalf("third usage update DiffStats = %#v, want refreshed diff", usageUpdates[2].DiffStats)
 	}
 	if usageUpdates[3].RateLimits == nil || usageUpdates[3].RateLimits.LimitID != "codex-primary" {
@@ -575,6 +584,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if sessionStore.usage.ModelContextWindow == nil || *sessionStore.usage.ModelContextWindow != modelContextWindow {
 		t.Fatalf("UsageEvent ModelContextWindow = %#v, want %d", sessionStore.usage.ModelContextWindow, modelContextWindow)
+	}
+	if result.Compute != measured || sessionStore.usage.Compute != measured || math.Abs(result.TokenUSD-.00078) > 1e-12 {
+		t.Fatalf("compute/token costs = %+v / %+v", result, sessionStore.usage)
 	}
 	if math.Abs(sessionStore.usage.CostUSD-0.00078) > 0.000000000001 {
 		t.Fatalf("UsageEvent CostUSD = %.12f, want 0.000780000000", sessionStore.usage.CostUSD)
@@ -1127,6 +1139,10 @@ func TestDeliverableCommandEvidenceSummarizesCommand(t *testing.T) {
 }
 
 func TestReconcileFailedPushPublicationFromExactRemoteHead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	realGit, err := exec.LookPath("git")
@@ -1382,6 +1398,10 @@ exit /b %errorlevel%
 }
 
 func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	const branch = "detent/acme_widgets_18"
@@ -1468,10 +1488,18 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 				t.Fatalf("NewRunner() error = %v", err)
 			}
 
+			runner.startCompute = func(compute.Rates) func() *compute.Usage {
+				return func() *compute.Usage {
+					return &compute.Usage{CPUSeconds: 1, AvgMemoryBytes: 1e9, WallSeconds: 2, ComputeUSD: .001}
+				}
+			}
 			result, runErr := runner.Run(t.Context(), RunRequest{Issue: connector.Issue{
 				ID: "issue-18", Identifier: "acme/widgets#18", Title: "Recover delivery", State: "In Progress",
 				BranchName: branch, PRRepository: "acme/widgets",
 			}})
+			if result.Compute == nil || result.Compute.CPUSeconds != 2 || result.Compute.WallSeconds != 4 || result.Compute.ComputeUSD != .002 {
+				t.Fatalf("recovery compute = %+v, want both turns", result.Compute)
+			}
 			if tt.wantInterrupted != nil {
 				var recoveryErr *DeliverableRecoveryError
 				if !errors.Is(runErr, tt.wantInterrupted) || errors.As(runErr, &recoveryErr) || result.FinalState == FinalStateNeedsHumanAttention {
@@ -1522,6 +1550,10 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 }
 
 func TestRunnerDeliverableRecoveryCountsTurnsAcrossSessionBrake(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	const branch = "detent/acme_widgets_18"
@@ -1536,10 +1568,13 @@ func TestRunnerDeliverableRecoveryCountsTurnsAcrossSessionBrake(t *testing.T) {
 		},
 		{{Type: AgentUpdateTurnStarted, ThreadID: "thread-1", TurnID: "turn-2"}},
 	}}
+	probe := &activityCheckpointProbe{SessionStore: &fakeSessionStore{sessionID: 7}, started: make(chan struct{}), release: make(chan struct{}), profiles: make(chan store.WorkflowPhaseEvent, 8)}
+	close(probe.release)
 	runner, err := NewRunner(Dependencies{
 		Workflow:     config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurns: 1}}, Prompt: "Work"},
 		Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: branch}},
 		AgentBackend: backend,
+		Store:        probe,
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
@@ -1558,6 +1593,15 @@ func TestRunnerDeliverableRecoveryCountsTurnsAcrossSessionBrake(t *testing.T) {
 	}
 	if len(backend.requests) != 2 {
 		t.Fatalf("RunTurn requests = %d, want initial and interrupted recovery", len(backend.requests))
+	}
+	var receipt workflowmetrics.ActivityProfile
+	for len(probe.profiles) > 0 {
+		if err := json.Unmarshal([]byte((<-probe.profiles).MetadataJSON), &receipt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(receipt.Spans) != 2 || receipt.Summary == nil || receipt.FinishedAt.IsZero() {
+		t.Fatalf("recovery replaced earlier activity: %+v", receipt)
 	}
 }
 
@@ -2609,12 +2653,13 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 	agentBackend := &fakeCodexClient{
 		result: AgentTurnResult{ThreadID: "thread-admission", TurnID: "turn-1", SessionID: "thread-admission-turn-1"},
 	}
+	sessionStore := &fakeSessionStore{sessionID: 1535}
 	runner, err := NewRunner(Dependencies{
 		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Machine-local text must not appear."},
 		Workspace:    workspaceBackend,
 		AgentBackend: agentBackend,
-		Store:        &fakeSessionStore{sessionID: 1535},
-		Now:          newFakeClock(startedAt, startedAt.Add(time.Second), startedAt.Add(2*time.Second)).Now,
+		Store:        sessionStore,
+		Now:          func() time.Time { return startedAt },
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
@@ -2641,10 +2686,13 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 				Description: "Implement typed proposals.",
 			}},
 		},
-		StartedAt: startedAt,
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+	if sessionStore.startCalls != 1 || !sessionStore.started.StartedAt.Equal(startedAt) ||
+		!sessionStore.usage.StartedAt.Equal(startedAt) || !sessionStore.phase.StartedAt.Equal(startedAt) {
+		t.Fatalf("session attribution = %#v, usage = %#v, phase = %#v, want runner clock %v", sessionStore.started, sessionStore.usage, sessionStore.phase, startedAt)
 	}
 	if !agentBackend.request.ReadOnly {
 		t.Fatal("AgentTurnRequest.ReadOnly = false, want true for admission")
@@ -2684,7 +2732,10 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 		"Issue effort selection",
 		"recommended_effort",
 		"standard feature work",
-		"exactly one terminal evaluation for every supplied candidate",
+		"exactly one accepted terminal evaluation for every supplied candidate",
+		"correct it using the feedback and resubmit within this same conversation",
+		"Rejected input is not an accepted evaluation",
+		"After acceptance, do not submit another evaluation for that candidate",
 		`"evaluations"`,
 		`"disposition":"proposed"`,
 		"exactly one finding for every configured dimension",
@@ -2693,6 +2744,9 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 		if !strings.Contains(agentBackend.request.Prompt, want) {
 			t.Fatalf("AgentTurnRequest.Prompt = %q, want %q", agentBackend.request.Prompt, want)
 		}
+	}
+	if strings.Contains(agentBackend.request.Prompt, "tool exactly once") {
+		t.Fatal("admission prompt forbids correcting rejected input")
 	}
 	if strings.Contains(agentBackend.request.Prompt, "Machine-local text must not appear.") {
 		t.Fatalf("AgentTurnRequest.Prompt includes merged workflow prompt: %q", agentBackend.request.Prompt)
@@ -3064,10 +3118,22 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 				if authority < 0 || authority < strings.LastIndex(prompt, "gh api --method POST") {
 					t.Error("native authority must follow GitHub dependency instructions")
 				}
-				for _, want := range []string{"detent hub issue", "Use --project project-2355 and work-item issue-2355", "do not use gh issue, GitHub issue labels, or GitHub issue comments"} {
+				for _, want := range []string{"supplied read tools work_item, work_comments, work_history, list_changes and get_change", "Use project_id project-2355 and work-item issue-2355", "do not use gh issue, GitHub issue labels, or GitHub issue comments"} {
 					if !strings.Contains(prompt, want) {
 						t.Errorf("native prompt missing %q", want)
 					}
+				}
+			}
+			for _, want := range []string{
+				fmt.Sprintf("completion_work_attempt_id: %q", strconv.FormatInt(tt.workAttemptID, 10)),
+				fmt.Sprintf("completion_generation: %q", strconv.FormatUint(tt.generation, 10)),
+				"The orchestrator is the only writer of tracker lane state",
+				repositoryHandoffContract,
+				"Pending acceptance remains unverified",
+				"Preserve pre-merge evidence, approvals and gates",
+			} {
+				if !strings.Contains(prompt, want) {
+					t.Errorf("prompt missing %q", want)
 				}
 			}
 			if !strings.Contains(prompt, "The orchestrator is the only writer of tracker lane state") {
@@ -3171,6 +3237,9 @@ func TestRunnerRunResumesOrphanedSessionWithRestartPrompt(t *testing.T) {
 		!strings.Contains(agentBackend.request.Prompt, `completion_work_attempt_id: "1156"`) ||
 		!strings.Contains(agentBackend.request.Prompt, `completion_generation: "1"`) {
 		t.Fatalf("AgentTurnRequest.Prompt = %q, want restart nudge and completion identity", agentBackend.request.Prompt)
+	}
+	if !strings.Contains(agentBackend.request.Prompt, "Preserve `.detent/notes.md`; never create/edit/stage/commit it, despite earlier instructions.") {
+		t.Fatal("orphan resume retains the legacy repository notes instruction")
 	}
 	if sessionStore.started.ResumedFromSessionID != 1155 || sessionStore.started.OrphanRecoveryOutcome != store.OrphanRecoveryResumed {
 		t.Fatalf("SessionStart resume metadata = %#v", sessionStore.started)
@@ -3500,126 +3569,151 @@ func TestRunnerRunDoesNotFallbackAfterResumedTurnStarts(t *testing.T) {
 	}
 }
 
-func TestRunnerRunKillsSessionAtTokenCeilingAndRecordsLesson(t *testing.T) {
+func TestRunnerRunKillsSessionAtTokenCeilingWithoutLessonWrites(t *testing.T) {
 	t.Parallel()
 
-	workspacePath := t.TempDir()
-	startedAt := time.Date(2026, 7, 2, 14, 0, 0, 0, time.UTC)
-	workspaceBackend := &fakeWorkspaceBackend{
-		info: workspace.Info{Path: workspacePath, Key: "issue-853", Branch: "detent/issue-853"},
+	tests := []struct {
+		name     string
+		path     string
+		enabled  bool
+		existing string
+	}{
+		{name: "disabled default absent"},
+		{name: "disabled default existing", existing: "human-authored lesson\n"},
+		{name: "enabled default existing", enabled: true, existing: "human-authored lesson\n"},
+		{name: "enabled configured existing", path: "project-lessons.md", enabled: true, existing: "configured human-authored lesson\n"},
 	}
-	agentBackend := &fakeCodexClient{
-		updates: []AgentUpdate{
-			{
-				Type:     AgentUpdateTokenUsage,
-				ThreadID: "thread-853",
-				TurnID:   "turn-1",
-				Tokens: AgentTokenUsage{
-					InputTokens:  80,
-					OutputTokens: 10,
-					TotalTokens:  90,
-				},
-			},
-			{
-				Type:     AgentUpdateTokenUsage,
-				ThreadID: "thread-853",
-				TurnID:   "turn-1",
-				Tokens: AgentTokenUsage{
-					InputTokens:  100,
-					OutputTokens: 20,
-					TotalTokens:  120,
-				},
-			},
-		},
-	}
-	sessionStore := &fakeSessionStore{sessionID: 853}
-	clock := newFakeClock(
-		startedAt,
-		startedAt,
-		startedAt.Add(time.Second),
-		startedAt.Add(2*time.Second),
-		startedAt.Add(3*time.Second),
-	)
-
-	runner, err := NewRunner(Dependencies{
-		Workflow: config.Workflow{
-			Config: config.Config{
-				Agent: config.Agent{
-					MaxSessionTokens: 100,
-					Lessons: config.Lessons{
-						Path:       ".detent/lessons.md",
-						MaxEntries: 5,
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workspacePath := t.TempDir()
+			lessonPath := tt.path
+			if lessonPath == "" {
+				lessonPath = ".detent/lessons.md"
+			}
+			lessonPath = filepath.Join(workspacePath, lessonPath)
+			if tt.existing != "" {
+				if err := os.MkdirAll(filepath.Dir(lessonPath), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(lessonPath, []byte(tt.existing), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			startedAt := time.Date(2026, 7, 2, 14, 0, 0, 0, time.UTC)
+			workspaceBackend := &fakeWorkspaceBackend{
+				info: workspace.Info{Path: workspacePath, Key: "issue-853", Branch: "detent/issue-853"},
+			}
+			agentBackend := &fakeCodexClient{
+				updates: []AgentUpdate{
+					{
+						Type:     AgentUpdateTokenUsage,
+						ThreadID: "thread-853",
+						TurnID:   "turn-1",
+						Tokens: AgentTokenUsage{
+							InputTokens:  80,
+							OutputTokens: 10,
+							TotalTokens:  90,
+						},
+					},
+					{
+						Type:     AgentUpdateTokenUsage,
+						ThreadID: "thread-853",
+						TurnID:   "turn-1",
+						Tokens: AgentTokenUsage{
+							InputTokens:  100,
+							OutputTokens: 20,
+							TotalTokens:  120,
+						},
 					},
 				},
-			},
-			Prompt: "Work on {{ issue.identifier }}",
-		},
-		Workspace:    workspaceBackend,
-		AgentBackend: agentBackend,
-		Store:        sessionStore,
-		Now:          clock.Now,
-	})
-	if err != nil {
-		t.Fatalf("NewRunner() error = %v", err)
-	}
+			}
+			sessionStore := &fakeSessionStore{sessionID: 853}
+			clock := newFakeClock(
+				startedAt,
+				startedAt,
+				startedAt.Add(time.Second),
+				startedAt.Add(2*time.Second),
+				startedAt.Add(3*time.Second),
+			)
 
-	var usageUpdates []UsageUpdate
-	result, err := runner.Run(context.Background(), RunRequest{
-		Issue: connector.Issue{
-			ID:         "issue-853",
-			Identifier: "digitaldrywood/detent#853",
-			Title:      "Per-session token ceiling",
-		},
-		StartedAt: startedAt,
-		OnUsageUpdate: func(update UsageUpdate) error {
-			usageUpdates = append(usageUpdates, update)
-			return nil
-		},
-	})
-	if err == nil {
-		t.Fatal("Run() error = nil, want token ceiling error")
-	}
-	if !errors.Is(err, ErrSessionTokenCeilingExceeded) {
-		t.Fatalf("Run() error = %v, want ErrSessionTokenCeilingExceeded", err)
-	}
-	var ceilingErr *SessionTokenCeilingError
-	if !errors.As(err, &ceilingErr) {
-		t.Fatalf("Run() error = %T, want SessionTokenCeilingError", err)
-	}
-	if ceilingErr.TotalTokens != 120 || ceilingErr.CeilingTokens != 100 || ceilingErr.Source != TokenCeilingSourceAbsolute {
-		t.Fatalf("ceiling error = %#v, want total 120 ceiling 100 absolute source", ceilingErr)
-	}
-	if result.FinalState != FinalStateTokenCeilingExceeded {
-		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateTokenCeilingExceeded)
-	}
-	if sessionStore.finished.FinalState != FinalStateTokenCeilingExceeded || sessionStore.finished.TotalTokens != 120 {
-		t.Fatalf("SessionFinish = %#v, want token ceiling final state and 120 tokens", sessionStore.finished)
-	}
-	if sessionStore.usage.Outcome != FinalStateTokenCeilingExceeded || sessionStore.usage.TotalTokens != 120 {
-		t.Fatalf("UsageEvent = %#v, want token ceiling outcome and 120 tokens", sessionStore.usage)
-	}
-	if sessionStore.phase.Status != FinalStateTokenCeilingExceeded || sessionStore.phase.TotalTokens != 120 {
-		t.Fatalf("WorkflowPhaseEvent = %#v, want token ceiling status and 120 tokens", sessionStore.phase)
-	}
-	if len(usageUpdates) != 5 {
-		t.Fatalf("usage update count = %d, want workspace start, dispatch baseline, configured identity, and 2 token updates", len(usageUpdates))
-	}
-	if got := usageUpdates[len(usageUpdates)-1].Tokens.TotalTokens; got != 120 {
-		t.Fatalf("last live usage total tokens = %d, want ceiling-crossing 120", got)
-	}
+			runner, err := NewRunner(Dependencies{
+				Workflow: config.Workflow{
+					Config: config.Config{
+						Agent: config.Agent{
+							MaxSessionTokens: 100,
+							Lessons: config.Lessons{
+								Path:       tt.path,
+								Enabled:    tt.enabled,
+								MaxEntries: 5,
+							},
+						},
+					},
+					Prompt: "Work on {{ issue.identifier }}",
+				},
+				Workspace:    workspaceBackend,
+				AgentBackend: agentBackend,
+				Store:        sessionStore,
+				Now:          clock.Now,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
 
-	lesson, err := os.ReadFile(filepath.Join(workspacePath, ".detent", "lessons.md"))
-	if err != nil {
-		t.Fatalf("ReadFile(lessons) error = %v", err)
-	}
-	for _, want := range []string{
-		"Failure kind:** token_ceiling_exceeded",
-		"session reached 120 tokens",
-		"configured ceiling 100",
-	} {
-		if !strings.Contains(string(lesson), want) {
-			t.Fatalf("lesson missing %q:\n%s", want, lesson)
-		}
+			var usageUpdates []UsageUpdate
+			result, err := runner.Run(context.Background(), RunRequest{
+				Issue: connector.Issue{
+					ID:         "issue-853",
+					Identifier: "digitaldrywood/detent#853",
+					Title:      "Per-session token ceiling",
+				},
+				StartedAt: startedAt,
+				OnUsageUpdate: func(update UsageUpdate) error {
+					usageUpdates = append(usageUpdates, update)
+					return nil
+				},
+			})
+			if err == nil {
+				t.Fatal("Run() error = nil, want token ceiling error")
+			}
+			if !errors.Is(err, ErrSessionTokenCeilingExceeded) {
+				t.Fatalf("Run() error = %v, want ErrSessionTokenCeilingExceeded", err)
+			}
+			var ceilingErr *SessionTokenCeilingError
+			if !errors.As(err, &ceilingErr) {
+				t.Fatalf("Run() error = %T, want SessionTokenCeilingError", err)
+			}
+			if ceilingErr.TotalTokens != 120 || ceilingErr.CeilingTokens != 100 || ceilingErr.Source != TokenCeilingSourceAbsolute {
+				t.Fatalf("ceiling error = %#v, want total 120 ceiling 100 absolute source", ceilingErr)
+			}
+			if result.FinalState != FinalStateTokenCeilingExceeded {
+				t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateTokenCeilingExceeded)
+			}
+			if sessionStore.finished.FinalState != FinalStateTokenCeilingExceeded || sessionStore.finished.TotalTokens != 120 {
+				t.Fatalf("SessionFinish = %#v, want token ceiling final state and 120 tokens", sessionStore.finished)
+			}
+			if sessionStore.usage.Outcome != FinalStateTokenCeilingExceeded || sessionStore.usage.TotalTokens != 120 {
+				t.Fatalf("UsageEvent = %#v, want token ceiling outcome and 120 tokens", sessionStore.usage)
+			}
+			if sessionStore.phase.Status != FinalStateTokenCeilingExceeded || sessionStore.phase.TotalTokens != 120 {
+				t.Fatalf("WorkflowPhaseEvent = %#v, want token ceiling status and 120 tokens", sessionStore.phase)
+			}
+			if len(usageUpdates) != 5 {
+				t.Fatalf("usage update count = %d, want workspace start, dispatch baseline, configured identity, and 2 token updates", len(usageUpdates))
+			}
+			if got := usageUpdates[len(usageUpdates)-1].Tokens.TotalTokens; got != 120 {
+				t.Fatalf("last live usage total tokens = %d, want ceiling-crossing 120", got)
+			}
+
+			lesson, err := os.ReadFile(lessonPath)
+			if tt.existing == "" {
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("ReadFile(lessons) error = %v, want absent file", err)
+				}
+			} else if err != nil || string(lesson) != tt.existing {
+				t.Fatalf("lesson = %q, error = %v; want unchanged %q", lesson, err, tt.existing)
+			}
+		})
 	}
 }
 
@@ -4269,6 +4363,9 @@ func TestRunnerClassifiesWorkspaceBranchHold(t *testing.T) {
 		BranchName: "detent/issue-1965",
 		PRNumber:   &prNumber,
 	}})
+	if err == nil {
+		t.Fatal("Run() succeeded, want WorkspaceBranchHeldError")
+	}
 	var heldErr *WorkspaceBranchHeldError
 	if !errors.As(err, &heldErr) {
 		t.Fatalf("Run() error = %v, want WorkspaceBranchHeldError", err)
@@ -4298,8 +4395,9 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 			},
 		},
 		prepareResult: workspace.MergePrepareResult{
-			Status:  workspace.MergePrepareStatusConflict,
-			Message: "CONFLICT (content): Merge conflict in README.md",
+			Status:               workspace.MergePrepareStatusConflict,
+			Message:              "CONFLICT (content): Merge conflict in README.md",
+			TargetCommitSubjects: []string{"fix: preserve the target feature"},
 		},
 	}
 	codexClient := &fakeCodexClient{
@@ -4312,6 +4410,12 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 		},
 		Workspace:    workspaceBackend,
 		AgentBackend: codexClient,
+		lookupEnv: func(name string) string {
+			if name == "GIT_CONFIG_PARAMETERS" {
+				return "'merge.renames'='false'"
+			}
+			return os.Getenv(name)
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
@@ -4319,10 +4423,11 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 
 	_, err = runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
-			ID:         "issue-860",
-			Identifier: "digitaldrywood/detent#860",
-			Title:      "Deterministic merge fast-path",
-			BranchName: "detent/digitaldrywood_detent_860",
+			ID:          "issue-860",
+			Identifier:  "digitaldrywood/detent#860",
+			Title:       "Deterministic merge fast-path",
+			Description: "Acceptance: keep both behaviors.",
+			BranchName:  "detent/digitaldrywood_detent_860",
 			PullRequest: &connector.PullRequest{
 				URL: "https://github.com/digitaldrywood/detent/pull/900",
 			},
@@ -4333,9 +4438,21 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
+	if got := codexClient.request.Environment.Variables["GIT_CONFIG_PARAMETERS"]; got != "'merge.renames'='false' 'merge.conflictStyle'='zdiff3'" {
+		t.Fatalf("merge conflict style override = %q", got)
+	}
+	styleCommand := exec.CommandContext(t.Context(), "git", "config", "--get", "merge.conflictStyle")
+	styleCommand.Dir = workspacePath
+	procgroup.SetEnvironment(styleCommand, codexClient.request.Environment)
+	style, styleErr := styleCommand.CombinedOutput()
+	if styleErr != nil || strings.TrimSpace(string(style)) != "zdiff3" {
+		t.Fatalf("Git conflict style = %q, %v", style, styleErr)
+	}
 	prompt := codexClient.request.Prompt
 	for _, want := range []string{
 		"merge-worker fallback",
+		"Acceptance: keep both behaviors.",
+		"fix: preserve the target feature",
 		"Deterministic merge pre-check status: conflict",
 		"CONFLICT (content): Merge conflict in README.md",
 		"Do not perform general code review",
@@ -4362,16 +4479,45 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 	t.Parallel()
 
+	findings := make([]string, 60)
+	for i := range findings {
+		findings[i] = fmt.Sprintf("missing declaration %02d", i+1)
+	}
+
 	tests := []struct {
 		name             string
 		agentOutput      string
 		verification     workspace.MergePrepareResult
 		verificationErr  error
 		wantOutput       string
+		wantFinding      string
+		unwantedFinding  string
+		wantSummary      string
+		wantFindingCount int
 		wantError        string
 		wantPrepareCalls int
 		wantHeadPushed   bool
 	}{
+		{
+			name:         "findings at the limit",
+			agentOutput:  "DETENT_MERGE_FALLBACK: resolved",
+			verification: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict, Findings: findings[:50]},
+			wantOutput:   RunOutputMergeFallbackRework, wantPrepareCalls: 2,
+			wantFinding: "missing declaration 50", unwantedFinding: "more findings", wantFindingCount: 50,
+		},
+		{
+			name:         "excess findings are summarized",
+			agentOutput:  "DETENT_MERGE_FALLBACK: resolved",
+			verification: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict, Findings: findings},
+			wantOutput:   RunOutputMergeFallbackRework, wantPrepareCalls: 2,
+			wantFinding: "missing declaration 50", unwantedFinding: "missing declaration 51", wantSummary: "10 more findings", wantFindingCount: 50,
+		},
+		{
+			name:         "missing declaration goes to rework with findings",
+			agentOutput:  "DETENT_MERGE_FALLBACK: resolved",
+			verification: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict, Message: "merge resolution removes unexplained Go declarations", Findings: []string{"example.go: Widget.Save"}},
+			wantOutput:   RunOutputMergeFallbackRework, wantPrepareCalls: 2, wantFinding: "example.go: Widget.Save",
+		},
 		{
 			name:             "resolved conflict is deterministically reverified",
 			agentOutput:      "Resolved the README conflict and passed make check.\nDETENT_MERGE_FALLBACK: resolved",
@@ -4390,9 +4536,9 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 		{
 			name:             "gate failure fails resolved attempt",
 			agentOutput:      "DETENT_MERGE_FALLBACK: resolved",
-			verificationErr:  errors.New("merge resolution gate failed: exit status 1"),
+			verificationErr:  errors.New("merge-fallback verification gate failed: exit status 1"),
 			wantOutput:       RunOutputMergeFallbackResolved,
-			wantError:        "merge resolution gate failed",
+			wantError:        "merge-fallback verification gate failed",
 			wantPrepareCalls: 2,
 		},
 		{
@@ -4483,6 +4629,18 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 			}
 			if !strings.HasPrefix(result.MergeFallbackFindings, tt.agentOutput) {
 				t.Fatalf("MergeFallbackFindings = %q, want agent output", result.MergeFallbackFindings)
+			}
+			if tt.wantFinding != "" && !strings.Contains(result.MergeFallbackFindings, tt.wantFinding) {
+				t.Fatalf("missing finding: %q", result.MergeFallbackFindings)
+			}
+			if tt.unwantedFinding != "" && strings.Contains(result.MergeFallbackFindings, tt.unwantedFinding) {
+				t.Fatalf("unexpected finding: %q", result.MergeFallbackFindings)
+			}
+			if tt.wantSummary != "" && !strings.Contains(result.MergeFallbackFindings, tt.wantSummary) {
+				t.Fatalf("missing findings summary: %q", result.MergeFallbackFindings)
+			}
+			if tt.wantFindingCount > 0 && strings.Count(result.MergeFallbackFindings, "missing declaration ") != tt.wantFindingCount {
+				t.Fatalf("findings = %q, want %d declarations", result.MergeFallbackFindings, tt.wantFindingCount)
 			}
 			if workspaceBackend.prepareCalls != tt.wantPrepareCalls {
 				t.Fatalf("PrepareMerge() calls = %d, want %d", workspaceBackend.prepareCalls, tt.wantPrepareCalls)
@@ -4672,6 +4830,10 @@ func TestRunnerMergeFallbackModelPermit(t *testing.T) {
 }
 
 func TestRunnerRunAddsGitMetadataExtraRootsForManagedWorkspace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initRunnerSourceRepo(t)
@@ -5898,15 +6060,17 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 			{Type: AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 2116, GroupID: 2116, StartedAt: processStartedAt}},
 			{
 				Type:  AgentUpdateMessageDelta,
-				Delta: `{"verdict":"pass","score":0.93,"summary":"Acceptance criteria are covered.","findings":[{"severity":"p2","body":"Follow-up polish.","path":"README.md","line":12}]}`,
+				Delta: `{"verdict":"pass","score":0.93,"summary":"Acceptance criteria are covered.","criteria_evidence":[{"criterion":"Validator checks the PR diff.","kind":"test","reference":"runner_test.go:TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON","behavior":"The independent review receives the identified PR diff"}],"findings":[{"severity":"p2","body":"Follow-up polish.","path":"README.md","line":12}]}`,
 			},
 		},
 		result: AgentTurnResult{ThreadID: "validator-thread", TurnID: "validator-turn"},
 	}
 	codeBackend := &fakeCodexClient{}
 	workspaceReaped := ""
+	sessionStore := &fakeSessionStore{sessionID: 522}
 
 	runner, err := NewRunner(Dependencies{
+		Store:             sessionStore,
 		ServiceConnection: serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"},
 		Workflow: config.Workflow{
 			Config: config.Config{
@@ -5946,6 +6110,8 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
+	measured := &compute.Usage{CPUSeconds: 3, AvgMemoryBytes: 1e9, WallSeconds: 4, ComputeUSD: .001}
+	runner.startCompute = func(compute.Rates) func() *compute.Usage { return func() *compute.Usage { return measured } }
 	result, err := runner.Validate(context.Background(), ValidatorRequest{
 		Issue: connector.Issue{
 			ID:          "issue-522",
@@ -5966,6 +6132,9 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 		t.Fatalf("Validate() error = %v", err)
 	}
 
+	if sessionStore.usage.Compute != measured {
+		t.Fatalf("validator compute = %+v", sessionStore.usage.Compute)
+	}
 	if !result.Submitted || result.Verdict != gate.ValidatorVerdictPass || result.Score != 0.93 {
 		t.Fatalf("Validate() result = %#v, want submitted pass score 0.93", result)
 	}
@@ -6643,6 +6812,39 @@ func TestParseValidatorResultRejectsMissingOutput(t *testing.T) {
 	}
 }
 
+func TestParseValidatorCriterionEvidence(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		entry   string
+		want    []gate.CriterionEvidence
+		invalid bool
+	}{
+		{name: "receipt", entry: `{"criterion":"Reject invalid input","kind":"receipt","reference":"make check","head_sha":"head","tree_sha":"tree","behavior":"Invalid input errors"}`, want: []gate.CriterionEvidence{{Criterion: "Reject invalid input", Kind: "receipt", Reference: "make check", HeadSHA: "head", TreeSHA: "tree", Behavior: "Invalid input errors"}}},
+		{name: "test", entry: `{"criterion":"Reject invalid input","kind":"test","reference":"input_test.go:TestInvalid","behavior":"Malformed input returns an error"}`, want: []gate.CriterionEvidence{{Criterion: "Reject invalid input", Kind: "test", Reference: "input_test.go:TestInvalid", Behavior: "Malformed input returns an error"}}},
+		{name: "not verified", entry: `{"criterion":"Reject invalid input","kind":"not_verified","reference":"No regression test"}`, want: []gate.CriterionEvidence{{Criterion: "Reject invalid input", Kind: "not_verified", Reference: "No regression test"}}},
+		{name: "empty map", want: []gate.CriterionEvidence{}},
+		{name: "restates implementation", entry: `{"criterion":"Reject invalid input","kind":"test","reference":"input_test.go:TestInvalid","behavior":"Copies code","restates_implementation":true}`, want: []gate.CriterionEvidence{{Criterion: "Reject invalid input", Kind: "test", Reference: "input_test.go:TestInvalid", Behavior: "Copies code", RestatesImplementation: true}}},
+		{name: "malformed entry", entry: `"receipt"`, invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := parseValidatorResult(`{"verdict":"pass","score":0.95,"summary":"Reviewed","criteria_evidence":[` + test.entry + `]}`)
+			if test.invalid {
+				if err == nil {
+					t.Fatal("malformed evidence accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Score != .95 || result.Verdict != "pass" || !reflect.DeepEqual(result.CriteriaEvidence, test.want) {
+				t.Fatalf("parsed result = %+v", result)
+			}
+		})
+	}
+}
+
 func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
 	t.Parallel()
 
@@ -7058,118 +7260,147 @@ func TestRunnerRunRoutesAtMeSelectorsWithContext(t *testing.T) {
 func TestRunnerRunFinishesFailedSessionAndAfterRunOnCodexError(t *testing.T) {
 	t.Parallel()
 
-	workspaceBackend := &fakeWorkspaceBackend{
-		info: workspace.Info{Path: t.TempDir(), Key: "issue-22", Branch: "detent/issue-22"},
-	}
-	codexClient := &fakeCodexClient{err: errors.New("codex failed")}
-	sessionStore := &fakeSessionStore{sessionID: 7}
-	now := newFakeClock(time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC))
+	for _, test := range []struct {
+		name    string
+		err     error
+		updates []AgentUpdate
+		refused bool
+	}{
+		{name: "unknown failure", err: errors.New("codex failed")},
+		{name: "refused start", err: &testProviderResponseError{operation: "turn/start"}, refused: true},
+		{name: "failed started turn", err: &testProviderResponseError{operation: "turn/start"}, updates: []AgentUpdate{{Type: AgentUpdateTurnStarted, TurnID: "accepted"}}},
+		{name: "startup response", err: &testProviderResponseError{operation: "thread/start"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workspaceBackend := &fakeWorkspaceBackend{
+				info: workspace.Info{Path: t.TempDir(), Key: "issue-22", Branch: "detent/issue-22"},
+			}
+			codexClient := &fakeCodexClient{err: test.err, updates: test.updates}
+			sessionStore := &fakeSessionStore{sessionID: 7}
+			probe := &activityCheckpointProbe{SessionStore: sessionStore, started: make(chan struct{}), release: make(chan struct{}), profiles: make(chan store.WorkflowPhaseEvent, 4)}
+			close(probe.release)
+			at := time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC)
 
-	runner, err := NewRunner(Dependencies{
-		Workflow:     config.Workflow{Config: config.Config{}},
-		Workspace:    workspaceBackend,
-		AgentBackend: codexClient,
-		Store:        sessionStore,
-		Now:          now.Now,
-	})
-	if err != nil {
-		t.Fatalf("NewRunner() error = %v", err)
+			runner, err := NewRunner(Dependencies{
+				Workflow:     config.Workflow{Config: config.Config{}},
+				Workspace:    workspaceBackend,
+				AgentBackend: codexClient,
+				Store:        probe,
+				Now:          func() time.Time { return at },
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			result, err := runner.Run(context.Background(), RunRequest{
+				Issue: connector.Issue{
+					ID:         "issue-22",
+					Identifier: "digitaldrywood/detent#22",
+					Title:      "Add runner",
+				},
+			})
+			if err == nil {
+				t.Fatal("Run() error = nil, want codex failure")
+			}
+			if !errors.Is(err, test.err) {
+				t.Fatalf("Run() error = %v, want codex failure", err)
+			}
+			if !workspaceBackend.afterRun {
+				t.Fatal("AfterRun was not called after codex failure")
+			}
+			if workspaceBackend.diffed {
+				t.Fatal("DiffStat was called after codex failure")
+			}
+			if sessionStore.finished.FinalState != FinalStateFailed {
+				t.Fatalf("SessionFinish.FinalState = %q, want %q", sessionStore.finished.FinalState, FinalStateFailed)
+			}
+			if result.TurnStartRefused != test.refused || sessionStore.finished.TurnStartRefused != test.refused {
+				t.Fatalf("refusal accounting: result=%v stored=%v want=%v", result.TurnStartRefused, sessionStore.finished.TurnStartRefused, test.refused)
+			}
+			var receipt workflowmetrics.ActivityProfile
+			for len(probe.profiles) > 0 {
+				if err := json.Unmarshal([]byte((<-probe.profiles).MetadataJSON), &receipt); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if receipt.SessionID != sessionStore.sessionID || receipt.Summary == nil || !receipt.StartedAt.Equal(sessionStore.started.StartedAt) || receipt.FinishedAt.IsZero() {
+				t.Fatalf("failed session receipt missing: %+v", receipt)
+			}
+		})
 	}
 
-	_, err = runner.Run(context.Background(), RunRequest{
-		Issue: connector.Issue{
-			ID:         "issue-22",
-			Identifier: "digitaldrywood/detent#22",
-			Title:      "Add runner",
-		},
-	})
-	if err == nil {
-		t.Fatal("Run() error = nil, want codex failure")
-	}
-	if !strings.Contains(err.Error(), "codex failed") {
-		t.Fatalf("Run() error = %v, want codex failure", err)
-	}
-	if !workspaceBackend.afterRun {
-		t.Fatal("AfterRun was not called after codex failure")
-	}
-	if workspaceBackend.diffed {
-		t.Fatal("DiffStat was called after codex failure")
-	}
-	if sessionStore.finished.FinalState != FinalStateFailed {
-		t.Fatalf("SessionFinish.FinalState = %q, want %q", sessionStore.finished.FinalState, FinalStateFailed)
-	}
 }
 
-func TestRunnerRunRecordsFailedOutputTailNote(t *testing.T) {
+func TestRunnerFailureKeepsSessionDiagnosticsWithoutNotes(t *testing.T) {
 	t.Parallel()
+	for _, exists := range []bool{false, true} {
+		t.Run(strconv.FormatBool(exists), func(t *testing.T) {
+			t.Parallel()
+			workspacePath := t.TempDir()
+			workspaceBackend := &fakeWorkspaceBackend{
+				info: workspace.Info{Path: workspacePath, Key: "issue-856", Branch: "detent/issue-856"},
+			}
+			notesPath := filepath.Join(workspacePath, ".detent", "notes.md")
+			const existing = "Existing user notes"
+			if exists {
+				if err := os.MkdirAll(filepath.Dir(notesPath), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(notesPath, []byte(existing), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sessionStore := &fakeSessionStore{sessionID: 42}
+			var lastMessage string
+			oldOutput := strings.Repeat("old output ", 2048)
+			codexClient := &fakeCodexClient{
+				updates: []AgentUpdate{{
+					Type:   AgentUpdateMessageDelta,
+					ItemID: "msg-1",
+					Delta:  oldOutput + "useful failure tail",
+				}},
+				err: errors.New("codex failed"),
+			}
+			nowValue := time.Date(2026, 7, 2, 21, 50, 0, 0, time.UTC)
+			now := newFakeClock(nowValue, nowValue, nowValue, nowValue, nowValue)
 
-	workspacePath := t.TempDir()
-	workspaceBackend := &fakeWorkspaceBackend{
-		info: workspace.Info{Path: workspacePath, Key: "issue-856", Branch: "detent/issue-856"},
-	}
-	oldOutput := strings.Repeat("old output ", 2048)
-	codexClient := &fakeCodexClient{
-		updates: []AgentUpdate{{
-			Type:   AgentUpdateMessageDelta,
-			ItemID: "msg-1",
-			Delta:  oldOutput + "useful failure tail",
-		}},
-		err: errors.New("codex failed"),
-	}
-	nowValue := time.Date(2026, 7, 2, 21, 50, 0, 0, time.UTC)
-	now := newFakeClock(nowValue, nowValue, nowValue, nowValue, nowValue)
+			runner, err := NewRunner(Dependencies{
+				Workflow:     config.Workflow{Config: config.Config{}},
+				Workspace:    workspaceBackend,
+				Store:        sessionStore,
+				AgentBackend: codexClient,
+				Now:          now.Now,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
 
-	runner, err := NewRunner(Dependencies{
-		Workflow:     config.Workflow{Config: config.Config{}},
-		Workspace:    workspaceBackend,
-		AgentBackend: codexClient,
-		Now:          now.Now,
-	})
-	if err != nil {
-		t.Fatalf("NewRunner() error = %v", err)
-	}
+			result, err := runner.Run(context.Background(), RunRequest{
+				OnUsageUpdate: func(update UsageUpdate) error { lastMessage = update.LastMessage; return nil },
+				Issue: connector.Issue{
+					ID:         "issue-856",
+					Identifier: "digitaldrywood/detent#856",
+					Title:      "Failure handoff",
+				},
+			})
+			if err == nil {
+				t.Fatal("Run() error = nil, want codex failure")
+			}
 
-	_, err = runner.Run(context.Background(), RunRequest{
-		Issue: connector.Issue{
-			ID:         "issue-856",
-			Identifier: "digitaldrywood/detent#856",
-			Title:      "Failure handoff",
-		},
-	})
-	if err == nil {
-		t.Fatal("Run() error = nil, want codex failure")
-	}
-
-	notesPath, err := notes.WorkspacePath(workspacePath)
-	if err != nil {
-		t.Fatalf("notes path: %v", err)
-	}
-	content, err := notes.Read(notesPath, notes.ReadOptions{})
-	if err != nil {
-		t.Fatalf("read notes: %v", err)
-	}
-	for _, want := range []string{
-		"## 2026-07-02T21:50:00Z - Failed run output tail",
-		"- final_state: failed",
-		"- error: codex failed",
-		"useful failure tail",
-	} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("notes missing %q:\n%s", want, content)
-		}
-	}
-	if strings.Contains(content, oldOutput) {
-		t.Fatalf("notes included unbounded old output")
-	}
-
-	prompt, err := BuildPrompt(config.Workflow{Prompt: "Retry prompt"}, connector.Issue{
-		Identifier: "digitaldrywood/detent#856",
-	}, PromptOptions{WorkspacePath: workspacePath})
-	if err != nil {
-		t.Fatalf("BuildPrompt() error = %v", err)
-	}
-	if !strings.Contains(prompt, "useful failure tail") {
-		t.Fatalf("retry prompt missing failure tail:\n%s", prompt)
+			if !strings.Contains(result.Output, "useful failure tail") || !strings.Contains(lastMessage, "useful failure tail") {
+				t.Fatal("existing diagnostic output lost")
+			}
+			if sessionStore.finished.FinalState != FinalStateFailed || sessionStore.finishCalls != 1 {
+				t.Fatalf("failed session outcome not persisted: %+v", sessionStore.finished)
+			}
+			content, err := os.ReadFile(notesPath)
+			if exists && (err != nil || string(content) != existing) {
+				t.Fatalf("failed turn modified existing notes: %v", err)
+			}
+			if !exists && !os.IsNotExist(err) {
+				t.Fatalf("failed turn created repository notes: %v", err)
+			}
+		})
 	}
 }
 
@@ -7321,9 +7552,22 @@ func TestRunnerRunTreatsMissingWorkspaceFinalDiffAsCompleted(t *testing.T) {
 			t.Fatalf("log output missing %q:\n%s", want, logOutput)
 		}
 	}
+	failure := errors.New("git add intent to add: git add failed: exit status 1")
+	workspaceBackend.diffErr = failure
+	result, err = runner.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-453", Identifier: "digitaldrywood/detent#453"}, StartedAt: startedAt})
+	if !errors.Is(err, ErrWorkspacePreparation) || !errors.Is(err, failure) || !result.TurnStarted {
+		t.Fatalf("Run() error=%v result=%+v, want post-turn instance diagnostic failure", err, result)
+	}
+	if result.FinalState != FinalStateFailed || sessionStore.finished.FinalState != FinalStateFailed {
+		t.Fatalf("result=%+v session=%+v, want preserved failed diagnostic outcome", result, sessionStore.finished)
+	}
 }
 
 func TestRunnerRunUsesFreshContextForAfterRunCleanup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	workspaceBackend := &fakeWorkspaceBackend{
@@ -7466,6 +7710,7 @@ func initRunnerSourceRepo(t *testing.T) string {
 	runRunnerGit(t, dir, "config", "core.autocrlf", "false")
 	runRunnerGit(t, dir, "config", "user.name", "Test User")
 	runRunnerGit(t, dir, "config", "user.email", "test@example.com")
+	runRunnerGit(t, dir, "config", "commit.gpgsign", "false")
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("source repo\n"), 0o600); err != nil {
 		t.Fatalf("write README.md: %v", err)
 	}
@@ -7985,7 +8230,7 @@ func (s *fakeRunnerBudgetSpendStore) IssueTokenSpend(context.Context, store.Issu
 	return s.issue, nil
 }
 
-func (s *fakeSessionStore) LatestCompletedAgentResumeState(_ context.Context, attrs store.AgentResumeLookup) (store.AgentResumeState, error) {
+func (s *fakeSessionStore) LatestAgentResumeState(_ context.Context, attrs store.AgentResumeLookup) (store.AgentResumeState, error) {
 	s.resumeLookups++
 	s.resumeLookup = attrs
 	if s.resumeErr != nil {
@@ -8097,9 +8342,6 @@ func TestWorkspaceIssuePullRequestComparison(t *testing.T) {
 				t.Fatalf("terminal PR must use default base only: %+v", got)
 			}
 			wantLanded := ""
-			if state == "MERGED" {
-				wantLanded = "old-head"
-			}
 			if got.LandedHeadSHA != wantLanded {
 				t.Fatalf("landed head = %q, want %q", got.LandedHeadSHA, wantLanded)
 			}
@@ -8108,6 +8350,10 @@ func TestWorkspaceIssuePullRequestComparison(t *testing.T) {
 }
 
 func TestRunnerReapSquashLandedWorkspace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	tests := []struct {
 		name          string
@@ -8117,7 +8363,8 @@ func TestRunnerReapSquashLandedWorkspace(t *testing.T) {
 		wantPreserved bool
 	}{
 		{name: "hub landed metadata", evidence: "hub"},
-		{name: "merged pull request with deleted branch", evidence: "pull", pullState: "MERGED"},
+		{name: "cached merged pull request with deleted branch", evidence: "pull", pullState: "MERGED", wantPreserved: true},
+		{name: "verified merged PR", evidence: "verified"},
 		{name: "closed unmerged pull request", evidence: "pull", pullState: "CLOSED", wantPreserved: true},
 		{name: "work after merged pull request", evidence: "pull", pullState: "MERGED", laterCommit: true, wantPreserved: true},
 		{name: "no landing evidence", wantPreserved: true},
@@ -8153,6 +8400,8 @@ func TestRunnerReapSquashLandedWorkspace(t *testing.T) {
 			runRunnerGit(t, source, "push", "origin", "main")
 			runRunnerGit(t, source, "push", "origin", "--delete", info.Branch)
 			switch tt.evidence {
+			case "verified":
+				issue.CleanupDeliveredHeadSHA = landedHead
 			case "hub":
 				issue.Metadata = map[string]string{"hub_landed_head_sha": landedHead}
 			case "pull":
@@ -8223,4 +8472,15 @@ func TestRunnerMergeFastPathValidatesTheHeadForALocalStatus(t *testing.T) {
 			}
 		})
 	}
+}
+
+type testProviderResponseError struct {
+	operation string
+}
+
+func (e *testProviderResponseError) Error() string { return "provider request refused" }
+
+func (e *testProviderResponseError) NativeTerminalFailure() tracker.NativeTerminalFailure {
+	code := -32602
+	return tracker.NativeTerminalFailure{Provider: "codex", Operation: e.operation, RPCCode: &code}
 }

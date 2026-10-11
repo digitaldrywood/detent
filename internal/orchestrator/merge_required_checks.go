@@ -80,7 +80,7 @@ func (o *Orchestrator) reconcilePersistentlyMissingRequiredCheckPark(
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "pull_request_hydration_unavailable", &park, "")
 		return true, false
 	}
-	if len(mergeWorkerMissingRequiredChecks(issue)) > 0 {
+	if len(mergeWorkerMissingRequiredChecks(issue, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus)) > 0 {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "required_checks_still_missing", &park, "")
 		return true, false
 	}

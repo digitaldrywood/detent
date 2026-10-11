@@ -54,7 +54,7 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 	c.logStaleSuccessfulCheckRuns(ctx, repo, sha, staleSuccessfulChecks)
 	requiredFailures := requiredStatusCheckFailures(checkRuns, statuses, c.requiredChecks)
 	state := combinedCIState(checkRunsState(checkRuns), commitStatusesState(statuses))
-	state = combinedCIState(requiredStatusCheckState(requiredFailures), state)
+	state = combinedCIState(requiredStatusCheckState(requiredFailures, c.localStatus), state)
 	transientFailures, err := c.transientCheckRunFailures(ctx, repo, checkRuns)
 	if err != nil {
 		return pullRequestCI{}, err
@@ -420,13 +420,16 @@ func requiredCommitStatusFailure(name string, status restCommitStatus) (connecto
 	}, true
 }
 
-func requiredStatusCheckState(failures []connector.PullRequestCheck) string {
+func requiredStatusCheckState(failures []connector.PullRequestCheck, localStatus string) string {
 	if len(failures) == 0 {
 		return ""
 	}
 	pending := false
 	failed := false
 	for _, failure := range failures {
+		if failure.IsMissingLocalStatus(localStatus) {
+			continue
+		}
 		status := strings.ToLower(strings.TrimSpace(failure.Status))
 		conclusion := strings.ToLower(strings.TrimSpace(failure.Conclusion))
 		switch {
@@ -442,7 +445,9 @@ func requiredStatusCheckState(failures []connector.PullRequestCheck) string {
 	if pending {
 		return "pending"
 	}
-	return ""
+	// Only unproduced local-gate work remains; the missing evidence above still
+	// prevents merging until Detent validates the head and posts the status.
+	return "success"
 }
 
 func requiredStatusCheckPending(status string, conclusion string) bool {
@@ -737,6 +742,9 @@ func restCommitStatusAfter(left restCommitStatus, right restCommitStatus) bool {
 }
 
 func normalizeRequiredStatusChecks(checks []string) []string {
+	if checks == nil {
+		return nil
+	}
 	normalized := make([]string, 0, len(checks))
 	seen := make(map[string]struct{}, len(checks))
 	for _, check := range checks {

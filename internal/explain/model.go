@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const SchemaVersion = 3
@@ -70,23 +71,31 @@ type Query struct {
 }
 
 type IssueExplanation struct {
-	Schema           int                    `json:"schema"`
-	Found            bool                   `json:"found"`
-	ObservedAt       time.Time              `json:"observed_at"`
-	Identity         Identity               `json:"identity"`
-	CurrentLane      Lane                   `json:"current_lane"`
-	LatestTransition *Transition            `json:"latest_transition,omitempty"`
-	Dependencies     []telemetry.BlockedRef `json:"dependencies,omitempty"`
-	DependencyNotes  []string               `json:"dependency_notes,omitempty"`
-	Eligibility      Eligibility            `json:"eligibility"`
-	Attempt          *Attempt               `json:"attempt,omitempty"`
-	Sessions         Sessions               `json:"sessions"`
-	PullRequest      *PullRequest           `json:"pull_request,omitempty"`
-	RequiredGate     Gate                   `json:"required_gate"`
-	ParkSummary      ParkSummary            `json:"park_summary"`
-	Reasons          []Reason               `json:"reasons"`
-	Sources          []SourceStatus         `json:"sources"`
-	Evidence         []EvidenceReference    `json:"evidence"`
+	FailureSignature *FailureSignature              `json:"failure_signature,omitempty"`
+	NativeRuntime    *tracker.NativeRuntimeEvidence `json:"native_runtime,omitempty"`
+	Schema           int                            `json:"schema"`
+	Found            bool                           `json:"found"`
+	ObservedAt       time.Time                      `json:"observed_at"`
+	Identity         Identity                       `json:"identity"`
+	CurrentLane      Lane                           `json:"current_lane"`
+	LatestTransition *Transition                    `json:"latest_transition,omitempty"`
+	Dependencies     []telemetry.BlockedRef         `json:"dependencies,omitempty"`
+	DependencyNotes  []string                       `json:"dependency_notes,omitempty"`
+	Eligibility      Eligibility                    `json:"eligibility"`
+	Attempt          *Attempt                       `json:"attempt,omitempty"`
+	Sessions         Sessions                       `json:"sessions"`
+	PullRequest      *PullRequest                   `json:"pull_request,omitempty"`
+	RequiredGate     Gate                           `json:"required_gate"`
+	ParkSummary      ParkSummary                    `json:"park_summary"`
+	Reasons          []Reason                       `json:"reasons"`
+	Sources          []SourceStatus                 `json:"sources"`
+	Evidence         []EvidenceReference            `json:"evidence"`
+}
+
+type FailureSignature struct {
+	Signature string `json:"signature"`
+	Count     int    `json:"count"`
+	Partial   bool   `json:"partial"`
 }
 
 type Reason struct {
@@ -170,6 +179,7 @@ type Admission struct {
 }
 
 type Eligibility struct {
+	Current  *EligibilityDecision  `json:"current,omitempty"`
 	State    EligibilityState      `json:"state"`
 	Latest   *EligibilityDecision  `json:"latest,omitempty"`
 	Refusals []EligibilityDecision `json:"refusals"`
@@ -177,35 +187,40 @@ type Eligibility struct {
 }
 
 type EligibilityDecision struct {
-	Historical          bool             `json:"historical,omitempty"`
-	EvidenceID          string           `json:"evidence_id"`
-	Source              string           `json:"source"`
-	State               EligibilityState `json:"state"`
-	Outcome             string           `json:"outcome"`
-	Reason              string           `json:"reason,omitempty"`
-	ReasonCode          string           `json:"reason_code,omitempty"`
-	AttemptNumber       int              `json:"attempt_number,omitempty"`
-	SelectionEvidenceID string           `json:"selection_evidence_id,omitempty"`
-	At                  time.Time        `json:"at"`
-	sequence            int64
+	UnresolvedDependencies []tracker.NativeDependency `json:"unresolved_dependencies,omitempty"`
+	Unavailable            []string                   `json:"unavailable,omitempty"`
+	RunnerID               string                     `json:"runner_id,omitempty"`
+	Historical             bool                       `json:"historical,omitempty"`
+	EvidenceID             string                     `json:"evidence_id"`
+	Source                 string                     `json:"source"`
+	State                  EligibilityState           `json:"state"`
+	Outcome                string                     `json:"outcome"`
+	Reason                 string                     `json:"reason,omitempty"`
+	ReasonCode             string                     `json:"reason_code,omitempty"`
+	AttemptNumber          int                        `json:"attempt_number,omitempty"`
+	SelectionEvidenceID    string                     `json:"selection_evidence_id,omitempty"`
+	At                     time.Time                  `json:"at"`
+	sequence               int64
 }
 
 type Attempt struct {
-	EvidenceID        string     `json:"evidence_id"`
-	ID                int64      `json:"id"`
-	Selection         string     `json:"selection"`
-	Status            string     `json:"status"`
-	TerminalState     string     `json:"terminal_state,omitempty"`
-	AttemptNumber     int        `json:"attempt_number,omitempty"`
-	Lane              string     `json:"lane,omitempty"`
-	Phase             string     `json:"phase,omitempty"`
-	StatusMessage     string     `json:"status_message,omitempty"`
-	WaitReason        string     `json:"wait_reason,omitempty"`
-	StartedAt         time.Time  `json:"started_at"`
-	HeartbeatAt       *time.Time `json:"heartbeat_at,omitempty"`
-	CompletedAt       *time.Time `json:"completed_at,omitempty"`
-	DetentSessionID   int64      `json:"detent_session_id,omitempty"`
-	ProviderSessionID string     `json:"provider_session_id,omitempty"`
+	NativeID          string      `json:"native_id,omitempty"`
+	Freshness         SourceState `json:"freshness,omitempty"`
+	EvidenceID        string      `json:"evidence_id"`
+	ID                int64       `json:"id"`
+	Selection         string      `json:"selection"`
+	Status            string      `json:"status"`
+	TerminalState     string      `json:"terminal_state,omitempty"`
+	AttemptNumber     int         `json:"attempt_number,omitempty"`
+	Lane              string      `json:"lane,omitempty"`
+	Phase             string      `json:"phase,omitempty"`
+	StatusMessage     string      `json:"status_message,omitempty"`
+	WaitReason        string      `json:"wait_reason,omitempty"`
+	StartedAt         time.Time   `json:"started_at"`
+	HeartbeatAt       *time.Time  `json:"heartbeat_at,omitempty"`
+	CompletedAt       *time.Time  `json:"completed_at,omitempty"`
+	DetentSessionID   int64       `json:"detent_session_id,omitempty"`
+	ProviderSessionID string      `json:"provider_session_id,omitempty"`
 }
 
 type Sessions struct {

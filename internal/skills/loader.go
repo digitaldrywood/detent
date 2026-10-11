@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -17,13 +19,14 @@ import (
 
 const (
 	DefaultPath              = ".detent/skills"
-	DefaultMaxSkillsInPrompt = 50
+	DefaultMaxSkillsInPrompt = 100
 )
 
 type Skill struct {
 	Name        string
 	Description string
 	WhenToUse   string
+	Aliases     []string
 	BodyPath    string
 }
 
@@ -58,10 +61,28 @@ type Result struct {
 }
 
 func Load(workspacePath string, opts Options) (Result, error) {
-	path := opts.Path
-	if strings.TrimSpace(path) == "" {
-		path = DefaultPath
+	relative := opts.Path
+	if strings.TrimSpace(relative) == "" {
+		relative = DefaultPath
 	}
+	skillsDir, err := workspaceRelativePath(workspacePath, relative)
+	if err != nil {
+		return Result{}, err
+	}
+	return load(os.DirFS(skillsDir), ".", opts, func(file string) string {
+		return filepath.Join(skillsDir, file)
+	})
+}
+
+func LoadFS(files fs.FS, opts Options) (Result, error) {
+	directory := opts.Path
+	if strings.TrimSpace(directory) == "" {
+		directory = DefaultPath
+	}
+	return load(files, directory, opts, func(file string) string { return file })
+}
+
+func load(filesystem fs.FS, directory string, opts Options, bodyPath func(string) string) (Result, error) {
 	maxSkills := opts.MaxSkillsInPrompt
 	if maxSkills <= 0 {
 		maxSkills = DefaultMaxSkillsInPrompt
@@ -71,13 +92,8 @@ func Load(workspacePath string, opts Options) (Result, error) {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 
-	skillsDir, err := workspaceRelativePath(workspacePath, path)
-	if err != nil {
-		return Result{}, err
-	}
-
-	entries, err := os.ReadDir(skillsDir)
-	if errors.Is(err, os.ErrNotExist) {
+	entries, err := fs.ReadDir(filesystem, directory)
+	if errors.Is(err, fs.ErrNotExist) {
 		return Result{}, nil
 	}
 	if err != nil {
@@ -89,24 +105,24 @@ func Load(workspacePath string, opts Options) (Result, error) {
 		if entry.IsDir() || strings.ToLower(filepath.Ext(entry.Name())) != ".md" {
 			continue
 		}
-		files = append(files, filepath.Join(skillsDir, entry.Name()))
+		files = append(files, path.Join(directory, entry.Name()))
 	}
 	sort.Strings(files)
 
 	skills := make([]Skill, 0, len(files))
 	dropped := make([]Drop, 0)
 	for _, file := range files {
-		content, err := os.ReadFile(file)
+		content, err := fs.ReadFile(filesystem, file)
 		if err != nil {
 			dropped = append(dropped, Drop{
-				Path:    file,
+				Path:    bodyPath(file),
 				Reason:  DropReasonInvalid,
 				Message: "failed to read skill: " + err.Error(),
 			})
 			continue
 		}
 
-		skill, drop := parseSkill(file, content)
+		skill, drop := parseSkill(bodyPath(file), content)
 		if drop != nil {
 			dropped = append(dropped, *drop)
 			continue
@@ -170,11 +186,16 @@ func parseSkill(path string, content []byte) (Skill, *Drop) {
 	if len(missing) > 0 {
 		return Skill{}, &Drop{Path: path, Reason: DropReasonInvalid, Message: strings.Join(missing, ", ")}
 	}
+	aliases, err := stringListField(root, "aliases")
+	if err != nil {
+		return Skill{}, &Drop{Path: path, Reason: DropReasonInvalid, Message: err.Error()}
+	}
 
 	return Skill{
 		Name:        fields["name"],
 		Description: fields["description"],
 		WhenToUse:   fields["when_to_use"],
+		Aliases:     aliases,
 		BodyPath:    path,
 	}, nil
 }
@@ -226,6 +247,27 @@ func stringField(root *yaml.Node, name string) (string, bool) {
 		return value.Value, true
 	}
 	return "", false
+}
+
+func stringListField(root *yaml.Node, name string) ([]string, error) {
+	for i := 0; i < len(root.Content); i += 2 {
+		if root.Content[i].Value != name {
+			continue
+		}
+		value := root.Content[i+1]
+		if value.Kind != yaml.SequenceNode {
+			return nil, fmt.Errorf("%s must be a list of nonempty strings", name)
+		}
+		items := make([]string, 0, len(value.Content))
+		for _, item := range value.Content {
+			if item.Kind != yaml.ScalarNode || item.Tag != "!!str" || strings.TrimSpace(item.Value) == "" {
+				return nil, fmt.Errorf("%s must be a list of nonempty strings", name)
+			}
+			items = append(items, strings.TrimSpace(item.Value))
+		}
+		return items, nil
+	}
+	return nil, nil
 }
 
 func rejectDuplicateNames(skillList []Skill) ([]Skill, []Drop) {

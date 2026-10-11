@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"time"
@@ -105,6 +106,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	s.applyAutoPromoteDecisionSnapshots(pipelineIssueSnapshots, pipeline, now)
 	s.applyArtifactGateWaitDispatchSnapshots(pipelineIssueSnapshots, pipeline)
 	snapshot := telemetry.Snapshot{
+		LocalIntake:        &s.LocalIntake,
 		Runtime:            s.RuntimeObservation,
 		GeneratedAt:        now,
 		Instance:           s.Instance,
@@ -126,7 +128,6 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		RateLimits:         cloneRateLimits(s.RateLimits),
 		TrackerUnavailable: trackerUnavailableSnapshots(s.TrackerUnavailable),
 		ForgeUnavailable:   forgeUnavailableSnapshots(s.ForgeUnavailable),
-		GitHubMonitors:     workerGitHubMonitorSnapshots(s.GitHubMonitors),
 		CIUnavailable:      ciUnavailableSnapshots(s.CIUnavailable),
 		BackendOutages:     backendOutageSnapshots(s.BackendOutages),
 		FailureBreakers:    projectFailureBreakerSnapshots(s),
@@ -166,7 +167,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Blocked:   len(snapshot.Blocked),
 		Completed: len(snapshot.Completed),
 	}
-	applySnapshotLaneProvenance(&snapshot, s.laneProvenance)
+	applySnapshotIssueProvenance(&snapshot, s.laneProvenance, s.dispatchModes)
 	return snapshot
 }
 
@@ -253,15 +254,20 @@ func forgeUnavailableSnapshots(conditions map[string]ForgeCondition) []telemetry
 	return result
 }
 
-func workerGitHubMonitorSnapshots(conditions map[string]GitHubMonitor) []telemetry.GitHubMonitor {
-	result := make([]telemetry.GitHubMonitor, 0, len(conditions))
-	for _, key := range sortedKeys(conditions) {
-		result = append(result, conditions[key])
+func (o *Orchestrator) snapshotDispatchModes(ctx context.Context, state *State) {
+	state.dispatchModes = make(map[string]string)
+	for _, issue := range stateLaneEntryIssues(state) {
+		key := workflowLaneEntryKey(issue)
+		if key == "" {
+			continue
+		}
+		if _, exists := state.dispatchModes[key]; !exists {
+			state.dispatchModes[key] = o.dispatchMode(ctx, state, issue)
+		}
 	}
-	return result
 }
 
-func applySnapshotLaneProvenance(snapshot *telemetry.Snapshot, laneProvenance map[string]provenance.Attribution) {
+func applySnapshotIssueProvenance(snapshot *telemetry.Snapshot, laneProvenance map[string]provenance.Attribution, dispatchModes map[string]string) {
 	if snapshot == nil {
 		return
 	}
@@ -269,7 +275,9 @@ func applySnapshotLaneProvenance(snapshot *telemetry.Snapshot, laneProvenance ma
 		if issue == nil {
 			return
 		}
-		attribution, ok := laneProvenance[telemetryIssueLaneKey(*issue)]
+		key := telemetryIssueLaneKey(*issue)
+		issue.DispatchMode = dispatchModes[key]
+		attribution, ok := laneProvenance[key]
 		if !ok {
 			return
 		}
@@ -363,7 +371,6 @@ func projectFailureBreakerSnapshots(state State) []telemetry.FailureBreaker {
 	}
 	candidateCount := state.DispatchStatus.EligibleCandidateCount
 	row := telemetry.FailureBreaker{
-		InstanceDrained:        breaker.PreTurn,
 		Class:                  breaker.Class,
 		Count:                  breaker.Count,
 		AttemptCount:           attemptCount,
@@ -381,9 +388,6 @@ func projectFailureBreakerSnapshots(state State) []telemetry.FailureBreaker {
 		TrippedAt:              breaker.TrippedAt,
 		ResumeAt:               breaker.ResumeAt,
 		CanaryIssueID:          breaker.CanaryIssueID,
-	}
-	if breaker.PreTurn {
-		row.CooldownSeconds = int64(breaker.ResumeAt.Sub(breaker.TrippedAt) / time.Second)
 	}
 	if scope := (backendcapacity.Scope{BackendID: row.BackendID, BackendKind: row.BackendKind, Provider: row.Provider}).Normalize(); scope.BackendID != "" || scope.BackendKind != "" || scope.Provider != "" {
 		if _, outage, ok := matchingBackendOutage(state.BackendOutages, scope); ok {
@@ -575,7 +579,7 @@ func (s State) applyAutoPromoteDecisionSnapshots(snapshots []telemetry.Issue, is
 			}
 			summary := AutoPromoteSummaryFromIssue(issues[i])
 			summary.CompletedFinalState = autoPromoteCompletedFinalState(&s, issueID)
-			summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(&s, issueID)
+			summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(&s, issues[i])
 			summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(&s, issueID, s.AutoPromote, now)
 			decision = EvaluateAutoPromote(issues[i], summary, s.AutoPromote, now)
 		}
@@ -1296,7 +1300,7 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 		pullRequest = &connector.PullRequest{Number: *prNumber}
 	}
 	out := &telemetry.PullRequest{
-
+		Draft:                      pullRequest.Draft,
 		Number:                     pullRequest.Number,
 		URL:                        pullRequest.URL,
 		BranchName:                 pullRequest.BranchName,

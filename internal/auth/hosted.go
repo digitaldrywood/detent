@@ -55,6 +55,24 @@ type Membership struct {
 	} `json:"role"`
 }
 
+type HostedUser struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
+type HostedUserProvider interface {
+	User(context.Context, string) (HostedUser, error)
+}
+
+func LookupHostedUser(ctx context.Context, provider HostedProvider, id string) (HostedUser, error) {
+	users, ok := provider.(HostedUserProvider)
+	if !ok {
+		return HostedUser{}, ErrHostedIdentity
+	}
+	return users.User(ctx, id)
+}
+
 type Invitation struct {
 	ID             string    `json:"id"`
 	Email          string    `json:"email"`
@@ -77,6 +95,7 @@ type HostedProvider interface {
 	RevokeMembership(context.Context, string) error
 	Invite(context.Context, string, string, string, string) (Invitation, error)
 	Invitation(context.Context, string) (Invitation, error)
+	HasUser(context.Context, string) (bool, error)
 	AcceptInvitation(context.Context, string, string) error
 	RevokeSession(context.Context, string) error
 }

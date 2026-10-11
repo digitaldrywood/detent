@@ -1,14 +1,18 @@
 package global
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -16,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/activehours"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	intakeconfig "github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/profiling"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -46,6 +51,8 @@ const (
 
 const plainWorkflowPathRequirement = "must be absolute or home-relative when workflow_ref is empty"
 
+var mutationMu sync.Mutex
+
 var schedulingModes = []string{
 	SchedulingWeighted,
 	SchedulingStrict,
@@ -71,32 +78,35 @@ type PathResolution struct {
 }
 
 type Config struct {
-	Path                  string          `yaml:"-"`
-	APIVersion            string          `yaml:"apiVersion"`
-	Kind                  string          `yaml:"kind"`
-	Env                   string          `yaml:"env,omitempty"`
-	LogLevel              string          `yaml:"log_level,omitempty"`
-	LogMaxSizeBytes       *int            `yaml:"log_max_size_bytes,omitempty"`
-	LogMaxBackups         *int            `yaml:"log_max_backups,omitempty"`
-	GitHubToken           string          `yaml:"github_token,omitempty"`
-	APIToken              string          `yaml:"api_token,omitempty"`
-	TrustLoopbackPeerRead bool            `yaml:"trust_loopback_peer_read,omitempty"`
-	DashboardAccess       DashboardAccess `yaml:"dashboard_access,omitempty"`
-	Client                HubClient       `yaml:"client,omitempty"`
-	Ops                   Ops             `yaml:"ops,omitempty"`
-	Port                  *int            `yaml:"port,omitempty"`
-	InstanceName          string          `yaml:"instance_name,omitempty"`
-	ServiceName           string          `yaml:"service_name,omitempty"`
-	Notifications         Notifications   `yaml:"notifications,omitempty"`
-	Update                Update          `yaml:"update,omitempty"`
-	Auth                  Auth            `yaml:"auth,omitempty"`
-	Global                Settings        `yaml:"global"`
-	Projects              []Project       `yaml:"projects"`
+	RunnerCheckouts       []Project        `yaml:"-"`
+	WorkspaceRoot         string           `yaml:"workspace_root,omitempty"`
+	Path                  string           `yaml:"-"`
+	APIVersion            string           `yaml:"apiVersion"`
+	Kind                  string           `yaml:"kind"`
+	Env                   string           `yaml:"env,omitempty"`
+	LogLevel              string           `yaml:"log_level,omitempty"`
+	LogMaxSizeBytes       *int             `yaml:"log_max_size_bytes,omitempty"`
+	LogMaxBackups         *int             `yaml:"log_max_backups,omitempty"`
+	GitHubToken           string           `yaml:"github_token,omitempty" json:"-"`
+	APIToken              string           `yaml:"api_token,omitempty" json:"-"`
+	TrustLoopbackPeerRead bool             `yaml:"trust_loopback_peer_read,omitempty"`
+	DashboardAccess       DashboardAccess  `yaml:"dashboard_access,omitempty"`
+	Client                HubClient        `yaml:"client,omitempty"`
+	Ops                   Ops              `yaml:"ops,omitempty"`
+	Port                  *int             `yaml:"port,omitempty"`
+	InstanceName          string           `yaml:"instance_name,omitempty"`
+	ServiceName           string           `yaml:"service_name,omitempty"`
+	Notifications         Notifications    `yaml:"notifications,omitempty"`
+	Update                Update           `yaml:"update,omitempty"`
+	Auth                  Auth             `yaml:"auth,omitempty"`
+	Profiling             profiling.Config `yaml:"profiling,omitempty"`
+	Global                Settings         `yaml:"global"`
+	Projects              []Project        `yaml:"projects,omitempty"`
 }
 
 type DashboardAccess struct {
 	Mode       string `yaml:"mode,omitempty"`
-	Token      string `yaml:"token,omitempty"`
+	Token      string `yaml:"token,omitempty" json:"-"`
 	AllowWrite bool   `yaml:"allow_write,omitempty"`
 }
 
@@ -113,14 +123,15 @@ func (a DashboardAccess) IsZero() bool {
 }
 
 type Update struct {
-	AutoCheckEnabled   bool `yaml:"auto_check_enabled,omitempty"`
+	configured         bool
+	AutoCheckEnabled   bool `yaml:"auto_check_enabled"`
 	CheckIntervalHours int  `yaml:"check_interval_hours,omitempty"`
-	AutoApplyEnabled   bool `yaml:"auto_apply_enabled,omitempty"`
+	AutoApplyEnabled   bool `yaml:"auto_apply_enabled"`
 	MaxDeferralHours   int  `yaml:"max_deferral_hours,omitempty"`
 }
 
 func (u Update) IsZero() bool {
-	return !u.AutoCheckEnabled && u.CheckIntervalHours == 0 && !u.AutoApplyEnabled && u.MaxDeferralHours == 0
+	return !u.configured && !u.AutoCheckEnabled && u.CheckIntervalHours == 0 && !u.AutoApplyEnabled && u.MaxDeferralHours == 0
 }
 
 func (u Update) NormalizedCheckIntervalHours() int {
@@ -138,6 +149,8 @@ func (u Update) NormalizedMaxDeferralHours() int {
 }
 
 type Settings struct {
+	LocalIntakeEnabled  *bool                              `yaml:"local_intake_enabled,omitempty"`
+	Worker              workflowconfig.WorkerDefaults      `yaml:"worker,omitempty"`
 	Cache               toolcache.Policy                   `yaml:"cache,omitempty"`
 	Agents              workflowconfig.Agents              `yaml:"agents,omitempty"`
 	Budget              workflowconfig.AgentBudgetDefaults `yaml:"budget,omitempty"`
@@ -219,6 +232,10 @@ type AgentPool struct {
 }
 
 type Project struct {
+	ModelSelection           *workflowconfig.ModelSelection     `yaml:"-"`
+	LocalIntakeEnabled       *bool                              `yaml:"local_intake_enabled,omitempty"`
+	GlobalLocalIntakeEnabled *bool                              `yaml:"-"`
+	GlobalWorker             workflowconfig.WorkerDefaults      `yaml:"-"`
 	GlobalAgents             workflowconfig.Agents              `yaml:"-"`
 	GlobalBudget             workflowconfig.AgentBudgetDefaults `yaml:"-"`
 	GlobalCache              toolcache.Policy                   `yaml:"-"`
@@ -250,6 +267,13 @@ type Project struct {
 	GlobalIO                 IO                                 `yaml:"-"`
 	GlobalCPU                CPU                                `yaml:"-"`
 	IntakeConfigured         bool                               `yaml:"-"`
+}
+
+func (p Project) LocalIntakeOn() bool {
+	if p.LocalIntakeEnabled != nil {
+		return *p.LocalIntakeEnabled
+	}
+	return p.GlobalLocalIntakeEnabled == nil || *p.GlobalLocalIntakeEnabled
 }
 
 func (p Project) EffectiveMemory() Memory {
@@ -286,6 +310,8 @@ type options struct {
 	relativeTo                string
 	projectPathLiterals       bool
 	allowMissingWorkflowFiles bool
+	allowMissingProjectPaths  bool
+	machineOnlyProjects       bool
 }
 
 type pathOptions struct {
@@ -316,6 +342,14 @@ func WithProjectPathLiterals() Option {
 func WithMissingWorkflowFiles() Option {
 	return func(opts *options) {
 		opts.allowMissingWorkflowFiles = true
+	}
+}
+
+// WithMissingProjectPaths permits not-yet-cloned project paths during runner
+// setup while preserving path expansion and all other configuration validation.
+func WithMissingProjectPaths() Option {
+	return func(opts *options) {
+		opts.allowMissingProjectPaths = true
 	}
 }
 
@@ -395,6 +429,43 @@ func ReadProject(path string, projectID string, opts ...Option) (Config, []strin
 }
 
 func Write(path string, cfg Config, opts ...Option) error {
+	mutationMu.Lock()
+	defer mutationMu.Unlock()
+	return write(path, cfg, opts...)
+}
+
+func Mutate(path string, mutate func(*Config, string) bool, opts ...Option) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("global config path is required")
+	}
+
+	mutationMu.Lock()
+	defer mutationMu.Unlock()
+
+	readOptions := defaultOptions()
+	for _, opt := range opts {
+		opt(&readOptions)
+	}
+	expandedPath, err := expandPath(path, readOptions)
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(expandedPath)
+	if err != nil {
+		return MissingFileError{Path: expandedPath, Err: err}
+	}
+	cfg, err := Parse(raw, expandedPath, opts...)
+	if err != nil {
+		return err
+	}
+	revision := sha256.Sum256(raw)
+	if !mutate(&cfg, hex.EncodeToString(revision[:])) {
+		return nil
+	}
+	return write(expandedPath, cfg, opts...)
+}
+
+func write(path string, cfg Config, opts ...Option) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("global config path is required")
 	}
@@ -425,6 +496,7 @@ func Write(path string, cfg Config, opts ...Option) error {
 	if err := os.MkdirAll(filepath.Dir(expandedPath), 0o755); err != nil {
 		return fmt.Errorf("create global config directory %s: %w", filepath.Dir(expandedPath), err)
 	}
+	// #nosec G703 -- writes the operator-selected global config path after expansion and config validation.
 	if err := os.WriteFile(expandedPath, raw, configFileMode); err != nil {
 		return fmt.Errorf("write global config %s: %w", expandedPath, err)
 	}
@@ -618,6 +690,10 @@ func ReadOrDefault(path string, opts ...Option) (Config, error) {
 	return Config{}, err
 }
 
+func WithoutProjectConfiguration() Option {
+	return func(o *options) { o.machineOnlyProjects = true }
+}
+
 func Parse(raw []byte, path string, opts ...Option) (Config, error) {
 	readOptions := defaultOptions()
 	for _, opt := range opts {
@@ -665,6 +741,15 @@ func decodeConfigRoot(raw []byte, path string) (map[string]any, error) {
 }
 
 func parseConfigRoot(root map[string]any, path string, readOptions options, opts ...Option) (Config, error) {
+	retained := runnerCheckoutLocations(root, readOptions)
+	warnings := normalizeRunnerConfig(root)
+	for _, key := range warnings {
+		slog.Warn("runner configuration key is removed and ignored; remove it before the next release", "key", key)
+	}
+	_, projectsConfigured := root["projects"]
+	if readOptions.machineOnlyProjects || !projectsConfigured {
+		root["projects"] = []any{}
+	}
 	if problems := validateRaw(root, readOptions); len(problems) > 0 {
 		return Config{}, ValidationError{Path: path, Problems: problems}
 	}
@@ -677,6 +762,20 @@ func parseConfigRoot(root map[string]any, path string, readOptions options, opts
 		return Config{}, err
 	}
 
+	if cfg.Client.IdentityFile != "" {
+		workspaceRoot := projectStringValue(root, "workspace_root")
+		if workspaceRoot == "" {
+			workspaceRoot = filepath.Join(readOptions.home, "detent-runner")
+		}
+		cfg.RunnerCheckouts = retained
+		cfg.WorkspaceRoot, err = expandPath(workspaceRoot, readOptions)
+		if err != nil {
+			return Config{}, buildValidationError(path, err)
+		}
+		if !filepath.IsAbs(cfg.WorkspaceRoot) {
+			return Config{}, ValidationError{Path: path, Problems: []string{"workspace_root: must be an absolute path"}}
+		}
+	}
 	return cfg, nil
 }
 
@@ -770,6 +869,11 @@ func (c Config) Validate(opts ...Option) error {
 		problems = append(problems, "update.max_deferral_hours: must be a positive integer")
 	}
 	problems = append(problems, c.Auth.validate("auth")...)
+	if c.Profiling != (profiling.Config{}) {
+		if err := c.Profiling.Validate(); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
 
 	if c.Global.MaxConcurrentAgents <= 0 {
 		problems = append(problems, "global.max_concurrent_agents: must be a positive integer")
@@ -1085,6 +1189,7 @@ func validateRaw(attrs map[string]any, opts options) []string {
 	problems = append(problems, requiredErrors(attrs, []string{"apiVersion", "kind", "global", "projects"})...)
 	problems = append(problems, versionErrors(attrs["apiVersion"])...)
 	problems = append(problems, kindErrors(attrs["kind"])...)
+	problems = append(problems, optionalStringTypeError(attrs, "workspace_root")...)
 	problems = append(problems, optionalStringTypeError(attrs, "env")...)
 	problems = append(problems, optionalStringTypeError(attrs, "log_level")...)
 	problems = append(problems, optionalNonNegativeIntegerError(attrs["log_max_size_bytes"], "log_max_size_bytes")...)
@@ -1701,6 +1806,9 @@ func projectPathErrors(path string, field string, opts options, expected pathExp
 	}
 
 	info, err := os.Stat(expanded) // #nosec G703 -- validation intentionally inspects the operator-configured project path after expansion.
+	if opts.allowMissingProjectPaths && errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return []string{field + ": path does not exist"}
 	}
@@ -2032,9 +2140,26 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
-	update, err := buildUpdate(attrs["update"])
+	update, err := buildUpdate(attrs["update"], client.Configured())
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
+	}
+	var profileConfig profiling.Config
+	if attrs["profiling"] != nil {
+		if _, err := mapValue(attrs["profiling"], "profiling"); err != nil {
+			return Config{}, buildValidationError(path, err)
+		}
+		if err := decodeYAMLValue(attrs["profiling"], &profileConfig); err != nil {
+			return Config{}, buildValidationError(path, err)
+		}
+		if profileConfig.Capture.Dir != "" {
+			profileOptions := opts
+			profileOptions.relativeTo = filepath.Dir(path)
+			profileConfig.Capture.Dir, err = expandPath(profileConfig.Capture.Dir, profileOptions)
+			if err != nil {
+				return Config{}, buildValidationError(path, err)
+			}
+		}
 	}
 	auth, err := buildAuth(attrs["auth"])
 	if err != nil {
@@ -2052,6 +2177,7 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	for index := range builtProjects {
 		builtProjects[index].GlobalAgents = settings.Agents
 		builtProjects[index].GlobalBudget = settings.Budget
+		builtProjects[index].GlobalWorker = settings.Worker
 		builtProjects[index].GlobalCache = settings.Cache.Normalized()
 	}
 	return Config{
@@ -2074,6 +2200,7 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 		Notifications:         notifications,
 		Update:                update,
 		Auth:                  auth,
+		Profiling:             profileConfig,
 		Global:                settings,
 		Projects:              builtProjects,
 	}, nil
@@ -2166,14 +2293,18 @@ func dashboardAccessProblems(access DashboardAccess) []string {
 	return nil
 }
 
-func buildUpdate(value any) (Update, error) {
+func buildUpdate(value any, hubRunner bool) (Update, error) {
+	update := Update{AutoCheckEnabled: hubRunner, AutoApplyEnabled: hubRunner}
 	if value == nil {
-		return Update{}, nil
+		return update, nil
 	}
-	if _, err := mapValue(value, "update"); err != nil {
+	attrs, err := mapValue(value, "update")
+	if err != nil {
 		return Update{}, err
 	}
-	var update Update
+	_, checkConfigured := attrs["auto_check_enabled"]
+	_, applyConfigured := attrs["auto_apply_enabled"]
+	update.configured = checkConfigured || applyConfigured
 	if err := decodeYAMLValue(value, &update); err != nil {
 		return Update{}, fmt.Errorf("update: %w", err)
 	}
@@ -2182,6 +2313,18 @@ func buildUpdate(value any) (Update, error) {
 
 func buildSettings(attrs map[string]any, opts options) (Settings, error) {
 	settings := defaultSettings()
+	if attrs["local_intake_enabled"] != nil {
+		value, err := optionalBool(attrs["local_intake_enabled"], "global.local_intake_enabled")
+		if err != nil {
+			return Settings{}, err
+		}
+		settings.LocalIntakeEnabled = &value
+	}
+	if attrs["worker"] != nil {
+		if err := decodeYAMLValue(attrs["worker"], &settings.Worker); err != nil {
+			return Settings{}, fmt.Errorf("global.worker: %w", err)
+		}
+	}
 	if attrs["cache"] != nil {
 		if err := decodeYAMLValue(attrs["cache"], &settings.Cache); err != nil {
 			return Settings{}, fmt.Errorf("global.cache: %w", err)
@@ -2194,6 +2337,9 @@ func buildSettings(attrs map[string]any, opts options) (Settings, error) {
 	if attrs["agents"] != nil {
 		if err := decodeYAMLValue(attrs["agents"], &settings.Agents); err != nil {
 			return Settings{}, fmt.Errorf("global.agents: %w", err)
+		}
+		for _, warning := range settings.Agents.ModelSelectionWarnings() {
+			slog.Warn("global." + warning)
 		}
 		if err := settings.Agents.ValidateDefaults(); err != nil {
 			return Settings{}, err
@@ -2435,7 +2581,16 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 			}
 		}
 
+		var localIntakeEnabled *bool
+		if project["local_intake_enabled"] != nil {
+			value, err := optionalBool(project["local_intake_enabled"], prefix+".local_intake_enabled")
+			if err != nil {
+				return nil, err
+			}
+			localIntakeEnabled = &value
+		}
 		out = append(out, Project{
+			LocalIntakeEnabled:       localIntakeEnabled,
 			ID:                       strings.TrimSpace(id),
 			Pool:                     pool,
 			Workflow:                 strings.TrimSpace(workflow),

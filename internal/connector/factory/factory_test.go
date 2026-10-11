@@ -230,6 +230,10 @@ func TestFactoryGitHubConnectorImplementsProvisioner(t *testing.T) {
 }
 
 func TestFactoryGitHubConnectorUsesConfiguredLogger(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	var defaultLogs bytes.Buffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&defaultLogs, &slog.HandlerOptions{

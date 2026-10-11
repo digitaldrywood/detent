@@ -18,6 +18,10 @@ import (
 // Exercise real label discovery with the tick and lane writer, without PR
 // hydration: closure alone must reach the existing reconciliation owner.
 func TestTickReconcilesClosedLabelsWithoutPreviousPipeline(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, tc := range []struct {
 		name, lane, reason string
 		previousTick       bool

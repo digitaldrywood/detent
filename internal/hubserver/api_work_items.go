@@ -157,7 +157,7 @@ func (s *Service) getWorkItem(c echo.Context) error {
 
 func (d *database) workItemBody(ctx context.Context, id tracker.WorkItemID) (string, error) {
 	var body sql.NullString
-	if err := d.db.QueryRowContext(ctx, "SELECT body FROM issues WHERE id = ?", id).Scan(&body); err != nil {
+	if err := d.reader.QueryRowContext(ctx, "SELECT body FROM issues WHERE id = ?", id).Scan(&body); err != nil {
 		return "", fmt.Errorf("read work item body: %w", err)
 	}
 	return body.String, nil
@@ -179,7 +179,7 @@ func (s *Service) allWorkItems(ctx context.Context) ([]tracker.WorkItem, error) 
 }
 
 func (d *database) allWorkItemIDs(ctx context.Context) ([]tracker.WorkItemID, error) {
-	rows, err := d.db.QueryContext(ctx, "SELECT id FROM issues WHERE github_node_id IS NOT NULL ORDER BY id")
+	rows, err := d.reader.QueryContext(ctx, "SELECT id FROM issues WHERE github_node_id IS NOT NULL ORDER BY id")
 	if err != nil {
 		return nil, fmt.Errorf("query hub work item IDs: %w", err)
 	}
@@ -587,7 +587,7 @@ func (d *database) latestWorkpad(ctx context.Context, id tracker.WorkItemID) (wo
 	var desiredJSON string
 	var status string
 	var updatedAt string
-	err := d.db.QueryRowContext(ctx, `
+	err := d.reader.QueryRowContext(ctx, `
 SELECT desired_json, status, updated_at
 FROM github_outbox
 WHERE issue_id = ? AND mutation_kind = ?
@@ -611,7 +611,7 @@ LIMIT 1`, id, MutationWorkpad).Scan(&desiredJSON, &status, &updatedAt)
 }
 
 func (d *database) workItemTimeline(ctx context.Context, id tracker.WorkItemID, afterID int64, limit int) ([]timelineEvent, error) {
-	rows, err := d.db.QueryContext(ctx, `
+	rows, err := d.reader.QueryContext(ctx, `
 SELECT id, fencing_token, machine_id, session_id, run_id, kind, payload_json, occurred_at, recorded_at
 FROM work_events
 WHERE issue_id = ? AND id > ?

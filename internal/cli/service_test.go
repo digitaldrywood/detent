@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -78,8 +80,10 @@ func TestStartCommandYesInstallsWithoutPrompt(t *testing.T) {
 		Manager: servicepkg.ManagerInfo{Name: servicepkg.ManagerLaunchd, Scope: "user", Unit: "com.digitaldrywood.detent"},
 		State:   servicepkg.StateRunning,
 		Definition: &servicepkg.Definition{
-			Path:    "/Users/name/Library/LaunchAgents/com.digitaldrywood.detent.plist",
-			Content: "<plist/>\n",
+			Path:              "/Users/name/Library/LaunchAgents/com.digitaldrywood.detent.plist",
+			Content:           "<plist/>\n",
+			StandardOutPath:   "/Users/name/.config/detent-runner/logs/service.out.log",
+			StandardErrorPath: "/Users/name/.config/detent-runner/logs/service.err.log",
 		},
 	}}}
 	cmd := NewRootCommand(t.Context(), WithServiceFactory(serviceFactoryFor(runner)))
@@ -93,6 +97,9 @@ func TestStartCommandYesInstallsWithoutPrompt(t *testing.T) {
 	}
 	if len(runner.startOptions) != 1 || !runner.startOptions[0].Install {
 		t.Fatalf("start options = %#v", runner.startOptions)
+	}
+	if !strings.Contains(stdout.String(), "Service logs: /Users/name/.config/detent-runner/logs/service.out.log and /Users/name/.config/detent-runner/logs/service.err.log") {
+		t.Fatalf("service log paths missing: %s", stdout.String())
 	}
 	if strings.Contains(stdout.String(), "[y/N]") {
 		t.Fatalf("output contains prompt:\n%s", stdout.String())
@@ -226,6 +233,10 @@ func TestStatusCommandManualStoppedIsSuccessful(t *testing.T) {
 }
 
 func TestStatusServiceRunnerReportsGitHubLookupBackoff(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	nextProbeAt := time.Date(2026, 9, 3, 18, 30, 0, 0, time.UTC)
@@ -360,37 +371,97 @@ func TestSystemdDefinitionArgumentsDecodesLiteralPercents(t *testing.T) {
 
 func TestServiceCommandResolvesConfigAndRuntime(t *testing.T) {
 	t.Parallel()
-
-	path := filepath.Join(t.TempDir(), "global.yaml")
-	cfg, err := globalconfig.DefaultAt(path)
-	if err != nil {
-		t.Fatalf("DefaultAt() error = %v", err)
-	}
-	port := 4100
-	cfg.Port = &port
-	cfg.Update.AutoApplyEnabled = true
-	if err := globalconfig.Write(path, cfg); err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
-
-	var captured servicepkg.Config
-	runner := &serviceRunnerStub{status: servicepkg.Status{ServiceManager: servicepkg.ManagerManual, Service: string(servicepkg.ManagerManual), State: servicepkg.StateStopped}}
-	cmd := NewRootCommand(t.Context(), WithVersion("dev"), WithServiceFactory(func(cfg servicepkg.Config) (ServiceRunner, error) {
-		captured = cfg
-		return runner, nil
-	}))
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--format", "json", "--config", path, "status"})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if captured.ConfigPath != path || captured.AutoUpdate != "apply enabled" || captured.DashboardURL != "http://localhost:4100" || captured.Install.Source != update.InstallSourceDevelopment {
-		t.Fatalf("captured config = %#v", captured)
-	}
-	if want := []string{"--config", path, "--headless"}; !reflect.DeepEqual(captured.Arguments, want) {
-		t.Fatalf("arguments = %#v, want %#v", captured.Arguments, want)
+	for _, test := range []struct {
+		name, serviceName, hubURL, wantName string
+	}{
+		{name: "board", wantName: "detent"},
+		{name: "runner without service name", hubURL: "https://hub.example.test", wantName: runnerServiceName},
+		{name: "runner with service name", serviceName: runnerServiceName, hubURL: "https://hub.example.test", wantName: runnerServiceName},
+		{name: "custom board", serviceName: "detent.board", wantName: "detent.board"},
+		{name: "custom runner", serviceName: "detent.runner-two", hubURL: "https://hub.example.test", wantName: "detent.runner-two"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "global.yaml")
+			cfg, err := globalconfig.DefaultAt(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			port := 4100
+			cfg.Port = &port
+			cfg.ServiceName = test.serviceName
+			cfg.Client.URL = test.hubURL
+			cfg.Update.AutoApplyEnabled = true
+			if err := globalconfig.Write(path, cfg); err != nil {
+				t.Fatal(err)
+			}
+			for _, command := range []string{"start", "status", "register"} {
+				var captured servicepkg.Config
+				runner := &serviceRunnerStub{status: servicepkg.Status{ServiceManager: servicepkg.ManagerManual, State: servicepkg.StateStopped}, startResults: []servicepkg.StartResult{{Action: servicepkg.ActionInstalled}}}
+				opts := defaultOptions()
+				opts.version = "dev"
+				opts.lookupEnv = func(string) string { return "" }
+				opts.serviceInjected = true
+				opts.service = func(cfg servicepkg.Config) (ServiceRunner, error) {
+					captured = cfg
+					return runner, nil
+				}
+				if got := configuredServiceName(path, opts); got != test.wantName {
+					t.Fatalf("configured service = %s, want %s", got, test.wantName)
+				}
+				var cmd *cobra.Command
+				host, runtimePort := "", -1
+				switch command {
+				case "start":
+					cmd = newStartCommand(&path, &host, &runtimePort, opts)
+					cmd.SetArgs([]string{"--yes"})
+				case "status":
+					cmd = newStatusCommand(&path, &host, &runtimePort, opts)
+				case "register":
+					cmd = &cobra.Command{Use: "register", RunE: func(cmd *cobra.Command, _ []string) error { return runnerServiceStarterFor(opts)(cmd, path) }}
+				}
+				cmd.SetOut(&bytes.Buffer{})
+				cmd.SetErr(&bytes.Buffer{})
+				if err := cmd.ExecuteContext(t.Context()); err != nil {
+					t.Fatalf("%s: %v", command, err)
+				}
+				if captured.ConfigPath != path || captured.AutoUpdate != "apply enabled" || captured.DashboardURL != "http://localhost:4100" || captured.Install.Source != update.InstallSourceDevelopment {
+					t.Fatalf("%s config = %#v", command, captured)
+				}
+				if want := []string{"--config", path, "--headless"}; !reflect.DeepEqual(captured.Arguments, want) {
+					t.Fatalf("arguments = %#v, want %#v", captured.Arguments, want)
+				}
+				for _, goos := range []string{"darwin", "linux"} {
+					platform := captured
+					platform.GOOS = goos
+					platform.HomeDir = t.TempDir()
+					platform.UserSystemdPath = filepath.Join(platform.HomeDir, servicepkg.SystemdUnit(test.wantName))
+					platform.SystemUnitPaths = []string{filepath.Join(platform.HomeDir, "system", "missing.service")}
+					platform.UserUnitPaths = []string{platform.UserSystemdPath}
+					platform.InspectManual = func(string) (servicepkg.Inspection, error) { return servicepkg.Inspection{}, nil }
+					platform.RunCommand = func(context.Context, string, ...string) (string, error) {
+						return "Could not find service", errors.New("exit status 113")
+					}
+					controller, err := servicepkg.New(platform)
+					if err != nil {
+						t.Fatal(err)
+					}
+					result, err := controller.Start(t.Context(), servicepkg.StartOptions{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := servicepkg.SystemdUnit(test.wantName)
+					filename := want
+					if goos == "darwin" {
+						want = servicepkg.LaunchdLabel(test.wantName)
+						filename = want + ".plist"
+					}
+					if result.Manager.Unit != want || filepath.Base(result.Definition.Path) != filename {
+						t.Fatalf("%s %s service = %+v, want %s", command, goos, result, want)
+					}
+				}
+			}
+		})
 	}
 }
 

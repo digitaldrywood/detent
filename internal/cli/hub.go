@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubgithub"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 )
@@ -24,18 +26,25 @@ func newHubCommand(opts options) *cobra.Command {
 		if cfg.GitHubDisabled {
 			return hubserver.Run(ctx, cfg)
 		}
-		token, err := opts.ghAuthToken(ctx)
-		if err != nil {
-			return fmt.Errorf("resolve github credentials for hub outbox: %w", err)
+		var transport *hubgithub.Transport
+		appID, privateKey := opts.lookupEnv("DETENT_HUB_GITHUB_APP_ID"), opts.lookupEnv("DETENT_HUB_GITHUB_APP_PRIVATE_KEY")
+		if appID != "" && privateKey != "" {
+			transport = hubgithub.NewAppTransport(connectorgithub.InstallationTokenConfig{AppID: appID, PrivateKey: privateKey, LookupEnv: opts.lookupEnv})
+			cfg.GitHubAppInstallation = transport.AppInstallation
+		} else {
+			if cfg.Hosted != nil {
+				return errors.New("hosted GitHub intake requires the product GitHub App credentials")
+			}
+			token, err := opts.ghAuthToken(ctx)
+			if err != nil {
+				return fmt.Errorf("resolve github credentials for hub outbox: %w", err)
+			}
+			client, err := connectorgithub.NewClient(connectorgithub.ClientConfig{TokenSource: connectorgithub.StaticTokenSource(token), Logger: cfg.Logger})
+			if err != nil {
+				return fmt.Errorf("configure github hub outbox client: %w", err)
+			}
+			transport = hubgithub.NewTransport(client)
 		}
-		client, err := connectorgithub.NewClient(connectorgithub.ClientConfig{
-			TokenSource: connectorgithub.StaticTokenSource(token),
-			Logger:      cfg.Logger,
-		})
-		if err != nil {
-			return fmt.Errorf("configure github hub outbox client: %w", err)
-		}
-		transport := hubgithub.NewTransport(client)
 		cfg.OutboxBackend = hubgithub.NewWriter(transport)
 		cfg.ReconcileBackend = hubgithub.NewReconciler(transport)
 		cfg.ImportBackend = hubgithub.NewImporter(transport)
@@ -79,6 +88,7 @@ func newHubCommandWithRun(version string, lookupEnv func(string) string, run hub
 	cmd.AddCommand(newHubIssueCommand(lookupEnv))
 	cmd.AddCommand(newHubRecoveryCommands(lookupEnv)...)
 	cmd.AddCommand(newHubSharedMigrationCommand(lookupEnv))
+	cmd.AddCommand(newHubSecretsCommand(lookupEnv))
 	return cmd
 }
 
@@ -132,6 +142,10 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 			if githubWebhookSecretEnv != "" && !validEnvName(githubWebhookSecretEnv) {
 				return NewValidationError("Hub GitHub webhook secret environment variable name is invalid", "Use an environment variable name such as DETENT_HUB_GITHUB_WEBHOOK_SECRET.", nil)
 			}
+			secretKeys, err := hubsecrets.FromEnvironment(lookupEnv)
+			if err != nil {
+				return err
+			}
 			hosted, _, err := readHostedConfig(hostedConfigPath, lookupEnv)
 			if err != nil {
 				return err
@@ -173,19 +187,22 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 					workspaces = &workspaceConfig
 				}
 			}
+			closeProfiling := startHubProfiling(cmd, lookupEnv, hostedConfigPath, databasePath, logger)
+			defer closeProfiling()
 			return run(cmd.Context(), hubserver.Config{
 				Hosted:                     hosted,
 				Conversation:               conversation,
 				Usage:                      usage,
 				Workspace:                  workspaces,
 				CredentialMaintenance:      credentialMaintenance,
-				GitHubDisabled:             githubDisabled || hosted != nil,
+				GitHubDisabled:             githubDisabled || hosted != nil && (lookupEnv("DETENT_HUB_GITHUB_APP_ID") == "" || lookupEnv("DETENT_HUB_GITHUB_APP_PRIVATE_KEY") == ""),
 				DatabasePath:               databasePath,
 				ListenAddress:              listenAddress,
 				TLSCertFile:                strings.TrimSpace(tlsCertificateFile),
 				TLSKeyFile:                 strings.TrimSpace(tlsKeyFile),
 				TrustedProxy:               trustedProxy,
 				InitialAdminToken:          []byte(adminToken),
+				SecretKeys:                 secretKeys,
 				BusyTimeout:                busyTimeout,
 				ShutdownTimeout:            shutdownTimeout,
 				GitHubWebhookSecret:        []byte(strings.TrimSpace(lookupEnv(githubWebhookSecretEnv))),

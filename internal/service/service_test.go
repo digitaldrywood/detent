@@ -253,6 +253,7 @@ func TestManagerFromProcessEnvironment(t *testing.T) {
 		env  map[string]string
 		want ManagerName
 	}{
+		{name: "legacy systemd definition", goos: "linux", env: map[string]string{"INVOCATION_ID": "test-invocation"}, want: ManagerSystemd},
 		{
 			name: "explicit manager",
 			goos: "darwin",

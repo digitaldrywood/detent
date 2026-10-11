@@ -48,6 +48,10 @@ func TestMain(m *testing.M) {
 }
 
 func TestRunWorkflowGitBoundsInheritedOutputPipe(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	binDir := installWorkflowGitHelper(t)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(workflowGitHelperModeEnv, "git")
@@ -211,6 +215,10 @@ func TestLoadWorkflowRejectsRelativeWorkflowWhenWorkflowRefUnset(t *testing.T) {
 }
 
 func TestLoadWorkflowUsesConfiguredGitRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	repo := initWorkflowSourceRepo(t)
@@ -234,6 +242,10 @@ func TestLoadWorkflowUsesConfiguredGitRef(t *testing.T) {
 }
 
 func TestLoadWorkflowUsesSplitDefinitionFromConfiguredGitRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	repo := initWorkflowSourceRepo(t)
@@ -273,6 +285,10 @@ func TestLoadWorkflowUsesSplitDefinitionFromConfiguredGitRef(t *testing.T) {
 }
 
 func TestLoadWorkflowUsesAdmissionEffortGuidanceFromConfiguredGitRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	repo := initWorkflowSourceRepo(t)
@@ -325,6 +341,10 @@ backlog_admission:
 }
 
 func TestLoadWorkflowUsesLocalOverlayWithConfiguredGitRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	repo := initWorkflowSourceRepo(t)
@@ -356,6 +376,10 @@ func TestLoadWorkflowUsesLocalOverlayWithConfiguredGitRef(t *testing.T) {
 }
 
 func TestLoadWorkflowUsesAbsolutePathUnderWorkdirWithConfiguredGitRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	repo := initWorkflowSourceRepo(t)
@@ -393,6 +417,10 @@ func TestLoadWorkflowRejectsRefPathOutsideWorkdir(t *testing.T) {
 }
 
 func TestGitRefWorkflowWatcherReloadsWhenRefAdvances(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	repo := initWorkflowSourceRepo(t)
@@ -443,6 +471,10 @@ func TestGitRefWorkflowWatcherReloadsWhenRefAdvances(t *testing.T) {
 }
 
 func TestWorkflowWatchersUseReloadedHostBackends(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	for _, ref := range []string{"", "origin/main"} {
 		t.Run("ref="+ref, func(t *testing.T) {
 			repo := initWorkflowSourceRepo(t)
@@ -451,7 +483,7 @@ func TestWorkflowWatchersUseReloadedHostBackends(t *testing.T) {
 			commitWorkflowSourceRepo(t, repo, "initial")
 			updateWorkflowSourceRef(t, repo, "origin/main", "HEAD")
 			project := &Project{cfg: globalconfig.Project{Workflow: path, WorkflowRef: ref, Workdir: repo}}
-			factory := resolveWorkflowWatcherFactory(Dependencies{}, project.Config(), "", slog.New(slog.DiscardHandler), project.Config)
+			factory := resolveWorkflowWatcherFactory(t.Context(), Dependencies{}, project.Config(), "", slog.New(slog.DiscardHandler), project.Config)
 			watcher, err := factory(path)
 			if err != nil {
 				t.Fatal(err)
@@ -464,6 +496,8 @@ func TestWorkflowWatchersUseReloadedHostBackends(t *testing.T) {
 			}
 			project.mu.Lock()
 			project.cfg.GlobalAgents = workflowconfig.Agents{Backends: []workflowconfig.AgentBackend{{ID: "new-backend", Kind: workflowconfig.AgentBackendCodex, Command: "codex"}}}
+			allowLocalBinding := true
+			project.cfg.GlobalWorker = workflowconfig.WorkerDefaults{AllowLocalBinding: &allowLocalBinding}
 			project.mu.Unlock()
 			if ref != "" {
 				path = workflowconfig.LocalWorkflowPath(path)
@@ -485,11 +519,18 @@ func TestWorkflowWatchersUseReloadedHostBackends(t *testing.T) {
 			if !found {
 				t.Fatal("watcher used obsolete host backends")
 			}
+			if !update.Workflow.Config.Worker.EffectiveAllowLocalBinding() {
+				t.Fatal("watcher used obsolete host localhost permission")
+			}
 		})
 	}
 }
 
 func TestGitRefWorkflowWatcherReloadsLocalOverlayLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	repo := initWorkflowSourceRepo(t)
@@ -600,8 +641,12 @@ func writeWorkflowSourceFile(t *testing.T, path string, prompt string) {
 	t.Helper()
 
 	content := "---\ntracker:\n  kind: memory\n---\n" + prompt + "\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	temporaryPath := path + ".tmp"
+	if err := os.WriteFile(temporaryPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		t.Fatalf("Rename() error = %v", err)
 	}
 }
 
@@ -866,6 +911,10 @@ func TestReadOptionalWorkflowSourceFileReconcilesPermission(t *testing.T) {
 }
 
 func TestGitRefWorkflowWatcherReconcilesOverlayDeletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	for _, operation := range []string{"seed", "poll"} {
@@ -942,6 +991,10 @@ func TestGitRefWorkflowWatcherReconcilesOverlayDeletion(t *testing.T) {
 }
 
 func TestWorkflowLoadFailureClassification(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	for _, tt := range []struct {
 		name           string
 		ref            string

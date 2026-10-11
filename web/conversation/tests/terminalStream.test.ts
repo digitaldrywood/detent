@@ -357,6 +357,7 @@ describe("why a terminal is unavailable", () => {
     workspaceReason: null,
     workspaceError: null,
     terminalCapable: true,
+    workspacesEnabled: true,
   };
 
   it("allows a member with write and the runners grant", () => {
@@ -392,11 +393,13 @@ describe("why a terminal is unavailable", () => {
     ).toBe(TERMINAL_POLICY_SENTENCES.viewer);
   });
 
-  it("does not refuse a capability nobody has reported yet", () => {
-    // §18.1's `enabled` flag exists so that merely rendering the tab spends no
-    // workspace slot; a null is what the panel looks like before anything was
-    // asked for, and pressing is what answers the question.
-    expect(terminalBlockedReason({ ...base, terminalCapable: null, workspaceState: null })).toBeNull();
+  it("refuses an unknown capability and a disabled hosted service", () => {
+    expect(terminalBlockedReason({ ...base, terminalCapable: null, workspaceState: null })).toBe(
+      TERMINAL_POLICY_SENTENCES.noCapability,
+    );
+    expect(terminalBlockedReason({ ...base, workspacesEnabled: false })).toBe(
+      TERMINAL_POLICY_SENTENCES.serviceDisabled,
+    );
   });
 
   it("passes the hub's own sentence through when the request was refused", () => {

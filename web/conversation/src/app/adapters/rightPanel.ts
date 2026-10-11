@@ -10,6 +10,7 @@ const RIGHT_PANEL_KINDS = [
   "terminal",
   "pull-request",
 
+  "ask",
   "conversation",
 
   "output",
@@ -48,6 +49,7 @@ export type RightPanelSurface =
       url?: string;
     }
   | { id: `conversation:${string}`; kind: "conversation"; conversationId: string }
+  | { id: "ask"; kind: "ask" }
   | { id: "output"; kind: "output" };
 
 export interface RightPanelState {
@@ -102,27 +104,23 @@ export interface RightPanelController extends RightPanelState {
 }
 
 export function useRightPanel(scopeKey: string): RightPanelController {
-  const [state, setState] = React.useState<RightPanelState>(() => readStored()[scopeKey] ?? EMPTY);
-
-  // A scope change re-reads rather than resets: coming back to a conversation
-  // finds the surface that was open on it.
-  const previousScope = React.useRef(scopeKey);
-  if (previousScope.current !== scopeKey) {
-    previousScope.current = scopeKey;
-    // eslint-disable-next-line react-hooks/rules-of-hooks
+  const [snapshot, setSnapshot] = React.useState(() => ({
+    scopeKey,
+    state: readStored()[scopeKey] ?? EMPTY,
+  }));
+  const state = snapshot.scopeKey === scopeKey ? snapshot.state : readStored()[scopeKey] ?? EMPTY;
+  if (snapshot.scopeKey !== scopeKey) {
+    setSnapshot({ scopeKey, state });
   }
-  React.useEffect(() => {
-    setState(readStored()[scopeKey] ?? EMPTY);
-  }, [scopeKey]);
 
   const update = React.useCallback(
     (next: (current: RightPanelState) => RightPanelState) => {
-      setState((current) => {
-        const value = next(current);
+      setSnapshot((current) => {
+        const value = next(current.scopeKey === scopeKey ? current.state : readStored()[scopeKey] ?? EMPTY);
         const stored = readStored();
         stored[scopeKey] = value;
         writeStored(stored);
-        return value;
+        return { scopeKey, state: value };
       });
     },
     [scopeKey],
@@ -134,7 +132,9 @@ export function useRightPanel(scopeKey: string): RightPanelController {
       surface: RightPanelSurface,
     ): RightPanelState => {
       const existing = current.surfaces.find((entry) => entry.id === surface.id);
-      const surfaces = existing === undefined ? [...current.surfaces, surface] : current.surfaces;
+      const surfaces = existing === undefined
+        ? surface.kind === "ask" ? [surface, ...current.surfaces] : [...current.surfaces, surface]
+        : current.surfaces;
       return { ...current, isOpen: true, surfaces, activeSurfaceId: surface.id };
     };
     const without = (current: RightPanelState, ids: ReadonlySet<string>): RightPanelState => {

@@ -16,6 +16,10 @@ import (
 )
 
 func TestMagicLinkSessionLifecyclePersists(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -85,6 +89,10 @@ func TestMagicLinkSessionLifecyclePersists(t *testing.T) {
 }
 
 func TestSessionServicePersistsAcrossRestartAndExpires(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -184,6 +192,10 @@ func TestHostedIdentitySessionPreservesProviderLifetime(t *testing.T) {
 }
 
 func TestLocalStoreRejectsHostedSessions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	backend := openAuthStore(t, filepath.Join(t.TempDir(), "detent.db"))
 	t.Cleanup(func() {
@@ -231,6 +243,10 @@ func (s *recordingSessionStore) CreateWebSession(_ context.Context, record auth.
 }
 
 func TestMagicLinkExpirationAndAllowlist(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()

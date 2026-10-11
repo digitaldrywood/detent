@@ -12,7 +12,10 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -37,18 +40,28 @@ type claimAPIRequest struct {
 }
 
 type claimCandidateQuery struct {
-	ProviderCandidates []tracker.NativeCapacityCandidate
-	PolicyID           string
-	RequirePolicy      bool
-	NativeScope        *nativeScope
-	RepositoryIDs      []tracker.RepositoryID
-	Repositories       []string
-	WorkflowStates     []string
-	Authors            []string
-	Assignees          []string
-	LabelInclude       []string
-	LabelExclude       []string
-	Scope              string
+	LandingBatchGroup       string
+	Limit                   int
+	After                   tracker.WorkItemID
+	WorkItemID              tracker.WorkItemID
+	OnlyIDs                 []tracker.WorkItemID
+	AvailableAt             time.Time
+	MinimumRunnerVersion    string
+	DispatchPriorityByState []string
+	DispatchPriorityByLabel []string
+	PrioritizeUnblockers    bool
+	ProviderCandidates      []tracker.NativeCapacityCandidate
+	PolicyID                string
+	RequirePolicy           bool
+	NativeScope             *nativeScope
+	RepositoryIDs           []tracker.RepositoryID
+	Repositories            []string
+	WorkflowStates          []string
+	Authors                 []string
+	Assignees               []string
+	LabelInclude            []string
+	LabelExclude            []string
+	Scope                   string
 	// WorkspaceLane reports that the claim came from a runner's workspace
 	// lane, which asked for workspace items by declaring the workspace
 	// capability. Every other claim, and the provider candidate preview, is
@@ -56,7 +69,6 @@ type claimCandidateQuery struct {
 	// is its own work item kind and not project work (decisions section
 	// 18.1).
 	WorkspaceLane bool
-	HomeProjects  []tracker.ProjectID
 }
 
 type renewLeaseAPIRequest struct {
@@ -125,16 +137,17 @@ func (s *Service) claimWorkItem(c echo.Context) error {
 	}
 	claim := tracker.ClaimRequest{WorkItemID: request.WorkItemID, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}
 	lease, err := s.database.claimNext(c.Request().Context(), claim, claimCandidateQuery{
-		PolicyID:       request.PolicyID,
-		RequirePolicy:  true,
-		RepositoryIDs:  request.RepositoryIDs,
-		Repositories:   request.Repositories,
-		WorkflowStates: request.WorkflowState,
-		Authors:        request.Authors,
-		Assignees:      request.Assignees,
-		LabelInclude:   request.LabelInclude,
-		LabelExclude:   request.LabelExclude,
-		Scope:          request.Scope,
+		MinimumRunnerVersion: minimumRunnerVersion(s.config.Version),
+		PolicyID:             request.PolicyID,
+		RequirePolicy:        true,
+		RepositoryIDs:        request.RepositoryIDs,
+		Repositories:         request.Repositories,
+		WorkflowStates:       request.WorkflowState,
+		Authors:              request.Authors,
+		Assignees:            request.Assignees,
+		LabelInclude:         request.LabelInclude,
+		LabelExclude:         request.LabelExclude,
+		Scope:                request.Scope,
 	}, s.config.ReconcileInterval)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -239,7 +252,83 @@ func trackerAPIError(c echo.Context, err error) error {
 	return c.JSON(status, apiErrorResponse{Code: code, Message: message})
 }
 
-func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (lease tracker.Lease, resultErr error) {
+// claimNext decides most claim attempts without the writer. A preflight runs
+// the whole claim on a read-only snapshot: refusals that record nothing new
+// are answered from it, and a selected candidate is claimed by a short write
+// transaction that re-validates only that candidate. Anything the preflight
+// cannot settle runs the full claim under the write lock, as before.
+func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (tracker.Lease, error) {
+	if d.claimReader != nil {
+		lease, err := d.claimPreflight(ctx, request, query, reconcileInterval)
+		var selected *claimSelected
+		switch {
+		case errors.As(err, &selected):
+			lease, err = d.claimNextOn(ctx, d.db, nil, claimMode{hint: selected}, request, query, reconcileInterval)
+			if !errors.Is(err, errClaimHintStale) {
+				return lease, err
+			}
+		case err == nil:
+			return lease, nil
+		case preflightAnswered(err):
+			return tracker.Lease{}, err
+		}
+	}
+	return d.claimNextOn(ctx, d.db, nil, claimMode{}, request, query, reconcileInterval)
+}
+
+// claimPreflightAcquire bounds how long a preflight waits for a claim reader;
+// a busy pool sends the claim down the full write pass instead of queueing.
+const claimPreflightAcquire = 250 * time.Millisecond
+
+func (d *database) claimPreflight(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (lease tracker.Lease, resultErr error) {
+	acquire, cancel := context.WithTimeout(ctx, claimPreflightAcquire)
+	conn, err := d.claimReader.Conn(acquire)
+	cancel()
+	if err != nil {
+		return tracker.Lease{}, err
+	}
+	defer func() {
+		if err := conn.Close(); err != nil {
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
+	return d.claimNextOn(ctx, conn, &sql.TxOptions{ReadOnly: true}, claimMode{preflight: true}, request, query, reconcileInterval)
+}
+
+// claimMode selects how one claim pass runs: a preflight on the reader that
+// stops at the first claimable candidate, a write pass restricted to that
+// candidate, or the full write pass.
+type claimMode struct {
+	hint      *claimSelected
+	preflight bool
+}
+
+type claimBeginner interface {
+	BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+}
+
+type claimSelected struct {
+	id       tracker.WorkItemID
+	revision int64
+}
+
+func (s *claimSelected) Error() string { return fmt.Sprintf("claim candidate %d selected", s.id) }
+
+var errClaimHintStale = errors.New("selected claim candidate is no longer claimable")
+
+// preflightAnswered reports whether a preflight result is the claim's answer.
+// Write attempts on the read-only snapshot and unexpected failures defer to
+// the full write pass instead.
+func preflightAnswered(err error) bool {
+	var failure *sqlite.Error
+	if errors.As(err, &failure) && failure.Code()&0xff == sqlite3.SQLITE_READONLY {
+		return false
+	}
+	var refusal *nativeError
+	return errors.Is(err, ErrNoClaimableWork) || errors.As(err, &refusal) || errors.Is(err, tracker.ErrLeaseConflict) || errors.Is(err, tracker.ErrInvalidClaimRequest) || errors.Is(err, tracker.ErrInvalidCandidateQuery)
+}
+
+func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *sql.TxOptions, mode claimMode, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (lease tracker.Lease, resultErr error) {
 	request.MachineID = tracker.MachineID(strings.TrimSpace(string(request.MachineID)))
 	request.SessionID = strings.TrimSpace(request.SessionID)
 	query.Scope = strings.TrimSpace(query.Scope)
@@ -274,9 +363,13 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	if len(query.LabelExclude) > 0 && len(labelExclude) == 0 {
 		return tracker.Lease{}, tracker.ErrInvalidCandidateQuery
 	}
-	tx, err := d.db.BeginTx(ctx, nil)
+	tx, err := db.BeginTx(ctx, options)
 	if err != nil {
 		return tracker.Lease{}, fmt.Errorf("begin hub claim next: %w", err)
+	}
+	commit := tx.Commit
+	if !mode.preflight {
+		commit = func() error { return d.commit(ctx, tx) }
 	}
 	defer func() {
 		if resultErr != nil {
@@ -301,7 +394,7 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	if query.RequirePolicy {
 		policyScope, err = validateClaimPolicy(ctx, tx, query, request.MachineID)
 		if err != nil {
-			return tracker.Lease{}, err
+			return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_claim_policy", err, now)
 		}
 	}
 	if existing, found, err := readLeaseBySession(ctx, tx, request.SessionID); err != nil {
@@ -327,33 +420,52 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 				return tracker.Lease{}, policyMismatch("Existing claim is pinned to a different policy; release it before requesting a new attempt")
 			}
 		}
-		if err := tx.Commit(); err != nil {
+		if err := checkMonthlyLease(ctx, tx, existing, now); err != nil {
+			return tracker.Lease{}, err
+		}
+		if err := commit(); err != nil {
 			return tracker.Lease{}, fmt.Errorf("commit idempotent hub claim next: %w", err)
 		}
 		return leaseFromRecord(existing), nil
+	}
+	var version string
+	if err := tx.QueryRowContext(ctx, "SELECT version FROM machines WHERE id = ?", request.MachineID).Scan(&version); err != nil {
+		return tracker.Lease{}, err
+	}
+	if err := runnerVersionError(query.MinimumRunnerVersion, version); err != nil {
+		return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_runner_routing", err, now)
 	}
 	if request.WorkItemID > 0 {
 		if err := requireWorkItem(ctx, tx, request.WorkItemID); err != nil {
 			return tracker.Lease{}, err
 		}
 	}
-	capacity, err := machineClaimCapacity(ctx, tx, request.MachineID, now)
+	joining, err := nativeLandingCapacityKey(ctx, tx, request.MachineID, request.SessionID, request.WorkItemID)
+	if err != nil {
+		return tracker.Lease{}, err
+	}
+	query.LandingBatchGroup = joining
+	capacity, err := machineClaimCapacity(ctx, tx, request.MachineID, now, joining)
 	if err != nil {
 		return tracker.Lease{}, err
 	}
 	if capacity <= 0 {
-		if query.NativeScope != nil && query.NativeScope.credential.Runner.RunnerID != "" {
-			return tracker.Lease{}, &nativeError{Code: "host_capacity", Message: "Shared host capacity is full or paused", status: http.StatusConflict}
+		if query.NativeScope != nil {
+			refusal := &nativeError{Code: "host_capacity", Message: "Shared host capacity is full or paused", status: http.StatusConflict}
+			recorded := d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_host_capacity", refusal, now)
+			if query.NativeScope.credential.Runner.RunnerID != "" || !errors.Is(recorded, refusal) {
+				return tracker.Lease{}, recorded
+			}
 		}
 		return tracker.Lease{}, ErrNoClaimableWork
 	}
 	if query.NativeScope != nil && query.NativeScope.credential.Runner.RunnerID != "" {
 		if err := validateRunnerDispatch(ctx, tx, *query.NativeScope, now); err != nil {
-			return tracker.Lease{}, err
+			return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_runner_routing", err, now)
 		}
 		if !query.WorkspaceLane {
 			if err := validateRunnerIsolation(ctx, tx, *query.NativeScope, now); err != nil {
-				return tracker.Lease{}, err
+				return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_runner_routing", err, now)
 			}
 		}
 	}
@@ -369,13 +481,48 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			}
 		}
 	}
-	homeID, homeRestricted, err := d.runnerHomeSelection(ctx, tx, query, now)
-	if err != nil {
-		return tracker.Lease{}, err
+	query.WorkItemID = request.WorkItemID
+	var ids []tracker.WorkItemID
+	if mode.hint != nil {
+		var revision int64
+		if err := tx.QueryRowContext(ctx, "SELECT revision FROM issues WHERE id = ?", mode.hint.id).Scan(&revision); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return tracker.Lease{}, err
+		}
+		if revision != mode.hint.revision {
+			if err := commit(); err != nil {
+				return tracker.Lease{}, err
+			}
+			return tracker.Lease{}, errClaimHintStale
+		}
+		ids = []tracker.WorkItemID{mode.hint.id}
+	} else {
+		selectedID, restricted, err := d.runnerAllowedSelection(ctx, tx, query, now)
+		if err != nil {
+			return tracker.Lease{}, err
+		}
+		if restricted && selectedID == 0 {
+			if err := commit(); err != nil {
+				return tracker.Lease{}, err
+			}
+			return tracker.Lease{}, ErrNoClaimableWork
+		}
+		if restricted {
+			query.OnlyIDs = []tracker.WorkItemID{selectedID}
+		}
+		query.AvailableAt = now
+		if query.NativeScope != nil {
+			query.Limit = 100
+			if request.WorkItemID > 0 || len(query.ProviderCandidates) == 1 {
+				query.Limit = 1
+			}
+		}
+		ids, err = claimCandidateIDs(ctx, tx, query, repositoryIDs, repositories, workflowStates, authors, assignees, labelInclude, labelExclude, claimableRepositories)
+		if err != nil {
+			return tracker.Lease{}, err
+		}
 	}
-	ids, err := claimCandidateIDs(ctx, tx, query, repositoryIDs, repositories, workflowStates, authors, assignees, labelInclude, labelExclude, claimableRepositories)
-	if err != nil {
-		return tracker.Lease{}, err
+	if len(ids) == 0 && request.WorkItemID > 0 {
+		return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_claim_eligibility", ErrNoClaimableWork, now)
 	}
 	// Workspace items are gated per candidate rather than per credential
 	// (decisions section 18.1): eligibility depends on the surfaces the
@@ -388,9 +535,6 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	}
 	var providerWait error
 	for _, id := range ids {
-		if homeRestricted && id != homeID {
-			continue
-		}
 		if request.WorkItemID > 0 && id != request.WorkItemID {
 			continue
 		}
@@ -407,6 +551,42 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			}
 			continue
 		}
+		if query.NativeScope != nil {
+			allowed, reason, err := nativeIssueContractClaimable(ctx, tx, *query.NativeScope, id)
+			if err != nil {
+				return tracker.Lease{}, err
+			}
+			if !allowed {
+				if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "skipped", Reason: reason}, now); err != nil {
+					return tracker.Lease{}, err
+				}
+				continue
+			}
+		}
+		ready, evaluated, err := nativeLandingCandidateReady(ctx, tx, query.NativeScope, id, request.MachineID, now, true)
+		if err != nil {
+			return tracker.Lease{}, err
+		}
+		if evaluated {
+			if err := recordNativeSchedulingDecision(ctx, tx, query.NativeScope, id, ready, now); err != nil {
+				return tracker.Lease{}, err
+			}
+		}
+		if !ready {
+			continue
+		}
+		if query.NativeScope != nil && !query.WorkspaceLane {
+			allowed, reason, err := placementClaimAllowed(ctx, tx, *query.NativeScope, request.MachineID, id, now, query.ProviderCandidates)
+			if err != nil {
+				return tracker.Lease{}, err
+			}
+			if !allowed {
+				if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: "native_runner_routing", Outcome: "skipped", Reason: reason}, now); err != nil {
+					return tracker.Lease{}, err
+				}
+				continue
+			}
+		}
 		// A workspace claim reserves one slot of the runner's capacity and
 		// nothing else (decisions section 18.1): the session serves files
 		// over the relay and runs no model, so it never goes through provider
@@ -416,6 +596,11 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		if !workspaceGate.skipsProviderReservation(id) {
 			reservation, reserved, err = selectProviderCapacity(ctx, tx, query, id, now)
 			if err != nil {
+				if errors.Is(err, ErrNoClaimableWork) || isProviderWait(err) {
+					if recordErr := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: "native_provider_capacity", Outcome: "skipped", Reason: "Current provider requirement has no available reservation"}, now); recordErr != nil {
+						return tracker.Lease{}, recordErr
+					}
+				}
 				if errors.Is(err, ErrNoClaimableWork) {
 					continue
 				}
@@ -426,8 +611,29 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 				return tracker.Lease{}, err
 			}
 		}
+		var exposure budget.CostExposure
+		if query.NativeScope != nil {
+			decision, currentExposure, err := checkMonthlyClaim(ctx, tx, *query.NativeScope, request.MachineID, id, workspaceGate.skipsProviderReservation(id), now)
+			if err != nil {
+				return tracker.Lease{}, err
+			}
+			exposure = currentExposure
+			if !decision.Allowed {
+				if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: "native_provider_capacity", Outcome: "skipped", Reason: monthlyBudgetRefusal(decision)}, now); err != nil {
+					return tracker.Lease{}, err
+				}
+				continue
+			}
+		}
+		if mode.preflight {
+			var revision int64
+			if err := tx.QueryRowContext(ctx, "SELECT revision FROM issues WHERE id = ?", id).Scan(&revision); err != nil {
+				return tracker.Lease{}, err
+			}
+			return tracker.Lease{}, &claimSelected{id: id, revision: revision}
+		}
 		request.WorkItemID = id
-		lease, err = d.claimInTransaction(ctx, tx, request, now)
+		lease, err = d.claimInTransaction(ctx, tx, request, now, exposure)
 		if err != nil {
 			return tracker.Lease{}, err
 		}
@@ -437,7 +643,7 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			}
 		}
 		if query.NativeScope != nil && query.NativeScope.credential.Runner.RunnerID != "" {
-			snapshot, err := readRunnerRoutingSnapshot(ctx, tx, query.NativeScope.organization, query.NativeScope.credential.Runner.RunnerID)
+			snapshot, err := readRunnerRoutingSnapshot(ctx, tx, query.NativeScope.organization, query.NativeScope.credential.Runner.RunnerID, now)
 			if err != nil {
 				return tracker.Lease{}, err
 			}
@@ -454,13 +660,19 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 				return tracker.Lease{}, err
 			}
 		}
-		if err := tx.Commit(); err != nil {
+		if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", Reason: "The scheduler granted a fenced lease"}, now); err != nil {
+			return tracker.Lease{}, err
+		}
+		if err := commit(); err != nil {
 			return tracker.Lease{}, fmt.Errorf("commit hub claim next: %w", err)
 		}
 		return lease, nil
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commit(); err != nil {
 		return tracker.Lease{}, fmt.Errorf("commit idle hub claim: %w", err)
+	}
+	if mode.hint != nil {
+		return tracker.Lease{}, errClaimHintStale
 	}
 	if providerWait != nil {
 		return tracker.Lease{}, providerWait
@@ -477,7 +689,7 @@ JOIN machines m ON m.id = l.machine_id
 WHERE l.session_id = ?`, sessionID))
 }
 
-func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.MachineID, now time.Time) (int, error) {
+func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.MachineID, now time.Time, joining ...string) (int, error) {
 	var capacity int
 	if err := tx.QueryRowContext(ctx, "SELECT capacity FROM machines WHERE id = ?", machineID).Scan(&capacity); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -485,15 +697,16 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 		}
 		return 0, fmt.Errorf("read hub machine capacity: %w", err)
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT expires_at FROM leases WHERE machine_id = ? AND released_at IS NULL", machineID)
+	rows, err := tx.QueryContext(ctx, `SELECT l.expires_at, l.session_id, l.lease_id, `+nativeLandingCapacityProject+` FROM leases l JOIN issues i ON i.id=l.issue_id `+nativeLandingCapacityJoins+` WHERE l.machine_id=? AND l.released_at IS NULL`, machineID)
 	if err != nil {
 		return 0, fmt.Errorf("query hub machine leases: %w", err)
 	}
 	defer rows.Close()
 	active := 0
+	groups := map[string]bool{}
 	for rows.Next() {
-		var value string
-		if err := rows.Scan(&value); err != nil {
+		var value, session, lease, project string
+		if err := rows.Scan(&value, &session, &lease, &project); err != nil {
 			return 0, fmt.Errorf("scan hub machine lease expiry: %w", err)
 		}
 		expiresAt, err := parseTimeValue(value)
@@ -501,11 +714,21 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 			return 0, fmt.Errorf("parse hub machine lease expiry: %w", err)
 		}
 		if expiresAt.After(now) {
-			active++
+			key := landingCapacityKey(machineID, project, session)
+			if key == "" {
+				key = lease
+			}
+			if !groups[key] {
+				active++
+				groups[key] = true
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("iterate hub machine leases: %w", err)
+	}
+	if capacity > 0 && len(joining) > 0 && joining[0] != "" && groups[joining[0]] {
+		active--
 	}
 	return capacity - active, nil
 }
@@ -514,25 +737,42 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 // succeeded against the item as it stands, for an issue query that aliases the
 // issues table as i.
 //
-// The item is offered again whenever any of the three is true, so the only
-// case this suppresses is the re-dispatch loop itself:
-//
-//   - the latest attempt did not succeed;
-//   - the item has moved on since that attempt: an edit, a comment or a
-//     workflow move bumps issues.revision;
-//   - somebody asked for another attempt: issues.dispatch_generation is ahead
-//     of the generation the attempt started under, which is how a conversation
-//     continuation, which bumps no revision, is honored.
+// A human-owned answer holds the item until the item changes: a human action,
+// a permission wait, recorded acceptance, or a blocker the instance does not
+// own. An instance-owned answer (an instance blocker, an instance reason code,
+// or an attempt without a typed disposition) holds it for 30 minutes and then
+// lets the next attempt retry, so a dispatchable item never waits forever on an
+// answer no human owns. A forge publication without a disposition never holds:
+// the next attempt continues from the published source.
 //
 // The latest attempt is the one with the highest fencing token. It applies to
 // native projects only: on a github_compatible project the issues row is a
 // projection whose writes never bump revision, so the clause would strand an
 // item whose lane moved on GitHub.
-const notAlreadyAnsweredClause = `(p.profile <> 'native' OR NOT EXISTS (SELECT 1 FROM native_attempts answered
+const notAlreadyAnsweredClause = `(p.profile <> 'native' OR lower(trim(ws.detent_state)) = 'merging' OR NOT EXISTS (SELECT 1 FROM native_attempts answered
  WHERE answered.organization_id = i.organization_id
    AND answered.project_id = i.project_id
    AND answered.work_item_id = i.native_id
    AND answered.status = 'succeeded'
+   AND (COALESCE(json_extract(answered.data_json, '$.disposition.human_action'), 0) <> 0
+     OR COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') = 'permission_wait'
+     OR COALESCE(json_extract(answered.data_json, '$.runtime.completion.acceptance_recorded'), 0) = 1
+     OR (COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 0) <> 0
+       AND (COALESCE(json_array_length(answered.data_json, '$.disposition.blocker_evidence'), 0) = 0
+         OR EXISTS (SELECT 1 FROM json_each(answered.data_json, '$.disposition.blocker_evidence') blocker
+           WHERE COALESCE(json_extract(blocker.value, '$.owner'), '') <> 'instance')))
+     OR ((COALESCE(json_extract(answered.data_json, '$.disposition.status'), '') <> 'complete'
+         OR COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 0) <> 0
+         OR COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') <> '')
+       AND julianday(answered.updated_at) > julianday('now', '-30 minutes')))
+   AND NOT (json_type(answered.data_json, '$.disposition') IS NULL
+     AND COALESCE(json_extract(answered.checkpoint_json, '$.external_effect'), '') IN ('git_push', 'pr_create'))
+   AND NOT (COALESCE(json_extract(answered.data_json, '$.disposition.status'), '') = 'in_progress'
+     AND COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 1) = 0
+     AND COALESCE(json_extract(answered.data_json, '$.disposition.human_action'), 1) = 0
+     AND COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') = '')
+   AND NOT (COALESCE(json_extract(answered.checkpoint_json, '$.external_effect'), '') IN ('git_push', 'pr_create')
+     AND COALESCE(json_extract(answered.checkpoint_json, '$.effect_state'), '') IN ('pending', 'ambiguous'))
    AND answered.work_item_revision >= i.revision
    AND answered.dispatch_generation >= i.dispatch_generation
    AND answered.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest
@@ -559,6 +799,18 @@ func claimWorkspaceExclusionArg(query claimCandidateQuery) int {
 }
 
 func claimCandidateIDs(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, repositoryIDs []tracker.RepositoryID, repositories []string, workflowStates []string, authors []string, assignees []string, labelInclude []string, labelExclude []string, claimableRepositories map[tracker.RepositoryID]struct{}) ([]tracker.WorkItemID, error) {
+	if query.NativeScope != nil {
+		if query.NativeScope.project != "" && !query.WorkspaceLane {
+			now := query.AvailableAt
+			if now.IsZero() {
+				now = time.Now().UTC()
+			}
+			if _, err := reportHealthFindings(ctx, tx, query.NativeScope.organization, now, query.NativeScope.project); err != nil {
+				return nil, err
+			}
+		}
+		return nativeCandidateIDs(ctx, tx, query, repositoryIDs, repositories, workflowStates, authors, assignees, labelInclude, labelExclude)
+	}
 	scope := query.Scope
 	organization, project := "", ""
 	if query.NativeScope != nil {
@@ -577,13 +829,15 @@ func claimCandidateIDs(ctx context.Context, tx *sql.Tx, query claimCandidateQuer
 	assigneeFilter := stringSet(assignees)
 	labelIncludeFilter := stringSet(labelInclude)
 	labelExcludeFilter := stringSet(labelExclude)
-	homeProjects, err := marshalNative(query.HomeProjects)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := tx.QueryContext(ctx, `
+	const statement = `
 SELECT i.id, COALESCE(r.id, 0), COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), lower(trim(ws.detent_state)),
-       lower(trim(i.author_login)), i.labels_json, i.assignees_json
+       lower(trim(i.author_login)), i.labels_json, i.assignees_json,
+       q.priority_override, COALESCE(q.rank, ''), COALESCE(i.native_created_at, i.created_at), i.project_id, i.number,
+       CASE WHEN ? THEN (SELECT count(DISTINCT d.dependent_issue_id) FROM issue_dependencies d
+         JOIN issues dependent ON dependent.id = d.dependent_issue_id
+         JOIN projects dp ON dp.id = dependent.project_id AND dp.require_dependencies = 1
+         LEFT JOIN workflow_states ds ON ds.id = dependent.workflow_state_id
+         WHERE d.blocker_issue_id = i.id AND dependent.archived = 0 AND COALESCE(ds.terminal, 0) = 0) ELSE 0 END
 FROM issues i
 LEFT JOIN repositories r ON r.id = i.repository_id
 JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
@@ -598,15 +852,15 @@ LEFT JOIN queue_entries q ON q.id = (
 )
 WHERE (p.profile = 'native' OR lower(trim(i.github_state)) = 'open')
 	AND NOT EXISTS (SELECT 1 FROM github_imports g WHERE g.work_item_id = i.native_id AND g.intake_pending = 1)
-  AND ((? = '' AND p.profile = 'github_compatible') OR (i.organization_id = ? AND (i.project_id = ? AND ? = 0 OR i.project_id IN (SELECT value FROM json_each(?))) AND p.profile = 'native'))
+  AND ((? = '' AND p.profile = 'github_compatible') OR (i.organization_id = ? AND i.project_id = ? AND p.profile = 'native'))
   AND ws.id IS NOT NULL
   AND ws.terminal = 0
   AND i.archived = 0
   AND lower(trim(ws.detent_state)) <> 'cancelled'
   AND ws.dispatchable = 1
-  AND (? = 1 OR `+notWorkspaceItemClause+`)
-  AND `+notAlreadyAnsweredClause+`
-  AND ((? = '' AND ? = 0) OR q.id IS NOT NULL)
+  AND (? = 1 OR ` + notWorkspaceItemClause + `)
+  AND ` + notAlreadyAnsweredClause + `
+  AND (? = '' OR q.id IS NOT NULL)
   AND (p.require_dependencies = 0 OR NOT EXISTS (
     SELECT 1
     FROM issue_dependencies dependency
@@ -618,7 +872,8 @@ WHERE (p.profile = 'native' OR lower(trim(i.github_state)) = 'open')
 ORDER BY
   CASE q.priority_override WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 WHEN 3 THEN 3 ELSE 4 END,
   CASE WHEN q.rank IS NULL OR trim(q.rank) = '' THEN 1 ELSE 0 END,
-  trim(q.rank), i.created_at, lower(trim(r.github_owner)), lower(trim(r.github_name)), i.github_number, i.id`, scope, scope, scope, organization, organization, project, len(query.HomeProjects), homeProjects, claimWorkspaceExclusionArg(query), scope, len(query.HomeProjects))
+  trim(q.rank), i.created_at, lower(trim(r.github_owner)), lower(trim(r.github_name)), i.github_number, i.id`
+	rows, err := tx.QueryContext(ctx, statement, query.PrioritizeUnblockers, scope, scope, scope, organization, organization, project, claimWorkspaceExclusionArg(query), scope)
 	if err != nil {
 		return nil, fmt.Errorf("query hub claim candidates: %w", err)
 	}
@@ -633,7 +888,10 @@ ORDER BY
 		var authorID string
 		var labelsJSON string
 		var assigneesJSON string
-		if err := rows.Scan(&id, &repositoryID, &repositoryOwner, &repositoryName, &workflowState, &authorID, &labelsJSON, &assigneesJSON); err != nil {
+		var priority sql.NullInt64
+		var rank, created, projectID string
+		var number, unblockerCount int
+		if err := rows.Scan(&id, &repositoryID, &repositoryOwner, &repositoryName, &workflowState, &authorID, &labelsJSON, &assigneesJSON, &priority, &rank, &created, &projectID, &number, &unblockerCount); err != nil {
 			return nil, fmt.Errorf("scan hub claim candidate: %w", err)
 		}
 		if _, ok := claimableRepositories[repositoryID]; !ok && query.NativeScope == nil {

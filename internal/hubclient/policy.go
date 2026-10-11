@@ -2,12 +2,14 @@ package hubclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -43,8 +45,21 @@ func (c *Client) ApproveProjectPolicy(ctx context.Context, repository string, ch
 }
 
 func (c *NativeClient) ProjectPolicy(ctx context.Context) (policy.Approval, error) {
+	state := c.heartbeatProject()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.changes != nil && state.approvalSet {
+		return state.approval, state.approvalErr
+	}
 	var approval policy.Approval
 	err := c.client.request(ctx, http.MethodGet, c.base()+"/policy", nil, &approval)
+	var failure *APIError
+	if c.client.runner != nil && (err == nil || errors.As(err, &failure) && failure.Code == "policy_mismatch") {
+		c.client.runner.setApprovedPolicy(c.project, approval.Policy.ID)
+		if state.changes != nil {
+			state.approval, state.approvalErr, state.approvalSet = approval, err, true
+		}
+	}
 	return approval, err
 }
 
@@ -54,17 +69,35 @@ func (c *NativeClient) ApproveProjectPolicy(ctx context.Context, change policy.C
 	return approval, err
 }
 
-// ReportObservedPolicy tells the Hub which descriptor this runner resolved and
-// could not run, so an owner can approve it without pasting it.
 func (c *NativeClient) ReportObservedPolicy(ctx context.Context, descriptor policy.Descriptor) error {
-	return c.client.request(ctx, http.MethodPost, c.base()+"/policy/observed", descriptor, nil)
+	return c.reportPolicyObservation(ctx, policy.Observation{Descriptor: descriptor})
+}
+
+func (c *NativeClient) reportPolicyObservation(ctx context.Context, observation policy.Observation) error {
+	return c.client.request(ctx, http.MethodPost, c.base()+"/policy/observed", observation, nil)
+}
+
+func (s *Scheduler) ProjectWorkflowMarkdown(ctx context.Context, project string) (string, error) {
+	source := s.nativeProject(project)
+	if source == nil {
+		return "", nil
+	}
+	definition, err := source.client.Project(ctx)
+	return definition.WorkflowMarkdown, err
 }
 
 func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository string, descriptor policy.Descriptor) error {
-	if err := descriptor.Validate(); err != nil {
-		return err
+	return s.CheckProjectPolicyWithSource(ctx, project, repository, descriptor, nil)
+}
+
+func (s *Scheduler) CheckProjectPolicyWithSource(ctx context.Context, project, repository string, descriptor policy.Descriptor, provenance *policy.RepositorySource) error {
+	if source := s.nativeProject(project); source != nil && s.client.runner != nil {
+		s.client.runner.setLocalPolicy(source.client.project, descriptor.ID)
 	}
-	source := s.nativeProjects[project]
+	if err := descriptor.Validate(); err != nil {
+		return &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()}
+	}
+	source := s.nativeProject(project)
 	if source == nil {
 		approval, err := s.client.ProjectPolicy(ctx, repository)
 		if err != nil {
@@ -72,32 +105,100 @@ func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository 
 		}
 		return descriptor.Match(approval.Policy)
 	}
+	if s.client.runner != nil {
+		if err := s.ensureNativeMachine(ctx, source); err != nil {
+			return err
+		}
+	}
 	approval, err := source.client.ProjectPolicy(ctx)
 	var apiErr *APIError
 	switch {
 	case err == nil:
 		if err := approval.Policy.Validate(); err != nil {
-			return fmt.Errorf("check approved repository policy: %w", err)
+			return fmt.Errorf("check approved repository policy: %w", &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()})
 		}
 		err = descriptor.Match(approval.Policy)
-		if err == nil {
-			return nil
+		if err == nil && (descriptor.ID == approval.Policy.ID || descriptor.Authored != nil && approval.Policy.Authored != nil && descriptor.Authored.Version < approval.Policy.Authored.Version) {
+			return s.reportObservedPolicy(ctx, project, source, policy.Observation{Descriptor: descriptor, Source: provenance})
 		}
-		err = errors.Join(connector.NewRetryableError("repository policy approval pending"), err)
+		if err == nil {
+			err = errors.New("policy_mismatch: canonical policy revision has not been applied")
+		}
+		err = errors.Join(connector.NewRetryableError("repository policy approval pending"), &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()})
 	case errors.As(err, &apiErr) && apiErr.Code == "policy_mismatch":
 		err = errors.Join(connector.NewRetryableError("repository policy approval pending"), fmt.Errorf("check approved repository policy: %w", err))
 	default:
 		return fmt.Errorf("check approved repository policy: %w", err)
 	}
-	return errors.Join(err, s.reportObservedPolicy(ctx, project, source, descriptor))
+	if reportErr := s.reportObservedPolicy(ctx, project, source, policy.Observation{Descriptor: descriptor, Source: provenance}); reportErr != nil {
+		return errors.Join(err, reportErr)
+	}
+	if descriptor.Authored != nil || provenance != nil && provenance.DefaultBranchReachable {
+		applied, readErr := source.client.ProjectPolicy(ctx)
+		if readErr == nil && descriptor.ID == applied.Policy.ID && descriptor.Match(applied.Policy) == nil {
+			return nil
+		}
+		return errors.Join(err, readErr)
+	}
+	return err
 }
 
-// reportObservedPolicy sends each new unapproved descriptor once per project,
-// not on every candidate poll. The descriptor is claimed before the request
-// so concurrent checks send it once, and released if the request fails.
-func (s *Scheduler) reportObservedPolicy(ctx context.Context, project string, source *NativeConnector, descriptor policy.Descriptor) error {
+func (s *Scheduler) ResolveProjectWorkflow(ctx context.Context, project string, workflow workflowconfig.Workflow, provenance *policy.RepositorySource) (workflowconfig.Workflow, error) {
+	source := s.nativeProject(project)
+	if source == nil {
+		return workflow, nil
+	}
+	return source.client.ResolveProjectWorkflow(ctx, workflow, provenance)
+}
+
+func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow workflowconfig.Workflow, provenance *policy.RepositorySource) (workflowconfig.Workflow, error) {
+	project, err := c.Project(ctx)
+	if err != nil {
+		return workflowconfig.Workflow{}, fmt.Errorf("load Cloud model selection: %w", err)
+	}
+	var selection workflowconfig.ModelSelection
+	if len(project.ModelSelection) > 0 {
+		if err := json.Unmarshal(project.ModelSelection, &selection); err != nil {
+			return workflowconfig.Workflow{}, fmt.Errorf("decode Cloud model selection: %w", err)
+		}
+	}
+	sources := selection.Sources
+	selection = workflowconfig.ResolveCloudModelSelection(selection, workflowconfig.ModelSelection{})
+	for key, source := range sources {
+		selection.Sources[key] = source
+	}
+	selection.Sources["authority"] = "cloud"
+	if problems := selection.Validate(); len(problems) > 0 {
+		return workflowconfig.Workflow{}, fmt.Errorf("invalid Cloud model selection: %s", strings.Join(problems, "; "))
+	}
+	workflow.Config.Agents.ModelSelection = selection
+
+	supplied := workflow.Definition.Layout == workflowconfig.ProjectDefinitionSplit || workflow.Definition.Layout == workflowconfig.ProjectDefinitionLegacy
+	if workflow.Definition.Layout == workflowconfig.ProjectDefinitionCloud || supplied && provenance != nil {
+		return workflow, nil
+	}
+	approval, err := c.ProjectPolicy(ctx)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Code == "policy_mismatch" {
+		return workflow, nil
+	}
+	if err != nil {
+		return workflowconfig.Workflow{}, fmt.Errorf("load approved shared project configuration: %w", err)
+	}
+	if supplied && approval.Policy.Authored == nil && (approval.Policy.Configuration == nil || workflow.DefinitionSources != nil) {
+		return workflow, nil
+	}
+	return workflowconfig.ApplyNativePolicy(workflow, approval.Policy)
+}
+
+func (s *Scheduler) reportObservedPolicy(ctx context.Context, project string, source *NativeConnector, observation policy.Observation) error {
+	raw, err := json.Marshal(observation)
+	if err != nil {
+		return err
+	}
+	reportID := policy.Digest(raw)
 	s.mu.Lock()
-	if s.reportedPolicies[project] == descriptor.ID {
+	if s.reportedPolicies[project] == reportID {
 		s.mu.Unlock()
 		return nil
 	}
@@ -105,16 +206,20 @@ func (s *Scheduler) reportObservedPolicy(ctx context.Context, project string, so
 		s.reportedPolicies = map[string]string{}
 	}
 	previous := s.reportedPolicies[project]
-	s.reportedPolicies[project] = descriptor.ID
+	s.reportedPolicies[project] = reportID
 	s.mu.Unlock()
-	if err := source.client.ReportObservedPolicy(ctx, descriptor); err != nil {
+	if err := source.client.reportPolicyObservation(ctx, observation); err != nil {
 		s.mu.Lock()
-		if s.reportedPolicies[project] == descriptor.ID {
+		if s.reportedPolicies[project] == reportID {
 			s.reportedPolicies[project] = previous
 		}
 		s.mu.Unlock()
 		return fmt.Errorf("report the resolved repository policy to the Hub: %w", err)
 	}
+	state := source.client.heartbeatProject()
+	state.mu.Lock()
+	state.approvalSet = false
+	state.mu.Unlock()
 	return nil
 }
 
@@ -125,29 +230,51 @@ type claimPolicy struct {
 }
 
 func (s *Scheduler) checkClaimPolicy(ctx context.Context, issueID, pinnedID string) error {
+	if err := s.checkClaimPolicyApproval(ctx, issueID, pinnedID); err != nil {
+		return err
+	}
+	return s.checkClaimRunner(ctx, issueID, pinnedID)
+}
+
+func (s *Scheduler) checkClaimPolicyApproval(ctx context.Context, issueID, pinnedID string) error {
+	s.mu.Lock()
+	pinned, ok := s.claimPolicies[issueID]
+	s.mu.Unlock()
+	if !ok || pinnedID != pinned.descriptor.ID {
+		return &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: "claim has no matching pinned repository policy; release it and request a new claim"}
+	}
+	if s.nativeProjects[pinned.project] != nil {
+		return pinned.descriptor.Validate()
+	}
+	return s.CheckProjectPolicy(ctx, pinned.project, pinned.repository, pinned.descriptor)
+}
+
+func (s *Scheduler) checkClaimRunner(ctx context.Context, issueID, pinnedID string) error {
 	s.mu.Lock()
 	pinned, ok := s.claimPolicies[issueID]
 	claim, native := s.nativeClaims[issueID]
 	s.mu.Unlock()
 	if !ok || pinnedID != pinned.descriptor.ID {
-		return errors.New("policy_mismatch: claim has no matching pinned repository policy; release it and request a new claim")
+		return &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: "claim has no matching pinned repository policy; release it and request a new claim"}
 	}
-	if err := s.CheckProjectPolicy(ctx, pinned.project, pinned.repository, pinned.descriptor); err != nil {
-		return err
-	}
-	if native && s.client.runner != nil {
+	if native {
 		r, err := claim.source.client.ValidateLease(ctx, claim.lease)
 		if err != nil {
 			return err
+		}
+		if s.client.runner == nil {
+			return nil
 		}
 		file, err := runnerauth.Load(s.client.runner.path)
 		if err != nil {
 			return err
 		}
 		if r.Binding != file.Identity.Binding || r.MachineID != s.machine.ID || r.OrganizationID != file.Identity.OrganizationID {
-			return errors.New("selector_no_match: Hub lease runner does not match this host's enrolled identity")
+			return &APIError{Status: http.StatusForbidden, Code: "selector_no_match", Message: "Hub lease runner does not match this host's enrolled identity"}
 		}
-		return pinned.descriptor.Requirements.Match(r.RunnerID, string(r.MachineID), r.Tags)
+		if err := pinned.descriptor.Requirements.Match(r.RunnerID, string(r.MachineID), r.Tags); err != nil {
+			return &APIError{Status: http.StatusForbidden, Code: "selector_no_match", Message: err.Error()}
+		}
 	}
 	return nil
 }

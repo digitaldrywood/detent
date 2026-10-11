@@ -835,6 +835,7 @@ func (c *Connector) mergeLocalWithGitHub(localIssue connector.Issue, upstream co
 	merged.Fields = cloneMetadata(localIssue.Fields)
 	merged.FieldUpdatedAt = maps.Clone(localIssue.FieldUpdatedAt)
 	merged.Comments = mergeIssueComments(upstream.Comments, localIssue.Comments)
+	merged.CommentsComplete = upstream.CommentsComplete && localIssue.CommentsComplete
 	merged.Deliverable = cloneDeliverable(localIssue.Deliverable)
 	merged.AssignedToWorker = localIssue.AssignedToWorker
 	merged.StageUpdatedAt = localIssue.StageUpdatedAt

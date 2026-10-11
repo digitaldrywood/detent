@@ -89,6 +89,10 @@ func TestProjectDispatchStatusRequiresProject(t *testing.T) {
 }
 
 func TestProjectDispatchStatusMigrationBackfillsLastSelection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "detent.db"))
 	if err != nil {

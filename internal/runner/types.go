@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -20,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -230,6 +232,10 @@ type Backend interface {
 	Run(context.Context, RunRequest) (RunResult, error)
 }
 
+type WorkerHostChecker interface {
+	WorkerHostAvailable(context.Context, string) bool
+}
+
 type BlockedRecoveryInspector interface {
 	BlockedRecoverySnapshot(context.Context, RunRequest) BlockedRecoverySnapshot
 }
@@ -369,6 +375,8 @@ type AgentModel struct {
 }
 
 type AgentTurnRequest struct {
+	ExtraNetworkDomains []string
+	AllowLocalBinding   bool
 	// ConversationControl, when set, connects a live conversation to the turn on
 	// backends that implement AgentLiveBackend.
 	ConversationControl *AgentConversationControl
@@ -408,6 +416,8 @@ type AgentResume struct {
 }
 
 type AgentTurnResult struct {
+	ReportedCostMicros *int64
+	CostSource         string
 	ThreadID           string
 	TurnID             string
 	SessionID          string
@@ -464,6 +474,15 @@ const (
 	AgentUpdateResourceUsage    AgentUpdateType = "resource_usage"
 )
 
+// NativeCommandAction retains provider metadata transiently; activity profiles
+// persist only fixed categories, fingerprints and instruction references.
+type NativeCommandAction struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+}
+
 type AgentUpdate struct {
 	workerScratchPath   string
 	Type                AgentUpdateType
@@ -477,6 +496,8 @@ type AgentUpdate struct {
 	ItemID              string
 	Tool                string
 	Command             string
+	NativeActions       []NativeCommandAction
+	CWD                 string
 	Delta               string
 	Status              string
 	ExitCode            *int
@@ -591,11 +612,15 @@ func (e *agentDurationLimitError) Is(target error) bool {
 }
 
 type RunRequest struct {
-	TriageContext string
+	LandingBatch *workspace.LandingBatchTicket `json:"-"`
+	// DeferExecutionFinish leaves terminal publication with the claim owner so
+	// native collaboration and lane writes finish under the execution lease.
+	DeferExecutionFinish bool
+	TriageContext        string
 
 	// ProviderReports supplies the scheduling snapshot; dispatch never starts an agent.
 	ProviderReports           []providercapacity.Report
-	Execution                 Execution
+	Execution                 Execution `json:"-"`
 	Policy                    policy.Descriptor
 	ProjectID                 string
 	Issue                     connector.Issue
@@ -609,27 +634,33 @@ type RunRequest struct {
 	StartedAt                 time.Time
 	WorkerHost                string
 	RetryMode                 RetryMode
+	RecoveryAttemptID         int64 // Existing operator retry intent; automatic host spillover has none.
 	ResumeState               store.AgentResumeState
 	SelectorContext           selector.Context
-	OnUsageUpdate             UsageUpdateHandler
-	OnActivityUpdate          AgentActivityUpdateHandler
-	OnOverrideRejected        AgentOverrideRejectionHandler
-	ProgressProbe             SessionProgressProbe
-	CheckpointValidate        func(context.Context) error
+	OnUsageUpdate             UsageUpdateHandler            `json:"-"`
+	OnActivityUpdate          AgentActivityUpdateHandler    `json:"-"`
+	OnOverrideRejected        AgentOverrideRejectionHandler `json:"-"`
+	ProgressProbe             SessionProgressProbe          `json:"-"`
+	CheckpointValidate        func(context.Context) error   `json:"-"`
 	Routine                   *RoutineRequest
 	Admission                 *AdmissionRequest
 	AgentTools                []AgentTool
-	AgentToolHandler          AgentToolHandler
-	AcquireModelPermit        ModelPermitAcquirer
+	AgentToolHandler          AgentToolHandler    `json:"-"`
+	AcquireModelPermit        ModelPermitAcquirer `json:"-"`
 	MergePrecheck             *MergePrecheck
 	MergeRefreshHeadSHA       string
 	ForgeRetry                *ForgeRetry
 	sessionBrake              *sessionBrakeController
+	activityProfile           *activityRecorder
 	workerGitHubActor         connector.IssueActor
 	deliverableRecoveryBranch string
 	sessionTurnOffset         int
 	sessionTokenOffset        int64
 	retainCheckpoint          bool
+	finalizeNativeWork        bool
+	checkpointRefs            *checkpointRefs
+	executionCancellation     func() error
+	validationEvidenceSource  AttemptDiffSource
 }
 
 type ForgeRetry struct {
@@ -645,12 +676,13 @@ type SessionProgressProbe func(context.Context) (string, error)
 type ModelPermitAcquirer func(context.Context) error
 
 type MergePrecheck struct {
-	ConflictPaths []string
-	HeadSHA       string
-	Status        string
-	Message       string
-	DiffStats     DiffStats
-	HeadChanged   bool
+	TargetCommitSubjects []string
+	ConflictPaths        []string
+	HeadSHA              string
+	Status               string
+	Message              string
+	DiffStats            DiffStats
+	HeadChanged          bool
 }
 
 type RoutineRequest struct {
@@ -719,6 +751,7 @@ const (
 )
 
 type ValidatorRequest struct {
+	NativeVersion    *tracker.ChangeVersion
 	Issue            connector.Issue
 	Diff             *connector.ValidationDiff
 	StartedAt        time.Time
@@ -747,12 +780,21 @@ type SecurityAuditExecution struct {
 }
 
 type RunResult struct {
+	BillingMode             string
+	ReportedCostMicros      *int64
+	CostSource              string
+	GitHubScope             *tracker.NativeGitHubScope
+	GitHubRESTUsage         *connector.RESTRateLimitUsage
+	GitHubRESTConsumer      string
+	Compute                 *compute.Usage
+	TokenUSD                float64
 	Checkpoint              *workspace.CheckpointRecord
 	FinalState              string
 	Output                  string
 	FinalMessage            string
 	Model                   string
 	TurnStarted             bool
+	TurnStartRefused        bool
 	TurnCount               int
 	RuntimeIdentity         agentidentity.Identity
 	Tokens                  TokenTotals
@@ -789,33 +831,52 @@ type RunResult struct {
 // base branch: the Change Request, the version, its head, and the merge
 // method the approved policy names.
 type NativeLandingTarget struct {
-	ChangeID  string
-	VersionID string
-	HeadSHA   string
-	Method    string
-	Title     string
-	Number    int64
+	Validation        *gate.CommandResult
+	RebaseRequired    bool
+	CI                *tracker.NativeLandingCIReceipt
+	SourceIssues      []tracker.ExternalReference
+	External          *tracker.ChangeExternalReference
+	ChangeID          string
+	VersionID         string
+	HeadSHA           string
+	Method            string
+	Repository        string
+	GitHubPullRequest bool
+	Title             string
+	Number            int64
 }
 
 // NativeLanding reports a landing run's outcome. A landed version names the
 // commit the base branch advanced to; a refused one carries the refusal kind
 // and the reason, and the base branch is unchanged.
 type NativeLanding struct {
-	ChangeID    string
-	VersionID   string
-	HeadSHA     string
-	Landed      bool
-	MergeSHA    string
-	BaseRef     string
-	Method      string
-	RefusalKind string
-	Refusal     string
+	Pipeline        []gate.PipelineTiming `json:"pipeline,omitempty"`
+	PipelineDropped int                   `json:"pipeline_dropped,omitempty"`
+	Path            string
+	Packages        []string
+	Waiting         bool
+	CI              *tracker.NativeLandingCIReceipt
+	Gate            *gate.CommandResult
+	Rebased         bool
+	GateFailed      bool
+	ChangeID        string
+	VersionID       string
+	HeadSHA         string
+	Landed          bool
+	MergeSHA        string
+	BaseRef         string
+	BaseSHA         string
+	Method          string
+	RefusalKind     string
+	Refusal         string
 }
 
 // NativeChange describes a successful hub-native work run's change. A hub
 // native item has no pull request; the runner opens the Change Request under
 // the run's lease and reports it here, and the orchestrator moves the item.
 type NativeChange struct {
+	Landing   *NativeLanding
+	Validator *gate.ValidatorResult
 	// Changed reports that the run's final attempt diff has commits ahead of
 	// its base. A run that committed nothing has nothing to review.
 	Changed bool

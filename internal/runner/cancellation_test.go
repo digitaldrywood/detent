@@ -35,7 +35,6 @@ func TestCancellationFirstCause(t *testing.T) {
 		{"session duration", ErrSessionDurationExceeded, "session_duration_exceeded"},
 		{"turn duration", ErrTurnDurationExceeded, "turn_duration_exceeded"},
 		{"memory", ErrSessionMemoryCeilingExceeded, "session_memory_ceiling_exceeded"},
-		{"no progress", ErrSessionNoProgress, "session_no_progress"},
 		{"deadline", context.DeadlineExceeded, "deadline_exceeded"},
 		{"shutdown", context.Canceled, "context_cancelled"},
 	} {
@@ -70,6 +69,10 @@ func TestCancellationDoesNotInventFailureOrExposeCause(t *testing.T) {
 	}{
 		{"success", nil, false},
 		{"ordinary error", errors.New("failure"), false},
+		{"cleanup deadline", errors.Join(ErrWorkerProcessReap, context.DeadlineExceeded), false},
+		{"cleanup cancellation", errors.Join(ErrWorkerProcessReap, context.Canceled), false},
+		{"workspace ownership deadline", errors.Join(ErrWorkspacePreparation, context.DeadlineExceeded), false},
+		{"workspace ownership cancellation", errors.Join(ErrWorkspacePreparation, context.Canceled), false},
 		{"backend cancellation", context.Canceled, true},
 		{"backend deadline", context.DeadlineExceeded, true},
 	} {
@@ -127,7 +130,6 @@ func TestCancellationProcessReapAttribution(t *testing.T) {
 		{ErrLaneRevoked, "lane_revoked:test.source"},
 		{ErrSessionDurationExceeded, "maximum_session_lifetime_exceeded"},
 		{ErrTurnDurationExceeded, "maximum_turn_lifetime_exceeded"},
-		{ErrSessionNoProgress, SessionBrakeReasonNoProgress},
 	} {
 		t.Run(tt.cause.Error(), func(t *testing.T) {
 			t.Parallel()
@@ -258,6 +260,10 @@ func TestSleepInhibitorProcess(t *testing.T) {
 }
 
 func TestSleepInhibitorRelease(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	for _, platform := range []string{"darwin", "linux", "windows"} {
 		t.Run(platform, func(t *testing.T) {
 			var process *exec.Cmd

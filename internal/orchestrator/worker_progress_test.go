@@ -127,7 +127,7 @@ func TestWorkerProgressHeartbeatUsesLatestObservation(t *testing.T) {
 		t.Fatalf("observable attempt = %#v", got)
 	}
 	previous := attempts.heartbeats[0].HeartbeatAt
-	heartbeat, err := manager.persistHeartbeat(t.Context(), target, manager.settingsSnapshot(), now.Add(-time.Hour))
+	heartbeat, err := manager.persistHeartbeat(t.Context(), target, manager.settingsSnapshot())
 	if err != nil || heartbeat.HeartbeatAt.Before(previous) {
 		t.Fatalf("delayed heartbeat regressed timestamp: %v, %v", heartbeat.HeartbeatAt, err)
 	}

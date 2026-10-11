@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -55,7 +56,13 @@ func TestEnforceLifetimeLimits(t *testing.T) {
 		tokenLimit   int64
 		wantParked   bool
 		wantComment  []string
+		session      *store.SessionFinish
+		active       bool
 	}{
+		{name: "confirmed refusal leaves session allowance", session: &store.SessionFinish{TurnStartRefused: true}, sessionLimit: 1},
+		{name: "actual failed turn exhausts session allowance", session: &store.SessionFinish{Turns: 1}, sessionLimit: 1, wantParked: true},
+		{name: "unknown historical failure exhausts session allowance", session: &store.SessionFinish{}, sessionLimit: 1, wantParked: true},
+		{name: "active session exhausts session allowance", active: true, sessionLimit: 1, wantParked: true},
 		{name: "below limits", usage: store.TokenSpend{Sessions: 14, TotalTokens: 39_000_000}},
 		{name: "session limit", usage: store.TokenSpend{Sessions: 15, TotalTokens: 12_000_000}, wantParked: true},
 		{name: "token limit", usage: store.TokenSpend{Sessions: 8, TotalTokens: 40_000_000}, wantParked: true},
@@ -92,6 +99,34 @@ func TestEnforceLifetimeLimits(t *testing.T) {
 			}
 			if test.tokenLimit > 0 {
 				cfg.LifetimeTokenLimit = test.tokenLimit
+			}
+			if test.session != nil || test.active {
+				db, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "usage.db")})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := db.Close(); err != nil {
+						t.Error(err)
+					}
+				})
+				issue := lifetimeLimitTestIssue()
+				at := time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)
+				id, err := db.StartSession(t.Context(), store.SessionStart{ProjectID: cfg.Project.ID, IssueID: issue.ID, StartedAt: at})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if test.session != nil {
+					finish := *test.session
+					finish.CompletedAt, finish.FinalState, finish.TotalTokens = at.Add(time.Second), "failed", 67
+					if err := db.FinishSession(t.Context(), id, finish); err != nil {
+						t.Fatal(err)
+					}
+				}
+				test.usage, err = db.IssueTokenSpend(t.Context(), store.IssueIdentity{ProjectID: cfg.Project.ID, IssueID: issue.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			tracker := &backendCapacityTestConnector{}
 			usage := &lifetimeUsageStoreStub{spend: test.usage, history: test.history, err: test.usageErr}

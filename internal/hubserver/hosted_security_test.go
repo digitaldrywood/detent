@@ -1,9 +1,9 @@
 package hubserver
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -23,7 +22,11 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 type hostedSecurityProvider struct {
@@ -34,6 +37,8 @@ type hostedSecurityProvider struct {
 	invitations     map[string]auth.Invitation
 	invitationRoles map[string]string
 	exchanges       int
+	revokeErr       error
+	revoked         []string
 }
 
 func newHostedSecurityProvider() *hostedSecurityProvider {
@@ -144,6 +149,26 @@ func (p *hostedSecurityProvider) Invitation(_ context.Context, token string) (au
 	return invitation, nil
 }
 
+func (p *hostedSecurityProvider) RevokeInvitation(_ context.Context, id string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	invitation, ok := p.invitations[id]
+	if !ok || invitation.State != "pending" {
+		return auth.ErrHostedIdentity
+	}
+	invitation.State = "revoked"
+	p.invitations[id] = invitation
+	return nil
+}
+
+func (p *hostedSecurityProvider) ResendInvitation(ctx context.Context, id string) error {
+	invitation, err := p.Invitation(ctx, id)
+	if err != nil || invitation.State != "pending" {
+		return auth.ErrHostedIdentity
+	}
+	return nil
+}
+
 func (p *hostedSecurityProvider) AcceptInvitation(_ context.Context, token, user string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -162,6 +187,10 @@ func (p *hostedSecurityProvider) AcceptInvitation(_ context.Context, token, user
 func (p *hostedSecurityProvider) RevokeSession(_ context.Context, id string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.revoked = append(p.revoked, id)
+	if p.revokeErr != nil {
+		return p.revokeErr
+	}
 	delete(p.sessions, id)
 	return nil
 }
@@ -178,34 +207,10 @@ type hostedSecurityFixture struct {
 	base     string
 }
 
-var hostedMigratedDatabase struct {
-	once     sync.Once
-	contents []byte
-	err      error
-}
-
 func hostedTestDatabasePath(t *testing.T) string {
 	t.Helper()
-	hostedMigratedDatabase.once.Do(func() {
-		path := filepath.Join(t.TempDir(), "schema.db")
-		db, err := openDatabase(t.Context(), Config{DatabasePath: path, Logger: discardLogger()}.normalized())
-		if err != nil {
-			hostedMigratedDatabase.err = err
-			return
-		}
-		if err := db.Close(); err != nil {
-			hostedMigratedDatabase.err = err
-			return
-		}
-		hostedMigratedDatabase.contents, hostedMigratedDatabase.err = os.ReadFile(path)
-	})
-	if hostedMigratedDatabase.err != nil {
-		t.Fatalf("build hosted schema fixture: %v", hostedMigratedDatabase.err)
-	}
 	path := filepath.Join(t.TempDir(), "hosted.db")
-	if err := os.WriteFile(path, hostedMigratedDatabase.contents, 0o600); err != nil {
-		t.Fatalf("write hosted schema fixture: %v", err)
-	}
+	seedHubDatabaseTemplate(t, path)
 	return path
 }
 
@@ -223,8 +228,8 @@ func TestHostedSchemaFixtureTenantIsolation(t *testing.T) {
 					Provider:             newHostedSecurityProvider(),
 				},
 			})
-			if service.database.schemaVersion != supportedSchemaVersion {
-				t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion)
+			if service.database.schemaVersion != supportedSchemaVersion(t) {
+				t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion(t))
 			}
 			var boundOrganization string
 			if err := service.database.db.QueryRowContext(t.Context(), "SELECT organization_id FROM hosted_tenant").Scan(&boundOrganization); err != nil {
@@ -251,14 +256,35 @@ func TestHostedSchemaFixtureTenantIsolation(t *testing.T) {
 			}
 		})
 	}
+	t.Run("seeded security copies", func(t *testing.T) {
+		for range 2 {
+			f := newHostedSecurityFixture(t)
+			var sessions int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_sessions").Scan(&sessions); err != nil {
+				t.Fatal(err)
+			}
+			if sessions != 0 {
+				t.Fatalf("security template contains %d sessions", sessions)
+			}
+			// The same user and issue must be fresh in each seeded copy.
+			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
+			response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "isolation"}, Title: "isolated", State: "Todo"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			if issue.Number != 1 {
+				t.Fatalf("security fixture issue number = %d, want 1", issue.Number)
+			}
+		}
+	})
 }
 
-func newHostedSecurityFixture(t *testing.T) hostedSecurityFixture {
+func newHostedSecurityFixture(t *testing.T, configure ...func(*Config)) hostedSecurityFixture {
 	t.Helper()
 	provider := newHostedSecurityProvider()
 	legacyPlans := pilotHostedPlans()
-	service := openTestService(t, Config{
-		DatabasePath:   hostedTestDatabasePath(t),
+	cfg := Config{
+		DatabasePath:   filepath.Join(t.TempDir(), "hosted.db"),
 		GitHubDisabled: true,
 		Hosted: &HostedConfig{
 			Plans:                &legacyPlans,
@@ -270,23 +296,33 @@ func newHostedSecurityFixture(t *testing.T) hostedSecurityFixture {
 			SupportActors:        []string{"support@example.test"},
 			Provider:             provider,
 		},
-	})
+	}
+	for _, apply := range configure {
+		apply(&cfg)
+	}
+	seedHostedSecurityDatabaseTemplate(t, cfg)
+	service := openTestService(t, cfg)
+	project := tracker.ProjectID("prj_security")
+	return hostedSecurityFixture{service: service, provider: provider, project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}
+}
+
+func seedHostedSecurityProject(ctx context.Context, db *sql.DB, organization string) error {
 	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}
 	raw, err := json.Marshal(states)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
 	project := tracker.ProjectID("prj_security")
 	now := formatHubTime(time.Now())
-	if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled) VALUES (?,?,'private-project-sentinel','native',?,?,0)", project, service.config.Hosted.OrganizationID, string(raw), now); err != nil {
-		t.Fatal(err)
+	if _, err := db.ExecContext(ctx, "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled) VALUES (?,?,'private-project-sentinel','native',?,?,0)", project, organization, string(raw), now); err != nil {
+		return err
 	}
 	for _, state := range states {
-		if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", project, state.Name, state.Name, state.Terminal, state.Dispatchable, now, now); err != nil {
-			t.Fatal(err)
+		if _, err := db.ExecContext(ctx, "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", project, state.Name, state.Name, state.Terminal, state.Dispatchable, now, now); err != nil {
+			return err
 		}
 	}
-	return hostedSecurityFixture{service: service, provider: provider, project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}
+	return nil
 }
 
 func (f hostedSecurityFixture) user(t *testing.T, name, role, email, grant, supportActor string) hostedSecurityUser {
@@ -397,8 +433,21 @@ func TestHostedSecurityRoleProjectMatrix(t *testing.T) {
 				}
 				command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create"}, Title: "new issue", Body: "private-body-sentinel", State: "Todo"}
 				requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/work-items", command), writeStatus)
+				policyStatus, revokeStatus := http.StatusNotFound, http.StatusNotFound
+				if grant == "write" && (role == "owner" || role == "admin") {
+					policyStatus, revokeStatus = http.StatusOK, http.StatusNoContent
+				}
+				descriptor := hubTestPolicy()
+				for _, route := range []string{"/policy", "/onboarding/policy"} {
+					requireNativeStatus(t, f.request(t, user, http.MethodPut, f.base+route, policy.Change{Policy: descriptor}), policyStatus)
+				}
+				requireNativeStatus(t, f.request(t, user, http.MethodDelete, f.base+"/policy", map[string]string{"expected_policy_id": descriptor.ID}), revokeStatus)
 				requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/claims", map[string]any{}), http.StatusForbidden)
-				requireNativeStatus(t, f.request(t, user, http.MethodGet, "/api/v2/organizations/org_security/runners", nil), http.StatusNotFound)
+				runnerStatus := http.StatusNotFound
+				if role == "owner" || role == "admin" {
+					runnerStatus = http.StatusOK
+				}
+				requireNativeStatus(t, f.request(t, user, http.MethodGet, "/api/v2/organizations/org_security/runners", nil), runnerStatus)
 			})
 		}
 	}
@@ -455,21 +504,63 @@ func TestHostedSecurityStaffMetadataBoundary(t *testing.T) {
 func TestHostedSecurityRunnerPermissionsAreSeparate(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		role   string
-		runner bool
-		want   int
+		name, role      string
+		runner, missing bool
+		want            int
 	}{
-		{role: "owner", want: http.StatusNotFound},
-		{role: "admin", want: http.StatusNotFound},
-		{role: "member", runner: true, want: http.StatusOK},
-		{role: "viewer", runner: true, want: http.StatusNotFound},
+		{name: "owner without runner grant", role: "owner", want: http.StatusOK},
+		{name: "admin without runner grant", role: "admin", want: http.StatusOK},
+		{name: "owner with grantless project", role: "owner", missing: true, want: http.StatusOK},
+		{name: "admin with grantless project", role: "admin", missing: true, want: http.StatusOK},
+		{name: "member with runner grant", role: "member", runner: true, want: http.StatusOK},
+		{name: "member with grantless project", role: "member", runner: true, missing: true, want: http.StatusNotFound},
+		{name: "viewer with runner grant", role: "viewer", runner: true, want: http.StatusNotFound},
 	} {
-		t.Run(test.role, func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newHostedSecurityFixture(t)
-			user := f.user(t, test.role, test.role, test.role+"@example.test", "read", "")
+			f, ctx := newHostedKeyMCPFixture(t, "dedicated", test.role)
+			user := f.user
 			f.grant(t, user, false, test.runner)
-			requireNativeStatus(t, f.request(t, user, http.MethodGet, "/api/v2/organizations/org_security/runners", nil), test.want)
+			if test.missing {
+				operatorSQL(t, f.hostedSecurityFixture, `INSERT INTO projects(id,organization_id,name,profile,created_at) VALUES ('prj_grantless','org_security','digitaldrywood/detent','github_compatible','now')`)
+				operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hosted_project_grants WHERE project_id='prj_grantless'")
+				operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM token_grants WHERE project_id='prj_grantless'")
+			}
+			response := f.request(t, user, http.MethodGet, "/api/v2/organizations/org_security/runners", nil)
+			requireNativeStatus(t, response, test.want)
+			if test.role == "member" && test.missing && !strings.Contains(response.Body.String(), "digitaldrywood/detent") {
+				t.Fatalf("denial does not name missing project: %s", response.Body.String())
+			}
+			credential, err := currentHubOperator(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := f.service.appAllRunnerGrants(t.Context(), credential); got != (test.want == http.StatusOK) {
+				t.Fatalf("Cloud runner controls available=%v", got)
+			}
+			catalogCtx := f.service.withOperatorCatalog(ctx, credential, "org_security")
+			_, catalogErr := f.service.authorizeCatalog(catalogCtx, hubFleetRequirement(operatortool.ListRunnerRouting))
+			_, err = (hubFleetExecutor{f.service}).Execute(ctx, operatortool.Call{Name: operatortool.ListRunnerRouting, Arguments: json.RawMessage(`{}`)})
+			enrollment := runnerauth.EnrollmentRequest{ProjectIDs: []tracker.ProjectID{f.project}, Operations: []string{runnerauth.Read}, TTLSeconds: 900}
+			arguments, encodeErr := json.Marshal(hubFleetRequest{RequestID: "role-enrollment", Enrollment: enrollment})
+			if encodeErr != nil {
+				t.Fatal(encodeErr)
+			}
+			_, enrollmentErr := (hubFleetExecutor{f.service}).Execute(ctx, operatortool.Call{Name: operatortool.CreateRunnerEnrollment, Arguments: arguments})
+			for _, denial := range []error{catalogErr, err, enrollmentErr} {
+				if test.want == http.StatusOK && denial != nil || test.want != http.StatusOK && !errors.Is(denial, operatortool.ErrAccessDenied) {
+					t.Fatalf("operator runner access=%v", denial)
+				}
+				if test.role == "member" && test.missing && !strings.Contains(denial.Error(), "digitaldrywood/detent") {
+					t.Fatalf("operator denial does not name missing project: %v", denial)
+				}
+			}
+			response = f.request(t, user, http.MethodPost, "/api/v2/organizations/org_security/runner-enrollments", enrollment)
+			want := test.want
+			if want == http.StatusOK {
+				want = http.StatusCreated
+			}
+			requireNativeStatus(t, response, want)
 			requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/work-items/wi_unknown/change-requests/change_unknown/versions/version_unknown/checks", map[string]any{}), http.StatusNotFound)
 		})
 	}
@@ -540,6 +631,13 @@ func TestHostedSecuritySupportSessionConstraints(t *testing.T) {
 				}
 				requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/work-items", command), wantWrite)
 				requireNativeStatus(t, f.request(t, user, http.MethodGet, "/api/cloud/metadata", nil), http.StatusForbidden)
+				if wantWrite != http.StatusOK {
+					var count int
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id=?", user.identity.Hosted.SessionID).Scan(&count); err != nil || count != 0 {
+						t.Fatalf("routine reads created %d audit rows: %v", count, err)
+					}
+					return
+				}
 				var actor, effective, organization, reason, raw string
 				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor,effective_user,organization_id,reason,event || route || project_id FROM hosted_audit WHERE session_id = ? ORDER BY id LIMIT 1", user.identity.Hosted.SessionID).Scan(&actor, &effective, &organization, &reason, &raw); err != nil {
 					t.Fatal(err)
@@ -560,7 +658,13 @@ func TestHostedSecurityReplayAndCursorRevocation(t *testing.T) {
 	f.seedIssue(t, 1)
 	f.seedIssue(t, 2)
 	command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "cached-command"}, Title: "cached-private-sentinel", State: "Todo"}
-	requireNativeStatus(t, f.request(t, writer, http.MethodPost, f.base+"/work-items", command), http.StatusOK)
+	created := f.request(t, writer, http.MethodPost, f.base+"/work-items", command)
+	requireNativeStatus(t, created, http.StatusOK)
+	// Simulate a pre-upgrade receipt: its session suffix must not let a
+	// reconnect create a duplicate or evade changed-payload conflicts.
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_commands SET operation=operation || ' ' || ? WHERE command_key=?", writer.identity.Hosted.SessionID, command.IdempotencyKey); err != nil {
+		t.Fatal(err)
+	}
 	response := f.request(t, writer, http.MethodGet, f.base+"/work-items?limit=1", nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	var page tracker.Page[tracker.NativeIssue]
@@ -581,6 +685,24 @@ func TestHostedSecurityReplayAndCursorRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	secondSession := hostedSecurityUser{identity: secondIdentity, token: secondToken}
+	replay := f.request(t, secondSession, http.MethodPost, f.base+"/work-items", command)
+	requireNativeStatus(t, replay, http.StatusOK)
+	if replay.Body.String() != created.Body.String() {
+		t.Fatal("reconnect did not replay legacy receipt")
+	}
+	changed := command
+	changed.Title = "changed"
+	requireNativeStatus(t, f.request(t, secondSession, http.MethodPost, f.base+"/work-items", changed), http.StatusConflict)
+	other := f.user(t, "other-writer", "member", "other-writer@example.test", "write", "")
+	distinct := f.request(t, other, http.MethodPost, f.base+"/work-items", command)
+	requireNativeStatus(t, distinct, http.StatusOK)
+	var first, second tracker.NativeIssue
+	decodeHubResponse(t, created, &first)
+	decodeHubResponse(t, distinct, &second)
+	if first.WorkItemID == second.WorkItemID {
+		t.Fatal("distinct actors shared a receipt")
+	}
+
 	requireNativeStatus(t, f.request(t, secondSession, http.MethodGet, f.base+"/work-items?limit=1&cursor="+url.QueryEscape(page.NextCursor), nil), http.StatusUnprocessableEntity)
 	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id = ?", writer.identity.Subject); err != nil {
 		t.Fatal(err)
@@ -694,77 +816,79 @@ func TestHostedSecuritySSEAudit(t *testing.T) {
 			f := newHostedSecurityFixture(t)
 			f.seedIssue(t, 1)
 			user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", actor)
-			server := httptest.NewServer(f.service.Handler())
-			t.Cleanup(server.Close)
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/projects/"+string(f.project)+"/events", nil)
-			if err != nil {
-				t.Fatal(err)
+			reader := openHostedTestStream(t, f, user, "")
+			kind, _ := readHostedEvent(t, reader)
+			if kind != "activity" {
+				t.Fatalf("initial event = %q", kind)
 			}
-			request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
-			response, err := server.Client().Do(request)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer response.Body.Close()
-			scanner := bufio.NewScanner(response.Body)
-			if response.StatusCode != http.StatusOK || !scanner.Scan() || scanner.Text() != "event: activity" {
-				t.Fatalf("stream status=%d, error=%v", response.StatusCode, scanner.Err())
-			}
-			var actual, effective, organization, project, reason string
 			var count int
-			err = f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor,effective_user,organization_id,project_id,reason,count(*) FROM hosted_audit WHERE session_id = ? AND route = ? GROUP BY actual_actor,effective_user,organization_id,project_id,reason", user.identity.Hosted.SessionID, "GET /projects/:project/events").Scan(&actual, &effective, &organization, &project, &reason, &count)
+			err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id = ? AND route = ?", user.identity.Hosted.SessionID, "GET /projects/:project/events").Scan(&count)
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantActor := actor
-			if wantActor == "" {
-				wantActor = user.identity.Subject
-			}
-			if actual != wantActor || effective != user.identity.Subject || organization != "org_security" || project != string(f.project) || reason != user.identity.Hosted.SupportReason || count != 1 {
-				t.Fatalf("stream audit actor=%q effective=%q organization=%q project=%q reason=%q count=%d", actual, effective, organization, project, reason, count)
-			}
-			var record string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor || effective_user || organization_id || project_id || reason || event || route FROM hosted_audit WHERE session_id = ?", user.identity.Hosted.SessionID).Scan(&record); err != nil {
-				t.Fatal(err)
-			}
-			for _, forbidden := range []string{user.token, "private-project-sentinel", "private-issue-sentinel", "private-body-sentinel"} {
-				if strings.Contains(record, forbidden) {
-					t.Fatalf("stream audit exposed %q", forbidden)
-				}
+			if count != 0 {
+				t.Fatalf("routine stream read created %d audit rows", count)
 			}
 		})
 	}
 }
 
+type hostedEventRecorder struct {
+	*httptest.ResponseRecorder
+	flush func()
+}
+
+func (r hostedEventRecorder) Flush() {
+	r.ResponseRecorder.Flush()
+	r.flush()
+}
+
 func TestHostedSecuritySSERevocation(t *testing.T) {
 	t.Parallel()
-	for _, revocation := range []string{"provider session", "membership", "project grant"} {
+	for _, revocation := range []string{"provider session", "membership", "project grant", "shutdown"} {
 		t.Run(revocation, func(t *testing.T) {
 			t.Parallel()
-			f := newHostedSecurityFixture(t)
+			f := newHostedSecurityFixture(t, func(cfg *Config) {
+				cfg.Workspace = &WorkspaceConfig{Enabled: true}
+			})
+			owner := f.user(t, "member", "member", "member@example.test", "write", "")
+			item := f.seedIssue(t, 1)
+			created := f.request(t, owner, http.MethodPost, f.base+"/workspaces", workspaceRequest{
+				Mutation: tracker.Mutation{IdempotencyKey: "revocation-workspace"}, WorkItemID: string(item), Requires: []string{"files"},
+			})
+			requireNativeStatus(t, created, http.StatusCreated)
+			var workspace workspacesession.Session
+			decodeHubResponse(t, created, &workspace)
 			user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
-			server := httptest.NewServer(f.service.Handler())
-			t.Cleanup(server.Close)
-			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-			defer cancel()
-			request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/projects/"+string(f.project)+"/events", nil)
-			if err != nil {
-				t.Fatal(err)
+			if revocation == "shutdown" {
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/projects/"+string(f.project)+"/events?workspace="+workspace.ID, nil)
+				request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
+				var shutdownErr error
+				frames := 0
+				response := hostedEventRecorder{ResponseRecorder: httptest.NewRecorder(), flush: func() {
+					frames++
+					if frames == 1 {
+						shutdownErr = f.service.Shutdown(ctx)
+					} else {
+						cancel()
+					}
+				}}
+				f.service.Handler().ServeHTTP(response, request)
+				if response.Code != http.StatusOK || frames != 1 || shutdownErr != nil || ctx.Err() != nil {
+					t.Fatalf("shutdown stream: status=%d frames=%d shutdown=%v context=%v", response.Code, frames, shutdownErr, ctx.Err())
+				}
+				return
 			}
-			request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
-			response, err := server.Client().Do(request)
-			if err != nil {
-				t.Fatal(err)
+			reader := openHostedTestStream(t, f, user, "?workspace="+workspace.ID)
+			kind, _ := readHostedEvent(t, reader)
+			if kind != "activity" {
+				t.Fatalf("initial event = %q", kind)
 			}
-			defer response.Body.Close()
-			if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
-				t.Fatalf("stream response = %d %s", response.StatusCode, response.Header.Get("Content-Type"))
-			}
-			scanner := bufio.NewScanner(response.Body)
-			if !scanner.Scan() || scanner.Text() != "event: activity" || !scanner.Scan() || scanner.Text() != "data: 0" || !scanner.Scan() || scanner.Text() != "" {
-				t.Fatalf("initial event is invalid: %v", scanner.Err())
+			kind, _ = readHostedEvent(t, reader)
+			if kind != "workspace.requested" {
+				t.Fatalf("workspace event = %q", kind)
 			}
 			switch revocation {
 			case "provider session":
@@ -780,11 +904,9 @@ func TestHostedSecuritySSERevocation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if scanner.Scan() {
-				t.Fatalf("revoked stream produced %q", scanner.Text())
-			}
-			if err := scanner.Err(); err != nil {
-				t.Fatalf("stream did not close cleanly: %v", err)
+			frame, err := readSSEFrame(reader)
+			if !errors.Is(err, io.EOF) {
+				t.Fatalf("revoked stream produced %+v, error=%v", frame, err)
 			}
 		})
 	}
@@ -947,6 +1069,10 @@ func TestHostedSecuritySupportLoginAndExit(t *testing.T) {
 }
 
 func TestHostedSecurityLogsExcludeCustomerContent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	var logs bytes.Buffer
 	provider := newHostedSecurityProvider()
@@ -966,8 +1092,9 @@ func TestHostedSecurityLogsExcludeCustomerContent(t *testing.T) {
 	})
 	const sentinel = "private-content-bearer-sentinel"
 	service.echo.GET("/security/error", func(c echo.Context) error {
-		service.config.Logger.Error(sentinel, "credential", sentinel, "error", errors.New(sentinel))
-		return service.nativeAPIError(c, errors.New(sentinel))
+		failure := fmt.Errorf("load work item: token=%s: %w", sentinel, errors.New("bearer "+sentinel))
+		service.config.Logger.Error("security probe failed", "title", sentinel, "body", sentinel, "api_token", sentinel, "error", failure)
+		return service.nativeAPIError(c, failure)
 	})
 	response := httptest.NewRecorder()
 	service.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/security/error", nil))
@@ -977,6 +1104,9 @@ func TestHostedSecurityLogsExcludeCustomerContent(t *testing.T) {
 	}
 	if logs.Len() == 0 {
 		t.Fatal("test produced no log records")
+	}
+	if !strings.Contains(logs.String(), "security probe failed") || !strings.Contains(logs.String(), "load work item") {
+		t.Fatalf("hosted logs dropped the error diagnostics: %s", logs.String())
 	}
 	if strings.Contains(logs.String(), sentinel) || strings.Contains(response.Body.String(), sentinel) {
 		t.Fatal("hosted logs or errors exposed customer content")
@@ -998,6 +1128,13 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 			f := newHostedSecurityFixture(t)
 			user := f.user(t, "creator-"+test.role, test.role, test.role+"-creator@example.test", "write", "")
 			f.grant(t, user, true, true)
+			for _, role := range []string{"owner", "admin", "member", "viewer"} {
+				f.user(t, "other-"+role, role, role+"-other@example.test", "write", "")
+			}
+			inactive := f.user(t, "inactive-admin", "admin", "inactive@example.test", "write", "")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET active = 0 WHERE user_id = ?", inactive.identity.Subject); err != nil {
+				t.Fatal(err)
+			}
 			// The request authenticated while the user was an owner; the
 			// provider's membership is what the transaction must trust.
 			var principal string
@@ -1005,7 +1142,7 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 				t.Fatal(err)
 			}
 			credential := apiCredential{ID: principal, Scope: apiScopeOperator, NativeOnly: true, Hosted: user.identity.Hosted, SessionHash: apikey.HashToken(user.token), HostedRole: "owner", ManageRunners: true}
-			project, err := f.service.createHostedProjectRecord(t.Context(), credential, "Project for "+test.role)
+			project, err := f.service.createHostedProjectRecord(t.Context(), credential, "Project for "+test.role, nil)
 			if (err == nil) != test.created {
 				t.Fatalf("createHostedProjectRecord() = %q, %v; want created %v", project, err, test.created)
 			}
@@ -1015,6 +1152,55 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 			var manageRunner bool
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT manage_runner FROM hosted_project_grants WHERE project_id = ? AND user_id = ?", project, user.identity.Subject).Scan(&manageRunner); err != nil || !manageRunner {
 				t.Fatalf("creator runner management = %v, %v", manageRunner, err)
+			}
+			for _, role := range []string{"owner", "admin", "member", "viewer"} {
+				var grants int
+				if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_project_grants g JOIN hosted_members m ON m.user_id=g.user_id JOIN token_grants t ON t.token_id=m.principal_id AND t.project_id=g.project_id WHERE g.project_id=? AND g.user_id=? AND g.can_write=1 AND g.manage_runner=1`, project, "user_other-"+role).Scan(&grants); err != nil {
+					t.Fatal(err)
+				}
+				want := 0
+				if role == "owner" || role == "admin" {
+					want = 1
+				}
+				if grants != want {
+					t.Fatalf("%s grants = %d, want %d", role, grants, want)
+				}
+			}
+			var inactiveGrants, audits int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_project_grants WHERE project_id=? AND user_id=?", project, inactive.identity.Subject).Scan(&inactiveGrants); err != nil || inactiveGrants != 0 {
+				t.Fatalf("inactive grants = %d, %v", inactiveGrants, err)
+			}
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE project_id=? AND actual_actor=? AND event='project_created'", project, user.identity.Subject).Scan(&audits); err != nil || audits != 1 {
+				t.Fatalf("creation audits = %d, %v", audits, err)
+			}
+		})
+	}
+}
+
+func (*hostedSecurityProvider) HasUser(context.Context, string) (bool, error) { return true, nil }
+
+func TestHostedRepeatedReadsAreNotAudited(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		support string
+	}{
+		{name: "member reads"},
+		{name: "support reads", support: "support@example.test"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newHostedSecurityFixture(t)
+			user := f.user(t, "customer", "member", "customer@example.test", "read", test.support)
+			for range 3 {
+				requireNativeStatus(t, f.request(t, user, http.MethodGet, f.base, nil), http.StatusOK)
+			}
+			var count int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id = ? AND event = 'action' AND route LIKE 'GET %'", user.identity.Hosted.SessionID).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != 0 {
+				t.Fatalf("read audit rows = %d, want 0", count)
 			}
 		})
 	}

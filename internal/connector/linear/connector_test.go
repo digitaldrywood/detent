@@ -981,6 +981,10 @@ func TestConnectorCapabilities(t *testing.T) {
 }
 
 func TestClientGraphQLReadsLargeSuccessfulResponse(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	body := strings.Repeat("large response ", maxErrorBodyBytes)

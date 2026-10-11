@@ -429,10 +429,16 @@ func checkDoctorInertWorkflowBlocks(projectID string, workflowPath string, cfg w
 }
 
 func checkDoctorGateCommand(ctx context.Context, projectID string, workflowPath string, project globalconfig.Project, cfg workflowconfig.Config, deps doctorDeps) []doctorCheck {
-	if gate.NormalizeKind(cfg.Gate.Kind) != gate.KindCommand || deps.resolveCommandInDir == nil {
+	if gate.NormalizeKind(cfg.Gate.Kind) != gate.KindCommand {
 		return nil
 	}
 	command := strings.TrimSpace(cfg.Gate.Run)
+	if (command == "true" || command == ":") && cfg.Gate.RequiredStatusChecks == nil {
+		return []doctorCheck{doctorWorkflowGateWarning(projectID, workflowPath, command, "the local command is a no-op but aggregate CI is still required; a head with no CI producer cannot advance", "Configure CI, or explicitly set gate.required_status_checks: [] to use only native branch requirements.")}
+	}
+	if deps.resolveCommandInDir == nil {
+		return nil
+	}
 	fields := doctorWorkflowCommandFields(doctorWorkflowCommandPrefix(command))
 	if len(fields) == 0 {
 		return []doctorCheck{doctorWorkflowGateWarning(projectID, workflowPath, command, "no executable was found", "Set gate.run to a command available on PATH.")}

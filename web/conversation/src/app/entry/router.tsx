@@ -17,12 +17,19 @@ import React from "react";
 import {
   CreateOrganization,
   EntrySignIn,
-  JoinInvitation,
   OrganizationChooser,
   ProvisioningProgress,
 } from "./EntryScreens.tsx";
-import { PlatformConsole } from "./PlatformConsole.tsx";
+import {
+  PlatformAllowlistPage,
+  PlatformConsole,
+  PlatformHealthPage,
+  PlatformSectionPage,
+  PlatformTenantsPage,
+} from "./PlatformConsole.tsx";
 import { usePageTitle } from "../pageTitle.ts";
+import { PlatformAuditPage } from "./PlatformAudit.tsx";
+import { PlatformUsersPage } from "./PlatformUsers.tsx";
 
 function useGo(): (to: string) => void {
   const navigate = useNavigate();
@@ -47,9 +54,61 @@ export const ENTRY_ROUTE_PATHS = [
   "/organizations",
   "/organizations/new",
   "/organizations/$organization/provisioning",
-  "/invitations/join",
   "/platform",
+  "/platform/tenants",
+  "/platform/users",
+  "/platform/staff",
+  "/platform/audit",
+  "/platform/health",
+  "/platform/allowlist",
 ] as const;
+
+const platformRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/platform",
+  component: PlatformConsole,
+});
+
+const platformRoutes = platformRoute.addChildren([
+  createRoute({
+    getParentRoute: () => platformRoute,
+    path: "/",
+    beforeLoad: () => {
+      throw redirect({ to: "/platform/tenants", replace: true } as never);
+    },
+  }),
+  createRoute({
+    getParentRoute: () => platformRoute,
+    path: "/tenants",
+    validateSearch: (search: Record<string, unknown>) => ({ tenant: typeof search.tenant === "string" ? search.tenant : undefined }),
+    component: PlatformTenantsPage,
+  }),
+  createRoute({
+    getParentRoute: () => platformRoute,
+    path: "/users",
+    validateSearch: (search: Record<string, unknown>) => ({ q: typeof search.q === "string" ? search.q : undefined }),
+    component: PlatformUsersPage,
+  }),
+  createRoute({
+    getParentRoute: () => platformRoute,
+    path: "/accounts",
+    beforeLoad: () => {
+      throw redirect({ to: "/platform/users", replace: true } as never);
+    },
+  }),
+  createRoute({
+    getParentRoute: () => platformRoute,
+    path: "/staff",
+    component: () => <PlatformSectionPage section="staff" />,
+  }),
+  createRoute({
+    getParentRoute: () => platformRoute,
+    path: "/audit",
+    component: PlatformAuditPage,
+  }),
+  createRoute({ getParentRoute: () => platformRoute, path: "/health", component: PlatformHealthPage }),
+  createRoute({ getParentRoute: () => platformRoute, path: "/allowlist", component: PlatformAllowlistPage }),
+]);
 
 const routeTree = rootRoute.addChildren([
   createRoute({
@@ -92,22 +151,7 @@ const routeTree = rootRoute.addChildren([
       return <ProvisioningProgress organization={organization ?? ""} onNavigate={useGo()} />;
     },
   }),
-  createRoute({
-    getParentRoute: () => rootRoute,
-    path: "/platform",
-    component: function Platform() {
-      usePageTitle("Platform");
-      return <PlatformConsole />;
-    },
-  }),
-  createRoute({
-    getParentRoute: () => rootRoute,
-    path: "/invitations/join",
-    component: function Join() {
-      usePageTitle("Join invitation");
-      return <JoinInvitation onNavigate={useGo()} />;
-    },
-  }),
+  platformRoutes,
 ]);
 
 export function makeEntryRouter(history?: RouterHistory) {

@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,6 +26,12 @@ func TestHubServeCommandPassesConfiguration(t *testing.T) {
 		return nil
 	}
 	cmd := newHubCommandWithRun("v-test", func(name string) string {
+		if name == "DETENT_HUB_SECRET_KEY_VERSION" {
+			return "1"
+		}
+		if name == "DETENT_HUB_SECRET_KEYS" {
+			return `{"1":"` + base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", 32))) + `"}`
+		}
 		if name == "TEST_HUB_ADMIN_TOKEN" {
 			return "hub-admin-token"
 		}
@@ -55,6 +63,9 @@ func TestHubServeCommandPassesConfiguration(t *testing.T) {
 	}
 	if gotContextValue != "request" {
 		t.Fatal("runner did not receive command context")
+	}
+	if gotConfig.SecretKeys == nil || gotConfig.SecretKeys.Version() != 1 {
+		t.Fatal("secret keys were not supplied from the environment")
 	}
 	if gotConfig.DatabasePath != wantDatabase {
 		t.Fatalf("database path = %q, want %q", gotConfig.DatabasePath, wantDatabase)

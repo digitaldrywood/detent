@@ -1,6 +1,6 @@
 # Project onboarding
 
-The shared product journey starts at `https://hub.detent.build`: sign in, create
+The shared product journey starts at `https://cloud.detent.build`: sign in, create
 or join an organization, then open a project explicitly shared with you. The
 organization chooser, creation/provisioning state, scoped Work/project navigation
 and billing reuse the existing Templ/HTMX shell. There is no forced tenant-domain
@@ -17,33 +17,55 @@ page to resume setup; infrastructure errors do not require another organization
 or host identity.
 
 A new hosted project starts with the workflow `Todo` → `In Progress` →
-`Merging` → `Done`, with `Human Review` beside it. `Todo`, `In Progress` and
-`Merging` dispatch work; `Human Review` neither dispatches nor ends it. By
-default nobody has to review a run: the project's review policy follows its
-repository gate and asks for a person only under a `human_review` gate. A run
+`Merging` → `Done`, with `Blocked` and `Human Review` beside it. `Todo`, `In Progress` and
+`Merging` dispatch work; `Blocked` and `Human Review` neither dispatch nor end it. By
+default `review.human` is false, so nobody has to review a run. A run
 that committed a change publishes a version the policy already accepts, and the
 runner's orchestrator moves it straight to `Merging`, where the runner that
 holds the project lands the head on the base branch with plain git and the Hub
 finishes the issue in `Done`. A run that committed nothing moves to `Done`.
 
-`Human Review` is where a Change Request waits for a person: in a project whose
-repository gate is `human_review` (opt in by setting that gate in the project's
-`detent.yaml` and approving the policy), and when a landing was refused, for
-example because the base branch requires pull requests. A person approves the
+`Human Review` is where a Change Request waits for a person only when the
+project sets `review.human: true`. With the default `false`, an unaccepted
+version or refused landing moves to `Blocked` with its reason. A person approves the
 change in the client, which moves it to `Merging`, or requests changes, which
 sends it back to `In Progress`. `Human Review` is the default
 `auto_promote.source_state`.
 
-Hub migrations 36, 38 and 39 move projects whose workflow is exactly an earlier
+Hub migrations 36, 38, 39 and 41 move projects whose workflow is exactly an earlier
 template onto this one. A customized workflow is left unchanged; it needs a
-lane matching the runner's `auto_promote.source_state` that `In Progress` can
-move to, or a completed run's Change Request has no review lane and its
-completion waits, and it needs a dispatchable `Merging` lane reachable from
-`In Progress` and from the review lane, or accepted changes stay in review for a
-person to land by hand. Hub migration 40 gives every project with an approved
-repository policy the default review policy: projects approved before the Hub
-seeded one could not publish versions, and projects seeded while the default
-required review now follow their repository gate.
+`Blocked` lane reachable from `In Progress` and `Merging` when `review.human` is
+false, or a review lane matching `auto_promote.source_state` when it is true.
+Accepted changes need a dispatchable `Merging` lane reachable from `In Progress`.
+Hub migration 40 gives every project with an approved repository policy a
+default review policy; approving the policy again now seeds `require_review`
+from `review.human`.
+
+The hosted hostname migration is tracked in the [Cloud domain runbook](cloud-domain-migration.md).
+Its provisioning results and pending browser cutover are recorded there.
+
+## Runner access through Luna
+
+In **Add runner > AI assisted**, an own-machine request such as “add a runner
+on my laptop” asks once whether agents should run in the sandbox or with full
+access. Sandbox is the default for a shared machine; `native-trusted` is
+available for a dedicated machine. Sandbox restricts agent access, while full
+access lets agents use the machine's files, credentials and network. Luna
+carries the answer into the enrollment `isolation_tier` field and the
+`detent hub runner register --isolation-tier` command. Obtain enrollment tokens
+through the secure enrollment dialog, never through chat.
+
+Fly Sprites are dedicated VMs. Luna defaults to full access inside each VM and
+lets you select sandbox when configuring the pool. See [Sprite runners](sprite-runners.md).
+
+For an existing runner, Luna reads its selected tier, backend support and
+current problems. `tier_unavailable` means its agent backends do not support
+the selected tier. An organization owner or admin can approve Luna's preview
+to switch to a supported tier without enrolling again. Approval is always
+required for runner access changes, even with ordinary chat confirmation off;
+non-admin members cannot make this change. Projects requiring sandbox remain
+ineligible for a `native-trusted` runner. Luna reads the runner again after the
+change to verify the tier and identify any remaining problem.
 
 ## Organization provisioning and recovery
 
@@ -99,13 +121,73 @@ organization deletion follow the [RFC lifecycle contract](cloud-hub-rfc.md#provi
 
 ## Repository configuration and policy
 
+Before increasing agent concurrency, use the
+[project delivery guide](project-delivery.md) to choose validation boundaries,
+test ownership, host capacity and release requirements. These are project
+choices; Detent's own repository policy is not a template every project must use.
+
 Keep the customer checkout and its `detent.yaml` / `WORKFLOW.md` on the customer
 host. Inspect existing files before using `detent onboarding draft-answers`,
 `explain-answers`, or `build-workflow`. The builder's `--help` describes its local
-output options. Review generated files before applying them. Cloud neither stores
-workflow source nor writes repository files.
+output options. Review generated files before applying them. Cloud does not write
+repository files. A supplied repository definition owns the native workflow;
+Cloud Markdown authoring is the fallback when no repository definition exists.
 
-For the shared-site target, use `client.hub_url: https://hub.detent.build`
+### Workflow definition authority
+
+The configured workflow path and `workflow_ref` select the definition anchor.
+The split layout puts machine configuration in `detent.yaml` beside agent
+instructions in `WORKFLOW.md`; legacy YAML frontmatter in `WORKFLOW.md` is also
+supported. Markdown bullets are instructions, never structured configuration.
+A prose-only `WORKFLOW.md` without `detent.yaml` supplies no structured workflow:
+native runners load the Cloud-authored definition when one exists, otherwise
+report that a definition must be supplied. Malformed, mixed-layout or invalid
+repository definitions fail with parser feedback and never fall back to Cloud
+or the hosted template. Inaccessible files, unavailable Git and invalid refs
+remain instance failures, not evidence that the repository has no definition.
+
+The resolved configuration supplies native states, allowed transitions, terminal
+and dispatchable classification, runner scheduling, and Cloud Board, List and
+lane-picker contents. An enabled plan contributes its configured stop (normally
+`Plan Review`) as a nondispatchable lane. Empty lanes remain available.
+Native defaults permit moves between configured states; explicit
+`server.kanban.allowed_transitions` entries constrain their source states for
+both authorized issue moves and execution progress. Include completion and
+landing transitions when constraining execution states.
+
+The runner includes bounded state and transition metadata in its repository
+policy descriptor and reports unapproved revisions through the existing policy
+observation path. An authorized owner/admin approves the exact descriptor with
+the current expected policy identity. Approval atomically persists the native
+workflow, repository source and revision alongside the policy. Active leases
+retain their approval. States occupied by issues, including archived issues,
+cannot be removed; move those issues through ordinary authorized transitions
+before removing a state. Approval never remaps work items. Conflicting runner
+reports remain separate candidates for explicit approval. An existing runtime
+applies a changed policy through its settled, paused configuration owner, or
+loads the approved definition on restart.
+
+Cloud settings show the approved repository source and revision and direct
+definition edits to the repository. UI, API and MCP definition writes cannot
+override repository authority. Authorized issue moves and other integration
+settings remain available. Older approvals without workflow metadata retain
+their states until an upgraded runner's descriptor is explicitly approved;
+an old descriptor cannot replace an already repository-controlled workflow.
+
+With no supplied repository definition, the Workflow settings editor accepts
+Markdown using the same legacy frontmatter schema: `tracker.kind: hub_native`,
+`tracker.active_states`, `tracker.observed_states`, `tracker.terminal_states`,
+and optional `server.kanban.allowed_transitions`. The body contains agent
+instructions. Cloud persists that Markdown and derives its lanes with the
+existing parser. Runners load it through the existing definition and policy
+approval path; execution changes still require approval. A saved edit makes
+the prior definition digest stale: claims and approvals must match the current
+Markdown revision. Approval history remains intact. Adding a repository
+definition transfers authority through that approval path without losing work
+items. Repository-controlled definitions cannot be replaced by Cloud Markdown
+or independent state arrays.
+
+For the shared-site target, use `client.hub_url: https://cloud.detent.build`
 and the selected immutable organization ID. Configure `client.organization_id` and
 `client.native_projects` mapping in the instance configuration. The project's
 page shows its native ID. Run `detent doctor` against that configuration; resolve
@@ -115,8 +197,9 @@ explicitly user-reported and do not override runtime validation.
 
 Run `detent hub policy inspect --config /path/to/config.yaml --project LOCAL_PROJECT`.
 Paste only the resulting descriptor into the policy approval form. The form
-accepts validated, bounded policy metadata, including source revision and digests,
-never arbitrary workflow fields. An organization owner/admin with project write
+accepts validated, bounded policy metadata, including source revision, digests
+and the resolved native workflow projection, rather than arbitrary runner
+configuration. An organization owner/admin with project write
 access approves it explicitly. Approval retains the existing compare-and-swap
 and active-lease guards. Edit gate, review, auto-promotion, merge and runner
 requirements in the repository, then approve the new descriptor. A running
@@ -138,16 +221,51 @@ project is the only way to give its workers GitHub access.
 
 ## Customer host enrollment
 
-In the organization's runner settings, choose Enroll a runner, give the runner
-a name, pick its projects, and copy the one command the dialog shows. Run it on
-the host:
+In Settings > Providers & runners, choose Add runner > Manual to enroll a
+runner, give it a name and pick its projects. The dialog preselects macOS or
+Linux from your browser; switch it if the target machine uses the other OS.
+Install Detent before creating the one-time token, which expires after 15
+minutes. The existing installer selects the latest release for macOS or Linux
+and detects amd64 or arm64:
 
 ```sh
-detent hub runner register --url https://hub.detent.build/organizations/ORGANIZATION_ID \
+curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh
+```
+
+On macOS, Homebrew is an alternative:
+
+```sh
+brew install digitaldrywood/tap/detent
+```
+
+The dialog shows the Hub's minimum runner version. Check `detent version` on
+an existing installation and, if older, run `detent update --yes --from-release`
+or `brew upgrade digitaldrywood/tap/detent` for Homebrew before registering.
+The registration output also tells older binaries to update.
+
+For a fresh machine, copy the dialog's combined install and register command.
+It adds the install directories to PATH so the new binary is available in the
+same shell:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh && \
+  export PATH="$HOME/.local/bin:/usr/local/bin:$PATH" && \
+  detent hub runner register --url https://cloud.detent.build/organizations/ORGANIZATION_ID \
   --token TOKEN --name "Build host" --service
 ```
 
-The command generates the host's identity locally, redeems the one-time token,
+If Detent is already installed, copy the register command alone:
+
+```sh
+detent hub runner register --url https://cloud.detent.build/organizations/ORGANIZATION_ID \
+  --token TOKEN --name "Build host" --service
+```
+
+AI assisted setup with Luna gives the same installation guidance before
+registration on your own machine. Keep the token out of chat; the dialog masks
+it by default and copies it only into the command you run on the target host.
+
+The register command generates the host's identity locally, redeems the one-time token,
 writes `~/.config/detent-runner/global.yaml` and `identity.json`, and installs
 the `detent.runner` background service. Clone each project's repository into
 the directory it prints (`~/detent-runner/PROJECT` by default) first, or run the
@@ -171,13 +289,88 @@ health and exclusion reasons come from the existing routing evaluator. Tag edits
 preserve the runner's full access scope and use its expected revision. Other
 projects' grants, leases and provider account records are omitted from readiness.
 
+### Runner in a Fly Sprite
+
+Inside a fresh Sprite, run
+[sprite-runner-bootstrap.sh](../scripts/sprite-runner-bootstrap.sh) and paste
+the Hub's enrollment command when it prompts:
+
+```sh
+bash scripts/sprite-runner-bootstrap.sh
+```
+
+The prompt does not echo. Without a terminal, send the command on standard
+input, for example from a private file you delete afterwards. The script splits
+the command without a shell and rejects `$`, backquotes and shell operators. It
+passes the token to `detent hub runner register` through
+`DETENT_RUNNER_ENROLLMENT_TOKEN`, so the token never appears in an argument
+list, the service launcher or the script's output.
+
+The script installs the Go toolchain named in `go.mod` (the adjacent checkout's,
+`--go-mod PATH`, or the pinned tag's), `gh`, the npm builds of Codex and Claude
+Code, and the checksum-verified Detent `v0.117.41` release. `--version vX.Y.Z`
+selects another release; `--from-source /path/to/detent` builds a checkout
+instead and is never the default. Registration uses the documented defaults,
+`~/.config/detent-runner/global.yaml` and workspace root `~/detent-runner`,
+unless the command or `--config` and `--workspace-root` name others.
+
+The host `--service` flag is replaced by a Sprite Service named
+`detent-runner` that runs `detent --headless` in the foreground. The Sprite
+runtime restarts it after a cold wake or crash and resumes it after a warm
+wake, so polling continues whenever the Sprite runs. Whether the runner's
+outbound polling alone keeps a Sprite from pausing is not yet verified; a
+paused runner picks up work only after its next wake.
+
+Re-running is safe. With empty input the script reuses the registered runner
+and restarts the service. With a pasted command, `register` keeps the existing
+identity and `global.yaml`, so no second runner is created. One runner per
+Sprite is supported; do not copy its identity to another Sprite.
+
+The script ends with `sprite-env checkpoints create` and prints the ID; restore
+the same Sprite with `sprite-env checkpoints restore CHECKPOINT_ID`. A failed
+checkpoint fails the script but leaves the enrollment and service in place.
+
+Remaining manual steps, which the script never performs:
+
+- Sign in to the providers the project uses: `claude auth login`, `codex login`
+  (`codex login --device-auth` without a browser), or a Sprites provider
+  connector.
+- For private clones and pushes, run `gh auth login` and `gh auth setup-git`,
+  or set up the project's own git credentials, and set the git author.
+- Clone each project into the directory `register` printed, with its
+  `WORKFLOW.md` and `detent.yaml`, and install its dependencies.
+- Approve the project's observed repository policy in the Hub if it is pending.
+- Re-run the script with empty input, check
+  `sprite-env services get detent-runner` and the Hub's runner health, then
+  route a Todo issue and confirm it pushes a branch.
+- Take a new checkpoint so the baseline includes the sign-ins and checkouts.
+
+### Runner restart and claim recovery
+
+The default claim lease is ten minutes, renewed every thirty seconds. This
+window covers a normal update's drain, binary swap and reconnect. Draining or
+interrupted runners retain in-flight claims until their leases expire, including
+when a policy or heartbeat error interrupts execution. Other runners cannot
+claim that work during the live lease.
+
+A returning runner renews its retained leases with their existing fencing tokens
+and resumes the recorded attempts, local worktrees and provider sessions. If it
+does not return before expiry, any eligible runner can claim the work with a new
+fencing token and recover from the pushed branch and Change evidence. Revocation
+or removal releases the runner's claims immediately. An explicitly configured
+`client.lease_ttl_seconds` continues to determine the lease window.
+
 ## Artifact history and GitHub
 
 Preserve the September 7 choices: local-only history, customer-managed durable
 storage, and explicit opt-in hosted storage through the portable S3 adapter
 (DigitalOcean Spaces initially). No setup default silently uploads artifacts.
-Local history is supported without a bucket or Cloud services. For history with
-execution runners offline, follow [artifact deployment](artifacts-deployment.md):
+Local history keeps artifacts on your own runner without a separate storage
+account or fee; losing that machine loses its artifacts. Customer-managed
+history uses an S3-compatible bucket and artifact gateway that you run and pay
+for. Detent records the binding only and stores neither your artifacts nor your
+storage credentials. For history with execution runners offline, follow
+[artifact deployment](artifacts-deployment.md):
 private S3-compatible bucket, durable catalog, separate TLS gateway, dedicated
 publisher identity, and local storage credentials. Register only the gateway
 origin, service ID and publisher token ID. Never enter the publisher token secret
@@ -185,8 +378,19 @@ or storage credentials in the hosted form. Run `verify-storage`, then test openi
 a retained artifact with execution runners stopped. A registered binding is
 configuration evidence, not a storage-health or offline-availability guarantee.
 
-Native issue creation works with GitHub disabled. If the deployment has GitHub
-transport, attach a repository explicitly before enabling manual imports, summary
+Native issue creation works with GitHub disabled. To connect GitHub:
+
+1. Associate the repository as `owner/name` in Project setup after cloning it on
+   an enrolled runner.
+2. [Install the Detent Cloud GitHub App](https://github.com/apps/detent-cloud/installations/new)
+   on the repository or organization. Choose all repositories or only selected
+   repositories, including this project's repository. The App requests Issues
+   and Pull requests read/write, and Contents, Checks, Commit statuses and
+   Metadata read permissions.
+3. Open Project setup to read whether Detent Cloud is installed on `owner/name`.
+   New GitHub issues enter Triage automatically once the App is installed.
+
+If the deployment has GitHub transport, attach a repository before manual imports, summary
 projection or repository/PR integration. Each choice is separate; saving setup
 progress does not activate an integration. Existing profile, repository binding,
 idle-work and revision checks still apply. Import execution and summary publication
@@ -227,12 +431,12 @@ configured portable artifact service rather than overloading local/customer.
 
 This is a test specification for #2341/#2342/#2343 and the expanded #2199 evidence,
 not a claim that current reserved-tenant fixtures pass it. Use synthetic providers,
-ephemeral services and one test hostname representing `hub.detent.build`.
+ephemeral services and one test hostname representing `cloud.detent.build`.
 
 Alice and Bob are unrelated verified identities. Alice creates A, Bob creates B,
 and Casey receives separate invitations to both. A has project PA and B has PB.
 Each tenant owns a separate database and process. Every application URL below is
-on **https://hub.detent.build**; WorkOS/Stripe hosted screens may temporarily leave
+on **https://cloud.detent.build**; WorkOS/Stripe hosted screens may temporarily leave
 the site only for their authenticated provider flow and return to that same host.
 
 | Step | Action and expected evidence |

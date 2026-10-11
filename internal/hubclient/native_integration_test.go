@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -32,9 +32,13 @@ func (t nativeOnlyTransport) RoundTrip(request *http.Request) (*http.Response, e
 }
 
 func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	const admin = "native-integration-admin"
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(admin)})
+	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(admin)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +99,7 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := strings.Repeat("Complete worker context.\n", 60)
+	body := strings.Repeat("Complete worker context.\n", 60) + issueContractTestSections
 	issue, err := conn.CreateIssue(t.Context(), connector.IssueDraft{Title: "Native work", Body: body, Labels: []string{"native"}})
 	if err != nil {
 		t.Fatal(err)
@@ -154,6 +158,7 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 	if err := conn.UpdateIssueState(t.Context(), blocker.ID, "Done"); err != nil {
 		t.Fatal(err)
 	}
+	confirmIssueContract(t, adminNative, issue.ID)
 	scheduler, err := NewScheduler(workerClient, SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"local": project.ID},
 		Machine: Machine{ID: "machine-native", Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
 	if err != nil {
@@ -191,8 +196,8 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 	if err := scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.CreateComment(t.Context(), issue.ID, "stale worker comment"); err == nil {
-		t.Fatal("released worker mutated native discussion")
+	if err := conn.CreateComment(t.Context(), issue.ID, "stale worker comment"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("released worker mutation = %v, want permanent authority loss", err)
 	}
 	events, err := conn.FetchIssueEvents(t.Context(), issue)
 	if err != nil || len(events) < 30 {

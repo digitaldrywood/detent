@@ -83,6 +83,8 @@ type WorkflowLabelDesired struct {
 type WorkpadDesired struct {
 	Summary     bool   `json:"summary,omitempty"`
 	CloseSource bool   `json:"close_source,omitempty"`
+	StateReason string `json:"state_reason,omitempty"`
+	IssueNumber int    `json:"issue_number,omitempty"`
 	Phase       string `json:"phase"`
 	Body        string `json:"body"`
 	Marker      string `json:"marker"`
@@ -418,7 +420,7 @@ func (s *Service) commitOutbox(ctx context.Context, record outboxRecord, apply f
 		if !existing.matches(record) {
 			return OutboxItem{}, ErrIdempotencyConflict
 		}
-		if err := tx.Commit(); err != nil {
+		if err := s.database.commit(ctx, tx); err != nil {
 			return OutboxItem{}, fmt.Errorf("commit idempotent hub mutation lookup: %w", err)
 		}
 		return existing, nil
@@ -455,7 +457,7 @@ func (s *Service) commitOutbox(ctx context.Context, record outboxRecord, apply f
 	if err := apply(tx, now); err != nil {
 		return OutboxItem{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.database.commit(ctx, tx); err != nil {
 		return OutboxItem{}, fmt.Errorf("commit hub state and outbox transaction: %w", err)
 	}
 
@@ -581,12 +583,12 @@ func (s *Service) claimOutbox(ctx context.Context) (result OutboxItem, found boo
 	var createdAt string
 	err = tx.QueryRowContext(ctx, `
 		SELECT o.id, o.idempotency_key, o.repository_id, r.github_owner, r.github_name,
-		       COALESCE(o.issue_id, 0), COALESCE(i.github_number, 0), o.mutation_kind,
+		       COALESCE(o.issue_id, 0), COALESCE(i.github_number, json_extract(o.desired_json, '$.issue_number'), 0), o.mutation_kind,
 		       COALESCE(o.target_node_id, ''), o.desired_json, o.status, o.attempts, o.created_at, p.profile
 		FROM github_outbox o
 		JOIN repositories r ON r.id = o.repository_id
 		LEFT JOIN issues i ON i.id = o.issue_id
-		JOIN projects p ON p.repository_id = r.id
+		JOIN projects p ON p.id = i.project_id
 		WHERE (
 			o.status IN (?, ?)
 			AND (o.next_retry_at IS NULL OR o.next_retry_at <= ?)
@@ -603,7 +605,7 @@ func (s *Service) claimOutbox(ctx context.Context) (result OutboxItem, found boo
 		&result.Status, &result.Attempts, &createdAt, &result.Profile,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
-		if err := tx.Commit(); err != nil {
+		if err := s.database.commit(ctx, tx); err != nil {
 			return OutboxItem{}, false, fmt.Errorf("commit empty github outbox claim: %w", err)
 		}
 		return OutboxItem{}, false, nil
@@ -634,7 +636,7 @@ func (s *Service) claimOutbox(ctx context.Context) (result OutboxItem, found boo
 	if err != nil || rows != 1 {
 		return OutboxItem{}, false, fmt.Errorf("claim github outbox mutation rows = %d: %w", rows, err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.database.commit(ctx, tx); err != nil {
 		return OutboxItem{}, false, fmt.Errorf("commit github outbox claim: %w", err)
 	}
 	return result, true, nil
@@ -739,7 +741,7 @@ func (s *Service) OutboxHealth(ctx context.Context) (OutboxHealth, error) {
 	}
 
 	var oldest sql.NullString
-	if err := s.database.db.QueryRowContext(ctx, `
+	if err := s.database.reader.QueryRowContext(ctx, `
 		SELECT MIN(created_at) FROM github_outbox WHERE status IN (?, ?, ?)`,
 		outboxPending, outboxRetrying, outboxProcessing,
 	).Scan(&oldest); err != nil {
@@ -753,7 +755,7 @@ func (s *Service) OutboxHealth(ctx context.Context) (OutboxHealth, error) {
 		health.OldestPendingAt = &parsed
 	}
 
-	actions, err := s.database.db.QueryContext(ctx, `
+	actions, err := s.database.reader.QueryContext(ctx, `
 		SELECT id, idempotency_key, mutation_kind, COALESCE(target_node_id, ''), operator_action
 		FROM github_outbox
 		WHERE status = ? AND operator_action IS NOT NULL
@@ -777,7 +779,7 @@ func (s *Service) OutboxHealth(ctx context.Context) (OutboxHealth, error) {
 }
 
 func (s *Service) readOutboxStatusCounts(ctx context.Context, health *OutboxHealth) (resultErr error) {
-	rows, err := s.database.db.QueryContext(ctx, `
+	rows, err := s.database.reader.QueryContext(ctx, `
 		SELECT status, COUNT(*)
 		FROM github_outbox
 		WHERE status IN (?, ?, ?, ?)
@@ -858,7 +860,17 @@ func (w *outboxWorker) run(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		for {
-			processed, err := w.service.ProcessOutbox(ctx)
+			processed, err := w.service.processSlackDelivery(ctx)
+			if err != nil && ctx.Err() == nil {
+				w.service.config.Logger.WarnContext(ctx, "Slack delivery storage failed", "error", err)
+			}
+			githubProcessed := false
+			if w.service.config.OutboxBackend != nil {
+				githubProcessed, err = w.service.ProcessOutbox(ctx)
+			} else {
+				err = nil
+			}
+			processed = processed || githubProcessed
 			if err != nil && !errors.Is(err, context.Canceled) {
 				w.service.config.Logger.WarnContext(ctx, "github outbox delivery failed", "error", err)
 			}

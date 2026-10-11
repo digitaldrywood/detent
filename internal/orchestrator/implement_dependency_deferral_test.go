@@ -165,6 +165,10 @@ func TestCompletedDependencyWaitPreservesUnrelatedParks(t *testing.T) {
 }
 
 func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name          string
@@ -188,9 +192,11 @@ func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
 				issue = implementProgressIssue("published-head", "Test")
 			}
 			issue.State = tt.lane
+			issue.Priority = new(1)
 			issue.AssignedToWorker = true
 			issue.BranchName = "saved-work"
 			blocker := dispatchTestIssue("blocker", "Todo")
+			blocker.Priority = new(2)
 			blocker.Identifier = "digitaldrywood/detent#2282"
 			issue.Description = "Depends on: " + blocker.Identifier
 			issue.Comments = []connector.IssueComment{{Body: implementProgressWorkpadComment(blocker.Identifier, "")}}
@@ -198,7 +204,7 @@ func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
 			unrelated := dispatchTestIssue("unrelated", "Todo")
 			unrelated.Identifier = "digitaldrywood/detent#1"
 			tracker := memory.New(memory.Config{Stateful: true, Issues: []connector.Issue{issue, blocker, unrelated}})
-			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent", Weight: 1}, MaxConcurrentAgents: 1, PrioritizeUnblockers: true, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}, DispatchPriorityByState: []string{"Merging", "Rework", "In Progress", "Todo"}})
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, MaxConcurrentAgents: 1, PrioritizeUnblockers: true, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}, DispatchPriorityByState: []string{"Merging", "Rework", "In Progress", "Todo"}})
 			path := filepath.Join(t.TempDir(), "detent.db")
 			backend, err := store.Open(ctx, store.Config{Path: path})
 			if err != nil {
@@ -214,7 +220,7 @@ func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
+			globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 			slot, acquired, err := globalGate.TryAcquire(ctx, cfg.Project, scheduler.SlotRequest{State: issue.State}, now)
 			if err != nil || !acquired {
 				t.Fatalf("initial slot: %v, %v", acquired, err)
@@ -450,6 +456,10 @@ func TestHistoricalDependencyDeferralUsesCurrentProseRefs(t *testing.T) {
 }
 
 func TestDependencyDeferralEvidenceAndReleaseAcrossRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "detent.db")

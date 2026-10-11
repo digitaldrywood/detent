@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -58,6 +59,15 @@ func ApplyRunningUpdate(ctx context.Context, cmd *cobra.Command, apply detentupd
 
 func (c *DashboardReadClient) applyRunningUpdate(ctx context.Context, apply detentupdate.ApplyOptions) (detentupdate.Status, error) {
 	state, err := c.updateState(ctx)
+	var problem *DashboardResponseError
+	if errors.As(err, &problem) && problem.StatusCode == http.StatusUnauthorized && (problem.Code == "unauthorized" || problem.Code == "invalid_token") && c.credential != c.configuredCredential {
+		host := c.baseURL.Hostname()
+		if host == "localhost" || net.ParseIP(host).IsLoopback() {
+			local := *c
+			local.credential = c.configuredCredential
+			return local.applyRunningUpdate(ctx, apply)
+		}
+	}
 	if err != nil {
 		return detentupdate.Status{}, fmt.Errorf("check running Detent update coordination: %w", err)
 	}

@@ -9,9 +9,10 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 
 	"golang.org/x/crypto/blake2b"
 )
@@ -194,7 +196,7 @@ func TestDetectInstallSource(t *testing.T) {
 			executable:     goInstalled,
 			env:            map[string]string{"GOBIN": goBin},
 			want:           InstallSourceGoInstall,
-			wantCommand:    "go install github.com/digitaldrywood/detent/cmd/detent@latest",
+			wantCommand:    "detent update --from-release",
 		},
 		{
 			name:           "development build",
@@ -358,6 +360,10 @@ func TestNewGitHubClientDefaultsTransportBounds(t *testing.T) {
 }
 
 func TestGitHubClientListReleasesUsesBearerToken(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	var gotAuth string
@@ -386,6 +392,10 @@ func TestGitHubClientListReleasesUsesBearerToken(t *testing.T) {
 }
 
 func TestGitHubClientListReleasesRetriesWithoutTokenOnAuthFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	var authHeaders []string
@@ -424,6 +434,10 @@ func TestGitHubClientListReleasesRetriesWithoutTokenOnAuthFailure(t *testing.T) 
 }
 
 func TestGitHubClientDownloadRejectsOversize(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -513,144 +527,388 @@ func (*contextBlockingBody) Close() error {
 	return nil
 }
 
-func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testing.T) {
-	tmp := t.TempDir()
-	binary := filepath.Join(tmp, "bin", "detent")
-	lockPath := filepath.Join(tmp, "state", "install.lock")
-	recoveryStatePath := filepath.Join(tmp, "state", startupRecoveryStateName)
-	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
-		t.Fatalf("MkdirAll(binary dir) error = %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
-		t.Fatalf("MkdirAll(lock dir) error = %v", err)
-	}
-	if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
-		t.Fatalf("WriteFile(binary) error = %v", err)
-	}
-	if err := os.WriteFile(lockPath, []byte("binary="+binary+"\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile(lock) error = %v", err)
-	}
+func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		current         string
+		version         string
+		follow          bool
+		brew            bool
+		explicit        bool
+		fromRelease     bool
+		invalidSelector string
+		missingReceipt  bool
+		failureStage    string
+		failureReason   string
+		urgent          bool
+	}{
+		{name: "selected release", current: "1.2.3"},
+		{name: "signed operator prerelease", current: "1.2.3", version: "1.2.4-op.abcdef123456", follow: true},
+		{name: "stable supersedes signed operator prerelease", current: "1.2.4-op.abcdef123456", follow: true},
+		{name: "target failure restores drain", current: "1.2.3", failureStage: "target", failureReason: "Update target resolution failed"},
+		{name: "urgent download failure restores drain", current: "1.2.3", urgent: true, failureStage: "download", failureReason: "Update download failed"},
+		{name: "signature failure restores drain", current: "1.2.3", failureStage: "signature", failureReason: "Update signature verification failed"},
+		{name: "provenance failure restores drain", current: "1.2.3", failureStage: "provenance", failureReason: "Update provenance verification failed"},
+		{name: "checksum failure restores drain", current: "1.2.3", failureStage: "checksum", failureReason: "Update checksum verification failed"},
+		{name: "install failure restores drain", current: "1.2.3", failureStage: "install", failureReason: "Update installation failed"},
+		{name: "urgent restart failure restores drain", current: "1.2.3", urgent: true, failureStage: "restart", failureReason: "Update restart request was declined"},
+		{name: "explicit release refuses wrong lock selector", current: "1.2.3", explicit: true, invalidSelector: "DETENT_INSTALL_LOCK"},
+		{name: "explicit release refuses wrong state selector", current: "1.2.3", explicit: true, invalidSelector: "DETENT_STATE_DIR"},
+		{name: "explicit release", current: "1.2.3", explicit: true},
+		{name: "explicit from-release", current: "1.2.3", explicit: true, fromRelease: true},
+		{name: "follow Hub below latest", current: "1.2.3", follow: true},
+		{name: "runner ahead of Hub", current: "1.2.5", follow: true},
+		{name: "installed development build", current: "operator-landed-abcdef123456", follow: true},
+		{name: "Homebrew enrolled runner", current: "1.2.3", follow: true, brew: true},
+		{name: "Homebrew refuses wrong lock selector", current: "1.2.3", follow: true, brew: true, invalidSelector: "DETENT_INSTALL_LOCK"},
+		{name: "Homebrew refuses missing lock selector", current: "1.2.3", follow: true, brew: true, invalidSelector: "DETENT_INSTALL_LOCK", missingReceipt: true},
+		{name: "Homebrew refuses wrong state selector", current: "1.2.3", follow: true, brew: true, invalidSelector: "DETENT_STATE_DIR"},
+		{name: "Homebrew refuses missing state selector", current: "1.2.3", follow: true, brew: true, invalidSelector: "DETENT_STATE_DIR", missingReceipt: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			version := test.version
+			if version == "" {
+				version = "1.2.4"
+			}
+			tmp := t.TempDir()
+			binary := filepath.Join(tmp, "bin", "detent")
+			lockPath := filepath.Join(tmp, "state", "install.lock")
+			recoveryStatePath := filepath.Join(tmp, "state", startupRecoveryStateName)
+			if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
+				t.Fatalf("MkdirAll(binary dir) error = %v", err)
+			}
+			if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+				t.Fatalf("MkdirAll(lock dir) error = %v", err)
+			}
+			if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
+				t.Fatalf("WriteFile(binary) error = %v", err)
+			}
+			if err := os.WriteFile(lockPath, []byte("binary="+binary+"\n"), 0o600); err != nil {
+				t.Fatalf("WriteFile(lock) error = %v", err)
+			}
 
-	archiveName := "detent_1.2.4_linux_amd64.tar.gz"
-	checksumName := "detent_1.2.4_checksums.txt"
-	signatureName := checksumName + ".minisig"
-	archive := detentUpdateArchive(t, "updated")
-	provenanceBytes := testReleaseProvenance(t, "v1.2.4", testUpdatedCommit)
-	archiveSum := sha256.Sum256(archive)
-	provenanceSum := sha256.Sum256(provenanceBytes)
-	checksums := fmt.Sprintf("%x  %s\n%x  %s\n", archiveSum, archiveName, provenanceSum, provenanceAssetName)
-	publicKey, privateKey, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatalf("GenerateKey() error = %v", err)
-	}
-	keyID := []byte("12345678")
-	signature := testMinisignSignature(t, privateKey, keyID, []byte(checksums), "detent checksums v1.2.4")
+			legacyHome := filepath.Join(tmp, "home")
+			legacyLock := filepath.Join(legacyHome, ".detent", "install.lock")
+			legacyReceipt := "binary=/other/install/detent\nversion=1.0.0\n"
+			if err := os.MkdirAll(filepath.Dir(legacyLock), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(legacyLock, []byte(legacyReceipt), 0o600); err != nil {
+				t.Fatal(err)
+			}
 
-	previous := defaultChecksumMinisignPublicKey
-	defaultChecksumMinisignPublicKey = testMinisignPublicKey(publicKey, keyID)
-	t.Cleanup(func() {
-		defaultChecksumMinisignPublicKey = previous
-	})
+			installEnv := map[string]string{"DETENT_INSTALL_LOCK": lockPath}
+			if test.invalidSelector != "" {
+				if err := os.WriteFile(lockPath, []byte(legacyReceipt), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				legacyReceipt = "binary=" + binary + "\n"
+				if err := os.WriteFile(legacyLock, []byte(legacyReceipt), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if test.invalidSelector == "DETENT_STATE_DIR" {
+					installEnv = map[string]string{"DETENT_STATE_DIR": filepath.Dir(lockPath)}
+				}
+			}
 
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/releases":
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `[{"tag_name":"v1.2.4","draft":false,"prerelease":false,"assets":[{"name":"%s","browser_download_url":"%s/archive"},{"name":"%s","browser_download_url":"%s/checksums"},{"name":"%s","browser_download_url":"%s/checksums.minisig"},{"name":"%s","browser_download_url":"%s/provenance"}]}]`, archiveName, server.URL, checksumName, server.URL, signatureName, server.URL, provenanceAssetName, server.URL)
-		case "/archive":
-			_, _ = w.Write(archive)
-		case "/checksums":
-			fmt.Fprint(w, checksums)
-		case "/checksums.minisig":
-			_, _ = w.Write(signature)
-		case "/provenance":
-			_, _ = w.Write(provenanceBytes)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(server.Close)
+			if test.missingReceipt {
+				if err := os.Remove(lockPath); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	service := NewService(Config{
-		CurrentVersion: "1.2.3",
-		CurrentCommit:  testPreviousCommit,
-		ExecutablePath: binary,
-		GOOS:           "linux",
-		GOARCH:         "amd64",
-		Client: NewGitHubClient(GitHubClientConfig{
-			APIBase:    server.URL,
-			HTTPClient: server.Client(),
-		}),
-		Env: map[string]string{"DETENT_INSTALL_LOCK": lockPath},
-		BinaryVerifier: func(context.Context, string) (string, error) {
-			return "version: v1.2.4\ncommit: " + testUpdatedCommit + "\n", nil
-		},
-	})
-
-	var preflightPath string
-	status, err := service.Apply(context.Background(), ApplyOptions{
-		AssumeYes:         true,
-		RecoveryStatePath: recoveryStatePath,
-		Preflight: func(_ context.Context, path string) error {
-			preflightPath = path
-			raw, err := os.ReadFile(path)
+			archiveName := "detent_" + version + "_linux_amd64.tar.gz"
+			checksumName := "detent_" + version + "_checksums.txt"
+			signatureName := checksumName + ".minisig"
+			archive := detentUpdateArchive(t, "updated")
+			provenanceBytes := testReleaseProvenance(t, "v"+version, testUpdatedCommit)
+			archiveSum := sha256.Sum256(archive)
+			provenanceSum := sha256.Sum256(provenanceBytes)
+			checksums := fmt.Sprintf("%x  %s\n%x  %s\n", archiveSum, archiveName, provenanceSum, provenanceAssetName)
+			publicKey, privateKey, err := ed25519.GenerateKey(nil)
 			if err != nil {
-				return err
+				t.Fatalf("GenerateKey() error = %v", err)
+			}
+			keyID := []byte("12345678")
+			signature := testMinisignSignature(t, privateKey, keyID, []byte(checksums), "detent checksums v"+version)
+
+			previous := defaultChecksumMinisignPublicKey
+			defaultChecksumMinisignPublicKey = testMinisignPublicKey(publicKey, keyID)
+			t.Cleanup(func() {
+				defaultChecksumMinisignPublicKey = previous
+			})
+
+			const releaseURL = "https://releases.example.test"
+			release := Release{TagName: "v" + version, Prerelease: strings.Contains(version, "-"), Assets: []Asset{
+				{Name: archiveName, BrowserDownloadURL: releaseURL + "/archive"},
+				{Name: checksumName, BrowserDownloadURL: releaseURL + "/checksums"},
+				{Name: signatureName, BrowserDownloadURL: releaseURL + "/checksums.minisig"},
+				{Name: provenanceAssetName, BrowserDownloadURL: releaseURL + "/provenance"},
+			}}
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/releases":
+					releases := []Release{release}
+					if test.follow {
+						releases = append(releases, Release{TagName: "v9.0.0"})
+					}
+					if err := json.NewEncoder(w).Encode(releases); err != nil {
+						t.Fatal(err)
+					}
+				case "/releases/tags/v" + version:
+					if err := json.NewEncoder(w).Encode(release); err != nil {
+						t.Fatal(err)
+					}
+				case "/archive":
+					_, _ = w.Write(archive)
+				case "/checksums":
+					fmt.Fprint(w, checksums)
+				case "/checksums.minisig":
+					_, _ = w.Write(signature)
+				case "/provenance":
+					_, _ = w.Write(provenanceBytes)
+				default:
+					http.NotFound(w, r)
+				}
+			})
+			httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, request)
+				return recorder.Result(), nil
+			})}
+
+			service := NewService(Config{
+				CurrentVersion: test.current,
+				HomeDir:        legacyHome,
+				CurrentCommit:  testPreviousCommit,
+				ExecutablePath: binary,
+				GOOS:           "linux",
+				GOARCH:         "amd64",
+				Client: NewGitHubClient(GitHubClientConfig{
+					APIBase:    releaseURL,
+					HTTPClient: httpClient,
+				}),
+				Env: installEnv,
+				BinaryVerifier: func(context.Context, string) (string, error) {
+					return "version: v" + version + "\ncommit: " + testUpdatedCommit + "\n", nil
+				},
+			})
+
+			if !test.follow {
+				if _, err := service.Check(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.brew {
+				service.cfg.EvalSymlinks = func(string) (string, error) { return "/opt/homebrew/Cellar/detent/1.2.3/bin/detent", nil }
+			}
+			if !test.follow && !test.explicit {
+				stale, staleErr := service.Apply(t.Context(), ApplyOptions{AssumeYes: true, ExpectedVersion: "1.2.5"})
+				if !errors.Is(staleErr, ErrRefused) || stale.Action != ActionRefused {
+					t.Fatalf("changed selected release = %+v, %v", stale, staleErr)
+				}
+			}
+			var preflightPath string
+			applyOptions := ApplyOptions{
+				AssumeYes:         true,
+				FollowHub:         test.follow,
+				FromRelease:       test.follow,
+				ExpectedVersion:   version,
+				RecoveryStatePath: recoveryStatePath,
+				Preflight: func(_ context.Context, path string) error {
+					preflightPath = path
+					raw, err := os.ReadFile(path)
+					if err != nil {
+						return err
+					}
+					if strings.TrimSpace(string(raw)) != "updated" {
+						return fmt.Errorf("candidate content = %q", raw)
+					}
+					return nil
+				},
+			}
+			if test.failureStage != "" {
+				now := time.Now().UTC()
+				running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: testPreviousCommit, Source: "release", SHA256: strings.Repeat("a", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
+				draining, drains := false, 0
+				config := SchedulerConfig{CheckInterval: time.Hour, Updater: service, RunningBuild: running, StatePath: filepath.Join(tmp, "scheduler.json"), ApplyOptions: applyOptions, Now: func() time.Time { return now },
+					ReserveDrain: func(context.Context) (func(), error) {
+						drains++
+						draining = true
+						return func() { draining = false }, nil
+					},
+					RequestRestart: func(string) bool { return false },
+				}
+				owner, err := NewScheduler(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				initial := owner.EnrolledUpdate(t.Context(), running, nil)
+				request := runnerauth.UpdateRequest{RequestedAt: now, ID: "failed-update", Service: "detent", Version: version, Release: true, ExpectedBuildRevision: initial.Revision, Urgent: test.urgent}
+				if test.urgent {
+					request.ExpectedBuildRevision = ""
+				}
+				switch test.failureStage {
+				case "target":
+					httpClient.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, errors.New("release unavailable") })
+				case "download":
+					httpClient.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+						if r.URL.Path == "/checksums" {
+							return nil, errors.New("private/token=secret")
+						}
+						recorder := httptest.NewRecorder()
+						handler.ServeHTTP(recorder, r)
+						return recorder.Result(), nil
+					})
+				case "signature":
+					service.cfg.ChecksumSignatureVerifier = func(context.Context, []byte, []byte) error { return errors.New("private/token=secret") }
+				case "provenance":
+					provenanceBytes = []byte("invalid provenance")
+					provenanceSum = sha256.Sum256(provenanceBytes)
+					checksums = fmt.Sprintf("%x  %s\n%x  %s\n", archiveSum, archiveName, provenanceSum, provenanceAssetName)
+					signature = testMinisignSignature(t, privateKey, keyID, []byte(checksums), "detent checksums v"+version)
+				case "checksum":
+					archive = []byte("corrupt archive")
+				case "install":
+					config.ApplyOptions.Preflight = func(context.Context, string) error { return errors.New("private/token=secret") }
+					owner.cfg.ApplyOptions = config.ApplyOptions
+				}
+				observed := owner.EnrolledUpdate(t.Context(), running, &request)
+				if draining || drains != 1 || observed == nil || observed.Validate() != nil || observed.Receipt.FailureReason != test.failureReason {
+					t.Fatalf("failed update: draining=%t drains=%d observation=%+v receipt=%+v", draining, drains, observed, observed.Receipt)
+				}
+				if test.failureStage != "restart" {
+					raw, err := os.ReadFile(binary)
+					if err != nil || string(raw) != "old" {
+						t.Fatalf("failure changed binary: %q %v", raw, err)
+					}
+				}
+				if test.failureStage == "restart" {
+					config.LastAppliedVersion = "1.2.4"
+				}
+				resumed, err := NewScheduler(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				observed = resumed.EnrolledUpdate(t.Context(), running, &request)
+				if observed.Receipt.FailureReason != test.failureReason || drains != 1 {
+					t.Fatalf("restart lost failure or retried early: %+v drains=%d", observed.Receipt, drains)
+				}
+				now = now.Add(time.Hour - time.Nanosecond)
+				resumed.EnrolledUpdate(t.Context(), running, &request)
+				if drains != 1 {
+					t.Fatal("retried before normal update schedule")
+				}
+				now = now.Add(time.Nanosecond)
+				resumed.EnrolledUpdate(t.Context(), running, &request)
+				if draining || drains != 2 {
+					t.Fatalf("scheduled retry: draining=%t drains=%d", draining, drains)
+				}
+				return
+			}
+			var status Status
+			if test.explicit {
+				drains, restarts, releases := 0, 0, 0
+				scheduler, schedulerErr := NewScheduler(SchedulerConfig{
+					CheckInterval: time.Hour, Updater: service, ApplyOptions: applyOptions,
+					ReserveDrain: func(context.Context) (func(), error) {
+						drains++
+						return func() { releases++ }, nil
+					},
+					RequestRestart: func(path string) bool {
+						if path != binary || releases != 0 {
+							t.Errorf("restart path = %q, released drains = %d", path, releases)
+						}
+						restarts++
+						return true
+					},
+				})
+				if schedulerErr != nil {
+					t.Fatal(schedulerErr)
+				}
+				status, err = scheduler.ApplyRelease(t.Context(), test.fromRelease)
+				if test.invalidSelector != "" && (drains != 1 || restarts != 0 || releases != 1) {
+					t.Fatalf("refused update drains/restarts/releases = %d/%d/%d", drains, restarts, releases)
+				}
+				if err == nil && (drains != 1 || restarts != 1 || releases != 0) {
+					t.Fatalf("drains = %d, restarts = %d, releases = %d", drains, restarts, releases)
+				}
+			} else {
+				status, err = service.Apply(t.Context(), applyOptions)
+			}
+			if test.invalidSelector != "" {
+				selectedRaw, selectedErr := os.ReadFile(lockPath)
+				defaultRaw, defaultErr := os.ReadFile(legacyLock)
+				binaryRaw, binaryErr := os.ReadFile(binary)
+				if !errors.Is(err, ErrRefused) || status.Action != ActionRefused || preflightPath != "" || defaultErr != nil || binaryErr != nil || string(defaultRaw) != legacyReceipt || string(binaryRaw) != "old" {
+					t.Fatalf("wrong selector update = %+v, error = %v, preflight = %q, default receipt = %q, binary = %q", status, err, preflightPath, defaultRaw, binaryRaw)
+				}
+				if test.missingReceipt {
+					if !os.IsNotExist(selectedErr) {
+						t.Fatalf("missing receipt was created: %q, error = %v", selectedRaw, selectedErr)
+					}
+				} else if selectedErr != nil || string(selectedRaw) != "binary=/other/install/detent\nversion=1.0.0\n" {
+					t.Fatalf("other installation receipt changed: %q, error = %v", selectedRaw, selectedErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Apply() error = %v", err)
+			}
+			if status.Action != ActionUpdated {
+				t.Fatalf("Action = %q, want %q", status.Action, ActionUpdated)
+			}
+			if !status.UpdateAvailable {
+				t.Fatal("UpdateAvailable = false, want true")
+			}
+			expectedBinarySum := sha256.Sum256([]byte("updated"))
+			if status.BinarySHA256 != hex.EncodeToString(expectedBinarySum[:]) || !status.VerifiedRelease || status.LatestCommit != testUpdatedCommit {
+				t.Fatalf("applied provenance = %+v", status)
+			}
+			raw, err := os.ReadFile(binary)
+			if err != nil {
+				t.Fatalf("ReadFile(binary) error = %v", err)
 			}
 			if strings.TrimSpace(string(raw)) != "updated" {
-				return fmt.Errorf("candidate content = %q", raw)
+				t.Fatalf("updated binary = %q, want updated", raw)
 			}
-			return nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-	if status.Action != ActionUpdated {
-		t.Fatalf("Action = %q, want %q", status.Action, ActionUpdated)
-	}
-	if !status.UpdateAvailable {
-		t.Fatal("UpdateAvailable = false, want true")
-	}
-	raw, err := os.ReadFile(binary)
-	if err != nil {
-		t.Fatalf("ReadFile(binary) error = %v", err)
-	}
-	if strings.TrimSpace(string(raw)) != "updated" {
-		t.Fatalf("updated binary = %q, want updated", raw)
-	}
-	if preflightPath == "" || preflightPath == binary {
-		t.Fatalf("preflight path = %q, want staged candidate", preflightPath)
-	}
-	previousPath := PreviousBinaryPath(binary)
-	previousRaw, err := os.ReadFile(previousPath)
-	if err != nil {
-		t.Fatalf("ReadFile(previous) error = %v", err)
-	}
-	if string(previousRaw) != "old" {
-		t.Fatalf("previous binary = %q, want old", previousRaw)
-	}
-	recoveryState := readTestStartupRecoveryState(t, recoveryStatePath)
-	if recoveryState.PendingUpdate == nil {
-		t.Fatal("PendingUpdate = nil, want rollback metadata")
-	}
-	if got := recoveryState.PendingUpdate; got.FromVersion != "1.2.3" || got.FromCommit != testPreviousCommit || got.ToVersion != "1.2.4" || got.ToCommit != testUpdatedCommit || got.PreviousBinaryPath != previousPath {
-		t.Fatalf("PendingUpdate = %#v, want 1.2.3 to 1.2.4 with previous binary", got)
-	}
-	if got := recoveryState.PendingUpdate; got.InstallLockPath != lockPath || !got.PreviousInstallLockFound || got.PreviousInstallLock != "binary="+binary+"\n" {
-		t.Fatalf("PendingUpdate install lock = %#v, want preserved pre-update metadata", got)
-	}
-	if got := InstalledReleaseVersion(DetectionOptions{
-		ExecutablePath: binary,
-		GOOS:           "linux",
-		Env:            map[string]string{"DETENT_INSTALL_LOCK": lockPath},
-	}); got != "1.2.4" {
-		t.Fatalf("InstalledReleaseVersion() = %q, want 1.2.4", got)
-	}
-	metadata, ok := readInstallLock(lockPath)
-	if !ok || metadata.commit != testUpdatedCommit {
-		t.Fatalf("install lock = %#v, found = %t, want updated full commit", metadata, ok)
+			if preflightPath == "" || preflightPath == binary {
+				t.Fatalf("preflight path = %q, want staged candidate", preflightPath)
+			}
+			previousPath := PreviousBinaryPath(binary)
+			previousRaw, err := os.ReadFile(previousPath)
+			if err != nil {
+				t.Fatalf("ReadFile(previous) error = %v", err)
+			}
+			if string(previousRaw) != "old" {
+				t.Fatalf("previous binary = %q, want old", previousRaw)
+			}
+			recoveryState := readTestStartupRecoveryState(t, recoveryStatePath)
+			if recoveryState.PendingUpdate == nil {
+				t.Fatal("PendingUpdate = nil, want rollback metadata")
+			}
+			if got := recoveryState.PendingUpdate; got.FromVersion != test.current || got.FromCommit != testPreviousCommit || got.ToVersion != version || got.ToCommit != testUpdatedCommit || got.PreviousBinaryPath != previousPath {
+				t.Fatalf("PendingUpdate = %#v, want 1.2.3 to 1.2.4 with previous binary", got)
+			}
+			if got := recoveryState.PendingUpdate; got.InstallLockPath != lockPath || !got.PreviousInstallLockFound || got.PreviousInstallLock != "binary="+binary+"\n" {
+				t.Fatalf("PendingUpdate install lock = %#v, want preserved pre-update metadata", got)
+			}
+			if got := InstalledReleaseVersion(DetectionOptions{
+				ExecutablePath: binary,
+				GOOS:           "linux",
+				Env:            map[string]string{"DETENT_INSTALL_LOCK": lockPath},
+			}); got != version {
+				t.Fatalf("InstalledReleaseVersion() = %q, want 1.2.4", got)
+			}
+			legacyRaw, legacyErr := os.ReadFile(legacyLock)
+			if legacyErr != nil || string(legacyRaw) != legacyReceipt {
+				t.Fatalf("other installation receipt = %q, error = %v", legacyRaw, legacyErr)
+			}
+			metadata, ok := readInstallLock(lockPath)
+			if !ok || metadata.commit != testUpdatedCommit {
+				t.Fatalf("install lock = %#v, found = %t, want updated full commit", metadata, ok)
+			}
+		})
 	}
 }
 
@@ -951,163 +1209,47 @@ func TestServiceCheckReportsCriticalReleaseMarker(t *testing.T) {
 	}
 }
 
-func TestServiceGoInstallYesRunsCommandAndReportsVersion(t *testing.T) {
+func TestServiceGoInstallUsesPreparedSourceGuidance(t *testing.T) {
 	t.Parallel()
 
-	tmp := t.TempDir()
-	goBin := filepath.Join(tmp, "gobin")
-	binary := filepath.Join(goBin, "detent")
-	if err := os.MkdirAll(goBin, 0o755); err != nil {
-		t.Fatalf("MkdirAll(goBin) error = %v", err)
-	}
-	if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
-		t.Fatalf("WriteFile(binary) error = %v", err)
-	}
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	var gotCommand string
-	var gotArgs []string
-	service := NewService(Config{
-		CurrentVersion: "1.2.3",
-		ExecutablePath: binary,
-		GOOS:           "linux",
-		GOARCH:         "amd64",
-		Client: staticReleaseClient{
-			releases: []Release{{TagName: "v1.2.4"}},
-		},
-		Env: map[string]string{"GOBIN": goBin},
-		CommandRunner: func(_ context.Context, command string, args []string, out io.Writer, errOut io.Writer) error {
-			gotCommand = command
-			gotArgs = append(gotArgs, args...)
-			_, _ = fmt.Fprintln(out, "go install output")
-			return nil
-		},
-		BinaryVerifier: func(context.Context, string) (string, error) {
-			return "version: v1.2.4\ncommit: abc1234\n", nil
-		},
-	})
-
-	status, err := service.Apply(context.Background(), ApplyOptions{
-		AssumeYes: true,
-		Stdout:    &stdout,
-		Stderr:    &stderr,
-	})
-	if err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-	if status.Action != ActionUpdated {
-		t.Fatalf("Action = %q, want %q", status.Action, ActionUpdated)
-	}
-	if gotCommand != "go" {
-		t.Fatalf("command = %q, want go", gotCommand)
-	}
-	if strings.Join(gotArgs, " ") != "install github.com/digitaldrywood/detent/cmd/detent@latest" {
-		t.Fatalf("args = %q, want go install module", gotArgs)
-	}
-	if !strings.Contains(stdout.String(), "go install output") {
-		t.Fatalf("stdout = %q, want streamed go install output", stdout.String())
-	}
-	if !strings.Contains(status.Message, "Installed Detent version: v1.2.4") {
-		t.Fatalf("Message = %q, want installed version", status.Message)
-	}
-	if !strings.Contains(status.Message, "Restart Detent") {
-		t.Fatalf("Message = %q, want restart note", status.Message)
-	}
-	if status.Command != moduleInstallCommand {
-		t.Fatalf("Command = %q, want %q", status.Command, moduleInstallCommand)
-	}
-}
-
-func TestServiceGoInstallPrereleasePinsSelectedTag(t *testing.T) {
-	t.Parallel()
-
-	tmp := t.TempDir()
-	goBin := filepath.Join(tmp, "gobin")
-	binary := filepath.Join(goBin, "detent")
-	if err := os.MkdirAll(goBin, 0o755); err != nil {
-		t.Fatalf("MkdirAll(goBin) error = %v", err)
-	}
-	if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
-		t.Fatalf("WriteFile(binary) error = %v", err)
-	}
-
-	var gotArgs []string
-	service := NewService(Config{
-		CurrentVersion: "1.3.0-rc.1",
-		ExecutablePath: binary,
-		GOOS:           "linux",
-		GOARCH:         "amd64",
-		Client: staticReleaseClient{
-			releases: []Release{
-				{TagName: "v1.2.4"},
-				{TagName: "v1.3.0-rc.2", Prerelease: true},
-			},
-		},
-		Env: map[string]string{"GOBIN": goBin},
-		CommandRunner: func(_ context.Context, _ string, args []string, _ io.Writer, _ io.Writer) error {
-			gotArgs = append(gotArgs, args...)
-			return nil
-		},
-		BinaryVerifier: func(context.Context, string) (string, error) {
-			return "version: v1.3.0-rc.2\n", nil
-		},
-	})
-
-	status, err := service.Apply(context.Background(), ApplyOptions{AssumeYes: true})
-	if err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-	if strings.Join(gotArgs, " ") != "install github.com/digitaldrywood/detent/cmd/detent@v1.3.0-rc.2" {
-		t.Fatalf("args = %q, want go install pinned prerelease", gotArgs)
-	}
-	if status.Command != "go install github.com/digitaldrywood/detent/cmd/detent@v1.3.0-rc.2" {
-		t.Fatalf("Command = %q, want pinned prerelease command", status.Command)
-	}
-}
-
-func TestServiceGoInstallRefusesVersionMismatch(t *testing.T) {
-	t.Parallel()
-
-	tmp := t.TempDir()
-	goBin := filepath.Join(tmp, "gobin")
-	binary := filepath.Join(goBin, "detent")
-	if err := os.MkdirAll(goBin, 0o755); err != nil {
-		t.Fatalf("MkdirAll(goBin) error = %v", err)
-	}
-	if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
-		t.Fatalf("WriteFile(binary) error = %v", err)
-	}
-
-	service := NewService(Config{
-		CurrentVersion: "1.3.0-rc.1",
-		ExecutablePath: binary,
-		GOOS:           "linux",
-		GOARCH:         "amd64",
-		Client: staticReleaseClient{
-			releases: []Release{
-				{TagName: "v1.2.4"},
-				{TagName: "v1.3.0-rc.2", Prerelease: true},
-			},
-		},
-		Env: map[string]string{"GOBIN": goBin},
-		CommandRunner: func(context.Context, string, []string, io.Writer, io.Writer) error {
-			return nil
-		},
-		BinaryVerifier: func(context.Context, string) (string, error) {
-			return "version: v1.2.4\n", nil
-		},
-	})
-
-	status, err := service.Apply(context.Background(), ApplyOptions{AssumeYes: true})
-	if err == nil {
-		t.Fatal("Apply() error = nil, want version mismatch")
-	}
-	if status.Action != ActionRefused {
-		t.Fatalf("Action = %q, want %q", status.Action, ActionRefused)
-	}
-	if !strings.Contains(status.Message, "does not match expected") {
-		t.Fatalf("Message = %q, want version mismatch", status.Message)
+	for _, tt := range []struct {
+		current string
+		tag     string
+	}{
+		{current: "1.2.3", tag: "v1.2.4"},
+		{current: "1.3.0-rc.1", tag: "v1.3.0-rc.2"},
+	} {
+		t.Run(tt.tag, func(t *testing.T) {
+			t.Parallel()
+			goBin := t.TempDir()
+			binary := filepath.Join(goBin, "detent")
+			if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			service := NewService(Config{
+				CurrentVersion: tt.current,
+				ExecutablePath: binary,
+				GOOS:           "linux",
+				GOARCH:         "amd64",
+				Client:         staticReleaseClient{releases: []Release{{TagName: tt.tag, Prerelease: strings.Contains(tt.tag, "-")}}},
+				Env:            map[string]string{"GOBIN": goBin},
+				BinaryVerifier: func(context.Context, string) (string, error) {
+					t.Fatal("attempted to replace the Go-managed binary")
+					return "", nil
+				},
+			})
+			status, err := service.Apply(context.Background(), ApplyOptions{AssumeYes: true})
+			if !errors.Is(err, ErrRefused) || status.Action != ActionRefused {
+				t.Fatalf("Apply() = %+v, %v", status, err)
+			}
+			if status.Command != sourceUpdateCommand || !strings.Contains(status.Message, "prepared release source archive") {
+				t.Fatalf("missing supported build guidance: %+v", status)
+			}
+			data, err := os.ReadFile(binary)
+			if err != nil || string(data) != "old" {
+				t.Fatalf("original binary changed: %q, %v", data, err)
+			}
+		})
 	}
 }
 
@@ -1146,8 +1288,8 @@ func TestServiceGoInstallInteractiveAbortReturnsCommand(t *testing.T) {
 	if status.Action != ActionRefused {
 		t.Fatalf("Action = %q, want %q", status.Action, ActionRefused)
 	}
-	if status.Command != moduleInstallCommand {
-		t.Fatalf("Command = %q, want %q", status.Command, moduleInstallCommand)
+	if status.Command != sourceUpdateCommand {
+		t.Fatalf("Command = %q, want %q", status.Command, sourceUpdateCommand)
 	}
 	if !strings.Contains(status.Message, "Update aborted") {
 		t.Fatalf("Message = %q, want abort message", status.Message)
@@ -1635,6 +1777,15 @@ func (c staticReleaseClient) ListReleases(context.Context) ([]Release, error) {
 	return c.releases, nil
 }
 
+func (c staticReleaseClient) GetRelease(_ context.Context, tag string) (Release, error) {
+	for _, release := range c.releases {
+		if release.TagName == tag {
+			return release, nil
+		}
+	}
+	return Release{}, errors.New("release not found")
+}
+
 func (c staticReleaseClient) Download(_ context.Context, url string) ([]byte, error) {
 	raw, ok := c.downloads[url]
 	if !ok {
@@ -1668,4 +1819,54 @@ func stagedWindowsUpdateFiles(t *testing.T, dir string) (string, string) {
 		t.Fatal("update script was not created")
 	}
 	return stagedBinary, script
+}
+
+func TestExplicitInstallerReceiptDoesNotFallBackToOtherOwners(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		goos      string
+		goInstall bool
+	}{
+		{name: "Windows installer directory", goos: "windows"},
+		{name: "Go install directory", goos: "linux", goInstall: true},
+		{name: "macOS custom release directory", goos: "darwin"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			tmp := t.TempDir()
+			home := filepath.Join(tmp, "home")
+			binDir := filepath.Join(home, ".detent", "bin")
+			name := "detent"
+			if test.goInstall {
+				binDir = filepath.Join(tmp, "gobin")
+			}
+			if test.goos == "windows" {
+				name = "detent.exe"
+			}
+			binary := filepath.Join(binDir, name)
+			defaultLock := filepath.Join(home, ".detent", "install.lock")
+			if err := os.MkdirAll(filepath.Dir(defaultLock), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			defaultOwner := binary
+			if test.goInstall || test.goos == "windows" {
+				defaultOwner = "/other/detent"
+			}
+			if err := os.WriteFile(defaultLock, []byte("binary="+defaultOwner+"\nversion=1.2.3\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			wrongLock := filepath.Join(tmp, "other-install.lock")
+			if err := os.WriteFile(wrongLock, []byte("binary=/other/detent\nversion=1.0.0\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			opts := DetectionOptions{CurrentVersion: "1.2.3", ExecutablePath: binary, HomeDir: home, GOOS: test.goos, Env: map[string]string{"DETENT_INSTALL_LOCK": wrongLock, "DETENT_STATE_DIR": filepath.Dir(defaultLock), "GOBIN": binDir}}
+			if got := DetectInstallSource(opts); got.Source != InstallSourceUnknown {
+				t.Fatalf("explicit wrong receipt owner = %+v", got)
+			}
+			if got := InstalledReleaseVersion(opts); got != "" {
+				t.Fatalf("version from another receipt = %q", got)
+			}
+		})
+	}
 }

@@ -68,6 +68,7 @@ export const AccountActor = Schema.Struct({
   role: Schema.String,
   can_manage: Schema.Boolean,
   can_manage_runners: Schema.Boolean,
+  platform_role: Schema.optional(Schema.String),
 });
 export type AccountActor = typeof AccountActor.Type;
 
@@ -135,6 +136,7 @@ export type ClientBuild = typeof ClientBuild.Type;
 
 /** One enrolled runner, as the update report describes it. */
 export const RunnerUpdate = Schema.Struct({
+  claim_refusal_reason: Schema.optional(Schema.String),
   runner_id: Schema.String,
   display_name: Schema.String,
   /** The Detent build its host reported; empty until one heartbeats. */
@@ -151,6 +153,7 @@ export type RunnerUpdate = typeof RunnerUpdate.Type;
  * from — always "hub", the hub binary's own build, never a release feed.
  */
 export const UpdatesReport = Schema.Struct({
+  minimum_runner_version: Schema.optional(Schema.String),
   current: Schema.String,
   source: Schema.String,
   runners: Schema.Array(RunnerUpdate),
@@ -165,7 +168,11 @@ export type UpdatesReport = typeof UpdatesReport.Type;
  * loads it once.
  */
 export const AccountBootstrap = Schema.Struct({
-  organization: Schema.Struct({ id: Schema.String, name: Schema.String }),
+  organization: Schema.Struct({
+    id: Schema.String,
+    name: Schema.String,
+    public_url: Schema.optional(Schema.String),
+  }),
   organizations: Schema.Array(BootstrapOrganization),
   actor: AccountActor,
   projects: Schema.Array(AccountProject),
@@ -191,6 +198,8 @@ export const Member = Schema.Struct({
   id: Schema.String,
   user_id: Schema.String,
   email: Schema.String,
+  name: Schema.optional(Schema.String),
+  never_signed_in: Schema.optional(Schema.Boolean),
   role: Schema.String,
   /** `active` for a member who can sign in; anything else is disabled. */
   status: Schema.String,
@@ -204,6 +213,7 @@ export const Invitation = Schema.Struct({
   role: Schema.String,
   created_at: Schema.String,
   expires_at: Schema.String,
+  grants: Schema.optional(Schema.Array(ProjectGrant)),
 });
 export type Invitation = typeof Invitation.Type;
 
@@ -254,12 +264,24 @@ export type SupportResponse = typeof SupportResponse.Type;
  * so recovering means re-reading, never guessing.
  */
 export const ProjectIntegration = Schema.Struct({
+  archive_completed_after_days: Schema.NullOr(Schema.Number),
+  archive_cancelled_after_days: Schema.NullOr(Schema.Number),
+  workflow_source: Schema.optional(Schema.String),
+  workflow_source_revision: Schema.optional(Schema.String),
+  workflow_markdown: Schema.optional(Schema.String),
+  states: Schema.optional(Schema.Array(WorkflowState)),
   profile: Schema.String,
   revision: Schema.String,
   intake: Schema.String,
+  manual_import_enabled: Schema.optional(Schema.Boolean),
   projection: Schema.String,
   repository_enabled: Schema.Boolean,
+  github_transport_available: Schema.optional(Schema.Boolean),
+  github_app_slug: Schema.optional(Schema.String),
+  github_app_install_url: Schema.optional(Schema.String),
+  github_app_installed: Schema.optional(Schema.Boolean),
   repository: Schema.optional(Schema.String),
+  checkout_repository: Schema.optional(Schema.String),
   authority: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type ProjectIntegration = typeof ProjectIntegration.Type;
@@ -277,6 +299,7 @@ export type PolicyRequirements = typeof PolicyRequirements.Type;
 
 export const PolicyGates = Schema.Struct({
   kind: Schema.String,
+  human_review: Schema.optional(Schema.Boolean),
   plan_enabled: Schema.Boolean,
   plan_review: Schema.String,
   plan_stop_digest: Schema.String,
@@ -286,11 +309,18 @@ export const PolicyGates = Schema.Struct({
   validator: Schema.Boolean,
   security_audit: Schema.Boolean,
   merge_method: Schema.String,
+  github_pull_request: Schema.optional(Schema.Boolean),
 });
 export type PolicyGates = typeof PolicyGates.Type;
 
 /** `policy.Descriptor`: the resolved policy a human approves by identity. */
 export const PolicyDescriptor = Schema.Struct({
+  authored: Schema.optional(Schema.Struct({
+    version: Schema.Number,
+    digest: Schema.String,
+    files: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  })),
+  workflow: Schema.optional(Schema.Struct({ source: Schema.String, revision: Schema.optional(Schema.String), states: Schema.Array(WorkflowState) })),
   schema: Schema.Number,
   policy_id: Schema.String,
   source_revision: Schema.String,
@@ -299,11 +329,34 @@ export const PolicyDescriptor = Schema.Struct({
   profile: Schema.optional(Schema.String),
   requirements: PolicyRequirements,
   gates: PolicyGates,
+  configuration: Schema.optional(Schema.Struct({
+    definition_digest: Schema.optional(Schema.String),
+    behavior: Schema.Unknown,
+    prompt: Schema.String,
+    shared_prompt: Schema.optional(Schema.String),
+    agents_prompt: Schema.optional(Schema.String),
+  })),
 });
 export type PolicyDescriptor = typeof PolicyDescriptor.Type;
 
+export const WorkflowApply = Schema.Struct({
+  id: Schema.String,
+  repository: Schema.String,
+  commit: Schema.String,
+  previous_definition_digest: Schema.String,
+  definition_digest: Schema.String,
+  runner_id: Schema.String,
+  applied_by: Schema.String,
+  applied_at: Schema.String,
+  previous_definition: Schema.optional(PolicyDescriptor),
+  definition: Schema.optional(PolicyDescriptor),
+});
+export type WorkflowApply = typeof WorkflowApply.Type;
+
 /** `GET {nativeBase}/policy` (`policy.Approval`). */
 export const PolicyApproval = Schema.Struct({
+  history: Schema.optional(Schema.Array(WorkflowApply)),
+  history_next: Schema.optional(Schema.String),
   policy: PolicyDescriptor,
   approved_by: Schema.String,
   approved_at: Schema.String,
@@ -349,9 +402,9 @@ export type OnboardingStep = typeof OnboardingStep.Type;
 
 /** The four steps `Evaluate()` emits, in its order. */
 export const ONBOARDING_STEPS = [
-  "Repository configuration",
-  "Local validation",
   "Execution runner",
+  "Local validation",
+  "Repository configuration",
   "Artifact history",
 ] as const;
 
@@ -376,7 +429,16 @@ export type RunnerExclusion = typeof RunnerExclusion.Type;
  * take this project's work. An empty `exclusions` is what makes step three
  * ready.
  */
+export const RunnerLocalChecks = Schema.Struct({
+  checkout: Schema.String,
+  doctor: Schema.String,
+  provider: Schema.String,
+  provider_kinds: Schema.optional(Schema.Array(Schema.String)),
+  observed_at: Schema.String,
+});
+
 export const RunnerEligibility = Schema.Struct({
+  local_checks: Schema.optional(Schema.NullOr(RunnerLocalChecks)),
   runner: Schema.Struct({
     runner_id: Schema.String,
     machine_id: Schema.optional(Schema.String),
@@ -401,9 +463,19 @@ export type RunnerEligibility = typeof RunnerEligibility.Type;
  * could not run because it differs from the approved policy.
  */
 export const ObservedPolicy = Schema.Struct({
+  repository_source: Schema.optional(Schema.Struct({
+    repository: Schema.String,
+    commit: Schema.String,
+    default_branch: Schema.optional(Schema.String),
+    default_branch_head: Schema.optional(Schema.String),
+    default_branch_reachable: Schema.Boolean,
+  })),
   policy: PolicyDescriptor,
   runner_id: Schema.String,
+  runner_ids: Schema.optional(Schema.Array(Schema.String)),
   observed_at: Schema.String,
+  conflict: Schema.optional(Schema.Boolean),
+  previously_approved: Schema.optional(Schema.Boolean),
 });
 export type ObservedPolicy = typeof ObservedPolicy.Type;
 
@@ -465,7 +537,7 @@ export const ProviderCapacity = Schema.Struct({
   account_alias: Schema.String,
   shared_account_alias: Schema.optional(Schema.String),
   models: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
-  max_concurrent: Schema.Number,
+  max_concurrent: Schema.optional(Schema.Number),
   availability: Schema.String,
   observed_at: Schema.String,
   reset_at: Schema.optional(Schema.String),
@@ -491,23 +563,17 @@ export const RunnerAvailability = Schema.Struct({
 });
 export type RunnerAvailability = typeof RunnerAvailability.Type;
 
-export const RunnerSpillover = Schema.Struct({
-  mode: Schema.String,
-  after_minutes: Schema.Number,
-});
-export type RunnerSpillover = typeof RunnerSpillover.Type;
-
 export const RunnerRouting = Schema.Struct({
+  scope: Schema.optional(Schema.Literals(["projects", "organization"])),
+  project_ranks: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
   display_name: Schema.String,
   tags: Schema.Array(Schema.String),
   state: Schema.String,
   capacity_limit: Schema.Number,
   project_ids: Schema.Array(Schema.String),
-  home_project_ids: Schema.optional(Schema.Array(Schema.String)),
   isolation_tier: Schema.String,
   host_services: Schema.Array(Schema.String),
   availability: RunnerAvailability,
-  spillover: RunnerSpillover,
 });
 export type RunnerRouting = typeof RunnerRouting.Type;
 
@@ -517,12 +583,31 @@ export type RunnerRouting = typeof RunnerRouting.Type;
  * why the host card draws two meters rather than one.
  */
 export const FleetRunner = Schema.Struct({
+  project_checkouts: Schema.optional(Schema.Record(Schema.String, Schema.Struct({ status: Schema.String, message: Schema.optional(Schema.String), fix_command: Schema.optional(Schema.String) }))),
+  update: Schema.optional(Schema.Struct({
+    status: Schema.String,
+    desired: Schema.NullOr(Schema.Struct({ version: Schema.String })),
+  })),
+  editable: Schema.optional(Schema.Boolean),
+  edit_refusal_reason: Schema.optional(Schema.String),
+  can_edit_projects: Schema.optional(Schema.Boolean),
+  can_convert_scope: Schema.optional(Schema.Boolean),
+  machine_id: Schema.String,
+  sprite: Schema.optional(Schema.Struct({ name: Schema.String, status: Schema.String, can_wake: Schema.Boolean, wake_failed: Schema.Boolean })),
+  claim_refusal_reason: Schema.optional(Schema.String),
   id: Schema.String,
   display_name: Schema.String,
   hostname: Schema.String,
   health: Schema.String,
+  connection_health: Schema.optional(Schema.String),
   problems: Schema.optional(Schema.Array(Schema.Struct({
+    subject: Schema.optional(Schema.String),
+    check: Schema.optional(Schema.String),
+    error_output: Schema.optional(Schema.String),
+    fix_command: Schema.optional(Schema.String),
+    reported_at: Schema.optional(Schema.String),
     code: Schema.String,
+    project_id: Schema.optional(Schema.String),
     message: Schema.String,
     fix_hint: Schema.String,
     first_seen: Schema.String,
@@ -530,11 +615,6 @@ export const FleetRunner = Schema.Struct({
   state: Schema.String,
   os: Schema.String,
   architecture: Schema.String,
-  /**
-   * The Detent build this runner's host reported. Compared against the
-   * response's `current` to draw the update state the footer's pill points at.
-   * Optional so a hub that does not publish it yet still decodes.
-   */
   version: Schema.optional(Schema.String),
   host_capacity: Schema.Number,
   host_used: Schema.Number,
@@ -544,10 +624,8 @@ export const FleetRunner = Schema.Struct({
   last_heartbeat_at: Schema.String,
   leases: Schema.Array(RunnerLease),
   isolation_tier: Schema.optional(Schema.String),
+  backend_isolation: Schema.optional(Schema.Record(Schema.String, Schema.Array(Schema.String))),
   availability: Schema.optional(RunnerAvailability),
-  home_project_ids: Schema.optional(Schema.Array(Schema.String)),
-  home_status: Schema.optional(Schema.String),
-  home_dry_since: Schema.optional(Schema.NullOr(Schema.String)),
   routing: Schema.optional(RunnerRouting),
   revision: Schema.optional(Schema.Number),
 });
@@ -589,7 +667,13 @@ export const Spend = Schema.Struct({
 });
 export type Spend = typeof Spend.Type;
 
+const RunnerNames = Schema.Record(Schema.String, Schema.Struct({ display_name: Schema.String, hostname: Schema.String }));
+
+export const FleetNamesResponse = Schema.Struct({ runner_names: RunnerNames });
+
 export const FleetResponse = Schema.Struct({
+  runner_names: Schema.optional(RunnerNames),
+  minimum_runner_version: Schema.optional(Schema.String),
   runners: Schema.Array(FleetRunner),
   editable: Schema.optional(Schema.Boolean),
   usage: FleetUsage,
@@ -678,6 +762,48 @@ export const BillingPrice = Schema.Struct({
 });
 export type BillingPrice = typeof BillingPrice.Type;
 
+export const AICredits = Schema.Struct({
+  balance_micros: Schema.Number,
+  auto_enabled: Schema.Boolean,
+  threshold_cents: Schema.Number,
+  price_id: Schema.String,
+  failure: Schema.String,
+  in_flight: Schema.Boolean,
+  can_auto_fund: Schema.Boolean,
+  packs: Schema.Array(Schema.Struct({
+    price_id: Schema.String, label: Schema.String, usd_cents: Schema.Number,
+  })),
+  history: Schema.Array(Schema.Struct({
+    amount_micros: Schema.Number, kind: Schema.String, at: Schema.String,
+  })),
+});
+export type AICredits = typeof AICredits.Type;
+
+export const ComparisonPlan = Schema.Struct({
+  id: Schema.String,
+  version: Schema.Number,
+  name: Schema.optional(Schema.String),
+  monthly_usd_cents: Schema.optional(Schema.NullOr(Schema.Number)),
+  allowances: Schema.Record(Schema.String, Schema.Number),
+  features: Schema.Array(Schema.String),
+  price_id: Schema.String,
+});
+export type ComparisonPlan = typeof ComparisonPlan.Type;
+
+export const BillingUsageReport = Schema.Struct({
+  organization_id: Schema.String,
+  renews_at: Schema.String,
+  chat_usage: ChatUsage,
+  charged_ai_micros: Schema.Number,
+  ai_credits: Schema.optional(AICredits),
+  comparison_plans: Schema.Array(ComparisonPlan),
+  can_checkout: Schema.Boolean,
+  can_manage: Schema.Boolean,
+  can_buy_credits: Schema.Boolean,
+  checkout_pending: Schema.Boolean,
+});
+export type BillingUsageReport = typeof BillingUsageReport.Type;
+
 /**
  * `GET /billing`: `hubserver.hostedBillingReport` plus `prices`. The report
  * alone cannot render the screen — the hosted Templ page read the configured
@@ -685,6 +811,9 @@ export type BillingPrice = typeof BillingPrice.Type;
  * "checkout buttons per configured price" needs the list on the payload.
  */
 export const BillingReport = Schema.Struct({
+  charged_ai_micros: Schema.optional(Schema.Number),
+  comparison_plans: Schema.optional(Schema.Array(ComparisonPlan)),
+  ai_credits: Schema.optional(AICredits),
   chat_usage: Schema.optional(ChatUsage),
   organization_id: Schema.String,
   state: BillingState,
@@ -722,3 +851,107 @@ export const decodeIntegration = Schema.decodeUnknownSync(ProjectIntegration);
 export const decodePolicy = Schema.decodeUnknownSync(PolicyApproval);
 
 export { ApiError };
+
+export const SpritePool = Schema.Struct({
+  min_runners: Schema.Number,
+  max_runners: Schema.Number,
+  idle_seconds: Schema.Number,
+  bootstrap: Schema.String,
+  revision: Schema.Number,
+  members: Schema.Array(Schema.Struct({
+    name: Schema.String,
+    state: Schema.String,
+    bootstrap_log: Schema.String,
+    runner_id: Schema.String,
+    idle_since: Schema.String,
+  })),
+});
+
+/** Provider secret presence; credentials are write-only. */
+export const ProjectSecretStatus = Schema.Struct({
+ kind: Schema.String,
+ present: Schema.Boolean,
+ organization_slug: Schema.optional(Schema.String),
+ key_version: Schema.optional(Schema.Number),
+});
+export type ProjectSecretStatus = typeof ProjectSecretStatus.Type;
+
+export const OperatorProjectAccess = Schema.Literals(["all", "selected"]);
+export type OperatorProjectAccess = typeof OperatorProjectAccess.Type;
+
+export const OperatorAPIKey = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  scope: Schema.Literals(["read", "write", "admin"]),
+  expires_at: Schema.NullOr(Schema.String),
+  fingerprint: Schema.String,
+  created_at: Schema.optional(Schema.String),
+  revoked_at: Schema.optional(Schema.String),
+  revoked: Schema.Boolean,
+  project_access: OperatorProjectAccess,
+  project_ids: Schema.Array(Schema.String),
+});
+export type OperatorAPIKey = typeof OperatorAPIKey.Type;
+export const OperatorAPIKeys = Schema.Struct({ keys: Schema.Array(OperatorAPIKey) });
+export const CreatedOperatorAPIKey = Schema.Struct({ token: Schema.String, project_access: OperatorProjectAccess, project_ids: Schema.Array(Schema.String) });
+export type CreatedOperatorAPIKey = typeof CreatedOperatorAPIKey.Type;
+
+type SelectionSelector = {
+  readonly assignee_in?: readonly string[];
+  readonly author_in?: readonly string[];
+  readonly priority_in?: readonly number[];
+  readonly labels?: { readonly include?: readonly string[]; readonly exclude?: readonly string[] };
+  readonly fields?: readonly { readonly name: string; readonly value: string }[];
+  readonly and?: readonly SelectionSelector[];
+  readonly or?: readonly SelectionSelector[];
+};
+const SelectionSelector: Schema.Codec<SelectionSelector> = Schema.Struct({
+  assignee_in: Schema.optional(Schema.Array(Schema.String)),
+  author_in: Schema.optional(Schema.Array(Schema.String)),
+  priority_in: Schema.optional(Schema.Array(Schema.Number)),
+  labels: Schema.optional(Schema.Struct({ include: Schema.optional(Schema.Array(Schema.String)), exclude: Schema.optional(Schema.Array(Schema.String)) })),
+  fields: Schema.optional(Schema.Array(Schema.Struct({ name: Schema.String, value: Schema.String }))),
+  and: Schema.optional(Schema.Array(Schema.suspend(() => SelectionSelector))),
+  or: Schema.optional(Schema.Array(Schema.suspend(() => SelectionSelector))),
+});
+const SelectionLevel = Schema.Struct({
+  model: Schema.optional(Schema.String), effort: Schema.optional(Schema.String),
+  max_session_duration_ms: Schema.optional(Schema.Number), max_session_tokens: Schema.optional(Schema.Number),
+});
+const SelectionStage = Schema.Struct({
+  model: Schema.optional(Schema.String), effort: Schema.optional(Schema.String),
+  level: Schema.optional(Schema.String), issue_complexity: Schema.optional(Schema.Boolean),
+});
+export const CloudSelection = Schema.Struct({
+  enabled: Schema.optional(Schema.Boolean), preset: Schema.optional(Schema.String),
+  normal_model: Schema.optional(Schema.String), complex_model: Schema.optional(Schema.String),
+  backend_kinds: Schema.optional(Schema.Array(Schema.String)), default_level: Schema.optional(Schema.String),
+  levels: Schema.optional(Schema.Record(Schema.String, SelectionLevel)),
+  stages: Schema.optional(Schema.Record(Schema.String, SelectionStage)),
+  rules: Schema.optional(Schema.Array(Schema.Struct({
+    name: Schema.String, level: Schema.String, disabled: Schema.optional(Schema.Boolean),
+    roles: Schema.optional(Schema.Array(Schema.String)), efforts: Schema.optional(Schema.Array(Schema.String)),
+    selector: Schema.optional(SelectionSelector),
+  }))),
+  unavailable: Schema.optional(Schema.String), fallback_order: Schema.optional(Schema.Array(Schema.String)),
+});
+export type CloudSelection = typeof CloudSelection.Type;
+export const CloudModelSelection = Schema.Struct({
+  revision: Schema.String, selection: Schema.NullOr(CloudSelection), effective: CloudSelection,
+});
+export type CloudModelSelection = typeof CloudModelSelection.Type;
+export const OrganizationProjectRank = Schema.Struct({
+  revision: Schema.Number,
+  project_ids: Schema.Array(Schema.String),
+});
+export type OrganizationProjectRank = typeof OrganizationProjectRank.Type;
+
+export const SlackIntegrationStatus = Schema.Struct({
+  webhook: Schema.String,
+  channel_name: Schema.String,
+  last_success_at: Schema.NullOr(Schema.String),
+  last_failure_at: Schema.NullOr(Schema.String),
+  last_delivery_failed: Schema.Boolean,
+  last_status_code: Schema.Number,
+});
+export type SlackIntegrationStatus = typeof SlackIntegrationStatus.Type;

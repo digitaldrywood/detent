@@ -10,6 +10,10 @@ import (
 )
 
 func TestResolveFallback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("toolchain subprocess discovery integration")
+	}
+
 	for _, tt := range []struct {
 		name                   string
 		fail, override, gopath bool
@@ -58,6 +62,10 @@ func TestResolveFallback(t *testing.T) {
 }
 
 func TestResolveNeutralToolchain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("toolchain subprocess discovery integration")
+	}
+
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX command fixture")
 	}
@@ -83,6 +91,10 @@ func TestResolveNeutralToolchain(t *testing.T) {
 }
 
 func TestResolveOnce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	if os.Getenv("DETENT_TEST_CACHE_ONCE") == "1" {
 		first, err := Resolve(context.Background())
 		if err != nil {

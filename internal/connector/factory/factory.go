@@ -54,6 +54,7 @@ type Config struct {
 	StateMap                    map[string]string
 	PriorityMap                 map[string]*int
 	RequiredStatusChecks        []string
+	LocalStatus                 string
 	Logger                      *slog.Logger
 	Publication                 publication.Policy
 }
@@ -110,6 +111,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 			StateMap:                   cfg.StateMap,
 			PriorityMap:                cfg.PriorityMap,
 			RequiredStatusChecks:       cfg.RequiredStatusChecks,
+			LocalStatus:                cfg.LocalStatus,
 			Logger:                     cfg.Logger,
 			Publication:                cfg.Publication,
 		})
@@ -159,6 +161,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 				StateMap:                   cfg.StateMap,
 				PriorityMap:                cfg.PriorityMap,
 				RequiredStatusChecks:       cfg.RequiredStatusChecks,
+				LocalStatus:                cfg.LocalStatus,
 				Logger:                     cfg.Logger,
 				Publication:                cfg.Publication,
 			},

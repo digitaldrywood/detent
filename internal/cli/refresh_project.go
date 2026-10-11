@@ -1386,6 +1386,15 @@ func migrateProjectRefreshStateInstructions(existing string, root *yaml.Node, de
 			active[state.Value] = true
 		}
 	}
+	if configured := projectRefreshYAMLPathNode(root, "tracker.lanes"); configured != nil {
+		for _, lane := range configured.Content {
+			name := projectRefreshYAMLPathNode(lane, "name")
+			role := projectRefreshYAMLPathNode(lane, "role")
+			if name != nil && role != nil && role.Value == workflowconfig.LaneActive {
+				active[name.Value] = true
+			}
+		}
+	}
 	// Preset lanes must not introduce keys outside the project's configured states.
 	if defaults := projectRefreshYAMLPathNode(desired, "agent.instructions_by_state"); defaults != nil {
 		var kept []*yaml.Node

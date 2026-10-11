@@ -16,6 +16,7 @@ func TestReadHostedConfig(t *testing.T) {
 	for _, test := range []struct {
 		name, body, key string
 		wantError       bool
+		wantSMTP        bool
 	}{
 		{name: "valid", body: "organization_id: org_customer\nbootstrap_subject: user_customer\npublic_url: https://tenant.example.test\nworkos:\n  client_id: client_example\n", key: "test-workos-key"},
 		{name: "unknown content field", body: "customer_prompt: content-sentinel\n", wantError: true},
@@ -24,6 +25,12 @@ func TestReadHostedConfig(t *testing.T) {
 		{name: "multiple documents", body: "organization_id: org_customer\n---\nprivate: content-sentinel\n", wantError: true},
 		{name: "invalid yaml", body: "x: [content-sentinel", wantError: true},
 		{name: "invalid env name", body: "workos:\n  api_key_env: bad-name\n", wantError: true},
+		{name: "SMTP configured", body: "organization_id: org_customer\nbootstrap_subject: user_customer\npublic_url: https://tenant.example.test\nworkos:\n  client_id: client_example\nsmtp:\n  host: smtp.example.test\n  from: detent@example.test\n  username: user\n  password_env: TEST_SMTP_PASSWORD\n", key: "test-workos-key", wantSMTP: true},
+		{name: "SMTP without authentication", body: "organization_id: org_customer\nbootstrap_subject: user_customer\npublic_url: https://tenant.example.test\nworkos:\n  client_id: client_example\nsmtp:\n  host: smtp.example.test\n  port: 2525\n  from: detent@example.test\n", key: "test-workos-key", wantSMTP: true},
+		{name: "SMTP partial authentication", body: "workos:\n  client_id: client_example\nsmtp:\n  host: smtp.example.test\n  from: detent@example.test\n  username: user\n", key: "test-workos-key", wantError: true},
+		{name: "SMTP invalid password variable", body: "workos:\n  client_id: client_example\nsmtp:\n  password_env: bad-name\n", key: "test-workos-key", wantError: true},
+		{name: "SMTP missing password", body: "workos:\n  client_id: client_example\nsmtp:\n  password_env: TEST_SMTP_MISSING\n", key: "test-workos-key", wantError: true},
+		{name: "SMTP literal password rejected", body: "smtp:\n  password: credential-sentinel\n", wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -32,6 +39,12 @@ func TestReadHostedConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 			config, enabled, err := readHostedConfig(path, func(name string) string {
+				if name == "TEST_SMTP_PASSWORD" {
+					return "credential-sentinel"
+				}
+				if name == "TEST_SMTP_MISSING" {
+					return ""
+				}
 				if name != "WORKOS_API_KEY" {
 					t.Errorf("unexpected environment lookup %q", name)
 				}
@@ -45,6 +58,9 @@ func TestReadHostedConfig(t *testing.T) {
 			}
 			if err == nil && (!enabled || config.OrganizationID != "org_customer" || config.Provider == nil) {
 				t.Fatal("hosted configuration was not constructed")
+			}
+			if err == nil && (config.EmailSender != nil) != test.wantSMTP {
+				t.Fatalf("SMTP configured=%v want %v", config.EmailSender != nil, test.wantSMTP)
 			}
 		})
 	}
@@ -106,6 +122,7 @@ func TestHubServeIdentityModes(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		maintenance bool
+		app         bool
 		name        string
 		hosted      bool
 		native      bool
@@ -115,6 +132,8 @@ func TestHubServeIdentityModes(t *testing.T) {
 		{name: "local native", native: true, wantMode: true},
 		{name: "hosted without GitHub flag", hosted: true, wantMode: true},
 		{name: "hosted credential maintenance", hosted: true, maintenance: true, wantMode: true},
+		{name: "hosted product GitHub App", hosted: true, app: true},
+		{name: "hosted product GitHub App explicitly disabled", hosted: true, app: true, native: true, wantMode: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -139,6 +158,11 @@ func TestHubServeIdentityModes(t *testing.T) {
 				switch name {
 				case "DETENT_HUB_ADMIN_TOKEN":
 					return "reporter-fixture"
+				case "DETENT_HUB_GITHUB_APP_ID", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY":
+					if test.app {
+						return "product-app-fixture"
+					}
+					return ""
 				case "WORKOS_API_KEY":
 					if !test.hosted {
 						t.Error("local mode resolved a WorkOS credential")

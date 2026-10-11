@@ -20,7 +20,6 @@ func TestRoutingCacheRoundTrip(t *testing.T) {
 		DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{"prj_home"},
 		IsolationTier: "native-trusted", HostServices: []string{"tcp:127.0.0.1:8080"},
 		Availability: Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}},
-		Spillover:    Spillover{Mode: "after", AfterMinutes: 0},
 	}}
 	if err := SaveRoutingCache(path, snapshot); err != nil {
 		t.Fatal(err)

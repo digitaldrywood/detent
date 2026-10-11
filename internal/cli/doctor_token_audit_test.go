@@ -18,6 +18,10 @@ import (
 )
 
 func TestDoctorTokenAuditWorkflowSourceDrift(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, tt := range []struct {
 		name, ref, branch string
 		modify            bool
@@ -73,6 +77,10 @@ func TestDoctorTokenAuditInstructionBudget(t *testing.T) {
 }
 
 func TestDoctorTokenAuditInstructionFiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, tt := range []struct {
 		name              string
 		override, missing bool
@@ -120,6 +128,10 @@ func TestDoctorTokenAuditInstructionFiles(t *testing.T) {
 }
 
 func TestDoctorTokenAuditTransitiveInstructions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, name := range []string{"AGENTS.md", "AGENTS.override.md"} {
 		t.Run(name, func(t *testing.T) {
 			root, _ := initDoctorWorkflowSourceRepository(t)
@@ -199,6 +211,10 @@ func doctorTokenAuditDB(t *testing.T) (string, *sql.DB) {
 }
 
 func TestDoctorTokenAuditAccounting(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, tt := range []struct {
 		name            string
 		usage, attempts int
@@ -230,6 +246,10 @@ func TestDoctorTokenAuditAccounting(t *testing.T) {
 }
 
 func TestDoctorTokenAuditModelPolicy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, tt := range []struct {
 		name   string
 		above  int
@@ -330,6 +350,10 @@ func TestDoctorTokenAuditNonGitInstructions(t *testing.T) {
 }
 
 func TestDoctorTokenAuditExternalWorkflow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	root, _ := initDoctorWorkflowSourceRepository(t)
 	external, _ := initDoctorWorkflowSourceRepository(t)
 	runDoctorWorkflowSourceGit(t, root, "checkout", "-b", "side")
@@ -376,6 +400,10 @@ func TestDoctorTokenAuditCIEvidence(t *testing.T) {
 }
 
 func TestDoctorTokenAuditMissingSchema(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	path := filepath.Join(t.TempDir(), "empty.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -403,6 +431,10 @@ func TestDoctorTokenAuditFastGateConflict(t *testing.T) {
 }
 
 func TestDoctorReferencedWorkflowGateConflict(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, tt := range []struct {
 		name, agents string
 		want         doctorStatus
@@ -440,6 +472,10 @@ func TestDoctorReferencedWorkflowGateConflict(t *testing.T) {
 }
 
 func TestDoctorEffectiveWorkflowDeduplicated(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, tt := range []struct {
 		name               string
 		external, distinct bool

@@ -289,8 +289,6 @@ func (r *Runner) runCheckpointedTurn(parent, session context.Context, c *workerC
 			reason = "periodic"
 		} else if errors.Is(execution.err, ErrSessionDurationExceeded) {
 			reason = SessionBrakeReasonDuration
-		} else if errors.Is(execution.err, ErrSessionNoProgress) {
-			reason = SessionBrakeReasonNoProgress
 		}
 		if !periodic && !durationLimitError(execution.err) || errors.Is(execution.err, ErrWorkerProcessReap) || parent.Err() != nil {
 			r.saveWorkerCheckpoint(c, workspace.CheckpointRecord{Reason: reason, Status: "local_only", Detail: "Worker interrupted or could not be reaped. No checkpoint epilogue ran; inspect the retained workspace and prior remote checkpoint evidence."})

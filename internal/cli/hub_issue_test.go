@@ -10,6 +10,10 @@ import (
 )
 
 func TestHubIssueRoutesMutationsToNativeAPI(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct{ action, method, suffix, input string }{
 		{"create", "POST", "/work-items", `{"idempotency_key":"create","title":"Native","body":"Body","state":"Todo"}`},

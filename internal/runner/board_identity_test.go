@@ -5,11 +5,16 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
 func TestConfiguredBoardIdentity(t *testing.T) {
-	for _, tt := range []struct{ name, routeModel, description, model, effort string }{
+	for _, tt := range []struct{ name, routeModel, description, model, effort, role, validatorModel string }{
+		{name: "explicit plan stage", role: RolePlan, model: "plan-model", effort: "low"},
+		{name: "explicit validator stage", role: RoleValidator, model: "validator-model", effort: "medium"},
+		{name: "validator model override", role: RoleValidator, validatorModel: "override-model", model: "override-model", effort: "medium"},
+		{name: "explicit rework", role: RoleRework, model: "fleet-model", effort: "low"},
 		{name: "fleet default", model: "fleet-model", effort: "low"},
 		{name: "route", routeModel: "route-model", model: "route-model", effort: "low"},
 		{name: "issue effort respects policy ceiling", description: "```detent-agent\nschema: 1\neffort: medium\n```", model: "fleet-model", effort: "low"},
@@ -19,11 +24,17 @@ func TestConfiguredBoardIdentity(t *testing.T) {
 			cfg.Agents.Backends = []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex}}
 			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Backend: "codex", Default: true, Model: tt.routeModel}}
 			cfg.Agents.ModelSelection = config.ModelSelection{Enabled: new(true), BackendKinds: &[]string{config.AgentBackendCodex}, DefaultLevel: new("normal"), Levels: map[string]config.ModelSelectionDefaults{"normal": {Model: new("fleet-model"), Effort: new("low")}}}
+			cfg.Agents.ModelSelection.Stages = map[string]config.ModelSelectionStage{RolePlan: {Model: new("plan-model"), Effort: new("low")}, RoleValidator: {Model: new("validator-model"), Effort: new("medium")}}
+			cfg.Gate.Validator = gate.ValidatorConfig{Model: tt.validatorModel}
 			resolver, err := NewBoardIdentityResolver(cfg, selector.Context{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := resolver.Identity(connector.Issue{Description: tt.description})
+			issue := connector.Issue{Description: tt.description}
+			got, err := resolver.Identity(issue)
+			if tt.role != "" {
+				got, err = resolver.IdentityForRole(issue, tt.role)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -1,9 +1,8 @@
 # Operations report
 
-Open **Operations**, immediately below **Reports** in the sidebar, or read
-`GET /api/v1/operations` using the same authentication and read scope as the
-state API. The report includes its generation time and producing instance name.
-Refresh updates the content in place and preserves the dashboard shell.
+Read `GET /api/v1/operations` from a runner's local API using the same
+authentication and read scope as the state API. The report includes its
+generation time and producing instance name.
 
 The JSON structure is shared in `internal/operations`. Historical aggregation
 lives in the store; the web layer adds instance identity, current merge-queue
@@ -46,8 +45,8 @@ Historical windows include their start and exclude their end.
 
 `since` is an optional RFC3339 timestamp, exclusive, applying only to actions.
 It defaults to 24 hours before the current request. Pass the preceding report's
-`data_time` to retrieve actions since that render. The page's Refresh button
-carries this timestamp; one reader never consumes another reader's actions.
+`data_time` to retrieve actions since that render. One reader never consumes
+another reader's actions.
 
 Only applied lane-ledger writes stamped with the `operator_routine` origin
 appear. The operator routine below produces these writes; the report does not
@@ -97,7 +96,7 @@ available yet; naming them in `actions` is a configuration error.
 ## Exporting the page
 
 `detent report --html <path>` writes the same report as a self-contained HTML
-file for readers away from the dashboard. It replaces the external
+file for readers away from the runner. It replaces the external
 `monitor.py` watcher and `repair.py` repair script, which are retired; actions
 now come from the operator routine and are visible in the report itself. A
 launchd agent keeps a synced copy current:
@@ -124,6 +123,23 @@ launchd agent keeps a synced copy current:
 
 On Linux, a systemd user timer calling the same command is equivalent.
 
+
+## Runner service logs
+
+`detent start` and runner registration install launchd or systemd services with
+stdout and stderr appended to `logs/service.out.log` and `logs/service.err.log`
+beside the runner's global config. With the default runner config, these are
+`~/.config/detent-runner/logs/service.out.log` and
+`~/.config/detent-runner/logs/service.err.log`. Installation prints both paths.
+Failed service starts are throttled to one restart per minute by the service
+manager.
+
+Startup validation is project-specific. A project with unusable tracker
+credentials reports its error and repair command through runner problems while
+other projects continue serving work. Credential failures use the existing
+project retry path, so repairing GitHub CLI authentication allows the project
+to start without restarting the runner. If every configured project fails,
+the runner reports its problems to the Hub before exiting non-zero.
 
 ## Codex disk retention
 
@@ -153,6 +169,70 @@ operator's responsibility. With Codex closed, its disposable log database and
 sidecars can safely be removed and will be recreated. Thread state and history
 contain session data: back them up and review what would be lost before manual
 pruning. Detent never prunes user-level SQLite databases.
+
+## Profiling
+
+Profiling is opt-in and disabled by default. Add this block to the runner's
+`global.yaml` (for an enrolled runner, `~/.config/detent-runner/global.yaml`):
+
+```yaml
+profiling:
+  listen_addr: "127.0.0.1:6060"
+  capture:
+    enabled: true
+    interval: 15m
+    cpu_duration: 30s
+    dir: ""
+    max_age: 168h
+    max_bytes: 1GB
+```
+
+The Hub reads the same block from `detent --config /path/to/global.yaml hub
+serve ...` (or `CONFIG`/`DETENT_CONFIG`). When no instance config is supplied,
+it reads the block from `--hosted-config`, if present. Runners and the Hub
+reload profiling settings from their config file without restarting or ending
+agent sessions. Invalid reloads retain the previous settings. Listener, capture,
+and retention failures are logged through `slog` and do not stop the process.
+
+Leave `listen_addr` empty to disable live endpoints; capture works independently.
+The dedicated profiling listener accepts only loopback IP addresses or
+`localhost`, which binds directly to `127.0.0.1`. It never shares the application
+listener. For a live heap profile:
+
+```sh
+go tool pprof http://127.0.0.1:6060/debug/pprof/heap
+```
+
+When `dir` is empty, bundles land beside the instance database under
+`profiles/orchestrator`, `profiles/runner`, or `profiles/hub`. An explicit directory
+can be absolute, home-relative, or relative to the configuration file. Each
+interval captures CPU for `cpu_duration`, then writes binary `heap.pprof`,
+`allocs.pprof`, `goroutine.pprof`, `mutex.pprof`, and `block.pprof` files alongside
+`cpu.pprof` in a UTC timestamped directory. Durations and retention bounds must
+be positive; CPU duration must not exceed the interval. `max_bytes` accepts
+integer bytes or integer sizes such as `1GB` (decimal) and `1GiB` (binary).
+
+Bundles publish only after all six profiles are written. Canceled or failed
+captures remove their incomplete directory. Retention runs at process startup,
+when capture starts, and after each capture attempt, removing bundles older than `max_age`, then the
+oldest bundles until their combined file size is at most `max_bytes`. Timestamped
+`.partial` directories left by a process crash count toward retention; unrelated
+directories and symlinks are left alone. A single bundle larger than the size
+limit is removed. Use a separate directory per process when overriding `dir`.
+
+Capture enables mutex sampling at one in five events and block sampling at an
+average of one sample per millisecond blocked; both reset to zero when capture
+is disabled or the process shuts down. Go allows only one CPU profiler at a time,
+so a live CPU request overlapping periodic capture can fail; the next capture
+interval still runs. Profiles can contain sensitive process data and are written
+with owner-only file and bundle directory permissions.
+
+Compare two recorded bundles from the same process using:
+
+```sh
+go tool pprof -diff_base /path/to/older/heap.pprof /path/to/newer/heap.pprof
+go tool pprof -diff_base /path/to/older/cpu.pprof /path/to/newer/cpu.pprof
+```
 
 ## Toolchain caches
 

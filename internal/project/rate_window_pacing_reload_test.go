@@ -3,10 +3,12 @@ package project_test
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
 )
 
@@ -19,8 +21,14 @@ func TestManagerReconcileHotAppliesGlobalRateWindowPacing(t *testing.T) {
 	manager, err := project.NewManager(project.ManagerConfig{Projects: []globalconfig.Project{initial}}, project.ManagerDependencies{
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 			created++
-			workflow := workflowConfig("memory")
-			return project.New(project.Config{Project: cfg, Workflow: workflowconfig.Workflow{Config: workflow}}, project.Dependencies{Runner: blockingRunner{}})
+			workflow := workflowconfig.Workflow{Config: workflowConfig("memory"), SourceHash: policy.Digest([]byte("approved workflow"))}
+			workflow.Definition.Revision = strings.Repeat("a", 40)
+			approved, err := project.ResolvePolicy(cfg, workflow)
+			if err != nil {
+				return nil, err
+			}
+			workflow.Config.Policy = approved
+			return project.New(project.Config{Project: cfg, Workflow: workflow}, project.Dependencies{Runner: blockingRunner{}})
 		},
 	})
 	if err != nil {
@@ -41,6 +49,7 @@ func TestManagerReconcileHotAppliesGlobalRateWindowPacing(t *testing.T) {
 	if !ok {
 		t.Fatal("project alpha missing before reconcile")
 	}
+	approved := before.Workflow().Config.Policy
 	off := workflowconfig.RateWindowPacing{Mode: workflowconfig.RateWindowPacingOff}.Normalized()
 	result, err := manager.Reconcile(context.Background(), project.ManagerConfig{Projects: []globalconfig.Project{{ID: "alpha", Weight: 1, GlobalRateWindowPacing: off}}})
 	if err != nil {
@@ -59,6 +68,13 @@ func TestManagerReconcileHotAppliesGlobalRateWindowPacing(t *testing.T) {
 	state, err := after.Orchestrator().State(context.Background())
 	if err != nil {
 		t.Fatalf("State() error = %v", err)
+	}
+	current, err := project.ResolvePolicy(globalconfig.Project{ID: "alpha", Weight: 1, GlobalRateWindowPacing: off}, after.Workflow())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := current.Match(approved); err != nil || after.Workflow().Config.Policy.ID != approved.ID {
+		t.Fatalf("running project lost its approved policy: %v", err)
 	}
 	if got := state.RateWindowPacing.Mode; got != workflowconfig.RateWindowPacingOff {
 		t.Fatalf("State().RateWindowPacing.Mode = %q, want off", got)

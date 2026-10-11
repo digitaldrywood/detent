@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import React from "react";
 
+import { readTimelineCards } from "../../src/app/adapters/timelineEntries.ts";
+import { OperatorActionPreview } from "../../src/app/components/OperatorActionPreview.tsx";
 import { Timeline } from "../../src/app/components/Timeline.tsx";
 import type { Message } from "../../src/contracts/index.ts";
 import {
@@ -42,6 +44,49 @@ function renderTimeline(
 }
 
 describe("Timeline", () => {
+  it.each([
+    [["Blocked", "Blocked"], "Children will be created in Blocked"],
+    [["Todo", "Todo"], "Children will be created in Todo · work starts as soon as a runner is free"],
+    [["Backlog", "Backlog"], "Children will be created in Backlog"],
+    [["Backlog", "Todo"], "Mixed lanes"],
+  ])("states the split lanes before the children: %j", (lanes, summary) => {
+    render(<OperatorActionPreview action={{
+      kind: "propose_issue_split",
+      arguments: {
+        parent_work_item_id: "wi_parent",
+        children: lanes.map((state, index) => ({ title: `Child ${index + 1}`, description: "Scoped work", state })),
+        edges: [],
+      },
+    }} />);
+    const proposal = screen.getByTestId("issue-split-proposal");
+    expect(proposal.firstElementChild).toBe(screen.getByTestId("issue-split-lane-summary"));
+    expect(proposal.firstElementChild?.textContent).toBe(summary);
+    expect([...proposal.querySelectorAll("section > p")].map((label) => label.textContent))
+      .toEqual(lanes.map((lane) => `${lane} · No priority`));
+  });
+
+  it.each([
+    [{ action: { kind: "propose_issue_split" }, conversation_id: "conv_reply" }, true],
+    [{ action: null, conversation_id: "conv_reply" }, false],
+    [{ action: {}, conversation_id: 123 }, false],
+    [null, false],
+  ])("reads an inline action only with its conversation: %j", (action, allowed) => {
+    const cards = readTimelineCards(assistantMessage({ kind: "status", data: { operator_action: action } }));
+    expect(cards?.action !== undefined).toBe(allowed);
+  });
+
+  it.each([
+    ["same turn", "turn_reply", false],
+    ["different turn", "turn_other", true],
+  ])("keeps the empty placeholder only without content in the %s", (_name, laterTurn, placeholder) => {
+    const { container } = renderTimeline({ messages: [
+      assistantMessage({ id: "empty", text: "", turn_id: "turn_reply" }),
+      assistantMessage({ id: "later", text: "The split is ready.", turn_id: laterTurn }),
+    ] });
+    expect(container.textContent?.includes("(empty response)")).toBe(placeholder);
+    expect(container.textContent).toContain("The split is ready.");
+  });
+
   it("renders a user bubble and an assistant turn", () => {
     renderTimeline();
     expect(screen.getAllByTestId("user-turn")).toHaveLength(1);
@@ -194,7 +239,10 @@ describe("Timeline", () => {
     expect(document.querySelector(".dc-delivery-chip .dc-err")).toBeNull();
   });
 
-  it("names a missing coordinator instead of reporting a bare failure", () => {
+  it.each([
+    { code: "coordinator_unavailable", label: "No coordinator is available for this project", explanation: "Enrol a runner for this project so it can answer chats." },
+    { code: "coordinator_error", label: "Reply failed", explanation: "The hub stored this message, but the coordinator failed to answer. Retry to request another turn." },
+  ])("explains the failed stage for $code", ({ code, label, explanation }) => {
     renderTimeline({
       ...unlinked,
       messages: [],
@@ -209,17 +257,18 @@ describe("Timeline", () => {
           receiptStatus: null,
           status: "failed",
           error: "No coordinator backend is configured.",
-          errorCode: "coordinator_unavailable",
+          errorCode: code,
           retryable: false,
         },
       ],
     });
-    expect(screen.getByTestId("delivery-label").textContent).toBe(
-      "No coordinator is available for this project",
-    );
-    expect(
-      screen.getByTitle("Enrol a runner for this project so it can answer chats."),
-    ).toBeTruthy();
+    expect(screen.getByTestId("delivery-label").textContent).toBe(label);
+    expect(screen.getByTitle(explanation)).toBeTruthy();
+  });
+
+  it("does not claim a persisted failed message never reached the hub", () => {
+    renderTimeline({ ...unlinked, messages: [userMessage({ delivery: "failed" })] });
+    expect(screen.getByTitle("The message or its reply failed. Check the conversation error before retrying.")).toBeTruthy();
   });
 
   it("renders a coordinator proposal as a card with the handoff action", () => {

@@ -1,39 +1,43 @@
-// `/platform` on the shared entry: the Detent staff console. It lists every
-// registered organization with its provisioning state, shows the signup
-// allowlist and where it is configured, and reports service health from the
-// entry's own admission readings. Support access starts through the existing
-// `/support/start` form, so the entry re-checks the actor, CSRF and reason.
 import React from "react";
+import { Link, Outlet, useRouterState } from "@tanstack/react-router";
+import { Activity, ArrowUpRight, Building2, ListChecks, ScrollText, Search, Users, UserSearch } from "lucide-react";
+
+import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
+import { WorkspacePageContainer } from "../../components/WorkspacePageContainer.tsx";
+import { DetentWordmark } from "../../components/DetentWordmark.tsx";
+import { Empty, EmptyHeader, EmptyTitle, EmptyDescription } from "../../components/ui/empty.tsx";
+import { Skeleton } from "../../components/ui/skeleton.tsx";
+import { SettingsSection } from "../settings/settingsLayout.tsx";
+import { PlatformSearch } from "./PlatformSearch.tsx";
+import { PlatformActionsContext } from "./PlatformPageActions.tsx";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarSeparator,
+  SidebarTrigger,
+  useSidebar,
+} from "../../components/ui/sidebar.tsx";
 
 import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
+import { usePlatformResource } from "./usePlatformResource.ts";
+import { usePageTitle } from "../pageTitle.ts";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../../components/ui/table.tsx";
-import { DetentCloudLogo } from "../account/Login.tsx";
-import { useResource } from "../account/useResource.ts";
-import {
+  type EntryOrganizations,
   type PlatformAllowlist,
   type PlatformHealth,
-  type PlatformOrganization,
-  type PlatformOrganizations,
-  SIGN_IN_PLATFORM,
-  SUPPORT_REASONS,
 } from "./api.ts";
-import { ComplimentaryPlansPanel } from "./ComplimentaryPlans.tsx";
+import { PlatformTenants } from "./PlatformTenants.tsx";
+import { PlatformStaff } from "./PlatformStaff.tsx";
 import { Problem, SignOut, useEntryApi } from "./EntryScreens.tsx";
-
-const UNAVAILABLE_LABELS: Record<string, string> = {
-  plan: "plan",
-  grants: "grants",
-  member_count: "member count",
-  runner_count: "runner count",
-};
 
 function Panel({
   title,
@@ -45,26 +49,13 @@ function Panel({
   readonly children: React.ReactNode;
 }): React.ReactElement {
   return (
-    <section aria-label={title} className="rounded-2xl border border-border bg-card p-5">
-      <h2 className="text-base font-semibold">{title}</h2>
-      {description === undefined ? null : (
-        <p className="mt-1 text-[13px] text-muted-foreground">{description}</p>
-      )}
-      <div className="mt-4">{children}</div>
-    </section>
+    <SettingsSection title={title} aria-label={title}>
+      <div className="p-4">
+        {description === undefined ? null : <p className="mb-4 text-sm text-muted-foreground">{description}</p>}
+        {children}
+      </div>
+    </SettingsSection>
   );
-}
-
-function stateVariant(state: string): "success" | "error" | "warning" | "outline" {
-  if (state === "ready") return "success";
-  if (state === "failed") return "error";
-  if (state === "requested" || state === "allocating" || state === "deleting") return "warning";
-  return "outline";
-}
-
-function formatDate(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toISOString().slice(0, 10);
 }
 
 export function formatBytes(value: number): string {
@@ -76,124 +67,6 @@ export function formatBytes(value: number): string {
     unit += 1;
   }
   return `${unit === 0 ? amount : amount.toFixed(1)} ${units[unit]}`;
-}
-
-function SupportAction({
-  organization,
-  csrf,
-}: {
-  readonly organization: PlatformOrganization;
-  readonly csrf: string;
-}): React.ReactElement {
-  if (!organization.can_support) {
-    return (
-      <span className="text-muted-foreground">
-        {organization.state === "ready" ? "Support actors only" : "Not ready"}
-      </span>
-    );
-  }
-  const reasonId = `support-reason-${organization.id}`;
-  return (
-    <form method="post" action="/support/start" className="flex flex-wrap items-center gap-2">
-      <input type="hidden" name="organization" value={organization.id} />
-      <input type="hidden" name="csrf" value={csrf} />
-      <label htmlFor={reasonId} className="sr-only">
-        Support reason for {organization.name}
-      </label>
-      <select
-        id={reasonId}
-        name="reason"
-        required
-        defaultValue=""
-        className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-      >
-        <option value="" disabled>
-          Reason…
-        </option>
-        {SUPPORT_REASONS.map((reason) => (
-          <option key={reason} value={reason}>
-            {reason}
-          </option>
-        ))}
-      </select>
-      <Button type="submit" size="sm" variant="outline">
-        Start support access
-      </Button>
-    </form>
-  );
-}
-
-export function PlatformOrganizationsPanel({
-  value,
-}: {
-  readonly value: PlatformOrganizations;
-}): React.ReactElement {
-  const unavailable = value.unavailable.map((field) => UNAVAILABLE_LABELS[field] ?? field);
-  return (
-    <Panel
-      title="Organizations"
-      description={
-        unavailable.length === 0
-          ? undefined
-          : `Not shown: ${unavailable.join(", ")}. The entry cannot read them without a new tenant query.`
-      }
-    >
-      {value.organizations.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No organizations are registered.</p>
-      ) : (
-        <Table aria-label="Organizations">
-          <TableHeader>
-            <TableRow>
-              <TableHead>Organization</TableHead>
-              <TableHead>State</TableHead>
-              <TableHead>Created by</TableHead>
-              <TableHead>Created</TableHead>
-              <TableHead>Billing</TableHead>
-              <TableHead>Support access</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {value.organizations.map((organization) => (
-              <TableRow key={organization.id}>
-                <TableCell>
-                  <div className="font-medium">{organization.name}</div>
-                  <div className="font-mono text-muted-foreground">{organization.id}</div>
-                </TableCell>
-                <TableCell>
-                  <Badge variant={stateVariant(organization.state)}>{organization.state}</Badge>
-                  {organization.error_code === "" ? null : (
-                    <div className="mt-1 text-destructive-foreground">
-                      Last error: {organization.error_code}
-                      {organization.step === "" ? "" : ` after ${organization.step}`}
-                      {organization.error_detail === undefined || organization.error_detail === "" ? "" : ` (${organization.error_detail})`}
-                    </div>
-                  )}
-                </TableCell>
-                <TableCell>
-                  {organization.creator_email === "" ? (
-                    <span className="text-muted-foreground">Registered externally</span>
-                  ) : (
-                    organization.creator_email
-                  )}
-                </TableCell>
-                <TableCell>{formatDate(organization.created_at)}</TableCell>
-                <TableCell>
-                  {organization.billing.available ? (
-                    organization.billing.status
-                  ) : (
-                    <span className="text-muted-foreground">Unavailable</span>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <SupportAction organization={organization} csrf={value.csrf} />
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
-    </Panel>
-  );
 }
 
 export function PlatformAllowlistPanel({ value }: { readonly value: PlatformAllowlist }): React.ReactElement {
@@ -275,61 +148,201 @@ export function PlatformHealthPanel({ value }: { readonly value: PlatformHealth 
   );
 }
 
+const PLATFORM_SECTIONS = [
+  { id: "tenants", title: "Tenants", icon: Building2 },
+  { id: "users", title: "Users", icon: UserSearch },
+  { id: "staff", title: "Staff", icon: Users },
+  { id: "audit", title: "Audit log", icon: ScrollText },
+  { id: "health", title: "Health", icon: Activity },
+  { id: "allowlist", title: "Sign-up allowlist", icon: ListChecks },
+] as const;
+
+type PlatformSection = typeof PLATFORM_SECTIONS[number]["id"];
+
+const PLATFORM_ROLES: Record<string, string> = {
+  admin: "Admin",
+  support: "Support",
+  billing: "Billing",
+  viewer: "Viewer",
+};
+
+const PlatformRoleContext = React.createContext("");
+const PlatformCSRFContext = React.createContext("");
+
+function HealthBadge({ value }: { readonly value: PlatformHealth }): React.ReactElement {
+  const admission = value.admission;
+  const down = !value.registry.ok;
+  const degraded = (value.tenants !== undefined && value.tenants.running < value.tenants.expected) ||
+    (admission !== undefined && ((admission.disk_measured && admission.free_disk_bytes < admission.min_free_disk_bytes) ||
+      (admission.memory_measured && admission.available_memory_bytes < admission.min_available_memory_bytes)));
+  return <Badge variant={down ? "error" : degraded ? "warning" : "success"}>{down ? "Down" : degraded ? "Degraded" : "OK"}</Badge>;
+}
+
+function PlatformNavigation({ role, email, csrf, organizations, count, health, onSearch }: {
+  readonly role: string;
+  readonly email: string;
+  readonly csrf: string;
+  readonly organizations: EntryOrganizations["organizations"];
+  readonly count?: number;
+  readonly health?: PlatformHealth | null;
+  readonly onSearch: () => void;
+}): React.ReactElement {
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const { isMobile, setOpenMobile } = useSidebar();
+  const group = (title: string, ids: readonly PlatformSection[]) => (
+    <SidebarGroup>
+      <SidebarGroupLabel><span>{title}</span><span className="ml-2 h-px flex-1 bg-sidebar-border" /></SidebarGroupLabel>
+      <SidebarMenu>
+        {ids.map((id) => PLATFORM_SECTIONS.find((section) => section.id === id)!).filter((section) => section.id !== "staff" || role === "admin").map((section) => {
+          const href = `/platform/${section.id}`;
+          const active = pathname === href;
+          return (
+            <SidebarMenuItem key={section.id}>
+              <SidebarMenuButton isActive={active} render={<Link to={href as never} aria-label={section.title} aria-current={active ? "page" : undefined} />} onClick={() => setOpenMobile(false)}>
+                <section.icon /><span className="flex-1">{section.title}</span>
+                {section.id === "tenants" && count !== undefined ? <Badge variant="outline">{count}</Badge> : null}
+                {section.id === "health" && health ? <HealthBadge value={health} /> : null}
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          );
+        })}
+      </SidebarMenu>
+    </SidebarGroup>
+  );
+  return (
+    <Sidebar className={isMobile ? "w-[calc(100vw-var(--spacing)*3)]" : "absolute inset-y-0 h-full"}>
+      <SidebarHeader>
+        <div className="flex h-[var(--workspace-topbar-height)] items-center gap-2 px-2">
+          <DetentWordmark aria-hidden="true" className="h-4 w-auto shrink-0" />
+          <span className="text-sm font-semibold">Detent Cloud</span><Badge variant="info">Platform</Badge>
+        </div>
+        {role === "" ? null : <Button variant="outline" size="sm" onClick={() => { setOpenMobile(false); onSearch(); }}>
+          <Search /><span className="flex-1 text-left">Find tenant or user</span><kbd className="text-xs text-muted-foreground">⌘K</kbd>
+        </Button>}
+      </SidebarHeader>
+      <SidebarContent>
+        {role === "" ? null : <nav aria-label="Platform navigation">
+          {group("Customers", ["tenants", "users", "audit"])}
+          {group("System", ["health", "allowlist", "staff"])}
+        </nav>}
+        <SidebarGroup>
+          <SidebarGroupLabel><span>Your organizations</span><span className="ml-2 h-px flex-1 bg-sidebar-border" /></SidebarGroupLabel>
+          <nav aria-label="Your organizations">
+            <SidebarMenu>
+              {organizations.map((organization) => <SidebarMenuItem key={organization.id}>
+                <SidebarMenuButton render={<a href={organization.url} />}>
+                  <Building2 /><span className="flex-1">{organization.name}</span><ArrowUpRight />
+                </SidebarMenuButton>
+              </SidebarMenuItem>)}
+            </SidebarMenu>
+          </nav>
+        </SidebarGroup>
+      </SidebarContent>
+      {email === "" ? null : <><SidebarSeparator /><SidebarFooter role="contentinfo" aria-label="Platform account">
+        <span className="truncate px-2 text-sm" title={email}>{email}</span>
+        <div className="flex items-center justify-between pl-2">
+          <span className="text-xs text-muted-foreground">{PLATFORM_ROLES[role] ?? role}</span><SignOut csrf={csrf} />
+        </div>
+      </SidebarFooter></>}
+    </Sidebar>
+  );
+}
+
 export function PlatformConsole(): React.ReactElement {
   const api = useEntryApi();
-  const organizations = useResource<PlatformOrganizations>(() => api.platformOrganizations(), [api]);
-  const allowlist = useResource<PlatformAllowlist>(() => api.platformAllowlist(), [api]);
-  const health = useResource<PlatformHealth>(() => api.platformHealth(), [api]);
-  const unauthenticated = [organizations.error, allowlist.error, health.error].some((error) => error?.status === 401);
-  React.useEffect(() => {
-    if (unauthenticated) globalThis.location?.assign(SIGN_IN_PLATFORM);
-  }, [unauthenticated]);
-  const value = organizations.value;
+  const session = usePlatformResource(() => api.session(), [api]);
+  const organizations = usePlatformResource(() => api.organizations(), [api]);
+  const value = session.value;
+  const role = value?.platform_role ?? "";
+  const tenants = usePlatformResource(() => role === "" ? Promise.resolve(null) : api.platformOrganizations(), [api, role]);
+  const health = usePlatformResource(() => role === "" ? Promise.resolve(null) : api.platformHealth(), [api, role]);
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const section = PLATFORM_SECTIONS.find((section) => pathname === `/platform/${section.id}`);
+  usePageTitle(section?.title ?? "Platform", "Platform");
+  const [searchOpen, setSearchOpen] = React.useState(false);
+  const [actions, setActions] = React.useState<HTMLDivElement | null>(null);
+  const error = session.error ?? organizations.error;
+  const denied = role === "" || (section?.id === "staff" && role !== "admin");
   return (
-    <div className="flex-1 overflow-y-auto">
-      <header className="flex flex-wrap items-center gap-3 border-b border-border/60 px-4 py-3 sm:px-8">
-        <DetentCloudLogo />
-        <Badge variant="info">Platform</Badge>
-        <span className="flex-1" />
-        {value === undefined ? null : (
-          <>
-            <span className="text-sm text-muted-foreground">{value.email}</span>
-            <SignOut csrf={value.csrf} />
-          </>
-        )}
-      </header>
-      <main className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-6 sm:px-8">
-        <h1 className="text-2xl font-semibold tracking-[-0.02em]">Platform console</h1>
-        {organizations.error?.status === 403 ? (
-          <Problem message="The platform console is limited to Detent staff." />
-        ) : (
-          <>
-            <Problem message={organizations.error?.message ?? null} />
-            {value === undefined ? (
-              <p className="text-sm text-muted-foreground">Loading organizations…</p>
-            ) : (
-              <>
-                <PlatformOrganizationsPanel value={value} />
-                {value.can_grant === true ? (
-                  <ComplimentaryPlansPanel organizations={value.organizations} csrf={value.csrf} />
-                ) : null}
-              </>
-            )}
-            <div className="grid gap-5 lg:grid-cols-2">
-              {allowlist.value === undefined ? (
-                <Problem message={allowlist.error?.message ?? null} />
-              ) : (
-                <PlatformAllowlistPanel value={allowlist.value} />
-              )}
-              {health.value === undefined ? (
-                <Problem message={health.error?.message ?? null} />
-              ) : (
-                <PlatformHealthPanel value={health.value} />
-              )}
-            </div>
-          </>
-        )}
-      </main>
-    </div>
+    <PlatformRoleContext.Provider value={role}>
+      <PlatformCSRFContext.Provider value={value?.csrf ?? ""}>
+        <PlatformActionsContext.Provider value={actions}>
+          <SidebarProvider open className="relative h-full min-h-0 flex-1">
+            <PlatformNavigation role={role} email={value?.email ?? ""} csrf={value?.csrf ?? ""} organizations={organizations.value?.organizations ?? []}
+              count={tenants.value?.organizations.length} health={health.value} onSearch={() => setSearchOpen(true)} />
+            <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+              <WorkspacePageHeader className="border-b border-border">
+                <SidebarTrigger className="md:hidden" />
+                <h1 className="min-w-0 truncate text-sm font-medium">{section?.title ?? "Platform"}</h1>
+                <div ref={setActions} className="ml-auto flex shrink-0 items-center gap-2" />
+              </WorkspacePageHeader>
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <WorkspacePageContainer width="wide">
+                  <Problem message={error?.message ?? null} />
+                  {value === undefined ? (error === null ? <Skeleton className="h-48" aria-label="Loading platform console" /> : null) : denied ? (
+                    <Empty><EmptyHeader><EmptyTitle>You don't have access to this page</EmptyTitle>
+                      {role === "" ? <EmptyDescription>The platform console is limited to Detent staff.</EmptyDescription> : null}
+                    </EmptyHeader></Empty>
+                  ) : <Outlet />}
+                </WorkspacePageContainer>
+              </div>
+            </main>
+            {role === "" ? null : <PlatformSearch open={searchOpen} onOpenChange={setSearchOpen} tenants={tenants.value?.organizations ?? []} tenantError={tenants.error} />}
+          </SidebarProvider>
+        </PlatformActionsContext.Provider>
+      </PlatformCSRFContext.Provider>
+    </PlatformRoleContext.Provider>
+  );
+}
+
+export function PlatformPageTitle({ section }: { readonly section: PlatformSection }): React.ReactElement {
+  const title = PLATFORM_SECTIONS.find((item) => item.id === section)!.title;
+  usePageTitle(title, "Platform");
+  return <></>;
+}
+
+export function PlatformTenantsPage(): React.ReactElement {
+  const role = React.useContext(PlatformRoleContext);
+  return <><PlatformPageTitle section="tenants" /><PlatformTenants role={role} /></>;
+}
+
+export function PlatformHealthPage(): React.ReactElement {
+  const api = useEntryApi();
+  const health = usePlatformResource(() => api.platformHealth(), [api]);
+  return (
+    <>
+      <PlatformPageTitle section="health" />
+      <Problem message={health.error?.message ?? null} />
+      {health.value === undefined ? (
+        health.loading ? <p className="text-sm text-muted-foreground">Loading health…</p> : null
+      ) : <PlatformHealthPanel value={health.value} />}
+    </>
+  );
+}
+
+export function PlatformAllowlistPage(): React.ReactElement {
+  const api = useEntryApi();
+  const allowlist = usePlatformResource(() => api.platformAllowlist(), [api]);
+  return (
+    <>
+      <PlatformPageTitle section="allowlist" />
+      <Problem message={allowlist.error?.message ?? null} />
+      {allowlist.value === undefined ? (
+        allowlist.loading ? <p className="text-sm text-muted-foreground">Loading allowlist…</p> : null
+      ) : <PlatformAllowlistPanel value={allowlist.value} />}
+    </>
+  );
+}
+
+export function PlatformSectionPage({ section }: { readonly section: "staff" | "audit" }): React.ReactElement {
+  const role = React.useContext(PlatformRoleContext);
+  const csrf = React.useContext(PlatformCSRFContext);
+  usePageTitle(section === "staff" ? "Staff" : "Audit", "Platform");
+  if (section === "staff" && role === "admin") return <PlatformStaff csrf={csrf} />;
+  return (
+    <>
+      <PlatformPageTitle section={section} />
+      {section === "staff" ? <Problem message="You do not have permission to do that." /> : null}
+    </>
   );
 }

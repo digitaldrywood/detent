@@ -90,13 +90,30 @@ type RunRecord struct {
 }
 
 type IssueRecord struct {
-	ID          string    `json:"id,omitempty"`
-	Identifier  string    `json:"identifier,omitempty"`
-	URL         string    `json:"url,omitempty"`
-	ProposalID  string    `json:"proposal_id,omitempty"`
-	Fingerprint string    `json:"fingerprint,omitempty"`
-	EvaluatedAt time.Time `json:"evaluated_at,omitzero"`
-	SkipReason  string    `json:"skip_reason,omitempty"`
+	ID          string             `json:"id,omitempty"`
+	Identifier  string             `json:"identifier,omitempty"`
+	URL         string             `json:"url,omitempty"`
+	ProposalID  string             `json:"proposal_id,omitempty"`
+	Fingerprint string             `json:"fingerprint,omitempty"`
+	EvaluatedAt time.Time          `json:"evaluated_at,omitzero"`
+	SkipReason  string             `json:"skip_reason,omitempty"`
+	Evaluation  *EvaluationOutcome `json:"evaluation,omitempty"`
+}
+
+type EvaluationOutcome struct {
+	Disposition            string             `json:"disposition"`
+	Confidence             float64            `json:"confidence"`
+	AutoAdmitMinConfidence float64            `json:"auto_admit_min_confidence"`
+	AutoQualified          bool               `json:"auto_qualified"`
+	Criteria               []CriterionOutcome `json:"criteria"`
+	CriteriaTotal          int                `json:"criteria_total"`
+	CriteriaTruncated      bool               `json:"criteria_truncated"`
+}
+
+type CriterionOutcome struct {
+	Index       int    `json:"index"`
+	Fingerprint string `json:"fingerprint"`
+	Matched     bool   `json:"matched"`
 }
 
 type MalformedStatus string

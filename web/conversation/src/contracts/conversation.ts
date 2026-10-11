@@ -5,6 +5,7 @@
 // side is expected to marshal/unmarshal the same files, so a change here that
 // is not mirrored there breaks a cross-language test on purpose.
 import * as Schema from "effect/Schema";
+import { WorkspaceCapabilities } from "./work.ts";
 
 // --- Identities -------------------------------------------------------------
 
@@ -24,11 +25,6 @@ export const COMMAND_KEY_MAX_BYTES = 128;
 export const ConversationVisibility = Schema.Literals(["private", "shared"]);
 export type ConversationVisibility = typeof ConversationVisibility.Type;
 
-/**
- * Settled replaces Archive (decisions.md §13.9, §14). A conversation is
- * `active` or `settled`; the hub dropped `archived` with the rest of the
- * archive surface.
- */
 export const ConversationStatus = Schema.Literals(["active", "settled"]);
 export type ConversationStatus = typeof ConversationStatus.Type;
 
@@ -296,7 +292,10 @@ export const Conversation = Schema.Struct({
   project_id: Schema.String,
   title: Schema.String,
   visibility: ConversationVisibility,
+  origin: Schema.optional(Schema.Literals(["user", "worker"])),
   status: ConversationStatus,
+  archived: Schema.optional(Schema.Boolean),
+  subject_work_item_id: Schema.optional(Schema.NullOr(WorkItemId)),
   work_item_id: Schema.NullOr(WorkItemId),
   linked_at: Schema.NullOr(Schema.String),
   work_item: Schema.NullOr(WorkItem),
@@ -594,7 +593,18 @@ export interface ConversationFrame {
 
 // --- Responses --------------------------------------------------------------
 
+export const ProviderSkill = Schema.Struct({
+  name: Schema.String,
+  description: Schema.optional(Schema.String),
+  path: Schema.String,
+  scope: Schema.optional(Schema.String),
+  enabled: Schema.Boolean,
+  userInvocable: Schema.optional(Schema.Boolean),
+  invocation: Schema.optional(Schema.String),
+});
+
 export const ConversationSnapshot = Schema.Struct({
+  skills: Schema.optional(Schema.Array(ProviderSkill)),
   conversation: Conversation,
   messages: Schema.Array(Message),
   questions: Schema.Array(Question),
@@ -635,6 +645,7 @@ export type FirstMessageInput = typeof FirstMessageInput.Type;
 export const CreateConversationRequest = Schema.Struct({
   key: Schema.String,
   title: Schema.optional(Schema.String),
+  subject_work_item_id: Schema.optional(WorkItemId),
   first_message: Schema.optional(FirstMessageInput),
 });
 export type CreateConversationRequest = typeof CreateConversationRequest.Type;
@@ -850,6 +861,7 @@ export const BootstrapProject = Schema.Struct({
   labels: Schema.optional(Schema.Array(Schema.String)),
   priorities: Schema.optional(Schema.Array(Schema.String)),
   coordinator: Schema.optional(Schema.Boolean),
+  capabilities: Schema.optional(WorkspaceCapabilities),
 });
 export type BootstrapProject = typeof BootstrapProject.Type;
 
@@ -883,7 +895,7 @@ export const Bootstrap = Schema.Struct({
    */
   preferences: Schema.optional(PreferenceChoices),
   /** The hub only serves this client when the conversation feature is on. */
-  feature: Schema.Struct({ conversation: Schema.Boolean }),
+  feature: Schema.Struct({ conversation: Schema.Boolean, workspaces: Schema.optional(Schema.Boolean) }),
 });
 export type Bootstrap = typeof Bootstrap.Type;
 

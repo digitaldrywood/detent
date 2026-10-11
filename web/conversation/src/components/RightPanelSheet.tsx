@@ -1,20 +1,18 @@
-import { type ReactNode } from "react";
+import { type ReactNode, useRef } from "react";
 
-import {
-  RIGHT_PANEL_SHEET_CLASS_NAME,
-  RIGHT_PANEL_SHEET_LAYER_CLASS_NAME,
-} from "../rightPanelLayout";
+import { RIGHT_PANEL_SHEET_CLASS_NAME } from "../rightPanelLayout";
 import { Sheet, SheetPopup } from "./ui/sheet";
 
 export function RightPanelSheet(props: {
   animationDurationMs: number;
   children: ReactNode;
   open: boolean;
-  underFloatingPreview?: boolean;
 
   label?: string;
+  focusAsk?: boolean;
   onClose: () => void;
 }) {
+  const popup = useRef<HTMLDivElement>(null);
   return (
     <Sheet
       open={props.open}
@@ -25,17 +23,13 @@ export function RightPanelSheet(props: {
       }}
     >
       <SheetPopup
+        ref={popup}
+        initialFocus={() => props.focusAsk ? (popup.current?.querySelector<HTMLElement>("[data-testid=issue-ask-panel] [role=textbox]") ?? true) : true}
         aria-label={props.label ?? "Right panel"}
         transitionDurationMs={props.animationDurationMs}
         side="right"
         showCloseButton={false}
         keepMounted
-        {...(props.underFloatingPreview
-          ? {
-              backdropClassName: RIGHT_PANEL_SHEET_LAYER_CLASS_NAME,
-              viewportClassName: RIGHT_PANEL_SHEET_LAYER_CLASS_NAME,
-            }
-          : {})}
         className={RIGHT_PANEL_SHEET_CLASS_NAME}
       >
         {props.children}

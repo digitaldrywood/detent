@@ -54,11 +54,15 @@ func (p *Project) Evaluate() {
 		}
 		p.Steps = append(p.Steps, Step{Name: name, State: state, Detail: detail})
 	}
-	add("Repository configuration", p.Policy != nil, "Inspect detent.yaml and WORKFLOW.md on the customer host, then explicitly approve the resolved policy descriptor.")
-	add("Local validation", p.Progress.Doctor && p.Progress.Provider, "User-reported: run detent doctor and sign in to the selected provider on the execution host. Credentials stay local.")
+	enrolled := slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool { return r.Runner.Health == "online" && r.Runner.State == "active" })
+	add("Execution runner", enrolled, "Enroll a host, then prepare its project checkout, detent.yaml and WORKFLOW.md. Enrollment does not require policy approval.")
+	validated := slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool {
+		return r.Runner.Health == "online" && r.Runner.State == "active" && r.LocalChecks != nil && r.LocalChecks.Passed()
+	})
+	add("Local validation", validated, "The runner reports checkout, detent doctor and selected provider sign-in checks. Fix failures on that host, then restart the runner to report fresh results. Credentials stay local.")
+	add("Repository configuration", p.Policy != nil, "Review the policy reported by the runner and explicitly approve it before dispatch.")
 	matching := slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool { return len(r.Exclusions) == 0 })
-	add("Execution runner", p.Policy != nil && matching, "Requires approved project access, matching tags and host selectors, a fresh heartbeat and available capacity.")
 	artifactDetail := "Choose local history or configure the customer S3-compatible service and independent gateway. A binding does not verify storage or promise offline access."
 	add("Artifact history", p.Progress.Artifacts == "local" || p.Progress.Artifacts == "customer" && len(p.Artifacts) > 0, artifactDetail)
-	p.Ready = !slices.ContainsFunc(p.Steps, func(s Step) bool { return s.State != "ready" })
+	p.Ready = matching && !slices.ContainsFunc(p.Steps, func(s Step) bool { return s.State != "ready" })
 }

@@ -11,6 +11,10 @@ import (
 )
 
 func TestCheckDoctorFleetStalenessSurfacesLiveFaults(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")

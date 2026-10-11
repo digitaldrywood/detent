@@ -1,14 +1,20 @@
 package templates
 
 import (
+	"fmt"
 	"strings"
 
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 )
 
 type ChatData struct {
-	Conversation chatpkg.Conversation
-	Error        string
+	ApprovalBasePath string
+	ApprovalPath     string
+	CSRF             string
+	Conversation     chatpkg.Conversation
+	Error            string
+	FormToken        string
+	ActionTokens     map[string]string
 }
 
 func chatMessageClass(message chatpkg.Message) string {
@@ -50,4 +56,24 @@ func chatActionStatus(action chatpkg.Action) string {
 
 func chatActionPath(action chatpkg.Action, decision string) string {
 	return "/api/v1/chat/actions/" + action.ID + "/" + strings.TrimSpace(decision)
+}
+
+func splitPriority(priority *int) string {
+	if priority == nil {
+		return "No priority"
+	}
+	if *priority < 0 || *priority > 3 {
+		return "Unknown priority"
+	}
+	return []string{"Urgent", "High", "Normal", "Low"}[*priority]
+}
+
+func splitNode(position int, split *chatpkg.IssueSplit) string {
+	if position == 0 {
+		return "Parent"
+	}
+	if position < 1 || position > len(split.Children) {
+		return "Unknown child"
+	}
+	return fmt.Sprintf("%d. %s", position, split.Children[position-1].Title)
 }

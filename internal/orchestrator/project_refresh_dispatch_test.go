@@ -18,6 +18,10 @@ import (
 )
 
 func TestProjectRefreshDispatchAvoidsIssueReads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	const count = 150
 	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
 	rest, pages := 0, 0
@@ -278,6 +282,10 @@ func TestDispatchLabelAuthorizationBeforeHydration(t *testing.T) {
 // The incident board must deliver the exact selected identities all the way to
 // the dispatch hook, without dispatch hydration undoing the connector savings.
 func TestProjectRefreshInstanceSelectorCandidateDelivery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	numbers := []int{3531, 3485, 3481, 3480, 1604, 9001, 9002, 9003}
 	lanes := []string{"Todo", "Todo", "Todo", "Todo", "Todo", "Backlog", "Blocked", "Human Review"}
 	for _, lane := range []struct {

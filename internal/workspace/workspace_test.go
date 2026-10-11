@@ -11,70 +11,33 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
-
-const workspacePackageDefaultParallelism = "1"
 
 func TestMain(m *testing.M) {
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}
-	if !hasExplicitTestParallelism(os.Args[1:]) {
-		if err := flag.Set("test.parallel", workspacePackageDefaultParallelism); err != nil {
-			fmt.Fprintf(os.Stderr, "configure workspace test parallelism: %v\n", err)
-			os.Exit(2)
-		}
+	if err := flag.Set("test.parallel", "8"); err != nil {
+		panic(err)
 	}
 	os.Exit(runWorkspaceTests(m))
 }
 
-func TestHasExplicitTestParallelism(t *testing.T) {
-	tests := []struct {
-		name string
-		args []string
-		want bool
-	}{
-		{name: "default"},
-		{name: "unrelated flag", args: []string{"-test.run=LocalGit"}},
-		{name: "single dash value", args: []string{"-test.parallel=4"}, want: true},
-		{name: "single dash separate value", args: []string{"-test.parallel", "4"}, want: true},
-		{name: "double dash value", args: []string{"--test.parallel=4"}, want: true},
-		{name: "double dash separate value", args: []string{"--test.parallel", "4"}, want: true},
-		{name: "before terminator", args: []string{"-test.parallel=4", "--"}, want: true},
-		{name: "after terminator", args: []string{"--", "-test.parallel=4"}},
-		{name: "after positional argument", args: []string{"fixture", "-test.parallel=4"}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := hasExplicitTestParallelism(tt.args); got != tt.want {
-				t.Fatalf("hasExplicitTestParallelism(%q) = %t, want %t", tt.args, got, tt.want)
-			}
-		})
-	}
-}
-
-func hasExplicitTestParallelism(args []string) bool {
-	for _, arg := range args {
-		if arg == "--" || arg == "-" || !strings.HasPrefix(arg, "-") {
-			return false
-		}
-		if arg == "-test.parallel" || arg == "--test.parallel" || strings.HasPrefix(arg, "-test.parallel=") || strings.HasPrefix(arg, "--test.parallel=") {
-			return true
-		}
-	}
-	return false
-}
-
 func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -151,6 +114,10 @@ func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T)
 }
 
 func TestLocalGitCreateSerializesAfterCreateHooksForSharedSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	source := initSourceRepo(t)
@@ -223,6 +190,10 @@ func TestLocalGitCreateSerializesAfterCreateHooksForSharedSource(t *testing.T) {
 }
 
 func TestLocalGitCreateRunsAfterCreateHooksConcurrentlyForDifferentSources(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	hookState := t.TempDir()
@@ -373,6 +344,10 @@ func TestLocalGitInfoForIssueNamespacesKeysByProjectID(t *testing.T) {
 }
 
 func TestLocalGitCreateAndCleanupWithoutHooks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -418,6 +393,10 @@ func TestLocalGitCreateAndCleanupWithoutHooks(t *testing.T) {
 }
 
 func TestLocalGitCreatePrunesMissingRegisteredWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -456,36 +435,6 @@ func TestLocalGitCreatePrunesMissingRegisteredWorktree(t *testing.T) {
 	if got := strings.TrimSpace(runGit(t, second.Path, "branch", "--show-current")); got != first.Branch {
 		t.Fatalf("second worktree branch = %q, want %q", got, first.Branch)
 	}
-}
-
-func TestLocalGitCreateClassifiesOccupiedBranch(t *testing.T) {
-	t.Parallel()
-
-	source := initSourceRepo(t)
-	root := filepath.Join(t.TempDir(), "workspaces")
-	backend, err := NewLocalGit(LocalGitOptions{
-		Root:       root,
-		SourceRoot: source,
-		AutoBranch: true,
-	})
-	if err != nil {
-		t.Fatalf("NewLocalGit() error = %v", err)
-	}
-	occupiedPath := filepath.Join(t.TempDir(), "occupied-worktree")
-	runGit(t, source, "worktree", "add", "-b", "detent/dd-conflict", occupiedPath, "HEAD")
-
-	_, err = backend.Create(context.Background(), Issue{Identifier: "DD-CONFLICT"})
-	if err == nil {
-		t.Fatal("Create() error = nil, want occupied branch error")
-	}
-	var heldErr *BranchHeldError
-	if !errors.As(err, &heldErr) {
-		t.Fatalf("Create() error = %T, want *BranchHeldError", err)
-	}
-	if heldErr.Branch != "detent/dd-conflict" {
-		t.Fatalf("BranchHeldError branch = %q, want detent/dd-conflict", heldErr.Branch)
-	}
-	requireSameFile(t, heldErr.Path, occupiedPath)
 }
 
 func TestRunWorktreeAddWithPrune(t *testing.T) {
@@ -595,6 +544,10 @@ func TestRunWorktreeAddWithPrune(t *testing.T) {
 }
 
 func TestLocalGitCreateBasesNewBranchOnFetchedRemoteDefault(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -654,6 +607,10 @@ func TestLocalGitCreateBasesNewBranchOnFetchedRemoteDefault(t *testing.T) {
 }
 
 func TestLocalGitCreateDoesNotFallBackWhenOriginIsUnavailable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -688,6 +645,10 @@ func TestLocalGitCreateDoesNotFallBackWhenOriginIsUnavailable(t *testing.T) {
 }
 
 func TestLocalGitCreateSerializesRemoteOperations(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -750,6 +711,10 @@ func TestLocalGitCreateSerializesRemoteOperations(t *testing.T) {
 }
 
 func TestLocalGitPrepareMergeRebasesAndPushesCleanBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -796,7 +761,7 @@ func TestLocalGitPrepareMergeRebasesAndPushesCleanBranch(t *testing.T) {
 	if result.Status != MergePrepareStatusClean {
 		t.Fatalf("PrepareMerge() status = %q, want clean", result.Status)
 	}
-	if result.DiffStat != (DiffStat{}) {
+	if !result.DiffStat.IsEmpty() {
 		t.Fatalf("PrepareMerge() DiffStat = %#v, want zero", result.DiffStat)
 	}
 	if !result.HeadChanged {
@@ -821,6 +786,10 @@ func TestLocalGitPrepareMergeRebasesAndPushesCleanBranch(t *testing.T) {
 }
 
 func TestLocalGitPrepareMergeUsesDevBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -913,73 +882,137 @@ func testLocalGitPrepareMergeUsesDevBranch(t *testing.T, remoteDefault string, o
 }
 
 func TestLocalGitPrepareMergeAbortsConflictingRebase(t *testing.T) {
-	t.Parallel()
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
 
-	source := initSourceRepo(t)
-	remote := initBareRemote(t)
-	runGit(t, source, "remote", "add", "origin", remote)
-	runGit(t, source, "push", "-u", "origin", "main")
+	for _, tt := range []struct {
+		name         string
+		commits      int
+		failSubjects bool
+	}{
+		{name: "target intent", commits: 1},
+		{name: "subject lookup is best effort", commits: 1, failSubjects: true},
+		{name: "bounded target history", commits: 42},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if !tt.failSubjects {
+				t.Parallel()
+			} else {
+				skipWindows(t)
+			}
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
 
-	root := filepath.Join(t.TempDir(), "workspaces")
-	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
-		Root:       root,
-		SourceRoot: source,
-		AutoBranch: true,
-	})
-	if err != nil {
-		t.Fatalf("NewBackend() error = %v", err)
-	}
-	preparer, ok := backend.(MergePreparer)
-	if !ok {
-		t.Fatal("backend does not implement MergePreparer")
-	}
-	issue := Issue{Identifier: "DD-CONFLICT"}
-	info, err := backend.Create(context.Background(), issue)
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("feature\n"), 0o600); err != nil {
-		t.Fatalf("write feature README: %v", err)
-	}
-	runGit(t, info.Path, "add", "README.md")
-	runGit(t, info.Path, "commit", "-m", "feature conflict")
+			root := filepath.Join(t.TempDir(), "workspaces")
+			backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+				Root:       root,
+				SourceRoot: source,
+				AutoBranch: true,
+			})
+			if err != nil {
+				t.Fatalf("NewBackend() error = %v", err)
+			}
+			preparer, ok := backend.(MergePreparer)
+			if !ok {
+				t.Fatal("backend does not implement MergePreparer")
+			}
+			issue := Issue{Identifier: "DD-CONFLICT"}
+			info, err := backend.Create(context.Background(), issue)
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("feature\n"), 0o600); err != nil {
+				t.Fatalf("write feature README: %v", err)
+			}
+			runGit(t, info.Path, "add", "README.md")
+			runGit(t, info.Path, "commit", "-m", "feature conflict")
 
-	if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("main\n"), 0o600); err != nil {
-		t.Fatalf("write main README: %v", err)
-	}
-	runGit(t, source, "add", "README.md")
-	runGit(t, source, "commit", "-m", "main conflict")
-	runGit(t, source, "push", "origin", "main")
+			if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("main\n"), 0o600); err != nil {
+				t.Fatalf("write main README: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(source, "other.txt"), []byte("unrelated"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, source, "add", "other.txt")
+			runGit(t, source, "commit", "-m", "unrelated target behavior")
+			runGit(t, source, "add", "README.md")
+			runGit(t, source, "commit", "-m", "main conflict")
+			for n := 1; n < tt.commits; n++ {
+				if err := os.WriteFile(filepath.Join(source, "README.md"), []byte(fmt.Sprintf("target %d\n", n)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, source, "add", "README.md")
+				runGit(t, source, "commit", "-m", fmt.Sprintf("target conflict %d", n))
+			}
+			runGit(t, source, "push", "origin", "main")
 
-	result, err := preparer.PrepareMerge(context.Background(), info, issue, MergePrepareOptions{})
-	if err != nil {
-		t.Fatalf("PrepareMerge() error = %v", err)
-	}
-	if result.Status != MergePrepareStatusConflict {
-		t.Fatalf("PrepareMerge() status = %q, want conflict", result.Status)
-	}
-	if len(result.ConflictPaths) != 1 || result.ConflictPaths[0] != "README.md" {
-		t.Fatalf("conflict paths = %v, want README.md", result.ConflictPaths)
-	}
-	if got := strings.TrimSpace(runGit(t, info.Path, "status", "--short")); got != "" {
-		t.Fatalf("status after aborted rebase = %q, want clean", got)
-	}
-	if got := strings.TrimSpace(runGit(t, info.Path, "branch", "--show-current")); got != info.Branch {
-		t.Fatalf("branch after aborted rebase = %q, want %q", got, info.Branch)
-	}
-	if got := readFile(t, filepath.Join(info.Path, "README.md")); got != "feature\n" {
-		t.Fatalf("README after aborted rebase = %q, want feature branch content", got)
-	}
-	inProgress, err := rebaseInProgress(context.Background(), info.Path)
-	if err != nil {
-		t.Fatalf("rebaseInProgress() error = %v", err)
-	}
-	if inProgress {
-		t.Fatal("rebase still in progress after PrepareMerge conflict")
+			if tt.failSubjects {
+				realGit, err := exec.LookPath("git")
+				if err != nil {
+					t.Fatal(err)
+				}
+				directory := t.TempDir()
+				script := "#!/bin/sh\nif [ \"$4\" = \"log\" ]; then exit 29; fi\nexec " + shellQuote(realGit) + " \"$@\"\n"
+				if err := os.WriteFile(filepath.Join(directory, "git"), []byte(script), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+				subjects, err := mergeTargetCommitSubjects(t.Context(), info.Path, "HEAD", "main", []string{"README.md"})
+				if len(subjects) != 0 || err == nil || !strings.Contains(err.Error(), "read merge target commit subjects") {
+					t.Fatalf("failed subject lookup = %v, %v", subjects, err)
+				}
+				var commandErr *CommandError
+				if !errors.As(err, &commandErr) || commandErr.ExitCode != 29 {
+					t.Fatalf("subject lookup error = %v, want wrapped exit code 29", err)
+				}
+			}
+			result, err := preparer.PrepareMerge(context.Background(), info, issue, MergePrepareOptions{})
+			if err != nil {
+				t.Fatalf("PrepareMerge() error = %v", err)
+			}
+			if result.Status != MergePrepareStatusConflict {
+				t.Fatalf("PrepareMerge() status = %q, want conflict", result.Status)
+			}
+			if tt.failSubjects && len(result.TargetCommitSubjects) != 0 {
+				t.Fatalf("failed subject lookup = %v, want empty", result.TargetCommitSubjects)
+			}
+			if !tt.failSubjects && tt.commits == 1 && !slices.Equal(result.TargetCommitSubjects, []string{"main conflict"}) {
+				t.Fatalf("target commit subjects = %v", result.TargetCommitSubjects)
+			}
+			if tt.commits > 40 && (len(result.TargetCommitSubjects) != 41 || result.TargetCommitSubjects[0] != "target conflict 41" || result.TargetCommitSubjects[40] != "[additional target commits truncated]") {
+				t.Fatalf("target commit truncation = %v", result.TargetCommitSubjects)
+			}
+			if len(result.ConflictPaths) != 1 || result.ConflictPaths[0] != "README.md" {
+				t.Fatalf("conflict paths = %v, want README.md", result.ConflictPaths)
+			}
+			if got := strings.TrimSpace(runGit(t, info.Path, "status", "--short")); got != "" {
+				t.Fatalf("status after aborted rebase = %q, want clean", got)
+			}
+			if got := strings.TrimSpace(runGit(t, info.Path, "branch", "--show-current")); got != info.Branch {
+				t.Fatalf("branch after aborted rebase = %q, want %q", got, info.Branch)
+			}
+			if got := readFile(t, filepath.Join(info.Path, "README.md")); got != "feature\n" {
+				t.Fatalf("README after aborted rebase = %q, want feature branch content", got)
+			}
+			inProgress, err := rebaseInProgress(context.Background(), info.Path)
+			if err != nil {
+				t.Fatalf("rebaseInProgress() error = %v", err)
+			}
+			if inProgress {
+				t.Fatal("rebase still in progress after PrepareMerge conflict")
+			}
+		})
 	}
 }
 
 func TestGitMetadataWritableRootsForLinkedWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1008,8 +1041,10 @@ func TestGitMetadataWritableRootsForLinkedWorktree(t *testing.T) {
 	wantRoots := []string{
 		linkedWorktreeGitDir(t, info.Path),
 		mustCanonicalExistingPath(t, filepath.Join(commonDir, "objects")),
-		mustCanonicalExistingPath(t, filepath.Join(commonDir, "refs", "heads", "detent")),
-		mustCanonicalExistingPath(t, filepath.Join(commonDir, "logs", "refs", "heads", "detent")),
+		filepath.Join(commonDir, "refs", "heads", filepath.FromSlash(info.Branch)),
+		filepath.Join(commonDir, "refs", "heads", filepath.FromSlash(info.Branch)) + ".lock",
+		filepath.Join(commonDir, "logs", "refs", "heads", filepath.FromSlash(info.Branch)),
+		filepath.Join(commonDir, "logs", "refs", "heads", filepath.FromSlash(info.Branch)) + ".lock",
 	}
 	for _, want := range wantRoots {
 		if !containsString(roots, want) {
@@ -1018,6 +1053,11 @@ func TestGitMetadataWritableRootsForLinkedWorktree(t *testing.T) {
 	}
 	if containsString(roots, commonDir) {
 		t.Fatalf("GitMetadataWritableRoots() = %#v, should not allow entire common git dir %q", roots, commonDir)
+	}
+	for _, parent := range []string{filepath.Join(commonDir, "refs", "heads", "detent"), filepath.Join(commonDir, "logs", "refs", "heads", "detent")} {
+		if containsString(roots, parent) {
+			t.Fatalf("GitMetadataWritableRoots() grants sibling branch writes through %s", parent)
+		}
 	}
 
 	if err := os.WriteFile(filepath.Join(info.Path, "agent.txt"), []byte("agent edit\n"), 0o600); err != nil {
@@ -1028,9 +1068,23 @@ func TestGitMetadataWritableRootsForLinkedWorktree(t *testing.T) {
 	if got := strings.TrimSpace(runGit(t, info.Path, "log", "-1", "--pretty=%s")); got != "agent commit" {
 		t.Fatalf("latest commit subject = %q, want agent commit", got)
 	}
+	runGit(t, source, "pack-refs", "--all")
+	roots, err = GitMetadataWritableRoots(t.Context(), info.Path)
+	if err != nil || len(roots) != len(wantRoots) {
+		t.Fatalf("packed branch roots = %#v, %v", roots, err)
+	}
+	for _, root := range roots {
+		if !containsString(wantRoots, root) {
+			t.Fatalf("packed branch widened metadata authority: %s", root)
+		}
+	}
 }
 
 func TestGitMetadataWritableRootsRejectsEnclosingRepository(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1046,6 +1100,10 @@ func TestGitMetadataWritableRootsRejectsEnclosingRepository(t *testing.T) {
 }
 
 func TestLocalGitHooksUseNonLoginShell(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	source := initSourceRepo(t)
@@ -1089,6 +1147,10 @@ func TestLocalGitHooksUseNonLoginShell(t *testing.T) {
 }
 
 func TestLocalGitHooksUseConfiguredShell(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	source := initSourceRepo(t)
@@ -1196,82 +1258,216 @@ func TestRunGitAtWithEnvCancellationReturnsPromptly(t *testing.T) {
 	}
 }
 
-func TestLocalGitHookCancellationReturnsPromptly(t *testing.T) {
+func TestHookCancellationReapsDescendants(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
 	skipWindows(t)
 
-	workspacePath := t.TempDir()
-	startedPath := filepath.Join(workspacePath, "hook.started")
-	completedPath := filepath.Join(workspacePath, "hook.completed")
-	backend := &LocalGit{
-		hooks:  Hooks{Timeout: time.Minute},
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
+	for _, kind := range []string{KindLocalGit, KindFilesystem} {
+		for _, timeout := range []bool{false, true} {
+			for _, resist := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/timeout=%t/resist=%t", kind, timeout, resist), func(t *testing.T) {
+					root := t.TempDir()
+					workspacePath := filepath.Join(root, "workspace")
+					if err := os.Mkdir(workspacePath, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					neighbor := exec.CommandContext(t.Context(), "sleep", "30")
+					neighbor.Dir = workspacePath
+					procgroup.Configure(t.Context(), neighbor)
+					if err := neighbor.Start(); err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() {
+						_ = neighbor.Process.Kill()
+						_ = neighbor.Wait()
+					})
+					neighborIdentity, err := procgroup.Inspect(neighbor)
+					if err != nil {
+						t.Fatal(err)
+					}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	hookDone := make(chan error, 1)
-	go func() {
-		hookDone <- backend.runHook(
-			ctx,
-			"before_run",
-			"(\n"+
-				": > "+shellQuote(startedPath)+"\n"+
-				"sleep 4\n"+
-				": > "+shellQuote(completedPath)+"\n"+
-				") &\n"+
-				"wait",
-			Info{Path: workspacePath, Key: "DD-HOOK", Branch: "detent/dd-hook"},
-			Issue{Identifier: "DD-HOOK"},
-		)
-	}()
-
-	waitForFile(t, startedPath, 10*time.Second)
-	cancel()
-	err := waitForError(t, hookDone, 10*time.Second)
-
-	if err == nil {
-		t.Fatal("runHook() error = nil, want cancellation error")
-	}
-	var hookErr *HookError
-	if !errors.As(err, &hookErr) {
-		t.Fatalf("runHook() error = %T, want *HookError", err)
-	}
-	if !errors.Is(hookErr.Err, context.Canceled) {
-		t.Fatalf("HookError.Err = %v, want context canceled", hookErr.Err)
-	}
-	if _, err := os.Stat(completedPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("hook workload completed before cancellation returned, stat error = %v", err)
+					trap := ""
+					if resist {
+						trap = "trap '' TERM; "
+					}
+					grandchild := trap + "echo $$ > grandchild.pid; printf 'hook stdout\n'; printf 'hook stderr\n' >&2; : > grandchild.ready; " +
+						"while [ ! -f release ]; do sleep 0.02; done; " +
+						"printf late > completed; printf late > " + shellQuote(filepath.Join(workspacePath, "completed"))
+					child := trap + "echo $$ > child.pid; sh -c " + shellQuote(grandchild) + "; wait"
+					command := trap + "echo $$ > shell.pid; sh -c " + shellQuote(child) + "; wait"
+					hooks := Hooks{Timeout: time.Minute}
+					wantErr := context.Canceled
+					if timeout {
+						hooks.Timeout = time.Second
+						wantErr = context.DeadlineExceeded
+					}
+					logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+					run := (&LocalGit{root: root, hooks: hooks, logger: logger}).runHook
+					if kind == KindFilesystem {
+						run = (&Filesystem{root: root, hooks: hooks, logger: logger}).runHook
+					}
+					ctx, cancel := context.WithCancel(t.Context())
+					t.Cleanup(cancel)
+					done := make(chan error, 1)
+					go func() {
+						done <- run(ctx, "before_run", command, Info{Path: workspacePath, Key: "DD-HOOK"}, Issue{Identifier: "DD-HOOK"})
+					}()
+					waitForFile(t, filepath.Join(workspacePath, "grandchild.ready"), 10*time.Second)
+					identities := make([]procgroup.Identity, 0, 3)
+					for _, role := range []string{"shell", "child", "grandchild"} {
+						pidPath := filepath.Join(workspacePath, role+".pid")
+						waitForFile(t, pidPath, 10*time.Second)
+						pid, err := strconv.Atoi(strings.TrimSpace(readFile(t, pidPath)))
+						if err != nil {
+							t.Fatal(err)
+						}
+						process, err := os.FindProcess(pid)
+						if err != nil {
+							t.Fatal(err)
+						}
+						t.Cleanup(func() { _ = process.Kill() })
+						identity, err := procgroup.Inspect(&exec.Cmd{Process: process})
+						if err != nil {
+							t.Fatalf("inspect %s: %v", role, err)
+						}
+						identities = append(identities, identity)
+					}
+					started := time.Now()
+					if !timeout {
+						cancel()
+					}
+					err = waitForError(t, done, 5*time.Second)
+					if elapsed := time.Since(started); elapsed > 3*time.Second {
+						t.Fatalf("hook shutdown took %s", elapsed)
+					}
+					var hookErr *HookError
+					if !errors.As(err, &hookErr) || !errors.Is(err, wantErr) {
+						t.Fatalf("runHook() error = %v, want HookError wrapping %v", err, wantErr)
+					}
+					if hookErr.ExitCode != -1 {
+						t.Fatalf("hook exit code = %d, want signal exit", hookErr.ExitCode)
+					}
+					for _, want := range []string{"hook stdout", "hook stderr"} {
+						if !strings.Contains(hookErr.Output, want) || !strings.Contains(readFile(t, hookErr.LogPath), want) {
+							t.Fatalf("hook evidence missing %q: %v", want, hookErr)
+						}
+					}
+					observations, err := procgroup.Observe(identities)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, observation := range observations {
+						if observation.Alive {
+							t.Errorf("owned process group still running at hook return: %+v", observation)
+						}
+					}
+					if alive, err := procgroup.Alive(neighborIdentity); err != nil || !alive {
+						t.Fatalf("unrelated process alive = %t, error = %v", alive, err)
+					}
+					quarantinedPath := filepath.Join(root, "quarantined")
+					if err := os.Rename(workspacePath, quarantinedPath); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Mkdir(workspacePath, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					for _, path := range []string{workspacePath, quarantinedPath} {
+						if err := os.WriteFile(filepath.Join(path, "release"), nil, 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					<-time.After(100 * time.Millisecond)
+					for _, path := range []string{workspacePath, quarantinedPath} {
+						if _, err := os.Stat(filepath.Join(path, "completed")); !errors.Is(err, os.ErrNotExist) {
+							t.Errorf("hook wrote after workspace quarantine at %s: %v", path, err)
+						}
+					}
+				})
+			}
+		}
 	}
 }
 
-func TestLocalGitHookAllowsDaemonizedSuccess(t *testing.T) {
+func TestHookWithExitedShell(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
 	skipWindows(t)
 
-	workspacePath := t.TempDir()
-	backend := &LocalGit{
-		hooks:  Hooks{Timeout: 3 * time.Second},
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
-
-	started := time.Now()
-	err := backend.runHook(
-		context.Background(),
-		"before_run",
-		"sleep 4 &",
-		Info{Path: workspacePath, Key: "DD-HOOK", Branch: "detent/dd-hook"},
-		Issue{Identifier: "DD-HOOK"},
-	)
-	elapsed := time.Since(started)
-
-	if err != nil {
-		t.Fatalf("runHook() error = %v, want nil", err)
-	}
-	if elapsed > 2*time.Second {
-		t.Fatalf("runHook() elapsed = %s, want daemonized hook within wait delay", elapsed)
+	for _, kind := range []string{KindLocalGit, KindFilesystem} {
+		for _, mode := range []string{"success", "parent cancellation", "timeout"} {
+			t.Run(kind+"/"+mode, func(t *testing.T) {
+				root := t.TempDir()
+				hooks := Hooks{Timeout: time.Minute}
+				if mode == "timeout" {
+					hooks.Timeout = 500 * time.Millisecond
+				}
+				logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+				run := (&LocalGit{root: root, hooks: hooks, logger: logger}).runHook
+				if kind == KindFilesystem {
+					run = (&Filesystem{root: root, hooks: hooks, logger: logger}).runHook
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				t.Cleanup(cancel)
+				done := make(chan error, 1)
+				go func() {
+					done <- run(ctx, "before_run", "sleep 30 & echo $! > descendant.pid.tmp && mv descendant.pid.tmp descendant.pid", Info{Path: root, Key: "DD-HOOK"}, Issue{Identifier: "DD-HOOK"})
+				}()
+				pidPath := filepath.Join(root, "descendant.pid")
+				waitForFile(t, pidPath, 10*time.Second)
+				pid, err := strconv.Atoi(strings.TrimSpace(readFile(t, pidPath)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				process, err := os.FindProcess(pid)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = process.Kill() })
+				identity, err := procgroup.Inspect(&exec.Cmd{Process: process})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mode == "parent cancellation" {
+					cancel()
+				}
+				err = waitForError(t, done, 3*time.Second)
+				if mode == "success" {
+					if err != nil {
+						t.Fatalf("daemonized hook error = %v", err)
+					}
+					if alive, err := procgroup.Alive(identity); err != nil || !alive {
+						t.Fatalf("successful background process alive = %t, error = %v", alive, err)
+					}
+					return
+				}
+				wantErr := context.Canceled
+				if mode == "timeout" {
+					wantErr = context.DeadlineExceeded
+				}
+				var hookErr *HookError
+				if !errors.As(err, &hookErr) || !errors.Is(err, wantErr) {
+					t.Fatalf("hook error = %v, want HookError wrapping %v", err, wantErr)
+				}
+				observations, err := procgroup.Observe([]procgroup.Identity{identity})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if observations[0].Alive {
+					t.Fatalf("descendant survived hook cancellation after shell exit: %+v", observations[0])
+				}
+			})
+		}
 	}
 }
 
 func TestLocalGitCreateReusesExistingWorktreeWithoutAfterCreate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1320,6 +1516,10 @@ func TestLocalGitCreateReusesExistingWorktreeWithoutAfterCreate(t *testing.T) {
 }
 
 func TestLocalGitCreateRecoversCleanDetachedWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1366,6 +1566,10 @@ func TestLocalGitCreateRecoversCleanDetachedWorktree(t *testing.T) {
 }
 
 func TestLocalGitCreateRecoversCleanWrongBranchWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1414,6 +1618,10 @@ func TestLocalGitCreateRecoversCleanWrongBranchWorktree(t *testing.T) {
 }
 
 func TestLocalGitCreateQuarantinesDirtyDetachedWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1479,6 +1687,10 @@ func TestLocalGitCreateQuarantinesDirtyDetachedWorktree(t *testing.T) {
 }
 
 func TestLocalGitCreateQuarantinesCleanDetachedUnreferencedCommit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1549,6 +1761,10 @@ func TestLocalGitCreateQuarantinesCleanDetachedUnreferencedCommit(t *testing.T) 
 }
 
 func TestLocalGitCreateRepairsWorkspacePreparationFailures(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	tests := []struct {
@@ -1593,38 +1809,72 @@ func TestLocalGitCreateRepairsWorkspacePreparationFailures(t *testing.T) {
 			},
 		},
 		{
-			name: "dangling gitdir is recreated",
+			name: "dangling gitdir retains unverifiable source",
 			run: func(t *testing.T) {
-				source := initSourceRepo(t)
-				root := filepath.Join(t.TempDir(), "workspaces")
-				backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
-				if err != nil {
-					t.Fatalf("NewLocalGit() error = %v", err)
-				}
-
-				issue := Issue{Identifier: "DD-DANGLING-GITDIR"}
-				first, err := backend.Create(t.Context(), issue)
-				if err != nil {
-					t.Fatalf("first Create() error = %v", err)
-				}
-				adminDir := linkedWorktreeGitDir(t, first.Path)
-				orphanedAdminDir := adminDir + "-orphaned"
-				if err := os.Rename(adminDir, orphanedAdminDir); err != nil {
-					t.Fatalf("orphan admin directory: %v", err)
-				}
-
-				second, err := backend.Create(t.Context(), issue)
-				if err != nil {
-					t.Fatalf("second Create() error = %v", err)
-				}
-				if !second.Created {
-					t.Fatal("second Create() Created = false, want true")
-				}
-				if got, want := filepath.Base(linkedWorktreeGitDir(t, second.Path)), filepath.Base(second.Path); got != want {
-					t.Fatalf("replacement admin name = %q, want %q", got, want)
-				}
-				if _, err := os.Stat(orphanedAdminDir); !errors.Is(err, os.ErrNotExist) {
-					t.Fatalf("orphaned admin directory stat error = %v, want absent", err)
+				for _, pending := range []bool{false, true} {
+					name := "clean but unverifiable"
+					if pending {
+						name = "pending source refuses replacement"
+					}
+					t.Run(name, func(t *testing.T) {
+						source := initSourceRepo(t)
+						root := filepath.Join(t.TempDir(), "workspaces")
+						backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+						if err != nil {
+							t.Fatal(err)
+						}
+						issue := Issue{Identifier: "DD-DANGLING-GITDIR"}
+						first, err := backend.Create(t.Context(), issue)
+						if err != nil {
+							t.Fatal(err)
+						}
+						adminDir := linkedWorktreeGitDir(t, first.Path)
+						wantFiles := map[string]string{"README.md": "source repo\n"}
+						if pending {
+							writeFileDiffFile(t, first.Path, "README.md", "staged source B\n")
+							runGit(t, first.Path, "add", "README.md")
+							writeFileDiffFile(t, first.Path, "README.md", "pending working source\n")
+							writeFileDiffFile(t, first.Path, "pending.go", "untracked sentinel\n")
+							wantFiles["README.md"] = "pending working source\n"
+							wantFiles["pending.go"] = "untracked sentinel\n"
+						}
+						gitPointer, err := os.ReadFile(filepath.Join(first.Path, ".git"))
+						if err != nil {
+							t.Fatal(err)
+						}
+						wantFiles[".git"] = string(gitPointer)
+						orphanedAdminDir := adminDir + "-orphaned"
+						var orphanedIndex []byte
+						if pending {
+							if err := os.RemoveAll(adminDir); err != nil {
+								t.Fatal(err)
+							}
+						} else {
+							orphanedIndex, err = os.ReadFile(filepath.Join(adminDir, "index"))
+							if err != nil {
+								t.Fatal(err)
+							}
+							if err := os.Rename(adminDir, orphanedAdminDir); err != nil {
+								t.Fatal(err)
+							}
+						}
+						second, createErr := backend.Create(t.Context(), issue)
+						if !errors.Is(createErr, ErrWorkspacePreserved) || second.Created {
+							t.Errorf("missing admin metadata did not refuse replacement: created=%t error=%v", second.Created, createErr)
+						}
+						for path, want := range wantFiles {
+							got, readErr := os.ReadFile(filepath.Join(first.Path, path))
+							if readErr != nil || string(got) != want {
+								t.Errorf("replacement discarded surviving %s: got=%q want=%q error=%v", path, got, want, readErr)
+							}
+						}
+						if !pending {
+							got, readErr := os.ReadFile(filepath.Join(orphanedAdminDir, "index"))
+							if readErr != nil || !slices.Equal(got, orphanedIndex) {
+								t.Errorf("preparation discarded available orphaned index: %v", readErr)
+							}
+						}
+					})
 				}
 			},
 		},
@@ -1715,6 +1965,10 @@ func TestLocalGitQuarantineWorkspaceCount(t *testing.T) {
 }
 
 func TestLocalGitBeforeAndAfterRunHooks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1752,6 +2006,10 @@ func TestLocalGitBeforeAndAfterRunHooks(t *testing.T) {
 }
 
 func TestLocalGitHookFailureSurfaces(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1857,6 +2115,10 @@ func TestLocalGitHookFailureSurfaces(t *testing.T) {
 }
 
 func TestLocalGitPreserveFailedWorkspaceReleasesBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	tests := []struct {
@@ -1952,6 +2214,10 @@ func TestLocalGitPreserveFailedWorkspaceReleasesBranch(t *testing.T) {
 }
 
 func TestLocalGitPreserveFailedWorkspaceSurfacesBranchReleaseFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	source := initSourceRepo(t)
@@ -1990,6 +2256,10 @@ func TestLocalGitPreserveFailedWorkspaceSurfacesBranchReleaseFailure(t *testing.
 }
 
 func TestLocalGitCreateQuarantinesFailedCreationState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	tests := []struct {
@@ -2085,77 +2355,72 @@ func TestLocalGitCreateQuarantinesFailedCreationState(t *testing.T) {
 	}
 }
 
-func TestLocalGitBranchHeldByWorktree(t *testing.T) {
+func TestLocalGitCreateReleasesStaleBranchHolders(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	tests := []struct {
-		name               string
-		releaseBeforeRetry bool
-		wantCreated        bool
+		name      string
+		fresh     bool
+		rebasing  bool
+		vanished  bool
+		wantFiles bool
 	}{
-		{name: "held branch is classified"},
-		{name: "released branch creates workspace", releaseBeforeRetry: true, wantCreated: true},
+		{name: "attached holder from an earlier layout", wantFiles: true},
+		{name: "attached holder before a fresh checkout", fresh: true, wantFiles: true},
+		{name: "holder stopped mid-rebase", fresh: true, rebasing: true, wantFiles: true},
+		{name: "holder directory deleted", fresh: true, vanished: true},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			source := initSourceRepo(t)
 			root := filepath.Join(t.TempDir(), "workspaces")
-			holder := filepath.Join(t.TempDir(), "review-pr")
-			branch := "detent/reviewer-held"
-			runGit(t, source, "worktree", "add", "-b", branch, holder)
-
 			backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatalf("NewLocalGit() error = %v", err)
 			}
-			issue := Issue{Identifier: "DD-HELD", BranchName: branch}
+			branch := "detent/dd-stale"
+			holder := filepath.Join(t.TempDir(), "old-layout", "dd-stale")
+			runGit(t, source, "worktree", "add", "-b", branch, holder, "HEAD")
+			if err := os.WriteFile(filepath.Join(holder, "kept.txt"), []byte("kept\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, holder, "add", "kept.txt")
+			runGit(t, holder, "commit", "-m", "earlier attempt")
+			if tt.rebasing {
+				runGit(t, holder, "-c", "sequence.editor=sed -i.bak s/^pick/edit/", "rebase", "-i", "HEAD~1")
+			}
+			if tt.vanished {
+				if err := os.RemoveAll(holder); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-			_, err = backend.Create(t.Context(), issue)
-			var heldErr *BranchHeldError
-			if !errors.As(err, &heldErr) {
-				t.Fatalf("Create() error = %v, want BranchHeldError", err)
+			info, err := backend.Create(t.Context(), Issue{Identifier: "DD-STALE", BranchName: branch, FreshCheckout: tt.fresh})
+			if err != nil {
+				t.Fatalf("Create() error = %v, want the stale holder released", err)
 			}
-			if heldErr.Branch != branch {
-				t.Fatalf("BranchHeldError branch = %q, want %q", heldErr.Branch, branch)
+			if got := strings.TrimSpace(runGit(t, info.Path, "branch", "--show-current")); got != branch {
+				t.Fatalf("new worktree branch = %q, want %q", got, branch)
 			}
-			requireSameFile(t, heldErr.Path, holder)
-			hold, held, err := backend.BranchHold(t.Context(), issue)
-			if err != nil || !held || hold.Branch != branch {
-				t.Fatalf("BranchHold() = %#v, %v, %v", hold, held, err)
-			}
-			requireSameFile(t, hold.Path, holder)
-
-			if !tt.releaseBeforeRetry {
+			if !tt.wantFiles {
 				return
 			}
-			runGit(t, source, "worktree", "remove", holder)
-			if hold, held, err = backend.BranchHold(t.Context(), issue); err != nil || held {
-				t.Fatalf("BranchHold() after release = %#v, %v, %v", hold, held, err)
+			if got := readFile(t, filepath.Join(holder, "kept.txt")); got != "kept\n" {
+				t.Fatalf("holder kept.txt = %q, want the earlier attempt's files kept", got)
 			}
-			info, err := backend.Create(t.Context(), issue)
-			if err != nil {
-				t.Fatalf("Create() after release error = %v", err)
+			if got := strings.TrimSpace(runGit(t, holder, "branch", "--show-current")); got != "" {
+				t.Fatalf("holder branch = %q, want detached", got)
 			}
-			if info.Created != tt.wantCreated || info.Branch != branch {
-				t.Fatalf("Create() after release = %#v, want Created=%v branch=%q", info, tt.wantCreated, branch)
+			if _, err := os.Stat(filepath.Join(source, ".git", "worktrees", filepath.Base(holder), "rebase-merge")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("holder rebase state stat error = %v, want removed", err)
 			}
 		})
-	}
-}
-
-func requireSameFile(t *testing.T, got string, want string) {
-	t.Helper()
-	gotInfo, err := os.Stat(got)
-	if err != nil {
-		t.Fatalf("stat %q: %v", got, err)
-	}
-	wantInfo, err := os.Stat(want)
-	if err != nil {
-		t.Fatalf("stat %q: %v", want, err)
-	}
-	if !os.SameFile(gotInfo, wantInfo) {
-		t.Fatalf("path %q does not identify %q", got, want)
 	}
 }
 
@@ -2192,6 +2457,10 @@ func TestHookErrorErrorIncludesBoundedOutputTail(t *testing.T) {
 }
 
 func TestLocalGitCleanupRemovesOnlyTargetWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -2241,6 +2510,10 @@ func TestLocalGitCleanupRemovesOnlyTargetWorktree(t *testing.T) {
 }
 
 func TestLocalGitCleanupRemediatesGeneratedCachePermissions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 	t.Setenv("GIT_CEILING_DIRECTORIES", os.TempDir())
 
@@ -2267,9 +2540,7 @@ func TestLocalGitCleanupRemediatesGeneratedCachePermissions(t *testing.T) {
 		restoreWritableTree(t, info.Path)
 	})
 
-	if err := ensureGitInfoExcludes(t.Context(), info.Path, []string{"tmp/"}); err != nil {
-		t.Fatal(err)
-	}
+	writeFileDiffFile(t, source, ".git/info/exclude", "tmp/\n")
 	cacheDir := filepath.Join(info.Path, "tmp", "_validation-cache", "go-mod", "modernc.org", "libc@v1.73.4")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		t.Fatalf("mkdir cache dir: %v", err)
@@ -2297,6 +2568,10 @@ func TestLocalGitCleanupRemediatesGeneratedCachePermissions(t *testing.T) {
 }
 
 func TestLocalGitRepositoryDiscoveryStaysWithinCandidate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	enclosing := initSourceRepo(t)
@@ -2473,10 +2748,19 @@ func TestPrepareWorkerScratchPreservesPriorAttempt(t *testing.T) {
 	}
 }
 
-func TestPrepareWorkerScratchInstallsGitExcludeBeforeUse(t *testing.T) {
+func TestPrepareWorkerScratchPreservesGitExclude(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	workspacePath := initSourceRepo(t)
+	excludePath := filepath.Join(workspacePath, ".git", "info", "exclude")
+	before, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = os.RemoveAll(WorkerScratchRoot(workspacePath)) })
 	scratchPath, err := PrepareWorkerScratch(context.Background(), workspacePath)
 	if err != nil {
@@ -2490,20 +2774,20 @@ func TestPrepareWorkerScratchInstallsGitExcludeBeforeUse(t *testing.T) {
 	if strings.Contains(status, ".detent/worker-tmp") {
 		t.Fatalf("git status includes worker scratch:\n%s", status)
 	}
-	excludePath := strings.TrimSpace(runCommand(t, workspacePath, "git", "rev-parse", "--git-path", "info/exclude"))
-	if !filepath.IsAbs(excludePath) {
-		excludePath = filepath.Join(workspacePath, excludePath)
-	}
-	exclude, err := os.ReadFile(excludePath)
+	after, err := os.ReadFile(excludePath)
 	if err != nil {
 		t.Fatalf("read git exclude: %v", err)
 	}
-	if !strings.Contains(string(exclude), ".detent/worker-tmp/") {
-		t.Fatalf("git exclude = %q, want worker scratch pattern", exclude)
+	if string(after) != string(before) {
+		t.Fatalf("scratch preparation changed git exclude: %q", after)
 	}
 }
 
 func TestLocalGitCleanupRejectsForeignGitRepoWithoutBeforeRemove(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -2544,6 +2828,10 @@ func TestLocalGitCleanupRejectsForeignGitRepoWithoutBeforeRemove(t *testing.T) {
 }
 
 func TestLocalGitRejectsSymlinkEscape(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -2580,6 +2868,10 @@ func TestLocalGitRejectsSymlinkEscape(t *testing.T) {
 }
 
 func TestLocalGitRejectsExistingGitRepoFromDifferentSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -2861,18 +3153,88 @@ func skipWindows(t *testing.T) {
 }
 
 func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
-	t.Parallel()
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
 
 	tests := []struct {
-		name       string
-		before     string
-		gate       string
-		wantError  string
-		wantPushed bool
+		name             string
+		before           string
+		gate             string
+		wantError        string
+		wantStage        string
+		wantPushed       bool
+		mode             string
+		baseGo           string
+		resolvedGo       string
+		description      string
+		wantMissing      string
+		prGo             string
+		targetGo         string
+		goFile           string
+		moveFile         bool
+		deleteFile       bool
+		wantMissingCount int
+		baseFiles        map[string]string
+		prFiles          map[string]string
+		targetFiles      map[string]string
+		resolvedFiles    map[string]string
+		gitFailure       string
+		mergeCleanly     bool
 	}{
+		{name: "drops a platform function variant", goFile: "watch_linux.go", baseGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", baseFiles: map[string]string{"watch_windows.go": "//go:build windows\n\npackage example\nfunc Watch() {}\n"}, resolvedGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", resolvedFiles: map[string]string{"watch_windows.go": ""}, wantMissing: "Watch"},
+		{name: "drops a platform receiver variant", goFile: "watch_linux.go", baseGo: "//go:build linux\n\npackage example\ntype Watcher struct{}\nfunc (w *Watcher) Watch() {}\n", baseFiles: map[string]string{"watch_windows.go": "//go:build windows\n\npackage example\ntype Watcher struct{}\nfunc (w *Watcher) Watch() {}\n"}, resolvedGo: "//go:build linux\n\npackage example\ntype Watcher struct{}\nfunc (w *Watcher) Watch() {}\n", resolvedFiles: map[string]string{"watch_windows.go": ""}, wantMissing: "Watcher.Watch"},
+		{name: "platform file rename preserves variants", goFile: "watch_linux.go", baseGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", baseFiles: map[string]string{"watch_windows.go": "//go:build windows\n\npackage example\nfunc Watch() {}\n"}, resolvedGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", moveFile: true, wantPushed: true},
+		{name: "PR intentionally deletes a platform variant", goFile: "watch_linux.go", baseGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", baseFiles: map[string]string{"watch_windows.go": "//go:build windows\n\npackage example\nfunc Watch() {}\n"}, prFiles: map[string]string{"watch_windows.go": ""}, resolvedGo: "//go:build linux\n\npackage example\nfunc Watch() {}\n", mergeCleanly: true, wantPushed: true},
+		{name: "do not removal bullet", resolvedGo: "package example\nfunc PR() {}\n", description: "Do not:\n- Remove `Target`.", wantMissing: "Target"},
+		{name: "out of scope removal bullet", resolvedGo: "package example\nfunc PR() {}\n", description: "## Out of scope\n- Remove `Target`.", wantMissing: "Target"},
+		{name: "do not rename bullet", resolvedGo: "package example\nfunc PR() {}\nfunc Renamed() {}\n", description: "Do not:\n- Rename `Target` to `Renamed`.", wantMissing: "Target"},
+		{name: "out of scope bare instruction", resolvedGo: "package example\nfunc PR() {}\n", description: "Out of scope:\nRemove `Target`.", wantMissing: "Target"},
+		{name: "nested context cannot authorize removal", resolvedGo: "package example\nfunc PR() {}\n", description: "## Out of scope\n### Acceptance criteria\n- Remove `Target`.", wantMissing: "Target"},
+		{name: "standalone removal bullet", resolvedGo: "package example\nfunc PR() {}\n", description: "- Remove `Target`.", wantPushed: true},
+		{name: "later context makes removal ambiguous", resolvedGo: "package example\nfunc PR() {}\n", description: "Remove `Target`.\nDo not remove `Target`.", wantMissing: "Target"},
+		{name: "indented example cannot authorize removal", resolvedGo: "package example\nfunc PR() {}\n", description: "    Remove `Target`.", wantMissing: "Target"},
+		{name: "PR deletes a file", mergeCleanly: true, prFiles: map[string]string{"example.go": ""}, deleteFile: true, resolvedGo: "deleted", wantPushed: true},
+		{name: "target deletes a file", mergeCleanly: true, targetFiles: map[string]string{"example.go": ""}, deleteFile: true, resolvedGo: "deleted", wantPushed: true},
+		{name: "PR deletes a function", mergeCleanly: true, prGo: "package example\nfunc Target() {}\n", resolvedGo: "package example\nfunc Target() {}\n", wantPushed: true},
+		{name: "target deletes a function", mergeCleanly: true, targetGo: "package example\nfunc PR() {}\n", resolvedGo: "package example\nfunc PR() {}\n", wantPushed: true},
+		{name: "PR renames a function", mergeCleanly: true, prGo: "package example\nfunc Renamed() {}\nfunc Target() {}\n", resolvedGo: "package example\nfunc Renamed() {}\nfunc Target() {}\n", wantPushed: true},
+		{name: "target renames a function", mergeCleanly: true, targetGo: "package example\nfunc PR() {}\nfunc Renamed() {}\n", resolvedGo: "package example\nfunc PR() {}\nfunc Renamed() {}\n", wantPushed: true},
+		{name: "PR moves a function to another package", mergeCleanly: true, prGo: "package example\nfunc Target() {}\n", prFiles: map[string]string{"moved/example.go": "package moved\nfunc PR() {}\n"}, resolvedGo: "package example\nfunc Target() {}\n", wantPushed: true},
+		{name: "target moves a function to another package", mergeCleanly: true, targetGo: "package example\nfunc PR() {}\n", targetFiles: map[string]string{"moved/example.go": "package moved\nfunc Target() {}\n"}, resolvedFiles: map[string]string{"moved/example.go": "package moved\nfunc Target() {}\n"}, resolvedGo: "package example\nfunc PR() {}\n", wantPushed: true},
+		{name: "declarations added after the base", baseGo: "package example\n", prGo: "package example\nfunc PR() {}\n", targetGo: "package example\nfunc Target() {}\n", resolvedGo: "package example\nfunc PR() {}\n", wantPushed: true},
+		{name: "generated templ declarations", goFile: "example_templ.go", baseGo: "// Code generated by templ - DO NOT EDIT.\npackage example\nfunc Target() {}\n", resolvedGo: "// Code generated by templ - DO NOT EDIT.\npackage example\n", wantPushed: true},
+		{name: "generated sqlc declarations", baseGo: "// Code generated by sqlc. DO NOT EDIT.\npackage example\nfunc Target() {}\n", resolvedGo: "// Code generated by sqlc. DO NOT EDIT.\npackage example\n", wantPushed: true},
+		{name: "unparseable generated resolution", baseGo: "// Code generated by templ - DO NOT EDIT.\npackage example\nfunc Target() {}\n", resolvedGo: "// Code generated by templ - DO NOT EDIT.\npackage example\nPARTIAL", wantPushed: true},
+		{name: "renamed init file", baseGo: "package example\nfunc init() {}\nfunc init() {}\n", resolvedGo: "package example\nfunc init() {}\nfunc init() {}\n", moveFile: true, wantPushed: true},
+		{name: "init moves within package", baseGo: "package example\nfunc init() {}\nfunc init() {}\n", resolvedGo: "package example\nfunc init() {}\n", resolvedFiles: map[string]string{"other.go": "package example\nfunc init() {}\n"}, wantPushed: true},
+		{name: "drops one init", baseGo: "package example\nfunc init() {}\nfunc init() {}\n", resolvedGo: "package example\nfunc init() {}\n", wantMissing: "init"},
+		{name: "unparseable PR blob", prGo: "//go:build fixture\n\npackage example\nPARTIAL", resolvedGo: "package example\nfunc PR() {}\nfunc Target() {}\n", wantPushed: true},
+		{name: "unparseable target blob", targetGo: "package example\nPARTIAL", resolvedGo: "package example\nfunc PR() {}\nfunc Target() {}\n", wantPushed: true},
+		{name: "unparseable base blob", baseGo: "package example\nPARTIAL", prGo: "package example\nfunc PR() {}\n", targetGo: "package example\nfunc Target() {}\n", resolvedGo: "package example\nfunc PR() {}\nfunc Target() {}\n", wantPushed: true},
+		{name: "changed paths Git failure", resolvedGo: "package example\nfunc PR() {}\n", gitFailure: "diff --name-only --no-renames", wantError: "read merge resolution changed paths"},
+		{name: "merge base Git failure", resolvedGo: "package example\nfunc PR() {}\n", gitFailure: "merge-base", wantError: "read merge base"},
+		{name: "tree listing Git failure", resolvedGo: "package example\nfunc PR() {}\n", gitFailure: "ls-tree -r", wantError: "list merge tree Go files"},
+		{name: "blob read Git failure", resolvedGo: "package example\nfunc PR() {}\n", gitFailure: "cat-file blob", wantError: "read merge tree Go source"},
+		{name: "file rename preserves both parents", moveFile: true, resolvedGo: "package example\nfunc PR() {}\nfunc Target() {}\n", wantPushed: true},
+		{name: "deleted file loses both parents", deleteFile: true, resolvedGo: "deleted", wantMissing: "PR", wantMissingCount: 2},
+		{name: "invalid Go resolution", resolvedGo: "package example\nCUSTOMER_PRIVATE_CONTENT", wantError: "cannot parse Go declarations"},
+		{name: "drops PR function", resolvedGo: "package example\nfunc Target() {}\n", wantMissing: "PR"},
+		{name: "drops target function", resolvedGo: "package example\nfunc PR() {}\n", wantMissing: "Target"},
+		{name: "preserves both parents", resolvedGo: "package example\nfunc PR() {}\nfunc Target() {}\n", wantPushed: true},
+		{name: "renames a function", resolvedGo: "package example\nfunc Renamed() {}\nfunc Target() {}\n", description: "Rename `PR` to `Renamed`.", wantPushed: true},
+		{name: "authorized removal", resolvedGo: "package example\nfunc PR() {}\n", description: "Remove `Target`.", wantPushed: true},
+		{name: "negated removal", resolvedGo: "package example\nfunc PR() {}\n", description: "Do not remove `Target`.", wantMissing: "Target"},
+		{name: "drops generic receiver method", baseGo: "package example\nfunc PR() {}\ntype Widget[T any] struct{}\nfunc (w *Widget[T]) Save() {}\n", resolvedGo: "package example\nfunc PR() {}\ntype Widget[T any] struct{}\n", wantMissing: "Widget.Save"},
+		{name: "drops target test", goFile: "example_test.go", baseGo: "package example\nimport \"testing\"\nfunc PR() {}\nfunc TestTarget(t *testing.T) {}\n", resolvedGo: "package example\nfunc PR() {}\n", wantMissing: "TestTarget"},
+		{name: "rename without replacement", resolvedGo: "package example\nfunc Target() {}\n", description: "Rename `PR` to `Renamed`.", wantMissing: "PR"},
+		{name: "conditional removal is ambiguous", resolvedGo: "package example\nfunc PR() {}\n", description: "Remove `Target` if unused.", wantMissing: "Target"},
+		{name: "shorter fence cannot authorize removal", resolvedGo: "package example\nfunc PR() {}\n", description: "````\n```\nRemove `Target`.\n````", wantMissing: "Target"},
+		{name: "removal mentioned as an example", resolvedGo: "package example\nfunc PR() {}\n", description: "```\nRemove `Target`.\n```", wantMissing: "Target"},
+		{name: "legacy rolling resolved head rejects failed gate", mode: gate.LandingRollingBarrier, gate: "exit 1", wantError: "merge-fallback verification gate failed", wantStage: gate.StageMergeFallbackVerification},
 		{name: "resolved committed head", wantPushed: true},
 		{name: "already pushed head", before: "push"},
-		{name: "gate failure", gate: "git detent-invalid-gate", wantError: "gate failed"},
+		{name: "gate failure", gate: "git detent-invalid-gate", wantError: "merge-fallback verification gate failed", wantStage: gate.StageMergeFallbackVerification},
 		{name: "push failure", before: "reject push", wantError: "push validated merge resolution"},
 		{name: "dirty resolution", before: "dirty", wantError: "not source-clean"},
 		{name: "stale target", before: "base", wantError: "does not contain"},
@@ -2885,8 +3247,49 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+			if tt.gitFailure == "" {
+				t.Parallel()
+			} else {
+				skipWindows(t)
+			}
+			goFile := tt.goFile
+			if goFile == "" {
+				goFile = "example.go"
+			}
+			baseGo := tt.baseGo
+			if baseGo == "" {
+				baseGo = "package example\nfunc PR() {}\nfunc Target() {}\n"
+			}
+			prGo := tt.prGo
+			if prGo == "" {
+				prGo = baseGo
+			}
+			targetGo := tt.targetGo
+			if targetGo == "" {
+				targetGo = baseGo
+			}
+			writeGoFiles := func(directory string, files map[string]string) {
+				t.Helper()
+				for name, content := range files {
+					if content == "" {
+						runGit(t, directory, "rm", name)
+						continue
+					}
+					if err := os.MkdirAll(filepath.Dir(filepath.Join(directory, name)), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(directory, name), []byte(content), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					runGit(t, directory, "add", name)
+				}
+			}
 			source := initSourceRepo(t)
+			if tt.resolvedGo != "" {
+				writeGoFiles(source, map[string]string{goFile: baseGo})
+				writeGoFiles(source, tt.baseFiles)
+				runGit(t, source, "commit", "-m", "base behavior")
+			}
 			remote := initBareRemote(t)
 			runGit(t, source, "remote", "add", "origin", remote)
 			runGit(t, source, "push", "-u", "origin", "main")
@@ -2901,8 +3304,37 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if tt.resolvedGo != "" {
+				writeGoFiles(info.Path, map[string]string{goFile: prGo})
+				writeGoFiles(info.Path, tt.prFiles)
+				runGit(t, info.Path, "commit", "--allow-empty", "-m", "PR behavior")
+				writeGoFiles(source, map[string]string{goFile: targetGo})
+				writeGoFiles(source, tt.targetFiles)
+				runGit(t, source, "commit", "--allow-empty", "-m", "target behavior")
+				runGit(t, source, "push", "origin", "main")
+			}
 			runGit(t, info.Path, "push", "origin", "HEAD:"+info.Branch)
 			expectedRemote := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			if tt.resolvedGo != "" {
+				if tt.mergeCleanly {
+					runGit(t, info.Path, "merge", "--no-edit", "main")
+				} else {
+					runGit(t, info.Path, "merge", "-s", "ours", "--no-edit", "main")
+				}
+				if tt.deleteFile {
+					runGit(t, info.Path, "rm", "--ignore-unmatch", goFile)
+				} else {
+					if tt.moveFile {
+						runGit(t, info.Path, "mv", goFile, "renamed.go")
+						goFile = "renamed.go"
+					}
+					if err := os.WriteFile(filepath.Join(info.Path, goFile), []byte(tt.resolvedGo), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					runGit(t, info.Path, "add", goFile)
+				}
+			}
+			writeGoFiles(info.Path, tt.resolvedFiles)
 			runGit(t, info.Path, "commit", "--allow-empty", "-m", "resolved")
 			head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 			mutateRemote := func(branch string) {
@@ -2942,12 +3374,62 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 					command += " && " + tt.gate
 				}
 			}
+			if tt.gitFailure != "" {
+				realGit, err := exec.LookPath("git")
+				if err != nil {
+					t.Fatal(err)
+				}
+				directory := t.TempDir()
+				failure := "case \"$*\" in *" + shellQuote(" "+tt.gitFailure+" ") + "*) exit 29;; esac\n"
+				if tt.gitFailure == "merge-base" {
+					failure = "if [ \"$3\" = \"merge-base\" ] && [ \"$4\" != \"--is-ancestor\" ]; then exit 29; fi\n"
+				}
+				script := "#!/bin/sh\n" + failure + "exec " + shellQuote(realGit) + " \"$@\"\n"
+				if err := os.WriteFile(filepath.Join(directory, "git"), []byte(script), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+			}
 			result, err := backend.(MergePreparer).PrepareMerge(t.Context(), info, issue, MergePrepareOptions{
-				TargetBranch: "main", VerifyResolution: true, ValidationCommand: command, ExpectedRemoteHead: expectedRemote,
+				LandingMode: tt.mode, TargetBranch: "main", VerifyResolution: true, ValidationCommand: command, ExpectedRemoteHead: expectedRemote, IssueDescription: tt.description,
 			})
+			if tt.wantMissing != "" {
+				count := tt.wantMissingCount
+				if count == 0 {
+					count = 1
+				}
+				if len(result.Findings) != count {
+					t.Fatalf("missing declarations = %v, want %d", result.Findings, count)
+				}
+				if err != nil || result.Status != MergePrepareStatusConflict || !strings.Contains(strings.Join(result.Findings, "\n"), tt.wantMissing) {
+					t.Fatalf("missing declaration verification = %#v, %v", result, err)
+				}
+				if got := strings.TrimSpace(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch)); got != remoteBefore {
+					t.Fatal("published a lossy resolution")
+				}
+				if out, _ := runGitAt(t.Context(), info.Path, "config", "--get", "detent.validation"); out != "" {
+					t.Fatal("ran gate before refusing loss")
+				}
+				return
+			}
 			if tt.wantError != "" {
+				if tt.gitFailure != "" {
+					var commandErr *CommandError
+					if !errors.As(err, &commandErr) || commandErr.ExitCode != 29 {
+						t.Fatalf("Git error = %v, want wrapped exit code 29", err)
+					}
+				}
+				if err != nil && strings.Contains(err.Error(), "CUSTOMER_PRIVATE_CONTENT") {
+					t.Fatal("error exposed customer content")
+				}
 				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
 					t.Fatalf("PrepareMerge() = %#v, %v; want error containing %q", result, err, tt.wantError)
+				}
+				if tt.wantStage != "" {
+					var validation *ValidationError
+					if !errors.As(err, &validation) || validation.Stage != tt.wantStage || validation.Error() != tt.wantError+": exit status 1" {
+						t.Fatalf("PrepareMerge() validation = %+v, %v; want stage %q and message %q", validation, err, tt.wantStage, tt.wantError+": exit status 1")
+					}
 				}
 				if tt.gate != "remote" {
 					if got := strings.TrimSpace(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch)); got != remoteBefore {
@@ -2962,6 +3444,7 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 			if got := strings.TrimSpace(runGit(t, info.Path, "config", "--get", "detent.validation")); got != "passed" {
 				t.Fatalf("local gate evidence = %q", got)
 			}
+
 			if got := strings.Fields(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch))[0]; got != head {
 				t.Fatalf("remote head = %s, want %s", got, head)
 			}
@@ -2970,6 +3453,10 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 }
 
 func TestLocalGitMergeFallbackRetryRevalidatesAheadHead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	for _, tt := range []struct {
@@ -3079,6 +3566,10 @@ func TestLocalGitMergeFallbackRetryRevalidatesAheadHead(t *testing.T) {
 }
 
 func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	skipWindows(t)
 
 	for _, tt := range []struct {
@@ -3187,14 +3678,26 @@ exit %d
 	}
 }
 
-func TestGitCommonDirCompletesWhenDescendantRetainsOutput(t *testing.T) {
+func TestGitQueriesCompleteWhenDescendantRetainsOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	skipWindows(t)
 	for _, tt := range []struct {
-		name  string
-		probe func(context.Context, string) (string, error)
+		name     string
+		probe    func(context.Context, string) (string, error)
+		exitCode int
 	}{
 		{name: "source common dir", probe: gitCommonDir},
 		{name: "workspace common dir", probe: gitCommonDirWithinRoot},
+		{name: "remote listing", probe: func(ctx context.Context, dir string) (string, error) {
+			output, err := (&LocalGit{sourceRoot: dir}).gitRemotes(ctx)
+			return strings.TrimSpace(output), err
+		}},
+		{name: "failed remote listing", exitCode: 23, probe: func(ctx context.Context, dir string) (string, error) {
+			return (&LocalGit{sourceRoot: dir}).gitRemotes(ctx)
+		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -3206,10 +3709,11 @@ func TestGitCommonDirCompletesWhenDescendantRetainsOutput(t *testing.T) {
 			}
 			defer release.Close()
 			donePath := filepath.Join(dir, "done")
-			script := `#!/bin/sh
+			script := fmt.Sprintf(`#!/bin/sh
 ( read -r release < "$DETENT_PIPE_RELEASE"; printf done > "$DETENT_PIPE_DONE" ) &
-printf '%s\n' "$DETENT_COMMON_DIR"
-`
+printf '%%s\n' "$DETENT_COMMON_DIR"
+exit %d
+`, tt.exitCode)
 			if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -3217,8 +3721,10 @@ printf '%s\n' "$DETENT_COMMON_DIR"
 			t.Setenv("DETENT_PIPE_RELEASE", fifoPath)
 			t.Setenv("DETENT_PIPE_DONE", donePath)
 			t.Setenv("DETENT_COMMON_DIR", dir)
+			scratchDir := t.TempDir()
+			t.Setenv("TMPDIR", scratchDir)
 
-			commonDir, commandErr := tt.probe(t.Context(), dir)
+			output, commandErr := tt.probe(t.Context(), dir)
 			if _, err := release.WriteString("release\n"); err != nil {
 				t.Fatal(err)
 			}
@@ -3235,21 +3741,41 @@ printf '%s\n' "$DETENT_COMMON_DIR"
 				case <-ticker.C:
 				}
 			}
-			if commandErr != nil {
-				t.Fatalf("common dir probe error = %v, want successful identity after Git exits", commandErr)
+			if tt.exitCode != 0 {
+				var gitErr *CommandError
+				if !errors.As(commandErr, &gitErr) || gitErr.ExitCode != tt.exitCode {
+					t.Fatalf("git query error = %v, want exit code %d", commandErr, tt.exitCode)
+				}
+				if output != "" {
+					t.Fatalf("failed query output = %q, want empty", output)
+				}
+				output = strings.TrimSpace(gitErr.Output)
+			} else if commandErr != nil {
+				t.Fatalf("git query error = %v, want successful output after Git exits", commandErr)
 			}
 			canonicalDir, err := filepath.EvalSymlinks(dir)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if commonDir != canonicalDir {
-				t.Fatalf("common dir probe = %q, want %q", commonDir, canonicalDir)
+			canonicalOutput, err := filepath.EvalSymlinks(output)
+			if err != nil {
+				t.Fatalf("git query = %q: %v", output, err)
+			}
+			if canonicalOutput != canonicalDir {
+				t.Fatalf("git query = %q, want %q", output, canonicalDir)
+			}
+			if entries, err := os.ReadDir(scratchDir); err != nil || len(entries) != 0 {
+				t.Fatalf("query scratch remains: %v, %v", entries, err)
 			}
 		})
 	}
 }
 
 func TestGitCommonDirCleanupFailureDoesNotInvalidateIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess cleanup integration")
+	}
+
 	skipWindows(t)
 
 	commonDir := t.TempDir()
@@ -3285,6 +3811,10 @@ chmod 500 "$TMPDIR"
 }
 
 func TestLocalGitQuarantineReleasesBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, operation := range []string{"checked-out", "rebase", "am", "merge", "cherry-pick", "detached"} {
 		t.Run(operation, func(t *testing.T) {
@@ -3359,6 +3889,10 @@ func TestLocalGitQuarantineReleasesBranch(t *testing.T) {
 }
 
 func TestLocalGitStaleQuarantineReleasesBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, failDetach := range []bool{false, true} {
 		t.Run(fmt.Sprintf("detach_failure=%t", failDetach), func(t *testing.T) {
 			source := initSourceRepo(t)
@@ -3451,6 +3985,10 @@ func TestHookCompletionBudget(t *testing.T) {
 }
 
 func TestLocalGitPrepareMergeValidatesTheCleanHeadItPushes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -3460,9 +3998,11 @@ func TestLocalGitPrepareMergeValidatesTheCleanHeadItPushes(t *testing.T) {
 		wantStatus    MergePrepareStatus
 		wantValidated bool
 		wantPublished bool
+		mode          string
 	}{
 		{name: "gate passes on the rebased head", validate: true, command: "test -f main.txt", wantStatus: MergePrepareStatusClean, wantValidated: true, wantPublished: true},
 		{name: "gate fails on the rebased head", validate: true, command: "test ! -f main.txt", wantStatus: MergePrepareStatusConflict},
+		{name: "legacy rolling mode rejects failed validation", mode: gate.LandingRollingBarrier, validate: true, command: "false", wantStatus: MergePrepareStatusConflict},
 		{name: "validation not requested", validate: false, command: "false", wantStatus: MergePrepareStatusClean, wantPublished: true},
 	}
 	for _, tt := range tests {
@@ -3496,7 +4036,7 @@ func TestLocalGitPrepareMergeValidatesTheCleanHeadItPushes(t *testing.T) {
 			runGit(t, source, "commit", "-m", "main change")
 			runGit(t, source, "push", "origin", "main")
 
-			result, err := preparer.PrepareMerge(context.Background(), info, issue, MergePrepareOptions{ValidateHead: tt.validate, ValidationCommand: tt.command, ExpectedRemoteHead: published})
+			result, err := preparer.PrepareMerge(context.Background(), info, issue, MergePrepareOptions{LandingMode: tt.mode, ValidateHead: tt.validate, ValidationCommand: tt.command, ExpectedRemoteHead: published})
 			if err != nil {
 				t.Fatalf("PrepareMerge() error = %v", err)
 			}
@@ -3522,6 +4062,10 @@ func TestLocalGitPrepareMergeValidatesTheCleanHeadItPushes(t *testing.T) {
 }
 
 func TestPrepareWorkerScratchIsOutsideWorkspace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real process or filesystem integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -3711,6 +4255,10 @@ func TestRemoveWorkerScratchRootKeepsSharedGroup(t *testing.T) {
 }
 
 func TestPrepareWorkerScratchToleratesConcurrentSiblingCleanup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real process or filesystem integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {

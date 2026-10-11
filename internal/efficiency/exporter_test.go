@@ -10,6 +10,10 @@ import (
 )
 
 func TestOTLPExporterEmitsLifecycleSpans(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	requests := make(chan map[string]any, 1)

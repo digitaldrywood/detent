@@ -19,7 +19,9 @@ let hub;
 
 test.beforeAll(async () => {
   test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
-  hub = await startHostedHub("conversation");
+  hub = await startHostedHub("conversation", {
+    env: { DETENT_HOSTED_BROWSER_CHAT_ORIGIN: "1", DETENT_HOSTED_BROWSER_RESTART: "1" },
+  });
 });
 
 test.afterAll(async () => {
@@ -34,6 +36,8 @@ const UNSERVED_PROJECT_ACTIONS = /\/api\/v2\/organizations\/[^/]+\/projects\/[^/
 // 404 to one who cannot manage runners, which the client reads as nothing to
 // report.
 const UNREPORTED_UPDATES = /\/app\/updates$/;
+// IssuePage treats a missing linked worker conversation as an optional read.
+const UNLINKED_CONVERSATION = /\/api\/v2\/organizations\/[^/]+\/projects\/[^/]+\/work-items\/[^/]+\/conversation$/;
 const NOT_FOUND = /status of 404\b/;
 
 /** Collects everything the page logs as an error, for a per-test assertion. */
@@ -44,7 +48,8 @@ function watchConsole(page) {
     const url = message.location().url ?? "";
     const expected404 =
       NOT_FOUND.test(message.text()) &&
-      (UNSERVED_PROJECT_ACTIONS.test(url) || UNREPORTED_UPDATES.test(url));
+      (UNSERVED_PROJECT_ACTIONS.test(url) || UNREPORTED_UPDATES.test(url) ||
+        UNLINKED_CONVERSATION.test(url));
     if (expected404) return;
     errors.push(message.text());
   });
@@ -94,6 +99,40 @@ async function openWorkIssue(page, account = "owner") {
 
 function shell(page) {
   return page.locator("[data-slot='sidebar-wrapper']");
+}
+
+for (const selection of ["all projects", "different project", "no remembered project"]) {
+  test(`opens an issue link with ${selection}`, async ({ page }) => {
+    await openChat(page);
+    const issueProject = new URL(hub.fixture.private_project).pathname.split("/").at(-1);
+    const created = await hubAPI(page, "POST", `/projects/${issueProject}/work-items`, {
+      idempotency_key: `issue-link-${selection}`,
+      title: `Issue link with ${selection}`,
+      body: "This issue has no linked conversation and resolves its own project.",
+      state: "Todo",
+    });
+    expect(created.status).toBe(200);
+    const item = created.payload.work_item_id;
+    const projectKey = "detent.conversation.lastProject";
+    const otherProject = hub.fixture.project_id;
+    if (selection === "all projects") {
+      await page.goto(new URL("/work", hub.fixture.url).toString());
+      await expect.poll(() => page.evaluate((key) => localStorage.getItem(key), projectKey)).toBe("");
+    } else if (selection === "different project") {
+      await page.goto(`${hub.fixture.chat}/p/${otherProject}`);
+      await expect.poll(() => page.evaluate((key) => localStorage.getItem(key), projectKey)).toBe(otherProject);
+    } else {
+      await page.evaluate((key) => localStorage.removeItem(key), projectKey);
+      expect(await page.evaluate((key) => localStorage.getItem(key), projectKey)).toBeNull();
+    }
+    await page.goto(new URL(`/work/i/${item}`, hub.fixture.url).toString());
+    await expect(page.getByRole("heading", { name: `Issue link with ${selection}`, exact: true })).toBeVisible();
+    await expect(page.getByTestId("issue-properties")).toBeVisible();
+    await expect(page.getByTestId("issue-body")).toContainText("resolves its own project");
+    const lookup = await hubAPI(page, "GET", `/work-items/${item}`);
+    expect(lookup.status).toBe(200);
+    expect(lookup.payload.project_id).toBe(issueProject);
+  });
 }
 
 function sidebar(page) {
@@ -224,6 +263,60 @@ async function openCreateLinkedIssue(page) {
   await page.getByRole("menuitem", { name: "Create linked issue" }).click();
 }
 
+for (const projectScope of ["one project", "one writable project", "several projects"]) {
+  test(`starts a new chat in All projects with ${projectScope}`, async ({ page }) => {
+    const errors = watchConsole(page);
+    let selectedProject;
+    let createPath;
+    const creates = [];
+    page.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname.endsWith("/conversations")) {
+        creates.push(new URL(request.url()).pathname);
+      }
+    });
+    await page.route("**/app/bootstrap", async (route) => {
+      const response = await route.fetch();
+      const bootstrap = await response.json();
+      selectedProject = bootstrap.projects.find((project) => project.id === hub.fixture.project_id);
+      createPath = `${new URL(bootstrap.api_base, hub.fixture.url).pathname}/projects/${selectedProject.id}/conversations`;
+      expect(selectedProject.can_write).toBe(true);
+      if (projectScope === "one project") {
+        bootstrap.projects = [selectedProject];
+      } else if (projectScope === "one writable project") {
+        expect(bootstrap.projects.length).toBeGreaterThan(1);
+        bootstrap.projects = bootstrap.projects.map((project) => ({
+          ...project,
+          can_write: project.id === selectedProject.id,
+        }));
+      } else {
+        expect(bootstrap.projects.filter((project) => project.can_write).length).toBeGreaterThan(1);
+      }
+      await route.fulfill({ response, json: bootstrap });
+    });
+
+    await openChat(page);
+    await page.goto(new URL("/work", hub.fixture.url).toString());
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("detent.conversation.lastProject"))).toBe("");
+    await page.goto(hub.fixture.chat);
+    await expect(composer(page)).toBeVisible();
+    const message = `Draft from All projects with ${projectScope}`;
+    await composer(page).fill(message);
+
+    if (projectScope === "several projects") {
+      await expect(page.getByText("Choose a project first", { exact: true })).toHaveCount(0);
+    }
+
+    await expect(page.getByTestId("hero-headline")).toContainText(`What should we build in ${selectedProject.name}?`);
+    await expect(page.getByTestId("composer-context-strip")).toContainText(`Project ${selectedProject.name}`);
+    await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+    await composer(page).press("Enter");
+    await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
+    await expect(page.getByTestId("user-turn").first()).toContainText(message);
+    expect(creates).toEqual([createPath]);
+    expect(errors).toEqual([]);
+  });
+}
+
 test("creates a chat from the keyboard", async ({ page }) => {
   const errors = watchConsole(page);
   await openChat(page);
@@ -258,11 +351,156 @@ test("creates a chat from the keyboard", async ({ page }) => {
   // segment is the heading, and the sidebar sections stay at level two.
   await expectOneHeadingOne(page, "Why does the lease lapse under load?");
   await expectNoSeriousAxeViolations(page, "an active conversation");
+  const projectCrumb = page.locator("[data-chat-header]").getByRole("button", {
+    name: "New thread in Browser collaboration", exact: true,
+  });
+  await projectCrumb.hover();
+  await expect(tooltip(page)).toHaveText("New thread in Browser collaboration");
+  await projectCrumb.click();
+  await expect(page).toHaveURL(/\/chat$/);
+  await expect(page.getByTestId("hero-headline")).toContainText("Browser collaboration");
+  await expect(composer(page)).toBeFocused();
   expect(errors).toEqual([]);
 });
 
-test("streams the coordinator's reply back", async () => {
-  test.skip(true, "Hub-side coordinator turns (the scripted backend) from #2635 are not on main.");
+test("keeps an open chat visible when its session cookie expires and reconnects", async ({ page, context }) => {
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.conversationStreams = { opened: 0, closed: [] };
+    window.EventSource = class extends NativeEventSource {
+      constructor(url, options) {
+        super(url, options);
+        if (!String(url).includes("/conversations/")) return;
+        this.addEventListener("open", () => window.conversationStreams.opened++);
+        this.addEventListener("closed", (event) => {
+          window.conversationStreams.closed.push(JSON.parse(event.data).reason);
+        });
+      }
+    };
+  });
+  await openChat(page);
+  const message = "Keep this chat through session refresh";
+  await sendWithKeyboard(page, message);
+  await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
+  const chatURL = page.url();
+  await expect(page.getByTestId("user-turn").first()).toContainText(message);
+  await expect.poll(() => page.evaluate(() => window.conversationStreams.opened)).toBeGreaterThan(0);
+  await composer(page).fill("Unsent draft survives refresh");
+  const original = (await context.cookies()).find((cookie) => cookie.name === "detent_hosted_session");
+  expect(original).toBeDefined();
+  const opened = await page.evaluate(() => window.conversationStreams.opened);
+  const expired = await page.evaluate(async () => {
+    return (await fetch("/__preview/session/expire", { method: "POST" })).status;
+  });
+  expect(expired).toBe(204);
+  await expect.poll(() => page.evaluate(() => window.conversationStreams.closed), { timeout: 40_000 }).toContain("server_error");
+  await expect(page.getByTestId("user-turn").first()).toContainText(message);
+  await expectComposerText(page, "Unsent draft survives refresh");
+  await expect(page.getByText("Conversation unavailable")).toHaveCount(0);
+  await expect(page.getByText("Your access to this conversation was removed.")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => window.conversationStreams.opened)).toBeGreaterThan(opened);
+  const refreshed = (await context.cookies()).find((cookie) => cookie.name === "detent_hosted_session");
+  expect(refreshed.value).not.toBe(original.value);
+  await expect(page).toHaveURL(chatURL);
+  expect(await page.evaluate(() => window.conversationStreams.closed)).not.toContain("access_revoked");
+  const accepted = await hubAPI(page, "POST", `${conversationPath(currentConversation(page))}/commands`, {
+    key: "session-refresh-follow-up",
+    kind: "message",
+    text: "Message after reconnect",
+  });
+  expect(accepted.status).toBe(200);
+  await expect(page.getByTestId("user-turn").last()).toContainText("Message after reconnect");
+  await expectComposerText(page, "Unsent draft survives refresh");
+});
+
+test("open chat reconnects after a Hub restart and replays the gap once", async ({ page }) => {
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.restartStreams = { urls: [], closed: [], hold: false, held: [], source: null };
+    window.EventSource = class extends NativeEventSource {
+      constructor(url, options) {
+        const conversation = String(url).includes("/conversations/");
+        if (conversation && window.restartStreams.hold) {
+          super(url, options);
+          this.close();
+          window.restartStreams.held.push(String(url));
+          setTimeout(() => this.dispatchEvent(new Event("error")), 0);
+          return;
+        }
+        super(url, options);
+        if (!conversation) return;
+        window.restartStreams.source = this;
+        window.restartStreams.urls.push(String(url));
+        this.addEventListener("closed", (event) => {
+          const reason = JSON.parse(event.data).reason;
+          window.restartStreams.closed.push(reason);
+          if (reason === "server_shutdown") window.restartStreams.hold = true;
+        });
+      }
+    };
+    window.restartMarker = true;
+  });
+  await openChat(page);
+  await sendWithKeyboard(page, "Keep this chat through restart");
+  await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
+  await expect(page.getByTestId("assistant-turn").last()).toContainText("Hello, world.");
+  const conversation = currentConversation(page);
+  const before = await hubAPI(page, "GET", conversationPath(conversation));
+  const cursor = before.payload.cursor;
+  await composer(page).fill("Unsent draft survives restart");
+  await expect.poll(() => page.evaluate(() => window.restartStreams.source?.readyState === EventSource.OPEN)).toBe(true);
+  const url = page.url();
+  const response = await fetch(hub.fixture.restart, { method: "POST", signal: AbortSignal.timeout(20_000) });
+  expect(response.status).toBe(204);
+  await expect.poll(() => page.evaluate(() => window.restartStreams.closed)).toContain("server_shutdown");
+  const gap = await hubAPI(page, "POST", `${conversationPath(conversation)}/commands`, {
+    key: "spec-message-during-restart-gap", kind: "message", text: "Published during the reconnect gap",
+  });
+  expect(gap.status).toBe(200);
+  await expect.poll(async () => {
+    const snapshot = await hubAPI(page, "GET", conversationPath(conversation));
+    return snapshot.payload.messages.find((message) => message.id === gap.payload.message_id)?.delivery;
+  }).toBe("delivered");
+  await expect.poll(() => page.evaluate(() => window.restartStreams.held.length)).toBeGreaterThan(0);
+  await page.evaluate(() => { window.restartStreams.hold = false; });
+  await expect(page.getByTestId("user-turn").filter({ hasText: "Published during the reconnect gap" })).toHaveCount(1);
+  await expect.poll(() => page.evaluate(() => window.restartStreams.urls.length)).toBeGreaterThan(1);
+  const resumed = await page.evaluate(() => window.restartStreams.urls.at(-1));
+  expect(Number(new URL(resumed, url).searchParams.get("after"))).toBe(cursor);
+  expect(page.url()).toBe(url);
+  expect(await page.evaluate(() => window.restartMarker)).toBe(true);
+  await expectComposerText(page, "Unsent draft survives restart");
+  await expect(page.getByTestId("user-turn")).toHaveCount(2);
+  await expect(page.getByTestId("assistant-turn")).toHaveCount(2);
+  await expect(page.getByTestId("message-retry")).toHaveCount(0);
+  await page.screenshot({ path: test.info().outputPath("chat-reconnected.png") });
+});
+
+test("a Luna turn abandoned by restart offers Retry and clears sending", async ({ page }) => {
+  await openChat(page);
+  const blocked = await fetch(`${hub.fixture.restart}/block`, { method: "POST" });
+  expect(blocked.status).toBe(204);
+  await sendWithKeyboard(page, "Retry this turn after restart");
+  await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
+  await expect(page.getByTestId("assistant-turn").last()).toContainText("Working before restart");
+  const url = page.url();
+  await page.evaluate(() => { window.restartMarker = true; });
+  const response = await fetch(hub.fixture.restart, { method: "POST", signal: AbortSignal.timeout(20_000) });
+  expect(response.status).toBe(204);
+  const retry = page.getByTestId("message-retry");
+  await expect(retry).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("chat-retry-after-restart.png") });
+  expect(page.url()).toBe(url);
+  expect(await page.evaluate(() => window.restartMarker)).toBe(true);
+  const snapshot = await hubAPI(page, "GET", conversationPath(currentConversation(page)));
+  expect(snapshot.status).toBe(200);
+  expect(snapshot.payload.conversation.execution.status).toBe("failed");
+  expect(snapshot.payload.messages.find((message) => message.role === "user").delivery).toBe("failed");
+  await retry.click();
+  await expect(page.getByTestId("assistant-turn").last()).toContainText("Hello, world.");
+  await expect(retry).toHaveCount(0);
+  await expect(page.getByTestId("user-turn")).toHaveCount(1);
+  await expect(composer(page)).toBeEditable();
 });
 
 test("Shift+Enter inserts a newline instead of sending", async ({ page }) => {
@@ -319,11 +557,75 @@ test("keeps every character of a long draft typed at speed", async ({ page }) =>
   expect(errors).toEqual([]);
 });
 
+test("keeps runner conversations out of Chat while preserving issue access", async ({ page }) => {
+  const errors = watchConsole(page);
+  await openChat(page);
+  await sendWithKeyboard(page, "Manual chat stays visible");
+  await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
+  const rows = sidebar(page).getByTestId("sidebar-row-card");
+  await expect(rows.filter({ hasText: "Manual chat stays visible" })).toBeVisible();
+  await expect(rows.filter({ hasText: "Lease renewal under load" })).toBeVisible();
+  await expect(rows.filter({ hasText: "Runner session isolation" })).toHaveCount(0);
+
+  for (const path of [
+    "/conversations",
+    `/projects/${hub.fixture.project_id}/conversations`,
+  ]) {
+    const listed = await hubAPI(page, "GET", path);
+    expect(listed.status).toBe(200);
+    expect(listed.payload.conversations.map((chat) => chat.id)).not.toContain(hub.fixture.worker_conversation);
+    expect(listed.payload.conversations.map((chat) => chat.id)).toContain(hub.fixture.conversation);
+  }
+
+  await page.addInitScript((id) => {
+    const NativeEventSource = window.EventSource;
+    window.workerConversationStream = { opened: false, updates: 0 };
+    window.EventSource = class extends NativeEventSource {
+      constructor(url, options) {
+        super(url, options);
+        if (!String(url).includes(`/conversations/${id}/events`)) return;
+        this.addEventListener("open", () => { window.workerConversationStream.opened = true; });
+        this.addEventListener("conversation.updated", () => { window.workerConversationStream.updates++; });
+      }
+    };
+  }, hub.fixture.worker_conversation);
+  await page.goto(new URL(`/work/i/${hub.fixture.worker_work_item}?panel=conversation`, hub.fixture.url).toString());
+  await expect(page.getByTestId("conversation-surface")).toBeVisible();
+  await page.getByTestId("properties-disclosure").click();
+  await expect(page.getByTestId("issue-properties")).toBeVisible();
+  const linked = await hubAPI(page, "GET", `/projects/${hub.fixture.project_id}/work-items/${hub.fixture.worker_work_item}/conversation`);
+  expect(linked.status).toBe(200);
+  expect(linked.payload.conversation.id).toBe(hub.fixture.worker_conversation);
+  await expect.poll(() => page.evaluate(() => window.workerConversationStream.opened)).toBe(true);
+  const updated = await hubAPI(page, "PATCH", conversationPath(hub.fixture.worker_conversation), {
+    title: "Runner session remains on the issue",
+  });
+  expect(updated.status).toBe(200);
+  await expect.poll(() => page.evaluate(() => window.workerConversationStream.updates)).toBeGreaterThan(0);
+  await expect(sidebar(page).getByTestId("sidebar-row-card").filter({ hasText: /Runner session/ })).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test("lists the chat in the sidebar and filters it from the search box", async ({ page }) => {
   const errors = watchConsole(page);
   await openChat(page);
   await sendWithKeyboard(page, "Explain the admission gate to me");
   await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
+  const conversationURL = page.url();
+  const userTurn = page.getByTestId("user-turn").first();
+  await expect(userTurn).toContainText("Explain the admission gate to me");
+  await expect(composer(page)).toBeFocused();
+
+  let releaseConversation;
+  const conversationReady = new Promise((resolve) => { releaseConversation = resolve; });
+  await page.route(/\/api\/v2\/organizations\/[^/]+\/projects\/[^/]+\/conversations\/conv_[^/?]+$/, async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const response = await route.fetch();
+    await conversationReady;
+    await route.fulfill({ response });
+  });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page).toHaveURL(conversationURL);
 
   const sidebar = page.getByRole("complementary", { name: "Conversations" });
   const newRow = sidebar
@@ -334,7 +636,20 @@ test("lists the chat in the sidebar and filters it from the search box", async (
   const search = sidebar.getByRole("combobox", { name: "Search threads" });
   await search.focus();
   await expect(search).toBeFocused();
+  await expect(page.getByText("Opening conversation…", { exact: true })).toBeVisible();
+  releaseConversation();
+  await expect(composer(page)).toBeEditable();
+  await expect(search).toBeFocused();
+  await expect(userTurn).toContainText("Explain the admission gate to me");
+  const searchRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return request.method() === "GET" && url.pathname.endsWith("/conversations") && url.searchParams.get("q") === "Lease renewal";
+  });
   await page.keyboard.type("Lease renewal");
+  await expect(search).toHaveValue("Lease renewal");
+  await expect(search).toBeFocused();
+  await expectComposerText(page, "");
+  await searchRequest;
 
   const results = sidebar.getByRole("listbox", { name: "Thread search results" });
   await expect(results.getByText(/Lease renewal under load/)).toBeVisible();
@@ -343,7 +658,11 @@ test("lists the chat in the sidebar and filters it from the search box", async (
   // Clearing the query brings the whole list back.
   await page.keyboard.press("ControlOrMeta+a");
   await page.keyboard.press("Backspace");
+  await expect(search).toHaveValue("");
+  await expect(search).toBeFocused();
   await expect(newRow).toBeVisible();
+  await expect(page).toHaveURL(conversationURL);
+  await expect(userTurn).toContainText("Explain the admission gate to me");
   expect(errors).toEqual([]);
 });
 
@@ -391,7 +710,7 @@ test("answers the search and new-chat keyboard shortcuts", async ({ page }) => {
   const errors = watchConsole(page);
   await openLinkedConversation(page);
 
-  const search = sidebar(page).getByRole("combobox", { name: "Search threads" });
+  const search = sidebar(page).getByRole("searchbox", { name: "Search issues" });
   await expect(search).toBeVisible();
 
   // `/` while the reader is typing is a slash, not a shortcut.
@@ -695,27 +1014,13 @@ test.describe("decisions.md §10 corrections", () => {
     expect(errors).toEqual([]);
   });
 
-  // §10.3. Not covered end to end: the retry affordance appears only on a
-  // message whose delivery is `unknown`, `failed` or `rejected`, and this
-  // fixture cannot produce one. Those deliveries are written by the worker
-  // paths (`internal/hubserver/conversation_worker.go` finishExecution) or by
-  // a coordinator turn that returns an error
-  // (`internal/hubserver/conversation_coordinator.go` coordinatorOutcome), and
-  // the preview's scripted coordinator
-  // (`internal/hubserver/hosted_browser_test.go` browserConversationBackend)
-  // never returns one: its only failure route is the tool handler, which turns
-  // every tool failure into a successful tool result. What is checked here is
-  // the rule the affordance is bound to — the hub's `retry` command, reached
-  // from this signed-in session — and that the client offers no retry on a
-  // delivery the hub would refuse.
-  test("re-queues a lost message through the retry command", async ({ page }) => {
-    test.skip(true, "Needs a coordinator turn to settle the message; hub coordinator turns from #2635 are not on main.");
+  test("refuses to retry a delivered message", async ({ page }) => {
     const errors = watchConsole(page);
     await openChat(page);
     await sendWithKeyboard(page, "Retry rules");
     await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
     const id = currentConversation(page);
-    await expect(page.getByTestId("assistant-turn").last()).toContainText("closes the window", {
+    await expect(page.getByTestId("assistant-turn").last()).toContainText("Hello, world.", {
       timeout: 30_000,
     });
 
@@ -952,10 +1257,6 @@ test.describe("decisions.md §10 corrections", () => {
     await expect(page.getByRole("option", { name: /High/ })).toHaveCount(0);
   });
 
-  test("offers the runners' model catalogue and the access choices", async () => {
-    test.skip(true, "The hub bootstrap publishes no model or access choices on main: the runner catalogue slice of #2635 is not ported.");
-  });
-
   test("opens the slash menu and runs the command it highlights", async ({ page }) => {
     const errors = watchConsole(page);
     const surface = await openLinkedConversation(page);
@@ -983,12 +1284,7 @@ test.describe("decisions.md §10 corrections", () => {
         };
       }),
     ).toEqual({ inCard: true, aboveEditor: true, sameWidth: true });
-    // The runner's own skills and prompts are in the contract and the hub does
-    // not serve them yet, so the menu says so rather than dropping the feature
-    // silently or inventing rows that would not run (decisions.md §16).
-    await expect(menu.getByTestId("slash-provider-skills")).toContainText(
-      "Runner skills and prompts appear here once the hub serves them",
-    );
+    await expect(menu.getByTestId("slash-provider-skills")).toHaveCount(0);
 
     // Typing filters by name, and the highlighted row is what Enter runs.
     await page.keyboard.type("mod");
@@ -1011,7 +1307,7 @@ test.describe("decisions.md §10 corrections", () => {
   });
 
   // §19.5. The issue page's composer offers the commands that page has, and
-  // only those: a comment has no model, no effort, no access and no files, and
+  // only those: a comment has no model, no effort or access, and
   // there is no runner working on this issue to send to.
   test("offers the issue page's own slash commands", async ({ page }) => {
     const errors = watchConsole(page);
@@ -1024,10 +1320,10 @@ test.describe("decisions.md §10 corrections", () => {
     await expect(menu).toBeVisible();
     await expect(menu.getByTestId("slash-command-shortcuts")).toBeVisible();
     await expect(menu.getByTestId("slash-command-clear")).toBeVisible();
-    // This card posts comments and nothing else, so there is no mode to
-    // switch, no turn to configure, no file to attach and no turn to stop
-    // (§19.5, Michael's review of September 12).
-    for (const name of ["model", "effort", "access", "attach", "stop", "comment", "runner"]) {
+    // Comments support project attachments, but have no mode to switch,
+    // turn preferences or running turn to stop.
+    await expect(menu.getByTestId("slash-command-attach")).toBeVisible();
+    for (const name of ["model", "effort", "access", "stop", "comment", "runner"]) {
       await expect(menu.getByTestId(`slash-command-${name}`)).toHaveCount(0);
     }
     await expectNoSeriousAxeViolations(page, "the issue composer's slash menu");
@@ -1117,7 +1413,7 @@ test.describe("decisions.md §10 corrections", () => {
     await page.goto(`${hub.fixture.url}/settings/organization`, { waitUntil: "domcontentloaded" });
 
     const appSidebar = page.locator("[data-app-sidebar]");
-    await expect(appSidebar.getByRole("button", { name: "Organization" })).toBeVisible();
+    await expect(appSidebar.getByRole("button", { name: "Organization", exact: true })).toBeVisible();
     await expect(page.getByRole("complementary", { name: "Conversations" })).toHaveCount(0);
     await expect(appSidebar.getByRole("button", { name: "Back" })).toBeVisible();
 
@@ -1311,19 +1607,14 @@ test.describe("the ported shell's interactions", () => {
     // never quietly removed (§16).
     expect(byLabel.Browser.openable, "Browser is inert").toBe(false);
     expect(byLabel.Browser.reason, "Browser says why").toBe("Not available on Detent Cloud yet.");
-    // The Terminal is real since §18.3, and what disables it here is the same
-    // thing that disables Files: a draft chat names no issue, so there is no
-    // worktree for a shell to run in. The sentence is the structural reason
-    // rather than a product absence, which is the §16 distinction this test
-    // and the Browser line above draw.
+    // The Terminal needs an issue-linked worktree. The draft has no issue,
+    // so the launcher reports that prerequisite instead of a product absence.
     expect(byLabel.Terminal.openable, "Terminal is inert on a draft chat").toBe(false);
     expect(byLabel.Terminal.reason, "Terminal says why").toBe("Link an issue to get a worktree.");
-    // Files is real since §18.11 step 2, but it needs a worktree, and a draft
-    // chat names no issue for a runner to open one on. So it is inert here for
-    // a Detent reason rather than an absence of product — which is the §16
-    // distinction the two strings above and this one draw.
+    // The fixture organization has workspace sessions disabled. Files stays
+    // inert and reports that service policy before worktree availability.
     expect(byLabel.Files.openable, "Files is inert on a draft chat").toBe(false);
-    expect(byLabel.Files.reason, "Files says why").toBe("Available from an issue with a runner.");
+    expect(byLabel.Files.reason, "Files says why").toBe("Workspace sessions are not enabled for this organization.");
     // Diff always has a card — Detent either has a change request or says why
     // it has none — and opening it swaps the launcher for the surface.
     expect(byLabel.Diff.openable, "Diff is openable").toBe(true);
@@ -1336,46 +1627,6 @@ test.describe("the ported shell's interactions", () => {
 
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
-    expect(errors).toEqual([]);
-  });
-
-  // §18.3. The Terminal surface, end to end: the launcher card is live on an
-  // issue whose runner serves terminals, opening it puts a real PTY on the
-  // workspace's worktree behind xterm, and what the reader types reaches the
-  // shell. The preview fixture's runner is this process, at `user` isolation
-  // with its owner account holding the runners grant.
-  test("opens a terminal on the workspace and runs what the reader types", async ({ page }) => {
-    test.skip(true, "The workspace terminal from #2635 is not on main.");
-    const errors = watchConsole(page);
-    await openWorkIssue(page);
-
-    const toggle = page.getByRole("button", { name: /^Toggle right panel/ });
-    await toggle.click();
-
-    await page.getByRole("button", { name: "Add panel surface" }).click();
-    await page.getByRole("menuitem", { name: /^Terminal/ }).click();
-    await expect(page.getByTestId("terminal-surface")).toBeVisible();
-
-    // The shell takes a moment: the workspace has to be claimed and the PTY
-    // allocated. The prompt is what says it is there.
-    const screen = page.locator("[data-terminal-owner='right-panel'] .xterm-screen");
-    await expect(screen).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByTestId("terminal-status")).toHaveAttribute("data-status", "open", {
-      timeout: 60_000,
-    });
-
-    await page.locator("[data-terminal-owner='right-panel']").click();
-    await page.keyboard.type("echo hi");
-    await page.keyboard.press("Enter");
-    // xterm draws to a canvas or to spans depending on the renderer, so the
-    // assertion reads the buffer the way a person reads the screen.
-    await expect
-      .poll(
-        async () =>
-          screen.evaluate((node) => node.closest(".xterm")?.textContent ?? ""),
-        { timeout: 60_000 },
-      )
-      .toContain("hi");
     expect(errors).toEqual([]);
   });
 
@@ -1598,636 +1849,10 @@ test.describe("the ported shell's interactions", () => {
     expect(errors).toEqual([]);
   });
 
-  // decisions.md §18.11 step 2. This is the whole stack in one assertion: the
-  // panel requests a workspace, the hub dispatches a `detent:workspace` item,
-  // the preview's runner claims it and binds, the panel learns it is ready
-  // from the project event stream rather than by polling, mints a ticket,
-  // opens the relay, and the tree and the file view are frames that crossed
-  // it. Anything broken between those and the surface never leaves "opening".
-  test("opens the Files surface on an issue and reads the worktree over the relay", async ({
-    page,
-  }) => {
-    test.skip(true, "Workspace sessions (files, exec, relay) from #2635 are not on main.");
-    const errors = watchConsole(page);
-    await openWorkIssue(page);
 
-    const toggle = page.getByRole("button", { name: /^Toggle right panel/ });
-    await toggle.click();
-    await expect(toggle).toHaveAttribute("aria-pressed", "true");
-
-    // The panel opens on the conversation for a linked issue (§19.3), so
-    // Files is reached through the surface menu rather than the launcher.
-    await page.getByRole("button", { name: "Add panel surface" }).click();
-    await page.getByRole("menuitem", { name: "Files" }).click();
-
-    const surface = page.getByTestId("files-surface");
-    await expect(surface).toBeVisible();
-
-    const tree = page.getByTestId("files-tree");
-    await expect(tree).toBeVisible({ timeout: 30_000 });
-    // Pierre's tree names its rows through the `treeitem` role; the visible
-    // text is broken for wrapping, so the accessible name is what to match.
-    await expect(tree.getByRole("treeitem", { name: "README.md" })).toBeVisible({
-      timeout: 30_000,
-    });
-    await expect(tree.getByRole("treeitem", { name: "internal" })).toBeVisible();
-    // A denied entry is listed and never read (§18.4), so the reader learns
-    // the project has a .env and not what is in it.
-    await expect(tree.getByRole("treeitem", { name: ".env" })).toBeVisible();
-
-    // Opening a file is a `read` frame, and what comes back is the worktree's
-    // own bytes rather than anything the client invented.
-    await tree.getByRole("treeitem", { name: "README.md" }).click();
-    await expect(page.getByTestId("files-view")).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("files-view")).toContainText("Preview worktree", {
-      timeout: 30_000,
-    });
-    // The row that was clicked is the file that opened. The root's folders are
-    // filled before the first paint, so no row is inserted above README.md
-    // after a click has resolved to it; when one was, this opened `main.go` —
-    // the row directly above it (§18.4).
-    await expect(page.getByTestId("files-view")).not.toContainText('println("preview")');
-
-    expect(errors).toEqual([]);
-  });
-
-  /** Closes every workspace the project has open, the way the panel's own
-   * close does: through the API, as the signed-in person. */
-  async function closeOpenWorkspaces(page) {
-    const listing = await hubAPI(page, "GET", `/projects/${hub.fixture.project_id}/workspaces`);
-    expect(listing.status).toBe(200);
-    const open = (listing.payload?.workspaces ?? []).filter(
-      (workspace) => !["closed", "failed"].includes(workspace.state),
-    );
-    for (const workspace of open) {
-      const closed = await page.evaluate(
-        async ({ path }) => {
-          const bootstrap = await (await fetch("/chat/bootstrap")).json();
-          const response = await fetch(`${bootstrap.api_base}${path}`, {
-            method: "DELETE",
-            headers: { "X-CSRF-Token": bootstrap.csrf_token },
-          });
-          return response.status;
-        },
-        { path: `/projects/${hub.fixture.project_id}/workspaces/${workspace.id}` },
-      );
-      expect(closed).toBe(204);
-    }
-    return open.map((workspace) => workspace.id);
-  }
-
-  async function openFilesSurface(page) {
-    const toggle = page.getByRole("button", { name: /^Toggle right panel/ });
-    await toggle.click();
-    await expect(toggle).toHaveAttribute("aria-pressed", "true");
-    const launcher = page.locator("[aria-label='Open a surface']");
-    const menu = page.getByRole("button", { name: "Add panel surface" });
-    await expect(launcher.or(menu).first()).toBeVisible({ timeout: 30_000 });
-    if (await launcher.isVisible()) {
-      await launcher
-        .locator("[class*='grid-cols-2'] > *")
-        .filter({ hasText: "Files" })
-        .getByRole("button")
-        .click();
-    } else {
-      await menu.click();
-      await page.getByRole("menuitem", { name: "Files" }).click();
-    }
-    await expect(page.getByTestId("files-surface")).toBeVisible({ timeout: 30_000 });
-  }
-
-  // decisions.md §18.1. The regression for the defect this change is about: a
-  // preview that had been up for hours answered Files with "Workspace ·
-  // requested" over skeleton rows for ever.
-  //
-  // The cause was on the hub side of the fixture — the workspace runner's
-  // capability report rides its machine heartbeat, the preview sent exactly
-  // one, and `runnerauth.HeartbeatTimeout` later the claim gate stopped
-  // offering the lane anything — so the shape of the failure was that the
-  // *first* workspace worked and no later one ever did. A test that only opens
-  // Files once cannot see that, because the fixture pre-warms one. So this one
-  // throws the pre-warmed workspace away first and then asks for another,
-  // which is exactly what Michael did hours in.
-  test("claims a second workspace after the pre-warmed one is closed", async ({ page }) => {
-    test.skip(true, "Workspace sessions (files, exec, relay) from #2635 are not on main.");
-    const errors = watchConsole(page);
-    await openWorkIssue(page);
-
-    const closed = await closeOpenWorkspaces(page);
-    expect(closed.length).toBeGreaterThan(0);
-
-    // A different issue, as in the report: nothing of the closed workspace is
-    // reusable for it, so the panel has to get a fresh one claimed.
-    const subject = await hubAPI(
-      page,
-      "GET",
-      `/projects/${hub.fixture.project_id}/work-items/${hub.fixture.work_item}`,
-    );
-    expect(subject.status).toBe(200);
-    const created = await hubAPI(page, "POST", `/projects/${hub.fixture.project_id}/work-items`, {
-      idempotency_key: `files-after-close-${Date.now()}`,
-      title: "Files on a second issue",
-      body: "Opened to prove a later workspace is still claimed.",
-      state: subject.payload.state,
-      labels: [],
-      assignees: [],
-    });
-    expect([200, 201]).toContain(created.status);
-    const second = created.payload.work_item_id;
-    expect(second, `the new issue has an id: ${JSON.stringify(created.payload)}`).toBeTruthy();
-
-    await page.goto(new URL(`/work/i/${second}`, hub.fixture.url).toString(), {
-      waitUntil: "domcontentloaded",
-    });
-    await expect(page.getByTestId("issue-properties")).toBeVisible();
-    await openFilesSurface(page);
-
-    // The whole point: a workspace requested now is claimed, bound and ready,
-    // and the tree is frames that crossed the relay. Before the fix this sat
-    // in `requested` until the request timeout and then failed `no_runner`.
-    const tree = page.getByTestId("files-tree");
-    await expect(tree).toBeVisible({ timeout: 60_000 });
-    await expect(tree.getByRole("treeitem", { name: "README.md" })).toBeVisible({
-      timeout: 30_000,
-    });
-
-    const after = await hubAPI(page, "GET", `/projects/${hub.fixture.project_id}/workspaces`);
-    const live = (after.payload?.workspaces ?? []).find(
-      (workspace) => workspace.work_item_id === second,
-    );
-    expect(live, "the second issue has a workspace of its own").toBeTruthy();
-    expect(["ready", "idle"]).toContain(live.state);
-    expect(live.runner_id, "a ready workspace names the runner that claimed it").toBeTruthy();
-    expect(closed).not.toContain(live.id);
-
-    expect(errors).toEqual([]);
-  });
-
-  // decisions.md §18.1. The other half of the defect: whatever the hub is
-  // doing, the surface has to say what it is waiting for.
-  //
-  // The wait is stubbed rather than provoked, because the real runner claims
-  // in well under a second and `requested` is the state a reader only ever
-  // sees when something is wrong — which is precisely when the sentence has to
-  // be right. Holding the create response at `requested` is the client-side
-  // equivalent of the slow runner: the id never appears in the project event
-  // stream, so the surface stays where the hub last put it.
-  test("says what it is waiting for while the workspace is still requested", async ({ page }) => {
-    test.skip(true, "Workspace sessions (files, exec, relay) from #2635 are not on main.");
-    const errors = watchConsole(page);
-    await openWorkIssue(page);
-    await closeOpenWorkspaces(page);
-
-    const requestedAt = new Date(Date.now() - 80_000).toISOString();
-    await page.route("**/workspaces", async (route) => {
-      const request = route.request();
-      if (request.method() === "GET") {
-        // Nothing reusable, so the panel has to request one.
-        return route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ workspaces: [] }),
-        });
-      }
-      if (request.method() !== "POST") return route.fallback();
-      return route.fulfill({
-        status: 201,
-        contentType: "application/json",
-        body: JSON.stringify({
-          id: "ws_stubbed_requested",
-          organization_id: hub.fixture.organization ?? "org_browser_preview",
-          project_id: hub.fixture.project_id,
-          work_item_id: hub.fixture.work_item,
-          attempt_id: null,
-          ref: "main",
-          head_sha: null,
-          runner_id: null,
-          machine_id: null,
-          state: "requested",
-          reason: null,
-          requires: ["files", "exec"],
-          capabilities: null,
-          isolation: null,
-          worktree: null,
-          read_only: false,
-          idle_timeout_seconds: 1800,
-          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-          opened_at: null,
-          last_activity_at: null,
-          created_by: "user_browser_owner",
-          relay_sessions: null,
-          revision: 1,
-          created_at: requestedAt,
-          updated_at: requestedAt,
-        }),
-      });
-    });
-
-    await openFilesSurface(page);
-
-    // Words, not skeleton rows: the sentence names the capability the request
-    // is waiting on, and the clock says how long it has been waiting.
-    const waiting = page.getByTestId("files-waiting");
-    await expect(waiting).toBeVisible({ timeout: 30_000 });
-    await expect(waiting).toContainText("Waiting for a runner that can serve files for this project");
-    await expect(page.getByTestId("files-elapsed")).toContainText("elapsed");
-    // The elapsed clock is counting from the request, not from the mount.
-    await expect(page.getByTestId("files-elapsed")).toContainText(/^1m \d+s elapsed$/);
-    // The skeleton belongs to `starting` alone, so there is none under this.
-    await expect(page.getByTestId("files-tree")).toHaveCount(0);
-
-    expect(errors).toEqual([]);
-  });
-
-  test("adds a project action, runs it from the top bar, and records the run", async ({ page }) => {
-    test.skip(true, "Project actions from #2635 are not on main.");
-    const errors = watchConsole(page);
-    await openWorkIssue(page);
-
-    await headerActionsTrigger(page).click();
-
-    await expect(page.getByRole("menuitem", { name: "Copy link" })).toBeVisible();
-    await page.getByRole("menuitem", { name: "Add action" }).click();
-
-    const dialog = page.getByRole("dialog");
-    await expect(dialog).toBeVisible();
-    await expect(dialog).toContainText(
-      "Actions are project-scoped commands you can run from the top bar or keybindings.",
-    );
-
-    // §18.7: the Browser surface is not built, so section 16 keeps the field
-    // and the toggle present and disabled with the reason rather than cutting
-    // them. A reader must be able to learn why, not just find it dead.
-    await expect(dialog.getByLabel("Preview URL (optional)")).toBeVisible();
-    const previewToggle = dialog.getByRole("switch", {
-      name: /Open preview automatically when this action runs/,
-    });
-    await expect(previewToggle).toBeDisabled();
-    // The reason has to be readable without hovering: a tooltip is only in the
-    // DOM while it is open, so the sentence is also in the dialog as the
-    // switch's description. Asserting the text rather than the tooltip is what
-    // makes this a test of what a keyboard reader gets.
-    await expect(dialog).toContainText("Browser preview is not available on Detent Cloud yet.");
-
-    // The empty-name refusal is the dialog's own validation, not the hub's.
-    await dialog.getByLabel("Command", { exact: true }).fill("echo hello");
-    await dialog.getByRole("button", { name: "Save action" }).click();
-    await expect(dialog).toContainText("Name is required.");
-
-    await dialog.getByLabel("Name", { exact: true }).fill("Greet");
-    await dialog.getByRole("button", { name: "Save action" }).click();
-    await expect(dialog).toBeHidden({ timeout: 15_000 });
-
-    const run = page.getByRole("button", { name: "Run Greet" });
-    await expect(run).toBeVisible({ timeout: 15_000 });
-    await run.click();
-
-    // Running with no workspace open asks for one with `requires: [files,
-    // exec]`; the fixture pre-warms exactly that, so the panel reuses it. The
-    // output is `output` frames off the runner's own shell, crossing the relay
-    // into the Output surface.
-    const output = page.getByTestId("output-surface");
-    await expect(output).toBeVisible({ timeout: 30_000 });
-    await expect(output).toContainText("hello", { timeout: 60_000 });
-
-    // The run is a record, not just a stream: status, and an exit code that is
-    // the command's own.
-    const actions = await hubAPI(page, "GET", `/projects/${hub.fixture.project_id}/actions`);
-    expect(actions.status).toBe(200);
-    const saved = actions.payload.items.find((item) => item.name === "Greet");
-    expect(saved).toBeTruthy();
-    expect(saved.command).toBe("echo hello");
-
-    let finished;
-    await expect
-      .poll(
-        async () => {
-          const runs = await hubAPI(
-            page,
-            "GET",
-            `/projects/${hub.fixture.project_id}/actions/${saved.id}/runs`,
-          );
-          finished = runs.payload?.items?.[0];
-          return finished?.status ?? null;
-        },
-        { timeout: 60_000, message: "the action run never reached a terminal status" },
-      )
-      .toBe("succeeded");
-    expect(finished.exit_code).toBe(0);
-
-    // The output the panel showed is the output the hub kept, so a later
-    // reader of the run sees what the runner actually printed.
-    const body = await page.evaluate(async (path) => {
-      const bootstrap = await (await fetch("/chat/bootstrap")).json();
-      const response = await fetch(`${bootstrap.api_base}${path}`);
-      return { status: response.status, text: await response.text() };
-    }, `/projects/${hub.fixture.project_id}/actions/${saved.id}/runs/${finished.id}/output`);
-    expect(body.status).toBe(200);
-    expect(body.text).toContain("hello");
-
-    expect(errors).toEqual([]);
-  });
-
-  // decisions.md §18.12, the headless half. The eighth dogfood run created an
-  // action and a run through the API — `POST …/actions` then `POST
-  // …/actions/:id/runs` — got its 202, and watched the row sit `queued` for
-  // three minutes and forty seconds: the process only ever started when a
-  // browser opened the exec channel for it, and the runner's lane only runs
-  // actions at worktree creation. Two REST calls were not an action run.
-  //
-  // This test is that sequence and nothing else. No button is pressed to start
-  // it: the hub hands the queued run to the runner already holding the
-  // workspace, and the Output surface — opened afterwards, from the panel's own
-  // menu — reads the finished run back. If either half regresses, the surface
-  // is empty or the run is still `queued`, and both fail here.
-  test("runs an action queued through the API alone and reads it back in the panel", async ({
-    page,
-  }) => {
-    test.skip(true, "Project actions from #2635 are not on main.");
-    const errors = watchConsole(page);
-    await openWorkIssue(page);
-
-    const created = await hubAPI(page, "POST", `/projects/${hub.fixture.project_id}/actions`, {
-      idempotency_key: `headless-action-${Date.now()}`,
-      name: "Headless greet",
-      command: "echo hello",
-    });
-    expect(created.status).toBe(201);
-    const actionId = created.payload.id;
-
-    // The workspace is whichever open one the hub holds on the fixture issue.
-    // An earlier test in this serial file closes the pre-warmed workspace
-    // and lets the lane claim a fresh one, so the id in the fixture file can
-    // be stale; the point stands either way — this caller has no browser
-    // doing anything on its behalf, it only names a workspace the hub has.
-    const listed = await hubAPI(
-      page,
-      "GET",
-      `/projects/${hub.fixture.project_id}/workspaces?work_item=${hub.fixture.work_item}`,
-    );
-    expect(listed.status).toBe(200);
-    const open = listed.payload.workspaces.find(
-      (candidate) => candidate.state === "ready" || candidate.state === "idle",
-    );
-    expect(open, "an open workspace on the fixture issue").toBeTruthy();
-    const queued = await hubAPI(
-      page,
-      "POST",
-      `/projects/${hub.fixture.project_id}/actions/${actionId}/runs`,
-      { idempotency_key: `headless-run-${Date.now()}`, workspace_id: open.id },
-    );
-    expect(queued.status).toBe(202);
-    const runId = queued.payload.run_id;
-
-    // Nothing else happens. The hub dispatches it on its own maintenance tick.
-    let finished;
-    await expect
-      .poll(
-        async () => {
-          const run = await hubAPI(
-            page,
-            "GET",
-            `/projects/${hub.fixture.project_id}/actions/${actionId}/runs/${runId}`,
-          );
-          finished = run.payload;
-          return finished?.status ?? null;
-        },
-        {
-          timeout: 60_000,
-          message: "the run queued through the API never left queued — nothing executed it",
-        },
-      )
-      .toBe("succeeded");
-    expect(finished.exit_code).toBe(0);
-
-    // And a reader who opens the Output surface afterwards sees it, because the
-    // surface reads the recorded runs back rather than only showing what this
-    // tab started.
-    const toggle = page.getByRole("button", { name: /^Toggle right panel/ });
-    await toggle.click();
-    await page.getByRole("button", { name: "Add panel surface" }).click();
-    await page.getByRole("menuitem", { name: "Output" }).click();
-
-    const output = page.getByTestId("output-surface");
-    await expect(output).toBeVisible({ timeout: 30_000 });
-    await expect(output).toContainText("hello", { timeout: 30_000 });
-    // The surface's word for the hub's `succeeded` is the command's own exit,
-    // because §18.12 makes "exited 0" and "never exited" different facts and
-    // the chip says which this was.
-    await expect(page.getByTestId("output-run-status")).toContainText("Exited 0", {
-      timeout: 30_000,
-    });
-
-    expect(errors).toEqual([]);
-  });
 });
 
-// decisions.md §18.13. The header's git action group and its Open picker, over
-// the real thing: the preview's runner holds a real git worktree with a bare
-// origin beside it, so a commit made through the header moves a branch on disk
-// and a push moves the origin's ref. Nothing here is mocked — a failure
-// anywhere between the split button and `git commit` fails this test rather
-// than leaving a control that looks like it worked.
 test.describe("the header's git action group", () => {
-  const { execFileSync } = require("node:child_process");
-  const fs = require("node:fs");
-  const path = require("node:path");
-
-  /** Runs git in the preview's worktree and answers its trimmed stdout. */
-  function git(worktree, ...args) {
-    return execFileSync("git", args, { cwd: worktree, encoding: "utf8" }).trim();
-  }
-
-  /**
-   * The workspace the header acts on, read from the hub rather than from the
-   * fixture file.
-   *
-   * Reading it from the API is the point: `worktree_path` and
-   * `machine_hostname` are §18.13's own additions to the resource, and a test
-   * that took the path out of the fixture's JSON would still pass if the runner
-   * never reported it.
-   */
-  async function previewWorkspace(page) {
-    const listed = await hubAPI(
-      page,
-      "GET",
-      `/projects/${hub.fixture.project_id}/workspaces?work_item=${hub.fixture.work_item}`,
-    );
-    expect(listed.status).toBe(200);
-    const open = listed.payload.workspaces.find(
-      (candidate) => candidate.state === "ready" || candidate.state === "idle",
-    );
-    expect(open, "the preview pre-warms one open workspace on the fixture issue").toBeTruthy();
-    return open;
-  }
-
-  /** Opens the issue page and waits for the git group to be drawn. */
-  async function openIssueWithHeader(page) {
-    await openWorkIssue(page);
-    await expect(page.getByTestId("header-commit-push-pr")).toBeVisible();
-  }
-
-  async function disabledReason(row) {
-    return row.getAttribute("data-disabled-reason");
-  }
-
-  // The whole stack in one assertion: the group asks the relay for a `status`,
-  // the runner runs git in the worktree, the reader picks Commit, the runner
-  // commits as the acting person, and the branch on disk moves. The denylist is
-  // checked in the same commit, because an excluded path is only ever proved by
-  // a commit that left it out.
-  test("commits the worktree through the relay and moves the branch", async ({ page }) => {
-    test.skip(true, "The header git actions need workspace sessions from #2635, which are not on main.");
-    const errors = watchConsole(page);
-    await openIssueWithHeader(page);
-
-    const workspace = await previewWorkspace(page);
-    const worktree = workspace.worktree_path;
-    expect(
-      worktree,
-      "the runner reports the worktree it prepared on every heartbeat (§18.13)",
-    ).toBeTruthy();
-    expect(fs.existsSync(path.join(worktree, ".git")), `${worktree} is a git worktree`).toBe(true);
-
-    // Dirty the worktree from outside the browser: what is under test is the
-    // header, not a file editor, and §18.4 has no writes.
-    fs.writeFileSync(path.join(worktree, "HEADER.md"), `header commit ${Date.now()}\n`);
-    // A denied path, dirty in the same commit. §18.13 stages everything except
-    // the §18.4 denylist, so this one has to survive the commit unstaged.
-    fs.writeFileSync(path.join(worktree, ".env"), "TOKEN=never-committed\n");
-
-    const before = git(worktree, "rev-parse", "HEAD");
-
-    await page.getByTestId("header-commit-menu").click();
-    const commit = page.getByTestId("header-git-commit");
-
-    await expect(commit).toBeVisible({ timeout: 30_000 });
-    expect(await disabledReason(commit), "a dirty worktree can be committed").toBeNull();
-    await commit.click();
-
-    const message = "feat(header): commit from the git action group";
-    const field = page.getByRole("textbox", { name: /message/i });
-    await expect(field).toBeVisible({ timeout: 15_000 });
-    await field.fill(message);
-    await page.getByTestId("header-git-commit-submit").click();
-
-    // The commit is the runner's, so the wait is on the branch rather than on a
-    // toast: a toast can report success for a command that failed after it.
-    await expect
-      .poll(() => git(worktree, "rev-parse", "HEAD"), { timeout: 60_000 })
-      .not.toBe(before);
-
-    expect(git(worktree, "log", "-1", "--format=%s")).toBe(message);
-
-    // Author the person, committer the runner — git's own distinction, and
-    // §18.13's rule about who a hosted commit belongs to.
-    const [authorEmail, committerName] = git(worktree, "log", "-1", "--format=%ae%n%cn").split(
-      "\n",
-    );
-    expect(authorEmail).toContain("@");
-    expect(authorEmail, "the author is the person, not the machine").not.toContain(
-      "detent.invalid",
-    );
-    expect(committerName).toContain("Detent runner");
-
-    const committed = git(worktree, "show", "--name-only", "--format=", "HEAD")
-      .split("\n")
-      .filter((line) => line.length > 0);
-    expect(committed).toContain("HEADER.md");
-    expect(committed, "a denylisted path is never staged (§18.4)").not.toContain(".env");
-    // And it is still dirty, which is what proves it was excluded rather than
-    // never written.
-    expect(git(worktree, "status", "--porcelain", "--", ".env")).not.toBe("");
-
-    expect(errors).toEqual([]);
-  });
-
-  // The push half. It is asserted against the branch's own upstream rather than
-  // against a remote path, so the test proves the origin really has the commit
-  // without knowing where the fixture put the bare repository.
-  test("pushes the branch to the project's remote", async ({ page }) => {
-    test.skip(true, "The header git actions need workspace sessions from #2635, which are not on main.");
-    const errors = watchConsole(page);
-    await openIssueWithHeader(page);
-
-    const workspace = await previewWorkspace(page);
-    const worktree = workspace.worktree_path;
-    expect(worktree).toBeTruthy();
-    expect(
-      git(worktree, "rev-parse", "--abbrev-ref", "HEAD"),
-      "the preview worktree is on a branch, so a push has a target",
-    ).not.toBe("HEAD");
-
-    await page.getByTestId("header-commit-menu").click();
-    const push = page.getByTestId("header-git-push");
-    await expect(push).toBeVisible({ timeout: 30_000 });
-    const reason = await disabledReason(push);
-    if (reason !== null) {
-
-      test.info().annotations.push({ type: "note", description: `push disabled: ${reason}` });
-      await page.keyboard.press("Escape");
-      expect(errors).toEqual([]);
-      return;
-    }
-    await push.click();
-
-    await expect
-      .poll(() => git(worktree, "rev-list", "--count", "@{u}..HEAD"), { timeout: 60_000 })
-      .toBe("0");
-
-    expect(errors).toEqual([]);
-  });
-
-  test("labels the pull request row from the hub's own view of it", async ({ page }) => {
-    test.skip(true, "PR actions and the seeded pull request from #2635 are not on main.");
-    const errors = watchConsole(page);
-    await openIssueWithHeader(page);
-
-    await page.getByTestId("header-commit-menu").click();
-    const pullRequest = page.getByTestId("header-git-pr");
-    await expect(pullRequest).toBeVisible({ timeout: 30_000 });
-
-    await expect(page.getByTestId("header-git-commit")).toHaveText(/Commit/);
-    await expect(page.getByTestId("header-git-push")).toHaveText(/Push/);
-    await expect(pullRequest).toHaveText(/View PR/);
-
-    await page.keyboard.press("Escape");
-    expect(errors).toEqual([]);
-  });
-
-  // §18.13's Open picker. The preview's hub is served on loopback, so the
-  // client never takes itself to be on the runner's machine and every editor
-  // row is disabled naming the host the worktree is on — which is the case that
-  // matters, because it is the one Detent Cloud is always in.
-  test("names the machine the worktree is on in the Open picker", async ({ page }) => {
-    test.skip(true, "The header git actions need workspace sessions from #2635, which are not on main.");
-    const errors = watchConsole(page);
-    await openIssueWithHeader(page);
-    await previewWorkspace(page);
-
-    await page.getByTestId("header-open-menu").click();
-    await expect(page.getByRole("menu").last()).toBeVisible();
-
-    await expect(page.getByTestId("header-open-cursor")).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("header-open-vscode")).toBeVisible();
-    const fileManager = page.getByTestId("header-open-file-manager");
-    await expect(fileManager).toBeVisible();
-    await expect(fileManager).toHaveText(/Finder|Explorer|Files/);
-
-    // Every one of them refuses, and the reason names where the worktree is.
-    for (const id of ["header-open-cursor", "header-open-vscode", "header-open-file-manager"]) {
-      const reason = await disabledReason(page.getByTestId(id));
-      expect(reason, `${id} carries the reason it is disabled (§18.13)`).toBeTruthy();
-      expect(reason).toMatch(/This worktree is on |Available on the runner's machine only\./);
-    }
-
-    await page.getByTestId("header-open-cursor").hover();
-    await expect(page.getByText(/This worktree is on /).first()).toBeVisible({ timeout: 10_000 });
-
-    await page.keyboard.press("Escape");
-    expect(errors).toEqual([]);
-  });
-
   // A plain chat has no issue, so it has no worktree, and the whole group says
   // so in one sentence (§18.13).
   test("disables the whole group on a chat with no linked issue", async ({ page }) => {
@@ -2250,7 +1875,7 @@ test.describe("the footer's update check", () => {
   /** The control, whatever state it is currently in. */
   function updateControl(page) {
     return page.getByRole("button", {
-      name: /Check for updates|All runners up to date|Couldn't check for updates|behind . Update/,
+      name: /Check for updates|All runners up to date|Couldn't check for updates|runners? too old to take work/,
     });
   }
 
@@ -2297,7 +1922,7 @@ test.describe("the footer's update check", () => {
     });
     await openChat(page);
 
-    const behind = page.getByRole("button", { name: "1 runner behind · Update" });
+    const behind = page.getByRole("button", { name: "1 runner too old to take work, needs v9.9.9" });
     await expect(behind).toBeVisible({ timeout: 20_000 });
     await behind.click();
 
@@ -2329,13 +1954,16 @@ test("archives native work, finds retained history, and restores from the archiv
   const history = await hubAPI(page, "GET", `${project}/work-items/${item}/history`);
   expect(history.status).toBe(200);
   expect(JSON.stringify(history.payload)).toContain('"operation":"archive"');
-  await page.goto(new URL(`/work/p/${hub.fixture.project_id}?view=list`, hub.fixture.url).toString());
+  await page.goto(new URL(`/work/p/${hub.fixture.project_id}?view=list&tab=closed`, hub.fixture.url).toString());
+  await expect(page.getByTestId("list-tab-closed")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("work-list").or(page.getByTestId("work-list-empty"))).toBeVisible();
   await expect(page.getByText("Retain completed archive history", { exact: true })).toHaveCount(0);
   await page.getByTestId("work-archived").click();
   await expect(page.getByText("Retain completed archive history", { exact: true })).toBeVisible();
   await expect(page).toHaveURL(/archived=true/);
   await page.reload();
   await expect(page.getByTestId("work-archived")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("list-tab-closed")).toHaveAttribute("aria-pressed", "true");
   await page.screenshot({ path: testInfo.outputPath("archived-list.png") });
   await page.getByText("Retain completed archive history", { exact: true }).click();
   await page.getByRole("button", { name: "Restore issue", exact: true }).click();

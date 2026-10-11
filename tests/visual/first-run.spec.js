@@ -18,7 +18,7 @@ let studioBoard;
 
 test.beforeAll(async () => {
   test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
-  hub = await startHostedHub("first-run");
+  hub = await startHostedHub("first-run", { env: { DETENT_HOSTED_BROWSER_RUNNER: "1" } });
 });
 
 test.afterAll(async () => {
@@ -26,7 +26,7 @@ test.afterAll(async () => {
   hub = undefined;
 });
 
-const EVIDENCE = path.join(process.cwd(), "tmp", "playwright-evidence", "first-run");
+const EVIDENCE = path.join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, "playwright-evidence", "first-run");
 const UNSERVED = [
   /\/api\/v2\/organizations\/[^/]+\/projects\/[^/]+\/actions$/,
   /\/app\/updates$/,
@@ -48,7 +48,7 @@ function watchConsole(page) {
 async function evidence(page, name) {
   fs.mkdirSync(EVIDENCE, { recursive: true });
   await page.waitForFunction(() =>
-    document.getAnimations().every((animation) => animation.playState !== "running"),
+    document.getAnimations().every((animation) => animation.playState !== "running" || animation.effect?.getTiming().iterations === Infinity),
   );
   await page.screenshot({ path: path.join(EVIDENCE, `${name}.png`), animations: "disabled" });
 }
@@ -164,10 +164,8 @@ test("creating the first project lands on its board and the checklist advances",
   await expect(page.getByTestId("first-run-step-project")).toHaveAttribute("data-done", "true");
   await expect(page.getByTestId("first-run-progress")).toContainText("of 4 done");
   await expect(page.getByTestId("work-board")).toHaveCount(0);
-  // Creating a project grants its owner runner management, so the runner step
-  // offers enrollment directly.
   await expect(
-    page.getByTestId("first-run-step-runner").getByRole("button", { name: "Enroll a runner" }),
+    page.getByTestId("first-run-step-runner").getByRole("button", { name: "Configure runner" }),
   ).toBeEnabled();
 
   await page.getByTestId("first-run-step-issue").getByRole("button", { name: "New issue" }).click();
@@ -179,6 +177,36 @@ test("creating the first project lands on its board and the checklist advances",
   await expect(page.getByText("Write the welcome page").first()).toBeVisible();
   await expect(page.getByTestId("first-run")).toHaveCount(0);
   studioBoard = page.url();
+  expect(errors).toEqual([]);
+});
+
+test("an organization runner does not complete an unserved project's runner step", async ({ page }) => {
+  const errors = watchConsole(page);
+  await openEmptyWork(page);
+  await page.getByTestId("first-run-step-project").getByRole("button", { name: "New project" }).click();
+  const dialog = page.getByRole("dialog", { name: "New project" });
+  await dialog.getByLabel("Name").fill("Unserved project");
+  await restoreOrganization(page);
+  const onboardingResponse = page.waitForResponse((response) =>
+    /\/projects\/[^/]+\/onboarding$/.test(new URL(response.url()).pathname) && response.request().method() === "GET",
+  );
+  await dialog.getByRole("button", { name: "Create project" }).click();
+  await expect(page).toHaveURL(/\/work\/p\/[^/]+$/);
+  const projectId = new URL(page.url()).pathname.split("/").at(-1);
+  const onboarding = await (await onboardingResponse).json();
+  const fleetResponse = await page.request.get(new URL("/api/v2/organizations/org_browser_preview/fleet", hub.fixture.url).toString());
+  expect(fleetResponse.ok()).toBe(true);
+  expect((await fleetResponse.json()).runners.length).toBeGreaterThan(0);
+  expect(onboarding.steps.find((step) => step.name === "Execution runner").state).toBe("action_required");
+  const remaining = onboarding.steps.filter((step) => step.state !== "ready").length;
+  await expect(page.getByTestId("first-run-step-runner")).toHaveAttribute("data-done", "false");
+  await expect(page.getByTestId("first-run-step-runner").getByText("Done", { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("first-run-progress")).toHaveText("1 of 4 done");
+  await expect(page.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "1");
+  await expect(page.getByTestId("first-run-step-setup")).toContainText(`${remaining} setup steps left`);
+  await evidence(page, "unserved-project-desktop");
+  await page.getByTestId("first-run-step-runner").getByRole("button", { name: "Configure runner" }).click();
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/setup$`));
   expect(errors).toEqual([]);
 });
 
@@ -248,7 +276,7 @@ test.describe("a board that already has issues", () => {
   test("the c shortcut opens the dialog, but not while typing", async ({ page }) => {
     const errors = watchConsole(page);
     await openStudioBoard(page);
-    const search = page.getByTestId("work-search");
+    const search = page.getByRole("searchbox", { name: "Search issues" });
     await search.focus();
     await page.keyboard.type("c");
     await expect(search).toHaveValue("c");

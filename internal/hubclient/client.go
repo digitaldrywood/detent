@@ -14,9 +14,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -38,26 +40,44 @@ type Config struct {
 }
 
 type Client struct {
-	artifactServiceID string
-	artifactBytes     int64
-	nativeLeases      sync.Map
-	runner            *runnerCredentialSource
-	baseURL           *url.URL
-	tokenSource       func() string
-	httpClient        *http.Client
+	requestBudgetMu    sync.Mutex
+	requestBudgetUntil time.Time
+	heartbeatProjects  map[string]*heartbeatProject
+	heartbeatMu        sync.Mutex
+	capabilitiesDigest string
+	reads              *nativeReadCache
+	capabilitiesAt     time.Time
+	capabilities       nativeCapabilities
+	capabilitiesMu     sync.Mutex
+	artifactServiceID  string
+	artifactBytes      int64
+	nativeLeases       sync.Map
+	runner             *runnerCredentialSource
+	baseURL            *url.URL
+	tokenSource        func() string
+	httpClient         *http.Client
 }
 
 type Machine struct {
-	Problems         []runnerauth.Problem      `json:"-"`
-	BackendIsolation isolationpolicy.Report    `json:"-"`
-	ProviderReports  []providercapacity.Report `json:"provider_reports,omitempty"`
-	ID               tracker.MachineID         `json:"id"`
-	Hostname         string                    `json:"hostname"`
-	DisplayName      string                    `json:"display_name,omitempty"`
-	Capabilities     map[string]any            `json:"capabilities,omitempty"`
-	Capacity         int                       `json:"capacity"`
-	Version          string                    `json:"version"`
-	LastHeartbeatAt  time.Time                 `json:"last_heartbeat_at,omitempty"`
+	HostMetricsAcknowledged *[]hostmetrics.Acknowledgment       `json:"-"`
+	HostMetrics             []hostmetrics.Summary               `json:"-"`
+	IsolationTier           string                              `json:"-"`
+	Skills                  *[]skills.ProviderSkill             `json:"-"`
+	ProjectConfiguration    *runnerauth.ProjectConfiguration    `json:"-"`
+	Admission               *tracker.NativeAdmissionObservation `json:"-"`
+	Update                  *runnerauth.UpdateObservation       `json:"-"`
+	CapacityConfig          *runnerauth.CapacityConfig          `json:"-"`
+	LocalChecks             *runnerauth.LocalChecks             `json:"local_checks,omitempty"`
+	Problems                []runnerauth.Problem                `json:"-"`
+	BackendIsolation        isolationpolicy.Report              `json:"-"`
+	ProviderReports         []providercapacity.Report           `json:"provider_reports,omitempty"`
+	ID                      tracker.MachineID                   `json:"id"`
+	Hostname                string                              `json:"hostname"`
+	DisplayName             string                              `json:"display_name,omitempty"`
+	Capabilities            map[string]any                      `json:"capabilities,omitempty"`
+	Capacity                int                                 `json:"capacity"`
+	Version                 string                              `json:"version"`
+	LastHeartbeatAt         time.Time                           `json:"last_heartbeat_at,omitempty"`
 	// WorkspaceCapabilities and WorkspaceIsolation are what this runner can
 	// serve for a workspace session. The hub reads the report from the same
 	// row it stamps the heartbeat on, so the two travel together.
@@ -68,6 +88,7 @@ type Machine struct {
 	// through workspaceReport instead.
 	WorkspaceCapabilities workspacesession.Capabilities `json:"-"`
 	WorkspaceIsolation    string                        `json:"-"`
+	CheckoutRepository    *string                       `json:"-"`
 }
 
 // workspaceReport is what the native machine endpoints send for the workspace
@@ -95,16 +116,17 @@ type WorkItem struct {
 }
 
 type ClaimRequest struct {
-	PolicyID      string            `json:"policy_id"`
-	MachineID     tracker.MachineID `json:"machine_id"`
-	SessionID     string            `json:"session_id"`
-	TTLSeconds    int64             `json:"ttl_seconds"`
-	Repositories  []string          `json:"repositories,omitempty"`
-	WorkflowState []string          `json:"workflow_states,omitempty"`
-	Authors       []string          `json:"authors,omitempty"`
-	Assignees     []string          `json:"assignees,omitempty"`
-	LabelInclude  []string          `json:"label_include,omitempty"`
-	LabelExclude  []string          `json:"label_exclude,omitempty"`
+	WorkItemID    tracker.WorkItemID `json:"work_item_id,omitempty"`
+	PolicyID      string             `json:"policy_id"`
+	MachineID     tracker.MachineID  `json:"machine_id"`
+	SessionID     string             `json:"session_id"`
+	TTLSeconds    int64              `json:"ttl_seconds"`
+	Repositories  []string           `json:"repositories,omitempty"`
+	WorkflowState []string           `json:"workflow_states,omitempty"`
+	Authors       []string           `json:"authors,omitempty"`
+	Assignees     []string           `json:"assignees,omitempty"`
+	LabelInclude  []string           `json:"label_include,omitempty"`
+	LabelExclude  []string           `json:"label_exclude,omitempty"`
 }
 
 type LeaseRequest struct {
@@ -143,7 +165,7 @@ func New(config Config) (*Client, error) {
 		httpClient = http.DefaultClient
 	}
 	baseURL.Path = strings.TrimRight(baseURL.Path, "/")
-	client := &Client{baseURL: baseURL, tokenSource: config.TokenSource, httpClient: httpClient, artifactServiceID: config.ArtifactServiceID, artifactBytes: config.ArtifactBytes}
+	client := &Client{reads: newNativeReadCache(), baseURL: baseURL, tokenSource: config.TokenSource, httpClient: httpClient, artifactServiceID: config.ArtifactServiceID, artifactBytes: config.ArtifactBytes}
 	if config.IdentityFile != "" {
 		file, err := runnerauth.Load(config.IdentityFile)
 		if err != nil {
@@ -224,6 +246,15 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := c.waitRequestBudget(ctx, method, path); err != nil {
+		return err
+	}
+	if method != http.MethodGet {
+		c.reads.forget(path)
+		defer c.reads.forget(path)
+		c.forgetHeartbeatItems(path)
+		defer c.forgetHeartbeatItems(path)
+	}
 	httpClient := c.httpClient
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -232,7 +263,10 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 		httpClient = clientWithTimeout(httpClient, timeout)
 	}
 	var body io.Reader
-	if input != nil {
+	stream, streaming := input.(io.Reader)
+	if streaming {
+		body = stream
+	} else if input != nil {
 		encoded, err := json.Marshal(input)
 		if err != nil {
 			return fmt.Errorf("encode Hub request: %w", err)
@@ -258,13 +292,14 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	}
 	request.Header.Set("Authorization", token)
 	request.Header.Set("Accept", "application/json")
-	if input != nil {
+	if input != nil && !streaming {
 		request.Header.Set("Content-Type", "application/json")
 	}
 	response, err := httpClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
+	c.observeRequestBudget(response)
 	defer response.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
@@ -277,7 +312,7 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 		apiErr := &APIError{Status: response.StatusCode}
 		if len(payload) > 0 {
 			if err := json.Unmarshal(payload, apiErr); err != nil {
-				return fmt.Errorf("%w: decode error response: %w", ErrUnavailable, err)
+				return errors.Join(apiErr, fmt.Errorf("%w: decode error response: %w", ErrUnavailable, err))
 			}
 		}
 		if response.StatusCode >= 500 {
@@ -358,6 +393,9 @@ func (c *Client) download(ctx context.Context, target string, limit int64) ([]by
 	if !strings.HasPrefix(target, "/") || strings.HasPrefix(target, "//") {
 		return nil, "", fmt.Errorf("hub download target %q is not a Hub path", target)
 	}
+	if err := c.waitRequestBudget(ctx, http.MethodGet, target); err != nil {
+		return nil, "", err
+	}
 	endpoint := *c.baseURL
 	requestPath, requestQuery, _ := strings.Cut(target, "?")
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + requestPath
@@ -375,6 +413,7 @@ func (c *Client) download(ctx context.Context, target string, limit int64) ([]by
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
+	c.observeRequestBudget(response)
 	defer response.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {

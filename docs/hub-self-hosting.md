@@ -8,7 +8,7 @@ automatic failover, or high availability guarantee. Never share a live SQLite
 file over NFS/SMB, mount it into runners, or run a second owner against it.
 
 Self-hosted Detent is free. No WorkOS, Stripe, Detent Cloud account,
-`hub.detent.build` callback, Detent subscription or purchased infrastructure is
+`cloud.detent.build` callback, Detent subscription or purchased infrastructure is
 required. Operators choose authentication, including WorkOS/custom/generic/local
 options; selecting WorkOS must never enable Detent billing. An external auth
 provider may have its own connectivity/account requirements. The currently
@@ -16,10 +16,8 @@ supported Hub bearer deployment below has no such dependency. Shared-site mode
 and self-hosted WorkOS configuration separation are design targets documented in
 [the deployment examples](examples/hub/README.md), not new flags in this runbook.
 The native-only example disables GitHub transport.
-Ordinary local Detent remains supported separately: omit `client.hub_url` and
-run `detent` using local configuration and the selected local/tracker backend.
-Durable artifacts are optional in both modes; local-only artifact availability
-depends on retaining the runner and its workspace.
+Durable artifacts are optional; local-only artifact availability depends on
+retaining the runner and its workspace.
 
 ## Install one host
 
@@ -31,7 +29,7 @@ install the executable at that path or adjust the example unit. Do not use an
 unversioned download URL for an upgrade. The release includes this runbook and
 the [Hub unit](examples/hub/detent-hub.service) and
 [Caddy example](examples/hub/Caddyfile). These examples deploy a customer-operated
-Hub, not the shared hub.detent.build entry/registry. See the
+Hub, not the shared cloud.detent.build entry/registry. See the
 [deployment boundary](examples/hub/README.md); equivalent files are in the same tagged
 source checkout. Native package documentation lives under `/usr/share/doc/detent/docs`.
 
@@ -63,9 +61,8 @@ sudo systemctl enable --now detent-hub
 sudo systemctl status detent-hub
 ```
 
-These commands operate on the example installation only. The ordinary
-`detent service install` command supervises the local orchestrator; use this
-separate Hub unit for `hub serve`. The Hub has no source checkouts, agent login
+These commands operate on the example installation only. Use this dedicated
+Hub unit for `hub serve`. The Hub has no source checkouts, agent login
 sessions or execution workspaces on this host. Do not expose the backend port
 by relying on `--trusted-proxy` alone: that flag declares trust, it does not
 create TLS or configure a firewall. Alternatively use `--tls-cert` and
@@ -99,8 +96,8 @@ For GitHub compatibility, remove `--github-disabled` only after configuring
 GitHub credentials for the dedicated service user and, if used, a webhook HMAC
 secret through the existing CLI environment options. Allow GitHub API traffic
 and the separately selected Git transport. Follow [GitHub profiles](github-profiles.md)
-for import, mirror cutover and projection; native-only mode does not project
-changes to GitHub. The example service's `ProtectHome` means interactive login
+for import, cutover and native GitHub intake. Hosted deployments use the product
+App credentials described there; Cloud comments remain private. The example service's `ProtectHome` means interactive login
 files in a human home directory are deliberately unavailable.
 
 ## Authentication, projects and runners
@@ -249,14 +246,65 @@ external effects; restoring a snapshot does not roll back a GitHub mutation.
 
 ## Upgrade, interruption and compatibility
 
-Pin a release and retain the old binary plus a verified pre-upgrade snapshot.
-Drain runners, stop the unit, create/verify a backup, install the selected binary,
-then start the Hub. Startup applies embedded forward goose migrations before
-health becomes ready. Each migration is transactional; a crash rolls back the
-unfinished migration. Earlier completed migrations remain applied and the same
-binary retries the remainder on restart. Fix disk/permission problems first.
-Never manually advance the schema table or run the unrelated local orchestrator
+For an ordinary binary deploy with an unchanged Hub schema, prepare the verified
+new executable on the host before stopping the unit. Keep the previous executable
+and an independently verified backup. Atomically replace the executable on the
+same filesystem, then restart the Hub unit immediately. Linux keeps the old
+process running from its original executable until the restart. Keep downloads,
+builds, archive extraction, backup creation/verification and proxy reconfiguration
+outside this restart window. Do not drain runners for this binary-only restart:
+their existing lease and session continue when the Hub returns in time. Do not
+restore an older database to roll back a same-schema binary; retain current run
+events and lease ownership.
+
+The restart budget is less than the configured runner renewal interval (30
+seconds by default), including shutdown, database reopen and authenticated HTTPS
+readiness through the existing proxy. Shutdown closes conversation streams and
+control polls before waiting for HTTP handlers; the hosted activity stream exits
+on its existing one-second tick. SQLite opens at the current schema without
+repeating a full foreign-key scan. It still verifies ownership, identity, pragmas
+and migration history; `hub verify` retains full offline integrity/foreign-key
+verification. These changes do not extend a lease or accept an expired owner.
+
+When adopting this procedure from a binary that verified foreign keys after
+committing the final migration, use the existing offline `hub verify` during a
+maintenance window first. A failed upgrade from that binary may already have
+recorded its final schema version; unchanged-schema startup does not repeat its
+data verification. Retain the verified snapshot and resolve any reported failure
+before using the quick restart procedure.
+
+A schema-changing upgrade requires a separate maintenance window. Rehearse the
+selected binary's migrations against a verified snapshot before cut-over and
+record the duration. The live Hub holds an exclusive SQLite connection and an
+instance lock: a second binary cannot pre-migrate its live database while it
+serves requests. Do not copy a migrated snapshot over the live database or open a
+second owner; either loses or competes with current run events. If the measured
+migration cannot fit the restart budget, let active runners finish while the old
+Hub remains online, then stop the unit, create/verify the pre-upgrade backup and
+start the prepared binary. Never hold a stopped Hub while waiting for active
+runners to finish.
+
+Startup applies embedded forward goose migrations before health becomes ready.
+Foreign keys are checked inside the final migration transaction before recording
+its version. Each migration is transactional; a crash or failed final validation
+rolls back the unfinished migration. Earlier completed migrations remain applied
+and the same binary retries the remainder on restart. Fix disk/permission
+problems first.
+Never manually advance the schema table or run the unrelated runner-store
 `make db-migrate` against a Hub database.
+
+The deployment/release owner must verify a normal production restart after
+integration. Record the finalized Change head, deployed binary version, stop time
+and first authenticated HTTPS-ready time; measure the entire unavailable interval
+and require it to be below one renewal interval. Start a real runner session
+before deployment and retain its work-item, machine, lease, fencing token, session,
+run and attempt identifiers. After deployment, confirm renewal and successful
+`run.finished` under those same identifiers, with one attempt and no replacement
+dispatch. Keep credentials and content out of this evidence. A local reopen test
+does not establish production deploy timing. The restricted staging deploy script
+and production host integration are operator-owned, outside this source checkout;
+their preparation/restart ordering must follow this procedure before claiming
+production acceptance.
 
 Schema 19 repairs the two formerly valid schema-18 branches. Migration 18 remains
 `00018_change_viewed_files.sql`; onboarding moves to
@@ -354,3 +402,64 @@ directory, then run a Python-capable Linux image with `--network none`, a read-o
 fixture mount and private writable temp storage. Run the smoke script plus the
 Hub recovery/routing/protocol tests there. No production deployment or paid
 resources are needed. The required repository gate remains `make check`.
+
+## Project Sprites credentials
+
+Owners and admins can set, replace or remove a project's Sprites organization
+token in project settings under Execution. The API is
+`/api/v2/organizations/{organization}/projects/{project}/secrets/fly_sprites_token`:
+GET returns only presence, organization slug and master key version; PUT accepts
+`{"token":"..."}`; DELETE removes Detent's copy. Hosted requests require the
+existing session, CSRF protection and a project grant. A self-hosted instance
+administrator can use the same endpoints. Worker, runner and coordinator tools
+have no plaintext read operation. PUT/DELETE use last-write-wins settings semantics;
+they never persist request input or a token-bearing command receipt.
+
+Hubs without provider secrets need no extra configuration. To enable encrypted
+secrets, inject `DETENT_HUB_SECRET_KEYS` as a JSON object mapping positive integer
+versions to standard base64-encoded **32-byte random master keys**, and set
+`DETENT_HUB_SECRET_KEY_VERSION` to the active version. Supply these environment
+variables through the same operator secret manager as `DETENT_HUB_ADMIN_TOKEN`.
+Never put them in `detent.yaml`, hosted config, the database, shell history or
+logs. The service refuses to start if a stored secret's key is missing or cannot
+unwrap its data key.
+
+Each value uses a separate random AES-256-GCM data key. Its data key is wrapped
+with AES-256-GCM under the versioned master key. Both authenticate the
+organization, project and secret kind, preventing ciphertext substitution across
+rows; the wrapping also authenticates the master key version. The database
+stores only ciphertext, nonce, wrapped key (including its wrapping nonce), version
+and public organization metadata. Backups must keep the corresponding master
+keys separately. Losing the keys loses access to stored credentials; possession
+of both a database backup and its keys exposes those credentials.
+
+For rotation, stop the Hub, add a new version to `DETENT_HUB_SECRET_KEYS` while
+retaining all old versions, and select the new `DETENT_HUB_SECRET_KEY_VERSION`.
+Run `detent hub secrets rotate --database /var/lib/detent/hub.db`. The existing
+database ownership lock refuses rotation against a running Hub. Rotation
+atomically re-wraps data keys and records the local operator identity; ciphertext
+and value nonces remain unchanged. Repeating rotation at that version is a no-op.
+Restart with the new active version; remove old keys only after every relevant
+database is rotated, keeping them in separate archival storage for old backups.
+A failed rotation rolls back every row. No master key is written to disk by this
+command.
+
+Setting a token validates `GET https://api.sprites.dev/v1/sprites` with Bearer
+authentication. Redirects are refused and provider errors/bodies are never echoed.
+Sprites organization tokens encode `org-slug/org-id/token-id/token-value`;
+authenticated list success confirms that organization even before its first
+sprite exists. Returned sprite organization fields must agree with the token's
+slug. See the [Sprites list API](https://docs.fly.io/sprites/api/sprites/list-sprites)
+and [Sprites authentication](https://docs.fly.io/sprites/cli/authentication).
+Set, replace, remove, use (including validation attempts) and rotation events
+carry actor, organization, project, kind and key version in `project_secret_audit`,
+never a value. Successful secret mutations and their audit events commit together.
+Internal use decrypts only for a provider call and clears mutable plaintext buffers;
+Go strings and HTTP header allocations are transient, garbage-collected memory,
+so this is not a guarantee of physical memory erasure. Credentials are never
+passed to workers, Luna or sprite processes.
+
+Use a dedicated Fly organization containing nothing else and configure a spend
+alert. A Sprites organization token can create and drive sprites in that
+organization. Removing it from Detent does not revoke it at Fly; revoke it at
+[your Sprites account](https://sprites.dev/account) to invalidate it.

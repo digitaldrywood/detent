@@ -12,7 +12,6 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
-	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const sessionBrakeMetadataKey = "session_brake"
@@ -27,12 +26,7 @@ func (o *Orchestrator) sessionProgressProbe(issue connector.Issue) runpkg.Sessio
 		if err != nil {
 			return "", err
 		}
-		for index := len(comments) - 1; index >= 0; index-- {
-			if autoPromoteIsWorkpadComment(comments[index].Body) {
-				return workpad.ContentHash(strings.TrimSpace(comments[index].Body)), nil
-			}
-		}
-		return "", nil
+		return artifactCompletionReceiptHash(comments), nil
 	}
 }
 
@@ -84,10 +78,6 @@ func (o *Orchestrator) handleSessionBrake(
 		terminalState = store.WorkAttemptTerminalMemoryCeiling
 		phase = runpkg.FinalStateMemoryCeilingExceeded
 		statusMessage = "agent session stopped after exceeding its memory ceiling"
-	} else if errors.Is(brake, runpkg.ErrSessionNoProgress) {
-		terminalState = store.WorkAttemptTerminalNoProgress
-		phase = "no_progress"
-		statusMessage = "agent session stopped after no work-product progress"
 	}
 	o.recordProjectAttemptOutcome(
 		state,
@@ -113,7 +103,6 @@ func (o *Orchestrator) handleSessionBrake(
 
 	issue := cloneIssue(running.Issue)
 	metadata := workflowLaneMetadata{
-		LessonEvidence: reworkLessonEvidence{LastCommand: running.LastCommand},
 		BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{
 			Owner:            blockedRecoveryOwnerOrchestrator,
 			Cause:            brake.Reason,

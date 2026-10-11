@@ -31,6 +31,10 @@ import (
 )
 
 func TestTelemetryPublicationSurvivesStalledSourceAfterRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, source := range []string{"project_state", "lifetime_totals"} {
 		for _, cached := range []bool{false, true} {
 			name := source + "/initializing"

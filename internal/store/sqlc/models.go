@@ -204,6 +204,8 @@ type CodexSession struct {
 	WorkerCleanupRoot            sql.NullString `json:"worker_cleanup_root"`
 	WorkerCleanupPath            sql.NullString `json:"worker_cleanup_path"`
 	RuntimeIdentityJson          sql.NullString `json:"runtime_identity_json"`
+	TurnStartRefused             int64          `json:"turn_start_refused"`
+	OwnerGeneration              sql.NullInt64  `json:"owner_generation"`
 }
 
 type DetentRun struct {
@@ -254,14 +256,6 @@ type EfficiencyReceipt struct {
 	RefreshedAt           string         `json:"refreshed_at"`
 }
 
-type FairShareUsage struct {
-	ProjectID      string `json:"project_id"`
-	Weight         int64  `json:"weight"`
-	Dispatches     int64  `json:"dispatches"`
-	RuntimeSeconds int64  `json:"runtime_seconds"`
-	UpdatedAt      string `json:"updated_at"`
-}
-
 type HealthNotificationState struct {
 	Identity  string `json:"identity"`
 	StateJson string `json:"state_json"`
@@ -279,6 +273,10 @@ type HumanQuestion struct {
 	AnswerBody        string         `json:"answer_body"`
 	WorkFingerprint   string         `json:"work_fingerprint"`
 	AskedAt           sql.NullString `json:"asked_at"`
+}
+
+type IssueContractRollout struct {
+	ActivatedAt string `json:"activated_at"`
 }
 
 type IssueParkAcknowledgement struct {
@@ -339,6 +337,24 @@ type MergeRequiredCheckStreak struct {
 	HeadSha                   string `json:"head_sha"`
 }
 
+type Organization struct {
+	ID                     string `json:"id"`
+	SchedulingRevision     int64  `json:"scheduling_revision"`
+	ConfigurationRevision  int64  `json:"configuration_revision"`
+	ModelSelectionJson     string `json:"model_selection_json"`
+	ModelSelectionRevision int64  `json:"model_selection_revision"`
+}
+
+type Project struct {
+	ID                     string         `json:"id"`
+	OrganizationID         string         `json:"organization_id"`
+	ConfigurationJson      string         `json:"configuration_json"`
+	SchedulingRank         int64          `json:"scheduling_rank"`
+	CreatedAt              string         `json:"created_at"`
+	ModelSelectionJson     sql.NullString `json:"model_selection_json"`
+	ModelSelectionRevision int64          `json:"model_selection_revision"`
+}
+
 type ProjectDispatchStatus struct {
 	ProjectID              string         `json:"project_id"`
 	CandidateCount         int64          `json:"candidate_count"`
@@ -351,6 +367,12 @@ type ProjectDispatchStatus struct {
 	ObservedAt             string         `json:"observed_at"`
 	EligibleCandidateCount int64          `json:"eligible_candidate_count"`
 	WaitReasonCode         sql.NullString `json:"wait_reason_code"`
+}
+
+type ProjectRunnerSetup struct {
+	RunnerID    string `json:"runner_id"`
+	ProjectID   string `json:"project_id"`
+	ContentHash string `json:"content_hash"`
 }
 
 type ProvenanceAttributionBoundary struct {
@@ -484,6 +506,12 @@ type StalenessWarningState struct {
 	LastSeenAt     sql.NullString `json:"last_seen_at"`
 }
 
+type TokenGrant struct {
+	TokenID        string `json:"token_id"`
+	OrganizationID string `json:"organization_id"`
+	ProjectID      string `json:"project_id"`
+}
+
 type UsageEvent struct {
 	ID                     int64           `json:"id"`
 	ProjectID              string          `json:"project_id"`
@@ -507,6 +535,10 @@ type UsageEvent struct {
 	ModelContextWindow     sql.NullInt64   `json:"model_context_window"`
 	ProjectedCostUsd       sql.NullFloat64 `json:"projected_cost_usd"`
 	ProjectionOvershootUsd float64         `json:"projection_overshoot_usd"`
+	CpuSeconds             sql.NullFloat64 `json:"cpu_seconds"`
+	AvgMemoryBytes         sql.NullFloat64 `json:"avg_memory_bytes"`
+	WallSeconds            sql.NullFloat64 `json:"wall_seconds"`
+	ComputeUsd             sql.NullFloat64 `json:"compute_usd"`
 }
 
 type ValidatorVerdict struct {
@@ -525,12 +557,13 @@ type ValidatorVerdict struct {
 	Commented       int64          `json:"commented"`
 	RecordedAt      string         `json:"recorded_at"`
 	UpdatedAt       string         `json:"updated_at"`
-	FailureAttempts int64          `json:"failure_attempts"`
-	NextRetryAt     sql.NullString `json:"next_retry_at"`
 	Repository      string         `json:"repository"`
 	BaseSha         string         `json:"base_sha"`
 	DiffDigest      string         `json:"diff_digest"`
 	DiffFilesJson   string         `json:"diff_files_json"`
+	FailureAttempts int64          `json:"failure_attempts"`
+	NextRetryAt     sql.NullString `json:"next_retry_at"`
+	ContextDigest   string         `json:"context_digest"`
 }
 
 type WorkAttempt struct {
@@ -569,6 +602,18 @@ type WorkAttempt struct {
 	DetentSessionID        sql.NullInt64  `json:"detent_session_id"`
 	ProviderSessionID      sql.NullString `json:"provider_session_id"`
 	RuntimeIdentityJson    string         `json:"runtime_identity_json"`
+	OwnerGeneration        sql.NullInt64  `json:"owner_generation"`
+}
+
+type WorkerGeneration struct {
+	Gen          int64          `json:"gen"`
+	Pid          int64          `json:"pid"`
+	ProcessStart string         `json:"process_start"`
+	Version      string         `json:"version"`
+	State        string         `json:"state"`
+	StartedAt    string         `json:"started_at"`
+	UpdatedAt    string         `json:"updated_at"`
+	ExitedAt     sql.NullString `json:"exited_at"`
 }
 
 type WorkflowHistoryRevision struct {

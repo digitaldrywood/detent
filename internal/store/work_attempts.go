@@ -72,6 +72,7 @@ func (s *sqliteStore) StartWorkAttempt(ctx context.Context, attrs WorkAttemptSta
 		DetentSessionID:        nullPositiveInt64(attrs.DetentSessionID),
 		ProviderSessionID:      nullString(attrs.ProviderSessionID),
 		RuntimeIdentityJson:    runtimeIdentityJSON,
+		OwnerGeneration:        s.ownerGeneration(),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("starting work attempt: %w", err)
@@ -247,7 +248,18 @@ func (s *sqliteStore) UpdateTerminalWorkAttemptWait(ctx context.Context, attrs W
 }
 
 func (s *sqliteStore) ListActiveWorkAttempts(ctx context.Context, query WorkAttemptQuery) ([]WorkAttempt, error) {
-	rows, err := s.queries.ListActiveWorkAttempts(ctx, strings.TrimSpace(query.ProjectID))
+	excluded := emptyGenerations
+	if query.ExcludeLiveForeignGenerations {
+		var err error
+		excluded, err = s.liveForeignGenerationsJSON(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	rows, err := s.queries.ListActiveWorkAttempts(ctx, sqlc.ListActiveWorkAttemptsParams{
+		FilterProjectID:        strings.TrimSpace(query.ProjectID),
+		LiveForeignGenerations: excluded,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing active work attempts: %w", err)
 	}
@@ -298,7 +310,14 @@ func (s *sqliteStore) ListPendingWorkAttemptCapacityReleases(ctx context.Context
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
-	rows, err := s.queries.ListPendingWorkAttemptCapacityReleases(ctx, projectID)
+	excluded, err := s.liveForeignGenerationsJSON(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListPendingWorkAttemptCapacityReleases(ctx, sqlc.ListPendingWorkAttemptCapacityReleasesParams{
+		ProjectID:              projectID,
+		LiveForeignGenerations: excluded,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing pending work attempt capacity releases: %w", err)
 	}
@@ -336,7 +355,14 @@ func (s *sqliteStore) UpdateOperatorStop(ctx context.Context, attrs OperatorStop
 }
 
 func (s *sqliteStore) ListPendingOperatorStops(ctx context.Context, projectID string) ([]WorkAttempt, error) {
-	rows, err := s.queries.ListPendingOperatorStops(ctx, strings.TrimSpace(projectID))
+	excluded, err := s.liveForeignGenerationsJSON(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListPendingOperatorStops(ctx, sqlc.ListPendingOperatorStopsParams{
+		ProjectID:              strings.TrimSpace(projectID),
+		LiveForeignGenerations: excluded,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing pending operator stops: %w", err)
 	}
@@ -372,6 +398,10 @@ func (s *sqliteStore) TimeoutExpiredWorkAttempts(ctx context.Context, attrs Work
 	if err != nil {
 		return nil, fmt.Errorf("encoding processless work attempts: %w", err)
 	}
+	liveForeign, err := s.liveForeignGenerationsJSON(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.queries.TimeoutExpiredWorkAttempts(ctx, sqlc.TimeoutExpiredWorkAttemptsParams{
 		ExcludeAttemptIds:       string(excluded),
 		ConfirmedGoneAttemptIds: string(confirmedGone),
@@ -385,6 +415,7 @@ func (s *sqliteStore) TimeoutExpiredWorkAttempts(ctx context.Context, attrs Work
 		StatusMessage:           nullString(errorMessage),
 		FilterProjectID:         strings.TrimSpace(attrs.ProjectID),
 		LeaseExpiresAt:          sql.NullString{String: now, Valid: true},
+		LiveForeignGenerations:  liveForeign,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("timing out expired work attempts: %w", err)
@@ -438,15 +469,45 @@ func (s *sqliteStore) RecordSchedulerDecision(ctx context.Context, attrs Schedul
 	return decision.ID, nil
 }
 
+func (s *sqliteStore) RecordSchedulerDecisions(ctx context.Context, decisions []SchedulerDecision) ([]int64, error) {
+	if len(decisions) == 0 {
+		return nil, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("starting scheduler evidence transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	writer := &sqliteStore{queries: s.queries.WithTx(tx)}
+	ids := make([]int64, 0, len(decisions))
+	for _, decision := range decisions {
+		id, err := writer.RecordSchedulerDecision(ctx, decision)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing scheduler evidence: %w", err)
+	}
+	return ids, nil
+}
+
 func (s *sqliteStore) ListRecentSchedulerDecisions(ctx context.Context, query SchedulerDecisionQuery) ([]SchedulerDecision, error) {
 	limit := query.Limit
 	if limit <= 0 {
 		limit = defaultSchedulerDecisionLimit
 	}
-	rows, err := s.queries.ListRecentSchedulerDecisions(ctx, sqlc.ListRecentSchedulerDecisionsParams{
-		FilterProjectID: strings.TrimSpace(query.ProjectID),
-		Limit:           int64(limit),
-	})
+	var rows []sqlc.SchedulerDecision
+	var err error
+	if projectID := strings.TrimSpace(query.ProjectID); projectID != "" {
+		rows, err = s.queries.ListRecentProjectSchedulerDecisions(ctx, sqlc.ListRecentProjectSchedulerDecisionsParams{
+			ProjectID: projectID,
+			Limit:     int64(limit),
+		})
+	} else {
+		rows, err = s.queries.ListRecentSchedulerDecisions(ctx, int64(limit))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("listing scheduler decisions: %w", err)
 	}
@@ -660,6 +721,9 @@ func workAttemptFromRow(row sqlc.WorkAttempt) (WorkAttempt, error) {
 	if row.DetentSessionID.Valid {
 		attempt.DetentSessionID = row.DetentSessionID.Int64
 	}
+	if row.OwnerGeneration.Valid {
+		attempt.OwnerGeneration = row.OwnerGeneration.Int64
+	}
 	return attempt, nil
 }
 
@@ -745,4 +809,25 @@ func boolInt64(value bool) int64 {
 		return 1
 	}
 	return 0
+}
+
+func (s *sqliteStore) ListLocalAdmittedIssueIDs(ctx context.Context, projectID string) ([]string, error) {
+	excluded, err := s.liveForeignGenerationsJSON(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListLocalAdmittedIssueIDs(ctx, sqlc.ListLocalAdmittedIssueIDsParams{
+		ProjectID:              strings.TrimSpace(projectID),
+		LiveForeignGenerations: excluded,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing local admitted issues: %w", err)
+	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.Valid && row.String != "" {
+			ids = append(ids, row.String)
+		}
+	}
+	return ids, nil
 }

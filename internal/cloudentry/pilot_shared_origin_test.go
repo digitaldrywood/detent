@@ -38,6 +38,8 @@ import (
 
 const pilotOperatorToken = "detent_pilot_entitlement_operator_0123456789abcdef"
 
+const issueContractTestSections = "## Acceptance criteria\nComplete the requested work.\n## Must not break\nExisting behavior.\n## How we know it worked\nRun the project checks."
+
 type pilotTenantLauncher struct {
 	provider   *fakeProvider
 	billing    billing.Provider
@@ -195,8 +197,8 @@ func newSharedOriginPilotWith(t *testing.T, maxTenants, retryLimit int, client f
 
 func (p *sharedOriginPilot) open(t *testing.T, maxTenants, retryLimit int) {
 	t.Helper()
-	allocation := &AllocationConfig{TenantRoot: p.roots[0], SocketRoot: p.roots[1], MaxTenants: maxTenants, MaxConcurrent: 2, MaxPerIdentity: 1, RetryLimit: retryLimit, Launcher: p.launcher, EntitlementAdminToken: []byte(pilotOperatorToken)}
-	config := Config{PublicURL: p.base, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: p.key, Provider: p.provider,
+	allocation := &AllocationConfig{TenantRoot: p.roots[0], SocketRoot: p.roots[1], MaxTenants: maxTenants, MaxConcurrent: 2, RetryLimit: retryLimit, Launcher: p.launcher, EntitlementAdminToken: []byte(pilotOperatorToken)}
+	config := Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: p.base, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: p.key, Provider: p.provider,
 		StaffEmails: []string{"staff@example.test", "ops@example.test"}, EntitlementAdministrators: []string{"staff@example.test"}, StateDir: p.state, Logger: slog.New(slog.DiscardHandler), clientFS: p.client, Allocation: allocation}
 	if !p.launcher.useUnix {
 		config.transport = p.launcher.transport
@@ -501,6 +503,10 @@ func (b *pilotBrowser) stream(t *testing.T, path string) pilotStream {
 // enrollment and execution, artifact endpoints, entitlements, durable
 // provisioning retry, capacity refusal and entry restart.
 func TestSharedOriginPilotAcceptance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	p := newSharedOriginPilot(t, 2, 1)
 	origin, err := url.Parse(p.base)
 	if err != nil {
@@ -567,6 +573,44 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 			"tenant_endpoints": "private unix sockets", "injected_failure": failed.ErrorCode, "resumed_to": readyAlpha.State,
 			"cross_user_page_status": foreign.status,
 		})
+	})
+
+	pilotStage(t, "MCP authority survives the shared entry boundary", func() {
+		initialize := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"pilot","version":"1"}}}`
+		path := "/organizations/" + alpha.id + "/mcp"
+		headers := map[string]string{"Content-Type": "application/json", "Origin": p.base, "X-CSRF-Token": alpha.ownerCSRF}
+		initialized := alpha.owner.request(http.MethodPost, path, strings.NewReader(initialize), headers)
+		pilotStatus(t, "MCP initialize", initialized, http.StatusOK)
+		session := initialized.header.Get("Mcp-Session-Id")
+		if session == "" {
+			t.Fatal("shared entry lost MCP session identity")
+		}
+		headers["Mcp-Session-Id"] = session
+		pilotStatus(t, "MCP initialized notification", alpha.owner.request(http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`), headers), http.StatusAccepted)
+		listed := alpha.owner.request(http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`), headers)
+		pilotStatus(t, "MCP list", listed, http.StatusOK)
+		for _, name := range []string{"fleet_health", "telemetry_usage", "recent_activity"} {
+			if strings.Contains(listed.body, `"name":"`+name+`"`) {
+				t.Fatalf("absent daemon service advertised: %s", listed.body)
+			}
+		}
+		for _, name := range []string{"board_state", "explain_item"} {
+			if !strings.Contains(listed.body, `"name":"`+name+`"`) {
+				t.Fatalf("native work read %s was not advertised", name)
+			}
+		}
+		call := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"explain_item","arguments":{"project_id":"foreign","reference":"wi_foreign"}}}`
+		denied := alpha.owner.request(http.MethodPost, path, strings.NewReader(call), headers)
+		pilotStatus(t, "MCP foreign project", denied, http.StatusOK)
+		if !strings.Contains(denied.body, `"isError":true`) {
+			t.Fatalf("foreign project authorized: %s", denied.body)
+		}
+		for _, browser := range []*pilotBrowser{beta.owner, p.browser(t)} {
+			response := browser.request(http.MethodPost, path, strings.NewReader(call), headers)
+			if response.status < 400 || strings.Contains(response.body, "Alpha secret") {
+				t.Fatalf("foreign identity: %d %s", response.status, response.body)
+			}
+		}
 	})
 
 	pilotStage(t, "capacity refusal keeps ready organizations", func() {
@@ -781,7 +825,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		}
 		descriptor := pilotPolicy()
 		pilotStatus(t, "policy", alpha.owner.json(http.MethodPut, alpha.projectAPI()+"/onboarding/policy", alpha.ownerCSRF, policy.Change{Policy: descriptor}), http.StatusOK)
-		created := alpha.owner.json(http.MethodPost, alpha.projectAPI()+"/work-items", alpha.ownerCSRF, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "runner-work"}, Title: "Runner work", State: "Todo"})
+		created := alpha.owner.json(http.MethodPost, alpha.projectAPI()+"/work-items", alpha.ownerCSRF, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "runner-work"}, Title: "Runner work", Body: issueContractTestSections, State: "Todo"})
 		pilotStatus(t, "runner issue", created, http.StatusOK)
 		pilotDecode(t, created, &alphaIssue)
 		claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: alphaIssue.WorkItemID, MachineID: alphaRunner.MachineID, SessionID: "shared-origin", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
@@ -1046,4 +1090,70 @@ func TestSharedOriginPilotPreview(t *testing.T) {
 	case <-timer.C:
 	case <-t.Context().Done():
 	}
+}
+
+func TestSharedOriginAPIKeyConnection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
+	p := newSharedOriginPilot(t, 1, 1)
+	owner := p.browser(t)
+	pilotStatus(t, "sign-in", owner.login("/auth/oidc/start", "user_dana:"), http.StatusSeeOther)
+	created := owner.createOrganization("API key organization")
+	pilotStatus(t, "organization", created, http.StatusSeeOther)
+	o := pilotOrganization{id: organizationFromLocation(t, created.location), owner: owner}
+	p.waitState(t, o.id, "ready")
+	pilotStatus(t, "organization sign-in", owner.login(o.page(), "user_dana:porg_"+o.id), http.StatusSeeOther)
+	o.ownerCSRF = owner.csrf(o.page())
+	project := owner.form("/organizations/"+o.id+"/projects", url.Values{"name": {"API key project"}, "grant_access": {"true"}, "csrf": {o.ownerCSRF}})
+	pilotStatus(t, "project", project, http.StatusSeeOther)
+	o.project = strings.TrimPrefix(project.location, "/organizations/"+o.id+"/projects/")
+	mount := "/organizations/" + o.id
+	api := mount + o.api()
+	pilotStatus(t, "seed readable work", owner.json(http.MethodPost, api+"/projects/"+o.project+"/work-items", o.ownerCSRF, map[string]any{"title": "Shared key read", "state": "Todo", "idempotency_key": "shared-key-read"}), http.StatusOK)
+	issued := owner.json(http.MethodPost, api+"/api-keys", o.ownerCSRF, map[string]any{"name": "external-client", "scope": "read", "expires_days": 7, "project_ids": []string{o.project}})
+	pilotStatus(t, "create shared key", issued, http.StatusCreated)
+	var key struct {
+		ID     string `json:"id"`
+		Token  string `json:"token"`
+		Expiry string `json:"expires_at"`
+	}
+	pilotDecode(t, issued, &key)
+	if key.ID == "" || key.Token == "" || key.Expiry == "" {
+		t.Fatal("expiring key missing")
+	}
+	external := p.browser(t)
+	external.client.Jar = nil
+	headers := map[string]string{"Authorization": "Bearer " + key.Token, "Content-Type": "application/json", "Accept": "application/json, text/event-stream", "Origin": ""}
+	read := external.request(http.MethodGet, api+"/projects/"+o.project, nil, headers)
+	pilotStatus(t, "direct API read", read, http.StatusOK)
+	if !strings.Contains(read.body, o.project) {
+		t.Fatal("project context missing")
+	}
+	pilotStatus(t, "key read cannot write", external.request(http.MethodPost, api+"/projects/"+o.project+"/work-items", strings.NewReader(`{"title":"denied","state":"Todo","idempotency_key":"denied"}`), headers), http.StatusForbidden)
+	initialized := external.request(http.MethodPost, mount+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"shared-key-regression","version":"1"}}}`), headers)
+	pilotStatus(t, "MCP initialize", initialized, http.StatusOK)
+	session := initialized.header.Get("Mcp-Session-Id")
+	if session == "" {
+		t.Fatal("MCP session missing")
+	}
+	headers["Mcp-Session-Id"] = session
+	headers["Mcp-Protocol-Version"] = "2025-11-25"
+	pilotStatus(t, "MCP initialized", external.request(http.MethodPost, mount+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`), headers), http.StatusAccepted)
+	listed := external.request(http.MethodPost, mount+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`), headers)
+	pilotStatus(t, "MCP tools", listed, http.StatusOK)
+	if !strings.Contains(listed.body, `"work_list"`) {
+		t.Fatal("authorized read tool missing")
+	}
+	call := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"work_list","arguments":{"project_id":"` + o.project + `","limit":20}}}`
+	result := external.request(http.MethodPost, mount+"/mcp", strings.NewReader(call), headers)
+	pilotStatus(t, "MCP authorized read", result, http.StatusOK)
+	if !strings.Contains(result.body, o.project) || strings.Contains(result.body, `"isError":true`) {
+		t.Fatal("authorized MCP read failed")
+	}
+	pilotStatus(t, "foreign organization", external.request(http.MethodGet, "/organizations/org_foreign/api/v2/organizations/org_foreign/projects/"+o.project, nil, headers), http.StatusNotFound)
+	pilotStatus(t, "revoke shared key", owner.json(http.MethodDelete, api+"/api-keys/"+key.ID, o.ownerCSRF, nil), http.StatusNoContent)
+	pilotStatus(t, "revoked API key", external.request(http.MethodGet, api+"/projects/"+o.project, nil, headers), http.StatusUnauthorized)
+	pilotStatus(t, "revoked MCP session", external.request(http.MethodPost, mount+"/mcp", strings.NewReader(call), headers), http.StatusUnauthorized)
 }

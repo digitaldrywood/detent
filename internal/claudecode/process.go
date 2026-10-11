@@ -78,6 +78,7 @@ func (b *AgentBackend) RunTurn(
 	cmd.Stderr = stderrWriter
 
 	procgroup.Configure(ctx, cmd)
+	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
 		return runner.AgentTurnResult{}, errors.Join(
 			fmt.Errorf("start claude command: %w", err),
@@ -90,12 +91,12 @@ func (b *AgentBackend) RunTurn(
 	if err := procgroup.Deprioritize(cmd); err != nil {
 		processGroupID := procgroup.GroupID(cmd)
 		err = terminateWithCause(cmd, processGroupID, fmt.Errorf("deprioritize claude worker process: %w", err))
-		return runner.AgentTurnResult{}, errors.Join(err, waitAndCleanup(cmd, processGroupID), stdout.Close(), stdoutWriter.Close(), stderrReader.Close(), stderrWriter.Close())
+		return runner.AgentTurnResult{}, errors.Join(err, waitAndCleanup(ctx, cmd, processGroupID, startedAt), stdout.Close(), stdoutWriter.Close(), stderrReader.Close(), stderrWriter.Close())
 	}
 	if err := errors.Join(stdoutWriter.Close(), stderrWriter.Close()); err != nil {
 		processGroupID := procgroup.GroupID(cmd)
 		err = terminateWithCause(cmd, processGroupID, fmt.Errorf("close parent output writers: %w", err))
-		return runner.AgentTurnResult{}, errors.Join(err, waitAndCleanup(cmd, processGroupID), stdout.Close(), stderrReader.Close())
+		return runner.AgentTurnResult{}, errors.Join(err, waitAndCleanup(ctx, cmd, processGroupID, startedAt), stdout.Close(), stderrReader.Close())
 	}
 	stderrDone := make(chan error)
 	go func() {
@@ -106,7 +107,7 @@ func (b *AgentBackend) RunTurn(
 	workerProcess, err := procgroup.Inspect(cmd)
 	if err != nil {
 		err = terminateWithCause(cmd, processGroupID, fmt.Errorf("inspect claude worker process: %w", err))
-		if waitErr := waitAndCleanup(cmd, processGroupID); waitErr != nil {
+		if waitErr := waitAndCleanup(ctx, cmd, processGroupID, startedAt); waitErr != nil {
 			err = errors.Join(err, waitErr)
 		}
 		if stderrErr := <-stderrDone; stderrErr != nil {
@@ -122,7 +123,7 @@ func (b *AgentBackend) RunTurn(
 		WorkerProcess:   workerProcess,
 	}); err != nil {
 		err = terminateWithCause(cmd, processGroupID, err)
-		if waitErr := waitAndCleanup(cmd, processGroupID); waitErr != nil {
+		if waitErr := waitAndCleanup(ctx, cmd, processGroupID, startedAt); waitErr != nil {
 			err = errors.Join(err, fmt.Errorf("wait after terminating claude command: %w", waitErr))
 		}
 		if stderrErr := <-stderrDone; stderrErr != nil {
@@ -133,7 +134,7 @@ func (b *AgentBackend) RunTurn(
 
 	waitDone := make(chan error)
 	go func() {
-		waitDone <- waitAndCleanup(cmd, processGroupID)
+		waitDone <- waitAndCleanup(ctx, cmd, processGroupID, startedAt)
 	}()
 	var streamOutput io.Reader = stdout
 	if sandboxInput != nil {
@@ -159,11 +160,15 @@ func (b *AgentBackend) RunTurn(
 	closeErr := errors.Join(stdout.Close(), stderrReader.Close())
 
 	result := runner.AgentTurnResult{
-		ThreadID:  state.sessionID,
-		TurnID:    state.sessionID,
-		SessionID: state.sessionID,
+		ReportedCostMicros: state.reportedCostMicros,
+		ThreadID:           state.sessionID,
+		TurnID:             state.sessionID,
+		SessionID:          state.sessionID,
 	}
 
+	if result.ReportedCostMicros != nil {
+		result.CostSource = "backend_result"
+	}
 	if streamErr != nil {
 		return result, errors.Join(streamErr, closeErr)
 	}
@@ -208,6 +213,10 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 		}
 		if err != nil {
 			return nil, nil, err
+		}
+		policy.AllowLocalBinding = req.AllowLocalBinding && !req.ReadOnly
+		if !req.ReadOnly {
+			policy.ExtraNetworkDomains = req.ExtraNetworkDomains
 		}
 		policy.WritableRoots = []string{req.Workspace}
 		if req.TempDir != "" {
@@ -416,8 +425,11 @@ func stopStallTimer(timer *time.Timer) {
 	}
 }
 
-func waitAndCleanup(cmd *exec.Cmd, processGroupID int) error {
-	return waitAndCleanupWith(cmd, processGroupID, procgroup.Cleanup)
+func waitAndCleanup(ctx context.Context, cmd *exec.Cmd, processGroupID int, startedAt time.Time) error {
+	return waitAndCleanupWith(cmd, processGroupID, func(groupID int) error {
+		procgroup.RecordUsage(procgroup.UsageHandler(ctx), cmd.ProcessState, startedAt)
+		return procgroup.Cleanup(groupID)
+	})
 }
 
 func waitAndCleanupWith(cmd *exec.Cmd, processGroupID int, cleanup func(int) error) error {

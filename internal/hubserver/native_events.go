@@ -27,10 +27,13 @@ func validNativeID(id, prefix string) bool {
 }
 
 func validateNativeRunEvent(request tracker.NativeRunEvent) error {
-	if request.SchemaVersion != 1 || !slices.Contains([]string{"run.started", "run.finished", "run.checkpointed"}, request.Type) {
+	if request.SchemaVersion != 1 || !slices.Contains([]string{"run.started", "run.finished", "run.checkpointed", "run.observed"}, request.Type) {
 		return nativeInvalid("Unsupported event type or schema version")
 	}
 	data := request.Data
+	if data.Runtime != nil && data.Sequence <= 0 || request.Type == "run.observed" && data.Runtime == nil {
+		return nativeInvalid("Runtime evidence requires an ordered observation")
+	}
 	if !validNativeID(data.RunID, "run") || !validNativeID(data.AttemptID, "attempt") || !validNativeID(data.PolicyID, "policy") || data.FencingToken <= 0 || data.LeaseID == "" {
 		return nativeInvalid("Typed run, attempt, policy and current lease references are required")
 	}
@@ -50,6 +53,9 @@ func validateNativeRunEvent(request tracker.NativeRunEvent) error {
 		}
 	}
 	if err := validateNativeRunUsage(request); err != nil {
+		return err
+	}
+	if err := validateNativeRuntime(data.Runtime); err != nil {
 		return err
 	}
 	return validateNativeExecution(data, request.Type)
@@ -78,6 +84,11 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 		if err := requireCurrentLease(lease, request.Data.FencingToken, now); err != nil {
 			return nil, err
 		}
+		if request.Type == "run.started" {
+			if err := checkMonthlyLease(ctx, tx, lease, now); err != nil {
+				return nil, err
+			}
+		}
 		if err := requireApprovedLeasePolicy(ctx, tx, request.Data.LeaseID, true); err != nil {
 			return nil, err
 		}
@@ -88,6 +99,52 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 		if err := requireLeaseRunner(ctx, tx, request.Data.LeaseID, scope); err != nil {
 			return nil, err
 		}
+		if f := request.Data.Finalization; f != nil && f.ChangeID != "" {
+			if _, err := readChange(ctx, tx, scope, string(issue.WorkItemID), f.ChangeID); err != nil {
+				return nil, err
+			}
+			if f.VersionID != "" {
+				version, err := readChangeVersion(ctx, tx, f.ChangeID, f.VersionID)
+				if err != nil {
+					return nil, err
+				}
+				if version.HeadSHA != f.HeadSHA {
+					return nil, nativeInvalid("Finalizer version must name its recorded head")
+				}
+			}
+			if source := f.SourceVersion; source != nil {
+				if source.ChangeID != f.ChangeID {
+					return nil, nativeInvalid("Finalizer source must belong to the reported Change")
+				}
+				version, err := readChangeVersion(ctx, tx, source.ChangeID, source.VersionID)
+				if err != nil {
+					return nil, err
+				}
+				if version.HeadSHA != source.HeadSHA || version.AttemptID != f.SourceAttemptID {
+					return nil, nativeInvalid("Finalizer source must match its recorded version and attempt")
+				}
+			}
+		}
+		if runtime := request.Data.Runtime; runtime != nil && runtime.Landing != nil && runtime.Landing.ChangeID != "" {
+			l := runtime.Landing
+			change, err := readChange(ctx, tx, scope, string(issue.WorkItemID), l.ChangeID)
+			if err != nil {
+				return nil, err
+			}
+			if l.VersionID != "" {
+				version, err := readChangeVersion(ctx, tx, change.ID, l.VersionID)
+				if err != nil {
+					return nil, err
+				}
+				if version.HeadSHA != l.HeadSHA {
+					return nil, nativeInvalid("Landing evidence must name its immutable version head")
+				}
+			}
+			if l.Landed && (change.Landed == nil || change.Landed.VersionID != l.VersionID || change.Landed.MergeSHA != l.MergeSHA || change.Landed.HeadSHA != l.HeadSHA || change.Landed.BaseRef != l.BaseRef || change.Landed.Method != l.Method) {
+				return nil, nativeInvalid("Landing evidence requires the recorded Change landing authority")
+			}
+		}
+		publish := true
 		if request.Data.Sequence > 0 {
 			if request.Data.MachineID != "" && request.Data.MachineID != lease.session.Machine.ID || request.Data.SessionID != "" && request.Data.SessionID != lease.session.SessionID || request.Data.RunnerID != "" && request.Data.RunnerID != scope.credential.Runner.RunnerID {
 				return nil, nativeInvalid("Execution identity must match the authenticated lease owner")
@@ -95,10 +152,11 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 			request.Data.MachineID = lease.session.Machine.ID
 			request.Data.SessionID = lease.session.SessionID
 			request.Data.RunnerID = scope.credential.Runner.RunnerID
-			appended, err := recordNativeAttempt(ctx, tx, scope, issue.WorkItemID, request, now)
+			appended, history, err := recordNativeAttempt(ctx, tx, scope, issue.WorkItemID, request, now)
 			if err != nil {
 				return nil, err
 			}
+			publish = history
 			if !appended {
 				return struct {
 					Accepted bool `json:"accepted"`
@@ -123,8 +181,20 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 		if err := recordAttemptUsage(ctx, tx, scope, request, s.usagePrices(), now); err != nil {
 			return nil, err
 		}
-		if err := appendNativeHistory(ctx, tx, scope, string(issue.WorkItemID), request.Type, tracker.CollaborationData{Run: &request.Data}, now); err != nil {
-			return nil, err
+		if publish {
+			if request.Type == "run.finished" && request.Data.Outcome == "succeeded" && request.Data.Sequence > 0 {
+				issue, err = recordNativeDependencyBlockers(ctx, tx, scope, issue, request.Data.Disposition, now)
+				if err != nil {
+					return nil, err
+				}
+			}
+			data := tracker.CollaborationData{Run: &request.Data}
+			if request.Type == "run.finished" {
+				data.Revision = issue.Revision
+			}
+			if err := appendNativeHistory(ctx, tx, scope, string(issue.WorkItemID), request.Type, data, now); err != nil {
+				return nil, err
+			}
 		}
 		return struct {
 			Accepted bool `json:"accepted"`

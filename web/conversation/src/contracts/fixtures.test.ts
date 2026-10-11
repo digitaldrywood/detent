@@ -27,6 +27,14 @@ describe("contract fixtures", () => {
     expect(() => Schema.decodeUnknownSync(schema!)(raw)).not.toThrow();
   });
 
+  it("rejects the legacy health detector actor kind", () => {
+    expect(() =>
+      Schema.decodeUnknownSync(FIXTURE_SCHEMAS["native-actors.json"]!)([
+        { kind: "system", principal_id: "health_detector" },
+      ]),
+    ).toThrow();
+  });
+
   it("rejects a payload with an unknown enumeration member", () => {
     const raw = JSON.parse(
       readFileSync(join(directory, "conversation.json"), "utf8"),

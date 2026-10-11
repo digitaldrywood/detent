@@ -149,15 +149,18 @@ are rejected. Complimentary grants remain independent of payment records.
 
 ### Granting from the platform console
 
-On the shared entry, list the staff who may grant complimentary plans in
-`entitlement_administrators` (see the [shared entry example](examples/hub/README.md#shared-entry)).
-Each address must also be in `staff_emails`, and the key requires
-`allocation.entitlement_admin_token_env`; the entry refuses to start otherwise.
-Only those administrators see the plan column in `/platform`. For each ready
-organization it shows the base plan, the effective plan and active grants (plan,
-scope, start, expiry, reason, granted by), a **Grant complimentary plan** action
-(plan, optional expiry date, required reason) and **Revoke** per grant (required
-reason). Other staff, support sessions and customers are refused by the entry.
+On the shared entry, registry platform members with `admin` or `billing` roles
+may grant and revoke complimentary plans. Configure
+`allocation.entitlement_admin_token_env` so the entry can reach tenant entitlements.
+`platform.bootstrap_admin_email` restores the operator as an admin at startup.
+The deprecated `entitlement_administrators`, `support_actors`, and `staff_emails`
+seed an empty platform membership registry; they do not gate access after seeding.
+See the [shared entry example](examples/hub/README.md#shared-entry).
+
+Authorized members can read the base plan, effective plan and active grants, and
+submit grant or revoke requests with a required reason. `support` and `viewer`
+roles, support impersonation sessions, and non-members cannot change plans.
+Customer organization ownership does not grant platform billing access.
 
 The entry reads and changes the plan server-side through the tenant's private
 socket, presenting the allocation's entitlement credential; the credential never

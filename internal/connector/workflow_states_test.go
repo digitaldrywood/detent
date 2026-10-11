@@ -18,6 +18,12 @@ func TestCompletionLane(t *testing.T) {
 		{Name: "Merging", Transitions: []string{"Done"}},
 		{Name: "Done", Terminal: true},
 	}
+	fourLanes := []WorkflowState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Human Review", "Done"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}},
+		{Name: "Human Review", Transitions: []string{"In Progress", "Done"}},
+		{Name: "Done", Terminal: true},
+	}
 	operatorDone := []WorkflowState{
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Blocked", "Done"}},
 		{Name: "In Review", Transitions: []string{"In Progress"}},
@@ -34,10 +40,17 @@ func TestCompletionLane(t *testing.T) {
 		states  []WorkflowState
 		current string
 		review  string
+		refusal bool
 		changed bool
 		want    string
 		wantOK  bool
 	}{
+		{name: "four lane completion ends accepted unchanged work", states: fourLanes, current: "In Progress", want: "Done", wantOK: true},
+		{name: "four lane completion respects configured review", states: fourLanes, current: "In Progress", review: "Human Review", changed: true, want: "Human Review", wantOK: true},
+		{name: "four lane refusal falls back from missing Blocked", states: fourLanes, current: "In Progress", review: "Blocked", refusal: true, want: "Human Review", wantOK: true},
+		{name: "refusal prefers configured review before earlier parking lane", states: review, current: "In Progress", review: "In Review", refusal: true, want: "In Review", wantOK: true},
+		{name: "refusal skips operator-only review and dispatchable fallback", states: operatorReview, current: "In Progress", review: "In Review", refusal: true},
+		{name: "refusal never ends work", states: hosted, current: "In Progress", review: "Done", refusal: true},
 		{name: "change goes to the configured review lane", states: review, current: "In Progress", review: "In Review", changed: true, want: "In Review", wantOK: true},
 		{name: "review lane is matched loosely", states: review, current: " in progress ", review: "in review", changed: true, want: "In Review", wantOK: true},
 		{name: "an earlier parking lane is not review", states: review, current: "Todo", review: "In Review", changed: true},
@@ -54,6 +67,9 @@ func TestCompletionLane(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			got, ok := CompletionLane(test.states, test.current, test.review, test.changed)
+			if test.refusal {
+				got, ok = LandingRefusalLane(test.states, test.current, test.review, false)
+			}
 			if got != test.want || ok != test.wantOK {
 				t.Fatalf("CompletionLane = %q, %t; want %q, %t", got, ok, test.want, test.wantOK)
 			}

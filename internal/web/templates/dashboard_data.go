@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/dispatchpriority"
+	"github.com/digitaldrywood/detent/internal/displayorder"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/observability"
@@ -67,8 +68,11 @@ const (
 )
 
 type DashboardData struct {
+	AttemptCosts              []AttemptCostData
+	AttemptCostsError         string
 	latestBoardAttempts       map[string]*telemetry.WorkAttempt
 	ConfiguredAgents          map[string]agentidentity.Identity
+	ConfiguredStageAgents     map[string]agentidentity.Identity
 	RunnerFleetEnabled        bool
 	Title                     string
 	ApplicationName           string
@@ -637,6 +641,7 @@ type projectKanbanLane struct {
 }
 
 type projectKanbanCard struct {
+	displayOrder          displayorder.Item
 	CreationOrigin        string
 	IssueNumber           string
 	Identity              string
@@ -2471,12 +2476,24 @@ func projectOverviewDiagnosticsDotClass(snapshot telemetry.Snapshot) string {
 
 func projectKanbanCardsByState(data DashboardData) map[string][]projectKanbanCard {
 	issues := projectKanbanIssues(data)
+	activity := projectKanbanRunActivity(data.Snapshot)
 	mergeStatuses := mergeLaneStatuses(data.Snapshot)
 	configured := projectKanbanConfiguredStateMap(data.Kanban.States)
 	cardsByState := map[string][]projectKanbanCard{}
 	for _, entry := range issues {
 		state := projectKanbanDisplayState(entry.state, configured)
 		card := projectKanbanCardForIssue(data, entry.issue, state, entry.stageAt, pipelineNow(data.Snapshot))
+		card.displayOrder = displayorder.Item{LastActivityAt: card.StageAt, Identifier: card.Identifier}
+		if rank := card.PriorityRank; rank >= 1 && rank <= 4 {
+			priority := rank - 1
+			card.displayOrder.Priority = &priority
+		}
+		if card.UpdatedAt != nil && card.UpdatedAt.After(card.displayOrder.LastActivityAt) {
+			card.displayOrder.LastActivityAt = *card.UpdatedAt
+		}
+		if at := activity[BoardIssueKey(entry.issue)]; at.After(card.displayOrder.LastActivityAt) {
+			card.displayOrder.LastActivityAt = at
+		}
 		if status, ok := mergeStatuses[mergeLaneIssueKey(entry.issue)]; ok {
 			card.MergeLaneStatus = status.Label
 			card.MergeLaneDetail = status.Detail
@@ -2487,39 +2504,45 @@ func projectKanbanCardsByState(data DashboardData) map[string][]projectKanbanCar
 	}
 	for key := range cardsByState {
 		cards := cardsByState[key]
+		terminal := boardLaneTerminal(data, projectKanbanLane{Title: key, Cards: cards}, projectKanbanTerminalStateSet(data.Kanban.TerminalStates))
 		sort.SliceStable(cards, func(i, j int) bool {
-			if leftRank, rightRank := projectKanbanCardPriorityRank(cards[i]), projectKanbanCardPriorityRank(cards[j]); leftRank != rightRank {
-				return leftRank < rightRank
-			}
-			if leftMatched, rightMatched := cards[i].DispatchPriorityRank > 0, cards[j].DispatchPriorityRank > 0; leftMatched != rightMatched {
-				return leftMatched
-			}
-			if cards[i].DispatchPriorityRank != cards[j].DispatchPriorityRank {
-				return cards[i].DispatchPriorityRank < cards[j].DispatchPriorityRank
-			}
-			if cards[i].DispatchPriorityRank == 0 && cards[i].UnblockerCount != cards[j].UnblockerCount {
-				return cards[i].UnblockerCount > cards[j].UnblockerCount
-			}
-			left := cards[i].StageAt
-			right := cards[j].StageAt
-			if left.IsZero() || right.IsZero() {
-				return !left.IsZero() && right.IsZero()
-			}
-			if !left.Equal(right) {
-				return left.Before(right)
-			}
-			return cards[i].Identifier < cards[j].Identifier
+			return displayorder.Compare(terminal, cards[i].displayOrder, cards[j].displayOrder) < 0
 		})
 		cardsByState[key] = cards
 	}
 	return cardsByState
 }
 
-func projectKanbanCardPriorityRank(card projectKanbanCard) int {
-	if card.PriorityRank < 1 || card.PriorityRank >= dispatchpriority.UnmappedPriorityRank {
-		return dispatchpriority.UnmappedPriorityRank
+func projectKanbanRunActivity(snapshot telemetry.Snapshot) map[string]time.Time {
+	activity := make(map[string]time.Time)
+	observe := func(issue telemetry.Issue, at time.Time) {
+		if key := BoardIssueKey(issue); key != "" && at.After(activity[key]) {
+			activity[key] = at
+		}
 	}
-	return card.PriorityRank
+	for _, row := range snapshot.Running {
+		observe(row.Issue, row.StartedAt)
+		if row.LastEventAt != nil {
+			observe(row.Issue, *row.LastEventAt)
+		}
+		for _, event := range row.RecentEvents {
+			observe(row.Issue, event.At)
+		}
+	}
+	for _, row := range snapshot.Completed {
+		observe(row.Issue, row.StartedAt)
+		observe(row.Issue, row.CompletedAt)
+	}
+	for _, attempt := range snapshot.WorkAttempts {
+		issue := telemetry.Issue{ProjectID: attempt.ProjectID, ID: attempt.IssueID, Identifier: attempt.Identifier}
+		observe(issue, attempt.StartedAt)
+		for _, at := range []*time.Time{attempt.HeartbeatAt, attempt.CompletedAt} {
+			if at != nil {
+				observe(issue, *at)
+			}
+		}
+	}
+	return activity
 }
 
 func projectKanbanPriorityRank(priority *int) int {
@@ -2665,9 +2688,28 @@ type projectKanbanRecentCompletion struct {
 func projectKanbanRecentCompletions(data DashboardData) []projectKanbanRecentCompletion {
 	now := pipelineNow(data.Snapshot)
 	cutoff := now.Add(-recentCompletionWindow)
-	rows := make([]projectKanbanRecentCompletion, 0, len(data.Snapshot.Completed)+len(data.Snapshot.WorkAttempts))
+	rows := make([]projectKanbanRecentCompletion, 0, len(data.Snapshot.Shipped)+len(data.Snapshot.Completed)+len(data.Snapshot.WorkAttempts))
 	seen := map[string]struct{}{}
+	completionIssue := func(issue telemetry.Issue) telemetry.Issue {
+		if strings.TrimSpace(issue.ProjectID) == "" {
+			issue.ProjectID = strings.TrimSpace(data.Snapshot.Project.ID)
+			if issue.ProjectID == "" {
+				issue.ProjectID = strings.TrimSpace(data.ProjectID)
+			}
+		}
+		return issue
+	}
+	knownIssues := map[string]telemetry.Issue{}
+	for _, attempt := range data.Snapshot.WorkAttempts {
+		issue := completionIssue(telemetry.Issue{ID: attempt.IssueID, ProjectID: attempt.ProjectID, Identifier: attempt.Identifier, URL: attempt.IssueURL, Title: recentWorkAttemptIssueTitle(attempt), RuntimeIdentity: attempt.RuntimeIdentity})
+		knownIssues[recentCompletionKey(issue)] = issue
+	}
+	for _, completed := range data.Snapshot.Completed {
+		issue := completionIssue(completed.Issue)
+		knownIssues[recentCompletionKey(issue)] = issue
+	}
 	appendCompletion := func(issue telemetry.Issue, state string, completedAt time.Time) {
+		issue = completionIssue(issue)
 		if completedAt.IsZero() || completedAt.Before(cutoff) || completedAt.After(now) {
 			return
 		}
@@ -2694,6 +2736,28 @@ func projectKanbanRecentCompletions(data DashboardData) []projectKanbanRecentCom
 		rows = append(rows, projectKanbanRecentCompletion{issue: issue, state: state, completedAt: completedAt.UTC()})
 	}
 
+	// Durable writer evidence owns the timestamp, even when it is outside the
+	// window. A later session receipt must not make an old delivery recent.
+	for _, completed := range data.Snapshot.Shipped {
+		issue := completionIssue(completed.Issue)
+		key := recentCompletionKey(issue)
+		if known, ok := knownIssues[key]; key != "" && ok {
+			if strings.TrimSpace(known.Title) != "" {
+				issue.Title = known.Title
+			}
+			if issue.Identifier == "" {
+				issue.Identifier = known.Identifier
+			}
+			if issue.URL == "" {
+				issue.URL = known.URL
+			}
+			issue.RuntimeIdentity = known.RuntimeIdentity
+		}
+		appendCompletion(issue, strings.TrimSpace(completed.State), completed.CompletedAt)
+		if key != "" {
+			seen[key] = struct{}{}
+		}
+	}
 	for _, completed := range data.Snapshot.Completed {
 		state := strings.TrimSpace(completed.State)
 		appendCompletion(completed.Issue, state, completed.CompletedAt)
@@ -2725,10 +2789,10 @@ func projectKanbanRecentCompletions(data DashboardData) []projectKanbanRecentCom
 
 func recentCompletionKey(issue telemetry.Issue) string {
 	if id := strings.TrimSpace(issue.ID); id != "" {
-		return "id:" + id
+		return strings.TrimSpace(issue.ProjectID) + ":id:" + id
 	}
 	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" {
-		return "identifier:" + identifier
+		return strings.TrimSpace(issue.ProjectID) + ":identifier:" + identifier
 	}
 	return ""
 }

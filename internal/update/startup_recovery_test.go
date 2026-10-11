@@ -308,8 +308,14 @@ func TestStartupRecoveryRestoresInstallLockAfterRollback(t *testing.T) {
 					"GOBIN":               goBin,
 					"DETENT_INSTALL_LOCK": lockPath,
 				},
+			}).Source; got != InstallSourceUnknown {
+				t.Fatalf("explicit receipt source after rollback = %q, want %q", got, InstallSourceUnknown)
+			}
+			if got := DetectInstallSource(DetectionOptions{
+				CurrentVersion: "0.93.0", ExecutablePath: executable, GOOS: "linux", HomeDir: dir,
+				Env: map[string]string{"GOBIN": goBin},
 			}).Source; got != InstallSourceGoInstall {
-				t.Fatalf("install source after rollback = %q, want %q", got, InstallSourceGoInstall)
+				t.Fatalf("Go source after rollback without a receipt selector = %q, want %q", got, InstallSourceGoInstall)
 			}
 		})
 	}

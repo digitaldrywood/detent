@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -1049,35 +1050,6 @@ func TestDispatchPlannerSkipsCompletedGateWaitRetry(t *testing.T) {
 	}
 }
 
-func TestDispatchableSkipsQuietWindowActiveIssueWithOpenPullRequest(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 7, 8, 13, 5, 0, 0, time.UTC)
-	cfg := normalizeConfig(Config{
-		MaxConcurrentAgents: 1,
-		AutoPromote: AutoPromoteConfig{
-			Enabled:       true,
-			QuietDuration: 10 * time.Minute,
-			Gate:          gate.Config{Kind: gate.KindCommand},
-		},
-		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
-		TerminalStates: []string{"Done", "Cancelled"},
-	})
-	issue := dispatchTestIssueWithPullRequest("issue-quiet-gate-pending", "In Progress", "OPEN")
-	issue.PullRequest.CIStatus = "pending"
-	state := newState(cfg)
-	state.Completed[issue.ID] = Completed{Issue: issue, FinalState: FinalStateCompleted}
-	orch := Orchestrator{cfg: cfg}
-
-	decision := orch.dispatchPlanner().dispatchableIssueDecision(issue, &state, false, now, "")
-	if decision.dispatchable {
-		t.Fatal("dispatchable quiet-window active issue with open PR = true, want false")
-	}
-	if decision.reason != dispatchSkipAwaitingGate {
-		t.Fatalf("dispatchable reason = %q, want %q", decision.reason, dispatchSkipAwaitingGate)
-	}
-}
-
 func TestDispatchableCompletedReworkGateWaitEvidence(t *testing.T) {
 	t.Parallel()
 
@@ -1837,6 +1809,34 @@ func TestAuthorizationFilterHintUsesTopLevelSelectorFields(t *testing.T) {
 
 			got := authorizationFilterHint(tt.auth, tt.ctx)
 			assertIssueFilterHint(t, got, tt.want)
+			now := time.Date(2026, 10, 3, 10, 41, 57, 0, time.UTC)
+			observer := &hubSchedulingSource{}
+			o := &Orchestrator{cfg: normalizeConfig(Config{ActiveStates: []string{"Todo"}, Authorization: tt.auth, SelectorContext: tt.ctx}), scheduling: observer, now: func() time.Time { return now }}
+			o.cfg.Policy.ID = "policy_current"
+			if _, observed := o.NativeAdmissionContext(); observed {
+				t.Fatal("unpublished selectors became current admission context")
+			}
+			state := State{}
+			o.publishState(t.Context(), &state)
+			o.cfg.Authorization.Labels.Exclude = []string{"replacement"}
+			current, observed := o.NativeAdmissionContext()
+			if !observed || !reflect.DeepEqual(observer.admission, current) || current.PolicyID != "policy_current" || !current.ObservedAt.Equal(now) || !slices.Equal(current.WorkflowStates, []string{"todo"}) {
+				t.Fatalf("admission context lost publication identity: %#v", current)
+			}
+			assertIssueFilterHint(t, connector.IssueFilterHint{Authors: current.Authors, Assignees: current.Assignees, LabelInclude: current.LabelInclude, LabelExclude: current.LabelExclude}, tt.want)
+			if len(current.LabelInclude) > 0 {
+				current.LabelInclude[0] = "reader-mutation"
+				unchanged, _ := o.NativeAdmissionContext()
+				if !slices.Equal(unchanged.LabelInclude, tt.want.LabelInclude) {
+					t.Fatal("admission reader mutated published selectors")
+				}
+			}
+			next := State{}
+			o.publishState(t.Context(), &next)
+			updated, _ := o.NativeAdmissionContext()
+			if !slices.Equal(updated.LabelExclude, []string{"replacement"}) {
+				t.Fatalf("new publication retained old selector context: %#v", updated)
+			}
 		})
 	}
 }
@@ -2343,6 +2343,12 @@ func TestDispatchPlanReportsMergedPullRequestReconciliationPending(t *testing.T)
 	issues := []connector.Issue{
 		dispatchTestIssueWithPullRequest("issue-todo-merged-pr", "Todo", "MERGED"),
 		func() connector.Issue {
+			issue := dispatchTestIssueWithPullRequest("issue-rework-merged-pr-pending", "Rework", "MERGED")
+			issue.PullRequest.CIStatus = "pending"
+			issue.PullRequest.RunningChecks = []string{"Verify"}
+			return issue
+		}(),
+		func() connector.Issue {
 			issue := dispatchTestIssueWithPullRequest("issue-todo-merged-pr-failed", "Todo", "MERGED")
 			issue.PullRequest.CIStatus = "fail"
 			issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{
@@ -2384,9 +2390,9 @@ func TestDispatchModeMergingFastPathFlag(t *testing.T) {
 	}{
 		{"merging disabled", "Merging", "clean", runpkg.RunModeImplement, false, false},
 		{"merging enabled", "Merging", "clean", runpkg.RunModeMerge, true, false},
-		{"dirty rework", "Rework", "dirty", runpkg.RunModeMerge, true, false},
+		{"dirty rework", "Rework", "dirty", runpkg.RunModeImplement, true, false},
 		{"dirty in progress", "In Progress", "dirty", runpkg.RunModeMerge, true, false},
-		{"dirty rework disabled", "Rework", "dirty", runpkg.RunModeMerge, false, false},
+		{"dirty rework disabled", "Rework", "dirty", runpkg.RunModeImplement, false, false},
 		{"dirty in progress disabled", "In Progress", "dirty", runpkg.RunModeMerge, false, false},
 		{"clean rework", "Rework", "clean", runpkg.RunModeImplement, true, false},
 		{"clean in progress", "In Progress", "clean", runpkg.RunModeImplement, true, false},
@@ -2574,7 +2580,7 @@ func TestDispatchReadyIssuesRechecksStartTransitionStateCapacity(t *testing.T) {
 func TestDispatchIssueRequiresSharedGlobalSlot(t *testing.T) {
 	t.Parallel()
 
-	global := scheduler.NewRoundRobin(scheduler.Config{Capacity: 1})
+	global := scheduler.NewStrictPriority(scheduler.Config{Capacity: 1})
 	globalGate := scheduler.NewGlobalDispatchGate(global)
 	now := time.Now()
 	ctx := t.Context()
@@ -2584,7 +2590,7 @@ func TestDispatchIssueRequiresSharedGlobalSlot(t *testing.T) {
 		MaxConcurrentAgents: 2,
 		ActiveStates:        []string{"Todo"},
 		TerminalStates:      []string{"Done"},
-		Project:             scheduler.ProjectCandidate{ID: "alpha", Weight: 1},
+		Project:             scheduler.ProjectCandidate{ID: "alpha"},
 	})
 	alpha := Orchestrator{
 		cfg:                alphaCfg,
@@ -2608,7 +2614,7 @@ func TestDispatchIssueRequiresSharedGlobalSlot(t *testing.T) {
 		MaxConcurrentAgents: 2,
 		ActiveStates:        []string{"Todo"},
 		TerminalStates:      []string{"Done"},
-		Project:             scheduler.ProjectCandidate{ID: "bravo", Weight: 1},
+		Project:             scheduler.ProjectCandidate{ID: "bravo"},
 	})
 	bravo := Orchestrator{
 		cfg:                bravoCfg,
@@ -2646,7 +2652,7 @@ func TestDispatchIssueRequiresSharedGlobalSlot(t *testing.T) {
 func TestDispatchReadyIssuesAllowsOneMergeWorkerPerProject(t *testing.T) {
 	t.Parallel()
 
-	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 2}))
+	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}))
 	now := time.Date(2026, 6, 25, 13, 0, 0, 0, time.UTC)
 	ctx := t.Context()
 
@@ -2659,7 +2665,7 @@ func TestDispatchReadyIssuesAllowsOneMergeWorkerPerProject(t *testing.T) {
 		DispatchPriorityByState: []string{"Merging", "Rework", "Todo"},
 		ActiveStates:            []string{"Todo", "In Progress", "Rework", "Merging"},
 		TerminalStates:          []string{"Done"},
-		Project:                 scheduler.ProjectCandidate{ID: "alpha", Weight: 1},
+		Project:                 scheduler.ProjectCandidate{ID: "alpha"},
 	})
 	alpha := Orchestrator{
 		cfg:                alphaCfg,
@@ -2689,7 +2695,7 @@ func TestDispatchReadyIssuesAllowsOneMergeWorkerPerProject(t *testing.T) {
 		DispatchPriorityByState: []string{"Merging", "Rework", "Todo"},
 		ActiveStates:            []string{"Todo", "In Progress", "Rework", "Merging"},
 		TerminalStates:          []string{"Done"},
-		Project:                 scheduler.ProjectCandidate{ID: "bravo", Weight: 1},
+		Project:                 scheduler.ProjectCandidate{ID: "bravo"},
 	})
 	bravo := Orchestrator{
 		cfg:                bravoCfg,
@@ -2726,8 +2732,8 @@ func TestDispatchReadyIssuesLogsMergeSlotDecisionAndStopsAfterGlobalWait(t *test
 
 	now := time.Date(2026, 6, 25, 14, 0, 0, 0, time.UTC)
 	ctx := t.Context()
-	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
-	lowerPriorityProject := scheduler.ProjectCandidate{ID: "alpha", Weight: 1}
+	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+	lowerPriorityProject := scheduler.ProjectCandidate{ID: "alpha"}
 	lowerSlot, ok, decision, err := globalGate.TryAcquireWithDecision(ctx, lowerPriorityProject, scheduler.SlotRequest{
 		State:    "Todo",
 		Priority: 2,
@@ -2752,7 +2758,7 @@ func TestDispatchReadyIssuesLogsMergeSlotDecisionAndStopsAfterGlobalWait(t *test
 		DispatchPriorityByState: []string{"Merging", "Rework", "Todo"},
 		ActiveStates:            []string{"Todo", "In Progress", "Rework", "Merging"},
 		TerminalStates:          []string{"Done"},
-		Project:                 scheduler.ProjectCandidate{ID: "zulu", Weight: 1},
+		Project:                 scheduler.ProjectCandidate{ID: "zulu"},
 	})
 	runner := newWorkerHostRunner()
 	var logs strings.Builder
@@ -2765,7 +2771,9 @@ func TestDispatchReadyIssuesLogsMergeSlotDecisionAndStopsAfterGlobalWait(t *test
 	}
 	state := newState(cfg)
 	first := dispatchTestIssueWithPullRequest("issue-merge-first", "Merging", "OPEN")
+	first.Priority = new(1)
 	second := dispatchTestIssueWithPullRequest("issue-merge-second", "Merging", "OPEN")
+	second.Priority = new(1)
 
 	orch.dispatchReadyIssues(ctx, &state, []connector.Issue{first, second}, now.Add(time.Second))
 
@@ -2808,8 +2816,8 @@ func TestDispatchReadyIssuesRecordsNonMergeSlotWaitTelemetry(t *testing.T) {
 
 	now := time.Date(2026, 6, 26, 10, 0, 0, 0, time.UTC)
 	ctx := t.Context()
-	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
-	lowerSlot, ok, decision, err := globalGate.TryAcquireWithDecision(ctx, scheduler.ProjectCandidate{ID: "alpha", Weight: 1}, scheduler.SlotRequest{
+	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+	lowerSlot, ok, decision, err := globalGate.TryAcquireWithDecision(ctx, scheduler.ProjectCandidate{ID: "alpha"}, scheduler.SlotRequest{
 		State:    "Todo",
 		Priority: 2,
 	}, now)
@@ -2830,7 +2838,7 @@ func TestDispatchReadyIssuesRecordsNonMergeSlotWaitTelemetry(t *testing.T) {
 		DispatchPriorityByState: []string{"Merging", "Rework", "Todo"},
 		ActiveStates:            []string{"Todo", "In Progress", "Rework", "Merging"},
 		TerminalStates:          []string{"Done"},
-		Project:                 scheduler.ProjectCandidate{ID: "zulu", Weight: 1},
+		Project:                 scheduler.ProjectCandidate{ID: "zulu"},
 	})
 	runner := newWorkerHostRunner()
 	var logs strings.Builder
@@ -3246,10 +3254,12 @@ func TestDispatchReadyIssuesLogsDebugDecisionAndWorkerLifecycle(t *testing.T) {
 
 	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
 	cfg := normalizeConfig(Config{
-		MaxConcurrentAgents: 2,
+		// Keep a slot free after selection so the running candidate reaches
+		// its eligibility decision instead of the project-capacity refusal.
+		MaxConcurrentAgents: 3,
 		ActiveStates:        []string{"Todo", "In Progress"},
 		TerminalStates:      []string{"Done"},
-		Project:             scheduler.ProjectCandidate{ID: "detent", Weight: 2, Priority: 10},
+		Project:             scheduler.ProjectCandidate{ID: "detent", Rank: 10},
 	})
 	runner := newWorkerHostRunner()
 	var logs strings.Builder
@@ -3535,7 +3545,7 @@ func TestDispatchReadyIssuesPreservesConcretePressureRefusal(t *testing.T) {
 		Project:             scheduler.ProjectCandidate{ID: "detent"},
 	})
 	globalGate := scheduler.NewGlobalDispatchGate(
-		scheduler.NewRoundRobin(scheduler.Config{Capacity: 2}),
+		scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}),
 		cfg.Project,
 	)
 	heldSlot, ok, decision, err := globalGate.TryAcquireWithDecision(
@@ -4292,8 +4302,12 @@ func TestDispatchReadyIssuesRefreshesStaleBlocker(t *testing.T) {
 					}
 				}
 			}
-			if tracker.identifierBatches != 1 {
-				t.Fatalf("blocker batches = %d, want one shared batch", tracker.identifierBatches)
+			wantBatches := 1
+			if tt.wantRunning > 0 {
+				wantBatches = len(candidates)
+			}
+			if tracker.identifierBatches != wantBatches {
+				t.Fatalf("blocker batches = %d, want %d", tracker.identifierBatches, wantBatches)
 			}
 		})
 	}
@@ -4331,75 +4345,51 @@ func TestDispatchReadyIssuesUnresolvedDependencyDoesNotBlockUnrelated(t *testing
 	}
 }
 
-func TestDispatchableWorkerGitHubMonitorCarrier(t *testing.T) {
+func TestTimedOutWorkerProbeDoesNotHoldDispatch(t *testing.T) {
 	t.Parallel()
-	now := time.Date(2026, 9, 17, 1, 50, 52, 0, time.UTC)
-	for _, restored := range []bool{false, true} {
-		t.Run(fmt.Sprintf("restored=%v", restored), func(t *testing.T) {
-			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, MaxConcurrentAgents: 2, ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}})
-			orch := Orchestrator{cfg: cfg, logger: slog.Default()}
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	for _, recorded := range []bool{false, true} {
+		t.Run(fmt.Sprintf("recorded_timeout=%v", recorded), func(t *testing.T) {
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, MaxConcurrentAgents: 1, ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}})
+			candidates := make([]connector.Issue, 131)
+			for index := range candidates {
+				candidates[index] = dispatchTestIssue(fmt.Sprintf("candidate-%03d", index), "In Progress")
+			}
+			issue := candidates[0]
 			state := newState(cfg)
-			issue := dispatchTestIssue("carrier", "In Progress")
-			const credential = "github-rest:worker"
-			metadata := workerGitHubMonitorWaitMetadata{CredentialIdentity: credential, Consumer: telemetry.RESTConsumerSharedPool, Operation: "credential_classification_worker", DetectedAt: now.Add(-5 * time.Minute), LastObservedAt: now.Add(-5 * time.Minute), NextProbeAt: now}
-			if restored {
-				orch.connector = &rateLimitConnector{issuesByID: []connector.Issue{issue}}
-				orch.workAttempts = &recordingWorkAttemptStore{recent: []store.WorkAttempt{{
-					ID: 2846, IssueID: issue.ID, Identifier: issue.Identifier, Lane: issue.State,
-					AttemptNumber: 2, Status: store.WorkAttemptStatusTerminal, CompletedAt: metadata.LastObservedAt,
-					TerminalState: store.WorkAttemptTerminalCapacity, ErrorClass: workerGitHubMonitorErrorClass,
-					WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"worker_github_monitor_wait": metadata}),
-				}}}
-				orch.recoverDurableWorkAttempts(t.Context(), &state, now.Add(-time.Minute))
-			} else {
-				state.GitHubMonitors[credential] = GitHubMonitor{CredentialIdentity: credential, NextProbeAt: now}
-				state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 2, DueAt: now, GitHubMonitor: true, GitHubCredential: credential}
+			state.RateLimits = &telemetry.RateLimits{GitHubREST: &telemetry.RateLimitBucket{Limit: 5000, Remaining: 4786}}
+			if recorded {
+				orch := Orchestrator{
+					cfg:       cfg,
+					connector: &rateLimitConnector{issuesByID: []connector.Issue{issue}},
+					workAttempts: &recordingWorkAttemptStore{recent: []store.WorkAttempt{{
+						ID: 3248, IssueID: issue.ID, Identifier: issue.Identifier, Lane: issue.State,
+						AttemptNumber: 1, Status: store.WorkAttemptStatusTerminal,
+						CompletedAt:   now.Add(-time.Minute),
+						TerminalState: store.WorkAttemptTerminalCapacity,
+						ErrorClass:    "worker_github_budget_monitor_unavailable",
+						WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"worker_github_monitor_wait": map[string]any{
+							"credential_identity": "github-rest:shared-worker",
+							"next_probe_at":       now.Add(time.Hour),
+						}}),
+					}}},
+				}
+				orch.recoverDurableWorkAttempts(t.Context(), &state, now)
 			}
-			planner := newDispatchPlanner(cfg)
-			planner.plan(&state, nil, now, dispatchPlanHooks{preserveMissingDueRetry: func(retry Retry) bool { return orch.preserveMissingDueRetry(&state, retry) }})
-			if !state.Retry[issue.ID].GitHubMonitor {
-				t.Fatal("missing candidate batch discarded carrier")
+			var decisions []dispatchPlanDecision
+			plan := newDispatchPlanner(cfg).plan(&state, candidates, now, dispatchPlanHooks{decision: func(decision dispatchPlanDecision) {
+				decisions = append(decisions, decision)
+			}})
+			if len(plan.Dispatches) != 1 {
+				t.Fatalf("dispatches = %#v, want continued work", plan.Dispatches)
 			}
-			decision := planner.dispatchableIssueDecisionForModelRequirement(issue, &state, true, now, "", true)
-			if decision.reason != dispatchSkipRetryPending {
-				t.Fatalf("carrier eligibility = %s, want normal retry queue ownership", decision.reason)
+			if len(decisions) != len(candidates) {
+				t.Fatalf("decisions = %d, want %d candidate decisions", len(decisions), len(candidates))
 			}
-			plan := planner.plan(&state, []connector.Issue{issue}, now, dispatchPlanHooks{})
-			if len(plan.Dispatches) != 1 || state.GitHubMonitors[credential].ProbeIssueID != issue.ID {
-				t.Fatalf("dispatches = %#v, monitor = %#v", plan.Dispatches, state.GitHubMonitors[credential])
-			}
-			orch.recoverWorkerGitHubMonitorFromUpdate(&state, state.Running[issue.ID], &telemetry.RateLimits{GitHubRESTBudgets: []telemetry.RESTBudget{{CredentialIdentity: credential, Consumer: telemetry.RESTConsumerSharedPool, Remaining: 4200}}}, now.Add(time.Second))
-			if len(state.GitHubMonitors) != 0 {
-				t.Fatal("successful probe did not clear monitor")
-			}
-		})
-	}
-}
-
-func TestUnavailableMonitorCarrierDoesNotRenewHold(t *testing.T) {
-	t.Parallel()
-	for _, lane := range []string{"Backlog", "Done", "In Progress"} {
-		t.Run(lane, func(t *testing.T) {
-			now := time.Date(2026, 9, 17, 1, 50, 52, 0, time.UTC)
-			cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}})
-			state := newState(cfg)
-			carrier := dispatchTestIssue("carrier", lane)
-			if lane == "In Progress" {
-				carrier.BlockedBy = []connector.BlockedRef{{Identifier: "owner/repo#10", State: "Backlog"}}
-			}
-			original := GitHubMonitor{CredentialIdentity: "credential", NextProbeAt: now, ProbeAttempts: 2}
-			state.GitHubMonitors["credential"] = original
-			retry := Retry{Issue: carrier, DueAt: now, GitHubMonitor: true, GitHubCredential: "credential"}
-			state.Retry[carrier.ID] = retry
-			planner := newDispatchPlanner(cfg)
-			if _, dispatched, _ := planner.retryAction(&state, carrier, retry, now); dispatched {
-				t.Fatal("unavailable carrier dispatched")
-			}
-			if workerGitHubMonitorBlocks(&state, "unrelated", Retry{}, now) {
-				t.Fatal("unavailable carrier renewed expired hold")
-			}
-			if state.GitHubMonitors["credential"] != original {
-				t.Fatal("unavailable carrier consumed probe attempt")
+			for _, decision := range decisions {
+				if decision.SkipReason == "worker_github_budget_monitor_unavailable" {
+					t.Fatalf("timeout revived retired dispatch skip: %#v", decision)
+				}
 			}
 		})
 	}

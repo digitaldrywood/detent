@@ -8,20 +8,41 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"runtime"
 
 	"github.com/spf13/cobra"
 
 	"github.com/digitaldrywood/detent/internal/cli"
 	"github.com/digitaldrywood/detent/internal/gobudget"
+	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/shadow"
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == cli.SSHProbeArgument {
+		if !cli.SSHWorkerReady() {
+			os.Exit(cli.ExitGeneral)
+		}
+		fmt.Fprintln(os.Stdout, runnerpkg.SSHProtocolVersion)
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == cli.SSHWorkerArgument {
+		logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+		if err := cli.RunSSHWorker(context.Background(), os.Stdin, os.Stdout, logger); err != nil {
+			os.Exit(cli.ExitGeneral)
+		}
+		return
+	}
 	if gobudget.IsWrapperInvocation(os.Args[0]) {
 		os.Exit(gobudget.RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
 	}
 	exitCode, restartBinary := runCLIResult(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
 	if exitCode == cli.ExitSuccess && restartBinary != "" {
+		manager := service.ManagerFromProcessEnvironment(runtime.GOOS, os.LookupEnv)
+		if manager == service.ManagerLaunchd || manager == service.ManagerSystemd {
+			os.Exit(cli.ExitGeneral)
+		}
 		if err := restartProcess(restartBinary, os.Args, os.Environ()); err != nil {
 			slog.Error("restart updated Detent process", "binary", restartBinary, "error", err)
 			os.Exit(cli.ExitGeneral)

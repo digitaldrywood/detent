@@ -10,6 +10,10 @@ import (
 )
 
 func TestExecDoesNotWaitOnDescendantsHoldingPipes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real process or filesystem integration")
+	}
+
 	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not on PATH")

@@ -8,13 +8,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/google/uuid"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/logging"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
-
-const ProtocolVersion = "2025-11-25"
 
 const (
 	maxFrameBytes      = operatortool.MaxArgumentBytes + 64*1024
@@ -34,14 +40,29 @@ type Executor interface {
 type Server struct {
 	executor Executor
 	version  string
+	logger   *slog.Logger
 }
 
-func NewServer(executor Executor, version string) *Server {
+type ServerOption func(*Server)
+
+func WithLogger(logger *slog.Logger) ServerOption {
+	return func(s *Server) {
+		if logger != nil {
+			s.logger = logger
+		}
+	}
+}
+
+func NewServer(executor Executor, version string, options ...ServerOption) *Server {
 	version = strings.TrimSpace(version)
 	if version == "" {
 		version = "dev"
 	}
-	return &Server{executor: executor, version: version}
+	server := &Server{executor: executor, version: version, logger: slog.Default()}
+	for _, option := range options {
+		option(server)
+	}
+	return server
 }
 
 func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) error {
@@ -61,6 +82,7 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 		done:     runContext.Done(),
 		cancel:   cancel,
 		executor: s.executor,
+		logger:   s.logger,
 		version:  s.version,
 		output:   output,
 		state:    stateNew,
@@ -122,12 +144,14 @@ type session struct {
 	done     <-chan struct{}
 	cancel   context.CancelFunc
 	executor Executor
+	logger   *slog.Logger
 	version  string
 	output   io.Writer
 
 	mu              sync.Mutex
 	state           lifecycleState
 	protocolVersion string
+	bridgeOpened    bool
 	active          map[string]*activeRequest
 	calls           sync.WaitGroup
 	writeMu         sync.Mutex
@@ -188,27 +212,76 @@ func (s *session) handle(ctx context.Context, line []byte) error {
 	if !ok {
 		return s.writeError(nil, codeInvalidRequest, "Invalid Request", nil)
 	}
+	meta, problem := metadata(message)
+	if problem != nil {
+		return s.writeError(message.ID, problem.Code, problem.Message, problem.Data)
+	}
+	version := s.requestVersion()
+	if meta.Modern {
+		version = meta.Version
+	}
 	switch message.Method {
+	case "server/discover":
+		if !meta.Modern {
+			return s.writeError(message.ID, codeInvalidParams, "Protocol metadata is required", nil)
+		}
+		var params struct {
+			Meta json.RawMessage `json:"_meta"`
+		}
+		if decodeObject(message.Params, &params, true) != nil {
+			return s.writeError(message.ID, codeInvalidParams, "Invalid discovery parameters", nil)
+		}
+		return s.writeVersionResult(message.ID, version, message.Method, map[string]any{"supportedVersions": supportedVersions(), "capabilities": map[string]any{"tools": map[string]any{}}, "instructions": operatorInstructions})
 	case "initialize":
-		return s.initialize(message)
+		if meta.Modern {
+			return s.writeError(message.ID, codeMethodNotFound, "Method not found", nil)
+		}
+		return s.initialize(ctx, message)
 	case "ping":
-		return s.writeResult(message.ID, map[string]any{})
-	case "tools/list":
-		if !s.ready() {
+		return s.writeVersionResult(message.ID, version, message.Method, map[string]any{})
+	case "tools/list", "tools/call":
+		if meta.Modern {
+			if err := s.ensureBridge(ctx, meta.Client); err != nil {
+				if message.Method == "tools/call" {
+					return s.writeVersionResult(message.ID, version, message.Method, s.toolFailure(ctx, version, "tools/call", message.ID, err))
+				}
+				return s.writeError(message.ID, codeInvalidParams, operatortool.ErrAccessDenied.Error(), nil)
+			}
+		}
+		if !meta.Modern && !s.ready() {
 			return s.writeError(message.ID, codeNotInitialized, "Server not initialized", nil)
 		}
-		return s.listTools(message)
-	case "tools/call":
-		if !s.ready() {
-			return s.writeError(message.ID, codeNotInitialized, "Server not initialized", nil)
+		if message.Method == "tools/list" {
+			return s.listTools(ctx, message, version)
 		}
-		return s.startToolCall(ctx, key, message)
+		return s.startToolCall(ctx, key, message, version)
 	default:
 		return s.writeError(message.ID, codeMethodNotFound, "Method not found", nil)
 	}
 }
 
-func (s *session) initialize(message request) error {
+const operatorInstructions = "tools/list returns the current authorized catalog. Optionally select toolsets with _meta.detent/toolsets, an array of toolset names from tool metadata. Authorized calls execute directly after checking key scope, project access and current grants through the application owner. Clients own confirmation."
+
+func (s *session) requestVersion() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.protocolVersion
+}
+
+func (s *session) ensureBridge(ctx context.Context, client string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bridgeOpened {
+		return nil
+	}
+	if err := s.openConnection(ctx, client); err != nil {
+		return err
+	}
+	s.bridgeOpened = true
+	return nil
+}
+
+func (s *session) initialize(ctx context.Context, message request) error {
 	var params struct {
 		ProtocolVersion string          `json:"protocolVersion"`
 		Capabilities    json.RawMessage `json:"capabilities"`
@@ -221,11 +294,21 @@ func (s *session) initialize(message request) error {
 		return s.writeError(message.ID, codeInvalidParams, "Invalid initialize parameters", nil)
 	}
 
+	if len(params.ClientInfo.Name) > 256 || len(params.ClientInfo.Version) > 256 {
+		return s.writeError(message.ID, codeInvalidParams, "Invalid initialize parameters", nil)
+	}
 	negotiated := negotiateVersion(params.ProtocolVersion)
 	s.mu.Lock()
 	if s.state != stateNew {
 		s.mu.Unlock()
 		return s.writeError(message.ID, codeInvalidRequest, "Server is already initialized", nil)
+	}
+	if !s.bridgeOpened {
+		if err := s.openConnection(ctx, params.ClientInfo.Name); err != nil {
+			s.mu.Unlock()
+			return s.writeError(message.ID, codeInvalidParams, operatortool.ErrAccessDenied.Error(), nil)
+		}
+		s.bridgeOpened = true
 	}
 	s.state = stateInitialized
 	s.protocolVersion = negotiated
@@ -241,16 +324,16 @@ func (s *session) initialize(message request) error {
 			"title":   serverTitle,
 			"version": s.version,
 		},
-		"instructions": "Read-only access to the Detent operator catalog through the running daemon.",
+		"instructions": operatorInstructions,
 	})
 }
 
 func negotiateVersion(requested string) string {
 	switch requested {
-	case ProtocolVersion, "2025-06-18", "2025-03-26", "2024-11-05":
+	case LegacyProtocolVersion, "2025-06-18", "2025-03-26", "2024-11-05":
 		return requested
 	default:
-		return ProtocolVersion
+		return LegacyProtocolVersion
 	}
 }
 
@@ -285,33 +368,31 @@ func (s *session) ready() bool {
 	return s.state == stateReady
 }
 
-type listedTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"inputSchema"`
-}
-
-func (s *session) listTools(message request) error {
+func (s *session) listTools(ctx context.Context, message request, version string) error {
 	var params struct {
-		Cursor string          `json:"cursor,omitempty"`
-		Meta   json.RawMessage `json:"_meta,omitempty"`
+		Cursor string                     `json:"cursor,omitempty"`
+		Meta   map[string]json.RawMessage `json:"_meta,omitempty"`
 	}
-	if err := decodeObject(message.Params, &params, true); err != nil || strings.TrimSpace(params.Cursor) != "" {
+	if err := decodeObject(message.Params, &params, true); err != nil {
 		return s.writeError(message.ID, codeInvalidParams, "Invalid tools/list parameters", nil)
 	}
-	definitions := operatortool.Catalog()
-	tools := make([]listedTool, 0, len(definitions))
-	for _, definition := range definitions {
-		tools = append(tools, listedTool{
-			Name:        definition.Name,
-			Description: definition.Description,
-			InputSchema: definition.InputSchema,
-		})
+	var toolsets []string
+	if raw, ok := params.Meta["detent/toolsets"]; ok {
+		if string(raw) == "null" || json.Unmarshal(raw, &toolsets) != nil {
+			return s.writeError(message.ID, codeInvalidParams, "Invalid toolset selection", nil)
+		}
 	}
-	return s.writeResult(message.ID, map[string]any{"tools": tools})
+	page, err := s.catalog(ctx, params.Cursor, toolsets)
+	if err != nil {
+		if errors.Is(err, operatortool.ErrAccessDenied) {
+			return s.writeError(message.ID, codeInvalidParams, operatortool.ErrAccessDenied.Error(), nil)
+		}
+		return s.writeError(message.ID, codeInvalidParams, "Invalid or unavailable catalog page", nil)
+	}
+	return s.writeVersionResult(message.ID, version, message.Method, page)
 }
 
-func (s *session) startToolCall(parent context.Context, key string, message request) error {
+func (s *session) startToolCall(parent context.Context, key string, message request, protocolVersion string) error {
 	var params struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments,omitempty"`
@@ -322,7 +403,7 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 	}
 	params.Name = strings.TrimSpace(params.Name)
 	if _, ok := operatortool.Lookup(params.Name); !ok {
-		return s.writeError(message.ID, codeInvalidParams, "Unknown tool: "+params.Name, nil)
+		return s.writeError(message.ID, codeInvalidParams, "Unknown tool", nil)
 	}
 	if len(params.Arguments) == 0 {
 		params.Arguments = json.RawMessage(`{}`)
@@ -343,7 +424,6 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 	}
 	s.active[key] = active
 	s.calls.Add(1)
-	protocolVersion := s.protocolVersion
 	s.mu.Unlock()
 
 	call := operatortool.Call{Name: params.Name, Arguments: params.Arguments}
@@ -355,15 +435,12 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 			return
 		}
 		if err != nil {
-			if writeErr := s.writeResult(message.ID, toolCallResult{
-				Content: []textContent{{Type: "text", Text: err.Error()}},
-				IsError: true,
-			}); writeErr != nil {
+			if writeErr := s.writeVersionResult(message.ID, protocolVersion, message.Method, s.toolFailure(callContext, protocolVersion, call.Name, message.ID, err)); writeErr != nil {
 				return
 			}
 			return
 		}
-		if writeErr := s.writeResult(message.ID, successfulToolCallResult(protocolVersion, result.Content)); writeErr != nil {
+		if writeErr := s.writeVersionResult(message.ID, protocolVersion, message.Method, NewToolCallResult(protocolVersion, result.Content, false)); writeErr != nil {
 			return
 		}
 	}()
@@ -379,7 +456,7 @@ func (s *session) execute(ctx context.Context, call operatortool.Call) (operator
 		return operatortool.Result{}, err
 	}
 	if len(result.Content) > operatortool.MaxResultBytes {
-		return operatortool.Result{}, fmt.Errorf("operator tool result exceeds %d bytes", operatortool.MaxResultBytes)
+		return operatortool.Result{}, operatortool.ErrResultTooLarge
 	}
 	if !isJSONObject(result.Content) {
 		return operatortool.Result{}, errors.New("operator tool result is not a JSON object")
@@ -388,6 +465,8 @@ func (s *session) execute(ctx context.Context, call operatortool.Call) (operator
 }
 
 type toolCallResult struct {
+	ResultType        string          `json:"resultType,omitempty"`
+	Meta              json.RawMessage `json:"_meta,omitempty"`
 	Content           []textContent   `json:"content"`
 	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
 	IsError           bool            `json:"isError,omitempty"`
@@ -398,11 +477,15 @@ type textContent struct {
 	Text string `json:"text"`
 }
 
-func successfulToolCallResult(protocolVersion string, content json.RawMessage) toolCallResult {
-	if protocolVersion == "2024-11-05" || protocolVersion == "2025-03-26" {
-		return toolCallResult{Content: []textContent{{Type: "text", Text: string(content)}}}
+func NewToolCallResult(protocolVersion string, content json.RawMessage, isError bool) toolCallResult {
+	result := toolCallResult{Content: []textContent{{Type: "text", Text: string(content)}}, IsError: isError}
+	if protocolVersion == ProtocolVersion {
+		result.ResultType = "complete"
 	}
-	return toolCallResult{Content: []textContent{}, StructuredContent: content}
+	if !isError && protocolVersion != "2024-11-05" && protocolVersion != "2025-03-26" {
+		result.StructuredContent = content
+	}
+	return result
 }
 
 func (s *session) completeRequest(key string, active *activeRequest) bool {
@@ -464,6 +547,9 @@ func (s *session) write(message response) error {
 	frame, err := json.Marshal(message)
 	if err != nil {
 		return fmt.Errorf("encode MCP response: %w", err)
+	}
+	if len(frame) > MaxHTTPResponseBytes {
+		frame = marshalHTTPResponse(response{JSONRPC: "2.0", ID: message.ID, Error: &rpcError{Code: codeInternalError, Message: "MCP response exceeds the size limit"}})
 	}
 	frame = append(frame, '\n')
 
@@ -529,8 +615,64 @@ func requestIDKey(raw json.RawMessage) (string, bool) {
 	case string:
 		return "string:" + value, true
 	case json.Number:
+		if _, err := strconv.ParseInt(value.String(), 10, 64); err != nil {
+			return "", false
+		}
 		return "number:" + value.String(), true
 	default:
 		return "", false
 	}
+}
+
+func safeToolError(err error) string {
+	if errors.Is(err, explain.ErrNotFound) {
+		return "work item not found in this project"
+	}
+	for _, safe := range []error{operatortool.ErrProjectScopeRequired, operatortool.ErrAccessDenied, operatortool.ErrInvalidArguments, mutation.ErrConflict, mutation.ErrUncertain} {
+		if errors.Is(err, safe) {
+			return safe.Error()
+		}
+	}
+	return "Operator tool is unavailable"
+}
+
+func (s *session) toolFailure(ctx context.Context, version, name string, id json.RawMessage, err error) toolCallResult {
+	var refusal *apikey.Refusal
+	if errors.As(err, &refusal) {
+		payload, encodeErr := json.Marshal(refusal)
+		if encodeErr == nil {
+			return NewToolCallResult(version, payload, true)
+		}
+	}
+	var conflict *operatortool.ConflictError
+	var request *operatortool.RequestError
+	if safeToolError(err) == "Operator tool is unavailable" && !errors.As(err, &conflict) && !errors.As(err, &request) {
+		correlation := uuid.NewString()
+		identity := operatortool.ConnectionIdentity(ctx)
+		s.logger.ErrorContext(ctx, "operator tool failed", "tool", name, "correlation_id", correlation, "organization_id", identity.OrganizationID, "principal_id", identity.PrincipalID, "request_id", string(id), "error", fmt.Errorf("%s: %w", strings.ReplaceAll(name, "_", " "), err), "error_class", ErrorClass(err))
+		return NewToolCallResult(version, json.RawMessage("Operator tool is unavailable (reason_code service_unavailable, correlation_id "+correlation+")"), true)
+	}
+	return failedToolCallResult(version, err)
+}
+
+func ErrorClass(err error) string { return logging.ErrorClass(err) }
+
+func failedToolCallResult(protocolVersion string, err error) toolCallResult {
+	var conflict *operatortool.ConflictError
+	var request *operatortool.RequestError
+	var detail any
+	switch {
+	case errors.As(err, &conflict):
+		detail = conflict
+	case errors.As(err, &request):
+		detail = request
+	}
+	if detail != nil {
+		if result, encodeErr := operatortool.EncodeResult(detail); encodeErr == nil {
+			failure := NewToolCallResult(protocolVersion, result.Content, false)
+			failure.IsError = true
+			return failure
+		}
+	}
+	return NewToolCallResult(protocolVersion, json.RawMessage(safeToolError(err)), true)
 }

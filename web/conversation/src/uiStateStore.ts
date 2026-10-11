@@ -2,6 +2,8 @@ import { Debouncer } from "@tanstack/react-pacer";
 import type { PullRequestMergeMethod } from "@t3tools/contracts";
 import { create } from "zustand";
 import { normalizeProjectPathForComparison } from "./lib/projectPaths";
+import { readSidebarData } from "./app/adapters/sidebarData.tsx";
+import { sidebarProjectScopeKey } from "./app/adapters/shell.ts";
 
 export const PERSISTED_STATE_KEY = "t3code:ui-state:v1";
 // Version 1 stored card visibility, not folder expansion.
@@ -448,8 +450,12 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => setThreadChangedFilesExpanded(state, threadId, turnId, expanded)),
   setDefaultAdvertisedEndpointKey: (key) =>
     set((state) => setDefaultAdvertisedEndpointKey(state, key)),
-  setSidebarProjectScopeKey: (projectKey) =>
-    set((state) => setSidebarProjectScopeKey(state, projectKey)),
+  setSidebarProjectScopeKey: (projectKey) => {
+    set((state) => setSidebarProjectScopeKey(state, projectKey));
+    const sidebar = readSidebarData();
+    const project = sidebar?.projects.find((candidate) => sidebarProjectScopeKey(candidate) === projectKey);
+    if (projectKey === null || project !== undefined) sidebar?.onProjectChange(project?.id ?? "");
+  },
   setPullRequestMergeMethod: (method) => set((state) => setPullRequestMergeMethod(state, method)),
   setProjectExpanded: (projectIds, expanded) =>
     set((state) => setProjectExpanded(state, projectIds, expanded)),

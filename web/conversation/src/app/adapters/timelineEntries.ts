@@ -14,6 +14,7 @@ import { deltaText, type ConversationDetail } from "../../runtime/state/conversa
 
 /** The three cards a status or tool message can carry. */
 export interface TimelineCards {
+  readonly action?: { readonly action: Record<string, unknown>; readonly conversation_id: string };
   readonly proposal?: IssueProposal;
   readonly issue?: IssueResult;
   readonly attention?: readonly AttentionItem[];
@@ -24,11 +25,14 @@ export interface TimelineCards {
 /** The cards on one message, or `undefined` when it carries none. */
 export function readTimelineCards(message: Message): TimelineCards | undefined {
   if (message.kind !== "status" && message.kind !== "tool") return undefined;
+  const candidate = message.data.operator_action;
+  const action = typeof candidate === "object" && candidate !== null && "action" in candidate && "conversation_id" in candidate && typeof candidate.conversation_id === "string" && typeof candidate.action === "object" && candidate.action !== null ? candidate as { action: Record<string, unknown>; conversation_id: string } : undefined;
   const proposal = readIssueProposal(message.data);
   const issue = readIssueResult(message.data);
   const attention = readAttention(message.data);
-  if (proposal === undefined && issue === undefined && attention.length === 0) return undefined;
+  if (action === undefined && proposal === undefined && issue === undefined && attention.length === 0) return undefined;
   return {
+    ...(action === undefined ? {} : { action }),
     ...(proposal === undefined ? {} : { proposal }),
     ...(issue === undefined ? {} : { issue }),
     ...(attention.length === 0 ? {} : { attention }),
@@ -102,11 +106,24 @@ export interface TimelineSources {
 export function timelineSources(detail: ConversationDetail): TimelineSources {
   const messages: ChatMessage[] = [];
   const workEntries: WorkLogEntry[] = [];
+  const hasContent = (message: Message): boolean =>
+    message.text.trim().length > 0 ||
+    deltaText(detail.deltas[message.id]).trim().length > 0 ||
+    readTimelineCards(message) !== undefined ||
+    (message.attachments?.length ?? 0) > 0;
+  const populatedTurns = new Set(
+    detail.messages.filter((message) =>
+      message.role === "assistant" && message.turn_id !== null &&
+      !isWorkMessage(message) && hasContent(message),
+    ).map((message) => message.turn_id),
+  );
   for (const message of detail.messages) {
     if (isWorkMessage(message)) {
       workEntries.push(toWorkLogEntry(message));
       continue;
     }
+    if (message.role === "assistant" && message.turn_id !== null &&
+      populatedTurns.has(message.turn_id) && !hasContent(message)) continue;
     messages.push(toChatMessage(message, deltaText(detail.deltas[message.id])));
   }
   return { messages, proposedPlans: EMPTY_PROPOSED_PLANS, workEntries };

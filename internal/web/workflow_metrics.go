@@ -28,13 +28,22 @@ func (s *Server) snapshotWorkflowMetrics(ctx context.Context, snapshot telemetry
 		now = time.Now()
 	}
 
-	out := s.workflowHistory.get(ctx, s.store, strings.TrimSpace(snapshot.Project.ID), now, s.now, s.loadWorkflowHistory)
+	out := s.workflowHistory.get(ctx, s.store, strings.TrimSpace(snapshot.Project.ID), now, s.now, s.loadWorkflowHistory).metrics
 	out.OldestCards = workflowOldestCards(snapshot)
 	out.ActiveBottleneck = workflowActiveBottleneck(snapshot, now)
 	return out
 }
 
-func (s *Server) loadWorkflowHistory(ctx context.Context, projectID string, now time.Time) telemetry.WorkflowMetrics {
+func (s *Server) loadWorkflowHistory(ctx context.Context, projectID string, now time.Time) workflowHistoryEntry {
+	entry := workflowHistoryEntry{metrics: s.loadWorkflowMetrics(ctx, projectID, now)}
+	if projectID == "" {
+		entry.cycleTime = s.loadCycleTime(ctx)
+		entry.shipped, entry.shippedAvailable = s.loadShippedCompletions(ctx)
+	}
+	return entry
+}
+
+func (s *Server) loadWorkflowMetrics(ctx context.Context, projectID string, now time.Time) telemetry.WorkflowMetrics {
 	runtimeEvidence, err := s.store.RuntimeEvidence(ctx, store.RuntimeEvidenceQuery{ProjectID: projectID})
 	if err != nil {
 		s.logger.Warn("runtime store evidence query failed", slog.Any("error", err))

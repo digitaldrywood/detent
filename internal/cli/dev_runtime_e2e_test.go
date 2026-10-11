@@ -8,17 +8,26 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/boardsnapshot"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/devruntime"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestStartIsolatedRuntimeAutoPromotesFixtureAndStopsOnCancel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0})
 	if err != nil {
 		t.Fatalf("devruntime.Build() error = %v", err)
@@ -64,6 +73,96 @@ func TestStartIsolatedRuntimeAutoPromotesFixtureAndStopsOnCancel(t *testing.T) {
 	}
 }
 
+func TestStartIsolatedRuntimePublishesBannerBeforeSnapshotLoad(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
+	for _, tt := range []struct {
+		name string
+		demo string
+	}{
+		{name: "fixture runtime"},
+		{name: "screenshots demo", demo: devruntime.DemoScreenshots},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0, Demo: tt.demo})
+			if err != nil {
+				t.Fatalf("devruntime.Build() error = %v", err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			output := &lockedBuffer{}
+			store := &bannerObservingBoardSnapshotStore{
+				output: output, observed: make(chan string, 1), releaseLoad: make(chan struct{}),
+			}
+			done := make(chan error, 1)
+			runtimeDone := make(chan struct{})
+			go func() {
+				done <- startRunningWithDependencies(ctx,
+					devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output),
+					startRunningDependencies{boardSnapshotStore: store})
+				close(runtimeDone)
+			}()
+			t.Cleanup(func() {
+				cancel()
+				store.release()
+				select {
+				case <-runtimeDone:
+				case <-time.After(10 * time.Second):
+					t.Error("timed out waiting for isolated runtime cleanup")
+				}
+			})
+
+			var bannerAtLoad string
+			select {
+			case bannerAtLoad = <-store.observed:
+			case err := <-done:
+				t.Fatalf("isolated runtime stopped before snapshot load: %v", err)
+			case <-time.After(bootDashboardURLTimeout):
+				t.Fatal("timed out waiting for snapshot load")
+			}
+
+			url := waitForIsolatedRuntimeURL(t, output, done)
+			if !strings.Contains(bannerAtLoad, "Dashboard: "+url) || !strings.Contains(bannerAtLoad, "Mode: isolated dev runtime") {
+				t.Fatalf("snapshot load began before bound-address banner:\n%s", bannerAtLoad)
+			}
+			store.release()
+			waitForDashboard(t, url+"/health", done)
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("startRunningWithDependencies() error = %v, want %v", err, context.Canceled)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("timed out waiting for isolated runtime to stop")
+			}
+		})
+	}
+}
+
+type bannerObservingBoardSnapshotStore struct {
+	output      *lockedBuffer
+	observed    chan string
+	releaseLoad chan struct{}
+	releaseOnce sync.Once
+}
+
+func (s *bannerObservingBoardSnapshotStore) Load(context.Context) (telemetry.Snapshot, bool, error) {
+	s.observed <- s.output.String()
+	<-s.releaseLoad
+	return telemetry.Snapshot{}, false, nil
+}
+
+func (*bannerObservingBoardSnapshotStore) Save(context.Context, telemetry.Snapshot) error {
+	return nil
+}
+
+func (s *bannerObservingBoardSnapshotStore) release() {
+	s.releaseOnce.Do(func() { close(s.releaseLoad) })
+}
+
 func TestDevRuntimeAuthConfig(t *testing.T) {
 	t.Parallel()
 
@@ -99,6 +198,10 @@ func TestDevRuntimeAuthConfig(t *testing.T) {
 }
 
 func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	const projectID = "demo-project"
 
 	runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0, Demo: devruntime.DemoKanban, DemoProjectID: projectID})
@@ -235,7 +338,163 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	}
 }
 
+func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
+	for _, outcome := range []string{"complete", "cancel", "required setup failure"} {
+		t.Run(outcome, func(t *testing.T) {
+			runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			output := &lockedBuffer{}
+			cfg := devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output)
+			if outcome == "required setup failure" {
+				t.Setenv("DETENT_TEST_STARTUP_TOKEN", "")
+				cfg.Global.Client = globalconfig.HubClient{URL: "http://127.0.0.1:1", TokenEnvironment: "DETENT_TEST_STARTUP_TOKEN"}
+			}
+			registry := project.NewRegistry()
+			boardCache, err := boardsnapshot.New(boardsnapshot.Config{Path: filepath.Join(t.TempDir(), "board-snapshot.json"), MaxAge: time.Hour})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cachedIssue := telemetry.Issue{ID: "cached-card", State: "Todo"}
+			if err := boardCache.Save(ctx, telemetry.Snapshot{GeneratedAt: time.Now().Add(-time.Minute), BoardIssues: []telemetry.Issue{cachedIssue}}); err != nil {
+				t.Fatal(err)
+			}
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			canceled := make(chan struct{})
+			cleanupRelease := make(chan struct{})
+			var releaseOnce, cleanupOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			finishCleanup := func() { cleanupOnce.Do(func() { close(cleanupRelease) }) }
+			done := make(chan error, 1)
+			exited := make(chan struct{})
+			go func() {
+				done <- startRunningWithDependencies(ctx, cfg, startRunningDependencies{
+					managerDependencies: project.ManagerDependencies{Registry: registry},
+					boardSnapshotStore:  boardCache,
+					startupMaintenance: func(ctx context.Context, _ globalconfig.Config, _ store.Store) {
+						close(entered)
+						select {
+						case <-release:
+						case <-ctx.Done():
+							close(canceled)
+							<-cleanupRelease
+						}
+					},
+				})
+				close(exited)
+			}()
+			t.Cleanup(func() {
+				cancel()
+				unblock()
+				finishCleanup()
+				select {
+				case <-exited:
+				case <-time.After(10 * time.Second):
+					t.Error("timed out joining startup runtime")
+				}
+			})
+			dashboardURL := waitForIsolatedRuntimeURL(t, output, done)
+			select {
+			case <-entered:
+			case err := <-done:
+				t.Fatalf("startup exited before maintenance: %v", err)
+			case <-time.After(10 * time.Second):
+				t.Fatal("maintenance did not start")
+			}
+			client := &http.Client{Timeout: time.Second}
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, dashboardURL+"/health", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.Do(request)
+			if err != nil {
+				t.Fatalf("health unavailable during blocked maintenance: %v", err)
+			}
+			var health struct {
+				Ready     bool   `json:"ready"`
+				Lifecycle string `json:"lifecycle"`
+			}
+			err = json.NewDecoder(response.Body).Decode(&health)
+			if closeErr := response.Body.Close(); closeErr != nil {
+				t.Fatal(closeErr)
+			}
+			if err != nil || response.StatusCode != http.StatusServiceUnavailable || health.Ready || health.Lifecycle != "starting" {
+				t.Fatalf("health during maintenance = %+v, status %d, error %v", health, response.StatusCode, err)
+			}
+			state := waitForDashboard(t, dashboardURL+"/api/v1/state", done)
+			var snapshot struct {
+				Refresh        telemetry.Refresh        `json:"refresh"`
+				LifetimeTotals telemetry.LifetimeTotals `json:"lifetime_totals"`
+				Board          struct {
+					Cards []struct {
+						IssueID string `json:"issue_id"`
+					} `json:"cards"`
+				} `json:"board"`
+			}
+			if err := json.Unmarshal([]byte(state), &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.Refresh.ReadinessStatus() != telemetry.RefreshStatusInitializing || snapshot.Refresh.NextRefreshAt != nil || snapshot.LifetimeTotals.Available {
+				t.Fatalf("startup state manufactured observations: %s", state)
+			}
+			if len(snapshot.Board.Cards) != 1 || snapshot.Board.Cards[0].IssueID != cachedIssue.ID {
+				t.Fatalf("last-known board not served during maintenance: %s", state)
+			}
+			if got := registry.List(); len(got) != 0 {
+				t.Fatalf("projects started before setup completed: %v", got)
+			}
+			switch outcome {
+			case "complete":
+				unblock()
+				waitForDashboard(t, dashboardURL+"/health", done)
+				waitForDashboardConditionWithRefresh(t, dashboardURL, dashboardURL+"/api/v1/state", done, "authorized mock work advances", func(body string) bool {
+					return boardStateCountFromBody(t, body, "Merging") == 1
+				})
+				cancel()
+			case "cancel":
+				cancel()
+				select {
+				case <-canceled:
+				case <-time.After(10 * time.Second):
+					t.Fatal("maintenance did not observe cancellation")
+				}
+				select {
+				case err := <-done:
+					t.Fatalf("startup returned before maintenance joined: %v", err)
+				default:
+				}
+				finishCleanup()
+			case "required setup failure":
+				unblock()
+			}
+			select {
+			case err := <-done:
+				if outcome == "required setup failure" {
+					if err == nil || !strings.Contains(err.Error(), "DETENT_TEST_STARTUP_TOKEN is empty") || len(registry.List()) != 0 {
+						t.Fatalf("missing Hub authority admitted projects: %v", err)
+					}
+				} else if !errors.Is(err, context.Canceled) {
+					t.Fatalf("startup exit = %v, want cancellation", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("startup runtime did not exit")
+			}
+		})
+	}
+}
+
 func TestStartRunningWaitsForBoardSnapshotPersistence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0, Demo: devruntime.DemoKanban})
 	if err != nil {
 		t.Fatalf("devruntime.Build() error = %v", err)
@@ -306,6 +565,10 @@ func TestStartRunningWaitsForBoardSnapshotPersistence(t *testing.T) {
 }
 
 func TestStartScreenshotsDemoServesScenarioManifestAndUsage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0, Demo: devruntime.DemoScreenshots})
 	if err != nil {
 		t.Fatalf("devruntime.Build() error = %v", err)

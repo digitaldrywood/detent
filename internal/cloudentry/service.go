@@ -20,8 +20,13 @@ import (
 
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/mcp"
+	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -32,10 +37,12 @@ const (
 )
 
 type Config struct {
+	Build                     buildinfo.Info
 	PublicURL                 string
 	Issuer                    string
 	SigningKey                ed25519.PrivateKey
 	Provider                  auth.HostedProvider
+	Platform                  PlatformConfig
 	StaffEmails               []string
 	SupportActors             []string
 	EntitlementAdministrators []string
@@ -45,11 +52,15 @@ type Config struct {
 	Allocation                *AllocationConfig
 	Billing                   *BillingConfig
 	ConfigPath                string
+	Attachments               *attachment.Config
+	GitHubWebhookSecret       []byte
+	GitHubApp                 *github.InstallationTokenConfig
 
-	now           func() time.Time
-	generateToken func() (string, error)
-	transport     func(Organization) (http.RoundTripper, error)
-	clientFS      fs.FS
+	now                 func() time.Time
+	generateToken       func() (string, error)
+	transport           func(Organization) (http.RoundTripper, error)
+	clientFS            fs.FS
+	attachmentTransport http.RoundTripper
 
 	tenantStartTimeout time.Duration
 	platformDeadline   time.Duration
@@ -76,9 +87,6 @@ func (c Config) validate() error {
 	if err := c.Allocation.validate(); err != nil {
 		return err
 	}
-	if err := c.validateEntitlementAdministrators(); err != nil {
-		return err
-	}
 	if !safeID(c.Issuer) || len(c.SigningKey) != ed25519.PrivateKeySize || c.Provider == nil || strings.TrimSpace(c.StateDir) == "" {
 		return errors.New("shared entry requires an issuer, signing key, identity provider and state directory")
 	}
@@ -86,24 +94,33 @@ func (c Config) validate() error {
 }
 
 type Service struct {
-	config     Config
-	registry   *Registry
-	auth       *authStore
-	echo       *echo.Echo
-	secure     bool
-	transports sync.Map
-	mutationMu sync.Mutex
-	verified   sessionVerifications
-	refreshes  refreshLocks
+	keyMCP            *mcp.HTTPHandler
+	administration    *operatoradmin.Executor
+	config            Config
+	registry          *Registry
+	auth              *authStore
+	echo              *echo.Echo
+	secure            bool
+	transports        sync.Map
+	mutationMu        sync.Mutex
+	verified          sessionVerifications
+	refreshes         refreshLocks
+	attachments       attachment.Storage
+	attachmentMu      sync.RWMutex
+	attachmentSweepAt time.Time
+	diffBodySweepAt   time.Time
+	githubRoutes      githubRoutes
 
-	stopAllocator context.CancelFunc
-	allocatorDone chan struct{}
-	wake          chan struct{}
-	stopBilling   context.CancelFunc
-	billingDone   chan struct{}
+	stopAllocator     context.CancelFunc
+	allocatorDone     chan struct{}
+	wake              chan struct{}
+	stopBilling       context.CancelFunc
+	billingDone       chan struct{}
+	closeDevelopState func() error
+	closePlatformMCP  func() error
 }
 
-func Open(ctx context.Context, cfg Config) (*Service, error) {
+func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -119,11 +136,34 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if cfg.generateToken == nil {
 		cfg.generateToken = apikey.GenerateToken
 	}
+	cfg, closeDevelopState, err := prepareDevelopState(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if resultErr != nil && closeDevelopState != nil {
+			resultErr = errors.Join(resultErr, closeDevelopState())
+		}
+	}()
+	var attachments attachment.Storage
+	if cfg.Attachments != nil {
+		var err error
+		attachments, err = attachment.NewStorage(ctx, *cfg.Attachments, cfg.attachmentTransport)
+		if err != nil {
+			return nil, fmt.Errorf("configure attachments: %w", err)
+		}
+	}
 	registry, err := OpenRegistry(ctx, filepath.Join(cfg.StateDir, "registry.db"))
 	if err != nil {
 		return nil, err
 	}
 	registry.now = cfg.now
+	if err := registry.seedPlatformMembers(ctx, cfg); err != nil {
+		return nil, errors.Join(err, registry.Close())
+	}
+	if len(cfg.StaffEmails)+len(cfg.SupportActors)+len(cfg.EntitlementAdministrators) > 0 {
+		cfg.Logger.Warn("legacy platform email lists are deprecated and used only to seed an empty registry")
+	}
 	authStorage, err := openStore(ctx, filepath.Join(cfg.StateDir, "auth.db"), authApplicationID, "auth")
 	if err != nil {
 		return nil, errors.Join(err, registry.Close())
@@ -132,7 +172,8 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, errors.Join(err, authStorage.Close(), registry.Close())
 	}
-	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.now, seal: seal}, secure: strings.HasPrefix(cfg.PublicURL, "https://")}
+	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.now, seal: seal}, secure: strings.HasPrefix(cfg.PublicURL, "https://"), closeDevelopState: closeDevelopState}
+	service.attachments = attachments
 	if cfg.transport == nil {
 		service.config.transport = service.tenantTransport
 	}
@@ -140,7 +181,14 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	service.echo.HideBanner, service.echo.HidePort = true, true
 	service.echo.Server.ReadHeaderTimeout = 5 * time.Second
 	service.routes()
+	service.registerPlatformCredits(ctx)
+	if err := service.routeDevelopTenants(ctx); err != nil {
+		return nil, errors.Join(err, service.CloseContext(ctx))
+	}
 	service.startAllocator(ctx)
+	if err := service.initializeGitHubRoutes(ctx); err != nil {
+		return nil, errors.Join(err, service.CloseContext(ctx))
+	}
 	service.startBillingWorker(ctx)
 	return service, nil
 }
@@ -154,8 +202,26 @@ func (s *Service) Registry() *Registry {
 }
 
 func (s *Service) Close() error {
+	return s.CloseContext(context.Background())
+}
+
+func (s *Service) CloseContext(ctx context.Context) error {
+	var keyErr error
+	if s.keyMCP != nil {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		keyErr = s.keyMCP.Shutdown(ctx)
+		cancel()
+	}
 	s.closeBillingWorker()
-	return errors.Join(s.closeAllocator(), s.registry.Close(), s.auth.store.Close())
+	var mcpErr error
+	if s.closePlatformMCP != nil {
+		mcpErr = s.closePlatformMCP()
+	}
+	err := errors.Join(keyErr, mcpErr, s.closeAllocator(), s.registry.Close(), s.auth.store.Close())
+	if s.closeDevelopState != nil {
+		err = errors.Join(err, s.closeDevelopState())
+	}
+	return err
 }
 
 func Run(ctx context.Context, cfg Config) (resultErr error) {
@@ -164,21 +230,36 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 		return err
 	}
 	defer func() {
-		resultErr = errors.Join(resultErr, service.Close())
+		resultErr = errors.Join(resultErr, service.CloseContext(ctx))
 	}()
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(ctx, "tcp", cfg.ListenAddress)
 	if err != nil {
 		return fmt.Errorf("listen for shared entry requests: %w", err)
 	}
-	service.config.Logger.Info("shared entry serving", "address", listener.Addr().String())
+	return service.serve(ctx, listener)
+}
+
+func (s *Service) serve(ctx context.Context, listener net.Listener) error {
+	since, before := s.githubReplayWindow(ctx)
+	s.config.Logger.Info("shared entry serving", "address", listener.Addr().String())
 	result := make(chan error, 1)
 	go func() {
-		err := service.echo.Server.Serve(listener)
+		err := s.echo.Server.Serve(listener)
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}
 		result <- err
+	}()
+	replayCtx, cancelReplay := context.WithTimeout(ctx, 5*time.Minute)
+	replayDone := make(chan struct{})
+	go func() {
+		defer close(replayDone)
+		s.replayGitHubDeliveries(replayCtx, since, before)
+	}()
+	defer func() {
+		cancelReplay()
+		<-replayDone
 	}()
 	select {
 	case err := <-result:
@@ -186,15 +267,18 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 	case <-ctx.Done():
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return errors.Join(service.echo.Shutdown(shutdown), <-result)
+		return errors.Join(s.echo.Shutdown(shutdown), <-result)
 	}
 }
 
 func (s *Service) routes() {
+	s.registerAdministration()
+	s.registerAccessKeys()
+	s.registerKeyMCP()
 	e := s.echo
 	e.Pre(s.boundary)
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", http.FileServerFS(detent.StaticFS()))))
-	e.GET("/health", func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{"status": "ok"}) })
+	e.GET("/health", s.health)
 	e.GET("/", s.home)
 	e.GET("/auth/oidc/start", s.startLogin)
 	e.GET("/auth/oidc/callback", s.completeLogin)
@@ -211,17 +295,26 @@ func (s *Service) routes() {
 	e.POST("/logout", s.logout)
 	e.POST("/organizations/:organization/logout", s.logout)
 	e.GET(platformPath, s.platformPage)
+	e.GET(platformPath+"/*", s.platformPage)
 	e.GET("/api/cloud/platform/organizations", s.platformOrganizationsJSON)
+	e.GET("/api/cloud/platform/organizations/:organization", s.platformOrganizationJSON)
+	e.POST("/api/cloud/platform/organizations/:organization/resume", s.resumePlatformProvisioning)
 	e.GET("/api/cloud/platform/allowlist", s.platformAllowlistJSON)
 	e.GET("/api/cloud/platform/health", s.platformHealthJSON)
+	e.GET("/api/cloud/platform/users", s.platformUsersJSON)
+	e.GET("/api/cloud/platform/audit", s.platformAuditJSON)
 	e.GET("/api/cloud/platform/organizations/:organization/entitlements", s.platformEntitlementsJSON)
 	e.POST("/api/cloud/platform/organizations/:organization/entitlements", s.changePlatformEntitlement)
+	e.GET("/api/cloud/platform/members", s.platformMembersJSON)
+	e.POST("/api/cloud/platform/members", s.changePlatformMember)
+	e.PATCH("/api/cloud/platform/members/:email", s.changePlatformMember)
+	e.DELETE("/api/cloud/platform/members/:email", s.changePlatformMember)
 	e.GET("/support", s.supportPage)
 	e.POST("/support/start", s.startSupport)
 	e.POST("/webhooks/stripe/:mode", s.stripeWebhook)
+	e.POST("/api/v1/webhooks/github", s.githubWebhook)
 	e.GET("/invite", s.startInvitation)
-	e.GET("/invitations/join", s.joinPage)
-	e.POST("/invitations/join", s.joinInvitation)
+	s.registerAttachmentRoutes(e)
 	e.Any("/organizations/:organization", s.proxy)
 	e.Any("/organizations/:organization/*", s.proxy)
 	e.Any("/api/v2/organizations/:organization/*", s.proxy)
@@ -239,6 +332,9 @@ func (s *Service) boundary(next echo.HandlerFunc) echo.HandlerFunc {
 		}
 		if !cloudassert.CanonicalPath(c.Request().URL) {
 			return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
+		}
+		if s.redirectLegacyNavigation(c) {
+			return c.Redirect(http.StatusTemporaryRedirect, s.config.PublicURL+c.Request().URL.RequestURI())
 		}
 		return next(c)
 	}
@@ -283,7 +379,7 @@ func (s *Service) session(c echo.Context) (accountSession, error) {
 	method := c.Request().Method
 	// Staff and support sessions reach across organizations, so they are
 	// re-verified on every request rather than trusted for the recheck window.
-	cacheable := !s.staff(session.Email) && session.Identity.SupportActor == ""
+	cacheable := s.platformRole(c.Request().Context(), session.Email) == "" && session.Identity.SupportActor == ""
 	if cacheable && (method == http.MethodGet || method == http.MethodHead) && session.Identity.ExpiresAt.After(now) && s.verified.fresh(session.Hash, now) {
 		return session, nil
 	}
@@ -301,19 +397,20 @@ func (s *Service) session(c echo.Context) (accountSession, error) {
 	return session, nil
 }
 
-func (s *Service) supportActor(email string) bool {
-	return s.staff(email) && listed(s.config.SupportActors, email)
+func (s *Service) supportActor(ctx context.Context, email string) bool {
+	role := s.platformRole(ctx, email)
+	return role == "admin" || role == "support"
 }
 
-func (s *Service) landing(email string, identity auth.HostedIdentity) string {
-	if s.platformIdentity(email, identity) {
-		return platformPath
+func (s *Service) landing(ctx context.Context, email string, identity auth.HostedIdentity) string {
+	if !s.platformIdentity(ctx, email, identity) {
+		return "/organizations"
 	}
-	return "/organizations"
-}
-
-func (s *Service) staff(email string) bool {
-	return listed(s.config.StaffEmails, email)
+	choices, err := s.organizationChoices(ctx, accountSession{Subject: identity.Subject, Email: email, Identity: identity})
+	if err != nil || len(choices) > 0 {
+		return "/organizations"
+	}
+	return platformPath
 }
 
 func listed(values []string, email string) bool {
@@ -341,21 +438,29 @@ func (s *Service) denied(c echo.Context, status int, message string) error {
 	return s.render(c, status, data)
 }
 
+func (s *Service) browserUnavailable(c echo.Context, status int) error {
+	request := c.Request()
+	organization := c.Param("organization")
+	retry := "/organizations/" + organization + "/work"
+	if (request.Method == http.MethodGet || request.Method == http.MethodHead) && validReturnPath(request.URL.Path, organization) {
+		retry = request.URL.RequestURI()
+	}
+	data := templates.HostedPageData{Mode: "unavailable", Title: "Temporarily unavailable", Error: "We could not open this organization right now. Please try again shortly.", RetryURL: retry}
+	if session, err := s.storedSession(c); err == nil {
+		data.Email, data.CSRF = session.Email, cloudassert.CSRFToken(session.CSRFSecret, "")
+	}
+	return s.render(c, status, data)
+}
+
 func (s *Service) loginDenied(c echo.Context, status int, message string, denial auth.HostedDenial) error {
 	denial.Status = status
 	auth.LogHostedDenial(s.config.Logger, c.Response(), c.Request(), denial)
 	return s.denied(c, status, message)
 }
 
-func (s *Service) loginRefused(c echo.Context, status int, code, message string, denial auth.HostedDenial) error {
-	denial.Status = status
-	auth.LogHostedDenial(s.config.Logger, c.Response(), c.Request(), denial)
-	return s.refuse(c, status, code, message)
-}
-
 func (s *Service) home(c echo.Context) error {
 	if session, err := s.session(c); err == nil {
-		return c.Redirect(http.StatusSeeOther, s.landing(session.Email, session.Identity))
+		return c.Redirect(http.StatusSeeOther, s.landing(c.Request().Context(), session.Email, session.Identity))
 	}
 	if served, err := s.clientShell(c); served || err != nil {
 		return err
@@ -369,7 +474,8 @@ func (s *Service) sameOrigin(c echo.Context) bool {
 	if origin == "null" {
 		return header.Get("Sec-Fetch-Site") == "same-origin"
 	}
-	return origin != "" && origin == strings.TrimRight(s.config.PublicURL, "/")
+	return origin != "" && (origin == strings.TrimRight(s.config.PublicURL, "/") ||
+		s.legacyHostedRequest(c.Request()) && origin == "https://"+c.Request().Host)
 }
 
 func (s *Service) csrfValid(c echo.Context, session accountSession, organization string) bool {

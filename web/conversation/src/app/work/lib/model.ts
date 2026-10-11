@@ -13,11 +13,8 @@ import type { WorkSort } from "./viewState.ts";
 export interface Lane {
   readonly id: string;
   readonly name: string;
-  /**
-   * A terminal state closes work. The artifact dims those lanes and collapses
-   * them by default: they are evidence, not a queue.
-   */
   readonly terminal: boolean;
+  readonly dispatchable: boolean;
   /** `backlog`, `unstarted`, `started`, `completed`, `cancelled`, or "". */
   readonly category: string;
 }
@@ -54,7 +51,14 @@ export interface ChangeView {
   readonly review: string;
 }
 
+export type Observation = "known" | "unchecked" | "unavailable" | "partial";
+
 export interface WorkItemView {
+  readonly pullRequest?: { readonly number: number; readonly url: string } | null;
+  readonly closedAt?: string | null;
+  readonly listChange?: { readonly branch: string; readonly headSha: string } | null;
+  readonly reserveWorkerSpace?: boolean;
+  readonly observations?: { readonly worker: Observation; readonly change: Observation };
   readonly archived?: boolean;
   readonly id: string;
   readonly projectId: string;
@@ -65,6 +69,14 @@ export interface WorkItemView {
   readonly body: string;
   readonly state: string;
   readonly stateId: string;
+  readonly terminal: boolean;
+  readonly sourceProvider: string | null;
+  readonly source: {
+    readonly externalId: string;
+    readonly createdAt: string | null;
+    readonly updatedAt: string | null;
+    readonly observedAt: string | null;
+  } | null;
   readonly priority: string | null;
   readonly labels: readonly string[];
   readonly assignees: readonly string[];
@@ -72,6 +84,7 @@ export interface WorkItemView {
   readonly epic: string | null;
   readonly createdAt: string | null;
   readonly updatedAt: string | null;
+  readonly lastActivityAt: string | null;
   readonly revision: string | null;
   /** Dependencies that are not yet terminal. A non-empty list is "Blocked". */
   readonly blockedBy: readonly string[];
@@ -90,12 +103,12 @@ export interface ProjectView {
 }
 
 /** True when the card should wear the live treatment (A.11: never a queue). */
-export function isLive(item: WorkItemView): boolean {
-  return item.attempt !== null && item.attempt.running;
+export function isLive(item: WorkItemView, terminal = item.terminal): boolean {
+  return !terminal && item.attempt !== null && item.attempt.running;
 }
 
-export function isBlocked(item: WorkItemView): boolean {
-  return item.blockedBy.length > 0;
+export function isBlocked(item: WorkItemView, terminal = item.terminal): boolean {
+  return !terminal && item.blockedBy.length > 0;
 }
 
 const PRIORITY_ORDER: Readonly<Record<string, number>> = {
@@ -133,6 +146,16 @@ export function sortItems(
     a.identifier.localeCompare(b.identifier, undefined, { numeric: true });
   return [...items].sort((a, b) => {
     switch (sort) {
+      case "default": {
+        const terminal = Number(a.terminal) - Number(b.terminal);
+        if (terminal !== 0) return terminal;
+        if (!a.terminal) {
+          const rank = priorityRank(a.priority) - priorityRank(b.priority);
+          if (rank !== 0) return rank;
+        }
+        const delta = time(b.lastActivityAt) - time(a.lastActivityAt);
+        return delta !== 0 ? delta : byIdentifier(a, b);
+      }
       case "priority": {
         const rank = priorityRank(a.priority) - priorityRank(b.priority);
         if (rank !== 0) return rank;
@@ -144,6 +167,10 @@ export function sortItems(
       }
       case "updated": {
         const delta = time(b.updatedAt) - time(a.updatedAt);
+        return delta !== 0 ? delta : byIdentifier(a, b);
+      }
+      case "closed": {
+        const delta = time(b.closedAt ?? null) - time(a.closedAt ?? null);
         return delta !== 0 ? delta : byIdentifier(a, b);
       }
       case "created": {
@@ -158,11 +185,6 @@ export function sortItems(
   });
 }
 
-/**
- * Client-side search over what is already loaded. The hub filters by state,
- * label, assignee and priority; it has no text search on work items, so this
- * is the honest fallback and the toolbar says it searches the loaded board.
- */
 export function searchItems(
   items: readonly WorkItemView[],
   query: string,
@@ -178,47 +200,66 @@ export function searchItems(
 }
 
 export interface BoardStats {
+  readonly observations: {
+    readonly worker: Readonly<Record<Observation, number>>;
+    readonly change: Readonly<Record<Observation, number>>;
+  };
   readonly running: number;
-  readonly ready: number;
   readonly waiting: number;
-  readonly blocked: number;
+  readonly needAttention: number;
+  readonly backlog: number;
+  readonly open: number;
   readonly completed: number;
+  readonly importedClosed: number;
   readonly total: number;
 }
 
-/**
- * The stats strip (A.1). Every counter is derived from the loaded issues, so
- * it cannot drift from the cards on screen: a strip that came from a separate
- * endpoint would sooner or later say "1 running" over an empty lane.
- */
+export interface ScopedWorkStats {
+  readonly lanes: Readonly<Record<string, number>>;
+  readonly running: number;
+  readonly waiting: number;
+  readonly needAttention: number;
+  readonly backlog: number;
+  readonly open: number;
+  readonly completed: number | null;
+  readonly total: number;
+  readonly asOf: string;
+  readonly truncated: boolean;
+}
+
 export function boardStats(
   items: readonly WorkItemView[],
   lanes: readonly Lane[],
 ): BoardStats {
   const terminal = new Set(lanes.filter((lane) => lane.terminal).map((lane) => lane.name));
-  const started = new Set(
-    lanes.filter((lane) => lane.category === "started").map((lane) => lane.name),
+  const dispatchable = new Set(
+    lanes.filter((lane) => lane.dispatchable).map((lane) => lane.name),
   );
   let running = 0;
-  let ready = 0;
   let waiting = 0;
-  let blocked = 0;
+  let needAttention = 0;
+  let backlog = 0;
   let completed = 0;
+  let importedClosed = 0;
+  const observations = {
+    worker: { known: 0, unchecked: 0, unavailable: 0, partial: 0 },
+    change: { known: 0, unchecked: 0, unavailable: 0, partial: 0 },
+  };
   for (const item of items) {
+    observations.worker[item.observations?.worker ?? "unchecked"] += 1;
+    observations.change[item.observations?.change ?? "unchecked"] += 1;
     if (terminal.has(item.state)) {
       completed += 1;
+      if (item.sourceProvider !== null) importedClosed += 1;
       continue;
     }
     if (isLive(item)) {
       running += 1;
       continue;
     }
-    if (isBlocked(item)) {
-      blocked += 1;
-      continue;
-    }
-    if (started.has(item.state)) waiting += 1;
-    else ready += 1;
+    if (item.state.toLowerCase() === "backlog") backlog += 1;
+    else if (dispatchable.has(item.state)) waiting += 1;
+    else needAttention += 1;
   }
-  return { running, ready, waiting, blocked, completed, total: items.length };
+  return { running, waiting, needAttention, backlog, open: items.length - completed, completed, importedClosed, total: items.length, observations };
 }

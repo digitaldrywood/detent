@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -150,7 +151,7 @@ func TestDispatchCapacityMatchesAttemptModelScope(t *testing.T) {
 			if selected.Err != nil || selected.Model != capacity.Model {
 				t.Fatalf("attempt = %+v, reservation = %+v", selected, capacity)
 			}
-			if len(backend.models) != 2 {
+			if !reflect.DeepEqual(backend.models, selectionCatalog()) {
 				t.Fatal("selection changed shared backend catalog")
 			}
 		})

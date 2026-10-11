@@ -11,6 +11,7 @@ import (
 )
 
 type restRecoveryEvidence struct {
+	status   *StatusError
 	path     string
 	resource string
 }

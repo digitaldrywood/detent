@@ -2284,7 +2284,7 @@ func TestManagerSharedGlobalSchedulerGate(t *testing.T) {
 		t.Fatalf("Subscribe() error = %v", err)
 	}
 
-	global := scheduler.NewWeightedFair(scheduler.Config{Capacity: 2})
+	global := scheduler.NewStrictPriority(scheduler.Config{Capacity: 2})
 	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{
 			{ID: "alpha", Weight: 5},
@@ -2332,12 +2332,6 @@ func TestManagerSharedGlobalSchedulerGate(t *testing.T) {
 	releaseProjectSlot(t, global, slots[1])
 	releaseProjectSlot(t, global, charlie)
 
-	assertWeightedFairCounts(t, global, manager, 100, map[string]int{
-		"alpha":   50,
-		"bravo":   30,
-		"charlie": 20,
-	})
-
 	if err := manager.Pause(context.Background(), "bravo"); err != nil {
 		t.Fatalf("Pause() error = %v", err)
 	}
@@ -2347,12 +2341,6 @@ func TestManagerSharedGlobalSchedulerGate(t *testing.T) {
 		paused.ProjectID != "bravo" || paused.Kind != project.EventPaused {
 		t.Fatalf("pause events = %#v %#v, want bravo stopped then paused", stopped, paused)
 	}
-
-	assertWeightedFairCounts(t, global, manager, 14, map[string]int{
-		"alpha":   10,
-		"bravo":   0,
-		"charlie": 4,
-	})
 
 	if err := manager.Unpause(context.Background(), "bravo"); err != nil {
 		t.Fatalf("Unpause() error = %v", err)
@@ -2364,17 +2352,12 @@ func TestManagerSharedGlobalSchedulerGate(t *testing.T) {
 		t.Fatalf("unpause events = %#v %#v, want bravo started then unpaused", started, unpaused)
 	}
 
-	assertWeightedFairCounts(t, global, manager, 100, map[string]int{
-		"alpha":   50,
-		"bravo":   30,
-		"charlie": 20,
-	})
 }
 
 func TestManagerProjectsShareGlobalDispatchCap(t *testing.T) {
 	t.Parallel()
 
-	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
+	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 	runners := map[project.ID]*projectBlockingRunner{
 		"alpha": newProjectBlockingRunner(),
 		"bravo": newProjectBlockingRunner(),
@@ -2966,47 +2949,4 @@ func releaseProjectSlot(t *testing.T, global scheduler.GlobalScheduler, slot sch
 	if err := global.ReleaseSlot(slot); err != nil {
 		t.Fatalf("ReleaseSlot() error = %v", err)
 	}
-}
-
-func assertWeightedFairCounts(
-	t *testing.T,
-	global scheduler.GlobalScheduler,
-	manager *project.Manager,
-	iterations int,
-	want map[string]int,
-) {
-	t.Helper()
-
-	counts := map[string]int{
-		"alpha":   0,
-		"bravo":   0,
-		"charlie": 0,
-	}
-	for range iterations {
-		selection, err := global.SelectProject(context.Background(), scheduler.ProjectSelectionRequest{
-			Projects: projectCandidates(manager),
-		})
-		if err != nil {
-			t.Fatalf("SelectProject() error = %v", err)
-		}
-		counts[selection.Project.ID]++
-	}
-	if !reflect.DeepEqual(counts, want) {
-		t.Fatalf("weighted-fair counts after %d selections = %#v, want %#v", iterations, counts, want)
-	}
-}
-
-func projectCandidates(manager *project.Manager) []scheduler.ProjectCandidate {
-	projects := manager.Registry().List()
-	candidates := make([]scheduler.ProjectCandidate, 0, len(projects))
-	for _, item := range projects {
-		cfg := item.Config()
-		candidates = append(candidates, scheduler.ProjectCandidate{
-			ID:       cfg.ID,
-			Weight:   cfg.Weight,
-			Priority: cfg.Priority,
-			Paused:   cfg.Paused,
-		})
-	}
-	return candidates
 }

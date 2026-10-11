@@ -21,6 +21,10 @@ import (
 // This joins the real connector, refresh tick, eligibility and lane writer.
 // Time and HTTP are injected; no external server or worker process is started.
 func TestGitHubFleetRefreshWorkload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	for _, tc := range []struct {
 		name                    string
 		projects, active, ticks int
