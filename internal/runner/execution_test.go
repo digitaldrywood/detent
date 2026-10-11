@@ -1931,6 +1931,7 @@ func TestNativeDispositionFromMessageHostPublication(t *testing.T) {
 	}{
 		{name: "publication only is complete", message: report("status: blocked\nreason_code: publication_blocked\nblockers: []\nhuman_action: null\n"), wantStatus: "complete"},
 		{name: "pending publish is complete", message: report("status: blocked\nreason_code: awaiting_host_publish\nblockers: []\nhuman_action: null\n"), wantStatus: "complete"},
+		{name: "post-publication acceptance stays blocked", message: report("status: blocked\nreason_code: post_publish_acceptance_pending\nblockers: []\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "post_publish_acceptance_pending"},
 		{name: "publication with a blocker stays blocked", message: report("status: blocked\nreason_code: publication_blocked\nblockers:\n  - ref: '#42'\n    reason: Await dependency\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "publication_blocked"},
 		{name: "publication with human action stays blocked", message: report("status: blocked\nreason_code: publication_blocked\nblockers: []\nhuman_action: Approve the release\n"), wantStatus: "blocked", wantReason: "publication_blocked"},
 		{name: "other reason stays blocked", message: report("status: blocked\nreason_code: validation_failed\nblockers: []\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "validation_failed"},
