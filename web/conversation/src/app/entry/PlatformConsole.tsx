@@ -35,7 +35,7 @@ import {
   type PlatformAllowlist,
   type PlatformHealth,
 } from "./api.ts";
-import { PlatformTenants } from "./PlatformTenants.tsx";
+import { PlatformTenants, PlatformTenant } from "./PlatformTenants.tsx";
 import { PlatformStaff } from "./PlatformStaff.tsx";
 import { Problem, SignOut, useEntryApi } from "./EntryScreens.tsx";
 
@@ -195,7 +195,7 @@ function PlatformNavigation({ role, email, csrf, organizations, count, health, o
       <SidebarMenu>
         {ids.map((id) => PLATFORM_SECTIONS.find((section) => section.id === id)!).filter((section) => section.id !== "staff" || role === "admin").map((section) => {
           const href = `/platform/${section.id}`;
-          const active = pathname === href;
+          const active = pathname === href || pathname.startsWith(`${href}/`);
           return (
             <SidebarMenuItem key={section.id}>
               <SidebarMenuButton isActive={active} render={<Link to={href as never} aria-label={section.title} aria-current={active ? "page" : undefined} />} onClick={() => setOpenMobile(false)}>
@@ -257,7 +257,7 @@ export function PlatformConsole(): React.ReactElement {
   const tenants = usePlatformResource(() => role === "" ? Promise.resolve(null) : api.platformOrganizations(), [api, role]);
   const health = usePlatformResource(() => role === "" ? Promise.resolve(null) : api.platformHealth(), [api, role]);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const section = PLATFORM_SECTIONS.find((section) => pathname === `/platform/${section.id}`);
+  const section = PLATFORM_SECTIONS.find((section) => (pathname === `/platform/${section.id}` || pathname.startsWith(`/platform/${section.id}/`)));
   usePageTitle(section?.title ?? "Platform", "Platform");
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [actions, setActions] = React.useState<HTMLDivElement | null>(null);
@@ -302,8 +302,12 @@ export function PlatformPageTitle({ section }: { readonly section: PlatformSecti
 }
 
 export function PlatformTenantsPage(): React.ReactElement {
+  return <><PlatformPageTitle section="tenants" /><PlatformTenants /></>;
+}
+
+export function PlatformTenantPage(): React.ReactElement {
   const role = React.useContext(PlatformRoleContext);
-  return <><PlatformPageTitle section="tenants" /><PlatformTenants role={role} /></>;
+  return <><PlatformPageTitle section="tenants" /><PlatformTenant role={role} /></>;
 }
 
 export function PlatformHealthPage(): React.ReactElement {
