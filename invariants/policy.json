@@ -35,13 +35,12 @@
       "TestFirstHumanBlockerCompletionReachesBlocked",
       "TestWorkpadHumanActionClearanceRecoversBlockedIssue",
       "TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane",
-      "TestPreTurnFailuresDrainInstance",
-      "TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers",
+      "TestPreTurnFailuresRetryWithoutPausingProject",
+      "TestWorkspacePreparationRetriesIssueWithoutPausingProject",
       "TestClassifyWorkspaceForgeReadFailure",
       "TestWorkspaceSSHRefusalDoesNotTripProjectBreaker",
       "TestRecoverDurableWorkspaceGitReadWait",
       "TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker",
-      "TestWorkspaceBreakerHonorsFailureCooldown",
       "TestReadyMergeAtWorkerCapacity",
       "TestCheckedMergeUnderForgeCondition",
       "TestPlanCompletionCoordinationDeferral",
@@ -85,10 +84,10 @@
       "TestSSHQueuedPreferenceAndHostCaps"
     ],
     "./internal/hubclient": [
-      "TestNativePlannerAutomaticHandoff"
+      "TestNativePlannerAutomaticHandoff",
+      "TestNativeExecutionSettlesFinishedRun"
     ],
     "./internal/runner": [
-      "TestLandingBarrierPublication",
       "TestNativeInterruptedCodeRecoversPersistedSession",
       "TestNativeReworkFinalizesBeforeImmutableEvidence",
       "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
@@ -181,11 +180,7 @@
     "./internal/workpad": [
       "TestMergedCompletionEvidence"
     ],
-    "./internal/hubclient": [
-      "TestNativeExecutionSettlesFinishedRun"
-    ],
     "./internal/hubserver": [
-      "TestRollingLandingBarrier",
       "TestClaimCandidatesRequireUnansweredWorkItem"
     ],
     "./internal/web": [

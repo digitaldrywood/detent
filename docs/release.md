@@ -21,29 +21,57 @@ Runners on 0.117.50 and earlier need a one-time manual reinstall of the release
 that introduces heartbeat updates if their scheduled updater has stalled. Run
 `detent update --yes --from-release` on the runner host. If the old binary cannot
 coordinate with its running service, install the signed release using the
-[installation instructions](../README.md#installation) and restart the service.
+[installation instructions](../README.md#install) and restart the service.
 
-GitHub Actions checks the current `develop` SHA hourly on a pinned commit. Each
-new SHA receives the complete suite once across scheduled and manual dispatch
-runs. Preflight skips a SHA with any completed non-cancelled run of `ci.yml`,
-regardless of event or conclusion, so launchd dispatches deduplicate with cron.
-A manual dispatch can set `force: true` to rerun that SHA; selecting `fail_job`
-also forces the suite and can force exactly one job to fail to verify diagnostic
-filing. It does not run on pull requests.
+## Validation and promotion
 
-A green run posts a `scheduled-full-ci` commit status, cuts an annotated patch
-version tag on the validated commit, and dispatches the release workflow. The
-annotation records the exact authenticated status ID. The release workflow
-verifies that provenance and publishes the GitHub Release archives, checksums,
-Homebrew formula, and Windows package-manager manifests. The tag is the
-release candidate; unvalidated `develop` commits are not production releases.
-The scheduled run does not merge `develop` into `main` or deploy production.
+GitHub Actions validates pinned `develop` commits hourly. Each new SHA receives
+the full suite once across scheduled and manual dispatch runs; preflight skips
+completed non-cancelled runs regardless of conclusion. A manual dispatch with
+`force: true`, or a non-`none` `fail_job`, runs it again. The workflow does not run
+on pull requests. Green develop validation posts `develop-full-ci` evidence for
+selecting a release snapshot; it does not publish a stable tag or deploy staging.
 
-Every push to `develop` still deploys to staging, whether the scheduled full
-suite passes or fails. Staging is an integration environment, not a production
-release. Production installations and releases use validated version tags.
+The scheduled release cut creates `release/vX.Y` from an eligible develop
+snapshot. Only fixes already landed on develop are cherry-picked onto that
+branch, with `-x` provenance. Every release-branch push or dispatch runs the full
+suite on its exact commit, independently of develop validation. The successful
+finalizer verifies that commit is still the release head, posts authenticated
+`scheduled-full-ci` evidence and creates an annotated tag in that release series.
+An existing validated tag retains its original evidence. If release dispatch
+was interrupted, the finalizer dispatches it when no run exists; retry failed
+jobs in an existing release run instead of replacing the tag or its provenance.
+See [release branches](branching.md#release-branches) for cutting, stabilizing,
+validating and tagging a series, including the first-cut prerequisites.
 
-Develop builds (`develop-` versions) on `https://staging.cloud.detent.build`
+The explicitly dispatched release workflow verifies the tag's evidence, builds
+and signs release artifacts, then deploys the same Hub binary to staging and
+production in order. Smoke checks verify version and full commit before the
+next environment runs. The sequence is serialized without cancelling an active
+release. Develop pushes do not deploy to staging and cannot replace a release
+during its smoke validation. A later reviewed PR promotes the tagged snapshot
+to `main` as production history; that PR does not build or deploy a new artifact.
+
+An authorized operator can bootstrap Cloud from a pinned develop commit through
+the [operator prerelease path](branching.md#operator-landed-cloud-deploys):
+
+```sh
+gh workflow run release.yml --repo digitaldrywood/detent --ref develop -f operator_landed=true
+```
+
+This workflow pins the dispatch commit, runs `make check-land`, binds its
+authenticated source-check evidence and publishes a signed operator prerelease.
+Staging and production smoke checks still apply. It does not require green
+scheduled-full-suite evidence or replace the stable installer release. Retry
+failed jobs without rerunning an already successful source check, so immutable
+tag provenance continues to identify that check.
+
+## Manual develop previews
+
+The runtime also supports manually deployed develop builds (`develop-` versions)
+on `https://staging.cloud.detent.build`. This capability is separate from the
+automated release deployment sequence; do not replace staging while that
+sequence is using it. Develop previews
 start from a disposable snapshot of the released registry, auth store and
 managed tenant files. SQLite snapshots include committed WAL data and are taken
 without applying migrations to the source databases. The shared entry retains
@@ -56,27 +84,32 @@ migration cannot advance the database schema that the next release must open.
 Preview startup requires managed tenant allocation and refuses to route unmanaged
 tenants or fall back to migrating the release databases if copying fails.
 
+## Failure reporting and merge validation
+
 A failed scheduled job reports through the existing native scheduled reporter
 for `digitaldrywood/detent` and its selected Detent Cloud project, following
 [deployment and release failure reporting](../AGENTS.md#deployment-and-release-failure-reporting).
-Under the human-approved Detent scheduled reporting policy, new proven source
-or test failures blocking deployment or the scheduled validated release enter
-Todo at least High when backed by reliable, pinned evidence. The selected
+Under the human-approved Detent scheduled reporting policy, every failing job
+enters Todo at least High, including source, test, unclassified and infrastructure
+failures. Infrastructure and unclassified reports carry the infrastructure label
+and retain attribution to the CI instance. Other unknown instance diagnostics
+remain Backlog intake. The selected
 workflow must have dispatchable, nonterminal Todo and nondispatchable,
-nonterminal Backlog, neither operator-only. Unknown instance diagnostics enter
-Backlog.
+nonterminal Backlog, neither operator-only.
 The reporter matches open fingerprints and imported occurrences before filing,
 appends occurrences to matching work, and raises unset, Normal or Low priority
 through the existing expected-revision priority owner, preserving High and
 Urgent. Origin stamps, stable problem fingerprints, pinned commit, run, attempt,
 job and source evidence, occurrence replay identity, and imported history remain
-durable. Reused items retain existing lanes, human questions, migration/operator
-holds and terminal history; a new occurrence never moves or reopens them.
-Priority updates alone do not authorize admission.
+durable. Matching scheduled Backlog intake is promoted to Todo through the native
+workflow owner. Preserve human questions, migration/operator holds, active and
+review lanes, and terminal history; a new occurrence never reopens terminal work
+or clears a hold. Priority updates alone do not authorize admission.
 
 Unknown setup, startup, download, network, backend, protocol and authentication
-failures remain instance-owned
-intake; they authorize no source repair and consume no issue failure allowance.
+failures remain instance-owned. Scheduled infrastructure reports authorize no
+source repair without a reproducible source or test diagnostic and consume no
+issue failure allowance.
 A historical pinned failure does not prove that the current head fails or
 staging is down; repair workers verify the failure on their current base.
 A green run appends validation evidence through the same native
@@ -84,22 +117,33 @@ comment owner; it does not close issues or establish repair, landing, review
 approval or completion. Other trackers and projects retain their chosen
 reporting priority, admission and validation policies.
 
-Ordinary Detent merging never waits for the scheduled suite, blocking CI or a
-local-gate status. The repository's configured local gate is `true` and publishes
-no validation status; focused diagnostics remain available. Validated release
-tags still require all configured scheduled jobs to succeed. The full suite
+Workers must run `make check-land` before source completion and fix every failure.
+This includes applicable affected browser journeys. The approved Cloud project
+policy uses `gate.run: make check-landing` and `gate.landing_mode: per_landing`.
+The short command validates the combined GitHub landing tree with a build,
+short tests for changed Go packages and their dependents, and changed-file lint;
+module changes widen the checks. The host also uses this approved command for
+its source-finalization receipt. That receipt proves the short command, not the
+worker's separate full `make check-land` obligation.
+
+Ordinary Detent merging never waits for the scheduled suite or an additional
+local-gate status. A failed landing command returns the item to Rework with its
+output. Full-suite failures do not impose a repository-wide landing barrier.
+Stable tags still require all configured full-suite jobs to succeed. The suite
 includes the checks that previously ran on pull requests, including generated
 sources, migrations, frontend verification, race shards,
 security, browser visual tests, portability, and packaging snapshots.
 
-The release workflow checks the annotated tag against the tagged full commit
-and requires authenticated successful `scheduled-full-ci` evidence. Configure
+For stable releases, the release workflow checks the annotated tag against the
+tagged full commit and requires authenticated successful `scheduled-full-ci`
+evidence from release-branch validation. Configure
 the GitHub Actions repository variable
 `DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON` to `["scheduled-full-ci"]`.
 Repository branch rulesets require no status checks. The provenance verifier
 also inspects active rulesets so any unexpected required check remains binding.
 A missing or malformed variable, missing status, stale status ID, or fabricated
-tag annotation prevents signing and publication.
+tag annotation prevents signing and publication. The operator prerelease path
+instead binds its authenticated `Verify operator-landed source` check.
 
 GoReleaser generates the package manifests during snapshots and skips
 publishing when the corresponding package-manager token is unavailable. The
@@ -114,6 +158,26 @@ inconsistent. Before replacement it executes the staged binary and requires
 its version and full commit to match the signed provenance. After restart,
 startup recovery requires both identities from the running instance before it
 marks the update healthy or removes rollback material.
+
+## Transition from rolling-barrier runners
+
+Before deploying the removal of rolling-barrier execution, drain active work
+through the supported runner controls and stop the old runner services on every
+participating host. Verify that their barrier, repair and Git processes have
+stopped. If a process is stalled, preserve its published checkpoints and handle
+it through the host's existing operational controls. A Hub policy change cannot
+recall Git credentials or authority already issued to a running process; leaving
+an old runner active can allow retired repair or revert code to continue.
+
+Deploy the compatible Hub and runner builds through the supported release path.
+Review and re-approve the repository policy in the Hub with
+`gate.landing_mode: per_landing` and `gate.run: make check-landing`; changing
+`detent.yaml` alone does not replace the approved Cloud policy. Keep the worker
+instruction to complete `make check-land`. Confirm the installed and running
+runner identities, effective policy revision and available gate command before
+resuming claims. Verify that existing work can be explained, claimed and landed
+without a rolling-barrier dependency. Do not clear human holds, rewrite reviewed
+versions or discard publication receipts as part of the transition.
 
 ## Verify release signatures
 
@@ -228,10 +292,11 @@ owner are serialized.
 The Makefile pins sqlc in `SQLC_VERSION`; `make generate`, `make sqlc`, and
 `make setup` use that version. Commit regenerated SQL output with query changes.
 `make check-generated` checks committed SQL output with `sqlc diff` and
-generates ignored configuration references. The scheduled full suite runs it on
-the pinned `develop` commit. Local checks remain optional diagnostics
-under [AGENTS.md validation](../AGENTS.md#validation), without a mandatory
-PR-worktree gate or local status publication.
+generates ignored configuration references. The source-completion gate and the
+full suite run it on their respective source trees; scheduled develop and
+release-branch validation pin exact commits. Workers must complete
+`make check-land` under [AGENTS.md validation](../AGENTS.md#validation).
+No additional local status publication is required.
 GoReleaser builds committed Go sources and generates documentation, dashboard
 CSS and the conversation client through `make assets generate-docs` from that
 exact tag's npm lockfiles using Node 24. Conversation output is ignored in feature commits. Staging and private operator builds use

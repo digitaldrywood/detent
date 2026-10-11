@@ -34,6 +34,7 @@ func TestNativeIssueContract(t *testing.T) {
 		{name: "partial", body: "## Acceptance criteria\nFix endpoint.", refused: true},
 		{name: "machine missing", machine: true},
 		{name: "human", body: complete, claimable: true},
+		{name: "dispatch marker", body: complete + "\n<!-- detent:no-dispatch -->"},
 		{name: "machine", body: complete, machine: true},
 		{name: "custom authored contract", body: "## Result\nThe endpoint works.", claimable: true, custom: true},
 	} {
@@ -81,10 +82,13 @@ func TestNativeIssueContract(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				got, err := nativeIssueContractClaimable(t.Context(), f.service.database.db, scope, id)
+				got, reason, err := nativeIssueContractClaimable(t.Context(), f.service.database.db, scope, id)
 				if err != nil || got != want {
 					contract, contractErr := nativeIssueContract(t.Context(), f.service.database.db, scope)
 					t.Fatalf("claimable = %t, %v; want %t; contract %+v (%v), criteria %+v, evaluation %+v", got, err, want, contract, contractErr, issue.IssueContract, contract.Evaluate(nativeContractIssue(issue)))
+				}
+				if (reason == "") != want {
+					t.Fatalf("claimable=%t reason=%q", got, reason)
 				}
 				claim := tracker.NativeClaim{PolicyID: descriptor.ID, MachineID: "contract-machine", SessionID: "contract-session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 				preview := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", worker, tracker.NativeCapacityPreview{NativeClaim: claim})
@@ -103,7 +107,7 @@ func TestNativeIssueContract(t *testing.T) {
 				requireNativeStatus(t, response, expected)
 			}
 			check(test.claimable)
-			if test.claimable {
+			if test.claimable || strings.Contains(test.body, "detent:no-dispatch") {
 				return
 			}
 			contract, err := config.ResolveIssueContract("")

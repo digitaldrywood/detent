@@ -75,8 +75,6 @@ func (s *Service) registerChangeRoutes(e *echo.Echo) {
 	read := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
 	write := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
 	operator := s.requireNativeScope(apiScopeOperator)
-	e.GET(nativeBase+"/landing-barrier", s.getLandingBarrier, read)
-	e.POST(nativeBase+"/landing-barrier", s.mutateLandingBarrier, write)
 	e.GET(nativeBase+"/change-review-policy", s.getChangeReviewPolicy, read)
 	e.PUT(nativeBase+"/change-review-policy", s.approveChangeReviewPolicy, s.requireChangeReviewPolicyAdmin())
 	e.GET(changeBase, s.listChanges, read)
@@ -459,6 +457,10 @@ func readChangeSummary(ctx context.Context, query nativeQueryer, scope nativeSco
 	for _, version := range detail.Versions {
 		if version.ID != detail.Change.CurrentVersion {
 			continue
+		}
+		if version.Policy.Gates.LandingMode == "rolling_barrier" {
+			policyID = ""
+			break
 		}
 		currentRules := rules
 		currentRules.PolicyID = policyID

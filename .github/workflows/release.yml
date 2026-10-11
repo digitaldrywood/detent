@@ -33,10 +33,15 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Verify source belongs to develop history
+      - name: Verify source belongs to develop or its release series
         run: |
           git fetch --no-tags origin develop:refs/remotes/origin/develop
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/develop
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/develop; then
+            [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+            branch="release/v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+            git fetch --no-tags origin "$branch:refs/remotes/origin/$branch"
+            git merge-base --is-ancestor "$GITHUB_SHA" "origin/$branch"
+          fi
       - uses: ./.github/actions/prepare-conversation
         if: inputs.operator_landed
       - uses: actions/setup-go@v6

@@ -67,7 +67,7 @@ elif args[0] in ("build", "vet", "test"):
         if arg.startswith("-coverprofile="):
             Path(arg.split("=", 1)[1]).write_text("mode: set\n")
 else:
-    stage = "workspace" if "./tools/testgate" in args else "docs" if "./internal/config/cmd/configdoc" in args else "migrations" if "./tools/migrationcheck" in args else "sqlc"
+    stage = "workspace" if "./tools/testgate" in args else "docs" if "./internal/config/cmd/configdoc" in args else "migrations" if "./tools/migrationcheck" in args else "invariant-manifest" if "./tools/invariantcheck" in args else "sqlc"
     budget = int(os.environ["GOMAXPROCS"])
 
 def record(action):
@@ -95,45 +95,22 @@ if stage == os.environ.get("PROBE_FAILURE"):
 
 @unittest.skipIf(os.name == "nt", "landing gate requires a POSIX shell")
 class LandingGateTest(unittest.TestCase):
-    def test_check_barrier_runs_only_in_landing_barrier(self):
-        scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
-        self.assertIsNotNone(scratch, "a supplied scratch directory is required")
-        for value in (None, "", "0"):
-            with self.subTest(value=value), tempfile.TemporaryDirectory(dir=scratch) as directory:
-                root = Path(directory)
-                (root / "scripts").mkdir()
-                for name in ("go.mod", "scripts/check-barrier.sh", "scripts/check-evidence.sh"):
-                    shutil.copy2(ROOT / name, root / name)
-                env = {key: item for key, item in os.environ.items() if key != "DETENT_LANDING_BARRIER"}
-                if value is not None:
-                    env["DETENT_LANDING_BARRIER"] = value
-                result = subprocess.run(["bash", "scripts/check-barrier.sh", "4"], cwd=root, env=env, capture_output=True, text=True, timeout=600)
-                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-                self.assertIn("make check-land", result.stderr)
-                self.assertEqual(sorted(path.name for path in root.iterdir()), ["go.mod", "scripts"])
-
     def test_stage_budget_and_failures(self):
         scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
         self.assertIsNotNone(scratch, "a supplied scratch directory is required")
-        cases = [("check-land", budget, failure) for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "lint"), (4, "unit-short"), (4, "docs"), (4, "sqlc"))]
-        cases += [(target, 4, "") for target in ("test", "test-fast", "test-race", "test-cover", "check-barrier")]
+        cases = [("check-land", budget, failure) for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "lint"), (4, "unit-short"), (4, "docs"), (4, "sqlc"), (4, "invariant-manifest"))]
+        cases += [(target, 4, "") for target in ("test", "test-fast", "test-race", "test-cover")]
         cases += [("check-land", 4, "browser"), ("check-land", 4, "browser-pass")]
         for target, budget, failure in cases:
             with self.subTest(target=target, budget=budget, failure=failure), tempfile.TemporaryDirectory(dir=scratch) as directory:
                 root = Path(directory)
                 (root / "scripts").mkdir()
-                for name in ("Makefile", ".golangci-version", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/affected_browser.py", "scripts/check-browser.sh", "scripts/check-barrier.sh", "scripts/barrier_failures.py", "scripts/test-workspace.sh", "scripts/cover-packages.sh"):
+                for name in ("Makefile", ".golangci-version", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/affected_browser.py", "scripts/check-browser.sh", "scripts/test-workspace.sh", "scripts/cover-packages.sh"):
                     shutil.copy2(ROOT / name, root / name)
                 for name in ("go", "git", "lint"):
                     path = root / name
                     path.write_text(TOOL)
                     path.chmod(0o700)
-                if target == "check-barrier":
-                    for name in ("make", "python3", "node_modules/.bin/playwright"):
-                        path = root / name
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_text(TOOL)
-                        path.chmod(0o700)
                 browser = failure in ("browser", "browser-pass")
                 if failure == "browser-pass":
                     (root / "app-changed").touch()
@@ -144,7 +121,7 @@ class LandingGateTest(unittest.TestCase):
                         path.write_text(TOOL)
                         path.chmod(0o700)
                 env = {key: value for key, value in os.environ.items() if key not in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES")}
-                env.update(PATH=str(root) + os.pathsep + env["PATH"], PROBE_BUDGET=str(budget), PROBE_FAILURE=failure, PROBE_TARGET=target, PROBE_MAKE=shutil.which("make"), PROBE_PYTHON=sys.executable, DETENT_BARRIER_FAILED="", DETENT_LANDING_BARRIER="1")
+                env.update(PATH=str(root) + os.pathsep + env["PATH"], PROBE_BUDGET=str(budget), PROBE_FAILURE=failure, PROBE_TARGET=target, PROBE_MAKE=shutil.which("make"), PROBE_PYTHON=sys.executable)
                 if browser:
                     env["PROBE_CHANGED"] = "web/conversation/src/app/reports/ReportsPage.tsx"
                 failed = bool(failure) and failure != "browser-pass"
@@ -155,7 +132,7 @@ class LandingGateTest(unittest.TestCase):
                 if failure not in ("docs", "sqlc"):
                     self.assertTrue(tests)
                 for event in tests:
-                    self.assertEqual("-count=1" in event["args"], target in ("test-race", "test-cover", "check-barrier"), event)
+                    self.assertEqual("-count=1" in event["args"], target in ("test-race", "test-cover"), event)
                 if target != "check-land":
                     continue
                 self.assertEqual("Landing checks passed." in result.stdout, not failed)
@@ -178,7 +155,7 @@ class LandingGateTest(unittest.TestCase):
                 self.assertFalse(active)
                 self.assertEqual(set(starts[2:6]), {"lint", "vet", "build", "unit-short"})
                 if browser:
-                    self.assertEqual(starts[6:], ["invariants", "migrations", "compile", "compile", "compile"])
+                    self.assertEqual(starts[6:], ["invariant-manifest", "invariants", "migrations", "compile", "compile", "compile"])
                     args = [json.loads(line) for line in (root / "browser-args").read_text().splitlines()]
                     self.assertEqual(args[-1], ["test", "--workers=4", "--retries=0", "tests/visual/cloud-reports.spec.js"])
                     self.assertIn("tests/visual/cloud-reports.spec.js", result.stdout + result.stderr)
@@ -188,14 +165,23 @@ class LandingGateTest(unittest.TestCase):
                 elif failure:
                     self.assertNotIn("invariants", starts)
                 else:
-                    self.assertEqual(starts[6:], ["invariants", "migrations"])
+                    self.assertEqual(starts[6:], ["invariant-manifest", "invariants", "migrations"])
                     self.assertFalse((root / "browser-args").exists())
                     self.assertIn("UI sources unchanged; skipping browser specs.", result.stdout)
                 self.assertNotIn("npm", result.stdout)
                 self.assertNotIn("nilaway", result.stdout)
                 self.assertFalse((root / "static/app/conversation/app.js").exists())
                 evidence = [json.loads(line.split(": ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("detent-check-evidence:")]
-                self.assertEqual({item["scope"] for item in evidence}, {"generated", "lint", "vet", "build", "unit-short"} | ({"invariants", "migrations"} if not failed or browser else set()) | ({"browser"} if browser else set()) | ({"app"} if failure == "browser-pass" else set()))
+                expected_scopes = {"generated", "lint", "vet", "build", "unit-short"}
+                if not failed or browser:
+                    expected_scopes.update(("invariant-manifest", "invariants", "migrations"))
+                elif failure == "invariant-manifest":
+                    expected_scopes.add("invariant-manifest")
+                if browser:
+                    expected_scopes.add("browser")
+                if failure == "browser-pass":
+                    expected_scopes.add("app")
+                self.assertEqual({item["scope"] for item in evidence}, expected_scopes)
                 self.assertEqual(sum(item["exit_code"] != 0 for item in evidence), int(failed))
 
 

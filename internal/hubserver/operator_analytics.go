@@ -340,16 +340,11 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 			if a.Landing.PipelineDropped > 0 {
 				out.Pipeline.Partial = true
 			}
-			for _, result := range []struct {
-				receipt *gate.CommandResult
-				stage   string
-			}{{a.Landing.Gate, "landing_validation"}, {a.Landing.Barrier, "barrier"}} {
-				if result.receipt != nil {
-					out.pipelineTimings = append(out.pipelineTimings, result.receipt.PipelineTiming(result.stage))
-					if result.receipt.Pipeline != nil {
-						out.pipelineTimings = append(out.pipelineTimings, result.receipt.Pipeline.Timings...)
-						out.Pipeline.Partial = out.Pipeline.Partial || result.receipt.Pipeline.Dropped > 0
-					}
+			if result := a.Landing.Gate; result != nil {
+				out.pipelineTimings = append(out.pipelineTimings, result.PipelineTiming("landing_validation"))
+				if result.Pipeline != nil {
+					out.pipelineTimings = append(out.pipelineTimings, result.Pipeline.Timings...)
+					out.Pipeline.Partial = out.Pipeline.Partial || result.Pipeline.Dropped > 0
 				}
 			}
 		}
@@ -433,9 +428,6 @@ AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)
 		return out, err
 	}
 	if err := projectNativeAnalyticsResidence(ctx, q, scope, r, &out); err != nil {
-		return out, err
-	}
-	if err := readPipelineBarriers(ctx, q, scope, &out); err != nil {
 		return out, err
 	}
 	out.PopulationCursors = paging.next

@@ -1,20 +1,14 @@
 name: Deploy staging
 
 on:
-  push:
-    branches: [develop]
   workflow_call:
     inputs:
       version:
-        required: false
+        required: true
         type: string
 
 permissions:
   contents: read
-
-concurrency:
-  group: deploy-staging
-  cancel-in-progress: true
 
 jobs:
   deploy:
@@ -28,14 +22,11 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}
-      - uses: ./.github/actions/prepare-conversation
-        if: inputs.version == ''
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.9'
           cache: true
       - uses: actions/download-artifact@v8
-        if: inputs.version != ''
         with:
           name: release-hub-binary
           path: ${{ runner.temp }}/release-hub
@@ -47,25 +38,11 @@ jobs:
           set -euo pipefail
           commit="$(git rev-parse HEAD)"
           version="$INPUT_VERSION"
-          if [ -z "$version" ]; then
-            version="develop-${commit:0:9}"
-          fi
+          test -n "$version"
           {
             echo "commit=$commit"
             echo "version=$version"
           } >> "$GITHUB_OUTPUT"
-      - name: Build develop binary
-        if: inputs.version == ''
-        env:
-          CGO_ENABLED: '0'
-          GOOS: linux
-          GOARCH: amd64
-          RELEASE_VERSION: ${{ steps.source.outputs.version }}
-          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/release-hub"
-          go build -trimpath -ldflags "-X main.version=$RELEASE_VERSION -X main.commit=$RELEASE_COMMIT -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$RUNNER_TEMP/release-hub/detent" ./cmd/detent
       - name: Deploy to staging
         id: deploy
         env:

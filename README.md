@@ -127,6 +127,7 @@ To build from source, download `detent_<version>_source.tar.gz` from a release, 
 Set up:
 
 - [Cloud onboarding](docs/cloud-onboarding.md): organizations, projects, workflow definitions, runner enrollment, and GitHub.
+- [Project delivery](docs/project-delivery.md): reliable validation, test ownership, capacity and releases as agent concurrency grows.
 - [Self-hosted Hub operations](docs/hub-self-hosting.md): install, authentication, backup, and recovery.
 - [Sprite runners](docs/sprite-runners.md): runners on Fly Sprites that wake when work arrives.
 - [Configuration reference](docs/config.md): every `detent.yaml` and runner setting.

@@ -151,9 +151,9 @@ agent:
 agents:
   model_selection: {}
 gate:
-  landing_mode: rolling_barrier
+  landing_mode: per_landing
   kind: command
-  run: "make check-barrier"
+  run: "make check-landing"
   approval_label: human-approved
   automated_review: "off"
   require_automated_review: false

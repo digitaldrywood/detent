@@ -72,7 +72,6 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 	if err := l.removeLandingWorktree(ctx, l.sourceRoot, staging); err != nil {
 		return fail(err)
 	}
-	rolling := gate.NormalizeLandingMode(requests[0].Options.LandingMode) == gate.LandingRollingBarrier
 	var rejectedBase string
 	var rejectedPush error
 	for cycle := 0; ; cycle++ {
@@ -180,10 +179,7 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 			if method == "rebase" && err == nil {
 				result.Rebased, result.Path = true, "rebase_short_validation"
 			}
-			if result.Rebased && gate.NormalizeLandingMode(request.Options.LandingMode) == gate.LandingRollingBarrier {
-				result.Path = "rebase_push"
-			}
-			if result.Rebased && err == nil && gate.NormalizeLandingMode(request.Options.LandingMode) != gate.LandingRollingBarrier {
+			if result.Rebased && err == nil {
 				validationInfo := info
 				validationInfo.Path = staging
 				command, packages, scopeErr := shortLandingCommand(ctx, staging, stageHead, merged, request.Options.ValidationCommand)
@@ -238,7 +234,7 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 			for _, i := range members {
 				out[i].Result.MergeSHA = ""
 			}
-			if errors.As(pushErr, &moved) && moved.Kind == LandRefusalBaseMoved && (cycle == 0 || rolling) {
+			if errors.As(pushErr, &moved) && moved.Kind == LandRefusalBaseMoved && cycle == 0 {
 				rejectedBase, rejectedPush = base, pushErr
 				continue
 			}

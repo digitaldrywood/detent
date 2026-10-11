@@ -83,10 +83,6 @@ func resolvePolicyDescriptor(workflow Workflow, revision, sourceDigest, configDi
 			GitHubPullRequest: cfg.Deliverable.GitHubPullRequest,
 		},
 	}
-	if g.LandingMode == gate.LandingRollingBarrier {
-		descriptor.Gates.LandingMode = g.LandingMode
-		descriptor.Gates.LandingCommandDigest = policy.Digest([]byte(g.Run))
-	}
 	if cfg.Tracker.Kind == TrackerHubNative && cfg.Deliverable.GitHubPullRequest {
 		descriptor.Gates.RequiredChecks = 0
 		if len(g.RequiredStatusChecks) > 0 || g.CITriggerLabel != "" {

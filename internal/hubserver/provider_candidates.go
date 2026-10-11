@@ -53,7 +53,7 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 			if found && lease.session.ExpiresAt.After(now) {
 				continue
 			}
-			claimable, err := nativeIssueContractClaimable(ctx, tx, scope, id)
+			claimable, _, err := nativeIssueContractClaimable(ctx, tx, scope, id)
 			if err != nil {
 				return nil, err
 			}

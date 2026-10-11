@@ -253,9 +253,6 @@ func (s *Service) landChange(c echo.Context) error {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO quality_landings (version_id,record_json) VALUES (?,?)", version.ID, qualityRaw); err != nil {
 			return nil, err
 		}
-		if err := recordBarrierLanding(ctx, tx, scope, version, change, request, now); err != nil {
-			return nil, err
-		}
 		change.UpdatedAt = now
 		change.Revision++
 		raw, err := marshalNative(change)
@@ -340,10 +337,6 @@ func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nati
 	}
 	version, err := readChangeVersion(ctx, query, change.ID, change.CurrentVersion)
 	if err != nil {
-		return false, true, err
-	}
-	barrier, err := readLandingBarrier(ctx, query, *scope, version.Repository)
-	if err != nil || barrier.Red {
 		return false, true, err
 	}
 	if version.External != nil || version.AttemptID == "" {

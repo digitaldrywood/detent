@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type pipelineStage struct {
@@ -127,42 +125,6 @@ func residencePipelineTimings(timeline analyticsResidenceTimeline, attempts []na
 		}
 	}
 	return out
-}
-
-func readPipelineBarriers(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
-	rows, err := queryAnalyticsPopulation(ctx, q, "barriers", `SELECT response_json FROM native_commands WHERE organization_id=? AND operation LIKE '%/landing-barrier' AND json_extract(response_json,'$.project_id')=? AND julianday(created_at)>=julianday(?) AND julianday(created_at)<julianday(?) ORDER BY created_at,actor_id,command_key LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(out.Window.From), formatHubTime(out.Window.To))
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	observed := 0
-	for rows.Next() {
-		if observed == maxAnalyticsPopulation {
-			out.Pipeline.Partial = true
-			break
-		}
-		observed++
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return err
-		}
-		var barrier tracker.LandingBarrier
-		if err := json.Unmarshal([]byte(raw), &barrier); err != nil {
-			return err
-		}
-		if barrier.Result != nil && !barrier.Running {
-			out.pipelineTimings = append(out.pipelineTimings, barrier.Result.PipelineTiming("barrier"))
-			if barrier.Result.Pipeline != nil {
-				out.pipelineTimings = append(out.pipelineTimings, barrier.Result.Pipeline.Timings...)
-				out.Pipeline.Partial = out.Pipeline.Partial || barrier.Result.Pipeline.Dropped > 0
-			}
-		}
-		if barrier.Running && !barrier.ClaimedAt.IsZero() && !barrier.ReadyAt.IsZero() {
-			timing := gate.Interval("barrier_claim", barrier.ReadyAt, barrier.ClaimedAt, "")
-			out.pipelineTimings = append(out.pipelineTimings, timing)
-		}
-	}
-	return rows.Err()
 }
 
 func pipelineTimingPage(timings []gate.PipelineTiming, offset, limit int) operatortool.ReadPage[gate.PipelineTiming] {

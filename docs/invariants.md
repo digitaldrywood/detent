@@ -72,9 +72,9 @@ only from a verified preserved source checkpoint; unknown changes and
 unavailable authority are refusals, never checkpoint rewrites or relaxed
 comparisons. Human and permission holds retain their authority.
 
-**Enforcement:** `TestPreTurnFailuresDrainInstance`,
+**Enforcement:** `TestPreTurnFailuresRetryWithoutPausingProject`,
 `TestObservedLanePreTurnFailureRemainsInstanceOwned`,
-`TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers`,
+`TestWorkspacePreparationRetriesIssueWithoutPausingProject`,
 `TestClassifyWorkspaceForgeReadFailure`,
 `TestWorkspaceSSHRefusalDoesNotTripProjectBreaker`,
 `TestRecoverDurableWorkspaceGitReadWait`,
@@ -157,30 +157,44 @@ runs build, short Go tests for touched packages, and lint of touched files.
 The receipt records the landing path and tested packages. A moved base repeats
 the clean-squash decision on the new head. GitHub PR landing stays behind its
 project policy opt-in and retains its configured validation and native checks.
-The approved `rolling_barrier` mode skips landing and merge-resolution commands,
-running the configured gate on the base tip outside the source lock after landings.
-Landing continues during validation; a red barrier stops repository landing
-except for its native repair issue. Repair proceeds forward without auto-revert,
-and a green barrier reopens landing. A failed per-landing command returns to
-configured Rework with the failing output. The project publishes no local status and sets
+This repository configures `make check-landing` for the combined GitHub landing
+tree: build, short tests for touched packages and dependents, and lint of changed
+Go files. Module changes widen validation. Source completion still runs the
+full `make check-land` gate.
+A failed per-landing command returns to configured Rework with the failing output. The project publishes no local status and sets
 `gate.required_status_checks: []` and `gate.automated_review: "off"`; ordinary
 merge waits for no additional CI producer or scheduled validation, while
 reported failed CI, native base-branch requirements and reported P1 findings
 remain authoritative. Diagnostics support concurrent worktrees without a shared
 validation lock. Other projects retain their configured policies.
 
-Landing checks repository source and workflow invariants; the full behavioral
-invariant manifest runs only in the scheduled suite.
-Full integration, race, coverage, fuzz, NilAway and generated-output validation
-run in the scheduled suite, which pins the current `develop` SHA. Each new SHA
-receives one full suite across scheduled and manual dispatch runs. Preflight
-skips a SHA that has a completed non-cancelled run of this workflow, regardless
-of event or conclusion; manual dispatch with `force: true` runs it again, and
-any non-`none` `fail_job` selection implies force. Only the successful full-suite
-finalizer publishes `scheduled-full-ci`, creates an annotated validated patch
-tag and dispatches release; release deploys staging, runs its smoke, then
-deploys production and runs its smoke, and a failed smoke stops promotion. An
-already validated commit receives no new stable tag or deploy. Operator-landed
+Source completion checks repository source and workflow invariants and verifies
+that behavioral test references exist without duplicate package groups. The
+full behavioral invariant manifest executes only in the scheduled suite.
+Full browser, integration, race, coverage, fuzz, NilAway and generated-output validation
+run in the full suite: hourly on pinned `develop` commits, and on every push
+or dispatch to `release/*`. Develop receives one full suite per SHA across
+scheduled and manual runs. Develop preflight skips completed non-cancelled
+runs regardless of conclusion; manual `force: true` or a non-`none` `fail_job`
+runs it again. Release runs always validate their event SHA, independently of
+develop and other release branches. Release evidence is the green full suite
+on the release branch head, never develop evidence reused after cherry-picks.
+Successful develop validation publishes `develop-full-ci`. Release validation
+publishes `scheduled-full-ci` only when creating new immutable release evidence.
+On a release branch, the finalizer verifies the validated SHA is still the branch head, creates
+an annotated `vX.Y.Z` provenance tag within that branch's `release/vX.Y` series,
+and dispatches the existing release workflow. Green develop commits select
+future cuts but do not publish stable tags. Cuts are weekly by default or
+operator-dispatched, from the newest green develop ancestor or develop tip if
+none exists; picks are develop-to-release only, with `-x` provenance and a PR.
+All release API calls belong to operators and GitHub Actions, never Detent
+runners. Develop landing does not wait for release stabilization. Release
+deploys staging, runs its smoke, then deploys production and runs its smoke;
+a failed smoke stops promotion. Operators promote the validated tag tree to
+`main` through a reviewed PR. A commit already tagged in that series receives no
+new stable tag or replacement status. A retry authenticates the original tag
+evidence, refuses superseded evidence, and resumes dispatch only when no release
+run exists for that tag. Operator-landed
 Cloud deploys may dispatch the existing release workflow on a pinned develop commit:
 its successful `make check-land` Actions check is authenticated by the existing
 provenance owner, and the workflow publishes a signed next-patch `op.<sha12>`
@@ -227,9 +241,6 @@ variations. Filing uses the selected tracker's supported owner, preserves
 imported provenance and matches open work before filing: a matching open issue
 receives an occurrence or comment, never a duplicate, and when every match is
 closed the newest one is already handled and nothing is created or changed.
-A newly red rolling landing barrier requires an open repair owner: it reuses an
-open match, or creates a fresh repair when only terminal repairs match, keeping
-that terminal history intact.
 Occurrence evidence identifies runs, attempts, commits and jobs without
 changing problem identity.
 
@@ -245,7 +256,7 @@ Other worker follow-ups remain Backlog. Reuse preserves existing lanes, holds
 and scheduled job origin stamps.
 
 **Enforcement:** `TestMachineIssueTool` in `internal/orchestrator`;
-`TestNativeMachineDefectOccurrences` and `TestRollingLandingBarrier` in `internal/hubserver` and
+`TestNativeMachineDefectOccurrences` in `internal/hubserver` and
 `TestDefectFingerprint` in `internal/issueorigin`;
 `TestMachineIssueDuplicate`, `TestMachineIssueSeparateConnectors`,
 `TestMachineOriginSurvivesBodyUpdates`,

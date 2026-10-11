@@ -181,7 +181,6 @@ type NativeLandingReceipt struct {
 	PipelineDropped int                     `json:"pipeline_dropped,omitempty"`
 	Path            string                  `json:"path,omitempty"`
 	Packages        []string                `json:"packages,omitempty"`
-	Barrier         *gate.CommandResult     `json:"barrier,omitempty"`
 	Waiting         bool                    `json:"waiting,omitempty"`
 	CI              *NativeLandingCIReceipt `json:"ci,omitempty"`
 	Gate            *gate.CommandResult     `json:"gate,omitempty"`

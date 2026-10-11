@@ -113,7 +113,7 @@ func (t PipelineTiming) Public() PipelineTiming {
 
 func (t PipelineTiming) Valid() bool {
 	return pipelineReceiptID.MatchString(t.ReceiptID) && len(t.Command) <= 4096 &&
-		slices.Contains([]string{"worker_check_land", "finalization", "landing_validation", "barrier", "repair", "rebase", "conflict_resolution", "merging_queue", "merging_to_landed", "barrier_claim"}, t.Stage) &&
+		slices.Contains([]string{"worker_check_land", "finalization", "landing_validation", "rebase", "conflict_resolution", "merging_queue", "merging_to_landed"}, t.Stage) &&
 		!t.StartedAt.IsZero() && !t.FinishedAt.Before(t.StartedAt) &&
 		(t.HeadSHA == "" || evidenceSHA.MatchString(t.HeadSHA)) && (t.TreeSHA == "" || evidenceSHA.MatchString(t.TreeSHA)) &&
 		(t.Execution == "" || t.Execution == "executed" || t.Execution == "reused") &&

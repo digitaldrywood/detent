@@ -1795,33 +1795,18 @@ GitHub's merge API pins the head, but provides no atomic expected-base field,
 so concurrent external base writes still depend on the repository's protection
 and serialized landing policy.
 
-Projects can opt into `gate.landing_mode: rolling_barrier` in the approved gate
-policy. `gate.run` remains a scalar command string. In this mode the host skips
-command validation after native source finalization, during landing and during
-merge-resolution preparation. Signed commit finalization and Change publication
-still occur; this mode does not reuse a worker command receipt for host
-validation. For Detent's repository, workers run `make check-land` under the
-repository validation instructions, while the Cloud project's approved
-`gate.run` is `make check-barrier`. Changes to that policy require operator
-approval before runners adopt them. In rolling-barrier mode,
-a rejected plain-Git push refreshes the base and recombines the same reviewed
-head. GitHub protection and required checks still apply. The project runner
-claims one repository barrier through `GET`/`POST /landing-barrier`, snapshots the
-base tip in a detached worktree, releases the source lock, and runs the approved
-`gate.run`.
-Landings continue during this command. The Hub records the checked commit and
-command result in the covered landing receipts. The runner reports the observed
-integration branch head when it claims; the Hub starts a barrier whenever that
-head differs from the last checked commit, so ordinary pull request merges
-trigger it as well as native landings. The claim captures the native landing
-receipts since the last green barrier.
-
-A red barrier files or appends a High-priority native repair issue through the
-existing machine-report owner, with command output, the checked commit, the
-commit range since the last green barrier, and the native changes in it. Only that repair issue may land while red;
-a green barrier reopens landing. The worker source completion command remains
-required. Barrier reads and receipts provide diagnostics through the existing
-API and MCP surfaces.
+Landing uses `gate.landing_mode: per_landing`; legacy `rolling_barrier`
+configuration is interpreted as per-landing validation. `gate.run` remains a
+scalar command string. Native finalization validates the exact reviewed head,
+and a rebased landing runs the short validation command on its integrated tree.
+The landing barrier endpoints are retired. Detent's project policy uses
+`gate.run: make check-landing` and requires operator re-approval in the Hub.
+Versions pinned to the retired rolling policy are stale and must return through
+Rework for fresh validation. Stop or drain old runners before this Hub upgrade,
+then update both sides and approve the replacement policy before resuming.
+A stale summary prevents new landing targets; it cannot recall Git credentials
+or a merge already authorized by an old runner.
+Scheduled validation supplies release evidence and never holds ordinary landing.
 
 GitHub's branch protection, required checks, and required reviews decide
 whether the merge succeeds. The runner verifies that the returned merge commit
