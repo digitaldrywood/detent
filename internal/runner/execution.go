@@ -380,6 +380,21 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	req.checkpointRefs.halt()
 	if req.finalizeNativeWork && !req.retainCheckpoint {
 		if execution, ok := req.Execution.(PublicationSourceExecution); ok {
+			publicationOptions := func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.LandOptions, error) {
+				opts.Repository, opts.HeadSHA = version.Repository, version.HeadSHA
+				opts.TargetBranch, opts.Message = issue.ProgressBaseRef, req.Issue.Title
+				if issue.Landing != nil {
+					opts.GitHubClient = issue.Landing.GitHubClient
+				}
+				if opts.GitHubClient == nil {
+					client, _, err := r.nativeLandingGitHubClient(ctx, req, workerGitHubPolicy{})
+					if err != nil {
+						return opts, fmt.Errorf("prepare required GitHub PR; verify runner authentication and retry with retained source: %w", err)
+					}
+					opts.GitHubClient = client
+				}
+				return opts, nil
+			}
 			if remote, ok := execution.(*sshNativeExecution); ok {
 				remote.setPublicationIdentity(func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
 					resolver, ok := backend.(interface {
@@ -388,7 +403,10 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 					if !ok {
 						return workspace.GitHubPublication{}, errors.New("SSH workspace cannot resolve the required PR publication identity")
 					}
-					opts.Repository, opts.HeadSHA, opts.TargetBranch = version.Repository, version.HeadSHA, issue.ProgressBaseRef
+					opts, err := publicationOptions(ctx, version, opts)
+					if err != nil {
+						return workspace.GitHubPublication{}, err
+					}
 					return resolver.GitHubPublicationIdentity(ctx, info, issue, opts)
 				})
 			}
@@ -399,17 +417,9 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 				if !ok {
 					return workspace.GitHubPublication{}, errors.New("workspace cannot prepare the required GitHub PR; resume on the source-owning runner with publication support")
 				}
-				opts.Repository, opts.HeadSHA = version.Repository, version.HeadSHA
-				opts.TargetBranch, opts.Message = issue.ProgressBaseRef, req.Issue.Title
-				if issue.Landing != nil {
-					opts.GitHubClient = issue.Landing.GitHubClient
-				}
-				if opts.GitHubClient == nil {
-					client, _, err := r.nativeLandingGitHubClient(ctx, req, workerGitHubPolicy{})
-					if err != nil {
-						return workspace.GitHubPublication{}, fmt.Errorf("prepare required GitHub PR; verify runner authentication and retry with retained source: %w", err)
-					}
-					opts.GitHubClient = client
+				opts, err := publicationOptions(ctx, version, opts)
+				if err != nil {
+					return workspace.GitHubPublication{}, err
 				}
 				return publisher.PrepareGitHubPublication(ctx, info, issue, opts)
 			})
