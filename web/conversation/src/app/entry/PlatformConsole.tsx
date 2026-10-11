@@ -1,5 +1,5 @@
 import React from "react";
-import { Link, Outlet, useRouterState } from "@tanstack/react-router";
+import { Link, Outlet, useParams, useRouterState } from "@tanstack/react-router";
 import { Activity, ArrowUpRight, Building2, ListChecks, ScrollText, Search, Users, UserSearch } from "lucide-react";
 
 import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
@@ -166,7 +166,7 @@ const PLATFORM_ROLES: Record<string, string> = {
   viewer: "Viewer",
 };
 
-const PlatformRoleContext = React.createContext("");
+export const PlatformRoleContext = React.createContext("");
 const PlatformCSRFContext = React.createContext("");
 
 function HealthBadge({ value }: { readonly value: PlatformHealth }): React.ReactElement {
@@ -195,7 +195,7 @@ function PlatformNavigation({ role, email, csrf, organizations, count, health, o
       <SidebarMenu>
         {ids.map((id) => PLATFORM_SECTIONS.find((section) => section.id === id)!).filter((section) => section.id !== "staff" || role === "admin").map((section) => {
           const href = `/platform/${section.id}`;
-          const active = pathname === href;
+          const active = pathname === href || pathname.startsWith(`${href}/`);
           return (
             <SidebarMenuItem key={section.id}>
               <SidebarMenuButton isActive={active} render={<Link to={href as never} aria-label={section.title} aria-current={active ? "page" : undefined} />} onClick={() => setOpenMobile(false)}>
@@ -257,7 +257,9 @@ export function PlatformConsole(): React.ReactElement {
   const tenants = usePlatformResource(() => role === "" ? Promise.resolve(null) : api.platformOrganizations(), [api, role]);
   const health = usePlatformResource(() => role === "" ? Promise.resolve(null) : api.platformHealth(), [api, role]);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const section = PLATFORM_SECTIONS.find((section) => pathname === `/platform/${section.id}`);
+  const section = PLATFORM_SECTIONS.find((section) => pathname === `/platform/${section.id}` || pathname.startsWith(`/platform/${section.id}/`));
+  const { email } = useParams({ strict: false }) as { email?: string };
+  const query = useRouterState({ select: (state) => (state.location.search as { q?: string }).q });
   usePageTitle(section?.title ?? "Platform", "Platform");
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [actions, setActions] = React.useState<HTMLDivElement | null>(null);
@@ -273,7 +275,7 @@ export function PlatformConsole(): React.ReactElement {
             <main className="flex min-h-0 min-w-0 flex-1 flex-col">
               <WorkspacePageHeader className="border-b border-border">
                 <SidebarTrigger className="md:hidden" />
-                <h1 className="min-w-0 truncate text-sm font-medium">{section?.title ?? "Platform"}</h1>
+                <h1 className="min-w-0 truncate text-sm font-medium">{email === undefined ? section?.title ?? "Platform" : <><Link to={"/platform/users" as never} search={{ q: query } as never} className="text-muted-foreground hover:underline">Users</Link><span className="mx-2 text-muted-foreground">/</span>{email}</>}</h1>
                 <div ref={setActions} className="ml-auto flex shrink-0 items-center gap-2" />
               </WorkspacePageHeader>
               <div className="min-h-0 flex-1 overflow-y-auto">

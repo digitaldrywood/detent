@@ -351,7 +351,7 @@ describe("entry API", () => {
 });
 
 describe("entry router", () => {
-  it.each(ENTRY_ROUTE_PATHS.filter((path) => path !== "/platform").map((path) => path.replace("$organization", "org_b")))(
+  it.each(ENTRY_ROUTE_PATHS.filter((path) => path !== "/platform").map((path) => path.replace("$organization", "org_b").replace("$email", "person%40example.test")))(
     "resolves %s",
     async (path) => {
       const router = makeEntryRouter(createMemoryHistory({ initialEntries: [path] }));

@@ -26,6 +26,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -129,44 +130,96 @@ function renderPlatform(api: EntryApi, path = "/platform/tenants") {
 }
 
 describe("platform console", () => {
-  it("searches users only on submit and renders memberships, invitations and incomplete tenants", async () => {
-    let resolve: ((value: typeof userResults) => void) | undefined;
-    const search = vi.fn(() => new Promise<typeof userResults>((done) => { resolve = done; }));
-    renderPlatform(fakeApi({ platformUsers: search }), "/platform/users");
+  it("debounces URL-backed user search and rejects short queries", async () => {
+    const search = vi.fn(async () => userResults);
+    const router = renderPlatform(fakeApi({ platformUsers: search }), "/platform/users");
     const input = await screen.findByRole("searchbox", { name: "Search by email" });
-    const button = screen.getByRole("button", { name: "Search" }) as HTMLButtonElement;
-    expect(button.disabled).toBe(true);
+    vi.useFakeTimers();
     fireEvent.change(input, { target: { value: "ab" } });
-    fireEvent.submit(input.closest("form")!);
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
     expect(search).not.toHaveBeenCalled();
+    expect(router.state.location.search).toEqual({ q: "ab" });
+    fireEvent.change(input, { target: { value: "example" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
     fireEvent.change(input, { target: { value: " example.test " } });
-    expect(button.disabled).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(299); });
     expect(search).not.toHaveBeenCalled();
-    fireEvent.submit(input.closest("form")!);
-    expect(search).toHaveBeenCalledWith("example.test");
-    expect(screen.getByRole("status", { name: "Searching users" })).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Searching…" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.submit(input.closest("form")!);
-    expect(search).toHaveBeenCalledTimes(1);
-    resolve!(userResults);
-    const user = await screen.findByRole("region", { name: "michael@example.test" });
-    expect(user.textContent).toContain("user_01HX_michael");
-    expect(user.textContent).toContain("2026-10-06 14:02Z");
-    expect(within(user).getByText("support")).toBeTruthy();
-    const rows = within(user).getAllByRole("row");
-    expect(rows.map((row) => row.textContent)).toEqual([
-      "OrganizationRoleJoinedTenant", "Parableowner2026-09-28Open tenant →", "Drywood Creekmember2026-10-01Open tenant →", "Example Coinvitedexpires 2026-10-13Open tenant →",
-    ]);
-    expect(within(user).getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual([
-      "/platform/tenants?tenant=org_parable", "/platform/tenants?tenant=org_drywood", "/platform/tenants?tenant=org_example",
-    ]);
-    expect(screen.getByText("No organization membership")).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    vi.useRealTimers();
+    expect(search).toHaveBeenCalledExactlyOnceWith("example.test");
+    expect(router.state.location.search).toEqual({ q: "example.test" });
+    const table = await screen.findByRole("table", { name: "Users" });
+    const member = within(table).getByRole("row", { name: /michael@example.test/ });
+    expect(member.textContent).toContain("support");
+    expect(member.textContent).toContain("2026-10-06 14:02Z");
+    expect(within(member).getByText("2")).toBeTruthy();
+    expect(within(table).getByRole("row", { name: /cory/ }).textContent).toContain("None");
     expect(screen.getByText("Not searched: Slow Tenant")).toBeTruthy();
+  });
+
+  it("restores search and selected user on back and reload with explicit empty sections", async () => {
+    const api = fakeApi({ platformUsers: vi.fn(async () => userResults) });
+    const router = renderPlatform(api, "/platform/users?q=example.test");
+    const input = await screen.findByRole("searchbox") as HTMLInputElement;
+    expect(input.value).toBe("example.test");
+    fireEvent.click(await screen.findByRole("link", { name: "cory+detent-prod-test@example.test" }));
+    const account = await screen.findByRole("region", { name: "Account" });
+    expect(account.textContent).toContain("user_01HX_cory");
+    expect(screen.getByRole("region", { name: "Organizations" }).textContent).toContain("No organization membership");
+    expect(screen.getByRole("region", { name: "Pending invitations" }).textContent).toContain("No pending invitations");
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(api.session).toHaveBeenCalledTimes(1);
+    const selected = router.state.location.href;
+    expect(router.state.location.search).toEqual({ q: "example.test" });
+    await act(async () => { router.history.back(); });
+    expect((await screen.findByRole("searchbox") as HTMLInputElement).value).toBe("example.test");
+    cleanup();
+    renderPlatform(api, selected);
+    expect((await screen.findByRole("region", { name: "Account" })).textContent).toContain("cory+detent-prod-test@example.test");
+    expect(api.platformUsers).toHaveBeenLastCalledWith("cory+detent-prod-test@example.test");
+    fireEvent.click(within(screen.getByRole("heading", { level: 1 })).getByRole("link", { name: "Users" }));
+    expect((await screen.findByRole("searchbox") as HTMLInputElement).value).toBe("example.test");
+  });
+
+  it("separates user organizations and pending invitations with client-side tenant links", async () => {
+    const api = fakeApi({ platformUsers: vi.fn(async () => userResults) });
+    renderPlatform(api, "/platform/users/michael%40example.test");
+    const account = await screen.findByRole("region", { name: "Account" });
+    expect(account.textContent).toContain("user_01HX_michael");
+    expect(within(account).getByRole("link", { name: "Manage in Staff" }).getAttribute("href")).toBe("/platform/staff");
+    const memberships = screen.getByRole("region", { name: "Organizations" });
+    expect(memberships.textContent).toContain("Joined 2026-09-28");
+    expect(memberships.textContent).toContain("owner");
+    expect(within(memberships).getByRole("link", { name: "Parable" }).getAttribute("href")).toBe("/platform/tenants?tenant=org_parable");
+    const invitations = screen.getByRole("region", { name: "Pending invitations" });
+    expect(invitations.textContent).toContain("Expires 2026-10-13");
+    expect(within(invitations).getByRole("link", { name: "Example Co" }).getAttribute("href")).toBe("/platform/tenants?tenant=org_example");
+  });
+
+  it("preserves the 50-result notice and explicit empty search row", async () => {
+    const api = fakeApi({ platformUsers: vi.fn(async (query: string) => ({
+      ...userResults,
+      users: query === "missing" ? [] : Array.from({ length: 50 }, (_, index) => ({ ...userResults.users[0]!, email: `user${index}@example.test` })),
+    })) });
+    renderPlatform(api, "/platform/users?q=example.test");
+    expect(await screen.findByText("Showing up to 50 users. Refine your search to find other users.")).toBeTruthy();
+    const input = screen.getByRole("searchbox");
     fireEvent.change(input, { target: { value: "missing" } });
     fireEvent.submit(input.closest("form")!);
-    expect(screen.queryByRole("region", { name: "michael@example.test" })).toBeNull();
-    resolve!({ users: [], unsearched: [] });
     expect(await screen.findByText("No users match")).toBeTruthy();
+    expect(screen.getByRole("row", { name: "No users match" })).toBeTruthy();
+    expect(screen.getByText("Not searched: Slow Tenant")).toBeTruthy();
+  });
+
+  it("keeps user pages staff-only and hides Staff management from non-admin staff", async () => {
+    const search = vi.fn(async () => userResults);
+    renderPlatform(fakeApi({ platformUsers: search, session: vi.fn(async () => ({ email: "person@example.test", csrf: "c", platform_role: "" })) }), "/platform/users/michael%40example.test");
+    expect(await screen.findByText("You don't have access to this page")).toBeTruthy();
+    expect(search).not.toHaveBeenCalled();
+    cleanup();
+    renderPlatform(fakeApi({ platformUsers: search, session: vi.fn(async () => ({ email: "support@example.test", csrf: "c", platform_role: "support" })) }), "/platform/users/michael%40example.test");
+    await screen.findByRole("region", { name: "Account" });
+    expect(screen.queryByRole("link", { name: "Manage in Staff" })).toBeNull();
   });
 
   it.each([401, 403, 503])("handles user search failure %s", async (status) => {
@@ -178,7 +231,7 @@ describe("platform console", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("Search refused");
     expect(screen.queryByText("No users match")).toBeNull();
     if (status === 401) expect(assign).toHaveBeenCalledWith(SIGN_IN_PLATFORM);
-    expect((screen.getByRole("button", { name: "Search" }) as HTMLButtonElement).disabled).toBe(false);
+
   });
   it.each(["admin", "support", "billing", "viewer"])("shows the shell and readable navigation for %s", async (role) => {
     const api = fakeApi({ session: vi.fn(async () => ({ email: "member@example.test", csrf: "c", platform_role: role })) });
@@ -325,10 +378,9 @@ describe("platform console", () => {
     const dialog = await screen.findByRole("dialog", { name: "Find tenant or user" });
     await user.type(within(dialog).getByRole("combobox", { name: "Find tenant or user" }), "cory@");
     await user.click(await within(dialog).findByRole("option", { name: /cory/ }));
-    const results = await screen.findByRole("region", { name: "cory+detent-prod-test@example.test" });
-    expect(router.state.location.pathname).toBe("/platform/users");
-    expect(router.state.location.search).toEqual({ q: "cory+detent-prod-test@example.test" });
-    expect(results.textContent).toContain("No organization membership");
+    await screen.findByRole("region", { name: "Account" });
+    expect(router.state.location.pathname).toBe("/platform/users/cory%2Bdetent-prod-test%40example.test");
+    expect(screen.getByRole("region", { name: "Organizations" }).textContent).toContain("No organization membership");
     expect(api.session).toHaveBeenCalledTimes(1);
   });
 
