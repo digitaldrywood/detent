@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -102,4 +106,69 @@ func requireNativeIssueContractAtFiling(ctx context.Context, q nativeQueryer, sc
 		return nativeWorkflowInvalid(fmt.Sprintf("Add these required issue sections before filing into %s: %s. File into Backlog to draft it first.", issue.State, strings.Join(missing, ", ")))
 	}
 	return nil
+}
+
+type nativeScheduledRepair struct {
+	policyID string
+	evidence gate.ScheduledEvidence
+}
+
+func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope, request tracker.CreateIssue) *nativeScheduledRepair {
+	origin, machine := issueorigin.Parse(request.Body)
+	if string(scope.project) != issueorigin.DetentCloudProjectID || !machine || origin.Kind != "doctor" || origin.Instance != "github-actions" || scope.credential.Scope == apiScopeWorker || request.GitHubIssueURL != "" || request.Provenance != nil || s.config.ImportBackend == nil {
+		return nil
+	}
+	evidence := gate.ParseScheduledEvidence(request.Body)
+	if len(evidence) != 1 || evidence[0].RunURL != origin.Source {
+		return nil
+	}
+	approval, err := readProjectPolicy(ctx, s.database.db, string(scope.organization)+"/"+string(scope.project))
+	if err != nil || approval.Policy.Authored == nil {
+		return nil
+	}
+	contract, err := config.ResolvePolicyIssueContract(approval.Policy)
+	if err != nil || contract.ScheduledRepairBody() == "" {
+		return nil
+	}
+	repository, err := policyRepository(ctx, s.database.db, string(scope.organization)+"/"+string(scope.project))
+	if err != nil || !strings.EqualFold(repository, "digitaldrywood/detent") || !strings.EqualFold(repository, evidence[0].Repository) {
+		return nil
+	}
+	page, err := s.config.ImportBackend.FetchImportPage(ctx, GitHubImportRequest{Profile: "native", Repository: evidence[0].Repository, Stage: "scheduled", Scheduled: &evidence[0]})
+	if err != nil || page.Scheduled == nil {
+		return nil
+	}
+	return &nativeScheduledRepair{policyID: approval.Policy.ID, evidence: *page.Scheduled}
+}
+
+func applyScheduledRepairContract(ctx context.Context, q nativeQueryer, scope nativeScope, issue *tracker.NativeIssue, now time.Time) {
+	verified := scope.scheduledRepair
+	if verified == nil {
+		return
+	}
+	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	if err != nil || approval.Policy.ID != verified.policyID || approval.Policy.Authored == nil {
+		return
+	}
+	repository, err := policyRepository(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	if err != nil || !strings.EqualFold(repository, "digitaldrywood/detent") || !strings.EqualFold(repository, verified.evidence.Repository) {
+		return
+	}
+	contract, err := config.ResolvePolicyIssueContract(approval.Policy)
+	if err != nil {
+		return
+	}
+	body := contract.ScheduledRepairBody()
+	if body == "" {
+		return
+	}
+	origin, ok := issueorigin.Parse(issue.Body)
+	if !ok || origin.Kind != "doctor" || origin.Instance != "github-actions" || origin.Source != verified.evidence.RunURL {
+		return
+	}
+	issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(body)
+	issue.IssueContract.RecordedAt = now
+	body += fmt.Sprintf("\n\n## Verified CI occurrence\nRun: %s\nJob: %s\nTested commit: %s\nApproved policy: %s", verified.evidence.RunURL, verified.evidence.JobURL, verified.evidence.HeadSHA, verified.policyID)
+	body += "\n\n## Diagnostic evidence (untrusted)\n\n> " + strings.ReplaceAll(html.EscapeString(strings.ReplaceAll(issue.Body, "\r", "")), "\n", "\n> ")
+	issue.Body = issueorigin.Stamp(body, origin) + verified.evidence.Stamp()
 }

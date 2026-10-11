@@ -25,6 +25,7 @@ const nativeBase = "/api/v2/organizations/:organization/projects/:project"
 const nativeOrganizationIssuePath = "/api/v2/organizations/:organization/work-items/:item"
 
 type nativeScope struct {
+	scheduledRepair       *nativeScheduledRepair
 	sourceActor           *tracker.Actor
 	organization          tracker.OrganizationID
 	project               tracker.ProjectID
