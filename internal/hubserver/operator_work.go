@@ -314,6 +314,9 @@ func operatorNativeConflict(err error) error {
 func safeNativeWorkError(err error) error {
 	var refusal *nativeError
 	if errors.As(err, &refusal) && refusal.Code == "invalid_request" {
+		if refusal.publicMessage {
+			return &operatortool.RequestError{Code: refusal.Code, Message: refusal.Message}
+		}
 		switch refusal.Message {
 		case linkedIssueRepositoryRequired, linkedIssueRepositoryMismatch:
 			return &operatortool.RequestError{Code: refusal.Code, Message: refusal.Message}
