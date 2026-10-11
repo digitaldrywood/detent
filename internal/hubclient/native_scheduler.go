@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"slices"
 	"sync"
 	"time"
@@ -264,8 +265,8 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		}
 	}
 	if updateSupported {
-		if request := s.client.runner.updateRequest(); request != nil && (machine.Update == nil || machine.Update.Receipt == nil || machine.Update.Receipt.Request != *request) {
-			if applied := owner(ctx, request); applied != nil {
+		if request := s.client.runner.updateRequest(); request != nil {
+			if applied := owner(ctx, request); applied != nil && (machine.Update == nil || applied.Revision != machine.Update.Revision || !reflect.DeepEqual(applied.Receipt, machine.Update.Receipt)) {
 				s.mu.Lock()
 				s.machine.Update = applied
 				s.mu.Unlock()
