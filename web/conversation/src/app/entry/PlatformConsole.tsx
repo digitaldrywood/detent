@@ -7,7 +7,10 @@ import { WorkspacePageContainer } from "../../components/WorkspacePageContainer.
 import { DetentWordmark } from "../../components/DetentWordmark.tsx";
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription } from "../../components/ui/empty.tsx";
 import { Skeleton } from "../../components/ui/skeleton.tsx";
-import { SettingsSection } from "../settings/settingsLayout.tsx";
+import { SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
+import { Input } from "../../components/ui/input.tsx";
+import { Label } from "../../components/ui/label.tsx";
+import { Table, TableBody, TableCell, TableRow } from "../../components/ui/table.tsx";
 import { PlatformSearch } from "./PlatformSearch.tsx";
 import { PlatformActionsContext } from "./PlatformPageActions.tsx";
 import {
@@ -62,33 +65,41 @@ function Panel({
 }
 
 export function PlatformAllowlistPanel({ value }: { readonly value: PlatformAllowlist }): React.ReactElement {
-  const source = value.source.file === "" ? "the shared entry configuration" : value.source.file;
+  const [query, setQuery] = React.useState("");
+  const term = query.trim().toLowerCase();
+  const open = value.open ?? (value.allowed_domains.length === 0 && value.allowed_emails.length === 0);
+  const description = !value.self_service ? "Self-service organization creation is not configured." :
+    open ? "Any verified account may create an organization." : "Only the domains and emails below.";
+  const lists = [
+    { title: "Domains", entries: value.allowed_domains, empty: "No domains configured.", noMatch: "No domains match this filter." },
+    { title: "Individual emails", entries: value.allowed_emails, empty: "No individual emails configured.", noMatch: "No individual emails match this filter." },
+  ];
   return (
-    <Panel
-      title="Signup allowlist"
-      description={`Read-only. Configured in ${source} under ${value.source.keys.join(" and ")}.`}
-    >
-      {!value.self_service ? (
-        <p className="text-sm text-muted-foreground">Self-service organization creation is not configured.</p>
-      ) : value.open === true ? (
-        <p className="text-sm">Open: any verified account may create an organization.</p>
-      ) : (
-        <dl className="grid gap-3 text-sm sm:grid-cols-2">
-          <div>
-            <dt className="font-medium">Allowed emails</dt>
-            <dd className="text-muted-foreground">
-              {value.allowed_emails.length === 0 ? "None" : value.allowed_emails.join(", ")}
-            </dd>
-          </div>
-          <div>
-            <dt className="font-medium">Allowed domains</dt>
-            <dd className="text-muted-foreground">
-              {value.allowed_domains.length === 0 ? "None" : value.allowed_domains.join(", ")}
-            </dd>
-          </div>
-        </dl>
-      )}
-    </Panel>
+    <section aria-label="Sign-up allowlist" className="grid min-w-0 gap-6">
+      <SettingsSection title="Access" aria-label="Access">
+        <SettingsRow title="Who can sign up" description={`${description} Changes are made in the Cloud configuration.`}
+          control={<Badge variant="outline">{open ? "Open" : "Restricted"}</Badge>} />
+      </SettingsSection>
+      {value.self_service && !open ? <>
+        <div className="w-full max-w-sm">
+          <Label htmlFor="allowlist-filter" className="sr-only">Filter domains and emails</Label>
+          <Input id="allowlist-filter" type="search" size="compact" placeholder="Filter domains and emails"
+            value={query} onChange={(event) => setQuery(event.target.value)} />
+        </div>
+        {lists.map(({ title, entries, empty, noMatch }) => {
+          const filtered = entries.filter((entry) => entry.toLowerCase().includes(term));
+          return <SettingsSection key={title} title={title} aria-label={title}
+            headerAction={<Badge variant="outline">{filtered.length}</Badge>}>
+            {filtered.length === 0 ? <p className="p-4 text-sm text-muted-foreground">{entries.length === 0 ? empty : noMatch}</p> :
+              <Table aria-label={title}>
+                <TableBody>{filtered.map((entry) => <TableRow key={entry}>
+                  <TableCell className="whitespace-normal break-all px-4 py-3 font-medium">{entry}</TableCell>
+                </TableRow>)}</TableBody>
+              </Table>}
+          </SettingsSection>;
+        })}
+      </> : null}
+    </section>
   );
 }
 
