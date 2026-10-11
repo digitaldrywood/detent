@@ -34,6 +34,8 @@ Run `make check-land` before reporting source work complete, fix failures in the
 same run, and report its printed wall time. It uses the scheduled lint version
 and configuration, vet and baseline-aware NilAway, `go build ./...`,
 `go test -short ./...`, invariants, migration and generated-source checks.
+Affected browser journeys run for UI changes; shared UI infrastructure widens
+that selection to the full browser suite.
 Conversation typecheck, vitest and build run when `web/conversation` differs
 from the merge base with `origin/develop`, including staged, unstaged and
 untracked changes. Set `CHECK_LAND_BASE` to the actual landing base when it
@@ -42,21 +44,28 @@ embedded conversation assets with Node 24; ignored bundles are never staged.
 The target generates docs and checks SQL output once, then overlaps lint, vet,
 build and short tests within `TEST_PROCS`. It prints its exit code and elapsed
 seconds. Lint and vet
-use the scheduled tools; they and short tests stay in the landing gate. If a
+use the scheduled tools. If a
 complete run exceeds ten minutes, report stage timings before moving expensive
 integration or race diagnostics to the scheduled suite.
 
 Workers run `make check-land` under this repository's validation instructions.
-The Cloud project uses `gate.run: make check-land` and
+The Cloud project uses `gate.run: make check-landing` and
 `gate.landing_mode: per_landing`; changes require operator re-approval in the Hub.
-Source finalization validates the immutable reviewed head. Clean squashes retain
-that receipt and join the ordered staging batch. Rebases run build, short Go tests
-for touched packages, and lint of touched files on the rebased tree. A command
-failure returns the item to Rework with its output. Full browser, race, NilAway
-and integration checks stay in the scheduled suite and never hold landing.
+The GitHub landing path validates the combined tree with a build, short Go tests
+for touched packages and their dependents, and lint of changed Go files. Module
+changes widen the selection. The native landing path retains its existing
+receipt and rebase validation. A command failure returns the item to Rework with
+its output. Full browser, race, repository-wide NilAway and integration checks
+stay in the scheduled suite and never hold landing. The host also uses the
+approved short command during source finalization, so its durable receipt proves
+that command. The full source gate remains the worker's completion requirement.
+Affected browser checks run before landing; interactions introduced by combining
+UI changes remain a risk covered by the scheduled full suite.
 Focused diagnostics and full scheduled
 suites do not publish a required local commit status. The
-scheduled suite validates pinned integrated develop commits for release tags;
+scheduled suite validates pinned develop commits and release branch heads;
+only green release branch heads receive stable tags. See the
+[release branch policy](branching.md#release-branches). Separately,
 every failing Detent scheduled job enters native Todo at least High under the
 human-approved reporting policy, including infrastructure and unclassified
 failures. Reused job issues preserve Urgent, human questions and operator holds;
@@ -72,9 +81,9 @@ usable for the others. Raise it for a solo run with `TEST_PROCS=8 make test`.
 `make check-land` generates docs and checks SQL output once before overlapping
 lint, vet, build and short tests. It divides `TEST_PROCS` among these stages,
 running them in batches when the budget is below four. Unchanged conversation
-sources need no frontend build or ignored bundle. Landing retains repository
+sources need no frontend build or ignored bundle. Source completion retains repository
 source/workflow invariant tests and migration checks; the full behavioral
-invariant manifest and baseline-aware NilAway audit run in the hourly suite.
+invariant manifest and repository-wide NilAway audit run in the full suite.
 Plain `go test ./...` outside `make` has no cap.
 
 Ordinary `make test`, `make test-fast`, and `make check-land` reuse Go's native

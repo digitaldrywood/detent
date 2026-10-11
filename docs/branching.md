@@ -4,10 +4,10 @@
 
 Detent uses two long-lived branches.
 
-- `develop` is the default integration and staging branch. Start changes from
+- `develop` is the default integration branch. Start changes from
   current `origin/develop` and land reviewed changes into `develop` under
-  [AGENTS.md validation](../AGENTS.md#validation), with no local validation gate
-  or local-gate status prerequisite. No GitHub Actions run
+  [AGENTS.md validation](../AGENTS.md#validation), including the configured
+  per-landing command and no additional local-gate status prerequisite. No GitHub Actions run
   starts for a pull request and no branch ruleset requires a status check.
 - `main` records deliberate production promotions. Stable releases are tagged
   from a green `release/vX.Y` head, and production uses artifacts built from that
@@ -16,10 +16,12 @@ Detent uses two long-lived branches.
   fixes already landed on develop, cherry-picked with `git cherry-pick -x`.
   Develop landing never waits for a release branch.
 
-`develop` always deploys to staging on push, even before scheduled validation.
-Stable production installations and releases use validated version tags.
-An operator may also deploy a pinned develop commit to Cloud through the release
-workflow's operator prerelease path below.
+The release workflow owns both staging and production deployment. It serializes
+the complete sequence without cancelling an active release when newer work
+arrives. Staging consumes the release's signed build artifact; develop pushes
+cannot replace it during smoke validation. Stable production installations and
+releases use validated version tags. An operator may also deploy a pinned develop
+commit through the same workflow's operator prerelease path below.
 
 Genuine source/test failures blocking deployment or a validated release require
 at least High priority in this repository's native reporting context, preserving
@@ -87,11 +89,20 @@ is the next minor after the highest stable tag or existing release series, or
 `v0.1` when neither exists. An existing branch is never overwritten.
 
 The default source is the newest develop ancestor with successful full-suite
-CI and matching `scheduled-full-ci` evidence from that run. A successful
+CI and matching `develop-full-ci` evidence from that run. Legacy
+`scheduled-full-ci` evidence is accepted only from an authenticated develop run.
+A successful
 preflight skip is not evidence. If none exists, use develop tip. An explicit
 source must be an ancestor of develop. For the first cut after introducing this
-flow, select a develop SHA containing the release workflows and scripts; an
-older snapshot cannot run workflows it does not contain.
+flow, select a develop SHA containing the release workflows, scripts and
+`CI_RELEASE_BRANCH` handoff. The cut refuses an incompatible snapshot before
+creating the branch.
+
+A cut also refuses a source already contained in an existing release series or
+stable version tag, including a series still awaiting its first release. Finish
+that series or explicitly select a newer develop snapshot. The cut does not
+silently substitute a different commit. Operator prerelease tags do not prevent
+the first stable release of their source.
 
 ```bash
 gh workflow run release-cut.yml --ref develop
@@ -126,7 +137,8 @@ The hourly scheduled workflow continues to validate pinned develop commits.
 Each develop SHA receives a full suite once across scheduled and manual runs;
 preflight skips completed non-cancelled runs regardless of conclusion. Set
 `force: true` or select a non-`none` `fail_job` to rerun. Green develop evidence
-helps select the next cut and does not publish a stable release.
+is published as `develop-full-ci`, helps select the next cut and does not
+publish a stable release.
 
 Every release push or dispatch runs the same full suite on the event's exact
 SHA, with a separate concurrency group from develop and other release branches.
@@ -134,9 +146,12 @@ A release run never reuses develop evidence or skips because that SHA ran
 elsewhere. Only its successful full-suite finalizer publishes
 `scheduled-full-ci`, verifies that the validated SHA is still the release head,
 and creates an annotated provenance tag. The first tag is `vX.Y.0`; subsequent
-validated heads increment the patch within the same series. A commit already tagged in that series
-receives no new tag or deployment. A moved release head must pass its
-own full suite before tagging.
+validated heads increment the patch within the same series. A commit already
+tagged in that series receives no new tag or replacement evidence. A retry
+authenticates the tag's original status, refuses superseded evidence, and
+dispatches the release workflow only if no run exists for the tag. Retry failed
+jobs in an existing release run. A moved release head must pass its own full
+suite before tagging.
 
 To explicitly validate and tag the current release head:
 

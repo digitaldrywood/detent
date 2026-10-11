@@ -140,14 +140,17 @@ by scanning the machine, or routing by where earlier work ran.
 Run `make check-land` before reporting source work complete and fix every
 failure in the same run. Do not hand back a red gate. Workers run `make check-land`
 under this repository's validation instructions. The Cloud project's approved
-policy must use `gate.run: make check-land` and `gate.landing_mode: per_landing`;
+policy must use `gate.run: make check-landing` and `gate.landing_mode: per_landing`;
 the operator reviews and re-approves this policy in the Hub.
 Signed commit finalization and Change publication still occur. Clean squashes
 join one ordered staging batch and push without a per-landing gate or GitHub
 API call. After
 a rebase, validate the build, short Go tests for touched packages, and lint of
 touched files; a failed command returns the item to Rework with its output.
-GitHub pull-request landing retains its configured target and checks.
+GitHub pull-request landing retains its configured target and checks. This
+repository uses `make check-landing` on the combined tree: build, short tests
+for changed packages and their dependents, and lint of changed Go files. Module
+changes widen the checks. `make check-land` remains the source-completion gate.
 The target generates docs and checks SQL output once, then runs lint, vet,
 build and the whole-repository short unit suite without the race detector
 concurrently within one `TEST_PROCS` budget. It retains source and workflow
@@ -189,7 +192,8 @@ before repeating the command; do not retry an unchanged unsupported fixture.
 Repeat diagnostics only to verify changed behavior or resolve a concrete remaining
 risk. Ordinary submission, completion, admission, and merge do not wait for a
 coverage percentage, fuzz duration, local status, or scheduled run. The scheduled
-full suite validates pinned `develop` commits and tags only green commits.
+full suite validates pinned `develop` commits and every release branch update.
+Only green release branch heads receive stable tags.
 A new validated release deploys staging and passes its smoke before deploying production.
 
 Other projects using Detent choose their own validation commands, required

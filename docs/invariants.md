@@ -72,9 +72,9 @@ only from a verified preserved source checkpoint; unknown changes and
 unavailable authority are refusals, never checkpoint rewrites or relaxed
 comparisons. Human and permission holds retain their authority.
 
-**Enforcement:** `TestPreTurnFailuresDrainInstance`,
+**Enforcement:** `TestPreTurnFailuresRetryWithoutPausingProject`,
 `TestObservedLanePreTurnFailureRemainsInstanceOwned`,
-`TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers`,
+`TestWorkspacePreparationRetriesIssueWithoutPausingProject`,
 `TestClassifyWorkspaceForgeReadFailure`,
 `TestWorkspaceSSHRefusalDoesNotTripProjectBreaker`,
 `TestRecoverDurableWorkspaceGitReadWait`,
@@ -157,6 +157,10 @@ runs build, short Go tests for touched packages, and lint of touched files.
 The receipt records the landing path and tested packages. A moved base repeats
 the clean-squash decision on the new head. GitHub PR landing stays behind its
 project policy opt-in and retains its configured validation and native checks.
+This repository configures `make check-landing` for the combined GitHub landing
+tree: build, short tests for touched packages and dependents, and lint of changed
+Go files. Module changes widen validation. Source completion still runs the
+full `make check-land` gate.
 A failed per-landing command returns to configured Rework with the failing output. The project publishes no local status and sets
 `gate.required_status_checks: []` and `gate.automated_review: "off"`; ordinary
 merge waits for no additional CI producer or scheduled validation, while
@@ -164,8 +168,9 @@ reported failed CI, native base-branch requirements and reported P1 findings
 remain authoritative. Diagnostics support concurrent worktrees without a shared
 validation lock. Other projects retain their configured policies.
 
-Landing checks repository source and workflow invariants; the full behavioral
-invariant manifest runs only in the scheduled suite.
+Source completion checks repository source and workflow invariants and verifies
+that behavioral test references exist without duplicate package groups. The
+full behavioral invariant manifest executes only in the scheduled suite.
 Full browser, integration, race, coverage, fuzz, NilAway and generated-output validation
 run in the full suite: hourly on pinned `develop` commits, and on every push
 or dispatch to `release/*`. Develop receives one full suite per SHA across
@@ -174,8 +179,9 @@ runs regardless of conclusion; manual `force: true` or a non-`none` `fail_job`
 runs it again. Release runs always validate their event SHA, independently of
 develop and other release branches. Release evidence is the green full suite
 on the release branch head, never develop evidence reused after cherry-picks.
-Only a successful full-suite finalizer publishes `scheduled-full-ci`. On a
-release branch, it verifies the validated SHA is still the branch head, creates
+Successful develop validation publishes `develop-full-ci`. Release validation
+publishes `scheduled-full-ci` only when creating new immutable release evidence.
+On a release branch, the finalizer verifies the validated SHA is still the branch head, creates
 an annotated `vX.Y.Z` provenance tag within that branch's `release/vX.Y` series,
 and dispatches the existing release workflow. Green develop commits select
 future cuts but do not publish stable tags. Cuts are weekly by default or
@@ -185,8 +191,10 @@ All release API calls belong to operators and GitHub Actions, never Detent
 runners. Develop landing does not wait for release stabilization. Release
 deploys staging, runs its smoke, then deploys production and runs its smoke;
 a failed smoke stops promotion. Operators promote the validated tag tree to
-`main` through a reviewed PR. A commit already tagged in that series receives no new stable
-tag or deploy. Operator-landed
+`main` through a reviewed PR. A commit already tagged in that series receives no
+new stable tag or replacement status. A retry authenticates the original tag
+evidence, refuses superseded evidence, and resumes dispatch only when no release
+run exists for that tag. Operator-landed
 Cloud deploys may dispatch the existing release workflow on a pinned develop commit:
 its successful `make check-land` Actions check is authenticated by the existing
 provenance owner, and the workflow publishes a signed next-patch `op.<sha12>`

@@ -121,6 +121,11 @@ organization deletion follow the [RFC lifecycle contract](cloud-hub-rfc.md#provi
 
 ## Repository configuration and policy
 
+Before increasing agent concurrency, use the
+[project delivery guide](project-delivery.md) to choose validation boundaries,
+test ownership, host capacity and release requirements. These are project
+choices; Detent's own repository policy is not a template every project must use.
+
 Keep the customer checkout and its `detent.yaml` / `WORKFLOW.md` on the customer
 host. Inspect existing files before using `detent onboarding draft-answers`,
 `explain-answers`, or `build-workflow`. The builder's `--help` describes its local

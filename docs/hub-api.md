@@ -1800,7 +1800,12 @@ configuration is interpreted as per-landing validation. `gate.run` remains a
 scalar command string. Native finalization validates the exact reviewed head,
 and a rebased landing runs the short validation command on its integrated tree.
 The landing barrier endpoints are retired. Detent's project policy uses
-`gate.run: make check-land` and requires operator re-approval in the Hub.
+`gate.run: make check-landing` and requires operator re-approval in the Hub.
+Versions pinned to the retired rolling policy are stale and must return through
+Rework for fresh validation. Stop or drain old runners before this Hub upgrade,
+then update both sides and approve the replacement policy before resuming.
+A stale summary prevents new landing targets; it cannot recall Git credentials
+or a merge already authorized by an old runner.
 Scheduled validation supplies release evidence and never holds ordinary landing.
 
 GitHub's branch protection, required checks, and required reviews decide

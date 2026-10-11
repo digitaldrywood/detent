@@ -332,6 +332,44 @@ required. GET/SSE returns 405; clients that require SSE/OAuth or cannot send
 private bearer headers are unsupported. Report this explicitly and stop.
 An optional GET receiving 405 is supported by the tested SDK.
 
+### Codex connection and confirmation failures
+
+Distinguish client startup, client confirmation and Hub authorization before
+changing the connection. These failures have different owners:
+
+| Symptom | Cause and supported next step |
+| --- | --- |
+| `Environment variable DETENT_API_KEY for MCP server 'detent' is not set` | The process hosting MCP lacks the configured environment variable. A shared Codex app-server may have started before the project environment loaded. Loading direnv in a later terminal does not update that process. Start a separate client from the loaded project environment; do not restart a shared daemon serving other sessions. |
+| `MCP tool call requires approval, but approval policy is never` | Codex rejected the call before contacting Detent. A tool requiring client confirmation cannot run in that session. The user must select a client session that can present confirmation; repeating the call or reconnecting to Detent does not approve it. |
+| A Detent response reports `403` or insufficient scope/grants | The request reached the Hub, which refused the current authority. Check the key scope, selected project and account grants through the existing Settings and connection reads. Client confirmation does not grant server permissions. |
+
+For an interactive operator session, the user can run the following from a
+project whose direnv environment already supplies the private key:
+
+```sh
+direnv exec . codex --no-daemon --sandbox workspace-write --ask-for-approval on-request
+```
+
+These options are supported by Codex CLI 0.162.1; check `codex --help` for the
+installed version. `--no-daemon` runs this session separately with the current
+environment. The user handles Codex's confirmation prompt before the MCP call
+reaches Detent. An agent running under a policy that forbids approval must not
+change that policy to retry a refused operation. Noninteractive `codex exec`
+can perform permitted reads with the loaded environment, but its ability to
+read does not establish permission to execute write tools. Inspect the actual
+session settings when resuming; do not assume the original sandbox or a changed
+user request altered its confirmation policy.
+
+After connecting, verify the selected account and organization with
+`connection_info`, then read the intended project before making an authorized
+change. Detent executes authorized writes directly and returns their result;
+there is no Detent approval URL to open or pending approval to release. Preserve
+truthful tool annotations and scoped credentials. Do not relabel writes as
+read-only, disable confirmation or broaden grants to conceal a client failure.
+See the [Codex MCP configuration reference](https://developers.openai.com/codex/mcp/)
+for client settings and [client confirmation and current authority](mcp-capabilities.md#client-confirmation-and-current-authority)
+for the server contract.
+
 A concise agent handoff is:
 
 > Configure your supported MCP client for the exact copied organization endpoint
