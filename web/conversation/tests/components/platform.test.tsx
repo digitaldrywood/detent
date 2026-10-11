@@ -61,6 +61,10 @@ const allowlist = {
 const health = {
   registry: { ok: true },
   tenants: { expected: 2, running: 1 },
+  tenant_hubs: [
+    { id: "org_alpha", name: "Alpha", running: true, uptime_seconds: 3600, restarts_24h: 0, database_bytes: 1024 },
+    { id: "org_beta", name: "Beta", running: false, uptime_seconds: null, restarts_24h: 2, database_bytes: null },
+  ],
   admission: {
     tenants: 2, max_tenants: 20, allocating: 0, max_concurrent: 1,
     disk_measured: true, free_disk_bytes: 10 * 1024 ** 3, min_free_disk_bytes: 2 * 1024 ** 3,
@@ -211,7 +215,7 @@ describe("platform console", () => {
     expect(within(nav).getByRole("link", { name: "My Alpha" }).getAttribute("href")).toBe("/organizations/org_alpha/organization");
     expect(within(nav).getByRole("link", { name: "My Beta" }).getAttribute("href")).toBe("/organizations/org_beta/work");
     fireEvent.click(screen.getByRole("link", { name: "Health" }));
-    await screen.findByRole("region", { name: "Service health" });
+    await screen.findByRole("alert", { name: "Service health" });
     expect(router.state.location.pathname).toBe("/platform/health");
     expect(document.title).toBe("Health · Platform · Detent");
     expect(screen.getByText("Platform")).toBeTruthy();
@@ -375,12 +379,83 @@ describe("platform console", () => {
 
   it("shows registry, tenant and admission health", async () => {
     renderPlatform(fakeApi(), "/platform/health");
-    const panel = await screen.findByRole("region", { name: "Service health" });
-    expect(within(panel).getByText("OK")).toBeTruthy();
-    expect(within(panel).getByText("1 of 2")).toBeTruthy();
-    expect(within(panel).getByText("2 of 20")).toBeTruthy();
-    expect(within(panel).getByText("10.0 GiB (floor 2.0 GiB)")).toBeTruthy();
-    expect(within(panel).getByText("Not measurable")).toBeTruthy();
+    const panel = await screen.findByRole("alert", { name: "Service health" });
+    expect(panel.getAttribute("data-variant")).toBe("error");
+    expect(panel.textContent).toContain("Registry reachable. 1 of 2 tenant Hubs running.");
+    const capacity = screen.getByRole("region", { name: "Capacity" });
+    expect(within(capacity).getByText("2 / 20")).toBeTruthy();
+    expect(within(capacity).getByRole("meter", { name: "Free disk" }).getAttribute("aria-valuetext")).toBe("10.0 GiB");
+    expect(within(capacity).getByText("Floor 2.0 GiB")).toBeTruthy();
+    expect(within(capacity).getByText("Not measurable")).toBeTruthy();
+    const table = screen.getByRole("table", { name: "Tenant Hubs" });
+    expect(within(table).getByRole("link", { name: "Beta" }).getAttribute("href")).toBe("/platform/tenants?tenant=org_beta");
+    expect(within(table).getByText("Down")).toBeTruthy();
+    expect(within(table).getByText("1 hours")).toBeTruthy();
+  });
+
+  it.each([
+    ["Free disk", 121, "Above floor"],
+    ["Free disk", 120, "Near limit"],
+    ["Free disk", 100, "At limit"],
+    ["Free disk", 99, "At limit"],
+    ["Available memory", 120, "Near limit"],
+    ["Available memory", 100, "At limit"],
+    ["Tenant slots", 80, "Near limit"],
+    ["Tenant slots", 100, "At limit"],
+  ])("labels %s at %s as %s", async (label, reading, expected) => {
+    const admission = { ...health.admission, memory_measured: true, available_memory_bytes: 1000, min_available_memory_bytes: 100,
+      free_disk_bytes: 1000, min_free_disk_bytes: 100, tenants: 2, max_tenants: 100 };
+    if (label === "Free disk") admission.free_disk_bytes = reading;
+    else if (label === "Available memory") admission.available_memory_bytes = reading;
+    else admission.tenants = reading;
+    const value = {
+      ...health,
+      tenants: { expected: 2, running: 2 },
+      tenant_hubs: health.tenant_hubs.map((hub) => ({ ...hub, running: true })),
+      admission,
+    };
+    renderPlatform(fakeApi({ platformHealth: vi.fn(async () => value) }), "/platform/health");
+    const panel = await screen.findByRole("region", { name: "Capacity" });
+    const meter = within(panel).getByRole("meter", { name: label });
+    expect(meter.getAttribute("aria-valuenow")).toBe(String(reading));
+    const detail = document.getElementById(meter.getAttribute("aria-describedby")!);
+    expect(detail?.textContent).toBe(expected);
+    expect(detail?.className).toContain(expected === "Near limit" ? "text-warning-foreground" : expected === "At limit" ? "text-error-foreground" : "text-muted-foreground");
+    expect(screen.getByRole("alert", { name: "Service health" }).getAttribute("data-variant")).toBe(expected === "At limit" ? "error" : expected === "Near limit" ? "warning" : "success");
+  });
+
+  it("refreshes health manually and every 30 seconds while visible, retaining the last reading on failure", async () => {
+    const api = fakeApi();
+    const read = vi.mocked(api.platformHealth);
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const view = renderPlatform(api, "/platform/health");
+    await screen.findByRole("table", { name: "Tenant Hubs" });
+    const before = read.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(read.mock.calls.length).toBe(before + 1));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" }).hasAttribute("disabled")).toBe(false));
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(read.mock.calls.length).toBe(before + 2);
+      expect(screen.getByText("Updated 0s ago")).toBeTruthy();
+      vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(read.mock.calls.length).toBe(before + 2);
+      read.mockRejectedValueOnce(new AccountError({ status: 503, code: "unavailable", message: "Health read unavailable" }));
+      vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+      await act(async () => { fireEvent(document, new Event("visibilitychange")); });
+      expect(screen.getByText("Health read unavailable")).toBeTruthy();
+      expect(screen.getByText("Updated 60s ago")).toBeTruthy();
+      expect(screen.getByRole("table", { name: "Tenant Hubs" })).toBeTruthy();
+      await act(async () => { await view.navigate({ to: "/platform/allowlist" }); });
+      const stopped = read.mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(read.mock.calls.length).toBe(stopped);
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
   });
 
   it("refuses non-staff accounts", async () => {
@@ -440,7 +515,7 @@ describe("platform console", () => {
 
   it.each([
     [{ registry: { ok: true }, tenants: { expected: 2, running: 2 } }, "OK"],
-    [{ registry: { ok: true }, tenants: { expected: 2, running: 1 } }, "Degraded"],
+    [{ registry: { ok: true }, tenants: { expected: 2, running: 1 } }, "Down"],
     [{ registry: { ok: false } }, "Down"],
   ])("renders the endpoint health status as %s", async (health, label) => {
     renderPlatform(fakeApi({ platformHealth: vi.fn(async () => health) }));

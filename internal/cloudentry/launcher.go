@@ -61,6 +61,33 @@ type ExecLauncher struct {
 	closed   bool
 	running  map[string]*supervisedTenant
 	failures map[string]error
+	health   map[string]*tenantProcessHealth
+}
+
+type tenantProcessHealth struct {
+	startedAt time.Time
+	starts    []time.Time
+	observed  bool
+}
+
+func (l *ExecLauncher) Health(id string, now time.Time) (*int64, *int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.health[id]
+	if entry == nil {
+		return nil, nil
+	}
+	restarts := 0
+	for _, at := range entry.starts {
+		if !at.Before(now.Add(-24 * time.Hour)) {
+			restarts++
+		}
+	}
+	if entry.startedAt.IsZero() {
+		return nil, &restarts
+	}
+	uptime := max(int64(0), int64(now.Sub(entry.startedAt)/time.Second))
+	return &uptime, &restarts
 }
 
 const (
@@ -150,6 +177,33 @@ func (l *ExecLauncher) runTenant(ctx context.Context, spec TenantSpec, cmd *exec
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	l.mu.Lock()
+	if l.health == nil {
+		l.health = make(map[string]*tenantProcessHealth)
+	}
+	entry := l.health[spec.Organization.ID]
+	if entry == nil {
+		entry = &tenantProcessHealth{}
+		l.health[spec.Organization.ID] = entry
+	}
+	now := time.Now()
+	kept := entry.starts[:0]
+	for _, at := range entry.starts {
+		if !at.Before(now.Add(-24 * time.Hour)) {
+			kept = append(kept, at)
+		}
+	}
+	entry.starts = kept
+	if entry.observed {
+		entry.starts = append(entry.starts, now)
+	}
+	entry.observed, entry.startedAt = true, now
+	l.mu.Unlock()
+	defer func() {
+		l.mu.Lock()
+		entry.startedAt = time.Time{}
+		l.mu.Unlock()
+	}()
 	result := make(chan error, 1)
 	go func() { result <- cmd.Wait() }()
 	if spec.Check == nil {
