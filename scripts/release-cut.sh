@@ -30,7 +30,7 @@ if [ -z "$source_sha" ]; then
     if [ "$candidate_runs" = '[]' ]; then continue; fi
     statuses="$(gh api --paginate --slurp "repos/$repository/commits/$candidate/statuses?per_page=100")"
     if jq -e --argjson runs "$candidate_runs" '
-      [.[][] | select(.context == "scheduled-full-ci" and (.target_url as $url | any($runs[]; .html_url == $url)))]
+      [.[][] | select((.context == "develop-full-ci" or .context == "scheduled-full-ci") and (.target_url as $url | any($runs[]; .html_url == $url)))]
       | first
       | .state == "success" and (.target_url as $url | any($runs[]; .html_url == $url and .conclusion == "success"))
     ' <<< "$statuses" > /dev/null; then
@@ -42,6 +42,32 @@ if [ -z "$source_sha" ]; then
 fi
 source_sha="$(git rev-parse --verify "$source_sha^{commit}")"
 git merge-base --is-ancestor "$source_sha" origin/develop || { echo 'Release source must be on develop' >&2; exit 1; }
+for path in scripts/release-cut.sh scripts/scheduled-ci-finish.sh .github/workflows/ci.yml .github/workflows/release.yml; do
+  if ! git cat-file -e "$source_sha:$path"; then
+    echo "Release source lacks $path; select a newer develop SHA containing the release flow." >&2
+    exit 1
+  fi
+done
+candidate_ci="$(git show "$source_sha:.github/workflows/ci.yml")"
+candidate_finalizer="$(git show "$source_sha:scripts/scheduled-ci-finish.sh")"
+if [[ "$candidate_ci" != *'CI_RELEASE_BRANCH:'* || "$candidate_finalizer" != *'${CI_RELEASE_BRANCH'* ]]; then
+  echo 'Release source does not pass release-branch identity from CI to its finalizer; select a newer develop SHA.' >&2
+  exit 1
+fi
+covered_branches="$(git for-each-ref --contains="$source_sha" --format='%(refname:strip=3)' refs/remotes/origin/release/)"
+while IFS= read -r existing; do
+  if [[ "$existing" =~ ^release/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    echo "Release source already belongs to $existing; finish that series or select a newer develop SHA." >&2
+    exit 1
+  fi
+done <<< "$covered_branches"
+covered_tags="$(git tag --contains "$source_sha" --list 'v*')"
+while IFS= read -r existing; do
+  if [[ "$existing" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    echo "Release source is already contained in stable release $existing; select a newer develop SHA." >&2
+    exit 1
+  fi
+done <<< "$covered_tags"
 gh api -X POST "repos/$repository/git/refs" -f ref="refs/heads/$branch" -f sha="$source_sha"
 gh workflow run ci.yml --repo "$repository" --ref "$branch" -f force=true
 printf 'Created %s at %s and dispatched the full suite.\n' "$branch" "$source_sha"

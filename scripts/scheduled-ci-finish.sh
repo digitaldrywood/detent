@@ -46,15 +46,24 @@ report_validated() {
   fi
 }
 
+dispatch_release() {
+  local release_tag="$1" runs
+  runs="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?head_sha=$CI_DEVELOP_SHA&per_page=100")"
+  if jq -e --arg tag "$release_tag" 'any(.[].workflow_runs[]; .head_branch == $tag)' <<< "$runs" > /dev/null; then
+    echo "Release workflow already exists for $release_tag; retain its execution and retry failed jobs there."
+    return
+  fi
+  gh api -X POST "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/dispatches" -f ref="$release_tag"
+}
+
 job_count="$(jq '[.[] | select(.name != "Finalize scheduled validation")] | length' "$jobs_file")"
 if [ "$job_count" -ne 15 ]; then
   echo "Expected 15 scheduled validation jobs; observed $job_count" >&2
   false
 fi
 
-status_id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$CI_DEVELOP_SHA" -f state=success -f context=scheduled-full-ci -f target_url="$run_url" -f description='Full scheduled validation passed' --jq .id)"
-
 if [ -z "${CI_RELEASE_BRANCH:-}" ]; then
+  gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$CI_DEVELOP_SHA" -f state=success -f context=develop-full-ci -f target_url="$run_url" -f description='Full develop validation passed' > /dev/null
   echo "Develop validation passed; release tags are published only from release branches."
   if [ "$GITHUB_REPOSITORY" = digitaldrywood/detent ]; then
     report_validated develop
@@ -80,7 +89,22 @@ for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list "$series.*"); do
   if [[ "$existing" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$(git cat-file -t "refs/tags/$existing")" = tag ]; then
     existing_message="$(git for-each-ref --format='%(contents)' "refs/tags/$existing")"
     if [[ "$existing_message" == *'"name":"scheduled-full-ci"'* ]]; then
-      echo "Validated release $existing already contains $CI_DEVELOP_SHA; no new release or deployment."
+      existing_provenance="${existing_message#*<!-- detent-release-provenance:}"
+      existing_provenance="${existing_provenance%% -->*}"
+      existing_status="$(jq -er --arg repository "$GITHUB_REPOSITORY" --arg tag "$existing" --arg commit "$CI_DEVELOP_SHA" '
+        select(.schema == 1 and .repository == $repository and .tag == $tag and .commit == $commit)
+        | [.checks[] | select(.name == "scheduled-full-ci" and .status == "completed" and .conclusion == "success")]
+        | select(length == 1) | .[0].status_id | select(type == "number" and . > 0)
+      ' <<< "$existing_provenance")"
+      existing_evidence="$(gh api "repos/$GITHUB_REPOSITORY/commits/$CI_DEVELOP_SHA/status")"
+      if ! jq -e --arg commit "$CI_DEVELOP_SHA" --argjson status_id "$existing_status" '
+        .sha == $commit and any(.statuses[]; .context == "scheduled-full-ci" and .id == $status_id and .state == "success")
+      ' <<< "$existing_evidence" > /dev/null; then
+        echo "Release $existing evidence is missing or superseded; refusing to redispatch its immutable tag." >&2
+        false
+      fi
+      echo "Validated release $existing already contains $CI_DEVELOP_SHA; preserving its tag and checking release dispatch."
+      dispatch_release "$existing"
       if [ "$GITHUB_REPOSITORY" = digitaldrywood/detent ]; then
         report_validated "$existing"
       fi
@@ -88,6 +112,7 @@ for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list "$series.*"); do
     fi
   fi
 done
+status_id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$CI_DEVELOP_SHA" -f state=success -f context=scheduled-full-ci -f target_url="$run_url" -f description='Full release validation passed' --jq .id)"
 git config user.name 'github-actions[bot]'
 git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 latest="$(git tag --list "$series.*" --sort=-v:refname | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }')"
@@ -105,7 +130,7 @@ Validated release build $tag
 EOF
 git tag -a "$tag" "$CI_DEVELOP_SHA" -F "$message_file"
 git push origin "refs/tags/$tag"
-gh api -X POST "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/dispatches" -f ref="$tag"
+dispatch_release "$tag"
 if [ "$GITHUB_REPOSITORY" = digitaldrywood/detent ]; then
   report_validated "$tag"
 else
