@@ -592,7 +592,10 @@ Uncounted windows retain their existing capacity, and capacity outside all windo
 is zero. Runner, host and reported-capacity limits still apply, so a window count
 can only lower capacity. Timezone and hard-deadline behavior are unchanged.
 The routing API and `update_runner_routing` / `list_runner_routing` carry these
-settings with the existing revision checks. Routing without counts omits
+settings with the existing revision checks. `machine_use` is `shared` by default
+and accepts `shared` or `dedicated`; omitting it in a routing update preserves
+the current designation. It describes declared machine use and never detects
+a person through input devices or console sessions. Routing without counts omits
 `window_slots`; older runners ignore it and retain on/off availability.
 
 The Fleet page links to runner list/detail and project eligibility. Project views,
@@ -681,6 +684,42 @@ Removed and other-organization runners also receive `404`. Optional `from` and
 positive range of at most 30 days and at most 720 rows. The default is the last seven days. Expired hours are omitted.
 Responses include metric counts, sums, extrema and averages derived from each
 metric's count; unavailable averages are omitted.
+
+`GET /api/v2/organizations/{organization}/runners/{runner}/capacity` and
+`get_runner_capacity` add an advisory `recommendation` to the existing capacity
+read. Capacity fields retain their meaning. Recommendations never change routing,
+capacity, slots or dispatch. Shared runners return `person_hours` and `free_hours`
+periods; dedicated runners return one `dedicated` period. Lower-slot availability
+windows declare person hours. Without those windows, person hours are 08:00–22:00
+in the runner timezone (UTC when unset). A host hour overlapping person hours
+uses the person reserve; run peaks are attributed by run start time.
+
+Each period requires 24 covered hours and 10 completed runs with peak memory
+and CPU/wall-time evidence. Covered hours use the minimum memory, CPU and disk
+sample count divided by 120, capped at one per hour. Sparse periods return
+`insufficient_evidence` and evidence counts without a slot range. The read uses
+retained completed host hours and up to 10,000 recent completed runs; `partial`
+reports run truncation. Running and infrastructure-interrupted attempts are excluded.
+
+The memory ceiling is floor((RAM minus reserve) / p90 run peak), capped by
+cores with a p90 CPU requirement of at least one core per slot. Dedicated and
+free hours reserve max(2 GiB, 10% RAM) and one core; person hours reserve
+max(8 GiB, 25% RAM) and two cores. Disk reserves max(20 GiB, 15% total);
+insufficient free disk yields zero slots. When observed disk growth correlates
+with lease occupancy, its p90 bytes per slot additionally caps slots. Otherwise
+there is no measured per-slot disk estimate. GPU is not reserved.
+
+The range reflects the least and most headroom observed after estimating
+background memory and CPU from host metrics and lease-derived slot hours,
+within the resource ceilings. Any warn/critical macOS pressure, hourly mean
+Linux PSI memory `some` avg10 above 10%, or adjacent swap-bearing host hours
+lowers both bounds by at least one and caps them below the affected hour's
+observed slot usage. Swap maxima cannot distinguish active swapping from
+retained swap allocation; PSI summaries cannot identify individual sample spikes.
+The evidence includes coverage, run counts, p90 memory and CPU, reserves,
+measured disk bytes per slot, slot hours and over-capacity hour counts.
+The result remains advice based on retained telemetry, including a zero range
+when observed pressure leaves no safe slot estimate.
 
 Native Hubs advertise `runner_host_metrics` before runners include optional
 `host_metrics` in a heartbeat. A batch contains at most 24 summaries of at most
