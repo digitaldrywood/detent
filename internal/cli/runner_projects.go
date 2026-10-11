@@ -239,6 +239,7 @@ func runnerProjectsForIdentity(ctx context.Context, cfg globalconfig.Config, cli
 		return cfg, errors.New("runner organization does not match enrolled identity")
 	}
 	previous := cfg.Projects
+	previousNative := cfg.Client.NativeProjects
 	cfg.Projects = []globalconfig.Project{}
 	cfg.Client.NativeProjects = map[string]string{}
 	ids := slices.Clone(identity.ProjectIDs)
@@ -253,6 +254,11 @@ func runnerProjectsForIdentity(ctx context.Context, cfg globalconfig.Config, cli
 		remote, err := native.Project(ctx)
 		if err != nil {
 			slog.Error("runner project setup failed", "runner_id", identity.RunnerID, "project_id", id, "attribution", "instance", "error", err)
+			if kept, ok := retainedRunnerProject(previous, previousNative, id, err); ok {
+				delete(cfg.Client.NativeProjects, name)
+				cfg.Client.NativeProjects[kept.ID] = string(id)
+				cfg.Projects = append(cfg.Projects, kept)
+			}
 			continue
 		}
 		if remote.ID != id || remote.OrganizationID != identity.OrganizationID {
@@ -290,6 +296,18 @@ func runnerProjectsForIdentity(ctx context.Context, cfg globalconfig.Config, cli
 		cfg.Projects = append(cfg.Projects, selected)
 	}
 	return cfg, ctx.Err()
+}
+
+func retainedRunnerProject(previous []globalconfig.Project, previousNative map[string]string, id tracker.ProjectID, err error) (globalconfig.Project, bool) {
+	if !errors.Is(err, hubclient.ErrUnavailable) {
+		return globalconfig.Project{}, false
+	}
+	for _, project := range previous {
+		if previousNative[project.ID] == string(id) {
+			return project, true
+		}
+	}
+	return globalconfig.Project{}, false
 }
 
 func runnerProjectCheckout(ctx context.Context, root, name, repository string, retained []globalconfig.Project) (string, string, error) {

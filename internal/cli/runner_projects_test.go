@@ -3,9 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -388,6 +391,50 @@ func TestRunnerCloudProjects(t *testing.T) {
 				if err != nil || len(fileConfig.Projects) != 0 || len(fileConfig.Client.NativeProjects) != 0 {
 					t.Fatalf("file retained Cloud policy: %+v, %v", fileConfig, err)
 				}
+			}
+		})
+	}
+}
+
+func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		kept   bool
+	}{
+		{name: "hub unavailable keeps the running project", status: http.StatusServiceUnavailable, kept: true},
+		{name: "project refusal drops the project", status: http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if strings.HasSuffix(r.URL.Path, "/capabilities") {
+					_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}})
+					return
+				}
+				w.WriteHeader(test.status)
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": "unavailable", "message": "unavailable"})
+			}))
+			t.Cleanup(server.Close)
+			client, err := hubclient.New(hubclient.Config{URL: server.URL + "/organizations/org_example", TokenSource: func() string { return "test" }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			running := globalconfig.Project{ID: "orders", Workflow: "/work/orders/WORKFLOW.md", Workdir: "/work/orders"}
+			cfg := globalconfig.Config{Projects: []globalconfig.Project{running}}
+			cfg.Client.OrganizationID = "org_example"
+			cfg.Client.NativeProjects = map[string]string{"orders": "prj_orders"}
+			got, err := runnerProjectsForIdentity(t.Context(), cfg, client, runnerauth.Identity{OrganizationID: "org_example", ProjectIDs: []tracker.ProjectID{"prj_orders"}}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kept := slices.ContainsFunc(got.Projects, func(project globalconfig.Project) bool {
+				return project.ID == running.ID && project.Workdir == running.Workdir
+			}); kept != test.kept {
+				t.Fatalf("projects=%+v, kept=%v want %v", got.Projects, kept, test.kept)
+			}
+			if mapped := got.Client.NativeProjects["orders"] == "prj_orders"; mapped != test.kept {
+				t.Fatalf("native projects=%v", got.Client.NativeProjects)
 			}
 		})
 	}
