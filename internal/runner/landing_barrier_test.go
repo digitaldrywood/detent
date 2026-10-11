@@ -1,10 +1,12 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/instancelock"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -237,14 +240,26 @@ func (b *repairingBarrierWorkspace) PublishLandingBarrierRepair(_ context.Contex
 	return strings.Repeat("f", 40), nil
 }
 
+type barrierRepairAgent struct {
+	fakeCodexClient
+	policy isolation.Policy
+	pinned bool
+}
+
+func (a *barrierRepairAgent) RunTurn(ctx context.Context, request AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+	a.policy, a.pinned = isolation.FromContext(ctx)
+	return a.fakeCodexClient.RunTurn(ctx, request, update)
+}
+
 type repeatingBarrierOwner struct {
-	cancel     context.CancelFunc
-	reds       int
-	claims     int
-	finishes   int
-	receipts   []gate.CommandResult
-	green      string
-	superseded bool
+	isolationPolicy *isolation.Policy
+	cancel          context.CancelFunc
+	reds            int
+	claims          int
+	finishes        int
+	receipts        []gate.CommandResult
+	green           string
+	superseded      bool
 }
 
 func (o *repeatingBarrierOwner) LandingBarrierCurrent(context.Context, string, string, string) bool {
@@ -257,7 +272,7 @@ func (o *repeatingBarrierOwner) NextLandingBarrier(context.Context, string, stri
 		o.cancel()
 		return tracker.LandingBarrier{}, false, nil
 	}
-	return tracker.LandingBarrier{ID: "barrier", Repository: "https://github.com/example/repo", BaseRef: "main", GreenHead: o.green}, true, nil
+	return tracker.LandingBarrier{ID: "barrier", Repository: "https://github.com/example/repo", BaseRef: "main", GreenHead: o.green, IsolationPolicy: o.isolationPolicy}, true, nil
 }
 
 func (o *repeatingBarrierOwner) FinishLandingBarrier(_ context.Context, _ string, _ tracker.LandingBarrier, result *gate.CommandResult) error {
@@ -282,10 +297,15 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 		wantPublished int
 		wantReverted  string
 		superseded    bool
+		missingPolicy bool
+		tier          string
 	}{
+		{name: "missing policy skips the agent and reverts the culprit", preparedHead: head, reds: 1, verifyExit: 1, green: "g0", commits: []string{"c1", head}, firstBad: 0, missingPolicy: true, wantPublished: 1, wantReverted: "c1"},
+		{name: "missing policy never runs the agent without a culprit", preparedHead: head, reds: 1, missingPolicy: true},
 		{name: "superseded barrier stops the culprit search and repair", preparedHead: head, reds: 1, verifyExit: 1, green: "g0", commits: []string{"c1", "c2", "c3", "c4", head}, firstBad: 2, superseded: true},
 		{name: "unverified repair falls back to reverting the culprit", preparedHead: head, reds: 1, verifyExit: 1, green: "g0", commits: []string{"c1", "c2", "c3", "c4", head}, firstBad: 2, wantTurns: 1, wantPublished: 1, wantReverted: "c3"},
 		{name: "first commit after green is the culprit", preparedHead: head, reds: 1, verifyExit: 1, green: "g0", commits: []string{"c1", head}, firstBad: 0, wantTurns: 1, wantPublished: 1, wantReverted: "c1"},
+		{name: "native trusted repair receives the claim policy", tier: isolation.NativeTrusted, preparedHead: head, reds: 1, wantTurns: 1, wantPublished: 1},
 		{name: "red head is repaired and published", preparedHead: head, reds: 1, wantTurns: 1, wantPublished: 1},
 		{name: "same red head is repaired once", preparedHead: head, reds: 2, wantTurns: 1, wantPublished: 1},
 		{name: "moved base repairs failures that still fail", preparedHead: strings.Repeat("a", 40), reds: 1, verifyExit: 1, wantTurns: 1, wantPublished: 0},
@@ -298,7 +318,14 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 				defer cancel()
 				failedLine := "detent-barrier-failed: go example.com/pkg:TestBroken"
 				backend := &repairingBarrierWorkspace{barrierWorkspace: barrierWorkspace{result: gate.CommandResult{Command: "make verify", HeadSHA: head, ExitCode: 7, Output: "barrier failure sentinel\n" + failedLine + "\ndetent-barrier-failed: browser \n"}}, head: test.preparedHead, verifyExit: test.verifyExit, commits: test.commits, firstBad: test.firstBad}
-				owner := &repeatingBarrierOwner{cancel: cancel, reds: test.reds, green: test.green, superseded: test.superseded}
+				claimPolicy := &isolation.Policy{Tier: isolation.Sandbox, HostServices: []string{"unix:/routing.sock"}}
+				if test.tier != "" {
+					claimPolicy.Tier = test.tier
+				}
+				if test.missingPolicy {
+					claimPolicy = nil
+				}
+				owner := &repeatingBarrierOwner{cancel: cancel, reds: test.reds, green: test.green, superseded: test.superseded, isolationPolicy: claimPolicy}
 				cfg := config.Default()
 				cfg.Gate.LandingMode, cfg.Gate.Run = gate.LandingRollingBarrier, "make verify"
 				cfg = cfg.ForNativeTracker()
@@ -307,8 +334,12 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				agent := &fakeCodexClient{}
-				r := &Runner{workspace: backend, projectID: "project", workflow: workflow, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), agentRuntime: agentRuntime{backends: map[string]AgentBackend{"codex": agent}, router: router}}
+				agent := &barrierRepairAgent{}
+				var logs bytes.Buffer
+				r := &Runner{workspace: backend, projectID: "project", workflow: workflow, logger: slog.New(slog.NewTextHandler(&logs, nil)), agentRuntime: agentRuntime{backends: map[string]AgentBackend{"codex": agent}, router: router}}
+				if test.missingPolicy {
+					r.agentRuntime = agentRuntime{}
+				}
 				r.RunLandingBarriers(ctx, owner)
 				if test.reds > 1 && (len(owner.receipts) != test.reds || owner.receipts[1].Pipeline == nil || len(owner.receipts[1].Pipeline.Timings) == 0 || owner.receipts[1].Pipeline.Timings[0].Stage != "repair") {
 					t.Fatal("next existing barrier receipt lost repair timing")
@@ -319,11 +350,17 @@ func TestRedLandingBarrierRepairsItself(t *testing.T) {
 				if backend.reverted != test.wantReverted {
 					t.Fatalf("reverted=%q want %q", backend.reverted, test.wantReverted)
 				}
-				if test.wantReverted != "" && !strings.Contains(agent.request.Prompt, test.wantReverted) {
+				if test.wantTurns > 0 && test.wantReverted != "" && !strings.Contains(agent.request.Prompt, test.wantReverted) {
 					t.Fatalf("repair prompt omits culprit %q", test.wantReverted)
 				}
 				if agent.calls != test.wantTurns || backend.published != test.wantPublished || backend.prepared != backend.released {
 					t.Fatalf("turns=%d published=%d prepared=%d released=%d", agent.calls, backend.published, backend.prepared, backend.released)
+				}
+				if test.wantTurns > 0 && (!agent.pinned || !reflect.DeepEqual(agent.policy, *claimPolicy) || len(agent.request.ExtraWritableRoots) != 0 || agent.request.TempDir == "") {
+					t.Fatalf("repair policy=%+v pinned=%v request=%+v", agent.policy, agent.pinned, agent.request)
+				}
+				if test.missingPolicy && (strings.Count(logs.String(), "landing barrier repair agent skipped: claim isolation policy is unavailable") != 1 || strings.Contains(logs.String(), "landing barrier repair turn failed") || strings.Contains(logs.String(), "landing barrier repair made no change")) {
+					t.Fatalf("missing-policy logs=%s", logs.String())
 				}
 				if test.wantTurns > 0 && (agent.request.Workspace != "/repair" || !strings.Contains(agent.request.Prompt, "barrier failure sentinel") || !strings.Contains(agent.request.Prompt, head) || !strings.Contains(agent.request.Prompt, "re-run only them")) {
 					t.Fatalf("repair request=%+v", agent.request)

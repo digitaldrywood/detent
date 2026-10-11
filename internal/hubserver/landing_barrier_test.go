@@ -3,11 +3,13 @@ package hubserver
 import (
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -306,5 +308,50 @@ func TestLargestRunnerTakesOverSmallerRunnersBarrier(t *testing.T) {
 	}
 	if taken := start(large, "large-start"); !taken.Running || taken.ID != "large-start" || taken.Owner != large.binding.RunnerID {
 		t.Fatalf("largest runner did not take over: %+v", taken)
+	}
+}
+
+func TestLandingBarrierClaimIsolation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		tier     string
+		services []string
+	}{
+		{name: "sandbox", tier: isolation.Sandbox},
+		{name: "sandbox with routing host services", tier: isolation.Sandbox, services: []string{"unix:/routing.sock"}},
+		{name: "native trusted", tier: isolation.NativeTrusted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			descriptor := hubTestPolicy()
+			descriptor.Gates.LandingMode = gate.LandingRollingBarrier
+			descriptor.Gates.LandingCommandDigest = policy.Digest([]byte("make verify"))
+			descriptor = descriptor.WithID()
+			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			r.redemption.IsolationTier = test.tier
+			r.enroll(t)
+			settings := map[string]any{"expected_revision": 1, "display_name": "Runner", "state": "active", "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}, "isolation_tier": test.tier, "host_services": test.services}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, settings), http.StatusOK)
+			request := tracker.LandingBarrierRequest{Mutation: tracker.Mutation{IdempotencyKey: "start"}, Repository: "https://github.com/example/repo", PolicyID: descriptor.ID, Action: "start", Head: strings.Repeat("e", 40)}
+			want := &isolation.Policy{Tier: test.tier, HostServices: test.services}
+			for _, attempt := range []string{"claim", "replay", "running claim"} {
+				if attempt == "replay" {
+					settings["expected_revision"], settings["isolation_tier"], settings["host_services"] = 2, isolation.NativeTrusted, []string{"unix:/changed.sock"}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, settings), http.StatusOK)
+				}
+				if attempt == "running claim" {
+					request.IdempotencyKey = "retry"
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/landing-barrier", r.redemption.Credential, request)
+				requireNativeStatus(t, response, http.StatusOK)
+				var barrier tracker.LandingBarrier
+				decodeHubResponse(t, response, &barrier)
+				if !barrier.Running || barrier.ID != "start" || !reflect.DeepEqual(barrier.IsolationPolicy, want) {
+					t.Fatalf("attempt=%s barrier=%+v isolation=%+v want=%+v", attempt, barrier, barrier.IsolationPolicy, want)
+				}
+			}
+		})
 	}
 }

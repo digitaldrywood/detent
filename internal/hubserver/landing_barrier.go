@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -127,6 +128,14 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 				return nil, err
 			}
 			barrier.CommandDigest = approved.Policy.Gates.LandingCommandDigest
+			barrier.IsolationPolicy = nil
+			if scope.credential.Runner.RunnerID != "" {
+				snapshot, err := readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
+				if err != nil {
+					return nil, err
+				}
+				barrier.IsolationPolicy = &isolation.Policy{Tier: snapshot.Routing.IsolationTier, HostServices: snapshot.Routing.HostServices}
+			}
 			barrier.ID = request.IdempotencyKey
 			barrier.Owner = landingBarrierOwner(scope)
 			barrier.Started, barrier.Running = latest, true

@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/instancelock"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -157,17 +158,6 @@ func (r *Runner) repairLandingBarrier(ctx context.Context, backend workspace.Lan
 	if !ok {
 		return
 	}
-	_, runtime, _, _ := r.runtimeSnapshot()
-	selection, err := runtime.router.Route(connector.Issue{}, selector.Context{})
-	if err != nil {
-		r.logger.Warn("landing barrier repair unavailable", "error", err)
-		return
-	}
-	agent, ok := runtime.backends[selection.BackendID]
-	if !ok {
-		r.logger.Warn("landing barrier repair unavailable", "error", fmt.Errorf("%w: %s", ErrMissingAgentBackend, selection.BackendID))
-		return
-	}
 	path, head, release, err := repairer.PrepareLandingBarrierRepair(ctx, barrier.ID, barrier.BaseRef)
 	if err != nil {
 		r.logger.Warn("landing barrier repair preparation failed", "error", err)
@@ -214,13 +204,31 @@ func (r *Runner) repairLandingBarrier(ctx context.Context, backend workspace.Lan
 	if superseded() {
 		return
 	}
-	turnCtx, cancel := context.WithTimeout(ctx, barrierRepairDuration)
-	defer cancel()
-	r.logger.Info("landing barrier repair started", "head", head, "culprit", culprit, "backend", selection.BackendID)
-	if _, err := agent.RunTurn(turnCtx, AgentTurnRequest{Workspace: path, TempDir: scratch, Prompt: barrierRepairPrompt(result, failed, culprit), MaxDuration: barrierRepairDuration}, nil); err != nil {
-		r.logger.Warn("landing barrier repair turn failed", "head", head, "error", err)
+	if barrier.IsolationPolicy == nil {
+		r.logger.Warn("landing barrier repair agent skipped: claim isolation policy is unavailable", "head", head, "culprit", culprit)
+	} else {
+		_, runtime, _, _ := r.runtimeSnapshot()
+		selection, err := runtime.router.Route(connector.Issue{}, selector.Context{})
+		if err != nil {
+			r.logger.Warn("landing barrier repair unavailable", "error", err)
+			return
+		}
+		agent, ok := runtime.backends[selection.BackendID]
+		if !ok {
+			r.logger.Warn("landing barrier repair unavailable", "error", fmt.Errorf("%w: %s", ErrMissingAgentBackend, selection.BackendID))
+			return
+		}
+		turnCtx, cancel := context.WithTimeout(isolation.WithPolicy(ctx, *barrier.IsolationPolicy), barrierRepairDuration)
+		defer cancel()
+		r.logger.Info("landing barrier repair started", "head", head, "culprit", culprit, "backend", selection.BackendID)
+		if _, err := agent.RunTurn(turnCtx, AgentTurnRequest{Workspace: path, TempDir: scratch, Prompt: barrierRepairPrompt(result, failed, culprit), MaxDuration: barrierRepairDuration}, nil); err != nil {
+			r.logger.Warn("landing barrier repair turn failed", "head", head, "error", err)
+		}
+		if r.publishVerifiedBarrierRepair(ctx, repairer, path, barrier.BaseRef, head, command, failed, "repair") {
+			return
+		}
 	}
-	if r.publishVerifiedBarrierRepair(ctx, repairer, path, barrier.BaseRef, head, command, failed, "repair") || culprit == "" || superseded() {
+	if culprit == "" || superseded() {
 		return
 	}
 	if err := repairer.RevertLandingBarrierCommit(ctx, path, head, culprit); err != nil {
