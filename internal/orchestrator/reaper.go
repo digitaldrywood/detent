@@ -30,7 +30,6 @@ func (o *Orchestrator) reapWorkspacesIfDue(ctx context.Context, state *State, no
 	if ids := workspaceCleanupIssueIDs(state); len(ids) > 0 {
 		ok, cleaned := o.reapWorkspaceIssueIDs(ctx, state, ids, now)
 		if ok && cleaned && !due {
-			state.LastWorkspaceCleanupAt = now
 			return
 		}
 	}
