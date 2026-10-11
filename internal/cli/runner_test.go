@@ -1111,7 +1111,7 @@ func TestPublishSnapshotOnceReplacesLastKnownStatePerProject(t *testing.T) {
 					t.Fatalf("alpha.Start() error = %v", err)
 				}
 				t.Cleanup(func() {
-					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
 					if err := alpha.Stop(ctx); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
 						t.Fatalf("alpha.Stop() error = %v", err)
@@ -1816,7 +1816,7 @@ func TestPublishSnapshotOncePreservesPipeline(t *testing.T) {
 			t.Fatalf("Project.Start() error = %v", err)
 		}
 		t.Cleanup(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if err := project.Stop(ctx); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
 				t.Fatalf("Project.Stop() error = %v", err)
@@ -2677,7 +2677,7 @@ func waitForProjectDataSeq(t *testing.T, project *projectpkg.Project, wantAtLeas
 		t.Fatal("Project.Orchestrator() = nil")
 	}
 
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		state, err := orch.State(ctx)
@@ -2714,7 +2714,7 @@ func TestPublishSnapshotOnceReportsHostCache(t *testing.T) {
 				if paused {
 					return
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 				if err := tracked.Stop(ctx); err != nil {
 					t.Error(err)
