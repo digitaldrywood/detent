@@ -19,7 +19,10 @@ async function openPlatform(page, { role = "admin", organizations = fixture.acco
     if (path.startsWith("/api/cloud/platform/organizations/")) return route.fulfill({ json: fixture.detail });
     if (path.endsWith("/users")) return route.fulfill({ json: { ...users, users: users.users.filter((user) => user.email.includes(new URL(route.request().url()).searchParams.get("q") ?? "")) } });
     if (path.endsWith("/audit")) return route.fulfill({ json: audit });
-    if (path.endsWith("/members")) return route.fulfill({ json: { members: [], revision: 1, self: { email: account.email, role } } });
+    if (path.endsWith("/members")) return route.fulfill({ json: { members: [
+      { email: account.email, role: "admin", bootstrap: true, added_by: "bootstrap", added_at: "2026-10-07T12:00:00Z", updated_at: "2026-10-09T15:00:00Z" },
+      { email: "support@example.test", role: "support", bootstrap: false, added_by: account.email, added_at: "2026-10-07T12:00:00Z", updated_at: "2026-10-09T15:00:00Z" },
+    ], revision: 1, self: { email: account.email, role } } });
     if (path.endsWith("/allowlist")) return route.fulfill({ json: fixture.allowlist });
     return route.fulfill({ json: fixture.health });
   });
@@ -111,19 +114,47 @@ for (const theme of ["light", "dark"]) {
   for (const width of [1440, 390]) {
     test(`all platform routes keep the shell in ${theme} at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 980 });
-      await page.addInitScript((theme) => { document.documentElement.classList.toggle("dark", theme === "dark"); }, theme);
       await openPlatform(page);
+      await page.evaluate((theme) => {
+        document.documentElement.classList.toggle("dark", theme === "dark");
+        document.documentElement.dataset.theme = theme;
+      }, theme);
       for (const [path, title] of [["tenants", "Tenants"], ["users", "Users"], ["audit", "Audit log"], ["health", "Health"], ["allowlist", "Sign-up allowlist"], ["staff", "Staff"]]) {
         if (width === 390) await page.getByRole("button", { name: "Toggle Sidebar" }).click();
         await page.getByRole("navigation", { name: "Platform navigation" }).getByRole("link", { name: title, exact: true }).click();
         const heading = page.getByRole("heading", { name: title, exact: true, level: 1 });
         await expect(heading).toBeVisible();
         await expect(page.getByRole("alert")).toHaveCount(0);
+        if (path === "staff") {
+          const own = page.getByRole("group", { name: fixture.account.email, exact: true });
+          await expect(own.getByText("You", { exact: true })).toBeVisible();
+          await expect(own.getByText("Admin", { exact: true })).toBeVisible();
+          await expect(own.getByRole("combobox")).toHaveCount(0);
+          await expect(own.getByText("You can't change your own role")).toBeVisible();
+          const member = page.getByRole("group", { name: "support@example.test", exact: true });
+          await expect(member).toContainText(`Added 2026-10-07 by ${fixture.account.email} · changed 2026-10-09`);
+          await expect(member.getByRole("combobox")).toBeVisible();
+          await expect(member.getByRole("button", { name: "Remove" })).toBeVisible();
+          await expect(page.getByRole("region", { name: "Roles", exact: true })).toContainText("Read-only access to this console.");
+        }
         expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
         await test.info().attach(`platform-shell-${path}-${theme}-${width}.png`, {
           body: await page.screenshot({ animations: "disabled", caret: "hide" }),
           contentType: "image/png",
         });
+        if (path === "staff") {
+          await page.getByRole("button", { name: "Add staff member" }).click();
+          const dialog = page.getByRole("dialog", { name: "Add staff member", exact: true });
+          await expect(dialog.getByRole("textbox", { name: "Email" })).toBeVisible();
+          await expect(dialog.getByRole("combobox", { name: "Role", exact: true })).toBeVisible();
+          await expect(dialog.getByRole("textbox", { name: "Reason" })).toBeVisible();
+          await test.info().attach(`platform-staff-add-${theme}-${width}.png`, {
+            body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+            contentType: "image/png",
+          });
+          await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+          await expect(dialog).toHaveCount(0);
+        }
       }
     });
   }
