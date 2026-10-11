@@ -458,6 +458,10 @@ func readChangeSummary(ctx context.Context, query nativeQueryer, scope nativeSco
 		if version.ID != detail.Change.CurrentVersion {
 			continue
 		}
+		if version.Policy.Gates.LandingMode == "rolling_barrier" {
+			policyID = ""
+			break
+		}
 		currentRules := rules
 		currentRules.PolicyID = policyID
 		if policyID != "" && rules.ID != "" && version.PolicyID == version.Policy.ID && version.ReviewPolicy.ID != "" &&

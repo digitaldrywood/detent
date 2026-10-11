@@ -552,11 +552,14 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			continue
 		}
 		if query.NativeScope != nil {
-			allowed, err := nativeIssueContractClaimable(ctx, tx, *query.NativeScope, id)
+			allowed, reason, err := nativeIssueContractClaimable(ctx, tx, *query.NativeScope, id)
 			if err != nil {
 				return tracker.Lease{}, err
 			}
 			if !allowed {
+				if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "skipped", Reason: reason}, now); err != nil {
+					return tracker.Lease{}, err
+				}
 				continue
 			}
 		}

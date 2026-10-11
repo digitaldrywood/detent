@@ -35,40 +35,48 @@ func nativeIssueContractConfig(ctx context.Context, q nativeQueryer, scope nativ
 	return workflow.Config, err
 }
 
-func nativeIssueContractClaimable(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.WorkItemID) (bool, error) {
+func nativeIssueContractClaimable(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.WorkItemID) (bool, string, error) {
 	var native string
 	if err := q.QueryRowContext(ctx, "SELECT native_id, project_id FROM issues WHERE id = ? AND organization_id = ?", id, scope.organization).Scan(&native, &scope.project); err != nil {
-		return false, err
+		return false, "", err
 	}
 	issue, _, err := readNativeIssue(ctx, q, scope, native)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if strings.Contains(strings.ToLower(issue.Body), "detent:no-dispatch") {
-		return false, nil
+		return false, "The issue contains detent:no-dispatch; remove the marker to permit dispatch", nil
 	}
 	if issue.LinkedSource != nil && issue.LinkedSource.Status != "complete" {
-		return true, nil
+		return true, "", nil
 	}
 	if issue.IssueContract.Exempt {
-		return true, nil
+		return true, "", nil
 	}
 	cfg, err := nativeIssueContractConfig(ctx, q, scope)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	target := cfg.BacklogAdmission.TargetState
 	if target == "" {
 		target = "Todo"
 	}
 	if !strings.EqualFold(issue.State, target) {
-		return true, nil
+		return true, "", nil
 	}
 	contract, err := nativeIssueContract(ctx, q, scope)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
-	return contract.Evaluate(nativeContractIssue(issue)).Satisfied(), nil
+	evaluation := contract.Evaluate(nativeContractIssue(issue))
+	var reasons []string
+	if len(evaluation.Missing) > 0 {
+		reasons = append(reasons, "Add or complete these required issue sections: "+strings.Join(evaluation.Missing, ", "))
+	}
+	if evaluation.NeedsConfirmation {
+		reasons = append(reasons, "A human must confirm the success criteria by editing or saving the issue body")
+	}
+	return evaluation.Satisfied(), strings.Join(reasons, "; "), nil
 }
 
 func requireNativeIssueContractAtFiling(ctx context.Context, q nativeQueryer, scope nativeScope, issue tracker.NativeIssue) error {

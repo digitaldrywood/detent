@@ -72,6 +72,14 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 	if err != nil {
 		return err
 	}
+	claimable, contractReason, err := nativeIssueContractClaimable(ctx, q, scope, id)
+	if err != nil {
+		return err
+	}
+	if !claimable && len(candidate.IDs) > 0 && nonExecutableReason == "" {
+		evidence.Scheduling.Outcome = "skipped"
+		evidence.Scheduling.Reason = contractReason
+	}
 	var supplied *tracker.NativeAdmissionContext
 	if len(contexts) > 0 {
 		supplied = &contexts[0]
@@ -107,6 +115,8 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 			if len(a.UnresolvedDependencies) > 0 {
 				a.Reason += "; observed required dependencies remain unfinished"
 			}
+		case !claimable:
+			refuse("no_claimable_work", contractReason)
 		case !ready:
 			refuse("no_claimable_work", "Current Change version is not ready for native landing")
 		default:

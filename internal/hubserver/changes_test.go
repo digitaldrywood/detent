@@ -853,13 +853,15 @@ func TestReviewInstructionsStayWithinTheCommentLimit(t *testing.T) {
 func TestPublishUnderTheDefaultPolicyLands(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		from string
-		want string
+		from        string
+		want        string
+		landingMode string
 	}{
 		{from: "Human Review", want: "Merging"},
 		{from: "In Progress", want: "In Progress"},
+		{from: "In Progress", want: "In Progress", landingMode: "rolling_barrier"},
 	} {
-		t.Run(test.from, func(t *testing.T) {
+		t.Run(test.from+"/"+test.landingMode, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "default")
 			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id = ?", f.project.ID); err != nil {
@@ -878,24 +880,49 @@ func TestPublishUnderTheDefaultPolicyLands(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			descriptor := hubTestPolicy()
+			if test.landingMode != "" {
+				descriptor.Gates.LandingMode = test.landingMode
+				descriptor.Gates.LandingCommandDigest = policy.Digest([]byte("make check-barrier"))
+				descriptor = descriptor.WithID()
+			}
+			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Land me", State: test.from})
 			requireNativeStatus(t, response, http.StatusOK)
 			var issue tracker.NativeIssue
 			decodeHubResponse(t, response, &issue)
+			var worker string
+			var lease tracker.NativeLease
+			if test.landingMode == "rolling_barrier" {
+				worker = f.worker(t, "legacy-worker")
+				lease = claimNativeAttempt(t, f, worker, "legacy-machine", "legacy-session", issue.WorkItemID, descriptor.ID)
+			}
 			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: "Native change"})
 			requireNativeStatus(t, response, http.StatusOK)
 			var change tracker.ChangeRequest
 			decodeHubResponse(t, response, &change)
 			path += "/" + change.ID
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish"}, ChangeVersionInput: changeTestInput()}), http.StatusOK)
+			input := changeTestInput()
+			input.PolicyID = descriptor.ID
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish"}, ChangeVersionInput: input}), http.StatusOK)
 			response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			var detail tracker.ChangeDetail
 			decodeHubResponse(t, response, &detail)
-			if detail.Summary.Status != "reviewed" || detail.Summary.NativeReview != "not_required" {
-				t.Fatalf("summary under the default policy = %#v, want reviewed with no review required", detail.Summary)
+			wantStatus := "reviewed"
+			if test.landingMode == "rolling_barrier" {
+				wantStatus = "stale_policy"
+				request := tracker.LandChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "legacy-landing", LeaseID: lease.ID, FencingToken: lease.FencingToken}, MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: "squash"}
+				refused := performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+detail.Change.CurrentVersion+"/landing", worker, request)
+				requireNativeStatus(t, refused, http.StatusConflict)
+				if !strings.Contains(refused.Body.String(), `"code":"not_reviewed"`) {
+					t.Fatalf("legacy landing did not reach review authority: %s", refused.Body.String())
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
+			}
+			if detail.Summary.Status != wantStatus || detail.Summary.NativeReview != "not_required" {
+				t.Fatalf("summary under the default policy = %#v, want %s with no review required", detail.Summary, wantStatus)
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID), f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)

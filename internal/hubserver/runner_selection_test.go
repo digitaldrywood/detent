@@ -18,9 +18,13 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 		name        string
 		unavailable int
 		ready       bool
+		contract    string
 	}{
-		{"unavailable project yields to ready project", 1, false},
-		{"ready work beyond first candidate page wins", 100, true},
+		{"unavailable project yields to ready project", 1, false, ""},
+		{"ready work beyond first candidate page wins", 100, true, ""},
+		{"invalid contract yields to ready project", 1, false, "missing"},
+		{"invalid contract yields to next candidate", 1, true, "missing"},
+		{"dispatch marker yields to next candidate", 1, true, "marker"},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
@@ -34,7 +38,16 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				approveHubTestPolicy(t, preferred.service, f.base+"/policy", hubTestPolicy())
 			}
 			for i := range scenario.unavailable {
-				preferred.create(t, fmt.Sprintf("unavailable model %d", i))
+				issue := preferred.create(t, fmt.Sprintf("unavailable candidate %d", i))
+				if scenario.contract != "" {
+					body := ""
+					if scenario.contract == "marker" {
+						body = issue.Body + "\n<!-- detent:no-dispatch -->"
+					}
+					if _, err := preferred.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", body, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			var preferredIssue tracker.NativeIssue
 			if scenario.ready {
@@ -44,21 +57,32 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				}
 			}
 			generalIssue := general.create(t, "available model")
-			publishCapacity(t, preferred, r, capacityReport(now))
+			if scenario.contract == "" {
+				publishCapacity(t, preferred, r, capacityReport(now))
+			}
 			claim := providerClaim(r, generalIssue, "general-provider")
 			if scenario.ready {
 				claim.ProviderCandidates = append(claim.ProviderCandidates, providerClaim(r, preferredIssue, "").ProviderCandidates[0])
 			}
+			if scenario.contract != "" {
+				claim.ProviderCandidates = nil
+				claim.WorkItemID = ""
+			}
 			response := performHubAPIRequest(t, preferred.service, http.MethodPost, general.base+"/claims", r.redemption.Credential, claim)
 			if scenario.ready {
 				requireNativeStatus(t, response, http.StatusConflict)
-				response = performHubAPIRequest(t, preferred.service, http.MethodPost, preferred.base+"/claims", r.redemption.Credential, providerClaim(r, preferredIssue, "preferred-provider"))
+				claim = providerClaim(r, preferredIssue, "preferred-provider")
+				if scenario.contract != "" {
+					claim.ProviderCandidates = nil
+					claim.WorkItemID = ""
+				}
+				response = performHubAPIRequest(t, preferred.service, http.MethodPost, preferred.base+"/claims", r.redemption.Credential, claim)
 				generalIssue = preferredIssue
 			}
 			requireNativeStatus(t, response, http.StatusOK)
 			var lease tracker.NativeLease
 			decodeHubResponse(t, response, &lease)
-			if lease.WorkItemID != generalIssue.WorkItemID || lease.ProviderReservation == nil {
+			if lease.WorkItemID != generalIssue.WorkItemID || (scenario.contract == "" && lease.ProviderReservation == nil) {
 				t.Fatalf("provider selection = %#v", lease)
 			}
 		})

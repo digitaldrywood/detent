@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -24,6 +25,8 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		name               string
 		label              string
 		body               string
+		contract           string
+		reason             string
 		dependency         bool
 		extraDependencies  int
 		ignoreDependencies bool
@@ -48,6 +51,10 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		{name: "another runner can admit after first runner selector refusal", heartbeat: true, another: true, label: "excluded", outcome: "skipped", code: "no_claimable_work"},
 		{name: "hosted heartbeat selector refusal", heartbeat: true, label: "excluded", outcome: "skipped", code: "no_claimable_work"},
 		{name: "hosted heartbeat admissible", heartbeat: true, outcome: "ready"},
+		{name: "missing issue contract refuses", heartbeat: true, contract: "missing", outcome: "skipped", code: "no_claimable_work", reason: "Add or complete these required issue sections: Acceptance criteria, Must not break, How we know it worked"},
+		{name: "unconfirmed issue contract refuses", heartbeat: true, contract: "unconfirmed", outcome: "skipped", code: "no_claimable_work", reason: "A human must confirm the success criteria by editing or saving the issue body"},
+		{name: "no dispatch marker refuses", heartbeat: true, body: "<!-- detent:no-dispatch -->", outcome: "skipped", code: "no_claimable_work", reason: "The issue contains detent:no-dispatch; remove the marker to permit dispatch"},
+		{name: "exempt issue contract stays eligible", heartbeat: true, contract: "exempt", outcome: "ready"},
 		{name: "unrelated heartbeat cannot freshen selectors", heartbeat: true, observation: "stale", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
 		{name: "routing change cannot restamp selector revision", heartbeat: true, observation: "revision", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
 		{name: "stored old policy is unknown", heartbeat: true, observation: "policy", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
@@ -125,6 +132,14 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				t.Fatal(err)
 			}
 			body := "private-body /private/runner credential-sentinel" + issueContractTestSections
+			if test.contract == "missing" || test.contract == "exempt" {
+				body = "private-body /private/runner credential-sentinel"
+			}
+			if test.contract == "unconfirmed" || test.contract == "exempt" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET issue_contract_json = ? WHERE native_id = ?", fmt.Sprintf(`{"exempt":%t}`, test.contract == "exempt"), issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.body != "" {
 				body += "\n" + test.body
 			}
@@ -173,7 +188,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				var baseline tracker.NativeRuntimeEvidence
 				decodeHubResponse(t, before, &baseline)
 				baselineOutcome := "unknown"
-				if test.label == "human-owned" || (test.dependency && !test.ignoreDependencies) || test.intake {
+				if test.reason != "" || test.label == "human-owned" || (test.dependency && !test.ignoreDependencies) || test.intake {
 					baselineOutcome = "skipped"
 				}
 				if baseline.Scheduling.Outcome != baselineOutcome || len(baseline.Admission) != 1 || baseline.Admission[0].SelectorObservedAt != nil {
@@ -288,6 +303,9 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			if a.RunnerID != r.binding.RunnerID || a.RunnerRevision < 1 || a.PolicyID != descriptor.ID || a.Outcome != test.outcome || a.ReasonCode != test.code || !a.ObservedAt.Equal(now) || a.Source != "native_claim_candidate_snapshot" {
 				t.Fatalf("admission=%#v", a)
 			}
+			if test.reason != "" && (a.Reason != test.reason || evidence.Scheduling.Reason != test.reason) {
+				t.Fatalf("contract refusal is not actionable: admission=%#v scheduling=%#v", a, evidence.Scheduling)
+			}
 			if test.code == "inactive_state" && len(a.Unavailable) != 0 {
 				t.Fatalf("known nonexecutable work became provider uncertainty: %#v", a)
 			}
@@ -376,7 +394,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 					t.Fatalf("finished dependencies did not restore current eligibility: %s", data)
 				}
 			}
-			if test.name == "admissible native item" || test.name == "known native label refusal" || (test.dependency && !test.intake && !test.privateDependency && test.extraDependencies < 100) {
+			if test.reason != "" || test.contract == "exempt" || test.name == "admissible native item" || test.name == "known native label refusal" || (test.dependency && !test.intake && !test.privateDependency && test.extraDependencies < 100) {
 				claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "candidate-parity", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}, WorkflowStates: current.WorkflowStates, LabelExclude: current.LabelExclude}
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 				status := http.StatusOK
@@ -386,6 +404,19 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				requireNativeStatus(t, response, status)
 				if status == http.StatusConflict && !strings.Contains(response.Body.String(), `"code":"no_claimable_work"`) {
 					t.Fatalf("explanation disagrees with claim refusal: %s", response.Body)
+				}
+				if test.reason != "" {
+					response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var recorded tracker.NativeRuntimeEvidence
+					decodeHubResponse(t, response, &recorded)
+					if recorded.LatestDecision == nil || recorded.LatestDecision.Data.Decision == nil {
+						t.Fatal("claim refusal was not recorded")
+					}
+					decision := recorded.LatestDecision.Data.Decision
+					if decision.Source != "native_claim_eligibility" || decision.Reason != test.reason || decision.WorkItemRevision != issue.Revision || !decision.At.Equal(now) {
+						t.Fatalf("recorded refusal disagrees with current explanation: %#v", decision)
+					}
 				}
 			}
 		})

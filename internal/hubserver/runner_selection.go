@@ -78,6 +78,16 @@ projects:
 				}
 				candidateScope := scope
 				candidateScope.project = project
+				claimable, reason, err := nativeIssueContractClaimable(ctx, tx, candidateScope, id)
+				if err != nil {
+					return 0, false, err
+				}
+				if !claimable {
+					if err := recordNativeSchedulingOutcome(ctx, tx, &candidateScope, id, tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "skipped", Reason: reason}, now); err != nil {
+						return 0, false, err
+					}
+					continue
+				}
 				ready, _, err := nativeLandingCandidateReady(ctx, tx, &candidateScope, id, r.MachineID, now, false)
 				if err != nil {
 					return 0, false, err
