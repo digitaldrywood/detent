@@ -1920,3 +1920,27 @@ func TestNativePublicationRecoveryOnAnyRunner(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeDispositionFromMessageHostPublication(t *testing.T) {
+	report := func(body string) string { return "Done.\n\n```detent-status\nschema: 1\n" + body + "```" }
+	for _, tt := range []struct {
+		name       string
+		message    string
+		wantStatus string
+		wantReason string
+	}{
+		{name: "publication only is complete", message: report("status: blocked\nreason_code: publication_blocked\nblockers: []\nhuman_action: null\n"), wantStatus: "complete"},
+		{name: "pending publish is complete", message: report("status: blocked\nreason_code: awaiting_host_publish\nblockers: []\nhuman_action: null\n"), wantStatus: "complete"},
+		{name: "publication with a blocker stays blocked", message: report("status: blocked\nreason_code: publication_blocked\nblockers:\n  - ref: '#42'\n    reason: Await dependency\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "publication_blocked"},
+		{name: "publication with human action stays blocked", message: report("status: blocked\nreason_code: publication_blocked\nblockers: []\nhuman_action: Approve the release\n"), wantStatus: "blocked", wantReason: "publication_blocked"},
+		{name: "other reason stays blocked", message: report("status: blocked\nreason_code: validation_failed\nblockers: []\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "validation_failed"},
+		{name: "complete stays complete", message: report("status: complete\nblockers: []\nhuman_action: null\n"), wantStatus: "complete"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NativeDispositionFromMessage(tt.message)
+			if got == nil || got.Status != tt.wantStatus || got.ReasonCode != tt.wantReason {
+				t.Fatalf("disposition = %+v, want status %q reason %q", got, tt.wantStatus, tt.wantReason)
+			}
+		})
+	}
+}
