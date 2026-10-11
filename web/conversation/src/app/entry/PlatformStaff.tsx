@@ -10,17 +10,23 @@ import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import { Select, SelectTrigger, SelectValue, SelectPopup, SelectItem } from "../../components/ui/select.tsx";
 import { Spinner } from "../../components/ui/spinner.tsx";
-import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell } from "../../components/ui/table.tsx";
 import { Textarea } from "../../components/ui/textarea.tsx";
 import { ToastProvider, toastManager } from "../../components/ui/toast.tsx";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipPopup } from "../../components/ui/tooltip.tsx";
 import { AccountError } from "../account/api.ts";
 import { newKey } from "../account/idempotency.ts";
+import { SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
 import { type PlatformMember, type PlatformMemberChange, type PlatformMembers } from "./api.ts";
 import { Problem, useEntryApi } from "./EntryScreens.tsx";
 import { redirectPlatformSignIn, usePlatformResource } from "./usePlatformResource.ts";
 
-const ROLES = ["admin", "support", "billing", "viewer"] as const;
+const ROLES = ["admin", "billing", "support", "viewer"] as const;
+const ROLE_DESCRIPTIONS = {
+  admin: "Everything, including staff, plans and AI credits.",
+  billing: "Plans, complimentary grants and AI credits.",
+  support: "Support access into tenants.",
+  viewer: "Read-only access to this console.",
+};
 const roleLabel = (role: string) => role.charAt(0).toUpperCase() + role.slice(1);
 export const STALE_STAFF_MESSAGE = "Someone changed the staff list; reload";
 
@@ -35,7 +41,7 @@ function RoleSelect({ value, onChange, label, id, disabled = false }: {
 }): React.ReactElement {
   return (
     <Select value={value} disabled={disabled} onValueChange={(role) => { if (role) onChange(role); }}>
-      <SelectTrigger id={id} aria-label={label}><SelectValue>{roleLabel(value)}</SelectValue></SelectTrigger>
+      <SelectTrigger id={id} size="sm" aria-label={label}><SelectValue>{roleLabel(value)}</SelectValue></SelectTrigger>
       <SelectPopup>{ROLES.map((role) => <SelectItem key={role} value={role}>{roleLabel(role)}</SelectItem>)}</SelectPopup>
     </Select>
   );
@@ -57,7 +63,7 @@ function MemberDialog({ edit, value, csrf, close, saved, stale }: {
   const [pending, setPending] = React.useState(false);
   const command = React.useRef<PlatformMemberChange | null>(null);
   const submitting = React.useRef(false);
-  const title = edit.action === "add" ? "Add member" : edit.action === "remove" ? `Remove ${email}` :
+  const title = edit.action === "add" ? "Add staff member" : edit.action === "remove" ? `Remove ${email}` :
     `Change role for ${email} from ${roleLabel(edit.member.role)} to ${roleLabel(role)}`;
   const actionLabel = edit.action === "add" ? "Add" : edit.action === "remove" ? "Remove member" : "Change role";
 
@@ -175,33 +181,30 @@ function Staff({ csrf }: { readonly csrf: string }): React.ReactElement {
   }
 
   return <>
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="grid gap-2">
-        <p className="text-sm text-muted-foreground">Platform roles are separate from organization membership.</p>
-        <p className="max-w-3xl text-sm text-muted-foreground">Admin manages staff and everything below. Support may start support access. Billing may grant and revoke plans. Viewer reads the console.</p>
-      </div>
-      <PlatformPageActions><Button size="sm" onClick={() => setEdit({ action: "add" })} disabled={unavailable || value === undefined}><Plus />Add member</Button></PlatformPageActions>
-    </div>
+    <PlatformPageActions><Button size="sm" onClick={() => setEdit({ action: "add" })} disabled={unavailable || value === undefined}><Plus />Add staff member</Button></PlatformPageActions>
     <Problem message={resource.error?.message ?? null} />
     {resource.error ? <Button variant="outline" disabled={resource.loading} onClick={() => { void resource.refresh(); }}>Reload</Button> : null}
     {value === undefined ? resource.loading ? <p className="text-sm text-muted-foreground">Loading staff…</p> : null :
-      <Table aria-label="Platform members">
-        <TableHeader><TableRow><TableHead>Member</TableHead><TableHead>Role</TableHead><TableHead>Added by</TableHead><TableHead>Added</TableHead><TableHead><span className="sr-only">Actions</span></TableHead></TableRow></TableHeader>
-        <TableBody>{value.members.map((member) => {
+      <SettingsSection title="Staff members" aria-label="Staff members" headerAction={<Badge variant="outline">{value.members.length}</Badge>}>
+        {value.members.map((member) => {
           const own = member.email === value.self.email;
           const lastAdmin = member.role === "admin" && admins === 1;
-          const protection = own ? "You cannot change your own role" : lastAdmin ? "At least one admin is required" :
+          const protection = lastAdmin ? "At least one admin is required" :
             member.bootstrap ? "The bootstrap admin cannot be demoted" : null;
           const picker = <RoleSelect label={`Role for ${member.email}`} value={member.role} disabled={unavailable || protection !== null}
             onChange={(role) => { if (role !== member.role) setEdit({ action: "change", member, role }); }} />;
-          return <TableRow key={member.email}>
-            <TableCell><div className="flex flex-wrap items-center gap-2"><span>{member.email}</span>{own ? <Badge variant="outline">you</Badge> : null}{member.bootstrap ? <span className="text-muted-foreground">bootstrap</span> : null}</div></TableCell>
-            <TableCell>{protection ? <Tooltip><TooltipTrigger render={<span tabIndex={0} aria-label={protection} />}>{picker}</TooltipTrigger><TooltipPopup>{protection}</TooltipPopup></Tooltip> : picker}</TableCell>
-            <TableCell>{member.added_by}</TableCell><TableCell>{member.added_at.slice(0, 10)}</TableCell>
-            <TableCell>{own || member.bootstrap || lastAdmin ? null : <Button variant="ghost-destructive" disabled={unavailable} onClick={() => setEdit({ action: "remove", member, role: member.role })}>Remove</Button>}</TableCell>
-          </TableRow>;
-        })}</TableBody>
-      </Table>}
+          return <SettingsRow key={member.email} role="group" aria-label={member.email}
+            title={<span className="flex flex-wrap items-center gap-2"><span className="break-all">{member.email}</span>{own ? <Badge variant="outline">You</Badge> : null}</span>}
+            description={<span className="break-words">Added <time dateTime={member.added_at}>{member.added_at.slice(0, 10)}</time> by {member.added_by} · changed <time dateTime={member.updated_at}>{member.updated_at.slice(0, 10)}</time></span>}
+            control={own ? <div className="flex flex-wrap items-center gap-2"><Badge variant="info">{roleLabel(member.role)}</Badge><span className="text-xs text-muted-foreground">You can't change your own role</span></div> : <>
+              {protection ? <Tooltip><TooltipTrigger render={<span tabIndex={0} aria-label={protection} />}>{picker}</TooltipTrigger><TooltipPopup>{protection}</TooltipPopup></Tooltip> : picker}
+              {member.bootstrap || lastAdmin ? null : <Button size="sm" variant="ghost-destructive" disabled={unavailable} onClick={() => setEdit({ action: "remove", member, role: member.role })}>Remove</Button>}
+            </>} />;
+        })}
+      </SettingsSection>}
+    <SettingsSection title="Roles" aria-label="Roles">
+      {ROLES.map((role) => <SettingsRow key={role} title={roleLabel(role)} description={ROLE_DESCRIPTIONS[role]} />)}
+    </SettingsSection>
     {edit && value ? <MemberDialog edit={edit} value={value} csrf={csrf} close={() => setEdit(null)} stale={stale}
       saved={async (message) => { toastManager.add({ title: message, type: "success" }); await resource.refresh(); }} /> : null}
   </>;
