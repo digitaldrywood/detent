@@ -218,7 +218,10 @@ func TestRunnerCloudProjects(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_orders": "Orders", "prj_tools": "Tools", "prj_unconfigured": "Unconfigured"})
 			hub.repositories["prj_unconfigured"] = ""
-			root := t.TempDir()
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
 			sources := filepath.Join(root, "sources")
 			for _, id := range []string{"prj_orders", "prj_tools"} {
 				checkout(t, filepath.Join(sources, id+".git"))
