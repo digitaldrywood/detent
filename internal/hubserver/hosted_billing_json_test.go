@@ -2,11 +2,13 @@ package hubserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func (f *browserHostedFixture) billingAPI(t *testing.T, account, method, path, body string) *httptest.ResponseRecorder {
@@ -121,14 +123,114 @@ func TestHostedBillingJSONForTheClient(t *testing.T) {
 	}
 }
 
-func TestHostedBillingJSONRefusesCheckoutWithMultipleSubscriptions(t *testing.T) {
+func TestHostedBillingJSONSubscriptionRestrictions(t *testing.T) {
 	t.Parallel()
-	f, _ := newHostedCustomerFixture(t)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_billing_accounts(organization_id,account_id,customer_id,mode,state_json) VALUES ('org_browser_preview','acct_fixture','cus_fixture','test','{\"status\":\"multiple_subscriptions\"}')"); err != nil {
+	for _, test := range []struct {
+		name   string
+		status string
+		cancel bool
+		renews bool
+	}{
+		{"multiple subscriptions", "multiple_subscriptions", false, false},
+		{"active subscription", "active", false, true},
+		{"canceling subscription", "active", true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f, _ := newHostedCustomerFixture(t)
+			state := hostedBillingState{Status: test.status}
+			if test.status == "active" {
+				state.Snapshot = activeBillingSnapshot(f.service.config.now())
+				state.Snapshot.CancelAtPeriodEnd = test.cancel
+			}
+			raw, err := json.Marshal(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_billing_accounts(organization_id,account_id,customer_id,mode,state_json) VALUES ('org_browser_preview','acct_fixture','cus_fixture','test',?)", string(raw)); err != nil {
+				t.Fatal(err)
+			}
+			report := f.billingAPI(t, "owner", http.MethodGet, "/billing", "")
+			requireNativeStatus(t, report, http.StatusOK)
+			if !strings.Contains(report.Body.String(), `"can_checkout":false`) {
+				t.Fatalf("subscription offered checkout: %s", report.Body.String())
+			}
+			usage := f.billingAPI(t, "owner", http.MethodGet, "/billing?view=usage", "")
+			requireNativeStatus(t, usage, http.StatusOK)
+			var view hostedBillingUsageView
+			if err := json.Unmarshal(usage.Body.Bytes(), &view); err != nil {
+				t.Fatal(err)
+			}
+			if view.CanCheckout || (!view.RenewsAt.IsZero()) != test.renews {
+				t.Fatalf("subscription usage flags=%+v", view)
+			}
+		})
+	}
+}
+
+func TestHostedBillingUsageJSON(t *testing.T) {
+	t.Parallel()
+	f, provider := newHostedBillingFixture(t)
+	configureTestCredits(t, f, provider)
+	cfg := f.service.config.Hosted
+	cfg.Plans.Plans = append(cfg.Plans.Plans, capacityHostedPlans().Plans[1:4]...)
+	cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_growth", Plan: PlanReference{ID: "growth", Version: 1}})
+	if err := f.service.database.configureHostedPlans(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	report := f.billingAPI(t, "owner", http.MethodGet, "/billing", "")
-	if !strings.Contains(report.Body.String(), `"can_checkout":false`) {
-		t.Fatalf("multiple subscriptions offered checkout: %s", report.Body.String())
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plans SET record_json=json_set(record_json,'$.allowances.projects',31,'$.monthly_usd_cents',15900) WHERE id='growth' AND version=1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'live',0)", cfg.OrganizationID); err != nil {
+		t.Fatal(err)
+	}
+	window := chatBillingWindow(f.service.config.now(), hostedBillingState{}.Snapshot)
+	for index := range 60 {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,'test',?,-1500,'usage',?)", cfg.OrganizationID, fmt.Sprintf("period-%d", index), window.From.Add(time.Duration(index)*time.Minute).UnixMicro()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index, entry := range []struct {
+		organization, mode, kind string
+		at                       time.Time
+		amount                   int64
+	}{
+		{cfg.OrganizationID, "test", "purchase", window.From, 5000000},
+		{cfg.OrganizationID, "test", "usage", window.From.Add(-time.Microsecond), -7000000},
+		{cfg.OrganizationID, "test", "usage", window.To, -8000000},
+		{cfg.OrganizationID, "live", "usage", window.From, -9000000},
+	} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,?,?,?,?,?)", entry.organization, entry.mode, fmt.Sprintf("excluded-%d", index), entry.amount, entry.kind, entry.at.UnixMicro()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, role := range []string{"owner", "admin", "member"} {
+		t.Run(role, func(t *testing.T) {
+			if err := f.provider.SetMembershipRole(t.Context(), "membership_user_browser_owner", role); err != nil {
+				t.Fatal(err)
+			}
+			response := f.billingAPI(t, "owner", http.MethodGet, "/billing?view=usage", "")
+			if role == "member" {
+				requireNativeStatus(t, response, http.StatusForbidden)
+				return
+			}
+			requireNativeStatus(t, response, http.StatusOK)
+			var view hostedBillingUsageView
+			if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+				t.Fatal(err)
+			}
+			if view.ChargedAIMicros != 90000 || view.AICredits == nil || len(view.AICredits.History) != 0 || len(view.ComparisonPlans) != 3 {
+				t.Fatalf("usage view=%+v", view)
+			}
+			if view.ComparisonPlans[1].Allowances["projects"] != 31 || view.ComparisonPlans[1].MonthlyUSDCents == nil || *view.ComparisonPlans[1].MonthlyUSDCents != 15900 || view.ComparisonPlans[1].PriceID != "price_growth" {
+				t.Fatalf("comparison plan did not read authoritative catalog: %+v", view.ComparisonPlans[1])
+			}
+			if view.CanCheckout != (role == "owner") || view.CanBuyCredits != (role == "owner") || view.CanManage != (role == "owner") {
+				t.Fatalf("incorrect purchase authority: %+v", view)
+			}
+			if !view.ChatUsage.Range.From.Equal(window.From) || !view.ChatUsage.Range.To.Equal(window.To) {
+				t.Fatalf("incorrect billing period: %+v", view.ChatUsage.Range)
+			}
+		})
 	}
 }
