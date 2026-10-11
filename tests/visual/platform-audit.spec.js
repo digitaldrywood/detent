@@ -47,14 +47,19 @@ async function openAudit(page, path = "/platform/audit") {
   return requests;
 }
 
-for (const [name, viewport] of [
-  ["desktop", { width: 1440, height: 1100 }],
-  ["mobile", { width: 390, height: 844 }],
+for (const [name, viewport, theme] of [
+  ["desktop", { width: 1440, height: 1100 }, "light"],
+  ["desktop", { width: 1440, height: 1100 }, "dark"],
+  ["mobile", { width: 390, height: 844 }, "light"],
+  ["mobile", { width: 390, height: 844 }, "dark"],
 ]) {
-  test(`${name} audit supports shared filters and loading older events`, async ({
+  test(`${name} ${theme} audit supports shared filters and loading older events`, async ({
     page,
   }) => {
     await page.setViewportSize(viewport);
+    await page.addInitScript((theme) => {
+      document.documentElement.classList.toggle("dark", theme === "dark");
+    }, theme);
     const requests = await openAudit(page);
     const table = page.getByRole("table", { name: "Audit events" });
     await expect(table.getByRole("row")).toHaveCount(4);
@@ -68,6 +73,10 @@ for (const [name, viewport] of [
         () => document.documentElement.scrollWidth > innerWidth,
       ),
     ).toBe(false);
+    await test.info().attach(`platform-audit-${theme}-${viewport.width}.png`, {
+      body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+      contentType: "image/png",
+    });
     await page.getByRole("button", { name: "Load older events" }).click();
     await expect(table.getByRole("row")).toHaveCount(7);
     await expect(table).toContainText("Provisioning attempt 1");
