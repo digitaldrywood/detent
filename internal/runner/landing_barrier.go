@@ -179,16 +179,14 @@ func (r *Runner) repairLandingBarrier(ctx context.Context, backend workspace.Lan
 		}
 	}()
 	failed := barrierFailures(result.Output)
-	if head != result.HeadSHA {
-		current, _, err := repairer.VerifyLandingBarrierRepair(ctx, path, "", command, failed)
-		if err != nil {
-			r.logger.Warn("landing barrier repair verification failed", "head", head, "error", err)
-			return
-		}
-		if current.ExitCode == 0 {
-			r.logger.Info("landing barrier failures already pass on the current head", "red_head", result.HeadSHA, "head", head)
-			return
-		}
+	recheck, _, err := repairer.VerifyLandingBarrierRepair(ctx, path, "", command, failed)
+	if err != nil {
+		r.logger.Warn("landing barrier repair verification failed", "head", head, "error", err)
+		return
+	}
+	if recheck.ExitCode == 0 {
+		r.logger.Info("landing barrier failures already pass on the current head", "red_head", result.HeadSHA, "head", head)
+		return
 	}
 	scratch, err := os.MkdirTemp("", "detent-barrier-repair-")
 	if err != nil {

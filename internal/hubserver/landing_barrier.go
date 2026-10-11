@@ -115,7 +115,7 @@ func (s *Service) mutateLandingBarrier(c echo.Context) error {
 					return barrier, nil
 				}
 				barrier.Started = barrier.Green
-			} else if barrier.Result != nil && barrier.Result.HeadSHA == request.Head {
+			} else if barrier.Result != nil && barrier.Result.HeadSHA == request.Head && barrier.Result.ExitCode == 0 {
 				return barrier, nil
 			}
 			var latest int64

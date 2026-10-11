@@ -110,9 +110,11 @@ func TestRollingLandingBarrier(t *testing.T) {
 			if repeated := mutate("red-again", "finish", next.ID, red, ""); !repeated.Red || repeated.Repair != "" {
 				t.Fatalf("repeated red=%+v", repeated)
 			}
-			if idle := mutate("idle-red", "start", "", nil, checked); idle.Running {
-				t.Fatal("barrier reran an unchanged head")
+			rerun := mutate("rerun-red", "start", "", nil, checked)
+			if !rerun.Running || rerun.ID == next.ID {
+				t.Fatalf("red head was not rerun: %+v", rerun)
 			}
+			mutate("rerun-red-finish", "finish", rerun.ID, red, "")
 			land("repair", f.create(t, "repair"))
 			next = mutate("repair-start", "start", "", nil, landed)
 			green := *red
