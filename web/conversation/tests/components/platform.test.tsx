@@ -369,13 +369,67 @@ describe("platform console", () => {
 
   });
 
-  it("shows the allowlist read-only with its configuration source", async () => {
-    renderPlatform(fakeApi(), "/platform/allowlist");
-    const panel = await screen.findByRole("region", { name: "Signup allowlist" });
-    expect(within(panel).getByText("dana@example.test")).toBeTruthy();
-    expect(within(panel).getByText("example.org")).toBeTruthy();
-    expect(within(panel).getByText(/\/etc\/detent\/cloud\.yaml under allocation\.allowed_emails and allocation\.allowed_domains/)).toBeTruthy();
-    expect(within(panel).queryByRole("textbox")).toBeNull();
+  it("shows restricted access with individual rows and filters both allowlists live", async () => {
+    const api = fakeApi({ platformAllowlist: vi.fn(async () => ({ ...allowlist,
+      allowed_domains: ["example.org", "detent.build"],
+      allowed_emails: ["dana@example.test", "cory@detent.build", "operator@example.test"],
+    })) });
+    renderPlatform(api, "/platform/allowlist");
+    const panel = await screen.findByRole("region", { name: "Sign-up allowlist" });
+    const access = within(panel).getByRole("region", { name: "Access" });
+    expect(within(access).getByRole("heading", { name: "Who can sign up" })).toBeTruthy();
+    expect(within(access).getByText("Restricted")).toBeTruthy();
+    expect(within(access).getByText("Only the domains and emails below. Changes are made in the Cloud configuration.")).toBeTruthy();
+    expect(panel.textContent).not.toContain(allowlist.source.file);
+    for (const key of allowlist.source.keys) expect(panel.textContent).not.toContain(key);
+    const domains = within(panel).getByRole("region", { name: "Domains" });
+    const emails = within(panel).getByRole("region", { name: "Individual emails" });
+    expect(within(domains).getByText("2")).toBeTruthy();
+    expect(within(emails).getByText("3")).toBeTruthy();
+    expect(within(domains).getAllByRole("row").map((row) => row.textContent)).toEqual(["example.org", "detent.build"]);
+    expect(within(emails).getAllByRole("row").map((row) => row.textContent)).toEqual(["dana@example.test", "cory@detent.build", "operator@example.test"]);
+    const filter = within(panel).getByRole("searchbox", { name: "Filter domains and emails" });
+    fireEvent.change(filter, { target: { value: " DETENT " } });
+    expect(within(domains).getAllByRole("row").map((row) => row.textContent)).toEqual(["detent.build"]);
+    expect(within(emails).getAllByRole("row").map((row) => row.textContent)).toEqual(["cory@detent.build"]);
+    expect(within(domains).getByText("1")).toBeTruthy();
+    expect(within(emails).getByText("1")).toBeTruthy();
+    fireEvent.change(filter, { target: { value: "no-match" } });
+    expect(within(domains).getByText("No domains match this filter.")).toBeTruthy();
+    expect(within(emails).getByText("No individual emails match this filter.")).toBeTruthy();
+    expect(within(domains).getByText("0")).toBeTruthy();
+    expect(within(emails).getByText("0")).toBeTruthy();
+    fireEvent.change(filter, { target: { value: "" } });
+    expect(within(domains).getAllByRole("row")).toHaveLength(2);
+    expect(within(emails).getAllByRole("row")).toHaveLength(3);
+    expect(api.platformAllowlist).toHaveBeenCalledTimes(1);
+    expect(within(panel).queryByRole("button")).toBeNull();
+  });
+
+  it.each([
+    { self_service: true, open: true, description: "Any verified account may create an organization." },
+    { self_service: true, open: undefined, description: "Any verified account may create an organization." },
+    { self_service: false, open: undefined, description: "Self-service organization creation is not configured." },
+  ])("shows open access without list sections for $self_service self-service and $open open mode", async ({ self_service, open, description }) => {
+    renderPlatform(fakeApi({ platformAllowlist: vi.fn(async () => ({ ...allowlist, self_service, open,
+      allowed_domains: [], allowed_emails: [],
+    })) }), "/platform/allowlist");
+    const panel = await screen.findByRole("region", { name: "Sign-up allowlist" });
+    expect(within(panel).getByText("Open")).toBeTruthy();
+    expect(within(panel).getByText(`${description} Changes are made in the Cloud configuration.`)).toBeTruthy();
+    expect(within(panel).queryByRole("region", { name: "Domains" })).toBeNull();
+    expect(within(panel).queryByRole("region", { name: "Individual emails" })).toBeNull();
+    expect(within(panel).queryByRole("searchbox")).toBeNull();
+  });
+
+  it.each(["allowed_domains", "allowed_emails"] as const)("keeps restricted access when only %s is configured", async (list) => {
+    renderPlatform(fakeApi({ platformAllowlist: vi.fn(async () => ({ ...allowlist, open: undefined,
+      allowed_domains: [], allowed_emails: [], [list]: allowlist[list],
+    })) }), "/platform/allowlist");
+    const panel = await screen.findByRole("region", { name: "Sign-up allowlist" });
+    expect(within(panel).getByText("Restricted")).toBeTruthy();
+    expect(within(panel).getByText(allowlist[list][0]!)).toBeTruthy();
+    expect(within(panel).getByText(list === "allowed_domains" ? "No individual emails configured." : "No domains configured.")).toBeTruthy();
   });
 
   it("shows registry, tenant and admission health", async () => {

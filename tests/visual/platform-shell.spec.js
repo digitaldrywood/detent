@@ -44,12 +44,12 @@ test("desktop platform shell redirects to tenants and keeps chrome across pages"
   await expect(nav.getByRole("link", { name: "Health" })).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("table", { name: "Tenants", exact: true })).toHaveCount(0);
   await nav.getByRole("link", { name: "Sign-up allowlist" }).click();
-  await expect(page.getByRole("region", { name: "Signup allowlist" })).toContainText("example.test");
+  await expect(page.getByRole("region", { name: "Sign-up allowlist" })).toContainText("example.test");
   await expect(page.getByText("Platform", { exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Service health" })).toHaveCount(0);
   expect(documentRequests).toEqual([]);
   await page.reload();
-  await expect(page.getByRole("region", { name: "Signup allowlist" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Sign-up allowlist" })).toBeVisible();
 });
 
 for (const role of ["support", "billing", "viewer"]) {
@@ -87,7 +87,7 @@ test("mobile platform navigation opens a sheet and closes on selection", async (
   await sheet.getByRole("link", { name: "Sign-up allowlist" }).click();
   await expect(sheet).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Sign-up allowlist", exact: true })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Signup allowlist" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Sign-up allowlist" })).toBeVisible();
 });
 
 test("the chooser exposes the platform entry only for platform members", async ({ page }) => {
@@ -119,6 +119,12 @@ for (const theme of ["light", "dark"]) {
         const heading = page.getByRole("heading", { name: title, exact: true, level: 1 });
         await expect(heading).toBeVisible();
         await expect(page.getByRole("alert")).toHaveCount(0);
+        if (path === "allowlist") {
+          const access = page.getByRole("region", { name: "Access", exact: true });
+          await expect(access.getByText("Restricted", { exact: true })).toBeVisible();
+          await expect(page.getByRole("table", { name: "Domains", exact: true }).getByText("example.test", { exact: true })).toBeVisible();
+          await expect(page.getByRole("searchbox", { name: "Filter domains and emails" })).toBeVisible();
+        }
         expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
         await test.info().attach(`platform-shell-${path}-${theme}-${width}.png`, {
           body: await page.screenshot({ animations: "disabled", caret: "hide" }),
