@@ -259,7 +259,8 @@ func (s *Service) applyRunnerUpdate(c echo.Context) error {
 
 func runnerUpdateSuperseded(current runnerauth.UpdateRequest, receipt *runnerauth.UpdateReceipt, target string) bool {
 	reported := receipt != nil && receipt.Request == current
-	if reported && !slices.Contains([]string{"running", "refused", "uncertain"}, receipt.Status) {
+	completed := reported && receipt.Status == "applied" && receipt.Running != nil && receipt.Applied != nil && receipt.Running.Matches(*receipt.Applied)
+	if reported && !completed && !slices.Contains([]string{"running", "refused", "uncertain"}, receipt.Status) {
 		return false
 	}
 	comparison, err := update.CompareVersions(current.Version, target)
