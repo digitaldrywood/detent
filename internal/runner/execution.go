@@ -99,8 +99,11 @@ func hostPublicationOnly(signal *workpad.Signal) bool {
 	if signal.Status != workpad.StatusBlocked || len(signal.Blockers) != 0 || signal.HumanAction != "" {
 		return false
 	}
-	reason := strings.ToLower(signal.ReasonCode)
-	return strings.Contains(reason, "publication") || strings.Contains(reason, "publish")
+	switch strings.ToLower(strings.TrimSpace(signal.ReasonCode)) {
+	case "publication_blocked", "awaiting_host_publish", "host_publication_pending":
+		return true
+	}
+	return false
 }
 
 type AvailabilityExecution interface {
