@@ -9,6 +9,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func (s *Service) platformTenantUsage(c echo.Context) error {
+	usage, err := s.hostedFleetUsage(c.Request().Context())
+	if err != nil {
+		return s.internalAPIError(c, "usage_unavailable", "Usage is unavailable", err)
+	}
+	return c.JSON(http.StatusOK, usage)
+}
+
 func (s *Service) platformTenantMembers(c echo.Context) error {
 	ctx := c.Request().Context()
 	provider, err := s.hostedProviderOrganization(ctx)

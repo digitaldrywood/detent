@@ -192,7 +192,7 @@ func testPlatformEntitlement(t *testing.T, feature, planID string) {
 	pilotStatus(t, "revoke", admin.json(http.MethodPost, path, csrf[admin], revoke), http.StatusOK)
 	response = admin.get(path)
 	pilotDecode(t, response, &state)
-	if len(state.Grants) != 0 || state.Revision != revision+2 || slices.Contains(state.Features, "model_choice") {
+	if len(state.Grants) != 0 || len(state.GrantHistory) != 1 || state.GrantHistory[0].RevokedAt == nil || state.Revision != revision+2 || slices.Contains(state.Features, "model_choice") {
 		t.Fatalf("entitlements after revoke = %+v", state)
 	}
 

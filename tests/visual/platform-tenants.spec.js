@@ -19,6 +19,7 @@ async function openTenants(page, { role = "admin", path = "/platform/tenants" } 
     const pathname = new URL(route.request().url()).pathname;
     if (pathname.endsWith("/organizations")) return route.fulfill({ json: { ...fixture.organizations, organizations: [ready, free, failed], unavailable: ["plan", "grants", "member_count", "runner_count"] } });
     if (pathname.endsWith("/health")) return route.fulfill({ json: fixture.health });
+    if (pathname.endsWith("/audit")) return route.fulfill({ json: { rows: [], events: [], tenants: [], next_cursor: "" } });
     const organization = pathname.endsWith("org_failed") ? failed : pathname.endsWith("org_free") ? free : ready;
     return route.fulfill({ json: { ...fixture.detail, organization: { ...organization, can_support: organization.state === "ready" && ["support", "admin"].includes(role) }, can_grant: ["billing", "admin"].includes(role), can_resume: organization.state === "failed" && role === "admin",
       members: organization.state === "failed" ? null : fixture.detail.members, runners: organization.state === "failed" ? null : organization.id === "org_free" ? [] : fixture.detail.runners, projects: organization.state === "failed" ? null : fixture.detail.projects,
@@ -26,7 +27,7 @@ async function openTenants(page, { role = "admin", path = "/platform/tenants" } 
     } });
   });
   await page.goto(origin + path);
-  if (path.includes("?tenant=") || path.includes("/tenants/org_")) await expect(page.getByRole("region", { name: "Model Choice Labs", exact: true })).toBeVisible();
+  if (path.includes("?tenant=") || path.includes("/tenants/org_")) await expect(page.getByRole("region", { name: "Organization", exact: true })).toBeVisible();
   else await expect(page.getByRole("table", { name: "Tenants", exact: true })).toBeVisible();
 }
 
@@ -75,24 +76,49 @@ for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844
       await expect(page.getByRole("combobox", { name: "Plan", exact: true })).toContainText("Growth");
       await expect(page.getByRole("combobox", { name: "Status", exact: true })).toContainText("Ready");
       await table.getByRole("link", { name: "Model Choice Labs", exact: true }).click();
-      const tenant = page.getByRole("region", { name: "Model Choice Labs", exact: true });
+      const tenant = page.getByRole("region", { name: "Organization", exact: true });
       await expect(tenant).toBeVisible();
       await expect(page).toHaveURL(listURL.replace("/tenants?", "/tenants/org_preview?"));
       await page.reload();
       await expect(tenant).toBeVisible();
-      await tenant.getByRole("link", { name: "← Back to tenants" }).click();
-      await expect(page).toHaveURL(listURL);
+      await page.evaluate((theme) => document.documentElement.classList.toggle("dark", theme === "dark"), theme);
+      await expect(page.getByRole("region", { name: "Organization" })).toContainText("owner@example.test");
+      await expect(page.getByRole("meter", { name: "Projects", exact: true })).toHaveAttribute("aria-valuetext", "2 of 5");
+      await test.info().attach("Tenant overview", { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+      await page.getByRole("button", { name: "Members 1", exact: true }).click();
+      await expect(page.getByRole("region", { name: "Members", exact: true })).toContainText("owner@example.test");
+      await page.getByRole("button", { name: "Runners 1", exact: true }).click();
+      await expect(page.getByRole("region", { name: "Runners", exact: true })).toContainText("Online");
+      await page.getByRole("button", { name: "Projects 1", exact: true }).click();
+      await expect(page.getByRole("region", { name: "Projects", exact: true })).toContainText("Detent");
+      await page.getByRole("button", { name: "Activity", exact: true }).click();
+      await expect(page.getByRole("region", { name: "Provisioning timeline" })).toContainText("Requested");
+      await page.reload();
+      await expect(page.getByRole("button", { name: "Activity", exact: true })).toHaveAttribute("aria-pressed", "true");
+      await page.getByRole("main").getByRole("link", { name: "Tenants", exact: true }).click();
+      const expectedList = new URL(listURL);
+      await expect(page).toHaveURL((url) =>
+        url.pathname === expectedList.pathname &&
+        Array.from(expectedList.searchParams).every(([key, value]) => url.searchParams.get(key) === value) &&
+        !url.searchParams.has("section"),
+      );
     });
   }
 }
 
 for (const role of ["viewer", "support", "billing", "admin"]) {
   test(`${role} tenant actions`, async ({ page }) => {
-    await openTenants(page, { role, path: "/platform/tenants?tenant=org_preview" });
-    const sheet = page.getByRole("region", { name: "Model Choice Labs", exact: true });
-    await expect(sheet.getByRole("region", { name: "Members (1)" })).toBeVisible();
-    await expect(sheet.getByRole("button", { name: "Start support access" })).toHaveCount(["admin", "support"].includes(role) ? 1 : 0);
-    await expect(sheet.getByRole("button", { name: "Grant complimentary plan" })).toHaveCount(["admin", "billing"].includes(role) ? 1 : 0);
-    await expect(sheet.getByRole("button", { name: "Resume provisioning" })).toHaveCount(0);
+    await openTenants(page, { role, path: "/platform/tenants/org_preview" });
+    await expect(page.getByRole("region", { name: "Organization" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Support access" })).toHaveCount(["admin", "support"].includes(role) ? 1 : 0);
+    await expect(page.getByRole("button", { name: "Change plan" })).toHaveCount(["admin", "billing"].includes(role) ? 1 : 0);
+    if (["admin", "support"].includes(role)) {
+      await page.getByRole("button", { name: "Support access" }).click();
+      const dialog = page.getByRole("dialog", { name: "Start support access", exact: true });
+      await expect(dialog.getByRole("combobox", { name: "Reason" })).toContainText("Customer asked for help");
+      await dialog.getByRole("button", { name: "Cancel" }).click();
+      await expect(dialog).toBeHidden();
+    }
   });
 }

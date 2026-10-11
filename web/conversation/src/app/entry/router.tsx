@@ -58,7 +58,7 @@ export const ENTRY_ROUTE_PATHS = [
   "/organizations/$organization/provisioning",
   "/platform",
   "/platform/tenants",
-  "/platform/tenants/$tenantId",
+  "/platform/tenants/$organization",
   "/platform/users",
   "/platform/staff",
   "/platform/audit",
@@ -85,14 +85,14 @@ const platformRoutes = platformRoute.addChildren([
     path: "/tenants",
     validateSearch: validateTenantSearch,
     beforeLoad: ({ search }) => {
-      if (search.tenant) throw redirect({ to: "/platform/tenants/$tenantId", params: { tenantId: search.tenant }, search: { ...search, tenant: undefined }, replace: true } as never);
+      if (search.tenant) throw redirect({ to: "/platform/tenants/$organization", params: { organization: search.tenant }, search: { ...search, tenant: undefined }, replace: true } as never);
     },
     component: PlatformTenantsPage,
   }),
   createRoute({
     getParentRoute: () => platformRoute,
-    path: "/tenants/$tenantId",
-    validateSearch: validateTenantSearch,
+    path: "/tenants/$organization",
+    validateSearch: (search: Record<string, unknown>) => ({ ...validateTenantSearch(search), section: typeof search.section === "string" ? search.section : undefined }),
     component: PlatformTenantPage,
   }),
   createRoute({

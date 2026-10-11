@@ -1,9 +1,18 @@
-// Complimentary plan grants in the platform console. Only entitlement
-// administrators get this panel; the entry re-checks that on every request,
-// reaches the tenant Hub with its own credential, and forwards the revision and
-// idempotency key minted here.
 import React from "react";
 
+import { SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
+import {
+  Tooltip,
+  TooltipPopup,
+  TooltipProvider,
+  TooltipTrigger,
+} from "../../components/ui/tooltip.tsx";
+import {
+  planDisplayName,
+  platformTime,
+  readableKey,
+  tenantPlanGrant,
+} from "./platformFormat.ts";
 import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import {
@@ -16,6 +25,13 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../../components/ui/dialog.tsx";
+import {
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import {
@@ -43,18 +59,8 @@ import { useEntryApi } from "./EntryScreens.tsx";
 export const STALE_PLAN_MESSAGE =
   "Someone changed this organization's plan; reload and try again.";
 
-function planName(plan: PlanReference): string {
-  return `${plan.id} v${plan.version}`;
-}
-
 function planKey(plan: PlanReference): string {
   return `${plan.id}@${plan.version}`;
-}
-
-function day(value: string | null): string {
-  if (value === null) return "Never";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toISOString().slice(0, 10);
 }
 
 function failureMessage(error: unknown): string {
@@ -117,12 +123,14 @@ export function GrantComplimentaryDialog({
   csrf,
   onChanged,
   modelChoice = false,
+  trigger,
 }: {
   readonly organization: PlatformOrganization;
   readonly entitlements: OrganizationEntitlements;
   readonly csrf: string;
   readonly onChanged: () => Promise<void>;
   readonly modelChoice?: boolean;
+  readonly trigger?: (onOpen: () => void, disabled: boolean) => React.ReactNode;
 }): React.ReactElement {
   const [open, setOpen] = React.useState(false);
   const choices = entitlements.plans.filter(
@@ -189,15 +197,44 @@ export function GrantComplimentaryDialog({
 
   return (
     <Dialog open={open} onOpenChange={reset}>
-      <Button
-        size="sm"
-        onClick={() => reset(true)}
-        disabled={
-          modelChoice && (entitlements.features ?? []).includes("model_choice")
-        }
-      >
-        {modelChoice ? "Grant model choice" : "Grant complimentary plan"}
-      </Button>
+      {trigger ? (
+        trigger(
+          () => reset(true),
+          modelChoice
+            ? (entitlements.features ?? []).includes("model_choice")
+            : choices.length === 0,
+        )
+      ) : (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span
+                  tabIndex={
+                    !modelChoice && choices.length === 0 ? 0 : undefined
+                  }
+                />
+              }
+            >
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => reset(true)}
+                disabled={
+                  modelChoice
+                    ? (entitlements.features ?? []).includes("model_choice")
+                    : choices.length === 0
+                }
+              >
+                {modelChoice ? "Grant model choice" : "Change plan"}
+              </Button>
+            </TooltipTrigger>
+            {!modelChoice && choices.length === 0 ? (
+              <TooltipPopup>No other plan is configured to grant.</TooltipPopup>
+            ) : null}
+          </Tooltip>
+        </TooltipProvider>
+      )}
       <DialogPopup>
         <form className="contents" onSubmit={onSubmit} noValidate>
           <DialogHeader>
@@ -218,18 +255,28 @@ export function GrantComplimentaryDialog({
               {modelChoice ? null : (
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor={`${prefix}-plan`}>Plan</Label>
-                  <select
-                    id={`${prefix}-plan`}
+                  <Select
                     value={selected === undefined ? "" : planKey(selected)}
-                    onChange={(event) => setPlan(event.currentTarget.value)}
-                    className="h-9 rounded-lg border border-input bg-background px-2 text-sm"
+                    items={choices.map((choice) => ({
+                      value: planKey(choice),
+                      label: planDisplayName(choice, entitlements),
+                    }))}
+                    onValueChange={(next) => setPlan(next ?? "")}
                   >
-                    {choices.map((choice) => (
-                      <option key={planKey(choice)} value={planKey(choice)}>
-                        {planName(choice)}
-                      </option>
-                    ))}
-                  </select>
+                    <SelectTrigger id={`${prefix}-plan`} className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectPopup>
+                      {choices.map((choice) => (
+                        <SelectItem
+                          key={planKey(choice)}
+                          value={planKey(choice)}
+                        >
+                          {planDisplayName(choice, entitlements)}
+                        </SelectItem>
+                      ))}
+                    </SelectPopup>
+                  </Select>
                 </div>
               )}
               <div className="flex flex-col gap-1.5">
@@ -272,8 +319,10 @@ export function RevokeGrantDialog({
   revision,
   csrf,
   onChanged,
+  planLabel,
 }: {
   readonly organization: PlatformOrganization;
+  readonly planLabel?: string;
   readonly grant: EntitlementGrant;
   readonly revision: number;
   readonly csrf: string;
@@ -324,14 +373,17 @@ export function RevokeGrantDialog({
   return (
     <Dialog open={open} onOpenChange={reset}>
       <Button size="sm" variant="outline" onClick={() => reset(true)}>
-        Revoke
+        Revoke grant
       </Button>
       <DialogPopup>
         <form className="contents" onSubmit={onSubmit} noValidate>
           <DialogHeader>
             <DialogTitle>
-              Revoke {modelChoice ? "model choice" : planName(grant.plan)} for{" "}
-              {organization.name}?
+              Revoke{" "}
+              {modelChoice
+                ? "model choice"
+                : (planLabel ?? planDisplayName(grant.plan))}{" "}
+              for {organization.name}?
             </DialogTitle>
             <DialogDescription>
               {modelChoice
@@ -368,125 +420,174 @@ export function RevokeGrantDialog({
   );
 }
 
-function effectivePlan(entitlements: OrganizationEntitlements): string {
-  const plan = `${planName(entitlements.effective_base)} (${entitlements.source})`;
-  const grants = entitlements.grants.length;
-  if (grants === 0) return plan;
-  return `${plan} + ${grants} complimentary grant${grants === 1 ? "" : "s"}`;
-}
-
 export function TenantPlan({
   organization,
   csrf,
   value,
   canGrant,
   onChanged,
+  history = false,
 }: {
   readonly organization: PlatformOrganization;
   readonly csrf: string;
   readonly value: OrganizationEntitlements;
   readonly canGrant: boolean;
   readonly onChanged: () => Promise<void>;
+  readonly history?: boolean;
 }): React.ReactElement {
+  const current = tenantPlanGrant(value);
+  const currentPlan = current?.plan ?? value.effective_base;
+  const records = value.grant_history ?? value.grants;
   return (
-    <section
+    <SettingsSection
+      title="Plan"
       aria-label={`Plan for ${organization.name}`}
-      className="border-t border-border pt-4"
+      headerAction={
+        canGrant ? (
+          <GrantComplimentaryDialog
+            organization={organization}
+            entitlements={value}
+            csrf={csrf}
+            onChanged={onChanged}
+          />
+        ) : null
+      }
     >
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex-1">
-          <h3 className="text-sm font-medium">Plan</h3>
-        </div>
-        {!canGrant ? null : (
+      <SettingsRow
+        title={
+          <span className="flex flex-wrap items-center gap-2">
+            {planDisplayName(currentPlan, value)}
+            {current ? <Badge variant="info">Complimentary</Badge> : null}
+          </span>
+        }
+        description={
+          current
+            ? `Granted ${platformTime(current.granted_at ?? current.starts_at)} by ${current.granted_by}. ${current.expires_at ? `Returns to ${planDisplayName(value.base, value)} on ${platformTime(current.expires_at)}.` : "No expiry."}`
+            : `Base plan: ${planDisplayName(value.base, value)}`
+        }
+        control={
+          current && canGrant ? (
+            <RevokeGrantDialog
+              organization={organization}
+              grant={current}
+              planLabel={planDisplayName(current.plan, value)}
+              revision={value.revision}
+              csrf={csrf}
+              onChanged={onChanged}
+            />
+          ) : null
+        }
+      />
+      <SettingsRow
+        title="Model choice"
+        description="Lets the organization pick models for its runs."
+        control={
           <>
-            <GrantComplimentaryDialog
-              organization={organization}
-              entitlements={value}
-              csrf={csrf}
-              onChanged={onChanged}
-            />
-            <GrantComplimentaryDialog
-              organization={organization}
-              entitlements={value}
-              csrf={csrf}
-              onChanged={onChanged}
-              modelChoice
-            />
+            <Badge variant="outline">
+              {(value.features ?? []).includes("model_choice") ? "On" : "Off"}
+            </Badge>
+            {canGrant ? (
+              <GrantComplimentaryDialog
+                organization={organization}
+                entitlements={value}
+                csrf={csrf}
+                onChanged={onChanged}
+                modelChoice
+              />
+            ) : null}
           </>
-        )}
-      </div>
-      <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
-        <div>
-          <dt className="text-muted-foreground">Base plan</dt>
-          <dd className="font-medium">{planName(value.base)}</dd>
+        }
+      />
+      <SettingsRow
+        title="Stripe subscription"
+        control={
+          <span className="text-sm text-muted-foreground">
+            {organization.billing.available
+              ? readableKey(organization.billing.status ?? "None")
+              : "Unavailable"}
+            {organization.billing.customer_id ? (
+              <>
+                {" "}
+                ·{" "}
+                <a
+                  className="text-link underline"
+                  href={`https://dashboard.stripe.com/customers/${encodeURIComponent(organization.billing.customer_id)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open Stripe customer
+                </a>
+              </>
+            ) : null}
+          </span>
+        }
+      />
+      {history ? (
+        <div className="p-4">
+          {records.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No complimentary grants.
+            </p>
+          ) : (
+            <Table aria-label={`Grant history for ${organization.name}`}>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Plan</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Scope</TableHead>
+                  <TableHead>Starts</TableHead>
+                  <TableHead>Expires</TableHead>
+                  <TableHead>Reason</TableHead>
+                  <TableHead>Granted by</TableHead>
+                  <TableHead />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {records.map((grant) => (
+                  <TableRow key={grant.id}>
+                    <TableCell>
+                      {grant.scope?.length === 1 &&
+                      grant.scope[0] === "model_choice"
+                        ? "Model choice"
+                        : planDisplayName(grant.plan, value)}
+                    </TableCell>
+                    <TableCell>
+                      {grant.revoked_at
+                        ? "Revoked"
+                        : !value.grants.some((active) => active.id === grant.id)
+                          ? "Inactive"
+                          : "Active"}
+                    </TableCell>
+                    <TableCell className="max-w-56 whitespace-normal">
+                      {(grant.scope ?? []).map(readableKey).join(", ")}
+                    </TableCell>
+                    <TableCell>{platformTime(grant.starts_at)}</TableCell>
+                    <TableCell>{platformTime(grant.expires_at)}</TableCell>
+                    <TableCell className="max-w-56 whitespace-normal">
+                      {grant.reason}
+                    </TableCell>
+                    <TableCell>{grant.granted_by}</TableCell>
+                    <TableCell>
+                      {canGrant &&
+                      grant.id !== current?.id &&
+                      value.grants.some((active) => active.id === grant.id) ? (
+                        <RevokeGrantDialog
+                          organization={organization}
+                          grant={grant}
+                          planLabel={planDisplayName(grant.plan, value)}
+                          revision={value.revision}
+                          csrf={csrf}
+                          onChanged={onChanged}
+                        />
+                      ) : null}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
         </div>
-        <div>
-          <dt className="text-muted-foreground">Effective plan</dt>
-          <dd className="font-medium">{effectivePlan(value)}</dd>
-        </div>
-      </dl>
-      <p className="mt-3 text-sm text-muted-foreground">
-        Model choice:{" "}
-        {(value.features ?? []).includes("model_choice")
-          ? "Enabled"
-          : "Disabled"}
-      </p>
-      {value.grants.length === 0 ? (
-        <p className="mt-3 text-sm text-muted-foreground">
-          No active complimentary grants.
-        </p>
-      ) : (
-        <Table
-          aria-label={`Active grants for ${organization.name}`}
-          className="mt-3"
-        >
-          <TableHeader>
-            <TableRow>
-              <TableHead>Plan</TableHead>
-              <TableHead>Scope</TableHead>
-              <TableHead>Starts</TableHead>
-              <TableHead>Expires</TableHead>
-              <TableHead>Reason</TableHead>
-              <TableHead>Granted by</TableHead>
-              <TableHead />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {value.grants.map((grant) => (
-              <TableRow key={grant.id}>
-                <TableCell>
-                  <Badge variant="info">
-                    {grant.scope?.length === 1 &&
-                    grant.scope[0] === "model_choice"
-                      ? "Model choice"
-                      : planName(grant.plan)}
-                  </Badge>
-                </TableCell>
-                <TableCell className="max-w-56 whitespace-normal text-muted-foreground">
-                  {(grant.scope ?? []).join(", ")}
-                </TableCell>
-                <TableCell>{day(grant.starts_at)}</TableCell>
-                <TableCell>{day(grant.expires_at)}</TableCell>
-                <TableCell className="max-w-56 whitespace-normal">
-                  {grant.reason}
-                </TableCell>
-                <TableCell>{grant.granted_by}</TableCell>
-                <TableCell>
-                  {canGrant ? (
-                    <RevokeGrantDialog
-                      organization={organization}
-                      grant={grant}
-                      revision={value.revision}
-                      csrf={csrf}
-                      onChanged={onChanged}
-                    />
-                  ) : null}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
-    </section>
+      ) : null}
+    </SettingsSection>
   );
 }
