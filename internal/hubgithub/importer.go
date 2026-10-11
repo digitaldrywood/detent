@@ -13,6 +13,7 @@ import (
 	"time"
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -34,6 +35,9 @@ func (i *Importer) FetchImportPage(ctx context.Context, request hubserver.GitHub
 	ctx = scopedRequests(ctx, request.Profile, "import")
 	if i == nil || i.client == nil {
 		return result, errors.New("github importer is not configured")
+	}
+	if request.Stage == "scheduled" {
+		return i.fetchScheduledOccurrence(ctx, request)
 	}
 	if request.Stage == "edits" {
 		return i.fetchEdits(ctx, request)
@@ -172,4 +176,60 @@ func importRecord(raw json.RawMessage, kind string) (hubserver.GitHubImportRecor
 		record.DependencyID = source.NodeID
 	}
 	return record, nil
+}
+
+func (i *Importer) fetchScheduledOccurrence(ctx context.Context, request hubserver.GitHubImportRequest) (hubserver.GitHubImportPage, error) {
+	if request.Scheduled == nil {
+		return hubserver.GitHubImportPage{}, errors.New("scheduled occurrence is required")
+	}
+	evidence := *request.Scheduled
+	parsed := gate.ParseScheduledEvidence(evidence.Stamp())
+	if len(parsed) != 1 || evidence.Repository != request.Repository || evidence.JobID == "0" {
+		return hubserver.GitHubImportPage{}, errors.New("scheduled occurrence is invalid")
+	}
+	path := "/repos/" + request.Repository + "/actions/runs/" + evidence.RunID + "/attempts/" + evidence.RunAttempt
+	var run struct {
+		ID         int64  `json:"id"`
+		Attempt    int64  `json:"run_attempt"`
+		Path       string `json:"path"`
+		HeadSHA    string `json:"head_sha"`
+		HeadBranch string `json:"head_branch"`
+		Event      string `json:"event"`
+		Repository struct {
+			Name string `json:"full_name"`
+		} `json:"repository"`
+		HeadRepository struct {
+			Name string `json:"full_name"`
+		} `json:"head_repository"`
+	}
+	if err := i.client.REST(ctx, http.MethodGet, path, nil, &run); err != nil {
+		return hubserver.GitHubImportPage{}, err
+	}
+	if strconv.FormatInt(run.ID, 10) != evidence.RunID || strconv.FormatInt(run.Attempt, 10) != evidence.RunAttempt || run.Path != ".github/workflows/ci.yml" || run.HeadSHA != evidence.HeadSHA || !strings.EqualFold(run.Repository.Name, request.Repository) || !strings.EqualFold(run.HeadRepository.Name, request.Repository) || (run.HeadBranch != "develop" && !strings.HasPrefix(run.HeadBranch, "release/v")) || (run.Event != "schedule" && run.Event != "push" && run.Event != "workflow_dispatch") {
+		return hubserver.GitHubImportPage{}, errors.New("scheduled occurrence does not match the repository CI run attempt")
+	}
+	var jobs struct {
+		Jobs []struct {
+			ID          int64     `json:"id"`
+			RunID       int64     `json:"run_id"`
+			Name        string    `json:"name"`
+			HeadSHA     string    `json:"head_sha"`
+			Status      string    `json:"status"`
+			Conclusion  string    `json:"conclusion"`
+			StartedAt   time.Time `json:"started_at"`
+			CompletedAt time.Time `json:"completed_at"`
+		} `json:"jobs"`
+	}
+	if err := i.client.REST(ctx, http.MethodGet, path+"/jobs?per_page=100", nil, &jobs); err != nil {
+		return hubserver.GitHubImportPage{}, err
+	}
+	for _, job := range jobs.Jobs {
+		if strconv.FormatInt(job.ID, 10) == evidence.JobID && job.RunID == run.ID && job.HeadSHA == evidence.HeadSHA && job.Name == evidence.JobName && job.Status == "completed" && job.Conclusion == evidence.Conclusion && (job.Conclusion == "failure" || job.Conclusion == "timed_out") {
+			evidence.Checks = nil
+			evidence.StartedAt, evidence.FinishedAt = job.StartedAt, job.CompletedAt
+			evidence.JobURL = "https://github.com/" + request.Repository + "/actions/jobs/" + evidence.JobID
+			return hubserver.GitHubImportPage{Scheduled: &evidence}, nil
+		}
+	}
+	return hubserver.GitHubImportPage{}, errors.New("scheduled occurrence does not match a failed job in the run attempt")
 }
