@@ -13,8 +13,9 @@ import (
 )
 
 type ChangeSource struct {
-	Version tracker.ChangeVersion `json:"version"`
-	Bundle  []byte                `json:"bundle,omitempty"`
+	Version       tracker.ChangeVersion `json:"version"`
+	Bundle        []byte                `json:"bundle,omitempty"`
+	PreviousHeads []string              `json:"previous_heads,omitempty"`
 }
 
 func changeSourceScratch() (string, error) {
@@ -143,29 +144,51 @@ func (l *LocalGit) importChangeSource(ctx context.Context, source *ChangeSource)
 	return nil
 }
 
-func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, issue Issue) error {
+func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, issue Issue) (bool, error) {
 	if issue.Source == nil || issue.Landing != nil {
-		return nil
+		return false, nil
 	}
+	l.createMu.Lock()
+	defer l.createMu.Unlock()
 	release, err := l.acquireSourceOperation(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer release()
 	paused, err := l.verifyReworkBranch(ctx, info, issue)
 	if err != nil || paused {
-		return err
+		return false, err
 	}
 	state, err := l.RecoveryState(ctx, info, issue)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if state.HeadSHA == issue.Source.Version.HeadSHA || len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 || state.UnpushedCommits > 0 {
-		return nil
+	if state.HeadSHA == issue.Source.Version.HeadSHA || len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 {
+		return false, nil
 	}
-	if state.HeadSHA != issue.Source.Version.BaseSHA {
-		return refuse(LandRefusalHeadMoved, "the existing clean worktree differs from the recorded source base and head; preserve its current head and reconcile the Change before recovery")
+	previous := issue.Source.Version.Source != nil && slices.Contains(issue.Source.PreviousHeads, state.HeadSHA)
+	if state.UnpushedCommits > 0 && !previous {
+		return false, nil
+	}
+	if state.HeadSHA != issue.Source.Version.BaseSHA || previous {
+		if !previous {
+			return false, refuse(LandRefusalHeadMoved, "the existing clean worktree differs from the recorded source base and head; preserve its current head and reconcile the Change before recovery")
+		}
+		if _, err := l.quarantineWorktree(ctx, info.Path); err != nil {
+			return false, err
+		}
+		if _, err := l.runGit(ctx, "branch", "-f", info.Branch, issue.Source.Version.HeadSHA); err != nil {
+			return false, err
+		}
+		created, err := l.ensureWorktree(ctx, info.Path, info.Branch, issue.Source.Version.HeadSHA)
+		if err != nil {
+			return false, l.preserveFailedWorkspace(ctx, info.Path, err)
+		}
+		if err := l.validateCreatedWorktree(ctx, info.Path); err != nil {
+			return false, l.preserveFailedWorkspace(ctx, info.Path, err)
+		}
+		return created, nil
 	}
 	_, err = runGitAt(ctx, info.Path, "-c", "core.hooksPath="+os.DevNull, "reset", "--hard", issue.Source.Version.HeadSHA)
-	return err
+	return false, err
 }

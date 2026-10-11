@@ -656,8 +656,15 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			if err != nil {
 				return Info{}, err
 			}
-			if err := l.prepareChangeSourceWorktree(ctx, info, issue); err != nil {
+			created, err := l.prepareChangeSourceWorktree(ctx, info, issue)
+			if err != nil {
 				return Info{}, err
+			}
+			info.Created = created
+			if created {
+				if err := l.runHook(ctx, "after_create", l.hooks.AfterCreate, info, issue); err != nil {
+					return Info{}, l.preserveFailedWorkspace(ctx, info.Path, err)
+				}
 			}
 			return info, nil
 		}
@@ -704,8 +711,13 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		if err := restoreCheckpointTree(ctx, info.Path, issue.Checkpoint); err != nil {
 			return Info{}, err
 		}
-	} else if err := l.prepareChangeSourceWorktree(ctx, info, issue); err != nil {
-		return Info{}, err
+	} else {
+		restored, err := l.prepareChangeSourceWorktree(ctx, info, issue)
+		if err != nil {
+			return Info{}, err
+		}
+		created = created || restored
+		info.Created = created
 	}
 	if issue.Landing != nil {
 		if err := l.recordCleanupOwnership(ctx, info, issue, true); err != nil {

@@ -176,8 +176,12 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 		return identity, nil
 	})
 	var privateOwner sync.Mutex
-	for _, mode := range []string{"confirmed", "wrong head", "wrong base", "wrong repository", "wrong branch", "wrong version", "stale invocation", "merge", "cancelled", "lost authority", "ambiguous", "disconnect"} {
+	for _, mode := range []string{"confirmed", "retained branch", "wrong head", "wrong base", "wrong repository", "wrong branch", "wrong version", "stale invocation", "merge", "cancelled", "lost authority", "ambiguous", "disconnect"} {
 		t.Run("publication/"+mode, func(t *testing.T) {
+			identity.Branch = "detent/rework"
+			if mode == "retained branch" {
+				identity.Branch = "manual/recovery"
+			}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			var authorizations, effects atomic.Int32
@@ -198,9 +202,16 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 				}
 				return nil
 			}}
+			if mode == "retained branch" {
+				opts.External = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: version.Repository + "/pull/7"}
+				opts.ExternalHeadSHA = strings.Repeat("b", 40)
+			}
 			remoteExecution.SetPublicationSource(func(ctx context.Context, received tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
 				if received.ID != version.ID || opts.Repository != version.Repository || opts.HeadSHA != version.HeadSHA || opts.TargetBranch != "develop" || opts.Authorize == nil || opts.PublicationEffect == nil || opts.GitHubClient != nil {
 					return workspace.GitHubPublication{}, errors.New("publication forwarding lost exact binding or leaked a client")
+				}
+				if mode == "retained branch" && (opts.External == nil || opts.External.ID != "7" || opts.ExternalHeadSHA != strings.Repeat("b", 40)) {
+					return workspace.GitHubPublication{}, errors.New("publication forwarding lost the retained PR identity")
 				}
 				if mode == "cancelled" {
 					cancel()
@@ -252,7 +263,7 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 			privateOwner.Lock()
 			result, err := publicationOwner.publicationSource(ctx, version, opts)
 			privateOwner.Unlock()
-			if mode == "confirmed" {
+			if mode == "confirmed" || mode == "retained branch" {
 				if err != nil || result.External.ID != "7" || effects.Load() != 2 {
 					t.Fatalf("SSH held publication=%s effects=%d error=%v", result.External.ID, effects.Load(), err)
 				}

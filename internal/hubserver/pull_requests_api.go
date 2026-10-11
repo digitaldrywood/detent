@@ -214,6 +214,10 @@ func (s *Service) changePullRequestView(ctx context.Context, scope nativeScope, 
 		view.Head.SHA, view.Base.SHA = current.HeadSHA, current.BaseSHA
 		view.Head.Repository = current.Repository
 		view.Author = current.Actor.PrincipalID
+		if current.External != nil {
+			view.URL = current.External.URL
+			view.Number = externalPullRequestNumber(*current.External)
+		}
 	}
 	for _, check := range detail.Checks {
 		status := "in_progress"

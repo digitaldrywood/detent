@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -14,6 +15,10 @@ import (
 
 func TestChangeValidatorSessionAuthority(t *testing.T) {
 	t.Parallel()
+	multipleReceipts := func(r *tracker.ReviewChange) {
+		r.Validator.CriteriaEvidence[0] = gate.CriterionEvidence{Criterion: "Complete the requested work.", Kind: "receipt", Reference: "make check-app; npx playwright test", ReceiptIDs: []string{"timing_app", "timing_browser"}, HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree", Behavior: "Application and browser checks exercise the requested behavior"}
+		r.Validator.Commands = []gate.CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree"}, {ReceiptID: "timing_browser", Command: "npx playwright test", HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree"}}
+	}
 	for _, test := range []struct {
 		name   string
 		edit   func(*tracker.ReviewChange)
@@ -21,6 +26,11 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		status string
 	}{
 		{"separate session pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed"},
+		{"separate session pass with multiple receipts", multipleReceipts, http.StatusOK, "reviewed"},
+		{"failed selected receipt cannot pass", func(r *tracker.ReviewChange) {
+			multipleReceipts(r)
+			r.Validator.Commands[1].ExitCode = 1
+		}, http.StatusUnprocessableEntity, "needs_evidence"},
 		{"separate session pass with human review", func(_ *tracker.ReviewChange) {}, http.StatusOK, "needs_evidence"},
 		{"implementing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence"},
 		{"missing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 0 }, http.StatusUnprocessableEntity, "needs_evidence"},
@@ -107,6 +117,12 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			}
 			if test.want == http.StatusOK && (len(detail.Reviews) != 1 || detail.Reviews[0].Validator == nil || detail.Reviews[0].Validator.SessionID != 42) {
 				t.Fatalf("validator session was not persisted: %+v", detail.Reviews)
+			}
+			if test.name == "separate session pass with multiple receipts" {
+				stored := detail.Reviews[0].Validator
+				if len(stored.CriteriaEvidence) != 1 || stored.CriteriaEvidence[0].Kind != "receipt" || !slices.Equal(stored.CriteriaEvidence[0].ReceiptIDs, []string{"timing_app", "timing_browser"}) || len(stored.NotVerified) != 0 {
+					t.Fatalf("receipt selection did not survive native review: %+v", stored)
+				}
 			}
 			if test.name == "missing evidence rework" || test.name == "disclosed missing evidence" {
 				stored := detail.Reviews[0].Validator
