@@ -1,12 +1,14 @@
 name: CI
 
 on:
+  push:
+    branches: ['release/*']
   schedule:
     - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       force:
-        description: Run the full suite even when this develop SHA has completed CI
+        description: Run the full suite even when this SHA has completed CI
         required: false
         type: boolean
         default: false
@@ -21,7 +23,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: scheduled-develop-validation
+  group: full-validation-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -32,6 +34,7 @@ jobs:
       contents: read
     outputs:
       should_run: ${{ steps.scope.outputs.should_run }}
+      release_branch: ${{ steps.scope.outputs.release_branch }}
       develop_sha: ${{ steps.scope.outputs.develop_sha }}
     steps:
       - uses: actions/checkout@v5
@@ -46,16 +49,25 @@ jobs:
           FAIL_JOB: ${{ inputs.fail_job || 'none' }}
         run: |
           set -euo pipefail
-          develop_sha="$(git ls-remote origin refs/heads/develop | cut -f1)"
+          release_branch=""
+          if [[ "$GITHUB_REF" == refs/heads/release/* ]]; then
+            release_branch="${GITHUB_REF#refs/heads/}"
+            develop_sha="$GITHUB_SHA"
+          elif [[ "$GITHUB_REF" == refs/heads/develop ]]; then
+            develop_sha="$GITHUB_SHA"
+          else
+            develop_sha="$(git ls-remote origin refs/heads/develop | cut -f1)"
+          fi
+          echo "release_branch=$release_branch" >> "$GITHUB_OUTPUT"
           test -n "$develop_sha"
           echo "develop_sha=$develop_sha" >> "$GITHUB_OUTPUT"
-          echo "Develop SHA: $develop_sha"
+          echo "Validation SHA: $develop_sha"
           should_run=true
           force="$FORCE"
           if [[ "$FAIL_JOB" != none ]]; then
             force=true
           fi
-          if [[ "$force" == true ]]; then
+          if [[ "$force" == true || -n "$release_branch" ]]; then
             echo "Preflight decision: run; develop_sha=$develop_sha; current_run_id=$GITHUB_RUN_ID; force=true; fail_job=$FAIL_JOB"
           else
             prior_run_id="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?status=completed&head_sha=$develop_sha&per_page=100" | jq -r --arg current_run_id "$GITHUB_RUN_ID" '[.[].workflow_runs[] | select((.id | tostring) != $current_run_id and .conclusion != "cancelled")] | first | .id // empty')"
@@ -488,6 +500,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CI_DEVELOP_SHA: ${{ needs.preflight.outputs.develop_sha }}
+          CI_RELEASE_BRANCH: ${{ needs.preflight.outputs.release_branch }}
           TMPDIR: ${{ runner.temp }}
           DETENT_MCP_URL: https://cloud.detent.build/organizations/org_9e0e65eec07a6639979a/mcp
           DETENT_PROJECT_ID: prj_6d4919bebd73446798e6cd807feda10e

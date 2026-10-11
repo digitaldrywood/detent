@@ -54,8 +54,29 @@ fi
 
 status_id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$CI_DEVELOP_SHA" -f state=success -f context=scheduled-full-ci -f target_url="$run_url" -f description='Full scheduled validation passed' --jq .id)"
 
+if [ -z "${CI_RELEASE_BRANCH:-}" ]; then
+  echo "Develop validation passed; release tags are published only from release branches."
+  if [ "$GITHUB_REPOSITORY" = digitaldrywood/detent ]; then
+    report_validated develop
+  fi
+  exit 0
+fi
+if [[ ! "$CI_RELEASE_BRANCH" =~ ^release/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+  echo "Invalid release branch: $CI_RELEASE_BRANCH" >&2
+  false
+fi
+series="${CI_RELEASE_BRANCH#release/}"
+head_sha="$(git ls-remote origin "refs/heads/$CI_RELEASE_BRANCH" | cut -f1)"
+if [ "$head_sha" != "$CI_DEVELOP_SHA" ]; then
+  echo "Validated commit is no longer the release branch head; skipping release."
+  if [ "$GITHUB_REPOSITORY" = digitaldrywood/detent ]; then
+    report_validated "$CI_RELEASE_BRANCH"
+  fi
+  exit 0
+fi
+
 git fetch --tags --force origin
-for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list 'v*'); do
+for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list "$series.*"); do
   if [[ "$existing" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$(git cat-file -t "refs/tags/$existing")" = tag ]; then
     existing_message="$(git for-each-ref --format='%(contents)' "refs/tags/$existing")"
     if [[ "$existing_message" == *'"name":"scheduled-full-ci"'* ]]; then
@@ -69,16 +90,16 @@ for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list 'v*'); do
 done
 git config user.name 'github-actions[bot]'
 git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-latest="$(git tag --list 'v*' --sort=-v:refname | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }')"
-if [[ "$latest" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-  tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+latest="$(git tag --list "$series.*" --sort=-v:refname | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }')"
+if [[ "$latest" =~ ^v[0-9]+\.[0-9]+\.([0-9]+)$ ]]; then
+  tag="$series.$((BASH_REMATCH[1] + 1))"
 else
-  tag=v0.0.1
+  tag="$series.0"
 fi
 
 message_file="$scratch_dir/scheduled-ci-tag-message"
 cat > "$message_file" <<EOF
-Validated development build $tag
+Validated release build $tag
 
 <!-- detent-release-provenance:{"schema":1,"repository":"$GITHUB_REPOSITORY","tag":"$tag","commit":"$CI_DEVELOP_SHA","checks":[{"name":"scheduled-full-ci","status":"completed","conclusion":"success","status_id":$status_id}]} -->
 EOF

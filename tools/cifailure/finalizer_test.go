@@ -25,9 +25,17 @@ func TestScheduledFinalizer(t *testing.T) {
 		cancelledRun        bool
 		cancelledJob        bool
 		workflowCancelled   bool
+		develop             bool
+		staleHead           bool
+		newSeries           bool
+		differentSeries     bool
 	}{
 		{name: "native unchanged validated commit", repository: "digitaldrywood/detent", unchanged: true},
 		{name: "native green evidence", repository: "digitaldrywood/detent"},
+		{name: "develop records evidence without tagging", repository: "digitaldrywood/detent", develop: true},
+		{name: "moved release head does not tag", repository: "digitaldrywood/detent", staleHead: true},
+		{name: "new release series starts at patch zero", repository: "digitaldrywood/detent", newSeries: true},
+		{name: "older series tag does not suppress new series", repository: "digitaldrywood/detent", newSeries: true, unchanged: true, differentSeries: true},
 		{name: "native failure evidence", repository: "digitaldrywood/detent", failed: true},
 		{name: "native publication unavailable", repository: "digitaldrywood/detent", unavailable: true},
 		{name: "GitHub green closure", repository: "owner/other"},
@@ -77,8 +85,9 @@ esac
 set -euo pipefail
 printf 'repository %s\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in
-  'tag --list '*) printf 'v1.2.3\n' ;;
-  'tag --points-at '*) if [ "$FIXTURE_UNCHANGED" = true ]; then printf 'v1.2.3\n'; fi ;;
+  'ls-remote '*) printf '%s\trefs/heads/release/v1.2\n' "$FIXTURE_HEAD" ;;
+  'tag --list '*) if [ "$FIXTURE_NEW_SERIES" = false ]; then printf 'v1.2.3\n'; fi ;;
+  'tag --points-at '*) if [ "$FIXTURE_UNCHANGED" = true ] && [[ "$*" == *'v1.2.*'* ]]; then printf 'v1.2.3\n'; fi ;;
   'cat-file -t '*) printf 'tag\n' ;;
   'for-each-ref '*) printf '%s\n' '{"name":"scheduled-full-ci"}' ;;
 esac
@@ -104,6 +113,18 @@ test "$FIXTURE_UNAVAILABLE" = false
 			command.Dir = root
 			command.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "TMPDIR="+dir, "GITHUB_REPOSITORY="+tt.repository, "GITHUB_SERVER_URL=https://github.com", "GITHUB_RUN_ID=123", "GITHUB_RUN_ATTEMPT=1", "CI_DEVELOP_SHA="+scheduledEnv("CI_DEVELOP_SHA"), "FIXTURE_LOG="+filepath.Join(dir, "calls"), "FIXTURE_JOBS="+filepath.Join(dir, "jobs"), "FIXTURE_REPORTS="+filepath.Join(dir, "reports"), "FIXTURE_UNCHANGED="+map[bool]string{true: "true", false: "false"}[tt.unchanged], "FIXTURE_UNAVAILABLE="+map[bool]string{true: "true", false: "false"}[tt.unavailable])
 			command.Env = append(command.Env, "FIXTURE_CONCLUSION="+map[bool]string{true: "cancelled", false: "null"}[tt.cancelledRun], "WORKFLOW_CANCELLED="+map[bool]string{true: "true", false: "false"}[tt.workflowCancelled])
+			releaseBranch := "release/v1.2"
+			if tt.differentSeries {
+				releaseBranch = "release/v1.3"
+			}
+			if tt.develop {
+				releaseBranch = ""
+			}
+			head := scheduledEnv("CI_DEVELOP_SHA")
+			if tt.staleHead {
+				head = strings.Repeat("b", 40)
+			}
+			command.Env = append(command.Env, "CI_RELEASE_BRANCH="+releaseBranch, "FIXTURE_HEAD="+head, "FIXTURE_NEW_SERIES="+map[bool]string{true: "true", false: "false"}[tt.newSeries])
 			skipped := tt.cancelledRun || tt.workflowCancelled
 			output, err := command.CombinedOutput()
 			if (err != nil) != ((tt.failed || tt.unavailable || tt.cancelledJob) && !skipped) {
@@ -134,7 +155,7 @@ test "$FIXTURE_UNAVAILABLE" = false
 			} else if !strings.Contains(text, "forge issue close 42") || strings.Contains(text, "native run") {
 				t.Fatalf("GitHub behavior changed: %s", text)
 			}
-			if tt.unchanged {
+			if (tt.unchanged && !tt.differentSeries) || tt.develop || tt.staleHead {
 				if strings.Contains(text, "tag -a ") || strings.Contains(text, "/dispatches") {
 					t.Fatal("unchanged validated commit released again")
 				}
@@ -143,7 +164,14 @@ test "$FIXTURE_UNAVAILABLE" = false
 					t.Fatal("failed suite published green evidence")
 				}
 			} else {
-				if !strings.Contains(text, "repository tag -a v1.2.4 "+scheduledEnv("CI_DEVELOP_SHA")) || !strings.Contains(text, "refs/tags/v1.2.4") || !strings.Contains(text, "/release.yml/dispatches") {
+				tag := "v1.2.4"
+				if tt.newSeries {
+					tag = "v1.2.0"
+				}
+				if tt.differentSeries {
+					tag = "v1.3.0"
+				}
+				if !strings.Contains(text, "repository tag -a "+tag+" "+scheduledEnv("CI_DEVELOP_SHA")) || !strings.Contains(text, "refs/tags/"+tag) || !strings.Contains(text, "/release.yml/dispatches") {
 					t.Fatalf("scheduled tag evidence lost: %s", text)
 				}
 			}

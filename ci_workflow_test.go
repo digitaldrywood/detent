@@ -57,8 +57,8 @@ func TestCIHasNoPullRequestConcurrency(t *testing.T) {
 	if strings.Contains(workflow, "github.event.pull_request") || strings.Contains(workflow, "pull_request:") {
 		t.Fatal("scheduled CI must not start for pull requests")
 	}
-	if !strings.Contains(workflow, "group: scheduled-develop-validation") {
-		t.Fatal("scheduled validation must avoid overlapping tag publication")
+	if !strings.Contains(workflow, "group: full-validation-${{ github.ref }}") {
+		t.Fatal("full validation must serialize each branch independently")
 	}
 }
 
@@ -209,16 +209,16 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 	}
 }
 
-func TestCIRunsOnScheduleAndManualDispatch(t *testing.T) {
+func TestCIRunsOnScheduleManualDispatchAndReleasePush(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
 	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
-	for _, want := range []string{"schedule:", "cron: '17 * * * *'", "workflow_dispatch:", "fail_job:"} {
+	for _, want := range []string{"schedule:", "cron: '17 * * * *'", "workflow_dispatch:", "fail_job:", "push:\n    branches: ['release/*']"} {
 		if !strings.Contains(triggers, want) {
 			t.Errorf("CI triggers missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"pull_request:", "merge_group:", "push:"} {
+	for _, forbidden := range []string{"pull_request:", "merge_group:"} {
 		if strings.Contains(triggers, forbidden) {
 			t.Errorf("CI has forbidden trigger %q", forbidden)
 		}

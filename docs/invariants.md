@@ -166,16 +166,27 @@ validation lock. Other projects retain their configured policies.
 
 Landing checks repository source and workflow invariants; the full behavioral
 invariant manifest runs only in the scheduled suite.
-Full browser, integration, race, coverage, fuzz, NilAway and generated-output
-validation run in the scheduled suite, which pins the current `develop` SHA. Each new SHA
-receives one full suite across scheduled and manual dispatch runs. Preflight
-skips a SHA that has a completed non-cancelled run of this workflow, regardless
-of event or conclusion; manual dispatch with `force: true` runs it again, and
-any non-`none` `fail_job` selection implies force. Only the successful full-suite
-finalizer publishes `scheduled-full-ci`, creates an annotated validated patch
-tag and dispatches release; release deploys staging, runs its smoke, then
-deploys production and runs its smoke, and a failed smoke stops promotion. An
-already validated commit receives no new stable tag or deploy. Operator-landed
+Full browser, integration, race, coverage, fuzz, NilAway and generated-output validation
+run in the full suite: hourly on pinned `develop` commits, and on every push
+or dispatch to `release/*`. Develop receives one full suite per SHA across
+scheduled and manual runs. Develop preflight skips completed non-cancelled
+runs regardless of conclusion; manual `force: true` or a non-`none` `fail_job`
+runs it again. Release runs always validate their event SHA, independently of
+develop and other release branches. Release evidence is the green full suite
+on the release branch head, never develop evidence reused after cherry-picks.
+Only a successful full-suite finalizer publishes `scheduled-full-ci`. On a
+release branch, it verifies the validated SHA is still the branch head, creates
+an annotated `vX.Y.Z` provenance tag within that branch's `release/vX.Y` series,
+and dispatches the existing release workflow. Green develop commits select
+future cuts but do not publish stable tags. Cuts are weekly by default or
+operator-dispatched, from the newest green develop ancestor or develop tip if
+none exists; picks are develop-to-release only, with `-x` provenance and a PR.
+All release API calls belong to operators and GitHub Actions, never Detent
+runners. Develop landing does not wait for release stabilization. Release
+deploys staging, runs its smoke, then deploys production and runs its smoke;
+a failed smoke stops promotion. Operators promote the validated tag tree to
+`main` through a reviewed PR. A commit already tagged in that series receives no new stable
+tag or deploy. Operator-landed
 Cloud deploys may dispatch the existing release workflow on a pinned develop commit:
 its successful `make check-land` Actions check is authenticated by the existing
 provenance owner, and the workflow publishes a signed next-patch `op.<sha12>`

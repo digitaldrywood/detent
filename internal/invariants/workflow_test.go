@@ -25,8 +25,8 @@ func checkWorkflow(data []byte) error {
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		return err
 	}
-	if len(workflow.On) != 2 {
-		return errors.New("INV-5 CI must trigger only on a schedule and manual dispatch")
+	if len(workflow.On) != 3 {
+		return errors.New("INV-5 CI must trigger only on a schedule, manual dispatch and release pushes")
 	}
 	if _, ok := workflow.Permissions["actions"]; ok {
 		return errors.New("INV-5 Actions access must be scoped to preflight")
@@ -34,10 +34,17 @@ func checkWorkflow(data []byte) error {
 	if permissions := workflow.Jobs["preflight"].Permissions; len(permissions) != 2 || permissions["actions"] != "read" || permissions["contents"] != "read" {
 		return errors.New("INV-5 preflight must have read-only Actions and contents access")
 	}
-	for _, event := range []string{"schedule", "workflow_dispatch"} {
+	for _, event := range []string{"schedule", "workflow_dispatch", "push"} {
 		if _, ok := workflow.On[event]; !ok {
 			return fmt.Errorf("INV-5 %s trigger missing", event)
 		}
+	}
+	var push struct {
+		Branches []string `yaml:"branches"`
+	}
+	pushNode := workflow.On["push"]
+	if err := pushNode.Decode(&push); err != nil || len(push.Branches) != 1 || push.Branches[0] != "release/*" {
+		return errors.New("INV-5 full CI pushes must be scoped to release branches")
 	}
 	var schedule []struct {
 		Cron string `yaml:"cron"`
@@ -153,6 +160,7 @@ func TestRepositoryWorkflow(t *testing.T) {
 	}
 	for _, tt := range []struct {
 		name, event, currentRunID string
+		releaseBranch             string
 		force                     bool
 		failJob                   string
 		priorRuns                 []priorRun
@@ -160,6 +168,8 @@ func TestRepositoryWorkflow(t *testing.T) {
 		wantGitHubQuery           bool
 		wantPriorRunID            string
 	}{
+		{name: "release push pins event SHA and runs despite prior failure", event: "push", currentRunID: "900", releaseBranch: "release/v1.2", priorRuns: []priorRun{{ID: 123, Conclusion: "failure"}}, wantRun: true},
+		{name: "release dispatch does not deduplicate against develop", event: "workflow_dispatch", currentRunID: "900", releaseBranch: "release/v1.2", priorRuns: []priorRun{{ID: 123, Conclusion: "success"}}, wantRun: true},
 		{name: "dispatch on validated SHA skips", event: "workflow_dispatch", currentRunID: "900", priorRuns: []priorRun{{ID: 123, Event: "schedule", Conclusion: "success"}}, wantGitHubQuery: true, wantPriorRunID: "123"},
 		{name: "dispatch with force runs", event: "workflow_dispatch", currentRunID: "900", force: true, priorRuns: []priorRun{{ID: 123, Event: "schedule", Conclusion: "success"}}, wantRun: true},
 		{name: "cancelled prior run does not skip", event: "workflow_dispatch", currentRunID: "900", priorRuns: []priorRun{{ID: 123, Event: "schedule", Conclusion: "cancelled"}}, wantRun: true, wantGitHubQuery: true},
@@ -212,7 +222,14 @@ esac
 			if failJob == "" {
 				failJob = "none"
 			}
-			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "GITHUB_EVENT_NAME="+tt.event, "GITHUB_OUTPUT="+outputPath, "GITHUB_REPOSITORY=digitaldrywood/detent", "GITHUB_RUN_ID="+tt.currentRunID, "FORCE="+force, "FAIL_JOB="+failJob, "FIXTURE_RUNS_FILE="+fixturePath, "FIXTURE_LOG="+logPath)
+			ref := "refs/heads/develop"
+			wantSHA := "0123456789012345678901234567890123456789"
+			if tt.releaseBranch != "" {
+				ref = "refs/heads/" + tt.releaseBranch
+				wantSHA = strings.Repeat("a", 40)
+			}
+			cmd.Env = append(os.Environ(), "GITHUB_REF="+ref, "GITHUB_SHA="+wantSHA)
+			cmd.Env = append(cmd.Env, "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "GITHUB_EVENT_NAME="+tt.event, "GITHUB_OUTPUT="+outputPath, "GITHUB_REPOSITORY=digitaldrywood/detent", "GITHUB_RUN_ID="+tt.currentRunID, "FORCE="+force, "FAIL_JOB="+failJob, "FIXTURE_RUNS_FILE="+fixturePath, "FIXTURE_LOG="+logPath)
 			preflightLog, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("preflight: %v: %s", err, preflightLog)
@@ -222,7 +239,7 @@ esac
 				t.Fatal(err)
 			}
 			wantShouldRun := map[bool]string{true: "true", false: "false"}[tt.wantRun]
-			if string(output) != "develop_sha=0123456789012345678901234567890123456789\nshould_run="+wantShouldRun+"\n" {
+			if string(output) != "release_branch="+tt.releaseBranch+"\ndevelop_sha="+wantSHA+"\nshould_run="+wantShouldRun+"\n" {
 				t.Fatalf("preflight output = %q, want pinned SHA and should_run=%s; log: %s", output, wantShouldRun, preflightLog)
 			}
 			logs, err := os.ReadFile(logPath)
@@ -243,7 +260,7 @@ esac
 					t.Fatalf("prior-run query filtered on event: %s", query)
 				}
 			}
-			if !strings.Contains(string(preflightLog), "Develop SHA: 0123456789012345678901234567890123456789") || !strings.Contains(string(preflightLog), "current_run_id="+tt.currentRunID) {
+			if !strings.Contains(string(preflightLog), "Validation SHA: "+wantSHA) || !strings.Contains(string(preflightLog), "current_run_id="+tt.currentRunID) {
 				t.Fatalf("preflight log omitted compared SHA or decision: %s", preflightLog)
 			}
 			if tt.wantPriorRunID != "" && !strings.Contains(string(preflightLog), "prior_run_id="+tt.wantPriorRunID) {
@@ -325,6 +342,7 @@ func TestWorkflowViolations(t *testing.T) {
 	for _, tt := range []struct{ name, old, replacement string }{
 		{"actions read permission dropped", "  actions: read\n", ""},
 		{"finalizer treats a preflight skip as a run", "if: always() && (needs.preflight.outputs.should_run == 'true' || needs.preflight.result == 'failure')", "if: always()"},
+		{"develop push trigger", "branches: ['release/*']", "branches: [develop]"},
 		{"pull request trigger", "  workflow_dispatch:\n", "  pull_request:\n  workflow_dispatch:\n"},
 		{"schedule dropped", "  schedule:\n    - cron: '17 * * * *'\n", ""},
 		{"slow schedule", "cron: '17 * * * *'", "cron: '17 0 * * *'"},
