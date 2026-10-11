@@ -85,17 +85,19 @@ func TestLandingBarrierPublication(t *testing.T) {
 		code               int
 		instanceFailure    bool
 		publicationFailure bool
+		output             string
 	}{
-		{"green", 0, false, false},
-		{"red", 7, false, false},
-		{"publication retry retains red result", 7, false, true},
-		{"instance failure releases claim", -1, true, false},
+		{"green", 0, false, false, ""},
+		{"red", 7, false, false, ""},
+		{"publication retry retains red result", 7, false, true, ""},
+		{"instance failure releases claim", -1, true, false, ""},
+		{"oversized red output publishes its tail", 7, false, false, strings.Repeat("x", 70<<10) + "\ndetent-barrier-failed: go example.com/pkg\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
-				backend := &barrierWorkspace{result: gate.CommandResult{Command: "make verify", ExitCode: test.code}}
+				backend := &barrierWorkspace{result: gate.CommandResult{Command: "make verify", ExitCode: test.code, Output: test.output}}
 				if test.instanceFailure {
 					backend.err = errors.New("workspace unavailable")
 				}
@@ -125,6 +127,9 @@ func TestLandingBarrierPublication(t *testing.T) {
 					}
 					if result == nil || result.ExitCode != test.code || result.Command != "make verify" {
 						t.Fatalf("result=%+v", result)
+					}
+					if len(result.Output) > 64<<10 || !strings.HasSuffix(result.Output, "detent-barrier-failed: go example.com/pkg\n") && test.output != "" {
+						t.Fatalf("published output is %d bytes or lost its failure summary", len(result.Output))
 					}
 				}
 			})
