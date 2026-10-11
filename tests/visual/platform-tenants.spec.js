@@ -56,6 +56,9 @@ for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844
         await expect(table.getByText("0 runners")).toBeVisible();
         await table.evaluate((element) => { element.parentElement.scrollLeft = 0; });
       }
+      await table.evaluate(async (element) => {
+        await Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished));
+      });
       await page.screenshot({ path: process.env.TMPDIR + `/tenants-${theme}-${viewport.width}.png`, fullPage: true });
       await page.getByRole("button", { name: /^Needs attention/ }).click();
       await expect(table.getByRole("link", { name: "Example Co" })).toBeVisible();
