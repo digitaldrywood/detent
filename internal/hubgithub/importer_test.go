@@ -6,10 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
@@ -145,6 +147,66 @@ func TestReconcileNativeProfileDoesNotFetchIssues(t *testing.T) {
 			if err != nil || len(client.steps) != 0 {
 				t.Fatalf("native reconciliation: %v, %d calls left", err, len(client.steps))
 			}
+		})
+	}
+}
+
+func TestImportScheduledOccurrence(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		changeRun func(map[string]any)
+		changeJob func(map[string]any)
+		status    int
+		valid     bool
+	}{
+		{name: "failed job while workflow is running", valid: true},
+		{name: "wrong run", changeRun: func(r map[string]any) { r["id"] = 124 }},
+		{name: "wrong attempt", changeRun: func(r map[string]any) { r["run_attempt"] = 2 }},
+		{name: "unproven tested SHA", changeRun: func(r map[string]any) { r["head_sha"] = strings.Repeat("b", 40) }},
+		{name: "other workflow", changeRun: func(r map[string]any) { r["path"] = ".github/workflows/release.yml" }},
+		{name: "other repository", changeRun: func(r map[string]any) { r["repository"] = map[string]any{"full_name": "elsewhere/repo"} }},
+		{name: "fork", changeRun: func(r map[string]any) { r["head_repository"] = map[string]any{"full_name": "fork/repo"} }},
+		{name: "feature branch", changeRun: func(r map[string]any) { r["head_branch"] = "feature" }},
+		{name: "pull request event", changeRun: func(r map[string]any) { r["event"] = "pull_request" }},
+		{name: "job absent from attempt", changeJob: func(j map[string]any) { j["id"] = 457 }},
+		{name: "job from other run", changeJob: func(j map[string]any) { j["run_id"] = 124 }},
+		{name: "job head mismatch", changeJob: func(j map[string]any) { j["head_sha"] = strings.Repeat("b", 40) }},
+		{name: "job name mismatch", changeJob: func(j map[string]any) { j["name"] = "Deploy" }},
+		{name: "running job", changeJob: func(j map[string]any) { j["status"] = "in_progress" }},
+		{name: "green job", changeJob: func(j map[string]any) { j["conclusion"] = "success" }},
+		{name: "403", status: http.StatusForbidden},
+		{name: "404", status: http.StatusNotFound},
+		{name: "429", status: http.StatusTooManyRequests},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sha := strings.Repeat("a", 40)
+			evidence := gate.ScheduledEvidence{Schema: 1, Repository: "org/repo", OccurrenceKey: strings.Repeat("a", 64), RunID: "123", RunAttempt: "1", JobID: "456", JobName: "Coverage", RunURL: "https://github.com/org/repo/actions/runs/123/attempts/1", JobURL: "https://github.com/org/repo/actions/jobs/456", HeadSHA: sha, Conclusion: "failure"}
+			run := map[string]any{"id": 123, "run_attempt": 1, "path": ".github/workflows/ci.yml", "head_sha": sha, "head_branch": "develop", "event": "schedule", "status": "in_progress", "repository": map[string]any{"full_name": "org/repo"}, "head_repository": map[string]any{"full_name": "org/repo"}}
+			job := map[string]any{"id": 456, "run_id": 123, "name": "Coverage", "head_sha": sha, "status": "completed", "conclusion": "failure", "started_at": "2026-10-11T12:00:00Z", "completed_at": "2026-10-11T12:01:00Z"}
+			if test.changeRun != nil {
+				test.changeRun(run)
+			}
+			if test.changeJob != nil {
+				test.changeJob(job)
+			}
+			path := "/repos/org/repo/actions/runs/123/attempts/1"
+			steps := []restStep{{method: http.MethodGet, path: path, response: run}}
+			if test.status != 0 {
+				steps[0].err = &connectorgithub.StatusError{StatusCode: test.status}
+			}
+			if test.changeRun == nil && test.status == 0 {
+				steps = append(steps, restStep{method: http.MethodGet, path: path + "/jobs?per_page=100", response: map[string]any{"jobs": []map[string]any{job}}})
+			}
+			client := &scriptedRESTClient{t: t, steps: steps}
+			page, err := NewImporter(client).FetchImportPage(t.Context(), hubserver.GitHubImportRequest{Profile: "native", Repository: "org/repo", Stage: "scheduled", Scheduled: &evidence})
+			if (err == nil) != test.valid || (page.Scheduled != nil) != test.valid {
+				t.Fatalf("page=%+v err=%v", page, err)
+			}
+			if test.valid && (page.Scheduled.HeadSHA != sha || page.Scheduled.StartedAt.Format(time.RFC3339) != "2026-10-11T12:00:00Z" || page.Scheduled.FinishedAt.Format(time.RFC3339) != "2026-10-11T12:01:00Z") {
+				t.Fatalf("verified evidence = %+v", page.Scheduled)
+			}
+			client.assertDone()
 		})
 	}
 }

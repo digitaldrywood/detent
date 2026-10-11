@@ -12,6 +12,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -34,6 +35,7 @@ type GitHubImport struct {
 }
 
 type GitHubImportRequest struct {
+	Scheduled   *gate.ScheduledEvidence
 	SourceID    string
 	Repository  string
 	Profile     string
@@ -53,6 +55,7 @@ type GitHubImportRecord struct {
 }
 
 type GitHubImportPage struct {
+	Scheduled     *gate.ScheduledEvidence
 	RetryAt       time.Time
 	EditSequence  int64
 	EditsFinished bool

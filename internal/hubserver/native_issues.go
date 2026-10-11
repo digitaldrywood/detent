@@ -429,6 +429,9 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		author = issue.Provenance.AuthorID
 	}
 	issue.IssueContract = &issuecontract.State{Exempt: workspaceLabelAllowed(ctx)}
+	if machineIntake && issue.Provenance == nil {
+		applyScheduledRepairContract(ctx, tx, scope, &issue, now)
+	}
 	_, machineOrigin := issueorigin.Parse(issue.Body)
 	if issue.Actor.Kind == "human" && !machineOrigin && !machineIntake && issue.Provenance == nil {
 		issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(issue.Body)
