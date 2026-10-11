@@ -76,6 +76,9 @@ func (r *Runner) RunLandingBarriers(ctx context.Context, owner LandingBarrierOwn
 					}
 					var completed *gate.CommandResult
 					if runErr == nil {
+						if len(result.Output) > barrierOutputBytes {
+							result.Output = result.Output[len(result.Output)-barrierOutputBytes:]
+						}
 						if !repairEvidence.IsZero() {
 							pipeline := gate.PipelineEvidence{}
 							if result.Pipeline != nil {
@@ -149,6 +152,7 @@ func (r *Runner) finishLandingBarrier(ctx context.Context, owner LandingBarrierO
 const (
 	barrierRepairDuration    = 45 * time.Minute
 	barrierRepairOutputBytes = 24 << 10
+	barrierOutputBytes       = 64 << 10
 	barrierFailedPrefix      = "detent-barrier-failed:"
 )
 
