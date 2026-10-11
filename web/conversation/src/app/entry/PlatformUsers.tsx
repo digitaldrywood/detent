@@ -1,4 +1,6 @@
 import React from "react";
+import { Link, useRouterState } from "@tanstack/react-router";
+import { usePlatformResource } from "./usePlatformResource.ts";
 
 import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
@@ -6,11 +8,9 @@ import { Empty, EmptyHeader, EmptyTitle } from "../../components/ui/empty.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Skeleton } from "../../components/ui/skeleton.tsx";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/table.tsx";
-import { AccountError } from "../account/api.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import { type PlatformUsers } from "./api.ts";
 import { Problem, useEntryApi } from "./EntryScreens.tsx";
-import { redirectPlatformSignIn } from "./usePlatformResource.ts";
 
 function date(value: string, time = false): string {
   if (value === "") return "—";
@@ -45,7 +45,7 @@ export function PlatformUserResults({ value }: { readonly value: PlatformUsers }
                   <TableCell>{membership.organization_name}</TableCell>
                   <TableCell><Badge variant="outline">{membership.role}</Badge></TableCell>
                   <TableCell><time dateTime={membership.joined_at}>{date(membership.joined_at)}</time></TableCell>
-                  <TableCell><Button size="compact" variant="ghost" render={<a href={`/platform/tenants?tenant=${encodeURIComponent(membership.organization_id)}`} />}>Open tenant →</Button></TableCell>
+                  <TableCell><Button size="compact" variant="ghost" render={<Link to={"/platform/tenants" as never} search={{ tenant: membership.organization_id } as never} />}>Open tenant →</Button></TableCell>
                 </TableRow>
               ))}
               {user.invitations.map((invitation, index) => (
@@ -53,7 +53,7 @@ export function PlatformUserResults({ value }: { readonly value: PlatformUsers }
                   <TableCell>{invitation.organization_name}</TableCell>
                   <TableCell><Badge variant="warning">invited</Badge></TableCell>
                   <TableCell>expires <time dateTime={invitation.expires_at}>{date(invitation.expires_at)}</time></TableCell>
-                  <TableCell><Button size="compact" variant="ghost" render={<a href={`/platform/tenants?tenant=${encodeURIComponent(invitation.organization_id)}`} />}>Open tenant →</Button></TableCell>
+                  <TableCell><Button size="compact" variant="ghost" render={<Link to={"/platform/tenants" as never} search={{ tenant: invitation.organization_id } as never} />}>Open tenant →</Button></TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -74,40 +74,24 @@ export function PlatformUserResults({ value }: { readonly value: PlatformUsers }
 export function PlatformUsersPage(): React.ReactElement {
   usePageTitle("Users", "Platform");
   const api = useEntryApi();
-  const [query, setQuery] = React.useState("");
-  const [value, setValue] = React.useState<PlatformUsers>();
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-  const active = React.useRef(true);
-  React.useEffect(() => {
-    active.current = true;
-    return () => { active.current = false; };
-  }, []);
+  const routeQuery = useRouterState({ select: (state) => (state.location.search as { q?: string }).q ?? "" });
+  const [query, setQuery] = React.useState(routeQuery);
+  const [submitted, setSubmitted] = React.useState(routeQuery);
+  React.useEffect(() => { setQuery(routeQuery); setSubmitted(routeQuery); }, [routeQuery]);
+  const resource = usePlatformResource(() => submitted === "" ? Promise.resolve(null) : api.platformUsers(submitted), [api, submitted]);
+  const loading = submitted !== "" && resource.loading;
   const valid = Array.from(query.trim()).length >= 3;
-
-  async function search(event: React.FormEvent): Promise<void> {
+  const value = loading || resource.error !== null ? null : resource.value;
+  function search(event: React.FormEvent): void {
     event.preventDefault();
     if (!valid || loading) return;
-    setLoading(true);
-    setValue(undefined);
-    setError(null);
-    try {
-      const result = await api.platformUsers(query.trim());
-      if (active.current) setValue(result);
-    } catch (cause) {
-      if (active.current) {
-        redirectPlatformSignIn(cause);
-        setError(cause instanceof AccountError ? cause.message : "User search is temporarily unavailable");
-      }
-    } finally {
-      if (active.current) setLoading(false);
-    }
+    if (submitted === query.trim()) void resource.refresh();
+    else setSubmitted(query.trim());
   }
 
   return (
     <>
-      <h1 className="text-2xl font-semibold">Users</h1>
-      <form onSubmit={(event) => { void search(event); }} className="space-y-2">
+      <form onSubmit={search} className="space-y-2">
         <label htmlFor="user-email" className="text-sm font-medium">Search by email</label>
         <div className="flex items-center gap-2">
           <Input id="user-email" type="search" value={query} onChange={(event) => setQuery(event.target.value)} aria-describedby="user-search-help" className="min-w-0 flex-1" />
@@ -115,9 +99,9 @@ export function PlatformUsersPage(): React.ReactElement {
         </div>
         <p id="user-search-help" className="text-xs text-muted-foreground">Enter at least three characters. Matches verified emails across all tenants.</p>
       </form>
-      <Problem message={error} />
+      <Problem message={resource.error?.message ?? null} />
       {loading ? <div role="status" aria-label="Searching users" className="space-y-3"><Skeleton className="h-6 w-1/2" /><Skeleton className="h-24 w-full" /></div> : null}
-      {value === undefined ? null : <PlatformUserResults value={value} />}
+      {value == null ? null : <PlatformUserResults value={value} />}
     </>
   );
 }

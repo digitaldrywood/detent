@@ -1,13 +1,22 @@
 import React from "react";
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
-import { Activity, Building2, ChevronDown, ListChecks, ScrollText, Users, UserSearch } from "lucide-react";
+import { Activity, ArrowUpRight, Building2, ListChecks, ScrollText, Search, Users, UserSearch } from "lucide-react";
 
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../../components/ui/menu.tsx";
+import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
+import { WorkspacePageContainer } from "../../components/WorkspacePageContainer.tsx";
+import { DetentWordmark } from "../../components/DetentWordmark.tsx";
+import { Empty, EmptyHeader, EmptyTitle, EmptyDescription } from "../../components/ui/empty.tsx";
+import { Skeleton } from "../../components/ui/skeleton.tsx";
+import { SettingsSection } from "../settings/settingsLayout.tsx";
+import { PlatformSearch } from "./PlatformSearch.tsx";
+import { PlatformActionsContext } from "./PlatformPageActions.tsx";
 import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
+  SidebarGroupLabel,
+  SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
@@ -19,10 +28,10 @@ import {
 
 import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
-import { DetentCloudLogo } from "../account/Login.tsx";
 import { usePlatformResource } from "./usePlatformResource.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import {
+  type EntryOrganizations,
   type PlatformAllowlist,
   type PlatformHealth,
 } from "./api.ts";
@@ -40,13 +49,12 @@ function Panel({
   readonly children: React.ReactNode;
 }): React.ReactElement {
   return (
-    <section aria-label={title} className="rounded-2xl border border-border bg-card p-5">
-      <h2 className="text-base font-semibold">{title}</h2>
-      {description === undefined ? null : (
-        <p className="mt-1 text-[13px] text-muted-foreground">{description}</p>
-      )}
-      <div className="mt-4">{children}</div>
-    </section>
+    <SettingsSection title={title} aria-label={title}>
+      <div className="p-4">
+        {description === undefined ? null : <p className="mb-4 text-sm text-muted-foreground">{description}</p>}
+        {children}
+      </div>
+    </SettingsSection>
   );
 }
 
@@ -144,9 +152,9 @@ const PLATFORM_SECTIONS = [
   { id: "tenants", title: "Tenants", icon: Building2 },
   { id: "users", title: "Users", icon: UserSearch },
   { id: "staff", title: "Staff", icon: Users },
-  { id: "audit", title: "Audit", icon: ScrollText },
+  { id: "audit", title: "Audit log", icon: ScrollText },
   { id: "health", title: "Health", icon: Activity },
-  { id: "allowlist", title: "Allowlist", icon: ListChecks },
+  { id: "allowlist", title: "Sign-up allowlist", icon: ListChecks },
 ] as const;
 
 type PlatformSection = typeof PLATFORM_SECTIONS[number]["id"];
@@ -161,43 +169,81 @@ const PLATFORM_ROLES: Record<string, string> = {
 const PlatformRoleContext = React.createContext("");
 const PlatformCSRFContext = React.createContext("");
 
-function PlatformNavigation({ role }: { readonly role: string }): React.ReactElement {
+function HealthBadge({ value }: { readonly value: PlatformHealth }): React.ReactElement {
+  const admission = value.admission;
+  const down = !value.registry.ok;
+  const degraded = (value.tenants !== undefined && value.tenants.running < value.tenants.expected) ||
+    (admission !== undefined && ((admission.disk_measured && admission.free_disk_bytes < admission.min_free_disk_bytes) ||
+      (admission.memory_measured && admission.available_memory_bytes < admission.min_available_memory_bytes)));
+  return <Badge variant={down ? "error" : degraded ? "warning" : "success"}>{down ? "Down" : degraded ? "Degraded" : "OK"}</Badge>;
+}
+
+function PlatformNavigation({ role, email, csrf, organizations, count, health, onSearch }: {
+  readonly role: string;
+  readonly email: string;
+  readonly csrf: string;
+  readonly organizations: EntryOrganizations["organizations"];
+  readonly count?: number;
+  readonly health?: PlatformHealth | null;
+  readonly onSearch: () => void;
+}): React.ReactElement {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const { isMobile, setOpenMobile } = useSidebar();
+  const group = (title: string, ids: readonly PlatformSection[]) => (
+    <SidebarGroup>
+      <SidebarGroupLabel><span>{title}</span><span className="ml-2 h-px flex-1 bg-sidebar-border" /></SidebarGroupLabel>
+      <SidebarMenu>
+        {ids.map((id) => PLATFORM_SECTIONS.find((section) => section.id === id)!).filter((section) => section.id !== "staff" || role === "admin").map((section) => {
+          const href = `/platform/${section.id}`;
+          const active = pathname === href;
+          return (
+            <SidebarMenuItem key={section.id}>
+              <SidebarMenuButton isActive={active} render={<Link to={href as never} aria-label={section.title} aria-current={active ? "page" : undefined} />} onClick={() => setOpenMobile(false)}>
+                <section.icon /><span className="flex-1">{section.title}</span>
+                {section.id === "tenants" && count !== undefined ? <Badge variant="outline">{count}</Badge> : null}
+                {section.id === "health" && health ? <HealthBadge value={health} /> : null}
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          );
+        })}
+      </SidebarMenu>
+    </SidebarGroup>
+  );
   return (
     <Sidebar className={isMobile ? "w-[calc(100vw-var(--spacing)*3)]" : "absolute inset-y-0 h-full"}>
+      <SidebarHeader>
+        <div className="flex h-[var(--workspace-topbar-height)] items-center gap-2 px-2">
+          <DetentWordmark aria-hidden="true" className="h-4 w-auto shrink-0" />
+          <span className="text-sm font-semibold">Detent Cloud</span><Badge variant="info">Platform</Badge>
+        </div>
+        {role === "" ? null : <Button variant="outline" size="sm" onClick={() => { setOpenMobile(false); onSearch(); }}>
+          <Search /><span className="flex-1 text-left">Find tenant or user</span><kbd className="text-xs text-muted-foreground">⌘K</kbd>
+        </Button>}
+      </SidebarHeader>
       <SidebarContent>
+        {role === "" ? null : <nav aria-label="Platform navigation">
+          {group("Customers", ["tenants", "users", "audit"])}
+          {group("System", ["health", "allowlist", "staff"])}
+        </nav>}
         <SidebarGroup>
-          <nav aria-label="Platform navigation">
+          <SidebarGroupLabel><span>Your organizations</span><span className="ml-2 h-px flex-1 bg-sidebar-border" /></SidebarGroupLabel>
+          <nav aria-label="Your organizations">
             <SidebarMenu>
-              {PLATFORM_SECTIONS.filter((section) => role !== "" && (section.id !== "staff" || role === "admin")).map((section) => {
-                const href = `/platform/${section.id}`;
-                const active = pathname === href;
-                return (
-                  <SidebarMenuItem key={section.id}>
-                    <SidebarMenuButton
-                      isActive={active}
-                      render={<Link to={href as never} aria-current={active ? "page" : undefined} />}
-                      onClick={() => setOpenMobile(false)}
-                    >
-                      <section.icon />
-                      <span>{section.title}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                );
-              })}
+              {organizations.map((organization) => <SidebarMenuItem key={organization.id}>
+                <SidebarMenuButton render={<a href={organization.url} />}>
+                  <Building2 /><span className="flex-1">{organization.name}</span><ArrowUpRight />
+                </SidebarMenuButton>
+              </SidebarMenuItem>)}
             </SidebarMenu>
           </nav>
         </SidebarGroup>
       </SidebarContent>
-      {role === "" ? null : (
-        <>
-          <SidebarSeparator />
-          <SidebarFooter>
-            <span className="px-2 text-xs text-muted-foreground">{PLATFORM_ROLES[role] ?? role}</span>
-          </SidebarFooter>
-        </>
-      )}
+      {email === "" ? null : <><SidebarSeparator /><SidebarFooter role="contentinfo" aria-label="Platform account">
+        <span className="truncate px-2 text-sm" title={email}>{email}</span>
+        <div className="flex items-center justify-between pl-2">
+          <span className="text-xs text-muted-foreground">{PLATFORM_ROLES[role] ?? role}</span><SignOut csrf={csrf} />
+        </div>
+      </SidebarFooter></>}
     </Sidebar>
   );
 }
@@ -208,52 +254,43 @@ export function PlatformConsole(): React.ReactElement {
   const organizations = usePlatformResource(() => api.organizations(), [api]);
   const value = session.value;
   const role = value?.platform_role ?? "";
+  const tenants = usePlatformResource(() => role === "" ? Promise.resolve(null) : api.platformOrganizations(), [api, role]);
+  const health = usePlatformResource(() => role === "" ? Promise.resolve(null) : api.platformHealth(), [api, role]);
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const section = PLATFORM_SECTIONS.find((section) => pathname === `/platform/${section.id}`);
+  usePageTitle(section?.title ?? "Platform", "Platform");
+  const [searchOpen, setSearchOpen] = React.useState(false);
+  const [actions, setActions] = React.useState<HTMLDivElement | null>(null);
   const error = session.error ?? organizations.error;
+  const denied = role === "" || (section?.id === "staff" && role !== "admin");
   return (
     <PlatformRoleContext.Provider value={role}>
       <PlatformCSRFContext.Provider value={value?.csrf ?? ""}>
-      <SidebarProvider open className="h-full min-h-0 flex-1 flex-col">
-        <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border/60 px-4 py-3 sm:px-8">
-          <SidebarTrigger className="md:hidden" />
-          <DetentCloudLogo />
-          <Badge variant="info">Platform</Badge>
-          <span className="flex-1" />
-          {(organizations.value?.organizations.length ?? 0) === 0 ? null : (
-            <Menu>
-              <MenuTrigger render={<Button size="sm" variant="outline" />}>
-                Open organization <ChevronDown />
-              </MenuTrigger>
-              <MenuPopup align="end">
-                {organizations.value?.organizations.map((organization) => (
-                  <MenuItem key={organization.id} render={<a href={organization.url} />}>
-                    {organization.name}
-                  </MenuItem>
-                ))}
-              </MenuPopup>
-            </Menu>
-          )}
-          {value === undefined ? null : (
-            <>
-              <span className="max-w-full truncate text-sm text-muted-foreground">{value.email}</span>
-              <SignOut csrf={value.csrf} />
-            </>
-          )}
-        </header>
-        <div className="relative flex min-h-0 flex-1">
-          <PlatformNavigation role={role} />
-          <main className="min-w-0 flex-1 overflow-y-auto">
-            <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-6 sm:px-8">
-              <Problem message={error?.message ?? null} />
-              {value === undefined ? (
-                error === null ? <p className="text-sm text-muted-foreground">Loading platform console…</p> : null
-              ) : role === "" ? (
-                <Problem message="The platform console is limited to Detent staff." />
-              ) : <Outlet />}
-            </div>
-          </main>
-        </div>
-      </SidebarProvider>
-    </PlatformCSRFContext.Provider>
+        <PlatformActionsContext.Provider value={actions}>
+          <SidebarProvider open className="relative h-full min-h-0 flex-1">
+            <PlatformNavigation role={role} email={value?.email ?? ""} csrf={value?.csrf ?? ""} organizations={organizations.value?.organizations ?? []}
+              count={tenants.value?.organizations.length} health={health.value} onSearch={() => setSearchOpen(true)} />
+            <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+              <WorkspacePageHeader className="border-b border-border">
+                <SidebarTrigger className="md:hidden" />
+                <h1 className="min-w-0 truncate text-sm font-medium">{section?.title ?? "Platform"}</h1>
+                <div ref={setActions} className="ml-auto flex shrink-0 items-center gap-2" />
+              </WorkspacePageHeader>
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <WorkspacePageContainer width="wide">
+                  <Problem message={error?.message ?? null} />
+                  {value === undefined ? (error === null ? <Skeleton className="h-48" aria-label="Loading platform console" /> : null) : denied ? (
+                    <Empty><EmptyHeader><EmptyTitle>You don't have access to this page</EmptyTitle>
+                      {role === "" ? <EmptyDescription>The platform console is limited to Detent staff.</EmptyDescription> : null}
+                    </EmptyHeader></Empty>
+                  ) : <Outlet />}
+                </WorkspacePageContainer>
+              </div>
+            </main>
+            {role === "" ? null : <PlatformSearch open={searchOpen} onOpenChange={setSearchOpen} tenants={tenants.value?.organizations ?? []} tenantError={tenants.error} />}
+          </SidebarProvider>
+        </PlatformActionsContext.Provider>
+      </PlatformCSRFContext.Provider>
     </PlatformRoleContext.Provider>
   );
 }
@@ -261,7 +298,7 @@ export function PlatformConsole(): React.ReactElement {
 export function PlatformPageTitle({ section }: { readonly section: PlatformSection }): React.ReactElement {
   const title = PLATFORM_SECTIONS.find((item) => item.id === section)!.title;
   usePageTitle(title, "Platform");
-  return <h1 className="text-2xl font-semibold tracking-[-0.02em]">{title}</h1>;
+  return <></>;
 }
 
 export function PlatformTenantsPage(): React.ReactElement {

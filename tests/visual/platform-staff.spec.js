@@ -118,7 +118,7 @@ for (const viewport of [{ name: "desktop", width: 1440, height: 1100 }, { name: 
 
 test("non-admin Staff visit is refused in the platform shell", async ({ page }) => {
   await openStaff(page, "support");
-  await expect(page.getByRole("alert")).toHaveText("You do not have permission to do that.");
+  await expect(page.getByText("You don't have access to this page", { exact: true })).toBeVisible();
   await expect(page.getByRole("table")).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Staff", exact: true })).toHaveCount(0);
 });
