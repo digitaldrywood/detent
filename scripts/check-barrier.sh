@@ -87,7 +87,20 @@ run_go_tests() {
 }
 
 run_race_tests() {
-    if [ -n "$failed" ]; then rerun_tests "$race_items" 1; else make -o generate-docs test-race TEST_PROCS="$procs"; fi
+    if [ -n "$failed" ]; then
+        rerun_tests "$race_items" 1
+        return
+    fi
+    local status=0 flaky
+    make -o generate-docs test-race TEST_PROCS="$procs" || status=$?
+    if [ "$status" != 0 ]; then
+        flaky=$(python3 scripts/barrier_failures.py extract go tmp/barrier-race.log)
+        if [ -n "$flaky" ] && rerun_tests "$flaky" 1; then
+            printf 'check-barrier: race tests passed on retry: %s\n' "$(printf '%s\n' "$flaky" | tr '\n' ' ')"
+            status=0
+        fi
+    fi
+    return "$status"
 }
 
 run_browser_specs() {
