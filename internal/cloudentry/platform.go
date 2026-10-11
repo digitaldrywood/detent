@@ -225,8 +225,15 @@ func (s *Service) platformHealthJSON(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusOK, result)
 	}
-	expected, running := s.servingTenants(ctx, organizations)
-	result["tenants"] = map[string]int{"expected": expected, "running": running}
+	hubs := s.tenantHealth(ctx, organizations)
+	running := 0
+	for _, hub := range hubs {
+		if hub.Running {
+			running++
+		}
+	}
+	result["tenants"] = map[string]int{"expected": len(hubs), "running": running}
+	result["tenant_hubs"] = hubs
 	if allocation := s.config.Allocation; allocation != nil {
 		holding, allocating, err := s.admissionLoad(ctx, "")
 		if err != nil {
