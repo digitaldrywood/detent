@@ -34,7 +34,7 @@ func (s *Scheduler) NextLandingBarrier(ctx context.Context, project, repository,
 		return observed, false, err
 	}
 	head, err := observeHead(ctx, observed.BaseRef)
-	if err != nil || !observed.Running && observed.Result != nil && observed.Result.HeadSHA == head {
+	if err != nil || !observed.Running && observed.Result != nil && observed.Result.HeadSHA == head && observed.Result.ExitCode == 0 {
 		return observed, false, err
 	}
 	key, err := randomSessionID()
