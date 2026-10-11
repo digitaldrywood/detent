@@ -204,10 +204,10 @@ func resolveVersionPublication(ctx context.Context, query nativeQueryer, changeI
 	}
 	var raw string
 	err := query.QueryRowContext(ctx, `SELECT json_extract(a.data_json, '$.finalization.publication')
-FROM native_attempts a JOIN change_requests c ON c.id=? AND json_extract(c.record_json, '$.current_version_id')=?
+FROM native_attempts a JOIN change_requests c ON c.id=?
 AND c.organization_id=a.organization_id AND c.project_id=a.project_id AND c.work_item_id=a.work_item_id
 WHERE json_extract(a.data_json, '$.finalization.publication.version_id')=?
-ORDER BY a.fencing_token DESC LIMIT 1`, changeID, version.ID, version.ID).Scan(&raw)
+ORDER BY a.fencing_token DESC LIMIT 1`, changeID, version.ID).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
