@@ -163,11 +163,15 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 	if err != nil {
 		return false, err
 	}
-	if state.HeadSHA == issue.Source.Version.HeadSHA || len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 || state.UnpushedCommits > 0 {
+	if state.HeadSHA == issue.Source.Version.HeadSHA || len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 {
 		return false, nil
 	}
-	if state.HeadSHA != issue.Source.Version.BaseSHA {
-		if issue.Source.Version.Source == nil || !slices.Contains(issue.Source.PreviousHeads, state.HeadSHA) {
+	previous := issue.Source.Version.Source != nil && slices.Contains(issue.Source.PreviousHeads, state.HeadSHA)
+	if state.UnpushedCommits > 0 && !previous {
+		return false, nil
+	}
+	if state.HeadSHA != issue.Source.Version.BaseSHA || previous {
+		if !previous {
 			return false, refuse(LandRefusalHeadMoved, "the existing clean worktree differs from the recorded source base and head; preserve its current head and reconcile the Change before recovery")
 		}
 		if _, err := l.quarantineWorktree(ctx, info.Path); err != nil {

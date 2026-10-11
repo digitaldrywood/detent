@@ -33,13 +33,14 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
-		name      string
-		edit      func(*ChangeSource)
-		pending   string
-		published bool
-		previous  bool
-		absent    bool
-		corrupt   bool
+		name        string
+		edit        func(*ChangeSource)
+		pending     string
+		published   bool
+		unpublished bool
+		previous    bool
+		absent      bool
+		corrupt     bool
 	}{
 		{name: "corrupt bundle", edit: func(s *ChangeSource) { s.Bundle = []byte("changed") }},
 		{name: "wrong diff", edit: func(s *ChangeSource) { s.Version.Source.DiffSHA256 = strings.Repeat("a", 64) }},
@@ -55,6 +56,9 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		{name: "superseded published source is preserved and restored", published: true, previous: true},
 		{name: "corrupt retained source preserves existing workspace", published: true, previous: true, corrupt: true},
 		{name: "superseded branch without workspace is preserved and restored", published: true, previous: true, absent: true},
+		{name: "superseded Hub-only source is preserved and restored", unpublished: true, previous: true},
+		{name: "superseded Hub-only branch without workspace is preserved and restored", unpublished: true, previous: true, absent: true},
+		{name: "unknown unpublished source survives restoration", unpublished: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "second")
@@ -70,7 +74,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 				test.edit(retained)
 			}
 			issue := Issue{Identifier: "native#584", NativeRework: true, Source: retained, BaseRef: base}
-			if test.published {
+			if test.published || test.unpublished {
 				runGit(t, dir, "config", "url."+remote+".insteadOf", repository)
 				initial := issue
 				initial.Source = nil
@@ -83,13 +87,15 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 				runGit(t, info.Path, "reset", "--hard", head)
 				writeFileDiffFile(t, info.Path, "source.txt", "newer completed work\n")
 				runGit(t, info.Path, "add", "source.txt")
-				runGit(t, info.Path, "-c", "user.name=Recovery Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "newer completed work")
+				runGit(t, info.Path, "-c", "user.name=Recovery Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", test.name)
 				newer := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
-				runGit(t, info.Path, "push", "origin", "HEAD:refs/heads/published-work-"+SafeKey(test.name))
-				runGit(t, dir, "fetch", "origin")
+				if test.published {
+					runGit(t, info.Path, "push", "origin", "HEAD:refs/heads/published-work-"+SafeKey(test.name))
+					runGit(t, dir, "fetch", "origin")
+				}
 				before, err := backend.(RecoveryStateProvider).RecoveryState(t.Context(), info, initial)
-				if err != nil || before.HeadSHA != newer || before.UnpushedCommits != 0 || len(before.TrackedPaths) != 0 || len(before.UntrackedPaths) != 0 {
-					t.Fatalf("fixture lacks a clean newer published head: %+v, %v", before, err)
+				if err != nil || before.HeadSHA != newer || (before.UnpushedCommits > 0) != test.unpublished || len(before.TrackedPaths) != 0 || len(before.UntrackedPaths) != 0 {
+					t.Fatalf("fixture lacks expected clean commit publication state: %+v, %v", before, err)
 				}
 				if test.previous {
 					retained.PreviousHeads = []string{newer}
@@ -124,7 +130,11 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 					return
 				}
 				var refusal *LandRefusal
-				if test.corrupt && restoreErr == nil || !test.corrupt && (!errors.As(restoreErr, &refusal) || refusal.Kind != LandRefusalHeadMoved) {
+				if test.unpublished && !test.corrupt {
+					if restoreErr != nil || restored.Created {
+						t.Fatalf("unpublished work must remain available unchanged: %+v, %v", restored, restoreErr)
+					}
+				} else if test.corrupt && restoreErr == nil || !test.corrupt && (!errors.As(restoreErr, &refusal) || refusal.Kind != LandRefusalHeadMoved) {
 					t.Errorf("older retained source must require explicit reconciliation: %v", restoreErr)
 				}
 				if got := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")); got != newer {
