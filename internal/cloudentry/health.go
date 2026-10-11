@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/labstack/echo/v4"
 )
@@ -20,23 +23,53 @@ func (s *Service) checkTenant(ctx context.Context, organization Organization) er
 }
 
 func (s *Service) servingTenants(ctx context.Context, organizations []Organization) (int, int) {
-	var ids []string
-	for _, organization := range organizations {
-		if organization.State == "ready" {
-			ids = append(ids, organization.ID)
-		}
-	}
-	healthy := make([]bool, len(ids))
-	s.eachReadyTenant(ctx, ids, func(call context.Context, index int, organization Organization) {
-		healthy[index] = s.checkTenant(call, organization) == nil
-	})
+	rows := s.tenantHealth(ctx, organizations)
 	running := 0
-	for _, ok := range healthy {
-		if ok {
+	for _, row := range rows {
+		if row.Running {
 			running++
 		}
 	}
-	return len(ids), running
+	return len(rows), running
+}
+
+type platformTenantHealth struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Running       bool   `json:"running"`
+	UptimeSeconds *int64 `json:"uptime_seconds"`
+	Restarts24h   *int   `json:"restarts_24h"`
+	DatabaseBytes *int64 `json:"database_bytes"`
+}
+
+func (s *Service) tenantHealth(ctx context.Context, organizations []Organization) []platformTenantHealth {
+	var ids []string
+	rows := []platformTenantHealth{}
+	for _, organization := range organizations {
+		if organization.State == "ready" {
+			ids = append(ids, organization.ID)
+			rows = append(rows, platformTenantHealth{ID: organization.ID, Name: organization.Name})
+		}
+	}
+	s.eachReadyTenant(ctx, ids, func(call context.Context, index int, organization Organization) {
+		row := &rows[index]
+		row.Running = s.checkTenant(call, organization) == nil
+		if allocation := s.config.Allocation; allocation != nil && organization.Managed {
+			if reader, ok := allocation.Launcher.(interface {
+				Health(string, time.Time) (*int64, *int)
+			}); ok {
+				row.UptimeSeconds, row.Restarts24h = reader.Health(organization.ID, s.config.now())
+			}
+			if info, err := os.Stat(filepath.Join(allocation.TenantRoot, organization.ID, "hub.db")); err == nil && info.Mode().IsRegular() {
+				size := info.Size()
+				row.DatabaseBytes = &size
+			}
+		}
+		if !row.Running {
+			row.UptimeSeconds = nil
+		}
+	})
+	return rows
 }
 
 func (s *Service) health(c echo.Context) error {

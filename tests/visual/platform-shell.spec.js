@@ -39,14 +39,14 @@ test("desktop platform shell redirects to tenants and keeps chrome across pages"
   const documentRequests = [];
   page.on("request", (request) => { if (request.isNavigationRequest()) documentRequests.push(request.url()); });
   await nav.getByRole("link", { name: "Health" }).click();
-  await expect(page.getByRole("region", { name: "Service health" })).toBeVisible();
+  await expect(page.getByRole("alert", { name: "Service health" })).toBeVisible();
   await expect(page).toHaveTitle("Health · Platform · Detent");
   await expect(nav.getByRole("link", { name: "Health" })).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("table", { name: "Tenants", exact: true })).toHaveCount(0);
   await nav.getByRole("link", { name: "Sign-up allowlist" }).click();
   await expect(page.getByRole("region", { name: "Signup allowlist" })).toContainText("example.test");
   await expect(page.getByText("Platform", { exact: true })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Service health" })).toHaveCount(0);
+  await expect(page.getByRole("alert", { name: "Service health" })).toHaveCount(0);
   expect(documentRequests).toEqual([]);
   await page.reload();
   await expect(page.getByRole("region", { name: "Signup allowlist" })).toBeVisible();
@@ -66,7 +66,7 @@ for (const role of ["support", "billing", "viewer"]) {
 test("mobile platform navigation opens a sheet and closes on selection", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openPlatform(page, { path: "/platform/health" });
-  await expect(page.getByRole("region", { name: "Service health" })).toBeVisible();
+  await expect(page.getByRole("alert", { name: "Service health" })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Platform navigation" })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   await test.info().attach("platform-health-mobile.png", {
@@ -118,7 +118,12 @@ for (const theme of ["light", "dark"]) {
         await page.getByRole("navigation", { name: "Platform navigation" }).getByRole("link", { name: title, exact: true }).click();
         const heading = page.getByRole("heading", { name: title, exact: true, level: 1 });
         await expect(heading).toBeVisible();
-        await expect(page.getByRole("alert")).toHaveCount(0);
+        if (path === "health") {
+          await expect(page.getByRole("alert", { name: "Service health" })).toContainText("1 of 1 tenant Hubs running");
+          await expect(page.getByRole("table", { name: "Tenant Hubs" })).toContainText("Running");
+        } else {
+          await expect(page.getByRole("alert")).toHaveCount(0);
+        }
         expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
         await test.info().attach(`platform-shell-${path}-${theme}-${width}.png`, {
           body: await page.screenshot({ animations: "disabled", caret: "hide" }),
