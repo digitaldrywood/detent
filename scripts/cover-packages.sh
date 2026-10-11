@@ -14,7 +14,7 @@ module=github.com/digitaldrywood/detent
 # Shard 1 starts loaded because it also runs the workspace and web suites.
 go list ./... | awk -v wanted="$index" -v total="$total" -v module="$module" '
 BEGIN {
-    weight[module "/internal/hubserver"] = 267
+    weight[module "/internal/hubserver"] = 600
     weight[module "/internal/orchestrator"] = 209
     weight[module "/internal/hubclient"] = 132
     weight[module] = 127
