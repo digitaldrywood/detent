@@ -614,6 +614,19 @@ including when multiple runners report the project.
 `policy_mismatch` refusal beginning with `No approved repository policy`;
 other refusals fail the smoke.
 
+Native projects refuse `order_item` and `set_queue_priority` with
+`invalid_request`: `Queue ordering and priority overrides require a
+GitHub-compatible project; native projects use issue priority`. These commands
+remain available for GitHub-compatible projects. A project without a cutover
+receipt returns `not_found`: `No cutover receipt exists for this project`.
+`get_change_review_policy` returns `not_found`: `No approved Change review
+policy exists for this project` until a policy is approved. Missing session
+activity returns `not_found`: `No recorded session activity exists for this
+work item and attempt` from `board_session_history`. The smoke accepts only
+these named refusals for these tools; other errors still fail deployment.
+When integration reads report automatic native intake, the unchanged-settings
+update omits `intake` to preserve it under the update contract.
+
 Tools that are known to fail are listed in `smokeKnownGaps` in
 `tools/cifailure` with their owning issue. They are reported but do not fail the
 deployment. Any other failure fails it, and so does a listed tool that starts

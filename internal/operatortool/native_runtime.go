@@ -22,7 +22,7 @@ func NativeRuntimeResult(name string, request WorkReadRequest, evidence tracker.
 	}
 	if name == BoardSessionHistory {
 		if evidence.Attempt == nil || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.Activity == nil {
-			return Result{}, ErrReadUnavailable
+			return Result{}, &RequestError{Code: "not_found", Message: "No recorded session activity exists for this work item and attempt"}
 		}
 		profile := *evidence.Attempt.Runtime.Activity
 		page := OffsetPage(profile.Spans, request.Offset, request.Limit)

@@ -468,8 +468,13 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	if len(nextHistory.Data.Items) != 1 || nextHistory.Data.Items[0].AggregateSequence <= history.Data.Items[0].AggregateSequence {
 		t.Fatalf("next history=%s", result.Content)
 	}
-	if _, err := call(operatortool.BoardSessionHistory, args()); !errors.Is(err, operatortool.ErrReadUnavailable) {
-		t.Fatalf("absent service=%v", err)
+	if _, err := call(operatortool.BoardSessionHistory, args()); err == nil {
+		t.Fatal("missing session activity succeeded")
+	} else {
+		var refusal *operatortool.RequestError
+		if !errors.As(err, &refusal) || refusal.Code != "not_found" || refusal.Message != "No recorded session activity exists for this work item and attempt" {
+			t.Fatalf("missing session activity=%v", err)
+		}
 	}
 	listArgs = map[string]any{"project_id": string(f.project.ID), "query": "absent"}
 	result, err = call(operatortool.WorkList, listArgs)

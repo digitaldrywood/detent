@@ -302,6 +302,25 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 							if mcpDenied != readDenied {
 								t.Fatalf("MCP session read status=%d denied=%t want=%t body=%s", mcpRead.Code, mcpDenied, readDenied, mcpRead.Body.String())
 							}
+							if scenario == "admin" {
+								for _, missing := range []struct{ name, message string }{
+									{"get_cutover_receipt", "No cutover receipt exists for this project"},
+									{operatortool.GetChangeReviewPolicy, "No approved Change review policy exists for this project"},
+								} {
+									response := serve(http.MethodPost, mcpEndpoint, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"`+missing.name+`","arguments":{"project_id":"`+project+`"}}}`)
+									requireNativeStatus(t, response, http.StatusOK)
+									var result struct {
+										Result struct {
+											IsError bool                      `json:"isError"`
+											Refusal operatortool.RequestError `json:"structuredContent"`
+										} `json:"result"`
+									}
+									decodeHubResponse(t, response, &result)
+									if !result.Result.IsError || result.Result.Refusal.Code != "not_found" || result.Result.Refusal.Message != missing.message {
+										t.Fatalf("admin key %s=%s", missing.name, response.Body.String())
+									}
+								}
+							}
 
 						})
 					}
