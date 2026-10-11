@@ -300,7 +300,7 @@ func escapePath(value string) string {
 
 func isGitHubNotFound(err error) bool {
 	var status interface{ HTTPStatus() int }
-	return errors.As(err, &status) && status.HTTPStatus() == http.StatusNotFound
+	return errors.As(err, &status) && status != nil && status.HTTPStatus() == http.StatusNotFound
 }
 
 func cleanCoordinationKey(key string) (string, error) {
