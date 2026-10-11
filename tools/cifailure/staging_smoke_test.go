@@ -289,6 +289,15 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 					}
 				case "update_project_integration":
 					input := args["input"].(map[string]any)
+					var schema smokeSchema
+					if err := json.Unmarshal(m.tools[name].InputSchema, &schema); err != nil {
+						t.Fatal(err)
+					}
+					for _, required := range schema.Properties["input"].Required {
+						if _, present := input[required]; !present {
+							t.Fatalf("integration update omits required input %s", required)
+						}
+					}
 					var intake any = "manual"
 					if test.automaticIntake {
 						intake = nil

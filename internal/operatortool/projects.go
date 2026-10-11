@@ -47,7 +47,7 @@ type IntegrationInput struct {
 	WorkflowMarkdown  *string                `json:"workflow_markdown,omitempty"`
 	States            *[]tracker.NativeState `json:"states,omitempty"`
 	ExpectedRevision  tracker.Revision       `json:"expected_revision,string"`
-	Intake            string                 `json:"intake"`
+	Intake            string                 `json:"intake,omitempty"`
 	Projection        string                 `json:"projection"`
 	RepositoryEnabled bool                   `json:"repository_enabled"`
 }
