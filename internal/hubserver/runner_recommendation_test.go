@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,6 +210,7 @@ func TestRunnerCapacityRecommendationReadOnly(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	r.enroll(t)
+	other := sharedRunner(t, r)
 	issue := f.create(t, "capacity evidence")
 	hours, runs := recommendationFixture()
 	for _, hour := range hours {
@@ -219,8 +222,12 @@ func TestRunnerCapacityRecommendationReadOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for i := range 13 {
+	for i := range 14 {
 		run := runs[i%10]
+		runnerID := r.binding.RunnerID
+		if i == 13 {
+			runnerID = other.binding.RunnerID
+		}
 		status := "succeeded"
 		if i == 0 {
 			status = "failed"
@@ -246,7 +253,7 @@ func TestRunnerCapacityRecommendationReadOnly(t *testing.T) {
 		if err := f.service.database.db.QueryRowContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) SELECT ?,id,?,?,?,?,?,?,?,? FROM issues WHERE native_id=? RETURNING fencing_token`, lease, r.binding.MachineID, fmt.Sprintf("capacity_session_%d", i), end, at, at, end, at, end, issue.WorkItemID).Scan(&fence); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO lease_runners(lease_id,runner_id) VALUES(?,?)`, lease, r.binding.RunnerID); err != nil {
+		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO lease_runners(lease_id,runner_id) VALUES(?,?)`, lease, runnerID); err != nil {
 			t.Fatal(err)
 		}
 		raw, err := json.Marshal(tracker.NativeRunData{ProcessUsage: &run.Usage})
@@ -259,6 +266,9 @@ func TestRunnerCapacityRecommendationReadOnly(t *testing.T) {
 	}
 	var before runnerauth.Runner
 	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", r.redemption.Credential, nil), &before)
+	if before.MachineUse != "shared" {
+		t.Fatalf("undeclared machine use=%q, want shared", before.MachineUse)
+	}
 	for _, machineUse := range []string{"dedicated", "shared"} {
 		change := runnerauth.RoutingChange{ExpectedRevision: before.Revision, Routing: before.Routing}
 		change.MachineUse = machineUse
@@ -288,12 +298,116 @@ func TestRunnerCapacityRecommendationReadOnly(t *testing.T) {
 		if !reflect.DeepEqual(before, after) {
 			t.Fatalf("capacity read changed runner: before=%+v after=%+v", before, after)
 		}
-		legacy := map[string]any{"expected_revision": after.Revision, "display_name": after.DisplayName, "state": after.State, "capacity_limit": after.CapacityLimit, "project_ids": after.ProjectIDs}
+		legacy := runnerauth.RoutingChange{ExpectedRevision: after.Revision, Routing: after.Routing}
+		legacy.MachineUse = ""
+		legacy.Routing = legacy.Normalized()
 		response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, legacy)
 		requireNativeStatus(t, response, http.StatusOK)
 		decodeHubResponse(t, response, &before)
 		if before.MachineUse != machineUse {
 			t.Fatalf("legacy edit reset designation: %+v", before.Routing)
 		}
+	}
+}
+
+func TestRunnerRecommendationLeaseHistoryCost(t *testing.T) {
+	t.Parallel()
+	f := newDefaultNativeFixture(t, Config{})
+	r := prepareRunner(t, f, runnerauth.Read)
+	r.enroll(t)
+	issue := f.create(t, "lease history")
+	db := f.service.database.db
+	from := time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC)
+	to := from.Add(24 * time.Hour)
+	hours, _ := recommendationFixture()
+	for _, hour := range hours {
+		raw, err := json.Marshal(hour.Summary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO runner_host_hours(organization_id,runner_id,hour,summary_json,segment_ids_json) VALUES(?,?,?,?, '[]')`, f.project.OrganizationID, r.binding.RunnerID, formatHubTime(hour.Hour), string(raw)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, lease := range []struct {
+		name     string
+		start    string
+		expires  string
+		released string
+	}{
+		{"before window", "2026-09-13T23:30:00Z", "2026-09-14T00:30:00Z", ""},
+		{"late release", "2026-09-14T00:15:00Z", "2026-09-14T01:30:00Z", "2026-09-14T02:30:00Z"},
+		{"early release", "2026-09-14T04:00:00Z", "2026-09-14T06:00:00Z", "2026-09-14T05:00:00Z"},
+		{"expired before window", "2026-09-13T22:00:00Z", "2026-09-13T23:00:00Z", "2026-09-14T04:00:00Z"},
+		{"ends at window start", "2026-09-13T23:00:00Z", "2026-09-14T00:00:00Z", ""},
+		{"begins at window end", "2026-09-15T00:00:00Z", "2026-09-15T01:00:00Z", ""},
+	} {
+		item := f.create(t, lease.name)
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) SELECT ?,id,?,?,?,?,?,nullif(?,''),?,? FROM issues WHERE native_id=?`, lease.name, r.binding.MachineID, lease.name, lease.expires, lease.start, lease.start, lease.released, lease.start, lease.expires, item.WorkItemID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO lease_runners(lease_id,runner_id) VALUES(?,?)`, lease.name, r.binding.RunnerID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	previous := 0
+	for _, history := range []int{1, 64, 256} {
+		t.Run(strconv.Itoa(history), func(t *testing.T) {
+			for i := previous; i < history; i++ {
+				at := formatHubTime(from.Add(-time.Duration(i+1) * 24 * time.Hour))
+				lease := fmt.Sprintf("old_capacity_lease_%d", i)
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) SELECT ?,id,?,?,?,?,?,?,?,? FROM issues WHERE native_id=?`, lease, r.binding.MachineID, lease, at, at, at, at, at, at, issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO lease_runners(lease_id,runner_id) VALUES(?,?)`, lease, r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			previous = history
+			q := &runtimeReadQuery{nativeQueryer: db}
+			got, err := readRecommendationHours(t.Context(), q, runnerauth.Runner{Binding: r.binding, OrganizationID: f.project.OrganizationID}, from, to)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantSlots := []float64{1.25, 0.5, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+			if len(got) != len(wantSlots) {
+				t.Fatalf("host hours=%d, want 24", len(got))
+			}
+			for i, hour := range got {
+				if hour.Slots != wantSlots[i] {
+					t.Fatalf("hour %d slot-hours=%v, want %v", i, hour.Slots, wantSlots[i])
+				}
+			}
+			for i, statement := range q.statements {
+				if !strings.Contains(statement, "FROM leases") {
+					continue
+				}
+				rows, err := db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+statement, q.arguments[i]...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer rows.Close()
+				var plans []string
+				for rows.Next() {
+					var id, parent, unused int
+					var plan string
+					if err := rows.Scan(&id, &parent, &unused, &plan); err != nil {
+						t.Fatal(err)
+					}
+					plans = append(plans, plan)
+				}
+				if err := rows.Err(); err != nil {
+					t.Fatal(err)
+				}
+				if err := rows.Close(); err != nil {
+					t.Fatal(err)
+				}
+				plan := strings.Join(plans, "\n")
+				t.Logf("lease query plan with %d historical rows:\n%s", history, plan)
+				if !strings.Contains(plan, "machine_id=? AND <expr>>?") || strings.Contains(plan, "SCAN l") {
+					t.Fatalf("lease read is not bounded by machine and overlap window:\n%s", plan)
+				}
+			}
+		})
 	}
 }

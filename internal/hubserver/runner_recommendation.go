@@ -91,6 +91,9 @@ func personHostHour(r runnerauth.Routing, at time.Time) (bool, error) {
 
 func recommendRunner(r runnerauth.Routing, hours []recommendationHour, runs []recommendationRun) (runnerRecommendation, error) {
 	r = r.Normalized()
+	if r.MachineUse == "" {
+		r.MachineUse = "shared"
+	}
 	out := runnerRecommendation{MachineUse: r.MachineUse, Timezone: r.Availability.Timezone, Advisory: true}
 	if out.Timezone == "" {
 		out.Timezone = "UTC"
@@ -288,7 +291,7 @@ func readRecommendationHours(ctx context.Context, q nativeQueryer, r runnerauth.
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT l.acquired_at,coalesce(l.released_at,l.expires_at),l.expires_at FROM leases l JOIN issues i ON i.id=l.issue_id WHERE i.organization_id=? AND l.machine_id=? AND julianday(l.acquired_at)<julianday(?) AND julianday(coalesce(l.released_at,l.expires_at))>julianday(?)`, r.OrganizationID, r.MachineID, formatHubTime(to), formatHubTime(from))
+	rows, err := q.QueryContext(ctx, `SELECT l.acquired_at,coalesce(l.released_at,l.expires_at),l.expires_at FROM leases l INDEXED BY runner_capacity_lease_window JOIN issues i ON i.id=l.issue_id JOIN lease_runners lr ON lr.lease_id=l.lease_id WHERE i.organization_id=? AND l.machine_id=? AND lr.runner_id=? AND julianday(l.acquired_at)<julianday(?) AND min(julianday(coalesce(l.released_at,l.expires_at)),julianday(l.expires_at))>julianday(?)`, r.OrganizationID, r.MachineID, r.RunnerID, formatHubTime(to), formatHubTime(from))
 	if err != nil {
 		return nil, err
 	}
@@ -311,7 +314,10 @@ func readRecommendationHours(ctx context.Context, q nativeQueryer, r runnerauth.
 			return nil, err
 		}
 		finish = minTime(finish, expiry)
-		for i := range hours {
+		first, _ := slices.BinarySearchFunc(hours, start.Truncate(time.Hour), func(hour recommendationHour, at time.Time) int {
+			return hour.Hour.Compare(at)
+		})
+		for i := first; i < len(hours) && hours[i].Hour.Before(finish); i++ {
 			overlap := minTime(finish, hours[i].Hour.Add(time.Hour)).Sub(maxTime(start, hours[i].Hour))
 			if overlap > 0 {
 				hours[i].Slots += overlap.Hours()

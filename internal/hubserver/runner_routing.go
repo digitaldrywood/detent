@@ -66,6 +66,9 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.T
 		return r, nil, time.Time{}, err
 	}
 	r.Routing = r.Normalized()
+	if r.MachineUse == "" {
+		r.MachineUse = "shared"
+	}
 	if err := applyRunnerProblems(&r, problems, isolationRaw, protocol, rejected); err != nil {
 		return r, nil, time.Time{}, err
 	}

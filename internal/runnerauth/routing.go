@@ -158,9 +158,6 @@ type ProjectEligibility struct {
 }
 
 func (r Routing) Normalized() Routing {
-	if r.MachineUse == "" {
-		r.MachineUse = "shared"
-	}
 	if r.Scope == "" {
 		r.Scope = "projects"
 	}
