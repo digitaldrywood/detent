@@ -67,7 +67,7 @@ elif args[0] in ("build", "vet", "test"):
         if arg.startswith("-coverprofile="):
             Path(arg.split("=", 1)[1]).write_text("mode: set\n")
 else:
-    stage = "workspace" if "./tools/testgate" in args else "docs" if "./internal/config/cmd/configdoc" in args else "migrations" if "./tools/migrationcheck" in args else "sqlc"
+    stage = "workspace" if "./tools/testgate" in args else "docs" if "./internal/config/cmd/configdoc" in args else "migrations" if "./tools/migrationcheck" in args else "invariant-manifest" if "./tools/invariantcheck" in args else "sqlc"
     budget = int(os.environ["GOMAXPROCS"])
 
 def record(action):
@@ -98,7 +98,7 @@ class LandingGateTest(unittest.TestCase):
     def test_stage_budget_and_failures(self):
         scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
         self.assertIsNotNone(scratch, "a supplied scratch directory is required")
-        cases = [("check-land", budget, failure) for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "lint"), (4, "unit-short"), (4, "docs"), (4, "sqlc"))]
+        cases = [("check-land", budget, failure) for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "lint"), (4, "unit-short"), (4, "docs"), (4, "sqlc"), (4, "invariant-manifest"))]
         cases += [(target, 4, "") for target in ("test", "test-fast", "test-race", "test-cover")]
         cases += [("check-land", 4, "browser"), ("check-land", 4, "browser-pass")]
         for target, budget, failure in cases:
@@ -155,7 +155,7 @@ class LandingGateTest(unittest.TestCase):
                 self.assertFalse(active)
                 self.assertEqual(set(starts[2:6]), {"lint", "vet", "build", "unit-short"})
                 if browser:
-                    self.assertEqual(starts[6:], ["invariants", "migrations", "compile", "compile", "compile"])
+                    self.assertEqual(starts[6:], ["invariant-manifest", "invariants", "migrations", "compile", "compile", "compile"])
                     args = [json.loads(line) for line in (root / "browser-args").read_text().splitlines()]
                     self.assertEqual(args[-1], ["test", "--workers=4", "--retries=0", "tests/visual/cloud-reports.spec.js"])
                     self.assertIn("tests/visual/cloud-reports.spec.js", result.stdout + result.stderr)
@@ -165,14 +165,23 @@ class LandingGateTest(unittest.TestCase):
                 elif failure:
                     self.assertNotIn("invariants", starts)
                 else:
-                    self.assertEqual(starts[6:], ["invariants", "migrations"])
+                    self.assertEqual(starts[6:], ["invariant-manifest", "invariants", "migrations"])
                     self.assertFalse((root / "browser-args").exists())
                     self.assertIn("UI sources unchanged; skipping browser specs.", result.stdout)
                 self.assertNotIn("npm", result.stdout)
                 self.assertNotIn("nilaway", result.stdout)
                 self.assertFalse((root / "static/app/conversation/app.js").exists())
                 evidence = [json.loads(line.split(": ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("detent-check-evidence:")]
-                self.assertEqual({item["scope"] for item in evidence}, {"generated", "lint", "vet", "build", "unit-short"} | ({"invariants", "migrations"} if not failed or browser else set()) | ({"browser"} if browser else set()) | ({"app"} if failure == "browser-pass" else set()))
+                expected_scopes = {"generated", "lint", "vet", "build", "unit-short"}
+                if not failed or browser:
+                    expected_scopes.update(("invariant-manifest", "invariants", "migrations"))
+                elif failure == "invariant-manifest":
+                    expected_scopes.add("invariant-manifest")
+                if browser:
+                    expected_scopes.add("browser")
+                if failure == "browser-pass":
+                    expected_scopes.add("app")
+                self.assertEqual({item["scope"] for item in evidence}, expected_scopes)
                 self.assertEqual(sum(item["exit_code"] != 0 for item in evidence), int(failed))
 
 

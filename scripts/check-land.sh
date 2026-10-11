@@ -74,6 +74,7 @@ if [ "${#script_tests[@]}" -gt 0 ]; then
     check_with_evidence scripts python3 -m unittest "${script_tests[@]}"
 fi
 
+check_with_evidence invariant-manifest go run -p "$procs" ./tools/invariantcheck -check-manifest
 check_with_evidence invariants env -u DETENT_API_TOKEN go test -p "$procs" -timeout=60s ./internal/invariants
 check_with_evidence migrations make check-migrations
 browser_specs=()
