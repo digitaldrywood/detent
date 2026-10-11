@@ -73,7 +73,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 					return nil, err
 				}
 			}
-			return createNativeMachineIntakeTx(ctx, tx, scope, request, now)
+			return createNativeMachineIntakeTx(ctx, tx, scope, request, now, scheduledReport && string(scope.project) == issueorigin.DetentCloudProjectID)
 		}
 		if sourceRepository != nil {
 			owner, name, node := sourceRepository.Owner, sourceRepository.Name, sourceRepository.NodeID
@@ -94,7 +94,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 	return result, err
 }
 
-func createNativeMachineIntakeTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
+func createNativeMachineIntakeTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, terminalRepair bool) (tracker.NativeIssue, error) {
 	project, err := validateNativeIssueDraft(ctx, tx, scope, request)
 	if err != nil {
 		return tracker.NativeIssue{}, err
@@ -121,7 +121,7 @@ func createNativeMachineIntakeTx(ctx context.Context, tx *sql.Tx, scope nativeSc
 			}
 		}
 	}
-	return reportNativeMachineIssueTx(ctx, tx, scope, request, now)
+	return reportNativeMachineOccurrenceTx(ctx, tx, scope, request, now, terminalRepair)
 }
 
 func reportNativeMachineIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
