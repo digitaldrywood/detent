@@ -43,6 +43,11 @@ occupied states. Cloud Markdown authoring is available only without repository
 definition authority; UI, API and MCP cannot independently override an approved
 repository workflow. Definition authority does not transfer issue-move ownership.
 
+Orphaned provider-session resumes use the new dispatch's durable attempt ID
+and generation in their completion handoff. Resume selection rejects an
+orphaned request missing either value before starting a turn; the ordinary
+retry starts a fresh attempt.
+
 **Enforcement:** `TestRepositorySources` in `internal/invariants`;
 `TestAdmissionRequiresLedgerWriter` in `internal/admission`. Review rejects
 lane-write bypasses and new ownership exceptions.

@@ -64,7 +64,7 @@ func completeRefreshConnection[T any](ctx context.Context, c *Connector, id, fie
 		if cursor != "" {
 			after = &cursor
 		}
-		query := fmt.Sprintf(`query DetentGitHubRefreshSelectorMetadata($id:ID!,$after:String) { node(id:$id) { ... on Issue { id values:%s(first:100,after:$after) { totalCount pageInfo { hasNextPage endCursor } nodes { %s } } } } rateLimit { cost remaining } }`, field, selection)
+		query := fmt.Sprintf(`query DetentGitHubRefreshSelectorMetadata($id:ID!,$after:String) { node(id:$id) { ... on Issue { id values:%s(first:100,after:$after) { totalCount pageInfo { hasNextPage endCursor } nodes { %s } } } } rateLimit { limit used remaining cost resetAt } }`, field, selection)
 		var response struct {
 			Node *struct {
 				ID     string

@@ -64,12 +64,16 @@ func TestRunnerProjectCredentials(t *testing.T) {
 
 func TestRunnerStartupProjectOutcomes(t *testing.T) {
 	t.Parallel()
-	for _, healthy := range []bool{true, false} {
-		name := "no runnable project reports before exit"
-		if healthy {
-			name = "native stays online and github recovers"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, test := range []struct {
+		name                             string
+		healthy, policyPending, terminal bool
+	}{
+		{name: "native stays online and github recovers", healthy: true},
+		{name: "pending credentials keep host online until authentication"},
+		{name: "no runnable project reports before exit", terminal: true},
+		{name: "pending policy keeps host online until approval", policyPending: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			githubPath := writeWorkflowFile(t)
 			raw, err := os.ReadFile(githubPath)
@@ -80,7 +84,7 @@ func TestRunnerStartupProjectOutcomes(t *testing.T) {
 				t.Fatal(err)
 			}
 			projects := []globalconfig.Project{{ID: "github", Workflow: githubPath, Workdir: filepath.Dir(githubPath), Weight: 1}}
-			if healthy {
+			if test.healthy {
 				path := writeWorkflowFile(t)
 				nativeRaw, err := os.ReadFile(path)
 				if err != nil {
@@ -115,6 +119,18 @@ func TestRunnerStartupProjectOutcomes(t *testing.T) {
 					}
 					return token, err
 				})
+			if test.policyPending || test.terminal {
+				approvedFactory := factory
+				factory = func(cfg globalconfig.Project) (*project.Project, error) {
+					if !authenticated.Load() {
+						if test.terminal {
+							return nil, errors.Join(project.ErrProjectDefinition, errors.New("github_token: GITHUB_TOKEN is not set"))
+						}
+						return nil, errors.Join(project.ErrProjectDefinition, connector.NewRetryableError("policy_mismatch: repository policy approval pending"))
+					}
+					return approvedFactory(cfg)
+				}
+			}
 			manager, err := project.NewManager(project.ManagerConfig{Projects: projects}, project.ManagerDependencies{ProjectFactory: factory, Logger: logger, RetrySleep: func(ctx context.Context, _ time.Duration) error {
 				select {
 				case <-ctx.Done():
@@ -141,18 +157,32 @@ func TestRunnerStartupProjectOutcomes(t *testing.T) {
 				return nil
 			})
 			err = startRunnerProjects(ctx, manager, heartbeat)
-			if (err == nil) != healthy || reported == healthy {
-				t.Fatalf("startup error=%v, reported=%v, healthy=%v", err, reported, healthy)
+			staysOnline := !test.terminal
+			if (err == nil) != staysOnline || reported == staysOnline {
+				t.Fatalf("startup error=%v, reported=%v, staysOnline=%v", err, reported, staysOnline)
 			}
 			problems := runnerStartupProblems(manager.Registry())
-			if len(problems) != 1 || problems[0].ProjectID != "github" || !strings.Contains(problems[0].Message, "GITHUB_TOKEN is not set") || !strings.Contains(problems[0].FixHint, "gh auth login") || runnerauth.ValidateReportedProblems(problems) != nil {
+			if len(problems) != 1 || problems[0].ProjectID != "github" || runnerauth.ValidateReportedProblems(problems) != nil {
 				t.Fatalf("startup problems=%+v", problems)
 			}
-			if healthy {
+			if test.policyPending {
+				pending, ok := manager.Registry().Pending("github")
+				if !ok || pending.RetryStopped || pending.NextRetryAt.IsZero() || manager.Registry().Len() != 0 || !strings.Contains(problems[0].Message, "policy_mismatch") {
+					t.Fatalf("pending policy admitted work or lost retry: %+v", pending)
+				}
+				if err := heartbeat.Heartbeat(ctx); err != nil || !reported || ctx.Err() != nil {
+					t.Fatalf("host heartbeat unavailable while awaiting policy: %v", err)
+				}
+			} else if !strings.Contains(problems[0].Message, "GITHUB_TOKEN is not set") || !strings.Contains(problems[0].FixHint, "gh auth login") {
+				t.Fatalf("startup credential problem=%+v", problems[0])
+			}
+			if test.healthy {
 				native, ok := manager.Registry().Get("native")
 				if !ok || native.Workflow().Config.Tracker.Kind != "hub_native" || !native.Running() {
 					t.Fatal("native project did not remain running")
 				}
+			}
+			if staysOnline {
 				authenticated.Store(true)
 				close(retry)
 				select {

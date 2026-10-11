@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
@@ -10,11 +11,70 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const nativeContractTestBody = "## Acceptance criteria\nThe change works.\n## Must not break\nExisting behavior.\n## How we know it worked\nThe focused tests pass."
+
+func TestNativeIssueContractPolicyMismatchReadRecovery(t *testing.T) {
+	f := newConversationAPIFixture(t, nil)
+	issue := f.nativeFixture.create(t, "policy recovery")
+	workflow := config.Workflow{Config: config.Default()}
+	workflow.Config.Tracker.Kind = config.TrackerHubNative
+	descriptor, err := config.ResolvePolicy(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+	drifted := descriptor
+	drifted.SourceRevision = strings.Repeat("b", 64)
+	drifted = drifted.WithID()
+	raw, err := json.Marshal(drifted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := string(f.project.OrganizationID) + "/" + string(f.project.ID)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at) SELECT scope, ?, ?, approved_by, approved_at FROM policy_revisions WHERE scope=? AND policy_id=?", drifted.ID, string(raw), scope, descriptor.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE project_policies SET policy_id=? WHERE scope=?", drifted.ID, scope); err != nil {
+		t.Fatal(err)
+	}
+	ctx := workspaceOperatorContext(t, f.service, f.token, string(f.project.OrganizationID), "policy-recovery")
+	call := hostedContextProtocol(t, f.service, ctx, "http")
+	for _, tool := range []string{operatortool.BoardReceipt, operatortool.BoardSession, operatortool.ExplainItem, "get_work_item_conversation"} {
+		args := map[string]any{"project_id": f.project.ID, "reference": issue.WorkItemID}
+		if tool == "get_work_item_conversation" {
+			delete(args, "reference")
+			args["work_item_id"] = issue.WorkItemID
+		}
+		reply := call("tools/call", tool, args)
+		var result struct {
+			IsError bool `json:"isError"`
+		}
+		if err := json.Unmarshal(reply.Result, &result); err != nil || result.IsError || !strings.Contains(string(reply.Result), "approved_dispatch_policy") {
+			t.Errorf("%s lost unavailable policy evidence: %s, %v", tool, reply.Result, err)
+		}
+	}
+	worker := f.worker(t, "policy-recovery")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "policy-machine", "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
+	claim := tracker.NativeClaim{WorkItemID: issue.WorkItemID, PolicyID: drifted.ID, MachineID: "policy-machine", SessionID: "policy-recovery", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusConflict)
+	onboarding, err := f.service.projectOnboarding(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+	if err != nil || onboarding.Policy == nil || onboarding.Policy.Policy.ID != drifted.ID {
+		t.Fatalf("onboarding lost replacement approval identity: %+v, %v", onboarding.Policy, err)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: "policy_stale", Policy: descriptor}), http.StatusConflict)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: drifted.ID, Policy: descriptor}), http.StatusOK)
+	evidence, err := readNativeRuntime(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(issue.WorkItemID), "", f.service.config.now())
+	if err != nil || slices.Contains(evidence.Unavailable, "approved_dispatch_policy") {
+		t.Fatalf("runtime did not recover after policy approval: %+v, %v", evidence, err)
+	}
+	claim.PolicyID = descriptor.ID
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusOK)
+}
 
 func TestNativeIssueContract(t *testing.T) {
 	if testing.Short() {

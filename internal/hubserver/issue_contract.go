@@ -32,7 +32,10 @@ func nativeIssueContractConfig(ctx context.Context, q nativeQueryer, scope nativ
 		return config.Config{}, err
 	}
 	workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, approval.Policy)
-	return workflow.Config, err
+	if err != nil {
+		return config.Config{}, policyMismatch(err.Error())
+	}
+	return workflow.Config, nil
 }
 
 func nativeIssueContractClaimable(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.WorkItemID) (bool, string, error) {
