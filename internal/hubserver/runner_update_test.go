@@ -120,6 +120,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 	for _, test := range []struct {
 		name, hub, runner, prior, wantVersion  string
 		supported, manual, unpublished, failed bool
+		witnessed                              bool
 		want                                   bool
 	}{
 		{name: "older runner", hub: "v1.2.4", runner: "1.2.3", supported: true, want: true},
@@ -138,6 +139,9 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 		{name: "refused older request superseded", hub: "v1.2.4", runner: "1.2.1", prior: "refused", supported: true, want: true},
 		{name: "uncertain newer operator request retained", hub: "v1.2.4", runner: "1.2.1", prior: "uncertain", wantVersion: "1.2.5", supported: true, manual: true, want: true},
 		{name: "draining older request retained", hub: "v1.2.4", runner: "1.2.1", prior: "draining", wantVersion: "1.2.2", supported: true, want: true},
+		{name: "applied older request awaits restart", hub: "v1.2.4", runner: "1.2.1", prior: "applied", wantVersion: "1.2.2", supported: true, want: true},
+		{name: "historical applied request superseded after external update", hub: "v1.2.4", runner: "1.2.1", prior: "applied", witnessed: true, supported: true, want: true},
+		{name: "historical newer operator request retained", hub: "v1.2.4", runner: "1.2.1", prior: "applied", witnessed: true, wantVersion: "1.2.5", supported: true, manual: true, want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Version: "dev", RunnerReleaseClient: &runnerReleaseFixture{}})
@@ -178,6 +182,21 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 				report.Receipt = &runnerauth.UpdateReceipt{Request: *earlier, Status: test.prior, FailureReason: "Update was interrupted before completion", ObservedAt: now}
 				if test.prior == "draining" {
 					report.Receipt.FailureReason = ""
+				}
+				if test.prior == "applied" {
+					applied := build
+					applied.Version = earlier.Version
+					applied.Commit = strings.Repeat("c", 40)
+					applied.SHA256 = strings.Repeat("d", 64)
+					applied.VerifiedRelease = true
+					report.Receipt.Applied = &applied
+					report.Receipt.FailureReason = ""
+					if test.witnessed {
+						witnessed := applied
+						report.Receipt.Running = &witnessed
+						report.Running.Version = "1.2.3"
+						report.Revision = report.BuildRevision()
+					}
 				}
 			}
 			if !test.unpublished {
