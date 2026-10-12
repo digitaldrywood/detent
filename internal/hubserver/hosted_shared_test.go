@@ -40,11 +40,15 @@ func hostedSharedTestConfig(path string, provider auth.HostedProvider, key ed255
 	}}
 }
 
-func newHostedSharedFixture(t *testing.T) hostedSharedFixture {
+func newHostedSharedFixture(t *testing.T, configure ...func(*Config)) hostedSharedFixture {
 	t.Helper()
 	key := hostedSharedKey(7)
 	provider := newHostedSecurityProvider()
-	service := openTestService(t, hostedSharedTestConfig(hostedTestDatabasePath(t), provider, key, 1))
+	cfg := hostedSharedTestConfig(hostedTestDatabasePath(t), provider, key, 1)
+	for _, apply := range configure {
+		apply(&cfg)
+	}
+	service := openTestService(t, cfg)
 	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}
 	raw, err := json.Marshal(states)
 	if err != nil {

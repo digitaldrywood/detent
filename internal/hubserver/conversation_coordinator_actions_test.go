@@ -5,12 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -27,6 +32,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 		outcomes := []string{"execute", "reject", "unauthorized", "revoked", "stale", "foreign issue", "expired session", "wrong role", "no write grant", "bad arguments"}
 		if tool == "propose_stop_run" {
 			outcomes = append(outcomes, "replaced attempt", "expired attempt", "release failure", "routing failure", "no active attempt")
+			outcomes = append(outcomes, "stored key preview", "shared entry preview", "shared entry expired", "shared entry mismatched principal", "shared entry revoked", "shared entry no write grant", "shared entry foreign issue")
 		}
 		if tool == "propose_file_issue" || tool == "propose_maintenance_issue" {
 			outcomes = []string{"execute", "reject", "unauthorized", "revoked", "no write grant", "bad arguments"}
@@ -48,8 +54,15 @@ func TestCoordinatorProjectActions(t *testing.T) {
 		}
 		for _, outcome := range outcomes {
 			t.Run(tool+"/"+outcome, func(t *testing.T) {
-				f := newHostedSecurityFixture(t, func(cfg *Config) {
+				sharedEntry := strings.HasPrefix(outcome, "shared entry")
+				mcpPost := sharedEntry || outcome == "stored key preview"
+				var clock atomic.Int64
+				clock.Store(time.Now().UnixNano())
+				configure := func(cfg *Config) {
 					cfg.Conversation = &ConversationConfig{Enabled: true, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir()}
+					if sharedEntry {
+						cfg.now = func() time.Time { return time.Unix(0, clock.Load()) }
+					}
 					if coordinatorSpriteMutation(tool) {
 						cfg.SecretKeys = secretTestKeys(t, "1", "1")
 						cfg.Version = "v0.117.99"
@@ -64,8 +77,51 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						cfg.GitHubDisabled = false
 						cfg.ReconcileBackend = &scriptedReconcileBackend{}
 					}
-				})
+				}
+				var f hostedSecurityFixture
+				var shared hostedSharedFixture
+				if sharedEntry {
+					shared = newHostedSharedFixture(t, configure)
+					f = shared.hostedSecurityFixture
+				} else {
+					f = newHostedSecurityFixture(t, configure)
+				}
 				u := f.user(t, "luna-owner", "owner", "luna@example.test", "write", "")
+				var storedToken string
+				request := f.request
+				if sharedEntry {
+					request = func(t *testing.T, user hostedSecurityUser, method, path string, body any) *httptest.ResponseRecorder {
+						raw, err := json.Marshal(body)
+						if err != nil {
+							t.Fatal(err)
+						}
+						return shared.serve(t, hostedSharedRequest{user: &user, method: method, target: path, body: string(raw), csrf: cloudassert.CSRFToken("shared-"+user.identity.Subject, "org_security")})
+					}
+				}
+				if outcome == "stored key preview" {
+					credential, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: u.identity.Hosted, Email: u.identity.Email}, apikey.HashToken(u.token))
+					if err != nil {
+						t.Fatal(err)
+					}
+					expires := time.Now().Add(time.Hour)
+					key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "coordinator", Scope: apiScopeOperator, Issuer: &credential, KeyScope: apikey.ScopeWrite, ExpiresAt: &expires, ProjectIDs: []string{string(f.project)}, ProjectAccess: hostedProjectsSelected})
+					if err != nil {
+						t.Fatal(err)
+					}
+					storedToken = key.Token
+					request = func(t *testing.T, _ hostedSecurityUser, method, path string, body any) *httptest.ResponseRecorder {
+						raw, err := json.Marshal(body)
+						if err != nil {
+							t.Fatal(err)
+						}
+						r := httptest.NewRequest(method, path, strings.NewReader(string(raw)))
+						r.Header.Set("Content-Type", "application/json")
+						r.Header.Set("Authorization", "Bearer "+storedToken)
+						response := httptest.NewRecorder()
+						f.service.Handler().ServeHTTP(response, r)
+						return response
+					}
+				}
 				if coordinatorSpriteMutation(tool) {
 					f.grant(t, u, true, outcome != "no runner grant")
 					if outcome == "grantless project" {
@@ -80,7 +136,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if outcome == "number resolution" {
 					seedArchiveIssues(t, f.service, nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}, 18, "Todo")
 				}
-				response := f.request(t, u, http.MethodPost, f.base+"/work-items", map[string]any{"idempotency_key": "luna-issue", "title": "Original issue", "body": nativeContractTestBody, "state": "Todo", "labels": []string{"original"}})
+				response := request(t, u, http.MethodPost, f.base+"/work-items", map[string]any{"idempotency_key": "luna-issue", "title": "Original issue", "body": nativeContractTestBody, "state": "Todo", "labels": []string{"original"}})
 				requireNativeStatus(t, response, http.StatusOK)
 				if coordinatorSpriteMutation(tool) {
 					f.service.spriteWakeWork.Wait()
@@ -123,7 +179,11 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if outcome == "intake preview" {
 					text = "no extra steps, 2 and 2"
 				}
-				response = f.request(t, u, http.MethodPost, f.base+"/conversations", map[string]any{"key": "luna-conversation", "first_message": map[string]any{"key": "luna-message", "text": text}})
+				create := map[string]any{"key": "luna-conversation"}
+				if !mcpPost {
+					create["first_message"] = map[string]any{"key": "luna-message", "text": text}
+				}
+				response = request(t, u, http.MethodPost, f.base+"/conversations", create)
 				requireNativeStatus(t, response, http.StatusCreated)
 				var created struct {
 					Conversation struct {
@@ -131,6 +191,38 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					} `json:"conversation"`
 				}
 				decodeHubResponse(t, response, &created)
+				if mcpPost {
+					call := func(name string, args map[string]any) operatortool.Result {
+						body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": args, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]any{"name": "test", "version": "1"}}}}
+						if sharedEntry {
+							raw, err := json.Marshal(body)
+							if err != nil {
+								t.Fatal(err)
+							}
+							response = shared.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: "/api/v2/organizations/org_security/mcp", body: string(raw), headers: map[string]string{"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": name}, mutate: func(claims *cloudassert.Claims) {
+								claims.Subject, claims.ProviderOrganization, claims.Role = u.identity.Subject, "org_provider", "owner"
+								claims.Key = &apikey.KeyAuthority{ID: "key_coordinator", Kind: "personal", Permission: apikey.ScopeWrite, ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{string(f.project)}}}
+							}})
+						} else {
+							response = performHubWorkCall(t, f.service, "/api/v2/organizations/org_security/mcp", storedToken, name, body)
+						}
+						requireNativeStatus(t, response, http.StatusOK)
+						var reply hostedContextReply
+						decodeHubResponse(t, response, &reply)
+						return operatortool.Result{Content: hostedContextData(t, reply, false)}
+					}
+					for _, name := range []string{"work_item", "work_runs"} {
+						result := call(name, map[string]any{"project_id": f.project, "reference": id})
+						if !strings.Contains(string(result.Content), string(id)) {
+							t.Fatalf("direct MCP %s=%s", name, result.Content)
+						}
+					}
+					args := map[string]any{"project_id": f.project, "conversation_id": created.Conversation.ID, "request_id": "mcp-message", "input": map[string]any{"kind": "message", "text": text}}
+					result := call("post_conversation_command", args)
+					if workspaceOperatorAction(t, result).Status != chat.ActionSucceeded {
+						t.Fatalf("MCP post=%s", result.Content)
+					}
+				}
 				c := f.service.conversations.coordinator.(*conversationTurnCoordinator)
 				record, err := c.readConversation(t.Context(), db, created.Conversation.ID)
 				if err != nil {
@@ -148,6 +240,50 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				}
 				state := &coordinatorTurnState{coordinator: c, conversationID: record.ID, users: []conversationMessageRecord{user}}
 				tools := newCoordinatorToolset(c, state)
+				if mcpPost {
+					if record.OwnerSubject != u.identity.Subject || record.Visibility != conversation.VisibilityPrivate || record.WorkItemID != "" {
+						t.Fatalf("MCP coordinator=%+v", record)
+					}
+					ctx, err := tools.actionContext(t.Context(), record)
+					if err != nil {
+						t.Fatalf("MCP origin binding: %v", err)
+					}
+					identity := operatortool.ConnectionIdentity(ctx)
+					var principal string
+					if err := db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id=?", u.identity.Subject).Scan(&principal); err != nil {
+						t.Fatal(err)
+					}
+					if identity.SessionID != "" || identity.CredentialID == "" || identity.PrincipalID != principal {
+						t.Fatalf("MCP origin identity=%+v", identity)
+					}
+					for _, section := range []string{"work_item", "work_runs"} {
+						raw := json.RawMessage(fmt.Sprintf(`{"work_item_id":%q,"section":%q}`, id, section))
+						result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: "read_issue_history", Arguments: raw})
+						if err != nil || !result.Success || !strings.Contains(result.Content, string(id)) {
+							t.Fatalf("MCP coordinator %s=%+v error=%v", section, result, err)
+						}
+					}
+					switch outcome {
+					case "shared entry expired":
+						clock.Add(int64(time.Minute))
+					case "shared entry mismatched principal":
+						user.Data = json.RawMessage(fmt.Sprintf(`{"operator_connection":%q,"operator_principal":"foreign"}`, operatortool.CurrentConnection(ctx).ID))
+						state.users = []conversationMessageRecord{user}
+					case "shared entry revoked":
+						operatorSQL(t, f, "UPDATE hosted_members SET active=0 WHERE user_id=?", u.identity.Subject)
+					case "shared entry no write grant":
+						f.grant(t, u, false, false)
+					}
+					if outcome == "shared entry expired" || outcome == "shared entry mismatched principal" || outcome == "shared entry revoked" || outcome == "shared entry no write grant" {
+						for _, section := range []string{"work_item", "work_runs"} {
+							raw := json.RawMessage(fmt.Sprintf(`{"work_item_id":%q,"section":%q}`, id, section))
+							result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: "read_issue_history", Arguments: raw})
+							if err != nil || result.Success != (outcome == "shared entry no write grant") {
+								t.Fatalf("changed MCP authority %s=%+v error=%v", section, result, err)
+							}
+						}
+					}
+				}
 				if coordinatorSpriteMutation(tool) {
 					f.service.spriteWakeWork.Wait()
 					envelope, err := f.service.config.SecretKeys.Seal([]byte(spritesSecretSentinel), secretAAD("org_security", "", flySpritesToken))
@@ -326,7 +462,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if outcome == "no write grant" {
 					f.grant(t, u, false, false)
 				}
-				if outcome == "foreign issue" {
+				if outcome == "foreign issue" || outcome == "shared entry foreign issue" {
 					if tool == string(chat.ActionArchiveItems) {
 						arguments["work_item_ids"] = []string{string(id), "wi_foreign"}
 					} else {
@@ -366,6 +502,13 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: tool, Arguments: raw})
 				if err != nil {
 					t.Fatal(err)
+				}
+				if sharedEntry && outcome != "shared entry preview" {
+					if result.Success || !strings.Contains(result.Content, "error") {
+						t.Fatalf("MCP authority denial=%+v", result)
+					}
+					assertCoordinatorEffect(t, f, id, tool, false)
+					return
 				}
 				if outcome == "transport unavailable" {
 					if result.Success || !strings.Contains(result.Content, "runner's repository policy") {
@@ -425,6 +568,13 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				}
 				if action.RequestID == "" {
 					t.Fatal("inline proposal missing")
+				}
+				if mcpPost {
+					assertCoordinatorEffect(t, f, id, tool, false)
+					if action.Mutation.Confirmation != "" || len(f.service.operatorChat.Conversation(connectionID).Actions) != 0 {
+						t.Fatalf("MCP preview executed or retained an executable action: %+v", action)
+					}
+					return
 				}
 				if outcome == "intake preview" {
 					var change coordinatorSpriteChange

@@ -27,10 +27,11 @@ import (
 
 func (s *Service) bindCoordinatorConnection(ctx context.Context, key string) (context.Context, error) {
 	connection := operatortool.CurrentConnection(ctx)
-	if s.config.Hosted == nil || connection.Identity.SessionID == "" || key == "" {
+	if s.config.Hosted == nil || !connection.Identity.Valid() || key == "" {
 		return ctx, nil
 	}
-	digest := sha256.Sum256([]byte(connection.Identity.SessionID + ":" + connection.Identity.PrincipalID + ":" + key))
+	origin := cmp.Or(connection.Identity.SessionID, connection.Identity.CredentialID)
+	digest := sha256.Sum256([]byte(origin + ":" + connection.Identity.PrincipalID + ":" + key))
 	connection.ID = "luna_" + hex.EncodeToString(digest[:])
 	connection.Client = "Luna"
 	ctx = operatortool.WithConnection(ctx, connection)
