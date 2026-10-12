@@ -219,6 +219,7 @@ func (r nativeDependencyRecoveryRunner) Run(ctx context.Context, request runner.
 func TestNativeRecordedDependencyAdmission(t *testing.T) {
 	for _, test := range []struct {
 		name, refusal string
+		reasonCode    string
 		laterLease    string
 		qualified     bool
 		advancePolicy bool
@@ -229,6 +230,11 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 	}{
 		{name: "reported prerequisite registers dependency hold"},
 		{name: "instance-owned blocker recovers on any runner without a dependency", instance: true},
+		{name: "typed instance reason recovers after ended claim", instance: true, reasonCode: "instance_limitation", laterLease: "released", dirty: true},
+		{name: "typed instance reason preserves human hold", instance: true, reasonCode: "instance_limitation", refusal: "human"},
+		{name: "typed instance reason preserves policy hold", instance: true, reasonCode: "instance_limitation", refusal: "policy"},
+		{name: "instance evidence preserves permission reason", instance: true, reasonCode: "permission_wait", refusal: "reason"},
+		{name: "instance evidence preserves unknown reason", instance: true, reasonCode: "unknown_hold", refusal: "reason"},
 		{name: "canonical native reference", qualified: true},
 		{name: "last reported prerequisite releases hold", second: true},
 		{name: "external prerequisite retains hold", external: true, refusal: "external"},
@@ -316,7 +322,10 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 				report = strings.Replace(report, reference, "vendor/service#42", 1)
 			}
 			if test.instance {
-				report = "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: 'instance:check-barrier'\n    reason: barrier failed on this host\n    owner: instance\nhuman_action: null\n```"
+				report = fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: 'instance:check-barrier'\n    reason: barrier failed on this host\n    owner: instance\nhuman_action: %s\n```", human)
+			}
+			if test.reasonCode != "" {
+				report = strings.Replace(report, "status: blocked", "status: blocked\nreason_code: "+test.reasonCode, 1)
 			}
 			if test.second {
 				report = strings.Replace(report, "human_action:", fmt.Sprintf("  - ref: '#%d'\n    reason: second prerequisite must finish\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\nhuman_action:", second.Number), 1)
@@ -433,6 +442,15 @@ SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, 
 			}
 			request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "too-early", LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}, PolicyID: h.descriptor.ID, BlockerAttemptID: attempt.AttemptID, ExpectedRevision: blocked.Revision, State: prior, Reason: "dependency_ready", ReasonDetail: "recorded_blocker_recovery"}
 			if test.instance {
+				if test.refusal == "policy" {
+					h.repolicy(t)
+				}
+				if test.refusal != "" {
+					if _, err := h.otherWorker(t).Transition(t.Context(), blocked.WorkItemID, request); err == nil || h.state(t, issue.ID) != "Blocked" {
+						t.Fatalf("%s authority was bypassed: %v", test.refusal, err)
+					}
+					return
+				}
 				if _, err := h.otherWorker(t).Transition(t.Context(), blocked.WorkItemID, request); err != nil || h.state(t, issue.ID) != prior {
 					t.Fatalf("instance-owned blocker recovery = %v, state %s, want %s", err, h.state(t, issue.ID), prior)
 				}
