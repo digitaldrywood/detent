@@ -349,6 +349,16 @@ export function SetupRoute({
   const onboarding = useResource<Onboarding>(() => api.onboarding(projectId), [api, projectId]);
   const integration = useResource<ProjectIntegration>(() => api.integration(projectId), [api, projectId]);
 
+  const waitingForCheckout = Boolean(integration.value?.checkout_repository) && integration.value?.checkout_verified !== true;
+  React.useEffect(() => {
+    if (!waitingForCheckout) return;
+    const timer = window.setInterval(() => {
+      void onboarding.refresh();
+      void integration.refresh();
+    }, 5_000);
+    return () => window.clearInterval(timer);
+  }, [waitingForCheckout, onboarding.refresh, integration.refresh]);
+
   const steps = orderedSteps(onboarding.value);
   const [activeIndex, setActiveIndex] = React.useState(0);
   const [settled, setSettled] = React.useState(false);
@@ -576,6 +586,8 @@ export function SetupRoute({
   const next = () => setActiveIndex((index) => Math.min(index + 1, steps.length - 1));
   const back = () => setActiveIndex((index) => Math.max(index - 1, 0));
   const associatedRepository = integration.value?.checkout_repository || integration.value?.repository;
+  const checkoutVerified = integration.value?.checkout_verified === true;
+  const preparingRunner = onboarding.value.runners?.find((entry) => entry.runner.state === "active" && entry.runner.health === "online");
   const githubApp = integration.value;
   const showGitHubApp = githubApp?.profile === "native" && associatedRepository && githubApp.github_transport_available === true && githubApp.github_app_slug && githubApp.github_app_install_url;
 
@@ -607,7 +619,7 @@ export function SetupRoute({
             <div className="flex items-center gap-1">
               <Label htmlFor="setup-repository">Associate the runner checkout</Label>
               <ContextHelp label="Associate the runner checkout">
-                Associate verifies that an enrolled runner’s checkout has a Git origin matching owner/name, including private repositories. Clone the repository on the runner and start it first; GitHub API integration is optional. This does not write configuration files or approve policy.
+                Associate binds owner/name so an enrolled runner can clone it using its own Git credentials, including private repositories. Its Git origin must match the binding. GitHub API integration is optional. This does not write configuration files or approve policy.
               </ContextHelp>
             </div>
             <Input
@@ -618,10 +630,13 @@ export function SetupRoute({
               disabled={Boolean(integration.value?.checkout_repository)}
             />
             <p className="text-[13px] text-muted-foreground">
-              Clone this repository on an enrolled runner, including private repositories, and start the runner. Its Git origin must match owner/name. GitHub API integration is optional.
+              An enrolled runner clones this repository using its own Git credentials. Its Git origin must match owner/name. GitHub API integration is optional.
             </p>
             {integration.value?.checkout_repository ? (
-              <p className="text-[13px] text-success-foreground">Verified runner checkout: <code className="font-mono">{integration.value.checkout_repository}</code></p>
+              <p role="status" className={`text-[13px] ${checkoutVerified ? "text-success-foreground" : "text-muted-foreground"}`}>
+                {checkoutVerified ? "Verified runner checkout: " : `Waiting for ${preparingRunner?.runner.display_name || "an enrolled runner"} to clone or verify checkout: `}
+                <code className="font-mono">{integration.value.checkout_repository}</code>
+              </p>
             ) : null}
           </div>
           <Button
