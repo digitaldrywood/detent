@@ -486,7 +486,7 @@ func nativeIntakeIssue(issue connector.Issue) intake.Issue {
 // every approval and check it asks for in place. Any other current version
 // is not this run's, so it never answers for it.
 func (c *NativeConnector) ChangeReviewed(ctx context.Context, issueID, changeID, versionID string) (bool, error) {
-	detail, err := c.client.Change(ctx, tracker.NativeWorkItemID(issueID), changeID)
+	detail, err := c.client.runtimeChange(ctx, tracker.NativeWorkItemID(issueID), changeID)
 	if err != nil {
 		return false, err
 	}
