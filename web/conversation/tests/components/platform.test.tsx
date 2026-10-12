@@ -12,6 +12,7 @@ import { type EntryApi, type PlatformAudit, type PlatformMembers, makeEntryApi, 
 import {
   EntryApiContext,
 } from "../../src/app/entry/EntryScreens.tsx";
+import { auditAction, auditActor } from "../../src/app/entry/platformAuditPresentation.ts";
 import { formatBytes } from "../../src/app/entry/PlatformConsole.tsx";
 import { makeEntryRouter } from "../../src/app/entry/router.tsx";
 import { STALE_PLAN_MESSAGE } from "../../src/app/entry/ComplimentaryPlans.tsx";
@@ -30,6 +31,8 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 const organizations = {
@@ -1152,17 +1155,21 @@ describe("platform audit", () => {
       api,
       "/platform/audit?tenant=org_alpha&actor=admin&event=support_started&from=2026-09-01&to=2026-10-01",
     );
-    await screen.findByRole("table", { name: "Audit events" });
+    await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
     expect(document.title).toBe("Audit log · Platform · Detent");
+    fireEvent.click(screen.getByRole("button", { name: /^Actor:/ }));
     expect((screen.getByLabelText("Actor") as HTMLInputElement).value).toBe(
       "admin",
     );
+    fireEvent.click(screen.getByRole("button", { name: /^Tenant:/ }));
     await waitFor(() =>
       expect((screen.getByLabelText("Tenant") as HTMLInputElement).value).toBe(
         "Alpha",
       ),
     );
-    expect(screen.getByLabelText("Event").textContent).toBe("support_started");
+    fireEvent.click(screen.getByRole("button", { name: /^Action:/ }));
+    expect(screen.getByLabelText("Action").textContent).toBe("Support access started");
+    fireEvent.click(screen.getByRole("button", { name: /2026-09-01 – 2026-10-01/ }));
     expect((screen.getByLabelText("From") as HTMLInputElement).value).toBe(
       "2026-09-01",
     );
@@ -1172,30 +1179,27 @@ describe("platform audit", () => {
     expect(api.platformAudit).toHaveBeenCalledWith(
       "tenant=org_alpha&actor=admin&event=support_started&from=2026-09-01&to=2026-10-01",
     );
+    fireEvent.click(screen.getByRole("button", { name: /^Actor:/ }));
     fireEvent.change(screen.getByLabelText("Actor"), {
       target: { value: "system" },
     });
     await waitFor(() =>
       expect(router.state.location.searchStr).toContain("actor=system"),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
     await waitFor(() => expect(router.state.location.searchStr).toBe(""));
-    expect((screen.getByLabelText("Actor") as HTMLInputElement).value).toBe("");
+    expect(screen.getByRole("button", { name: "Actor: Anyone" })).toBeTruthy();
     await act(async () => {
       router.history.back();
     });
     await waitFor(() =>
-      expect((screen.getByLabelText("Actor") as HTMLInputElement).value).toBe(
-        "system",
-      ),
+      expect(screen.getByRole("button", { name: "Actor: system" })).toBeTruthy(),
     );
     await act(async () => {
       router.history.forward();
     });
     await waitFor(() =>
-      expect((screen.getByLabelText("Actor") as HTMLInputElement).value).toBe(
-        "",
-      ),
+      expect(screen.getByRole("button", { name: "Actor: Anyone" })).toBeTruthy(),
     );
   });
 
@@ -1204,14 +1208,16 @@ describe("platform audit", () => {
       fakeApi({ platformAudit: vi.fn(async () => audit) }),
       "/platform/audit",
     );
-    await screen.findByRole("table", { name: "Audit events" });
-    fireEvent.click(screen.getByLabelText("Event"));
+    await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
+    fireEvent.click(screen.getByRole("button", { name: /^Action:/ }));
+    fireEvent.click(screen.getByLabelText("Action"));
     await userEvent.click(
-      await screen.findByRole("option", { name: "organization_ready" }),
+      await screen.findByRole("option", { name: "Tenant ready" }),
     );
     await waitFor(() =>
       expect(router.state.location.searchStr).toBe("?event=organization_ready"),
     );
+    fireEvent.click(screen.getByRole("button", { name: /^Tenant:/ }));
     const tenant = screen.getByLabelText("Tenant");
     await userEvent.click(tenant);
     await userEvent.clear(tenant);
@@ -1224,6 +1230,15 @@ describe("platform audit", () => {
         "?tenant=org_beta&event=organization_ready",
       ),
     );
+    fireEvent.click(screen.getByRole("button", { name: "Remove tenant filter" }));
+    await waitFor(() => expect(router.state.location.searchStr).toBe("?event=organization_ready"));
+    fireEvent.click(screen.getByRole("button", { name: "All dates" }));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-10T23:00:00Z"));
+    fireEvent.click(screen.getByRole("button", { name: "Last 7 days" }));
+    vi.useRealTimers();
+    await waitFor(() => expect(router.state.location.searchStr).toBe("?event=organization_ready&from=2026-10-04&to=2026-10-10"));
+
   });
 
   it("appends older rows, preserves tenant links and does not poll", async () => {
@@ -1240,28 +1255,28 @@ describe("platform audit", () => {
         .mockResolvedValueOnce({ ...audit, rows: [old], next_cursor: "" }),
     });
     renderPlatform(api, "/platform/audit?actor=admin");
-    const table = await screen.findByRole("table", { name: "Audit events" });
+    const table = await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
     expect(
       within(table).getByRole("link", { name: "Alpha" }).getAttribute("href"),
     ).toBe("/platform/tenants?tenant=org_alpha");
     expect(
       within(table)
-        .getByRole("link", { name: "org_beta" })
+        .getByRole("link", { name: "Beta" })
         .getAttribute("href"),
     ).toBe("/platform/tenants?tenant=org_beta");
-    expect(within(table).getByText("deleted")).toBeTruthy();
+    expect(within(table).getByText("Deleted")).toBeTruthy();
     expect(api.platformAudit).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole("button", { name: "Load older" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load older events" }));
     await screen.findByText("older reason");
     expect(within(table).getAllByRole("row")).toHaveLength(4);
-    expect(within(table).getByText("unresolved_subject").className).toBe(
-      "font-mono",
-    );
+    expect(within(table).getByText("Unknown account")).toBeTruthy();
+    expect(table.textContent).not.toContain("unresolved_subject");
+    expect(screen.getByLabelText("3 events loaded").textContent).toBe("3");
     expect(api.platformAudit).toHaveBeenLastCalledWith(
       "actor=admin&cursor=older-cursor",
     );
     expect(api.platformAudit).toHaveBeenCalledTimes(2);
-    expect(screen.queryByRole("button", { name: "Load older" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Load older events" })).toBeNull();
   });
 
   it("drops an older page after changing filters and preserves rows on a failed retry", async () => {
@@ -1291,20 +1306,21 @@ describe("platform audit", () => {
         }),
     });
     renderPlatform(api, "/platform/audit");
-    await screen.findByRole("table", { name: "Audit events" });
-    fireEvent.click(screen.getByRole("button", { name: "Load older" }));
+    await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
+    fireEvent.click(screen.getByRole("button", { name: "Load older events" }));
     expect(
       screen
-        .getByRole("button", { name: "Loading older…" })
+        .getByRole("button", { name: "Load older events" })
         .hasAttribute("disabled"),
     ).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: /^Actor:/ }));
     fireEvent.change(screen.getByLabelText("Actor"), {
       target: { value: "system" },
     });
     await waitFor(() =>
       expect(api.platformAudit).toHaveBeenCalledWith("actor=system"),
     );
-    await screen.findByText("generation 1");
+    await screen.findByText("Provisioning attempt 1");
     await act(async () => {
       resolveOlder({
         ...audit,
@@ -1312,14 +1328,14 @@ describe("platform audit", () => {
       });
     });
     expect(screen.queryByText("stale older row")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Load older" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load older events" }));
     expect((await screen.findByRole("alert")).textContent).toBe(
       "Audit unavailable",
     );
-    expect(screen.getByText("generation 1")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Load older" }));
+    expect(screen.getByText("Provisioning attempt 1")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load older events" }));
     await screen.findByText("troubleshooting");
-    expect(screen.getByText("generation 1")).toBeTruthy();
+    expect(screen.getByText("Provisioning attempt 1")).toBeTruthy();
   });
 
   it.each([401, 403])(
@@ -1346,6 +1362,148 @@ describe("platform audit", () => {
         await waitFor(() => expect(assign).toHaveBeenCalledWith(SIGN_IN_PLATFORM));
     },
   );
+
+  it("debounces actor typing and cancels a pending draft on clear", async () => {
+    const api = fakeApi({ platformAudit: vi.fn(async () => ({ ...audit, next_cursor: "" })) });
+    const router = renderPlatform(api, "/platform/audit?tenant=org_alpha&event=support_started");
+    await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
+    fireEvent.click(screen.getByRole("button", { name: "Actor: Anyone" }));
+    const input = screen.getByLabelText("Actor");
+    vi.useFakeTimers();
+    fireEvent.change(input, { target: { value: "a" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    fireEvent.change(input, { target: { value: "admin" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(349); });
+    expect(api.platformAudit).toHaveBeenCalledTimes(1);
+    expect((screen.getByRole("button", { name: "Export CSV" }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(api.platformAudit).toHaveBeenLastCalledWith("tenant=org_alpha&actor=admin&event=support_started");
+    expect(api.platformAudit).toHaveBeenCalledTimes(2);
+    expect(router.state.location.searchStr).toContain("actor=admin");
+    fireEvent.change(input, { target: { value: "stale" } });
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(350); });
+    expect(router.state.location.searchStr).toBe("");
+    expect(api.platformAudit).not.toHaveBeenCalledWith(expect.stringContaining("stale"));
+  });
+
+  it.each([
+    ["plan_granted", "Plan granted", "info"],
+    ["support_started", "Support access started", "warning"],
+    ["organization_failed", "Tenant failed", "error"],
+    ["member_role_changed", "Staff role changed", "info"],
+    ["platform_audit_viewed", "Platform audit viewed", "secondary"],
+  ])("labels %s without showing the stored key", (event, label, variant) => {
+    expect(auditAction(event)).toEqual({ label, variant });
+  });
+
+  it.each([
+    ["person@example.test", "person@example.test"],
+    ["system", "System"],
+    ["platform_service_token_123", "Platform service token"],
+    ["hosted_subject_123", "Unknown account"],
+  ])("shows a readable actor for %s", (actor, label) => {
+    expect(auditActor(actor)).toBe(label);
+  });
+
+  it("exports every cursor page with the active filters and readable CSV cells", async () => {
+    const selected = { ...audit.rows[0]!, event: "plan_granted", detail: 'growth v1 until 2026-12-31T23:59:59Z · customer, "pilot"' };
+    const old = { ...selected, id: "older", at: "2026-09-30T10:00:00Z", detail: "growth v1 · =customer reason" };
+    const api = fakeApi({ platformAudit: vi.fn(async (query: string) => {
+      const params = new URLSearchParams(query);
+      if (params.get("tenant") !== "org_alpha" || params.get("actor") !== "admin" || params.get("event") !== "plan_granted" || params.get("from") !== "2026-09-01" || params.get("to") !== "2026-10-01") return { ...audit, rows: [audit.rows[1]!], next_cursor: "" };
+      return params.has("cursor") ? { ...audit, rows: [old], next_cursor: "" } : { ...audit, rows: [selected] };
+    }) });
+    let exported!: Blob;
+    const createObjectURL = vi.fn((blob: Blob) => { exported = blob; return "blob:audit"; });
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", class extends URL { static createObjectURL = createObjectURL; static revokeObjectURL = revokeObjectURL; });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    renderPlatform(api, "/platform/audit?tenant=org_alpha&actor=admin&event=plan_granted&from=2026-09-01&to=2026-10-01");
+    const table = await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
+    expect(table.textContent).toContain("Plan granted");
+    expect(table.textContent).toContain("Growth (version 1) until Dec 31, 2026");
+    expect(table.textContent).toContain('customer, "pilot"');
+    expect(table.textContent).not.toContain("plan_granted");
+    fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+    await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+    const csv = await exported.text();
+    expect(csv).toBe('"When (UTC)","Action","Tenant","By","Details","Reason"\r\n' +
+      '"2026-10-01T12:00:00Z","Plan granted","Alpha","admin@detent.build","Growth (version 1) until Dec 31, 2026","customer, ""pilot"""\r\n' +
+      '"2026-09-30T10:00:00Z","Plan granted","Alpha","admin@detent.build","Growth (version 1)","\'=customer reason"\r\n');
+    expect(api.platformAudit).toHaveBeenNthCalledWith(2, "tenant=org_alpha&actor=admin&event=plan_granted&from=2026-09-01&to=2026-10-01&limit=200", expect.any(AbortSignal));
+    expect(api.platformAudit).toHaveBeenLastCalledWith("tenant=org_alpha&actor=admin&event=plan_granted&from=2026-09-01&to=2026-10-01&limit=200&cursor=older-cursor", expect.any(AbortSignal));
+    expect((click.mock.instances[0] as unknown as HTMLAnchorElement).download).toBe("audit-log.csv");
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:audit");
+  });
+
+  it.each([10_000, 10_001])("bounds an export of %s events without downloading a partial CSV", async (total) => {
+    const api = fakeApi({ platformAudit: vi.fn(async (query: string) => {
+      const params = new URLSearchParams(query);
+      if (!params.has("limit")) return audit;
+      expect(params.get("actor")).toBe("admin");
+      expect(params.get("limit")).toBe("200");
+      const offset = Number(params.get("cursor") ?? "0");
+      const rows = Array.from({ length: Math.min(200, total - offset) }, (_, index) => ({ ...audit.rows[0]!, id: String(offset + index) }));
+      return { ...audit, rows, next_cursor: offset + rows.length < total ? String(offset + rows.length) : "" };
+    }) });
+    let exported: Blob | undefined;
+    const createObjectURL = vi.fn((blob: Blob) => { exported = blob; return "blob:audit"; });
+    vi.stubGlobal("URL", class extends URL { static createObjectURL = createObjectURL; static revokeObjectURL = vi.fn(); });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    renderPlatform(api, "/platform/audit?actor=admin");
+    await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
+    fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+    if (total === 10_000) {
+      await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+      const csv = await exported!.text();
+      expect(csv.split("\r\n")).toHaveLength(10_002);
+      expect(csv.match(/"When \(UTC\)"/g)).toHaveLength(1);
+    } else {
+      await screen.findByText("Export exceeds 10,000 events. Narrow the date range or other filters and try again.");
+      expect(createObjectURL).not.toHaveBeenCalled();
+      expect(click).not.toHaveBeenCalled();
+    }
+    expect(api.platformAudit).toHaveBeenCalledTimes(51);
+    expect((screen.getByRole("button", { name: "Export CSV" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it.each(["cancel", "filters", "unmount"])("aborts an in-flight export on %s without continuing the crawl", async (stop) => {
+    let signal: AbortSignal | undefined;
+    let holdExport = true;
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+      const params = new URL(input, "https://platform.detent.test").searchParams;
+      if (params.has("limit") && holdExport) {
+        signal = init?.signal ?? undefined;
+        return new Promise<Response>((_, reject) => {
+          signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+        });
+      }
+      return new Response(JSON.stringify({ ...audit, next_cursor: "" }), { headers: { "Content-Type": "application/json" } });
+    });
+    const api = fakeApi({ platformAudit: makeEntryApi({ fetch }).platformAudit });
+    const createObjectURL = vi.fn(() => "blob:audit");
+    vi.stubGlobal("URL", class extends URL { static createObjectURL = createObjectURL; static revokeObjectURL = vi.fn(); });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    renderPlatform(api, "/platform/audit?actor=admin");
+    await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
+    fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+    await screen.findByRole("button", { name: "Cancel export" });
+    expect(signal?.aborted).toBe(false);
+    if (stop === "cancel") fireEvent.click(screen.getByRole("button", { name: "Cancel export" }));
+    else if (stop === "filters") fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    else cleanup();
+    await waitFor(() => expect(signal?.aborted).toBe(true));
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(fetch.mock.calls.filter(([url]) => new URL(url, "https://platform.detent.test").searchParams.has("limit"))).toHaveLength(1);
+    if (stop !== "unmount") {
+      const button = await screen.findByRole("button", { name: "Export CSV" });
+      expect(screen.queryByText("Aborted")).toBeNull();
+      holdExport = false;
+      fireEvent.click(button);
+      await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+    }
+  });
 
   it("shows an empty state for filters with no matches", async () => {
     renderPlatform(fakeApi(), "/platform/audit?actor=nobody");
