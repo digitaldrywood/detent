@@ -111,13 +111,19 @@ for (const theme of ["light", "dark"]) {
   for (const width of [1440, 390]) {
     test(`all platform routes keep the shell in ${theme} at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 980 });
-      await page.addInitScript((theme) => { document.documentElement.classList.toggle("dark", theme === "dark"); }, theme);
+      await page.emulateMedia({ colorScheme: theme });
       await openPlatform(page);
+      await expect(page.getByRole("heading", { name: "Tenants", exact: true, level: 1 })).toBeVisible();
+      await page.evaluate((theme) => {
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.classList.toggle("dark", theme === "dark");
+      }, theme);
       for (const [path, title] of [["tenants", "Tenants"], ["users", "Users"], ["audit", "Audit log"], ["health", "Health"], ["allowlist", "Sign-up allowlist"], ["staff", "Staff"]]) {
         if (width === 390) await page.getByRole("button", { name: "Toggle Sidebar" }).click();
         await page.getByRole("navigation", { name: "Platform navigation" }).getByRole("link", { name: title, exact: true }).click();
         const heading = page.getByRole("heading", { name: title, exact: true, level: 1 });
         await expect(heading).toBeVisible();
+        await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)).toBe(theme);
         if (path === "health") {
           await expect(page.getByRole("alert", { name: "Service health" })).toContainText("1 of 1 tenant Hubs running");
           await expect(page.getByRole("table", { name: "Tenant Hubs" })).toContainText("Running");
