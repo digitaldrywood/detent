@@ -348,7 +348,7 @@ func TestPlatformStaffLanding(t *testing.T) {
 				_, body := b.get(path)
 				var session map[string]any
 				decodeJSON(t, body, &session)
-				if session["platform_role"] != test.platformRole || session["can_create"] != test.canCreate {
+				if prices, present := session["creation_prices"]; session["platform_role"] != test.platformRole || session["can_create"] != test.canCreate || present && prices == nil {
 					t.Fatalf("%s = %s", path, body)
 				}
 			}
