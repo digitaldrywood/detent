@@ -176,10 +176,10 @@ test("the palette opens tenants and users with keyboard navigation", async ({ pa
   await page.keyboard.press("Escape");
   await page.keyboard.press("Meta+k");
   dialog = page.getByRole("dialog", { name: "Find tenant or user" });
-  await dialog.getByRole("combobox", { name: "Find tenant or user" }).fill("cory");
-  await expect(dialog.getByRole("option", { name: /cory/ })).toBeVisible();
+  await dialog.getByRole("combobox", { name: "Find tenant or user" }).fill("alex");
+  await expect(dialog.getByRole("option", { name: /alex/ })).toBeVisible();
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(origin + "/platform/users/cory%2Bdetent-prod-test%40example.test");
-  await expect(page.getByRole("region", { name: "Account" })).toContainText("cory+detent-prod-test@example.test");
+  await expect(page).toHaveURL(origin + "/platform/users/alex%2Btest%40example.test");
+  await expect(page.getByRole("region", { name: "Account" })).toContainText("alex+test@example.test");
   expect(navigations).toEqual([]);
 });
