@@ -1,12 +1,16 @@
 package hubclient
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -53,6 +57,64 @@ func (c *NativeClient) Change(ctx context.Context, item tracker.NativeWorkItemID
 	return result, err
 }
 
+func (c *NativeClient) runtimeChange(ctx context.Context, item tracker.NativeWorkItemID, id string) (tracker.ChangeDetail, error) {
+	path, err := changePath(item, id, "")
+	if err != nil || id == "" {
+		return tracker.ChangeDetail{}, errors.New("valid Change Request identity is required")
+	}
+	read := func(params url.Values) (operatortool.ChangeResult, error) {
+		var page operatortool.ChangeResult
+		if err := c.client.request(ctx, http.MethodGet, c.base()+path+"?"+params.Encode(), nil, &page); err != nil {
+			return page, err
+		}
+		if page.OrganizationID != string(c.organization) || page.ProjectID != string(c.project) || page.WorkItemID != string(item) || page.Detail == nil || page.Read == nil || page.Detail.Change.ID != id || page.Detail.Change.ProjectID != c.project || page.Detail.Change.WorkItemID != item || page.Read.VersionID != page.Detail.Change.CurrentVersion {
+			return page, fmt.Errorf("%w: bounded Change read has incomplete or mismatched identity", ErrUnavailable)
+		}
+		return page, nil
+	}
+	first, err := read(url.Values{"view": {"bounded"}})
+	if err != nil {
+		return tracker.ChangeDetail{}, err
+	}
+	detail := *first.Detail
+	for _, section := range []string{"versions", "reviews", "checks", "discussion"} {
+		page, ok := first.Read.Sections[section]
+		seen := map[string]bool{}
+		for {
+			if !ok {
+				return tracker.ChangeDetail{}, fmt.Errorf("%w: bounded Change section is missing", ErrUnavailable)
+			}
+			if page.Complete {
+				break
+			}
+			if page.NextCursor == "" || seen[page.NextCursor] {
+				return tracker.ChangeDetail{}, fmt.Errorf("%w: bounded Change cursor did not progress", ErrUnavailable)
+			}
+			seen[page.NextCursor] = true
+			next, err := read(url.Values{"view": {"bounded"}, "section": {section}, "cursor": {page.NextCursor}, "version_id": {first.Read.VersionID}})
+			if err != nil {
+				return tracker.ChangeDetail{}, err
+			}
+			if next.Detail.Change.CurrentVersion != detail.Change.CurrentVersion {
+				return tracker.ChangeDetail{}, fmt.Errorf("%w: bounded Change head changed during traversal", ErrUnavailable)
+			}
+			switch section {
+			case "versions":
+				detail.Versions = append(detail.Versions, next.Detail.Versions...)
+			case "reviews":
+				detail.Reviews = append(detail.Reviews, next.Detail.Reviews...)
+			case "checks":
+				detail.Checks = append(detail.Checks, next.Detail.Checks...)
+			case "discussion":
+				detail.Discussion = append(detail.Discussion, next.Detail.Discussion...)
+			}
+			page, ok = next.Read.Sections[section]
+		}
+	}
+	slices.SortFunc(detail.Versions, func(a, b tracker.ChangeVersion) int { return cmp.Compare(a.Number, b.Number) })
+	return detail, nil
+}
+
 func (c *NativeClient) currentChange(ctx context.Context, item tracker.NativeWorkItemID) (tracker.ChangeDetail, error) {
 	changes, err := c.Changes(ctx, item)
 	if err != nil {
@@ -61,7 +123,7 @@ func (c *NativeClient) currentChange(ctx context.Context, item tracker.NativeWor
 	if len(changes) == 0 {
 		return tracker.ChangeDetail{}, nil
 	}
-	detail, err := c.Change(ctx, item, changes[len(changes)-1].ID)
+	detail, err := c.runtimeChange(ctx, item, changes[len(changes)-1].ID)
 	if err != nil {
 		return tracker.ChangeDetail{}, fmt.Errorf("read change: %w", err)
 	}
