@@ -191,6 +191,13 @@ func (d *database) processWebhook(ctx context.Context, inboxID int64, now time.T
 		failureErr := d.markWebhookFailed(ctx, inboxID, now, err)
 		return errors.Join(fmt.Errorf("complete GitHub webhook processing: %w", err), rollbackErr, failureErr)
 	}
+	if result.Outcome == webhookOutcomeIgnored {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM github_webhook_payloads WHERE inbox_id = ?", inboxID); err != nil {
+			rollbackErr := tx.Rollback()
+			failureErr := d.markWebhookFailed(ctx, inboxID, now, err)
+			return errors.Join(fmt.Errorf("delete ignored GitHub webhook payload: %w", err), rollbackErr, failureErr)
+		}
+	}
 	if result.RepositoryID != nil {
 		if err := recordCheckpointSuccessTx(ctx, tx, *result.RepositoryID, checkpointWebhook, now, now); err != nil {
 			rollbackErr := tx.Rollback()
@@ -326,8 +333,8 @@ func (d *database) purgeWebhookPayloads(ctx context.Context, now time.Time, rete
 			SELECT 1
 			FROM github_webhook_inbox i
 			WHERE i.id = github_webhook_payloads.inbox_id
-				AND i.status IN ('processed', 'ignored')
-				AND julianday(i.processed_at) <= julianday(?)
+				AND (i.status = 'ignored'
+					OR (i.status = 'processed' AND julianday(i.processed_at) <= julianday(?)))
 		)
 	`, formatWebhookTime(now.Add(-retention)))
 	if err != nil {
