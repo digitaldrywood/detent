@@ -75,9 +75,22 @@ for (const mode of ["denied", "stopped", "unavailable"]) {
     page.on("console", (message) => {
       if (message.text().includes("form-action")) cspRefusals.push(message.text());
     });
+    const destination = await page.context().newCDPSession(page);
+    await destination.send("Fetch.enable", {
+      patterns: [{ urlPattern: "https://detent.build/", requestStage: "Request" }],
+    });
+    const interceptedDestination = new Promise((resolve) => destination.once("Fetch.requestPaused", resolve));
     const logoutResponse = page.waitForResponse(`${origin}/logout`);
     const destinationRequest = page.waitForRequest("https://detent.build/");
     await page.keyboard.press("Enter");
+    const { requestId } = await interceptedDestination;
+    await destination.send("Fetch.fulfillRequest", {
+      requestId,
+      responseCode: 200,
+      responseHeaders: [{ name: "Content-Type", value: "text/html" }],
+      body: Buffer.from("<!doctype html><title>Signed out</title><p>Signed out</p>").toString("base64"),
+    });
+    await destination.detach();
     const logout = await logoutResponse;
     expect(logout.request().method()).toBe("POST");
     expect(new URLSearchParams(logout.request().postData()).get("csrf")).toBe(csrf);
@@ -85,6 +98,7 @@ for (const mode of ["denied", "stopped", "unavailable"]) {
     expect(logout.headers().location).toBe("https://detent.build");
     expect((await destinationRequest).isNavigationRequest()).toBe(true);
     await expect(page).toHaveURL("https://detent.build/");
+    await expect(page.getByText("Signed out", { exact: true })).toBeVisible();
     expect(cspRefusals).toEqual([]);
     expect((await page.context().cookies(origin)).filter((cookie) => cookie.name === "detent_entry_session")).toEqual([]);
   });
