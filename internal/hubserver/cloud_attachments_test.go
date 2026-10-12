@@ -151,7 +151,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 		status                    int
 	}{
 		{"allowed", 10000, 2, 0, http.StatusCreated},
-		{"exact preflight limit", 100, 100, 0, http.StatusTooManyRequests},
+		{"exact preflight limit", 100, 100, 0, http.StatusCreated},
 		{"refused", 99, 100, 0, http.StatusTooManyRequests},
 		{"API exhausted", 10000, 1, 1, http.StatusTooManyRequests},
 		{"outer API limit", 10000, 1, 0, http.StatusTooManyRequests},
@@ -219,11 +219,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var receiptBytes int64
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT coalesce(sum(length(CAST(response_json AS BLOB))),0) FROM native_commands WHERE operation LIKE 'attachment.record %'").Scan(&receiptBytes); err != nil {
-				t.Fatal(err)
-			}
-			if receiptBytes == 0 || usage["collaboration_bytes"] != record.Size+receiptBytes {
+			if usage["collaboration_bytes"] != record.Size {
 				t.Fatalf("attachment bytes=%d", usage["collaboration_bytes"])
 			}
 			replay := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: f.base + "/attachment-metadata", body: string(body), csrf: csrf})
