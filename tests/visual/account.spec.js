@@ -661,6 +661,8 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   await dialog.getByRole("button", { name: "Create command" }).click();
   await expect(dialog.locator('[aria-current="step"]')).toHaveText("2. Run the command");
   connected = true;
+  await expect(dialog.getByText("Build host is connected")).toBeVisible();
+  await dialog.getByRole("button", { name: "Next", exact: true }).click();
   await expect(dialog.locator('[aria-current="step"]')).toHaveText("3. Connected");
   await expect(dialog.getByText("Build host is connected")).toBeVisible();
   await expect(dialog.getByText("build-host.local")).toBeVisible();

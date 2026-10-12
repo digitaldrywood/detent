@@ -58,6 +58,7 @@ type hostedFleetRunner struct {
 	CapacityLimit      int                                        `json:"capacity_limit"`
 	ReportedCapacity   int                                        `json:"reported_capacity"`
 	ProviderCapacity   []providercapacity.View                    `json:"provider_capacity"`
+	HasHeartbeat       bool                                       `json:"has_heartbeat"`
 	LastHeartbeatAt    time.Time                                  `json:"last_heartbeat_at"`
 	Leases             []hostedFleetLease                         `json:"leases"`
 	IsolationTier      string                                     `json:"isolation_tier"`
@@ -226,17 +227,17 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 
 func (s *Service) hostedFleetRunners(ctx context.Context, credential apiCredential, visible map[tracker.ProjectID]bool) ([]hostedFleetRunner, error) {
 	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, ''), r.local_checks_json FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, ''), r.local_checks_json, r.created_at FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
 WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.id`, organization)
 	if err != nil {
 		return nil, fmt.Errorf("list runners: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	type listed struct{ id, version, checks string }
+	type listed struct{ id, version, checks, created string }
 	runners := []listed{}
 	for rows.Next() {
 		var entry listed
-		if err := rows.Scan(&entry.id, &entry.version, &entry.checks); err != nil {
+		if err := rows.Scan(&entry.id, &entry.version, &entry.checks, &entry.created); err != nil {
 			return nil, fmt.Errorf("scan runner: %w", err)
 		}
 		runners = append(runners, entry)
@@ -252,7 +253,12 @@ WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.
 		if err != nil {
 			return nil, fmt.Errorf("read runner %s: %w", entry.id, err)
 		}
+		createdAt, err := parseTimeValue(entry.created)
+		if err != nil {
+			return nil, fmt.Errorf("read runner enrollment time: %w", err)
+		}
 		view := hostedFleetRunnerView(runner, entry.version, visible, s.config.now())
+		view.HasHeartbeat = runner.LastHeartbeatAt.After(createdAt)
 		var checks map[tracker.ProjectID]runnerauth.LocalChecks
 		if err := json.Unmarshal([]byte(entry.checks), &checks); err != nil {
 			return nil, err
