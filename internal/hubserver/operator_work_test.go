@@ -45,6 +45,9 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			} `json:"result"`
 		}
 		decodeHubResponse(t, response, &envelope)
+		if envelope.Result.IsError && len(envelope.Result.Content) == 0 {
+			t.Logf("MCP %s request %s error response=%s", name, key, response.Body.String())
+		}
 		if name == operatortool.CreateChange || name == operatortool.PublishChangeVersion || envelope.Result.IsError {
 			return envelope.Result.Content, envelope.Result.IsError
 		}
@@ -240,7 +243,11 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			t.Fatal(err)
 		}
 		args := map[string]any{"github_issue_url": "github.com/Acme/Orders/issues/13", "state": "Backlog"}
-		f.service.config.ImportBackend = linkedTestImporter{snapshot: batchSnapshot(13)}
+		snapshot := linkedSnapshot()
+		snapshot.URL = "https://github.com/acme/orders/issues/13"
+		snapshot.Provenance.ExternalID = "I_13"
+		snapshot.Comments[0].Provenance.ExternalID = "C_13"
+		f.service.config.ImportBackend = linkedTestImporter{snapshot: snapshot}
 		raw, failed = call("file_issue", "checkout-link", args)
 		var item tracker.NativeIssue
 		if err := json.Unmarshal(raw, &item); err != nil || failed || item.State != "Triage" || item.LinkedSource == nil || item.LinkedSource.Status != "complete" {
