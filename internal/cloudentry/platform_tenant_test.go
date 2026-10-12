@@ -23,6 +23,17 @@ func TestPlatformTenantDetail(t *testing.T) {
 	}
 	t.Parallel()
 	f := newEntryFixture(t)
+	endpoint := testSocketEndpoint("alpha.sock")
+	tenant := f.tenants[endpoint]
+	f.tenants[endpoint] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/platform/ai-credits/balance" {
+			if err := json.NewEncoder(w).Encode(map[string]int64{"balance_micros": 10250000}); err != nil {
+				t.Error(err)
+			}
+			return
+		}
+		tenant.ServeHTTP(w, r)
+	})
 	for _, role := range []string{"viewer", "support", "billing", "admin"} {
 		user := "user_" + role
 		email := role + "@example.test"
@@ -38,6 +49,9 @@ func TestPlatformTenantDetail(t *testing.T) {
 			decodeJSON(t, body, &detail)
 			if response.StatusCode != http.StatusOK || detail.Organization.ID != "org_alpha" || detail.CSRF == "" || detail.CanGrant != (role == "billing" || role == "admin") || detail.Organization.CanSupport != (role == "support" || role == "admin") || detail.CanResume {
 				t.Fatalf("detail = %d %+v", response.StatusCode, detail)
+			}
+			if detail.CreditBalanceMicros == nil || *detail.CreditBalanceMicros != 10250000 || slices.Contains(detail.Unavailable, "ai_credits") {
+				t.Fatalf("credit balance = %+v", detail)
 			}
 			if detail.Usage == nil || detail.Usage.Allowances == nil || detail.Members == nil || len(*detail.Members) != 1 || (*detail.Members)[0].Role != "owner" || detail.Runners == nil || detail.Projects == nil || len(*detail.Projects) == 0 || detail.Entitlements != nil || !slices.Contains(detail.Unavailable, "entitlements") || len(detail.Events) == 0 {
 				t.Fatalf("sections = %+v", detail)
@@ -64,7 +78,7 @@ func TestPlatformTenantDetail(t *testing.T) {
 	response, body := admin.get("/api/cloud/platform/organizations/org_alpha")
 	var detail platformTenantDetail
 	decodeJSON(t, body, &detail)
-	if response.StatusCode != http.StatusOK || detail.Organization.ErrorCode != "tenant_start_failed" || detail.Organization.ErrorDetail != "disk floor" || detail.Organization.Step != "tenant_files" || len(detail.Unavailable) != 6 {
+	if response.StatusCode != http.StatusOK || detail.Organization.ErrorCode != "tenant_start_failed" || detail.Organization.ErrorDetail != "disk floor" || detail.Organization.Step != "tenant_files" || detail.CreditBalanceMicros != nil || len(detail.Unavailable) != 7 {
 		t.Fatalf("failed tenant = %d %+v", response.StatusCode, detail)
 	}
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='ready' WHERE id='org_alpha'"); err != nil {
@@ -73,10 +87,61 @@ func TestPlatformTenantDetail(t *testing.T) {
 	f.service.config.transport = func(Organization) (http.RoundTripper, error) { return platformTimeoutTransport{}, nil }
 	response, body = admin.get("/api/cloud/platform/organizations/org_alpha")
 	decodeJSON(t, body, &detail)
-	if response.StatusCode != http.StatusOK || detail.Members != nil || detail.Runners != nil || detail.Projects != nil || detail.Entitlements != nil || detail.Organization.Billing.Available || len(detail.Unavailable) != 6 {
+	if response.StatusCode != http.StatusOK || detail.Members != nil || detail.Runners != nil || detail.Projects != nil || detail.Entitlements != nil || detail.CreditBalanceMicros != nil || detail.Organization.Billing.Available || len(detail.Unavailable) != 7 {
 		t.Fatalf("timeout = %d %+v", response.StatusCode, detail)
 	}
 
+}
+
+func TestPlatformTenantAICreditBalance(t *testing.T) {
+	t.Parallel()
+	f := newEntryFixture(t)
+	f.provider.users["user_admin"] = "admin@example.test"
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES('admin@example.test','admin','test','time','time')"); err != nil {
+		t.Fatal(err)
+	}
+	b := newBrowser(t, f.service.Handler())
+	b.login("/auth/oidc/start", "user_admin:")
+	endpoint := testSocketEndpoint("alpha.sock")
+	tenant := f.tenants[endpoint]
+	for _, test := range []struct {
+		name, body  string
+		status      int
+		want        int64
+		unavailable bool
+	}{
+		{"positive", `{"balance_micros":10250000}`, http.StatusOK, 10250000, false},
+		{"zero", `{"balance_micros":0}`, http.StatusOK, 0, false},
+		{"negative", `{"balance_micros":-1}`, http.StatusOK, -1, false},
+		{"failed read", `{"code":"ai_credits_unavailable"}`, http.StatusInternalServerError, 0, true},
+		{"malformed", `{`, http.StatusOK, 0, true},
+		{"missing balance", `{}`, http.StatusOK, 0, true},
+		{"null balance", `{"balance_micros":null}`, http.StatusOK, 0, true},
+		{"wrong type", `{"balance_micros":"5"}`, http.StatusOK, 0, true},
+		{"null response", `null`, http.StatusOK, 0, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f.tenants[endpoint] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/internal/v1/platform/ai-credits/balance" {
+					w.WriteHeader(test.status)
+					if _, err := w.Write([]byte(test.body)); err != nil {
+						t.Error(err)
+					}
+					return
+				}
+				tenant.ServeHTTP(w, r)
+			})
+			response, body := b.get("/api/cloud/platform/organizations/org_alpha")
+			var detail platformTenantDetail
+			decodeJSON(t, body, &detail)
+			if response.StatusCode != http.StatusOK || (detail.CreditBalanceMicros == nil) != test.unavailable || slices.Contains(detail.Unavailable, "ai_credits") != test.unavailable {
+				t.Fatalf("detail = %d %+v", response.StatusCode, detail)
+			}
+			if !test.unavailable && *detail.CreditBalanceMicros != test.want {
+				t.Fatalf("balance = %d, want %d", *detail.CreditBalanceMicros, test.want)
+			}
+		})
+	}
 }
 
 func TestPlatformResumeProvisioning(t *testing.T) {
