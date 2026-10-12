@@ -233,6 +233,14 @@ export type PlatformAllowlist = typeof PlatformAllowlist.Type;
 export const PlatformHealth = Schema.Struct({
   registry: Schema.Struct({ ok: Schema.Boolean }),
   tenants: Schema.optional(Schema.Struct({ expected: Schema.Number, running: Schema.Number })),
+  tenant_hubs: Schema.optional(Schema.Array(Schema.Struct({
+    id: Schema.String,
+    name: Schema.String,
+    running: Schema.Boolean,
+    uptime_seconds: Schema.NullOr(Schema.Number),
+    restarts_24h: Schema.NullOr(Schema.Number),
+    database_bytes: Schema.NullOr(Schema.Number),
+  }))),
   admission: Schema.optional(
     Schema.Struct({
       tenants: Schema.Number,

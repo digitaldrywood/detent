@@ -2440,11 +2440,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if req.Execution != nil && mode == RunModeImplement {
 			// Native finalization runs the configured source gate on the
 			// finalized head. It needs the work budget, not the cleanup budget.
-			workBudget := durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS)
-			if workBudget <= 0 {
-				workBudget = durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS)
-			}
-			timeout = max(timeout, workBudget)
+			timeout = r.nativeWorkTimeout(workflow.Config, backendConfig, 0)
 		}
 		afterRunCtx, afterRunCancel = context.WithTimeoutCause(context.WithoutCancel(ctx), timeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 	}
