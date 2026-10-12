@@ -42,6 +42,12 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 		want   int
 	}{
 		{"available", func(*providercapacity.Report, *tracker.NativeClaim) {}, http.StatusOK},
+		{"multiple candidates retain selection", func(_ *providercapacity.Report, c *tracker.NativeClaim) {
+			c.WorkItemID = ""
+			missing := c.ProviderCandidates[0]
+			missing.WorkItemID = "wi_missing"
+			c.ProviderCandidates = append([]tracker.NativeCapacityCandidate{missing}, c.ProviderCandidates...)
+		}, http.StatusOK},
 		{"unknown", func(r *providercapacity.Report, _ *tracker.NativeClaim) { r.Availability = "unknown" }, http.StatusOK},
 		{"default report without account limit", func(r *providercapacity.Report, _ *tracker.NativeClaim) {
 			r.MaxConcurrent, r.Availability = 0, "unknown"
@@ -116,7 +122,7 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 			}
 			var lease tracker.NativeLease
 			decodeHubResponse(t, response, &lease)
-			if count != 1 || lease.ProviderReservation == nil || lease.ProviderReservation.Model != "test-model" {
+			if lease.WorkItemID != issue.WorkItemID || count != 1 || lease.ProviderReservation == nil || lease.ProviderReservation.Model != "test-model" {
 				t.Fatalf("lease = %+v", lease)
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
