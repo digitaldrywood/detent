@@ -171,9 +171,10 @@ func TestHostedFleetVisibility(t *testing.T) {
 	}
 	wantNames := map[string]hostedRunnerName{}
 	var activeID, removedID string
+	var active runnerauth.Redemption
 	for _, name := range []string{"Active runner", "Retired runner"} {
 		binding := runnerauth.NewBinding()
-		request := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(f.privateProject)}, Operations: []string{runnerauth.Read}, TTLSeconds: 60}
+		request := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(f.privateProject)}, Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, TTLSeconds: 60}
 		var enrollment runnerauth.Enrollment
 		browserHostedDecode(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/runner-enrollments", request, http.StatusCreated), &enrollment)
 		credential, err := apikey.GenerateToken()
@@ -188,8 +189,21 @@ func TestHostedFleetVisibility(t *testing.T) {
 			f.api(t, "owner", http.MethodDelete, browserHostedOrganizationBase+"/runners/"+removedID, nil, http.StatusNoContent)
 		} else {
 			activeID = binding.RunnerID
+			active = redemption
 		}
 	}
+	var connection hostedFleetResponse
+	browserHostedDecode(t, f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/fleet", nil, http.StatusOK), &connection)
+	if len(connection.Runners) != 1 || connection.Runners[0].HasHeartbeat || connection.Runners[0].LastHeartbeatAt.IsZero() {
+		t.Fatalf("enrolled runner connection = %#v, want enrollment timestamp without heartbeat", connection.Runners)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, browserHostedOrganizationBase+"/projects/"+f.privateProject+"/machines/"+string(active.MachineID)+"/heartbeat", active.Credential,
+		map[string]any{"display_name": active.DisplayName, "capacity": active.Capacity, "version": active.Version}), http.StatusOK)
+	browserHostedDecode(t, f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/fleet", nil, http.StatusOK), &connection)
+	if len(connection.Runners) != 1 || !connection.Runners[0].HasHeartbeat {
+		t.Fatalf("started runner connection = %#v, want heartbeat received", connection.Runners)
+	}
+
 	now := f.service.config.now().UTC()
 	summary := testHostSummary(now)
 	raw, err := json.Marshal(summary)
