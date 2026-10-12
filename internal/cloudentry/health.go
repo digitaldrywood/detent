@@ -60,9 +60,21 @@ func (s *Service) tenantHealth(ctx context.Context, organizations []Organization
 			}); ok {
 				row.UptimeSeconds, row.Restarts24h = reader.Health(organization.ID, s.config.now())
 			}
-			if info, err := os.Stat(filepath.Join(allocation.TenantRoot, organization.ID, "hub.db")); err == nil && info.Mode().IsRegular() {
+			databasePath := filepath.Join(allocation.TenantRoot, organization.ID, "hub.db")
+			if info, err := os.Stat(databasePath); err == nil && info.Mode().IsRegular() {
 				size := info.Size()
 				row.DatabaseBytes = &size
+				for _, suffix := range []string{"-wal", "-shm"} {
+					sidecar, err := os.Stat(databasePath + suffix)
+					if os.IsNotExist(err) {
+						continue
+					}
+					if err != nil || !sidecar.Mode().IsRegular() {
+						row.DatabaseBytes = nil
+						break
+					}
+					size += sidecar.Size()
+				}
 			}
 		}
 		if !row.Running {

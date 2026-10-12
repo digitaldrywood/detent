@@ -206,14 +206,25 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 		MinFreeDiskBytes: 4096, MinAvailableMemoryBytes: 8192,
 		Launcher: &ExecLauncher{health: map[string]*tenantProcessHealth{"org_alpha": {startedAt: now.Add(-time.Hour), observed: true, starts: []time.Time{now.Add(-time.Hour)}}}},
 	}
-	_, body = staff.get("/api/cloud/platform/health")
-	decodeJSON(t, body, &health)
-	if health.Admission == nil || health.Admission.MinFreeDiskBytes != 4096 || health.Admission.MinAvailableMemoryBytes != 8192 {
-		t.Fatalf("admission floors = %s", body)
-	}
-	for _, hub := range health.Hubs {
-		if hub.ID == "org_alpha" && (hub.UptimeSeconds == nil || *hub.UptimeSeconds < 3600 || hub.Restarts24h == nil || *hub.Restarts24h != 1 || hub.DatabaseBytes == nil || *hub.DatabaseBytes != 16) {
-			t.Fatalf("managed tenant health = %+v", hub)
+	for _, test := range []struct {
+		suffix string
+		data   string
+		bytes  int64
+	}{{"", "", 16}, {"-wal", "wal", 19}, {"-shm", "shared-memory", 32}} {
+		if test.suffix != "" {
+			if err := os.WriteFile(filepath.Join(root, "org_alpha", "hub.db"+test.suffix), []byte(test.data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, body = staff.get("/api/cloud/platform/health")
+		decodeJSON(t, body, &health)
+		if health.Admission == nil || health.Admission.MinFreeDiskBytes != 4096 || health.Admission.MinAvailableMemoryBytes != 8192 {
+			t.Fatalf("admission floors = %s", body)
+		}
+		for _, hub := range health.Hubs {
+			if hub.ID == "org_alpha" && (hub.UptimeSeconds == nil || *hub.UptimeSeconds < 3600 || hub.Restarts24h == nil || *hub.Restarts24h != 1 || hub.DatabaseBytes == nil || *hub.DatabaseBytes != test.bytes) {
+				t.Fatalf("managed tenant health after %q = %+v, want %d database bytes", test.suffix, hub, test.bytes)
+			}
 		}
 	}
 	original := f.service.config.transport
