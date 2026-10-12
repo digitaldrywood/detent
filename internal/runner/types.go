@@ -752,15 +752,16 @@ const (
 )
 
 type ValidatorRequest struct {
-	EvidenceTools    []AgentTool
-	EvidenceHandler  AgentToolHandler
-	NativeVersion    *tracker.ChangeVersion
-	Issue            connector.Issue
-	Diff             *connector.ValidationDiff
-	StartedAt        time.Time
-	SelectorContext  selector.Context
-	OnUsageUpdate    UsageUpdateHandler
-	OnActivityUpdate AgentActivityUpdateHandler
+	implementationReview bool
+	EvidenceTools        []AgentTool
+	EvidenceHandler      AgentToolHandler
+	NativeVersion        *tracker.ChangeVersion
+	Issue                connector.Issue
+	Diff                 *connector.ValidationDiff
+	StartedAt            time.Time
+	SelectorContext      selector.Context
+	OnUsageUpdate        UsageUpdateHandler
+	OnActivityUpdate     AgentActivityUpdateHandler
 }
 
 type SecurityAuditRequest struct {

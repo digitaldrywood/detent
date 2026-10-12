@@ -140,17 +140,19 @@ type PublishChangeVersion struct {
 }
 
 type ChangeReview struct {
-	Validator *gate.ValidatorResult `json:"validator,omitempty"`
-	ID        string                `json:"review_id"`
-	VersionID string                `json:"version_id"`
-	Decision  string                `json:"decision"`
-	Body      string                `json:"body"`
-	Actor     Actor                 `json:"actor"`
-	CreatedAt time.Time             `json:"created_at"`
+	ImplementationReview *gate.ValidatorResult `json:"implementation_review,omitempty"`
+	Validator            *gate.ValidatorResult `json:"validator,omitempty"`
+	ID                   string                `json:"review_id"`
+	VersionID            string                `json:"version_id"`
+	Decision             string                `json:"decision"`
+	Body                 string                `json:"body"`
+	Actor                Actor                 `json:"actor"`
+	CreatedAt            time.Time             `json:"created_at"`
 }
 
 type ReviewChange struct {
-	Validator *gate.ValidatorResult `json:"validator,omitempty"`
+	ImplementationReview *gate.ValidatorResult `json:"implementation_review,omitempty"`
+	Validator            *gate.ValidatorResult `json:"validator,omitempty"`
 	Mutation
 	ExpectedRevision  Revision            `json:"expected_revision,string,omitempty"`
 	Decision          string              `json:"decision"`

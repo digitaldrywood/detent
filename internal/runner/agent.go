@@ -3362,6 +3362,13 @@ func budgetRefusalFromDecision(issue connector.Issue, refusal budget.Refusal) *B
 }
 
 func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.ValidatorResult, error) {
+	role := RoleValidator
+	if req.implementationReview {
+		if req.NativeVersion == nil {
+			return gate.ValidatorResult{}, errors.New("independent native review requires an immutable version")
+		}
+		role = RoleCode
+	}
 	release := r.keepAwake(ctx)
 	defer release()
 	if ctx == nil {
@@ -3454,7 +3461,9 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		commands = &validatorCommands{run: commandRunner, info: info, issue: workspaceIssue}
 		configured := gate.Effective(workflow.Config.Gate)
 		if configured.Kind == gate.KindCommand {
-			if _, err := commands.execute(ctx, configured.Run); err != nil {
+			if req.implementationReview && workspace.ValidationCoversHead(req.NativeVersion.Validation, configured.Run, req.NativeVersion.HeadSHA) {
+				commands.results = append(commands.results, *req.NativeVersion.Validation)
+			} else if _, err := commands.execute(ctx, configured.Run); err != nil {
 				return gate.ValidatorResult{}, err
 			}
 		}
@@ -3462,6 +3471,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}
 	validator := gate.Effective(workflow.Config.Gate).Validator
 	promptOptions := validatorPromptOptionsForPR(info, *req.Diff, validatorMaxInlineDiffBytes(validator))
+	promptOptions.implementationReview = req.implementationReview
 	if commands != nil {
 		var commandErr error
 		promptOptions.Commands, commandErr = commands.evidence()
@@ -3474,7 +3484,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		promptOptions.DiffTruncated = promptOptions.DiffTruncated || req.Diff.Patch == ""
 	}
 	prompt := BuildValidatorPrompt(workflow, req.Issue, promptOptions)
-	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
+	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), role)
 	if err != nil {
 		return gate.ValidatorResult{}, err
 	}
@@ -3497,10 +3507,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}
 
 	selectedModel := selection.Model
-	if override := strings.TrimSpace(validator.Model); override != "" {
+	if override := strings.TrimSpace(validator.Model); override != "" && !req.implementationReview {
 		selectedModel = override
 	}
-	baseModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleValidator))
+	baseModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(role))
 	baseEnvironment := r.withGoBudget(info.Path, workerEnvironment(serviceapi.RestrictedEnvironment(), info, workspaceIssue))
 	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
 		Workspace:   info.Path,
@@ -3509,20 +3519,20 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if err != nil {
 		return gate.ValidatorResult{}, err
 	}
-	resolvedSelection := resolveAgentSelection(ctx, req.Issue, processRequest, baseModel, RoleValidator, workflow.Config, backendConfig, backend)
+	resolvedSelection := resolveAgentSelection(ctx, req.Issue, processRequest, baseModel, role, workflow.Config, backendConfig, backend)
 	if err := r.agentPreflightError(resolvedSelection.Err, cleanupPreflight()); err != nil {
 		return gate.ValidatorResult{}, err
 	}
 	workflow.Config.Agent = workflow.Config.EffectiveModelSelection().SessionAgent(workflow.Config.Agent, resolvedSelection.Selection.Level)
 	selectedModel = resolvedSelection.Model
-	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleValidator))
+	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(role))
 
 	startedAt := req.StartedAt
 	if startedAt.IsZero() {
 		startedAt = r.now().UTC()
 	}
 	runStartedAt := r.now()
-	runtimeIdentity := configuredRuntimeIdentity(selection, backendConfig, RoleValidator, sessionModel, startedAt)
+	runtimeIdentity := configuredRuntimeIdentity(selection, backendConfig, role, sessionModel, startedAt)
 	runtimeIdentity.Selection = resolvedSelection.Selection
 	runtimeIdentity.Selection.BackendSource = workflow.Config.Agents.Sources["backends."+selection.BackendID]
 	runtimeIdentity.Selection.RouteSource = workflow.Config.Agents.Sources["routes."+selection.RouteName]
@@ -3816,8 +3826,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if req.NativeVersion != nil && req.NativeVersion.Validation != nil {
 		tree = req.NativeVersion.Validation.TreeSHA
 	}
-	gate.NormalizeCriterionEvidence(&validation, contract.AcceptanceCriteria(req.Issue.Description), tree)
-	gate.ApplyCriterionPolicy(validator, &validation)
+	if !req.implementationReview {
+		gate.NormalizeCriterionEvidence(&validation, contract.AcceptanceCriteria(req.Issue.Description), tree)
+		gate.ApplyCriterionPolicy(validator, &validation)
+	}
 	return validation, nil
 }
 

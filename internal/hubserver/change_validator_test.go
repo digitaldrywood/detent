@@ -15,6 +15,9 @@ import (
 
 func TestChangeValidatorSessionAuthority(t *testing.T) {
 	t.Parallel()
+	implementationReview := func(r *tracker.ReviewChange) {
+		r.ImplementationReview, r.Validator = r.Validator, nil
+	}
 	multipleReceipts := func(r *tracker.ReviewChange) {
 		r.Validator.CriteriaEvidence[0] = gate.CriterionEvidence{Criterion: "Complete the requested work.", Kind: "receipt", Reference: "make check-app; npx playwright test", ReceiptIDs: []string{"timing_app", "timing_browser"}, HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree", Behavior: "Application and browser checks exercise the requested behavior"}
 		r.Validator.Commands = []gate.CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree"}, {ReceiptID: "timing_browser", Command: "npx playwright test", HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree"}}
@@ -25,6 +28,15 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		want   int
 		status string
 	}{
+		{"implementation review is not acceptance", implementationReview, http.StatusOK, "needs_evidence"},
+		{"implementation review is not human approval", implementationReview, http.StatusOK, "needs_evidence"},
+		{"implementation review same session", func(r *tracker.ReviewChange) {
+			implementationReview(r)
+			r.ImplementationReview.SessionID = 41
+		}, http.StatusUnprocessableEntity, "needs_evidence"},
+		{"implementation review mixed result", func(r *tracker.ReviewChange) {
+			r.ImplementationReview = r.Validator
+		}, http.StatusUnprocessableEntity, "needs_evidence"},
 		{"separate session pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed"},
 		{"separate session pass with multiple receipts", multipleReceipts, http.StatusOK, "reviewed"},
 		{"failed selected receipt cannot pass", func(r *tracker.ReviewChange) {
@@ -60,6 +72,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				cfg := config.Default()
 				cfg.Tracker.Kind = config.TrackerHubNative
 				cfg.Gate.Validator.Enabled = true
+				cfg.Gate.AutomatedReview = gate.AutomatedReviewOff
 				cfg.Gate.Validator.UnverifiedCriteria = gate.UnverifiedCriteriaDisclose
 				resolved, err := config.ResolvePolicy(config.Workflow{Config: cfg})
 				if err != nil {
@@ -68,7 +81,11 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				descriptor = resolved
 			}
 			descriptor.Gates.Validator = true
-			humanReview := test.name == "separate session pass with human review"
+			implementation := strings.HasPrefix(test.name, "implementation review")
+			if implementation {
+				descriptor.Gates.AutomatedReview = gate.AutomatedReviewRequired
+			}
+			humanReview := test.name == "separate session pass with human review" || test.name == "implementation review is not human approval"
 			if humanReview {
 				descriptor.Gates.HumanReview = true
 			}
@@ -115,8 +132,20 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			if err != nil || current.Summary.Status != detail.Summary.Status {
 				t.Fatalf("current summary differs: %+v, %v", current.Summary, err)
 			}
-			if test.want == http.StatusOK && (len(detail.Reviews) != 1 || detail.Reviews[0].Validator == nil || detail.Reviews[0].Validator.SessionID != 42) {
-				t.Fatalf("validator session was not persisted: %+v", detail.Reviews)
+			if test.want == http.StatusOK {
+				if len(detail.Reviews) != 1 {
+					t.Fatalf("review session was not persisted: %+v", detail.Reviews)
+				}
+				stored := detail.Reviews[0].Validator
+				if implementation {
+					stored = detail.Reviews[0].ImplementationReview
+					if detail.Reviews[0].Validator != nil {
+						t.Fatal("implementation review was stored as acceptance")
+					}
+				}
+				if stored == nil || stored.SessionID != 42 {
+					t.Fatalf("review session was not persisted: %+v", detail.Reviews)
+				}
 			}
 			if test.name == "separate session pass with multiple receipts" {
 				stored := detail.Reviews[0].Validator

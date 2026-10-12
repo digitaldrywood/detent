@@ -14,14 +14,23 @@ import (
 
 func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, request tracker.ReviewChange) error {
 	worker := scope.credential.Scope == apiScopeWorker
-	if request.Validator == nil {
+	implementationReview := request.ImplementationReview != nil
+	if implementationReview && request.Validator != nil {
+		return nativeInvalid("implementation review and acceptance validation must be separate results")
+	}
+	if request.Validator == nil && !implementationReview {
 		if worker {
 			return &nativeError{status: 403, Code: "forbidden", Message: "workers may only submit validator reviews"}
 		}
 		return nil
 	}
 	result := request.Validator
-	if !worker || !version.Policy.Gates.Validator || change.CurrentVersion != version.ID || !result.Submitted || result.SessionID <= 0 || result.VersionID != version.ID || result.Repository != version.Repository || result.BaseSHA != version.BaseSHA || result.HeadSHA != version.HeadSHA || !changerequest.ValidHash(result.DiffDigest, 64) || math.IsNaN(result.Score) || math.IsInf(result.Score, 0) || result.Score < 0 || result.Score > 1 {
+	required := version.Policy.Gates.Validator
+	if implementationReview {
+		result = request.ImplementationReview
+		required = version.Policy.Gates.AutomatedReview == gate.AutomatedReviewRequired
+	}
+	if !worker || !required || change.CurrentVersion != version.ID || !result.Submitted || result.SessionID <= 0 || result.VersionID != version.ID || result.Repository != version.Repository || result.BaseSHA != version.BaseSHA || result.HeadSHA != version.HeadSHA || !changerequest.ValidHash(result.DiffDigest, 64) || math.IsNaN(result.Score) || math.IsInf(result.Score, 0) || result.Score < 0 || result.Score > 1 {
 		return nativeInvalid("validator review must identify the current immutable version and a fresh validator session")
 	}
 	issue, _, err := readNativeIssue(ctx, tx, scope, string(change.WorkItemID))
@@ -40,8 +49,10 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 	if err != nil {
 		return err
 	}
-	gate.NormalizeCriterionEvidence(result, contract.AcceptanceCriteria(issue.Body), tree)
-	gate.ApplyCriterionPolicy(workflow.Config.Gate.Validator, result)
+	if !implementationReview {
+		gate.NormalizeCriterionEvidence(result, contract.AcceptanceCriteria(issue.Body), tree)
+		gate.ApplyCriterionPolicy(workflow.Config.Gate.Validator, result)
+	}
 	decision := ""
 	switch result.Verdict {
 	case gate.ValidatorVerdictPass:

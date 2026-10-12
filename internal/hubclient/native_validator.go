@@ -16,6 +16,14 @@ import (
 )
 
 func (e *nativeExecution) ValidatorVersion(ctx context.Context) (runner.NativeValidation, error) {
+	return e.validationVersion(ctx, false)
+}
+
+func (e *nativeExecution) ReviewVersion(ctx context.Context) (runner.NativeValidation, error) {
+	return e.validationVersion(ctx, true)
+}
+
+func (e *nativeExecution) validationVersion(ctx context.Context, implementationReview bool) (runner.NativeValidation, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.change == nil || e.change.Landing != nil || e.change.VersionID == "" || e.lastDiff == nil {
@@ -32,7 +40,21 @@ func (e *nativeExecution) ValidatorVersion(ctx context.Context) (runner.NativeVa
 		if version.HeadSHA != e.lastDiff.HeadSHA || version.BaseSHA != e.lastDiff.BaseSHA || version.PolicyID != e.data.PolicyID {
 			return runner.NativeValidation{}, errors.New("native validator version differs from the published source")
 		}
-		if !version.Policy.Gates.Validator || detail.Summary.Status == "reviewed" {
+		if implementationReview {
+			if version.Policy.Gates.AutomatedReview != gate.AutomatedReviewRequired {
+				return runner.NativeValidation{}, nil
+			}
+			var latest *tracker.ChangeReview
+			for i := range detail.Reviews {
+				review := &detail.Reviews[i]
+				if review.VersionID == version.ID && review.ImplementationReview != nil && review.ImplementationReview.HeadSHA == version.HeadSHA && (latest == nil || review.CreatedAt.After(latest.CreatedAt)) {
+					latest = review
+				}
+			}
+			if latest != nil && latest.Decision == "approved" {
+				return runner.NativeValidation{}, nil
+			}
+		} else if !version.Policy.Gates.Validator || detail.Summary.Status == "reviewed" {
 			return runner.NativeValidation{}, nil
 		}
 		raw, err := json.Marshal(e.lastDiff.Files)
@@ -53,6 +75,34 @@ func (e *nativeExecution) ValidatorVersion(ctx context.Context) (runner.NativeVa
 		return runner.NativeValidation{Version: &version, Diff: diff}, nil
 	}
 	return runner.NativeValidation{}, errors.New("native validator version is no longer current")
+}
+
+func (e *nativeExecution) RecordReview(ctx context.Context, result gate.ValidatorResult) error {
+	if err := e.Validate(ctx); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.change == nil || e.lastDiff == nil || e.change.VersionID != result.VersionID || e.lastDiff.HeadSHA != result.HeadSHA || e.lastDiff.BaseSHA != result.BaseSHA {
+		return errors.New("native implementation review differs from the published source")
+	}
+	decision := "changes_requested"
+	if result.Verdict == gate.ValidatorVerdictPass {
+		decision = "approved"
+	}
+	var body strings.Builder
+	fmt.Fprintf(&body, "Independent automated implementation review of immutable head %s in fresh session %d. This is a source review, separate from acceptance validation.\n\n%s", result.HeadSHA, result.SessionID, result.Summary)
+	for _, finding := range result.Findings {
+		fmt.Fprintf(&body, "\n\n%s %s: %s", finding.Severity, finding.Path, finding.Body)
+	}
+	for _, command := range result.Commands {
+		fmt.Fprintf(&body, "\n\nHost command evidence: %s; head=%s tree=%s exit=%d", command.Command, command.HeadSHA, command.TreeSHA, command.ExitCode)
+	}
+	_, err := e.claim.source.client.ReviewChange(ctx, e.claim.lease.WorkItemID, e.change.ChangeID, result.VersionID, tracker.ReviewChange{
+		Mutation:          tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":implementation-review:" + strconv.FormatInt(result.SessionID, 10), LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
+		ExpectedVersionID: result.VersionID, Decision: decision, Body: body.String(), ImplementationReview: &result,
+	})
+	return err
 }
 
 func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.ValidatorResult) error {

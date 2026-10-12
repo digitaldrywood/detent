@@ -67,21 +67,22 @@ type PromptOptions struct {
 }
 
 type ValidatorPromptOptions struct {
-	Commands           []gate.CommandResult
-	VersionID          string
-	WorkspacePath      string
-	Branch             string
-	Repository         string
-	PRNumber           int
-	BaseSHA            string
-	HeadSHA            string
-	DiffDigest         string
-	DiffFiles          []string
-	DiffStat           *workspace.DiffStat
-	DiffPatch          string
-	DiffTruncated      bool
-	DiffError          string
-	MaxInlineDiffBytes int
+	implementationReview bool
+	Commands             []gate.CommandResult
+	VersionID            string
+	WorkspacePath        string
+	Branch               string
+	Repository           string
+	PRNumber             int
+	BaseSHA              string
+	HeadSHA              string
+	DiffDigest           string
+	DiffFiles            []string
+	DiffStat             *workspace.DiffStat
+	DiffPatch            string
+	DiffTruncated        bool
+	DiffError            string
+	MaxInlineDiffBytes   int
 }
 
 func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOptions) (string, error) {
@@ -352,7 +353,11 @@ func boundedMergeContext(value string, limit int) string {
 
 func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts ValidatorPromptOptions) string {
 	var b strings.Builder
-	b.WriteString("You are the Detent validator-agent. Review the diff against the issue acceptance criteria and return a structured gate verdict.\n\n")
+	if opts.implementationReview {
+		b.WriteString("You are the independent Detent implementation reviewer in a fresh read-only session. Review the immutable source for actual defects, repository standards and fidelity to the issue. Return the structured verdict below. Report actionable source findings, not hypothetical risks or requirements belonging to the subsequent acceptance validator, review publication or landing. Do not treat the absence of your own review receipt as a source defect. This review does not establish final acceptance; the separate validator still owns all acceptance criteria and required test evidence.\n\n")
+	} else {
+		b.WriteString("You are the Detent validator-agent. Review the diff against the issue acceptance criteria and return a structured gate verdict.\n\n")
+	}
 	if opts.WorkspacePath != "" {
 		b.WriteString("Workspace: `")
 		b.WriteString(opts.WorkspacePath)

@@ -132,7 +132,7 @@ func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 	if err := validateNativeValidatorReview(ctx, tx, scope, change, version, request); err != nil {
 		return nil, err
 	}
-	review := tracker.ChangeReview{Validator: request.Validator, ID: newNativeID("review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: now}
+	review := tracker.ChangeReview{ImplementationReview: request.ImplementationReview, Validator: request.Validator, ID: newNativeID("review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: now}
 	if err := insertChangeEvidence(ctx, tx, change.ID, review.VersionID, "review", "", review); err != nil {
 		return nil, err
 	}
