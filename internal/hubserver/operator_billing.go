@@ -145,6 +145,9 @@ func billingResult(value any) (operatortool.Result, error) {
 }
 
 func safeBillingError(err error) error {
+	if errors.Is(err, operatortool.ErrResultTooLarge) {
+		return err
+	}
 	for _, safe := range []error{operatortool.ErrAccessDenied, operatortool.ErrInvalidArguments, mutation.ErrConflict, mutation.ErrUncertain} {
 		if errors.Is(err, safe) {
 			return safe
