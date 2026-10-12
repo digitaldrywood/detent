@@ -149,28 +149,57 @@ test.describe("the work board", () => {
     await scan(page, "board");
   });
 
-  test("keeps one toolbar and the completed counter in the header at desktop and phone widths", async ({ page }) => {
-    await openWork(page, `/work/p/${hub.fixture.project_id}`);
-    for (const width of [1440, 390, 320]) {
-      await page.setViewportSize({ width, height: 900 });
-      const header = page;
-      await expect(page.getByTestId("work-toolbar")).toHaveCount(1);
-      await expect(page.getByTestId("work-stats")).toHaveCount(0);
-      await expect(header.getByRole("button", { name: /completed ·/ })).toBeVisible();
-      await expect(page.getByTestId("connection-chip")).toHaveCount(1);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-      if (width < 768) {
-        const chip = await page.getByTestId("connection-chip").boundingBox();
-        const ask = await header.getByRole("button", { name: "Ask", exact: true }).boundingBox();
-        const menu = await header.getByRole("button", { name: "More work actions", exact: true }).boundingBox();
-        expect(chip.x + chip.width).toBeLessThanOrEqual(ask.x);
-        expect(menu.x).toBeGreaterThan(ask.x);
-        await header.getByRole("button", { name: "More work actions", exact: true }).click();
-        await expect(page.getByRole("menuitem", { name: /New issue/ })).toBeVisible();
-        await page.keyboard.press("Escape");
+  for (const scope of ["project", "organization"]) {
+    test(`keeps one toolbar and the completed counter in the ${scope} header at desktop and phone widths`, async ({ page }) => {
+      const scopeTitle = scope === "project"
+        ? "Browser collaboration"
+        : "All Parable and Drywood Creek Collaborative Research Organization With a Very Long Name projects";
+      if (scope === "organization") {
+        await page.route(/\/(?:app|chat)\/bootstrap$/, async (route) => {
+          const response = await route.fetch();
+          const bootstrap = await response.json();
+          await route.fulfill({ response, json: { ...bootstrap, organization: {
+            ...bootstrap.organization,
+            name: "Parable and Drywood Creek Collaborative Research Organization With a Very Long Name",
+          } } });
+        });
       }
-    }
-  });
+      await openWork(page, scope === "project" ? `/work/p/${hub.fixture.project_id}` : "/work");
+      for (const width of [1440, 390, 320]) {
+        await page.setViewportSize({ width, height: 900 });
+        const header = page;
+        const heading = page.getByRole("heading", { level: 1, name: scopeTitle, exact: true });
+        await expect(heading).toHaveText(scopeTitle);
+        await expect(page.getByTestId("work-toolbar")).toHaveCount(1);
+        await expect(page.getByTestId("work-stats")).toHaveCount(0);
+        await expect(header.getByRole("button", { name: /completed ·/ })).toBeVisible();
+        await expect(page.getByTestId("connection-chip")).toHaveCount(1);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        if (scope === "organization") {
+          const title = heading.getByText(scopeTitle, { exact: true });
+          expect(await title.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+          await page.keyboard.press("Tab");
+          await title.focus();
+          await expect(page.getByRole("tooltip")).toHaveText(scopeTitle);
+          await expect(page.getByRole("tooltip")).toBeVisible();
+          await page.keyboard.press("Escape");
+        }
+        if (width < 768) {
+          const chip = await page.getByTestId("connection-chip").boundingBox();
+          const ask = await header.getByRole("button", { name: "Ask", exact: true }).boundingBox();
+          const menu = await header.getByRole("button", { name: "More work actions", exact: true }).boundingBox();
+          expect(chip.x + chip.width).toBeLessThanOrEqual(ask.x);
+          expect(menu.x).toBeGreaterThan(ask.x);
+          expect(menu.x + menu.width).toBeLessThanOrEqual(width);
+          await header.getByRole("button", { name: "More work actions", exact: true }).click();
+          await expect(page.getByRole("menuitem", { name: /New issue/ })).toBeVisible();
+          await page.keyboard.press("Escape");
+        } else {
+          await expect(header.getByRole("button", { name: "New issue", exact: true })).toBeVisible();
+        }
+      }
+    });
+  }
 
   // Michael's review of September 12: the toolbar read "1 project · ● Not
   // streaming · data as of 9:02 AM · Reload" while the sidebar footer read

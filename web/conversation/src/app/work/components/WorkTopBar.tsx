@@ -128,7 +128,7 @@ export function WorkTopBar(props: WorkTopBarProps): React.ReactElement {
                   <TooltipTrigger render={<span className="min-w-0 truncate" tabIndex={0} />}>
                     {props.title}
                   </TooltipTrigger>
-                  <TooltipPopup side="bottom" className="max-w-80">
+                  <TooltipPopup role="tooltip" side="bottom" className="max-w-80">
                     {props.titleTooltip}
                   </TooltipPopup>
                 </Tooltip>

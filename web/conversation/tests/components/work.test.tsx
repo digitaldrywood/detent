@@ -1265,8 +1265,7 @@ describe("the filter-first Work surface", () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
       within(heading).getByText(title).focus();
     });
-    await waitFor(() => expect(screen.getAllByText(title)).toHaveLength(2));
-    expect(screen.getAllByText(title).find((element) => !heading.contains(element))).toBeTruthy();
+    expect((await screen.findByRole("tooltip")).textContent).toBe(title);
   });
 
   it.each(["4", "42", "true", "false", "null", "4.0", "1e3", "9007199254740993", '"4"', '[4]', '{"number":4}'])("preserves the literal search %s through URL edits", async (q) => {

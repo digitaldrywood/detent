@@ -172,14 +172,19 @@ describe("platform console", () => {
   });
 
   it.each([401, 403, 503])("handles user search failure %s", async (status) => {
-    const api = fakeApi({ platformUsers: vi.fn(async () => { throw new AccountError({ status, code: "refused", message: "Search refused" }); }) });
+    let refuse!: (error: AccountError) => void;
+    const api = fakeApi({ platformUsers: vi.fn(() => new Promise<typeof userResults>((_, reject) => { refuse = reject; })) });
+    const user = userEvent.setup();
     renderPlatform(api, "/platform/users");
-    const input = await screen.findByRole("searchbox");
-    fireEvent.change(input, { target: { value: "member" } });
-    fireEvent.submit(input.closest("form")!);
+    const input = await screen.findByRole("searchbox", { name: "Search by email" });
+    await user.type(input, "member");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    expect(api.platformUsers).toHaveBeenCalledExactlyOnceWith("member");
+    expect(screen.getByRole("status", { name: "Searching users" })).toBeTruthy();
+    await act(async () => { refuse(new AccountError({ status, code: "refused", message: "Search refused" })); });
     expect((await screen.findByRole("alert")).textContent).toContain("Search refused");
     expect(screen.queryByText("No users match")).toBeNull();
-    if (status === 401) expect(assign).toHaveBeenCalledWith(SIGN_IN_PLATFORM);
+    if (status === 401) await waitFor(() => expect(assign).toHaveBeenCalledWith(SIGN_IN_PLATFORM));
     expect((screen.getByRole("button", { name: "Search" }) as HTMLButtonElement).disabled).toBe(false);
   });
   it.each(["admin", "support", "billing", "viewer"])("shows the shell and readable navigation for %s", async (role) => {
