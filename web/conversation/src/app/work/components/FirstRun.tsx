@@ -121,8 +121,8 @@ export function firstRunSteps(facts: FirstRunFacts): readonly FirstRunStep[] {
     },
     {
       id: "issue",
-      title: "Create your first issue",
-      description: "Describe the first piece of work and it lands on this board.",
+      title: "Add your first issues",
+      description: "Create new work or import existing issues from a repository.",
       actionLabel: "New issue",
       done: facts.issues > 0,
       blockedReason: !hasProject
@@ -138,9 +138,11 @@ export function firstRunSteps(facts: FirstRunFacts): readonly FirstRunStep[] {
 export function FirstRunChecklist({
   steps,
   onAction,
+  importAction,
 }: {
   readonly steps: readonly FirstRunStep[];
   readonly onAction: (id: FirstRunStepId) => void;
+  readonly importAction?: React.ReactNode;
 }): React.ReactElement {
   const done = steps.filter((step) => step.done).length;
   return (
@@ -215,7 +217,7 @@ export function FirstRunChecklist({
                   ) : null}
                 </div>
               </div>
-              <div className="flex shrink-0 ps-[34px] sm:ps-0">
+              <div className="flex shrink-0 flex-wrap gap-2 ps-[34px] sm:ps-0">
                 {step.done ? (
                   <span className="font-medium text-success-foreground text-xs">Done</span>
                 ) : (
@@ -233,6 +235,7 @@ export function FirstRunChecklist({
                     {step.actionLabel}
                   </Button>
                 )}
+                {step.id === "issue" && !step.done ? importAction : null}
               </div>
             </li>
           ))}
@@ -246,10 +249,12 @@ export function FirstRunPanel({
   projectId,
   issues,
   onIssueCreated,
+  onImport,
 }: {
   readonly projectId: string | null;
   readonly issues: number;
   readonly onIssueCreated: () => void;
+  readonly onImport: (projectId: string) => void;
 }): React.ReactElement {
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
@@ -270,10 +275,17 @@ export function FirstRunPanel({
   // project, or if that read fails, the previous project's count must not be
   // shown as this one's.
   const setup = useResource(
-    async () => (targetId === null ? null : { projectId: targetId, onboarding: await api.onboarding(targetId) }),
+    async () => {
+      if (targetId === null) return null;
+      const [onboarding, integration] = await Promise.all([api.onboarding(targetId), api.integration(targetId)]);
+      return { projectId: targetId, onboarding, integration };
+    },
     [api, targetId],
   );
   const onboarding = setup.value?.projectId === targetId ? setup.value.onboarding : undefined;
+
+  const integration = setup.value?.projectId === targetId ? setup.value.integration : undefined;
+  const repository = integration?.checkout_repository || integration?.repository;
 
   const steps = firstRunSteps({
     projects: projects.length,
@@ -318,6 +330,13 @@ export function FirstRunPanel({
     <>
       <FirstRunChecklist
         steps={steps}
+        importAction={targetId === null ? null : <div className="flex flex-col items-start gap-2">
+          <Button size="sm" variant="outline" disabled={!repository || !target?.can_write || integration?.profile !== "native"} onClick={() => onImport(targetId)}>Import from GitHub</Button>
+          {integration !== undefined && !repository ? <div className="max-w-48 text-xs text-muted-foreground">
+            Associate a repository first.
+            <Button size="sm" variant="link" onClick={() => void navigate({ to: "/projects/$project/setup", params: { project: targetId } } as never)}>Associate repository</Button>
+          </div> : null}
+        </div>}
         onAction={(id) => {
           if (id === "project") newProject.openNewProject();
           if (id === "runner" && canEnrollRunners) {

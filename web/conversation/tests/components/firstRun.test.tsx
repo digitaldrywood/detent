@@ -40,6 +40,8 @@ import type { AccountProject } from "../../src/contracts/account.ts";
 import { loadBootstrap, makeClient, type ConversationClient } from "../../src/runtime/bootstrap.ts";
 import { fetchEventStreamTransport } from "../../src/runtime/rpc/sse.ts";
 
+if (typeof globalThis.PointerEvent === "undefined") { globalThis.PointerEvent = globalThis.MouseEvent as unknown as typeof PointerEvent; }
+
 Object.defineProperty(globalThis, "scrollTo", { value: () => {}, writable: true });
 
 let hub: MockHub | undefined;
@@ -65,6 +67,7 @@ const sameRealmFetch: typeof globalThis.fetch = (input, init) => {
 async function startHub(options: {
   readonly organization?: OrganizationMode;
   readonly account?: AccountMode;
+  readonly emptyWork?: boolean;
 }): Promise<ConversationClient> {
   hub = await startMockHub({
     deltaDelayMs: 0,
@@ -73,6 +76,7 @@ async function startHub(options: {
     organization: options.organization ?? "empty",
     account: options.account ?? "write",
   });
+  if (options.emptyWork) await nativeFetch(`${hub.url}/__mock/work/reset`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ empty: true }) });
   const bootstrap = await loadBootstrap(hub.url);
   client = makeClient({
     origin: hub.url,
@@ -85,7 +89,7 @@ async function startHub(options: {
 
 async function mountShell(
   path = "/work",
-  options: { readonly organization?: OrganizationMode; readonly account?: AccountMode } = {},
+  options: { readonly organization?: OrganizationMode; readonly account?: AccountMode; readonly emptyWork?: boolean } = {},
 ) {
   const mounted = await startHub(options);
   const router = makeRouter(createMemoryHistory({ initialEntries: [path] }));
@@ -430,4 +434,37 @@ describe("where a new issue goes", () => {
   ])("starts in $name", ({ requested, want }) => {
     expect(newIssueState(project("a", true), requested)).toBe(want);
   });
+});
+
+
+describe("empty project import", () => {
+  it("offers New issue and a setup link when no repository is associated", async () => {
+    const { router } = await mountShell("/work/p/proj_beta", { organization: "seeded", emptyWork: true });
+    await screen.findByText("Associate a repository first.");
+    expect(within(step("issue")).getByRole("button", { name: "New issue" })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Import from GitHub" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Associate repository" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/projects/proj_beta/setup"));
+  }, 30_000);
+
+  it("imports from the empty Work view and keeps progress available when cards appear", async () => {
+    await mountShell("/work/p/proj_alpha", { organization: "seeded", emptyWork: true });
+    const action = await screen.findByRole("button", { name: "Import from GitHub" });
+    await waitFor(() => expect((action as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(action);
+    const dialog = await screen.findByRole("dialog", { name: "Import issues" });
+    const preview = await within(dialog).findByRole("button", { name: "Preview issues" });
+    fireEvent.click(preview);
+    await within(dialog).findByText(/2 matching issues/);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Select previewed" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Import selected issues" }));
+    await within(dialog).findByText(/2 completed/);
+    expect((within(dialog).getByRole("button", { name: "Close source issues" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getByLabelText("Close imported GitHub source issues"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close source issues" }));
+    await within(dialog).findByText(/Link and close requested for 2 GitHub issues/);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+    await screen.findByText("Imported task 12");
+    expect(screen.queryByRole("dialog", { name: "Import issues" })).toBeNull();
+  }, 30_000);
 });

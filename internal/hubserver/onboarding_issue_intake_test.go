@@ -795,3 +795,55 @@ func TestGitHubBatchUsesCatalogJobCap(t *testing.T) {
 		})
 	}
 }
+
+func TestGitHubBatchSourceCloseOptIn(t *testing.T) {
+	t.Parallel()
+	for _, closed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("source_closed=%t", closed), func(t *testing.T) {
+			t.Parallel()
+			f := newBatchFixture(t)
+			f.preview(t, closed)
+			f.command(t, tracker.GitHubBatchCommand{Action: "close_source"}, http.StatusUnprocessableEntity)
+			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}}, http.StatusOK)
+			snapshot := batchSnapshot(12)
+			f.report(t, tracker.GitHubBatchResult{Number: 12, Snapshot: &snapshot}, http.StatusOK)
+			f.preview(t, closed)
+			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 13, 14}}, http.StatusOK)
+			snapshot = batchSnapshot(13)
+			f.report(t, tracker.GitHubBatchResult{Number: 13, Snapshot: &snapshot}, http.StatusOK)
+			f.report(t, tracker.GitHubBatchResult{Number: 14, Error: "Source context incomplete"}, http.StatusOK)
+			var count int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox WHERE json_extract(desired_json, '$.close_source')=1").Scan(&count); err != nil || count != 0 {
+				t.Fatalf("source closed without opt-in: count=%d error=%v", count, err)
+			}
+			f.command(t, tracker.GitHubBatchCommand{Action: "close_source"}, http.StatusUnprocessableEntity)
+			f.service.database.linkedSourceBase = "https://cloud.example"
+			f.service.config.OutboxBackend = &recordingOutboxBackend{}
+			f.command(t, tracker.GitHubBatchCommand{Action: "close_source"}, http.StatusOK)
+			f.command(t, tracker.GitHubBatchCommand{Action: "close_source"}, http.StatusOK)
+			expected := 1
+			if closed {
+				expected = 0
+			}
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox WHERE json_extract(desired_json, '$.close_source')=1").Scan(&count); err != nil || count != expected {
+				t.Fatalf("close requests=%d want=%d error=%v", count, expected, err)
+			}
+			if f.batch.Items[0].SourceCloseRequested || f.batch.Items[2].SourceCloseRequested || f.batch.Items[1].SourceCloseRequested == closed {
+				t.Fatalf("incorrect close selection: %+v", f.batch.Items)
+			}
+			if !closed {
+				var raw string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT desired_json FROM github_outbox WHERE json_extract(desired_json, '$.close_source')=1").Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				var desired WorkpadDesired
+				if err := json.Unmarshal([]byte(raw), &desired); err != nil {
+					t.Fatal(err)
+				}
+				if desired.Body != "Tracked in Detent: https://cloud.example/work/i/"+string(f.batch.Items[1].WorkItemID) || desired.StateReason != "" || desired.IssueNumber != 13 {
+					t.Fatalf("close payload=%+v", desired)
+				}
+			}
+		})
+	}
+}
