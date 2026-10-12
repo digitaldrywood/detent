@@ -352,10 +352,14 @@ describe("platform console", () => {
   });
 
   it("starts support access through the entry form with a required reason and the CSRF token", async () => {
-    renderPlatform(fakeApi());
+    let resolveOrganizations!: (value: typeof organizations) => void;
+    const pendingOrganizations = new Promise<typeof organizations>((resolve) => { resolveOrganizations = resolve; });
+    renderPlatform(fakeApi({ platformOrganizations: vi.fn(() => pendingOrganizations) }));
     const table = await screen.findByRole("table", { name: "Tenants" });
+    resolveOrganizations(organizations);
+    const alpha = await within(table).findByRole("link", { name: "Alpha" });
     const rows = within(table).getAllByRole("row");
-    fireEvent.click(within(table).getByRole("link", { name: "Alpha" }));
+    fireEvent.click(alpha);
     const form = (await screen.findByRole("button", { name: "Start support access" })).closest("form")!;
     expect(form.getAttribute("method")).toBe("post");
     expect(form.getAttribute("action")).toBe("/support/start");
