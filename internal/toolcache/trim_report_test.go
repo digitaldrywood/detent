@@ -17,13 +17,15 @@ func TestTrimWithReport(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		age    time.Duration
+		maxAge time.Duration
 		cap    int64
 		cancel bool
 	}{
-		{"retained", time.Hour, 1000, false},
-		{"age eviction", 72 * time.Hour, 1000, false},
-		{"size eviction", time.Hour, 1, false},
-		{"cancelled", time.Hour, 1000, true},
+		{"retained", time.Hour, 0, 1000, false},
+		{"age eviction", 72 * time.Hour, 0, 1000, false},
+		{"recent retained above target", time.Hour, 0, 1, false},
+		{"short age preserves last day", 24 * time.Hour, time.Hour, 1, false},
+		{"cancelled", time.Hour, 0, 1000, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -47,7 +49,7 @@ func TestTrimWithReport(t *testing.T) {
 			}
 			// A second pass verifies accounting when the trim timestamp already exists.
 			for sweep := range 2 {
-				report, err := TrimWithReport(ctx, root, Policy{MaxBytes: tt.cap}, now)
+				report, err := TrimWithReport(ctx, root, Policy{MaxAge: tt.maxAge, MaxBytes: tt.cap}, now)
 				if tt.cancel {
 					if !errors.Is(err, context.Canceled) || report.Error == "" || report.LastTrim != "" {
 						t.Fatalf("cancelled trim = %+v, %v", report, err)
@@ -68,8 +70,6 @@ func TestTrimWithReport(t *testing.T) {
 				if sweep == 0 {
 					if tt.age > 48*time.Hour {
 						age = 10
-					} else if tt.cap == 1 {
-						size = 10
 					}
 				}
 				if report.AgeExpiredBytes != age || report.SizeEvictedBytes != size || report.RetainedBytes != want {
@@ -130,7 +130,7 @@ func TestTrimWithReportSkipped(t *testing.T) {
 	}
 }
 
-func TestTrimBothPhases(t *testing.T) {
+func TestTrimAgeExpiryAboveTarget(t *testing.T) {
 	for _, bound := range []int64{100, 1000} {
 		t.Run(strconv.FormatInt(bound, 10), func(t *testing.T) {
 			root := t.TempDir()
@@ -155,11 +155,7 @@ func TestTrimBothPhases(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var wantSize int64
-			if bound == 100 {
-				wantSize = 200
-			}
-			if report.AgeExpiredBytes != 200 || report.SizeEvictedBytes != wantSize {
+			if report.AgeExpiredBytes != 200 || report.SizeEvictedBytes != 0 {
 				t.Fatalf("report=%+v", report)
 			}
 		})
