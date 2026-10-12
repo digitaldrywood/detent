@@ -288,9 +288,10 @@ func (p *fakeProvider) RevokeSession(_ context.Context, id string) error {
 }
 
 type browser struct {
-	t     *testing.T
-	entry http.Handler
-	jar   *cookiejar.Jar
+	t      *testing.T
+	entry  http.Handler
+	jar    *cookiejar.Jar
+	origin string
 }
 
 type page struct {
@@ -304,7 +305,7 @@ func newBrowser(t *testing.T, entry http.Handler) *browser {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &browser{t: t, entry: entry, jar: jar}
+	return &browser{t: t, entry: entry, jar: jar, origin: testPublicURL}
 }
 
 func (b *browser) do(method, target string, form url.Values, headers map[string]string) page {
@@ -313,12 +314,12 @@ func (b *browser) do(method, target string, form url.Values, headers map[string]
 	if form != nil {
 		body = strings.NewReader(form.Encode())
 	}
-	request := httptest.NewRequest(method, testPublicURL+target, body)
+	request := httptest.NewRequest(method, b.origin+target, body)
 	if form != nil {
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
 	if method != http.MethodGet {
-		request.Header.Set("Origin", testPublicURL)
+		request.Header.Set("Origin", b.origin)
 	}
 	for key, value := range headers {
 		if value == "" {
@@ -327,7 +328,7 @@ func (b *browser) do(method, target string, form url.Values, headers map[string]
 			request.Header.Set(key, value)
 		}
 	}
-	base, _ := url.Parse(testPublicURL)
+	base, _ := url.Parse(b.origin)
 	for _, cookie := range b.jar.Cookies(base) {
 		request.AddCookie(cookie)
 	}
@@ -933,10 +934,10 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 	if response, _ := alice.get("/auth/oidc/callback?" + url.Values{"code": {"user_alice:porg_beta"}, "state": {secondState}}.Encode()); response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("second tab callback = %d", response.StatusCode)
 	}
-	if response, _ := alice.get("/auth/oidc/callback?" + url.Values{"code": {"user_alice:porg_alpha"}, "state": {firstState}}.Encode()); response.StatusCode != http.StatusSeeOther {
+	if response, _ := alice.get("/auth/oidc/callback?" + url.Values{"code": {"user_alice:porg_alpha"}, "state": {firstState}}.Encode()); response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("first tab callback = %d", response.StatusCode)
 	}
-	if response, _ := alice.get("/auth/oidc/callback?" + url.Values{"code": {"user_alice:porg_alpha"}, "state": {firstState}}.Encode()); response.StatusCode != http.StatusUnauthorized {
+	if response, _ := alice.get("/auth/oidc/callback?" + url.Values{"code": {"user_alice:porg_beta"}, "state": {secondState}}.Encode()); response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("replayed callback = %d", response.StatusCode)
 	}
 	wrong, _ := alice.get("/auth/oidc/start?organization=org_alpha")
@@ -944,7 +945,12 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 		t.Fatalf("organization mismatch = %d", response.StatusCode)
 	}
 	for _, organization := range []string{"org_alpha", "org_beta"} {
-		if response, _ := alice.get("/organizations/" + organization + "/organization"); response.StatusCode != http.StatusOK {
+		response, _ := alice.get("/organizations/" + organization + "/organization")
+		want := http.StatusOK
+		if organization == "org_alpha" {
+			want = http.StatusSeeOther
+		}
+		if response.StatusCode != want {
 			t.Fatalf("%s after concurrent logins = %d", organization, response.StatusCode)
 		}
 	}
@@ -952,6 +958,115 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 	stolen, _ := alice.get("/auth/oidc/start")
 	if response, _ := other.get("/auth/oidc/callback?" + url.Values{"code": {"user_bob:"}, "state": {stateOf(t, stolen)}}.Encode()); response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("callback without the initiating browser = %d", response.StatusCode)
+	}
+}
+
+func TestSharedEntryLoginCookieReplacement(t *testing.T) {
+	t.Parallel()
+	for _, origin := range []string{testPublicURL, "https://entry.example.test"} {
+		t.Run(origin, func(t *testing.T) {
+			t.Parallel()
+			f := newEntryFixture(t)
+			f.service.config.PublicURL = origin
+			f.service.secure = strings.HasPrefix(origin, "https:")
+			base, err := url.Parse(origin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, test := range []struct {
+				name            string
+				starts          int
+				supersededFirst bool
+				legacyOnStart   bool
+			}{
+				{name: "single start", starts: 1},
+				{name: "newest callback first", starts: 2},
+				{name: "superseded callback first", starts: 2, supersededFirst: true},
+				{name: "retry loop", starts: 100, supersededFirst: true},
+				{name: "legacy cookies on start", starts: 2, legacyOnStart: true},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					b := newBrowser(t, f.service.Handler())
+					b.origin = origin
+					seedLegacy := func() {
+						b.jar.SetCookies(base, []*http.Cookie{
+							{Name: f.service.cookieName("login_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), Value: "old-token-a", Path: "/", Secure: f.service.secure},
+							{Name: f.service.cookieName("login_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), Value: "old-token-b", Path: "/", Secure: f.service.secure},
+						})
+					}
+					assertLoginCookies := func(want int) {
+						t.Helper()
+						count := 0
+						supportFound := false
+						for _, cookie := range b.jar.Cookies(base) {
+							if strings.HasPrefix(cookie.Name, f.service.cookieName("login")) {
+								count++
+							}
+							if cookie.Name == f.service.cookieName("support") && cookie.Value == "existing-support" {
+								supportFound = true
+							}
+						}
+						if count != want {
+							t.Fatalf("login cookie count = %d, want %d", count, want)
+						}
+						if !supportFound {
+							t.Fatal("login changed the support cookie")
+						}
+					}
+					b.jar.SetCookies(base, []*http.Cookie{
+						{Name: f.service.cookieName("session"), Value: "existing-session", Path: "/", Secure: f.service.secure},
+						{Name: f.service.cookieName("support"), Value: "existing-support", Path: "/", Secure: f.service.secure},
+					})
+					if test.legacyOnStart {
+						seedLegacy()
+					}
+					var firstState, newestState string
+					for range test.starts {
+						start, _ := b.get("/auth/oidc/start?organization=org_beta&return=/organizations/org_beta/organization")
+						newestState = stateOf(t, start)
+						if firstState == "" {
+							firstState = newestState
+						}
+						assertLoginCookies(1)
+						for _, cookie := range (&http.Response{Header: start.Header}).Cookies() {
+							if cookie.Name == f.service.cookieName("session") || cookie.Name == f.service.cookieName("support") {
+								t.Fatalf("login start changed %s", cookie.Name)
+							}
+							if cookie.Value != "" && (!cookie.HttpOnly || cookie.Secure != f.service.secure || cookie.Path != "/" || cookie.Domain != "" || cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge <= 0 || cookie.MaxAge > 600) {
+								t.Fatalf("login cookie attributes = %+v", cookie)
+							}
+						}
+					}
+					callback := func(state string) page {
+						response, _ := b.get("/auth/oidc/callback?" + url.Values{"code": {"user_alice:porg_beta"}, "state": {state}}.Encode())
+						return response
+					}
+					assertSuperseded := func() {
+						t.Helper()
+						response := callback(firstState)
+						if response.StatusCode != http.StatusUnauthorized || !strings.Contains(response.Body, "This sign-in link is invalid or has already been used") || !strings.Contains(response.Body, "Sign in again") {
+							t.Fatalf("superseded callback = %d: %s", response.StatusCode, response.Body)
+						}
+					}
+					if test.supersededFirst {
+						assertSuperseded()
+						assertLoginCookies(1)
+					}
+					seedLegacy()
+					response := callback(newestState)
+					if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != "/organizations/org_beta/organization" {
+						t.Fatalf("newest callback = %d %q: %s", response.StatusCode, response.Header.Get("Location"), response.Body)
+					}
+					assertLoginCookies(0)
+					if response, _ := b.get("/organizations/org_beta/organization"); response.StatusCode != http.StatusOK {
+						t.Fatalf("authenticated return path = %d", response.StatusCode)
+					}
+					if test.starts > 1 && !test.supersededFirst {
+						assertSuperseded()
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -973,10 +1088,12 @@ func TestSharedEntryInvitation(t *testing.T) {
 	for _, tt := range []struct {
 		name, message           string
 		entryCode, callbackCode int
+		starts                  int
 	}{
 		{name: "new user sign-up", entryCode: 303, callbackCode: 303},
 		{name: "existing user sign-in", entryCode: 303, callbackCode: 303},
 		{name: "legacy token alias", entryCode: 303, callbackCode: 303},
+		{name: "repeated invitation starts", entryCode: 303, callbackCode: 303, starts: 3},
 		{name: "wrong account", entryCode: 303, callbackCode: 403, message: "different account at example.test"},
 		{name: "expired", entryCode: 403, message: "has expired"},
 		{name: "used", entryCode: 403, message: "already been used"},
@@ -1012,6 +1129,19 @@ func TestSharedEntryInvitation(t *testing.T) {
 				path = "/invite?invitation_token=inv_unknown"
 			}
 			start, body := browser.get(path)
+			var supersededState string
+			if tt.starts > 1 {
+				supersededState = stateOf(t, start)
+			}
+			for i := 1; i < tt.starts; i++ {
+				start, body = browser.get(path)
+			}
+			if supersededState != "" {
+				response, _ := browser.get("/auth/oidc/callback?" + url.Values{"code": {"user_carol:"}, "state": {supersededState}}.Encode())
+				if response.StatusCode != http.StatusUnauthorized {
+					t.Fatalf("superseded invitation callback = %d", response.StatusCode)
+				}
+			}
 			if start.StatusCode != tt.entryCode {
 				t.Fatalf("entry = %d, want %d: %s", start.StatusCode, tt.entryCode, body)
 			}
