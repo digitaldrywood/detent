@@ -412,7 +412,7 @@ func TestHostedIssueAllowanceCatalog(t *testing.T) {
 			if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
 				t.Fatal(err)
 			}
-			plan, err := readHostedPlan(t.Context(), f.service.database.db, config.Base)
+			plan, err := f.service.database.readHostedPlan(t.Context(), f.service.database.db, config.Base)
 			if err != nil {
 				t.Fatal(err)
 			}

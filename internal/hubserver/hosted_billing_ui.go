@@ -292,7 +292,7 @@ func (s *Service) hostedBillingUsageJSON(c echo.Context) error {
 }
 
 func (s *Service) hostedPriceLabel(ctx context.Context, price HostedBillingPrice) string {
-	plan, err := readHostedPlan(ctx, s.database.db, price.Plan)
+	plan, err := s.database.readHostedPlan(ctx, s.database.db, price.Plan)
 	if err != nil || plan.MonthlyUSDCents == nil {
 		return price.Label
 	}
@@ -312,7 +312,7 @@ func (s *Service) readBillingView(ctx context.Context) (hostedBillingView, error
 			if !slices.Contains([]string{"starter", "growth", "scale"}, configured.ID) {
 				continue
 			}
-			plan, err := readHostedPlan(ctx, s.database.db, configured.PlanReference)
+			plan, err := s.database.readHostedPlan(ctx, s.database.db, configured.PlanReference)
 			if err != nil {
 				return hostedBillingView{}, err
 			}

@@ -219,17 +219,16 @@ usage-window settings, and the active billing price list publish as one
 immutable snapshot in each tenant after the database transaction succeeds.
 New plans, reloads, and their reasons are recorded in `hosted_plan_audit`.
 
-The entry captures each ready managed tenant's current runtime and validates all
-tenants before applying the reload. Invalid files or rejected tenant validation
-leave the previous settings in place. If an application fails, the entry restores
-the captured settings on every attempted tenant, including a tenant whose reply
-was lost after commit. Restoration uses a bounded context independent of request
-cancellation and records its actor and reason in the same audit path. Restore
-failures identify the affected tenant in the reload error. The entry publishes
-new launch settings only after every tenant update succeeds. Persisted plan
-versions, assignments, grants and Stripe price identities remain immutable during
-restoration; it restores the runtime policy and active price list. Startup never
-replaces persisted assignments or grants.
+The entry validates every ready managed tenant, then prepares immutable plan
+records without exposing the new catalog, policy, or active prices. One atomic
+publication file selects the prepared settings for all managed tenants and
+future launches. Tenant Hubs read this shared publication through an entry-owned
+link beside their database; publication requires no tenant activation request.
+A rejected preparation, a lost reply after preparation commits, or a persistent
+transport outage leaves the previous publication active. Unpublished plan records
+cannot be read or assigned through the entitlement API. Preparation and reload
+logs retain actor and reason. This replaces tenant-by-tenant application and
+compensating restoration. Startup never replaces persisted assignments or grants.
 
 Listeners, origins, database/state paths, signing and provider credentials,
 platform membership seeds, attachments, allocation paths, capacity and allowlists,

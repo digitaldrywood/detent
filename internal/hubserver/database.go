@@ -47,6 +47,9 @@ type database struct {
 	schemaVersion          int64
 	hostedOrganization     tracker.OrganizationID
 	hostedRuntime          atomic.Pointer[hostedRuntimeConfig]
+	runtimeReadMu          sync.Mutex
+	runtimeFile            string
+	runtimeBilling         *HostedBillingConfig
 	logger                 *slog.Logger
 	hostedBilling          bool
 	aiCreditMode           string

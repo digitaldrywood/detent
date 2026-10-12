@@ -267,7 +267,7 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 		return err
 	}
 	defer tx.Rollback()
-	if err := d.seedHostedPlans(ctx, tx, config, "configuration", "startup seed"); err != nil {
+	if err := d.seedHostedPlans(ctx, tx, config, "configuration", "startup seed", ""); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO hosted_plan_assignments(organization_id,base_id,base_version) VALUES(?,?,?) ON CONFLICT DO NOTHING`, d.hostedOrganization, config.Base.ID, config.Base.Version); err != nil {
@@ -305,25 +305,30 @@ func validateHostedPlan(plan HostedPlan) error {
 	return config.validate()
 }
 
-func (d *database) seedHostedPlans(ctx context.Context, tx *sql.Tx, config HostedPlansConfig, actor, reason string) error {
+func (d *database) seedHostedPlans(ctx context.Context, tx *sql.Tx, config HostedPlansConfig, actor, reason, runtimeID string) error {
 	for _, plan := range config.Plans {
 		plan = normalizeHostedPlan(plan)
 		encoded, err := json.Marshal(plan)
 		if err != nil {
 			return err
 		}
-		var existing string
-		err = tx.QueryRowContext(ctx, "SELECT record_json FROM hosted_plans WHERE id = ? AND version = ?", plan.ID, plan.Version).Scan(&existing)
+		var existing, staged string
+		err = tx.QueryRowContext(ctx, "SELECT record_json,runtime_id FROM hosted_plans WHERE id = ? AND version = ?", plan.ID, plan.Version).Scan(&existing, &staged)
 		if err == nil {
 			if existing != string(encoded) {
 				d.logger.WarnContext(ctx, "hosted plan seed differs from immutable stored version; keeping stored version", "plan", plan.ID, "version", plan.Version, "actor", actor, "reason", reason)
+			}
+			if !d.runtimeVisible(staged) {
+				if _, err := tx.ExecContext(ctx, "UPDATE hosted_plans SET runtime_id=? WHERE id=? AND version=?", runtimeID, plan.ID, plan.Version); err != nil {
+					return err
+				}
 			}
 			continue
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_plans(id,version,record_json) VALUES(?,?,?)", plan.ID, plan.Version, string(encoded)); err != nil {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_plans(id,version,record_json,runtime_id) VALUES(?,?,?,?)", plan.ID, plan.Version, string(encoded), runtimeID); err != nil {
 			return err
 		}
 		command := hostedPlanCommand{ID: "seed_" + uuid.NewString(), Action: "create_plan", Plan: plan.PlanReference, Definition: &plan, Reason: reason}
@@ -334,8 +339,8 @@ func (d *database) seedHostedPlans(ctx context.Context, tx *sql.Tx, config Hoste
 	return nil
 }
 
-func readHostedPlans(ctx context.Context, query nativeQueryer) ([]HostedPlan, error) {
-	rows, err := query.QueryContext(ctx, "SELECT id,version FROM hosted_plans ORDER BY id, version")
+func (d *database) readHostedPlans(ctx context.Context, query nativeQueryer) ([]HostedPlan, error) {
+	rows, err := query.QueryContext(ctx, "SELECT id,version,runtime_id FROM hosted_plans ORDER BY id, version")
 	if err != nil {
 		return nil, err
 	}
@@ -343,17 +348,20 @@ func readHostedPlans(ctx context.Context, query nativeQueryer) ([]HostedPlan, er
 	var references []PlanReference
 	for rows.Next() {
 		var ref PlanReference
-		if err := rows.Scan(&ref.ID, &ref.Version); err != nil {
+		var runtimeID string
+		if err := rows.Scan(&ref.ID, &ref.Version, &runtimeID); err != nil {
 			return nil, err
 		}
-		references = append(references, ref)
+		if d.runtimeVisible(runtimeID) {
+			references = append(references, ref)
+		}
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
 	}
 	plans := make([]HostedPlan, 0, len(references))
 	for _, ref := range references {
-		plan, err := readHostedPlan(ctx, query, ref)
+		plan, err := d.readHostedPlan(ctx, query, ref)
 		if err != nil {
 			return nil, err
 		}
@@ -362,11 +370,14 @@ func readHostedPlans(ctx context.Context, query nativeQueryer) ([]HostedPlan, er
 	return plans, nil
 }
 
-func readHostedPlan(ctx context.Context, query nativeQueryer, ref PlanReference) (HostedPlan, error) {
-	var raw string
+func (d *database) readHostedPlan(ctx context.Context, query nativeQueryer, ref PlanReference) (HostedPlan, error) {
+	var raw, runtimeID string
 	var plan HostedPlan
-	if err := query.QueryRowContext(ctx, "SELECT record_json FROM hosted_plans WHERE id = ? AND version = ?", ref.ID, ref.Version).Scan(&raw); err != nil {
+	if err := query.QueryRowContext(ctx, "SELECT record_json,runtime_id FROM hosted_plans WHERE id = ? AND version = ?", ref.ID, ref.Version).Scan(&raw, &runtimeID); err != nil {
 		return plan, err
+	}
+	if !d.runtimeVisible(runtimeID) {
+		return plan, sql.ErrNoRows
 	}
 	err := json.Unmarshal([]byte(raw), &plan)
 	if err == nil {
@@ -377,11 +388,12 @@ func readHostedPlan(ctx context.Context, query nativeQueryer, ref PlanReference)
 			plan.Allowances["unarchived_issues"] = 200
 		}
 		if ref.Version == 1 && slices.Contains([]string{"pilot_free", "comp_team"}, ref.ID) {
-			var capacityCatalog bool
-			if err := query.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM hosted_plans WHERE id='starter' AND version=1)").Scan(&capacityCatalog); err != nil {
+			var capacityRuntime string
+			err := query.QueryRowContext(ctx, "SELECT runtime_id FROM hosted_plans WHERE id='starter' AND version=1").Scan(&capacityRuntime)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return plan, err
 			}
-			if capacityCatalog {
+			if err == nil && d.runtimeVisible(capacityRuntime) {
 				plan.Allowances["projects"] = max(plan.Allowances["projects"], 5)
 				plan.Allowances["unarchived_issues"] = max(plan.Allowances["unarchived_issues"], 2000)
 				plan.Allowances["collaboration_bytes"] = max(plan.Allowances["collaboration_bytes"], 1<<30)
@@ -423,7 +435,7 @@ func (d *database) hostedEntitlement(ctx context.Context, query nativeQueryer, n
 			result.Source = "subscription"
 		}
 	}
-	base, err := readHostedPlan(ctx, query, result.EffectiveBase)
+	base, err := d.readHostedPlan(ctx, query, result.EffectiveBase)
 	if err != nil {
 		return result, err
 	}
@@ -455,7 +467,7 @@ func (d *database) hostedEntitlement(ctx context.Context, query nativeQueryer, n
 		if grant.RevokedAt != nil || grant.StartsAt.After(now) || grant.ExpiresAt != nil && !grant.ExpiresAt.After(now) {
 			continue
 		}
-		plan, err := readHostedPlan(ctx, query, grant.Plan)
+		plan, err := d.readHostedPlan(ctx, query, grant.Plan)
 		if err != nil {
 			return result, err
 		}

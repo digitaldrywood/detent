@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"maps"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -60,10 +62,11 @@ func TestHostedPlanVersionCreatedAndGrantedWithoutRestart(t *testing.T) {
 func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name                     string
-		invalid, remap, validate bool
+		name                              string
+		invalid, remap, validate, prepare bool
 	}{
 		{name: "new version and price"},
+		{name: "prepared policy and prices publish together", prepare: true},
 		{name: "invalid policy", invalid: true},
 		{name: "immutable price mapping", remap: true},
 		{name: "validation changes nothing", validate: true},
@@ -87,6 +90,11 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 				prices[0].Plan = plan.PlanReference
 			}
 			update := HostedRuntimeUpdate{Plans: &plans, Prices: prices, Reason: "SIGHUP regression", ValidateOnly: test.validate}
+			if test.prepare {
+				f.service.config.Hosted.SharedEntry = &HostedSharedEntry{}
+				f.service.database.configureRuntimePublication(f.service.config)
+				update.StageID = "00000000-0000-4000-8000-000000000001"
+			}
 			path := "/api/v2/organizations/org_browser_preview/entitlements/runtime"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil), http.StatusForbidden)
 			snapshot := performHubAPIRequest(t, f.service, http.MethodGet, path, testHostedPlanAdminToken, nil)
@@ -99,7 +107,11 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 			response := performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, update)
 			applied := !test.invalid && !test.remap && !test.validate
 			if !test.invalid && !test.remap {
-				requireNativeStatus(t, response, http.StatusNoContent)
+				want := http.StatusNoContent
+				if test.prepare {
+					want = http.StatusOK
+				}
+				requireNativeStatus(t, response, want)
 			} else if response.Code < 400 {
 				t.Fatalf("invalid reload accepted: %d", response.Code)
 			}
@@ -112,6 +124,28 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 					t.Fatal("failed or validation-only reload changed persisted or runtime state")
 				}
 				return
+			}
+			if test.prepare {
+				if f.service.database.hostedRuntime.Load() != before || len(f.service.hostedBillingConfig().Prices) != 1 {
+					t.Fatal("preparation exposed policy or prices")
+				}
+				if _, err := f.service.database.readHostedPlan(t.Context(), f.service.database.db, plan.PlanReference); err == nil {
+					t.Fatal("preparation exposed a plan version")
+				}
+				publication := HostedRuntimePublication{Published: []string{update.StageID}, Update: update, Tenants: map[string]HostedRuntimeUpdate{"org_browser_preview": update}}
+				raw, err := json.Marshal(publication)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(filepath.Dir(f.service.database.path), HostedRuntimeFilename), raw, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.readHostedPlan(t.Context(), f.service.database.db, plan.PlanReference); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_plan_audit WHERE action='prepare_reload' AND actor_id='test-operator' AND reason=?", update.Reason).Scan(&audits); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if stored != 1 || audits != 1 || f.service.database.plans().WindowSeconds != 120 || !slices.ContainsFunc(f.service.hostedBillingConfig().Prices, func(price HostedBillingPrice) bool { return price.PriceID == "price_runtime" }) {
 				t.Fatal("valid reload did not publish plan and prices")
