@@ -196,9 +196,12 @@ ORDER BY e.seq LIMIT ?`
 		summary.RemovedByType[event.kind]++
 		summary.ThroughSequence = max(summary.ThroughSequence, event.sequence)
 	}
-	if candidate.kind == "work_item" {
+	processed := int64(len(events))
+	if candidate.kind == "work_item" && processed < eventCompactionBatch {
 		result, err := tx.ExecContext(ctx, `UPDATE collaboration_events SET data_json=json_insert(json_remove(data_json,'$.run.runtime.activity.spans'),'$.run.runtime.activity.coverage_notes',json('[]'),'$.run.runtime.activity.coverage_notes[#]','activity_spans_compacted')
-WHERE organization_id=? AND project_id=? AND work_item_id=? AND type LIKE 'run.%' AND json_type(data_json,'$.run.runtime.activity.spans') IS NOT NULL`, candidate.organization, candidate.project, candidate.id)
+WHERE rowid IN (SELECT rowid FROM collaboration_events
+WHERE organization_id=? AND project_id=? AND work_item_id=? AND type LIKE 'run.%' AND json_type(data_json,'$.run.runtime.activity.spans') IS NOT NULL
+ORDER BY sequence LIMIT ?)`, candidate.organization, candidate.project, candidate.id, eventCompactionBatch-processed)
 		if err != nil {
 			return 0, fmt.Errorf("compact activity spans: %w", err)
 		}
@@ -207,12 +210,13 @@ WHERE organization_id=? AND project_id=? AND work_item_id=? AND type LIKE 'run.%
 			return 0, err
 		}
 		summary.CompactedActivityEvents += stripped
+		processed += stripped
 		if stripped > 0 {
 			summary.CompactedAt = now.UTC()
 		}
 	}
 	scanned := int64(0)
-	if len(events) < eventCompactionBatch {
+	if processed < eventCompactionBatch {
 		scanned = candidate.head
 	}
 	if len(events) > 0 {

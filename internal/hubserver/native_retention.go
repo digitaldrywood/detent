@@ -25,7 +25,8 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM native_commands WHERE rowid IN (SELECT rowid FROM native_commands
 WHERE (operation LIKE 'POST /%' OR operation LIKE 'PUT /%' OR operation LIKE 'PATCH /%' OR operation LIKE 'DELETE /%')
-AND instr(operation, '/conversations/')=0 AND julianday(created_at)<julianday(?) LIMIT ?)`, formatHubTime(now.Add(-commandReceiptRetention)), commandReceiptPruneBatch); err != nil {
+AND operation NOT LIKE '%/conversations' AND instr(operation, '/conversations/')=0
+AND julianday(created_at)<julianday(?) LIMIT ?)`, formatHubTime(now.Add(-commandReceiptRetention)), commandReceiptPruneBatch); err != nil {
 		return fmt.Errorf("expire command receipts: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE attachments SET deleted_at=? WHERE deleted_at IS NULL AND work_item_id IS NULL AND julianday(created_at)<=julianday(?)", formatHubTime(now), formatHubTime(now.Add(-attachment.OrphanTTL))); err != nil {

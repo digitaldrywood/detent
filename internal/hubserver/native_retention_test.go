@@ -38,6 +38,7 @@ func TestNativeRetention(t *testing.T) {
 			{"POST " + base + "/landing-barrier", "old", 25 * time.Hour, false},
 			{"PATCH " + base + "/work-items/x", "old-patch", 25 * time.Hour, false},
 			{"POST " + base + "/landing-barrier", "recent", time.Hour, true},
+			{"POST " + base + "/conversations", "create-conversation", 25 * time.Hour, true},
 			{"POST " + base + "/conversations/c/link", "link", 25 * time.Hour, true},
 			{"mcp update_runner_routing", "mcp", 25 * time.Hour, true},
 		}
