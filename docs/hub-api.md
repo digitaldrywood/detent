@@ -199,15 +199,22 @@ organization/project scope. Policies are resolved on the customer host. See
 | --- | --- | --- |
 | `/api/v1/repositories/{owner}/{repo}/policy` | `GET` | Read current descriptor and approval provenance with a compatibility credential |
 | `/api/v2/organizations/{organization}/projects/{project}/policy` | `GET` | Read current descriptor, approval provenance and workflow apply history within native project grants (`limit`, `after`) |
-| Either policy endpoint | `PUT` | Instance administrator only; `policy` descriptor and `expected_policy_id` (empty for first approval). Exact retries are idempotent; concurrent distinct replacements have one winner. |
+| Either policy endpoint | `PUT` | Instance administrator only; `expected_policy_id` (empty for first approval) and either a complete `policy` descriptor or `observed_policy_id` from the scoped onboarding read. Exact retries are idempotent; concurrent distinct replacements have one winner. |
 | Either policy endpoint | `DELETE` | Instance administrator only; `expected_policy_id`. Revokes current authority while retaining revision/lease history. |
-| `/api/v2/organizations/{organization}/projects/{project}/policy/observed` | `POST` | A runner with the `heartbeat` operation reports its resolved descriptor, including successful matches. The Hub retains the latest report per runner and returns distinct mismatches with all reporting runner IDs in `GET .../onboarding`. Conflicting configurations and previously approved reports are not new approval candidates. An enrolled runner may include `repository_source` alongside the descriptor: `repository`, `commit`, `default_branch`, `default_branch_head` and `default_branch_reachable`. A committed workflow definition reachable from the bound repository's default branch is applied through the existing atomic policy approval path. Other reports remain pending. |
+| `/api/v2/organizations/{organization}/projects/{project}/policy/observed` | `POST` | A runner with the `heartbeat` operation reports its resolved descriptor, including successful matches. The Hub retains the latest report per runner and returns distinct mismatches with all reporting runner IDs in `GET .../onboarding`. Conflicting configurations and previously approved reports are not new approval candidates. An enrolled runner may include `repository_source` alongside the descriptor: `repository`, `commit`, `default_branch`, `default_branch_head` and `default_branch_reachable`. Every new committed workflow definition reachable from the bound repository's default branch, including replacements of an approved policy, is applied through the existing atomic policy approval path as `repository-default-branch`. Replaying a historical approval does not replace current authority. Other reports remain pending. |
 
 Hosted organizations approve through `PUT .../projects/{project}/onboarding/policy`
 (owner or admin); the generic `PUT .../policy` above stays instance-administrator
 only and is not served in hosted mode. Runners report each distinct resolved
 descriptor/provenance combination once, including successful matches that replace earlier mismatches.
 Only the latest observations from currently authorized runners are actionable.
+The MCP `approve_project_policy` tool accepts the same reference in `input`:
+`observed_policy_id` is the chosen `observed_policies[].policy.policy_id`, and
+`expected_policy_id` is the current `policy.policy.policy_id` (empty without an
+approval). Omit `input.policy` when approving by reference. The Hub resolves and
+validates the stored descriptor within the existing approval transaction; the
+full-descriptor path remains available. Unknown request fields and invalid
+field types are named in invalid-body errors.
 Previously approved descriptors retain their history; they are reported as
 configuration conflicts rather than newly generated policies.
 

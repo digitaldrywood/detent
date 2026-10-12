@@ -470,6 +470,7 @@ func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
 	if ids, _ = observedIDs(t); len(ids) != 0 {
 		t.Fatalf("removed runners retain actionable reports: %v", ids)
 	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/onboarding/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, ObservedPolicyID: changed.ID}), http.StatusUnprocessableEntity)
 }
 
 func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
@@ -551,7 +552,27 @@ func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
 			if test.selected && len(read(f.base, f.token).ObservedPolicies) != 0 {
 				t.Fatal("selected project's candidate leaked into the default project")
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, target.base+"/onboarding/policy", testHubAdminToken, policy.Change{ExpectedID: setup.Policy.Policy.ID, Policy: pending.Policy}), http.StatusOK)
+			for _, invalid := range []struct {
+				name   string
+				change policy.Change
+				status int
+			}{
+				{"unknown observation", policy.Change{ExpectedID: original.ID, ObservedPolicyID: "policy_" + strings.Repeat("f", 64)}, http.StatusUnprocessableEntity},
+				{"stale approval", policy.Change{ObservedPolicyID: pending.Policy.ID}, http.StatusConflict},
+				{"ambiguous input", policy.Change{ExpectedID: original.ID, ObservedPolicyID: pending.Policy.ID, Policy: pending.Policy}, http.StatusUnprocessableEntity},
+			} {
+				t.Run(invalid.name, func(t *testing.T) {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, target.base+"/onboarding/policy", testHubAdminToken, invalid.change), invalid.status)
+				})
+			}
+			change := policy.Change{ExpectedID: setup.Policy.Policy.ID, ObservedPolicyID: pending.Policy.ID}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, target.base+"/onboarding/policy", runner.redemption.Credential, change), http.StatusForbidden)
+			if test.selected {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/onboarding/policy", testHubAdminToken, change), http.StatusUnprocessableEntity)
+			}
+			for range 2 {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, target.base+"/onboarding/policy", testHubAdminToken, change), http.StatusOK)
+			}
 			if err := check(); err != nil {
 				t.Fatalf("same runner cannot load the approved candidate: %v", err)
 			}
