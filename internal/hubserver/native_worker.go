@@ -85,6 +85,9 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 		return s.nativeAPIError(c, nativeInvalid("Lease TTL is invalid"))
 	}
 	scope := nativeRequestScope(c)
+	if request.WorkItemID == "" && len(request.ProviderCandidates) == 1 {
+		request.WorkItemID = request.ProviderCandidates[0].WorkItemID
+	}
 	var id tracker.WorkItemID
 	if request.WorkItemID != "" {
 		_, id, err = readNativeIssue(c.Request().Context(), s.database.db, scope, string(request.WorkItemID))
