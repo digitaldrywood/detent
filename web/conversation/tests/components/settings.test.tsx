@@ -513,6 +513,8 @@ describe("personal keys and org controls", () => {
     });
     renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
     await screen.findByRole("button", { name: "Revoke Org integration" });
+    expect(screen.getByRole("textbox", { name: "MCP endpoint value" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy MCP setup prompt" })).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "Approve My agent" }));
     await screen.findByText("No keys awaiting approval");
     fireEvent.change(screen.getByLabelText("Personal keys"), { target: { value: "blocked" } });
