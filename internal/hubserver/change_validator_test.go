@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -32,6 +33,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"same machine source session cannot validate acceptance", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence"},
 		{"implementation review is not acceptance", implementationReview, http.StatusOK, "needs_evidence"},
 		{"implementation review is not human approval", implementationReview, http.StatusOK, "needs_evidence"},
+		{"implementation review does not leave stale human approval", implementationReview, http.StatusOK, "needs_evidence"},
 		{"implementation review same session", func(r *tracker.ReviewChange) {
 			implementationReview(r)
 			r.ImplementationReview.SessionID = 41
@@ -88,7 +90,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			if implementation || counterCollision {
 				descriptor.Gates.AutomatedReview = gate.AutomatedReviewRequired
 			}
-			humanReview := test.name == "separate session pass with human review" || test.name == "implementation review is not human approval"
+			humanReview := test.name == "separate session pass with human review" || test.name == "implementation review is not human approval" || test.name == "implementation review does not leave stale human approval"
 			if humanReview {
 				descriptor.Gates.HumanReview = true
 			}
@@ -181,7 +183,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					t.Fatalf("missing evidence not persisted on its version: %+v", stored)
 				}
 			}
-			if strings.HasPrefix(test.name, "separate session pass") {
+			if strings.HasPrefix(test.name, "separate session pass") || test.name == "implementation review does not leave stale human approval" {
 				input.HeadSHA = strings.Repeat("c", 40)
 				mutation.IdempotencyKey = "publish-next"
 				response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", worker, tracker.PublishChangeVersion{Mutation: mutation, ExpectedVersionID: version.ID, ChangeVersionInput: input})
@@ -194,7 +196,14 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					t.Fatalf("old validator approved new version: %+v, %v", current.Summary, err)
 				}
 				if current.Summary.NativeReview != review {
-					t.Fatalf("old validator counted as human approval: %+v", current.Summary)
+					t.Errorf("old automated review counted as human approval: %+v", current.Summary)
+				}
+				response = performHubAPIRequest(t, f.service, http.MethodGet, path+"?view=bounded&section=current", f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var bounded operatortool.ChangeResult
+				decodeHubResponse(t, response, &bounded)
+				if bounded.Detail == nil || bounded.Detail.Summary.NativeReview != review {
+					t.Fatalf("bounded read attributed automated review to a human: %+v", bounded.Detail)
 				}
 
 			}

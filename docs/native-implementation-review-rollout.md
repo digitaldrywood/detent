@@ -47,16 +47,3 @@ disable a required gate to accommodate an older runner.
 If any target cannot adopt the matching build, keep the affected rollout drained
 and resolve compatibility before resuming. Do not roll back Hub enforcement or
 change policy merely to make missing evidence appear accepted.
-
-## Executable source proof
-
-`TestNativeImplementationReviewPrecedesAcceptanceValidator` covers ordering,
-validator-disabled review, rework, wait, and recording errors.
-`TestNativeImplementationReviewIsRecordedSeparately` exercises the real Hub's
-typed records, current-head fences, separate acceptance session, and verdicts.
-`TestChangeValidatorSessionAuthority` checks implementing-session and human
-approval boundaries. `TestNativeChangeRunCompletion` checks source-verdict routing
-while retaining prerequisite and human-action authority.
-
-These tests prove the source behavior. Fleet adoption and a genuine landing are
-separate runtime acceptance and must be recorded after deployment.
