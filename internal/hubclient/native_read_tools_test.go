@@ -252,6 +252,23 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		t.Fatalf("git-only receipt fabricated provider activity: %+v", p)
 	}
 	t.Run("bounded native Change traversal", func(t *testing.T) {
+		for range 16 {
+			if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: fullChange.Versions[0].ID, Body: strings.Repeat("historical feedback\n", 3000)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := h.admin.Change(t.Context(), item, change.ID); !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "response exceeds 1048576 bytes") {
+			t.Fatalf("canonical aggregate did not reproduce the runtime transport limit: %v", err)
+		}
+		runtime, err := h.native.currentChange(t.Context(), item)
+		if err != nil || runtime.Change.CurrentVersion != version.ID || len(runtime.Versions) != len(fullChange.Versions) || len(runtime.Discussion) != 9 {
+			t.Fatalf("runtime lost source history or current feedback: versions=%d discussion=%d error=%v", len(runtime.Versions), len(runtime.Discussion), err)
+		}
+		for i := range runtime.Versions {
+			if runtime.Versions[i].ID != fullChange.Versions[i].ID {
+				t.Fatal("runtime version history changed order or identity")
+			}
+		}
 		seen := map[string]bool{}
 		cursor := ""
 		for pages := range 20 {
