@@ -111,13 +111,18 @@ for (const theme of ["light", "dark"]) {
   for (const width of [1440, 390]) {
     test(`all platform routes keep the shell in ${theme} at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 980 });
-      await page.addInitScript((theme) => { document.documentElement.classList.toggle("dark", theme === "dark"); }, theme);
+      await page.emulateMedia({ colorScheme: theme });
       await openPlatform(page);
+      await page.evaluate((theme) => {
+        document.documentElement.classList.toggle("dark", theme === "dark");
+        document.documentElement.dataset.theme = theme;
+      }, theme);
       for (const [path, title] of [["tenants", "Tenants"], ["users", "Users"], ["audit", "Audit log"], ["health", "Health"], ["allowlist", "Sign-up allowlist"], ["staff", "Staff"]]) {
         if (width === 390) await page.getByRole("button", { name: "Toggle Sidebar" }).click();
         await page.getByRole("navigation", { name: "Platform navigation" }).getByRole("link", { name: title, exact: true }).click();
         const heading = page.getByRole("heading", { name: title, exact: true, level: 1 });
         await expect(heading).toBeVisible();
+        await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains("dark"))).toBe(theme === "dark");
         await expect(page.getByRole("alert")).toHaveCount(0);
         if (path === "allowlist") {
           const access = page.getByRole("region", { name: "Access", exact: true });
