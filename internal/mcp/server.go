@@ -456,7 +456,7 @@ func (s *session) execute(ctx context.Context, call operatortool.Call) (operator
 		return operatortool.Result{}, err
 	}
 	if len(result.Content) > operatortool.MaxResultBytes {
-		return operatortool.Result{}, operatortool.ErrResultTooLarge
+		return operatortool.Result{}, &operatortool.ResultTooLargeError{SizeBytes: len(result.Content), LimitBytes: operatortool.MaxResultBytes}
 	}
 	if !isJSONObject(result.Content) {
 		return operatortool.Result{}, errors.New("operator tool result is not a JSON object")
@@ -549,7 +549,7 @@ func (s *session) write(message response) error {
 		return fmt.Errorf("encode MCP response: %w", err)
 	}
 	if len(frame) > MaxHTTPResponseBytes {
-		frame = marshalHTTPResponse(response{JSONRPC: "2.0", ID: message.ID, Error: &rpcError{Code: codeInternalError, Message: "MCP response exceeds the size limit"}})
+		frame = marshalHTTPResponse(oversizedResponse(message.ID, len(frame)))
 	}
 	frame = append(frame, '\n')
 
@@ -637,6 +637,9 @@ func safeToolError(err error) string {
 }
 
 func (s *session) toolFailure(ctx context.Context, version, name string, id json.RawMessage, err error) toolCallResult {
+	if errors.Is(err, operatortool.ErrResultTooLarge) {
+		return failedToolCallResult(version, err)
+	}
 	var refusal *apikey.Refusal
 	if errors.As(err, &refusal) {
 		payload, encodeErr := json.Marshal(refusal)
@@ -662,6 +665,13 @@ func failedToolCallResult(protocolVersion string, err error) toolCallResult {
 	var request *operatortool.RequestError
 	var detail any
 	switch {
+	case errors.Is(err, operatortool.ErrResultTooLarge):
+		tooLarge := &operatortool.ResultTooLargeError{LimitBytes: operatortool.MaxResultBytes}
+		errors.As(err, &tooLarge)
+		detail = struct {
+			Code string `json:"code"`
+			*operatortool.ResultTooLargeError
+		}{"result_too_large", tooLarge}
 	case errors.As(err, &conflict):
 		detail = conflict
 	case errors.As(err, &request):

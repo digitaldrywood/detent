@@ -122,7 +122,7 @@ func (e nativeOperatorExecutor) workflowReceipt(raw json.RawMessage) (operatorto
 		return operatortool.Result{}, operatortool.ErrServiceUnavailable
 	}
 	issue = e.service.nativeIssueResponse(issue)
-	return hubChangeResult(map[string]any{"data": issue, "resource_id": issue.WorkItemID, "revision": issue.Revision, "status": chat.ActionSucceeded})
+	return operatortool.EncodeWorkItemResult(map[string]any{"data": issue, "resource_id": issue.WorkItemID, "revision": issue.Revision, "status": chat.ActionSucceeded})
 }
 
 func (e nativeOperatorExecutor) executeWorkflowTransition(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {

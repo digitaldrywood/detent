@@ -246,6 +246,7 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 		{"missing", explain.ErrNotFound, "work item not found in this project"},
 		{"unauthorized project", operatortool.ErrProjectScopeRequired, operatortool.ErrProjectScopeRequired.Error()},
 		{"read fault", &operatortool.ReadUnavailableError{Err: errors.New("database fault sentinel")}, "Operator tool is unavailable"},
+		{"oversized result", &operatortool.ResultTooLargeError{SizeBytes: 300000, LimitBytes: operatortool.MaxResultBytes}, `{"code":"result_too_large","size_bytes":300000,"limit_bytes":262144}`},
 		{"argument validation", nativeMoveArgumentError(), `{"code":"invalid_request","message":"expected_revision: is required"}`},
 		{"request", &operatortool.RequestError{Code: "invalid_request", Message: "Read get_project_integration"}, `{"code":"invalid_request","message":"Read get_project_integration"}`},
 		{"oversized Change record", operatortool.ChangeRecordTooLarge(), `{"code":"change_record_too_large","message":"A Change record with its required evidence envelope exceeds the 262144-byte result budget. Inspect the exact version or artifact through its scoped read; the record requires an operator repair. No evidence was reported as passing."}`},
@@ -306,7 +307,7 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 				}
 				var conflict *operatortool.ConflictError
 				var request *operatortool.RequestError
-				if !errors.As(test.err, &conflict) && !errors.As(test.err, &request) || version == "2024-11-05" {
+				if !errors.Is(test.err, operatortool.ErrResultTooLarge) && !errors.As(test.err, &conflict) && !errors.As(test.err, &request) || version == "2024-11-05" {
 					if len(result.StructuredContent) != 0 {
 						t.Fatalf("unexpected structured error=%s", result.StructuredContent)
 					}
