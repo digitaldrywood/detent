@@ -204,7 +204,7 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 		t.Cleanup(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			if err := tracked.Stop(ctx); err != nil {
+			if err := tracked.Stop(ctx); err != nil && !errors.Is(err, project.ErrNotRunning) {
 				t.Error(err)
 			}
 		})
