@@ -43,6 +43,11 @@ type NativeValidatorExecution interface {
 	RecordValidator(context.Context, gate.ValidatorResult) error
 }
 
+type NativeReviewExecution interface {
+	ReviewVersion(context.Context) (NativeValidation, error)
+	RecordReview(context.Context, gate.ValidatorResult) error
+}
+
 type SourceValidationExecution interface {
 	RecordSourceValidation(context.Context, gate.CommandResult) error
 }
@@ -868,6 +873,9 @@ func (r *Runner) nativeWorkTimeout(cfg config.Config, backend config.AgentBacken
 }
 
 func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error {
+	if approved, err := r.reviewNativeChange(ctx, req); err != nil || !approved {
+		return err
+	}
 	execution, ok := req.Execution.(NativeValidatorExecution)
 	if !ok {
 		return nil
@@ -904,6 +912,46 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error
 		result.Verdict = gate.ValidatorVerdictPass
 	}
 	return execution.RecordValidator(ctx, result)
+}
+
+func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (bool, error) {
+	workflow, runtime, _, _ := r.runtimeSnapshot()
+	if gate.AutomatedReviewMode(workflow.Config.Gate) != gate.AutomatedReviewRequired {
+		return true, nil
+	}
+	execution, ok := req.Execution.(NativeReviewExecution)
+	if !ok {
+		return false, errors.New("required native implementation review producer is unavailable")
+	}
+	_, _, backend, routeErr := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleCode)
+	ctx, cancel := context.WithTimeoutCause(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+	defer cancel()
+	input, err := execution.ReviewVersion(ctx)
+	if err != nil || input.Version == nil {
+		return err == nil, err
+	}
+	if routeErr != nil {
+		return false, routeErr
+	}
+	request := ValidatorRequest{implementationReview: true, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	if source, ok := req.Execution.(ToolExecution); ok {
+		request.EvidenceTools, request.EvidenceHandler = source.AgentTools()
+	}
+	result, err := r.Validate(ctx, request)
+	if err != nil {
+		return false, err
+	}
+	cfg := gate.Effective(workflow.Config.Gate).Validator
+	cfg.Enabled = true
+	if decision, stopped := gate.EvaluateValidator(cfg, result); stopped {
+		result.Verdict = string(decision.Action)
+	} else {
+		result.Verdict = gate.ValidatorVerdictPass
+	}
+	if err := execution.RecordReview(ctx, result); err != nil {
+		return false, err
+	}
+	return result.Verdict == gate.ValidatorVerdictPass, nil
 }
 
 func (r *Runner) recordPipeline(req RunRequest, timing gate.PipelineTiming) {

@@ -1089,6 +1089,23 @@ func TestBuildPromptOmitsWorkflowInstructionsWhenUnconfigured(t *testing.T) {
 	}
 }
 
+func TestImplementationReviewPromptLeavesAcceptanceToValidator(t *testing.T) {
+	t.Parallel()
+	workflow := config.Workflow{Config: config.Config{Gate: gate.Config{Validator: gate.ValidatorConfig{Enabled: true, UnverifiedCriteria: gate.UnverifiedCriteriaRework}}}}
+	issue := connector.Issue{Description: "## Acceptance criteria\n- Verify the delivered feature through its real surface."}
+	prompt := BuildValidatorPrompt(workflow, issue, ValidatorPromptOptions{implementationReview: true})
+	for _, instruction := range []string{"implementation defects", "separate validator", "immutable source diff", "Return only JSON"} {
+		if !strings.Contains(prompt, instruction) {
+			t.Errorf("source-review task omitted its independent contract: %q", instruction)
+		}
+	}
+	for _, instruction := range []string{"Acceptance criteria to map", "Map every acceptance criterion", "any not_verified criterion forces rework", "satisfies the acceptance criteria"} {
+		if strings.Contains(prompt, instruction) {
+			t.Errorf("source review was assigned the later acceptance validator's task: %q", instruction)
+		}
+	}
+}
+
 func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 	t.Parallel()
 

@@ -41,6 +41,14 @@ type testExecution struct {
 	onValidate   func()
 }
 
+func (*testExecution) ReviewVersion(context.Context) (NativeValidation, error) {
+	return NativeValidation{}, nil
+}
+
+func (*testExecution) RecordReview(context.Context, gate.ValidatorResult) error {
+	return errors.New("fixture has no published implementation review")
+}
+
 func (e *testExecution) Guard(ctx context.Context) (context.Context, func(), error) {
 	return ctx, func() {}, e.validateErr
 }
