@@ -89,6 +89,9 @@ func TestValidatorReadsPublishedImages(t *testing.T) {
 			if calls != 2 || result.ImageURL != "data:image/png;base64,"+encoded || len(reads) != 1 || reads[0].SHA256 != metadata.SHA256 || reads[0].CommentID != metadata.CommentID || !strings.Contains(result.Content, reads[0].ReceiptID) {
 				t.Fatalf("published image not supplied with source-bound read receipt: calls=%d reads=%v", calls, reads)
 			}
+			if strings.Contains(result.Content, "content_base64") || strings.Contains(result.Content, encoded[:16]) {
+				t.Fatal("image payload duplicated into text context")
+			}
 			validation := gate.ValidatorResult{HeadSHA: "review-head", AttachmentReads: reads, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "Page is visible", Kind: gate.EvidenceAttachment, Reference: "page.png", ReceiptIDs: []string{reads[0].ReceiptID}, HeadSHA: "review-head", TreeSHA: "review-tree", Behavior: "The independently viewed capture shows the required page"}}}
 			gate.NormalizeCriterionEvidence(&validation, []string{"Page is visible"}, "review-tree")
 			if len(validation.NotVerified) != 0 {

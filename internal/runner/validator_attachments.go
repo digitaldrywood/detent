@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -97,9 +98,9 @@ func (v *validatorAttachments) call(ctx context.Context, call AgentToolCall) (Ag
 		HeadSHA: v.head, TreeSHA: v.tree,
 	}
 	data, err := json.Marshal(struct {
-		operatortool.AttachmentContentResult
+		Metadata    attachment.Metadata `json:"metadata"`
 		ReadReceipt gate.AttachmentRead `json:"read_receipt"`
-	}{first, read})
+	}{first.Metadata, read})
 	if err != nil {
 		return AgentToolResult{}, err
 	}
