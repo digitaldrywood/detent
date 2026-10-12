@@ -1534,6 +1534,88 @@ func TestNativeEpilogueStageContexts(t *testing.T) {
 	}
 }
 
+type workBudgetExecution struct {
+	testExecution
+	delay time.Duration
+}
+
+func (e *workBudgetExecution) Validate(ctx context.Context) error {
+	return errors.Join(ctx.Err(), e.validateErr)
+}
+
+func (e *workBudgetExecution) ValidatorVersion(ctx context.Context) (NativeValidation, error) {
+	time.Sleep(e.delay)
+	return NativeValidation{}, ctx.Err()
+}
+
+func (*workBudgetExecution) RecordValidator(context.Context, gate.ValidatorResult) error {
+	return nil
+}
+
+func TestNativeWorkUsesBackendBudget(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		phase        string
+		configure    func(*config.Config)
+		wantDeadline bool
+		noVersion    bool
+	}{
+		{name: "source inherits backend", phase: "source"},
+		{name: "validator inherits backend", phase: "validator"},
+		{name: "source turn limit retained", phase: "source", wantDeadline: true, configure: func(c *config.Config) { c.Agent.MaxTurnDurationMS = 10 }},
+		{name: "source session limit retained", phase: "source", wantDeadline: true, configure: func(c *config.Config) { c.Agent.MaxSessionDurationMS = 10 }},
+		{name: "validator turn limit retained", phase: "validator", wantDeadline: true, configure: func(c *config.Config) { c.Agent.MaxTurnDurationMS = 1000 }},
+		{name: "validator session limit retained", phase: "validator", wantDeadline: true, configure: func(c *config.Config) { c.Agent.MaxSessionDurationMS = 1000 }},
+		{name: "validator own limit retained", phase: "validator", wantDeadline: true, configure: func(c *config.Config) { c.Gate.Validator.TurnTimeoutMS = 1000 }},
+		{name: "validator limit outranks session fallback", phase: "validator", wantDeadline: true, configure: func(c *config.Config) { c.Agent.MaxSessionDurationMS = 7200000; c.Gate.Validator.TurnTimeoutMS = 1000 }},
+		{name: "no version needs no validator route", phase: "validator", noVersion: true, configure: func(c *config.Config) {
+			c.Agents.Routes = []config.AgentRoute{{Name: "code-only", Role: RoleCode, Backend: config.DefaultAgentBackendID}}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			run := func(t *testing.T) {
+				backend := &finalizingExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{HeadSHA: "head", WorkspaceFingerprint: "digest"}}}}, delay: 20 * time.Millisecond}
+				cfg := config.Config{Codex: config.Codex{TurnTimeoutMS: 3600000}}
+				cfg.Gate.Validator.Enabled = test.phase == "validator"
+				if test.configure != nil {
+					test.configure(&cfg)
+				}
+				r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: &fakeCodexClient{}, AfterRunTimeout: 10 * time.Millisecond})
+				if err != nil {
+					t.Fatal(err)
+				}
+				execution := &workBudgetExecution{delay: 65 * time.Second}
+				if test.noVersion {
+					execution.delay = 0
+				}
+				req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModeImplement}
+				if test.phase == "validator" {
+					err = r.validateNativeChange(t.Context(), req)
+				} else {
+					_, err = r.Run(t.Context(), req)
+				}
+				if test.wantDeadline {
+					if !errors.Is(err, context.DeadlineExceeded) {
+						t.Fatalf("explicit work limit was ignored: %v", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("%s work inherited cleanup timeout: %v", test.phase, err)
+				}
+				if test.phase == "source" && (!backend.finalized || execution.finish != "succeeded") {
+					t.Fatalf("source finalization=%t outcome=%q", backend.finalized, execution.finish)
+				}
+			}
+			if test.phase == "validator" {
+				synctest.Test(t, run)
+			} else {
+				run(t)
+			}
+		})
+	}
+}
+
 func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
