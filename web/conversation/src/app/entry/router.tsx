@@ -31,7 +31,7 @@ import {
 import { usePageTitle } from "../pageTitle.ts";
 import { validateTenantSearch } from "./tenantList.ts";
 import { PlatformAuditPage } from "./PlatformAudit.tsx";
-import { PlatformUsersPage } from "./PlatformUsers.tsx";
+import { PlatformUserPage, PlatformUsersPage } from "./PlatformUsers.tsx";
 
 function useGo(): (to: string) => void {
   const navigate = useNavigate();
@@ -58,8 +58,9 @@ export const ENTRY_ROUTE_PATHS = [
   "/organizations/$organization/provisioning",
   "/platform",
   "/platform/tenants",
-  "/platform/tenants/$tenantId",
+  "/platform/tenants/$organization",
   "/platform/users",
+  "/platform/users/$email",
   "/platform/staff",
   "/platform/audit",
   "/platform/health",
@@ -85,14 +86,14 @@ const platformRoutes = platformRoute.addChildren([
     path: "/tenants",
     validateSearch: validateTenantSearch,
     beforeLoad: ({ search }) => {
-      if (search.tenant) throw redirect({ to: "/platform/tenants/$tenantId", params: { tenantId: search.tenant }, search: { ...search, tenant: undefined }, replace: true } as never);
+      if (search.tenant) throw redirect({ to: "/platform/tenants/$organization", params: { organization: search.tenant }, search: { ...search, tenant: undefined }, replace: true } as never);
     },
     component: PlatformTenantsPage,
   }),
   createRoute({
     getParentRoute: () => platformRoute,
-    path: "/tenants/$tenantId",
-    validateSearch: validateTenantSearch,
+    path: "/tenants/$organization",
+    validateSearch: (search: Record<string, unknown>) => ({ ...validateTenantSearch(search), section: typeof search.section === "string" ? search.section : undefined }),
     component: PlatformTenantPage,
   }),
   createRoute({
@@ -100,6 +101,12 @@ const platformRoutes = platformRoute.addChildren([
     path: "/users",
     validateSearch: (search: Record<string, unknown>) => ({ q: typeof search.q === "string" ? search.q : undefined }),
     component: PlatformUsersPage,
+  }),
+  createRoute({
+    getParentRoute: () => platformRoute,
+    path: "/users/$email",
+    validateSearch: (search: Record<string, unknown>) => ({ q: typeof search.q === "string" ? search.q : undefined }),
+    component: PlatformUserPage,
   }),
   createRoute({
     getParentRoute: () => platformRoute,

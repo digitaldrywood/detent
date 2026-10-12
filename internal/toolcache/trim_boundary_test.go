@@ -30,9 +30,10 @@ func TestTrimRootReplacement(t *testing.T) {
 		name     string
 		age      time.Duration
 		maxBytes int64
+		removed  bool
 	}{
-		{"age eviction", 72 * time.Hour, 1 << 20},
-		{"size eviction", 0, 1},
+		{"age eviction", 72 * time.Hour, 1 << 20, true},
+		{"recent above target", 0, 1, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			base := t.TempDir()
@@ -89,8 +90,8 @@ func TestTrimRootReplacement(t *testing.T) {
 					t.Fatalf("rename after closing cache root: %v", err)
 				}
 			}
-			if _, err := os.Stat(filepath.Join(moved, name)); !os.IsNotExist(err) {
-				t.Fatalf("original cache entry not evicted: %v", err)
+			if _, err := os.Stat(filepath.Join(moved, name)); os.IsNotExist(err) != tt.removed {
+				t.Fatalf("original cache entry stat = %v, removed = %t", err, tt.removed)
 			}
 		})
 	}

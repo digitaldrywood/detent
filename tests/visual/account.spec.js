@@ -365,6 +365,7 @@ for (const state of [
         repository_enabled: true,
         repository: state.repository,
         checkout_repository: state.repository,
+        checkout_verified: Boolean(state.repository),
         github_transport_available: state.transport,
         github_app_slug: "detent-cloud",
         github_app_install_url: "https://github.com/apps/detent-cloud/installations/new",
@@ -459,7 +460,7 @@ test("the first-run wizard reports the hub's four onboarding steps", async ({ pa
   await expect(steps.first()).toContainText("Execution runner");
   // Exactly one step is the current one, and it is reachable from the keyboard.
   await expect(page.locator('[aria-current="step"]')).toHaveCount(1);
-  expect(await tabTo(page, "Continue")).toBe(true);
+  expect(await tabTo(page, "Skip for now")).toBe(true);
   await expectNoSeriousAxeViolations(page, "/projects/:project/setup");
   expect(errors, "console errors on the wizard").toEqual([]);
 });
@@ -660,6 +661,8 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   await dialog.getByRole("button", { name: "Create command" }).click();
   await expect(dialog.locator('[aria-current="step"]')).toHaveText("2. Run the command");
   connected = true;
+  await expect(dialog.getByText("Build host is connected")).toBeVisible();
+  await dialog.getByRole("button", { name: "Next", exact: true }).click();
   await expect(dialog.locator('[aria-current="step"]')).toHaveText("3. Connected");
   await expect(dialog.getByText("Build host is connected")).toBeVisible();
   await expect(dialog.getByText("build-host.local")).toBeVisible();

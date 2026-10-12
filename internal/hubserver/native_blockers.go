@@ -106,12 +106,11 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 	if request.LeaseID != attempt.LeaseID || request.FencingToken != attempt.FencingToken {
 		return tracker.ErrStaleFencingToken
 	}
-	var fence tracker.FencingToken
-	var active bool
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(max(l.fencing_token), 0), COALESCE(max(l.released_at IS NULL AND julianday(l.expires_at) > julianday(?)), 0) FROM leases l JOIN issues i ON i.id = l.issue_id WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, formatHubTime(now), scope.organization, scope.project, issue.WorkItemID).Scan(&fence, &active); err != nil {
+	var recorded, active bool
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(max(l.lease_id = ? AND l.fencing_token = ?), 0), COALESCE(max(l.released_at IS NULL AND julianday(l.expires_at) > julianday(?)), 0) FROM leases l JOIN issues i ON i.id = l.issue_id WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, attempt.LeaseID, attempt.FencingToken, formatHubTime(now), scope.organization, scope.project, issue.WorkItemID).Scan(&recorded, &active); err != nil {
 		return err
 	}
-	if fence != attempt.FencingToken || active {
+	if !recorded || active {
 		return tracker.ErrStaleFencingToken
 	}
 	if !instanceOwnedBlockers(attempt.Disposition) {
@@ -140,7 +139,7 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 	_, prior, valid := tracker.RecordedNativeBlockers(issue, []tracker.NativeAttempt{attempt}, history)
 	disposition := attempt.Disposition
 	reason := strings.ReplaceAll(request.ReasonDetail, " ", "_")
-	if !valid || prior != request.State || disposition.HumanAction || disposition.ReasonCode != "" || !disposition.Blockers || len(disposition.BlockerEvidence) == 0 || reason != "recorded_blocker_recovery" && reason != "dependency_auto_unblock" {
+	if !valid || prior != request.State || disposition.HumanAction || disposition.ReasonCode != "" && (disposition.ReasonCode != "instance_limitation" || !instanceOwnedBlockers(disposition)) || !disposition.Blockers || len(disposition.BlockerEvidence) == 0 || reason != "recorded_blocker_recovery" && reason != "dependency_auto_unblock" {
 		return nativeInvalid("Recorded blockers do not authorize recovery")
 	}
 	project, err := readNativeProject(ctx, tx, scope)

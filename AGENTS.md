@@ -14,6 +14,15 @@ Reuse existing primitives and screen compositions; select semantic tokens and
 component variants before introducing feature-specific styling. Proposed
 components and layout baselines do not expand the authorized UI scope.
 
+Use generic names in fixtures, mock data, designs, demo screenshots, instructional
+copy, and issue-brief examples. Write repository examples as
+`example-org/example-project` or `owner/repository`; never hardcode a real
+customer's or operator's organization, project, repository, or local path into
+these examples. Real names shown by the product must come from the selected
+runtime context. Screenshots of actual project behavior may retain that context;
+historical bug reports may also retain real names as factual evidence. Do not
+reuse either as synthetic example data or product copy.
+
 Follow [INV-15](docs/invariants.md#inv-15--visible-ui-changes-require-a-human-authored-issue):
 add visible UI only when a human-authored issue names the surface or feature it
 belongs to. This covers the Cloud app (`web/conversation`), Hub server-rendered
@@ -105,6 +114,10 @@ interactions are the main source of incidents, so the set may not grow.
   are attributed to the instance, never to the issue.
 - The orchestrator is the only writer of tracker lane state; workers report
   outcomes and never write lane labels.
+- This project has no human review step. Never move a Detent issue to Human
+  Review. An operator session that recovers or hand-lands work moves the issue
+  to Done once its PR merges into `develop`; work that needs a human goes to
+  Blocked with a `human_action`.
 - Do not add configuration keys, CLI subcommands, or dashboard surfaces to work
   around a mechanism. Fix the mechanism.
 - Machine-filed issues carry an origin stamp and a fingerprint; never file a
@@ -181,6 +194,15 @@ behavior-preserving refactor, or a private function exported only for a test
 (see [docs/test-suite-audit.md](docs/test-suite-audit.md)). Coverage profiles
 are scheduled evidence only; no package, file or aggregate coverage floor
 exists, and no change is made to move a percentage.
+
+Code that creates rows per key, member, organization, project or other entity
+is tested with at least two of those entities in the same database and scope,
+and asserts that both are usable. One row proves nothing about uniqueness.
+Every UNIQUE or PRIMARY KEY column such a row writes derives from its entity,
+never from a fixed label. `TestInsertsNeverWriteConstantUniqueKeys` in each
+SQLite store package refuses an INSERT that writes constants into every column
+of a unique key, except a singleton upsert whose `ON CONFLICT` key is itself
+constant. A new store package adds the same test.
 
 Focused `go test -timeout=60s ./<touched-package>/...`, `go vet`, targeted
 regressions, and [safety-critical fuzzing](CLAUDE.md#safety-critical-orchestrator-validation)

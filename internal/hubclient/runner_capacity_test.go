@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,19 +26,25 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name        string
-		supported   bool
-		denied      bool
-		dispatch    bool
-		draining    bool
-		retryUpdate bool
+		name              string
+		supported         bool
+		denied            bool
+		dispatch          bool
+		draining          bool
+		retryUpdate       bool
+		reenterControl    bool
+		overlapControl    bool
+		precedingDispatch bool
 	}{
-		{"older Hub", false, false, false, false, false},
-		{"capacity owner Hub", true, false, false, false, false},
-		{"dispatch heartbeat", true, false, true, false, false},
-		{"denied heartbeat", true, true, false, false, false},
-		{"heartbeat upgrade stops claims", true, false, true, true, false},
-		{"failed Hub update retries while drained", true, false, true, true, true},
+		{name: "older Hub"},
+		{name: "capacity owner Hub", supported: true},
+		{name: "dispatch heartbeat", supported: true, dispatch: true},
+		{name: "denied heartbeat", supported: true, denied: true},
+		{name: "heartbeat upgrade stops claims", supported: true, dispatch: true, draining: true},
+		{name: "failed Hub update retries while drained", supported: true, dispatch: true, draining: true, retryUpdate: true},
+		{name: "configuration control permits candidate heartbeat", supported: true, reenterControl: true},
+		{name: "configuration receipt preserves routing order", supported: true, overlapControl: true},
+		{name: "configuration observation follows dispatch heartbeat", supported: true, precedingDispatch: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -77,6 +84,12 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 				snapshot.Routing.UpdateRequest = &updateRequest
 			}
 			calls, observations, applications, appliedLimit := 0, 0, 0, 2
+			dispatching := test.dispatch
+			var observedProject *runnerauth.ProjectConfiguration
+			var responseMu sync.Mutex
+			candidateEntered := make(chan struct{})
+			parentDone := make(chan struct{})
+			candidateDone := make(chan error, 1)
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
@@ -108,28 +121,41 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 						w.WriteHeader(http.StatusBadRequest)
 						return
 					}
-					if test.supported && (report.Configuration == nil || report.Configuration.RuntimeLimit != appliedLimit || report.Capacity != report.Configuration.RuntimeLimit) {
+					if test.supported && !test.overlapControl && (report.Configuration == nil || report.Configuration.RuntimeLimit != appliedLimit || report.Capacity != report.Configuration.RuntimeLimit) {
 						t.Errorf("report=%+v", report)
 					}
 					if !test.supported && report.Configuration != nil {
 						t.Error("sent unsupported configuration authority")
 					}
-					if test.supported && report.Update == nil || !test.supported && report.Update != nil {
+					if test.supported && !test.overlapControl && report.Update == nil || !test.supported && report.Update != nil {
 						t.Errorf("update support report=%+v", report.Update)
 					}
-					if test.supported && !test.dispatch && report.Project == nil || (!test.supported || test.dispatch) && report.Project != nil {
+					if test.supported && !dispatching && !test.overlapControl && report.Project == nil || (!test.supported || dispatching) && report.Project != nil {
 						t.Error("incorrect project configuration capability")
 					}
+					if report.Project != nil {
+						observedProject = report.Project
+					}
+					responseMu.Lock()
 					if report.Project != nil && report.Project.RequestID == projectRequest.RequestID {
 						snapshot.ProjectConfigurationRequest = nil
 					}
 					observations++
+					response := snapshot
+					responseMu.Unlock()
+					if test.overlapControl && report.Project == nil && observations == 2 {
+						close(candidateEntered)
+						select {
+						case <-parentDone:
+						case <-time.After(time.Second):
+						}
+					}
 					if test.denied {
 						w.WriteHeader(http.StatusForbidden)
 						_, _ = w.Write([]byte(`{"code":"access_denied","message":"denied"}`))
 						return
 					}
-					if err := json.NewEncoder(w).Encode(snapshot); err != nil {
+					if err := json.NewEncoder(w).Encode(response); err != nil {
 						t.Error(err)
 					}
 				default:
@@ -172,9 +198,13 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 				updateReport = updateScheduler.EnrolledUpdate(t.Context(), updateReport.Running, nil)
 				updateRequest.ExpectedBuildRevision = updateReport.Revision
 			}
-			scheduler, err := NewScheduler(client, SchedulerConfig{
+			heartbeatInterval := time.Second
+			if test.precedingDispatch {
+				heartbeatInterval = 30 * time.Second
+			}
+			config := SchedulerConfig{
 				OrganizationID: "org_test", NativeProjects: map[string]tracker.ProjectID{"native": "prj_test"},
-				Machine: Machine{ID: file.Identity.MachineID, Hostname: "host", DisplayName: "Runner", Version: "test", Capacity: 2}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute, Now: func() time.Time { return now },
+				Machine: Machine{ID: file.Identity.MachineID, Hostname: "host", DisplayName: "Runner", Version: "test", Capacity: 2}, HeartbeatInterval: heartbeatInterval, LeaseTTL: time.Minute, Now: func() time.Time { return now },
 				UpdateOwner: func(_ context.Context, desired *runnerauth.UpdateRequest) *runnerauth.UpdateObservation {
 					updateCalls++
 					if updateScheduler != nil {
@@ -206,11 +236,16 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 					}
 					return &runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: appliedLimit, ClientLimit: appliedLimit, RuntimeLimit: appliedLimit, Manageable: true, ObservedAt: now}
 				},
-			})
+			}
+			if test.overlapControl {
+				config.UpdateOwner = nil
+				config.CapacityConfiguration = nil
+			}
+			scheduler, err := NewScheduler(client, config)
 			if err != nil {
 				t.Fatal(err)
 			}
-			scheduler.SetProjectConfigurationOwner(func(_ context.Context, project string, desired *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration {
+			scheduler.SetProjectConfigurationOwner(func(ownerCtx context.Context, project string, desired *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration {
 				projectCalls++
 				if project != "prj_test" {
 					t.Errorf("foreign owner project: %s", project)
@@ -226,20 +261,65 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 					}
 				}
 				if desired != nil {
+					if test.overlapControl {
+						now = now.Add(2 * time.Second)
+						go func() {
+							candidateDone <- scheduler.ensureNativeMachine(ownerCtx, scheduler.nativeProjects["native"])
+						}()
+						select {
+						case <-candidateEntered:
+						case <-time.After(3 * time.Second):
+							t.Error("expired candidate heartbeat did not reach the Hub")
+						}
+					}
+					if test.reenterControl {
+						ctx, cancel := context.WithTimeout(ownerCtx, time.Second)
+						done := make(chan error, 1)
+						go func() {
+							done <- scheduler.ensureNativeMachine(ctx, scheduler.nativeProjects["native"])
+						}()
+						select {
+						case err := <-done:
+							if err != nil {
+								t.Errorf("candidate heartbeat during configuration control: %v", err)
+							}
+						case <-ctx.Done():
+							t.Error("configuration control blocked candidate heartbeat")
+						}
+						cancel()
+					}
 					if desired.RequestID != projectRequest.RequestID {
 						t.Error("cached request applied without authenticated heartbeat")
 					}
 					projectApplications++
 					projectReport.RequestID = desired.RequestID
 				}
+				projectReport.ObservedAt = now
 				return projectReport
 			})
 			heartbeats := 2
+			if test.overlapControl {
+				heartbeats = 1
+			}
 			if test.retryUpdate {
 				heartbeats = 4
 			}
 			for heartbeatIndex := range heartbeats {
 				var err error
+				if test.precedingDispatch {
+					dispatching = true
+					if err := scheduler.ensureNativeMachine(t.Context(), scheduler.nativeProjects["native"]); err != nil {
+						t.Fatal(err)
+					}
+					beforeDuplicate := observations
+					if err := scheduler.ensureNativeMachine(t.Context(), scheduler.nativeProjects["native"]); err != nil {
+						t.Fatal(err)
+					}
+					if observations != beforeDuplicate {
+						t.Fatal("recent dispatch heartbeat was not throttled")
+					}
+					dispatching = false
+				}
 				if test.draining {
 					var issues []connector.Issue
 					issues, err = scheduler.fetchNativeCandidate(t.Context(), orchestrator.SchedulingRequest{ProjectID: "native"}, scheduler.nativeProjects["native"])
@@ -251,6 +331,15 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 				} else {
 					err = scheduler.Heartbeat(t.Context())
 				}
+				if test.overlapControl {
+					close(parentDone)
+					if candidateErr := <-candidateDone; candidateErr != nil {
+						t.Errorf("concurrent candidate heartbeat: %v", candidateErr)
+					}
+					if current := client.runner.projectConfigurationRequest(); current != nil {
+						t.Errorf("older heartbeat resurrected completed configuration request: %s", current.RequestID)
+					}
+				}
 				if test.denied {
 					if err == nil {
 						t.Fatal("denied heartbeat succeeded")
@@ -260,13 +349,39 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if test.precedingDispatch && (observedProject == nil || !observedProject.ObservedAt.Equal(now)) {
+					t.Fatalf("dispatch heartbeat prevented a fresh configuration observation: calls=%d report=%+v now=%s", projectCalls, observedProject, now)
+				}
+				if test.precedingDispatch {
+					beforeCalls, beforeReports := projectCalls, observations
+					now = now.Add(time.Second)
+					if err := scheduler.Heartbeat(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+					if projectCalls != beforeCalls || observations != beforeReports {
+						t.Fatal("configuration reporting ignored the configured heartbeat interval")
+					}
+					now = now.Add(-time.Second)
+				}
+				if test.overlapControl {
+					if observations != 3 || projectApplications != 1 {
+						t.Errorf("configuration delivery observations/applications=%d/%d, want 3/1", observations, projectApplications)
+					}
+					return
+				}
 				if test.retryUpdate {
 					wantApplications := []int{1, 1, 2, 2}[heartbeatIndex]
 					if updateApplications != wantApplications {
 						t.Fatalf("heartbeat %d update applications=%d, want %d", heartbeatIndex, updateApplications, wantApplications)
 					}
 				}
-				now = now.Add(time.Second)
+				now = now.Add(heartbeatInterval)
+			}
+			if test.precedingDispatch {
+				if projectCalls != 3 || projectApplications != 1 {
+					t.Fatalf("project calls/applications=%d/%d, want 3/1", projectCalls, projectApplications)
+				}
+				return
 			}
 			if test.supported && !test.denied && (calls != 2*heartbeats || applications != heartbeats || scheduler.machine.Capacity != 6) || !test.supported && calls != 0 || test.denied && (calls != 1 || applications != 0 || scheduler.machine.Capacity != 2) {
 				t.Fatalf("calls/applications/capacity=%d/%d/%d", calls, applications, scheduler.machine.Capacity)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -66,8 +67,10 @@ func (s *Service) approveProjectPolicy(c echo.Context) error {
 	if err := decodeAPIJSON(c, &change); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	if err := change.Policy.Validate(); err != nil {
-		return s.nativeAPIError(c, nativeInvalid(err.Error()))
+	if change.ObservedPolicyID == "" {
+		if err := change.Policy.Validate(); err != nil {
+			return s.nativeAPIError(c, nativeInvalid(err.Error()))
+		}
 	}
 	scope, err := s.policyScope(c)
 	if err != nil {
@@ -191,7 +194,11 @@ func (s *Service) revokeProjectPolicy(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	_, err = revokeProjectPolicyInTx(c.Request().Context(), s.database.db, scope, request.ExpectedID)
+	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	if !ok || credential.ID == "" {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	_, err = s.database.revokePolicy(c.Request().Context(), scope, credential.ID, request.ExpectedID)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -215,6 +222,28 @@ func (d *database) approvePolicy(ctx context.Context, scope, actor string, chang
 	return result, d.commit(ctx, tx)
 }
 func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor string, change policy.Change) (result policy.Approval, resultErr error) {
+	if change.ObservedPolicyID != "" {
+		if !reflect.ValueOf(change.Policy).IsZero() {
+			return result, nativeInvalid("Supply either observed_policy_id or policy, not both")
+		}
+		now, err := d.currentTime()
+		if err != nil {
+			return result, err
+		}
+		observed, err := readObservedPolicies(ctx, tx, scope, policy.Descriptor{}, now)
+		if err != nil {
+			return result, err
+		}
+		for _, candidate := range observed {
+			if candidate.Policy.ID == change.ObservedPolicyID {
+				change.Policy = candidate.Policy
+				break
+			}
+		}
+		if change.Policy.ID == "" {
+			return result, nativeInvalid("observed_policy_id does not identify a current authorized observation in this project")
+		}
+	}
 	resolved, err := workflowconfig.ResolveSharedPolicy(change.Policy)
 	if err != nil {
 		return result, nativeInvalid(err.Error())
@@ -287,6 +316,11 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 	}
 	if err := followDefaultChangeReviewPolicy(ctx, tx, scope, change.Policy); err != nil {
 		return result, err
+	}
+	if current != change.Policy.ID {
+		if err := routeStaleNativeLandingChanges(ctx, tx, scope, actor, change.Policy.ID, now); err != nil {
+			return result, err
+		}
 	}
 	result, err = readProjectPolicy(ctx, tx, scope)
 	if err != nil {
@@ -572,8 +606,29 @@ JOIN policy_revisions p ON p.scope = lp.scope AND p.policy_id = lp.policy_id WHE
 	return nil
 }
 
-func revokeProjectPolicyInTx(ctx context.Context, exec hostedExecer, scope, expectedID string) (any, error) {
-	result, err := exec.ExecContext(ctx, "DELETE FROM project_policies WHERE scope = ? AND policy_id = ?", scope, expectedID)
+func (d *database) revokePolicy(ctx context.Context, scope, actor, expectedID string) (result any, resultErr error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, tx.Rollback())
+		}
+	}()
+	now, err := d.currentTime()
+	if err != nil {
+		return nil, err
+	}
+	result, err = revokeProjectPolicyInTx(ctx, tx, scope, actor, expectedID, now)
+	if err != nil {
+		return nil, err
+	}
+	return result, d.commit(ctx, tx)
+}
+
+func revokeProjectPolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor, expectedID string, now time.Time) (any, error) {
+	result, err := tx.ExecContext(ctx, "DELETE FROM project_policies WHERE scope = ? AND policy_id = ?", scope, expectedID)
 	if err != nil {
 		return nil, err
 	}
@@ -583,6 +638,9 @@ func revokeProjectPolicyInTx(ctx context.Context, exec hostedExecer, scope, expe
 	}
 	if count != 1 {
 		return nil, policyMismatch("Policy changed or is already revoked; inspect the current approval before revoking it")
+	}
+	if err := routeStaleNativeLandingChanges(ctx, tx, scope, actor, "", now); err != nil {
+		return nil, err
 	}
 	return struct {
 		Status string `json:"status"`

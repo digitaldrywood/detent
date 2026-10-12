@@ -495,6 +495,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		publicationRestore      bool
 		publicationUncertain    bool
 		publicationReference    string
+		publicationRefused      bool
 		publicationHistory      bool
 		wantChange              *runner.NativeChange
 		wantDiagnostic          string
@@ -506,6 +507,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "required PR retains its publication receipt on historical versions", requiredPR: true, publicationHistory: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChanges: 1, wantVersions: 1},
 		{name: "required PR adopts a retained branch under human hold", requiredPR: true, publicationReference: "current", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 1},
 		{name: "required PR reuses the previous version PR after recommit", requiredPR: true, publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 2},
+		{name: "required PR reuses latest published head after refused landing", requiredPR: true, publicationReference: "previous", publicationRefused: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 3},
 		{name: "required PR refuses an unknown retained branch head", requiredPR: true, publicationReference: "unknown", publicationFailure: "identity", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 2},
 		{name: "required PR refuses unrelated ambiguous external effect", requiredPR: true, publicationUncertain: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "required PR no edit Rework preserves human hold", requiredPR: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
@@ -615,6 +617,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			var ci *NativeClient
 			var publicationOwner *nativeExecution
 			var publicationPrevious string
+			var refusedPublication tracker.ChangeVersion
 			if test.requiredPR {
 				source := nativeChangeSourceRepo(t)
 				remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
@@ -777,7 +780,12 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					if test.publicationReference != "" {
 						external = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: nativeChangeRepository + "/pull/7"}
 						if test.publicationReference != "current" {
-							old := h.publishCapturedExternal(t, item, earlier.ID, publicationPrevious, nil, external, "", base)
+							if test.publicationRefused {
+								older := h.publishCapturedExternal(t, item, earlier.ID, strings.Repeat("d", 40), nil, external, "", base)
+								previous = older.ID
+							}
+							old := h.publishCapturedExternal(t, item, earlier.ID, publicationPrevious, nil, external, previous, base)
+							refusedPublication = old
 							previous, external = old.ID, nil
 						}
 					}
@@ -831,6 +839,18 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			}
 			if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: test.role, Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)
+			}
+			if test.publicationRefused {
+				if err := execution.(runner.LandingRuntimeExecution).ObserveLanding(guarded, runner.NativeLanding{ChangeID: refusedPublication.ChangeID, VersionID: refusedPublication.ID, HeadSHA: refusedPublication.HeadSHA, RefusalKind: workspace.LandRefusalProtected}); err != nil {
+					t.Fatal(err)
+				}
+				if err := publicationOwner.FlushRuntime(guarded); err != nil {
+					t.Fatal(err)
+				}
+				original, err = h.admin.Change(t.Context(), item, refusedPublication.ChangeID)
+				if err != nil || original.Versions[1].Landing == nil || original.Versions[1].Landing.Landed {
+					t.Fatalf("prior publication refusal was not retained: %v", err)
+				}
 			}
 			checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: test.worktree, HeadSHA: test.checkpointHead, ExternalEffect: "none", EffectState: "none"}
 			if test.publicationUncertain {
@@ -1498,6 +1518,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 	dependencyDisposition := &tracker.NativeDisposition{Status: "blocked", Blockers: true, BlockerEvidence: []workpad.Blocker{{Ref: "prj_6d4919bebd73446798e6cd807feda10e#750", Identifier: "prj_6d4919bebd73446798e6cd807feda10e#750", Owner: workpad.BlockerOwnerOrchestrator, Reason: "prerequisite remains Backlog", RecheckInterval: "tick", Predicate: &workpad.Predicate{Type: workpad.PredicateIssueState, Ref: "prj_6d4919bebd73446798e6cd807feda10e#750", Identifier: "prj_6d4919bebd73446798e6cd807feda10e#750", States: []string{"done"}}}}}
 	instanceDisposition := &tracker.NativeDisposition{Status: "blocked", Blockers: true, BlockerEvidence: []workpad.Blocker{{Ref: "instance:tool", Owner: workpad.BlockerOwnerInstance, Reason: "effective host gate lacks a passing current-head receipt", Unverifiable: true}}}
 	for _, test := range []struct {
+		sourceFixture    string
 		finalMessage     string
 		wantDisposition  *tracker.NativeDisposition
 		reconnect        bool
@@ -1581,6 +1602,10 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "commits", commit: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "initial interactive code stays conversation owned", interactive: true, staged: true, wantNone: true, wantState: "In Progress"},
 		{name: "same worker reconnects during a provider command and publishes once", reconnect: true, staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
+		{name: "inherited synthetic fixtures publish", sourceFixture: "synthetic", staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
+		{name: "introduced credential refuses publication", sourceFixture: "introduced", staged: true},
+		{name: "inherited credential refuses publication", sourceFixture: "inherited", staged: true},
+		{name: "unsafe intermediate commit refuses publication", sourceFixture: "history", staged: true},
 		{name: "host commits staged code", staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "expired parent publishes completed staged code", expired: true, staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "expired parent publishes with native validation", expired: true, staged: true, validator: "pass", land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
@@ -1710,6 +1735,30 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				issue = h.createInProgress(t, "Update the README")
 			}
 			source := nativeChangeSourceRepo(t)
+			fixtures := map[string]string{}
+			credential := "ghp_" + strings.Repeat("Z", 36)
+			if test.sourceFixture != "" {
+				for _, name := range []string{"health_email_test.go", "slack_delivery_test.go"} {
+					data, err := os.ReadFile(filepath.Join("..", "hubserver", name))
+					if err != nil {
+						t.Fatal(err)
+					}
+					path := filepath.Join("internal", "hubserver", name)
+					fixtures[path] = string(data)
+					if err := os.MkdirAll(filepath.Join(source, "internal", "hubserver"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					content := string(data)
+					if test.sourceFixture == "inherited" {
+						content += "\n" + credential
+					}
+					if err := os.WriteFile(filepath.Join(source, path), []byte(content), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				nativeChangeGit(t, source, "add", "internal/hubserver")
+				nativeChangeGit(t, source, "commit", "-m", "inherited notification fixtures")
+			}
 			if test.dependencyOnly {
 				for name, content := range map[string]string{
 					"frontend/package.json": `{"dependencies":{"@radix-ui/themes":"1"}}`,
@@ -1989,6 +2038,28 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				nativeChangeGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-signer"))
 			}
 			provider := &committingAgent{finalMessage: test.finalMessage, dependencyOnly: test.dependencyOnly, failedCheck: test.failedCheck, commit: test.commit, dirty: test.dirty, staged: test.staged || genuinePublication, validator: test.validator, lowScore: test.lowScore, complete: test.absorbed, hold: test.hold, inProgress: test.lateConflict}
+			if test.sourceFixture != "" {
+				provider.duringTurn = func() {
+					for path, original := range fixtures {
+						file := filepath.Join(provider.workspace, path)
+						if test.sourceFixture == "history" {
+							if err := os.WriteFile(file, []byte(original+"\n"+credential), 0o600); err != nil {
+								t.Fatal(err)
+							}
+							nativeChangeGit(t, provider.workspace, "add", path)
+							nativeChangeGit(t, provider.workspace, "commit", "-m", "unsafe intermediate fixture")
+						}
+						content := original + "\n"
+						if test.sourceFixture == "inherited" || test.sourceFixture == "introduced" {
+							content += credential + "\n"
+						}
+						if err := os.WriteFile(file, []byte(content), 0o600); err != nil {
+							t.Fatal(err)
+						}
+						nativeChangeGit(t, provider.workspace, "add", path)
+					}
+				}
+			}
 			var targetHead string
 			if test.advanceTarget {
 				provider.duringTurn = func() {
@@ -2720,6 +2791,12 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				}
 			}
 			change := result.NativeChange
+			if test.sourceFixture != "" && test.sourceFixture != "synthetic" {
+				if change == nil || change.Changed || change.VersionID != "" || change.VersionError != "checkpoint could not be safely published: possible credential in selected content" || len(h.changes(t, issue.ID)) != 0 {
+					t.Fatal("unsafe source was published or lost its capture refusal")
+				}
+				return
+			}
 			if test.advanceTarget {
 				attempt := executionID("attempt", string(execution.Recovery().Lease.ID))
 				var stored tracker.AttemptDiff
@@ -2878,6 +2955,23 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					owner := execution.(*nativeExecution).data
 					if version.ID != change.VersionID || version.ID != detail.Change.CurrentVersion || version.HeadSHA != stored.HeadSHA || version.BaseSHA != stored.BaseSHA || version.AttemptID != attemptID || version.RunID != owner.RunID || version.PolicyID != owner.PolicyID {
 						t.Fatalf("published version lost finalized attempt/head/policy identity: %+v", version)
+					}
+					if test.sourceFixture == "synthetic" {
+						bundle, err := h.admin.ChangeSource(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID, version.ID)
+						if err != nil || version.Source == nil {
+							t.Fatalf("published synthetic source unavailable: %v", err)
+						}
+						if err := version.Source.Validate(version.BaseSHA, version.HeadSHA, bundle); err != nil {
+							t.Fatal(err)
+						}
+						var paths []string
+						for _, file := range stored.Files {
+							paths = append(paths, file.Path)
+						}
+						slices.Sort(paths)
+						if !slices.Equal(paths, []string{"CHANGE.md", "internal/hubserver/health_email_test.go", "internal/hubserver/slack_delivery_test.go"}) || stored.Producer.LeaseID != owner.LeaseID || stored.Producer.FencingToken != owner.FencingToken {
+							t.Fatal("synthetic source lost approved paths or runner fencing")
+						}
 					}
 				}
 				if test.rework {

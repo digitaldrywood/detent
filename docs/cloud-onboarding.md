@@ -380,8 +380,9 @@ configuration evidence, not a storage-health or offline-availability guarantee.
 
 Native issue creation works with GitHub disabled. To connect GitHub:
 
-1. Associate the repository as `owner/name` in Project setup after cloning it on
-   an enrolled runner.
+1. Associate the repository as `owner/name` in Project setup. An enrolled runner
+   clones it using its own Git credentials; setup shows progress until the
+   runner reports the matching checkout. No manual clone is required.
 2. [Install the Detent Cloud GitHub App](https://github.com/apps/detent-cloud/installations/new)
    on the repository or organization. Choose all repositories or only selected
    repositories, including this project's repository. The App requests Issues

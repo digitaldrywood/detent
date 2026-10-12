@@ -2,6 +2,8 @@ package hubclient
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -217,6 +219,8 @@ func (r nativeDependencyRecoveryRunner) Run(ctx context.Context, request runner.
 func TestNativeRecordedDependencyAdmission(t *testing.T) {
 	for _, test := range []struct {
 		name, refusal string
+		reasonCode    string
+		laterLease    string
 		qualified     bool
 		advancePolicy bool
 		dirty         bool
@@ -226,11 +230,20 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 	}{
 		{name: "reported prerequisite registers dependency hold"},
 		{name: "instance-owned blocker recovers on any runner without a dependency", instance: true},
+		{name: "typed instance reason recovers after ended claim", instance: true, reasonCode: "instance_limitation", laterLease: "released", dirty: true},
+		{name: "typed instance reason preserves human hold", instance: true, reasonCode: "instance_limitation", refusal: "human"},
+		{name: "typed instance reason preserves policy hold", instance: true, reasonCode: "instance_limitation", refusal: "policy"},
+		{name: "instance evidence preserves permission reason", instance: true, reasonCode: "permission_wait", refusal: "reason"},
+		{name: "instance evidence preserves unknown reason", instance: true, reasonCode: "unknown_hold", refusal: "reason"},
 		{name: "canonical native reference", qualified: true},
 		{name: "last reported prerequisite releases hold", second: true},
 		{name: "external prerequisite retains hold", external: true, refusal: "external"},
 		{name: "dirty1067 canonical prerequisite retains checkpoint and recovery", qualified: true, dirty: true},
 		{name: "new approved policy recovers historical report", advancePolicy: true},
+		{name: "later released claim retains recorded recovery", laterLease: "released", dirty: true},
+		{name: "later expired claim retains recorded recovery", laterLease: "expired", dirty: true},
+		{name: "later active claim retains hold", laterLease: "active", refusal: "active"},
+		{name: "later completed attempt supersedes report", laterLease: "attempt", refusal: "attempt"},
 		{name: "human action retains hold", refusal: "human"},
 		{name: "operator transition retains hold", refusal: "operator"},
 		{name: "stale revision cannot recover", refusal: "revision"},
@@ -309,7 +322,10 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 				report = strings.Replace(report, reference, "vendor/service#42", 1)
 			}
 			if test.instance {
-				report = "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: 'instance:check-barrier'\n    reason: barrier failed on this host\n    owner: instance\nhuman_action: null\n```"
+				report = fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: 'instance:check-barrier'\n    reason: barrier failed on this host\n    owner: instance\nhuman_action: %s\n```", human)
+			}
+			if test.reasonCode != "" {
+				report = strings.Replace(report, "status: blocked", "status: blocked\nreason_code: "+test.reasonCode, 1)
 			}
 			if test.second {
 				report = strings.Replace(report, "human_action:", fmt.Sprintf("  - ref: '#%d'\n    reason: second prerequisite must finish\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\nhuman_action:", second.Number), 1)
@@ -381,8 +397,60 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 					t.Fatal("run.finished omitted dirty terminal disposition")
 				}
 			}
+			latestFence := attempt.FencingToken
+			if test.laterLease != "" {
+				h.reopen(func(path string) error {
+					db, err := sql.Open("sqlite", path)
+					if err != nil {
+						return err
+					}
+					now := time.Now().UTC()
+					expires := now.Add(time.Hour)
+					var released any
+					switch test.laterLease {
+					case "released", "attempt":
+						released = now.Format(time.RFC3339Nano)
+					case "expired":
+						expires = now.Add(-time.Minute)
+					}
+					result, err := db.ExecContext(t.Context(), `INSERT INTO leases (lease_id, issue_id, machine_id, session_id, expires_at, acquired_at, renewed_at, released_at, created_at, updated_at, work_item_revision)
+SELECT 'later-lease', issue_id, machine_id, 'later-session', ?, acquired_at, renewed_at, ?, created_at, updated_at, work_item_revision FROM leases WHERE lease_id = ?`, expires.Format(time.RFC3339Nano), released, attempt.LeaseID)
+					if err != nil {
+						return errors.Join(err, db.Close())
+					}
+					fence, err := result.LastInsertId()
+					if err != nil {
+						return errors.Join(err, db.Close())
+					}
+					latestFence = tracker.FencingToken(fence)
+					if test.laterLease == "attempt" {
+						data := attempt.NativeRunData
+						data.AttemptID, data.LeaseID, data.FencingToken = "later-attempt", "later-lease", latestFence
+						data.RunID, data.SessionID = "later-run", "later-session"
+						encoded, err := json.Marshal(data)
+						if err != nil {
+							return errors.Join(err, db.Close())
+						}
+						_, err = db.ExecContext(t.Context(), `INSERT INTO native_attempts (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, started_at, updated_at, work_item_revision, dispatch_generation)
+SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, ?, started_at, updated_at, work_item_revision, dispatch_generation FROM native_attempts WHERE id = ?`, data.AttemptID, data.LeaseID, data.FencingToken, data.RunID, string(encoded), attempt.AttemptID)
+						if err != nil {
+							return errors.Join(err, db.Close())
+						}
+					}
+					return db.Close()
+				})
+			}
 			request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "too-early", LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}, PolicyID: h.descriptor.ID, BlockerAttemptID: attempt.AttemptID, ExpectedRevision: blocked.Revision, State: prior, Reason: "dependency_ready", ReasonDetail: "recorded_blocker_recovery"}
 			if test.instance {
+				if test.refusal == "policy" {
+					h.repolicy(t)
+				}
+				if test.refusal != "" {
+					if _, err := h.otherWorker(t).Transition(t.Context(), blocked.WorkItemID, request); err == nil || h.state(t, issue.ID) != "Blocked" {
+						t.Fatalf("%s authority was bypassed: %v", test.refusal, err)
+					}
+					return
+				}
 				if _, err := h.otherWorker(t).Transition(t.Context(), blocked.WorkItemID, request); err != nil || h.state(t, issue.ID) != prior {
 					t.Fatalf("instance-owned blocker recovery = %v, state %s, want %s", err, h.state(t, issue.ID), prior)
 				}
@@ -394,7 +462,7 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			if len(h.candidates(t)) != 0 {
 				t.Fatal("blocked prerequisite was admitted")
 			}
-			if test.refusal != "" {
+			if test.refusal != "" || test.laterLease != "" {
 				if _, err := h.admin.Transition(t.Context(), prerequisite.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: prerequisite.Revision, State: "Done", Reason: "user_requested"}); err != nil {
 					t.Fatal(err)
 				}
@@ -417,10 +485,23 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 				h.repolicy(t)
 			}
 			if test.refusal != "" {
-				if _, err := h.native.Transition(t.Context(), blocked.WorkItemID, request); err == nil || h.state(t, issue.ID) != "Blocked" {
+				_, err := h.native.Transition(t.Context(), blocked.WorkItemID, request)
+				if err == nil || h.state(t, issue.ID) != "Blocked" {
 					t.Fatalf("%s authority was bypassed: %v", test.refusal, err)
 				}
+				if test.laterLease != "" {
+					var failure *APIError
+					if !errors.As(err, &failure) || failure.Status != http.StatusConflict || failure.Code != "stale_fencing_token" {
+						t.Fatalf("newer authority refusal = %v, want stale fencing", err)
+					}
+				}
 				return
+			}
+			if test.laterLease != "" {
+				request.ReasonDetail = "dependency_auto_unblock"
+				if _, err := h.native.Transition(t.Context(), blocked.WorkItemID, request); err != nil {
+					t.Fatalf("ended claim without an attempt prevented recorded recovery: %v", err)
+				}
 			}
 			if test.advancePolicy {
 				h.repolicy(t)
@@ -469,12 +550,14 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 					}
 				}
 			}
-			waitHolding(wantBlockers)
-			if _, err := h.admin.Transition(t.Context(), prerequisite.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: prerequisite.Revision, State: "Done", Reason: "user_requested"}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := orch.RequestRefresh(t.Context()); err != nil {
-				t.Fatal(err)
+			if test.laterLease == "" {
+				waitHolding(wantBlockers)
+				if _, err := h.admin.Transition(t.Context(), prerequisite.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: prerequisite.Revision, State: "Done", Reason: "user_requested"}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := orch.RequestRefresh(t.Context()); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if test.second {
 				waitHolding(1)
@@ -492,7 +575,7 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 				}
 				if test.dirty {
 					fresh, ok := run.Execution.(*nativeExecution)
-					if !ok || fresh.claim.lease.FencingToken <= attempt.FencingToken || len(fresh.Recovery().Attempts) != 1 || !reflect.DeepEqual(fresh.Recovery().Attempts[0].Checkpoint, &checkpoint) {
+					if !ok || fresh.claim.lease.FencingToken <= latestFence || len(fresh.Recovery().Attempts) != 1 || !reflect.DeepEqual(fresh.Recovery().Attempts[0].Checkpoint, &checkpoint) {
 						t.Fatal("prerequisite recovery lost fresh fencing or retained dirty checkpoint")
 					}
 				}

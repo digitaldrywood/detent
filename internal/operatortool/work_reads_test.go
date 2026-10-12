@@ -128,7 +128,12 @@ func TestWorkReadDirectAuthorityAndSafeFailure(t *testing.T) {
 				if !errors.Is(err, ErrAccessDenied) || probe.calls != 0 {
 					t.Fatalf("err=%v calls=%d", err, probe.calls)
 				}
-			case test.failure != nil || test.oversized:
+			case test.oversized:
+				var size *ResultTooLargeError
+				if !errors.As(err, &size) || size.SizeBytes != len(probe.content) || size.LimitBytes != MaxResultBytes || errors.Is(err, ErrReadUnavailable) {
+					t.Fatalf("oversize cause = %v", err)
+				}
+			case test.failure != nil:
 				if !errors.Is(err, ErrReadUnavailable) {
 					t.Fatal(err)
 				}

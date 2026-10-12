@@ -285,7 +285,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 		{name: "unrecorded check scope", want: "unknown", edit: func(r *tracker.NativeLandingReceipt) { r.Gate.Evidence.Checks = nil }},
 		{name: "environment differs", want: "different_environment", edit: func(r *tracker.NativeLandingReceipt) { r.Gate.Evidence.Checks[0].Environment.OS = "darwin" }},
 		{name: "unknown historical metadata", want: "unknown", edit: func(r *tracker.NativeLandingReceipt) { r.Gate.Evidence = nil }},
-		{name: "same content and check passes locally", want: "local_pass_scheduled_failure"},
+		{name: "same content and check passes locally", want: "local_pass_scheduled_failure", edit: func(r *tracker.NativeLandingReceipt) { r.Gate.Output = strings.Repeat("界", 21000) }},
 		{name: "earlier Change is only a candidate", want: "local_pass_scheduled_failure", edit: func(r *tracker.NativeLandingReceipt) { r.MergeSHA = strings.Repeat("9", 40) }},
 	} {
 		t.Run("validation audit "+test.name, func(t *testing.T) {
@@ -307,6 +307,17 @@ func TestOperatorChangeCommands(t *testing.T) {
 			var value operatortool.ChangeResult
 			if err != nil || json.Unmarshal(result.Content, &value) != nil || value.ValidationAudit == nil || len(value.ValidationAudit.Occurrences) != 1 {
 				t.Fatalf("audit=%s %v", result.Content, err)
+			}
+			if test.name == "same content and check passes locally" {
+				want := *receipt.Gate
+				want.Output, want.OutputTruncated = strings.Repeat("界", 1365), true
+				if len(value.Detail.Versions) != 1 || value.Detail.Versions[0].Landing == nil || !reflect.DeepEqual(value.Detail.Versions[0].Landing.Gate, &want) {
+					t.Fatal("landing receipt lost identity or explicit output excerpt")
+				}
+				stored, err := readVersionLanding(ctx, f.service.database.db, version.ID)
+				if err != nil || !reflect.DeepEqual(stored.Gate, receipt.Gate) {
+					t.Fatalf("bounded landing read changed canonical output: %v", err)
+				}
 			}
 			occurrence := value.ValidationAudit.Occurrences[0]
 			if occurrence.Source.WorkItemID != report.WorkItemID || occurrence.Source.Actor.PrincipalID == "" || len(occurrence.Comparisons) != 1 {
@@ -558,6 +569,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 			input := changeTestInput()
 			input.PolicyID = descriptor.ID
 			input.HeadSHA = strings.Repeat(strconv.Itoa(i+1), 40)
+			input.Validation = &gate.CommandResult{Command: "make check-land", HeadSHA: input.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 1, Output: strings.Repeat("界", 21000), Evidence: &gate.CommandEvidence{}}
 			bundle := []byte("retained admission fixture")
 			input.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "large-version-" + strconv.Itoa(i)}, ExpectedVersionID: current.ID, ChangeVersionInput: input, SourceBundle: bundle})
@@ -579,16 +591,50 @@ func TestOperatorChangeCommands(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		assertVersion := func(got tracker.ChangeVersion) {
+			t.Helper()
+			want := versions[got.ID]
+			if want.Validation != nil {
+				command := *want.Validation
+				command.Output, command.OutputTruncated = strings.Repeat("界", 1365), true
+				want.Validation = &command
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatal("version identity or validation receipt changed beyond explicit output excerpt")
+			}
+		}
 		actor := current.Actor
 		for i := range 9 {
 			id := strconv.Itoa(i)
-			insert(ctx, "review", current.ID, tracker.ChangeReview{ID: "review_" + id, VersionID: current.ID, Decision: "commented", Body: strings.Repeat("é<\n", 5000), Actor: actor, CreatedAt: at, Validator: &gate.ValidatorResult{VersionID: current.ID, HeadSHA: current.HeadSHA, Verdict: "approved", Submitted: true}})
+			validator := &gate.ValidatorResult{VersionID: current.ID, HeadSHA: current.HeadSHA, Verdict: "approved", Submitted: true}
+			if i == 0 {
+				validator.Verdict = gate.ValidatorVerdictRework
+				validator.NotVerified = []string{"missing journey"}
+				validator.Findings = []gate.Finding{{Severity: "p1", Body: "failed journey"}}
+				validator.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: "missing journey", Kind: gate.EvidenceNotVerified, Reference: "test journey", ReceiptIDs: []string{"receipt_0", "receipt_1"}, HeadSHA: current.HeadSHA, TreeSHA: strings.Repeat("d", 40), Behavior: "failed command"}}
+				for command := range 5 {
+					output := strings.Repeat("界", 21000)
+					if command == 4 {
+						output = "short diagnostic <failure>\n"
+					}
+					validator.Commands = append(validator.Commands, gate.CommandResult{ReceiptID: "receipt_" + strconv.Itoa(command), Command: "check " + strconv.Itoa(command), HeadSHA: current.HeadSHA, TreeSHA: strings.Repeat("d", 40), ExitCode: command % 2, DurationNS: 1, Output: output, OutputTruncated: command >= 3})
+				}
+			}
+			insert(ctx, "review", current.ID, tracker.ChangeReview{ID: "review_" + id, VersionID: current.ID, Decision: "commented", Body: strings.Repeat("é<\n", 5000), Actor: actor, CreatedAt: at, Validator: validator})
 			insert(ctx, "check", current.ID, tracker.ChangeCheck{VersionID: current.ID, ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: "check_" + id, HeadSHA: current.HeadSHA, Conclusion: "failure", Evidence: []tracker.ChangeArtifact{current.Code}}, Actor: actor, ReceivedAt: at})
 			insert(ctx, "discussion", current.ID, tracker.ChangeDiscussion{ID: "discussion_" + id, VersionID: current.ID, Body: strings.Repeat("世界<\n", 5000), Actor: actor, CreatedAt: at})
 		}
 		full := f.detail(t)
 		for _, stored := range full.Versions {
 			versions[stored.ID] = stored
+		}
+		for _, review := range full.Reviews {
+			if review.ID == "review_0" {
+				raw, err := json.Marshal(operatortool.ChangeResult{Detail: &tracker.ChangeDetail{Change: full.Change, Versions: []tracker.ChangeVersion{current}, Reviews: []tracker.ChangeReview{review}}})
+				if err != nil || len(raw) <= operatortool.MaxResultBytes {
+					t.Fatalf("single output-heavy review did not exceed budget: bytes=%d %v", len(raw), err)
+				}
+			}
 		}
 		old, err := json.Marshal(operatortool.ChangeResult{Detail: &full})
 		if err != nil || len(old) <= operatortool.MaxResultBytes {
@@ -614,15 +660,22 @@ func TestOperatorChangeCommands(t *testing.T) {
 			}
 			return value
 		}
+		one := base
+		one.Section, one.Limit = "reviews", 1
+		selected := read(one)
+		if len(selected.Detail.Reviews) != 1 || selected.Detail.Reviews[0].ID != "review_0" {
+			t.Fatal("output-heavy review was not readable")
+		}
 		first := read(base)
 		currentBytes, err := json.Marshal(first)
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Logf("old_aggregate_bytes=%d current_page_bytes=%d policy_bytes=%d versions=%d", len(old), len(currentBytes), len(policyBytes), len(versions))
-		if first.Read.VersionID != current.ID || first.Read.Complete || len(first.Detail.Versions) != 1 || !reflect.DeepEqual(first.Detail.Versions[0], current) || first.Detail.Summary.NativeReview == "approved" || first.Detail.Summary.Checks == "passed" {
+		if first.Read.VersionID != current.ID || first.Read.Complete || len(first.Detail.Versions) != 1 || first.Detail.Summary.NativeReview == "approved" || first.Detail.Summary.Checks == "passed" {
 			t.Fatalf("current identity or readiness lost: %+v", first.Read)
 		}
+		assertVersion(first.Detail.Versions[0])
 		for _, section := range []string{"versions", "reviews", "checks", "discussion"} {
 			seen := map[string]bool{}
 			collect := func(value operatortool.ChangeResult) {
@@ -631,13 +684,29 @@ func TestOperatorChangeCommands(t *testing.T) {
 				switch section {
 				case "versions":
 					for _, v := range value.Detail.Versions {
-						if !reflect.DeepEqual(v, versions[v.ID]) {
-							t.Fatal("historical policy/source/artifact identity changed")
-						}
+						assertVersion(v)
 						ids = append(ids, v.ID)
 					}
 				case "reviews":
 					for _, r := range value.Detail.Reviews {
+						for _, stored := range full.Reviews {
+							if stored.ID != r.ID {
+								continue
+							}
+							want := stored
+							validator := *stored.Validator
+							validator.Commands = append([]gate.CommandResult(nil), validator.Commands...)
+							for i := range validator.Commands {
+								if i < 4 {
+									validator.Commands[i].Output = strings.Repeat("界", 1365)
+									validator.Commands[i].OutputTruncated = true
+								}
+							}
+							want.Validator = &validator
+							if !reflect.DeepEqual(r, want) {
+								t.Fatal("review verdict, criteria, receipt identity or output disclosure changed")
+							}
+						}
 						ids = append(ids, r.ID)
 					}
 				case "checks":
@@ -678,6 +747,9 @@ func TestOperatorChangeCommands(t *testing.T) {
 			if len(seen) != want {
 				t.Fatalf("lost %s identities: got %d want %d", section, len(seen), want)
 			}
+		}
+		if stored := f.detail(t); !reflect.DeepEqual(stored, full) {
+			t.Fatal("bounded reads changed canonical records or original command output")
 		}
 		args := base
 		args.VersionID = version.ID
@@ -733,7 +805,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 			t.Fatalf("exact historical version blocked by oversized current evidence: %v", err)
 		}
 		input := current.ChangeVersionInput
-		input.HeadSHA, input.Source = strings.Repeat("7", 40), nil
+		input.HeadSHA, input.Source, input.Validation = strings.Repeat("7", 40), nil, nil
 		response = performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "advance-after-cursor"}, ExpectedVersionID: current.ID, ChangeVersionInput: input})
 		requireNativeStatus(t, response, http.StatusOK)
 		args = base

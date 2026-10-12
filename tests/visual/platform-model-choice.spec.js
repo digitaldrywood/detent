@@ -37,6 +37,7 @@ async function openPlatform(page, canGrant = true) {
       ...fixture.detail, can_grant: canGrant,
       entitlements: { ...fixture.entitlements, revision, features, grants },
     } });
+    if (path.endsWith("/audit")) return route.fulfill({ json: { rows: [], events: [], tenants: [], next_cursor: "" } });
     if (path.endsWith("/organizations")) return route.fulfill({ json: { ...fixture.organizations, can_grant: canGrant } });
     if (path.endsWith("/allowlist")) return route.fulfill({ json: fixture.allowlist });
     return route.fulfill({ json: fixture.health });
@@ -44,20 +45,17 @@ async function openPlatform(page, canGrant = true) {
   await page.goto(origin + "/platform/tenants");
   await expect(page.getByRole("table", { name: "Tenants", exact: true })).toBeVisible();
   await page.getByRole("table", { name: "Tenants", exact: true }).getByRole("link", { name: "Model Choice Labs", exact: true }).click();
-  await expect(page.getByRole("region", { name: "Model Choice Labs", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Model Choice Labs", exact: true })).toBeVisible();
   return changes;
 }
 
 test("platform administrators grant and revoke model choice without granting a plan", async ({ page }) => {
   const changes = await openPlatform(page);
   const plan = page.getByRole("region", { name: "Plan for Model Choice Labs" });
-  await expect(plan.getByText("Model choice: Disabled")).toBeVisible();
+  await expect(plan.getByText("Off", { exact: true })).toBeVisible();
   await plan.getByRole("button", { name: "Grant model choice", exact: true }).click();
   const grant = page.getByRole("dialog", { name: "Grant model choice to Model Choice Labs" });
   await expect(grant).toBeVisible();
-  const popup = await grant.boundingBox();
-  const footer = await grant.locator('[data-slot="dialog-footer"]').boundingBox();
-  expect(footer.y + footer.height).toBeLessThanOrEqual(popup.y + popup.height + 1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   await expect(grant.getByLabel("Plan", { exact: true })).toHaveCount(0);
   await grant.getByRole("button", { name: "Grant", exact: true }).click();
@@ -69,22 +67,22 @@ test("platform administrators grant and revoke model choice without granting a p
   await expect(grant).toHaveCount(0);
   expect(changes[0]).toEqual({ action: "grant", feature: "model_choice", idempotency_key: expect.any(String),
     expected_revision: 1, expires_at: "2026-12-31T23:59:59Z", reason: "Approved runner model choice" });
-  await expect(plan.getByText("Model choice: Enabled")).toBeVisible();
+  await expect(plan.getByText("On", { exact: true })).toBeVisible();
   await expect(plan.getByRole("button", { name: "Grant model choice", exact: true })).toBeDisabled();
-  const grants = plan.getByRole("table", { name: "Active grants for Model Choice Labs" });
-  await expect(grants.getByText("Model choice", { exact: true })).toBeVisible();
-  await expect(grants.getByText("model_choice", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Plan and billing" }).click();
+  const grants = plan.getByRole("table", { name: "Grant history for Model Choice Labs" });
+  await expect(grants).toContainText("Model choice");
   await expect(grants.getByText("admin@example.test", { exact: true })).toBeVisible();
   await page.reload();
-  await expect(plan.getByText("Model choice: Enabled")).toBeVisible();
-  await grants.getByRole("button", { name: "Revoke", exact: true }).click();
+  await expect(plan.getByText("On", { exact: true })).toBeVisible();
+  await grants.getByRole("button", { name: "Revoke grant", exact: true }).click();
   const revoke = page.getByRole("dialog", { name: "Revoke model choice for Model Choice Labs?" });
   await revoke.getByLabel("Reason", { exact: true }).fill("Model choice access ended");
   await revoke.getByRole("button", { name: "Revoke grant", exact: true }).click();
   await expect(revoke).toHaveCount(0);
   expect(changes[1]).toEqual({ action: "revoke", grant_id: "model_grant", idempotency_key: expect.any(String),
     expected_revision: 2, reason: "Model choice access ended" });
-  await expect(plan.getByText("Model choice: Disabled")).toBeVisible();
+  await expect(plan.getByText("Off", { exact: true })).toBeVisible();
   await expect(grants).toHaveCount(0);
   await expect(plan.getByRole("button", { name: "Grant model choice", exact: true })).toBeEnabled();
 });

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -21,7 +22,9 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	servicepkg "github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -46,9 +49,9 @@ func TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin(t *testing.T) {
 		{name: "GitLab origin with external workflow", remote: "git@gitlab.com:Acme/Private.git", externalWorkflow: true, wantReady: true},
 		{name: "local origin", remote: "../source.git", wantReady: true},
 		{name: "configured workflow outside checkout", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, want: "Acme/Private", wantReady: true},
-		{name: "missing configured workflow despite default", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, missingWorkflow: true},
-		{name: "invalid configured workflow despite default", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, invalidWorkflow: true},
-		{name: "missing default workflow", remote: "git@github.com:Acme/Private.git", missingWorkflow: true},
+		{name: "missing configured workflow despite default", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, missingWorkflow: true, want: "Acme/Private"},
+		{name: "invalid configured workflow despite default", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, invalidWorkflow: true, want: "Acme/Private"},
+		{name: "missing default workflow", remote: "git@github.com:Acme/Private.git", missingWorkflow: true, want: "Acme/Private"},
 		{name: "missing Git origin", externalWorkflow: true, wantReady: true},
 		{name: "missing Git checkout", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, missingGit: true},
 		{name: "configured Git ref workflow absent locally", remote: "git@github.com:Acme/Private.git", refWorkflow: true, want: "Acme/Private", wantReady: true},
@@ -236,6 +239,7 @@ type registerHub struct {
 	server         *httptest.Server
 	credential     atomic.Value
 	identity       atomic.Value
+	heartbeat      atomic.Value
 	tier           atomic.Value
 	redeemed       atomic.Int32
 	projects       map[tracker.ProjectID]string
@@ -306,7 +310,12 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 		}
 		if identity, ok := hub.identity.Load().(runnerauth.Identity); ok && strings.HasSuffix(r.URL.Path, "/runners/"+identity.RunnerID+"/routing") {
 			tier, _ := hub.tier.Load().(string)
-			_ = json.NewEncoder(w).Encode(runnerauth.Runner{Binding: identity.Binding, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Build host", State: "active", CapacityLimit: 2, ProjectIDs: ids, IsolationTier: tier}.Normalized()})
+			runner := runnerauth.Runner{Binding: identity.Binding, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Build host", State: "active", CapacityLimit: 2, ProjectIDs: ids, IsolationTier: tier}.Normalized()}
+			if heartbeat, ok := hub.heartbeat.Load().(time.Time); ok {
+				runner.LastHeartbeatAt = heartbeat
+				runner.ProviderCapacity = []providercapacity.View{{Report: providercapacity.Report{Provider: "openai"}}}
+			}
+			_ = json.NewEncoder(w).Encode(runner)
 			return
 		}
 		for id, name := range projects {
@@ -345,6 +354,93 @@ func executeRegister(t *testing.T, command *cobra.Command, args ...string) (stri
 	command.SetArgs(args)
 	err := command.ExecuteContext(t.Context())
 	return output.String(), err
+}
+
+func TestHubRunnerRegisterServiceRuntime(t *testing.T) {
+	t.Parallel()
+	serviceErr := errors.New("service manager unavailable")
+	for _, test := range []struct {
+		name        string
+		configPort  int
+		flags       []string
+		wantPort    string
+		wantArgs    []string
+		factoryErr  error
+		startErr    error
+		wantFailure bool
+	}{
+		{name: "no port flag", wantPort: "0"},
+		{name: "configured port", configPort: 4100, wantPort: "4100"},
+		{name: "explicit ephemeral port", flags: []string{"--port", "0"}, wantPort: "0", wantArgs: []string{"--port", "0"}},
+		{name: "explicit port", flags: []string{"--port", "4200"}, wantPort: "4200", wantArgs: []string{"--port", "4200"}},
+		{name: "negative port", flags: []string{"--port", "-1"}, wantFailure: true},
+		{name: "service configuration failure", factoryErr: serviceErr, wantFailure: true},
+		{name: "service start failure", startErr: serviceErr, wantFailure: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			hub := newRegisterHub(t, nil)
+			root := t.TempDir()
+			configPath := filepath.Join(root, "runner config", "global.yaml")
+			var captured servicepkg.Config
+			runner := &serviceRunnerStub{startErrs: []error{test.startErr}, startResults: []servicepkg.StartResult{{Action: servicepkg.ActionInstalled, State: servicepkg.StateRunning}}, onStart: func() { hub.heartbeat.Store(time.Now()) }}
+			var opts options
+			command := NewRootCommand(t.Context(), func(o *options) {
+				o.lookupEnv = func(string) string { return "" }
+				WithServiceFactory(func(cfg servicepkg.Config) (ServiceRunner, error) {
+					captured = cfg
+					return runner, test.factoryErr
+				})(o)
+				opts = *o
+			})
+			runnerCommand, _, err := command.Find([]string{"hub", "runner"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, child := range runnerCommand.Commands() {
+				if child.Name() == "register" {
+					runnerCommand.RemoveCommand(child)
+				}
+			}
+			register := newHubRunnerRegisterCommandWithGitHubAuth("test", opts.lookupEnv, runnerServiceStarterFor(opts), func(string) error { return nil }, func(_ context.Context, cfg globalconfig.Config, _ string) error {
+				cfg.Port = &test.configPort
+				return globalconfig.Write(configPath, cfg)
+			}, func(context.Context) error { return nil })
+			runnerCommand.AddCommand(register)
+			args := []string{"hub", "runner", "register", "--url", hub.server.URL + "/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--workspace-root", filepath.Join(root, "work"), "--service"}
+			output, err := executeRegister(t, command, append(args, test.flags...)...)
+			if test.wantFailure {
+				if err == nil {
+					t.Fatal("service failure returned success")
+				}
+				if !strings.Contains(ErrorDetail(err), "enrollment succeeded") || !strings.Contains(ErrorHint(err), "detent start --config '"+configPath+"' --yes") {
+					t.Fatalf("service failure lacks enrollment recovery: %v", err)
+				}
+				if test.factoryErr != nil && !errors.Is(err, test.factoryErr) || test.startErr != nil && !errors.Is(err, test.startErr) {
+					t.Fatalf("service error was not preserved: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("register: %v\n%s", err, output)
+				}
+				if captured.Name != runnerServiceName || captured.ConfigPath != configPath || captured.DashboardURL != "http://localhost:"+test.wantPort {
+					t.Fatalf("service config = %+v", captured)
+				}
+				want := append([]string{"--config", configPath}, test.wantArgs...)
+				want = append(want, "--headless")
+				if !reflect.DeepEqual(captured.Arguments, want) || len(runner.startOptions) != 1 || !runner.startOptions[0].Install {
+					t.Fatalf("service arguments = %v, start options = %+v", captured.Arguments, runner.startOptions)
+				}
+				var registration runnerRegistration
+				if err := json.Unmarshal([]byte(output), &registration); err != nil || !registration.ServiceRun || registration.Service != runnerServiceName {
+					t.Fatalf("service registration = %+v, %v\n%s", registration, err, output)
+				}
+			}
+			if hub.redeemed.Load() != 1 {
+				t.Fatalf("token redemptions = %d", hub.redeemed.Load())
+			}
+		})
+	}
 }
 
 func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {

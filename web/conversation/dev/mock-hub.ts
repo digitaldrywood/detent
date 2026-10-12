@@ -98,6 +98,7 @@ interface IntegrationRow {
   archive_cancelled_after_days: number | null;
   repository?: string;
   checkout_repository?: string;
+  checkout_verified?: boolean;
   authority: Record<string, string>;
 }
 
@@ -2866,7 +2867,11 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     const tail = rest.join("/");
 
     if (tail === "integration" && method === "GET") {
-      json(response, 200, account.integrations.get(projectId));
+      const integration = account.integrations.get(projectId);
+      json(response, 200, integration === undefined ? undefined : {
+        ...integration,
+        checkout_verified: Boolean(integration.checkout_repository) && account.checkoutReports.get(projectId)?.toLowerCase() === integration.checkout_repository?.toLowerCase(),
+      });
       return true;
     }
 
@@ -3051,12 +3056,13 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         if (String(body.expected_revision ?? "") !== current.revision) {
           return { status: 409, payload: REVISION_CONFLICT };
         }
-        if (account.checkoutReports.get(projectId)?.toLowerCase() !== repository.toLowerCase()) {
-          return { status: 422, payload: { code: "checkout_unavailable", message: "Start an enrolled runner with this project's Git checkout and matching GitHub origin, then retry." } };
+        if (current.checkout_repository || (current.repository && current.repository.toLowerCase() !== repository.toLowerCase())) {
+          return { status: 422, payload: { code: "invalid_request", message: "This project already has a repository." } };
         }
         const next: IntegrationRow = {
           ...current,
           checkout_repository: repository,
+          checkout_verified: account.checkoutReports.get(projectId)?.toLowerCase() === repository.toLowerCase(),
           revision: String(Number(current.revision) + 1),
         };
         account.integrations.set(projectId, next);

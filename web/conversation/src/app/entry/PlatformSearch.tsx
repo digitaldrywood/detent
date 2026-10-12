@@ -43,8 +43,8 @@ export function PlatformSearch({ open, onOpenChange, tenants, tenantError }: {
   ];
   const select = (result: SearchResult) => {
     onOpenChange(false);
-    void navigate((result.kind === "tenant" ? { to: "/platform/tenants", search: { tenant: result.id } } :
-      { to: "/platform/users", search: { q: result.id } }) as never);
+    void navigate((result.kind === "tenant" ? { to: "/platform/tenants/$organization", params: { organization: result.id } } :
+      { to: "/platform/users/$email", params: { email: result.id } }) as never);
   };
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange}>

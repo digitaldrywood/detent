@@ -47,70 +47,93 @@ async function openAudit(page, path = "/platform/audit") {
   return requests;
 }
 
-for (const [name, viewport] of [
-  ["desktop", { width: 1440, height: 1100 }],
-  ["mobile", { width: 390, height: 844 }],
+for (const [name, viewport, theme] of [
+  ["desktop", { width: 1440, height: 1100 }, "light"],
+  ["desktop", { width: 1440, height: 1100 }, "dark"],
+  ["mobile", { width: 390, height: 844 }, "light"],
+  ["mobile", { width: 390, height: 844 }, "dark"],
 ]) {
-  test(`${name} audit supports shared filters and loading older events`, async ({
+  test(`${name} ${theme} audit supports shared filters and loading older events`, async ({
     page,
   }) => {
     await page.setViewportSize(viewport);
+    await page.addInitScript((theme) => {
+      window.addEventListener("DOMContentLoaded", () => {
+        document.documentElement.classList.toggle("dark", theme === "dark");
+        document.documentElement.dataset.theme = theme;
+      });
+    }, theme);
     const requests = await openAudit(page);
+    expect(
+      await page.evaluate(() => document.documentElement.classList.contains("dark")),
+    ).toBe(theme === "dark");
     const table = page.getByRole("table", { name: "Audit events" });
     await expect(table.getByRole("row")).toHaveCount(4);
     await expect(table).toContainText("troubleshooting");
     await expect(
       table.getByRole("link", { name: "Parable" }).first(),
-    ).toHaveAttribute("href", "/platform/tenants?tenant=org_alpha");
+    ).toHaveAttribute("href", "/platform/tenants/org_alpha");
     await expect(page).toHaveTitle("Audit log · Platform · Detent");
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth > innerWidth,
       ),
     ).toBe(false);
-    await page.getByRole("button", { name: "Load older" }).click();
+    await test.info().attach(`platform-audit-${theme}-${viewport.width}.png`, {
+      body: await page.screenshot({ animations: "disabled", caret: "hide" }),
+      contentType: "image/png",
+    });
+    await page.getByRole("button", { name: "Load older events" }).click();
     await expect(table.getByRole("row")).toHaveCount(7);
-    await expect(table).toContainText("generation 1");
-    await expect(table).toContainText("hosted_unknown_subject");
-    await expect(table.getByText("deleted", { exact: true })).toHaveCount(2);
-    await expect(page.getByRole("button", { name: "Load older" })).toHaveCount(
+    await expect(table).toContainText("Provisioning attempt 1");
+    await expect(table).toContainText("Unknown account");
+    await expect(table.getByText("Deleted", { exact: true })).toHaveCount(2);
+    await expect(page.getByRole("button", { name: "Load older events" })).toHaveCount(
       0,
     );
     expect(requests).toEqual(["", "cursor=older-page"]);
 
+    await page.getByRole("button", { name: "Actor: Anyone" }).click();
     await page.getByLabel("Actor", { exact: true }).fill("system");
     await expect(page).toHaveURL(origin + "/platform/audit?actor=system");
     await expect(table.getByRole("row")).toHaveCount(2);
     await page.reload();
-    await expect(page.getByLabel("Actor", { exact: true })).toHaveValue(
-      "system",
-    );
-    await expect(table).toContainText("organization_ready");
-    await page.getByRole("button", { name: "Clear", exact: true }).click();
+    await page.getByRole("button", { name: "Actor: system" }).click();
+    await expect(page.getByLabel("Actor", { exact: true })).toHaveValue("system");
+    await expect(table).toContainText("Tenant ready");
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Clear filters", exact: true }).click();
     await expect(page).toHaveURL(origin + "/platform/audit");
     await expect(table.getByRole("row")).toHaveCount(4);
 
+    await page.getByRole("button", { name: "Tenant: All" }).click();
     await page.getByLabel("Tenant", { exact: true }).fill("Parable");
     await page.getByRole("option", { name: "Parable", exact: true }).click();
-    await page.getByLabel("Event", { exact: true }).click();
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Action: All" }).click();
+    await page.getByLabel("Action", { exact: true }).click();
     await page
-      .getByRole("option", { name: "support_started", exact: true })
+      .getByRole("option", { name: "Support access started", exact: true })
       .click();
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "All dates", exact: true }).click();
     await page.getByLabel("From", { exact: true }).fill("2026-10-01");
     await page.getByLabel("To", { exact: true }).fill("2026-10-01");
+    await page.keyboard.press("Escape");
     await expect(page).toHaveURL(
       origin +
         "/platform/audit?tenant=org_alpha&event=support_started&from=2026-10-01&to=2026-10-01",
     );
     await expect(table.getByRole("row")).toHaveCount(2);
     await page.reload();
+    await page.getByRole("button", { name: "Tenant: Parable" }).click();
     await expect(page.getByLabel("Tenant", { exact: true })).toHaveValue(
       "Parable",
     );
-    await expect(page.getByLabel("Event", { exact: true })).toContainText(
-      "support_started",
-    );
-    await expect(table).toContainText("support_started");
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("button", { name: "Action: Support access started" })).toBeVisible();
+    await page.getByRole("button", { name: "Actor: Anyone" }).click();
+    await expect(table).toContainText("Support access started");
     await page.getByLabel("Actor", { exact: true }).fill("nobody");
     await expect(
       page.getByText("No events match these filters."),

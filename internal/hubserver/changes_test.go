@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -524,12 +525,14 @@ func TestChangeLanding(t *testing.T) {
 func TestApprovalMovesToLandingLane(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name   string
-		states []tracker.NativeState
-		from   string
-		want   string
+		name     string
+		states   []tracker.NativeState
+		from     string
+		want     string
+		provider bool
 	}{
 		{name: "hosted template lands", states: HostedProjectStates(), from: "Human Review", want: "Merging"},
+		{name: "provider candidate lands", states: HostedProjectStates(), from: "Human Review", want: "Merging", provider: true},
 		{name: "no landing lane stays", states: []tracker.NativeState{
 			{Name: "Todo", Dispatchable: true, Transitions: []string{"Review"}},
 			{Name: "Review", Transitions: []string{"Done"}},
@@ -593,6 +596,12 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 					t.Fatalf("unclaimed landing evidence=%#v", evidence)
 				}
 				claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "capacity-refusal", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+				if test.provider {
+					publishCapacity(t, f, r, capacityReport(f.service.config.now()))
+					claim.WorkItemID = ""
+					claim.SessionID = "landing/batch/candidate"
+					claim.ProviderCandidates = []tracker.NativeCapacityCandidate{{WorkItemID: issue.WorkItemID, Revision: issue.Revision, Requirement: providercapacity.Requirement{Role: "merge", Backend: "codex", Model: "test-model"}}}
+				}
 				assertUnchangedDecision := func() {
 					t.Helper()
 					// Finish credential bookkeeping before measuring decision writes.
@@ -640,6 +649,9 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 					t.Fatal(err)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 2, "display_name": "Landing runner", "state": "active", "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}}), http.StatusOK)
+				if test.provider {
+					claim.ProviderCandidates[0].Revision = issue.Revision + 1
+				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusOK)
 				var evaluatedReady int
 				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision' AND json_extract(data_json, '$.decision.source')='native_claim_eligibility' AND json_extract(data_json, '$.decision.outcome')='ready' AND json_extract(data_json, '$.change.version_id')=?", issue.WorkItemID, version.ID).Scan(&evaluatedReady); err != nil || evaluatedReady != 1 {

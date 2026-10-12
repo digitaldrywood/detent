@@ -210,7 +210,7 @@ func TestHostedProjectTools(t *testing.T) {
 			if setup.Policy == nil || setup.Policy.Policy.ID != previous.Policy.ID || len(setup.ObservedPolicies) != 1 || !reflect.DeepEqual(setup.ObservedPolicies[0].Policy, candidate) {
 				t.Fatalf("observed candidate = %+v", setup)
 			}
-			approve := projectCall(t, "approve_project_policy", id, "approve", operatortool.PolicyApprovalInput{ExpectedID: setup.Policy.Policy.ID, Policy: setup.ObservedPolicies[0].Policy})
+			approve := projectCall(t, "approve_project_policy", id, "approve", operatortool.PolicyApprovalInput{ExpectedID: setup.Policy.Policy.ID, ObservedPolicyID: setup.ObservedPolicies[0].Policy.ID})
 			a = projectAction(t, e, ctx, approve)
 			if a.Status != chatpkg.ActionSucceeded {
 				t.Fatalf("policy=%+v", a)

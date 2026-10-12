@@ -193,7 +193,7 @@ Resolution at the allocation transaction's clock sample is:
 | Concurrent work | Unreleased leases whose expiry is strictly after the transaction clock. No plan concurrency limit applies. Operational runner and host capacity still apply. |
 | API mutations | Accepted allocation-changing transactions per configured UTC window. Matching native command retries do not consume another unit. Reads, billing, renew/release and completion/checkpoint events remain available. |
 | Ingested events | Newly stored collaboration events per window. Native retries and ordered duplicate event sequences do not add an event. |
-| Collaboration bytes | UTF-8 bytes of issue text/labels/assignees, comments, versions, event payload/actor records, idempotency responses, attempts, artifact references and import snapshots. This is logical retained payload, not disk billing. Database/WAL bytes are separately reported. |
+| Collaboration bytes | UTF-8 bytes of issue text/labels/assignees, comments, versions, event payload/actor records other than run telemetry (`run.*`) and scheduler decisions, artifact references, change source bundles, import snapshots and stored attachments. Idempotency receipts, attempt records, run telemetry and scheduler decisions are internal bookkeeping and do not count. This is logical retained payload, not disk billing. Database/WAL bytes are separately reported. |
 | History records | Collaboration events, immutable versions and ordered attempt-event receipts. |
 
 Checks and allocation writes use the same transaction. An operation that increases

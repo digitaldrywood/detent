@@ -1,16 +1,16 @@
-const { test, expect } = require("@playwright/test");
+const { test: base, expect } = require("@playwright/test");
 const { startEntryPreview } = require("./entry-preview");
 
-test.describe.configure({ mode: "serial" });
-let entry;
-test.beforeAll(async () => {
-  test.setTimeout(210_000);
-  entry = await startEntryPreview({ fallback: true });
+const test = base.extend({
+  entry: async ({}, use) => {
+    const entry = await startEntryPreview({ fallback: true });
+    try { await use(entry); } finally { await entry.stop(); }
+  },
 });
-test.afterAll(async () => { await entry?.stop(); });
+test.setTimeout(210_000);
 
 for (const mode of ["denied", "stopped", "unavailable"]) {
-  test(`${mode} uses the standalone sign-in surface on desktop and mobile`, async ({ page }) => {
+  test(`${mode} uses the standalone sign-in surface on desktop and mobile`, async ({ page, entry }) => {
     const origin = entry.fixture.origin;
     const start = await page.request.get(`${origin}/auth/oidc/start?organization=org_alpha`, { maxRedirects: 0 });
     expect(start.status()).toBe(303);
@@ -71,12 +71,35 @@ for (const mode of ["denied", "stopped", "unavailable"]) {
     await card.getByRole("button", { name: "Sign out" }).focus();
     await expect(card.getByRole("button", { name: "Sign out" })).toBeFocused();
     const csrf = await card.locator('input[name="csrf"]').inputValue();
-    await page.route(`${origin}/logout`, async (route) => {
-      expect(route.request().method()).toBe("POST");
-      expect(new URLSearchParams(route.request().postData()).get("csrf")).toBe(csrf);
-      await route.fulfill({ status: 200, contentType: "text/html", body: "Signed out" });
+    const cspRefusals = [];
+    page.on("console", (message) => {
+      if (message.text().includes("form-action")) cspRefusals.push(message.text());
     });
+    const destination = await page.context().newCDPSession(page);
+    await destination.send("Fetch.enable", {
+      patterns: [{ urlPattern: "https://detent.build/", requestStage: "Request" }],
+    });
+    const interceptedDestination = new Promise((resolve) => destination.once("Fetch.requestPaused", resolve));
+    const logoutResponse = page.waitForResponse(`${origin}/logout`);
+    const destinationRequest = page.waitForRequest("https://detent.build/");
     await page.keyboard.press("Enter");
-    await expect(page.locator("body")).toHaveText("Signed out");
+    const { requestId } = await interceptedDestination;
+    await destination.send("Fetch.fulfillRequest", {
+      requestId,
+      responseCode: 200,
+      responseHeaders: [{ name: "Content-Type", value: "text/html" }],
+      body: Buffer.from("<!doctype html><title>Signed out</title><p>Signed out</p>").toString("base64"),
+    });
+    await destination.detach();
+    const logout = await logoutResponse;
+    expect(logout.request().method()).toBe("POST");
+    expect(new URLSearchParams(logout.request().postData()).get("csrf")).toBe(csrf);
+    expect(logout.status()).toBe(303);
+    expect(logout.headers().location).toBe("https://detent.build");
+    expect((await destinationRequest).isNavigationRequest()).toBe(true);
+    await expect(page).toHaveURL("https://detent.build/");
+    await expect(page.getByText("Signed out", { exact: true })).toBeVisible();
+    expect(cspRefusals).toEqual([]);
+    expect((await page.context().cookies(origin)).filter((cookie) => cookie.name === "detent_entry_session")).toEqual([]);
   });
 }

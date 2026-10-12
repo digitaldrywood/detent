@@ -66,14 +66,15 @@ type ImportAdvanceInput struct {
 	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
 }
 type GitHubBatchInput struct {
-	Revision      int64    `json:"revision"`
-	Action        string   `json:"action"`
-	RunnerID      string   `json:"runner_id"`
-	Labels        []string `json:"labels,omitempty"`
-	IncludeClosed bool     `json:"include_closed"`
-	Numbers       []int    `json:"numbers,omitempty"`
-	Destination   string   `json:"destination"`
-	AllowDispatch bool     `json:"allow_dispatch"`
+	LabelLanes    map[string]string `json:"label_lanes,omitempty"`
+	Revision      int64             `json:"revision"`
+	Action        string            `json:"action"`
+	RunnerID      string            `json:"runner_id"`
+	Labels        []string          `json:"labels,omitempty"`
+	IncludeClosed bool              `json:"include_closed"`
+	Numbers       []int             `json:"numbers,omitempty"`
+	Destination   string            `json:"destination"`
+	AllowDispatch bool              `json:"allow_dispatch"`
 }
 type CutoverInput struct {
 	ClosedState    string                `json:"closed_state"`
@@ -88,7 +89,8 @@ type CutoverInput struct {
 
 type PolicyApprovalInput struct {
 	ExpectedID       string            `json:"expected_policy_id"`
-	Policy           policy.Descriptor `json:"policy"`
+	ObservedPolicyID string            `json:"observed_policy_id,omitempty"`
+	Policy           policy.Descriptor `json:"policy,omitempty,omitzero"`
 	RepositoryPolicy bool              `json:"repository_policy,omitempty"`
 }
 
@@ -150,8 +152,10 @@ func projectWrite[T any](name string, destructive, openWorld bool) Definition {
 	schema["required"] = []string{"project_id", "request_id", "input"}
 	if name == "approve_project_policy" {
 		input := schemaObject(schemaObject(schema["properties"])["input"])
+		input["oneOf"] = []map[string]any{{"required": []string{"policy"}}, {"required": []string{"observed_policy_id"}}}
 		descriptor := schemaObject(schemaObject(input["properties"])["policy"])
-		descriptor["description"] = "The complete selected_policy object returned by local_project_configuration, unchanged. Preserve every returned field, including authored, profile, configuration, workflow and gates.human_review when present; policy_id covers the descriptor's identity inputs. Do not reconstruct a subset or recompute policy_id. Authorized approval executes directly."
+		descriptor["description"] = "Alternatively to observed_policy_id, the complete selected_policy object returned by local_project_configuration, unchanged. Preserve every returned field, including authored, profile, configuration, workflow and gates.human_review when present; policy_id covers the descriptor's identity inputs. Do not reconstruct a subset or recompute policy_id. Authorized approval executes directly."
+		schemaObject(schemaObject(input["properties"])["observed_policy_id"])["description"] = "Approve the stored observed_policies[].policy.policy_id returned by get_onboarding without echoing the descriptor or authored files. Supply expected_policy_id for the current approval and omit policy. Current administrator authority is required."
 	}
 	if name == "import_sprite_usage" {
 		input := schemaObject(schemaObject(schema["properties"])["input"])

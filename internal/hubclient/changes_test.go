@@ -3,12 +3,15 @@ package hubclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -96,6 +99,88 @@ func TestChangeClientFencingAndConnectorRead(t *testing.T) {
 	attempts, err := source.FetchNativeAttempts(ctx, lease.WorkItemID)
 	if err != nil || len(attempts) != 2 || attempts[1].AttemptID != "attempt_second" {
 		t.Fatalf("run navigation = %#v, %v", attempts, err)
+	}
+	for _, scenario := range []string{"complete current evidence and history", "missing section", "repeated cursor", "head changed", "scope changed", "page failed"} {
+		t.Run(scenario, func(t *testing.T) {
+			current := tracker.ChangeVersion{ID: "version_current", ChangeID: "change_example", Number: 2, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("b", 40)}}
+			previous := tracker.ChangeVersion{ID: "version_previous", ChangeID: current.ChangeID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("a", 40), External: &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: "https://github.com/acme/repo/pull/7"}, Source: &tracker.ChangeSource{Format: "git-bundle", BundleSHA256: strings.Repeat("c", 64)}}}
+			want := tracker.ChangeDetail{
+				Change:       tracker.ChangeRequest{ID: current.ChangeID, OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: lease.WorkItemID, CurrentVersion: current.ID},
+				Versions:     []tracker.ChangeVersion{previous, current},
+				Reviews:      []tracker.ChangeReview{{ID: "review_current", VersionID: current.ID, Decision: "changes_requested", Validator: &gate.ValidatorResult{HeadSHA: current.HeadSHA, Verdict: "rework", NotVerified: []string{"journey"}, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "journey", Kind: gate.EvidenceNotVerified, ReceiptIDs: []string{"receipt_failed"}}}, Commands: []gate.CommandResult{{ReceiptID: "receipt_failed", HeadSHA: current.HeadSHA, ExitCode: 1, Output: "excerpt", OutputTruncated: true}}}}},
+				Checks:       []tracker.ChangeCheck{{VersionID: current.ID, ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: "check_current", Conclusion: "failure"}}},
+				Discussion:   []tracker.ChangeDiscussion{{ID: "discussion_current", VersionID: current.ID, Body: "preserve feedback"}},
+				Summary:      tracker.ChangeSummary{Status: "changes_requested"},
+				SourceIssues: []tracker.ExternalReference{{Provider: "native", ID: "source_issue"}},
+			}
+			readClient, err := New(Config{URL: "http://native-hub.test", TokenSource: func() string { return "token" }, HTTPClient: providerHandlerClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("view") != "bounded" {
+					t.Error("runtime requested aggregate canonical Change")
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				section := r.URL.Query().Get("section")
+				value := operatortool.ChangeResult{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: string(lease.WorkItemID), Detail: &tracker.ChangeDetail{Change: want.Change, Versions: []tracker.ChangeVersion{current}, Summary: want.Summary, SourceIssues: want.SourceIssues}, Read: &operatortool.ChangeRead{VersionID: current.ID, Sections: map[string]operatortool.ChangeReadPage{}}}
+				for _, name := range []string{"versions", "reviews", "checks", "discussion"} {
+					value.Read.Sections[name] = operatortool.ChangeReadPage{NextCursor: name}
+				}
+				if section != "" {
+					if r.URL.Query().Get("cursor") != section || r.URL.Query().Get("version_id") != current.ID {
+						t.Error("runtime lost exact cursor or current version")
+					}
+					value.Read.Sections[section] = operatortool.ChangeReadPage{Complete: true}
+					switch section {
+					case "versions":
+						value.Detail.Versions = []tracker.ChangeVersion{previous}
+					case "reviews":
+						value.Detail.Reviews = want.Reviews
+					case "checks":
+						value.Detail.Checks = want.Checks
+					case "discussion":
+						value.Detail.Discussion = want.Discussion
+					}
+					if section == "discussion" {
+						switch scenario {
+						case "missing section":
+							delete(value.Read.Sections, section)
+						case "repeated cursor":
+							value.Read.Sections[section] = operatortool.ChangeReadPage{NextCursor: section}
+						case "head changed":
+							value.Detail.Change.CurrentVersion, value.Read.VersionID = "version_new", "version_new"
+						case "scope changed":
+							value.ProjectID = "prj_foreign"
+						case "page failed":
+							w.WriteHeader(http.StatusConflict)
+							return
+						}
+					}
+				}
+				json.NewEncoder(w).Encode(value)
+			}))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader, err := readClient.Native("org_example", "prj_example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := reader.runtimeChange(t.Context(), lease.WorkItemID, current.ChangeID)
+			if scenario != "complete current evidence and history" {
+				if err == nil || !reflect.DeepEqual(got, tracker.ChangeDetail{}) {
+					t.Fatalf("partial runtime evidence escaped: %v", err)
+				}
+				if scenario == "page failed" {
+					var refusal *APIError
+					if !errors.As(err, &refusal) || refusal.Status != http.StatusConflict {
+						t.Fatalf("lost paging conflict: %v", err)
+					}
+				}
+				return
+			}
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("runtime evidence lost canonical semantics: %#v, %v", got, err)
+			}
+		})
 	}
 }
 

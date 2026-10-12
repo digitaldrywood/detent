@@ -39,7 +39,7 @@ func TestPlatformTenantDetail(t *testing.T) {
 			if response.StatusCode != http.StatusOK || detail.Organization.ID != "org_alpha" || detail.CSRF == "" || detail.CanGrant != (role == "billing" || role == "admin") || detail.Organization.CanSupport != (role == "support" || role == "admin") || detail.CanResume {
 				t.Fatalf("detail = %d %+v", response.StatusCode, detail)
 			}
-			if detail.Members == nil || len(*detail.Members) != 1 || (*detail.Members)[0].Role != "owner" || detail.Runners == nil || detail.Projects == nil || len(*detail.Projects) == 0 || detail.Entitlements != nil || !slices.Contains(detail.Unavailable, "entitlements") || len(detail.Events) == 0 {
+			if detail.Usage == nil || detail.Usage.Allowances == nil || detail.Members == nil || len(*detail.Members) != 1 || (*detail.Members)[0].Role != "owner" || detail.Runners == nil || detail.Projects == nil || len(*detail.Projects) == 0 || detail.Entitlements != nil || !slices.Contains(detail.Unavailable, "entitlements") || len(detail.Events) == 0 {
 				t.Fatalf("sections = %+v", detail)
 			}
 			if response, _ := b.get("/api/cloud/platform/organizations/org_unknown"); response.StatusCode != http.StatusNotFound {
@@ -64,7 +64,7 @@ func TestPlatformTenantDetail(t *testing.T) {
 	response, body := admin.get("/api/cloud/platform/organizations/org_alpha")
 	var detail platformTenantDetail
 	decodeJSON(t, body, &detail)
-	if response.StatusCode != http.StatusOK || detail.Organization.ErrorCode != "tenant_start_failed" || detail.Organization.ErrorDetail != "disk floor" || detail.Organization.Step != "tenant_files" || len(detail.Unavailable) != 5 {
+	if response.StatusCode != http.StatusOK || detail.Organization.ErrorCode != "tenant_start_failed" || detail.Organization.ErrorDetail != "disk floor" || detail.Organization.Step != "tenant_files" || len(detail.Unavailable) != 6 {
 		t.Fatalf("failed tenant = %d %+v", response.StatusCode, detail)
 	}
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='ready' WHERE id='org_alpha'"); err != nil {
@@ -73,7 +73,7 @@ func TestPlatformTenantDetail(t *testing.T) {
 	f.service.config.transport = func(Organization) (http.RoundTripper, error) { return platformTimeoutTransport{}, nil }
 	response, body = admin.get("/api/cloud/platform/organizations/org_alpha")
 	decodeJSON(t, body, &detail)
-	if response.StatusCode != http.StatusOK || detail.Members != nil || detail.Runners != nil || detail.Projects != nil || detail.Entitlements != nil || detail.Organization.Billing.Available || len(detail.Unavailable) != 5 {
+	if response.StatusCode != http.StatusOK || detail.Members != nil || detail.Runners != nil || detail.Projects != nil || detail.Entitlements != nil || detail.Organization.Billing.Available || len(detail.Unavailable) != 6 {
 		t.Fatalf("timeout = %d %+v", response.StatusCode, detail)
 	}
 
@@ -121,7 +121,7 @@ func TestPlatformResumeProvisioning(t *testing.T) {
 			}
 			if test.want == http.StatusOK {
 				var next map[string]string
-				if err := json.Unmarshal([]byte(body), &next); err != nil || next["next"] != "/platform/tenants?tenant=org_failed" {
+				if err := json.Unmarshal([]byte(body), &next); err != nil || next["next"] != "/platform/tenants/org_failed" {
 					t.Fatalf("result = %s %v", body, err)
 				}
 				organization, err := f.service.registry.Organization(t.Context(), "org_failed")

@@ -29,7 +29,7 @@ import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
 
 const mocks = vi.hoisted(() => ({
   api: { activity: vi.fn(), fleet: vi.fn() },
-  bootstrap: { projects: [] as AccountProject[] },
+  bootstrap: { projects: [] as AccountProject[], organization: { name: "" } },
   http: { eventsUrl: (project: string) => `/projects/${project}/events` },
 }));
 vi.mock("../../src/app/account/context.ts", () => ({
@@ -204,6 +204,7 @@ function View({
       error={error}
       runners={hosts}
       projects={projects}
+      organizationName={mocks.bootstrap.organization.name}
       project={project}
       onProjectChange={setProject}
       live
@@ -223,6 +224,7 @@ async function choose(label: string, option: string) {
 beforeEach(() => {
   vi.spyOn(Date, "now").mockReturnValue(NOW);
   mocks.bootstrap.projects = projects;
+  mocks.bootstrap.organization.name = "";
   vi.clearAllMocks();
 });
 afterEach(() => {
@@ -230,6 +232,24 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+it("keeps the Activity scope and project picker consistent across organization changes", async () => {
+  mocks.bootstrap.organization.name = "Parable";
+  const mounted = render(<View />);
+  const scope = () => screen.getByRole("navigation", { name: "Activity breadcrumb" });
+  expect(scope().textContent).toContain("All Parable projects");
+  mocks.bootstrap.organization.name = "Drywood Creek";
+  mounted.rerender(<View />);
+  expect(scope().textContent).toContain("All Drywood Creek projects");
+  await choose("Project", "detent");
+  expect(scope().textContent).toContain("detent");
+  expect(scope().textContent).not.toContain("All Drywood Creek projects");
+  await choose("Project", "All Drywood Creek projects");
+  expect(scope().textContent).toContain("All Drywood Creek projects");
+  mocks.bootstrap.organization.name = "";
+  mounted.rerender(<View />);
+  expect(scope().textContent).toContain("All projects");
 });
 
 describe("Activity stage timing", () => {

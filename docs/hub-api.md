@@ -199,15 +199,22 @@ organization/project scope. Policies are resolved on the customer host. See
 | --- | --- | --- |
 | `/api/v1/repositories/{owner}/{repo}/policy` | `GET` | Read current descriptor and approval provenance with a compatibility credential |
 | `/api/v2/organizations/{organization}/projects/{project}/policy` | `GET` | Read current descriptor, approval provenance and workflow apply history within native project grants (`limit`, `after`) |
-| Either policy endpoint | `PUT` | Instance administrator only; `policy` descriptor and `expected_policy_id` (empty for first approval). Exact retries are idempotent; concurrent distinct replacements have one winner. |
+| Either policy endpoint | `PUT` | Instance administrator only; `expected_policy_id` (empty for first approval) and either a complete `policy` descriptor or `observed_policy_id` from the scoped onboarding read. Exact retries are idempotent; concurrent distinct replacements have one winner. |
 | Either policy endpoint | `DELETE` | Instance administrator only; `expected_policy_id`. Revokes current authority while retaining revision/lease history. |
-| `/api/v2/organizations/{organization}/projects/{project}/policy/observed` | `POST` | A runner with the `heartbeat` operation reports its resolved descriptor, including successful matches. The Hub retains the latest report per runner and returns distinct mismatches with all reporting runner IDs in `GET .../onboarding`. Conflicting configurations and previously approved reports are not new approval candidates. An enrolled runner may include `repository_source` alongside the descriptor: `repository`, `commit`, `default_branch`, `default_branch_head` and `default_branch_reachable`. A committed workflow definition reachable from the bound repository's default branch is applied through the existing atomic policy approval path. Other reports remain pending. |
+| `/api/v2/organizations/{organization}/projects/{project}/policy/observed` | `POST` | A runner with the `heartbeat` operation reports its resolved descriptor, including successful matches. The Hub retains the latest report per runner and returns distinct mismatches with all reporting runner IDs in `GET .../onboarding`. Conflicting configurations and previously approved reports are not new approval candidates. An enrolled runner may include `repository_source` alongside the descriptor: `repository`, `commit`, `default_branch`, `default_branch_head` and `default_branch_reachable`. Every new committed workflow definition reachable from the bound repository's default branch, including replacements of an approved policy, is applied through the existing atomic policy approval path as `repository-default-branch`. Replaying a historical approval does not replace current authority. Other reports remain pending. |
 
 Hosted organizations approve through `PUT .../projects/{project}/onboarding/policy`
 (owner or admin); the generic `PUT .../policy` above stays instance-administrator
 only and is not served in hosted mode. Runners report each distinct resolved
 descriptor/provenance combination once, including successful matches that replace earlier mismatches.
 Only the latest observations from currently authorized runners are actionable.
+The MCP `approve_project_policy` tool accepts the same reference in `input`:
+`observed_policy_id` is the chosen `observed_policies[].policy.policy_id`, and
+`expected_policy_id` is the current `policy.policy.policy_id` (empty without an
+approval). Omit `input.policy` when approving by reference. The Hub resolves and
+validates the stored descriptor within the existing approval transaction; the
+full-descriptor path remains available. Unknown request fields and invalid
+field types are named in invalid-body errors.
 Previously approved descriptors retain their history; they are reported as
 configuration conflicts rather than newly generated policies.
 
@@ -976,7 +983,9 @@ the URL is not immutable content.
 Collaboration mutations return the committed representation with status 200,
 including identical retries. Idempotency keys are scoped to the authenticated
 principal, organization and operation/resource. Reusing a key with different
-content returns 409 `idempotency_conflict`. Concurrent edits return 409
+content returns 409 `idempotency_conflict`. REST mutation receipts outside
+conversation routes are retained for 24 hours; a retry with the same key after
+that is processed as a new request. Concurrent edits return 409
 `revision_conflict` with `current_revision`. Revisions, event sequences and fencing
 tokens are decimal strings on the wire. Mutations, their saved content versions,
 history and retry result commit in one SQLite transaction. Ordinary clients cannot
@@ -1706,11 +1715,19 @@ No separately provisioned operator credential is required by this flag.
 
 Each validator review stores `criteria_evidence` and a derived `not_verified`
 list against its immutable version. Every acceptance criterion has a `criterion`,
-`kind` (`receipt`, `test`, or `not_verified`), and `reference`. Receipt entries
+`kind` (`receipt`, `test`, `attachment`, or `not_verified`), and `reference`. Receipt entries
 name a successful host-observed command and its reviewed `head_sha` and `tree_sha`.
 Test entries name the file and test and describe the independent behavioral
 assertion in `behavior`; tests that restate the implementation are flagged and
 excluded. Missing, duplicate, or unsupported entries become `not_verified`.
+Native Codex validators can read issue comments and attachments through the existing
+scoped read owners. Image reads verify the complete content digest and display the
+image to the validator. Attachment entries cite the returned host `read_receipt`
+IDs in `receipt_ids`, name the attachment and digest, and describe the observed
+visual outcome and its relevance to the reviewed source in `behavior`. The review
+stores these reads in `attachment_reads`, with attachment provenance and review
+head/tree identities. Download success or worker prose does not establish visual
+acceptance. Older captures remain usable when the affected UI is unchanged.
 The Change review page shows this map and highlights the unverified list.
 `gate.validator.unverified_criteria` defaults to `rework`, naming every gap.
 Projects may select `pass-with-disclosure` to retain gaps while allowing a pass;
@@ -1888,33 +1905,37 @@ than trusting a stale worker checkpoint to identify the current version.
 ## Retention, export and deletion design
 
 Collaboration content, content versions, typed events, idempotency responses and
-owner backups all contain retained data. This release has no automatic native
-content expiry or issue-deletion endpoint. Append-only triggers deliberately
+owner backups all contain retained data. REST mutation receipts expire after 24
+hours. This release has no automatic native content expiry or issue-deletion
+endpoint. Append-only triggers deliberately
 reject ordinary history deletion. [Self-hosted operations](hub-self-hosting.md)
 defines full-instance export/import, credential fencing on restore, whole-instance
 retirement and operator-managed backup expiry. Scoped purge remains unimplemented;
 append-only storage is not a promise of permanent retention.
 
-The existing archive/retention sweep compacts archived work and conversations
-settled for more than 30 days. Active leases, unfinished executions, queued
+The existing archive/retention sweep compacts archived work, work that has been
+in a terminal state for more than 3 days, and conversations settled for more
+than 30 days. Active leases, unfinished executions, queued
 messages and pending questions exclude an aggregate. Each transaction examines
 at most four work items and four conversations, deleting at most 500 events per
 aggregate. It retains comments, content revisions, workflow transitions,
 scheduler decisions, attempt checkpoints and final observations, validation and
 landing evidence, messages, questions and command receipts. Superseded runtime
 observations, message updates and execution progress, streaming deltas,
-heartbeats and redundant conversation snapshots are removed. Conversation
+heartbeats and redundant conversation snapshots are removed. Retained work-item
+run events drop their activity spans and record `activity_spans_compacted` in
+the activity coverage notes. Conversation
 metadata changes keep their timeline boundaries.
 
 History pages and conversation snapshots carry an optional `compaction` summary
 with removed event counts by type, retained event count, removed payload bytes,
-last removed sequence and compaction time. Existing history cursors invalidate
+last removed sequence, compacted activity event count and compaction time. Existing history cursors invalidate
 when their aggregate is compacted and instruct the reader to restart. Conversation
 SSE cursors behind a removed event receive `closed` with `cursor_expired`; clients
 fetch the current snapshot and resume from its cursor. Open work streams retain
 all events and their existing cursors. Ordinary collaboration updates and
-deletions remain rejected; retention replaces and restores the deletion trigger
-within its transaction, so a failed batch rolls back rows and enforcement.
+deletions remain rejected; retention replaces and restores the deletion and update
+triggers within its transaction, so a failed batch rolls back rows and enforcement.
 
 The first compaction records database and event-table sizes in the existing
 maintenance record and marks space reclamation pending. The online diff-body
@@ -2035,9 +2056,10 @@ Declare the same `provider` and `shared_account_alias` on every machine using th
 same provider account, even when local aliases or backend IDs differ. Hub scopes
 sharing to the organization, uses the lowest declared limit and honors exhaustion
 from any overlapping report. Distinct explicit aliases declare independent
-accounts. An omitted shared alias means sharing is unknown: its reports and
-reservations overlap every account of that provider in the organization. Separate
-local aliases or reports never imply independent capacity. Drain work before
+accounts. An omitted shared alias keeps the account local to its enrolled runner. Local
+accounts are identified by runner identity, provider and account alias; matching
+local alias text on different runners never combines their limits or usage.
+Only matching explicit shared aliases combine accounts across runners. Drain work before
 changing account mappings; existing leases retain their original reservation.
 
 Registration and heartbeats accept typed `provider_reports` on the native machine
@@ -2101,25 +2123,43 @@ GitHub transport disabled on Hub. Associate a matching runner checkout first.
 returns `batch` (nullable) and configured `lanes`. Administrator mutations use
 `POST` to the same path with `idempotency_key`, `revision`, and `action`:
 
-- `discover`: choose `runner_id`, optional `labels` and explicit `include_closed`.
-  Default is open issues. The assigned runner reads one page of at most 100
-  issues using GraphQL and publishes previews through its existing heartbeat.
-- `more`: request the next preview page, up to 1,000 previews per intake. Narrow
-  larger sets with labels. Selecting all matching requires loading all pages.
+- `start`: begin one asynchronous job for all matching issues with a
+  `destination`, optional `labels`, `label_lanes`, and `include_closed`.
+  The Hub's GitHub App reads 100 issues per GraphQL page, including complete
+  bodies, labels, provenance and the first comment page. Additional discussion
+  pages are fetched before intake. The existing Hub maintenance worker applies
+  each page and persists progress. Runner fallback uses an enrolled runner
+  reporting the matching checkout only when the App is unavailable or lacks
+  repository access; `runner_id` may select that fallback explicitly.
+- `discover`: fetch one preview page using the same App-first transport.
+- `more`: request the next preview page within the plan's job limit.
 - `apply`: provide selected `numbers` and `destination`. A configured
-  non-dispatchable, nonterminal lane is the default; dispatchable destinations
-  require `allow_dispatch: true`. Source URL and node identity deduplicate
-  linked issues and older imports. Existing issues are skipped without changes.
-- `retry`: resume failed discovery/items, optionally on another `runner_id`.
-  Reported source retry deadlines must have elapsed. Completed items are retained.
+  non-dispatchable, nonterminal lane is the default. GitHub `detent:<lane>`
+  labels map to matching Cloud states unless `label_lanes` supplies a mapping;
+  other labels are copied. Conflicting lane labels fail that item. Dispatchable
+  destinations, including those selected by label, require
+  `allow_dispatch: true`. Existing source identities are reused without changes.
+- `retry`: resume failed discovery/items, optionally on another fallback
+  `runner_id`. Reported source retry deadlines must have elapsed. Completed
+  items are retained. `allow_dispatch: true` may confirm a previously refused
+  dispatchable destination; `destination` and `label_lanes` can correct failed
+  item routing. A retry rechecks the current plan's job limit.
 
-The runner publishes one complete snapshot or an incomplete-context diagnostic
-per selected item to the worker-only `/onboarding/issue-intake/result` endpoint.
-Snapshot, provenance, comments and completion checkpoint commit together;
-native edits retain field ownership. At most 20 comment pages are read per
-issue. Context exceeding that bound remains incomplete. Rate limits stop
-unstarted items until an explicit retry; no idle GitHub polling occurs. The
-wizard refreshes progress only on request. Reopening setup resumes the persisted
-selection and results. Intake performs no GitHub writes. New authoring and
+The per-job size cap uses the plan catalog's `unarchived_issues` allowance:
+Free permits 200, Starter 2,000, Growth 10,000 and Scale 50,000. Unhosted Hubs
+permit 1,000. Source filters can narrow a repository to fit the cap. Normal
+organization capacity and storage allowances still apply to imported issues.
+
+Results include aggregate `progress` counts and per-item completion, failure,
+skip and retry information. MCP pages and command receipts omit issue bodies
+and source snapshots. The runner fallback reports up to 100 results to the
+worker-only `/onboarding/issue-intake/result` endpoint, whose receipt carries
+its next page task without waiting for another heartbeat. Each successful item
+commits its source snapshot, provenance, comments and completion checkpoint;
+failed items roll back independently. Native edits retain field ownership.
+Rate limits stop unstarted work until explicit retry, honoring source deadlines.
+No idle GitHub polling occurs. The wizard refreshes progress only on request.
+Reopening setup resumes persisted selection and results. Webhook intake of new
+issues continues to create linked issues in Triage. New authoring and
 landing continue through native Hub operations, including the existing Done
 transaction; any later explicit source action keeps its own write authorization.

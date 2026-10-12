@@ -33,24 +33,24 @@ func checkDoctorNativeCaches(ctx context.Context, deps doctorDeps, policy toolca
 				check.Detail += ": " + err.Error()
 			}
 			if policy.MaxBytes == 0 {
-				check.Detail += "; using fallback build cache bound of 20 GiB"
+				check.Detail += "; using fallback build cache size target of 20 GiB"
 			}
 		} else {
 			check.Detail += "; cache volume capacity: " + toolcache.FormatBytes(int64(capacity))
 			if uint64(policy.NormalizedForCapacity(capacity).MaxBytes) > capacity/10 {
 				check.Status = doctorWarn
-				check.Detail += "; effective build cache bound exceeds 10% of cache-volume capacity"
-				check.Hint = "Reduce global.cache.max_bytes to at most 10% of the cache-volume capacity."
+				check.Detail += "; effective build cache size target exceeds 10% of cache-volume capacity"
+				check.Hint = "global.cache.max_bytes is a reporting target; recent outputs may exceed it."
 			}
 		}
 		policy = policy.NormalizedForCapacity(capacity)
 	}
 	policy = policy.NormalizedForCapacity(0)
-	check.Detail += "; build cache bound: " + toolcache.FormatBytes(policy.MaxBytes)
+	check.Detail += "; build cache size target: " + toolcache.FormatBytes(policy.MaxBytes)
 	if report.SizeEvictedBytes > 0 {
 		check.Status = doctorWarn
-		check.Detail += "; last sweep size eviction: " + toolcache.FormatBytes(report.SizeEvictedBytes)
-		check.Hint = "Review global.cache.max_bytes: size eviction indicates the bound may be below the working set; last sweep retained " + toolcache.FormatBytes(report.RetainedBytes) + "."
+		check.Detail += "; last recorded size eviction: " + toolcache.FormatBytes(report.SizeEvictedBytes)
+		check.Hint = "An older runner evicted entries to enforce global.cache.max_bytes; current runners preserve recent outputs above the size target. Last recorded sweep retained " + toolcache.FormatBytes(report.RetainedBytes) + "."
 	}
 	lastTrim := report.LastTrim
 	if lastTrim == "" {

@@ -218,11 +218,7 @@ func (e hubProjectExecutor) actionResult(action chatpkg.Action) (operatortool.Re
 }
 
 func hubProjectResult(value any) (operatortool.Result, error) {
-	raw, err := json.Marshal(value)
-	if err != nil || len(raw) > operatortool.MaxResultBytes {
-		return operatortool.Result{}, errProjectServiceUnavailable
-	}
-	return operatortool.Result{Content: raw}, nil
+	return operatortool.EncodeResult(value)
 }
 func projectToolError(err error) error {
 	if errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, operatortool.ErrInvalidArguments) || errors.Is(err, mutation.ErrConflict) {
@@ -457,7 +453,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			return nil, operatortool.ErrInvalidArguments
 		}
 		projectID, requestID = r.ProjectID, r.RequestID
-		request := tracker.GitHubBatchCommand{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Revision: r.Input.Revision, Action: r.Input.Action, RunnerID: r.Input.RunnerID, Labels: r.Input.Labels, IncludeClosed: r.Input.IncludeClosed, Numbers: r.Input.Numbers, Destination: r.Input.Destination, AllowDispatch: r.Input.AllowDispatch}
+		request := tracker.GitHubBatchCommand{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Revision: r.Input.Revision, Action: r.Input.Action, RunnerID: r.Input.RunnerID, Labels: r.Input.Labels, IncludeClosed: r.Input.IncludeClosed, Numbers: r.Input.Numbers, Destination: r.Input.Destination, AllowDispatch: r.Input.AllowDispatch, LabelLanes: r.Input.LabelLanes}
 		input = request
 		operation = s.commandGitHubBatchOperation(request)
 	case "approve_project_policy":
@@ -466,10 +462,10 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			return nil, err
 		}
 		projectID, requestID = r.ProjectID, r.RequestID
-		if r.Input.Policy.Validate() != nil {
+		if r.Input.ObservedPolicyID == "" && r.Input.Policy.Validate() != nil {
 			return nil, &operatortool.RequestError{Code: "invalid_request", Message: "Policy descriptor is invalid or its identity digest does not match. Pass the entire local_project_configuration.selected_policy object unchanged as input.policy, including authored, profile, configuration, workflow and gates.human_review when returned"}
 		}
-		if workflowconfig.ValidateSharedPolicy(r.Input.Policy) != nil {
+		if r.Input.ObservedPolicyID == "" && workflowconfig.ValidateSharedPolicy(r.Input.Policy) != nil {
 			return nil, &operatortool.RequestError{Code: "invalid_request", Message: "Policy configuration is invalid or its digest does not match the descriptor"}
 		}
 		input = r.Input
@@ -478,7 +474,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			if err != nil {
 				return nil, err
 			}
-			return s.database.approvePolicyInTx(ctx, tx, policyScope, scope.credential.ID, policy.Change{ExpectedID: r.Input.ExpectedID, Policy: r.Input.Policy})
+			return s.database.approvePolicyInTx(ctx, tx, policyScope, scope.credential.ID, policy.Change{ExpectedID: r.Input.ExpectedID, ObservedPolicyID: r.Input.ObservedPolicyID, Policy: r.Input.Policy})
 		}
 	case "revoke_project_policy":
 		r, err := projectCommandInput[operatortool.PolicyRevokeInput](call.Arguments)
@@ -492,7 +488,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			if err != nil {
 				return nil, err
 			}
-			return revokeProjectPolicyInTx(ctx, tx, policyScope, r.Input.ExpectedID)
+			return revokeProjectPolicyInTx(ctx, tx, policyScope, scope.credential.ID, r.Input.ExpectedID, now)
 		}
 	case "remove_project_secret":
 		r, err := projectCommandInput[struct{}](call.Arguments)

@@ -298,9 +298,12 @@ and `get_native_project` for the selected project. The URL must match its
 attached repository or associated runner checkout. A missing association returns
 `invalid_request` with the existing setup owner: an administrator uses
 `bind_native_repository` with the observed integration `expected_revision`,
-`repository` and `source: "runner_checkout"`. This requires a currently enrolled,
-authorized runner reporting that matching checkout; Cloud needs no repository
-credentials and GitHub tracker mode stays disabled. Choose a configured
+`repository` and `source: "runner_checkout"`. The association supplies the
+repository and clone URL to authorized runners, which clone using their own Git
+credentials and report the matching origin. The integration read returns
+`checkout_verified` once an active runner has reported that checkout recently;
+a binding alone does not verify it. Cloud needs no repository credentials and
+GitHub tracker mode stays disabled. Choose a configured
 nonterminal, non-dispatchable destination such as Backlog. Linked creation
 records pending source context for existing runner intake, and repeated source
 URLs reuse the native work item. Cross-repository requests retain their refusal.
@@ -513,9 +516,16 @@ version and record boundary and is rejected if the current head changes.
 An omitted record is not passing evidence. `section: "versions"` traverses
 historical versions excluding the selected version already returned by the
 default read; `version_id` selects exact historical evidence. Existing
-`get_change_version` reads remain available. Individually oversized records
-return `change_record_too_large` with scoped inspection and operator repair
-guidance, without returning record content. The result budget remains 256 KiB.
+`get_change_version` reads remain available. Bounded Change reads return command
+output as UTF-8 excerpts of at most 4 KiB, setting `output_truncated: true` when
+output is shortened and preserving any existing truncation flag. Verdicts,
+criteria, findings, command results and receipt identities remain complete;
+section completeness describes records, not the completeness of output text.
+The canonical scoped Change HTTP GET without `view=bounded` retains the full
+stored reviews and output; exact-version reads also retain stored output.
+Records whose remaining semantic evidence exceeds the budget still return
+`change_record_too_large` without record content or passing evidence. The result
+budget remains 256 KiB.
 Native workers use the same projection through the Change HTTP read with
 `view=bounded` and the same section, cursor, version and limit selectors.
 

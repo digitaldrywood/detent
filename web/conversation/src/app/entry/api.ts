@@ -121,6 +121,7 @@ export type PlanReference = typeof PlanReference.Type;
 
 export const EntitlementPlan = Schema.Struct({
   id: Schema.String,
+  name: Schema.optional(Schema.String),
   version: Schema.Number,
   features: Schema.NullOr(Schema.Array(Schema.String)),
   allowances: Schema.NullOr(Schema.Record(Schema.String, Schema.Number)),
@@ -136,6 +137,7 @@ export const EntitlementGrant = Schema.Struct({
   reason: Schema.String,
   granted_by: Schema.String,
   granted_at: Schema.NullOr(Schema.String),
+  revoked_at: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type EntitlementGrant = typeof EntitlementGrant.Type;
 
@@ -147,6 +149,7 @@ export const OrganizationEntitlements = Schema.Struct({
   revision: Schema.Number,
   features: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
   grants: Schema.Array(EntitlementGrant),
+  grant_history: Schema.optional(Schema.NullOr(Schema.Array(EntitlementGrant))),
   plans: Schema.Array(EntitlementPlan),
 });
 export type OrganizationEntitlements = typeof OrganizationEntitlements.Type;
@@ -156,6 +159,10 @@ export const PlatformTenantDetail = Schema.Struct({
   csrf: Schema.String,
   can_grant: Schema.Boolean,
   can_resume: Schema.Boolean,
+  usage: Schema.optional(Schema.NullOr(Schema.Struct({
+    window_ends_at: Schema.String,
+    allowances: Schema.Record(Schema.String, Schema.Struct({ used: Schema.Number, limit: Schema.NullOr(Schema.Number) })),
+  }))),
   unavailable: Schema.Array(Schema.String),
   members: Schema.NullOr(Schema.Array(Schema.Struct({ id: Schema.String, email: Schema.String, role: Schema.String }))),
   runners: Schema.NullOr(Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, health: Schema.String }))),
@@ -233,6 +240,14 @@ export type PlatformAllowlist = typeof PlatformAllowlist.Type;
 export const PlatformHealth = Schema.Struct({
   registry: Schema.Struct({ ok: Schema.Boolean }),
   tenants: Schema.optional(Schema.Struct({ expected: Schema.Number, running: Schema.Number })),
+  tenant_hubs: Schema.optional(Schema.Array(Schema.Struct({
+    id: Schema.String,
+    name: Schema.String,
+    running: Schema.Boolean,
+    uptime_seconds: Schema.NullOr(Schema.Number),
+    restarts_24h: Schema.NullOr(Schema.Number),
+    database_bytes: Schema.NullOr(Schema.Number),
+  }))),
   admission: Schema.optional(
     Schema.Struct({
       tenants: Schema.Number,
@@ -285,11 +300,12 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
   const fetchImpl: FetchLike = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
   const origin = options.origin ?? "";
 
-  async function read<A>(schema: Schema.Codec<A, any, never, never>, path: string): Promise<A> {
+  async function read<A>(schema: Schema.Codec<A, any, never, never>, path: string, signal?: AbortSignal): Promise<A> {
     const response = await fetchImpl(`${origin}${path}`, {
       method: "GET",
       credentials: "same-origin",
       headers: { Accept: "application/json" },
+      ...(signal ? { signal } : {}),
     });
     if (!response.ok) throw await decodeFailure(response);
     return Schema.decodeUnknownSync(schema)(await response.json());
@@ -353,7 +369,7 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
     },
     platformHealth: () => read(PlatformHealth, "/api/cloud/platform/health"),
     platformUsers: (query: string) => read(PlatformUsers, `/api/cloud/platform/users?q=${encodeURIComponent(query)}`),
-    platformAudit: (query: string) => read(PlatformAudit, `/api/cloud/platform/audit${query === "" ? "" : `?${query}`}`),
+    platformAudit: (query: string, signal?: AbortSignal) => read(PlatformAudit, `/api/cloud/platform/audit${query === "" ? "" : `?${query}`}`, signal),
     platformEntitlements: (organization: string) => read(OrganizationEntitlements, entitlementsPath(organization)),
     changePlatformEntitlement: (input: { organization: string; csrf: string; change: EntitlementChange }) =>
       post(EntitlementChangeResult, entitlementsPath(input.organization), input.csrf, input.change),

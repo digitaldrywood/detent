@@ -476,7 +476,7 @@ func TestBuildPromptDocumentsWorkpadStatusContract(t *testing.T) {
 	for _, opts := range []PromptOptions{{}, {WorkAttemptID: 5715, Generation: 68}} {
 		t.Run(strconv.FormatInt(opts.WorkAttemptID, 10), func(t *testing.T) {
 			prompt := appendBlockedHandoffBlock("", opts)
-			for _, required := range []string{"current authoritative `## Codex Workpad`", "if permitted, else post anew", "body/final cannot supersede it", "Keep native/local writers", "reuse verified same-head/test-input receipts without handoff-only reruns", "Finish source/pre-merge requirements", "existing post-integration owner", "exact PR/head, pending acceptance", "Pending acceptance remains unverified", "Preserve pre-merge evidence, approvals and gates", "Without a permitted owner, retain original acceptance"} {
+			for _, required := range []string{"current authoritative `## Codex Workpad`", "if permitted, else post anew", "body/final cannot supersede it", "Keep native/local writers", "reuse verified same-head/test-input receipts without handoff-only reruns", "Finish source/pre-merge requirements", "existing post-integration owner", "exact PR/head, pending acceptance", "Pending acceptance remains unverified", "Preserve pre-merge evidence, approvals and gates", "Without a permitted owner, retain original acceptance", "never file a follow-up issue for acceptance"} {
 				if !strings.Contains(prompt, required) {
 					t.Fatalf("handoff lost acceptance ownership: %s", required)
 				}
@@ -1104,8 +1104,8 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 	}{
 		{
 			name: "native host command evidence",
-			opts: ValidatorPromptOptions{VersionID: "version", HeadSHA: "head", Commands: []gate.CommandResult{{Command: "cd frontend && pnpm build", HeadSHA: "head", TreeSHA: "tree", ExitCode: 0, Output: "build passed"}}},
-			want: []string{"host", "pnpm build", "build passed", "head=", "tree=", "exit=", "detent_run_validation", "Worker prose and human approval do not replace test evidence"},
+			opts: ValidatorPromptOptions{VersionID: "version", HeadSHA: "head", Commands: []gate.CommandResult{{ReceiptID: "timing_build", Command: "cd frontend && pnpm build", HeadSHA: "head", TreeSHA: "tree", ExitCode: 0, Output: "build passed"}}},
+			want: []string{"host", `receipt_id="timing_build"`, "receipt_ids", "pnpm build", "build passed", "head=", "tree=", "exit=", "detent_run_validation", "Worker prose and human approval do not replace test evidence"},
 		},
 		{
 			name:      "clean physical observation",

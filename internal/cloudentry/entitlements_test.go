@@ -157,7 +157,7 @@ func testPlatformEntitlement(t *testing.T, feature, planID string) {
 	response = admin.get(path)
 	pilotStatus(t, "entitlements after grant", response, http.StatusOK)
 	pilotDecode(t, response, &state)
-	if len(state.Grants) != 1 || state.Revision != revision+1 || slices.Contains(state.Features, "model_choice") != (feature != "") {
+	if len(state.Grants) != 1 || len(state.GrantHistory) != 1 || state.GrantHistory[0].GrantedBy != "staff@example.test" || state.Revision != revision+1 || slices.Contains(state.Features, "model_choice") != (feature != "") {
 		t.Fatalf("entitlements after grant = %+v", state)
 	}
 	var detail platformTenantDetail
@@ -192,7 +192,7 @@ func testPlatformEntitlement(t *testing.T, feature, planID string) {
 	pilotStatus(t, "revoke", admin.json(http.MethodPost, path, csrf[admin], revoke), http.StatusOK)
 	response = admin.get(path)
 	pilotDecode(t, response, &state)
-	if len(state.Grants) != 0 || state.Revision != revision+2 || slices.Contains(state.Features, "model_choice") {
+	if len(state.Grants) != 0 || len(state.GrantHistory) != 1 || state.GrantHistory[0].RevokedAt == nil || state.GrantHistory[0].GrantedBy != "staff@example.test" || state.Revision != revision+2 || slices.Contains(state.Features, "model_choice") {
 		t.Fatalf("entitlements after revoke = %+v", state)
 	}
 

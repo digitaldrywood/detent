@@ -775,6 +775,7 @@ type serviceRunnerStub struct {
 	startResults []servicepkg.StartResult
 	startErrs    []error
 	startOptions []servicepkg.StartOptions
+	onStart      func()
 	status       servicepkg.Status
 	statusErr    error
 }
@@ -789,6 +790,9 @@ func (s *serviceRunnerStub) Start(_ context.Context, opts servicepkg.StartOption
 	var err error
 	if index < len(s.startErrs) {
 		err = s.startErrs[index]
+	}
+	if err == nil && s.onStart != nil {
+		s.onStart()
 	}
 	return result, err
 }

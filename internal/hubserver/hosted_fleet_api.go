@@ -58,6 +58,7 @@ type hostedFleetRunner struct {
 	CapacityLimit      int                                        `json:"capacity_limit"`
 	ReportedCapacity   int                                        `json:"reported_capacity"`
 	ProviderCapacity   []providercapacity.View                    `json:"provider_capacity"`
+	HasHeartbeat       bool                                       `json:"has_heartbeat"`
 	LastHeartbeatAt    time.Time                                  `json:"last_heartbeat_at"`
 	Leases             []hostedFleetLease                         `json:"leases"`
 	IsolationTier      string                                     `json:"isolation_tier"`
@@ -226,17 +227,17 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 
 func (s *Service) hostedFleetRunners(ctx context.Context, credential apiCredential, visible map[tracker.ProjectID]bool) ([]hostedFleetRunner, error) {
 	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, ''), r.local_checks_json FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, ''), r.local_checks_json, r.created_at FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
 WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.id`, organization)
 	if err != nil {
 		return nil, fmt.Errorf("list runners: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	type listed struct{ id, version, checks string }
+	type listed struct{ id, version, checks, created string }
 	runners := []listed{}
 	for rows.Next() {
 		var entry listed
-		if err := rows.Scan(&entry.id, &entry.version, &entry.checks); err != nil {
+		if err := rows.Scan(&entry.id, &entry.version, &entry.checks, &entry.created); err != nil {
 			return nil, fmt.Errorf("scan runner: %w", err)
 		}
 		runners = append(runners, entry)
@@ -252,7 +253,12 @@ WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.
 		if err != nil {
 			return nil, fmt.Errorf("read runner %s: %w", entry.id, err)
 		}
+		createdAt, err := parseTimeValue(entry.created)
+		if err != nil {
+			return nil, fmt.Errorf("read runner enrollment time: %w", err)
+		}
 		view := hostedFleetRunnerView(runner, entry.version, visible, s.config.now())
+		view.HasHeartbeat = runner.LastHeartbeatAt.After(createdAt)
 		var checks map[tracker.ProjectID]runnerauth.LocalChecks
 		if err := json.Unmarshal([]byte(entry.checks), &checks); err != nil {
 			return nil, err
@@ -372,19 +378,20 @@ func (s *Service) hostedFleetUsage(ctx context.Context) (hostedFleetUsage, error
 
 // hostedVisibleReservations reads the live provider reservations held by
 // leases in projects the reader can see.
-func (s *Service) hostedVisibleReservations(ctx context.Context, visible map[tracker.ProjectID]bool) ([]providercapacity.Report, error) {
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.reservation_json, l.expires_at, coalesce(i.project_id, '') FROM provider_reservations p
+func (s *Service) hostedVisibleReservations(ctx context.Context, visible map[tracker.ProjectID]bool) ([]scopedProviderAccount, error) {
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.reservation_json, l.expires_at, coalesce(i.project_id, ''), coalesce(lr.runner_id, '') FROM provider_reservations p
 JOIN leases l ON l.lease_id = p.lease_id JOIN issues i ON i.id = l.issue_id
+LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id
 WHERE p.organization_id = ? AND l.released_at IS NULL`, s.config.Hosted.OrganizationID)
 	if err != nil {
 		return nil, fmt.Errorf("list provider reservations: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	now := s.config.now()
-	reports := []providercapacity.Report{}
+	reports := []scopedProviderAccount{}
 	for rows.Next() {
-		var raw, expiry, project string
-		if err := rows.Scan(&raw, &expiry, &project); err != nil {
+		var raw, expiry, project, runnerID string
+		if err := rows.Scan(&raw, &expiry, &project, &runnerID); err != nil {
 			return nil, fmt.Errorf("scan provider reservation: %w", err)
 		}
 		end, err := parseTimeValue(expiry)
@@ -398,7 +405,7 @@ WHERE p.organization_id = ? AND l.released_at IS NULL`, s.config.Hosted.Organiza
 		if err := json.Unmarshal([]byte(raw), &reservation); err != nil {
 			return nil, fmt.Errorf("decode provider reservation: %w", err)
 		}
-		reports = append(reports, reservation.Report)
+		reports = append(reports, scopedProviderAccount{runnerID: runnerID, Report: reservation.Report})
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("list provider reservations: %w", err)
@@ -409,13 +416,13 @@ WHERE p.organization_id = ? AND l.released_at IS NULL`, s.config.Hosted.Organiza
 // scopeProviderUsage recounts each provider account's reserved concurrency
 // from the reservations the reader can see, and restates the reason that
 // depended on the organization-wide count.
-func scopeProviderUsage(runners []hostedFleetRunner, reservations []providercapacity.Report) {
+func scopeProviderUsage(runners []hostedFleetRunner, reservations []scopedProviderAccount) {
 	for index := range runners {
 		for position := range runners[index].ProviderCapacity {
 			view := &runners[index].ProviderCapacity[position]
 			view.Used = 0
 			for _, reservation := range reservations {
-				if sharedProviderAccount(view.Report, reservation) {
+				if sharedProviderAccount(scopedProviderAccount{runnerID: runners[index].ID, Report: view.Report}, reservation) {
 					view.Used++
 				}
 			}

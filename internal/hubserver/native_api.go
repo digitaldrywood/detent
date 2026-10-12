@@ -452,7 +452,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		return nil, err
 	}
 	if consolidateRunEvent {
-		after, err := s.database.hostedRunEventConsumption(ctx, tx, now, before, runEventState, event, response)
+		after, err := s.database.hostedRunEventConsumption(ctx, tx, now, before, runEventState, event)
 		if err != nil {
 			return nil, err
 		}

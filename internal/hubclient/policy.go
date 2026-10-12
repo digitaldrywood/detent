@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -52,7 +54,7 @@ func (c *NativeClient) ProjectPolicy(ctx context.Context) (policy.Approval, erro
 		return state.approval, state.approvalErr
 	}
 	var approval policy.Approval
-	err := c.client.request(ctx, http.MethodGet, c.base()+"/policy", nil, &approval)
+	err := retryableProjectRead(ctx, c.client.request(ctx, http.MethodGet, c.base()+"/policy", nil, &approval))
 	var failure *APIError
 	if c.client.runner != nil && (err == nil || errors.As(err, &failure) && failure.Code == "policy_mismatch") {
 		c.client.runner.setApprovedPolicy(c.project, approval.Policy.ID)
@@ -154,7 +156,7 @@ func (s *Scheduler) ResolveProjectWorkflow(ctx context.Context, project string, 
 func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow workflowconfig.Workflow, provenance *policy.RepositorySource) (workflowconfig.Workflow, error) {
 	project, err := c.Project(ctx)
 	if err != nil {
-		return workflowconfig.Workflow{}, fmt.Errorf("load Cloud model selection: %w", err)
+		return workflowconfig.Workflow{}, fmt.Errorf("load Cloud model selection: %w", retryableProjectRead(ctx, err))
 	}
 	var selection workflowconfig.ModelSelection
 	if len(project.ModelSelection) > 0 {
@@ -283,4 +285,20 @@ func (c *NativeClient) ValidateLease(ctx context.Context, lease tracker.NativeLe
 	var result runnerauth.Runner
 	err := c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/validate", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken}, &result)
 	return result, err
+}
+
+func retryableProjectRead(ctx context.Context, err error) error {
+	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) || !errors.Is(err, ErrUnavailable) {
+		return err
+	}
+	var apiErr *APIError
+	var transportErr net.Error
+	retryable := errors.As(err, &transportErr) || errors.Is(err, io.ErrUnexpectedEOF)
+	if errors.As(err, &apiErr) {
+		retryable = apiErr.Status >= http.StatusInternalServerError
+	}
+	if !retryable {
+		return err
+	}
+	return errors.Join(connector.NewRetryableError("project configuration read unavailable"), err)
 }

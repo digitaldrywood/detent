@@ -577,5 +577,13 @@ AND EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = t.id AND g.organizat
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO change_review_policies (organization_id, project_id, policy_json) VALUES (?, ?, ?)
 ON CONFLICT (organization_id, project_id) DO UPDATE SET policy_json = excluded.policy_json`, scope.organization, scope.project, raw)
-	return rules, err
+	if err != nil {
+		return nil, err
+	}
+	if previous.ID != rules.ID {
+		if err := routeStaleNativeLandingChanges(ctx, tx, string(scope.organization)+"/"+string(scope.project), scope.actor().PrincipalID, "", s.config.now()); err != nil {
+			return nil, err
+		}
+	}
+	return rules, nil
 }

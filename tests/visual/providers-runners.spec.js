@@ -105,7 +105,7 @@ for (const width of [1440, 390]) {
           await dialog.getByRole("radio", { name: os, exact: true }).check();
           await expect(dialog).toContainText(`Installs the latest release for ${os}`);
           await expect(dialog.getByRole("button", { name: "Copy the Homebrew command" })).toHaveCount(os === "macOS" ? 1 : 0);
-          await dialog.getByRole("button", { name: /^(?:Copy|Copied) the install and register command$/ }).click();
+          await dialog.getByRole("button", { name: "Copy the install and register command", exact: true }).click();
           const combined = await page.evaluate(() => navigator.clipboard.readText());
           expect(combined).toBe(`curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh && export PATH="$HOME/.local/bin:/usr/local/bin:$PATH" && ${copied}`);
           expect(await dialog.innerHTML()).not.toContain("det_enroll_preview");
@@ -118,6 +118,7 @@ for (const width of [1440, 390]) {
       await page.unroute("**/fleet");
       await page.route("**/fleet", (route) => route.fulfill({ json: { ...fleet, runners: [...fleet.runners, { ...fleetFixture.runners[0], id: "runner_new", display_name: name, hostname: sprite ? name : "build-machine", health: "healthy" }] } }));
       await expect(dialog.getByText(`${name} is connected`)).toBeVisible();
+      await dialog.getByRole("button", { name: "Next", exact: true }).click();
       await expect(dialog.getByText("Sleeps when idle; the Hub wakes it for new work")).toHaveCount(location === "sprite" ? 1 : 0);
       await dialog.getByRole("button", { name: "Done" }).click();
       await expect(dialog).toHaveCount(0);

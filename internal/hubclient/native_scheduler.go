@@ -92,10 +92,10 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		s.nativeHeartbeatMu[project] = heartbeat
 	}
 	now := s.now()
-	previous := s.nativeHeartbeats[project]
+	previousConfiguration := s.configHeartbeats[project]
 	s.mu.Unlock()
 	var ownerView *runnerauth.ProjectConfiguration
-	if projectOwner != nil && (previous.IsZero() || !now.Before(previous.Add(s.heartbeatInterval))) {
+	if projectOwner != nil && (previousConfiguration.IsZero() || !now.Before(previousConfiguration.Add(s.heartbeatInterval))) {
 		supported, err := source.client.HubFeature(ctx, tracker.NativeProjectConfigurationCapability)
 		if err != nil {
 			return err
@@ -106,7 +106,12 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		}
 	}
 	heartbeat.Lock()
-	defer heartbeat.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			heartbeat.Unlock()
+		}
+	}()
 	s.mu.Lock()
 	last := s.nativeHeartbeats[project]
 	owner := s.updateOwner
@@ -207,10 +212,6 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		break
 	}
 	s.mu.Lock()
-	if current := s.nativeHeartbeats[project]; !current.IsZero() && s.now().Before(current.Add(s.heartbeatInterval)) {
-		s.mu.Unlock()
-		return nil
-	}
 	s.machine.Update = update
 	s.machine.CapacityConfig = capacityConfig
 	if capacityConfig != nil {
@@ -251,6 +252,17 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		return err
 	}
 	machine.HostMetrics = nil
+	s.mu.Lock()
+	s.nativeHeartbeats[project] = s.now()
+	if projectConfig != nil {
+		if s.configHeartbeats == nil {
+			s.configHeartbeats = make(map[tracker.ProjectID]time.Time)
+		}
+		s.configHeartbeats[project] = s.now()
+	}
+	s.mu.Unlock()
+	heartbeat.Unlock()
+	locked = false
 
 	if projectConfig != nil {
 		if request := s.client.runner.projectConfigurationRequest(); request != nil && request.ProjectID == string(project) && request.RequestID != projectConfig.RequestID {
@@ -259,7 +271,10 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 				return err
 			}
 			machine.ProjectConfiguration = &view
-			if err := source.client.HeartbeatMachine(ctx, machine); err != nil {
+			heartbeat.Lock()
+			err := source.client.HeartbeatMachine(ctx, machine)
+			heartbeat.Unlock()
+			if err != nil {
 				return err
 			}
 		}
@@ -271,7 +286,10 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 				s.machine.Update = applied
 				s.mu.Unlock()
 				machine.Update = applied
-				if err := source.client.HeartbeatMachine(ctx, machine); err != nil {
+				heartbeat.Lock()
+				err := source.client.HeartbeatMachine(ctx, machine)
+				heartbeat.Unlock()
+				if err != nil {
 					return err
 				}
 			}
@@ -442,6 +460,7 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		s.claims[issueID] = nativeTrackerLease(claim.lease)
 		s.nativeClaims[issueID] = claim
 		s.claimPolicies[issueID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
+		claim.source.client.client.nativeLeases.Store(claim.source.client.base()+"/"+issueID, claim.lease)
 	}
 	s.mu.Unlock()
 	s.syncLeaseHold(ctx)

@@ -9,11 +9,13 @@ import (
 func TestCriterionEvidence(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name     string
-		entries  []CriterionEvidence
-		commands []CommandResult
-		gaps     []string
-		findings int
+		name       string
+		entries    []CriterionEvidence
+		commands   []CommandResult
+		gaps       []string
+		findings   int
+		receiptIDs []string
+		edit       func(*ValidatorResult)
 	}{
 		{name: "missing map", gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "named tests", entries: []CriterionEvidence{
@@ -30,10 +32,45 @@ func TestCriterionEvidence(t *testing.T) {
 		{name: "failed receipt", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceReceipt, Reference: "make check", HeadSHA: "head", TreeSHA: "tree", Behavior: "Malformed input returns an error"}}, commands: []CommandResult{{Command: "make check", HeadSHA: "head", TreeSHA: "tree", ExitCode: 1}}, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "wrong head", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceReceipt, Reference: "make check", HeadSHA: "old", TreeSHA: "tree", Behavior: "Malformed input returns an error"}}, commands: []CommandResult{{Command: "make check", HeadSHA: "old", TreeSHA: "tree"}}, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "wrong tree", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceReceipt, Reference: "make check", HeadSHA: "head", TreeSHA: "other", Behavior: "Malformed input returns an error"}}, commands: []CommandResult{{Command: "make check", HeadSHA: "head", TreeSHA: "other"}}, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "multiple bound receipts", receiptIDs: []string{"timing_app", "timing_browser"}, gaps: []string{"Return valid input"}},
+		{name: "missing selected receipt", receiptIDs: []string{"timing_app", "missing"}, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "duplicate selected receipt", receiptIDs: []string{"timing_app", "timing_app"}, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "empty selected receipt", receiptIDs: []string{"timing_app", ""}, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "ambiguous receipt ID", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.Commands = append(r.Commands, r.Commands[0]) }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "failed selected receipt", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.Commands[1].ExitCode = 1 }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "selected receipt wrong head", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.Commands[1].HeadSHA = "other" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "selected receipt wrong tree", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.Commands[1].TreeSHA = "other" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "receipt IDs retain expected tree binding", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) {
+			r.CriteriaEvidence[0].TreeSHA = "other"
+			for i := range r.Commands {
+				r.Commands[i].TreeSHA = "other"
+			}
+		}, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "receipt IDs require behavior", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].Behavior = "" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "receipt IDs reject restated implementation", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].RestatesImplementation = true }, gaps: []string{"Reject invalid input", "Return valid input"}, findings: 1},
+		{name: "invalid ID cannot fall back to exact command", receiptIDs: []string{"missing"}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].Reference = r.Commands[0].Command }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "legacy combined command is not split", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].ReceiptIDs = nil }, gaps: []string{"Reject invalid input", "Return valid input"}},
+
+		{name: "observed attachment", edit: func(r *ValidatorResult) {
+			r.CriteriaEvidence = []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceAttachment, Reference: "invalid-input.png", ReceiptIDs: []string{"image-read"}, HeadSHA: "head", TreeSHA: "tree", Behavior: "The capture shows the error beside the invalid field"}}
+			r.AttachmentReads = []AttachmentRead{{ReceiptID: "image-read", AttachmentID: "attachment", SHA256: "digest", HeadSHA: "head", TreeSHA: "tree"}}
+		}, gaps: []string{"Return valid input"}},
+		{name: "invented attachment read", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceAttachment, Reference: "image.png", ReceiptIDs: []string{"invented"}, HeadSHA: "head", TreeSHA: "tree", Behavior: "Claimed image"}}, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "attachment from another review", edit: func(r *ValidatorResult) {
+			r.CriteriaEvidence = []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceAttachment, Reference: "image.png", ReceiptIDs: []string{"image-read"}, HeadSHA: "head", TreeSHA: "tree", Behavior: "Claimed image"}}
+			r.AttachmentReads = []AttachmentRead{{ReceiptID: "image-read", AttachmentID: "attachment", SHA256: "digest", HeadSHA: "other", TreeSHA: "tree"}}
+		}, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "unsupported kind", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: "approval", Reference: "human"}}, gaps: []string{"Reject invalid input", "Return valid input"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			result := ValidatorResult{HeadSHA: "head", CriteriaEvidence: test.entries, Commands: test.commands}
+			if test.receiptIDs != nil {
+				result.CriteriaEvidence = []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceReceipt, Reference: "make check-app; npx playwright test", ReceiptIDs: test.receiptIDs, HeadSHA: "head", TreeSHA: "tree", Behavior: "Both checks reject malformed input"}}
+				result.Commands = []CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: "head", TreeSHA: "tree"}, {ReceiptID: "timing_browser", Command: "npx playwright test", HeadSHA: "head", TreeSHA: "tree"}}
+			}
+			if test.edit != nil {
+				test.edit(&result)
+			}
 			NormalizeCriterionEvidence(&result, []string{"Reject invalid input", "Return valid input"}, "tree")
 			if len(result.CriteriaEvidence) != 2 || result.CriteriaEvidence[0].Criterion != "Reject invalid input" || result.CriteriaEvidence[1].Criterion != "Return valid input" || !reflect.DeepEqual(result.NotVerified, test.gaps) || len(result.Findings) != test.findings {
 				t.Fatalf("normalized evidence = %+v", result)
