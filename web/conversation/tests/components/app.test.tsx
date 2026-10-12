@@ -173,7 +173,7 @@ describe("the conversation shell", () => {
     await screen.findByLabelText("Message");
     await waitFor(() => expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("proj_beta"));
     await router.navigate({ to: "/work" });
-    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All projects"));
+    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All Mock organization projects"));
     expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("");
     await router.navigate({ to: "/chat" });
     await screen.findByLabelText("Message");
@@ -181,8 +181,8 @@ describe("the conversation shell", () => {
     await router.navigate({ to: "/chat/p/$projectId", params: { projectId: "proj_beta" } });
     await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("beta"));
     fireEvent.click(screen.getByLabelText("Filter threads by project"));
-    fireEvent.click(await screen.findByRole("option", { name: "All projects" }));
-    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All projects"));
+    fireEvent.click(await screen.findByRole("option", { name: "All Mock organization projects" }));
+    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All Mock organization projects"));
     expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("");
     const composer = screen.getByLabelText<HTMLElement>("Message");
     await setComposerText(composer, "Chat after All projects");

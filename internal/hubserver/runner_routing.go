@@ -66,6 +66,9 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.T
 		return r, nil, time.Time{}, err
 	}
 	r.Routing = r.Normalized()
+	if r.MachineUse == "" {
+		r.MachineUse = "shared"
+	}
 	if err := applyRunnerProblems(&r, problems, isolationRaw, protocol, rejected); err != nil {
 		return r, nil, time.Time{}, err
 	}
@@ -164,6 +167,7 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope WHERE l.machine_id = ? AND 
 }
 
 type runnerSettings struct {
+	MachineUse                  string                                  `json:"machine_use,omitempty"`
 	ProjectRanks                map[tracker.ProjectID]int               `json:"project_ranks,omitempty"`
 	ProjectConfigurationCommand *runnerauth.ProjectConfigurationCommand `json:"project_configuration_request,omitempty"`
 	UpdateRequest               *runnerauth.UpdateRequest               `json:"update_request,omitempty"`
@@ -174,7 +178,7 @@ type runnerSettings struct {
 }
 
 func settingsFromRouting(r runnerauth.Routing) runnerSettings {
-	return runnerSettings{ProjectRanks: r.ProjectRankOverrides, ProjectConfigurationCommand: r.ProjectConfigurationCommand, UpdateRequest: r.UpdateRequest, CapacityRequest: r.CapacityRequest, IsolationTier: r.IsolationTier, HostServices: r.HostServices, Availability: r.Availability}
+	return runnerSettings{MachineUse: r.MachineUse, ProjectRanks: r.ProjectRankOverrides, ProjectConfigurationCommand: r.ProjectConfigurationCommand, UpdateRequest: r.UpdateRequest, CapacityRequest: r.CapacityRequest, IsolationTier: r.IsolationTier, HostServices: r.HostServices, Availability: r.Availability}
 }
 
 func unmarshalRunnerSettings(raw string, routing *runnerauth.Routing) error {
@@ -183,6 +187,7 @@ func unmarshalRunnerSettings(raw string, routing *runnerauth.Routing) error {
 		return err
 	}
 	routing.ProjectRanks = settings.ProjectRanks
+	routing.MachineUse = settings.MachineUse
 	routing.ProjectRankOverrides = settings.ProjectRanks
 	routing.UpdateRequest = settings.UpdateRequest
 	routing.ProjectConfigurationCommand = settings.ProjectConfigurationCommand
@@ -242,6 +247,9 @@ type runnerRoutingRequest struct {
 // effective preserves optional settings exactly as the dashboard command does.
 func (request runnerRoutingRequest) effective(current runnerauth.Routing) runnerauth.RoutingChange {
 	change := request.RoutingChange
+	if change.MachineUse == "" {
+		change.MachineUse = current.MachineUse
+	}
 	if change.Scope == "" {
 		change.Scope = current.Scope
 	}

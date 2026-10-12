@@ -19,6 +19,8 @@ func TestRoutingNormalizationAndValidation(t *testing.T) {
 		valid   bool
 	}{
 		{"normalized", Routing{DisplayName: " Builder ", Tags: []string{" Linux ", "BUILD", "linux"}, State: "active", CapacityLimit: 2}, true},
+		{"dedicated", Routing{DisplayName: "Builder", State: "active", MachineUse: "dedicated"}, true},
+		{"shared", Routing{DisplayName: "Builder", State: "active", MachineUse: "shared"}, true},
 		{"organization scope", Routing{Scope: "organization", DisplayName: "Builder", State: "active"}, true},
 		{"unknown scope", Routing{Scope: "all", DisplayName: "Builder", State: "active"}, false},
 		{"organization with list", Routing{Scope: "organization", DisplayName: "Builder", State: "active", ProjectIDs: []tracker.ProjectID{"prj_a"}}, false},
@@ -34,6 +36,9 @@ func TestRoutingNormalizationAndValidation(t *testing.T) {
 			normalized := test.routing.Normalized()
 			if err := normalized.Validate(); (err == nil) != test.valid {
 				t.Fatalf("Validate = %v", err)
+			}
+			if normalized.MachineUse != test.routing.MachineUse {
+				t.Fatalf("normalization changed machine use from %q to %q", test.routing.MachineUse, normalized.MachineUse)
 			}
 			if test.name == "normalized" {
 				if normalized.DisplayName != "Builder" || !reflect.DeepEqual(normalized.Tags, []string{"build", "linux"}) {
@@ -55,6 +60,9 @@ func TestRoutingSettingsValidation(t *testing.T) {
 		valid    bool
 	}{
 		{"defaults", func(*Routing) {}, true},
+		{"dedicated machine", func(r *Routing) { r.MachineUse = "dedicated" }, true},
+		{"shared machine", func(r *Routing) { r.MachineUse = "shared" }, true},
+		{"unknown machine use", func(r *Routing) { r.MachineUse = "idle" }, false},
 		{"trusted", func(r *Routing) { r.IsolationTier = "native-trusted" }, true},
 		{"unknown tier", func(r *Routing) { r.IsolationTier = "root" }, false},
 		{"loopback service", func(r *Routing) { r.HostServices = []string{"tcp:127.0.0.1:8080"} }, true},

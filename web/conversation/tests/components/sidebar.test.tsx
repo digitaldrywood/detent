@@ -215,17 +215,38 @@ describe("the thread sidebar", () => {
     expect(brand.getAttribute("href")).toBe("/work");
   });
 
-  it("names the project scope and reports project and all-project selections", async () => {
+  it.each([
+    ["Parable", "All Parable projects"],
+    ["Drywood Creek", "All Drywood Creek projects"],
+    ["", "All projects"],
+  ])("names the %s project scope and reports project and all-project selections", async (organizationName, label) => {
     const onProjectChange = vi.fn();
-    await renderSidebar({ onProjectChange });
+    await renderSidebar({ onProjectChange, organizationName });
     expect(
       screen.getByLabelText("Filter threads by project").textContent,
-    ).toContain("All projects");
+    ).toContain(label);
+    expect(screen.getByLabelText("Filter threads by project").getAttribute("title")).toBe(label);
     fireEvent.click(screen.getByLabelText("Filter threads by project"));
     fireEvent.click(await screen.findByRole("option", { name: "beta" }));
     expect(onProjectChange).toHaveBeenLastCalledWith("proj_beta");
+    expect(screen.getByLabelText("Filter threads by project").textContent).toContain("beta");
     fireEvent.click(screen.getByLabelText("Filter threads by project"));
-    fireEvent.click(await screen.findByRole("option", { name: "All projects" }));
+    fireEvent.click(await screen.findByRole("option", { name: label }));
+    expect(onProjectChange).toHaveBeenLastCalledWith("");
+  });
+
+  it("updates the current scope and reset option when the organization changes", async () => {
+    const onProjectChange = vi.fn();
+    const fixture = await renderSidebar({ onProjectChange, organizationName: "Parable" });
+    fixture.setOrganization("Drywood Creek");
+    expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All Drywood Creek projects");
+    fireEvent.click(screen.getByLabelText("Filter threads by project"));
+    fireEvent.click(await screen.findByRole("option", { name: "beta" }));
+    fixture.setOrganization("Parable");
+    expect(screen.getByLabelText("Filter threads by project").textContent).toContain("beta");
+    expect(onProjectChange).toHaveBeenLastCalledWith("proj_beta");
+    fireEvent.click(screen.getByLabelText("Filter threads by project"));
+    fireEvent.click(await screen.findByRole("option", { name: "All Parable projects" }));
     expect(onProjectChange).toHaveBeenLastCalledWith("");
   });
 

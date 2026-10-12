@@ -57,7 +57,7 @@ for (const width of [1440, 390]) {
     await input.fill("example.test");
     await search.click();
     await member.getByRole("link", { name: "Open tenant →" }).first().click();
-    await expect(page).toHaveURL(origin + "/platform/tenants?tenant=org_parable");
-    await expect(page.getByRole("dialog", { name: "Parable", exact: true })).toBeVisible();
+    await expect(page).toHaveURL(origin + "/platform/tenants/org_parable");
+    await expect(page.getByRole("region", { name: "Parable", exact: true })).toBeVisible();
   });
 }
