@@ -12,7 +12,7 @@
   "terminal": false,
   "priority": 1,
   "labels": ["bug", "goal:reliability"],
-  "assignees": ["michaelhvisser"],
+  "assignees": ["example-owner"],
   "actor": { "kind": "human", "principal_id": "tok_7b21" },
   "created_at": "2026-09-07T18:04:00Z",
   "updated_at": "2026-09-09T10:02:44Z",

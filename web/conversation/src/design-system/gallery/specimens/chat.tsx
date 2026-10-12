@@ -107,7 +107,7 @@ const SIDEBAR_CONVERSATIONS = [
 
 function sidebarData(): SidebarShellData {
   return {
-    organizationName: "Threefold",
+    organizationName: "Example Organization",
     projects: PROJECTS,
     activeProjectId: null,
     onProjectChange: noop,

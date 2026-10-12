@@ -241,10 +241,10 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "api-usage-populated", Route: "/api/v1/usage?by=day", WaitSelector: "body", Page: "api", Variant: "healthy"},
 		{ID: "api-usage-empty", Route: "/api/v1/usage?by=day", WaitSelector: "body", Page: "api", Variant: "reports-empty"},
 		{ID: "api-usage-invalid-range", Route: "/api/v1/usage?by=day&from=2026-06-16&to=2026-06-15", WaitSelector: "body", Page: "api", Variant: "invalid-date-range", Status: http.StatusBadRequest},
-		{ID: "api-issue-running", Route: "/api/v1/digitaldrywood/detent-core%235260", WaitSelector: "body", Page: "api", Variant: "healthy"},
-		{ID: "api-issue-queued", Route: "/api/v1/digitaldrywood/docs-site%235270", WaitSelector: "body", Page: "api", Variant: "healthy"},
-		{ID: "api-issue-blocked", Route: "/api/v1/digitaldrywood/billing-api%235280", WaitSelector: "body", Page: "api", Variant: "healthy"},
-		{ID: "api-issue-not-found", Route: "/api/v1/digitaldrywood/detent-core%239999", WaitSelector: "body", Page: "api", Variant: "healthy", Status: http.StatusNotFound},
+		{ID: "api-issue-running", Route: "/api/v1/example-org/detent-core%235260", WaitSelector: "body", Page: "api", Variant: "healthy"},
+		{ID: "api-issue-queued", Route: "/api/v1/example-org/docs-site%235270", WaitSelector: "body", Page: "api", Variant: "healthy"},
+		{ID: "api-issue-blocked", Route: "/api/v1/example-org/billing-api%235280", WaitSelector: "body", Page: "api", Variant: "healthy"},
+		{ID: "api-issue-not-found", Route: "/api/v1/example-org/detent-core%239999", WaitSelector: "body", Page: "api", Variant: "healthy", Status: http.StatusNotFound},
 		{ID: "health-running-demo", Route: "/health", WaitSelector: "body", Page: "api", Variant: "healthy"},
 		{ID: "events-frozen", Route: "/events", WaitSelector: "#snapshot", Page: "api", Variant: "healthy"},
 		{ID: "events-play", Route: "/events", WaitSelector: "#snapshot", Page: "api", Variant: "play"},
@@ -456,7 +456,7 @@ func (s *Server) demoProjectDashboardData(ctx context.Context, scenario demoScen
 	}
 	if scenario.Variant == "paused" {
 		project.PauseReason = "waiting for the release train"
-		project.PauseIssue = "digitaldrywood/release-train#314"
+		project.PauseIssue = "example-org/release-train#314"
 		project.PauseExitEvaluated = true
 		project.PauseExitEvaluable = true
 		project.PauseExitResolver = "release-train"
@@ -750,16 +750,16 @@ func demoSettingsProjects(variant string) []templates.SettingsProject {
 		return nil
 	}
 	projects := []templates.SettingsProject{
-		{ID: demoPrimaryProjectID, WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", WorkflowDetailsURL: "https://github.com/orgs/digitaldrywood/projects/4/workflows", Workdir: "/tmp/detent-screenshots/source/detent-core", WorktreeRoot: "/tmp/detent-screenshots/workspaces/detent-core", Weight: 120, Priority: 100, TrackerKind: "memory", TrackerProject: "digitaldrywood/detent-core", DependencyAutoUnblock: "enabled: Blocked -> Todo when terminal_or_merged"},
-		{ID: "docs-site", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/docs-site", WorktreeRoot: "/tmp/detent-screenshots/workspaces/docs-site", Weight: 90, Priority: 80, TrackerKind: "memory", TrackerProject: "digitaldrywood/docs-site", DependencyAutoUnblock: "disabled: n/a -> n/a when terminal_or_merged"},
-		{ID: "billing-api", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/billing-api", WorktreeRoot: "/tmp/detent-screenshots/workspaces/billing-api", Weight: 80, Priority: 95, TrackerKind: "memory", TrackerProject: "digitaldrywood/billing-api", DependencyAutoUnblock: "enabled: Blocked -> Rework when terminal_or_merged"},
-		{ID: "mobile-client", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/mobile-client", WorktreeRoot: "/tmp/detent-screenshots/workspaces/mobile-client", Weight: 40, Priority: 20, Paused: true, TrackerKind: "memory", TrackerProject: "digitaldrywood/mobile-client", DependencyAutoUnblock: "disabled: n/a -> n/a when terminal_or_merged"},
+		{ID: demoPrimaryProjectID, WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", WorkflowDetailsURL: "https://github.com/orgs/example-org/projects/4/workflows", Workdir: "/tmp/detent-screenshots/source/detent-core", WorktreeRoot: "/tmp/detent-screenshots/workspaces/detent-core", Weight: 120, Priority: 100, TrackerKind: "memory", TrackerProject: "example-org/detent-core", DependencyAutoUnblock: "enabled: Blocked -> Todo when terminal_or_merged"},
+		{ID: "docs-site", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/docs-site", WorktreeRoot: "/tmp/detent-screenshots/workspaces/docs-site", Weight: 90, Priority: 80, TrackerKind: "memory", TrackerProject: "example-org/docs-site", DependencyAutoUnblock: "disabled: n/a -> n/a when terminal_or_merged"},
+		{ID: "billing-api", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/billing-api", WorktreeRoot: "/tmp/detent-screenshots/workspaces/billing-api", Weight: 80, Priority: 95, TrackerKind: "memory", TrackerProject: "example-org/billing-api", DependencyAutoUnblock: "enabled: Blocked -> Rework when terminal_or_merged"},
+		{ID: "mobile-client", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/mobile-client", WorktreeRoot: "/tmp/detent-screenshots/workspaces/mobile-client", Weight: 40, Priority: 20, Paused: true, TrackerKind: "memory", TrackerProject: "example-org/mobile-client", DependencyAutoUnblock: "disabled: n/a -> n/a when terminal_or_merged"},
 	}
 	if variant == "settings-long-paths" {
 		for i := range projects {
 			projects[i].WorkflowPath = "/Users/example/Library/Application Support/Detent/screenshot-demo/very/long/project/" + projects[i].ID + "/workflow/WORKFLOW.md"
-			projects[i].Workdir = "/Users/example/Development/digitaldrywood/products/detent/screenshot-demo/source/" + projects[i].ID + "/with/a/deep/path"
-			projects[i].WorktreeRoot = "/Users/example/Development/digitaldrywood/products/detent/screenshot-demo/worktrees/" + projects[i].ID + "/nested/workspaces"
+			projects[i].Workdir = "/Users/example/Development/example-org/products/detent/screenshot-demo/source/" + projects[i].ID + "/with/a/deep/path"
+			projects[i].WorktreeRoot = "/Users/example/Development/example-org/products/detent/screenshot-demo/worktrees/" + projects[i].ID + "/nested/workspaces"
 		}
 	}
 	if variant == "settings-missing" {
@@ -801,8 +801,8 @@ func (s *Server) demoOnboardingData(scenario demoScenario) templates.OnboardingD
 		TrackerKind:                  workflowconfig.TrackerGitHub,
 		Endpoint:                     "https://api.github.test",
 		APIKey:                       "$GITHUB_TOKEN",
-		ProjectSlug:                  "digitaldrywood/detent-core",
-		Repo:                         "digitaldrywood/detent-core",
+		ProjectSlug:                  "example-org/detent-core",
+		Repo:                         "example-org/detent-core",
 		WorkspaceRoot:                "/tmp/detent-screenshots/workspaces",
 		MaxConcurrentAgents:          "6",
 		MaxTurns:                     "24",
@@ -826,7 +826,7 @@ func (s *Server) demoOnboardingData(scenario demoScenario) templates.OnboardingD
 	case "validation-errors":
 		form.Step = onboardingStepProject
 		form.Endpoint = "not a url"
-		form.Repo = "digitaldrywood"
+		form.Repo = "example-org"
 		errors = []string{"endpoint must be an absolute HTTP URL", "repo must look like owner/name", "max agents must be a positive integer"}
 	case "write-exists":
 		form.Step = onboardingStepWrite

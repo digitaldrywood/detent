@@ -25,7 +25,7 @@ func TestSecurityAuditDispositionAcceptsProjectScopedWorkerCredential(t *testing
 	mustSetWebProject(t, deps.Registry, "detent", false)
 	key := securityaudit.Key{
 		ProjectID:  "detent",
-		Repository: "digitaldrywood/detent",
+		Repository: "example-org/example-project",
 		PRNumber:   2006,
 		BaseSHA:    "base-7",
 		HeadSHA:    "head-7",
@@ -34,8 +34,8 @@ func TestSecurityAuditDispositionAcceptsProjectScopedWorkerCredential(t *testing
 		InvocationID:       "invocation-7",
 		ProjectID:          key.ProjectID,
 		IssueID:            "issue-2005",
-		Identifier:         "digitaldrywood/detent#2005",
-		IssueURL:           "https://github.com/digitaldrywood/detent/issues/2005",
+		Identifier:         "example-org/example-project#2005",
+		IssueURL:           "https://github.com/example-org/example-project/issues/2005",
 		Repository:         key.Repository,
 		PRNumber:           key.PRNumber,
 		BaseSHA:            key.BaseSHA,
@@ -113,7 +113,7 @@ func TestSecurityAuditDispositionAcceptsProjectScopedWorkerCredential(t *testing
 
 	// The MCP path must enforce exact-head evidence and return a real pending
 	// approval, without accepting model-supplied confirmation or writing a disposition.
-	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: now, BoardIssues: []telemetry.Issue{{ProjectID: "detent", ID: "issue-2005", Identifier: "digitaldrywood/detent#2005", State: "Todo"}}}); err != nil {
+	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: now, BoardIssues: []telemetry.Issue{{ProjectID: "detent", ID: "issue-2005", Identifier: "example-org/example-project#2005", State: "Todo"}}}); err != nil {
 		t.Fatal(err)
 	}
 	mcpHeaders := map[string]string{"Authorization": "Bearer current-operator-token"}
@@ -130,7 +130,7 @@ func TestSecurityAuditDispositionAcceptsProjectScopedWorkerCredential(t *testing
 		success    bool
 	}{{"untrusted head", "other", false}, {"exact trusted head", key.HeadSHA, true}} {
 		t.Run(tt.name, func(t *testing.T) {
-			input := map[string]any{"project_id": "detent", "identifier": "digitaldrywood/detent#2005", "request_id": tt.name, "repository": key.Repository, "pull_request": key.PRNumber, "base_sha": key.BaseSHA, "head_sha": tt.head, "finding_id": "auth-2", "evidence": "Verified false positive"}
+			input := map[string]any{"project_id": "detent", "identifier": "example-org/example-project#2005", "request_id": tt.name, "repository": key.Repository, "pull_request": key.PRNumber, "base_sha": key.BaseSHA, "head_sha": tt.head, "finding_id": "auth-2", "evidence": "Verified false positive"}
 			raw, err := json.Marshal(input)
 			if err != nil {
 				t.Fatal(err)

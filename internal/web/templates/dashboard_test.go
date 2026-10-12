@@ -129,7 +129,7 @@ func TestProjectDiagnosticsPageRendersTabbedOperationsView(t *testing.T) {
 					AttemptID:     42,
 					ProjectID:     "detent",
 					IssueID:       "issue-979",
-					Identifier:    "digitaldrywood/detent#979",
+					Identifier:    "example-org/example-project#979",
 					WorkerType:    "agent",
 					WorkerHost:    "worker-a",
 					Status:        "terminal",
@@ -142,7 +142,7 @@ func TestProjectDiagnosticsPageRendersTabbedOperationsView(t *testing.T) {
 					AttemptID:  43,
 					ProjectID:  "detent",
 					IssueID:    "issue-980",
-					Identifier: "digitaldrywood/detent#980",
+					Identifier: "example-org/example-project#980",
 					WorkerType: "agent",
 					WorkerHost: "worker-b",
 					Status:     "active",
@@ -180,7 +180,7 @@ func TestProjectDiagnosticsPageRendersTabbedOperationsView(t *testing.T) {
 				},
 				ActiveBottleneck: telemetry.WorkflowBottleneck{
 					Label:   "Human Review waiting longest",
-					Detail:  "digitaldrywood/detent#755 has waited 2h in Human Review.",
+					Detail:  "example-org/example-project#755 has waited 2h in Human Review.",
 					Seconds: 7200,
 					Count:   1,
 				},
@@ -375,7 +375,7 @@ func TestProjectDiagnosticsPageRendersWorkflowDiagnosticPromptCopyControls(t *te
 					},
 				},
 				OldestCards: []telemetry.WorkflowLaneAge{
-					{ProjectID: "detent", IssueID: "issue-759", Identifier: "digitaldrywood/detent#759", URL: "https://github.com/digitaldrywood/detent/issues/759", State: "Merging", AgeSeconds: 3600},
+					{ProjectID: "detent", IssueID: "issue-759", Identifier: "example-org/example-project#759", URL: "https://github.com/example-org/example-project/issues/759", State: "Merging", AgeSeconds: 3600},
 				},
 				ActiveBottleneck: telemetry.WorkflowBottleneck{
 					Kind:       "merge_queue",
@@ -383,7 +383,7 @@ func TestProjectDiagnosticsPageRendersWorkflowDiagnosticPromptCopyControls(t *te
 					Detail:     "issues waiting or actively merging",
 					ProjectID:  "detent",
 					IssueID:    "issue-759",
-					Identifier: "digitaldrywood/detent#759",
+					Identifier: "example-org/example-project#759",
 					Seconds:    3600,
 					Count:      1,
 				},
@@ -426,15 +426,15 @@ func TestProjectDiagnosticsPageRendersTrackerStatusDriftWarning(t *testing.T) {
 			TrackerDrift: telemetry.TrackerDrift{
 				UntrackedOpen: []telemetry.Issue{{
 					ID:         "I_771",
-					Identifier: "digitaldrywood/detent#771",
-					URL:        "https://github.com/digitaldrywood/detent/issues/771",
+					Identifier: "example-org/example-project#771",
+					URL:        "https://github.com/example-org/example-project/issues/771",
 					Title:      "Untracked issue",
 					Labels:     []string{"bug"},
 				}},
 				OpenTerminal: []telemetry.Issue{{
 					ID:         "I_583",
-					Identifier: "digitaldrywood/detent#583",
-					URL:        "https://github.com/digitaldrywood/detent/issues/583",
+					Identifier: "example-org/example-project#583",
+					URL:        "https://github.com/example-org/example-project/issues/583",
 					Title:      "Done but open",
 					State:      "Done",
 					Labels:     []string{"detent:done"},
@@ -449,10 +449,10 @@ func TestProjectDiagnosticsPageRendersTrackerStatusDriftWarning(t *testing.T) {
 		"2 cleanup issues",
 		"Untracked open issues",
 		"Open terminal issues",
-		`href="https://github.com/digitaldrywood/detent/issues/771"`,
+		`href="https://github.com/example-org/example-project/issues/771"`,
 		"#771",
 		"Untracked issue",
-		`href="https://github.com/digitaldrywood/detent/issues/583"`,
+		`href="https://github.com/example-org/example-project/issues/583"`,
 		"#583",
 		"Done but open",
 		"detent:done",
@@ -567,7 +567,7 @@ func workflowDiagnosticTestLane(lane string, average int64, active int64, wait i
 		ActiveSeconds:  active,
 		WaitSeconds:    wait,
 		Representatives: []telemetry.WorkflowRepresentativeRun{
-			{RunID: 42, SessionID: 84, Identifier: "digitaldrywood/detent#759", FinishedAt: time.Date(2026, 6, 28, 11, 0, 0, 0, time.UTC)},
+			{RunID: 42, SessionID: 84, Identifier: "example-org/example-project#759", FinishedAt: time.Date(2026, 6, 28, 11, 0, 0, 0, time.UTC)},
 		},
 	}
 }
@@ -686,8 +686,8 @@ func TestDashboardDistinguishesBudgetHoldLifecycle(t *testing.T) {
 			Budget: telemetry.Budget{
 				Enabled: true,
 				Refusals: []telemetry.BudgetRefusal{
-					{IssueID: "issue-hard", Identifier: "digitaldrywood/detent#1251", Code: "per_issue_max_usd", HardHold: true},
-					{IssueID: "issue-daily", Identifier: "digitaldrywood/detent#1247", Code: "per_day_max_usd", ResetAt: &resetAt},
+					{IssueID: "issue-hard", Identifier: "example-org/example-project#1251", Code: "per_issue_max_usd", HardHold: true},
+					{IssueID: "issue-daily", Identifier: "example-org/example-project#1247", Code: "per_day_max_usd", ResetAt: &resetAt},
 				},
 			},
 		},
@@ -695,10 +695,10 @@ func TestDashboardDistinguishesBudgetHoldLifecycle(t *testing.T) {
 
 	for _, want := range []string{
 		`aria-label="Budget holds"`,
-		"digitaldrywood/detent#1251",
+		"example-org/example-project#1251",
 		"Hard hold",
 		"Needs an operator decision; it will not retry automatically.",
-		"digitaldrywood/detent#1247",
+		"example-org/example-project#1247",
 		"Temporary cooldown",
 		"Retries automatically after {{detent-time:date-time-seconds:2026-07-13T00:00:00Z}}.",
 	} {

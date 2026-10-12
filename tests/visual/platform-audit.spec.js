@@ -71,7 +71,7 @@ for (const [name, viewport, theme] of [
     await expect(table.getByRole("row")).toHaveCount(4);
     await expect(table).toContainText("troubleshooting");
     await expect(
-      table.getByRole("link", { name: "Parable" }).first(),
+      table.getByRole("link", { name: "Secondary Example Organization" }).first(),
     ).toHaveAttribute("href", "/platform/tenants/org_alpha");
     await expect(page).toHaveTitle("Audit log · Platform · Detent");
     expect(
@@ -107,8 +107,8 @@ for (const [name, viewport, theme] of [
     await expect(table.getByRole("row")).toHaveCount(4);
 
     await page.getByRole("button", { name: "Tenant: All" }).click();
-    await page.getByLabel("Tenant", { exact: true }).fill("Parable");
-    await page.getByRole("option", { name: "Parable", exact: true }).click();
+    await page.getByLabel("Tenant", { exact: true }).fill("Secondary Example Organization");
+    await page.getByRole("option", { name: "Secondary Example Organization", exact: true }).click();
     await page.keyboard.press("Escape");
     await page.getByRole("button", { name: "Action: All" }).click();
     await page.getByLabel("Action", { exact: true }).click();
@@ -126,9 +126,9 @@ for (const [name, viewport, theme] of [
     );
     await expect(table.getByRole("row")).toHaveCount(2);
     await page.reload();
-    await page.getByRole("button", { name: "Tenant: Parable" }).click();
+    await page.getByRole("button", { name: "Tenant: Secondary Example Organization" }).click();
     await expect(page.getByLabel("Tenant", { exact: true })).toHaveValue(
-      "Parable",
+      "Secondary Example Organization",
     );
     await page.keyboard.press("Escape");
     await expect(page.getByRole("button", { name: "Action: Support access started" })).toBeVisible();

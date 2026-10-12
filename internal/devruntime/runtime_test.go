@@ -157,7 +157,7 @@ func TestBuildLoadsFixtureIssues(t *testing.T) {
 	}{
 		Issues: []connector.Issue{{
 			ID:         "fixture-issue",
-			Identifier: "digitaldrywood/detent#42",
+			Identifier: "example-org/example-project#42",
 			State:      "Human Review",
 			PullRequest: &connector.PullRequest{
 				Number:   42,

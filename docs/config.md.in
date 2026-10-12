@@ -721,12 +721,12 @@ worker:
     local:
       cpu_hour_usd: 0.07
       memory_gb_hour_usd: 0.04375
-  ssh_hosts: [logans-macbook-air, corys-mac-studio, local]
+  ssh_hosts: [example-laptop, example-build-host, local]
   host_selection: preference
   max_concurrent_agents_per_host: 2
   host_caps:
-    logans-macbook-air: 2
-    corys-mac-studio: 6
+    example-laptop: 2
+    example-build-host: 6
     local: 1
 ```
 

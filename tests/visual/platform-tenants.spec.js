@@ -8,7 +8,7 @@ test.beforeAll(async () => { html = await platformPreview(); });
 
 const ready = { ...fixture.detail.organization, billing: { available: true, status: "active", customer_id: "cus_preview", plan: "growth", price_label: "Growth monthly" }, plan: "growth", grants: 1, member_count: 1, runner_count: 1 };
 const failed = { ...ready, id: "org_failed", name: "Example Co", state: "failed", error_code: "tenant_start_failed", error_detail: "disk floor", step: "allocate_tenant", creator_email: "", plan: null, grants: null, member_count: null, runner_count: null, billing: { available: false }, created_at: "2026-10-06T12:00:00Z" };
-const free = { ...ready, id: "org_free", name: "Parable", plan: "free", grants: 0, runner_count: 0, created_at: "2026-10-05T14:00:00Z" };
+const free = { ...ready, id: "org_free", name: "Secondary Example Organization", plan: "free", grants: 0, runner_count: 0, created_at: "2026-10-05T14:00:00Z" };
 
 async function openTenants(page, { role = "admin", path = "/platform/tenants" } = {}) {
   const account = { ...fixture.account, platform_role: role };
@@ -63,7 +63,7 @@ for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844
       await page.screenshot({ path: process.env.TMPDIR + `/tenants-${theme}-${viewport.width}.png`, fullPage: true });
       await page.getByRole("button", { name: /^Needs attention/ }).click();
       await expect(table.getByRole("link", { name: "Example Co" })).toBeVisible();
-      await expect(table.getByRole("link", { name: "Parable" })).toHaveCount(0);
+      await expect(table.getByRole("link", { name: "Secondary Example Organization" })).toHaveCount(0);
       await page.getByRole("button", { name: /^Complimentary/ }).click();
       await page.getByRole("combobox", { name: "Status", exact: true }).click();
       await page.getByRole("option", { name: "Ready", exact: true }).click();

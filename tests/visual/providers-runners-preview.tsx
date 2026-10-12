@@ -18,7 +18,7 @@ const client = {
   drafts: new DraftStore(),
   account: {
     version: params.get("version") ?? "v0.9.1",
-    organization: { id: "org_preview", name: "Threefold" },
+    organization: { id: "org_preview", name: "Example Organization" },
     organizations: [{ current: true, public_url: "https://runners.detent.test" }],
     actor: { can_manage: true, can_manage_runners: true },
     projects,

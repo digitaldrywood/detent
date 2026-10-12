@@ -52,7 +52,7 @@ export async function renderSidebar(
   const navigated: string[] = [];
 
   let data: SidebarShellData = {
-    organizationName: "Threefold",
+    organizationName: "Example Organization",
     projects: [...PROJECTS],
     activeProjectId: "proj_alpha",
     onProjectChange: vi.fn(),

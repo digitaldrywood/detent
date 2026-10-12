@@ -74,8 +74,8 @@ describe("what to list next", () => {
 
 describe("breadcrumbs", () => {
   it("start at the project and end at the file", () => {
-    expect(fileBreadcrumbs("parable", ".claude/hooks/post-tool-use-lint.sh")).toEqual([
-      { label: "parable", path: "", kind: "project" },
+    expect(fileBreadcrumbs("example-project", ".claude/hooks/post-tool-use-lint.sh")).toEqual([
+      { label: "example-project", path: "", kind: "project" },
       { label: ".claude", path: ".claude", kind: "directory" },
       { label: "hooks", path: ".claude/hooks", kind: "directory" },
       { label: "post-tool-use-lint.sh", path: ".claude/hooks/post-tool-use-lint.sh", kind: "file" },

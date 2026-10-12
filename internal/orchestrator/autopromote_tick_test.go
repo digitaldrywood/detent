@@ -876,7 +876,7 @@ func TestAutoPromoteDoesNotReconcileReworkBeforeCompletion(t *testing.T) {
 	now := time.Date(2026, 8, 26, 18, 34, 0, 0, time.UTC)
 	issue := autoPromoteTickIssue("issue-sticky-rework", []string{"bug"}, &connector.PullRequest{
 		Number:         2928,
-		URL:            "https://github.test/getparable/parable/pull/2928",
+		URL:            "https://github.test/example-org/example-project/pull/2928",
 		State:          "OPEN",
 		MergeableState: "clean",
 		CIStatus:       "success",

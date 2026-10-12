@@ -106,7 +106,7 @@ func TestStopRunControlsRenderContextualConfirmationAndResult(t *testing.T) {
 
 	dialogPath := "/api/v1/projects/detent/runs/0/stop?issue_id=issue-1311&work_attempt_id=1311&detent_session_id=91&provider_session_id=thread-1311"
 	dialog := stopRunRequest(t, server.Handler(), http.MethodGet, dialogPath, "", map[string]string{"Authorization": "Bearer detent_test_token", "HX-Request": "true"})
-	for _, want := range []string{"digitaldrywood/detent", "digitaldrywood/detent#1311", "code", "In Progress", "Detent 91", "provider thread-1311", "attempt 0", "Blocked", "Backlog", "Cancelled", "Todo", "Urgent · rank 1", "Low · rank 4", `maxlength="280"`, "sm:grid-cols-2", "hx-disabled-elt=", "stop-run-submit-indicator", "Stopping...", "Cancel"} {
+	for _, want := range []string{"example-org/example-project", "example-org/example-project#1311", "code", "In Progress", "Detent 91", "provider thread-1311", "attempt 0", "Blocked", "Backlog", "Cancelled", "Todo", "Urgent · rank 1", "Low · rank 4", `maxlength="280"`, "sm:grid-cols-2", "hx-disabled-elt=", "stop-run-submit-indicator", "Stopping...", "Cancel"} {
 		if !strings.Contains(dialog.Body.String(), want) {
 			t.Fatalf("confirmation missing %q: %s", want, dialog.Body.String())
 		}
@@ -143,9 +143,9 @@ func TestStopRunAsyncTransitionFailureReopensRetryDialog(t *testing.T) {
 	t.Parallel()
 	stopper := &fakeRunStopper{result: orchestrator.StopRunResult{ProjectID: "detent", IssueID: "issue-1311", Attempt: 0, WorkAttemptID: 1311, DetentSessionID: 91, ProviderSessionID: "thread-1311", Destination: "Todo", Priority: 2, PriorityName: "High", Reason: "make room", Outcome: "succeeded"}}
 	server := newStopRunServerWithSnapshot(t, stopper, telemetry.Snapshot{
-		BoardIssues: []telemetry.Issue{{ID: "issue-1311", Identifier: "digitaldrywood/detent#1311", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/1311", Title: "Stop unhealthy run", State: "In Progress"}},
+		BoardIssues: []telemetry.Issue{{ID: "issue-1311", Identifier: "example-org/example-project#1311", ProjectID: "detent", URL: "https://github.com/example-org/example-project/issues/1311", Title: "Stop unhealthy run", State: "In Progress"}},
 		Blocked: []telemetry.Blocked{{
-			Issue:           telemetry.Issue{ID: "issue-1311", Identifier: "digitaldrywood/detent#1311", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/1311", Title: "Stop unhealthy run", State: "In Progress"},
+			Issue:           telemetry.Issue{ID: "issue-1311", Identifier: "example-org/example-project#1311", ProjectID: "detent", URL: "https://github.com/example-org/example-project/issues/1311", Title: "Stop unhealthy run", State: "In Progress"},
 			Error:           "run stopped; retry the transition to Todo: tracker unavailable",
 			Source:          telemetry.BlockedSourceOperatorStop,
 			RecoveryReason:  "transition_failed",
@@ -182,8 +182,8 @@ func TestStopRunAsyncTransitionFailureReopensRetryDialog(t *testing.T) {
 func newStopRunServer(t *testing.T, stopper *fakeRunStopper) *web.Server {
 	t.Helper()
 	return newStopRunServerWithSnapshot(t, stopper, telemetry.Snapshot{
-		BoardIssues: []telemetry.Issue{{ID: "issue-1311", Identifier: "digitaldrywood/detent#1311", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/1311", Title: "Stop unhealthy run", State: "In Progress"}},
-		Running:     []telemetry.Running{{Issue: telemetry.Issue{ID: "issue-1311", Identifier: "digitaldrywood/detent#1311", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/1311", Title: "Stop unhealthy run", State: "In Progress", RuntimeIdentity: agentidentity.Identity{Role: "code"}}, Attempt: 0, WorkAttemptID: 1311, DetentSessionID: 91, SessionID: "thread-1311", StopDestination: "Blocked", StopPriorityOptions: []telemetry.StopRunPriorityOption{{Rank: 1, Name: "Urgent"}, {Rank: 2, Name: "High"}, {Rank: 3, Name: "Medium"}, {Rank: 4, Name: "Low"}}}},
+		BoardIssues: []telemetry.Issue{{ID: "issue-1311", Identifier: "example-org/example-project#1311", ProjectID: "detent", URL: "https://github.com/example-org/example-project/issues/1311", Title: "Stop unhealthy run", State: "In Progress"}},
+		Running:     []telemetry.Running{{Issue: telemetry.Issue{ID: "issue-1311", Identifier: "example-org/example-project#1311", ProjectID: "detent", URL: "https://github.com/example-org/example-project/issues/1311", Title: "Stop unhealthy run", State: "In Progress", RuntimeIdentity: agentidentity.Identity{Role: "code"}}, Attempt: 0, WorkAttemptID: 1311, DetentSessionID: 91, SessionID: "thread-1311", StopDestination: "Blocked", StopPriorityOptions: []telemetry.StopRunPriorityOption{{Rank: 1, Name: "Urgent"}, {Rank: 2, Name: "High"}, {Rank: 3, Name: "Medium"}, {Rank: 4, Name: "Low"}}}},
 	})
 }
 

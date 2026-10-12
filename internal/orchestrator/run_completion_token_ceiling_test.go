@@ -141,7 +141,7 @@ func TestHandleRunResultParksBudgetProjectionFailureWithoutRetry(t *testing.T) {
 	state := newState(cfg)
 	issue := connector.Issue{
 		ID:         "issue-budget-projection",
-		Identifier: "digitaldrywood/parable#2255",
+		Identifier: "digitaldrywood/example-project#2255",
 		State:      "In Progress",
 	}
 	completedAt := time.Date(2026, 8, 19, 3, 0, 0, 0, time.UTC)

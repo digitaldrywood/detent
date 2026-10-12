@@ -78,7 +78,7 @@ const ATTEMPT_DIFF = attemptDiffFixture as unknown as AttemptDiff;
 
 function item(overrides: Partial<WorkItemView> = {}): WorkItemView {
   return {
-    ...toWorkItemView(itemFixture as unknown as NativeIssue, "parable"),
+    ...toWorkItemView(itemFixture as unknown as NativeIssue, "example-project"),
     ...overrides,
   };
 }
@@ -125,7 +125,7 @@ describe("the board card", () => {
     expect(metadata.textContent).toBe(expectedMetadata);
     expect(metadata.children).toHaveLength(attemptNumber === 4 ? 2 : 1);
     expect(within(metadata).getByTestId("issue-age")).not.toBeNull();
-    expect(screen.getByTestId("issue-card").textContent).toBe(`parable#3363${value.title}${expectedStatus}${expectedMetadata}`);
+    expect(screen.getByTestId("issue-card").textContent).toBe(`example-project#3363${value.title}${expectedStatus}${expectedMetadata}`);
     expect(screen.queryByTestId("worker-strip")).toBeNull();
   });
 
@@ -134,7 +134,7 @@ describe("the board card", () => {
       <IssueCard item={item()} showProject now={NOW} onOpen={vi.fn()} moves={[]} onMove={vi.fn()} />,
     );
     expect(screen.getByTestId("project-dot")).not.toBeNull();
-    expect(screen.getByText("parable")).not.toBeNull();
+    expect(screen.getByText("example-project")).not.toBeNull();
     unmount();
 
     render(
@@ -191,7 +191,7 @@ describe("the board card", () => {
   }) => {
     const issue = toWorkItemView(
       { ...itemFixture as unknown as NativeIssue, state, terminal: true },
-      "parable",
+      "example-project",
       { attempts: [{ ...ATTEMPTS[0]!, status: attemptStatus }] },
     );
     const closed = { ...issue, priority };
@@ -222,10 +222,10 @@ describe("the board card", () => {
     expect(isBlocked(closed)).toBe(false);
     if (showProject) {
       expect(screen.getByTestId("project-dot").getAttribute("style")).toBeNull();
-      expect(screen.getByText("parable")).not.toBeNull();
+      expect(screen.getByText("example-project")).not.toBeNull();
     } else {
       expect(card.querySelector(".grayscale")).not.toBeNull();
-      expect(screen.getByText("parable").className).toBe("sr-only");
+      expect(screen.getByText("example-project").className).toBe("sr-only");
     }
     const open = screen.getByTestId("issue-card-open");
     expect(open.className).toContain("focus-visible:ring-2");
@@ -269,7 +269,7 @@ describe("the board card", () => {
       updated_at: "2026-09-09T10:00:00Z",
       provenance: { provider: "github", external_id: "91", author_id: "source_author", observed_at: "2026-09-09T08:00:00Z", ...sourceDates },
     };
-    const imported = toWorkItemView(native, "parable");
+    const imported = toWorkItemView(native, "example-project");
     expect(imported.createdAt).toBe(native.created_at);
     expect(imported.updatedAt).toBe(native.updated_at);
     expect(imported.source).toEqual({ externalId: "91", createdAt: sourceDates.created_at ?? null, updatedAt: sourceDates.updated_at ?? null, observedAt: native.provenance.observed_at });
@@ -328,10 +328,10 @@ describe("the board card", () => {
     const { rerender } = render(surface(item()));
     expect(screen.queryByTestId("pr-chip")).toBeNull();
     const linked = toWorkItemView({ ...itemFixture as unknown as NativeIssue,
-      pull_request: { number: 3372, url: "https://github.com/digitaldrywood/detent/pull/3372" } }, "parable");
+      pull_request: { number: 3372, url: "https://github.com/example-org/example-project/pull/3372" } }, "example-project");
     rerender(surface(linked));
     const link = screen.getByRole("link", { name: "PR #3372" });
-    expect(link.getAttribute("href")).toBe("https://github.com/digitaldrywood/detent/pull/3372");
+    expect(link.getAttribute("href")).toBe("https://github.com/example-org/example-project/pull/3372");
     expect(link.getAttribute("target")).toBe("_blank");
     expect(link.getAttribute("rel")).toBe("noopener noreferrer");
     fireEvent.click(link);
@@ -735,7 +735,7 @@ describe("the Diff surface", () => {
     );
     expect(screen.queryByTestId("diff-attempt")).toBeNull();
     // What it does have is shown instead of nothing.
-    expect(screen.getByText("digitaldrywood/detent")).not.toBeNull();
+    expect(screen.getByText("example-org/example-project")).not.toBeNull();
     expect(screen.getByTestId("diff-pr-link").textContent).toContain("3372");
   });
 
@@ -1239,10 +1239,10 @@ describe("the filter-first Work surface", () => {
     const fixture = await pagedWork();
     await settledWork();
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Fixture projects");
-    fixture.setOrganization("Parable");
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Parable projects");
-    fixture.setOrganization("Drywood Creek");
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Drywood Creek projects");
+    fixture.setOrganization("Secondary Example Organization");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Secondary Example Organization projects");
+    fixture.setOrganization("Example Organization");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Example Organization projects");
     fixture.setOrganization("");
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All projects");
     fixture.setOrganization();
@@ -1250,7 +1250,7 @@ describe("the filter-first Work surface", () => {
     await act(() => fixture.router.navigate({ to: "/work/p/$projectId", params: { projectId: "proj_alpha" } }));
     await settledWork();
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("alpha");
-    fixture.setOrganization("Parable");
+    fixture.setOrganization("Secondary Example Organization");
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("alpha");
     expect(fixture.router.state.location.pathname).toBe("/work/p/proj_alpha");
   });
@@ -1258,8 +1258,8 @@ describe("the filter-first Work surface", () => {
   it("reveals the full scope title on keyboard focus", async () => {
     const fixture = await pagedWork();
     await settledWork();
-    const title = "All Parable and Drywood Creek Collaborative Research Organization projects";
-    fixture.setOrganization("Parable and Drywood Creek Collaborative Research Organization");
+    const title = "All Example Collaborative Collaborative Research Organization projects";
+    fixture.setOrganization("Example Collaborative Collaborative Research Organization");
     const heading = screen.getByRole("heading", { level: 1, name: title });
     act(() => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));

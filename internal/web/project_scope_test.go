@@ -44,42 +44,42 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 			},
 		},
 		Pipeline: []telemetry.Issue{
-			{ID: "detent-pipeline", Identifier: "digitaldrywood/detent#1", ProjectID: "detent"},
-			{ID: "pyro-pipeline", Identifier: "digitaldrywood/pyroapex#1", ProjectID: "pyroapex"},
+			{ID: "detent-pipeline", Identifier: "example-org/example-project#1", ProjectID: "detent"},
+			{ID: "pyro-pipeline", Identifier: "example-org/pyroapex#1", ProjectID: "pyroapex"},
 		},
 		BoardIssues: []telemetry.Issue{
-			{ID: "detent-board", Identifier: "digitaldrywood/detent#6", ProjectID: "detent"},
-			{ID: "pyro-board", Identifier: "digitaldrywood/pyroapex#6", ProjectID: "pyroapex"},
+			{ID: "detent-board", Identifier: "example-org/example-project#6", ProjectID: "detent"},
+			{ID: "pyro-board", Identifier: "example-org/pyroapex#6", ProjectID: "pyroapex"},
 		},
 		TrackerDrift: telemetry.TrackerDrift{
 			UntrackedOpen: []telemetry.Issue{
-				{ID: "detent-untracked", Identifier: "digitaldrywood/detent#771", ProjectID: "detent"},
-				{ID: "pyro-untracked", Identifier: "digitaldrywood/pyroapex#71", ProjectID: "pyroapex"},
+				{ID: "detent-untracked", Identifier: "example-org/example-project#771", ProjectID: "detent"},
+				{ID: "pyro-untracked", Identifier: "example-org/pyroapex#71", ProjectID: "pyroapex"},
 			},
 			OpenTerminal: []telemetry.Issue{
-				{ID: "detent-terminal", Identifier: "digitaldrywood/detent#583", ProjectID: "detent"},
-				{ID: "pyro-terminal", Identifier: "digitaldrywood/pyroapex#58", ProjectID: "pyroapex"},
+				{ID: "detent-terminal", Identifier: "example-org/example-project#583", ProjectID: "detent"},
+				{ID: "pyro-terminal", Identifier: "example-org/pyroapex#58", ProjectID: "pyroapex"},
 			},
 		},
 		Running: []telemetry.Running{
-			{Issue: telemetry.Issue{ID: "detent-running", Identifier: "digitaldrywood/detent#2", ProjectID: "detent"}},
-			{Issue: telemetry.Issue{ID: "pyro-running", Identifier: "digitaldrywood/pyroapex#2", ProjectID: "pyroapex"}},
+			{Issue: telemetry.Issue{ID: "detent-running", Identifier: "example-org/example-project#2", ProjectID: "detent"}},
+			{Issue: telemetry.Issue{ID: "pyro-running", Identifier: "example-org/pyroapex#2", ProjectID: "pyroapex"}},
 		},
 		Queue: []telemetry.Queued{
-			{Issue: telemetry.Issue{ID: "detent-queued", Identifier: "digitaldrywood/detent#3", ProjectID: "detent"}},
-			{Issue: telemetry.Issue{ID: "pyro-queued", Identifier: "digitaldrywood/pyroapex#3", ProjectID: "pyroapex"}},
+			{Issue: telemetry.Issue{ID: "detent-queued", Identifier: "example-org/example-project#3", ProjectID: "detent"}},
+			{Issue: telemetry.Issue{ID: "pyro-queued", Identifier: "example-org/pyroapex#3", ProjectID: "pyroapex"}},
 		},
 		Blocked: []telemetry.Blocked{
-			{Issue: telemetry.Issue{ID: "detent-blocked", Identifier: "digitaldrywood/detent#4", ProjectID: "detent"}},
-			{Issue: telemetry.Issue{ID: "pyro-blocked", Identifier: "digitaldrywood/pyroapex#4", ProjectID: "pyroapex"}},
+			{Issue: telemetry.Issue{ID: "detent-blocked", Identifier: "example-org/example-project#4", ProjectID: "detent"}},
+			{Issue: telemetry.Issue{ID: "pyro-blocked", Identifier: "example-org/pyroapex#4", ProjectID: "pyroapex"}},
 		},
 		Shipped: []telemetry.Completed{
 			{Issue: telemetry.Issue{ID: "same-native-id", ProjectID: "detent", State: "Done"}, CompletedAt: now},
 			{Issue: telemetry.Issue{ID: "same-native-id", ProjectID: "pyroapex", State: "Done"}, CompletedAt: now},
 		},
 		Completed: []telemetry.Completed{
-			{Issue: telemetry.Issue{ID: "detent-completed", Identifier: "digitaldrywood/detent#5", ProjectID: "detent"}},
-			{Issue: telemetry.Issue{ID: "pyro-completed", Identifier: "digitaldrywood/pyroapex#5", ProjectID: "pyroapex"}},
+			{Issue: telemetry.Issue{ID: "detent-completed", Identifier: "example-org/example-project#5", ProjectID: "detent"}},
+			{Issue: telemetry.Issue{ID: "pyro-completed", Identifier: "example-org/pyroapex#5", ProjectID: "pyroapex"}},
 		},
 		CIUnavailable: []telemetry.CICondition{
 			{ProjectID: "detent", UnstartedCheckCount: 4, PullRequestCount: 2},
@@ -198,7 +198,7 @@ func TestProjectScopedSnapshotRecomputesWorkflowSummaries(t *testing.T) {
 		BoardIssues: []telemetry.Issue{
 			{
 				ID:                    "detent-card",
-				Identifier:            "digitaldrywood/detent#722",
+				Identifier:            "example-org/example-project#722",
 				ProjectID:             "detent",
 				Title:                 "Detent metrics",
 				State:                 "Todo",
@@ -207,7 +207,7 @@ func TestProjectScopedSnapshotRecomputesWorkflowSummaries(t *testing.T) {
 			},
 			{
 				ID:                    "pyro-card",
-				Identifier:            "digitaldrywood/pyroapex#91",
+				Identifier:            "example-org/pyroapex#91",
 				ProjectID:             "pyroapex",
 				Title:                 "Pyro Apex task",
 				State:                 "Rework",
@@ -227,14 +227,14 @@ func TestProjectScopedSnapshotRecomputesWorkflowSummaries(t *testing.T) {
 				},
 			},
 			OldestCards: []telemetry.WorkflowLaneAge{
-				{ProjectID: "pyroapex", IssueID: "pyro-card", Identifier: "digitaldrywood/pyroapex#91", AgeSeconds: 900},
+				{ProjectID: "pyroapex", IssueID: "pyro-card", Identifier: "example-org/pyroapex#91", AgeSeconds: 900},
 			},
 			ActiveBottleneck: telemetry.WorkflowBottleneck{
 				Kind:       "lane_age",
 				Label:      "Oldest lane",
 				ProjectID:  "pyroapex",
 				IssueID:    "pyro-card",
-				Identifier: "digitaldrywood/pyroapex#91",
+				Identifier: "example-org/pyroapex#91",
 				Seconds:    900,
 				Count:      1,
 			},
@@ -270,10 +270,10 @@ func TestProjectScopedSnapshotFallsBackToSingleProjectRows(t *testing.T) {
 	got, ok := projectScopedSnapshot(telemetry.Snapshot{
 		Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
 		BoardIssues: []telemetry.Issue{
-			{ID: "board", Identifier: "digitaldrywood/detent#1"},
+			{ID: "board", Identifier: "example-org/example-project#1"},
 		},
 		Running: []telemetry.Running{
-			{Issue: telemetry.Issue{ID: "running", Identifier: "digitaldrywood/detent#2"}},
+			{Issue: telemetry.Issue{ID: "running", Identifier: "example-org/example-project#2"}},
 		},
 	}, "detent")
 

@@ -30,7 +30,7 @@
         "merge_method": "squash"
       }
     },
-    "approved_by": "michael@threefold.solutions",
+    "approved_by": "owner@example.com",
     "approved_at": "2026-09-08T09:12:44Z"
   },
   "runners": [
@@ -38,13 +38,13 @@
       "runner": {
         "runner_id": "rnr_macbook",
         "machine_id": "mac_9df1",
-        "display_name": "Michael's MacBook Pro",
+        "display_name": "Example laptop",
         "tags": ["detent:macbook"],
         "state": "enabled",
         "capacity_limit": 2,
-        "project_ids": ["proj_parable"],
+        "project_ids": ["proj_example_project"],
         "revision": 4,
-        "hostname": "michaels-macbook-pro.local",
+        "hostname": "laptop.example.com",
         "health": "healthy",
         "os": "darwin",
         "architecture": "arm64",
@@ -60,7 +60,7 @@
         "tags": ["detent:mac-mini-1"],
         "state": "paused",
         "capacity_limit": 2,
-        "project_ids": ["proj_parable"],
+        "project_ids": ["proj_example_project"],
         "revision": 2,
         "hostname": "mac-mini-1.local",
         "health": "stale",
