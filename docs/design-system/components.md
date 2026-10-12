@@ -368,7 +368,7 @@ A rich preview of a linked entity, such as a pull request link preview.
 
 ### Usage meter
 
-Plan allowance consumption with human units, remaining capacity and visible warning text at 80% and limit-reached text at 100%. Supports byte sizes, counts, record counts, duration limits, unlimited and excluded allowances.
+Plan allowance consumption with human units, remaining capacity and visible warning text at 80% and limit-reached text at 100%. Supports byte sizes, counts, record counts, duration limits, unlimited and excluded allowances. Minimum readings show a warning within 20% above a floor and error at the floor; valueText and statusText adapt the visible reading to its domain.
 
 - Kind: Primitive; status: available; id: `usage-meter`.
 - Import: `import { UsageMeter, formatUsageValue, usageMeterState, UsageUnit } from "~/components/ui/usage-meter";`
