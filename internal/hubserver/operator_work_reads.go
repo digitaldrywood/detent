@@ -159,7 +159,11 @@ func hubWorkResult[T any](r operatorWorkReads, request operatortool.WorkReadRequ
 	if err != nil {
 		return operatortool.Result{}, safeWorkReadError(err)
 	}
-	return operatortool.EncodeResult(operatortool.WorkReadResult[T]{ProjectID: request.ProjectID, Reference: request.Reference, URL: operatortool.WorkItemURL(request.ProjectID, request.Reference), GeneratedAt: r.service.config.now(), Freshness: explain.SourceAvailable, Data: data})
+	view := operatortool.WorkReadResult[T]{ProjectID: request.ProjectID, Reference: request.Reference, URL: operatortool.WorkItemURL(request.ProjectID, request.Reference), GeneratedAt: r.service.config.now(), Freshness: explain.SourceAvailable, Data: data}
+	if _, ok := any(data).(operatortool.NativeItem); ok {
+		return operatortool.EncodeWorkItemResult(view)
+	}
+	return operatortool.EncodeResult(view)
 }
 
 func safeWorkReadError(err error) error {

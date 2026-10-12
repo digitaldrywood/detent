@@ -13,8 +13,10 @@ import (
 
 const eventRetention = 30 * 24 * time.Hour
 const eventCompactionBatch = 500
+const closedWorkCompactionAge = 3 * 24 * time.Hour
 
-const compactableWork = `i.archived=1
+const compactableWork = `(i.archived=1 OR (EXISTS (SELECT 1 FROM workflow_states ws WHERE ws.id=i.workflow_state_id AND ws.terminal=1)
+AND julianday(` + nativeTerminalEnteredAt + `)<julianday(?)))
 AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.issue_id=i.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?))
 AND COALESCE((SELECT scanned_sequence FROM event_compactions c WHERE c.organization_id=i.organization_id AND c.project_id=i.project_id AND c.aggregate_kind='work_item' AND c.aggregate_id=i.native_id),0)<i.event_sequence`
 
@@ -51,7 +53,7 @@ func readEventCompaction(ctx context.Context, q nativeQueryer, organization trac
 
 func compactEvents(ctx context.Context, tx *sql.Tx, now time.Time) ([]string, int64, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT * FROM (SELECT i.organization_id,i.project_id,'work_item',i.native_id,i.event_sequence FROM issues i WHERE `+compactableWork+` LIMIT 4)
-UNION ALL SELECT * FROM (SELECT c.organization_id,c.project_id,'conversation',c.id,c.event_seq FROM conversations c WHERE `+compactableConversation+` LIMIT 4)`, formatHubTime(now), formatHubTime(now.Add(-eventRetention)), formatHubTime(now))
+UNION ALL SELECT * FROM (SELECT c.organization_id,c.project_id,'conversation',c.id,c.event_seq FROM conversations c WHERE `+compactableConversation+` LIMIT 4)`, formatHubTime(now.Add(-closedWorkCompactionAge)), formatHubTime(now), formatHubTime(now.Add(-eventRetention)), formatHubTime(now))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -88,6 +90,9 @@ UNION ALL SELECT * FROM (SELECT c.organization_id,c.project_id,'conversation',c.
 	if _, err := tx.ExecContext(ctx, `DROP TRIGGER collaboration_events_no_delete`); err != nil {
 		return nil, 0, err
 	}
+	if _, err := tx.ExecContext(ctx, `DROP TRIGGER collaboration_events_no_update`); err != nil {
+		return nil, 0, err
+	}
 	var conversations []string
 	var removed int64
 	for _, candidate := range candidates {
@@ -101,6 +106,9 @@ UNION ALL SELECT * FROM (SELECT c.organization_id,c.project_id,'conversation',c.
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER collaboration_events_no_delete BEFORE DELETE ON collaboration_events BEGIN SELECT RAISE(ABORT, 'collaboration events are immutable'); END`); err != nil {
+		return nil, 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER collaboration_events_no_update BEFORE UPDATE ON collaboration_events BEGIN SELECT RAISE(ABORT, 'collaboration events are immutable'); END`); err != nil {
 		return nil, 0, err
 	}
 	if removed > 0 {
@@ -188,8 +196,27 @@ ORDER BY e.seq LIMIT ?`
 		summary.RemovedByType[event.kind]++
 		summary.ThroughSequence = max(summary.ThroughSequence, event.sequence)
 	}
+	processed := int64(len(events))
+	if candidate.kind == "work_item" && processed < eventCompactionBatch {
+		result, err := tx.ExecContext(ctx, `UPDATE collaboration_events SET data_json=json_insert(json_remove(data_json,'$.run.runtime.activity.spans'),'$.run.runtime.activity.coverage_notes',json('[]'),'$.run.runtime.activity.coverage_notes[#]','activity_spans_compacted')
+WHERE rowid IN (SELECT rowid FROM collaboration_events
+WHERE organization_id=? AND project_id=? AND work_item_id=? AND type LIKE 'run.%' AND json_type(data_json,'$.run.runtime.activity.spans') IS NOT NULL
+ORDER BY sequence LIMIT ?)`, candidate.organization, candidate.project, candidate.id, eventCompactionBatch-processed)
+		if err != nil {
+			return 0, fmt.Errorf("compact activity spans: %w", err)
+		}
+		stripped, err := result.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		summary.CompactedActivityEvents += stripped
+		processed += stripped
+		if stripped > 0 {
+			summary.CompactedAt = now.UTC()
+		}
+	}
 	scanned := int64(0)
-	if len(events) < eventCompactionBatch {
+	if processed < eventCompactionBatch {
 		scanned = candidate.head
 	}
 	if len(events) > 0 {

@@ -31,7 +31,7 @@ import {
 import { usePageTitle } from "../pageTitle.ts";
 import { validateTenantSearch } from "./tenantList.ts";
 import { PlatformAuditPage } from "./PlatformAudit.tsx";
-import { PlatformUsersPage } from "./PlatformUsers.tsx";
+import { PlatformUserPage, PlatformUsersPage } from "./PlatformUsers.tsx";
 
 function useGo(): (to: string) => void {
   const navigate = useNavigate();
@@ -60,6 +60,7 @@ export const ENTRY_ROUTE_PATHS = [
   "/platform/tenants",
   "/platform/tenants/$organization",
   "/platform/users",
+  "/platform/users/$email",
   "/platform/staff",
   "/platform/audit",
   "/platform/health",
@@ -100,6 +101,12 @@ const platformRoutes = platformRoute.addChildren([
     path: "/users",
     validateSearch: (search: Record<string, unknown>) => ({ q: typeof search.q === "string" ? search.q : undefined }),
     component: PlatformUsersPage,
+  }),
+  createRoute({
+    getParentRoute: () => platformRoute,
+    path: "/users/$email",
+    validateSearch: (search: Record<string, unknown>) => ({ q: typeof search.q === "string" ? search.q : undefined }),
+    component: PlatformUserPage,
   }),
   createRoute({
     getParentRoute: () => platformRoute,

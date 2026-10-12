@@ -32,6 +32,17 @@ type Result struct {
 	Content json.RawMessage
 }
 
+type ResultTooLargeError struct {
+	SizeBytes  int `json:"size_bytes"`
+	LimitBytes int `json:"limit_bytes"`
+}
+
+func (e *ResultTooLargeError) Error() string {
+	return fmt.Sprintf("operator tool result exceeds size limit: %d bytes, limit %d bytes", e.SizeBytes, e.LimitBytes)
+}
+
+func (e *ResultTooLargeError) Unwrap() error { return ErrResultTooLarge }
+
 type SnapshotSource interface {
 	Snapshot(context.Context) (telemetry.Snapshot, error)
 }
@@ -353,7 +364,7 @@ func encodeResult(value any) (Result, error) {
 		return Result{}, fmt.Errorf("encode operator tool result: %w", err)
 	}
 	if len(data) > MaxResultBytes {
-		return Result{}, ErrResultTooLarge
+		return Result{}, &ResultTooLargeError{SizeBytes: len(data), LimitBytes: MaxResultBytes}
 	}
 	return Result{Content: data}, nil
 }

@@ -166,6 +166,7 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 				ctx := connect("batch-tools")
 				e := hubProjectExecutor{f.service}
 				f.batch.Error = "provider credential-secret"
+				f.batch.Page.Issues[0].Body = strings.Repeat("preview body", 30000)
 				raw, err := json.Marshal(f.batch)
 				if err != nil {
 					t.Fatal(err)
@@ -182,7 +183,7 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 				input.Destination = "Backlog"
 				call := projectCall(t, "command_git_hub_batch", string(f.project.ID), "batch-apply", input)
 				a := projectAction(t, e, ctx, call)
-				if a.Status != chatpkg.ActionSucceeded || strings.Contains(a.Result, "credential-secret") {
+				if a.Status != chatpkg.ActionSucceeded || strings.Contains(a.Result, "credential-secret") || strings.Contains(a.Result, `"body"`) {
 					t.Fatalf("batch apply=%+v", a)
 				}
 				if replay := projectAction(t, e, connect("batch-reconnected"), call); replay.Result != a.Result {
@@ -194,7 +195,7 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 				}
 				read := operatortool.Call{Name: "get_git_hub_batch", Arguments: json.RawMessage(`{"project_id":"` + string(f.project.ID) + `","limit":1}`)}
 				result, err := (hostedOperatorExecutor{f.service}).Execute(ctx, read)
-				if err != nil || strings.Contains(string(result.Content), "credential-secret") || !strings.Contains(string(result.Content), `"next_cursor":"1"`) {
+				if err != nil || strings.Contains(string(result.Content), "credential-secret") || strings.Contains(string(result.Content), `"body"`) || !strings.Contains(string(result.Content), `"next_cursor":"1"`) {
 					t.Fatalf("batch page=%s %v", result.Content, err)
 				}
 				var envelope struct {
@@ -202,6 +203,14 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 				}
 				if json.Unmarshal(result.Content, &envelope) != nil || len(envelope.Data.Batch.Items) != 1 || len(envelope.Data.Batch.Page.Issues) != 1 {
 					t.Fatalf("batch bounds=%s", result.Content)
+				}
+				preview := envelope.Data.Batch.Page.Issues[0]
+				if preview.Number != f.batch.Page.Issues[0].Number || preview.Title != f.batch.Page.Issues[0].Title || preview.Status != "open" {
+					t.Fatalf("batch preview=%+v", preview)
+				}
+				stored, err := readGitHubBatch(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+				if err != nil || stored.Page.Issues[0].Body != strings.Repeat("preview body", 30000) {
+					t.Fatalf("stored batch preview body changed: %v", err)
 				}
 				if _, err := e.Execute(ctx, projectCall(t, "command_git_hub_batch", string(f.project.ID), "stale-batch", input)); !errors.Is(err, mutation.ErrConflict) {
 					t.Fatalf("stale batch=%v", err)

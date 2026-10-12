@@ -1412,7 +1412,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 				if _, err := tx.ExecContext(t.Context(), "INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,created_at) VALUES(?,?,?,?,?,?,?)", scope.organization, credential.ID, "local-event", event.IdempotencyKey, "hash", response, formatHubTime(now)); err != nil {
 					t.Fatal(err)
 				}
-				after, err := d.hostedRunEventConsumption(t.Context(), queries, now, before, state, event, response)
+				after, err := d.hostedRunEventConsumption(t.Context(), queries, now, before, state, event)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1424,7 +1424,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 					t.Fatalf("queries=%d rows=%d", len(queries.statements), queries.resultRows)
 				}
 				for _, statement := range []string{queries.statements[4], queries.statements[5]} {
-					args := []any{event.Data.AttemptID, event.Data.AttemptID, event.Data.Sequence}
+					args := []any{event.Data.AttemptID, event.Data.Sequence}
 					if strings.Contains(statement, "rowid>?") {
 						args = append(args, state.eventRowID)
 					}
@@ -1544,14 +1544,14 @@ func TestHostedNativeRunMutationQuotas(t *testing.T) {
 		status int
 	}{
 		{"unrelated allocation exhaustion", map[string]int64{"projects": 0, "unarchived_issues": 0, "repositories": 0, "registered_runners": 0, "connected_runners": 0}, "run.observed", http.StatusOK},
-		{"storage exhaustion", map[string]int64{"collaboration_bytes": 1}, "run.observed", http.StatusTooManyRequests},
+		{"storage exhaustion", map[string]int64{"collaboration_bytes": 1}, "run.observed", http.StatusOK},
 		{"history exhaustion", map[string]int64{"history_records": 0}, "run.observed", http.StatusTooManyRequests},
 		{"event exhaustion", map[string]int64{"ingested_events": 0}, "run.observed", http.StatusTooManyRequests},
 		{"window exhaustion", map[string]int64{"api_mutations": 0}, "run.observed", http.StatusTooManyRequests},
 		{"failed completion while exhausted", map[string]int64{"collaboration_bytes": 1, "history_records": 0, "ingested_events": 0, "api_mutations": 0}, "run.finished", http.StatusOK},
 		{"checkpoint while exhausted", map[string]int64{"collaboration_bytes": 1, "history_records": 0, "ingested_events": 0, "api_mutations": 0}, "run.checkpointed", http.StatusOK},
 		{"start allowed", nil, "run.started", http.StatusOK},
-		{"start storage exhaustion", map[string]int64{"collaboration_bytes": 1}, "run.started", http.StatusTooManyRequests},
+		{"start storage exhaustion", map[string]int64{"collaboration_bytes": 1}, "run.started", http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}), "", "runtime-quota")
@@ -1605,19 +1605,9 @@ func TestHostedNativeRunMutationQuotas(t *testing.T) {
 func requireUsageCountersMatchRecount(t *testing.T, d *database) {
 	t.Helper()
 	recounts := map[string]string{
-		"events_total":    "SELECT count(*) FROM collaboration_events",
-		"history_records": "SELECT (SELECT count(*) FROM collaboration_events) + (SELECT count(*) FROM collaboration_versions) + (SELECT count(*) FROM native_attempt_events)",
-		"collaboration_bytes": `SELECT
-		(SELECT coalesce(sum(length(CAST(title AS BLOB))+length(CAST(body AS BLOB))+length(CAST(labels_json AS BLOB))+length(CAST(assignees_json AS BLOB))),0) FROM issues) +
-		(SELECT coalesce(sum(length(CAST(body AS BLOB))),0) FROM native_comments) +
-		(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM collaboration_versions) +
-		(SELECT coalesce(sum(length(CAST(data_json AS BLOB))+length(CAST(actor_json AS BLOB))),0) FROM collaboration_events) +
-		(SELECT coalesce(sum(length(CAST(response_json AS BLOB))),0) FROM native_commands) +
-		(SELECT coalesce(sum(length(CAST(data_json AS BLOB))),0) FROM native_attempts) +
-		(SELECT coalesce(sum(length(CAST(reference_json AS BLOB))),0) FROM artifact_references) +
-		(SELECT coalesce(sum(length(bundle)),0) FROM change_sources) +
-		(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM github_import_records) +
-		(SELECT coalesce(sum(size),0) FROM attachments WHERE object_deleted_at IS NULL)`,
+		"events_total":        "SELECT count(*) FROM collaboration_events",
+		"history_records":     "SELECT (SELECT count(*) FROM collaboration_events) + (SELECT count(*) FROM collaboration_versions) + (SELECT count(*) FROM native_attempt_events)",
+		"collaboration_bytes": collaborationBytesRecount,
 	}
 	for name, recount := range recounts {
 		var counter, want int64

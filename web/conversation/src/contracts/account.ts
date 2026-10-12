@@ -282,6 +282,7 @@ export const ProjectIntegration = Schema.Struct({
   github_app_installed: Schema.optional(Schema.Boolean),
   repository: Schema.optional(Schema.String),
   checkout_repository: Schema.optional(Schema.String),
+  checkout_verified: Schema.optional(Schema.Boolean),
   authority: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type ProjectIntegration = typeof ProjectIntegration.Type;

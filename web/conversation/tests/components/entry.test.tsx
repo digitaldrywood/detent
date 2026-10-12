@@ -315,8 +315,8 @@ describe("entry API", () => {
     expect(body.get("name")).toBe("Delta");
     expect(body.get("creation_key")).toBe("key_0123456789abcdef");
     expect(body.get("csrf")).toBe("csrf-token");
-    expect(await api.platformUsers("cory+test@example.test")).toEqual({ users: [], unsearched: [] });
-    expect(calls[3]!.url).toBe("/api/cloud/platform/users?q=cory%2Btest%40example.test");
+    expect(await api.platformUsers("alex+test@example.test")).toEqual({ users: [], unsearched: [] });
+    expect(calls[3]!.url).toBe("/api/cloud/platform/users?q=alex%2Btest%40example.test");
     expect(calls[3]!.init?.method).toBe("GET");
   });
 
@@ -351,7 +351,7 @@ describe("entry API", () => {
 });
 
 describe("entry router", () => {
-  it.each(ENTRY_ROUTE_PATHS.filter((path) => path !== "/platform").map((path) => path.replace("$organization", "org_b")))(
+  it.each(ENTRY_ROUTE_PATHS.filter((path) => path !== "/platform").map((path) => path.replace("$organization", "org_b").replace("$email", "person%40example.test")))(
     "resolves %s",
     async (path) => {
       const router = makeEntryRouter(createMemoryHistory({ initialEntries: [path] }));

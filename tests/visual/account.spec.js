@@ -365,6 +365,7 @@ for (const state of [
         repository_enabled: true,
         repository: state.repository,
         checkout_repository: state.repository,
+        checkout_verified: Boolean(state.repository),
         github_transport_available: state.transport,
         github_app_slug: "detent-cloud",
         github_app_install_url: "https://github.com/apps/detent-cloud/installations/new",

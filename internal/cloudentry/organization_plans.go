@@ -74,7 +74,7 @@ func (s *Service) creationPriceAllowed(id string) bool {
 
 func (s *Service) creationPlans(ctx context.Context, session accountSession) (bool, []templates.HostedBillingPrice, error) {
 	if s.config.Allocation == nil || s.entitlementAdministrator(ctx, session) {
-		return false, nil, nil
+		return false, []templates.HostedBillingPrice{}, nil
 	}
 	used, err := s.freeSlotUsed(ctx, s.registry.store.db, session)
 	if err != nil {
