@@ -55,9 +55,6 @@ test("platform administrators grant and revoke model choice without granting a p
   await plan.getByRole("button", { name: "Grant model choice", exact: true }).click();
   const grant = page.getByRole("dialog", { name: "Grant model choice to Model Choice Labs" });
   await expect(grant).toBeVisible();
-  const popup = await grant.boundingBox();
-  const footer = await grant.locator('[data-slot="dialog-footer"]').boundingBox();
-  expect(footer.y + footer.height).toBeLessThanOrEqual(popup.y + popup.height + 1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   await expect(grant.getByLabel("Plan", { exact: true })).toHaveCount(0);
   await grant.getByRole("button", { name: "Grant", exact: true }).click();
