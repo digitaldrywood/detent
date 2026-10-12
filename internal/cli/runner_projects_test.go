@@ -41,8 +41,9 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 		name         string
 		cloneFailure bool
 		setupFailure bool
+		unbound      bool
 	}{
-		{name: "new assignment"}, {name: "one clone fails", cloneFailure: true}, {name: "one setup hook fails", setupFailure: true},
+		{name: "new assignment"}, {name: "one clone fails", cloneFailure: true}, {name: "one setup hook fails", setupFailure: true}, {name: "wait for repository binding", unbound: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -145,6 +146,22 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 			identity := hub.identity.Load().(runnerauth.Identity)
 			identity.ProjectIDs = append(identity.ProjectIDs, "prj_later")
 			hub.identity.Store(identity)
+			if test.unbound {
+				delete(hub.repositories, "prj_later")
+				delete(hub.cloneURLs, "prj_later")
+				for range 2 {
+					p.lastRefresh = time.Time{}
+					if err := p.refresh(t.Context(), scheduler); err != nil {
+						t.Fatal(err)
+					}
+					if cloneCalls != 0 || slices.ContainsFunc(applied.Projects, func(selected globalconfig.Project) bool { return selected.ID == "prj_later" }) {
+						t.Fatal("unbound project entered checkout or startup")
+					}
+				}
+				hub.repositories["prj_later"] = "acme/later"
+				hub.cloneURLs["prj_later"] = "https://github.com/acme/later.git"
+				p.lastRefresh = time.Time{}
+			}
 			if err := p.refresh(t.Context(), scheduler); err != nil {
 				t.Fatal(err)
 			}
@@ -476,8 +493,20 @@ func TestRunnerProjectsNewRepositoryBinding(t *testing.T) {
 			cfg := globalconfig.Config{WorkspaceRoot: filepath.Join(root, "work")}
 			cfg.Client.OrganizationID = "org_example"
 			identity := runnerauth.Identity{OrganizationID: "org_example", ProjectIDs: []tracker.ProjectID{"prj_new"}}
-			cfg, err = runnerProjectsForIdentity(t.Context(), cfg, client, identity, true)
-			if err != nil || len(cfg.Projects) != 0 || cfg.Client.NativeProjects["prj_new"] != "prj_new" {
+			var logs bytes.Buffer
+			previousLogger := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previousLogger) })
+			for _, prepare := range []bool{true, false, false} {
+				cfg, err = runnerProjectsForIdentity(t.Context(), cfg, client, identity, prepare)
+				if err != nil || len(cfg.Projects) != 0 {
+					t.Fatalf("waiting project starts (prepare=%v): %+v: %v", prepare, cfg.Projects, err)
+				}
+			}
+			if output := logs.String(); !strings.Contains(output, "level=INFO") || !strings.Contains(output, "Waiting for a repository: bind one in project setup") || strings.Contains(output, "level=ERROR") || strings.Contains(output, "error_class=") {
+				t.Fatalf("unbound project logs = %s", output)
+			}
+			if cfg.Client.NativeProjects["prj_new"] != "prj_new" {
 				t.Fatalf("unbound project = %+v: %v", cfg, err)
 			}
 			target := filepath.Join(cfg.WorkspaceRoot, "prj_new")

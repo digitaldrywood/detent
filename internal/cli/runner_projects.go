@@ -268,6 +268,10 @@ func runnerProjectsForIdentity(ctx context.Context, cfg globalconfig.Config, cli
 		if repository == "" {
 			repository, _ = doctorGitHubRepositoryFromRemoteURL(remote.CloneURL)
 		}
+		if repository == "" && remote.CloneURL == "" {
+			slog.Info("Waiting for a repository: bind one in project setup", "runner_id", identity.RunnerID, "project_id", id)
+			continue
+		}
 		locations := slices.Concat(cfg.RunnerCheckouts, previous)
 		workdir, retainedName, err := runnerProjectCheckout(ctx, cfg.WorkspaceRoot, name, repository, locations)
 		if err != nil {

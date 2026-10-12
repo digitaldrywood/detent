@@ -451,6 +451,7 @@ export const RunnerEligibility = Schema.Struct({
     revision: Schema.Number,
     hostname: Schema.optional(Schema.String),
     health: Schema.optional(Schema.String),
+    connection_health: Schema.optional(Schema.String),
     os: Schema.optional(Schema.String),
     architecture: Schema.optional(Schema.String),
     last_heartbeat_at: Schema.optional(Schema.String),
