@@ -49,7 +49,11 @@ it("shows the hosted checkout action and its verified private repository", async
   await waitFor(() => expect(screen.getByRole("button", { name: "Associate" }).hasAttribute("disabled")).toBe(true));
 });
 
-it.each([false, true])("uses the runner step's readiness for its primary action (ready: %s)", async (ready) => {
+it.each([
+  { ready: false, unrouted: false },
+  { ready: true, unrouted: false },
+  { ready: true, unrouted: true },
+])("uses the runner step's readiness for its primary action (ready: $ready, unrouted: $unrouted)", async ({ ready, unrouted }) => {
   const onNavigate = vi.fn();
   const mount = await mountSetup(onNavigate);
   const fetch = globalThis.fetch;
@@ -58,6 +62,12 @@ it.each([false, true])("uses the runner step's readiness for its primary action 
     if (String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET")) {
       const onboarding = await response.json();
       onboarding.runners = ready ? onboarding.runners : [];
+      if (unrouted) {
+        onboarding.runners = [{
+          runner: { ...onboarding.runners[0].runner, scope: "organization", project_ids: [], display_name: "Shared build runner" },
+          exclusions: [{ code: "required_tag_missing", message: "Runner is missing required tag gpu" }],
+        }];
+      }
       onboarding.steps = onboarding.steps.map((step: { name: string; state: string }) => ({
         ...step,
         state: ready ? "ready" : step.name === "Execution runner" ? "action_required" : step.state,
@@ -75,6 +85,11 @@ it.each([false, true])("uses the runner step's readiness for its primary action 
   expect(enroll.classList.contains("bg-primary")).toBe(!ready);
   expect(forward.classList.contains("bg-primary")).toBe(ready);
   expect(screen.queryByRole("button", { name: ready ? "Skip for now" : "Continue" })).toBeNull();
+  if (unrouted) {
+    expect(screen.getByText("Shared build runner")).toBeTruthy();
+    expect(screen.getByText("Runner is missing required tag gpu")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Route here" }).hasAttribute("disabled")).toBe(false);
+  }
 
   await user.click(enroll);
   expect(await screen.findByRole("dialog")).toBeTruthy();
