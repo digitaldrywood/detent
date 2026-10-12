@@ -19,6 +19,10 @@ import (
 )
 
 func (e hubProjectExecutor) localProjectConfiguration(ctx context.Context, name string, args operatortool.LocalProjectArguments) (operatortool.Result, error) {
+	return e.projectConfigurationCommand(ctx, name, args, false)
+}
+
+func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, name string, args operatortool.LocalProjectArguments, preview bool) (operatortool.Result, error) {
 	scope, err := e.projectScope(ctx)
 	if err != nil {
 		return operatortool.Result{}, err
@@ -142,6 +146,9 @@ func (e hubProjectExecutor) localProjectConfiguration(ctx context.Context, name 
 				return operatortool.Result{}, policyMismatch("Approved policy changed; inspect the current policy and supply its expected_policy_id")
 			}
 		}
+	}
+	if preview {
+		return hubProjectResult(view)
 	}
 	request := runnerauth.ProjectConfigurationRequest{RequestID: args.RequestID, Operation: name, ProjectID: args.ProjectID, ExpectedConfigRevision: args.ExpectedConfigRevision, ExpectedPolicyID: args.ExpectedPolicyID, PolicyID: args.PolicyID, SourceRevision: args.SourceRevision, Checkpoint: args.Checkpoint, AllowLocalBinding: args.AllowLocalBinding}
 	rawAuthority, err := json.Marshal(scope.credential)

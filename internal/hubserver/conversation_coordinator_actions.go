@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -60,7 +61,7 @@ func coordinatorConnectionData(ctx context.Context) json.RawMessage {
 func coordinatorActionTools() []runner.AgentTool {
 	return []runner.AgentTool{
 		coordinatorTool("get_project_integration", "Read this project's integration settings and GitHub transport availability. Runner PR landing is selected by the approved repository policy.", `{"type":"object","properties":{},"additionalProperties":false}`),
-		coordinatorTool("update_project_integration", "Preview available Hub integration changes. This does not change the runner's approved PR landing policy. The client controls confirmation and submits the proposed call.", `{"type":"object","properties":{"repository_enabled":{"type":"boolean"},"intake":{"type":"string","enum":["disabled","manual"]},"projection":{"type":"string","enum":["disabled","summary"]}},"additionalProperties":false}`),
+		coordinatorTool("update_project_integration", "Preview Hub integration or Cloud-owned workflow Markdown changes (lanes, transitions and dispatch). Repository-owned definitions require a reviewed source change and policy approval. This does not change the runner's approved PR landing policy. The client controls confirmation and submits the proposed call.", `{"type":"object","properties":{"workflow_markdown":{"type":"string","maxLength":12000},"repository_enabled":{"type":"boolean"},"intake":{"type":"string","enum":["disabled","manual"]},"projection":{"type":"string","enum":["disabled","summary"]}},"additionalProperties":false}`),
 		coordinatorTool("move_item", "Preview moving a native issue to a workflow state. Retry a blocked issue by moving it to Todo. Current workflow rules and revision apply; the client controls confirmation and submission.", `{"type":"object","required":["work_item_id","state"],"properties":{"work_item_id":{"type":"string"},"state":{"type":"string"}},"additionalProperties":false}`),
 		coordinatorTool("edit_item", "Preview editing an issue's title, body, labels or priority (0 urgent through 3 low). The client controls confirmation and submission.", `{"type":"object","required":["work_item_id"],"properties":{"work_item_id":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"labels":{"type":"array","items":{"type":"string"}},"priority":{"type":"integer","minimum":0,"maximum":3}},"additionalProperties":false}`),
 		coordinatorTool(string(chat.ActionArchiveItems), "Preview archiving a set of native issues in this project. The client controls confirmation and submission. Running and Merging issues are refused. Archived issues leave the board and dispatch and can be restored.", `{"type":"object","required":["work_item_ids"],"properties":{"work_item_ids":{"type":"array","minItems":1,"maxItems":50,"uniqueItems":true,"items":{"type":"string"}}},"additionalProperties":false}`),
@@ -69,6 +70,7 @@ func coordinatorActionTools() []runner.AgentTool {
 }
 
 type coordinatorActionArguments struct {
+	WorkflowMarkdown  *string   `json:"workflow_markdown"`
 	WorkItemID        string    `json:"work_item_id"`
 	State             string    `json:"state"`
 	Title             *string   `json:"title"`
@@ -138,7 +140,7 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 	case "get_project_integration":
 		allowed = []string{}
 	case "update_project_integration":
-		allowed = []string{"repository_enabled", "intake", "projection"}
+		allowed = []string{"repository_enabled", "intake", "projection", "workflow_markdown"}
 	case operatortool.MoveItem:
 		allowed = []string{"work_item_id", "state"}
 	case operatortool.EditItem:
@@ -166,10 +168,28 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 		if len(fields) == 0 {
 			return nil, operatortool.ErrInvalidArguments
 		}
-		if !*current.GitHubTransportAvailable {
+		if (args.RepositoryEnabled != nil || args.Intake != nil || args.Projection != nil) && !*current.GitHubTransportAvailable {
 			return nil, nativeInvalid("Hub GitHub integration is unavailable. Associate the runner checkout in project setup and approve the runner's repository policy with GitHub PR landing enabled.")
 		}
-		input := operatortool.IntegrationInput{ExpectedRevision: current.Revision, Intake: current.Intake, Projection: current.Projection, RepositoryEnabled: current.RepositoryEnabled}
+		input := operatortool.IntegrationInput{WorkflowMarkdown: args.WorkflowMarkdown, ExpectedRevision: current.Revision, Intake: current.Intake, Projection: current.Projection, RepositoryEnabled: current.RepositoryEnabled}
+		if args.WorkflowMarkdown != nil {
+			if current.Authority["workflow"] == "repository" {
+				return nil, nativeWorkflowInvalid("Workflow is controlled by the repository; propose a reviewed definition change, then approve its trusted policy revision and verify runner adoption")
+			}
+			workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(*args.WorkflowMarkdown)})
+			if err != nil {
+				return nil, nativeWorkflowInvalid(err.Error())
+			}
+			if workflow.Config.Tracker.Kind != workflowconfig.TrackerHubNative {
+				return nil, nativeWorkflowInvalid("Cloud workflow must use tracker.kind hub_native")
+			}
+			if err := workflow.Config.Validate(); err != nil {
+				return nil, nativeWorkflowInvalid(err.Error())
+			}
+			if err := workflow.Config.ValidateNativeWorkflow(); err != nil {
+				return nil, nativeWorkflowInvalid(err.Error())
+			}
+		}
 		if current.Intake == "automatic" {
 			input.Intake = ""
 		}
@@ -190,7 +210,14 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 			return nil, err
 		}
 		proposedIntake := cmp.Or(input.Intake, current.Intake)
-		action.Description = fmt.Sprintf("GitHub pull-request mode: %t → %t; intake: %s → %s; projection: %s → %s (revision %d).", current.RepositoryEnabled, input.RepositoryEnabled, current.Intake, proposedIntake, current.Projection, input.Projection, current.Revision)
+		action.Description = fmt.Sprintf("Hub repository integration: %t → %t; intake: %s → %s; projection: %s → %s (revision %d).", current.RepositoryEnabled, input.RepositoryEnabled, current.Intake, proposedIntake, current.Projection, input.Projection, current.Revision)
+		if args.WorkflowMarkdown != nil {
+			diff, err := coordinatorSettingsDiff(map[string]any{"workflow_markdown": current.WorkflowMarkdown}, map[string]any{"workflow_markdown": *args.WorkflowMarkdown})
+			if err != nil {
+				return nil, err
+			}
+			action.Description += "\n" + diff
+		}
 	} else {
 		if args.WorkItemID == "" || len(args.WorkItemID) > 256 {
 			return nil, operatortool.ErrInvalidArguments
@@ -300,10 +327,13 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 	if coordinatorSpriteMutation(string(action.Kind)) {
 		return s.executeCoordinatorSpriteAction(ctx, action)
 	}
+	if coordinatorWorkflowMutation(string(action.Kind)) {
+		return s.executeCoordinatorWorkflowAction(ctx, action)
+	}
 	if string(action.Kind) == "update_project_integration" {
 		_, err := (hubProjectExecutor{s}).command(ctx, operatortool.Call{Name: string(action.Kind), Arguments: action.Arguments}, projectCommandExecute)
 		if err != nil {
-			return chat.ActionExecution{}, coordinatorActionError(err)
+			return chat.ActionExecution{}, err
 		}
 		return chat.ActionExecution{Message: "Integration updated."}, nil
 	}
@@ -372,7 +402,7 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 
 func (s *Service) authorizeCoordinatorAction(ctx context.Context, action chat.Action) (context.Context, error) {
 	requirement := operatortool.Requirement{Scope: apikey.ScopeWrite, ProjectID: action.ProjectID, ResourceKind: "work_item", ResourceID: action.IssueID}
-	if string(action.Kind) == "set_runner_tier" || string(action.Kind) == "convert_runner_scope" || string(action.Kind) == "promote_sprites_token" || string(action.Kind) == "update_project_integration" || coordinatorSpriteMutation(string(action.Kind)) {
+	if coordinatorWorkflowMutation(string(action.Kind)) || string(action.Kind) == "set_runner_tier" || string(action.Kind) == "convert_runner_scope" || string(action.Kind) == "promote_sprites_token" || string(action.Kind) == "update_project_integration" || coordinatorSpriteMutation(string(action.Kind)) {
 		requirement.Scope, requirement.ResourceKind, requirement.ResourceID = apikey.ScopeAdmin, "", ""
 	}
 	if coordinatorSettingsTool(string(action.Kind)) {
@@ -403,6 +433,14 @@ func (t *coordinatorToolset) postActionRefusal(ctx context.Context, name string,
 }
 
 func coordinatorActionError(err error) error {
+	var request *operatortool.RequestError
+	if errors.As(err, &request) {
+		return errors.New(request.Message)
+	}
+	var conflict *operatortool.ConflictError
+	if errors.As(err, &conflict) {
+		return errors.New(conflict.Message)
+	}
 	var native *nativeError
 	if errors.As(err, &native) {
 		return errors.New(native.Message)
@@ -456,7 +494,7 @@ func (s *Service) postConversationAction(c echo.Context) error {
 	if err := s.conversations.authorizeWrite(ctx, s.database.db, scope, record); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if !coordinatorSettingsTool(string(action.Kind)) && !slices.Contains([]string{operatortool.StopRun, operatortool.FileIssue, operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_runner_tier", "convert_runner_scope", "promote_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", string(chat.ActionIssueSplit), string(chat.ActionArchiveItems)}, string(action.Kind)) || action.ProjectID != string(scope.project) || action.RequestID == "" || len(action.RequestID) > 128 {
+	if (!coordinatorSettingsTool(string(action.Kind)) && !coordinatorWorkflowMutation(string(action.Kind)) && !slices.Contains([]string{operatortool.StopRun, operatortool.FileIssue, operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_runner_tier", "convert_runner_scope", "promote_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", string(chat.ActionIssueSplit), string(chat.ActionArchiveItems)}, string(action.Kind))) || action.ProjectID != string(scope.project) || action.RequestID == "" || len(action.RequestID) > 128 {
 		return invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
 	identity := operatortool.ConnectionIdentity(ctx)

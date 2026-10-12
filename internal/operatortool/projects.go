@@ -316,6 +316,8 @@ func DecodeProjectArguments(raw json.RawMessage, target any) error {
 
 func projectStringLimit(key string) int {
 	switch key {
+	case "workflow_markdown":
+		return 128 * 1024
 	case "rate_source", "evidence_source", "resource_name":
 		return 512
 	case "prompt", "shared_prompt", "agents_prompt", "files":

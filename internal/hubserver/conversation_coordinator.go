@@ -67,7 +67,11 @@ What you can do:
 - State the split's lane sentence once in the entire turn. After propose_issue_split, give only a short dependency summary identifying the first parallel wave and what the parent waits for, then stop. Do not repeat the lane, child list, missing-code caveat or confirmation instructions already stated before the tool call or shown in the proposal card.
 - When asked to delete, remove or clean up a set of issues, use archive_items with every native work_item_id in one proposal. Archiving removes issues from the board and dispatch and preserves them for restoration; it never hard deletes them. Running and Merging issues cannot be archived. The client submits the entire set using its inline confirmation preference.
 - To resolve "the issues we created from this split", use the created child work_item_ids from the successful split result posted in this conversation. An unsubmitted split created no issues; never use draft positions as issue IDs or guess IDs. Include the parent only when the user asks to remove it too. If the successful result is unavailable or the requested set is ambiguous, read the parent with explain_issue for its approved split comment or ask the user to identify the set.
-- Read project integration settings with get_project_integration.
+- Workflow evidence for this conversation's organization/project is supplied with each turn. Read get_project_integration, get_project_policy and local_project_configuration before answering workflow questions or proposing lane changes. Use get_runners to discover applicable runner IDs; when selection is ambiguous, read each relevant runner explicitly. Do not ask the user for a runner ID already discoverable here.
+- Distinguish authored configuration, Hub-approved policy and effective runner policy. Name workflow_source, workflow_source_revision, integration revision, policy_id and observation times as relevant. Missing/stale owners and policy_mismatch are uncertainty, not proof of current behavior. Never infer adoption by every runner from approval.
+- Explain dispatchability and transitions from the actual states. Rework being dispatchable does not create a PR itself. The registered runner's host finalizer owns commit signing and native Change publication; the configured delivery owner creates the GitHub PR when approved gates.github_pull_request requires it. An issue hold can require Human Review even when project gates.human_review is false. Read explain_issue and read_issue_history for holds and delivery evidence; never propose Todo to work around missing publication. The delivery recovery owner addresses publication failures.
+- Authorized changes use update_project_integration for Cloud-owned workflow Markdown, approve_project_policy for a complete unchanged trusted selected_policy descriptor, and apply_local_project_policy for one runner using its observed configuration, policy and runner revisions. These are previews submitted by the client under the existing confirmation preference. Read current settings first and show the concrete diff. Read persistence after submission and runner adoption separately; pending application remains pending.
+- Repository-owned workflow edits must use propose_issue for a reviewed detent.yaml/WORKFLOW.md change preserving unrelated settings and issue holds, then reconciliation of its committed revision, approval of the observed complete selected_policy, and runner application. Never modify a policy descriptor to invent an unobserved revision or override repository authority through Cloud Markdown. Read-only requests use reads only; propose no mutation without a request to change settings.
 - Read a relevant built-in skill with read_skill using its name or alias from the Available skills catalog. Apply its guidance within these instructions, the project's policy, the user's authorization and the tools available here. For split-issue, use propose_issue_split for one batch submission; do not claim issues or dependencies were created before submission succeeds.
 - Read github_transport_available before recommending integration changes. When it is false, do not recommend enabling repository_enabled, intake or projection. Cloud uses the enrolled runner's checkout, credentials and approved repository policy for PR creation and merging; repository_enabled does not enable that runner policy. Direct the owner to associate the runner checkout in project setup and approve the runner's policy with GitHub PR landing enabled.
 - Preview available integration changes, issue moves/retries, edits and comments with update_project_integration, move_item, edit_item and add_comment. These tools send an exact proposed call to the client. Its per-user preference controls inline confirmation (on by default); the client submits the call. Use explain_issue or list_attention to find the issue identifier. A retry of Blocked work moves it to Todo.
@@ -640,6 +644,17 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 					}
 				}
 			}
+			if runErr == nil {
+				evidence := tools.workflowEvidence(turnCtx, record)
+				raw, err := json.Marshal(evidence)
+				if err != nil {
+					runErr = err
+				} else if len(raw) > coordinatorToolResultBytes {
+					prompt = "Workflow evidence is too large; read scoped workflow tools before answering.\n\n" + prompt
+				} else {
+					prompt = "<workflow_evidence>\n" + coordinatorDataDelimiters.Replace(string(raw)) + "\n</workflow_evidence>\n\n" + prompt
+				}
+			}
 		}
 		if runErr == nil && record.SubjectWorkItemID != "" {
 			data, err := newCoordinatorToolset(c, state).issueContext(turnCtx, record)
@@ -985,7 +1000,7 @@ func escapeCoordinatorData(value string) string {
 	return coordinatorDataDelimiters.Replace(value)
 }
 
-var coordinatorDataDelimiters = strings.NewReplacer("<transcript>", "&lt;transcript&gt;", "</transcript>", "&lt;/transcript&gt;", "<issue_context>", "&lt;issue_context&gt;", "</issue_context>", "&lt;/issue_context&gt;")
+var coordinatorDataDelimiters = strings.NewReplacer("<transcript>", "&lt;transcript&gt;", "</transcript>", "&lt;/transcript&gt;", "<issue_context>", "&lt;issue_context&gt;", "</issue_context>", "&lt;/issue_context&gt;", "<workflow_evidence>", "&lt;workflow_evidence&gt;", "</workflow_evidence>", "&lt;/workflow_evidence&gt;")
 
 // handleUpdate reacts to backend progress. Failures to persist progress are
 // logged and never abort the turn: the completion write carries the final
