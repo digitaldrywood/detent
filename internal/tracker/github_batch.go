@@ -2,6 +2,7 @@ package tracker
 
 // GitHubDiscovery describes one explicit, read-only source page.
 type GitHubDiscovery struct {
+	Snapshots     bool     `json:"snapshots,omitempty"`
 	Repository    string   `json:"repository"`
 	IncludeClosed bool     `json:"include_closed"`
 	Labels        []string `json:"labels"`
@@ -9,13 +10,16 @@ type GitHubDiscovery struct {
 }
 
 type GitHubIssuePreview struct {
-	Number int      `json:"number"`
-	ID     string   `json:"id"`
-	URL    string   `json:"url"`
-	Title  string   `json:"title"`
-	Body   string   `json:"body"`
-	Closed bool     `json:"closed"`
-	Labels []string `json:"labels"`
+	Snapshot        *GitHubIssueSnapshot `json:"snapshot,omitempty"`
+	DiscussionCount int                  `json:"discussion_count,omitempty"`
+	NeedsDiscussion bool                 `json:"needs_discussion,omitempty"`
+	Number          int                  `json:"number"`
+	ID              string               `json:"id"`
+	URL             string               `json:"url"`
+	Title           string               `json:"title"`
+	Body            string               `json:"body"`
+	Closed          bool                 `json:"closed"`
+	Labels          []string             `json:"labels"`
 }
 
 type GitHubDiscoveryPage struct {
@@ -34,45 +38,67 @@ type GitHubBatchItem struct {
 
 // GitHubBatch persists intake intent and checkpoints, without execution state.
 type GitHubBatch struct {
-	ID          string              `json:"id"`
-	Revision    int64               `json:"revision"`
-	RunnerID    string              `json:"runner_id"`
-	Discovery   GitHubDiscovery     `json:"discovery"`
-	Page        GitHubDiscoveryPage `json:"page"`
-	Status      string              `json:"status"`
-	Error       string              `json:"error,omitempty"`
-	RetryAt     string              `json:"retry_at,omitempty"`
-	Destination string              `json:"destination"`
-	Items       []GitHubBatchItem   `json:"items"`
+	RequestedBy   *Actor              `json:"requested_by,omitempty"`
+	Automatic     bool                `json:"automatic,omitempty"`
+	HubOwned      bool                `json:"hub_owned,omitempty"`
+	AllowDispatch bool                `json:"allow_dispatch,omitempty"`
+	LabelLanes    map[string]string   `json:"label_lanes,omitempty"`
+	Limit         int                 `json:"limit,omitempty"`
+	ID            string              `json:"id"`
+	Revision      int64               `json:"revision"`
+	RunnerID      string              `json:"runner_id"`
+	Discovery     GitHubDiscovery     `json:"discovery"`
+	Page          GitHubDiscoveryPage `json:"page"`
+	Status        string              `json:"status"`
+	Error         string              `json:"error,omitempty"`
+	RetryAt       string              `json:"retry_at,omitempty"`
+	Destination   string              `json:"destination"`
+	Items         []GitHubBatchItem   `json:"items"`
 }
 
 type GitHubBatchCommand struct {
 	Mutation
-	Revision      int64    `json:"revision"`
-	Action        string   `json:"action"`
-	RunnerID      string   `json:"runner_id"`
-	Labels        []string `json:"labels"`
-	IncludeClosed bool     `json:"include_closed"`
-	Numbers       []int    `json:"numbers"`
-	Destination   string   `json:"destination"`
-	AllowDispatch bool     `json:"allow_dispatch"`
+	LabelLanes    map[string]string `json:"label_lanes,omitempty"`
+	Revision      int64             `json:"revision"`
+	Action        string            `json:"action"`
+	RunnerID      string            `json:"runner_id"`
+	Labels        []string          `json:"labels"`
+	IncludeClosed bool              `json:"include_closed"`
+	Numbers       []int             `json:"numbers"`
+	Destination   string            `json:"destination"`
+	AllowDispatch bool              `json:"allow_dispatch"`
 }
 
 type GitHubBatchTask struct {
-	ProjectID ProjectID           `json:"project_id"`
-	BatchID   string              `json:"batch_id"`
-	Revision  int64               `json:"revision"`
-	Discovery *GitHubDiscovery    `json:"discovery,omitempty"`
-	Item      *GitHubIssuePreview `json:"item,omitempty"`
+	Items     []GitHubIssuePreview `json:"items,omitempty"`
+	ProjectID ProjectID            `json:"project_id"`
+	BatchID   string               `json:"batch_id"`
+	Revision  int64                `json:"revision"`
+	Discovery *GitHubDiscovery     `json:"discovery,omitempty"`
+	Item      *GitHubIssuePreview  `json:"item,omitempty"`
 }
 
 type GitHubBatchResult struct {
 	Mutation
-	BatchID  string               `json:"batch_id"`
-	Revision int64                `json:"revision"`
-	Page     *GitHubDiscoveryPage `json:"page,omitempty"`
-	Snapshot *GitHubIssueSnapshot `json:"snapshot,omitempty"`
+	Results  []GitHubBatchItemResult `json:"results,omitempty"`
+	BatchID  string                  `json:"batch_id"`
+	Revision int64                   `json:"revision"`
+	Page     *GitHubDiscoveryPage    `json:"page,omitempty"`
+	Snapshot *GitHubIssueSnapshot    `json:"snapshot,omitempty"`
+	Number   int                     `json:"number"`
+	Error    string                  `json:"error,omitempty"`
+	RetryAt  string                  `json:"retry_at,omitempty"`
+}
+
+type GitHubBatchItemResult struct {
 	Number   int                  `json:"number"`
+	Snapshot *GitHubIssueSnapshot `json:"snapshot,omitempty"`
 	Error    string               `json:"error,omitempty"`
 	RetryAt  string               `json:"retry_at,omitempty"`
+}
+
+type GitHubBatchReceipt struct {
+	Revision int64            `json:"revision"`
+	Status   string           `json:"status"`
+	Next     *GitHubBatchTask `json:"next,omitempty"`
 }

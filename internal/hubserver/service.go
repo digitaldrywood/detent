@@ -468,6 +468,9 @@ func (s *Service) maintainGitHubWebhooks(ctx context.Context) {
 	if _, err := s.database.purgeWebhookPayloads(ctx, now, s.config.WebhookPayloadRetention); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.Warn("purge GitHub webhook payloads", "error", err)
 	}
+	if err := s.maintainGitHubBatches(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		s.config.Logger.Error("process GitHub intake batches", "error", err)
+	}
 	s.maintainSpritePools(ctx)
 	if err := s.maintainNativeRetention(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.Warn("maintain native retention", "error", err)

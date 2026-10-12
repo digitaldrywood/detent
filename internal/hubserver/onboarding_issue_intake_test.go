@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -30,8 +33,12 @@ type batchFixture struct {
 func newBatchFixture(t *testing.T) *batchFixture {
 	t.Helper()
 	f := linkedFixture(t)
+	f.service.config.ImportBackend = nil
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE repositories SET github_owner='example-org', github_name='example-project' WHERE github_node_id='R_repo'"); err != nil {
+		t.Fatal(err)
+	}
 	// Exercise the hosted runner-first association, without a GitHub backend.
-	_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id=NULL, checkout_repository='acme/orders', github_intake='manual' WHERE id=?", f.project.ID)
+	_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id=NULL, checkout_repository='example-org/example-project', github_intake='manual' WHERE id=?", f.project.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +63,7 @@ func newBatchFixture(t *testing.T) *batchFixture {
 }
 func (f *batchFixture) heartbeat(t *testing.T) *tracker.GitHubBatchTask {
 	t.Helper()
-	r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"version": "test", "capacity": 1, "display_name": "runner", "checkout_repository": "acme/orders", "local_checks": runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}}})
+	r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"version": "test", "capacity": 1, "display_name": "runner", "checkout_repository": "example-org/example-project", "local_checks": runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}}})
 	requireNativeStatus(t, r, http.StatusOK)
 	var response runnerauth.RoutingSnapshot
 	decodeHubResponse(t, r, &response)
@@ -97,7 +104,7 @@ func (f *batchFixture) report(t *testing.T, request tracker.GitHubBatchResult, s
 	}
 }
 func previewIssue(number int, closed bool) tracker.GitHubIssuePreview {
-	return tracker.GitHubIssuePreview{Number: number, ID: fmt.Sprint("I_", number), URL: fmt.Sprintf("https://github.com/acme/orders/issues/%d", number), Title: fmt.Sprint("Source ", number), Body: "Preview", Closed: closed, Labels: []string{"enhancement"}}
+	return tracker.GitHubIssuePreview{Number: number, ID: fmt.Sprint("I_", number), URL: fmt.Sprintf("https://github.com/example-org/example-project/issues/%d", number), Title: fmt.Sprint("Source ", number), Body: "Preview", Closed: closed, Labels: []string{"enhancement"}}
 }
 func (f *batchFixture) preview(t *testing.T, closed bool) {
 	t.Helper()
@@ -294,7 +301,7 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id), f.token, nil)
 			decodeHubResponse(t, response, &native)
-			if native.Title != title || native.Body != body || native.State != "Triage" || native.LinkedSource.Status != "complete" {
+			if native.Title != title || native.Body != body || native.State != "Backlog" || native.LinkedSource.Status != "complete" {
 				t.Fatalf("native ownership = %#v", native)
 			}
 			var comments, count int
@@ -349,7 +356,11 @@ func TestGitHubBatchSkipsLinkedAndLegacyImportedIdentity(t *testing.T) {
 			f := newBatchFixture(t)
 			var existing tracker.NativeIssue
 			if mode == "linked URL" {
-				existing = f.link(t, "prior-linked")
+				f.service.config.ImportBackend = linkedTestImporter{snapshot: batchSnapshot(12)}
+				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "prior-linked"}, GitHubIssueURL: previewIssue(12, false).URL})
+				requireNativeStatus(t, r, http.StatusOK)
+				decodeHubResponse(t, r, &existing)
+				f.service.config.ImportBackend = nil
 			} else {
 				snapshot := batchSnapshot(12)
 				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "prior-import"}, Title: "Native edits on old import", Body: "Preserved", State: "Backlog", Provenance: &snapshot.Provenance})
@@ -433,5 +444,342 @@ func TestGitHubBatchImportsDiscussionBeyondDefaultAPILimit(t *testing.T) {
 	var count int
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", f.batch.Items[0].WorkItemID).Scan(&count); err != nil || count != 40 {
 		t.Fatalf("discussion count=%d error=%v", count, err)
+	}
+}
+
+func TestGitHubBatchAppPagesAndPartialRetry(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name string
+		fail bool
+	}{{name: "100 issue page"}, {name: "invalid issue rolls back and retries", fail: true}} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newBatchFixture(t)
+			reads := 0
+			f.service.config.ImportBackend = scheduledContractImporter(func(_ context.Context, request GitHubImportRequest) (GitHubImportPage, error) {
+				reads++
+				if request.Stage == "issue" {
+					snapshot := batchSnapshot(request.IssueNumber)
+					return GitHubImportPage{Issue: &IssueSource{URL: snapshot.URL, NodeID: snapshot.Provenance.ExternalID, Title: snapshot.Title, Body: snapshot.Body, AuthorID: snapshot.Provenance.AuthorID, CreatedAt: snapshot.Provenance.CreatedAt, UpdatedAt: snapshot.Provenance.UpdatedAt}}, nil
+				}
+				if request.Stage == "comments" {
+					return GitHubImportPage{}, nil
+				}
+				if request.Stage != "batch" || request.Discovery == nil || !request.Discovery.Snapshots {
+					t.Fatalf("source request=%+v", request)
+				}
+				page := tracker.GitHubDiscoveryPage{Total: 101}
+				first, last := 1, 100
+				if request.Discovery.Cursor != "" {
+					first, last = 101, 101
+				} else {
+					page.NextCursor = "page2"
+				}
+				for number := first; number <= last; number++ {
+					preview := previewIssue(number, false)
+					snapshot := batchSnapshot(number)
+					snapshot.Body = strings.Repeat("complete-source-body", 100)
+					preview.Snapshot = &snapshot
+					preview.Labels = []string{"bug", "phase:one"}
+					if number%2 == 0 {
+						preview.Labels = append(preview.Labels, "detent:backlog")
+					} else {
+						preview.Labels = append(preview.Labels, "detent:todo")
+					}
+					if test.fail && number == 50 {
+						snapshot.Body = strings.Repeat("x", (256<<10)+1)
+					}
+					page.Issues = append(page.Issues, preview)
+				}
+				return GitHubImportPage{BatchPage: &page}, nil
+			})
+			f.command(t, tracker.GitHubBatchCommand{Action: "start", Destination: "Backlog", AllowDispatch: true}, http.StatusOK)
+			if task := f.heartbeat(t); task != nil {
+				t.Fatal("App-owned import assigned to runner")
+			}
+			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			batch, err := readGitHubBatch(t.Context(), f.service.database.db, scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.batch = batch
+			if batch.Status != "finished" || len(batch.Items) != 101 || reads != 2 {
+				t.Fatalf("progress=%s items=%d source reads=%d", batch.Status, len(batch.Items), reads)
+			}
+			for _, item := range batch.Items {
+				if test.fail && item.Number == 50 {
+					if item.Status != "failed" || item.WorkItemID != "" || item.Error == "" {
+						t.Fatalf("failed item=%+v", item)
+					}
+					continue
+				}
+				issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(item.WorkItemID))
+				if err != nil {
+					t.Fatalf("item=%+v: %v", item, err)
+				}
+				lane := "Todo"
+				if item.Number%2 == 0 {
+					lane = "Backlog"
+				}
+				if item.Status != "completed" || issue.State != lane || len(issue.Labels) != 2 || issue.Labels[0] != "bug" || issue.Labels[1] != "phase:one" || !strings.Contains(issue.Body, "complete-source-body") {
+					t.Fatalf("item=%+v issue=%+v", item, issue)
+				}
+			}
+			response, err := f.service.projectGitHubBatch(t.Context(), scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(response)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(raw), "complete-source-body") || strings.Contains(string(raw), `"snapshot":`) {
+				t.Fatal("batch read echoed issue bodies")
+			}
+			if test.fail {
+				f.command(t, tracker.GitHubBatchCommand{Action: "retry"}, http.StatusOK)
+				if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				batch, err = readGitHubBatch(t.Context(), f.service.database.db, scope)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if batch.Items[49].Status != "completed" || reads != 4 {
+					t.Fatalf("retry item=%+v reads=%d", batch.Items[49], reads)
+				}
+				f.batch = batch
+			}
+			f.command(t, tracker.GitHubBatchCommand{Action: "start", Destination: "Backlog", AllowDispatch: true}, http.StatusOK)
+			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			batch, err = readGitHubBatch(t.Context(), f.service.database.db, scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, item := range batch.Items {
+				if item.Status != "skipped" {
+					t.Fatalf("rerun duplicated item=%+v", item)
+				}
+			}
+			var count int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != 101 {
+				t.Fatalf("duplicate issues=%d", count)
+			}
+		})
+	}
+}
+
+func TestGitHubBatchLabelLaneConfirmation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		labels  []string
+		mapping map[string]string
+		allow   bool
+		lane    string
+		failed  bool
+	}{
+		{name: "default destination", labels: []string{"bug"}, lane: "Backlog"},
+		{name: "lane label", labels: []string{"bug", "detent:todo"}, allow: true, lane: "Todo"},
+		{name: "unconfirmed dispatch", labels: []string{"detent:todo"}, failed: true},
+		{name: "custom mapping", labels: []string{"incoming", "bug"}, mapping: map[string]string{"incoming": "Todo"}, allow: true, lane: "Todo"},
+		{name: "conflicting lane labels", labels: []string{"detent:todo", "detent:backlog"}, allow: true, failed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newBatchFixture(t)
+			f.service.config.ImportBackend = scheduledContractImporter(func(context.Context, GitHubImportRequest) (GitHubImportPage, error) {
+				preview := previewIssue(12, false)
+				snapshot := batchSnapshot(12)
+				preview.Labels, preview.Snapshot = test.labels, &snapshot
+				return GitHubImportPage{BatchPage: &tracker.GitHubDiscoveryPage{Total: 1, Issues: []tracker.GitHubIssuePreview{preview}}}, nil
+			})
+			f.command(t, tracker.GitHubBatchCommand{Action: "start", Destination: "Backlog", AllowDispatch: test.allow, LabelLanes: test.mapping}, http.StatusOK)
+			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			batch, err := readGitHubBatch(t.Context(), f.service.database.db, scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := batch.Items[0]
+			if test.failed {
+				if item.Status != "failed" || item.WorkItemID != "" {
+					t.Fatalf("unconfirmed/conflicting import=%+v", item)
+				}
+				f.batch = batch
+				f.service.config.ImportBackend = linkedTestImporter{snapshot: batchSnapshot(12)}
+				f.command(t, tracker.GitHubBatchCommand{Action: "retry", AllowDispatch: true, LabelLanes: map[string]string{"detent:backlog": "Todo"}}, http.StatusOK)
+				if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				retried, err := readGitHubBatch(t.Context(), f.service.database.db, scope)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if retried.Items[0].Status != "completed" {
+					t.Fatalf("corrected routing=%+v", retried.Items[0])
+				}
+				issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(retried.Items[0].WorkItemID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if issue.State != "Todo" {
+					t.Fatalf("corrected destination=%s", issue.State)
+				}
+			} else {
+				issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(item.WorkItemID))
+				if err != nil {
+					t.Fatalf("item=%+v: %v", item, err)
+				}
+				wantLabels := []string{"bug"}
+				if test.mapping != nil {
+					wantLabels = []string{"incoming", "bug"}
+				}
+				if issue.State != test.lane || !slices.Equal(issue.Labels, wantLabels) {
+					t.Fatalf("mapped issue=%+v", issue)
+				}
+			}
+		})
+	}
+}
+
+func TestGitHubBatchAppFallbackAndThrottle(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		sourceErr error
+		fallback  bool
+	}{
+		{name: "App lacks repository access", sourceErr: githubconnector.ErrNotFound, fallback: true},
+		{name: "App throttle retains deadline", sourceErr: &githubconnector.StatusError{StatusCode: 429, RetryAfter: time.Hour, Err: githubconnector.ErrRateLimited}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newBatchFixture(t)
+			reads := 0
+			f.service.config.ImportBackend = scheduledContractImporter(func(context.Context, GitHubImportRequest) (GitHubImportPage, error) {
+				reads++
+				return GitHubImportPage{}, test.sourceErr
+			})
+			f.command(t, tracker.GitHubBatchCommand{Action: "start", Destination: "Backlog"}, http.StatusOK)
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			batch, err := readGitHubBatch(t.Context(), f.service.database.db, scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			batch.RunnerID = ""
+			raw, err := json.Marshal(batch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE onboarding_issue_intake SET request_json=? WHERE project_id=?", raw, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			batch, err = readGitHubBatch(t.Context(), f.service.database.db, scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.batch = batch
+			task := f.heartbeat(t)
+			if test.fallback {
+				if batch.HubOwned || batch.RunnerID != f.runner.binding.RunnerID || task == nil || task.Discovery == nil {
+					t.Fatalf("fallback=%+v task=%+v", batch, task)
+				}
+			} else {
+				if !batch.HubOwned || batch.Status != "discovery_failed" || batch.RetryAt == "" || task != nil {
+					t.Fatalf("throttle=%+v task=%+v", batch, task)
+				}
+				f.command(t, tracker.GitHubBatchCommand{Action: "retry"}, http.StatusUnprocessableEntity)
+				if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if reads != 1 {
+				t.Fatalf("unexpected source retries=%d", reads)
+			}
+		})
+	}
+}
+
+func TestGitHubBatchUsesCatalogJobCap(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		plan    string
+		cap     int
+		refused bool
+	}{{plan: "free", cap: 200, refused: true}, {plan: "starter", cap: 2000}} {
+		t.Run(test.plan, func(t *testing.T) {
+			t.Parallel()
+			f := newBatchFixture(t)
+			d := f.service.database
+			d.hostedOrganization = f.project.OrganizationID
+			if err := d.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+				t.Fatal(err)
+			}
+			if test.plan != "free" {
+				if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "paid-plan", Action: "base", ExpectedRevision: 1, Plan: PlanReference{ID: test.plan, Version: 1}, Reason: "fixture paid plan"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reads := 0
+			f.service.config.ImportBackend = scheduledContractImporter(func(_ context.Context, request GitHubImportRequest) (GitHubImportPage, error) {
+				reads++
+				offset := 0
+				if request.Discovery.Cursor != "" {
+					var err error
+					offset, err = strconv.Atoi(request.Discovery.Cursor)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				page := tracker.GitHubDiscoveryPage{Total: 201}
+				for number := offset + 1; number <= min(offset+100, 201); number++ {
+					preview := previewIssue(number, false)
+					snapshot := batchSnapshot(number)
+					preview.Snapshot = &snapshot
+					page.Issues = append(page.Issues, preview)
+				}
+				if offset+100 < 201 {
+					page.NextCursor = strconv.Itoa(offset + 100)
+				}
+				return GitHubImportPage{BatchPage: &page}, nil
+			})
+			f.command(t, tracker.GitHubBatchCommand{Action: "start", Destination: "Backlog"}, http.StatusOK)
+			if f.batch.Limit != test.cap {
+				t.Fatalf("job cap=%d want=%d", f.batch.Limit, test.cap)
+			}
+			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			batch, err := readGitHubBatch(t.Context(), d.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var count int
+			if err := d.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if test.refused {
+				if count != 0 || batch.Status != "discovery_failed" || reads != 1 {
+					t.Fatalf("free cap: count=%d status=%s reads=%d", count, batch.Status, reads)
+				}
+			} else if count != 201 || batch.Status != "finished" || reads != 3 {
+				t.Fatalf("paid cap: count=%d status=%s reads=%d", count, batch.Status, reads)
+			}
+		})
 	}
 }
