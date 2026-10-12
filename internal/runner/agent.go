@@ -3478,6 +3478,23 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if err != nil {
 		return gate.ValidatorResult{}, err
 	}
+	var attachments *validatorAttachments
+	if req.NativeVersion != nil && req.EvidenceHandler != nil {
+		tree := ""
+		if req.NativeVersion.Validation != nil {
+			tree = req.NativeVersion.Validation.TreeSHA
+		}
+		attachments = &validatorAttachments{head: req.NativeVersion.HeadSHA, tree: tree, images: backendConfig.Kind == config.AgentBackendCodex, handle: req.EvidenceHandler}
+		reads := validatorEvidenceTools(req.EvidenceTools)
+		validationTools = append(validationTools, reads...)
+		commandHandler := validationHandler
+		validationHandler = func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
+			if slices.ContainsFunc(reads, func(tool AgentTool) bool { return tool.Name == call.Name }) {
+				return attachments.call(ctx, call)
+			}
+			return commandHandler(ctx, call)
+		}
+	}
 
 	selectedModel := selection.Model
 	if override := strings.TrimSpace(validator.Model); override != "" {
@@ -3791,6 +3808,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	validation.HeadSHA = req.Diff.HeadSHA
 	validation.DiffDigest = req.Diff.Digest
 	validation.DiffFiles = append([]string(nil), req.Diff.Files...)
+	validation.AttachmentReads = nil
+	if attachments != nil {
+		validation.AttachmentReads = attachments.evidence()
+	}
 	tree := ""
 	if req.NativeVersion != nil && req.NativeVersion.Validation != nil {
 		tree = req.NativeVersion.Validation.TreeSHA

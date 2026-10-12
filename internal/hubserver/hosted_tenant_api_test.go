@@ -660,24 +660,33 @@ func TestScopeProviderUsage(t *testing.T) {
 	codex := providercapacity.Report{Provider: "codex", AccountAlias: "team", SharedAccountAlias: "team", MaxConcurrent: 2, Availability: "available"}
 	other := providercapacity.Report{Provider: "codex", AccountAlias: "solo", SharedAccountAlias: "solo", MaxConcurrent: 2}
 	claude := providercapacity.Report{Provider: "claude", MaxConcurrent: 1}
+	local := codex
+	local.SharedAccountAlias = ""
 	full := "Shared provider concurrency is fully reserved; wait for lease release or expiry"
 	available := "Bounded concurrency available; quota is an observation, not transferable credit"
 	for _, test := range []struct {
 		name         string
 		state        string
-		reservations []providercapacity.Report
+		local        bool
+		reservations []scopedProviderAccount
 		used         int
 		reason       string
 	}{
+		{name: "local usage excludes same alias on another runner", local: true, state: "available", reservations: []scopedProviderAccount{{runnerID: "other", Report: local}}, used: 0, reason: available},
+		{name: "local usage includes own runner", local: true, state: "available", reservations: []scopedProviderAccount{{runnerID: "runner", Report: local}}, used: 1, reason: available},
 		{name: "no visible reservations", state: "available", used: 0, reason: available},
-		{name: "one visible reservation", state: "available", reservations: []providercapacity.Report{codex}, used: 1, reason: available},
-		{name: "other accounts and providers do not count", state: "available", reservations: []providercapacity.Report{other, claude}, used: 0, reason: available},
-		{name: "visible reservations fill the account", state: "available", reservations: []providercapacity.Report{codex, codex}, used: 2, reason: full},
-		{name: "an exhausted account keeps its reason", state: "exhausted", reservations: []providercapacity.Report{codex}, used: 1, reason: "exhausted"},
+		{name: "one visible reservation", state: "available", reservations: []scopedProviderAccount{{runnerID: "other", Report: codex}}, used: 1, reason: available},
+		{name: "other accounts and providers do not count", state: "available", reservations: []scopedProviderAccount{{runnerID: "runner", Report: other}, {runnerID: "runner", Report: claude}}, used: 0, reason: available},
+		{name: "visible reservations fill the account", state: "available", reservations: []scopedProviderAccount{{runnerID: "other", Report: codex}, {runnerID: "runner", Report: codex}}, used: 2, reason: full},
+		{name: "an exhausted account keeps its reason", state: "exhausted", reservations: []scopedProviderAccount{{runnerID: "other", Report: codex}}, used: 1, reason: "exhausted"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			runners := []hostedFleetRunner{{ProviderCapacity: []providercapacity.View{{Report: codex, Used: 2, State: test.state, Reason: test.state}}}}
+			report := codex
+			if test.local {
+				report.SharedAccountAlias = ""
+			}
+			runners := []hostedFleetRunner{{ID: "runner", ProviderCapacity: []providercapacity.View{{Report: report, Used: 2, State: test.state, Reason: test.state}}}}
 			if test.state != "exhausted" {
 				runners[0].ProviderCapacity[0].Reason = full
 			}

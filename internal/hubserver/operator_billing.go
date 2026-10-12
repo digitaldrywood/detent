@@ -141,14 +141,13 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 }
 
 func billingResult(value any) (operatortool.Result, error) {
-	raw, err := json.Marshal(value)
-	if err != nil || len(raw) > operatortool.MaxResultBytes {
-		return operatortool.Result{}, errBillingUnavailable
-	}
-	return operatortool.Result{Content: raw}, nil
+	return operatortool.EncodeResult(value)
 }
 
 func safeBillingError(err error) error {
+	if errors.Is(err, operatortool.ErrResultTooLarge) {
+		return err
+	}
 	for _, safe := range []error{operatortool.ErrAccessDenied, operatortool.ErrInvalidArguments, mutation.ErrConflict, mutation.ErrUncertain} {
 		if errors.Is(err, safe) {
 			return safe

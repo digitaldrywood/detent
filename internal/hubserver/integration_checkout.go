@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"net/http"
 	"strings"
 	"time"
 
@@ -78,18 +77,8 @@ func (s *Service) bindRunnerCheckoutCommand(ctx context.Context, scope nativeSco
 			}
 			return nil, nativeInvalid("This project already has a checkout repository")
 		}
-		var reported int
-		err = tx.QueryRowContext(ctx, `SELECT count(*) FROM runner_checkout_repositories cr
-JOIN runner_identities r ON r.id=cr.runner_id AND r.organization_id=?
-JOIN api_tokens t ON t.id=r.token_id AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR julianday(t.expires_at)>julianday(?))
-JOIN token_grants g ON g.token_id=t.id AND g.organization_id=? AND g.project_id=cr.project_id
-WHERE cr.project_id=? AND lower(cr.repository)=lower(?) AND r.state='active' AND julianday(cr.reported_at)>julianday(?)`,
-			scope.organization, formatHubTime(now), scope.organization, scope.project, repository, formatHubTime(now.Add(-5*time.Minute))).Scan(&reported)
-		if err != nil {
-			return nil, err
-		}
-		if reported == 0 {
-			return nil, &nativeError{Code: "checkout_unavailable", Message: "Start an enrolled runner with this project's Git checkout and matching GitHub origin, then retry. The runner needs access to the private repository; Cloud does not need its credentials.", status: http.StatusUnprocessableEntity}
+		if current.Repository != "" && !strings.EqualFold(current.Repository, repository) {
+			return nil, nativeInvalid("This project already has a repository")
 		}
 		if err := requireIntegrationIdle(ctx, tx, scope, now); err != nil {
 			return nil, err

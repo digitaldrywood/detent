@@ -132,7 +132,7 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 
 func TestProviderSharedCapacityConcurrentRecovery(t *testing.T) {
 	t.Parallel()
-	for _, sharing := range []string{"declared", "unknown", "mixed"} {
+	for _, sharing := range []string{"declared", "unknown", "same local alias", "mixed", "mixed reversed"} {
 		t.Run(sharing, func(t *testing.T) {
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 			cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}
@@ -144,7 +144,10 @@ func TestProviderSharedCapacityConcurrentRecovery(t *testing.T) {
 				runners[i].enroll(t)
 				report := capacityReport(now)
 				report.AccountAlias = fmt.Sprintf("local-%d", i)
-				if sharing == "unknown" || sharing == "mixed" && i == 1 {
+				if sharing == "same local alias" {
+					report.AccountAlias = "local"
+				}
+				if sharing == "unknown" || sharing == "same local alias" || sharing == "mixed" && i == 1 || sharing == "mixed reversed" && i == 0 {
 					report.SharedAccountAlias = ""
 				}
 				publishCapacity(t, f, runners[i], report)
@@ -181,8 +184,12 @@ func TestProviderSharedCapacityConcurrentRecovery(t *testing.T) {
 					t.Fatalf("status = %d", outcome.status)
 				}
 			}
-			if count != 1 {
-				t.Fatalf("concurrent reservations = %d, want 1", count)
+			want := 2
+			if sharing == "declared" {
+				want = 1
+			}
+			if count != want {
+				t.Fatalf("concurrent reservations = %d, want %d", count, want)
 			}
 			if err := f.service.Close(); err != nil {
 				t.Fatal(err)
@@ -517,15 +524,21 @@ func TestProviderPoolIsolation(t *testing.T) {
 	for _, test := range []struct {
 		name, provider, shared, authority, availability, leaseEnd               string
 		otherOrganization, stale, offline, reserve, unbounded, currentUnbounded bool
+		currentLocal, sameAlias, sameRunner, missingOwner                       bool
 		used, bound, finalBound                                                 int
 		state                                                                   string
 	}{
 		{name: "same pool", reserve: true, used: 1, bound: 2, state: "available"},
-		{name: "default runner preserves account cap and usage", unbounded: true, shared: "unknown", reserve: true, availability: "unknown", used: 1, bound: 4, state: "unknown"},
-		{name: "default report inherits configured account cap", currentUnbounded: true, shared: "unknown", reserve: true, used: 1, bound: 2, state: "unknown"},
-		{name: "default reports use runner limits", currentUnbounded: true, unbounded: true, shared: "unknown", reserve: true, used: 1, bound: 0, state: "unknown"},
+		{name: "local report does not affect explicit account", unbounded: true, shared: "unknown", reserve: true, availability: "unknown", bound: 4, state: "available"},
+		{name: "explicit unbounded account ignores local cap", currentUnbounded: true, shared: "unknown", reserve: true, bound: 0, state: "unknown"},
+		{name: "default reports use runner limits", currentUnbounded: true, unbounded: true, shared: "unknown", reserve: true, bound: 0, state: "unknown"},
 		{name: "explicit independent account", shared: "independent", reserve: true, bound: 4, state: "available"},
-		{name: "unknown sharing", shared: "unknown", reserve: true, used: 1, bound: 2, state: "available"},
+		{name: "local sharing stays independent", shared: "unknown", reserve: true, bound: 4, state: "available"},
+		{name: "same local alias on different runners", currentLocal: true, sameAlias: true, shared: "unknown", reserve: true, bound: 4, state: "available"},
+		{name: "local account ignores explicit exhaustion", currentLocal: true, sameAlias: true, availability: "exhausted", reserve: true, bound: 4, state: "available"},
+		{name: "explicit account ignores local exhaustion", shared: "unknown", availability: "exhausted", reserve: true, bound: 4, state: "available"},
+		{name: "local account retains own reservations", currentLocal: true, sameAlias: true, sameRunner: true, shared: "unknown", reserve: true, used: 1, bound: 2, state: "available"},
+		{name: "ownerless local reservation is not global", currentLocal: true, sameAlias: true, shared: "unknown", missingOwner: true, reserve: true, bound: 4, state: "available"},
 		{name: "other provider", provider: "anthropic", reserve: true, bound: 4, state: "available"},
 		{name: "other organization", otherOrganization: true, reserve: true, bound: 4, state: "available"},
 		{name: "valid lower report", bound: 2, state: "available"},
@@ -539,6 +552,7 @@ func TestProviderPoolIsolation(t *testing.T) {
 		{name: "future authority", authority: "future", bound: 4, state: "available"},
 		{name: "invalid expiry", authority: "invalid", bound: 4, state: "available"},
 		{name: "missing expiry", authority: "missing", bound: 4, state: "available"},
+		{name: "same alias on another owner does not supersede pinned shared bound", sameAlias: true, authority: "expired", reserve: true, leaseEnd: "expiry", used: 1, bound: 2, finalBound: 4, state: "available"},
 		{name: "expired pinned lease until expiry", authority: "expired", reserve: true, leaseEnd: "expiry", used: 1, bound: 2, finalBound: 4, state: "available"},
 		{name: "revoked pinned lease until expiry", authority: "revoked", reserve: true, leaseEnd: "expiry", used: 1, bound: 2, finalBound: 4, state: "available"},
 		{name: "fresh report supersedes pinned lease bound before release", authority: "expired", reserve: true, leaseEnd: "release", used: 1, bound: 4, finalBound: 4, state: "available"},
@@ -563,6 +577,12 @@ func TestProviderPoolIsolation(t *testing.T) {
 			otherRunner.enroll(t)
 			report := capacityReport(now)
 			report.MaxConcurrent = 4
+			if test.currentLocal {
+				report.SharedAccountAlias = ""
+			}
+			if test.sameRunner {
+				otherRunner = current
+			}
 			if test.currentUnbounded {
 				report.MaxConcurrent, report.Availability = 0, "unknown"
 			}
@@ -572,6 +592,9 @@ func TestProviderPoolIsolation(t *testing.T) {
 			publishCapacity(t, f, current, report)
 			other := capacityReport(now)
 			other.AccountAlias, other.MaxConcurrent = "older-runner", 2
+			if test.sameAlias {
+				other.AccountAlias = report.AccountAlias
+			}
 			if test.unbounded {
 				other.MaxConcurrent = 0
 			}
@@ -598,6 +621,11 @@ func TestProviderPoolIsolation(t *testing.T) {
 				response := performHubAPIRequest(t, f.service, http.MethodPost, owner.nativeFixture.base+"/claims", owner.redemption.Credential, providerClaim(owner, issue, "reserved"))
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &lease)
+				if test.missingOwner {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM lease_runners WHERE lease_id=?", lease.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			if test.leaseEnd == "release" {
 				report.MaxConcurrent = 4
@@ -641,7 +669,7 @@ func TestProviderPoolIsolation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			view, err := providerView(t.Context(), f.service.database.db, f.project.OrganizationID, report, now)
+			view, err := providerView(t.Context(), f.service.database.db, f.project.OrganizationID, current.binding.RunnerID, report, now)
 			if err != nil || view.Used != test.used || view.MaxConcurrent != test.bound || view.State != test.state {
 				t.Fatalf("view = %+v, %v; want used=%d bound=%d state=%s", view, err, test.used, test.bound, test.state)
 			}
@@ -652,7 +680,7 @@ func TestProviderPoolIsolation(t *testing.T) {
 				} else {
 					now = lease.ExpiresAt
 				}
-				view, err = providerView(t.Context(), f.service.database.db, f.project.OrganizationID, report, now)
+				view, err = providerView(t.Context(), f.service.database.db, f.project.OrganizationID, current.binding.RunnerID, report, now)
 				if err != nil || view.Used != 0 || view.MaxConcurrent != test.finalBound {
 					t.Fatalf("ended lease view = %+v, %v; want used=0 bound=%d", view, err, test.finalBound)
 				}

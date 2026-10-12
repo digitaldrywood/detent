@@ -50,6 +50,16 @@ func TestCriterionEvidence(t *testing.T) {
 		{name: "receipt IDs reject restated implementation", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].RestatesImplementation = true }, gaps: []string{"Reject invalid input", "Return valid input"}, findings: 1},
 		{name: "invalid ID cannot fall back to exact command", receiptIDs: []string{"missing"}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].Reference = r.Commands[0].Command }, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "legacy combined command is not split", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].ReceiptIDs = nil }, gaps: []string{"Reject invalid input", "Return valid input"}},
+
+		{name: "observed attachment", edit: func(r *ValidatorResult) {
+			r.CriteriaEvidence = []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceAttachment, Reference: "invalid-input.png", ReceiptIDs: []string{"image-read"}, HeadSHA: "head", TreeSHA: "tree", Behavior: "The capture shows the error beside the invalid field"}}
+			r.AttachmentReads = []AttachmentRead{{ReceiptID: "image-read", AttachmentID: "attachment", SHA256: "digest", HeadSHA: "head", TreeSHA: "tree"}}
+		}, gaps: []string{"Return valid input"}},
+		{name: "invented attachment read", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceAttachment, Reference: "image.png", ReceiptIDs: []string{"invented"}, HeadSHA: "head", TreeSHA: "tree", Behavior: "Claimed image"}}, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "attachment from another review", edit: func(r *ValidatorResult) {
+			r.CriteriaEvidence = []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceAttachment, Reference: "image.png", ReceiptIDs: []string{"image-read"}, HeadSHA: "head", TreeSHA: "tree", Behavior: "Claimed image"}}
+			r.AttachmentReads = []AttachmentRead{{ReceiptID: "image-read", AttachmentID: "attachment", SHA256: "digest", HeadSHA: "other", TreeSHA: "tree"}}
+		}, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "unsupported kind", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: "approval", Reference: "human"}}, gaps: []string{"Reject invalid input", "Return valid input"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

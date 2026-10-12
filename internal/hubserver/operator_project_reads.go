@@ -166,14 +166,33 @@ type operatorProjectPage struct {
 }
 
 type projectBatchPage struct {
-	githubBatchView
-	NextCursor string `json:"next_cursor,omitempty"`
+	Batch      *projectBatch         `json:"batch"`
+	Lanes      []tracker.NativeState `json:"lanes"`
+	NextCursor string                `json:"next_cursor,omitempty"`
+}
+
+type projectBatch struct {
+	tracker.GitHubBatch
+	Page projectBatchIssues `json:"page"`
+}
+
+type projectBatchIssues struct {
+	Issues     []projectBatchIssue `json:"issues"`
+	Total      int                 `json:"total"`
+	NextCursor string              `json:"next_cursor"`
+}
+
+type projectBatchIssue struct {
+	Number int      `json:"number"`
+	Title  string   `json:"title"`
+	Labels []string `json:"labels"`
+	Status string   `json:"status"`
 }
 
 // Stored runner diagnostics are provider text. Keep the application's checkpoint
 // and status while returning a bounded page and opaque transport diagnostics.
 func boundedProjectBatch(view githubBatchView, request operatortool.ProjectReadRequest) (projectBatchPage, error) {
-	page := projectBatchPage{githubBatchView: view}
+	page := projectBatchPage{Lanes: view.Lanes}
 	after := 0
 	if request.After != "" {
 		var err error
@@ -185,7 +204,8 @@ func boundedProjectBatch(view githubBatchView, request operatortool.ProjectReadR
 	if view.Batch == nil {
 		return page, nil
 	}
-	batch := view.Batch
+	batch := *view.Batch
+	batch.Items = slices.Clone(batch.Items)
 	if batch.Error != "" {
 		batch.Error = "Import transport is unavailable"
 	}
@@ -203,6 +223,15 @@ func boundedProjectBatch(view githubBatchView, request operatortool.ProjectReadR
 	}
 	batch.Page.Issues = batch.Page.Issues[min(after, len(batch.Page.Issues)):min(after+limit, len(batch.Page.Issues))]
 	batch.Items = batch.Items[min(after, len(batch.Items)):min(after+limit, len(batch.Items))]
+	issues := make([]projectBatchIssue, 0, len(batch.Page.Issues))
+	for _, issue := range batch.Page.Issues {
+		status := "open"
+		if issue.Closed {
+			status = "closed"
+		}
+		issues = append(issues, projectBatchIssue{Number: issue.Number, Title: issue.Title, Labels: issue.Labels, Status: status})
+	}
+	page.Batch = &projectBatch{GitHubBatch: batch, Page: projectBatchIssues{Issues: issues, Total: batch.Page.Total, NextCursor: batch.Page.NextCursor}}
 	return page, nil
 }
 

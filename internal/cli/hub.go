@@ -63,6 +63,13 @@ func newHubCommand(opts options) *cobra.Command {
 func runnerServiceStarterFor(opts options) runnerServiceStarter {
 	return func(cmd *cobra.Command, configPath string) error {
 		host, port := "", -1
+		if flagChanged(cmd, "port") {
+			value, err := cmd.Flags().GetInt("port")
+			if err != nil {
+				return err
+			}
+			port = value
+		}
 		runner, err := serviceRunnerForCommand(cmd, &configPath, &host, &port, opts)
 		if err != nil {
 			return err

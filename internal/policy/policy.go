@@ -151,8 +151,9 @@ type ObservedPolicy struct {
 }
 
 type Change struct {
-	ExpectedID string     `json:"expected_policy_id"`
-	Policy     Descriptor `json:"policy"`
+	ExpectedID       string     `json:"expected_policy_id"`
+	ObservedPolicyID string     `json:"observed_policy_id,omitempty"`
+	Policy           Descriptor `json:"policy,omitempty,omitzero"`
 }
 
 func ValidToken(value string) bool {

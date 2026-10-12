@@ -148,7 +148,7 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope WHERE l.machine_id = ? AND 
 		return r, err
 	}
 	for _, report := range reports {
-		view, err := providerView(ctx, db, organization, report, now)
+		view, err := providerView(ctx, db, organization, id, report, now)
 		if err != nil {
 			return r, err
 		}

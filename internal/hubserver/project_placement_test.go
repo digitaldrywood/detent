@@ -121,12 +121,12 @@ func TestPlacementClaims(t *testing.T) {
 func TestPlacementDemandAndCapacity(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name, excluded, model string
-		locals, providerMax   int
-		shared, pending       bool
-		organization          bool
-		wantDemand, wantLocal int
-		wantPending           int
+		name, excluded, model  string
+		locals, providerMax    int
+		shared, pending, local bool
+		organization           bool
+		wantDemand, wantLocal  int
+		wantPending            int
 	}{
 		{name: "ready Todo", wantDemand: 3},
 		{name: "Backlog excluded even if dispatchable", excluded: "backlog", wantDemand: 2},
@@ -137,6 +137,7 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 		{name: "heterogeneous demand overflows only incompatible local work", model: "gpt-6-astra", locals: 1, providerMax: 8, wantDemand: 3, wantLocal: 2},
 		{name: "shared account capacity once", locals: 2, providerMax: 1, shared: true, wantDemand: 3, wantLocal: 1},
 		{name: "independent accounts add capacity", locals: 2, providerMax: 1, wantDemand: 3, wantLocal: 2},
+		{name: "runner local accounts add capacity with identical aliases", locals: 2, providerMax: 1, local: true, wantDemand: 3, wantLocal: 2},
 		{name: "host and runner limit", locals: 1, providerMax: 8, wantDemand: 3, wantLocal: 2},
 		{name: "pending creation is not double counted", pending: true, wantDemand: 3, wantPending: 1},
 		{name: "organization local capacity is counted once", organization: true, locals: 1, providerMax: 8, wantDemand: 6, wantLocal: 2},
@@ -156,6 +157,9 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 				r := placementFixtureRunner(t, f, account, account, false, 2, "gpt-6.1-sol", "test-model")
 				report := capacityReport(f.service.config.now())
 				report.Models, report.SharedAccountAlias, report.MaxConcurrent = []string{"gpt-6.1-sol", "test-model"}, account, test.providerMax
+				if test.local {
+					report.SharedAccountAlias = ""
+				}
 				publishCapacity(t, f, r, report)
 			}
 			first := f.create(t, "first")
