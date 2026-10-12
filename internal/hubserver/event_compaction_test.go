@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 func TestEventCompactionWorkHistory(t *testing.T) {
@@ -19,11 +21,16 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 	for _, test := range []struct {
 		name             string
 		archived, leased bool
+		closedAgo        time.Duration
 		removed          int64
+		extraActivity    int
 	}{
 		{name: "archived", archived: true, removed: 19},
 		{name: "open"},
 		{name: "archived with live lease", archived: true, leased: true},
+		{name: "closed for three days", closedAgo: 73 * time.Hour, removed: 19},
+		{name: "closed recently", closedAgo: time.Hour},
+		{name: "closed activity spans span batches", closedAgo: 73 * time.Hour, removed: 19, extraActivity: 500},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -49,7 +56,23 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 			}
 			durable := []string{"run.started", "run.checkpointed", "run.finished", "workflow.transitioned", "scheduler.decision"}
 			for _, kind := range durable {
-				if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), kind, tracker.CollaborationData{ReasonDetail: "durable record"}, now); err != nil {
+				data := tracker.CollaborationData{ReasonDetail: "durable record"}
+				copies := 1
+				if kind == "run.checkpointed" {
+					copies += test.extraActivity
+					data.Run = &tracker.NativeRunData{AttemptID: "attempt_first", Runtime: &tracker.NativeRuntimeObservation{Activity: &workflowmetrics.ActivityProfile{Schema: 1, Spans: []workflowmetrics.ActivitySpan{{ID: "span", Kind: "tool", Evidence: strings.Repeat("x", 4096)}}}}}
+				}
+				for range copies {
+					if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), kind, data, now); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if test.closedAgo > 0 {
+				if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, now.Add(-test.closedAgo)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=issues.project_id AND detent_state='Done') WHERE native_id=?`, issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -78,6 +101,25 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
 				t.Fatal(err)
 			}
+			if test.extraActivity > 0 {
+				for _, want := range []struct{ compacted, remaining int64 }{{481, 20}, {501, 0}, {501, 0}} {
+					summary, err := readEventCompaction(t.Context(), f.service.database.db, scope.organization, scope.project, "work_item", string(issue.WorkItemID))
+					if err != nil {
+						t.Fatal(err)
+					}
+					var remaining, checkpoints int64
+					if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT count(*),coalesce(sum(json_type(data_json,'$.run.runtime.activity.spans') IS NOT NULL),0) FROM collaboration_events WHERE work_item_id=? AND type='run.checkpointed'`, issue.WorkItemID).Scan(&checkpoints, &remaining); err != nil {
+						t.Fatal(err)
+					}
+					if summary.RemovedEvents != 19 || summary.CompactedActivityEvents != want.compacted || remaining != want.remaining || checkpoints != 501 {
+						t.Fatalf("compaction=%+v remaining=%d checkpoints=%d want=%+v", summary, remaining, checkpoints, want)
+					}
+					if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return
+			}
 			response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?limit=200", f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			var after tracker.Page[tracker.CollaborationEvent]
@@ -92,8 +134,13 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 				}
 			}
 			if test.removed > 0 {
-				if after.Compaction == nil || after.Compaction.RemovedEvents != test.removed || after.Compaction.RemovedBytes <= 0 || kinds["run.observed"] != 3 {
+				if after.Compaction == nil || after.Compaction.RemovedEvents != test.removed || after.Compaction.RemovedBytes <= 0 || kinds["run.observed"] != 3 || after.Compaction.CompactedActivityEvents != 1 {
 					t.Fatalf("compaction=%+v kinds=%v", after.Compaction, kinds)
+				}
+				for _, event := range after.Items {
+					if event.Type == "run.checkpointed" && (event.Data.Run == nil || event.Data.Run.Runtime.Activity.Spans != nil || !slices.Contains(event.Data.Run.Runtime.Activity.CoverageNotes, "activity_spans_compacted")) {
+						t.Fatalf("checkpoint kept activity spans: %+v", event.Data.Run)
+					}
 				}
 				var raw string
 				var pending bool
