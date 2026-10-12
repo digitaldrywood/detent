@@ -528,7 +528,7 @@ func TestHostedPlanConfigurationAndTelemetry(t *testing.T) {
 	if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
 		t.Fatalf("changed seed stopped startup: %v", err)
 	}
-	stored, err := readHostedPlan(t.Context(), f.service.database.db, config.Base)
+	stored, err := f.service.database.readHostedPlan(t.Context(), f.service.database.db, config.Base)
 	if err != nil || stored.Allowances["projects"] == config.Plans[0].Allowances["projects"] {
 		t.Fatalf("changed seed overwrote stored plan: %+v %v", stored, err)
 	}
@@ -903,7 +903,7 @@ func TestCapacityCatalog(t *testing.T) {
 		{"free", 1, 200, false}, {"starter", 5, 2000, true}, {"growth", 25, 10000, true}, {"scale", 100, 50000, true},
 	} {
 		t.Run(test.id, func(t *testing.T) {
-			plan, err := readHostedPlan(t.Context(), f.service.database.db, PlanReference{ID: test.id, Version: 1})
+			plan, err := f.service.database.readHostedPlan(t.Context(), f.service.database.db, PlanReference{ID: test.id, Version: 1})
 			if err != nil {
 				t.Fatal(err)
 			}

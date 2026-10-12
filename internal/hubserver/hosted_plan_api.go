@@ -82,7 +82,7 @@ func (d *database) hostedEntitlementReport(ctx context.Context) (hostedEntitleme
 		return report, err
 	}
 	report = hostedEntitlementReport{OrganizationID: entitlement.OrganizationID, Base: entitlement.Base, EffectiveBase: entitlement.EffectiveBase, Source: entitlement.Source, Revision: entitlement.Revision, Features: entitlement.Features, Grants: []hostedGrantRecord{}, GrantHistory: []hostedGrantRecord{}, Plans: []HostedPlan{}}
-	report.Plans, err = readHostedPlans(ctx, d.db)
+	report.Plans, err = d.readHostedPlans(ctx, d.db)
 	if err != nil {
 		return report, err
 	}
@@ -177,7 +177,7 @@ func (d *database) applyHostedPlanCommand(ctx context.Context, actor string, com
 		return nativeConflict(tracker.Revision(revision))
 	}
 	if slices.Contains([]string{"base", "subscription", "grant"}, command.Action) {
-		if _, err := readHostedPlan(ctx, tx, command.Plan); err != nil {
+		if _, err := d.readHostedPlan(ctx, tx, command.Plan); err != nil {
 			return nativeInvalid("The plan version must exist")
 		}
 	}

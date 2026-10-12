@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"syscall"
@@ -65,6 +66,11 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 	f := newEntryFixture(t)
 	const token = "runtime-entitlement-admin-0123456789abcdef"
 	entitlementFixture(t, f, token)
+	for _, tenant := range f.fixtures {
+		if err := f.service.linkRuntimePublication(filepath.Dir(tenant.config.DatabasePath)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	allocation := &AllocationConfig{TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxTenants: 2, MaxConcurrent: 1, RetryLimit: 5, Launcher: &ExecLauncher{}, EntitlementAdminToken: []byte(token)}
 	f.service.config.Allocation = allocation
 	f.service.config.ConfigureRuntime = func(update hubserver.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error) {
@@ -166,14 +172,18 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 	priorBeta := readRuntime("org_beta")
 	priorBeta.Plans.WindowSeconds = 7200
 	priorBeta.Reason = "tenant-specific window policy"
-	if err := f.service.changeTenantRuntime(t.Context(), beta, priorBeta); err != nil {
+	if err := f.service.changeTenantRuntime(t.Context(), beta, &priorBeta); err != nil {
 		t.Fatal(err)
 	}
-	for _, failure := range []string{"later tenant refused", "reply lost after commit", "request canceled after commit"} {
+	for _, failure := range []string{"later tenant refused", "reply lost after commit", "request canceled after commit", "persistent outage after prepare", "publication file refused"} {
 		t.Run(failure, func(t *testing.T) {
 			before := map[string]hubserver.HostedRuntimeUpdate{"org_alpha": readRuntime("org_alpha"), "org_beta": readRuntime("org_beta")}
 			entryBefore := f.service.runtime.Load()
 			candidate := *next.Runtime.Plans
+			candidate.Plans = append([]hubserver.HostedPlan(nil), candidate.Plans...)
+			stagedPlan := candidate.Plans[1]
+			stagedPlan.Version += 10
+			candidate.Plans = append(candidate.Plans, stagedPlan)
 			candidate.WindowSeconds = 240
 			attempt := next
 			attempt.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &candidate}
@@ -182,12 +192,26 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 			original := f.service.config.transport
 			defer func() { f.service.config.transport = original }()
 			failed := false
+			if failure == "publication file refused" {
+				path := f.service.runtimePublicationPath() + ".tmp"
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := os.Remove(path); err != nil {
+						t.Error(err)
+					}
+				})
+			}
 			f.service.config.transport = func(organization Organization) (http.RoundTripper, error) {
 				transport, err := original(organization)
 				if err != nil || organization.ID != "org_beta" {
 					return transport, err
 				}
 				return runtimeTransport(func(r *http.Request) (*http.Response, error) {
+					if failed && failure == "persistent outage after prepare" {
+						return nil, errors.New("persistent tenant transport outage")
+					}
 					if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/entitlements/runtime") {
 						return transport.RoundTrip(r)
 					}
@@ -197,17 +221,17 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 					}
 					r.Body = io.NopCloser(bytes.NewReader(body))
 					var update hubserver.HostedRuntimeUpdate
-					if json.Unmarshal(body, &update) == nil && !update.ValidateOnly && !failed {
+					if json.Unmarshal(body, &update) == nil && !update.ValidateOnly && !failed && failure != "publication file refused" {
 						failed = true
-						if applied := readRuntime("org_alpha"); applied.Plans.WindowSeconds != 240 {
-							t.Errorf("earlier tenant had not applied before the later failure: window=%d", applied.Plans.WindowSeconds)
+						if applied := readRuntime("org_alpha"); applied.Plans.WindowSeconds != before["org_alpha"].Plans.WindowSeconds {
+							t.Errorf("prepared tenant exposed unpublished settings: window=%d", applied.Plans.WindowSeconds)
 						}
 						if failure != "later tenant refused" {
 							applied, err := transport.RoundTrip(r)
 							if err != nil {
 								return nil, err
 							}
-							if applied.StatusCode != http.StatusNoContent {
+							if applied.StatusCode != http.StatusOK {
 								t.Errorf("fault injection did not commit: %d", applied.StatusCode)
 							}
 							if err := applied.Body.Close(); err != nil {
@@ -223,19 +247,73 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 				}), nil
 			}
 			readings <- reading{config: attempt}
-			if err := f.service.reloadConfiguration(attemptCtx); err == nil || !failed || !strings.Contains(err.Error(), "tenant org_beta runtime reload") {
-				t.Fatalf("later application failure was not reported: %v", err)
+			err := f.service.reloadConfiguration(attemptCtx)
+			wantError := "tenant org_beta runtime reload"
+			if failure == "publication file refused" {
+				wantError = "publish runtime settings"
+			} else if !failed {
+				t.Fatal("tenant preparation failure was not injected")
 			}
-			if f.service.runtime.Load() != entryBefore {
+			if err == nil || !strings.Contains(err.Error(), wantError) {
+				t.Fatalf("reload failure was not reported: %v", err)
+			}
+			f.service.config.transport = original
+			if f.service.currentRuntime() != entryBefore {
 				t.Fatal("failed reload published new tenant launch settings")
 			}
 			for _, id := range []string{"org_alpha", "org_beta"} {
+				organization, err := f.service.registry.Organization(t.Context(), id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				report, err := f.service.tenantEntitlements(t.Context(), organization)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, plan := range report.Plans {
+					if plan.ID == stagedPlan.ID && plan.Version == stagedPlan.Version {
+						t.Fatal("failed reload exposed a prepared plan")
+					}
+				}
 				if after := readRuntime(id); !reflect.DeepEqual(after, before[id]) {
 					t.Fatalf("%s kept a partial reload: window=%d, want %d", id, after.Plans.WindowSeconds, before[id].Plans.WindowSeconds)
 				}
 			}
 		})
 	}
+	retry := next
+	candidate := *next.Runtime.Plans
+	candidate.Plans = append([]hubserver.HostedPlan(nil), candidate.Plans...)
+	stagedPlan := candidate.Plans[1]
+	stagedPlan.Version += 10
+	candidate.Plans = append(candidate.Plans, stagedPlan)
+	candidate.WindowSeconds = 240
+	retry.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &candidate}
+	readings <- reading{config: retry}
+	if err := f.service.reloadConfiguration(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"org_alpha", "org_beta"} {
+		if state := readRuntime(id); state.Plans.WindowSeconds != 240 {
+			t.Fatalf("successful retry did not select the publication: tenant=%s window=%d", id, state.Plans.WindowSeconds)
+		}
+		organization, err := f.service.registry.Organization(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		report, err := f.service.tenantEntitlements(t.Context(), organization)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, plan := range report.Plans {
+			found = found || plan.ID == stagedPlan.ID && plan.Version == stagedPlan.Version
+		}
+		if !found {
+			t.Fatal("successful retry did not expose the prepared plan")
+		}
+	}
+
 }
 
 func TestPlatformEntitlementsRESTAndMCPWithoutRestart(t *testing.T) {
