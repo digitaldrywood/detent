@@ -256,12 +256,14 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 		noIdentity    bool
 		gpg           string
 		gpgsign       string
+		sshDefaultKey bool
 		paused        bool
 		landingMethod string
 	}{
 		{name: "unsigned Code"},
 		{name: "signed Code", signed: true},
 		{name: "signed Rework", signed: true, rework: true},
+		{name: "signed SSH default key command", signed: true, sshDefaultKey: true},
 		{name: "no identity or GPG", noIdentity: true},
 		{name: "working OpenPGP", signed: true, gpg: "working"},
 		{name: "working OpenPGP uppercase boolean", signed: true, gpg: "working", gpgsign: "TRUE"},
@@ -340,6 +342,22 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 				runGit(t, source, "config", "gpg.format", "ssh")
 				runGit(t, source, "config", "user.signingkey", signer)
 				runGit(t, source, "config", "gpg.ssh.allowedSignersFile", allowed)
+				if test.sshDefaultKey {
+					runGit(t, source, "config", "--unset", "user.signingkey")
+					keyCommand := filepath.Join(filepath.Dir(signer), "default-key")
+					if err := os.WriteFile(keyCommand, []byte("#!/bin/sh\nprintf 'key::'\ncat "+shellQuote(signer+".pub")+"\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					runGit(t, source, "config", "gpg.ssh.defaultKeyCommand", shellQuote(keyCommand))
+					program := filepath.Join(filepath.Dir(signer), "agent-signer")
+					script := "#!/bin/sh\ncd " + shellQuote(filepath.Dir(signer)) + "\nexec ssh-agent -a \"signing-agent-$$\" sh -c 'ssh-add \"$1\" && shift && exec \"$@\"' sh " + shellQuote(signer) + " ssh-keygen \"$@\"\n"
+					if err := os.WriteFile(program, []byte(script), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					runGit(t, source, "config", "gpg.ssh.program", program)
+					head := strings.TrimSpace(runGit(t, source, "commit-tree", "-S", "HEAD^{tree}", "-m", "test: verify SSH default key signing"))
+					runGit(t, source, "verify-commit", head)
+				}
 			}
 			if test.noIdentity {
 				runGit(t, source, "config", "--unset", "user.name")

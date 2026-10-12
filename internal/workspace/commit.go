@@ -48,7 +48,7 @@ func probeCommitPolicy(ctx context.Context, source string, fallback CommitIdenti
 		key, value, _ := strings.Cut(entry, "\n")
 		values[key] = value
 	}
-	read := func(key string) string { return strings.TrimSpace(values[key]) }
+	read := func(key string) string { return strings.TrimSpace(values[strings.ToLower(key)]) }
 	identity := CommitIdentity{Name: read("user.name"), Email: read("user.email")}
 	if identity.Name == "" || identity.Email == "" {
 		identity = fallback
