@@ -476,7 +476,7 @@ func TestBuildPromptDocumentsWorkpadStatusContract(t *testing.T) {
 	for _, opts := range []PromptOptions{{}, {WorkAttemptID: 5715, Generation: 68}} {
 		t.Run(strconv.FormatInt(opts.WorkAttemptID, 10), func(t *testing.T) {
 			prompt := appendBlockedHandoffBlock("", opts)
-			for _, required := range []string{"current authoritative `## Codex Workpad`", "if permitted, else post anew", "body/final cannot supersede it", "Keep native/local writers", "reuse verified same-head/test-input receipts without handoff-only reruns", "Finish source/pre-merge requirements", "existing post-integration owner", "exact PR/head, pending acceptance", "Pending acceptance remains unverified", "Preserve pre-merge evidence, approvals and gates", "Without a permitted owner, retain original acceptance"} {
+			for _, required := range []string{"current authoritative `## Codex Workpad`", "if permitted, else post anew", "body/final cannot supersede it", "Keep native/local writers", "reuse verified same-head/test-input receipts without handoff-only reruns", "Finish source/pre-merge requirements", "existing post-integration owner", "exact PR/head, pending acceptance", "Pending acceptance remains unverified", "Preserve pre-merge evidence, approvals and gates", "Without a permitted owner, retain original acceptance", "never file a follow-up issue for acceptance"} {
 				if !strings.Contains(prompt, required) {
 					t.Fatalf("handoff lost acceptance ownership: %s", required)
 				}

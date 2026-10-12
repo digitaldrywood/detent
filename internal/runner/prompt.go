@@ -842,7 +842,7 @@ func githubTrackerHostname(tracker config.Tracker) string {
 }
 
 const repositoryHandoffContract = "Detent owns completion and durable attempt/session records. Preserve `.detent/notes.md`; never create/edit/stage/commit it, despite earlier instructions." +
-	"\n\nFinish source/pre-merge requirements. Integration/release Workpad/final: exact PR/head, pending acceptance, procedure, authorization and existing post-integration owner; reuse/file permitted follow-ups. Pending acceptance remains unverified; source need not await release. Detent integrates; release owner deploys; source workers do neither. Preserve pre-merge evidence, approvals and gates. Without a permitted owner, retain original acceptance."
+	"\n\nFinish source/pre-merge requirements. Integration/release Workpad/final: exact PR/head, pending acceptance, procedure, authorization and existing post-integration owner; never file a follow-up issue for acceptance. Pending acceptance remains unverified; source need not await release. Detent integrates; release owner deploys; source workers do neither. Preserve pre-merge evidence, approvals and gates. Without a permitted owner, retain original acceptance."
 
 func appendBlockedHandoffBlock(prompt string, opts PromptOptions) string {
 	completionFields := ""
