@@ -566,6 +566,7 @@ export function SetupRoute({
   }
 
   const step = steps[activeIndex];
+  const needsAction = step?.state === "action_required";
   const eligible = (onboarding.value.runners ?? []).filter(
     (entry) => (entry.exclusions ?? []).length === 0,
   );
@@ -678,7 +679,7 @@ export function SetupRoute({
           help="An owner or admin approves this exact resolved descriptor. Hub records its policy identity; runners must resolve a matching policy to claim work. Approval does not run doctor or sign in to a provider."
           detail={<span className="break-all">{onboarding.value.observed_policies?.[0]?.policy.policy_id ?? onboarding.value.policy?.policy.policy_id ?? "Waiting for the runner to report its policy"}</span>}
           right={
-            <Button size="sm" disabled={approve.pending || (policyConflict && pastedPolicy.trim().length === 0)} onClick={() => void approve.call()}>
+            <Button size="sm" variant={needsAction ? "default" : "outline"} disabled={approve.pending || (policyConflict && pastedPolicy.trim().length === 0)} onClick={() => void approve.call()}>
               {approve.pending ? "Approving…" : "Approve"}
             </Button>
           }
@@ -710,7 +711,7 @@ export function SetupRoute({
             </div>
           );
         })}
-        <Button variant="outline" onClick={() => void onboarding.refresh()}>Refresh runner checks</Button>
+        <Button variant={needsAction ? "default" : "outline"} onClick={() => void onboarding.refresh()}>Refresh runner checks</Button>
       </>
     ),
     "Execution runner": (
@@ -769,7 +770,7 @@ export function SetupRoute({
             identity there, connects it to this project and writes its configuration.
           </p>
           <div>
-            <Button variant="outline" onClick={() => setEnrolling(true)}>
+            <Button variant={needsAction ? "default" : "outline"} onClick={() => setEnrolling(true)}>
               Enroll a runner
             </Button>
           </div>
@@ -851,7 +852,7 @@ export function SetupRoute({
             </div>
             <div>
               <Button
-                variant="outline"
+                variant={needsAction ? "default" : "outline"}
                 disabled={bindArtifacts.pending || serviceId.trim().length === 0}
                 onClick={() => void bindArtifacts.call()}
               >
@@ -936,6 +937,17 @@ export function SetupRoute({
           ) : null}
           {onboarding.value.ready && activeIndex === steps.length - 1 ? (
             <Button onClick={() => onNavigate?.("/work")}>Finish</Button>
+          ) : needsAction ? (
+            <>
+              <Button variant="outline" onClick={saveAndContinue} disabled={saveProgress.pending}>
+                {saveProgress.pending ? "Saving…" : "Skip for now"}
+              </Button>
+              {step.name === "Artifact history" && artifacts !== "customer" ? (
+                <Button onClick={saveAndContinue} disabled={saveProgress.pending || artifacts !== "local"}>
+                  {saveProgress.pending ? "Saving…" : "Save choice"}
+                </Button>
+              ) : null}
+            </>
           ) : (
             <Button onClick={saveAndContinue} disabled={saveProgress.pending}>
               {saveProgress.pending ? "Saving…" : "Continue"}
