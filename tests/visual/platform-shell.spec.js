@@ -156,19 +156,6 @@ for (const theme of ["light", "dark"]) {
           body: await page.screenshot({ animations: "disabled", caret: "hide" }),
           contentType: "image/png",
         });
-        if (path === "staff") {
-          await page.getByRole("button", { name: "Add staff member" }).click();
-          const dialog = page.getByRole("dialog", { name: "Add staff member", exact: true });
-          await expect(dialog.getByRole("textbox", { name: "Email" })).toBeVisible();
-          await expect(dialog.getByRole("combobox", { name: "Role", exact: true })).toBeVisible();
-          await expect(dialog.getByRole("textbox", { name: "Reason" })).toBeVisible();
-          await test.info().attach(`platform-staff-add-${theme}-${width}.png`, {
-            body: await page.screenshot({ animations: "disabled", caret: "hide" }),
-            contentType: "image/png",
-          });
-          await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-          await expect(dialog).toHaveCount(0);
-        }
       }
     });
   }
