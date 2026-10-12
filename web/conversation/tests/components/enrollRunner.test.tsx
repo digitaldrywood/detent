@@ -105,6 +105,7 @@ describe("the Enroll dialog", () => {
     setRunners([runner]);
     await act(() => vi.advanceTimersByTimeAsync(2_000));
     expect(screen.getByText("Build host is connected")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
     if (hasProviders) {
       expect(screen.queryByRole("alert")).toBeNull();
     } else {
