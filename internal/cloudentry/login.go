@@ -69,7 +69,8 @@ func (s *Service) beginLogin(c echo.Context, transaction loginTransaction, provi
 	if err := s.auth.createTransaction(c.Request().Context(), apikey.HashToken(token), transaction); err != nil {
 		return err
 	}
-	s.setCookie(c, "login_"+id, token, s.config.now().Add(10*time.Minute))
+	s.expireLegacyLoginCookies(c)
+	s.setCookie(c, "login", token, s.config.now().Add(10*time.Minute))
 	if transaction.InvitationToken != "" {
 		invitation, err := s.config.Provider.Invitation(c.Request().Context(), transaction.InvitationToken)
 		if err != nil {
@@ -117,6 +118,7 @@ func (s *Service) startLogin(c echo.Context) error {
 
 func (s *Service) completeLogin(c echo.Context) error {
 	ctx := c.Request().Context()
+	s.expireLegacyLoginCookies(c)
 	state := c.QueryParam("state")
 	if state == "" {
 		return s.completeSupport(c)
@@ -128,13 +130,15 @@ func (s *Service) completeLogin(c echo.Context) error {
 		callback.Reason = "state_invalid"
 		return s.loginDenied(c, http.StatusUnauthorized, invalidLink, callback)
 	}
-	cookie, cookieErr := c.Cookie(s.cookieName("login_" + id))
-	s.setCookie(c, "login_"+id, "", time.Unix(1, 0))
+	cookie, cookieErr := c.Cookie(s.cookieName("login"))
 	if cookieErr != nil {
 		callback.Reason = "transaction_cookie_missing"
 		return s.loginDenied(c, http.StatusUnauthorized, invalidLink, callback)
 	}
 	transaction, err := s.auth.consumeTransaction(ctx, apikey.HashToken(cookie.Value), id)
+	if err == nil {
+		s.setCookie(c, "login", "", time.Unix(1, 0))
+	}
 	switch {
 	case err != nil:
 		callback.Reason = "transaction_missing"
@@ -259,6 +263,14 @@ func (s *Service) completeLogin(c echo.Context) error {
 		return c.Redirect(http.StatusSeeOther, target)
 	default:
 		return c.Redirect(http.StatusSeeOther, s.landing(ctx, identity.Email, *identity.Hosted))
+	}
+}
+
+func (s *Service) expireLegacyLoginCookies(c echo.Context) {
+	for _, cookie := range c.Request().Cookies() {
+		if suffix, ok := strings.CutPrefix(cookie.Name, s.cookieName("login_")); ok {
+			s.setCookie(c, "login_"+suffix, "", time.Unix(1, 0))
+		}
 	}
 }
 
