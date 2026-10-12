@@ -301,6 +301,11 @@ parking and root-level `rateLimit` in mutation documents stay retired.
 Obtain budget information through a separate query. Documentation and negative
 fixtures may name retired mechanisms; runtime code must not restore them.
 
+The rolling landing barrier and its Red landing hold, execution, repair,
+bisection and automatic revert owners stay retired. Historical barrier tables
+and migrations, legacy policy decoding and stale-version handling remain
+readable; they do not authorize restarting those owners.
+
 Server-side MCP confirmation modes, YOLO, pending approval actions and the
 `/chat/approval` page stay retired. The Hub enforces key scope, project access and
 current grants on every call; authorized calls execute directly. Clients own

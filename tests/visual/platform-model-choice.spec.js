@@ -43,8 +43,8 @@ async function openPlatform(page, canGrant = true) {
   });
   await page.goto(origin + "/platform/tenants");
   await expect(page.getByRole("table", { name: "Tenants", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Model Choice Labs", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "Model Choice Labs", exact: true })).toBeVisible();
+  await page.getByRole("table", { name: "Tenants", exact: true }).getByRole("link", { name: "Model Choice Labs", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Model Choice Labs", exact: true })).toBeVisible();
   return changes;
 }
 

@@ -285,7 +285,70 @@ func (s *Service) landChange(c echo.Context) error {
 	})
 }
 
-func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nativeScope, id tracker.WorkItemID, machine tracker.MachineID, now time.Time, routeStale bool) (ready, evaluated bool, err error) {
+func routeStaleNativeLandingChanges(ctx context.Context, tx *sql.Tx, policyScope, actor, preservedPolicyID string, now time.Time) error {
+	organization, projectID, native := strings.Cut(policyScope, "/")
+	if !native || strings.HasPrefix(policyScope, "repository:") {
+		return nil
+	}
+	scope := nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(projectID), credential: apiCredential{ID: actor, Scope: apiScopeAdmin}}
+	project, err := readNativeProject(ctx, tx, scope)
+	if err != nil {
+		return err
+	}
+	if project.Profile != "native" {
+		return nil
+	}
+	items, err := nativePageIDs(ctx, tx, `SELECT i.native_id FROM issues i
+JOIN workflow_states ws ON ws.id = i.workflow_state_id
+WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0 AND ws.terminal = 0
+AND lower(trim(ws.detent_state)) = 'merging' ORDER BY i.id`, scope.organization, scope.project)
+	if err != nil {
+		return err
+	}
+	states := make([]connector.WorkflowState, len(project.States))
+	for i, lane := range project.States {
+		states[i] = connector.WorkflowState{Name: lane.Name, Dispatchable: lane.Dispatchable, Terminal: lane.Terminal, OperatorOnly: lane.OperatorOnly, Transitions: lane.Transitions}
+	}
+	for _, item := range items {
+		change, found, err := readLatestNativeChangeRequest(ctx, tx, scope, item)
+		if err != nil {
+			return err
+		}
+		if !found || change.CurrentLanding() != nil || change.CurrentVersion == "" {
+			continue
+		}
+		version, err := readChangeVersion(ctx, tx, change.ID, change.CurrentVersion)
+		if err != nil {
+			return err
+		}
+		if preservedPolicyID != "" && version.PolicyID == preservedPolicyID {
+			continue
+		}
+		detail, err := readCurrentChangeDetail(ctx, tx, scope, change, now)
+		if err != nil {
+			return err
+		}
+		if detail.Summary.Status != "stale_policy" {
+			continue
+		}
+		issue, _, err := readNativeIssue(ctx, tx, scope, item)
+		if err != nil {
+			return err
+		}
+		target, ok := connector.LandingRefusalLane(states, issue.State, "Rework", true)
+		if !ok {
+			return nativeInvalid("The workflow allows no move from " + issue.State + " to a landing refusal lane")
+		}
+		from := issue.State
+		issue.State = target
+		if _, err := persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: target, Reason: "stale_policy"}, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nativeScope, id tracker.WorkItemID, machine tracker.MachineID, now time.Time) (ready, evaluated bool, err error) {
 	if scope == nil {
 		return true, false, nil
 	}
@@ -305,31 +368,6 @@ func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nati
 	}
 	detail, err := readCurrentChangeDetail(ctx, query, *scope, change, now)
 	if err != nil {
-		return false, true, err
-	}
-	if detail.Summary.Status == "stale_policy" {
-		if !routeStale {
-			return true, true, nil
-		}
-		issue, _, err := readNativeIssue(ctx, query, *scope, item)
-		if err != nil {
-			return false, true, err
-		}
-		project, err := readNativeProject(ctx, query, *scope)
-		if err != nil {
-			return false, true, err
-		}
-		states := make([]connector.WorkflowState, len(project.States))
-		for i, lane := range project.States {
-			states[i] = connector.WorkflowState{Name: lane.Name, Dispatchable: lane.Dispatchable, Terminal: lane.Terminal, OperatorOnly: lane.OperatorOnly, Transitions: lane.Transitions}
-		}
-		target, ok := connector.LandingRefusalLane(states, issue.State, "Rework", true)
-		if !ok {
-			return false, true, nativeInvalid("The workflow allows no move from " + issue.State + " to a landing refusal lane")
-		}
-		from := issue.State
-		issue.State = target
-		_, err = persistNativeIssue(ctx, query, *scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: target, Reason: "completed_active_review_transition"}, now)
 		return false, true, err
 	}
 	if !nativeChangeLandingReady(state, &detail) {

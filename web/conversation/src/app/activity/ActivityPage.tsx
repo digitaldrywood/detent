@@ -38,6 +38,7 @@ import { StatusDot } from "../account/controls.tsx";
 import { useClientSettings } from "../adapters/settings.ts";
 import { fleetHosts } from "../fleet/capacity.ts";
 import { usePageTitle } from "../pageTitle.ts";
+import { allProjectsLabel } from "../lib/projectScope.ts";
 import { subscribeProjectEvents } from "../work/lib/projectEvents.ts";
 import { useWorkHttp } from "../work/lib/useWork.ts";
 import {
@@ -135,6 +136,7 @@ export function ActivityRoute() {
     <ActivityView
       {...state}
       projects={bootstrap?.projects ?? []}
+      organizationName={bootstrap?.organization?.name}
       project={project}
       onProjectChange={setProject}
       live={live}
@@ -183,6 +185,7 @@ export function ActivityView({
   report,
   runners,
   projects,
+  organizationName,
   pending,
   error,
   live,
@@ -192,6 +195,7 @@ export function ActivityView({
   readonly report: ActivityReport | null;
   readonly runners: readonly FleetRunner[];
   readonly projects: readonly AccountProject[];
+  readonly organizationName?: string;
   readonly pending: boolean;
   readonly error: string | null;
   readonly live: boolean;
@@ -199,6 +203,7 @@ export function ActivityView({
   readonly onProjectChange: (value: string) => void;
 }) {
   const [runner, setRunner] = useState("");
+  const allProjects = allProjectsLabel(organizationName);
   const [group, setGroup] = useState<Group>("none");
   const [sort, setSort] = useState<Sort>("attention");
   const [clock, setClock] = useState(false);
@@ -211,7 +216,7 @@ export function ActivityView({
     return () => clearInterval(timer);
   }, []);
   const scope =
-    projects.find((row) => row.id === project)?.name ?? "All projects";
+    projects.find((row) => row.id === project)?.name ?? allProjects;
   const selectedRunner = runners.find((row) => row.id === runner);
   const working = runners.filter(
     (row) => runnerCategory(row) === "working",
@@ -509,8 +514,13 @@ export function ActivityView({
             <h1>Activity</h1>
           </WorkspaceBreadcrumbItem>
           <WorkspaceBreadcrumbSeparator />
-          <WorkspaceBreadcrumbItem current={!runner}>
-            <span className="truncate">{scope}</span>
+          <WorkspaceBreadcrumbItem current={!runner} className="shrink">
+            <Tooltip>
+              <TooltipTrigger render={<span className="truncate" tabIndex={0} />}>
+                {scope}
+              </TooltipTrigger>
+              <TooltipPopup side="bottom" className="max-w-80">{scope}</TooltipPopup>
+            </Tooltip>
           </WorkspaceBreadcrumbItem>
           {runner ? (
             <>
@@ -544,7 +554,7 @@ export function ActivityView({
                   value={project}
                   onChange={onProjectChange}
                   options={[
-                    { value: "", label: "All projects" },
+                    { value: "", label: allProjects },
                     ...projects.map((row) => ({
                       value: row.id,
                       label: row.name,

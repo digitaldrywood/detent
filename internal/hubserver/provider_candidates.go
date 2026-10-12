@@ -60,7 +60,7 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 			if !claimable {
 				continue
 			}
-			ready, _, err := nativeLandingCandidateReady(ctx, tx, &scope, id, request.MachineID, now, false)
+			ready, _, err := nativeLandingCandidateReady(ctx, tx, &scope, id, request.MachineID, now)
 			if err != nil {
 				return nil, err
 			}

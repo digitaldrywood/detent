@@ -605,7 +605,8 @@ func TestNativeExecutionOperatorLandingTarget(t *testing.T) {
 	h := newNativeChangeHubTransport(t, "Human Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"Human Review", "Merging"}},
 		{Name: "Human Review", Transitions: []string{"Merging"}},
-		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "Rework"}},
+		{Name: "Rework", Dispatchable: true, Transitions: []string{"Human Review", "Merging"}},
 		{Name: "Done", Terminal: true},
 	}, true)
 	next := h.descriptor

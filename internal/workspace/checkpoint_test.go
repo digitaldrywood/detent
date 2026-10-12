@@ -50,7 +50,7 @@ func TestCheckpointIntendedWork(t *testing.T) {
 	}
 
 	t.Parallel()
-	for _, work := range []string{"dirty", "unpushed", "already pushed", "deleted", "unchanged", "literal path"} {
+	for _, work := range []string{"dirty", "unpushed", "already pushed", "deleted", "unchanged", "literal path", "inherited synthetic fixtures"} {
 		t.Run(work, func(t *testing.T) {
 			t.Parallel()
 			backend, _, plan, remote := checkpointFixture(t)
@@ -58,8 +58,20 @@ func TestCheckpointIntendedWork(t *testing.T) {
 			if work == "literal path" {
 				path = "[intended].go"
 			}
+			content := "intended issue work\n"
+			if work == "inherited synthetic fixtures" {
+				data, err := os.ReadFile(filepath.Join("..", "hubserver", "health_email_test.go"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				checkpointWrite(t, plan.Info.Path, path, string(data))
+				runGit(t, plan.Info.Path, "add", path)
+				runGit(t, plan.Info.Path, "commit", "-m", "inherited notification fixtures")
+				plan.BaseSHA = strings.TrimSpace(runGit(t, plan.Info.Path, "rev-parse", "HEAD"))
+				content = string(data) + "\n"
+			}
 			if work != "unchanged" {
-				checkpointWrite(t, plan.Info.Path, path, "intended issue work\n")
+				checkpointWrite(t, plan.Info.Path, path, content)
 			}
 			if work == "deleted" {
 				if err := os.Remove(filepath.Join(plan.Info.Path, path)); err != nil {
@@ -128,9 +140,9 @@ func TestCheckpointRefusesUnsafePublication(t *testing.T) {
 				selection.Paths = []string{".env"}
 				checkpointWrite(t, plan.Info.Path, ".env", "secret")
 			case "secret content":
-				checkpointWrite(t, plan.Info.Path, "README.md", "-----BEGIN PRIVATE KEY-----")
+				checkpointWrite(t, plan.Info.Path, "README.md", "-----BEGIN "+"PRIVATE KEY-----")
 			case "secret in old commit", "unapproved commit":
-				path, content := "README.md", "-----BEGIN PRIVATE KEY-----"
+				path, content := "README.md", "-----BEGIN "+"PRIVATE KEY-----"
 				if failure == "unapproved commit" {
 					path, content = "unrelated.txt", "not issue work"
 				}
@@ -246,7 +258,8 @@ func TestCheckpointDurableEvidenceBeforeHardTermination(t *testing.T) {
 
 func TestCheckpointGitReadFailures(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"missing blob", "unreadable entry", "unreadable blob", "symlink history", "invalid entry", "empty remote", "invalid remote", "unreadable remote", "unrelated base", "unreadable history", "unreadable diff", "empty commit"} {
+	synthetic := []string{"ghp_" + "abcdefghijklmnopqrstuvwxyz123456789", "AKIA" + "1234567890123456", "AKIA" + "1234567890ABCDEF"}
+	for _, scenario := range []string{"missing blob", "unreadable entry", "unreadable blob", "symlink history", "invalid entry", "empty remote", "invalid remote", "unreadable remote", "unrelated base", "unreadable history", "unreadable diff", "empty commit", "synthetic fixtures", "altered synthetic", "altered email aws fixture", "altered slack aws fixture", "synthetic and credential", "credential before synthetic", "private key", "github token", "github fine grained token", "aws key", "project key"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			failure := errors.New("git unavailable")
@@ -265,6 +278,30 @@ func TestCheckpointGitReadFailures(t *testing.T) {
 					}
 					return "100644 blob hash\tfile.go\x00", nil
 				case "show":
+					switch scenario {
+					case "synthetic fixtures":
+						return strings.Join(synthetic, "\n"), nil
+					case "altered synthetic":
+						return synthetic[0] + "Z", nil
+					case "altered email aws fixture":
+						return synthetic[1][:len(synthetic[1])-1] + "Z", nil
+					case "altered slack aws fixture":
+						return synthetic[2][:len(synthetic[2])-1] + "Z", nil
+					case "synthetic and credential":
+						return strings.Join(synthetic, "\n") + "\nghp_" + strings.Repeat("Z", 36), nil
+					case "credential before synthetic":
+						return "ghp_" + strings.Repeat("Z", 36) + "\n" + strings.Join(synthetic, "\n"), nil
+					case "private key":
+						return "-----BEGIN " + "PRIVATE KEY-----", nil
+					case "github token":
+						return "ghp_" + strings.Repeat("Z", 36), nil
+					case "github fine grained token":
+						return "github_pat_" + strings.Repeat("Z", 36), nil
+					case "aws key":
+						return "AKIA" + strings.Repeat("Z", 16), nil
+					case "project key":
+						return "sk-proj-" + strings.Repeat("Z", 36), nil
+					}
 					return "", failure
 				case "ls-remote":
 					if scenario == "empty remote" {
@@ -302,7 +339,7 @@ func TestCheckpointGitReadFailures(t *testing.T) {
 			default:
 				err = checkpointBlob(t.Context(), git, "commit:", "file.go")
 			}
-			wantOK := scenario == "missing blob" || scenario == "empty remote" || scenario == "empty commit"
+			wantOK := scenario == "missing blob" || scenario == "empty remote" || scenario == "empty commit" || scenario == "synthetic fixtures"
 			if (err == nil) != wantOK {
 				t.Fatalf("Git failure handling = %v", err)
 			}

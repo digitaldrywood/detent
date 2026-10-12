@@ -19,6 +19,16 @@ func TestContentSecurityPolicy(t *testing.T) {
 		}
 		directives[fields[0]] = fields[1:]
 	}
+	formSources := directives["form-action"]
+	wantFormSources := []string{"'self'", "https://checkout.stripe.com", "https://billing.stripe.com", "https://detent.build"}
+	if len(formSources) != len(wantFormSources) {
+		t.Fatalf("form destinations = %v, want %v", formSources, wantFormSources)
+	}
+	for _, source := range wantFormSources {
+		if !slices.Contains(formSources, source) {
+			t.Fatalf("form destinations omit %s: %v", source, formSources)
+		}
+	}
 	for _, test := range []struct {
 		name      string
 		directive string

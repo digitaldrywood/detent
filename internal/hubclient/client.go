@@ -30,6 +30,18 @@ var (
 	ErrUnavailable     = errors.New("hub unavailable")
 )
 
+type responseSizeError struct {
+	status int
+}
+
+func (e *responseSizeError) Error() string {
+	return fmt.Sprintf("%s: response exceeds %d bytes", ErrUnavailable, maxResponseBytes)
+}
+
+func (e *responseSizeError) Unwrap() error {
+	return ErrUnavailable
+}
+
 type Config struct {
 	ArtifactServiceID string
 	ArtifactBytes     int64
@@ -306,7 +318,7 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 		return fmt.Errorf("%w: read response: %w", ErrUnavailable, err)
 	}
 	if len(payload) > maxResponseBytes {
-		return fmt.Errorf("%w: response exceeds %d bytes", ErrUnavailable, maxResponseBytes)
+		return &responseSizeError{status: response.StatusCode}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		apiErr := &APIError{Status: response.StatusCode}
