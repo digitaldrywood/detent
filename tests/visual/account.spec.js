@@ -459,7 +459,7 @@ test("the first-run wizard reports the hub's four onboarding steps", async ({ pa
   await expect(steps.first()).toContainText("Execution runner");
   // Exactly one step is the current one, and it is reachable from the keyboard.
   await expect(page.locator('[aria-current="step"]')).toHaveCount(1);
-  expect(await tabTo(page, "Continue")).toBe(true);
+  expect(await tabTo(page, "Skip for now")).toBe(true);
   await expectNoSeriousAxeViolations(page, "/projects/:project/setup");
   expect(errors, "console errors on the wizard").toEqual([]);
 });

@@ -69,15 +69,16 @@ func TestOnboardingProgressRetryAndProjectIsolation(t *testing.T) {
 func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name, kind  string
-		auto, match bool
+		name, kind, scope string
+		auto, match       bool
 	}{
-		{"human review", "human_review", false, true},
-		{"auto merge missing tag", "command", true, false},
+		{"human review", "human_review", "projects", false, true},
+		{"auto merge missing tag", "command", "projects", true, false},
+		{"organization runner without project grant", "human_review", "organization", false, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", tt.name)
-			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			r := prepareRunnerForScope(t, f, tt.scope, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
 			descriptor := hubTestPolicy()
 			descriptor.Gates.Kind, descriptor.Gates.AutoPromote = tt.kind, tt.auto
@@ -101,6 +102,17 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 			}
 			if strings.Contains(response.Body.String(), r.redemption.Credential) || len(setup.Runners[0].Runner.Leases) != 0 {
 				t.Fatal("private runner data exposed")
+			}
+			other := newNativeFixture(t, f.service, f.project.OrganizationID, "other")
+			response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/onboarding", other.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &setup)
+			if tt.scope == "organization" {
+				if len(setup.Runners) != 1 || setup.Runners[0].Runner.RunnerID != r.binding.RunnerID {
+					t.Fatalf("organization runner missing from ungranted project: %+v", setup.Runners)
+				}
+			} else if len(setup.Runners) != 0 {
+				t.Fatalf("project-scoped runner exposed to ungranted project: %+v", setup.Runners)
 			}
 		})
 	}
