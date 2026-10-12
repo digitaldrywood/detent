@@ -5,7 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"slices"
+	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -58,7 +61,7 @@ func readBoundedChange(ctx context.Context, query nativeQueryer, scope nativeSco
 			return result, err
 		}
 		if selection.Section != "versions" {
-			detail.Versions = []tracker.ChangeVersion{version}
+			detail.Versions = []tracker.ChangeVersion{boundedChangeVersion(version)}
 		}
 	}
 	result.Detail = &detail
@@ -178,11 +181,19 @@ func readChangeSection(ctx context.Context, query nativeQueryer, args operatorto
 			if err != nil {
 				return operatortool.ChangeReadPage{}, err
 			}
-			detail.Versions = append(detail.Versions, version)
+			detail.Versions = append(detail.Versions, boundedChangeVersion(version))
 		case "reviews":
 			var review tracker.ChangeReview
 			if err := json.Unmarshal(row.raw, &review); err != nil {
 				return operatortool.ChangeReadPage{}, err
+			}
+			if review.Validator != nil {
+				validator := *review.Validator
+				validator.Commands = slices.Clone(validator.Commands)
+				for i := range validator.Commands {
+					validator.Commands[i] = *boundedChangeCommand(&validator.Commands[i])
+				}
+				review.Validator = &validator
 			}
 			detail.Reviews = append(detail.Reviews, review)
 		case "checks":
@@ -222,4 +233,36 @@ func readChangeSection(ctx context.Context, query nativeQueryer, args operatorto
 	}
 	next, err := encodeChangeReadCursor(cursor)
 	return operatortool.ChangeReadPage{NextCursor: next}, err
+}
+
+func boundedChangeCommand(command *gate.CommandResult) *gate.CommandResult {
+	if command == nil {
+		return nil
+	}
+	result := *command
+	const outputBytes = 4 << 10
+	if len(result.Output) > outputBytes {
+		end := outputBytes
+		for !utf8.ValidString(result.Output[:end]) {
+			end--
+		}
+		result.Output = result.Output[:end]
+		result.OutputTruncated = true
+	}
+	return &result
+}
+
+func boundedChangeLanding(landing *tracker.NativeLandingReceipt) *tracker.NativeLandingReceipt {
+	if landing == nil {
+		return nil
+	}
+	result := *landing
+	result.Gate = boundedChangeCommand(result.Gate)
+	return &result
+}
+
+func boundedChangeVersion(version tracker.ChangeVersion) tracker.ChangeVersion {
+	version.Validation = boundedChangeCommand(version.Validation)
+	version.Landing = boundedChangeLanding(version.Landing)
+	return version
 }
