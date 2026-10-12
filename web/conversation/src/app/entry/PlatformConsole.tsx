@@ -81,8 +81,8 @@ export function PlatformAllowlistPanel({ value }: { readonly value: PlatformAllo
           control={<Badge variant="outline">{!value.self_service ? "Disabled" : open ? "Open" : "Restricted"}</Badge>} />
       </SettingsSection>
       {value.self_service && !open ? <>
-        <div className="w-full max-w-sm">
-          <Label htmlFor="allowlist-filter" className="sr-only">Filter domains and emails</Label>
+        <div className="grid w-full max-w-sm gap-2">
+          <Label htmlFor="allowlist-filter">Filter domains and emails</Label>
           <Input id="allowlist-filter" type="search" size="compact" placeholder="Filter domains and emails"
             value={query} onChange={(event) => setQuery(event.target.value)} />
         </div>
