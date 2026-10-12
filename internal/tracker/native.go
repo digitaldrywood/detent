@@ -392,6 +392,8 @@ type EventCompaction struct {
 	RemovedBytes    int64            `json:"removed_bytes"`
 	RemovedByType   map[string]int64 `json:"removed_by_type"`
 	CompactedAt     time.Time        `json:"compacted_at"`
+
+	CompactedActivityEvents int64 `json:"compacted_activity_events,omitempty"`
 }
 
 type NativeIssuePage struct {
