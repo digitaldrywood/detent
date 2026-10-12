@@ -357,8 +357,9 @@ describe("platform console", () => {
   it("starts support access through the entry form with a required reason and the CSRF token", async () => {
     renderPlatform(fakeApi());
     const table = await screen.findByRole("table", { name: "Tenants" });
+    const tenant = await within(table).findByRole("link", { name: "Alpha" });
     const rows = within(table).getAllByRole("row");
-    fireEvent.click(within(table).getByRole("link", { name: "Alpha" }));
+    fireEvent.click(tenant);
     const form = (await screen.findByRole("button", { name: "Start support access" })).closest("form")!;
     expect(form.getAttribute("method")).toBe("post");
     expect(form.getAttribute("action")).toBe("/support/start");
