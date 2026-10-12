@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -16,15 +17,17 @@ import (
 func TestDiscoverIssuesReadOnlyFiltersAndAccess(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name    string
-		labels  []string
-		closed  bool
-		status  int
-		missing bool
-		want    error
+		name      string
+		labels    []string
+		snapshots bool
+		closed    bool
+		status    int
+		missing   bool
+		want      error
 	}{
 		{name: "omitted labels"},
 		{name: "empty labels", labels: []string{}},
+		{name: "complete page snapshots", labels: []string{"bug"}, snapshots: true},
 		{name: "nonempty labels", labels: []string{"bug"}},
 		{name: "explicit history", labels: []string{"bug"}, closed: true},
 		{name: "private access denied", labels: []string{"bug"}, status: 401, want: ErrAuthenticationFailed},
@@ -63,6 +66,13 @@ func TestDiscoverIssuesReadOnlyFiltersAndAccess(t *testing.T) {
 					return
 				}
 				node := map[string]any{"id": "I_12", "number": 12, "url": "https://github.com/acme/orders/issues/12", "title": "Issue", "body": strings.Repeat("界", 2000), "closed": test.closed, "labels": map[string]any{"nodes": []any{map[string]string{"name": "bug"}}}}
+				if test.snapshots {
+					node["createdAt"], node["updatedAt"], node["author"] = "2020-01-01T00:00:00Z", "2021-01-01T00:00:00Z", map[string]string{"login": "source-user"}
+					node["comments"] = map[string]any{"totalCount": 1, "nodes": []any{map[string]any{"id": "C_12", "body": "Full discussion", "createdAt": "2020-01-01T00:00:00Z", "updatedAt": "2021-01-01T00:00:00Z", "author": map[string]string{"login": "comment-user"}}}, "pageInfo": map[string]bool{"hasNextPage": false}}
+					if !strings.Contains(input.Query, "comments(first:100)") {
+						t.Error("page omitted discussion")
+					}
+				}
 				nodes := []any{node}
 				total := 1
 				nextCursor := ""
@@ -94,12 +104,23 @@ func TestDiscoverIssuesReadOnlyFiltersAndAccess(t *testing.T) {
 				t.Fatal(err)
 			}
 			client.restBackoffs = newRESTBackoffRegistry()
-			page, err := client.DiscoverIssues(t.Context(), tracker.GitHubDiscovery{Repository: "acme/orders", IncludeClosed: test.closed, Labels: test.labels, Cursor: "page2"})
+			page, err := client.DiscoverIssues(t.Context(), tracker.GitHubDiscovery{Repository: "acme/orders", IncludeClosed: test.closed, Labels: test.labels, Cursor: "page2", Snapshots: test.snapshots})
 			if test.want != nil {
 				if !errors.Is(err, test.want) || len(page.Issues) != 0 {
 					t.Fatalf("page=%#v error=%v", page, err)
 				}
 			} else {
+				if test.snapshots {
+					if err != nil || len(page.Issues) != 1 || page.Issues[0].Snapshot == nil {
+						t.Fatalf("complete page=%+v %v", page, err)
+					}
+					snapshot := page.Issues[0].Snapshot
+					if snapshot.Body != strings.Repeat("界", 2000) || snapshot.Provenance.ExternalID != "I_12" || snapshot.Provenance.AuthorID != "source-user" || snapshot.Provenance.CreatedAt != time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC) || snapshot.Provenance.ObservedAt.IsZero() || len(snapshot.Comments) != 1 || snapshot.Comments[0].Body != "Full discussion" || snapshot.Comments[0].Provenance.ExternalID != "C_12" {
+						t.Fatalf("snapshot=%+v", snapshot)
+					}
+					page.Issues[0].Snapshot = nil
+					page.Issues[0].DiscussionCount = 0
+				}
 				wantPage := tracker.GitHubDiscoveryPage{Total: 1, Issues: []tracker.GitHubIssuePreview{{ID: "I_12", Number: 12, URL: "https://github.com/acme/orders/issues/12", Title: "Issue", Body: strings.Repeat("界", 1000), Closed: test.closed, Labels: []string{"bug"}}}}
 				if len(test.labels) == 0 {
 					wantPage.Total = 73

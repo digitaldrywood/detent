@@ -32,9 +32,12 @@ func (i *Importer) FetchImportPage(ctx context.Context, request hubserver.GitHub
 			}
 		}
 	}()
-	ctx = scopedRequests(ctx, request.Profile, "import")
+	ctx = scopedRequests(ctx, request.Profile, "import", request.Repository)
 	if i == nil || i.client == nil {
 		return result, errors.New("github importer is not configured")
+	}
+	if request.Stage == "batch" {
+		return i.fetchBatch(ctx, request)
 	}
 	if request.Stage == "scheduled" {
 		return i.fetchScheduledOccurrence(ctx, request)
@@ -232,4 +235,55 @@ func (i *Importer) fetchScheduledOccurrence(ctx context.Context, request hubserv
 		}
 	}
 	return hubserver.GitHubImportPage{}, errors.New("scheduled occurrence does not match a failed job in the run attempt")
+}
+
+func (i *Importer) fetchBatch(ctx context.Context, request hubserver.GitHubImportRequest) (hubserver.GitHubImportPage, error) {
+	client, ok := i.client.(graphQLClient)
+	if !ok || request.Discovery == nil {
+		return hubserver.GitHubImportPage{}, errors.New("github GraphQL batch transport is unavailable")
+	}
+	page, err := connectorgithub.FetchDiscoveryPage(ctx, client, *request.Discovery)
+	if err != nil {
+		return hubserver.GitHubImportPage{}, err
+	}
+	for index := range page.Issues {
+		preview := &page.Issues[index]
+		if !preview.NeedsDiscussion {
+			continue
+		}
+		preview.Snapshot.Comments = nil
+		comments := hubserver.GitHubImportRequest{Profile: request.Profile, Repository: request.Repository, IssueNumber: preview.Number, Stage: "comments"}
+		seen := map[string]bool{}
+		commentCount := 0
+		for pages := 0; ; pages++ {
+			if pages == 500 {
+				return hubserver.GitHubImportPage{}, errors.New("github discussion exceeds intake page bound")
+			}
+			result, err := i.FetchImportPage(ctx, comments)
+			if err != nil {
+				return result, err
+			}
+			for _, record := range result.Records {
+				if record.Kind == "comment" {
+					commentCount++
+				}
+				if record.Kind == "comment" && !strings.Contains(record.Body, "<!-- detent-summary:") {
+					preview.Snapshot.Comments = append(preview.Snapshot.Comments, tracker.GitHubIssueComment{Body: record.Body, Provenance: record.Provenance})
+				}
+			}
+			if result.NextCursor == "" {
+				break
+			}
+			if seen[result.NextCursor] {
+				return hubserver.GitHubImportPage{}, errors.New("github discussion pagination did not advance")
+			}
+			seen[result.NextCursor] = true
+			comments.Cursor = result.NextCursor
+		}
+		if commentCount != preview.DiscussionCount {
+			return hubserver.GitHubImportPage{}, errors.New("github discussion changed or is incomplete; retry intake")
+		}
+		preview.NeedsDiscussion = false
+	}
+	return hubserver.GitHubImportPage{BatchPage: &page}, nil
 }
