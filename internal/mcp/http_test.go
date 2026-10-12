@@ -184,12 +184,30 @@ func TestHTTPTransportResultLimits(t *testing.T) {
 				if response.Error == nil || response.Error.Code != codeInternalError {
 					t.Fatalf("response error = %#v, want code %d", response.Error, codeInternalError)
 				}
+				data, ok := response.Error.Data.(map[string]any)
+				if !ok || data["code"] != "result_too_large" || data["limit_bytes"] != float64(MaxHTTPResponseBytes) {
+					t.Fatalf("response size error = %#v", response.Error.Data)
+				}
+				size, ok := data["size_bytes"].(float64)
+				if !ok || size <= float64(MaxHTTPResponseBytes) {
+					t.Fatalf("response size = %#v", data["size_bytes"])
+				}
 				return
 			}
 			var result toolCallResult
 			decodeResult(t, response, &result)
 			if test.wantToolError != result.IsError {
 				t.Fatalf("tool result IsError = %t, want %t", result.IsError, test.wantToolError)
+			}
+			if test.wantToolError {
+				var detail struct {
+					Code       string `json:"code"`
+					SizeBytes  int    `json:"size_bytes"`
+					LimitBytes int    `json:"limit_bytes"`
+				}
+				if len(result.Content) != 1 || json.Unmarshal([]byte(result.Content[0].Text), &detail) != nil || detail.Code != "result_too_large" || detail.SizeBytes != operatortool.MaxResultBytes+12 || detail.LimitBytes != operatortool.MaxResultBytes {
+					t.Fatalf("oversized result = %#v", result)
+				}
 			}
 		})
 	}
