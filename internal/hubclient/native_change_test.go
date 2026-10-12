@@ -495,6 +495,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		publicationRestore      bool
 		publicationUncertain    bool
 		publicationReference    string
+		publicationRefused      bool
 		publicationHistory      bool
 		wantChange              *runner.NativeChange
 		wantDiagnostic          string
@@ -506,6 +507,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "required PR retains its publication receipt on historical versions", requiredPR: true, publicationHistory: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChanges: 1, wantVersions: 1},
 		{name: "required PR adopts a retained branch under human hold", requiredPR: true, publicationReference: "current", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 1},
 		{name: "required PR reuses the previous version PR after recommit", requiredPR: true, publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 2},
+		{name: "required PR reuses latest published head after refused landing", requiredPR: true, publicationReference: "previous", publicationRefused: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 3},
 		{name: "required PR refuses an unknown retained branch head", requiredPR: true, publicationReference: "unknown", publicationFailure: "identity", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 2},
 		{name: "required PR refuses unrelated ambiguous external effect", requiredPR: true, publicationUncertain: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "required PR no edit Rework preserves human hold", requiredPR: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
@@ -615,6 +617,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			var ci *NativeClient
 			var publicationOwner *nativeExecution
 			var publicationPrevious string
+			var refusedPublication tracker.ChangeVersion
 			if test.requiredPR {
 				source := nativeChangeSourceRepo(t)
 				remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
@@ -777,7 +780,12 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					if test.publicationReference != "" {
 						external = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: nativeChangeRepository + "/pull/7"}
 						if test.publicationReference != "current" {
-							old := h.publishCapturedExternal(t, item, earlier.ID, publicationPrevious, nil, external, "", base)
+							if test.publicationRefused {
+								older := h.publishCapturedExternal(t, item, earlier.ID, strings.Repeat("d", 40), nil, external, "", base)
+								previous = older.ID
+							}
+							old := h.publishCapturedExternal(t, item, earlier.ID, publicationPrevious, nil, external, previous, base)
+							refusedPublication = old
 							previous, external = old.ID, nil
 						}
 					}
@@ -831,6 +839,18 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			}
 			if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: test.role, Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)
+			}
+			if test.publicationRefused {
+				if err := execution.(runner.LandingRuntimeExecution).ObserveLanding(guarded, runner.NativeLanding{ChangeID: refusedPublication.ChangeID, VersionID: refusedPublication.ID, HeadSHA: refusedPublication.HeadSHA, RefusalKind: workspace.LandRefusalProtected}); err != nil {
+					t.Fatal(err)
+				}
+				if err := publicationOwner.FlushRuntime(guarded); err != nil {
+					t.Fatal(err)
+				}
+				original, err = h.admin.Change(t.Context(), item, refusedPublication.ChangeID)
+				if err != nil || original.Versions[1].Landing == nil || original.Versions[1].Landing.Landed {
+					t.Fatalf("prior publication refusal was not retained: %v", err)
+				}
 			}
 			checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: test.worktree, HeadSHA: test.checkpointHead, ExternalEffect: "none", EffectState: "none"}
 			if test.publicationUncertain {
