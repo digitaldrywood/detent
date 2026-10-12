@@ -457,7 +457,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			return nil, operatortool.ErrInvalidArguments
 		}
 		projectID, requestID = r.ProjectID, r.RequestID
-		request := tracker.GitHubBatchCommand{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Revision: r.Input.Revision, Action: r.Input.Action, RunnerID: r.Input.RunnerID, Labels: r.Input.Labels, IncludeClosed: r.Input.IncludeClosed, Numbers: r.Input.Numbers, Destination: r.Input.Destination, AllowDispatch: r.Input.AllowDispatch}
+		request := tracker.GitHubBatchCommand{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Revision: r.Input.Revision, Action: r.Input.Action, RunnerID: r.Input.RunnerID, Labels: r.Input.Labels, IncludeClosed: r.Input.IncludeClosed, Numbers: r.Input.Numbers, Destination: r.Input.Destination, AllowDispatch: r.Input.AllowDispatch, LabelLanes: r.Input.LabelLanes}
 		input = request
 		operation = s.commandGitHubBatchOperation(request)
 	case "approve_project_policy":

@@ -2116,25 +2116,43 @@ GitHub transport disabled on Hub. Associate a matching runner checkout first.
 returns `batch` (nullable) and configured `lanes`. Administrator mutations use
 `POST` to the same path with `idempotency_key`, `revision`, and `action`:
 
-- `discover`: choose `runner_id`, optional `labels` and explicit `include_closed`.
-  Default is open issues. The assigned runner reads one page of at most 100
-  issues using GraphQL and publishes previews through its existing heartbeat.
-- `more`: request the next preview page, up to 1,000 previews per intake. Narrow
-  larger sets with labels. Selecting all matching requires loading all pages.
+- `start`: begin one asynchronous job for all matching issues with a
+  `destination`, optional `labels`, `label_lanes`, and `include_closed`.
+  The Hub's GitHub App reads 100 issues per GraphQL page, including complete
+  bodies, labels, provenance and the first comment page. Additional discussion
+  pages are fetched before intake. The existing Hub maintenance worker applies
+  each page and persists progress. Runner fallback uses an enrolled runner
+  reporting the matching checkout only when the App is unavailable or lacks
+  repository access; `runner_id` may select that fallback explicitly.
+- `discover`: fetch one preview page using the same App-first transport.
+- `more`: request the next preview page within the plan's job limit.
 - `apply`: provide selected `numbers` and `destination`. A configured
-  non-dispatchable, nonterminal lane is the default; dispatchable destinations
-  require `allow_dispatch: true`. Source URL and node identity deduplicate
-  linked issues and older imports. Existing issues are skipped without changes.
-- `retry`: resume failed discovery/items, optionally on another `runner_id`.
-  Reported source retry deadlines must have elapsed. Completed items are retained.
+  non-dispatchable, nonterminal lane is the default. GitHub `detent:<lane>`
+  labels map to matching Cloud states unless `label_lanes` supplies a mapping;
+  other labels are copied. Conflicting lane labels fail that item. Dispatchable
+  destinations, including those selected by label, require
+  `allow_dispatch: true`. Existing source identities are reused without changes.
+- `retry`: resume failed discovery/items, optionally on another fallback
+  `runner_id`. Reported source retry deadlines must have elapsed. Completed
+  items are retained. `allow_dispatch: true` may confirm a previously refused
+  dispatchable destination; `destination` and `label_lanes` can correct failed
+  item routing. A retry rechecks the current plan's job limit.
 
-The runner publishes one complete snapshot or an incomplete-context diagnostic
-per selected item to the worker-only `/onboarding/issue-intake/result` endpoint.
-Snapshot, provenance, comments and completion checkpoint commit together;
-native edits retain field ownership. At most 20 comment pages are read per
-issue. Context exceeding that bound remains incomplete. Rate limits stop
-unstarted items until an explicit retry; no idle GitHub polling occurs. The
-wizard refreshes progress only on request. Reopening setup resumes the persisted
-selection and results. Intake performs no GitHub writes. New authoring and
+The per-job size cap uses the plan catalog's `unarchived_issues` allowance:
+Free permits 200, Starter 2,000, Growth 10,000 and Scale 50,000. Unhosted Hubs
+permit 1,000. Source filters can narrow a repository to fit the cap. Normal
+organization capacity and storage allowances still apply to imported issues.
+
+Results include aggregate `progress` counts and per-item completion, failure,
+skip and retry information. MCP pages and command receipts omit issue bodies
+and source snapshots. The runner fallback reports up to 100 results to the
+worker-only `/onboarding/issue-intake/result` endpoint, whose receipt carries
+its next page task without waiting for another heartbeat. Each successful item
+commits its source snapshot, provenance, comments and completion checkpoint;
+failed items roll back independently. Native edits retain field ownership.
+Rate limits stop unstarted work until explicit retry, honoring source deadlines.
+No idle GitHub polling occurs. The wizard refreshes progress only on request.
+Reopening setup resumes persisted selection and results. Webhook intake of new
+issues continues to create linked issues in Triage. New authoring and
 landing continue through native Hub operations, including the existing Done
 transaction; any later explicit source action keeps its own write authorization.

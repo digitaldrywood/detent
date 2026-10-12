@@ -15,16 +15,21 @@ import (
 
 type requestScopeKey struct{}
 type requestScope struct {
-	profile   string
-	operation string
-	remaining int
+	profile    string
+	operation  string
+	remaining  int
+	repository string
 }
 
-func scopedRequests(ctx context.Context, profile, operation string) context.Context {
+func scopedRequests(ctx context.Context, profile, operation string, repositories ...string) context.Context {
 	if profile == "" {
 		profile = "github_compatible"
 	}
-	return context.WithValue(ctx, requestScopeKey{}, &requestScope{profile: profile, operation: operation, remaining: 500})
+	scope := &requestScope{profile: profile, operation: operation, remaining: 500}
+	if len(repositories) > 0 {
+		scope.repository = repositories[0]
+	}
+	return context.WithValue(ctx, requestScopeKey{}, scope)
 }
 
 type Transport struct {

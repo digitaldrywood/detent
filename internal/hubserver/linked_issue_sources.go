@@ -54,6 +54,11 @@ func validateLinkedIssueRepository(integration ProjectIntegration, repository st
 }
 
 func createLinkedIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
+	request.State = "Triage"
+	return createLinkedIssueInStateTx(ctx, tx, scope, request, now)
+}
+
+func createLinkedIssueInStateTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
 	canonical, repository, number, err := tracker.ParseGitHubIssueURL(strings.TrimSpace(request.GitHubIssueURL))
 	if err != nil {
 		return tracker.NativeIssue{}, nativeInvalid(err.Error())
@@ -82,7 +87,6 @@ AND (native_source_key = ? OR (repository_id = ? AND github_number = ?))`, scope
 	if err := ensureNativeTriage(ctx, tx, scope, now); err != nil {
 		return tracker.NativeIssue{}, err
 	}
-	request.State = "Triage"
 	titleSupplied, bodySupplied := request.Title != "", request.Body != ""
 	if !titleSupplied {
 		request.Title = fmt.Sprintf("GitHub issue %s#%d", repository, number)
