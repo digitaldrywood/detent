@@ -54,20 +54,109 @@ it.each([
   mount();
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /Repository configuration/ }));
-  const field = await screen.findByLabelText("Associate the runner checkout");
+  const field = await screen.findByLabelText("Which repository should Detent work on?");
   expect(screen.getByText(/GitHub API integration is optional/)).toBeTruthy();
   fireEvent.change(field, { target: { value: "https://github.com/example-org/example-repository" } });
   await user.click(screen.getByRole("button", { name: "Associate" }));
   expect(await screen.findByText("Enter the repository as owner/name, then retry.")).toBeTruthy();
   fireEvent.change(field, { target: { value: repository } });
   await user.click(screen.getByRole("button", { name: "Associate" }));
-  await waitFor(() => expect(screen.getByRole("status").textContent).toContain(`${status} ${repository}`));
+  await waitFor(() => expect(screen.getByText(/runner checkout:|clone or verify checkout:/).textContent).toContain(`${status} ${repository}`));
   await waitFor(() => expect(screen.getByRole("button", { name: "Associate" }).hasAttribute("disabled")).toBe(true));
   if (repository === "example-org/example-repository") {
     checkoutReported = true;
-    await waitFor(() => expect(screen.getByRole("status").textContent).toContain(`Verified runner checkout: ${repository}`), { timeout: 6_000 });
+    await waitFor(() => expect(screen.getByText(/runner checkout:|clone or verify checkout:/).textContent).toContain(`Verified runner checkout: ${repository}`), { timeout: 6_000 });
   }
 }, 10_000);
+
+it.each(["no repository", "configuration needed", "policy pending", "policy reported", "approved", "conflict"] as const)("reveals repository setup actions in order: %s", async (state) => {
+  const mount = await mountSetup();
+  const fetch = globalThis.fetch;
+  const policyResponse = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_alpha/policy`);
+  const approval = await policyResponse.json();
+  const descriptor = approval.policy;
+  const repository = "example-org/example-project";
+  const configurationChosen = !["no repository", "configuration needed"].includes(state);
+  let reported = ["policy reported", "conflict"].includes(state);
+  const approveRequests: Record<string, unknown>[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    if (String(input).endsWith("/onboarding/policy") && init?.method === "PUT") {
+      approveRequests.push(JSON.parse(String(init.body)));
+    }
+    const response = await fetch(input, init);
+    if (String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET") && response.ok) {
+      const onboarding = await response.json();
+      const approved = state === "approved" || onboarding.policy?.policy.policy_id === descriptor.policy_id;
+      return Response.json({
+        ...onboarding,
+        progress: { ...onboarding.progress, repository: configurationChosen ? "existing" : onboarding.progress.repository },
+        policy: approved ? approval : null,
+        observed_policies: reported && !approved ? [{ policy: descriptor, runner_id: "runner_example", observed_at: "2026-10-12T12:00:00Z", conflict: state === "conflict" }] : [],
+        steps: onboarding.steps.map((step: { name: string; state: string }) => step.name === "Repository configuration" ? { ...step, state: approved ? "ready" : "action_required" } : step),
+      });
+    }
+    if (String(input).endsWith("/integration") && response.ok) {
+      const integration = await response.json();
+      return Response.json({ ...integration, repository: "", checkout_repository: state === "no repository" ? "" : repository, checkout_verified: state !== "no repository" });
+    }
+    return response;
+  });
+  mount();
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Repository configuration/ }));
+  expect(await screen.findByLabelText("Which repository should Detent work on?")).toBeTruthy();
+  expect(approveRequests).toEqual([]);
+  expect(screen.queryByLabelText("Resolved policy descriptor")).toBeNull();
+  expect(screen.queryByText(/detent hub policy inspect/)).toBeNull();
+
+  if (state === "no repository") {
+    expect(screen.queryByRole("group", { name: "Configuration files" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Approve settings" })).toBeNull();
+    return;
+  }
+  if (state === "configuration needed") {
+    expect(await screen.findByRole("group", { name: "Configuration files" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve settings" })).toBeNull();
+    await user.click(screen.getByRole("radio", { name: "Create configuration files" }));
+    await user.click(screen.getByRole("button", { name: "Save configuration choice" }));
+    expect(await screen.findByRole("button", { name: "Approve settings" })).toBeTruthy();
+    const saved = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`);
+    expect((await saved.json()).progress.repository).toBe("generate");
+    expect(approveRequests).toEqual([]);
+    return;
+  }
+  expect(screen.queryByRole("radio")).toBeNull();
+  if (state === "approved") {
+    expect(await screen.findByText(`Approved the settings in detent.yaml and WORKFLOW.md from ${repository}.`)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve settings" })).toBeNull();
+    return;
+  }
+  const approve = await screen.findByRole("button", { name: "Approve settings" });
+  expect(approve.hasAttribute("disabled")).toBe(state !== "policy reported");
+  if (state === "policy pending") {
+    expect(screen.getByText(`Waiting for the runner to report the settings in detent.yaml and WORKFLOW.md from ${repository}.`)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Advanced policy details" }));
+    fireEvent.change(screen.getByLabelText("Resolved policy descriptor"), { target: { value: JSON.stringify(descriptor) } });
+    expect(approve.hasAttribute("disabled")).toBe(true);
+    reported = true;
+    await waitFor(() => expect(approve.hasAttribute("disabled")).toBe(false), { timeout: 6_000 });
+    expect(approveRequests).toEqual([]);
+    return;
+  }
+  expect(screen.getByText(`Approve the settings in detent.yaml and WORKFLOW.md from ${repository}.`)).toBeTruthy();
+  if (state === "conflict") {
+    expect(screen.getByRole("alert").textContent).toContain("Runners reported different settings");
+    await user.click(screen.getByRole("button", { name: "Advanced policy details" }));
+    fireEvent.change(screen.getByLabelText("Resolved policy descriptor"), { target: { value: "not JSON" } });
+    await user.click(approve);
+    expect(await screen.findByText(/The pasted descriptor is not JSON/)).toBeTruthy();
+    expect(approveRequests).toEqual([]);
+    fireEvent.change(screen.getByLabelText("Resolved policy descriptor"), { target: { value: JSON.stringify(descriptor) } });
+  }
+  await user.click(approve);
+  expect(await screen.findByText(`Approved the settings in detent.yaml and WORKFLOW.md from ${repository}.`)).toBeTruthy();
+  expect(approveRequests).toEqual([{ expected_policy_id: "", policy: descriptor }]);
+});
 
 it.each([
   { ready: false, unrouted: false },
