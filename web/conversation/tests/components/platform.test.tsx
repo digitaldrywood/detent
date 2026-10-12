@@ -1206,9 +1206,78 @@ describe("platform audit", () => {
     expect(csv).toBe('"When (UTC)","Action","Tenant","By","Details","Reason"\r\n' +
       '"2026-10-01T12:00:00Z","Plan granted","Alpha","admin@detent.build","Growth (version 1) until Dec 31, 2026","customer, ""pilot"""\r\n' +
       '"2026-09-30T10:00:00Z","Plan granted","Alpha","admin@detent.build","Growth (version 1)","\'=customer reason"\r\n');
-    expect(api.platformAudit).toHaveBeenLastCalledWith("tenant=org_alpha&actor=admin&event=plan_granted&from=2026-09-01&to=2026-10-01&cursor=older-cursor");
+    expect(api.platformAudit).toHaveBeenNthCalledWith(2, "tenant=org_alpha&actor=admin&event=plan_granted&from=2026-09-01&to=2026-10-01&limit=200", expect.any(AbortSignal));
+    expect(api.platformAudit).toHaveBeenLastCalledWith("tenant=org_alpha&actor=admin&event=plan_granted&from=2026-09-01&to=2026-10-01&limit=200&cursor=older-cursor", expect.any(AbortSignal));
     expect((click.mock.instances[0] as unknown as HTMLAnchorElement).download).toBe("audit-log.csv");
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:audit");
+  });
+
+  it.each([10_000, 10_001])("bounds an export of %s events without downloading a partial CSV", async (total) => {
+    const api = fakeApi({ platformAudit: vi.fn(async (query: string) => {
+      const params = new URLSearchParams(query);
+      if (!params.has("limit")) return audit;
+      expect(params.get("actor")).toBe("admin");
+      expect(params.get("limit")).toBe("200");
+      const offset = Number(params.get("cursor") ?? "0");
+      const rows = Array.from({ length: Math.min(200, total - offset) }, (_, index) => ({ ...audit.rows[0]!, id: String(offset + index) }));
+      return { ...audit, rows, next_cursor: offset + rows.length < total ? String(offset + rows.length) : "" };
+    }) });
+    let exported: Blob | undefined;
+    const createObjectURL = vi.fn((blob: Blob) => { exported = blob; return "blob:audit"; });
+    vi.stubGlobal("URL", class extends URL { static createObjectURL = createObjectURL; static revokeObjectURL = vi.fn(); });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    renderPlatform(api, "/platform/audit?actor=admin");
+    await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
+    fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+    if (total === 10_000) {
+      await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+      const csv = await exported!.text();
+      expect(csv.split("\r\n")).toHaveLength(10_002);
+      expect(csv.match(/"When \(UTC\)"/g)).toHaveLength(1);
+    } else {
+      await screen.findByText("Export exceeds 10,000 events. Narrow the date range or other filters and try again.");
+      expect(createObjectURL).not.toHaveBeenCalled();
+      expect(click).not.toHaveBeenCalled();
+    }
+    expect(api.platformAudit).toHaveBeenCalledTimes(51);
+    expect((screen.getByRole("button", { name: "Export CSV" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it.each(["cancel", "filters", "unmount"])("aborts an in-flight export on %s without continuing the crawl", async (stop) => {
+    let signal: AbortSignal | undefined;
+    let holdExport = true;
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+      const params = new URL(input, "https://platform.detent.test").searchParams;
+      if (params.has("limit") && holdExport) {
+        signal = init?.signal ?? undefined;
+        return new Promise<Response>((_, reject) => {
+          signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+        });
+      }
+      return new Response(JSON.stringify({ ...audit, next_cursor: "" }), { headers: { "Content-Type": "application/json" } });
+    });
+    const api = fakeApi({ platformAudit: makeEntryApi({ fetch }).platformAudit });
+    const createObjectURL = vi.fn(() => "blob:audit");
+    vi.stubGlobal("URL", class extends URL { static createObjectURL = createObjectURL; static revokeObjectURL = vi.fn(); });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    renderPlatform(api, "/platform/audit?actor=admin");
+    await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
+    fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+    await screen.findByRole("button", { name: "Cancel export" });
+    expect(signal?.aborted).toBe(false);
+    if (stop === "cancel") fireEvent.click(screen.getByRole("button", { name: "Cancel export" }));
+    else if (stop === "filters") fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    else cleanup();
+    await waitFor(() => expect(signal?.aborted).toBe(true));
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(fetch.mock.calls.filter(([url]) => new URL(url, "https://platform.detent.test").searchParams.has("limit"))).toHaveLength(1);
+    if (stop !== "unmount") {
+      const button = await screen.findByRole("button", { name: "Export CSV" });
+      expect(screen.queryByText("Aborted")).toBeNull();
+      holdExport = false;
+      fireEvent.click(button);
+      await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+    }
   });
 
   it("shows an empty state for filters with no matches", async () => {

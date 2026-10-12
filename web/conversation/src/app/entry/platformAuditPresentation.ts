@@ -93,12 +93,13 @@ export function auditDetails(row: PlatformAuditRow): {
 export function auditCSV(
   rows: readonly PlatformAuditRow[],
   tenants: readonly { id: string; name: string }[],
+  includeHeader = true,
 ): string {
   const cell = (value: string) =>
     `"${(/^[=+\-@\t\r]/.test(value) ? "'" : "") + value.replaceAll('"', '""')}"`;
   return (
     [
-      ["When (UTC)", "Action", "Tenant", "By", "Details", "Reason"],
+      ...(includeHeader ? [["When (UTC)", "Action", "Tenant", "By", "Details", "Reason"]] : []),
       ...rows.map((row) => {
         const detail = auditDetails(row);
         const tenant =
@@ -116,7 +117,7 @@ export function auditCSV(
         ];
       }),
     ]
-      .map((row) => row.map(cell).join(","))
-      .join("\r\n") + "\r\n"
+      .map((row) => row.map(cell).join(",") + "\r\n")
+      .join("")
   );
 }

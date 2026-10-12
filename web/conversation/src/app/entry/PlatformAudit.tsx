@@ -84,10 +84,12 @@ function AuditTimeline({
   const resource = usePlatformResource(() => api.platformAudit(query), [api]);
   const page = resource.value;
   const active = React.useRef(true);
+  const exportController = React.useRef<AbortController | null>(null);
   React.useEffect(() => {
     active.current = true;
     return () => {
       active.current = false;
+      exportController.current?.abort();
     };
   }, []);
   React.useEffect(() => {
@@ -105,26 +107,41 @@ function AuditTimeline({
     redirectPlatformSignIn(older.error);
   }, [older.error]);
   const exporting = useMutation(async () => {
-    const rows: PlatformAudit["rows"][number][] = [];
+    const controller = new AbortController();
+    exportController.current = controller;
+    const chunks: Blob[] = [];
+    let rowCount = 0;
     let cursor = "";
-    let tenants: PlatformAudit["tenants"] = [];
-    do {
-      const params = new URLSearchParams(query);
-      if (cursor !== "") params.set("cursor", cursor);
-      const next = await api.platformAudit(params.toString());
-      if (!active.current) return;
-      rows.push(...next.rows);
-      tenants = next.tenants;
-      cursor = next.next_cursor;
-    } while (cursor !== "");
-    const url = URL.createObjectURL(
-      new Blob([auditCSV(rows, tenants)], { type: "text/csv;charset=utf-8" }),
-    );
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "audit-log.csv";
-    link.click();
-    URL.revokeObjectURL(url);
+    try {
+      do {
+        const params = new URLSearchParams(query);
+        params.set("limit", "200");
+        if (cursor !== "") params.set("cursor", cursor);
+        const next = await api.platformAudit(params.toString(), controller.signal);
+        if (controller.signal.aborted || !active.current) return;
+        rowCount += next.rows.length;
+        if (rowCount > 10_000 || (rowCount === 10_000 && next.next_cursor !== "")) {
+          throw new Error("Export exceeds 10,000 events. Narrow the date range or other filters and try again.");
+        }
+        chunks.push(new Blob([auditCSV(next.rows, next.tenants, chunks.length === 0)]));
+        cursor = next.next_cursor;
+      } while (cursor !== "");
+      const url = URL.createObjectURL(
+        new Blob(chunks, { type: "text/csv;charset=utf-8" }),
+      );
+      try {
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "audit-log.csv";
+        link.click();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) throw error;
+    } finally {
+      exportController.current = null;
+    }
   });
   React.useEffect(() => {
     redirectPlatformSignIn(exporting.error);
@@ -135,13 +152,15 @@ function AuditTimeline({
         <Button
           variant="outline"
           size="sm"
-          disabled={page === undefined || actorPending || exporting.pending}
+          disabled={!exporting.pending && (page === undefined || actorPending)}
           aria-busy={exporting.pending}
           onClick={() => {
-            void exporting.call();
+            if (exporting.pending) exportController.current?.abort();
+            else void exporting.call();
           }}
         >
-          {exporting.pending ? <Spinner aria-hidden="true" /> : null}Export CSV
+          {exporting.pending ? <Spinner aria-hidden="true" /> : null}
+          {exporting.pending ? "Cancel export" : "Export CSV"}
         </Button>
       </PlatformPageActions>
       <section
