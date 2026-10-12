@@ -88,21 +88,24 @@ existing operator tag or publish signed artifacts from a workstation.
 is the next minor after the highest stable tag or existing release series, or
 `v0.1` when neither exists. An existing branch is never overwritten.
 
-The default source is the newest develop ancestor with successful full-suite
-CI and matching `develop-full-ci` evidence from that run. Legacy
+The default source is the newest develop ancestor not already contained in an
+existing release series or stable version tag, with successful full-suite CI
+and matching `develop-full-ci` evidence from that run. Legacy
 `scheduled-full-ci` evidence is accepted only from an authenticated develop run.
 A successful
-preflight skip is not evidence. If none exists, use develop tip. An explicit
+preflight skip is not evidence. If no uncovered green ancestor exists, use the
+unreleased develop tip. If develop tip is already covered, the cut succeeds
+without creating a branch or dispatching CI. An explicit
 source must be an ancestor of develop. For the first cut after introducing this
 flow, select a develop SHA containing the release workflows, scripts and
 `CI_RELEASE_BRANCH` handoff. The cut refuses an incompatible snapshot before
 creating the branch.
 
-A cut also refuses a source already contained in an existing release series or
-stable version tag, including a series still awaiting its first release. Finish
-that series or explicitly select a newer develop snapshot. The cut does not
-silently substitute a different commit. Operator prerelease tags do not prevent
-the first stable release of their source.
+Coverage includes a release series still awaiting its first release. An explicit
+SHA already contained in a release series or stable version tag is refused;
+the cut never substitutes a different commit for an explicit request. Operator
+prerelease tags do not prevent the first stable release of their source. Every
+new cut still runs the full suite on its release branch before stable tagging.
 
 ```bash
 gh workflow run release-cut.yml --ref develop

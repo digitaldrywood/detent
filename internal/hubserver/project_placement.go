@@ -120,7 +120,7 @@ func readPlacementRunners(ctx context.Context, q nativeQueryer, scope nativeScop
 type placementCapacity struct {
 	hosts    map[tracker.MachineID]int
 	runners  map[string]int
-	accounts []providercapacity.Report
+	accounts []scopedProviderAccount
 }
 
 func placementRunnerCompatible(r placementRunner, project tracker.ProjectID, requirements policy.Requirements, now time.Time, paused bool) bool {
@@ -155,7 +155,7 @@ func (c *placementCapacity) available(r placementRunner, project tracker.Project
 		if view.MaxConcurrent > 0 {
 			remaining = view.MaxConcurrent - view.Used
 			for _, account := range c.accounts {
-				if sharedProviderAccount(account, view.Report) {
+				if sharedProviderAccount(account, scopedProviderAccount{runnerID: r.RunnerID, Report: view.Report}) {
 					remaining--
 				}
 			}
@@ -168,7 +168,7 @@ func (c *placementCapacity) available(r placementRunner, project tracker.Project
 	if consume && free > 0 {
 		c.hosts[r.MachineID]++
 		c.runners[r.RunnerID]++
-		c.accounts = append(c.accounts, selected)
+		c.accounts = append(c.accounts, scopedProviderAccount{runnerID: r.RunnerID, Report: selected})
 	}
 	return free
 }
@@ -427,18 +427,18 @@ func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, sco
 			if view.MaxConcurrent > 0 {
 				remaining = view.MaxConcurrent - view.Used
 				for _, prior := range spriteCapacity.accounts {
-					if sharedProviderAccount(prior, view.Report) {
+					if sharedProviderAccount(prior, scopedProviderAccount{runnerID: r.RunnerID, Report: view.Report}) {
 						remaining--
 					}
 				}
 				for _, prior := range providerSlots.accounts {
-					if sharedProviderAccount(prior, view.Report) {
+					if sharedProviderAccount(prior, scopedProviderAccount{runnerID: r.RunnerID, Report: view.Report}) {
 						remaining--
 					}
 				}
 			}
 			for range max(remaining, 0) {
-				providerSlots.accounts = append(providerSlots.accounts, view.Report)
+				providerSlots.accounts = append(providerSlots.accounts, scopedProviderAccount{runnerID: r.RunnerID, Report: view.Report})
 				providerCapacity++
 			}
 		}

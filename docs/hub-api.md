@@ -199,15 +199,22 @@ organization/project scope. Policies are resolved on the customer host. See
 | --- | --- | --- |
 | `/api/v1/repositories/{owner}/{repo}/policy` | `GET` | Read current descriptor and approval provenance with a compatibility credential |
 | `/api/v2/organizations/{organization}/projects/{project}/policy` | `GET` | Read current descriptor, approval provenance and workflow apply history within native project grants (`limit`, `after`) |
-| Either policy endpoint | `PUT` | Instance administrator only; `policy` descriptor and `expected_policy_id` (empty for first approval). Exact retries are idempotent; concurrent distinct replacements have one winner. |
+| Either policy endpoint | `PUT` | Instance administrator only; `expected_policy_id` (empty for first approval) and either a complete `policy` descriptor or `observed_policy_id` from the scoped onboarding read. Exact retries are idempotent; concurrent distinct replacements have one winner. |
 | Either policy endpoint | `DELETE` | Instance administrator only; `expected_policy_id`. Revokes current authority while retaining revision/lease history. |
-| `/api/v2/organizations/{organization}/projects/{project}/policy/observed` | `POST` | A runner with the `heartbeat` operation reports its resolved descriptor, including successful matches. The Hub retains the latest report per runner and returns distinct mismatches with all reporting runner IDs in `GET .../onboarding`. Conflicting configurations and previously approved reports are not new approval candidates. An enrolled runner may include `repository_source` alongside the descriptor: `repository`, `commit`, `default_branch`, `default_branch_head` and `default_branch_reachable`. A committed workflow definition reachable from the bound repository's default branch is applied through the existing atomic policy approval path. Other reports remain pending. |
+| `/api/v2/organizations/{organization}/projects/{project}/policy/observed` | `POST` | A runner with the `heartbeat` operation reports its resolved descriptor, including successful matches. The Hub retains the latest report per runner and returns distinct mismatches with all reporting runner IDs in `GET .../onboarding`. Conflicting configurations and previously approved reports are not new approval candidates. An enrolled runner may include `repository_source` alongside the descriptor: `repository`, `commit`, `default_branch`, `default_branch_head` and `default_branch_reachable`. Every new committed workflow definition reachable from the bound repository's default branch, including replacements of an approved policy, is applied through the existing atomic policy approval path as `repository-default-branch`. Replaying a historical approval does not replace current authority. Other reports remain pending. |
 
 Hosted organizations approve through `PUT .../projects/{project}/onboarding/policy`
 (owner or admin); the generic `PUT .../policy` above stays instance-administrator
 only and is not served in hosted mode. Runners report each distinct resolved
 descriptor/provenance combination once, including successful matches that replace earlier mismatches.
 Only the latest observations from currently authorized runners are actionable.
+The MCP `approve_project_policy` tool accepts the same reference in `input`:
+`observed_policy_id` is the chosen `observed_policies[].policy.policy_id`, and
+`expected_policy_id` is the current `policy.policy.policy_id` (empty without an
+approval). Omit `input.policy` when approving by reference. The Hub resolves and
+validates the stored descriptor within the existing approval transaction; the
+full-descriptor path remains available. Unknown request fields and invalid
+field types are named in invalid-body errors.
 Previously approved descriptors retain their history; they are reported as
 configuration conflicts rather than newly generated policies.
 
@@ -1706,11 +1713,19 @@ No separately provisioned operator credential is required by this flag.
 
 Each validator review stores `criteria_evidence` and a derived `not_verified`
 list against its immutable version. Every acceptance criterion has a `criterion`,
-`kind` (`receipt`, `test`, or `not_verified`), and `reference`. Receipt entries
+`kind` (`receipt`, `test`, `attachment`, or `not_verified`), and `reference`. Receipt entries
 name a successful host-observed command and its reviewed `head_sha` and `tree_sha`.
 Test entries name the file and test and describe the independent behavioral
 assertion in `behavior`; tests that restate the implementation are flagged and
 excluded. Missing, duplicate, or unsupported entries become `not_verified`.
+Native Codex validators can read issue comments and attachments through the existing
+scoped read owners. Image reads verify the complete content digest and display the
+image to the validator. Attachment entries cite the returned host `read_receipt`
+IDs in `receipt_ids`, name the attachment and digest, and describe the observed
+visual outcome and its relevance to the reviewed source in `behavior`. The review
+stores these reads in `attachment_reads`, with attachment provenance and review
+head/tree identities. Download success or worker prose does not establish visual
+acceptance. Older captures remain usable when the affected UI is unchanged.
 The Change review page shows this map and highlights the unverified list.
 `gate.validator.unverified_criteria` defaults to `rework`, naming every gap.
 Projects may select `pass-with-disclosure` to retain gaps while allowing a pass;
@@ -2035,9 +2050,10 @@ Declare the same `provider` and `shared_account_alias` on every machine using th
 same provider account, even when local aliases or backend IDs differ. Hub scopes
 sharing to the organization, uses the lowest declared limit and honors exhaustion
 from any overlapping report. Distinct explicit aliases declare independent
-accounts. An omitted shared alias means sharing is unknown: its reports and
-reservations overlap every account of that provider in the organization. Separate
-local aliases or reports never imply independent capacity. Drain work before
+accounts. An omitted shared alias keeps the account local to its enrolled runner. Local
+accounts are identified by runner identity, provider and account alias; matching
+local alias text on different runners never combines their limits or usage.
+Only matching explicit shared aliases combine accounts across runners. Drain work before
 changing account mappings; existing leases retain their original reservation.
 
 Registration and heartbeats accept typed `provider_reports` on the native machine

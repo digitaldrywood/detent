@@ -14,7 +14,7 @@ class ReleaseCutTest(unittest.TestCase):
     def test_cut_source_and_dispatch(self):
         scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
         self.assertIsNotNone(scratch, "a supplied scratch directory is required")
-        cases = ("green", "no green", "skipped run", "explicit", "outside develop", "existing", "next minor", "invalid version", "api failure", "superseded green", "newer release success", "newer release failure", "release status only", "failed develop publication", "legacy develop evidence", "missing release scripts", "legacy CI", "legacy finalizer", "same source unreleased", "advanced series", "stable tag only", "prerelease tag only")
+        cases = ("green", "no green", "skipped run", "explicit", "outside develop", "existing", "next minor", "invalid version", "api failure", "superseded green", "newer release success", "newer release failure", "release status only", "failed develop publication", "legacy develop evidence", "missing release scripts", "legacy CI", "legacy finalizer", "same source unreleased", "advanced series", "stable tag only", "prerelease tag only", "newer uncovered green", "covered tip no green", "stable tip", "explicit covered series", "explicit covered tag")
         for case in cases:
             with self.subTest(case=case), tempfile.TemporaryDirectory(dir=scratch) as directory:
                 root = Path(directory)
@@ -51,6 +51,10 @@ class ReleaseCutTest(unittest.TestCase):
                 git("add", ".")
                 git("commit", "-m", "initial release flow")
                 green = git("rev-parse", "HEAD")
+                uncovered = green
+                if case == "newer uncovered green":
+                    git("commit", "--allow-empty", "-m", "uncovered green")
+                    uncovered = git("rev-parse", "HEAD")
                 git("commit", "--allow-empty", "-m", "develop tip")
                 tip = git("rev-parse", "HEAD")
                 git("push", "origin", "develop")
@@ -62,14 +66,16 @@ class ReleaseCutTest(unittest.TestCase):
                 if case == "next minor":
                     git("tag", "v1.9.2", green)
                     git("push", "origin", "v1.9.2", green + ":refs/heads/release/v1.10")
-                if case in ("same source unreleased", "advanced series"):
-                    existing_head = tip if case == "advanced series" else green
+                if case in ("same source unreleased", "advanced series", "newer uncovered green", "covered tip no green", "explicit covered series"):
+                    existing_head = tip if case in ("advanced series", "covered tip no green") else green
                     git("push", "origin", existing_head + ":refs/heads/release/v1.1")
-                if case in ("stable tag only", "prerelease tag only"):
-                    tag = "v1.1.0" if case == "stable tag only" else "v1.1.0-op.example"
-                    git("tag", tag, green)
+                if case in ("stable tag only", "prerelease tag only", "stable tip", "explicit covered tag"):
+                    tag = "v1.1.0-op.example" if case == "prerelease tag only" else "v1.1.0"
+                    git("tag", tag, tip if case == "stable tip" else green)
                     git("push", "origin", tag)
-                runs = [] if case == "no green" else [{"head_sha": green, "html_url": "https://github.com/example/repo/actions/runs/1"}, {"head_sha": tip, "html_url": "https://github.com/example/repo/actions/runs/2"}]
+                runs = [] if case in ("no green", "covered tip no green") else [{"head_sha": green, "html_url": "https://github.com/example/repo/actions/runs/1"}, {"head_sha": tip, "html_url": "https://github.com/example/repo/actions/runs/2"}]
+                if case == "newer uncovered green":
+                    runs.append({"head_sha": uncovered, "html_url": "https://github.com/example/repo/actions/runs/5"})
                 for run in runs:
                     run.update(head_branch="develop", event="schedule", conclusion="success")
                 if case == "superseded green":
@@ -79,7 +85,7 @@ class ReleaseCutTest(unittest.TestCase):
                 if case == "failed develop publication":
                     runs[0]["conclusion"] = "failure"
                 fixture = root / "fixture.json"
-                fixture.write_text(json.dumps({"case": case, "runs": runs, "green": green}))
+                fixture.write_text(json.dumps({"case": case, "runs": runs, "green": green, "uncovered": uncovered}))
                 gh = root / "gh"
                 gh.write_text("#!" + sys.executable + "\n" + r'''
 import json, os, sys
@@ -103,6 +109,8 @@ elif "/statuses?" in query:
     if fixture["case"] in ("newer release success", "newer release failure", "release status only") and statuses:
         release = {"context": "scheduled-full-ci", "state": "failure" if fixture["case"] == "newer release failure" else "success", "target_url": "https://github.com/example/repo/actions/runs/4"}
         statuses = [release] if fixture["case"] == "release status only" else [release] + statuses
+    if fixture["case"] == "newer uncovered green" and fixture["uncovered"] in query:
+        statuses = [{"context": "develop-full-ci", "state": "success", "target_url": "https://github.com/example/repo/actions/runs/5"}]
     print(json.dumps([statuses]))
 elif "git/refs" in query or args[:2] == ["workflow", "run"]:
     pass
@@ -113,9 +121,9 @@ else:
                 log = root / "calls.jsonl"
                 env.update(PATH=str(root) + os.pathsep + env["PATH"], CALL_LOG=str(log), FIXTURE=str(fixture), GITHUB_REPOSITORY="example/repo")
                 version = "" if case == "next minor" else "bad" if case == "invalid version" else "v1.2"
-                source = tip if case in ("explicit", "next minor") else outside if case == "outside develop" else ""
+                source = tip if case in ("explicit", "next minor") else outside if case == "outside develop" else green if case in ("explicit covered series", "explicit covered tag") else ""
                 result = subprocess.run(["bash", str(ROOT / "scripts/release-cut.sh"), version, source], cwd=checkout, env=env, capture_output=True, text=True, timeout=30)
-                accepted = case not in ("outside develop", "existing", "invalid version", "api failure", "missing release scripts", "legacy CI", "legacy finalizer", "same source unreleased", "advanced series", "stable tag only")
+                accepted = case not in ("outside develop", "existing", "invalid version", "api failure", "missing release scripts", "legacy CI", "legacy finalizer", "explicit covered series", "explicit covered tag")
                 self.assertEqual(result.returncode == 0, accepted, result.stdout + result.stderr)
                 calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
                 writes = [call for call in calls if "POST" in call]
@@ -123,7 +131,11 @@ else:
                 if not accepted:
                     self.assertEqual(writes + dispatches, [], "rejected cuts must not create a branch or run CI")
                     continue
-                expected = tip if case in ("no green", "skipped run", "explicit", "next minor", "superseded green", "release status only", "failed develop publication") else green
+                if case in ("advanced series", "covered tip no green", "stable tip"):
+                    self.assertEqual(writes + dispatches, [], "covered develop must not create duplicate releases")
+                    self.assertIn("No unreleased develop commits", result.stdout)
+                    continue
+                expected = uncovered if case == "newer uncovered green" else tip if case in ("no green", "skipped run", "explicit", "next minor", "superseded green", "release status only", "failed develop publication", "same source unreleased", "stable tag only") else green
                 branch = "release/v1.11" if case == "next minor" else "release/v1.2"
                 self.assertEqual(len(writes), 1)
                 self.assertIn("sha=" + expected, writes[0])

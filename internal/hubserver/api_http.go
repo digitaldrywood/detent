@@ -130,7 +130,16 @@ func invalidAPIRequest(c echo.Context, err error) error {
 	if errors.As(err, &maxBytesError) {
 		return c.JSON(http.StatusRequestEntityTooLarge, apiErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
 	}
-	return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_request", Message: "Request body is invalid"})
+	message := "Request body is invalid"
+	if strings.HasPrefix(err.Error(), "json: unknown field ") {
+		message += ": " + err.Error()
+	} else {
+		var typeError *json.UnmarshalTypeError
+		if errors.As(err, &typeError) && typeError.Field != "" {
+			message += ": invalid type for field " + typeError.Field
+		}
+	}
+	return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_request", Message: message})
 }
 
 func (s *Service) internalAPIError(c echo.Context, code string, message string, err error) error {

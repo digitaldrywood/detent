@@ -37,7 +37,13 @@ func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope s
 	current := approval.Policy.ID
 	carryover := current != "" && descriptor.SameAuthoredInputs(approval.Policy)
 	if current != "" && !carryover {
-		return tx.Commit()
+		var previouslyApproved bool
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM policy_revisions WHERE scope = ? AND policy_id = ?)", scope, descriptor.ID).Scan(&previouslyApproved); err != nil {
+			return err
+		}
+		if previouslyApproved {
+			return d.commit(ctx, tx)
+		}
 	}
 	if descriptor.Workflow != nil {
 		if source == nil || !validCommitID(source.Commit) || !validCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" || source.Commit != descriptor.Workflow.Revision {
@@ -65,7 +71,10 @@ func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope s
 		return d.commit(ctx, tx)
 	}
 	if current != descriptor.ID {
-		actor := approval.ApprovedBy
+		actor := "repository-default-branch"
+		if carryover {
+			actor = approval.ApprovedBy
+		}
 		if actor == "" || strings.HasPrefix(actor, "runner_") {
 			actor = "repository-default-branch"
 		}

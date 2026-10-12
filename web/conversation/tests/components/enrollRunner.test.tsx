@@ -95,6 +95,25 @@ async function mountDialog(projectIds?: readonly string[], settings = false, ini
 }
 
 describe("the Enroll dialog", () => {
+  it.each([false, true])("warns when a connected runner reports no providers (providers: %s)", async (hasProviders) => {
+    const { setRunners } = await mountDialog();
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Build host" } });
+    vi.useFakeTimers();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Create command" })));
+    const runner = { ...fleetFixture.runners[0]!, id: "rnr_new", display_name: "Build host", provider_capacity: hasProviders ? fleetFixture.runners[0]!.provider_capacity : [] } as FleetRunner;
+    setRunners([runner]);
+    await act(() => vi.advanceTimersByTimeAsync(2_000));
+    expect(screen.getByText("Build host is connected")).toBeTruthy();
+    if (hasProviders) {
+      expect(screen.queryByRole("alert")).toBeNull();
+    } else {
+      const warning = screen.getByRole("alert");
+      expect(warning.textContent).toContain("No providers reported");
+      expect(warning.textContent).toContain("service PATH");
+      expect(warning.textContent).toContain("runner service logs");
+    }
+  });
+
   it("waits for a delayed initial fleet baseline before matching a new runner", async () => {
     let release!: (response: Response) => void;
     const initial = new Promise<Response>((resolve) => { release = resolve; });

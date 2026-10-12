@@ -29,6 +29,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -64,6 +65,10 @@ const allowlist = {
 const health = {
   registry: { ok: true },
   tenants: { expected: 2, running: 1 },
+  tenant_hubs: [
+    { id: "org_alpha", name: "Alpha", running: true, uptime_seconds: 3600, restarts_24h: 0, database_bytes: 1024 },
+    { id: "org_beta", name: "Beta", running: false, uptime_seconds: null, restarts_24h: 2, database_bytes: null },
+  ],
   admission: {
     tenants: 2, max_tenants: 20, allocating: 0, max_concurrent: 1,
     disk_measured: true, free_disk_bytes: 10 * 1024 ** 3, min_free_disk_bytes: 2 * 1024 ** 3,
@@ -134,61 +139,135 @@ function renderPlatform(api: EntryApi, path = "/platform/tenants") {
 }
 
 describe("platform console", () => {
-  it("searches users only on submit and renders memberships, invitations and incomplete tenants", async () => {
-    let resolve: ((value: typeof userResults) => void) | undefined;
-    const search = vi.fn(() => new Promise<typeof userResults>((done) => { resolve = done; }));
-    renderPlatform(fakeApi({ platformUsers: search }), "/platform/users");
+  it("debounces URL-backed user search and rejects short queries", async () => {
+    const search = vi.fn(async () => userResults);
+    const router = renderPlatform(fakeApi({ platformUsers: search }), "/platform/users");
     const input = await screen.findByRole("searchbox", { name: "Search by email" });
-    const button = screen.getByRole("button", { name: "Search" }) as HTMLButtonElement;
-    expect(button.disabled).toBe(true);
+    vi.useFakeTimers();
     fireEvent.change(input, { target: { value: "ab" } });
-    fireEvent.submit(input.closest("form")!);
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
     expect(search).not.toHaveBeenCalled();
+    expect(router.state.location.search).toEqual({ q: "ab" });
+    fireEvent.change(input, { target: { value: "example" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
     fireEvent.change(input, { target: { value: " example.test " } });
-    expect(button.disabled).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(299); });
     expect(search).not.toHaveBeenCalled();
-    fireEvent.submit(input.closest("form")!);
-    expect(search).toHaveBeenCalledWith("example.test");
-    expect(screen.getByRole("status", { name: "Searching users" })).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Searching…" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.submit(input.closest("form")!);
-    expect(search).toHaveBeenCalledTimes(1);
-    resolve!(userResults);
-    const user = await screen.findByRole("region", { name: "michael@example.test" });
-    expect(user.textContent).toContain("user_01HX_michael");
-    expect(user.textContent).toContain("2026-10-06 14:02Z");
-    expect(within(user).getByText("support")).toBeTruthy();
-    const rows = within(user).getAllByRole("row");
-    expect(rows.map((row) => row.textContent)).toEqual([
-      "OrganizationRoleJoinedTenant", "Parableowner2026-09-28Open tenant →", "Drywood Creekmember2026-10-01Open tenant →", "Example Coinvitedexpires 2026-10-13Open tenant →",
-    ]);
-    expect(within(user).getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual([
-      "/platform/tenants?tenant=org_parable", "/platform/tenants?tenant=org_drywood", "/platform/tenants?tenant=org_example",
-    ]);
-    expect(screen.getByText("No organization membership")).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    vi.useRealTimers();
+    expect(search).toHaveBeenCalledExactlyOnceWith("example.test");
+    expect(router.state.location.search).toEqual({ q: "example.test" });
+    const table = await screen.findByRole("table", { name: "Users" });
+    const member = within(table).getByRole("row", { name: /sam@example.test/ });
+    expect(member.textContent).toContain("support");
+    expect(member.textContent).toContain("2026-10-06 14:02Z");
+    expect(within(member).getByText("2")).toBeTruthy();
+    expect(within(table).getByRole("row", { name: /alex/ }).textContent).toContain("None");
     expect(screen.getByText("Not searched: Slow Tenant")).toBeTruthy();
+  });
+
+  it("restores search and selected user on back and reload with explicit empty sections", async () => {
+    const api = fakeApi({ platformUsers: vi.fn(async () => userResults) });
+    const router = renderPlatform(api, "/platform/users?q=example.test");
+    const input = await screen.findByRole("searchbox") as HTMLInputElement;
+    expect(input.value).toBe("example.test");
+    fireEvent.click(await screen.findByRole("link", { name: "alex+test@example.test" }));
+    const account = await screen.findByRole("region", { name: "Account" });
+    expect(account.textContent).toContain("user_01HX_alex");
+    expect(screen.getByRole("region", { name: "Organizations" }).textContent).toContain("No organization membership");
+    expect(screen.getByRole("region", { name: "Pending invitations" }).textContent).toContain("No pending invitations");
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(api.session).toHaveBeenCalledTimes(1);
+    const selected = router.state.location.href;
+    expect(router.state.location.search).toEqual({ q: "example.test" });
+    await act(async () => { router.history.back(); });
+    expect((await screen.findByRole("searchbox") as HTMLInputElement).value).toBe("example.test");
+    cleanup();
+    renderPlatform(api, selected);
+    expect((await screen.findByRole("region", { name: "Account" })).textContent).toContain("alex+test@example.test");
+    expect(api.platformUsers).toHaveBeenLastCalledWith("alex+test@example.test");
+    fireEvent.click(within(screen.getByRole("heading", { level: 1 })).getByRole("link", { name: "Users" }));
+    expect((await screen.findByRole("searchbox") as HTMLInputElement).value).toBe("example.test");
+  });
+
+  it("separates user organizations and pending invitations with client-side tenant links", async () => {
+    const original = userResults.users[0]!;
+    const invitation = original.invitations[0]!;
+    let invitationsResult = [invitation, { ...invitation, expires_at: "2026-10-14T00:00:00Z" }, invitation];
+    const errors = vi.spyOn(console, "error");
+    const api = fakeApi({ platformUsers: vi.fn(async () => ({ ...userResults, users: [{ ...original, invitations: invitationsResult }] })) });
+    const router = renderPlatform(api, "/platform/users/sam%40example.test");
+    const account = await screen.findByRole("region", { name: "Account" });
+    expect(account.textContent).toContain("user_01HX_sam");
+    expect(within(account).getByRole("link", { name: "Manage in Staff" }).getAttribute("href")).toBe("/platform/staff");
+    const memberships = screen.getByRole("region", { name: "Organizations" });
+    expect(memberships.textContent).toContain("Joined 2026-09-28");
+    expect(memberships.textContent).toContain("owner");
+    expect(within(memberships).getByRole("link", { name: "Example Alpha" }).getAttribute("href")).toBe("/platform/tenants/org_alpha");
+    const invitations = screen.getByRole("region", { name: "Pending invitations" });
+    expect(invitations.textContent).toContain("Expires 2026-10-13");
+    expect(within(invitations).getAllByRole("link", { name: "Example Co" })).toHaveLength(3);
+    expect(within(invitations).getAllByRole("link", { name: "Example Co" })[0]!.getAttribute("href")).toBe("/platform/tenants/org_example");
+    expect(invitations.textContent).toContain("Expires 2026-10-14");
+    invitationsResult = [invitationsResult[1]!];
+    await act(async () => { await router.navigate({ to: "/platform/users/$email", params: { email: "SAM@example.test" } } as never); });
+    await waitFor(() => {
+      expect(within(invitations).getAllByRole("link", { name: "Example Co" })).toHaveLength(1);
+      expect(invitations.textContent).toContain("Expires 2026-10-14");
+      expect(invitations.textContent).not.toContain("Expires 2026-10-13");
+    });
+    expect(errors.mock.calls.filter((args) => args.some((arg) => typeof arg === "string" && arg.includes("same key")))).toEqual([]);
+    errors.mockRestore();
+  });
+
+  it("preserves the 50-result notice and explicit empty search row", async () => {
+    const api = fakeApi({ platformUsers: vi.fn(async (query: string) => ({
+      ...userResults,
+      users: query === "missing" ? [] : Array.from({ length: 50 }, (_, index) => ({ ...userResults.users[0]!, email: `user${index}@example.test` })),
+    })) });
+    renderPlatform(api, "/platform/users?q=example.test");
+    expect(await screen.findByText("Showing up to 50 users. Refine your search to find other users.")).toBeTruthy();
+    const input = screen.getByRole("searchbox");
     fireEvent.change(input, { target: { value: "missing" } });
     fireEvent.submit(input.closest("form")!);
-    expect(screen.queryByRole("region", { name: "michael@example.test" })).toBeNull();
-    resolve!({ users: [], unsearched: [] });
     expect(await screen.findByText("No users match")).toBeTruthy();
+    expect(screen.getByRole("row", { name: "No users match" })).toBeTruthy();
+    expect(screen.getByText("Not searched: Slow Tenant")).toBeTruthy();
+  });
+
+  it("keeps user pages staff-only and hides Staff management from non-admin staff", async () => {
+    const search = vi.fn(async () => userResults);
+    renderPlatform(fakeApi({ platformUsers: search, session: vi.fn(async () => ({ email: "person@example.test", csrf: "c", platform_role: "" })) }), "/platform/users/sam%40example.test");
+    expect(await screen.findByText("You don't have access to this page")).toBeTruthy();
+    expect(search).not.toHaveBeenCalled();
+    cleanup();
+    renderPlatform(fakeApi({ platformUsers: search, session: vi.fn(async () => ({ email: "support@example.test", csrf: "c", platform_role: "support" })) }), "/platform/users/sam%40example.test");
+    await screen.findByRole("region", { name: "Account" });
+    expect(screen.queryByRole("link", { name: "Manage in Staff" })).toBeNull();
   });
 
   it.each([401, 403, 503])("handles user search failure %s", async (status) => {
     let refuse!: (error: AccountError) => void;
-    const api = fakeApi({ platformUsers: vi.fn(() => new Promise<typeof userResults>((_, reject) => { refuse = reject; })) });
+    const search = vi.fn().mockImplementationOnce(() => new Promise<typeof userResults>((_, reject) => { refuse = reject; })).mockResolvedValue(userResults);
+    const api = fakeApi({ platformUsers: search });
     const user = userEvent.setup();
-    renderPlatform(api, "/platform/users");
+    const router = renderPlatform(api, "/platform/users");
     const input = await screen.findByRole("searchbox", { name: "Search by email" });
     await user.type(input, "member");
-    await user.click(screen.getByRole("button", { name: "Search" }));
-    expect(api.platformUsers).toHaveBeenCalledExactlyOnceWith("member");
+    await waitFor(() => expect(api.platformUsers).toHaveBeenCalledExactlyOnceWith("member"));
     expect(screen.getByRole("status", { name: "Searching users" })).toBeTruthy();
     await act(async () => { refuse(new AccountError({ status, code: "refused", message: "Search refused" })); });
     expect((await screen.findByRole("alert")).textContent).toContain("Search refused");
     expect(screen.queryByText("No users match")).toBeNull();
     if (status === 401) await waitFor(() => expect(assign).toHaveBeenCalledWith(SIGN_IN_PLATFORM));
-    expect((screen.getByRole("button", { name: "Search" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((input as HTMLInputElement).disabled).toBe(false);
+    fireEvent.change(input, { target: { value: " member " } });
+    fireEvent.submit(input.closest("form")!);
+    await screen.findByRole("table", { name: "Users" });
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(search).toHaveBeenLastCalledWith("member");
+    expect(router.state.location.search).toEqual({ q: "member" });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
   it.each(["admin", "support", "billing", "viewer"])("shows the shell and readable navigation for %s", async (role) => {
     const api = fakeApi({ session: vi.fn(async () => ({ email: "member@example.test", csrf: "c", platform_role: role })) });
@@ -219,7 +298,7 @@ describe("platform console", () => {
     expect(within(nav).getByRole("link", { name: "My Alpha" }).getAttribute("href")).toBe("/organizations/org_alpha/organization");
     expect(within(nav).getByRole("link", { name: "My Beta" }).getAttribute("href")).toBe("/organizations/org_beta/work");
     fireEvent.click(screen.getByRole("link", { name: "Health" }));
-    await screen.findByRole("region", { name: "Service health" });
+    await screen.findByRole("alert", { name: "Service health" });
     expect(router.state.location.pathname).toBe("/platform/health");
     expect(document.title).toBe("Health · Platform · Detent");
     expect(screen.getByText("Platform")).toBeTruthy();
@@ -229,11 +308,14 @@ describe("platform console", () => {
     expect(screen.queryByRole("region", { name: "Complimentary plans" })).toBeNull();
   });
 
-  it("refuses a direct Staff route for a non-admin inside the shell", async () => {
-    renderPlatform(fakeApi({ session: vi.fn(async () => ({ email: "support@example.test", csrf: "c", platform_role: "support" })) }), "/platform/staff");
+  it.each(["support", "billing", "viewer"])("refuses a direct Staff route for %s inside the shell", async (role) => {
+    const api = fakeApi({ session: vi.fn(async () => ({ email: "staff@example.test", csrf: "c", platform_role: role })) });
+    renderPlatform(api, "/platform/staff");
     expect(await screen.findByText("You don't have access to this page")).toBeTruthy();
     expect(screen.getByText("Platform")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Staff" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add staff member" })).toBeNull();
+    expect(api.platformMembers).not.toHaveBeenCalled();
   });
 
   it("lists newest tenants first with human status, owner and explicit unavailable values", async () => {
@@ -355,11 +437,14 @@ describe("platform console", () => {
   });
 
   it("starts support access through the entry form with a required reason and the CSRF token", async () => {
-    renderPlatform(fakeApi());
+    let resolveOrganizations!: (value: typeof organizations) => void;
+    const pendingOrganizations = new Promise<typeof organizations>((resolve) => { resolveOrganizations = resolve; });
+    renderPlatform(fakeApi({ platformOrganizations: vi.fn(() => pendingOrganizations) }));
     const table = await screen.findByRole("table", { name: "Tenants" });
-    const tenant = await within(table).findByRole("link", { name: "Alpha" });
+    resolveOrganizations(organizations);
+    const alpha = await within(table).findByRole("link", { name: "Alpha" });
     const rows = within(table).getAllByRole("row");
-    fireEvent.click(tenant);
+    fireEvent.click(alpha);
     const form = (await screen.findByRole("button", { name: "Start support access" })).closest("form")!;
     expect(form.getAttribute("method")).toBe("post");
     expect(form.getAttribute("action")).toBe("/support/start");
@@ -373,23 +458,148 @@ describe("platform console", () => {
 
   });
 
-  it("shows the allowlist read-only with its configuration source", async () => {
-    renderPlatform(fakeApi(), "/platform/allowlist");
-    const panel = await screen.findByRole("region", { name: "Signup allowlist" });
-    expect(within(panel).getByText("dana@example.test")).toBeTruthy();
-    expect(within(panel).getByText("example.org")).toBeTruthy();
-    expect(within(panel).getByText(/\/etc\/detent\/cloud\.yaml under allocation\.allowed_emails and allocation\.allowed_domains/)).toBeTruthy();
-    expect(within(panel).queryByRole("textbox")).toBeNull();
+  it("shows restricted access with individual rows and filters both allowlists live", async () => {
+    const api = fakeApi({ platformAllowlist: vi.fn(async () => ({ ...allowlist,
+      allowed_domains: ["example.org", "detent.build"],
+      allowed_emails: ["dana@example.test", "cory@detent.build", "operator@example.test"],
+    })) });
+    renderPlatform(api, "/platform/allowlist");
+    const panel = await screen.findByRole("region", { name: "Sign-up allowlist" });
+    const access = within(panel).getByRole("region", { name: "Access" });
+    expect(within(access).getByRole("heading", { name: "Who can sign up" })).toBeTruthy();
+    expect(within(access).getByText("Restricted")).toBeTruthy();
+    expect(within(access).getByText("Only the domains and emails below. Changes are made in the Cloud configuration.")).toBeTruthy();
+    expect(panel.textContent).not.toContain(allowlist.source.file);
+    for (const key of allowlist.source.keys) expect(panel.textContent).not.toContain(key);
+    const domains = within(panel).getByRole("region", { name: "Domains" });
+    const emails = within(panel).getByRole("region", { name: "Individual emails" });
+    expect(within(domains).getByText("2")).toBeTruthy();
+    expect(within(emails).getByText("3")).toBeTruthy();
+    expect(within(domains).getAllByRole("row").map((row) => row.textContent)).toEqual(["example.org", "detent.build"]);
+    expect(within(emails).getAllByRole("row").map((row) => row.textContent)).toEqual(["dana@example.test", "cory@detent.build", "operator@example.test"]);
+    const filter = within(panel).getByRole("searchbox", { name: "Filter domains and emails" });
+    fireEvent.change(filter, { target: { value: " DETENT " } });
+    expect(within(domains).getAllByRole("row").map((row) => row.textContent)).toEqual(["detent.build"]);
+    expect(within(emails).getAllByRole("row").map((row) => row.textContent)).toEqual(["cory@detent.build"]);
+    expect(within(domains).getByText("1")).toBeTruthy();
+    expect(within(emails).getByText("1")).toBeTruthy();
+    fireEvent.change(filter, { target: { value: "no-match" } });
+    expect(within(domains).getByText("No domains match this filter.")).toBeTruthy();
+    expect(within(emails).getByText("No individual emails match this filter.")).toBeTruthy();
+    expect(within(domains).getByText("0")).toBeTruthy();
+    expect(within(emails).getByText("0")).toBeTruthy();
+    fireEvent.change(filter, { target: { value: "" } });
+    expect(within(domains).getAllByRole("row")).toHaveLength(2);
+    expect(within(emails).getAllByRole("row")).toHaveLength(3);
+    expect(api.platformAllowlist).toHaveBeenCalledTimes(1);
+    expect(within(panel).queryByRole("button")).toBeNull();
+  });
+
+  it.each([
+    { self_service: true, open: true, mode: "Open", description: "Any verified account may create an organization." },
+    { self_service: true, open: undefined, mode: "Open", description: "Any verified account may create an organization." },
+    { self_service: false, open: undefined, mode: "Disabled", description: "Self-service organization creation is not configured." },
+  ])("shows $mode access without list sections for $self_service self-service and $open open mode", async ({ self_service, open, mode, description }) => {
+    renderPlatform(fakeApi({ platformAllowlist: vi.fn(async () => ({ ...allowlist, self_service, open,
+      allowed_domains: [], allowed_emails: [],
+    })) }), "/platform/allowlist");
+    const panel = await screen.findByRole("region", { name: "Sign-up allowlist" });
+    expect(within(panel).getByText(mode)).toBeTruthy();
+    expect(within(panel).getByText(`${description} Changes are made in the Cloud configuration.`)).toBeTruthy();
+    expect(within(panel).queryByRole("region", { name: "Domains" })).toBeNull();
+    expect(within(panel).queryByRole("region", { name: "Individual emails" })).toBeNull();
+    expect(within(panel).queryByRole("searchbox")).toBeNull();
+  });
+
+  it.each(["allowed_domains", "allowed_emails"] as const)("keeps restricted access when only %s is configured", async (list) => {
+    renderPlatform(fakeApi({ platformAllowlist: vi.fn(async () => ({ ...allowlist, open: undefined,
+      allowed_domains: [], allowed_emails: [], [list]: allowlist[list],
+    })) }), "/platform/allowlist");
+    const panel = await screen.findByRole("region", { name: "Sign-up allowlist" });
+    expect(within(panel).getByText("Restricted")).toBeTruthy();
+    expect(within(panel).getByText(allowlist[list][0]!)).toBeTruthy();
+    expect(within(panel).getByText(list === "allowed_domains" ? "No individual emails configured." : "No domains configured.")).toBeTruthy();
   });
 
   it("shows registry, tenant and admission health", async () => {
     renderPlatform(fakeApi(), "/platform/health");
-    const panel = await screen.findByRole("region", { name: "Service health" });
-    expect(within(panel).getByText("OK")).toBeTruthy();
-    expect(within(panel).getByText("1 of 2")).toBeTruthy();
-    expect(within(panel).getByText("2 of 20")).toBeTruthy();
-    expect(within(panel).getByText("10.0 GiB (floor 2.0 GiB)")).toBeTruthy();
-    expect(within(panel).getByText("Not measurable")).toBeTruthy();
+    const panel = await screen.findByRole("alert", { name: "Service health" });
+    expect(panel.getAttribute("data-variant")).toBe("error");
+    expect(panel.textContent).toContain("Registry reachable. 1 of 2 tenant Hubs running.");
+    const capacity = screen.getByRole("region", { name: "Capacity" });
+    expect(within(capacity).getByText("2 / 20")).toBeTruthy();
+    expect(within(capacity).getByRole("meter", { name: "Free disk" }).getAttribute("aria-valuetext")).toBe("10.0 GiB");
+    expect(within(capacity).getByText("Floor 2.0 GiB")).toBeTruthy();
+    expect(within(capacity).getByText("Not measurable")).toBeTruthy();
+    const table = screen.getByRole("table", { name: "Tenant Hubs" });
+    expect(within(table).getByRole("link", { name: "Beta" }).getAttribute("href")).toBe("/platform/tenants?tenant=org_beta");
+    expect(within(table).getByText("Down")).toBeTruthy();
+    expect(within(table).getByText("1 hours")).toBeTruthy();
+  });
+
+  it.each([
+    ["Free disk", 121, "Above floor"],
+    ["Free disk", 120, "Near limit"],
+    ["Free disk", 100, "At limit"],
+    ["Free disk", 99, "At limit"],
+    ["Available memory", 120, "Near limit"],
+    ["Available memory", 100, "At limit"],
+    ["Tenant slots", 80, "Near limit"],
+    ["Tenant slots", 100, "At limit"],
+  ])("labels %s at %s as %s", async (label, reading, expected) => {
+    const admission = { ...health.admission, memory_measured: true, available_memory_bytes: 1000, min_available_memory_bytes: 100,
+      free_disk_bytes: 1000, min_free_disk_bytes: 100, tenants: 2, max_tenants: 100 };
+    if (label === "Free disk") admission.free_disk_bytes = reading;
+    else if (label === "Available memory") admission.available_memory_bytes = reading;
+    else admission.tenants = reading;
+    const value = {
+      ...health,
+      tenants: { expected: 2, running: 2 },
+      tenant_hubs: health.tenant_hubs.map((hub) => ({ ...hub, running: true })),
+      admission,
+    };
+    renderPlatform(fakeApi({ platformHealth: vi.fn(async () => value) }), "/platform/health");
+    const panel = await screen.findByRole("region", { name: "Capacity" });
+    const meter = within(panel).getByRole("meter", { name: label });
+    expect(meter.getAttribute("aria-valuenow")).toBe(String(reading));
+    const detail = document.getElementById(meter.getAttribute("aria-describedby")!);
+    expect(detail?.textContent).toBe(expected);
+    expect(detail?.className).toContain(expected === "Near limit" ? "text-warning-foreground" : expected === "At limit" ? "text-error-foreground" : "text-muted-foreground");
+    expect(screen.getByRole("alert", { name: "Service health" }).getAttribute("data-variant")).toBe(expected === "At limit" ? "error" : expected === "Near limit" ? "warning" : "success");
+  });
+
+  it("refreshes health manually and every 30 seconds while visible, retaining the last reading on failure", async () => {
+    const api = fakeApi();
+    const read = vi.mocked(api.platformHealth);
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const view = renderPlatform(api, "/platform/health");
+    await screen.findByRole("table", { name: "Tenant Hubs" });
+    const before = read.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(read.mock.calls.length).toBe(before + 1));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" }).hasAttribute("disabled")).toBe(false));
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(read.mock.calls.length).toBe(before + 2);
+      expect(screen.getByText("Updated 0s ago")).toBeTruthy();
+      vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(read.mock.calls.length).toBe(before + 2);
+      read.mockRejectedValueOnce(new AccountError({ status: 503, code: "unavailable", message: "Health read unavailable" }));
+      vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+      await act(async () => { fireEvent(document, new Event("visibilitychange")); });
+      expect(screen.getByText("Health read unavailable")).toBeTruthy();
+      expect(screen.getByText("Updated 60s ago")).toBeTruthy();
+      expect(screen.getByRole("table", { name: "Tenant Hubs" })).toBeTruthy();
+      await act(async () => { await view.navigate({ to: "/platform/allowlist" }); });
+      const stopped = read.mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(read.mock.calls.length).toBe(stopped);
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
   });
 
   it("refuses non-staff accounts", async () => {
@@ -433,23 +643,22 @@ describe("platform console", () => {
 
   it("opens a selected user with results loaded without reloading the shell", async () => {
     const user = userEvent.setup();
-    const api = fakeApi({ platformUsers: vi.fn(async () => ({ ...userResults, users: userResults.users.filter((user) => user.email.startsWith("cory")) })) });
+    const api = fakeApi({ platformUsers: vi.fn(async () => ({ ...userResults, users: userResults.users.filter((user) => user.email.startsWith("alex")) })) });
     const router = renderPlatform(api);
     await screen.findByRole("table", { name: "Tenants" });
     fireEvent.click(screen.getByRole("button", { name: /Find tenant or user/ }));
     const dialog = await screen.findByRole("dialog", { name: "Find tenant or user" });
-    await user.type(within(dialog).getByRole("combobox", { name: "Find tenant or user" }), "cory@");
-    await user.click(await within(dialog).findByRole("option", { name: /cory/ }));
-    const results = await screen.findByRole("region", { name: "cory+detent-prod-test@example.test" });
-    expect(router.state.location.pathname).toBe("/platform/users");
-    expect(router.state.location.search).toEqual({ q: "cory+detent-prod-test@example.test" });
-    expect(results.textContent).toContain("No organization membership");
+    await user.type(within(dialog).getByRole("combobox", { name: "Find tenant or user" }), "alex@");
+    await user.click(await within(dialog).findByRole("option", { name: /alex/ }));
+    await screen.findByRole("region", { name: "Account" });
+    expect(router.state.location.pathname).toBe("/platform/users/alex%2Btest%40example.test");
+    expect(screen.getByRole("region", { name: "Organizations" }).textContent).toContain("No organization membership");
     expect(api.session).toHaveBeenCalledTimes(1);
   });
 
   it.each([
     [{ registry: { ok: true }, tenants: { expected: 2, running: 2 } }, "OK"],
-    [{ registry: { ok: true }, tenants: { expected: 2, running: 1 } }, "Degraded"],
+    [{ registry: { ok: true }, tenants: { expected: 2, running: 1 } }, "Down"],
     [{ registry: { ok: false } }, "Down"],
   ])("renders the endpoint health status as %s", async (health, label) => {
     renderPlatform(fakeApi({ platformHealth: vi.fn(async () => health) }));
@@ -744,7 +953,7 @@ if (typeof globalThis.PointerEvent === "undefined") globalThis.PointerEvent = gl
 
 
 const member = (email: string, role: string, bootstrap = false) => ({ email, role, bootstrap,
-  added_by: bootstrap ? "bootstrap" : "admin@example.test", added_at: "2026-10-07T12:00:00Z", updated_at: "2026-10-07T12:00:00Z" });
+  added_by: bootstrap ? "bootstrap" : "admin@example.test", added_at: "2026-10-07T12:00:00Z", updated_at: "2026-10-09T15:00:00Z" });
 const listing: PlatformMembers = { revision: 4, self: { email: "admin@example.test", role: "admin" }, members: [
   member("admin@example.test", "admin"), member("bootstrap@example.test", "admin", true), member("support@example.test", "support"),
 ] };
@@ -780,8 +989,16 @@ function reason(dialog: HTMLElement, value = "  staffing change  ") {
 describe("platform staff", () => {
   it("adds a normalized email with a reason and uses the refreshed revision for removal", async () => {
     const api = openStaff();
-    await screen.findByRole("table", { name: "Platform members" });
-    fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+    const staff = await screen.findByRole("region", { name: "Staff members" });
+    expect(within(staff).getByText("3")).toBeTruthy();
+    const roles = screen.getByRole("region", { name: "Roles" });
+    for (const role of ["Admin", "Billing", "Support", "Viewer"]) {
+      expect(within(roles).getByRole("heading", { name: role })).toBeTruthy();
+    }
+    for (const description of ["Everything, including staff, plans and AI credits.", "Plans, complimentary grants and AI credits.", "Support access into tenants.", "Read-only access to this console."]) {
+      expect(within(roles).getByText(description)).toBeTruthy();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Add staff member" }));
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByRole("combobox", { name: "Role" }).textContent).toContain("Viewer");
     fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
@@ -795,7 +1012,7 @@ describe("platform staff", () => {
     await waitFor(() => expect(api.changePlatformMember).toHaveBeenCalledWith({ csrf: "staff-csrf", change: {
       action: "add", email: "new@example.test", role: "viewer", reason: "staffing change", expected_revision: 4, idempotency_key: expect.any(String),
     } }));
-    const row = (await screen.findByText("new@example.test")).closest("tr")!;
+    const row = await screen.findByRole("group", { name: "new@example.test" });
     fireEvent.click(within(row).getByRole("button", { name: "Remove" }));
     const removal = await screen.findByRole("alertdialog");
     fireEvent.click(within(removal).getByRole("button", { name: "Remove member" }));
@@ -810,7 +1027,7 @@ describe("platform staff", () => {
 
   it("keeps the old role until confirmation, supports cancellation and requires a reason", async () => {
     const api = openStaff();
-    await screen.findByRole("table");
+    await screen.findByRole("region", { name: "Staff members" });
     await selectRole("Role for support@example.test", "Billing");
     let dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByRole("heading").textContent).toBe("Change role for support@example.test from Support to Billing");
@@ -830,22 +1047,29 @@ describe("platform staff", () => {
   });
 
   it.each([
-    { name: "own", value: listing, email: "admin@example.test", tooltip: "You cannot change your own role" },
+    { name: "own", value: listing, email: "admin@example.test", tooltip: "You can't change your own role" },
     { name: "bootstrap", value: listing, email: "bootstrap@example.test", tooltip: "The bootstrap admin cannot be demoted" },
     { name: "last admin", value: { ...listing, self: { email: "reader@example.test", role: "admin" }, members: [member("last@example.test", "admin")] }, email: "last@example.test", tooltip: "At least one admin is required" },
   ])("protects the $name row", async ({ value, email, tooltip }) => {
     openStaff({ platformMembers: vi.fn(async () => value) });
-    const table = await screen.findByRole("table", { name: "Platform members" });
-    const row = within(table).getByRole("combobox", { name: `Role for ${email}` }).closest("tr")!;
-    expect((within(row).getByRole("combobox") as HTMLButtonElement).disabled).toBe(true);
+    const row = await screen.findByRole("group", { name: email });
+    expect(row.textContent).toContain(`Added 2026-10-07 by ${value.members.find((member) => member.email === email)!.added_by} · changed 2026-10-09`);
+    if (value.self.email === email) {
+      expect(within(row).queryByRole("combobox")).toBeNull();
+      expect(within(row).getByText("Admin")).toBeTruthy();
+      expect(within(row).getByText("You")).toBeTruthy();
+      expect(within(row).getByText(tooltip)).toBeTruthy();
+    } else {
+      expect((within(row).getByRole("combobox") as HTMLButtonElement).disabled).toBe(true);
+      expect(within(row).getByLabelText(tooltip)).toBeTruthy();
+    }
     expect(within(row).queryByRole("button", { name: "Remove" })).toBeNull();
-    expect(within(row).getByLabelText(tooltip)).toBeTruthy();
   });
 
   it("shows a duplicate error inline and allows correction", async () => {
     const api = openStaff({ changePlatformMember: vi.fn(async () => { throw new AccountError({ status: 409, code: "already_member", message: "Already a member" }); }) });
-    await screen.findByRole("table");
-    fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+    await screen.findByRole("region", { name: "Staff members" });
+    fireEvent.click(screen.getByRole("button", { name: "Add staff member" }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("Email"), { target: { value: "support@example.test" } });
     reason(dialog);
@@ -861,23 +1085,23 @@ describe("platform staff", () => {
       current = { ...listing, revision: 7, members: listing.members.map((member) => member.email === "support@example.test" ? { ...member, role: "viewer" } : member) };
       throw new AccountError({ status: 409, code: "revision_conflict", message: "changed" });
     }) });
-    await screen.findByRole("table");
+    await screen.findByRole("region", { name: "Staff members" });
     await selectRole("Role for support@example.test", "Billing");
     const dialog = await screen.findByRole("dialog");
     reason(dialog);
     fireEvent.click(within(dialog).getByRole("button", { name: "Change role" }));
     await screen.findByText(STALE_STAFF_MESSAGE);
-    expect((screen.getByRole("button", { name: "Add member" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Add staff member" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Reload" }));
     await waitFor(() => expect(api.platformMembers).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Role for support@example.test" }).textContent).toContain("Viewer"));
-    expect((screen.getByRole("button", { name: "Add member" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Add staff member" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("retries an unconfirmed write with the same key and input", async () => {
     const write = vi.fn(async () => { throw new AccountError({ status: 503, code: "unavailable", message: "Retry to verify" }); });
     openStaff({ changePlatformMember: write });
-    await screen.findByRole("table");
+    await screen.findByRole("region", { name: "Staff members" });
     await selectRole("Role for support@example.test", "Billing");
     const dialog = await screen.findByRole("dialog");
     reason(dialog);

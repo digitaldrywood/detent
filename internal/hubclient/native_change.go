@@ -260,7 +260,7 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 		if external == nil {
 			var previousNumber int64
 			for _, previous := range detail.Versions {
-				if previous.Number < version.Number && previous.Number > previousNumber && previous.Repository == version.Repository && previous.External != nil && previous.Landing == nil {
+				if previous.Number < version.Number && previous.Number > previousNumber && previous.Repository == version.Repository && previous.External != nil && (previous.Landing == nil || !previous.Landing.Landed) {
 					external, externalHead, previousNumber = previous.External, previous.HeadSHA, previous.Number
 				}
 			}

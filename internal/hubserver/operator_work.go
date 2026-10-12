@@ -283,10 +283,13 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		CommentID     string           `json:"comment_id,omitempty"`
 		Data          json.RawMessage  `json:"data"`
 	}{metadata.CorrelationID, e.service.config.now(), resourceID, resourceURL, resource.Revision, resource.ID, raw})
-	if err != nil || len(content) > operatortool.MaxResultBytes {
+	if err != nil {
 		return operatortool.Result{}, operatortool.ErrSnapshotUnavailable
 	}
-	return operatortool.Result{Content: content}, nil
+	if resource.ID == "" && len(resource.WorkItemID) > 0 {
+		return operatortool.EncodeWorkItemResult(json.RawMessage(content))
+	}
+	return operatortool.EncodeResult(json.RawMessage(content))
 }
 
 func operatorNativeConflict(err error) error {

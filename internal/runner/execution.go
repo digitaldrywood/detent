@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -293,7 +294,21 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	if prepared, ok := req.Execution.(CompletionExecution); ok {
-		if err := prepared.PrepareFinish(finishCtx, outcome, result.FinalMessage, nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused)); err != nil {
+		prepareCtx, prepareCancel := finishCtx, func() {}
+		if outcome == "succeeded" {
+			workflow, runtime, _, _ := r.runtimeSnapshot()
+			role := runtime.effectiveRunRole(runRole(req.Mode, req.Issue))
+			_, _, backend, routeErr := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), role)
+			if routeErr != nil {
+				runErr = errors.Join(runErr, routeErr)
+				outcome = "failed"
+			} else {
+				prepareCtx, prepareCancel = context.WithTimeoutCause(context.WithoutCancel(guarded), r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+			}
+		}
+		err := prepared.PrepareFinish(prepareCtx, outcome, result.FinalMessage, nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused))
+		prepareCancel()
+		if err != nil {
 			runErr = errors.Join(runErr, err)
 			outcome = "failed"
 		} else if outcome == "succeeded" {
@@ -308,7 +323,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		if change != nil && change.Landing != nil {
 			result.NativeLanding = change.Landing
 			if runtime, ok := req.Execution.(LandingRuntimeExecution); ok {
-				if err := runtime.ObserveLanding(finishCtx, *result.NativeLanding); err != nil {
+				landingCtx, landingCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
+				err := runtime.ObserveLanding(landingCtx, *result.NativeLanding)
+				landingCancel()
+				if err != nil {
 					runErr = errors.Join(runErr, err)
 				}
 			}
@@ -828,23 +846,54 @@ func nativeGitError(operation string, err error) error {
 	return fmt.Errorf("%w: %s: %w", ErrWorkspacePreparation, operation, err)
 }
 
+func (r *Runner) nativeWorkTimeout(cfg config.Config, backend config.AgentBackend, validatorTimeout time.Duration) time.Duration {
+	workBudget := durationFromMillis(cfg.Agent.MaxTurnDurationMS)
+	if workBudget <= 0 {
+		workBudget = validatorTimeout
+	}
+	if workBudget <= 0 {
+		workBudget = durationFromMillis(cfg.Agent.MaxSessionDurationMS)
+	}
+	if workBudget <= 0 {
+		switch backend.Kind {
+		case config.AgentBackendCodex:
+			workBudget = durationFromMillis(backend.CodexOptions().TurnTimeoutMS)
+		case config.AgentBackendClaudeCode:
+			workBudget = durationFromMillis(backend.ClaudeCodeOptions().TurnTimeoutMS)
+		case config.AgentBackendPiAgent:
+			workBudget = durationFromMillis(backend.PiAgentOptions().TurnTimeoutMS)
+		}
+	}
+	return max(r.afterRunTimeout, workBudget, validatorTimeout)
+}
+
 func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error {
 	execution, ok := req.Execution.(NativeValidatorExecution)
 	if !ok {
 		return nil
 	}
-	workflow, _, _, _ := r.runtimeSnapshot()
+	workflow, runtime, _, _ := r.runtimeSnapshot()
 	cfg := gate.Effective(workflow.Config.Gate).Validator
 	if !cfg.Enabled {
 		return nil
 	}
-	ctx, cancel := context.WithTimeoutCause(context.WithoutCancel(ctx), max(r.afterRunTimeout, durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS), durationFromMillis(cfg.TurnTimeoutMS)), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+	_, _, backend, routeErr := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
+	ctx, cancel := context.WithTimeoutCause(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backend, durationFromMillis(cfg.TurnTimeoutMS)), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 	defer cancel()
 	input, err := execution.ValidatorVersion(ctx)
 	if err != nil || input.Version == nil {
 		return err
 	}
-	result, err := r.Validate(ctx, ValidatorRequest{Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate})
+	if routeErr != nil {
+		return routeErr
+	}
+	request := ValidatorRequest{Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	if source, ok := req.Execution.(ToolExecution); ok {
+		tools, handler := source.AgentTools()
+		request.EvidenceTools = tools
+		request.EvidenceHandler = handler
+	}
+	result, err := r.Validate(ctx, request)
 	if err != nil {
 		return err
 	}
