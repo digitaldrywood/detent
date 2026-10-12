@@ -190,8 +190,11 @@ On a release branch, the finalizer verifies the validated SHA is still the branc
 an annotated `vX.Y.Z` provenance tag within that branch's `release/vX.Y` series,
 and dispatches the existing release workflow. Green develop commits select
 future cuts but do not publish stable tags. Cuts are weekly by default or
-operator-dispatched, from the newest green develop ancestor or develop tip if
-none exists; picks are develop-to-release only, with `-x` provenance and a PR.
+operator-dispatched. Automatic selection uses the newest green develop ancestor
+not already covered by a release series or stable tag, or unreleased develop tip
+if none exists; it succeeds without cutting when develop is already covered.
+Explicit covered sources remain errors. Picks are develop-to-release only, with
+`-x` provenance and a PR.
 All release API calls belong to operators and GitHub Actions, never Detent
 runners. Develop landing does not wait for release stabilization. Release
 deploys staging, runs its smoke, then deploys production and runs its smoke;
