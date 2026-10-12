@@ -7708,6 +7708,7 @@ func initRunnerSourceRepo(t *testing.T) string {
 
 	dir := t.TempDir()
 	runRunnerGit(t, dir, "init", "-b", "main")
+	runRunnerGit(t, dir, "config", "maintenance.autoDetach", "false")
 	runRunnerGit(t, dir, "config", "core.autocrlf", "false")
 	runRunnerGit(t, dir, "config", "user.name", "Test User")
 	runRunnerGit(t, dir, "config", "user.email", "test@example.com")
