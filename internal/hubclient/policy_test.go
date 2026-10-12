@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,8 +15,87 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestNativePolicyRetryAfterApproval(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		pendingStatus int
+	}{
+		{name: "approval pending", pendingStatus: http.StatusConflict},
+		{name: "previous policy approved", pendingStatus: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			selected := clientTestPolicy()
+			previous := selected
+			previous.Gates.AutoPromote = true
+			previous = previous.WithID()
+			approved := false
+			path := filepath.Join(t.TempDir(), "private", "identity.json")
+			identity, err := runnerauth.Initialize(path, "https://hub.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity.Identity.OrganizationID = "org_test"
+			identity.Identity.ProjectIDs = []tracker.ProjectID{"prj_test"}
+			identity.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
+			if err := runnerauth.Save(path, identity); err != nil {
+				t.Fatal(err)
+			}
+			client, err := New(Config{URL: identity.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				w := httptest.NewRecorder()
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/policy/observed"):
+					w.WriteHeader(http.StatusNoContent)
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/policy"):
+					if approved {
+						if err := json.NewEncoder(w).Encode(policy.Approval{Policy: selected}); err != nil {
+							t.Fatal(err)
+						}
+					} else if test.pendingStatus == http.StatusConflict {
+						w.WriteHeader(http.StatusConflict)
+						if err := json.NewEncoder(w).Encode(map[string]string{"code": "policy_mismatch", "message": "approval pending"}); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						if err := json.NewEncoder(w).Encode(policy.Approval{Policy: previous}); err != nil {
+							t.Fatal(err)
+						}
+					}
+				default:
+					t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+				return w.Result(), nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			scheduler, err := NewScheduler(client, SchedulerConfig{OrganizationID: "org_test", NativeProjects: map[string]tracker.ProjectID{"project": "prj_test"}, Machine: Machine{ID: identity.Identity.MachineID, Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Minute, LeaseTTL: time.Hour})
+			if err != nil {
+				t.Fatal(err)
+			}
+			scheduler.nativeHeartbeats["prj_test"] = time.Now()
+			native := scheduler.nativeProjects["project"].client
+			native.applyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "stable", PolicyID: previous.ID})
+			for range 2 {
+				err := scheduler.CheckProjectPolicy(t.Context(), "project", "", selected)
+				var failure *APIError
+				if !errors.As(err, &failure) || failure.Status != http.StatusConflict || failure.Code != "policy_mismatch" || !connector.IsRetryable(err) {
+					t.Fatalf("pending approval accepted or not retryable: %v", err)
+				}
+			}
+			approved = true
+			if err := scheduler.CheckProjectPolicy(t.Context(), "project", "", selected); err != nil {
+				t.Fatalf("unchanged selected policy stayed rejected after approval: %v", err)
+			}
+		})
+	}
+}
 
 func clientTestPolicy() policy.Descriptor {
 	return policy.Descriptor{

@@ -132,6 +132,10 @@ func (s *Scheduler) CheckProjectPolicyWithSource(ctx context.Context, project, r
 	default:
 		return fmt.Errorf("check approved repository policy: %w", err)
 	}
+	state := source.client.heartbeatProject()
+	state.mu.Lock()
+	state.approvalSet = false
+	state.mu.Unlock()
 	if reportErr := s.reportObservedPolicy(ctx, project, source, policy.Observation{Descriptor: descriptor, Source: provenance}); reportErr != nil {
 		return errors.Join(err, reportErr)
 	}
