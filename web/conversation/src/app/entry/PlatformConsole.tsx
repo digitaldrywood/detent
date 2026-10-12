@@ -45,25 +45,6 @@ import { Problem, SignOut, useEntryApi } from "./EntryScreens.tsx";
 
 export { formatBytes, PlatformHealthPanel } from "./PlatformHealth.tsx";
 
-function Panel({
-  title,
-  description,
-  children,
-}: {
-  readonly title: string;
-  readonly description?: string;
-  readonly children: React.ReactNode;
-}): React.ReactElement {
-  return (
-    <SettingsSection title={title} aria-label={title}>
-      <div className="p-4">
-        {description === undefined ? null : <p className="mb-4 text-sm text-muted-foreground">{description}</p>}
-        {children}
-      </div>
-    </SettingsSection>
-  );
-}
-
 export function PlatformAllowlistPanel({ value }: { readonly value: PlatformAllowlist }): React.ReactElement {
   const [query, setQuery] = React.useState("");
   const term = query.trim().toLowerCase();
