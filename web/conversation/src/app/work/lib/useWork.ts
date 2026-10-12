@@ -72,6 +72,7 @@ export function useBoard(projectId: string | null, view: WorkViewState): BoardSt
     const connected = new Set<string>();
     const sources = new Map<string, EventSource>();
     const retries = new Map<string, ReturnType<typeof setTimeout>>();
+    const controller = new AbortController();
 
     // Live means every project in scope is connected: on the all-projects
     // board one project whose stream is down is activity the reader is not
@@ -105,14 +106,16 @@ export function useBoard(projectId: string | null, view: WorkViewState): BoardSt
       source.addEventListener("error", () => {
         connected.delete(id);
         publish();
-        // The browser retries a stream it has only lost. One it has closed it
-        // never retries, so this is where a board that would otherwise stay
-        // dark comes back on its own.
         if (source.readyState !== EVENT_SOURCE_CLOSED) return;
         source.close();
         sources.delete(id);
         clearTimeout(retries.get(id));
-        retries.set(id, setTimeout(() => connect(id), STREAM_RETRY_MS));
+        retries.set(id, setTimeout(() => {
+          void http.getProject(id, controller.signal).then(() => connect(id), (cause: unknown) => {
+            if (cause instanceof WorkApiError && [401, 403].includes(cause.status)) return;
+            connect(id);
+          });
+        }, STREAM_RETRY_MS));
       });
     };
 
@@ -120,6 +123,7 @@ export function useBoard(projectId: string | null, view: WorkViewState): BoardSt
 
     return () => {
       stopped = true;
+      controller.abort();
       for (const retry of retries.values()) clearTimeout(retry);
       for (const source of sources.values()) source.close();
     };
