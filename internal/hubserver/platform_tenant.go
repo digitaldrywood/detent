@@ -2,12 +2,43 @@ package hubserver
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type platformTenantAllowance struct {
+	Used  int64  `json:"used"`
+	Limit *int64 `json:"limit"`
+}
+
+type platformTenantUsage struct {
+	WindowEndsAt string                             `json:"window_ends_at"`
+	Allowances   map[string]platformTenantAllowance `json:"allowances"`
+}
+
+func (s *Service) platformTenantUsage(c echo.Context) error {
+	usage := platformTenantUsage{Allowances: map[string]platformTenantAllowance{}}
+	if s.database.hostedPlans == nil {
+		return c.JSON(http.StatusOK, usage)
+	}
+	entitlement, err := s.database.hostedPlanUsage(c.Request().Context(), s.config.now())
+	if err != nil {
+		return s.internalAPIError(c, "usage_unavailable", "Usage is unavailable", err)
+	}
+	usage.WindowEndsAt = entitlement.WindowEndsAt.UTC().Format(time.RFC3339)
+	for _, name := range hostedAllowanceNames() {
+		row := platformTenantAllowance{Used: entitlement.Usage[name]}
+		if limit, limited := entitlement.Allowances[name]; limited {
+			row.Limit = &limit
+		}
+		usage.Allowances[name] = row
+	}
+	return c.JSON(http.StatusOK, usage)
+}
 
 func (s *Service) platformTenantMembers(c echo.Context) error {
 	ctx := c.Request().Context()

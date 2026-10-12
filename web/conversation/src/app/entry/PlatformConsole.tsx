@@ -12,7 +12,7 @@ import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import { Table, TableBody, TableCell, TableRow } from "../../components/ui/table.tsx";
 import { PlatformSearch } from "./PlatformSearch.tsx";
-import { PlatformActionsContext } from "./PlatformPageActions.tsx";
+import { PlatformActionsContext, PlatformHeadingContext } from "./PlatformPageActions.tsx";
 import {
   Sidebar,
   SidebarContent,
@@ -38,7 +38,8 @@ import {
   type PlatformAllowlist,
   type PlatformHealth,
 } from "./api.ts";
-import { PlatformTenants, PlatformTenant } from "./PlatformTenants.tsx";
+import { PlatformTenant } from "./PlatformTenant.tsx";
+import { PlatformTenants } from "./PlatformTenants.tsx";
 import { PlatformHealthContext, PlatformHealthContent, platformHealthState } from "./PlatformHealth.tsx";
 import { PlatformStaff } from "./PlatformStaff.tsx";
 import { Problem, SignOut, useEntryApi } from "./EntryScreens.tsx";
@@ -194,6 +195,7 @@ export function PlatformConsole(): React.ReactElement {
   const query = useRouterState({ select: (state) => (state.location.search as { q?: string }).q });
   usePageTitle(section?.title ?? "Platform", "Platform");
   const [searchOpen, setSearchOpen] = React.useState(false);
+  const [heading, setHeading] = React.useState<React.ReactNode>(null);
   const [actions, setActions] = React.useState<HTMLDivElement | null>(null);
   const error = session.error ?? organizations.error;
   const denied = role === "" || (section?.id === "staff" && role !== "admin");
@@ -201,15 +203,15 @@ export function PlatformConsole(): React.ReactElement {
     <PlatformRoleContext.Provider value={role}>
       <PlatformCSRFContext.Provider value={value?.csrf ?? ""}>
         <PlatformHealthContext.Provider value={health}>
-          <PlatformActionsContext.Provider value={actions}>
+          <PlatformHeadingContext.Provider value={setHeading}><PlatformActionsContext.Provider value={actions}>
             <SidebarProvider open className="relative h-full min-h-0 flex-1">
               <PlatformNavigation role={role} email={value?.email ?? ""} csrf={value?.csrf ?? ""} organizations={organizations.value?.organizations ?? []}
                 count={tenants.value?.organizations.length} health={health.value} onSearch={() => setSearchOpen(true)} />
               <main className="flex min-h-0 min-w-0 flex-1 flex-col">
                 <WorkspacePageHeader className="border-b border-border">
                   <SidebarTrigger className="md:hidden" />
-                  <h1 className="min-w-0 truncate text-sm font-medium">{email === undefined ? section?.title ?? "Platform" : <><Link to={"/platform/users" as never} search={{ q: query } as never} className="text-muted-foreground hover:underline">Users</Link><span className="mx-2 text-muted-foreground">/</span>{email}</>}</h1>
-                  <div ref={setActions} className="ml-auto flex shrink-0 items-center gap-2" />
+                  <div className="min-w-0 flex-1">{heading ?? <h1 className="truncate text-sm font-medium">{email === undefined ? section?.title ?? "Platform" : <><Link to={"/platform/users" as never} search={{ q: query } as never} className="text-muted-foreground hover:underline">Users</Link><span className="mx-2 text-muted-foreground">/</span>{email}</>}</h1>}</div>
+                  <div ref={setActions} className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2" />
                 </WorkspacePageHeader>
                 <div className="min-h-0 flex-1 overflow-y-auto">
                   <WorkspacePageContainer width="wide">
@@ -224,7 +226,7 @@ export function PlatformConsole(): React.ReactElement {
               </main>
               {role === "" ? null : <PlatformSearch open={searchOpen} onOpenChange={setSearchOpen} tenants={tenants.value?.organizations ?? []} tenantError={tenants.error} />}
             </SidebarProvider>
-          </PlatformActionsContext.Provider>
+          </PlatformActionsContext.Provider></PlatformHeadingContext.Provider>
         </PlatformHealthContext.Provider>
       </PlatformCSRFContext.Provider>
     </PlatformRoleContext.Provider>
@@ -243,7 +245,7 @@ export function PlatformTenantsPage(): React.ReactElement {
 
 export function PlatformTenantPage(): React.ReactElement {
   const role = React.useContext(PlatformRoleContext);
-  return <><PlatformPageTitle section="tenants" /><PlatformTenant role={role} /></>;
+  return <PlatformTenant role={role} />;
 }
 
 export function PlatformHealthPage(): React.ReactElement {
