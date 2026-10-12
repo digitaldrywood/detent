@@ -933,14 +933,15 @@ describe("tenant discovery and detail", () => {
   it.each(["viewer", "support", "billing", "admin"])("opens a tenant page with role-gated actions for %s", async (role) => {
     const api = fakeApi({ session: vi.fn(async () => ({ email: "staff@example.test", csrf: "staff-csrf", platform_role: role })) });
     renderPlatform(api, "/platform/tenants/org_alpha");
-    await screen.findByRole("region", { name: "Organization" });
+    const organization = await screen.findByRole("region", { name: "Organization" });
+    expect(within(organization).getByRole("link", { name: "dana@example.test" }).getAttribute("href")).toBe("/platform/users/dana%40example.test");
     expect(screen.queryByRole("dialog", { name: "Alpha" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Support access" }) !== null).toBe(role === "support" || role === "admin");
     for (const name of ["Change plan", "Grant model choice", "Revoke grant"]) expect(screen.queryByRole("button", { name }) !== null).toBe(role === "billing" || role === "admin");
     expect(screen.queryByRole("button", { name: "Resume provisioning" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Members 1" }));
     const members = await screen.findByRole("region", { name: "Members" });
-    expect(within(members).getByRole("link", { name: "dana@example.test" }).getAttribute("href")).toBe("/platform/users?q=dana%40example.test");
+    expect(within(members).getByRole("link", { name: "dana@example.test" }).getAttribute("href")).toBe("/platform/users/dana%40example.test");
     expect(within(members).getByText("Owner")).toBeTruthy();
   });
 

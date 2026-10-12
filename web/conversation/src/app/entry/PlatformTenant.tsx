@@ -591,8 +591,8 @@ export function PlatformTenant({
                   control={
                     owner ? (
                       <Link
-                        to={"/platform/users" as never}
-                        search={{ q: owner } as never}
+                        to={"/platform/users/$email" as never}
+                        params={{ email: owner } as never}
                         className="break-all text-sm text-link underline"
                       >
                         {owner}
@@ -693,8 +693,8 @@ export function PlatformTenant({
                     key={member.id}
                     title={
                       <Link
-                        to={"/platform/users" as never}
-                        search={{ q: member.email } as never}
+                        to={"/platform/users/$email" as never}
+                        params={{ email: member.email } as never}
                         className="break-all text-link underline"
                       >
                         {member.email}
