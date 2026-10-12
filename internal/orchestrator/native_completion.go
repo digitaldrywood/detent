@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -189,7 +190,8 @@ func (o *Orchestrator) completeNativeChangeRun(
 		target, ok = connector.CompletionLane(states, issue.State, normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock).TargetState, true)
 	}
 	validatorRework := change != nil && change.Validator != nil && change.Validator.Verdict == "rework" && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
-	unfinished := validatorRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == ""
+	implementationRework := change != nil && change.ImplementationReview != nil && change.ImplementationReview.Verdict != gate.ValidatorVerdictPass && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
+	unfinished := validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == ""
 	if unfinished {
 		if rework, allowed := nativeRetryLane(states, issue.State, cfg.ReworkState); allowed {
 			target, ok = rework, true

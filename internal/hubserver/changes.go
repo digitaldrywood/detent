@@ -393,7 +393,7 @@ func readChangeDetailView(ctx context.Context, query nativeQueryer, scope native
 	var staleApproval bool
 	if current {
 		err = query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_evidence WHERE change_id = ? AND kind = 'review'
-AND json_extract(record_json, '$.decision') = 'approved' AND json_extract(record_json, '$.validator') IS NULL AND version_id != ?)`, id, result.Change.CurrentVersion).Scan(&staleApproval)
+AND json_extract(record_json, '$.decision') = 'approved' AND json_extract(record_json, '$.validator') IS NULL AND json_extract(record_json, '$.implementation_review') IS NULL AND version_id != ?)`, id, result.Change.CurrentVersion).Scan(&staleApproval)
 		if err != nil {
 			return result, fmt.Errorf("load stale approval: %w", err)
 		}
@@ -423,7 +423,7 @@ func readCurrentChangeDetail(ctx context.Context, query nativeQueryer, scope nat
 			return result, err
 		}
 		err = query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_evidence WHERE change_id = ? AND kind = 'review'
-AND json_extract(record_json, '$.decision') = 'approved' AND json_extract(record_json, '$.validator') IS NULL AND version_id != ?)`, change.ID, version.ID).Scan(&staleApproval)
+AND json_extract(record_json, '$.decision') = 'approved' AND json_extract(record_json, '$.validator') IS NULL AND json_extract(record_json, '$.implementation_review') IS NULL AND version_id != ?)`, change.ID, version.ID).Scan(&staleApproval)
 		if err != nil {
 			return result, err
 		}
