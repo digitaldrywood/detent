@@ -168,7 +168,7 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 			switch {
 			case service:
 				if err := startService(cmd, paths.config); err != nil {
-					return err
+					return NewClassifiedError(err, classifyError(err).Slug, "Runner enrollment succeeded; install and start service: "+ErrorDetail(err), "Finish runner setup: "+start, nil)
 				}
 				result.ServiceRun = true
 				result.Service = serviceNameForConfig(configuration)
