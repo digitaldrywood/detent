@@ -39,6 +39,7 @@ import { WorkTopBar } from "./components/WorkTopBar.tsx";
 import { useShell } from "../App.tsx";
 import { useWorkSidebarSearch } from "../adapters/sidebarData.tsx";
 import { boardConnectionChip } from "./lib/freshness.ts";
+import { allProjectsLabel } from "../lib/projectScope.ts";
 
 function applyFilters(
   items: readonly WorkItemView[],
@@ -234,7 +235,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   });
   const scopeName =
     projectId === null
-      ? "All projects"
+      ? allProjectsLabel(client.bootstrap.organization?.name)
       : (board.project?.name ?? projects.get(projectId) ?? projectId);
   const laneNames = board.lanes.map((lane) => lane.name);
   const visible = board.lanes.filter((lane) => laneVisible(view, lane));
@@ -263,6 +264,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
     <WorkTopBar
       context="Work"
       title={scopeName}
+      titleTooltip={scopeName}
       completed={noProjects ? null : (
         <div className="flex shrink-0 items-center gap-1">
           <LiveCounter count={board.resolved ? stats.running : null} loading={board.loading} />

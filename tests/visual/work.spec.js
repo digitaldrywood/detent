@@ -815,11 +815,11 @@ test("shares project scope between the sidebar and Work across reloads", async (
   await page.goForward();
   await expectProject(projects[0]);
 
-  await selectScope("All projects");
+  await selectScope("All Browser organization projects");
   const expectAll = async () => {
     await expect(page).toHaveURL(/\/work(?:\?|$)/);
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText("All projects");
-    await expect(scope).toHaveText("All projects");
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("All Browser organization projects");
+    await expect(scope).toHaveText("All Browser organization projects");
     await showClosed();
     await expect(closedTab).toHaveText("Closed 2");
     for (const project of projects) {

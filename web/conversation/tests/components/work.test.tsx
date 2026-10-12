@@ -894,8 +894,17 @@ async function pagedWork(path = "/work", wrapFetch?: (fetch: ReturnType<typeof w
   } });
   const history = createMemoryHistory({ initialEntries: [path] });
   const router = createRouter({ routeTree: root.addChildren([all, project]), history, ...plainSearchOptions });
-  render(<ClientContext.Provider value={fixture.client}><RouterProvider router={router} /></ClientContext.Provider>);
-  return { ...fixture, router, history };
+  const mounted = render(<ClientContext.Provider value={fixture.client}><RouterProvider router={router} /></ClientContext.Provider>);
+  const setOrganization = (name?: string) => {
+    const organization = { ...fixture.client.bootstrap.organization, name: name ?? "" };
+    if (name === undefined) Reflect.deleteProperty(organization, "name");
+    mounted.rerender(
+      <ClientContext.Provider value={{ ...fixture.client, bootstrap: { ...fixture.client.bootstrap, organization } }}>
+        <RouterProvider router={router} />
+      </ClientContext.Provider>,
+    );
+  };
+  return { ...fixture, router, history, setOrganization };
 }
 
 async function settledWork() {
@@ -1226,6 +1235,40 @@ describe("the live Work continuation intent", () => {
 });
 
 describe("the filter-first Work surface", () => {
+  it("names the organization, follows organization changes and preserves project scope", async () => {
+    const fixture = await pagedWork();
+    await settledWork();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Fixture projects");
+    fixture.setOrganization("Parable");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Parable projects");
+    fixture.setOrganization("Drywood Creek");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Drywood Creek projects");
+    fixture.setOrganization("");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All projects");
+    fixture.setOrganization();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All projects");
+    await act(() => fixture.router.navigate({ to: "/work/p/$projectId", params: { projectId: "proj_alpha" } }));
+    await settledWork();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("alpha");
+    fixture.setOrganization("Parable");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("alpha");
+    expect(fixture.router.state.location.pathname).toBe("/work/p/proj_alpha");
+  });
+
+  it("reveals the full scope title on keyboard focus", async () => {
+    const fixture = await pagedWork();
+    await settledWork();
+    const title = "All Parable and Drywood Creek Collaborative Research Organization projects";
+    fixture.setOrganization("Parable and Drywood Creek Collaborative Research Organization");
+    const heading = screen.getByRole("heading", { level: 1, name: title });
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+      within(heading).getByText(title).focus();
+    });
+    await waitFor(() => expect(screen.getAllByText(title)).toHaveLength(2));
+    expect(screen.getAllByText(title).find((element) => !heading.contains(element))).toBeTruthy();
+  });
+
   it.each(["4", "42", "true", "false", "null", "4.0", "1e3", "9007199254740993", '"4"', '[4]', '{"number":4}'])("preserves the literal search %s through URL edits", async (q) => {
     const fixture = await pagedWork();
     await settledWork();

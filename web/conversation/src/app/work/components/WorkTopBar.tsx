@@ -77,6 +77,7 @@ export interface WorkTopBarProps {
   readonly context: string;
   /** The current segment. It is the route's one `h1` (B.14). */
   readonly title: string;
+  readonly titleTooltip?: string;
   readonly meta?: string | null;
   readonly completed?: React.ReactNode;
   /** Rendered before the identifier in the current segment, e.g. `#3363`. */
@@ -122,7 +123,18 @@ export function WorkTopBar(props: WorkTopBarProps): React.ReactElement {
                   {props.identifier}
                 </span>
               )}
-              <span className="min-w-0 truncate">{props.title}</span>
+              {props.titleTooltip ? (
+                <Tooltip>
+                  <TooltipTrigger render={<span className="min-w-0 truncate" tabIndex={0} />}>
+                    {props.title}
+                  </TooltipTrigger>
+                  <TooltipPopup side="bottom" className="max-w-80">
+                    {props.titleTooltip}
+                  </TooltipPopup>
+                </Tooltip>
+              ) : (
+                <span className="min-w-0 truncate">{props.title}</span>
+              )}
             </h1>
           </WorkspaceBreadcrumbItem>
           {props.meta == null ? null : (

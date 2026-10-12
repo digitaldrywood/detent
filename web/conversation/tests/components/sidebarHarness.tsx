@@ -33,6 +33,7 @@ export interface SidebarHarness {
   readonly onNewChat: ReturnType<typeof vi.fn>;
   readonly onNavigate: ReturnType<typeof vi.fn>;
   readonly navigated: string[];
+  readonly setOrganization: (name: string) => void;
 }
 
 /** Every shelf and override the sidebar persists, back to its first-run state. */
@@ -50,7 +51,7 @@ export async function renderSidebar(
   const onNavigate = vi.fn();
   const navigated: string[] = [];
 
-  const data: SidebarShellData = {
+  let data: SidebarShellData = {
     organizationName: "Threefold",
     projects: [...PROJECTS],
     activeProjectId: "proj_alpha",
@@ -70,11 +71,9 @@ export async function renderSidebar(
   const Mounted = (): React.ReactElement => (
     <ClientContext.Provider value={options.client ?? null}>
     <ToastProvider>
-      <SidebarDataProvider value={data}>
-        <SidebarProvider>
-          <ThreadSidebar />
-        </SidebarProvider>
-      </SidebarDataProvider>
+      <SidebarProvider>
+        <ThreadSidebar />
+      </SidebarProvider>
     </ToastProvider>
     </ClientContext.Provider>
   );
@@ -104,8 +103,13 @@ export async function renderSidebar(
   // The router resolves its first match asynchronously; without this the
   // provider's first paint is the pending frame and nothing is in the DOM.
   await (router as unknown as { load: () => Promise<void> }).load();
-  render(<RouterProvider router={router as never} />);
-  return { onSelect, onNewChat, onNavigate, navigated };
+  const mounted = render(<SidebarDataProvider value={data}><RouterProvider router={router as never} /></SidebarDataProvider>);
+  const setOrganization = (organizationName: string) => {
+    data = { ...data, organizationName };
+    publishSidebarData(data);
+    mounted.rerender(<SidebarDataProvider value={data}><RouterProvider router={router as never} /></SidebarDataProvider>);
+  };
+  return { onSelect, onNewChat, onNavigate, navigated, setOrganization };
 }
 
 /** The row for a conversation, card or slim, as the copied sidebar renders it. */
