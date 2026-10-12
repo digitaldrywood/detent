@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 )
@@ -41,8 +42,13 @@ func (l *LocalGit) RunReviewCommand(ctx context.Context, info Info, issue Issue,
 	result.ReceiptID = result.PipelineTiming("").ReceiptID
 	const maxOutputBytes = 64 * 1024
 	const truncatedOutputMarker = "[earlier output truncated]\n"
+	result.Output = strings.ToValidUTF8(result.Output, "�")
 	if len(result.Output) > maxOutputBytes {
-		result.Output = truncatedOutputMarker + result.Output[len(result.Output)-maxOutputBytes+len(truncatedOutputMarker):]
+		start := len(result.Output) - maxOutputBytes + len(truncatedOutputMarker)
+		for !utf8.RuneStart(result.Output[start]) {
+			start++
+		}
+		result.Output = truncatedOutputMarker + result.Output[start:]
 		result.OutputTruncated = true
 	}
 	if err != nil {
