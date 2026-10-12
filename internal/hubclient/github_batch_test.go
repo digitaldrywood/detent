@@ -3,8 +3,11 @@ package hubclient
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,5 +88,61 @@ func TestRunnerGitHubBatchReportsOneBoundedStep(t *testing.T) {
 				t.Fatalf("reads=%d reports=%d", reads, reports)
 			}
 		})
+	}
+}
+
+func TestRunnerGitHubBatchContinuesPagesWithoutHeartbeat(t *testing.T) {
+	t.Parallel()
+	reports, reads := 0, 0
+	httpClient := &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		reports++
+		var result tracker.GitHubBatchResult
+		if err := json.NewDecoder(request.Body).Decode(&result); err != nil {
+			t.Fatal(err)
+		}
+		first, count := 1+(reports-1)*100, 100
+		if reports == 4 {
+			count = 85
+		}
+		if len(result.Results) != count || result.Results[0].Number != first || result.Results[count-1].Number != first+count-1 || result.Revision != int64(reports) {
+			t.Fatalf("page=%+v", result)
+		}
+		receipt := tracker.GitHubBatchReceipt{Revision: int64(reports + 1), Status: "importing"}
+		if reports < 4 {
+			task := tracker.GitHubBatchTask{ProjectID: "prj_test", BatchID: "intake_test", Revision: int64(reports + 1)}
+			for number := first + count; number <= min(first+count+99, 385); number++ {
+				task.Items = append(task.Items, tracker.GitHubIssuePreview{Number: number, URL: fmt.Sprintf("https://github.com/example-org/example-project/issues/%d", number)})
+			}
+			receipt.Next = &task
+		}
+		raw, err := json.Marshal(receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(string(raw))), Request: request}, nil
+	})}
+	client, err := New(Config{URL: "https://hub.test", TokenSource: func() string { return "fixture-token" }, HTTPClient: httpClient})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := client.Native("org_test", "prj_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler := &Scheduler{githubIntake: func(_ context.Context, url string) (tracker.GitHubIssueSnapshot, error) {
+		reads++
+		snapshot := intakeSnapshot()
+		snapshot.URL = url
+		return snapshot, nil
+	}}
+	task := tracker.GitHubBatchTask{ProjectID: "prj_test", BatchID: "intake_test", Revision: 1}
+	for number := 1; number <= 100; number++ {
+		task.Items = append(task.Items, tracker.GitHubIssuePreview{Number: number, URL: fmt.Sprintf("https://github.com/example-org/example-project/issues/%d", number)})
+	}
+	if err := scheduler.processGitHubBatch(t.Context(), native, task); err != nil {
+		t.Fatal(err)
+	}
+	if reports != 4 || reads != 385 {
+		t.Fatalf("reports=%d reads=%d", reports, reads)
 	}
 }

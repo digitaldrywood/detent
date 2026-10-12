@@ -66,14 +66,15 @@ type ImportAdvanceInput struct {
 	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
 }
 type GitHubBatchInput struct {
-	Revision      int64    `json:"revision"`
-	Action        string   `json:"action"`
-	RunnerID      string   `json:"runner_id"`
-	Labels        []string `json:"labels,omitempty"`
-	IncludeClosed bool     `json:"include_closed"`
-	Numbers       []int    `json:"numbers,omitempty"`
-	Destination   string   `json:"destination"`
-	AllowDispatch bool     `json:"allow_dispatch"`
+	LabelLanes    map[string]string `json:"label_lanes,omitempty"`
+	Revision      int64             `json:"revision"`
+	Action        string            `json:"action"`
+	RunnerID      string            `json:"runner_id"`
+	Labels        []string          `json:"labels,omitempty"`
+	IncludeClosed bool              `json:"include_closed"`
+	Numbers       []int             `json:"numbers,omitempty"`
+	Destination   string            `json:"destination"`
+	AllowDispatch bool              `json:"allow_dispatch"`
 }
 type CutoverInput struct {
 	ClosedState    string                `json:"closed_state"`

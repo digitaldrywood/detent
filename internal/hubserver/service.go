@@ -456,6 +456,9 @@ func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.maintainGitHubWebhooks(ctx)
+			if err := s.maintainGitHubBatches(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				s.config.Logger.Error("process GitHub intake batches", "error", err)
+			}
 		}
 	}
 }
