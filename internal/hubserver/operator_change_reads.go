@@ -187,14 +187,8 @@ func readChangeSection(ctx context.Context, query nativeQueryer, args operatorto
 			if err := json.Unmarshal(row.raw, &review); err != nil {
 				return operatortool.ChangeReadPage{}, err
 			}
-			if review.Validator != nil {
-				validator := *review.Validator
-				validator.Commands = slices.Clone(validator.Commands)
-				for i := range validator.Commands {
-					validator.Commands[i] = *boundedChangeCommand(&validator.Commands[i])
-				}
-				review.Validator = &validator
-			}
+			review.Validator = boundedChangeReviewResult(review.Validator)
+			review.ImplementationReview = boundedChangeReviewResult(review.ImplementationReview)
 			detail.Reviews = append(detail.Reviews, review)
 		case "checks":
 			var check tracker.ChangeCheck
@@ -233,6 +227,18 @@ func readChangeSection(ctx context.Context, query nativeQueryer, args operatorto
 	}
 	next, err := encodeChangeReadCursor(cursor)
 	return operatortool.ChangeReadPage{NextCursor: next}, err
+}
+
+func boundedChangeReviewResult(result *gate.ValidatorResult) *gate.ValidatorResult {
+	if result == nil {
+		return nil
+	}
+	bounded := *result
+	bounded.Commands = slices.Clone(bounded.Commands)
+	for i := range bounded.Commands {
+		bounded.Commands[i] = *boundedChangeCommand(&bounded.Commands[i])
+	}
+	return &bounded
 }
 
 func boundedChangeCommand(command *gate.CommandResult) *gate.CommandResult {

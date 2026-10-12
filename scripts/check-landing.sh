@@ -43,6 +43,7 @@ while raw.strip():
 root = Path.cwd()
 wide = any(path in ("go.mod", "go.sum") for path in changed)
 direct = set()
+propagated = set()
 lint = set()
 for name, package in packages.items():
     directory = Path(package["Dir"]).relative_to(root).as_posix()
@@ -53,17 +54,20 @@ for name, package in packages.items():
             if relative.endswith(".go") and "/" not in relative:
                 direct.add(name)
                 lint.add(name)
+                if not relative.endswith("_test.go"):
+                    propagated.add(name)
             if relative.startswith("testdata/") or relative in package.get("EmbedFiles", []) + package.get("TestEmbedFiles", []) + package.get("XTestEmbedFiles", []):
                 direct.add(name)
-selected = set(packages) if wide else direct.copy()
+                propagated.add(name)
 while True:
     dependents = {
         name for name, package in packages.items()
-        if selected.intersection(package.get("Imports", []) + package.get("TestImports", []) + package.get("XTestImports", []))
+        if propagated.intersection(package.get("Imports", []) + package.get("TestImports", []) + package.get("XTestImports", []))
     }
-    if dependents.issubset(selected):
+    if dependents.issubset(propagated):
         break
-    selected.update(dependents)
+    propagated.update(dependents)
+selected = set(packages) if wide else direct | propagated
 if wide:
     print("wide\t./...")
 for scope, names in (("test", selected), ("lint", set(packages) if wide else lint)):

@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -15,6 +16,9 @@ import (
 
 func TestChangeValidatorSessionAuthority(t *testing.T) {
 	t.Parallel()
+	implementationReview := func(r *tracker.ReviewChange) {
+		r.ImplementationReview, r.Validator = r.Validator, nil
+	}
 	multipleReceipts := func(r *tracker.ReviewChange) {
 		r.Validator.CriteriaEvidence[0] = gate.CriterionEvidence{Criterion: "Complete the requested work.", Kind: "receipt", Reference: "make check-app; npx playwright test", ReceiptIDs: []string{"timing_app", "timing_browser"}, HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree", Behavior: "Application and browser checks exercise the requested behavior"}
 		r.Validator.Commands = []gate.CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree"}, {ReceiptID: "timing_browser", Command: "npx playwright test", HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree"}}
@@ -25,6 +29,18 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		want   int
 		status string
 	}{
+		{"source review from another machine does not collide", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed"},
+		{"same machine source session cannot validate acceptance", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence"},
+		{"implementation review is not acceptance", implementationReview, http.StatusOK, "needs_evidence"},
+		{"implementation review is not human approval", implementationReview, http.StatusOK, "needs_evidence"},
+		{"implementation review does not leave stale human approval", implementationReview, http.StatusOK, "needs_evidence"},
+		{"implementation review same session", func(r *tracker.ReviewChange) {
+			implementationReview(r)
+			r.ImplementationReview.SessionID = 41
+		}, http.StatusUnprocessableEntity, "needs_evidence"},
+		{"implementation review mixed result", func(r *tracker.ReviewChange) {
+			r.ImplementationReview = r.Validator
+		}, http.StatusUnprocessableEntity, "needs_evidence"},
 		{"separate session pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed"},
 		{"separate session pass with multiple receipts", multipleReceipts, http.StatusOK, "reviewed"},
 		{"failed selected receipt cannot pass", func(r *tracker.ReviewChange) {
@@ -60,6 +76,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				cfg := config.Default()
 				cfg.Tracker.Kind = config.TrackerHubNative
 				cfg.Gate.Validator.Enabled = true
+				cfg.Gate.AutomatedReview = gate.AutomatedReviewOff
 				cfg.Gate.Validator.UnverifiedCriteria = gate.UnverifiedCriteriaDisclose
 				resolved, err := config.ResolvePolicy(config.Workflow{Config: cfg})
 				if err != nil {
@@ -68,7 +85,12 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				descriptor = resolved
 			}
 			descriptor.Gates.Validator = true
-			humanReview := test.name == "separate session pass with human review"
+			implementation := strings.HasPrefix(test.name, "implementation review")
+			counterCollision := test.name == "source review from another machine does not collide" || test.name == "same machine source session cannot validate acceptance"
+			if implementation || counterCollision {
+				descriptor.Gates.AutomatedReview = gate.AutomatedReviewRequired
+			}
+			humanReview := test.name == "separate session pass with human review" || test.name == "implementation review is not human approval" || test.name == "implementation review does not leave stale human approval"
 			if humanReview {
 				descriptor.Gates.HumanReview = true
 			}
@@ -99,6 +121,20 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			request := tracker.ReviewChange{Mutation: mutation, ExpectedVersionID: version.ID, Decision: "approved", Validator: &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Submitted: true, Verdict: "pass", Score: .95, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, DiffDigest: policy.Digest([]byte("diff"))}}
 			request.Validator.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: "test", Reference: "change_validator_test.go:TestChangeValidatorSessionAuthority", Behavior: "A separate validator session reviews the immutable version"}}
 			test.edit(&request)
+			if counterCollision {
+				machine := tracker.MachineID("machine")
+				if test.name == "source review from another machine does not collide" {
+					machine = "other-machine"
+				}
+				sourceReview := tracker.ChangeReview{SessionMachineID: machine, ID: "review_previous_source", VersionID: version.ID, Decision: "approved", ImplementationReview: &gate.ValidatorResult{VersionID: version.ID, Repository: version.Repository, HeadSHA: version.HeadSHA, BaseSHA: version.BaseSHA, SessionID: 42, Submitted: true, Verdict: "pass", Score: 1}, Actor: tracker.Actor{Kind: "runner", PrincipalID: "previous-worker"}, CreatedAt: f.service.config.now()}
+				raw, err := marshalNative(sourceReview)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_evidence (change_id, version_id, kind, record_json) VALUES (?, ?, 'review', ?)", change.ID, version.ID, raw); err != nil {
+					t.Fatal(err)
+				}
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request), test.want)
 			response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
@@ -115,8 +151,25 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			if err != nil || current.Summary.Status != detail.Summary.Status {
 				t.Fatalf("current summary differs: %+v, %v", current.Summary, err)
 			}
-			if test.want == http.StatusOK && (len(detail.Reviews) != 1 || detail.Reviews[0].Validator == nil || detail.Reviews[0].Validator.SessionID != 42) {
-				t.Fatalf("validator session was not persisted: %+v", detail.Reviews)
+			if test.want == http.StatusOK {
+				wantReviews := 1
+				if counterCollision {
+					wantReviews++
+				}
+				if len(detail.Reviews) != wantReviews {
+					t.Fatalf("review session was not persisted: %+v", detail.Reviews)
+				}
+				storedReview := detail.Reviews[len(detail.Reviews)-1]
+				stored := storedReview.Validator
+				if implementation {
+					stored = storedReview.ImplementationReview
+					if storedReview.Validator != nil {
+						t.Fatal("implementation review was stored as acceptance")
+					}
+				}
+				if stored == nil || stored.SessionID != 42 || storedReview.SessionMachineID != lease.MachineID {
+					t.Fatalf("review session was not persisted: %+v", detail.Reviews)
+				}
 			}
 			if test.name == "separate session pass with multiple receipts" {
 				stored := detail.Reviews[0].Validator
@@ -130,7 +183,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					t.Fatalf("missing evidence not persisted on its version: %+v", stored)
 				}
 			}
-			if strings.HasPrefix(test.name, "separate session pass") {
+			if strings.HasPrefix(test.name, "separate session pass") || test.name == "implementation review does not leave stale human approval" {
 				input.HeadSHA = strings.Repeat("c", 40)
 				mutation.IdempotencyKey = "publish-next"
 				response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", worker, tracker.PublishChangeVersion{Mutation: mutation, ExpectedVersionID: version.ID, ChangeVersionInput: input})
@@ -143,7 +196,14 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					t.Fatalf("old validator approved new version: %+v, %v", current.Summary, err)
 				}
 				if current.Summary.NativeReview != review {
-					t.Fatalf("old validator counted as human approval: %+v", current.Summary)
+					t.Errorf("old automated review counted as human approval: %+v", current.Summary)
+				}
+				response = performHubAPIRequest(t, f.service, http.MethodGet, path+"?view=bounded&section=current", f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var bounded operatortool.ChangeResult
+				decodeHubResponse(t, response, &bounded)
+				if bounded.Detail == nil || bounded.Detail.Summary.NativeReview != review {
+					t.Fatalf("bounded read attributed automated review to a human: %+v", bounded.Detail)
 				}
 
 			}

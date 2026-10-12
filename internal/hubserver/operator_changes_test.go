@@ -620,7 +620,11 @@ func TestOperatorChangeCommands(t *testing.T) {
 					validator.Commands = append(validator.Commands, gate.CommandResult{ReceiptID: "receipt_" + strconv.Itoa(command), Command: "check " + strconv.Itoa(command), HeadSHA: current.HeadSHA, TreeSHA: strings.Repeat("d", 40), ExitCode: command % 2, DurationNS: 1, Output: output, OutputTruncated: command >= 3})
 				}
 			}
-			insert(ctx, "review", current.ID, tracker.ChangeReview{ID: "review_" + id, VersionID: current.ID, Decision: "commented", Body: strings.Repeat("é<\n", 5000), Actor: actor, CreatedAt: at, Validator: validator})
+			review := tracker.ChangeReview{ID: "review_" + id, VersionID: current.ID, Decision: "commented", Body: strings.Repeat("é<\n", 5000), Actor: actor, CreatedAt: at, Validator: validator}
+			if i%2 == 0 {
+				review.ImplementationReview, review.Validator = review.Validator, nil
+			}
+			insert(ctx, "review", current.ID, review)
 			insert(ctx, "check", current.ID, tracker.ChangeCheck{VersionID: current.ID, ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: "check_" + id, HeadSHA: current.HeadSHA, Conclusion: "failure", Evidence: []tracker.ChangeArtifact{current.Code}}, Actor: actor, ReceivedAt: at})
 			insert(ctx, "discussion", current.ID, tracker.ChangeDiscussion{ID: "discussion_" + id, VersionID: current.ID, Body: strings.Repeat("世界<\n", 5000), Actor: actor, CreatedAt: at})
 		}
@@ -694,7 +698,11 @@ func TestOperatorChangeCommands(t *testing.T) {
 								continue
 							}
 							want := stored
-							validator := *stored.Validator
+							result := stored.Validator
+							if stored.ImplementationReview != nil {
+								result = stored.ImplementationReview
+							}
+							validator := *result
 							validator.Commands = append([]gate.CommandResult(nil), validator.Commands...)
 							for i := range validator.Commands {
 								if i < 4 {
@@ -702,7 +710,11 @@ func TestOperatorChangeCommands(t *testing.T) {
 									validator.Commands[i].OutputTruncated = true
 								}
 							}
-							want.Validator = &validator
+							if stored.ImplementationReview != nil {
+								want.ImplementationReview = &validator
+							} else {
+								want.Validator = &validator
+							}
 							if !reflect.DeepEqual(r, want) {
 								t.Fatal("review verdict, criteria, receipt identity or output disclosure changed")
 							}
