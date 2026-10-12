@@ -140,6 +140,7 @@ type PublishChangeVersion struct {
 }
 
 type ChangeReview struct {
+	SessionMachineID     MachineID             `json:"session_machine_id,omitempty"`
 	ImplementationReview *gate.ValidatorResult `json:"implementation_review,omitempty"`
 	Validator            *gate.ValidatorResult `json:"validator,omitempty"`
 	ID                   string                `json:"review_id"`

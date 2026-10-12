@@ -129,10 +129,11 @@ func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 	if change.CurrentLanding() != nil {
 		return nil, nativeConflict(change.Revision)
 	}
-	if err := validateNativeValidatorReview(ctx, tx, scope, change, version, request); err != nil {
+	sessionMachineID, err := validateNativeValidatorReview(ctx, tx, scope, change, version, request)
+	if err != nil {
 		return nil, err
 	}
-	review := tracker.ChangeReview{ImplementationReview: request.ImplementationReview, Validator: request.Validator, ID: newNativeID("review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: now}
+	review := tracker.ChangeReview{SessionMachineID: sessionMachineID, ImplementationReview: request.ImplementationReview, Validator: request.Validator, ID: newNativeID("review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: now}
 	if err := insertChangeEvidence(ctx, tx, change.ID, review.VersionID, "review", "", review); err != nil {
 		return nil, err
 	}

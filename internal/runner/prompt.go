@@ -417,6 +417,16 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 	}
 
 	validator := gate.Effective(workflow.Config.Gate).Validator
+	if opts.implementationReview {
+		b.WriteString("Review instructions:\n")
+		b.WriteString("- Review the immutable source diff above for implementation defects, security problems, regressions, and repository-standard or issue-spec violations. Inspect relevant callers and tests to trace actual consequences.\n")
+		b.WriteString("- Do not modify files, commit, push, change labels, or transition issue state. Do not claim final acceptance or map acceptance evidence; the separate validator performs that task after this review.\n")
+		b.WriteString("- Report only introduced, reachable, actionable defects with a concrete trace. Use severities p1, p2, p3, or p4. Score is confidence from 0 to 1 in the source review's conclusion about implementation quality.\n")
+		b.WriteString("- Return pass when no blocking source defects remain, rework for actionable defects, or wait when source review cannot be completed. Missing later feature-acceptance evidence alone is not a source-review defect.\n")
+		b.WriteString("- Return only JSON: {\"verdict\":\"pass|wait|rework\",\"score\":0.0,\"summary\":\"...\",\"findings\":[{\"severity\":\"p1|p2|p3|p4\",\"body\":\"concrete traced defect\",\"path\":\"optional\",\"line\":0}]}.\n")
+		fmt.Fprintf(&b, "Minimum source-review score: %g. Blocking severities: %s.\n", validator.MinScore, strings.Join(validator.BlockOn, ", "))
+		return b.String()
+	}
 	contract, err := config.ResolveIssueContract(workflow.SharedPrompt)
 	if err != nil {
 		fmt.Fprintf(&b, "Cannot resolve acceptance criteria: %s\n", err)

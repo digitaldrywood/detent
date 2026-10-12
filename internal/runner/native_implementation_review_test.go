@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"reflect"
@@ -120,7 +121,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "source rework without acceptance validator", verdict: "rework"},
 		{name: "source rework stops acceptance validator", validator: true, verdict: "rework"},
 		{name: "source wait stops acceptance validator", validator: true, verdict: "wait"},
-		{name: "record failure stops acceptance validator", validator: true, verdict: "pass", recordError: fmt.Errorf("review recording unavailable")},
+		{name: "record failure stops acceptance validator", validator: true, verdict: "pass", recordError: errors.New("review recording unavailable")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var events []string

@@ -28,6 +28,8 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		want   int
 		status string
 	}{
+		{"source review from another machine does not collide", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed"},
+		{"same machine source session cannot validate acceptance", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence"},
 		{"implementation review is not acceptance", implementationReview, http.StatusOK, "needs_evidence"},
 		{"implementation review is not human approval", implementationReview, http.StatusOK, "needs_evidence"},
 		{"implementation review same session", func(r *tracker.ReviewChange) {
@@ -82,7 +84,8 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			}
 			descriptor.Gates.Validator = true
 			implementation := strings.HasPrefix(test.name, "implementation review")
-			if implementation {
+			counterCollision := test.name == "source review from another machine does not collide" || test.name == "same machine source session cannot validate acceptance"
+			if implementation || counterCollision {
 				descriptor.Gates.AutomatedReview = gate.AutomatedReviewRequired
 			}
 			humanReview := test.name == "separate session pass with human review" || test.name == "implementation review is not human approval"
@@ -116,6 +119,20 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			request := tracker.ReviewChange{Mutation: mutation, ExpectedVersionID: version.ID, Decision: "approved", Validator: &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Submitted: true, Verdict: "pass", Score: .95, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, DiffDigest: policy.Digest([]byte("diff"))}}
 			request.Validator.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: "test", Reference: "change_validator_test.go:TestChangeValidatorSessionAuthority", Behavior: "A separate validator session reviews the immutable version"}}
 			test.edit(&request)
+			if counterCollision {
+				machine := tracker.MachineID("machine")
+				if test.name == "source review from another machine does not collide" {
+					machine = "other-machine"
+				}
+				sourceReview := tracker.ChangeReview{SessionMachineID: machine, ID: "review_previous_source", VersionID: version.ID, Decision: "approved", ImplementationReview: &gate.ValidatorResult{VersionID: version.ID, Repository: version.Repository, HeadSHA: version.HeadSHA, BaseSHA: version.BaseSHA, SessionID: 42, Submitted: true, Verdict: "pass", Score: 1}, Actor: tracker.Actor{Kind: "runner", PrincipalID: "previous-worker"}, CreatedAt: f.service.config.now()}
+				raw, err := marshalNative(sourceReview)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_evidence (change_id, version_id, kind, record_json) VALUES (?, ?, 'review', ?)", change.ID, version.ID, raw); err != nil {
+					t.Fatal(err)
+				}
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request), test.want)
 			response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
@@ -133,17 +150,22 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				t.Fatalf("current summary differs: %+v, %v", current.Summary, err)
 			}
 			if test.want == http.StatusOK {
-				if len(detail.Reviews) != 1 {
+				wantReviews := 1
+				if counterCollision {
+					wantReviews++
+				}
+				if len(detail.Reviews) != wantReviews {
 					t.Fatalf("review session was not persisted: %+v", detail.Reviews)
 				}
-				stored := detail.Reviews[0].Validator
+				storedReview := detail.Reviews[len(detail.Reviews)-1]
+				stored := storedReview.Validator
 				if implementation {
-					stored = detail.Reviews[0].ImplementationReview
-					if detail.Reviews[0].Validator != nil {
+					stored = storedReview.ImplementationReview
+					if storedReview.Validator != nil {
 						t.Fatal("implementation review was stored as acceptance")
 					}
 				}
-				if stored == nil || stored.SessionID != 42 {
+				if stored == nil || stored.SessionID != 42 || storedReview.SessionMachineID != lease.MachineID {
 					t.Fatalf("review session was not persisted: %+v", detail.Reviews)
 				}
 			}
