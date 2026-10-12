@@ -21,7 +21,7 @@ func (e *nativeExecution) ValidatorVersion(ctx context.Context) (runner.NativeVa
 	if e.change == nil || e.change.Landing != nil || e.change.VersionID == "" || e.lastDiff == nil {
 		return runner.NativeValidation{}, nil
 	}
-	detail, err := e.claim.source.client.Change(ctx, e.claim.lease.WorkItemID, e.change.ChangeID)
+	detail, err := e.claim.source.client.runtimeChange(ctx, e.claim.lease.WorkItemID, e.change.ChangeID)
 	if err != nil {
 		return runner.NativeValidation{}, err
 	}
@@ -88,7 +88,7 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 	if err != nil {
 		return err
 	}
-	detail, err := client.Change(ctx, item, e.change.ChangeID)
+	detail, err := client.runtimeChange(ctx, item, e.change.ChangeID)
 	if err != nil {
 		return err
 	}

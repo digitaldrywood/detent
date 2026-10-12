@@ -193,7 +193,7 @@ func (e *nativeExecution) SetPublicationSource(source func(context.Context, trac
 }
 
 func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runner.NativeChange) error {
-	detail, err := e.claim.source.client.Change(ctx, e.claim.lease.WorkItemID, change.ChangeID)
+	detail, err := e.claim.source.client.runtimeChange(ctx, e.claim.lease.WorkItemID, change.ChangeID)
 	if err != nil {
 		return err
 	}
@@ -219,7 +219,7 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			if _, err := e.claim.source.client.ValidateLease(ctx, e.claim.lease); err != nil {
 				return e.executionError(err)
 			}
-			current, err := e.claim.source.client.Change(ctx, e.claim.lease.WorkItemID, change.ChangeID)
+			current, err := e.claim.source.client.runtimeChange(ctx, e.claim.lease.WorkItemID, change.ChangeID)
 			if err != nil {
 				return err
 			}
@@ -337,7 +337,7 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 // run's completion send the item straight to landing.
 func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID string, diff tracker.AttemptDiffRequest) (string, bool, error) {
 	client, item := e.claim.source.client, e.claim.lease.WorkItemID
-	detail, err := client.Change(ctx, item, changeID)
+	detail, err := client.runtimeChange(ctx, item, changeID)
 	if err != nil {
 		return "", false, fmt.Errorf("read change: %w", err)
 	}
