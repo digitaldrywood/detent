@@ -10,8 +10,20 @@ const (
 	UnverifiedCriteriaDisclose = "pass-with-disclosure"
 	EvidenceReceipt            = "receipt"
 	EvidenceTest               = "test"
+	EvidenceAttachment         = "attachment"
 	EvidenceNotVerified        = "not_verified"
 )
+
+type AttachmentRead struct {
+	ReceiptID    string `json:"receipt_id"`
+	AttachmentID string `json:"attachment_id"`
+	SHA256       string `json:"sha256"`
+	ProjectID    string `json:"project_id"`
+	WorkItemID   string `json:"work_item_id,omitempty"`
+	CommentID    string `json:"comment_id,omitempty"`
+	HeadSHA      string `json:"head_sha"`
+	TreeSHA      string `json:"tree_sha"`
+}
 
 type CriterionEvidence struct {
 	Criterion              string   `json:"criterion"`
@@ -49,6 +61,11 @@ func NormalizeCriterionEvidence(result *ValidatorResult, criteria []string, tree
 				}
 			}
 			switch entry.Kind {
+			case EvidenceAttachment:
+				if !entry.matchesAttachmentReads(result.AttachmentReads, result.HeadSHA, tree) {
+					entry.Kind = EvidenceNotVerified
+					entry.Behavior = "Observed attachment and matching host read receipt required"
+				}
 			case EvidenceReceipt:
 				if !entry.matchesReceipts(result.Commands, result.HeadSHA, tree) {
 					entry.Kind = EvidenceNotVerified
@@ -73,6 +90,25 @@ func NormalizeCriterionEvidence(result *ValidatorResult, criteria []string, tree
 		}
 		result.CriteriaEvidence = append(result.CriteriaEvidence, entry)
 	}
+}
+
+func (entry CriterionEvidence) matchesAttachmentReads(reads []AttachmentRead, head, tree string) bool {
+	if entry.Reference == "" || entry.Behavior == "" || len(entry.ReceiptIDs) == 0 || head == "" || entry.HeadSHA != head || entry.TreeSHA == "" || tree != "" && entry.TreeSHA != tree {
+		return false
+	}
+	seen := make(map[string]bool, len(entry.ReceiptIDs))
+	for _, id := range entry.ReceiptIDs {
+		if id == "" || seen[id] {
+			return false
+		}
+		seen[id] = true
+		if !slices.ContainsFunc(reads, func(read AttachmentRead) bool {
+			return read.ReceiptID == id && read.AttachmentID != "" && read.SHA256 != "" && read.HeadSHA == head && read.TreeSHA == entry.TreeSHA
+		}) {
+			return false
+		}
+	}
+	return true
 }
 
 func (entry CriterionEvidence) matchesReceipts(commands []CommandResult, head, tree string) bool {

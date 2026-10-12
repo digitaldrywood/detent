@@ -286,7 +286,7 @@ func TestPolicyDefaults(t *testing.T) {
 		input, want Policy
 	}{
 		{"defaults", Policy{}, Policy{MaxAge: 48 * time.Hour, MaxBytes: 20 * 1024 * 1024 * 1024}},
-		{"explicit", Policy{MaxAge: time.Hour, MaxBytes: 123}, Policy{MaxAge: time.Hour, MaxBytes: 123}},
+		{"explicit", Policy{MaxAge: time.Hour, MaxBytes: 123}, Policy{MaxAge: 25 * time.Hour, MaxBytes: 123}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.input.NormalizedForCapacity(0); got != tt.want {
@@ -322,7 +322,7 @@ func TestInspect(t *testing.T) {
 	}
 }
 
-func TestTrimSizeCap(t *testing.T) {
+func TestTrimSizeTarget(t *testing.T) {
 	now := time.Now()
 	for _, tt := range []struct {
 		name                   string
@@ -332,8 +332,8 @@ func TestTrimSizeCap(t *testing.T) {
 	}{
 		{"age only below cap", 100, true, true, 10},
 		{"exact cap", 24, true, true, 10},
-		{"oldest recent evicted", 14, false, true, 20},
-		{"all entries evicted metadata retained", 1, false, false, 30},
+		{"recent retained above target", 14, true, true, 10},
+		{"fresh entries and metadata retained", 1, true, true, 10},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -428,7 +428,7 @@ func TestTrimExplicitReportedGrowth(t *testing.T) {
 		age     time.Duration
 		removed bool
 	}{
-		{"reported recent growth", 47 << 10, 5 * time.Hour, true},
+		{"reported recent growth", 47 << 10, 5 * time.Hour, false},
 		{"below budget", 19 << 10, 5 * time.Hour, false},
 		{"expired below budget", 1 << 10, 49 * time.Hour, true},
 	} {

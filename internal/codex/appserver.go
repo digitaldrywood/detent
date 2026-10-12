@@ -233,8 +233,9 @@ type DynamicToolCall struct {
 }
 
 type DynamicToolResult struct {
-	Content string
-	Success bool
+	Content  string
+	Success  bool
+	ImageURL string
 }
 
 type MCPElicitationRule struct {
@@ -1379,7 +1380,7 @@ func serverRequestResult(
 		if err != nil {
 			toolResult = DynamicToolResult{Content: err.Error(), Success: false}
 		}
-		result = dynamicToolResponse(toolResult.Content, toolResult.Success)
+		result = dynamicToolResponse(toolResult.Content, toolResult.Success, toolResult.ImageURL)
 	default:
 		return nil, false, nil
 	}
@@ -1759,9 +1760,17 @@ func logMCPElicitationDecision(ctx context.Context, logger *slog.Logger, decisio
 	)
 }
 
-func dynamicToolResponse(content string, success bool) map[string]any {
+func dynamicToolResponse(content string, success bool, images ...string) map[string]any {
+	items := []map[string]string{{"type": "inputText", "text": content}}
+	if success {
+		for _, image := range images {
+			if image != "" {
+				items = append(items, map[string]string{"type": "inputImage", "imageUrl": image})
+			}
+		}
+	}
 	return map[string]any{
-		"contentItems": []map[string]string{{"type": "inputText", "text": content}},
+		"contentItems": items,
 		"success":      success,
 	}
 }

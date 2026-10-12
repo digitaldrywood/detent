@@ -14,6 +14,15 @@ Reuse existing primitives and screen compositions; select semantic tokens and
 component variants before introducing feature-specific styling. Proposed
 components and layout baselines do not expand the authorized UI scope.
 
+Use generic names in fixtures, mock data, designs, demo screenshots, instructional
+copy, and issue-brief examples. Write repository examples as
+`example-org/example-project` or `owner/repository`; never hardcode a real
+customer's or operator's organization, project, repository, or local path into
+these examples. Real names shown by the product must come from the selected
+runtime context. Screenshots of actual project behavior may retain that context;
+historical bug reports may also retain real names as factual evidence. Do not
+reuse either as synthetic example data or product copy.
+
 Follow [INV-15](docs/invariants.md#inv-15--visible-ui-changes-require-a-human-authored-issue):
 add visible UI only when a human-authored issue names the surface or feature it
 belongs to. This covers the Cloud app (`web/conversation`), Hub server-rendered
