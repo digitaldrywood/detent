@@ -101,9 +101,9 @@ export function KeyScope({
   );
 }
 
-export function keySetupPrompt(endpoint: string, direct = false): string {
+export function keySetupPrompt(endpoint: string, direct = false, service = false): string {
   const origin = endpoint.replace(/\/mcp$/, "");
-  return `Use my personal Detent key from Account settings → API keys. A key never grants more than its owner has. Store it privately as DETENT_API_KEY; never paste it into chat, logs or source files. ${direct ? `Use Authorization: Bearer with that private environment variable at ${origin}/api/v2. Read GET /api/v2/organizations, then GET /api/v2/organizations/ORG_ID/projects to choose a granted organization and project before using documented routes.` : `Configure one Streamable HTTP MCP server at ${endpoint}, with bearer_token_env_var = "DETENT_API_KEY". Initialize MCP, retain Mcp-Session-Id and protocol version, send notifications/initialized and discover every tools/list page. Use organization_list and list_projects to choose granted organization_id and project_id selectors for calls.`} Check the returned organization and project before reporting success. Current membership, project grants, org policy, permission, expiry and revocation apply on every call. Your client's permission settings control sensitive-operation confirmation. This prompt contains no secret.`;
+  return `Use ${service ? "the Detent org service key from Org settings → API & MCP" : "my personal Detent key from Account settings → API keys"}. A key never grants more than its owner has. Store it privately as DETENT_API_KEY; never paste it into chat, logs or source files. ${direct ? `Use Authorization: Bearer with that private environment variable at ${origin}/api/v2. Read GET /api/v2/organizations, then GET /api/v2/organizations/ORG_ID/projects to choose a granted organization and project before using documented routes.` : `Configure one Streamable HTTP MCP server at ${endpoint}, with bearer_token_env_var = "DETENT_API_KEY". Initialize MCP, retain Mcp-Session-Id and protocol version, send notifications/initialized and discover every tools/list page. Use organization_list and list_projects to choose granted organization_id and project_id selectors for calls.`} Check the returned organization and project before reporting success. Current membership, project grants, org policy, permission, expiry and revocation apply on every call. Your client's permission settings control sensitive-operation confirmation. This prompt contains no secret.`;
 }
 
 export function PersonalAPIKeysSettings() {
@@ -415,10 +415,16 @@ export function AccessKeyManager({
           />
         )}
       </SettingsSection>
-      {!service && context && (
-        <SettingsSection title="Connect across organizations">
+      {context && (
+        <SettingsSection
+          title={service ? "Connect with a service key" : "Connect across organizations"}
+        >
           <SettingsRow
-            title="One connection for your personal keys"
+            title={
+              service
+                ? "One connection for this org's service keys"
+                : "One connection for your personal keys"
+            }
             description="A key never grants more than its owner has."
           />
           <ConnectionValue label="MCP endpoint" value={context.mcp_endpoint} />
@@ -427,7 +433,7 @@ export function AccessKeyManager({
             control={
               <SetupPromptControl
                 label="MCP setup prompt"
-                value={keySetupPrompt(context.mcp_endpoint)}
+                value={keySetupPrompt(context.mcp_endpoint, false, service)}
                 preview
               />
             }
@@ -437,7 +443,7 @@ export function AccessKeyManager({
             control={
               <SetupPromptControl
                 label="Direct API setup prompt"
-                value={keySetupPrompt(context.mcp_endpoint, true)}
+                value={keySetupPrompt(context.mcp_endpoint, true, service)}
                 preview
               />
             }
@@ -500,17 +506,17 @@ export function AccessKeyManager({
                 >
                   {copied ? "Key copied" : "Copy key privately"}
                 </Button>
-                {!service && context && (
+                {context && (
                   <div className="flex flex-wrap gap-2">
                     <SetupPromptControl
                       label="MCP setup prompt"
                       copyLabel="Copy MCP prompt"
-                      value={keySetupPrompt(context.mcp_endpoint)}
+                      value={keySetupPrompt(context.mcp_endpoint, false, service)}
                     />
                     <SetupPromptControl
                       label="Direct API setup prompt"
                       copyLabel="Copy Direct API prompt"
-                      value={keySetupPrompt(context.mcp_endpoint, true)}
+                      value={keySetupPrompt(context.mcp_endpoint, true, service)}
                     />
                   </div>
                 )}
