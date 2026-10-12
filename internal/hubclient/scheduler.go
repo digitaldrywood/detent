@@ -78,6 +78,7 @@ type Scheduler struct {
 	nativeProjects        map[string]*NativeConnector
 	nativeClaims          map[string]nativeClaim
 	nativeHeartbeats      map[tracker.ProjectID]time.Time
+	configHeartbeats      map[tracker.ProjectID]time.Time
 	checkoutRepository    func(project string) string
 	reportedPolicies      map[string]string
 	client                *Client
@@ -664,6 +665,7 @@ func (s *Scheduler) SetNativeProjects(organization tracker.OrganizationID, proje
 			}
 			s.localChecks[name] = value
 			delete(s.nativeHeartbeats, projects[name])
+			delete(s.configHeartbeats, projects[name])
 		}
 	}
 	return nil
