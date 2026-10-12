@@ -976,7 +976,9 @@ the URL is not immutable content.
 Collaboration mutations return the committed representation with status 200,
 including identical retries. Idempotency keys are scoped to the authenticated
 principal, organization and operation/resource. Reusing a key with different
-content returns 409 `idempotency_conflict`. Concurrent edits return 409
+content returns 409 `idempotency_conflict`. REST mutation receipts outside
+conversation routes are retained for 24 hours; a retry with the same key after
+that is processed as a new request. Concurrent edits return 409
 `revision_conflict` with `current_revision`. Revisions, event sequences and fencing
 tokens are decimal strings on the wire. Mutations, their saved content versions,
 history and retry result commit in one SQLite transaction. Ordinary clients cannot
@@ -1896,33 +1898,37 @@ than trusting a stale worker checkpoint to identify the current version.
 ## Retention, export and deletion design
 
 Collaboration content, content versions, typed events, idempotency responses and
-owner backups all contain retained data. This release has no automatic native
-content expiry or issue-deletion endpoint. Append-only triggers deliberately
+owner backups all contain retained data. REST mutation receipts expire after 24
+hours. This release has no automatic native content expiry or issue-deletion
+endpoint. Append-only triggers deliberately
 reject ordinary history deletion. [Self-hosted operations](hub-self-hosting.md)
 defines full-instance export/import, credential fencing on restore, whole-instance
 retirement and operator-managed backup expiry. Scoped purge remains unimplemented;
 append-only storage is not a promise of permanent retention.
 
-The existing archive/retention sweep compacts archived work and conversations
-settled for more than 30 days. Active leases, unfinished executions, queued
+The existing archive/retention sweep compacts archived work, work that has been
+in a terminal state for more than 3 days, and conversations settled for more
+than 30 days. Active leases, unfinished executions, queued
 messages and pending questions exclude an aggregate. Each transaction examines
 at most four work items and four conversations, deleting at most 500 events per
 aggregate. It retains comments, content revisions, workflow transitions,
 scheduler decisions, attempt checkpoints and final observations, validation and
 landing evidence, messages, questions and command receipts. Superseded runtime
 observations, message updates and execution progress, streaming deltas,
-heartbeats and redundant conversation snapshots are removed. Conversation
+heartbeats and redundant conversation snapshots are removed. Retained work-item
+run events drop their activity spans and record `activity_spans_compacted` in
+the activity coverage notes. Conversation
 metadata changes keep their timeline boundaries.
 
 History pages and conversation snapshots carry an optional `compaction` summary
 with removed event counts by type, retained event count, removed payload bytes,
-last removed sequence and compaction time. Existing history cursors invalidate
+last removed sequence, compacted activity event count and compaction time. Existing history cursors invalidate
 when their aggregate is compacted and instruct the reader to restart. Conversation
 SSE cursors behind a removed event receive `closed` with `cursor_expired`; clients
 fetch the current snapshot and resume from its cursor. Open work streams retain
 all events and their existing cursors. Ordinary collaboration updates and
-deletions remain rejected; retention replaces and restores the deletion trigger
-within its transaction, so a failed batch rolls back rows and enforcement.
+deletions remain rejected; retention replaces and restores the deletion and update
+triggers within its transaction, so a failed batch rolls back rows and enforcement.
 
 The first compaction records database and event-table sizes in the existing
 maintenance record and marks space reclamation pending. The online diff-body

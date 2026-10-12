@@ -8,6 +8,18 @@ import (
 	"time"
 )
 
+const customerContentEvent = `type NOT LIKE 'run.%' AND type <> 'scheduler.decision'`
+
+const collaborationBytesRecount = `SELECT
+	(SELECT coalesce(sum(length(CAST(title AS BLOB))+length(CAST(body AS BLOB))+length(CAST(labels_json AS BLOB))+length(CAST(assignees_json AS BLOB))),0) FROM issues) +
+	(SELECT coalesce(sum(length(CAST(body AS BLOB))),0) FROM native_comments) +
+	(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM collaboration_versions) +
+	(SELECT coalesce(sum(length(CAST(data_json AS BLOB))+length(CAST(actor_json AS BLOB))),0) FROM collaboration_events WHERE ` + customerContentEvent + `) +
+	(SELECT coalesce(sum(length(CAST(reference_json AS BLOB))),0) FROM artifact_references) +
+	(SELECT coalesce(sum(length(bundle)),0) FROM change_sources) +
+	(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM github_import_records) +
+	(SELECT coalesce(sum(size),0) FROM attachments WHERE object_deleted_at IS NULL)`
+
 func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, now time.Time, metrics ...string) (map[string]int64, error) {
 	result := make(map[string]int64)
 	if d.hostedPlans == nil {
