@@ -9,6 +9,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const (
+	commandReceiptRetention  = 24 * time.Hour
+	commandReceiptPruneBatch = 5000
+)
+
 func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) error {
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -17,6 +22,12 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, "DELETE FROM hosted_audit WHERE julianday(recorded_at)<julianday(?)", formatHubTime(now.Add(-90*24*time.Hour))); err != nil {
 		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM native_commands WHERE rowid IN (SELECT rowid FROM native_commands
+WHERE (operation LIKE 'POST /%' OR operation LIKE 'PUT /%' OR operation LIKE 'PATCH /%' OR operation LIKE 'DELETE /%')
+AND operation NOT LIKE '%/conversations' AND instr(operation, '/conversations/')=0
+AND julianday(created_at)<julianday(?) LIMIT ?)`, formatHubTime(now.Add(-commandReceiptRetention)), commandReceiptPruneBatch); err != nil {
+		return fmt.Errorf("expire command receipts: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE attachments SET deleted_at=? WHERE deleted_at IS NULL AND work_item_id IS NULL AND julianday(created_at)<=julianday(?)", formatHubTime(now), formatHubTime(now.Add(-attachment.OrphanTTL))); err != nil {
 		return err

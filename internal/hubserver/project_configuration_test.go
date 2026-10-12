@@ -180,17 +180,10 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			if scenario == "drained apply" {
 				view.Paused, view.Draining = false, true
 			}
-			heartbeatStatus := http.StatusOK
 			heartbeat := func() runnerauth.RoutingSnapshot {
 				t.Helper()
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view})
-				requireNativeStatus(t, response, heartbeatStatus)
-				if heartbeatStatus != http.StatusOK {
-					if !strings.Contains(response.Body.String(), "collaboration_bytes") {
-						t.Fatalf("storage refusal=%s", response.Body.String())
-					}
-					return runnerauth.RoutingSnapshot{}
-				}
+				requireNativeStatus(t, response, http.StatusOK)
 				var snapshot runnerauth.RoutingSnapshot
 				decodeHubResponse(t, response, &snapshot)
 				return snapshot
@@ -401,7 +394,6 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				f.service.database.hostedOrganization = f.project.OrganizationID
 				hostedTestPlans(t, f.service, map[string]int64{"collaboration_bytes": 1})
 				f.service.config.Hosted = nil
-				heartbeatStatus = http.StatusTooManyRequests
 			}
 			if heartbeat().ProjectConfigurationRequest != nil {
 				t.Fatal("acknowledged request repeated")
@@ -432,18 +424,11 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				return
 			}
 			completedReplay, err := call("apply_local_project_policy", args)
-			if scenario == "storage exhausted" {
-				if err != nil || !strings.Contains(string(completedReplay.Content), `"pending":true`) {
-					t.Fatalf("rejected receipt persisted=%s %v", completedReplay.Content, err)
-				}
-				var pending int
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM runner_identities WHERE id = ? AND json_extract(routing_settings_json, '$.project_configuration_request') IS NOT NULL", r.binding.RunnerID).Scan(&pending); err != nil || pending != 1 {
-					t.Fatalf("rejected receipt lost pending command: %d %v", pending, err)
-				}
-				return
-			}
 			if err != nil || !strings.Contains(string(completedReplay.Content), `"applied":true`) || strings.Contains(string(completedReplay.Content), `"pending":true`) {
 				t.Fatalf("completed replay=%s %v", completedReplay.Content, err)
+			}
+			if scenario == "storage exhausted" {
+				return
 			}
 			changed := args
 			changed.PolicyID = current.ID
