@@ -178,7 +178,7 @@ func boundedProjectBatch(view githubBatchView, request operatortool.ProjectReadR
 	if request.After != "" {
 		var err error
 		after, err = strconv.Atoi(request.After)
-		if err != nil || after < 0 || after > 1000 {
+		if err != nil || after < 0 || after > 50000 {
 			return page, operatortool.ErrInvalidArguments
 		}
 	}

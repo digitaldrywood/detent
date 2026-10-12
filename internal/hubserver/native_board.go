@@ -67,7 +67,9 @@ func refreshNativeBoardCard(ctx context.Context, tx *sql.Tx, id string, now time
 		current = &tracker.NativeBoardCard{Issue: issue}
 		var attemptID string
 		var attemptCount int
-		err = tx.QueryRowContext(ctx, "SELECT id,(SELECT count(*) FROM native_attempts WHERE work_item_id=?) FROM native_attempts WHERE work_item_id=? ORDER BY fencing_token DESC LIMIT 1", id, id).Scan(&attemptID, &attemptCount)
+		err = tx.QueryRowContext(ctx, `SELECT id,(SELECT count(*) FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?)
+FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY fencing_token DESC LIMIT 1`,
+			scope.organization, scope.project, id, scope.organization, scope.project, id).Scan(&attemptID, &attemptCount)
 		if err == nil {
 			attempt, err := readNativeAttempt(ctx, tx, scope, id, attemptID, now)
 			if err != nil {
