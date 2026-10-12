@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
@@ -67,26 +68,77 @@ func (s *Service) reloadConfiguration(ctx context.Context) error {
 	}
 	update := *next.Runtime
 	update.Reason = "SIGHUP cloud configuration reload"
-	for _, validate := range []bool{true, false} {
-		update.ValidateOnly = validate
-		body, err := json.Marshal(update)
+	update.ValidateOnly = false
+	state := &entryRuntime{Update: update, Prices: next.Allocation.Prices, Configure: s.config.ConfigureRuntime(update)}
+	type tenantRuntime struct {
+		organization Organization
+		previous     hubserver.HostedRuntimeUpdate
+	}
+	var tenants []tenantRuntime
+	for _, organization := range organizations {
+		if !organization.Managed || organization.State != "ready" {
+			continue
+		}
+		previous, err := s.readTenantRuntime(ctx, organization)
 		if err != nil {
 			return err
 		}
-		for _, organization := range organizations {
-			if !organization.Managed || organization.State != "ready" {
-				continue
-			}
-			status, _, err := s.machineCall(ctx, organization, http.MethodPost, tenantEntitlementsPath(organization.ID)+"/runtime", body, string(s.config.Allocation.EntitlementAdminToken))
-			if err != nil {
-				return fmt.Errorf("tenant runtime reload: %w", err)
-			}
-			if status != http.StatusNoContent {
-				return fmt.Errorf("tenant runtime reload answered %d", status)
-			}
+		tenants = append(tenants, tenantRuntime{organization, previous})
+	}
+	validation := update
+	validation.ValidateOnly = true
+	for _, tenant := range tenants {
+		if err := s.changeTenantRuntime(ctx, tenant.organization, validation); err != nil {
+			return err
 		}
 	}
-	s.runtime.Store(&entryRuntime{Update: update, Prices: next.Allocation.Prices, Configure: s.config.ConfigureRuntime(update)})
+	for index, tenant := range tenants {
+		if err := s.changeTenantRuntime(ctx, tenant.organization, update); err != nil {
+			failures := []error{err}
+			for rollback := index; rollback >= 0; rollback-- {
+				previous := tenants[rollback].previous
+				previous.Reason = "SIGHUP reload failed; restore previous runtime settings"
+				restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+				restoreErr := s.changeTenantRuntime(restoreCtx, tenants[rollback].organization, previous)
+				cancel()
+				if restoreErr != nil {
+					failures = append(failures, fmt.Errorf("restore previous runtime: %w", restoreErr))
+				}
+			}
+			return errors.Join(failures...)
+		}
+	}
+	s.runtime.Store(state)
 	s.config.Logger.InfoContext(ctx, "cloud configuration reloaded", "actor", "operator", "reason", "SIGHUP", "settings", []string{"allocation.entitlements", "allocation.billing.prices"})
+	return nil
+}
+
+func (s *Service) readTenantRuntime(ctx context.Context, organization Organization) (hubserver.HostedRuntimeUpdate, error) {
+	var update hubserver.HostedRuntimeUpdate
+	status, body, err := s.machineCall(ctx, organization, http.MethodGet, tenantEntitlementsPath(organization.ID)+"/runtime", nil, string(s.config.Allocation.EntitlementAdminToken))
+	if err != nil {
+		return update, fmt.Errorf("tenant %s runtime snapshot: %w", organization.ID, err)
+	}
+	if status != http.StatusOK {
+		return update, fmt.Errorf("tenant %s runtime snapshot answered %d", organization.ID, status)
+	}
+	if err := json.Unmarshal(body, &update); err != nil {
+		return update, fmt.Errorf("tenant %s runtime snapshot: %w", organization.ID, err)
+	}
+	return update, nil
+}
+
+func (s *Service) changeTenantRuntime(ctx context.Context, organization Organization, update hubserver.HostedRuntimeUpdate) error {
+	body, err := json.Marshal(update)
+	if err != nil {
+		return err
+	}
+	status, _, err := s.machineCall(ctx, organization, http.MethodPost, tenantEntitlementsPath(organization.ID)+"/runtime", body, string(s.config.Allocation.EntitlementAdminToken))
+	if err != nil {
+		return fmt.Errorf("tenant %s runtime reload: %w", organization.ID, err)
+	}
+	if status != http.StatusNoContent {
+		return fmt.Errorf("tenant %s runtime reload answered %d", organization.ID, status)
+	}
 	return nil
 }
