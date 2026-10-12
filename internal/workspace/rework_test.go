@@ -255,6 +255,7 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 		rework        bool
 		noIdentity    bool
 		gpg           string
+		gpgsign       string
 		paused        bool
 		landingMethod string
 	}{
@@ -263,6 +264,8 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 		{name: "signed Rework", signed: true, rework: true},
 		{name: "no identity or GPG", noIdentity: true},
 		{name: "working OpenPGP", signed: true, gpg: "working"},
+		{name: "working OpenPGP uppercase boolean", signed: true, gpg: "working", gpgsign: "TRUE"},
+		{name: "working OpenPGP mixed-case boolean", signed: true, gpg: "working", gpgsign: "Yes"},
 		{name: "unusable OpenPGP key", gpg: "missing"},
 		{name: "locked OpenPGP key never prompts", gpg: "locked"},
 		{name: "unresponsive signer is bounded", gpg: "stalled"},
@@ -346,6 +349,9 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 			pinentry := filepath.Join(home, "pinentry-called")
 			if test.gpg != "" {
 				configureGPGCommitFixture(t, source, test.gpg, pinentry)
+			}
+			if test.gpgsign != "" {
+				runGit(t, source, "config", "commit.gpgsign", test.gpgsign)
 			}
 			probeStarted := time.Now()
 			backend, err = NewBackend(KindLocalGit, LocalGitOptions{Root: filepath.Dir(info.Path), SourceRoot: source, AutoBranch: true, CommitIdentity: CommitIdentity{Name: "Enrolled runner", Email: "machine_fixture@runners.detent.invalid"}})

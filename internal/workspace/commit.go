@@ -88,8 +88,8 @@ func probeCommitPolicy(ctx context.Context, source string, fallback CommitIdenti
 			p.config = append(p.config, "-c", key+"="+value)
 		}
 	}
-	enabled, present := values["commit.gpgsign"]
-	if !present || (enabled != "" && enabled != "true" && enabled != "yes" && enabled != "on" && enabled != "1") {
+	enabled, err := runGitAt(ctx, source, "config", "--bool", "--get", "commit.gpgsign")
+	if err != nil || strings.TrimSpace(enabled) != "true" {
 		return p, nil
 	}
 	scratch, err := changeSourceScratch()
