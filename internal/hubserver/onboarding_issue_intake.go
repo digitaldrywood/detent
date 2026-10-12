@@ -16,8 +16,18 @@ import (
 )
 
 type githubBatchView struct {
-	Batch *tracker.GitHubBatch  `json:"batch"`
-	Lanes []tracker.NativeState `json:"lanes"`
+	Progress githubBatchProgress   `json:"progress"`
+	Batch    *tracker.GitHubBatch  `json:"batch"`
+	Lanes    []tracker.NativeState `json:"lanes"`
+}
+
+type githubBatchProgress struct {
+	Discovered int `json:"discovered"`
+	Total      int `json:"total"`
+	Pending    int `json:"pending"`
+	Completed  int `json:"completed"`
+	Failed     int `json:"failed"`
+	Skipped    int `json:"skipped"`
 }
 
 func readGitHubBatch(ctx context.Context, query nativeQueryer, scope nativeScope) (*tracker.GitHubBatch, error) {
@@ -35,7 +45,32 @@ func readGitHubBatch(ctx context.Context, query nativeQueryer, scope nativeScope
 
 func githubBatchResponse(ctx context.Context, query nativeQueryer, scope nativeScope, batch *tracker.GitHubBatch) (githubBatchView, error) {
 	project, err := readNativeProject(ctx, query, scope)
-	return githubBatchView{Batch: batch, Lanes: project.States}, err
+	progress := githubBatchProgress{}
+	if batch != nil {
+		progress.Discovered, progress.Total = len(batch.Page.Issues), batch.Page.Total
+		for _, item := range batch.Items {
+			switch item.Status {
+			case "pending":
+				progress.Pending++
+			case "completed":
+				progress.Completed++
+			case "failed":
+				progress.Failed++
+			case "skipped":
+				progress.Skipped++
+			}
+		}
+	}
+	if batch != nil {
+		copy := *batch
+		copy.Page.Issues = slices.Clone(batch.Page.Issues)
+		for i := range copy.Page.Issues {
+			copy.Page.Issues[i].Body = ""
+			copy.Page.Issues[i].Snapshot = nil
+		}
+		batch = &copy
+	}
+	return githubBatchView{Batch: batch, Lanes: project.States, Progress: progress}, err
 }
 
 func saveGitHubBatch(ctx context.Context, tx *sql.Tx, scope nativeScope, batch *tracker.GitHubBatch) error {
@@ -128,7 +163,7 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 			return nil, nativeInvalid("Manual import of existing GitHub issues is disabled")
 		}
 		switch request.Action {
-		case "discover":
+		case "discover", "start":
 			if batch != nil && (batchHasPending(batch) || slices.ContainsFunc(batch.Items, func(item tracker.GitHubBatchItem) bool { return item.Status == "failed" })) {
 				return nil, nativeInvalid("Finish the current intake before starting another preview")
 			}
@@ -140,41 +175,47 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 					return nil, nativeInvalid("Label filters must be nonempty and at most 100 bytes")
 				}
 			}
-			if err := requireBatchRunner(ctx, tx, scope, request.RunnerID, repository, now); err != nil {
+			if s.config.ImportBackend == nil {
+				if err := requireBatchRunner(ctx, tx, scope, request.RunnerID, repository, now); err != nil {
+					return nil, err
+				}
+			}
+			batch = &tracker.GitHubBatch{ID: newNativeID("intake"), Revision: revision, RunnerID: request.RunnerID, Discovery: tracker.GitHubDiscovery{Snapshots: true, Repository: strings.ToLower(repository), Labels: request.Labels, IncludeClosed: request.IncludeClosed}, Status: "discovering", Page: tracker.GitHubDiscoveryPage{Issues: []tracker.GitHubIssuePreview{}}, Items: []tracker.GitHubBatchItem{}, HubOwned: s.config.ImportBackend != nil}
+			actor := scope.actor()
+			batch.RequestedBy = &actor
+			batch.Limit, err = s.githubBatchLimit(ctx, tx, now)
+			if err != nil {
 				return nil, err
 			}
-			batch = &tracker.GitHubBatch{ID: newNativeID("intake"), Revision: revision, RunnerID: request.RunnerID, Discovery: tracker.GitHubDiscovery{Repository: strings.ToLower(repository), Labels: request.Labels, IncludeClosed: request.IncludeClosed}, Status: "discovering", Page: tracker.GitHubDiscoveryPage{Issues: []tracker.GitHubIssuePreview{}}, Items: []tracker.GitHubBatchItem{}}
+			if request.Action == "start" {
+				batch.Automatic = true
+				if err := configureBatchDestination(ctx, tx, scope, batch, request); err != nil {
+					return nil, err
+				}
+			}
 		case "more":
-			if batch == nil || batch.Status != "preview" || batch.Page.NextCursor == "" || len(batch.Page.Issues) >= 1000 {
+			if batch == nil || batch.Status != "preview" || batch.Page.NextCursor == "" || len(batch.Page.Issues) >= batchLimit(batch) {
 				return nil, nativeInvalid("No further preview page is available (maximum 1000 issues per intake)")
 			}
 			batch.Discovery.Cursor = batch.Page.NextCursor
 			batch.Status = "discovering"
 		case "apply":
-			if batch == nil || batch.Status != "preview" || len(request.Numbers) == 0 || len(request.Numbers) > 1000 {
+			if batch == nil || batch.Status != "preview" || len(request.Numbers) == 0 || len(request.Numbers) > batchLimit(batch) {
 				return nil, nativeInvalid("Select issues from the completed preview")
 			}
-			if err := requireBatchRunner(ctx, tx, scope, batch.RunnerID, repository, now); err != nil {
+			if !batch.HubOwned {
+				if err := requireBatchRunner(ctx, tx, scope, batch.RunnerID, repository, now); err != nil {
+					return nil, err
+				}
+			}
+			if err := configureBatchDestination(ctx, tx, scope, batch, request); err != nil {
 				return nil, err
 			}
 			project, err := readNativeProject(ctx, tx, scope)
 			if err != nil {
 				return nil, err
 			}
-			destination := request.Destination
-			if destination == "" {
-				for _, state := range project.States {
-					if !state.Dispatchable && !state.Terminal {
-						destination = state.Name
-						break
-					}
-				}
-			}
-			lane, exists := findBatchLane(project.States, destination)
-			if !exists || lane.Dispatchable && !request.AllowDispatch {
-				return nil, nativeInvalid("Select a destination and explicitly confirm any dispatchable lane")
-			}
-			batch.Destination = destination
+
 			seen := map[int]bool{}
 			for _, number := range request.Numbers {
 				if seen[number] {
@@ -186,8 +227,12 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 					return nil, nativeInvalid("Selected issue is absent from the preview")
 				}
 				preview := batch.Page.Issues[index]
+				destination, labels, err := batchIssueDestination(project.States, batch, preview.Labels)
+				if err != nil {
+					return nil, err
+				}
 				var existing string
-				err := tx.QueryRowContext(ctx, `SELECT native_id FROM issues WHERE organization_id=? AND project_id=? AND
+				err = tx.QueryRowContext(ctx, `SELECT native_id FROM issues WHERE organization_id=? AND project_id=? AND
     (native_source_key IN (?,?) OR github_node_id=? OR (json_extract(provenance_json, '$.provider')='github' AND json_extract(provenance_json, '$.external_id')=?) OR (repository_id=? AND github_number=?))`, scope.organization, scope.project, "github:"+preview.URL, "github:"+preview.ID, preview.ID, preview.ID, integration.RepositoryID, number).Scan(&existing)
 				if err == nil {
 					batch.Items = append(batch.Items, tracker.GitHubBatchItem{Number: number, WorkItemID: tracker.NativeWorkItemID(existing), Status: "skipped"})
@@ -196,7 +241,7 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 				if !errors.Is(err, sql.ErrNoRows) {
 					return nil, err
 				}
-				issue, err := createLinkedIssueTx(ctx, tx, scope, tracker.CreateIssue{GitHubIssueURL: preview.URL, State: destination}, now)
+				issue, err := createLinkedIssueInStateTx(ctx, tx, scope, tracker.CreateIssue{GitHubIssueURL: preview.URL, State: destination, Labels: labels}, now)
 				if err != nil {
 					return nil, err
 				}
@@ -207,13 +252,34 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 				batch.Status = "finished"
 			}
 		case "retry":
-			if batch == nil || batchHasPending(batch) && (request.RunnerID == "" || request.RunnerID == batch.RunnerID) {
+			if batch == nil || !batch.HubOwned && batchHasPending(batch) && (request.RunnerID == "" || request.RunnerID == batch.RunnerID) {
 				return nil, nativeInvalid("Wait for current intake work to finish, or select another runner")
 			}
 			if request.RunnerID != "" {
 				batch.RunnerID = request.RunnerID
 			}
-			if err := requireBatchRunner(ctx, tx, scope, batch.RunnerID, repository, now); err != nil {
+			if !batch.HubOwned {
+				if err := requireBatchRunner(ctx, tx, scope, batch.RunnerID, repository, now); err != nil {
+					return nil, err
+				}
+			}
+			if request.AllowDispatch || request.Destination != "" || request.LabelLanes != nil {
+				effective := request
+				if effective.Destination == "" {
+					effective.Destination = batch.Destination
+				}
+				if effective.LabelLanes == nil {
+					effective.LabelLanes = batch.LabelLanes
+				}
+				effective.AllowDispatch = effective.AllowDispatch || batch.AllowDispatch
+				if err := configureBatchDestination(ctx, tx, scope, batch, effective); err != nil {
+					return nil, err
+				}
+				actor := scope.actor()
+				batch.RequestedBy = &actor
+			}
+			batch.Limit, err = s.githubBatchLimit(ctx, tx, now)
+			if err != nil {
 				return nil, err
 			}
 			if batch.Status == "discovery_failed" || batch.Status == "discovering" {
@@ -232,6 +298,10 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 						batch.Items[index].Status = "pending"
 						batch.Items[index].Error = ""
 						batch.Items[index].RetryAt = ""
+						previewIndex := slices.IndexFunc(batch.Page.Issues, func(p tracker.GitHubIssuePreview) bool { return p.Number == item.Number })
+						if previewIndex >= 0 {
+							batch.Page.Issues[previewIndex].Snapshot = nil
+						}
 					}
 				}
 				batch.Status = "importing"
@@ -276,21 +346,27 @@ func readGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope) (*t
 	if err != nil || batch == nil {
 		return nil, err
 	}
-	if batch.RunnerID != scope.credential.Runner.RunnerID {
+	if batch.HubOwned || batch.RunnerID != scope.credential.Runner.RunnerID || batch.Status != "importing" && batch.Status != "discovering" {
 		return nil, nil //nolint:nilnil // This runner has no assigned task.
 	}
+	return nextGitHubBatchTask(ctx, tx, scope, batch)
+}
+
+func nextGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope, batch *tracker.GitHubBatch) (*tracker.GitHubBatchTask, error) {
 	if batch.Status == "discovering" {
 		return &tracker.GitHubBatchTask{ProjectID: scope.project, BatchID: batch.ID, Revision: batch.Revision, Discovery: &batch.Discovery}, nil
 	}
 	changed := false
-	var preview *tracker.GitHubIssuePreview
+	previews := []tracker.GitHubIssuePreview{}
 	for i, item := range batch.Items {
 		if item.Status == "pending" {
 			// An explicitly dispatchable selection can complete the same one-time
 			// intake through #3257 before its batch turn. Honor that existing snapshot.
 			var complete bool
-			if err := tx.QueryRowContext(ctx, "SELECT snapshot_json IS NOT NULL FROM linked_issue_sources WHERE work_item_id=?", item.WorkItemID).Scan(&complete); err != nil {
-				return nil, err
+			if item.WorkItemID != "" {
+				if err := tx.QueryRowContext(ctx, "SELECT snapshot_json IS NOT NULL FROM linked_issue_sources WHERE work_item_id=?", item.WorkItemID).Scan(&complete); err != nil {
+					return nil, err
+				}
 			}
 			if complete {
 				batch.Items[i].Status = "completed"
@@ -301,8 +377,10 @@ func readGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope) (*t
 			if index < 0 {
 				return nil, errors.New("intake item missing preview")
 			}
-			preview = &batch.Page.Issues[index]
-			break
+			previews = append(previews, batch.Page.Issues[index])
+			if len(previews) == 100 {
+				break
+			}
 		}
 	}
 	if changed {
@@ -313,10 +391,10 @@ func readGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope) (*t
 			return nil, err
 		}
 	}
-	if preview == nil {
+	if len(previews) == 0 {
 		return nil, nil //nolint:nilnil // No pending preview means this batch has no task.
 	}
-	return &tracker.GitHubBatchTask{ProjectID: scope.project, BatchID: batch.ID, Revision: batch.Revision, Item: preview}, nil
+	return &tracker.GitHubBatchTask{ProjectID: scope.project, BatchID: batch.ID, Revision: batch.Revision, Item: &previews[0], Items: previews}, nil
 }
 
 func (s *Service) reportGitHubBatch(c echo.Context) error {
@@ -329,99 +407,309 @@ func (s *Service) reportGitHubBatch(c echo.Context) error {
 		if err != nil {
 			return nil, err
 		}
-		if batch == nil || batch.RunnerID != scope.credential.Runner.RunnerID || batch.ID != request.BatchID {
+		if batch == nil || batch.HubOwned || batch.RunnerID != scope.credential.Runner.RunnerID || batch.ID != request.BatchID {
 			return nil, nativeNotFound()
 		}
-		if batch.Revision != request.Revision {
-			return nil, nativeConflict(tracker.Revision(batch.Revision))
-		}
-		if len(request.Error) > 1000 {
-			return nil, nativeInvalid("Source diagnostic exceeds 1000 bytes")
-		}
-		if request.RetryAt != "" {
-			if _, err := time.Parse(time.RFC3339Nano, request.RetryAt); err != nil {
-				return nil, nativeInvalid("Invalid source retry deadline")
+		return s.applyGitHubBatchResult(ctx, tx, scope, batch, request, now)
+	})
+}
+
+func (s *Service) applyGitHubBatchResult(ctx context.Context, tx *sql.Tx, scope nativeScope, batch *tracker.GitHubBatch, request tracker.GitHubBatchResult, now time.Time) (tracker.GitHubBatchReceipt, error) {
+	receipt := tracker.GitHubBatchReceipt{}
+	if batch.Revision != request.Revision {
+		return receipt, nativeConflict(tracker.Revision(batch.Revision))
+	}
+	if err := validateBatchDiagnostic(request.Error, request.RetryAt); err != nil {
+		return receipt, err
+	}
+	switch batch.Status {
+	case "discovering":
+		if request.Error != "" {
+			batch.Status, batch.Error, batch.RetryAt = "discovery_failed", request.Error, request.RetryAt
+		} else {
+			if request.Page == nil || len(request.Page.Issues) > 100 || request.Page.Total < 0 {
+				return receipt, nativeInvalid("Invalid source discovery page or plan import limit exceeded")
 			}
-		}
-		switch batch.Status {
-		case "discovering":
-			if request.Error != "" {
-				batch.Status = "discovery_failed"
-				batch.Error = request.Error
-				batch.RetryAt = request.RetryAt
-			} else {
-				if request.Page == nil || len(request.Page.Issues) > 100 || len(batch.Page.Issues)+len(request.Page.Issues) > 1000 || request.Page.Total < 0 {
-					return nil, nativeInvalid("Invalid source discovery page")
-				}
-				seen := map[int]bool{}
-				ids := map[string]bool{}
-				for _, p := range batch.Page.Issues {
-					seen[p.Number] = true
-					ids[p.ID] = true
-				}
-				for _, p := range request.Page.Issues {
-					canonical, repository, number, err := tracker.ParseGitHubIssueURL(p.URL)
-					if err != nil || repository != batch.Discovery.Repository || number != p.Number || canonical != p.URL || seen[number] || ids[p.ID] || p.ID == "" || p.Title == "" || len(p.Title) > 500 || len([]rune(p.Body)) > 1000 || p.Closed && !batch.Discovery.IncludeClosed {
-						return nil, nativeInvalid("Mismatched or duplicate source preview")
-					}
-					seen[number] = true
-					ids[p.ID] = true
-				}
-				if request.Page.NextCursor != "" && (request.Page.NextCursor == batch.Discovery.Cursor || len(request.Page.Issues) == 0) {
-					return nil, nativeInvalid("Invalid source discovery cursor")
-				}
-				batch.Page.Issues = append(batch.Page.Issues, request.Page.Issues...)
+			if batch.Automatic && request.Page.Total > batchLimit(batch) {
+				batch.Status, batch.Error = "discovery_failed", "Repository exceeds the plan's per-job import limit; select a label filter or upgrade"
 				batch.Page.Total = request.Page.Total
-				batch.Page.NextCursor = request.Page.NextCursor
-				batch.Status = "preview"
+				if err := saveGitHubBatch(ctx, tx, scope, batch); err != nil {
+					return receipt, err
+				}
+				return tracker.GitHubBatchReceipt{Revision: batch.Revision, Status: batch.Status}, nil
 			}
-		case "importing":
+			if len(batch.Page.Issues)+len(request.Page.Issues) > batchLimit(batch) {
+				return receipt, nativeInvalid("Plan import limit exceeded")
+			}
+			seen, ids := map[int]bool{}, map[string]bool{}
+			for _, p := range batch.Page.Issues {
+				seen[p.Number], ids[p.ID] = true, true
+			}
+			for _, p := range request.Page.Issues {
+				canonical, repository, number, err := tracker.ParseGitHubIssueURL(p.URL)
+				if err != nil || repository != batch.Discovery.Repository || number != p.Number || canonical != p.URL || seen[number] || ids[p.ID] || p.ID == "" || p.Title == "" || len(p.Title) > 500 || len([]rune(p.Body)) > 1000 || p.Closed && !batch.Discovery.IncludeClosed {
+					return receipt, nativeInvalid("Mismatched or duplicate source preview")
+				}
+				seen[number], ids[p.ID] = true, true
+			}
+			if request.Page.NextCursor != "" && (request.Page.NextCursor == batch.Discovery.Cursor || len(request.Page.Issues) == 0) {
+				return receipt, nativeInvalid("Invalid source discovery cursor")
+			}
+			batch.Page.Issues = append(batch.Page.Issues, request.Page.Issues...)
+			batch.Page.Total, batch.Page.NextCursor = request.Page.Total, request.Page.NextCursor
+			batch.Status = "preview"
+			if batch.Automatic {
+				for _, preview := range request.Page.Issues {
+					batch.Items = append(batch.Items, tracker.GitHubBatchItem{Number: preview.Number, Status: "pending"})
+				}
+				batch.Status = "importing"
+			}
+		}
+	case "importing":
+		results := request.Results
+		if len(results) == 0 {
+			if request.Number == 0 && request.Error != "" {
+				for _, item := range batch.Items {
+					if item.Status == "pending" {
+						results = append(results, tracker.GitHubBatchItemResult{Number: item.Number, Error: request.Error, RetryAt: request.RetryAt})
+					}
+					if len(results) == 100 {
+						break
+					}
+				}
+			} else {
+				results = []tracker.GitHubBatchItemResult{{Number: request.Number, Snapshot: request.Snapshot, Error: request.Error, RetryAt: request.RetryAt}}
+			}
+		}
+		if len(results) > 100 {
+			return receipt, nativeInvalid("At most 100 intake results per page")
+		}
+		seen := map[int]bool{}
+		for _, result := range results {
 			index := slices.IndexFunc(batch.Items, func(item tracker.GitHubBatchItem) bool {
-				return item.Number == request.Number && item.Status == "pending"
+				return item.Number == result.Number && item.Status == "pending"
 			})
-			if index < 0 {
-				return nil, nativeInvalid("No pending selected issue")
+			if index < 0 || seen[result.Number] {
+				return receipt, nativeInvalid("No pending selected issue")
+			}
+			seen[result.Number] = true
+			if err := validateBatchDiagnostic(result.Error, result.RetryAt); err != nil {
+				return receipt, err
 			}
 			item := &batch.Items[index]
-			if request.Error != "" {
-				item.Status = "failed"
-				item.Error = request.Error
-				item.RetryAt = request.RetryAt
-				// A source throttle stops this explicit intake. The operator resumes it
-				// after the reported deadline; there is no automatic source retry loop.
-				if request.RetryAt != "" {
-					for i := range batch.Items {
-						if batch.Items[i].Status == "pending" {
-							batch.Items[i].Status = "failed"
-							batch.Items[i].Error = "Source intake stopped at rate limit"
-							batch.Items[i].RetryAt = request.RetryAt
-						}
+			if result.Error != "" {
+				item.Status, item.Error, item.RetryAt = "failed", result.Error, result.RetryAt
+			} else {
+				previewIndex := slices.IndexFunc(batch.Page.Issues, func(p tracker.GitHubIssuePreview) bool { return p.Number == item.Number })
+				if previewIndex < 0 {
+					return receipt, nativeInvalid("Intake item missing preview")
+				}
+				preview := batch.Page.Issues[previewIndex]
+				if result.Snapshot == nil || result.Snapshot.Provenance.Provider != "github" || result.Snapshot.Provenance.ExternalID != preview.ID {
+					return receipt, nativeInvalid("Snapshot stable source identity does not match preview")
+				}
+				if _, err := tx.ExecContext(ctx, "SAVEPOINT github_batch_item"); err != nil {
+					return receipt, err
+				}
+				itemErr := s.importBatchItem(ctx, tx, scope, batch, item, preview, *result.Snapshot, now)
+				if itemErr != nil {
+					if _, err := tx.ExecContext(ctx, "ROLLBACK TO github_batch_item"); err != nil {
+						return receipt, err
+					}
+					item.Status, item.Error = "failed", "Source issue could not be imported"
+					var diagnostic *nativeError
+					if errors.As(itemErr, &diagnostic) {
+						item.Error = diagnostic.Message
+					}
+				} else {
+					batch.Page.Issues[previewIndex].Snapshot = nil
+				}
+				if _, err := tx.ExecContext(ctx, "RELEASE github_batch_item"); err != nil {
+					return receipt, err
+				}
+			}
+			if result.RetryAt != "" {
+				for i := range batch.Items {
+					if batch.Items[i].Status == "pending" && !slices.ContainsFunc(results, func(r tracker.GitHubBatchItemResult) bool { return r.Number == batch.Items[i].Number }) {
+						batch.Items[i].Status, batch.Items[i].Error, batch.Items[i].RetryAt = "failed", "Source intake stopped at rate limit", result.RetryAt
 					}
 				}
-			} else {
-				preview := batch.Page.Issues[slices.IndexFunc(batch.Page.Issues, func(p tracker.GitHubIssuePreview) bool { return p.Number == item.Number })]
-				if request.Snapshot == nil || request.Snapshot.Provenance.Provider != "github" || request.Snapshot.Provenance.ExternalID != preview.ID {
-					return nil, nativeInvalid("Snapshot stable source identity does not match preview")
-				}
-				if _, err := intakeLinkedIssueTx(ctx, tx, scope, string(item.WorkItemID), *request.Snapshot, now); err != nil {
-					return nil, err
-				}
-				item.Status = "completed"
 			}
-			if !batchHasPending(batch) {
-				batch.Status = "finished"
+		}
+	default:
+		return receipt, nativeInvalid("Intake has no outstanding source request")
+	}
+	if batch.Status == "importing" && !batchHasPending(batch) {
+		if batch.Automatic && batch.Page.NextCursor != "" && !slices.ContainsFunc(batch.Items, func(item tracker.GitHubBatchItem) bool { return item.Status == "failed" && item.RetryAt != "" }) {
+			batch.Discovery.Cursor = batch.Page.NextCursor
+			batch.Status = "discovering"
+		} else {
+			batch.Status = "finished"
+		}
+	}
+	if err := saveGitHubBatch(ctx, tx, scope, batch); err != nil {
+		return receipt, err
+	}
+	receipt.Revision, receipt.Status = batch.Revision, batch.Status
+	if batch.Status == "importing" || batch.Status == "discovering" {
+		next, err := nextGitHubBatchTask(ctx, tx, scope, batch)
+		if err != nil {
+			return receipt, err
+		}
+		receipt.Next = next
+	}
+	receipt.Revision, receipt.Status = batch.Revision, batch.Status
+	return receipt, nil
+}
+
+func validateBatchDiagnostic(message, retry string) error {
+	if len(message) > 1000 {
+		return nativeInvalid("Source diagnostic exceeds 1000 bytes")
+	}
+	if retry != "" {
+		if _, err := time.Parse(time.RFC3339Nano, retry); err != nil {
+			return nativeInvalid("Invalid source retry deadline")
+		}
+	}
+	return nil
+}
+
+func batchLimit(batch *tracker.GitHubBatch) int {
+	if batch.Limit > 0 {
+		return batch.Limit
+	}
+	return 1000
+}
+
+func (s *Service) githubBatchLimit(ctx context.Context, query nativeQueryer, now time.Time) (int, error) {
+	if s.database.hostedPlans == nil {
+		return 1000, nil
+	}
+	entitlement, err := s.database.hostedEntitlement(ctx, query, now)
+	if err != nil {
+		return 0, err
+	}
+	limit := int(min(entitlement.Allowances["unarchived_issues"], 50000))
+	if limit <= 0 {
+		return 0, nativeInvalid("The plan does not allow issue import")
+	}
+	return limit, nil
+}
+
+func configureBatchDestination(ctx context.Context, tx *sql.Tx, scope nativeScope, batch *tracker.GitHubBatch, request tracker.GitHubBatchCommand) error {
+	project, err := readNativeProject(ctx, tx, scope)
+	if err != nil {
+		return err
+	}
+	destination := request.Destination
+	if destination == "" {
+		for _, state := range project.States {
+			if !state.Dispatchable && !state.Terminal {
+				destination = state.Name
+				break
 			}
-		default:
-			return nil, nativeInvalid("Intake has no outstanding source request")
 		}
-		if err := saveGitHubBatch(ctx, tx, scope, batch); err != nil {
-			return nil, err
+	}
+	lane, exists := findBatchLane(project.States, destination)
+	if !exists || lane.Dispatchable && !request.AllowDispatch {
+		return nativeInvalid("Select a destination and explicitly confirm any dispatchable lane")
+	}
+	if len(request.LabelLanes) > 100 {
+		return nativeInvalid("At most 100 label lane mappings are allowed")
+	}
+	for label, name := range request.LabelLanes {
+		lane, exists := findBatchLane(project.States, name)
+		if label == "" || len(label) > 100 || !exists || lane.Dispatchable && !request.AllowDispatch {
+			return nativeInvalid("Select a destination and explicitly confirm any dispatchable lane")
 		}
-		// Keep per-item receipts small: replaying the entire discovery preview
-		// for every checkpoint would duplicate backlog content in native_commands.
-		return struct {
-			Revision int64  `json:"revision"`
-			Status   string `json:"status"`
-		}{batch.Revision, batch.Status}, nil
-	})
+	}
+	batch.Destination, batch.AllowDispatch, batch.LabelLanes = destination, request.AllowDispatch, request.LabelLanes
+	return nil
+}
+
+func batchIssueDestination(states []tracker.NativeState, batch *tracker.GitHubBatch, sourceLabels []string) (string, []string, error) {
+	destination := batch.Destination
+	labels := []string{}
+	mapped := ""
+	for _, label := range sourceLabels {
+		name, explicit := batch.LabelLanes[label]
+		laneLabel := explicit && strings.HasPrefix(strings.ToLower(label), "detent:")
+		if strings.HasPrefix(strings.ToLower(label), "detent:") {
+			for _, state := range states {
+				if strings.EqualFold(label, "detent:"+state.Name) {
+					laneLabel = true
+					if !explicit {
+						name = state.Name
+					}
+					break
+				}
+			}
+		}
+		if name != "" {
+			if mapped != "" && mapped != name {
+				return "", nil, nativeInvalid("Source labels map to conflicting lanes")
+			}
+			mapped = name
+		}
+		if !laneLabel {
+			labels = append(labels, label)
+		}
+	}
+	if mapped != "" {
+		destination = mapped
+	}
+	lane, exists := findBatchLane(states, destination)
+	if !exists || lane.Dispatchable && !batch.AllowDispatch {
+		return "", nil, nativeInvalid("Select a destination and explicitly confirm any dispatchable lane")
+	}
+	return destination, labels, nil
+}
+
+func (s *Service) importBatchItem(ctx context.Context, tx *sql.Tx, scope nativeScope, batch *tracker.GitHubBatch, item *tracker.GitHubBatchItem, preview tracker.GitHubIssuePreview, snapshot tracker.GitHubIssueSnapshot, now time.Time) error {
+	before, err := s.database.hostedConsumption(ctx, tx, now)
+	if err != nil {
+		return err
+	}
+	id := item.WorkItemID
+	status := "completed"
+	if id == "" {
+		integration, err := readProjectIntegration(ctx, tx, scope)
+		if err != nil {
+			return err
+		}
+		var existing string
+		err = tx.QueryRowContext(ctx, `SELECT native_id FROM issues WHERE organization_id=? AND project_id=? AND
+   (native_source_key IN (?,?) OR github_node_id=? OR (json_extract(provenance_json, '$.provider')='github' AND json_extract(provenance_json, '$.external_id')=?) OR (repository_id=? AND github_number=?))`, scope.organization, scope.project, "github:"+preview.URL, "github:"+preview.ID, preview.ID, preview.ID, integration.RepositoryID, preview.Number).Scan(&existing)
+		if err == nil {
+			item.WorkItemID, item.Status = tracker.NativeWorkItemID(existing), "skipped"
+			return nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		project, err := readNativeProject(ctx, tx, scope)
+		if err != nil {
+			return err
+		}
+		destination, labels, err := batchIssueDestination(project.States, batch, preview.Labels)
+		if err != nil {
+			return err
+		}
+		creationScope := scope
+		creationScope.credential.Scope = apiScopeOperator
+		creationScope.sourceActor = batch.RequestedBy
+		issue, err := createLinkedIssueInStateTx(ctx, tx, creationScope, tracker.CreateIssue{GitHubIssueURL: preview.URL, State: destination, Labels: labels}, now)
+		if err != nil {
+			return err
+		}
+		id = issue.WorkItemID
+	}
+	if _, err := intakeLinkedIssueTx(ctx, tx, scope, string(id), snapshot, now); err != nil {
+		return err
+	}
+	if err := s.database.checkHostedGrowth(ctx, tx, before, now, false); err != nil {
+		return err
+	}
+	item.WorkItemID, item.Status = id, status
+	return nil
 }

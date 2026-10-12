@@ -458,6 +458,7 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		s.claims[issueID] = nativeTrackerLease(claim.lease)
 		s.nativeClaims[issueID] = claim
 		s.claimPolicies[issueID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
+		claim.source.client.client.nativeLeases.Store(claim.source.client.base()+"/"+issueID, claim.lease)
 	}
 	s.mu.Unlock()
 	s.syncLeaseHold(ctx)

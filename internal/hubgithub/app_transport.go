@@ -11,6 +11,7 @@ import (
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type appClient struct {
@@ -96,4 +97,26 @@ func (a *appClient) RESTPage(ctx context.Context, path string, output any) (stri
 		return "", err
 	}
 	return client.RESTPage(ctx, path, output)
+}
+
+func (a *appClient) GraphQL(ctx context.Context, query string, variables map[string]any, output any) error {
+	repository := ""
+	if scope, ok := ctx.Value(requestScopeKey{}).(*requestScope); ok {
+		repository = scope.repository
+	}
+	owner, ownerOK := variables["owner"].(string)
+	name, nameOK := variables["repo"].(string)
+	if ownerOK && nameOK {
+		repository = owner + "/" + name
+	}
+	_, canonical, _, err := tracker.ParseGitHubIssueURL("https://github.com/" + repository + "/issues/1")
+	if err != nil {
+		return err
+	}
+	parts := strings.SplitN(canonical, "/", 2)
+	client, err := a.repositoryClient(repositoryRESTPath(parts[0], parts[1]))
+	if err != nil {
+		return err
+	}
+	return client.GraphQL(ctx, query, variables, output)
 }

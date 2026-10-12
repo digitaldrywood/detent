@@ -29,7 +29,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 			}
 			enrollment, err := h.admin.client.CreateRunnerEnrollment(t.Context(), h.organization, runnerauth.EnrollmentRequest{
 				Binding: file.Identity.Binding, ProjectIDs: []tracker.ProjectID{h.project},
-				Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 60,
+				Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, TTLSeconds: 60,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -98,6 +98,9 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 			}
 			if err := resumed.Checkpoint(t.Context(), checkpoint); err != nil {
 				t.Fatal(err)
+			}
+			if err := resumed.claim.source.UpdateIssueState(t.Context(), issue.ID, "In Review"); err != nil {
+				t.Fatalf("reconnected actor transition: %v", err)
 			}
 			if err := resumed.Finish(t.Context(), "failed"); err != nil {
 				t.Fatal(err)
