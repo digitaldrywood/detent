@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -141,7 +142,7 @@ func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
 								Tools []operatortool.Definition `json:"tools"`
 							} `json:"result"`
 						}
-						if json.Unmarshal(listed.Body.Bytes(), &catalog) != nil || len(catalog.Result.Tools) != 1 || catalog.Result.Tools[0].Name != operatortool.PlatformAdjustAICredits {
+						if json.Unmarshal(listed.Body.Bytes(), &catalog) != nil || !slices.ContainsFunc(catalog.Result.Tools, func(tool operatortool.Definition) bool { return tool.Name == operatortool.PlatformAdjustAICredits }) {
 							t.Fatalf("catalog=%s", listed.Body.String())
 						}
 						body = fmt.Sprintf(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":%q,"arguments":{"organization_id":"org_alpha","idempotency_key":%q,"amount_usd":"5.25","reason":"design partner"}}}`, operatortool.PlatformAdjustAICredits, key)

@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/process"
@@ -44,7 +46,8 @@ type database struct {
 	path                   string
 	schemaVersion          int64
 	hostedOrganization     tracker.OrganizationID
-	hostedPlans            *HostedPlansConfig
+	hostedRuntime          atomic.Pointer[hostedRuntimeConfig]
+	logger                 *slog.Logger
 	hostedBilling          bool
 	aiCreditMode           string
 	aiCreditCostMultiplier float64
@@ -87,7 +90,11 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
-	store := &database{db: db, lock: lock, path: path, now: cfg.now, newLeaseID: cfg.newLeaseID, aiCreditCostMultiplier: defaultAICreditCostMultiplier}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	store := &database{logger: logger, db: db, lock: lock, path: path, now: cfg.now, newLeaseID: cfg.newLeaseID, aiCreditCostMultiplier: defaultAICreditCostMultiplier}
 	if cfg.Hosted != nil {
 		store.linkedSourceBase = cfg.Hosted.PublicURL
 		if cfg.Hosted.SharedEntry != nil {

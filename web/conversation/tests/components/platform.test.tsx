@@ -744,13 +744,91 @@ describe("platform console", () => {
 });
 
 describe("complimentary plans", () => {
+  it.each(["create", "base"])(
+    "submits an audited %s plan change from the tenant console",
+    async (operation) => {
+      const api = fakeApi({
+        platformOrganizations: vi.fn(async () => administrator),
+      });
+      renderPlatform(api);
+      fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
+      const plan = await screen.findByRole("region", {
+        name: "Plan for Alpha",
+      });
+      fireEvent.click(
+        within(plan).getByRole("button", {
+          name:
+            operation === "create"
+              ? "Create plan version"
+              : "Change base or subscription",
+        }),
+      );
+      const dialog = await screen.findByRole("dialog", {
+        name:
+          operation === "create"
+            ? "Create plan version for Alpha"
+            : "Change base or subscription for Alpha",
+      });
+      fireEvent.click(
+        within(dialog).getByRole("button", {
+          name: operation === "create" ? "Create version" : "Apply plan",
+        }),
+      );
+      expect((await within(dialog).findByRole("alert")).textContent).toContain(
+        "Give a reason",
+      );
+      expect(api.changePlatformEntitlement).not.toHaveBeenCalled();
+      if (operation === "create") {
+        fireEvent.change(within(dialog).getByLabelText("Plan ID"), {
+          target: { value: "extended_capacity" },
+        });
+        fireEvent.change(within(dialog).getByLabelText("projects"), {
+          target: { value: "50" },
+        });
+      } else {
+        fireEvent.change(within(dialog).getByLabelText("Plan"), {
+          target: { value: "comp_team@1" },
+        });
+        expect(
+          within(dialog).queryByRole("option", { name: "Subscription" }),
+        ).toBeNull();
+      }
+      fireEvent.change(within(dialog).getByLabelText("Reason"), {
+        target: { value: "Capacity adjustment" },
+      });
+      fireEvent.click(
+        within(dialog).getByRole("button", {
+          name: operation === "create" ? "Create version" : "Apply plan",
+        }),
+      );
+      await waitFor(() =>
+        expect(api.changePlatformEntitlement).toHaveBeenCalledTimes(1),
+      );
+      const call = vi.mocked(api.changePlatformEntitlement).mock.calls[0]![0];
+      expect(call.organization).toBe("org_alpha");
+      expect(call.change).toMatchObject({
+        action: operation === "create" ? "create_plan" : "base",
+        expected_revision: 3,
+        reason: "Capacity adjustment",
+        plan:
+          operation === "create"
+            ? { id: "extended_capacity", version: 2 }
+            : { id: "comp_team", version: 1 },
+      });
+      if (call.change.action === "create_plan")
+        expect(call.change.definition.allowances).toEqual({ projects: 50 });
+      expect(call.change.idempotency_key).not.toBe("");
+    },
+  );
+
   it("is hidden from staff who are not entitlement administrators", async () => {
     const api = fakeApi();
     renderPlatform(api);
     await screen.findByRole("table", { name: "Tenants" });
     expect(screen.queryByRole("region", { name: "Complimentary plans" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Change plan" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Grant model choice" })).toBeNull();
+    for (const name of ["Change plan", "Grant complimentary plan", "Grant model choice", "Create plan version", "Change base or subscription"]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
   });
 
   it.each(["admin", "billing"])("shows base, effective plan and active grants of ready organizations to %s", async (role) => {

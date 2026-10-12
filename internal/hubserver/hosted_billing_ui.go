@@ -167,7 +167,7 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 			data.PlanGrants = append(data.PlanGrants, message)
 		}
 	}
-	if cfg := s.config.Hosted.Billing; cfg != nil {
+	if cfg := s.hostedBillingConfig(); cfg != nil {
 		data.BillingEnabled = true
 		data.BillingCanPurchase = report.State.Snapshot.SubscriptionID == "" && report.State.Status != "multiple_subscriptions"
 		data.BillingCheckoutPrice = c.QueryParam("checkout_price")
@@ -262,6 +262,7 @@ func (s *Service) hostedBillingJSON(c echo.Context) error {
 }
 
 func (s *Service) hostedBillingUsageJSON(c echo.Context) error {
+	cfg := s.hostedBillingConfig()
 	credential, err := s.hostedAdministrator(c)
 	if err != nil {
 		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Plan and usage require owner or admin access"})
@@ -285,7 +286,7 @@ func (s *Service) hostedBillingUsageJSON(c echo.Context) error {
 		ChatUsage: view.ChatUsage, ChargedAIMicros: view.ChargedAIMicros, AICredits: view.AICredits,
 		ComparisonPlans: view.ComparisonPlans, CanCheckout: canBill && view.CanCheckout,
 		CanManage:       canBill && view.CanManage,
-		CanBuyCredits:   canBill && s.config.Hosted.Billing != nil && !s.config.Hosted.Billing.CheckoutDisabled && view.AICredits != nil && len(view.AICredits.Packs) > 0,
+		CanBuyCredits:   canBill && cfg != nil && !cfg.CheckoutDisabled && view.AICredits != nil && len(view.AICredits.Packs) > 0,
 		CheckoutPending: view.CheckoutPending,
 	})
 }
@@ -306,8 +307,8 @@ func (s *Service) readBillingView(ctx context.Context) (hostedBillingView, error
 
 	view := hostedBillingView{hostedBillingReport: report, Prices: []hostedBillingPriceView{}}
 	view.ComparisonPlans = []hostedComparisonPlan{}
-	if s.database.hostedPlans != nil {
-		for _, configured := range s.database.hostedPlans.Plans {
+	if runtimePlans := s.database.plans(); runtimePlans != nil {
+		for _, configured := range runtimePlans.Plans {
 			if !slices.Contains([]string{"starter", "growth", "scale"}, configured.ID) {
 				continue
 			}
@@ -316,7 +317,7 @@ func (s *Service) readBillingView(ctx context.Context) (hostedBillingView, error
 				return hostedBillingView{}, err
 			}
 			comparison := hostedComparisonPlan{HostedPlan: plan}
-			if cfg := s.config.Hosted.Billing; cfg != nil {
+			if cfg := s.hostedBillingConfig(); cfg != nil {
 				for _, price := range cfg.Prices {
 					if price.Plan == plan.PlanReference {
 						comparison.PriceID = price.PriceID
@@ -327,7 +328,7 @@ func (s *Service) readBillingView(ctx context.Context) (hostedBillingView, error
 			view.ComparisonPlans = append(view.ComparisonPlans, comparison)
 		}
 	}
-	if cfg := s.config.Hosted.Billing; cfg != nil {
+	if cfg := s.hostedBillingConfig(); cfg != nil {
 		for _, price := range cfg.Prices {
 			view.Prices = append(view.Prices, hostedBillingPriceView{ID: price.PriceID, Label: s.hostedPriceLabel(ctx, price)})
 		}

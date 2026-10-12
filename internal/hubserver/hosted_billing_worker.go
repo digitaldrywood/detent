@@ -21,7 +21,7 @@ type hostedBillingWorker struct {
 }
 
 func (s *Service) startHostedBilling() {
-	if s.config.Hosted == nil || s.config.Hosted.Billing == nil {
+	if s.config.Hosted == nil || s.hostedBillingConfig() == nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -38,7 +38,11 @@ func (s *Service) stopHostedBilling() {
 
 func (w *hostedBillingWorker) run(ctx context.Context) {
 	defer close(w.done)
-	ticker := time.NewTicker(time.Duration(w.service.config.Hosted.Billing.ReconcileSeconds) * time.Second)
+	cfg := w.service.hostedBillingConfig()
+	if cfg == nil {
+		return
+	}
+	ticker := time.NewTicker(time.Duration(cfg.ReconcileSeconds) * time.Second)
 	defer ticker.Stop()
 	for {
 		w.mu.Lock()
@@ -95,7 +99,10 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	cfg := s.config.Hosted.Billing
+	cfg := s.hostedBillingConfig()
+	if cfg == nil {
+		return nil
+	}
 	binding, err := s.database.hostedBillingBinding(ctx, cfg)
 	if errors.Is(err, errHostedBillingUnbound) {
 		return nil
@@ -112,14 +119,15 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 }
 
 func (s *Service) hostedStripeWebhook(c echo.Context) error {
-	if s.config.Hosted.Billing == nil {
+	cfg := s.hostedBillingConfig()
+	if cfg == nil {
 		return c.NoContent(http.StatusNotFound)
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(c.Response(), c.Request().Body, 1024*1024))
 	if err != nil {
 		return c.NoContent(http.StatusBadRequest)
 	}
-	event, err := billing.VerifyModeEvent(body, c.Request().Header.Get("Stripe-Signature"), s.config.Hosted.Billing.WebhookSecret, s.config.now(), s.config.Hosted.Billing.mode() == billing.ModeLive)
+	event, err := billing.VerifyModeEvent(body, c.Request().Header.Get("Stripe-Signature"), cfg.WebhookSecret, s.config.now(), cfg.mode() == billing.ModeLive)
 	if err != nil {
 		return c.NoContent(http.StatusBadRequest)
 	}

@@ -21,8 +21,9 @@ const collaborationBytesRecount = `SELECT
 	(SELECT coalesce(sum(size),0) FROM attachments WHERE object_deleted_at IS NULL)`
 
 func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, now time.Time, metrics ...string) (map[string]int64, error) {
+	runtimePlans := d.plans()
 	result := make(map[string]int64)
-	if d.hostedPlans == nil {
+	if runtimePlans == nil {
 		return result, nil
 	}
 	queries := map[string]string{
@@ -56,7 +57,7 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 		after           time.Time
 	}{
 		{"concurrent_work", "SELECT expires_at FROM leases WHERE released_at IS NULL", now},
-		{"connected_runners", `SELECT r.last_heartbeat_at FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE t.revoked_at IS NULL UNION ALL SELECT m.last_heartbeat_at FROM machines m JOIN api_tokens t ON t.id = m.token_id WHERE t.revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_identities r WHERE r.machine_id = m.id)`, now.Add(-time.Duration(d.hostedPlans.ConnectedSeconds) * time.Second)},
+		{"connected_runners", `SELECT r.last_heartbeat_at FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE t.revoked_at IS NULL UNION ALL SELECT m.last_heartbeat_at FROM machines m JOIN api_tokens t ON t.id = m.token_id WHERE t.revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_identities r WHERE r.machine_id = m.id)`, now.Add(-time.Duration(runtimePlans.ConnectedSeconds) * time.Second)},
 	} {
 		if len(metrics) > 0 && !slices.Contains(metrics, sample.name) {
 			continue
@@ -77,7 +78,7 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 	if len(metrics) > 0 && !slices.Contains(metrics, "usage_windows") {
 		return result, nil
 	}
-	window := now.Unix() / d.hostedPlans.WindowSeconds * d.hostedPlans.WindowSeconds
+	window := now.Unix() / runtimePlans.WindowSeconds * runtimePlans.WindowSeconds
 	rows, err := query.QueryContext(ctx, "SELECT metric,amount FROM hosted_usage_windows WHERE window_start = ?", window)
 	if err != nil {
 		return nil, err
@@ -118,11 +119,12 @@ func countHostedAfter(ctx context.Context, query nativeQueryer, statement string
 }
 
 func (d *database) recordHostedUsage(ctx context.Context, tx *sql.Tx, now time.Time, metric string, amount int64) error {
-	if d.hostedPlans == nil || amount == 0 {
+	runtimePlans := d.plans()
+	if runtimePlans == nil || amount == 0 {
 		return nil
 	}
-	window := now.Unix() / d.hostedPlans.WindowSeconds * d.hostedPlans.WindowSeconds
-	if _, err := tx.ExecContext(ctx, "DELETE FROM hosted_usage_windows WHERE window_start <= ?", window-d.hostedPlans.RetentionWindows*d.hostedPlans.WindowSeconds); err != nil {
+	window := now.Unix() / runtimePlans.WindowSeconds * runtimePlans.WindowSeconds
+	if _, err := tx.ExecContext(ctx, "DELETE FROM hosted_usage_windows WHERE window_start <= ?", window-runtimePlans.RetentionWindows*runtimePlans.WindowSeconds); err != nil {
 		return err
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO hosted_usage_windows(window_start,metric,amount) VALUES(?,?,?) ON CONFLICT(window_start,metric) DO UPDATE SET amount = min(amount+excluded.amount,1125899906842624)`, window, metric, amount)
@@ -130,7 +132,7 @@ func (d *database) recordHostedUsage(ctx context.Context, tx *sql.Tx, now time.T
 }
 
 func (d *database) checkHostedGrowth(ctx context.Context, tx *sql.Tx, before map[string]int64, now time.Time, completion bool, metrics ...string) error {
-	if d.hostedPlans == nil {
+	if d.plans() == nil {
 		return nil
 	}
 	after, err := d.hostedConsumption(ctx, tx, now, metrics...)
@@ -174,7 +176,8 @@ func (d *database) checkHostedConsumptionGrowth(ctx context.Context, tx *sql.Tx,
 }
 
 func (d *database) checkHostedClaim(ctx context.Context, tx *sql.Tx, now time.Time) error {
-	if d.hostedPlans == nil {
+	runtimePlans := d.plans()
+	if runtimePlans == nil {
 		return nil
 	}
 	if err := d.requireHostedFeature(ctx, tx, "native_execution", now); err != nil {
@@ -187,7 +190,7 @@ func (d *database) checkHostedClaim(ctx context.Context, tx *sql.Tx, now time.Ti
 	if err != nil {
 		return err
 	}
-	window := now.Unix() / d.hostedPlans.WindowSeconds * d.hostedPlans.WindowSeconds
+	window := now.Unix() / runtimePlans.WindowSeconds * runtimePlans.WindowSeconds
 	var used int64
 	if err := tx.QueryRowContext(ctx, "SELECT coalesce(sum(amount),0) FROM hosted_usage_windows WHERE window_start = ? AND metric = 'api_mutations'", window).Scan(&used); err != nil {
 		return err

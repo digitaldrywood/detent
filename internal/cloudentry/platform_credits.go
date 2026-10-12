@@ -89,10 +89,13 @@ func (a platformCredits) ListTools(ctx context.Context) ([]operatortool.Definiti
 	if _, err := a.actor(ctx); err != nil {
 		return nil, err
 	}
-	return operatortool.PlatformCreditCatalog(), nil
+	return append(operatortool.PlatformCreditCatalog(), operatortool.PlatformEntitlementCatalog()...), nil
 }
 
 func (a platformCredits) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+	if call.Name == operatortool.PlatformEntitlements || call.Name == operatortool.PlatformChangeEntitlement {
+		return a.entitlements(ctx, call)
+	}
 	if call.Name != operatortool.PlatformAdjustAICredits {
 		return operatortool.Result{}, operatortool.ErrUnknownTool
 	}

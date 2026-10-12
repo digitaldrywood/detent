@@ -45,6 +45,7 @@ type Service struct {
 	billing                 *hostedBillingWorker
 	healthDetector          *healthDetector
 	hostedMutationMu        sync.Mutex
+	runtimeMu               sync.Mutex
 	hostedAuthLogger        *slog.Logger
 	hostedSessions          *auth.Service
 	echo                    *echo.Echo
