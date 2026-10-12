@@ -13,6 +13,72 @@ import (
 )
 
 func TestNativeRetention(t *testing.T) {
+	t.Run("command receipts and storage accounting", func(t *testing.T) {
+		now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+		issue := f.create(t, "receipts")
+		var actor string
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id FROM api_tokens LIMIT 1").Scan(&actor); err != nil {
+			t.Fatal(err)
+		}
+		counter := func() int64 {
+			var value int64
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&value); err != nil {
+				t.Fatal(err)
+			}
+			return value
+		}
+		before := counter()
+		base := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/projects/" + string(f.project.ID)
+		receipts := []struct {
+			operation, key string
+			age            time.Duration
+			kept           bool
+		}{
+			{"POST " + base + "/landing-barrier", "old", 25 * time.Hour, false},
+			{"PATCH " + base + "/work-items/x", "old-patch", 25 * time.Hour, false},
+			{"POST " + base + "/landing-barrier", "recent", time.Hour, true},
+			{"POST " + base + "/conversations/c/link", "link", 25 * time.Hour, true},
+			{"mcp update_runner_routing", "mcp", 25 * time.Hour, true},
+		}
+		for _, receipt := range receipts {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,created_at) VALUES(?,?,?,?,'hash',?,?)", f.project.OrganizationID, actor, receipt.operation, receipt.key, `{"output":"`+fmt.Sprintf("%0512d", 0)+`"}`, formatHubTime(now.Add(-receipt.age))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt"}}, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if after := counter(); after != before {
+			t.Fatalf("bookkeeping counted against storage: before=%d after=%d", before, after)
+		}
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "comment"}, Body: "customer content"})
+		requireNativeStatus(t, response, http.StatusOK)
+		if counter() <= before {
+			t.Fatal("customer comment was not counted")
+		}
+		if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
+			t.Fatal(err)
+		}
+		for _, receipt := range receipts {
+			var count int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE command_key=?", receipt.key).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if (count == 1) != receipt.kept {
+				t.Fatalf("receipt %s %s kept=%v", receipt.operation, receipt.key, count == 1)
+			}
+		}
+	})
 	t.Run("hourly host history", func(t *testing.T) {
 		now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
 		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
