@@ -33,56 +33,167 @@ import (
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
-func TestInstallScriptInstallsBinaryAndRefusesExistingLock(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
+func TestInstallScriptExistingInstall(t *testing.T) {
 	t.Parallel()
 
 	root, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd() error = %v", err)
 	}
+	server := newInstallReleaseServer("v1.2.3", "unused.tar.gz", nil, "")
+	t.Cleanup(server.Close)
 
-	tmp := t.TempDir()
-	source := filepath.Join(tmp, "source-detent")
-	if err := os.WriteFile(source, []byte("#!/usr/bin/env sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
+	tests := []struct {
+		name          string
+		version       string
+		required      string
+		lock          string
+		removeBinary  bool
+		versionFails  bool
+		homebrew      bool
+		nonExecutable bool
+		wantError     string
+	}{
+		{name: "completed current install", version: "v1.2.3"},
+		{name: "current latest release", version: "v1.2.3", required: "latest"},
+		{name: "latest release unavailable", version: "v1.2.3", required: "unavailable", wantError: "Retry the enrollment command when the release service is reachable"},
+		{name: "completed newer install", version: "v1.10.0"},
+		{name: "build metadata", version: "v1.2.3+build.1"},
+		{name: "other install method", version: "v1.2.3", lock: "absent"},
+		{name: "current binary after install method changed", version: "v1.2.3", lock: "stale"},
+		{name: "concurrent install", version: "v1.2.3", lock: "empty", wantError: "Wait for it to finish"},
+		{name: "incomplete install record", version: "v1.2.3", lock: "partial", wantError: "Wait for it to finish"},
+		{name: "missing recorded binary", version: "v1.2.3", removeBinary: true, wantError: "remove the completed install record with rm"},
+		{name: "older install", version: "v1.2.2", wantError: "update --yes --from-release"},
+		{name: "older prerelease", version: "v1.2.3-rc.1", wantError: "update --yes --from-release"},
+		{name: "newer prerelease", version: "v1.3.0-rc.1"},
+		{name: "numeric prerelease ordering", version: "v1.2.3-rc.10", required: "v1.2.3-rc.2"},
+		{name: "unknown installed version", version: "dev", wantError: "update --yes --from-release"},
+		{name: "unreadable version", version: "", wantError: "Cannot read the version"},
+		{name: "version command fails", version: "v1.2.3", versionFails: true, wantError: "Cannot read the version"},
+		{name: "older external install", version: "v1.2.2", lock: "absent", wantError: "This switches installations managed by go install"},
+		{name: "older Homebrew install", version: "v1.2.2", lock: "absent", homebrew: true, wantError: "brew upgrade digitaldrywood/tap/detent"},
+		{name: "non-executable external file", version: "v1.2.3", lock: "absent", nonExecutable: true, wantError: "Move it aside with mv"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	installDir := filepath.Join(tmp, "bin")
-	stateDir := filepath.Join(tmp, "state")
-	lockPath := filepath.Join(stateDir, "install.lock")
-	env := append(os.Environ(),
-		"HOME="+tmp,
-		"DETENT_INSTALL_SOURCE="+source,
-		"DETENT_INSTALL_DIR="+installDir,
-		"DETENT_STATE_DIR="+stateDir,
-		"DETENT_INSTALL_LOCK="+lockPath,
-	)
-
-	first := runInstall(t, root, env)
-	if first.err != nil {
-		t.Fatalf("first install error = %v\nstdout:\n%s\nstderr:\n%s", first.err, first.stdout, first.stderr)
-	}
-	if _, err := os.Stat(filepath.Join(installDir, "detent")); err != nil {
-		t.Fatalf("installed binary stat error = %v", err)
-	}
-	lock, err := os.ReadFile(lockPath)
-	if err != nil {
-		t.Fatalf("ReadFile(lock) error = %v", err)
-	}
-	if !strings.Contains(string(lock), filepath.Join(installDir, "detent")) {
-		t.Fatalf("lock file = %q, want installed binary path", string(lock))
-	}
-
-	second := runInstall(t, root, env)
-	if second.err == nil {
-		t.Fatal("second install error = nil, want lock failure")
-	}
-	if !strings.Contains(second.stderr, "already installed") {
-		t.Fatalf("second install stderr = %q, want already installed", second.stderr)
+			tmp := t.TempDir()
+			source := filepath.Join(tmp, "source-detent")
+			versionExit := 0
+			if tt.versionFails {
+				versionExit = 1
+			}
+			content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = --format ]; then\n  printf 'version: %%s\\n' '%s'\n  exit %d\nfi\nif [ \"$1\" = hub ]; then printf 'registered\\n'; exit 0; fi\nexit 1\n", tt.version, versionExit)
+			if err := os.WriteFile(source, []byte(content), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			installDir := filepath.Join(tmp, "bin")
+			if tt.homebrew {
+				installDir = filepath.Join(tmp, "Cellar", "detent", "1.2.2", "bin")
+			}
+			stateDir := filepath.Join(tmp, "state")
+			binary := filepath.Join(installDir, "detent")
+			lockPath := filepath.Join(stateDir, "install.lock")
+			required := tt.required
+			if required == "" {
+				required = "v1.2.3"
+			}
+			apiBase := server.URL
+			if required == "latest" || required == "unavailable" {
+				if required == "unavailable" {
+					apiBase += "/unavailable"
+				}
+				required = ""
+			}
+			env := append(os.Environ(),
+				"HOME="+tmp,
+				"DETENT_VERSION="+required,
+				"DETENT_GITHUB_API_BASE="+apiBase,
+				"DETENT_INSTALL_SOURCE="+source,
+				"DETENT_INSTALL_DIR="+installDir,
+				"DETENT_STATE_DIR="+stateDir,
+				"DETENT_INSTALL_LOCK="+lockPath,
+			)
+			first := runInstall(t, root, env)
+			if first.err != nil {
+				t.Fatalf("first install error = %v\nstdout:\n%s\nstderr:\n%s", first.err, first.stdout, first.stderr)
+			}
+			lock, err := os.ReadFile(lockPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(lock), "binary="+binary+"\n") {
+				t.Fatalf("lock file = %q, want installed binary path", lock)
+			}
+			switch tt.lock {
+			case "stale":
+				lock = []byte(strings.ReplaceAll(string(lock), binary, filepath.Join(tmp, "removed-detent")))
+				if err := os.WriteFile(lockPath, lock, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			case "absent":
+				if err := os.Remove(lockPath); err != nil {
+					t.Fatal(err)
+				}
+			case "empty", "partial":
+				lock = nil
+				if tt.lock == "partial" {
+					lock = []byte("binary=" + binary + "\n")
+				}
+				if err := os.WriteFile(lockPath, lock, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.removeBinary {
+				if err := os.Remove(binary); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.nonExecutable {
+				if err := os.Chmod(binary, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.CommandContext(t.Context(), "sh", "-c", `sh install.sh && export PATH="$DETENT_INSTALL_DIR:$PATH" && detent hub runner register --url https://hub.example.test --token test-token`)
+			cmd.Dir = root
+			cmd.Env = env
+			output, err := cmd.CombinedOutput()
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(string(output), tt.wantError) {
+					t.Fatalf("repeat install error = %v, output = %s, want %q", err, output, tt.wantError)
+				}
+				if strings.Contains(string(output), "registered") {
+					t.Fatalf("registration ran after a refused install: %s", output)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("repeat install error = %v, output = %s", err, output)
+				}
+				for _, want := range []string{"Using existing Detent at " + binary + " (version " + tt.version + ")", "registered\n"} {
+					if !strings.Contains(string(output), want) {
+						t.Fatalf("repeat install output = %s, want %q", output, want)
+					}
+				}
+			}
+			if tt.lock == "absent" {
+				if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("external install acquired an installer record: %v", err)
+				}
+			} else {
+				after, err := os.ReadFile(lockPath)
+				if err != nil || !bytes.Equal(after, lock) {
+					t.Fatalf("install record changed: %q, error = %v, want %q", after, err, lock)
+				}
+			}
+			if !tt.removeBinary {
+				after, err := os.ReadFile(binary)
+				if err != nil || string(after) != content {
+					t.Fatalf("existing binary changed: %q, error = %v", after, err)
+				}
+			}
+		})
 	}
 }
 
