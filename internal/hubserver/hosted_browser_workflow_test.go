@@ -89,7 +89,7 @@ func (f *browserHostedFixture) seedWorkflowRevisions(t *testing.T, project strin
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Review"}},
 		{Name: "Done", Terminal: true},
 	}, strings.Repeat("b", 40), true)
-	source := &policy.RepositorySource{Repository: "acme/orders", Commit: applied.Workflow.Revision, DefaultBranch: "develop", DefaultBranchHead: applied.Workflow.Revision, DefaultBranchReachable: true}
+	source := &policy.RepositorySource{Repository: "acme/orders", Commit: applied.Workflow.Revision, DefaultBranch: "develop", DefaultBranchHead: original.Workflow.Revision, DefaultBranchReachable: false}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/policy/observed", credential, policy.Observation{Descriptor: applied, Source: source}), http.StatusNoContent)
 	f.api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: original.ID, Policy: applied}, http.StatusOK)
 	pending := resolvedWorkflowPolicy(t, []policy.State{
