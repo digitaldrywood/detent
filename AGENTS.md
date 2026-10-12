@@ -195,6 +195,15 @@ behavior-preserving refactor, or a private function exported only for a test
 are scheduled evidence only; no package, file or aggregate coverage floor
 exists, and no change is made to move a percentage.
 
+Code that creates rows per key, member, organization, project or other entity
+is tested with at least two of those entities in the same database and scope,
+and asserts that both are usable. One row proves nothing about uniqueness.
+Every UNIQUE or PRIMARY KEY column such a row writes derives from its entity,
+never from a fixed label. `TestInsertsNeverWriteConstantUniqueKeys` in each
+SQLite store package refuses an INSERT that writes constants into every column
+of a unique key, except a singleton upsert whose `ON CONFLICT` key is itself
+constant. A new store package adds the same test.
+
 Focused `go test -timeout=60s ./<touched-package>/...`, `go vet`, targeted
 regressions, and [safety-critical fuzzing](CLAUDE.md#safety-critical-orchestrator-validation)
 are available for diagnostics during edits. `make check-land` is the
