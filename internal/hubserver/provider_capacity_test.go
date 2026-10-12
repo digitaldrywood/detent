@@ -297,8 +297,19 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-			for _, state := range []string{"Merging", "Rework"} {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, dispatchable, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)", f.project.ID, state, state, testTimestamp, testTimestamp); err != nil {
+			states := []tracker.NativeState{
+				{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework"}},
+				{Name: "Rework", Dispatchable: true},
+			}
+			raw, err := marshalNative(append(f.project.States, states...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", raw, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			for _, state := range states {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, dispatchable, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)", f.project.ID, state.Name, state.Name, testTimestamp, testTimestamp); err != nil {
 					t.Fatal(err)
 				}
 			}
