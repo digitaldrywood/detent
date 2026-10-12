@@ -894,11 +894,14 @@ describe("tenant discovery and detail", () => {
     expect(api.changePlatformEntitlement).not.toHaveBeenCalled();
   });
 
-  it("formats tenant labels, units and timestamps across Overview, grant history and Activity", async () => {
+  it.each(["base", "subscription"] as const)("formats tenant labels, usage and grant return plans with a %s base", async (source) => {
     const api = fakeApi({
       platformEntitlements: vi.fn(async () => ({
         ...entitlements,
-        plans: entitlements.plans.map((plan) => ({ ...plan, name: plan.id === "pilot_free" ? "Starter" : "Team" })),
+        source,
+        effective_base: source === "subscription" ? { id: "paid_business", version: 1 } : entitlements.base,
+        plans: [...entitlements.plans.map((plan) => ({ ...plan, name: plan.id === "pilot_free" ? "Starter" : "Team" })),
+          { id: "paid_business", version: 1, name: "Business", features: ["collaboration"], allowances: { projects: 30, members: 20, concurrent_work: 10 } }],
         grant_history: [
           ...entitlements.grants,
           { ...entitlements.grants[0]!, id: "comp_models", scope: ["model_choice"], revoked_at: "2026-10-01T10:00:00Z" },
@@ -906,7 +909,7 @@ describe("tenant discovery and detail", () => {
       })),
     });
     const original = api.platformTenant;
-    api.platformTenant = vi.fn(async (id) => ({ ...await original(id), usage: { window_ends_at: "2026-10-10T15:00:00Z", allowances: { projects: { used: 2, limit: 20 }, collaboration_bytes: { used: 390 * 1024 ** 2, limit: 1024 ** 3 } } } }));
+    api.platformTenant = vi.fn(async (id) => ({ ...await original(id), usage: { window_ends_at: "2026-10-10T15:00:00Z", allowances: { projects: { used: 2, limit: 20 }, members: { used: 3, limit: null }, concurrent_work: { used: 2, limit: null }, collaboration_bytes: { used: 390 * 1024 ** 2, limit: 1024 ** 3 } } } }));
     const auditRow = { at: "2026-10-09T10:00:00Z", actor: "staff@example.test", organization_id: "org_alpha", organization_name: "Alpha", organization_deleted: false, source: "entry" };
     api.platformAudit = vi.fn(async () => ({ rows: [
       { ...auditRow, event: "plan_granted", detail: "comp_team v1 until 2026-12-31T23:59:59Z", id: "one" },
@@ -914,17 +917,19 @@ describe("tenant discovery and detail", () => {
       { ...auditRow, event: "organization_ready", detail: "generation 7", id: "three" },
     ], events: [], tenants: [], next_cursor: "" }));
     renderPlatform(api, "/platform/tenants/org_alpha");
-    const rawValues = /pilot_free|comp_team|hosted_artifacts|model_choice|collaboration_bytes|artifact_retained_bytes|plan_granted|support_requested|organization_ready|customer-request|\d{4}-\d{2}-\d{2}T|generation/;
+    const rawValues = /pilot_free|comp_team|paid_business|hosted_artifacts|model_choice|collaboration_bytes|artifact_retained_bytes|plan_granted|support_requested|organization_ready|customer-request|\d{4}-\d{2}-\d{2}T|generation/;
     expect((await screen.findByRole("meter", { name: "Projects" })).getAttribute("aria-valuetext")).toBe("2 of 20");
     expect(screen.getByRole("meter", { name: "Workspace data" }).getAttribute("aria-valuetext")).toBe("390 MB of 1 GB");
     expect(screen.getByText("Not included on Team")).toBeTruthy();
+    expect(screen.getByRole("meter", { name: "Members" }).getAttribute("aria-valuetext")).toBe("3 used · no plan limit");
+    expect(screen.getByRole("meter", { name: "Concurrent work" }).getAttribute("aria-valuetext")).toBe("2 used · no plan limit");
     await waitFor(() => expect(api.platformAudit).toHaveBeenCalledWith("tenant=org_alpha&limit=3"));
     const activity = await screen.findByRole("region", { name: "Recent activity" });
     expect(within(activity).getByText("Plan granted")).toBeTruthy();
     expect(within(activity).getByText(/Customer asked for help · Ticket 123/)).toBeTruthy();
     expect(within(activity).getByText("Organization ready")).toBeTruthy();
     expect(screen.getByRole("region", { name: "Organization" }).textContent).toContain("September 2026");
-    expect(screen.getByRole("region", { name: "Plan for Alpha" }).textContent).toContain("Returns to Starter");
+    expect(screen.getByRole("region", { name: "Plan for Alpha" }).textContent).toContain(`Returns to ${source === "subscription" ? "Business" : "Starter"}`);
     expect(document.body.textContent).not.toMatch(rawValues);
     expect(within(activity).getByRole("link", { name: "Open audit log" }).getAttribute("href")).toBe("/platform/audit?tenant=org_alpha");
     fireEvent.click(screen.getByRole("button", { name: "Plan and billing" }));

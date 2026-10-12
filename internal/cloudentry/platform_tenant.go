@@ -57,8 +57,8 @@ type platformTenantDetail struct {
 type platformTenantUsage struct {
 	WindowEndsAt string `json:"window_ends_at"`
 	Allowances   map[string]struct {
-		Used  int64 `json:"used"`
-		Limit int64 `json:"limit"`
+		Used  int64  `json:"used"`
+		Limit *int64 `json:"limit"`
 	} `json:"allowances"`
 }
 

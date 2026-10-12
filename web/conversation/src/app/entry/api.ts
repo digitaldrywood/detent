@@ -161,7 +161,7 @@ export const PlatformTenantDetail = Schema.Struct({
   can_resume: Schema.Boolean,
   usage: Schema.optional(Schema.NullOr(Schema.Struct({
     window_ends_at: Schema.String,
-    allowances: Schema.Record(Schema.String, Schema.Struct({ used: Schema.Number, limit: Schema.Number })),
+    allowances: Schema.Record(Schema.String, Schema.Struct({ used: Schema.Number, limit: Schema.NullOr(Schema.Number) })),
   }))),
   unavailable: Schema.Array(Schema.String),
   members: Schema.NullOr(Schema.Array(Schema.Struct({ id: Schema.String, email: Schema.String, role: Schema.String }))),

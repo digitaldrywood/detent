@@ -106,9 +106,11 @@ func (s *Service) tenantEntitlements(ctx context.Context, organization Organizat
 	if err != nil {
 		return result, err
 	}
-	for index, grant := range result.Grants {
-		if email, ok := granters[grant.ID]; ok {
-			result.Grants[index].GrantedBy = email
+	for _, grants := range [][]entitlementGrant{result.Grants, result.GrantHistory} {
+		for index, grant := range grants {
+			if email, ok := granters[grant.ID]; ok {
+				grants[index].GrantedBy = email
+			}
 		}
 	}
 	return result, nil

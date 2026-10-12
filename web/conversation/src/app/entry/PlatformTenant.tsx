@@ -328,13 +328,10 @@ function TenantUsage({
   const allowances = Object.fromEntries(
     Object.entries(usage?.allowances ?? {}).map(([key, row]) => [
       key,
-      row.limit,
+      row.limit ?? 0,
     ]),
   );
   if (usage && Object.keys(allowances).length > 0) {
-    for (const plan of value?.plans ?? [])
-      for (const name of Object.keys(plan.allowances ?? {}))
-        allowances[name] ??= 0;
     allowances.artifact_retained_bytes ??= 0;
   }
   const rows = usage
@@ -374,12 +371,12 @@ function TenantUsage({
                 limit={row.limit}
                 unit={row.unit}
                 limitOnly={row.limitOnly}
+                unlimited={usage.allowances[row.name]?.limit === null}
                 description={row.description}
                 notIncludedOn={
-                  !(row.name in usage.allowances) ||
-                  (row.name.startsWith("artifact_") &&
-                    value !== null &&
-                    !(value.features ?? []).includes("hosted_artifacts"))
+                  row.name.startsWith("artifact_") &&
+                  value !== null &&
+                  !(value.features ?? []).includes("hosted_artifacts")
                     ? name
                     : undefined
                 }

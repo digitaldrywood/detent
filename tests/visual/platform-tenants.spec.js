@@ -84,6 +84,8 @@ for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844
       await page.evaluate((theme) => document.documentElement.classList.toggle("dark", theme === "dark"), theme);
       await expect(page.getByRole("region", { name: "Organization" })).toContainText("owner@example.test");
       await expect(page.getByRole("meter", { name: "Projects", exact: true })).toHaveAttribute("aria-valuetext", "2 of 5");
+      await expect(page.getByRole("meter", { name: "Members", exact: true })).toHaveAttribute("aria-valuetext", "1 used · no plan limit");
+      await page.screenshot({ path: process.env.TMPDIR + `/tenant-overview-${theme}-${viewport.width}.png`, fullPage: true });
       await test.info().attach("Tenant overview", { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
       expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
       await page.getByRole("button", { name: "Members 1", exact: true }).click();

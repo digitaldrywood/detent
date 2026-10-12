@@ -462,7 +462,7 @@ export function TenantPlan({
         }
         description={
           current
-            ? `Granted ${platformTime(current.granted_at ?? current.starts_at)} by ${current.granted_by}. ${current.expires_at ? `Returns to ${planDisplayName(value.base, value)} on ${platformTime(current.expires_at)}.` : "No expiry."}`
+            ? `Granted ${platformTime(current.granted_at ?? current.starts_at)} by ${current.granted_by}. ${current.expires_at ? `Returns to ${planDisplayName(value.effective_base, value)} on ${platformTime(current.expires_at)}.` : "No expiry."}`
             : `Base plan: ${planDisplayName(value.base, value)}`
         }
         control={
