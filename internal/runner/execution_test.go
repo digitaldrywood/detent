@@ -1584,6 +1584,7 @@ func TestNativeWorkUsesBackendBudget(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				r.sleepInhibitor = func(context.Context, func()) (func(), error) { return func() {}, nil }
 				execution := &workBudgetExecution{delay: 65 * time.Second}
 				if test.noVersion {
 					execution.delay = 0
@@ -1607,11 +1608,7 @@ func TestNativeWorkUsesBackendBudget(t *testing.T) {
 					t.Fatalf("source finalization=%t outcome=%q", backend.finalized, execution.finish)
 				}
 			}
-			if test.phase == "validator" {
-				synctest.Test(t, run)
-			} else {
-				run(t)
-			}
+			synctest.Test(t, run)
 		})
 	}
 }
