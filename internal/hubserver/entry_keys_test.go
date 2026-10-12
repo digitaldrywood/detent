@@ -41,6 +41,17 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 						if read.Code != wantRead {
 							t.Fatalf("read=%d want=%d %s", read.Code, wantRead, read.Body.String())
 						}
+						if kind == "service" {
+							second := key
+							second.ID = "key_matrix_second"
+							secondRead := f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, target: f.base + "/work-items", mutate: func(claims *cloudassert.Claims) {
+								mutate(claims)
+								claims.Key, claims.Subject = &second, "service:"+second.ID
+							}})
+							if secondRead.Code != http.StatusOK {
+								t.Fatalf("second service key read=%d %s", secondRead.Code, secondRead.Body.String())
+							}
+						}
 						write := f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: f.base + "/work-items", body: `{"idempotency_key":"matrix-write","title":"Scope and membership regression","state":"Todo"}`, mutate: mutate})
 						wantWrite := http.StatusOK
 						if kind == "personal" && !member {
