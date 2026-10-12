@@ -63,13 +63,13 @@ for (const width of [1280, 390]) {
     const repositoryLabel = "Which repository should Detent work on?";
     const repository = page.getByRole("textbox", { name: repositoryLabel, exact: true });
     await expect(repository).toHaveValue("");
-    await help(page, "Associate the runner checkout", "GitHub API integration is optional", width === 1280 ? "hover" : tap);
+    await help(page, "Associate the runner checkout", "private repositories work too, without a GitHub integration", width === 1280 ? "hover" : tap);
     await expect(repository).toHaveValue("");
     await expect(page.getByRole("button", { name: "Associate", exact: true })).toBeDisabled();
     await repository.fill("owner/repository");
-    await help(page, "Associate the runner checkout", "Its Git origin must match the binding", width === 1280 ? "focus" : tap, undefined, repositoryLabel);
+    await help(page, "Associate the runner checkout", "Enter owner/name and click Associate", width === 1280 ? "focus" : tap, undefined, repositoryLabel);
     await expect(repository).toHaveValue("owner/repository");
-    await help(page, "Associate the runner checkout", "This does not write configuration files or approve policy", tap);
+    await help(page, "Associate the runner checkout", "a repository your runner can download using its Git sign-in", tap);
     await expect(repository).toHaveValue("owner/repository");
     await expect(page.getByRole("button", { name: "Associate", exact: true })).toBeEnabled();
     await steps.getByRole("button", { name: /Repository configuration/ }).click();
@@ -77,13 +77,13 @@ for (const width of [1280, 390]) {
 
     await steps.getByRole("button", { name: /Local validation/ }).click();
     await expect(page.getByRole("checkbox")).toHaveCount(0);
-    await help(page, "Project checkout and configuration", "execution host", tap);
-    await help(page, "detent doctor", "not a browser confirmation", tap);
-    await help(page, "Provider sign-in", "Credentials and account details stay local", tap);
+    await help(page, "Project checkout and configuration", "Your runner needs a copy of your code", tap);
+    await help(page, "detent doctor", "checks whether Detent is set up correctly", tap);
+    await help(page, "Provider sign-in", "your sign-in details stay on that computer", tap);
 
     await steps.getByRole("button", { name: /Execution runner/ }).click();
-    await help(page, "Runner eligibility", "runner-reported heartbeat and capacity", tap);
-    await help(page, "Route here", "does not fix a stale heartbeat", tap);
+    await help(page, "Runner eligibility", "a computer you control", tap);
+    await help(page, "Route here", "check the reason shown next to it", tap);
     const enroll = page.getByRole("button", { name: "Enroll a runner", exact: true });
     const intake = page.getByRole("region", { name: "Import GitHub issues", exact: true });
     await expect(intake).toBeVisible();
@@ -132,14 +132,24 @@ for (const width of [1280, 390]) {
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
 
     await steps.getByRole("button", { name: /Artifact history/ }).click();
-    await help(page, "Your runner (local history)", "Detent stores no artifacts", tap);
+    await help(page, "Your runner (local history)", "losing it also loses those files", tap);
     await help(page, "Your bucket and gateway", "you run and pay for", tap);
     await page.getByRole("radio", { name: "Your bucket and gateway", exact: true }).check();
-    await help(page, "Service id", "does not provision or verify storage", tap);
+    await help(page, "Service id", "does not create storage or check that it works", tap);
     await help(page, "Gateway origin", "not the S3 bucket URL", tap);
-    await help(page, "Publisher token id", "Hub checks that grant", tap, testInfo.outputPath(`publisher-help-${width}.png`));
+    await help(page, "Publisher token id", "not the secret token itself", tap, testInfo.outputPath(`publisher-help-${width}.png`));
     await page.screenshot({ path: testInfo.outputPath(`setup-${width}.png`) });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await steps.getByRole("button", { name: /^.*Repository (ready|action required)$/ }).click();
+    await repository.fill("mockorg/alpha");
+    await page.getByRole("button", { name: "Associate", exact: true }).click();
+    await steps.getByRole("button", { name: /Repository configuration/ }).click();
+    await expect(page.getByText("Configuration files", { exact: true })).toBeVisible();
+    await expect(page.getByText(/The runner reads detent.yaml and WORKFLOW.md/)).toBeVisible();
+    await page.getByRole("button", { name: "Advanced policy details", exact: true }).click();
+    await expect(page.getByLabel("Resolved policy descriptor", { exact: true })).toBeVisible();
+    await expect(page.getByText(/Approval saves the work settings you reviewed/)).toBeVisible();
+    await page.getByRole("button", { name: "Advanced policy details", exact: true }).click();
     await context.close();
   });
 }

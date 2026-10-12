@@ -578,7 +578,7 @@ export function SetupRoute({
             <div className="flex items-center gap-1">
               <Label htmlFor="setup-repository">Which repository should Detent work on?</Label>
               <ContextHelp label="Associate the runner checkout">
-                Associate binds owner/name so an enrolled runner can clone it using its own Git credentials, including private repositories. Its Git origin must match the binding. GitHub API integration is optional. This does not write configuration files or approve policy.
+                This connects your project to a repository your runner can download using its Git sign-in. Enter owner/name and click Associate; private repositories work too, without a GitHub integration.
               </ContextHelp>
             </div>
             <Input
@@ -589,7 +589,7 @@ export function SetupRoute({
               disabled={Boolean(integration.value?.checkout_repository)}
             />
             <p className="text-[13px] text-muted-foreground">
-              The runner checks out this repository so it can read your configuration and work on issues. GitHub API integration is optional.
+              Enter your repository's owner/name; your runner downloads it using its Git sign-in. Private repositories work too, without a GitHub integration.
             </p>
             {integration.value?.checkout_repository ? (
               <p role="status" className={`text-[13px] ${checkoutVerified ? "text-success-foreground" : "text-muted-foreground"}`}>
@@ -630,7 +630,7 @@ export function SetupRoute({
             <h2 id="setup-configuration-heading" className="mb-2 text-sm font-medium">Configuration files</h2>
             {configurationChosen ? (
               <p className="mb-3 text-sm text-muted-foreground">
-                {progress?.repository === "generate" && policyReports.length === 0 && !policyApproved ? `Create detent.yaml and WORKFLOW.md in ${associatedRepository} on the execution host so the runner can report its settings.` : `The runner reads detent.yaml and WORKFLOW.md from ${associatedRepository} to learn how to build, check and deliver your work.`}
+                {progress?.repository === "generate" && policyReports.length === 0 && !policyApproved ? `Create detent.yaml and WORKFLOW.md in ${associatedRepository} on your runner’s computer so it can send the settings for review.` : `The runner reads detent.yaml and WORKFLOW.md from ${associatedRepository} to learn how to build, check and deliver your work.`}
               </p>
             ) : (
               <>
@@ -642,7 +642,7 @@ export function SetupRoute({
                   onValueChange={setRepository}
                   choices={[
                     { value: "existing", name: "Use existing configuration files", detail: "detent.yaml and WORKFLOW.md are already in the repository" },
-                    { value: "generate", name: "Create configuration files", detail: "Create detent.yaml and WORKFLOW.md on the execution host before approval" },
+                    { value: "generate", name: "Create configuration files", detail: "Create detent.yaml and WORKFLOW.md on your runner’s computer before approval" },
                   ]}
                 />
                 <Button variant="outline" disabled={saveProgress.pending || repository === ""} onClick={() => void saveProgress.call({ repository, doctor: progress?.doctor ?? false, provider: progress?.provider ?? false, artifacts })}>
@@ -659,7 +659,7 @@ export function SetupRoute({
               <p role="status" className="text-sm text-success-foreground">Approved the settings in detent.yaml and WORKFLOW.md from {associatedRepository}.</p>
             ) : (
               <>
-                <p className="mb-3 text-sm text-muted-foreground">Your approval lets the runner use these settings to dispatch work.</p>
+                <p className="mb-3 text-sm text-muted-foreground">Your approval lets the runner use these settings to start work.</p>
                 {policyReports.length === 0 ? (
                   <p role="status" className="mb-3 text-sm text-muted-foreground">Waiting for the runner to report the settings in detent.yaml and WORKFLOW.md from {associatedRepository}.</p>
                 ) : (
@@ -683,7 +683,7 @@ export function SetupRoute({
                     value={pastedPolicy}
                     onChange={(event) => setPastedPolicy(event.currentTarget.value)}
                   />
-                  <p className="break-words text-[13px] text-muted-foreground">If needed, run <code className="font-mono">{POLICY_INSPECT_COMMAND}</code> on the execution host and paste its output. Approval records the exact descriptor you reviewed.</p>
+                  <p className="break-words text-[13px] text-muted-foreground">If needed, run <code className="font-mono">{POLICY_INSPECT_COMMAND}</code> on your runner’s computer and paste its output. Approval saves the work settings you reviewed.</p>
                 </div>
               </CollapsiblePanel>
             </Collapsible>
@@ -700,7 +700,7 @@ export function SetupRoute({
     "Local validation": (
       <>
         {(onboarding.value.runners ?? []).length === 0 ? (
-          <p className="mb-3 text-sm text-muted-foreground">Enroll a runner to observe checks on its execution host.</p>
+          <p className="mb-3 text-sm text-muted-foreground">Enroll a runner first to check that its computer is ready.</p>
         ) : null}
         {(onboarding.value.runners ?? []).map((entry) => {
           const checks = entry.local_checks;
@@ -709,15 +709,15 @@ export function SetupRoute({
             <div key={entry.runner.runner_id} className="mb-3">
               <p className="mb-2 text-sm font-medium">{entry.runner.display_name} · {offline ? "Offline" : "Online"}{entry.runner.health === "needs_attention" ? " · Needs attention" : ""}</p>
               {([
-                ["Project checkout and configuration", "The runner checks its project checkout and configuration on the execution host. Prepare the files there, restart the runner, then refresh these observations.", checks?.checkout, "Prepare the checkout with WORKFLOW.md and detent.yaml at the path printed by registration."],
-                ["detent doctor", "The runner runs detent doctor on the execution host and reports a sanitized result. Hub stores this observation, not a browser confirmation. Run doctor locally for details, restart the runner after fixes, then refresh.", checks?.doctor, "Run detent doctor --config <global.yaml> --project <project> on this host for details and fixes."],
-                ["Provider sign-in", "The runner checks sign-in to the configured provider on its execution host. Credentials and account details stay local. Sign in there, restart the runner, then refresh these observations.", checks?.provider, `Sign in to ${(checks?.provider_kinds ?? []).join(" and ") || "the selected provider"} on this host, then restart the runner.`],
+                ["Project checkout and configuration", "Your runner needs a copy of your code with detent.yaml and WORKFLOW.md in the project folder. Put those files on the runner’s computer, restart the runner, then click Refresh runner checks.", checks?.checkout, "Put your code, WORKFLOW.md and detent.yaml in the project folder shown when you enrolled the runner."],
+                ["detent doctor", "detent doctor checks whether Detent is set up correctly on your computer. Run the command below on that computer for details, fix any problems, then restart the runner and refresh the checks.", checks?.doctor, "Run detent doctor --config <global.yaml> --project <project> on your runner’s computer to see what needs fixing."],
+                ["Provider sign-in", "Your runner needs to be signed in to the AI coding tool chosen for this project; your sign-in details stay on that computer. Sign in there, restart the runner, then click Refresh runner checks.", checks?.provider, `Sign in to ${(checks?.provider_kinds ?? []).join(" and ") || "the AI coding tool chosen for this project"} on your runner’s computer, then restart the runner.`],
               ] as const).map(([name, help, state, hint]) => (
                 <OptionRow key={name} label={name} name={name} help={help}
-                  detail={state === "passed" ? "Observed on the execution host" : hint}
+                  detail={state === "passed" ? "Checked on your runner’s computer" : hint}
                   right={<><StatusDot tone={state === "passed" && !offline ? "ok" : "warn"} />{state === "passed" ? "Passed" : state === "failed" ? "Failed" : state === "warning" ? "Warnings" : "Waiting"}</>} />
               ))}
-              {checks?.observed_at ? <p className="text-xs text-muted-foreground">Reported {new Date(checks.observed_at).toLocaleString()}. {offline ? "Reconnect the host to use these results." : "Credentials and command output stay local."}</p> : null}
+              {checks?.observed_at ? <p className="text-xs text-muted-foreground">Reported {new Date(checks.observed_at).toLocaleString()}. {offline ? "Reconnect the runner’s computer to use these results." : "Sign-in details and command output stay on your computer."}</p> : null}
             </div>
           );
         })}
@@ -729,10 +729,7 @@ export function SetupRoute({
         <div className="mb-2 flex items-center gap-1 text-sm">
           Runner eligibility
           <ContextHelp label="Runner eligibility">
-            Hub evaluates administrator-approved project access, claim permission, enabled state,
-            policy selectors, runner-reported heartbeat and capacity, shared host capacity, and
-            reported provider capacity. Any listed exclusion prevents new claims; runners also
-            verify that their resolved policy matches approval.
+            A runner is a computer you control, like your laptop or a server, where Detent's agents write and test code. Runners that can take work for this project are listed here; if one can't, the reason is shown next to it.
           </ContextHelp>
         </div>
         {eligible.map((entry) => (
@@ -767,17 +764,16 @@ export function SetupRoute({
                 >
                   Route here
                 </Button>
-                <ContextHelp label="Route here">Add this project to the runner’s routing scope, preserving its other projects. This can resolve missing project access; it does not fix a stale heartbeat, full capacity, disabled runner, or policy mismatch.</ContextHelp>
+                <ContextHelp label="Route here">Allow this runner to work on this project as well as its other projects. If it still cannot start, check the reason shown next to it.</ContextHelp>
               </>
             }
           />
         ))}
         <ControlError message={route.error?.message ?? null} />
         <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
-          <div className="text-[14.5px]">Enroll a host</div>
+          <div className="text-[14.5px]">Connect a computer</div>
           <p className="text-[13px] text-muted-foreground">
-            Name the host and copy one command to run on it. The command creates the host's
-            identity there, connects it to this project and writes its configuration.
+            Choose a name for the computer, then paste the enrollment command into a terminal on it. The command connects that computer to this project.
           </p>
           <div>
             <Button variant={needsAction ? "default" : "outline"} onClick={() => setEnrolling(true)}>
@@ -807,14 +803,14 @@ export function SetupRoute({
             {
               value: "local",
               name: "Your runner (local history)",
-              help: "Artifacts stay on your runner, the machine in your environment that produced them. Detent stores no artifacts. No separate storage account or fee is needed; access depends on your runner being available. If that machine is lost, so are the artifacts.",
-              detail: "Your runner stores artifacts; no Detent storage or storage fee",
+              help: "Keep logs, screenshots and other run files on your runner, with no separate storage account or fee. You can view them while that computer is available; losing it also loses those files.",
+              detail: "Keep run files on your runner, with no separate storage fee",
             },
             {
               value: "customer",
               name: "Your bucket and gateway",
-              help: "Artifacts go to an S3-compatible bucket and artifact gateway that you run and pay for. Bind its details below. Detent records the binding only and never holds your storage credentials or artifacts. A binding does not verify storage or guarantee offline access.",
-              detail: "Your bucket and gateway, your bill; no Detent artifact storage",
+              help: "Keep run files in storage you run and pay for: an S3-compatible bucket and a gateway, the service that lets you view those files. Enter the details below; connecting it does not check that storage works or ensure access when your runner is offline.",
+              detail: "Keep run files in storage you manage and pay for",
             },
           ]}
         />
@@ -824,7 +820,7 @@ export function SetupRoute({
               <div className="flex items-center gap-1">
                 <Label htmlFor="setup-service-id">Service id</Label>
                 <ContextHelp label="Service id">
-                  The identifier for the artifact service you operate. Binding it associates that service with this project; it does not provision or verify storage.
+                  Enter the ID from the service you set up to store run files. This connects it to the project; it does not create storage or check that it works.
                 </ContextHelp>
               </div>
               <Input
@@ -837,7 +833,7 @@ export function SetupRoute({
               <div className="flex items-center gap-1">
                 <Label htmlFor="setup-service-origin">Gateway origin</Label>
                 <ContextHelp label="Gateway origin">
-                  The HTTP(S) origin of your independent artifact gateway, for example https://artifacts.example.com. Use the gateway address, not the S3 bucket URL.
+                  Enter the web address of your gateway, the service that lets you view stored run files, for example https://artifacts.example.com. Use that address, not the S3 bucket URL.
                 </ContextHelp>
               </div>
               <Input
@@ -851,7 +847,7 @@ export function SetupRoute({
               <div className="flex items-center gap-1">
                 <Label htmlFor="setup-service-token">Publisher token id</Label>
                 <ContextHelp label="Publisher token id">
-                  The id of an existing, unrevoked Hub API token with a grant for this project. Hub checks that grant when binding. Enter its id, not the secret token; your gateway and publisher still need their credentials configured.
+                  Enter the ID of an active Detent API token that has access to this project, not the secret token itself. Set up the sign-in details for your storage service separately.
                 </ContextHelp>
               </div>
               <Input
@@ -871,8 +867,8 @@ export function SetupRoute({
             </div>
             <ControlError message={bindArtifacts.error?.message ?? null} />
             <p className="text-[13px] text-muted-foreground">
-              A binding records where artifacts go. It does not verify the storage and does not
-              promise offline access.
+              Connecting storage saves where your run files will go. Check that your storage service
+              works; connecting it does not ensure access when your runner is offline.
             </p>
           </div>
         ) : null}
@@ -894,7 +890,7 @@ export function SetupRoute({
       activeIndex={activeIndex}
       onSelectStep={setActiveIndex}
       title={step?.name ?? "Set up this project"}
-      lede={step?.name === "Repository configuration" ? "Connect your repository, prepare its configuration files, then approve the settings reported by your runner." : step?.detail ?? ""}
+      lede={step?.name === "Repository configuration" ? "Connect your repository so Detent can work on your code. Prepare its configuration files, then click Approve settings after reviewing the settings sent by your runner." : step?.detail ?? ""}
       footer={
         <>
           {activeIndex > 0 ? (
