@@ -23,6 +23,7 @@ import { DiffSurface } from "../../src/app/components/surfaces/DiffSurface.tsx";
 import { diffSource, readAttemptDiff, type DiffSource } from "../../src/app/adapters/surfaces.ts";
 import { WorkList } from "../../src/app/work/components/WorkList.tsx";
 import { WorkTopBar } from "../../src/app/work/components/WorkTopBar.tsx";
+import { WorkToolbar } from "../../src/app/work/components/WorkToolbar.tsx";
 import { CompletedCounter } from "../../src/app/work/components/CompletedCounter.tsx";
 import { LiveCounter } from "../../src/app/work/components/LiveCounter.tsx";
 import { toAttemptView, toWorkItemView, transitionsFrom } from "../../src/app/work/lib/fromWire.ts";
@@ -1266,6 +1267,37 @@ describe("the filter-first Work surface", () => {
       within(heading).getByText(title).focus();
     });
     expect((await screen.findByRole("tooltip")).textContent).toBe(title);
+  });
+
+  it("keeps lane counts labelled while visibility and filters change", async () => {
+    const lanes = ["Triage", "Plan Review", "Human Review", "Done"].map((name) => ({
+      id: name, name, terminal: name === "Done", dispatchable: false, category: "",
+    }));
+    function Toolbar() {
+      const [view, setView] = React.useState(DEFAULT_VIEW_STATE);
+      return <WorkToolbar view={view} onChange={setView} lanes={lanes}
+        totals={{ Triage: 101, "Plan Review": 0, "Human Review": 4 }}
+        facets={{ state: [], label: ["bug"], assignee: [], priority: [] }} />;
+    }
+    render(<Toolbar />);
+    fireEvent.click(screen.getByTestId("lanes-trigger"));
+    for (const [name, count] of [["Triage", "101"], ["Plan Review", "0"], ["Human Review", "4"]]) {
+      const row = await screen.findByRole("menuitemcheckbox", { name: new RegExp(`^${name}\\s*${count}$`) });
+      expect(within(row).getByText(count!).textContent).toBe(count);
+      expect(row.getAttribute("aria-checked")).toBe("true");
+    }
+    expect(screen.queryByTestId("lane-toggle-Done")).toBeNull();
+    fireEvent.click(screen.getByTestId("lane-toggle-Human Review"));
+    await waitFor(() => expect(screen.getByTestId("lane-toggle-Human Review").getAttribute("aria-checked")).toBe("false"));
+    expect(within(screen.getByTestId("lane-toggle-Human Review")).getByText("4")).not.toBeNull();
+    fireEvent.keyDown(screen.getByTestId("lane-toggle-Human Review"), { key: "Escape" });
+    fireEvent.click(screen.getByTestId("filters-trigger"));
+    const filter = await screen.findByRole("menuitemcheckbox", { name: "bug" });
+    fireEvent.click(filter);
+    await waitFor(() => expect(filter.getAttribute("aria-checked")).toBe("true"));
+    fireEvent.keyDown(filter, { key: "Escape" });
+    fireEvent.click(screen.getByTestId("lanes-trigger"));
+    expect((await screen.findByRole("menuitemcheckbox", { name: /^Human Review\s*4$/ })).getAttribute("aria-checked")).toBe("false");
   });
 
   it.each(["4", "42", "true", "false", "null", "4.0", "1e3", "9007199254740993", '"4"', '[4]', '{"number":4}'])("preserves the literal search %s through URL edits", async (q) => {

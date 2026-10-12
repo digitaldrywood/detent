@@ -205,7 +205,7 @@ export function WorkToolbar({
                 onCheckedChange={() => onChange(toggleLane(view, lane.name, lanes))}
               >
                 {lane.name}
-                {totals === undefined ? null : <span className="ml-auto text-muted-foreground tabular-nums">{totals[lane.name] ?? 0}</span>}
+                {totals === undefined ? null : <span className="ml-auto inline-grid h-5 min-w-5 shrink-0 place-items-center rounded-md bg-accent px-1.5 text-[11px] text-muted-foreground tabular-nums">{totals[lane.name] ?? 0}</span>}
               </MenuCheckboxItem>
             ))}
           </MenuGroup>
