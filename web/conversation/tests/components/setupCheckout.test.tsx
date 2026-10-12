@@ -33,21 +33,41 @@ async function mountSetup(onNavigate?: (to: string) => void) {
   );
 }
 
-it("shows the hosted checkout action and its verified private repository", async () => {
+it.each([
+  ["reported checkout", "mockorg/private", "Verified runner checkout:"],
+  ["new checkout", "example-org/example-repository", "Waiting for Example runner to clone or verify checkout:"],
+])("shows association progress for a %s", async (_name, repository, status) => {
   const mount = await mountSetup();
+  let checkoutReported = false;
+  const fetch = globalThis.fetch;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (...args) => {
+    const response = await fetch(...args);
+    if (String(args[0]).endsWith("/onboarding") && response.ok) {
+      const onboarding = await response.json();
+      return Response.json({ ...onboarding, runners: onboarding.runners.map((row: { runner: { display_name: string } }) => ({ ...row, runner: { ...row.runner, display_name: "Example runner" } })) });
+    }
+    if (checkoutReported && String(args[0]).endsWith("/integration") && response.ok) {
+      return Response.json({ ...await response.json(), checkout_verified: true });
+    }
+    return response;
+  });
   mount();
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /Repository configuration/ }));
   const field = await screen.findByLabelText("Associate the runner checkout");
   expect(screen.getByText(/GitHub API integration is optional/)).toBeTruthy();
-  fireEvent.change(field, { target: { value: "https://github.com/mockorg/private" } });
+  fireEvent.change(field, { target: { value: "https://github.com/example-org/example-repository" } });
   await user.click(screen.getByRole("button", { name: "Associate" }));
   expect(await screen.findByText("Enter the repository as owner/name, then retry.")).toBeTruthy();
-  fireEvent.change(field, { target: { value: "mockorg/private" } });
+  fireEvent.change(field, { target: { value: repository } });
   await user.click(screen.getByRole("button", { name: "Associate" }));
-  await waitFor(() => expect(screen.getByText(/Verified runner checkout:/).textContent).toContain("mockorg/private"));
+  await waitFor(() => expect(screen.getByRole("status").textContent).toContain(`${status} ${repository}`));
   await waitFor(() => expect(screen.getByRole("button", { name: "Associate" }).hasAttribute("disabled")).toBe(true));
-});
+  if (repository === "example-org/example-repository") {
+    checkoutReported = true;
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain(`Verified runner checkout: ${repository}`), { timeout: 6_000 });
+  }
+}, 10_000);
 
 it.each([
   { ready: false, unrouted: false },
