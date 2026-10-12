@@ -25,19 +25,21 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name        string
-		supported   bool
-		denied      bool
-		dispatch    bool
-		draining    bool
-		retryUpdate bool
+		name           string
+		supported      bool
+		denied         bool
+		dispatch       bool
+		draining       bool
+		retryUpdate    bool
+		reenterControl bool
 	}{
-		{"older Hub", false, false, false, false, false},
-		{"capacity owner Hub", true, false, false, false, false},
-		{"dispatch heartbeat", true, false, true, false, false},
-		{"denied heartbeat", true, true, false, false, false},
-		{"heartbeat upgrade stops claims", true, false, true, true, false},
-		{"failed Hub update retries while drained", true, false, true, true, true},
+		{name: "older Hub"},
+		{name: "capacity owner Hub", supported: true},
+		{name: "dispatch heartbeat", supported: true, dispatch: true},
+		{name: "denied heartbeat", supported: true, denied: true},
+		{name: "heartbeat upgrade stops claims", supported: true, dispatch: true, draining: true},
+		{name: "failed Hub update retries while drained", supported: true, dispatch: true, draining: true, retryUpdate: true},
+		{name: "configuration control permits candidate heartbeat", supported: true, reenterControl: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -226,6 +228,22 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 					}
 				}
 				if desired != nil {
+					if test.reenterControl {
+						ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+						done := make(chan error, 1)
+						go func() {
+							done <- scheduler.ensureNativeMachine(ctx, scheduler.nativeProjects["native"])
+						}()
+						select {
+						case err := <-done:
+							if err != nil {
+								t.Errorf("candidate heartbeat during configuration control: %v", err)
+							}
+						case <-ctx.Done():
+							t.Error("configuration control blocked candidate heartbeat")
+						}
+						cancel()
+					}
 					if desired.RequestID != projectRequest.RequestID {
 						t.Error("cached request applied without authenticated heartbeat")
 					}

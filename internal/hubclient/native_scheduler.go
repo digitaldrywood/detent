@@ -106,7 +106,12 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		}
 	}
 	heartbeat.Lock()
-	defer heartbeat.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			heartbeat.Unlock()
+		}
+	}()
 	s.mu.Lock()
 	last := s.nativeHeartbeats[project]
 	owner := s.updateOwner
@@ -251,6 +256,11 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		return err
 	}
 	machine.HostMetrics = nil
+	s.mu.Lock()
+	s.nativeHeartbeats[project] = s.now()
+	s.mu.Unlock()
+	heartbeat.Unlock()
+	locked = false
 
 	if projectConfig != nil {
 		if request := s.client.runner.projectConfigurationRequest(); request != nil && request.ProjectID == string(project) && request.RequestID != projectConfig.RequestID {
