@@ -285,7 +285,7 @@ func (s *Service) landChange(c echo.Context) error {
 	})
 }
 
-func routeStaleNativeLandingChanges(ctx context.Context, tx *sql.Tx, policyScope, actor, policyID string, now time.Time) error {
+func routeStaleNativeLandingChanges(ctx context.Context, tx *sql.Tx, policyScope, actor, preservedPolicyID string, now time.Time) error {
 	organization, projectID, native := strings.Cut(policyScope, "/")
 	if !native || strings.HasPrefix(policyScope, "repository:") {
 		return nil
@@ -321,7 +321,7 @@ AND lower(trim(ws.detent_state)) = 'merging' ORDER BY i.id`, scope.organization,
 		if err != nil {
 			return err
 		}
-		if version.PolicyID == policyID {
+		if preservedPolicyID != "" && version.PolicyID == preservedPolicyID {
 			continue
 		}
 		detail, err := readCurrentChangeDetail(ctx, tx, scope, change, now)

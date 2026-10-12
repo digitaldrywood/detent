@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -152,6 +153,7 @@ func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
 		status        int
 		barrier       bool
 		activeLanding bool
+		mutation      string
 	}{
 		{name: "zero", target: "Rework", status: http.StatusOK},
 		{name: "one", stale: 1, target: "Rework", status: http.StatusOK},
@@ -163,6 +165,12 @@ func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
 		{name: "unauthorized", stale: 2, target: "Rework", refusal: "unauthorized", status: http.StatusForbidden},
 		{name: "stale approval", stale: 2, target: "Rework", refusal: "expected", status: http.StatusConflict},
 		{name: "later transition failure rolls back", stale: 2, target: "Rework", refusal: "write", status: http.StatusInternalServerError},
+		{name: "review policy replacement", stale: 3, target: "Rework", mutation: "review", status: http.StatusOK},
+		{name: "review policy unauthorized", stale: 2, target: "Rework", mutation: "review", refusal: "unauthorized", status: http.StatusForbidden},
+		{name: "review policy transition rollback", stale: 2, target: "Rework", mutation: "review", refusal: "write", status: http.StatusInternalServerError},
+		{name: "repository policy revocation", stale: 3, target: "Rework", mutation: "revoke", status: http.StatusNoContent},
+		{name: "repository policy revocation unauthorized", stale: 2, target: "Rework", mutation: "revoke", refusal: "unauthorized", status: http.StatusForbidden},
+		{name: "repository policy revocation transition rollback", stale: 2, target: "Rework", mutation: "revoke", refusal: "write", status: http.StatusInternalServerError},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -184,7 +192,17 @@ func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
 				next.Gates.LandingCommandDigest = policy.Digest([]byte("make check-barrier"))
 			}
 			next = next.WithID()
-			approveHubTestPolicy(t, f.service, f.base+"/policy", next)
+			controlPolicy := next
+			if test.mutation != "" {
+				controlPolicy = previous
+			}
+			approveHubTestPolicy(t, f.service, f.base+"/policy", controlPolicy)
+			nextRules := defaultChangeReviewPolicy(previous)
+			nextRules.RequireReview = true
+			nextRules.ID = changerequest.PolicyID(nextRules)
+			if test.mutation == "review" {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "future-review"}, Policy: nextRules}), http.StatusOK)
+			}
 			createChange := func(name, state string, descriptor policy.Descriptor) changeFixture {
 				t.Helper()
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: name}, Title: name, State: state})
@@ -204,8 +222,11 @@ func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish"}, ChangeVersionInput: input, SourceBundle: bundle}), http.StatusOK)
 				return changeFixture{nativeFixture: f, issue: issue, change: change, path: path}
 			}
-			current := createChange("current policy", "In Progress", next)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: next.ID, Policy: previous}), http.StatusOK)
+			current := createChange("current policy", "In Progress", controlPolicy)
+			if test.mutation == "review" {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "old-review"}, ExpectedID: nextRules.ID, Policy: defaultChangeReviewPolicy(previous)}), http.StatusOK)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: controlPolicy.ID, Policy: previous}), http.StatusOK)
 			moveToMerging := func(change changeFixture) {
 				t.Helper()
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(change.issue.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "merging"}, ExpectedRevision: change.issue.Revision, State: "Merging", Reason: "user_requested"}), http.StatusOK)
@@ -278,14 +299,37 @@ func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", token, policy.Change{ExpectedID: expected, Policy: next}), test.status)
-			wantPolicy := next.ID
-			if test.status != http.StatusOK {
-				wantPolicy = previous.ID
+			succeeded := test.status >= 200 && test.status < 300
+			switch test.mutation {
+			case "review":
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", token, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "replace-review"}, ExpectedID: defaultChangeReviewPolicy(previous).ID, Policy: nextRules}), test.status)
+			case "revoke":
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/policy", token, map[string]string{"expected_policy_id": expected}), test.status)
+			default:
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", token, policy.Change{ExpectedID: expected, Policy: next}), test.status)
+			}
+			wantPolicy := previous.ID
+			if succeeded && test.mutation == "" {
+				wantPolicy = next.ID
 			}
 			approval, err := readProjectPolicy(t.Context(), f.service.database.db, string(scope.organization)+"/"+string(scope.project))
-			if err != nil || approval.Policy.ID != wantPolicy {
+			if succeeded && test.mutation == "revoke" {
+				var failure *nativeError
+				if !errors.As(err, &failure) || failure.Code != "policy_mismatch" {
+					t.Fatalf("revoked policy is still approved: %+v, error = %v", approval, err)
+				}
+			} else if err != nil || approval.Policy.ID != wantPolicy {
 				t.Fatalf("approved policy = %+v, error = %v, want %s", approval, err, wantPolicy)
+			}
+			if test.mutation == "review" {
+				rules, err := readChangePolicy(t.Context(), f.service.database.db, scope)
+				wantRules := defaultChangeReviewPolicy(previous).ID
+				if succeeded {
+					wantRules = nextRules.ID
+				}
+				if err != nil || rules.ID != wantRules {
+					t.Fatalf("review policy = %+v, error = %v, want %s", rules, err, wantRules)
+				}
 			}
 			if test.barrier {
 				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
@@ -313,13 +357,13 @@ func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
 				want := "Merging"
 				if i > test.stale {
 					want = "Blocked"
-				} else if i > 0 && test.status == http.StatusOK {
+				} else if succeeded && (i > 0 || test.mutation == "revoke") {
 					want = test.target
 				}
 				if issue.State != want {
 					t.Errorf("%s state = %s, want %s", issue.Title, issue.State, want)
 				}
-				if (i == 0 || i > test.stale || test.status != http.StatusOK) && !reflect.DeepEqual(issue, issuesBefore[i]) {
+				if (i == 0 && test.mutation != "revoke" || i > test.stale || !succeeded) && !reflect.DeepEqual(issue, issuesBefore[i]) {
 					t.Errorf("%s approval changed unrelated or held work", issue.Title)
 				}
 				if i > test.stale {
@@ -338,7 +382,7 @@ func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
 					t.Fatal(err)
 				}
 				wantTransitions := 0
-				if i > 0 && i <= test.stale && test.status == http.StatusOK {
+				if i <= test.stale && succeeded && (i > 0 || test.mutation == "revoke") {
 					wantTransitions = 1
 				}
 				if transitions != wantTransitions {
@@ -349,7 +393,11 @@ func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
 			if err != nil || pinned != previous.ID {
 				t.Fatalf("active lease policy = %s, error = %v", pinned, err)
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
+			wantRenew := http.StatusOK
+			if succeeded && test.mutation == "revoke" {
+				wantRenew = http.StatusConflict
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), wantRenew)
 		})
 	}
 }

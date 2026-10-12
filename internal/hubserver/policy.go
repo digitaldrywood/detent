@@ -191,7 +191,11 @@ func (s *Service) revokeProjectPolicy(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	_, err = revokeProjectPolicyInTx(c.Request().Context(), s.database.db, scope, request.ExpectedID)
+	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	if !ok || credential.ID == "" {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	_, err = s.database.revokePolicy(c.Request().Context(), scope, credential.ID, request.ExpectedID)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -577,8 +581,29 @@ JOIN policy_revisions p ON p.scope = lp.scope AND p.policy_id = lp.policy_id WHE
 	return nil
 }
 
-func revokeProjectPolicyInTx(ctx context.Context, exec hostedExecer, scope, expectedID string) (any, error) {
-	result, err := exec.ExecContext(ctx, "DELETE FROM project_policies WHERE scope = ? AND policy_id = ?", scope, expectedID)
+func (d *database) revokePolicy(ctx context.Context, scope, actor, expectedID string) (result any, resultErr error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, tx.Rollback())
+		}
+	}()
+	now, err := d.currentTime()
+	if err != nil {
+		return nil, err
+	}
+	result, err = revokeProjectPolicyInTx(ctx, tx, scope, actor, expectedID, now)
+	if err != nil {
+		return nil, err
+	}
+	return result, d.commit(ctx, tx)
+}
+
+func revokeProjectPolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor, expectedID string, now time.Time) (any, error) {
+	result, err := tx.ExecContext(ctx, "DELETE FROM project_policies WHERE scope = ? AND policy_id = ?", scope, expectedID)
 	if err != nil {
 		return nil, err
 	}
@@ -588,6 +613,9 @@ func revokeProjectPolicyInTx(ctx context.Context, exec hostedExecer, scope, expe
 	}
 	if count != 1 {
 		return nil, policyMismatch("Policy changed or is already revoked; inspect the current approval before revoking it")
+	}
+	if err := routeStaleNativeLandingChanges(ctx, tx, scope, actor, "", now); err != nil {
+		return nil, err
 	}
 	return struct {
 		Status string `json:"status"`
