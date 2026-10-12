@@ -55,7 +55,7 @@ it.each([
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /Repository configuration/ }));
   const field = await screen.findByLabelText("Which repository should Detent work on?");
-  expect(screen.getByText(/GitHub API integration is optional/)).toBeTruthy();
+  expect(screen.getByText(/Private repositories work too, without a GitHub integration/)).toBeTruthy();
   fireEvent.change(field, { target: { value: "https://github.com/example-org/example-repository" } });
   await user.click(screen.getByRole("button", { name: "Associate" }));
   expect(await screen.findByText("Enter the repository as owner/name, then retry.")).toBeTruthy();

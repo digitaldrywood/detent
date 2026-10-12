@@ -187,10 +187,10 @@ const WORKFLOW_STATES = [
  * needs, which does not change with whether it has it, so only `state` moves.
  */
 const ONBOARDING_STEP_TEXT: ReadonlyArray<{ name: string; detail: string }> = [
-  { name: "Execution runner", detail: "Enroll a host, then prepare its project checkout, detent.yaml and WORKFLOW.md. Enrollment does not require policy approval." },
-  { name: "Local validation", detail: "The runner reports checkout, detent doctor and selected provider sign-in checks. Fix failures on that host, then restart the runner to report fresh results. Credentials stay local." },
-  { name: "Repository configuration", detail: "Review the policy reported by the runner and explicitly approve it before dispatch." },
-  { name: "Artifact history", detail: "Choose local history or configure the customer S3-compatible service and independent gateway. A binding does not verify storage or promise offline access." },
+  { name: "Execution runner", detail: "Connect a computer to do this project's work. Click Enroll a runner, then paste the command it gives you into a terminal on that machine." },
+  { name: "Local validation", detail: "Check that your computer has the project files, can run Detent, and is signed in to your AI coding tool. Fix any failed checks on that computer, restart the runner, then click Refresh runner checks." },
+  { name: "Repository configuration", detail: "The project configuration tells Detent how to work on your code. Review the settings sent by your runner, then click Approve to allow work to start." },
+  { name: "Artifact history", detail: "Choose where to keep files from agent runs, such as logs and screenshots. Keep them on your runner, or connect storage that you manage." },
 ];
 
 /**
