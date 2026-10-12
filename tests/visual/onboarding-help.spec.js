@@ -28,12 +28,12 @@ test.afterAll(async () => {
   }
 });
 
-async function help(page, label, content, interaction = "click", screenshot) {
+async function help(page, label, content, interaction = "click", screenshot, fieldLabel = label) {
   const trigger = page.getByRole("button", { name: `Help for ${label}`, exact: true }).first();
   if (interaction === "hover") await trigger.hover();
   else if (interaction === "focus") {
     // Actual keyboard focus, including the focus-visible browser behavior.
-    await page.getByLabel(label, { exact: true }).focus();
+    await page.getByLabel(fieldLabel, { exact: true }).focus();
     await page.keyboard.press("Shift+Tab");
     await expect(trigger).toBeFocused();
   } else if (interaction === "tap") await trigger.tap();
@@ -60,14 +60,18 @@ for (const width of [1280, 390]) {
     const steps = page.getByRole("list", { name: "Setup steps" });
     await expect(steps.getByRole("button").nth(0)).toContainText("Execution runner");
     await steps.getByRole("button").nth(2).click();
-    await help(page, "Use an existing repository", "This saves your setup choice", width === 1280 ? "hover" : tap);
-    await expect(page.getByRole("radio", { name: "Use an existing repository" })).toBeChecked();
-    await help(page, "Generate the configuration", "Associate does not generate files", tap);
-    await expect(page.getByRole("radio", { name: "Generate the configuration" })).not.toBeChecked();
-    await help(page, "Associate the runner checkout", "GitHub API integration is optional", width === 1280 ? "focus" : tap);
-    await page.getByLabel("Associate the runner checkout", { exact: true }).fill("owner/repository");
-    await help(page, "Resolved policy descriptor", "policy mismatch prevents claims", tap);
-    await help(page, "Approve the resolved policy", "runners must resolve a matching policy", tap);
+    const repositoryLabel = "Which repository should Detent work on?";
+    const repository = page.getByRole("textbox", { name: repositoryLabel, exact: true });
+    await expect(repository).toHaveValue("");
+    await help(page, "Associate the runner checkout", "GitHub API integration is optional", width === 1280 ? "hover" : tap);
+    await expect(repository).toHaveValue("");
+    await expect(page.getByRole("button", { name: "Associate", exact: true })).toBeDisabled();
+    await repository.fill("owner/repository");
+    await help(page, "Associate the runner checkout", "Its Git origin must match the binding", width === 1280 ? "focus" : tap, undefined, repositoryLabel);
+    await expect(repository).toHaveValue("owner/repository");
+    await help(page, "Associate the runner checkout", "This does not write configuration files or approve policy", tap);
+    await expect(repository).toHaveValue("owner/repository");
+    await expect(page.getByRole("button", { name: "Associate", exact: true })).toBeEnabled();
 
     await steps.getByRole("button").nth(1).click();
     await expect(page.getByRole("checkbox")).toHaveCount(0);
