@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -828,21 +829,46 @@ func nativeGitError(operation string, err error) error {
 	return fmt.Errorf("%w: %s: %w", ErrWorkspacePreparation, operation, err)
 }
 
+func (r *Runner) nativeWorkTimeout(cfg config.Config, backend config.AgentBackend, validatorTimeout time.Duration) time.Duration {
+	workBudget := durationFromMillis(cfg.Agent.MaxTurnDurationMS)
+	if workBudget <= 0 {
+		workBudget = validatorTimeout
+	}
+	if workBudget <= 0 {
+		workBudget = durationFromMillis(cfg.Agent.MaxSessionDurationMS)
+	}
+	if workBudget <= 0 {
+		switch backend.Kind {
+		case config.AgentBackendCodex:
+			workBudget = durationFromMillis(backend.CodexOptions().TurnTimeoutMS)
+		case config.AgentBackendClaudeCode:
+			workBudget = durationFromMillis(backend.ClaudeCodeOptions().TurnTimeoutMS)
+		case config.AgentBackendPiAgent:
+			workBudget = durationFromMillis(backend.PiAgentOptions().TurnTimeoutMS)
+		}
+	}
+	return max(r.afterRunTimeout, workBudget, validatorTimeout)
+}
+
 func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error {
 	execution, ok := req.Execution.(NativeValidatorExecution)
 	if !ok {
 		return nil
 	}
-	workflow, _, _, _ := r.runtimeSnapshot()
+	workflow, runtime, _, _ := r.runtimeSnapshot()
 	cfg := gate.Effective(workflow.Config.Gate).Validator
 	if !cfg.Enabled {
 		return nil
 	}
-	ctx, cancel := context.WithTimeoutCause(context.WithoutCancel(ctx), max(r.afterRunTimeout, durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS), durationFromMillis(cfg.TurnTimeoutMS)), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+	_, _, backend, routeErr := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
+	ctx, cancel := context.WithTimeoutCause(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backend, durationFromMillis(cfg.TurnTimeoutMS)), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 	defer cancel()
 	input, err := execution.ValidatorVersion(ctx)
 	if err != nil || input.Version == nil {
 		return err
+	}
+	if routeErr != nil {
+		return routeErr
 	}
 	result, err := r.Validate(ctx, ValidatorRequest{Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate})
 	if err != nil {
