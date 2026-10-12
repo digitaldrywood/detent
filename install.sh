@@ -130,6 +130,92 @@ trim_v() {
 	esac
 }
 
+version_at_least() {
+	awk -v installed="$(trim_v "$1")" -v required="$(trim_v "$2")" 'BEGIN {
+		sub(/\+.*/, "", installed)
+		sub(/\+.*/, "", required)
+		if (installed !~ /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/ || required !~ /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/) exit 1
+		split(installed, current, /[.-]/)
+		split(required, minimum, /[.-]/)
+		for (i = 1; i <= 3; i++) {
+			if (current[i] + 0 > minimum[i] + 0) exit 0
+			if (current[i] + 0 < minimum[i] + 0) exit 1
+		}
+		if (installed == required || installed !~ /-/) exit 0
+		if (required !~ /-/) exit 1
+		sub(/^[0-9]+\.[0-9]+\.[0-9]+-/, "", installed)
+		sub(/^[0-9]+\.[0-9]+\.[0-9]+-/, "", required)
+		count = split(installed, current, /\./)
+		minimum_count = split(required, minimum, /\./)
+		for (i = 1; i <= count && i <= minimum_count; i++) {
+			if (current[i] == minimum[i]) continue
+			current_numeric = current[i] ~ /^[0-9]+$/
+			minimum_numeric = minimum[i] ~ /^[0-9]+$/
+			if (current_numeric && minimum_numeric) exit !(current[i] + 0 > minimum[i] + 0)
+			if (current_numeric != minimum_numeric) exit current_numeric
+			exit !(current[i] > minimum[i])
+		}
+		exit !(count >= minimum_count)
+	}'
+}
+
+report_update_command() {
+	case "$existing_binary" in
+		*/Cellar/*|/opt/homebrew/*|/usr/local/Homebrew/*)
+			printf '%s\n' 'Update with: brew upgrade digitaldrywood/tap/detent' >&2
+			;;
+		*)
+			printf 'Update with: "%s" update --yes --from-release\n' "$existing_binary" >&2
+			printf '%s\n' 'This switches installations managed by go install to a release binary.' >&2
+			printf '%s\n' 'If a local board reports insufficient scope: admin, stop it before retrying the update (Ctrl-C for a foreground board; systemctl --user stop detent.service for a systemd user service; sudo systemctl stop detent.service for a system service).' >&2
+			;;
+	esac
+	printf '%s\n' 'Then rerun the enrollment command.' >&2
+}
+
+reuse_existing_install() {
+	existing_binary=""
+	if [ -e "$lock_path" ]; then
+		locked_binary="$(sed -n 's/^binary=//p' "$lock_path" | head -n 1)"
+		installed_at="$(sed -n 's/^installed_at=//p' "$lock_path" | head -n 1)"
+		if [ -z "$locked_binary" ] || [ -z "$installed_at" ]; then
+			abort "Another Detent installation is in progress or incomplete: $lock_path. Wait for it to finish, then rerun the enrollment command."
+		fi
+		existing_binary="$locked_binary"
+	fi
+	if [ -n "${DETENT_INSTALL_DIR:-${PREFIX:-}}" ]; then
+		if [ -x "$target" ]; then existing_binary="$target"; fi
+	elif [ -x "$HOME/.local/bin/detent" ]; then
+		existing_binary="$HOME/.local/bin/detent"
+	elif [ -x /usr/local/bin/detent ]; then
+		existing_binary=/usr/local/bin/detent
+	elif command -v detent >/dev/null 2>&1; then
+		existing_binary="$(command -v detent)"
+	fi
+	if [ -z "$existing_binary" ]; then return 1; fi
+	if [ ! -x "$existing_binary" ]; then
+		abort "Installed Detent binary is missing or not executable: $existing_binary. Restore it, or remove the completed install record with rm \"$lock_path\" and rerun the installer."
+	fi
+
+	installed_version=""
+	if version_output="$("$existing_binary" --format pretty version 2>/dev/null)"; then
+		installed_version="$(printf '%s\n' "$version_output" | sed -n 's/^version: //p' | head -n 1)"
+	fi
+	if [ -z "$installed_version" ]; then
+		printf 'Cannot read the version of Detent at %s.\n' "$existing_binary" >&2
+		report_update_command
+		exit 1
+	fi
+	required_version="$(release_tag)" || abort "Cannot determine the required Detent release. Retry the enrollment command when the release service is reachable, or run the installer with DETENT_VERSION set to the Hub-required release."
+	if ! version_at_least "$installed_version" "$required_version"; then
+		printf 'Detent at %s is %s; this installer requires %s or newer.\n' "$existing_binary" "$installed_version" "$required_version" >&2
+		report_update_command
+		exit 1
+	fi
+	printf 'Using existing Detent at %s (version %s). No binary was replaced.\n' "$existing_binary" "$installed_version"
+	return 0
+}
+
 download_archive() {
 	tag="$1"
 	version="$2"
@@ -343,13 +429,25 @@ else
 	printf '%s\n' "No supported release target detected; falling back to prepared source if needed" >&2
 fi
 
+tmp_dir="$(mktemp -d "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/detent-install.XXXXXX")"
+cleanup_tmp() {
+	rm -rf "$tmp_dir"
+}
+trap cleanup_tmp EXIT
+
+if reuse_existing_install; then exit 0; fi
+
+if [ -e "$target" ] || [ -L "$target" ]; then
+	abort "Cannot replace the existing file at $target. Move it aside with mv \"$target\" \"$target.previous\", then rerun the installer."
+fi
+
 mkdir -p "$install_dir" "$state_dir" || abort "Cannot create install or state directory"
 if [ ! -w "$install_dir" ]; then
 	abort "Install directory is not writable: $install_dir"
 fi
 
 if ! (set -C; : > "$lock_path") 2>/dev/null; then
-	abort "Detent is already installed on this host: $lock_path"
+	abort "Another Detent installation started: $lock_path. Wait for it to finish, then rerun the enrollment command."
 fi
 
 cleanup_lock=true
@@ -357,12 +455,6 @@ cleanup_lock_file() {
 	if [ "$cleanup_lock" = true ]; then
 		rm -f "$lock_path"
 	fi
-}
-trap cleanup_lock_file EXIT
-
-tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/detent-install.XXXXXX")"
-cleanup_tmp() {
-	rm -rf "$tmp_dir"
 }
 trap 'cleanup_tmp; cleanup_lock_file' EXIT
 
