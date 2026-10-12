@@ -14,9 +14,10 @@ esac
 case "$environment:$version" in
   staging:develop-[a-f0-9]*) [[ "$version" =~ ^develop-[a-f0-9]{7,40}$ ]] ;;
   *)
-    [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-op\.[a-f0-9]{12})?$ ]]
+    [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-op\.g?[a-f0-9]{12})?$ ]]
     if [[ "$version" == *-op.* ]]; then
-      test "${version##*-op.}" = "${commit:0:12}"
+      suffix="${version##*-op.}"
+      test "${suffix#g}" = "${commit:0:12}"
     fi
     ;;
 esac
