@@ -44,7 +44,16 @@ if (location.protocol === "file:") {
     } else if (path === "/api/cloud/platform/members") {
       value = { members: [], revision: 1, self: { email: fixture.account.email, role: params.get("role") ?? "admin" } };
     } else if (path.startsWith("/api/cloud/platform/audit")) {
-      value = audit;
+      const filters = new URL(path, "https://platform.detent.test").searchParams;
+      const rows = audit.rows.filter((row) =>
+        (!filters.get("tenant") || row.organization_id === filters.get("tenant")) &&
+        (!filters.get("actor") || row.actor.toLowerCase().includes(filters.get("actor")!.toLowerCase())) &&
+        (!filters.get("event") || row.event === filters.get("event")) &&
+        (!filters.get("from") || row.at >= filters.get("from")!) &&
+        (!filters.get("to") || row.at.slice(0, 10) <= filters.get("to")!),
+      );
+      const older = filters.has("cursor");
+      value = { ...audit, rows: older ? rows.slice(3) : rows.slice(0, 3), next_cursor: !older && rows.length > 3 ? "older-page" : "" };
     } else if (path.startsWith("/api/cloud/platform/users?")) {
       const query = new URL(path, "https://platform.detent.test").searchParams.get("q") ?? "";
       value = { ...users, users: users.users.filter((user) => user.email.includes(query)) };

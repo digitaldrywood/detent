@@ -99,7 +99,16 @@ it.each([
   });
   mount();
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: /Execution runner/ }));
+  await screen.findByRole("button", { name: /Execution runner/ });
+  for (const step of ["Execution runner", "Local validation", "Repository configuration", "Artifact history"]) {
+    await user.click(screen.getByRole("button", { name: new RegExp(step) }));
+    expect(screen.queryByText("Your first issue")).toBeNull();
+    expect(screen.queryByLabelText("Title")).toBeNull();
+    expect(screen.queryByLabelText("What needs doing")).toBeNull();
+    expect(screen.queryByLabelText("Lane")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create the first issue" })).toBeNull();
+  }
+  await user.click(screen.getByRole("button", { name: /Execution runner/ }));
   const enroll = screen.getByRole("button", { name: "Enroll a runner" });
   const forward = screen.getByRole("button", { name: ready ? "Continue" : "Skip for now" });
   expect(enroll.classList.contains("bg-primary")).toBe(!ready);

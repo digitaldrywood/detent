@@ -85,9 +85,9 @@ esac
 				}
 				return
 			}
-			wantTag := "v0.117.48-op.abcdef123456"
+			wantTag := "v0.117.48-op.gabcdef123456"
 			if latest == "v0.117.48" {
-				wantTag = "v0.117.49-op.abcdef123456"
+				wantTag = "v0.117.49-op.gabcdef123456"
 			}
 			if strings.TrimSpace(string(output)) != wantTag {
 				t.Fatalf("tag = %q, want %q", output, wantTag)

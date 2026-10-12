@@ -8,7 +8,7 @@ check_id="${4:?operator source check ID required}"
 scratch="${TMPDIR:-${TMP:-${TEMP:?operator release requires provided scratch}}}"
 [[ "$commit" =~ ^[a-f0-9]{40}$ ]]
 [[ "$latest" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
-tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))-op.${commit:0:12}"
+tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))-op.g${commit:0:12}"
 [[ "$check_id" =~ ^[1-9][0-9]*$ ]]
 test "$(git rev-parse HEAD)" = "$commit"
 git merge-base --is-ancestor "$commit" origin/develop

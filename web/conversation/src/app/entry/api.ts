@@ -300,11 +300,12 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
   const fetchImpl: FetchLike = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
   const origin = options.origin ?? "";
 
-  async function read<A>(schema: Schema.Codec<A, any, never, never>, path: string): Promise<A> {
+  async function read<A>(schema: Schema.Codec<A, any, never, never>, path: string, signal?: AbortSignal): Promise<A> {
     const response = await fetchImpl(`${origin}${path}`, {
       method: "GET",
       credentials: "same-origin",
       headers: { Accept: "application/json" },
+      ...(signal ? { signal } : {}),
     });
     if (!response.ok) throw await decodeFailure(response);
     return Schema.decodeUnknownSync(schema)(await response.json());
@@ -368,7 +369,7 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
     },
     platformHealth: () => read(PlatformHealth, "/api/cloud/platform/health"),
     platformUsers: (query: string) => read(PlatformUsers, `/api/cloud/platform/users?q=${encodeURIComponent(query)}`),
-    platformAudit: (query: string) => read(PlatformAudit, `/api/cloud/platform/audit${query === "" ? "" : `?${query}`}`),
+    platformAudit: (query: string, signal?: AbortSignal) => read(PlatformAudit, `/api/cloud/platform/audit${query === "" ? "" : `?${query}`}`, signal),
     platformEntitlements: (organization: string) => read(OrganizationEntitlements, entitlementsPath(organization)),
     changePlatformEntitlement: (input: { organization: string; csrf: string; change: EntitlementChange }) =>
       post(EntitlementChangeResult, entitlementsPath(input.organization), input.csrf, input.change),
