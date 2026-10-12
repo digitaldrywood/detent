@@ -47,7 +47,7 @@ func (e *nativeExecution) validationVersion(ctx context.Context, implementationR
 			var latest *tracker.ChangeReview
 			for i := range detail.Reviews {
 				review := &detail.Reviews[i]
-				if review.VersionID == version.ID && review.ImplementationReview != nil && review.ImplementationReview.HeadSHA == version.HeadSHA && (latest == nil || review.CreatedAt.After(latest.CreatedAt)) {
+				if review.VersionID == version.ID && review.ImplementationReview != nil && review.ImplementationReview.HeadSHA == version.HeadSHA && (latest == nil || !review.CreatedAt.Before(latest.CreatedAt)) {
 					latest = review
 				}
 			}
@@ -86,9 +86,12 @@ func (e *nativeExecution) RecordReview(ctx context.Context, result gate.Validato
 	if e.change == nil || e.lastDiff == nil || e.change.VersionID != result.VersionID || e.lastDiff.HeadSHA != result.HeadSHA || e.lastDiff.BaseSHA != result.BaseSHA {
 		return errors.New("native implementation review differs from the published source")
 	}
-	decision := "changes_requested"
-	if result.Verdict == gate.ValidatorVerdictPass {
+	decision := "commented"
+	switch result.Verdict {
+	case gate.ValidatorVerdictPass:
 		decision = "approved"
+	case gate.ValidatorVerdictRework:
+		decision = "changes_requested"
 	}
 	var body strings.Builder
 	fmt.Fprintf(&body, "Independent automated implementation review of immutable head %s in fresh session %d. This is a source review, separate from acceptance validation.\n\n%s", result.HeadSHA, result.SessionID, result.Summary)
@@ -98,11 +101,21 @@ func (e *nativeExecution) RecordReview(ctx context.Context, result gate.Validato
 	for _, command := range result.Commands {
 		fmt.Fprintf(&body, "\n\nHost command evidence: %s; head=%s tree=%s exit=%d", command.Command, command.HeadSHA, command.TreeSHA, command.ExitCode)
 	}
-	_, err := e.claim.source.client.ReviewChange(ctx, e.claim.lease.WorkItemID, e.change.ChangeID, result.VersionID, tracker.ReviewChange{
+	client, item := e.claim.source.client, e.claim.lease.WorkItemID
+	_, err := client.ReviewChange(ctx, item, e.change.ChangeID, result.VersionID, tracker.ReviewChange{
 		Mutation:          tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":implementation-review:" + strconv.FormatInt(result.SessionID, 10), LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
 		ExpectedVersionID: result.VersionID, Decision: decision, Body: body.String(), ImplementationReview: &result,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	detail, err := client.runtimeChange(ctx, item, e.change.ChangeID)
+	if err != nil {
+		return err
+	}
+	e.change.ImplementationReview = &result
+	e.change.Reviewed = detail.Change.CurrentVersion == result.VersionID && detail.Summary.Status == "reviewed"
+	return nil
 }
 
 func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.ValidatorResult) error {

@@ -873,7 +873,7 @@ func (r *Runner) nativeWorkTimeout(cfg config.Config, backend config.AgentBacken
 }
 
 func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error {
-	if err := r.reviewNativeChange(ctx, req); err != nil {
+	if approved, err := r.reviewNativeChange(ctx, req); err != nil || !approved {
 		return err
 	}
 	execution, ok := req.Execution.(NativeValidatorExecution)
@@ -914,24 +914,24 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error
 	return execution.RecordValidator(ctx, result)
 }
 
-func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) error {
+func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (bool, error) {
 	workflow, runtime, _, _ := r.runtimeSnapshot()
 	if gate.AutomatedReviewMode(workflow.Config.Gate) != gate.AutomatedReviewRequired {
-		return nil
+		return true, nil
 	}
 	execution, ok := req.Execution.(NativeReviewExecution)
 	if !ok {
-		return errors.New("required native implementation review producer is unavailable")
+		return false, errors.New("required native implementation review producer is unavailable")
 	}
 	_, _, backend, routeErr := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleCode)
 	ctx, cancel := context.WithTimeoutCause(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 	defer cancel()
 	input, err := execution.ReviewVersion(ctx)
 	if err != nil || input.Version == nil {
-		return err
+		return err == nil, err
 	}
 	if routeErr != nil {
-		return routeErr
+		return false, routeErr
 	}
 	request := ValidatorRequest{implementationReview: true, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ToolExecution); ok {
@@ -939,20 +939,19 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) error {
 	}
 	result, err := r.Validate(ctx, request)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if decision, stopped := gate.EvaluateValidator(gate.Effective(workflow.Config.Gate).Validator, result); stopped {
+	cfg := gate.Effective(workflow.Config.Gate).Validator
+	cfg.Enabled = true
+	if decision, stopped := gate.EvaluateValidator(cfg, result); stopped {
 		result.Verdict = string(decision.Action)
 	} else {
 		result.Verdict = gate.ValidatorVerdictPass
 	}
 	if err := execution.RecordReview(ctx, result); err != nil {
-		return err
+		return false, err
 	}
-	if result.Verdict != gate.ValidatorVerdictPass {
-		return errors.New("independent native implementation review requires changes")
-	}
-	return nil
+	return result.Verdict == gate.ValidatorVerdictPass, nil
 }
 
 func (r *Runner) recordPipeline(req RunRequest, timing gate.PipelineTiming) {

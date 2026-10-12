@@ -87,5 +87,18 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 	if current.PolicyID != version.PolicyID || current.FencingToken != request.FencingToken || current.Identity == nil || (current.Identity.Role != "code" && current.Identity.Role != "rework") || current.Runtime == nil || current.Runtime.Activity == nil || current.Runtime.Activity.SessionID <= 0 || current.Runtime.Activity.SessionID == result.SessionID || current.MachineID == source.MachineID && source.Runtime.Activity.SessionID == result.SessionID {
 		return nativeInvalid("validator review must come from a session separate from the implementing session under its active execution authority")
 	}
+	reviews, err := changeRows[tracker.ChangeReview](ctx, tx, "SELECT record_json FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'review' ORDER BY sequence", change.ID, version.ID)
+	if err != nil {
+		return err
+	}
+	for _, review := range reviews {
+		other := review.ImplementationReview
+		if implementationReview {
+			other = review.Validator
+		}
+		if other != nil && other.SessionID == result.SessionID {
+			return nativeInvalid("implementation review and acceptance validation require separate sessions")
+		}
+	}
 	return nil
 }

@@ -3838,7 +3838,11 @@ func verifyValidatorRequest(req ValidatorRequest) error {
 		return verifyValidatorDiff(req.Issue, req.Diff)
 	}
 	version, diff := req.NativeVersion, req.Diff
-	if diff == nil || version.ID == "" || !version.Policy.Gates.Validator || diff.Repository != version.Repository || diff.BaseSHA != version.BaseSHA || diff.HeadSHA != version.HeadSHA || diff.Digest == "" {
+	required := version.Policy.Gates.Validator
+	if req.implementationReview {
+		required = version.Policy.Gates.AutomatedReview == gate.AutomatedReviewRequired
+	}
+	if diff == nil || version.ID == "" || !required || diff.Repository != version.Repository || diff.BaseSHA != version.BaseSHA || diff.HeadSHA != version.HeadSHA || diff.Digest == "" {
 		return fmt.Errorf("%w: validator diff differs from immutable native version", ErrValidatorInfrastructure)
 	}
 	return nil
