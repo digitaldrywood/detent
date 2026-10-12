@@ -442,3 +442,62 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 		})
 	}
 }
+
+func TestRunnerProjectsNewRepositoryBinding(t *testing.T) {
+	for _, test := range []struct {
+		name, repository, origin string
+		wantCheckout             bool
+	}{
+		{name: "new private repository", repository: "acme/private", wantCheckout: true},
+		{name: "matching checkout is retained", repository: "acme/private", origin: "acme/private", wantCheckout: true},
+		{name: "mismatched checkout is refused", repository: "acme/private", origin: "other/repository"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_new": "new"})
+			hub.repositories["prj_new"] = ""
+			hub.credential.Store("test")
+			root := t.TempDir()
+			gitConfig := filepath.Join(root, "gitconfig")
+			t.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			t.Setenv("GIT_CONFIG_COUNT", "0")
+			t.Setenv("GIT_CONFIG_SYSTEM", filepath.Join(root, "absent-system-config"))
+			source := filepath.Join(root, "source")
+			checkout(t, source)
+			if test.origin == "" {
+				runDoctorWorkflowSourceGit(t, source, "rm", "WORKFLOW.md")
+				runDoctorWorkflowSourceGit(t, source, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "repository without policy")
+			}
+			runDoctorWorkflowSourceGit(t, source, "config", "--file", gitConfig, "url."+filepath.ToSlash(source)+".insteadOf", "https://github.com/acme/private.git")
+			client, err := hubclient.New(hubclient.Config{URL: hub.server.URL + "/organizations/org_example", TokenSource: func() string { return "test" }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := globalconfig.Config{WorkspaceRoot: filepath.Join(root, "work")}
+			cfg.Client.OrganizationID = "org_example"
+			identity := runnerauth.Identity{OrganizationID: "org_example", ProjectIDs: []tracker.ProjectID{"prj_new"}}
+			cfg, err = runnerProjectsForIdentity(t.Context(), cfg, client, identity, true)
+			if err != nil || len(cfg.Projects) != 0 || cfg.Client.NativeProjects["prj_new"] != "prj_new" {
+				t.Fatalf("unbound project = %+v: %v", cfg, err)
+			}
+			target := filepath.Join(cfg.WorkspaceRoot, "prj_new")
+			if test.origin != "" {
+				checkout(t, target)
+				runDoctorWorkflowSourceGit(t, target, "remote", "set-url", "origin", "https://github.com/"+test.origin+".git")
+			}
+			hub.repositories["prj_new"] = test.repository
+			hub.cloneURLs = map[tracker.ProjectID]string{"prj_new": "https://github.com/" + test.repository + ".git"}
+			cfg, err = runnerProjectsForIdentity(t.Context(), cfg, client, identity, true)
+			if err != nil || (len(cfg.Projects) == 1) != test.wantCheckout {
+				t.Fatalf("bound project checkouts = %+v: %v", cfg.Projects, err)
+			}
+			p := &runnerProjects{cfg: cfg}
+			if reported := p.repository(t.Context(), "prj_new"); test.wantCheckout && reported != "acme/private" || !test.wantCheckout && reported != "" {
+				t.Fatalf("checkout report = %q", reported)
+			}
+			if test.origin != "" && runnerCheckoutRepository(t.Context(), globalconfig.Project{Workdir: target}) != test.origin {
+				t.Fatal("existing checkout origin changed")
+			}
+		})
+	}
+}

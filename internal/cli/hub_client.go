@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -189,14 +191,21 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 }
 
 func runnerCheckoutRepository(ctx context.Context, selected globalconfig.Project) string {
-	if !runnerCheckoutReady(ctx, selected) {
+	if selected.Workdir == "" {
 		return ""
 	}
-	remote, err := defaultGitRemoteURL(ctx, selected.Workdir)
+	if _, err := os.Stat(filepath.Join(selected.Workdir, ".git")); err != nil {
+		return ""
+	}
+	commandCtx, cancel := context.WithTimeout(ctx, doctorCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(commandCtx, "git", "config", "--get", "remote.origin.url")
+	cmd.Dir = selected.Workdir
+	remote, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
-	repository, _ := doctorGitHubRepositoryFromRemoteURL(remote)
+	repository, _ := doctorGitHubRepositoryFromRemoteURL(string(remote))
 	return repository
 }
 

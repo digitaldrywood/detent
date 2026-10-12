@@ -298,9 +298,12 @@ and `get_native_project` for the selected project. The URL must match its
 attached repository or associated runner checkout. A missing association returns
 `invalid_request` with the existing setup owner: an administrator uses
 `bind_native_repository` with the observed integration `expected_revision`,
-`repository` and `source: "runner_checkout"`. This requires a currently enrolled,
-authorized runner reporting that matching checkout; Cloud needs no repository
-credentials and GitHub tracker mode stays disabled. Choose a configured
+`repository` and `source: "runner_checkout"`. The association supplies the
+repository and clone URL to authorized runners, which clone using their own Git
+credentials and report the matching origin. The integration read returns
+`checkout_verified` once an active runner has reported that checkout recently;
+a binding alone does not verify it. Cloud needs no repository credentials and
+GitHub tracker mode stays disabled. Choose a configured
 nonterminal, non-dispatchable destination such as Backlog. Linked creation
 records pending source context for existing runner intake, and repeated source
 URLs reuse the native work item. Cross-repository requests retain their refusal.
