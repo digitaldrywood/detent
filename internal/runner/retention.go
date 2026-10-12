@@ -7,7 +7,7 @@ import (
 )
 
 func (r *Runner) SweepRetention(ctx context.Context, request workspace.RetentionRequest) (workspace.RetentionTotals, error) {
-	sweeper, ok := r.workspace.(workspace.RetentionSweeper)
+	sweeper, ok := r.workspaceSnapshot().(workspace.RetentionSweeper)
 	if !ok {
 		return workspace.RetentionTotals{}, nil
 	}
