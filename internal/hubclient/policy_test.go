@@ -213,8 +213,8 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 				}
 				resolved, err := scheduler.ResolveProjectWorkflow(t.Context(), "site", workflow, test.provenance)
 				if test.status == http.StatusServiceUnavailable && layout != workflowconfig.ProjectDefinitionCloud {
-					if err == nil {
-						t.Fatal("unavailable approval was ignored")
+					if !errors.Is(err, ErrUnavailable) || !connector.IsRetryable(err) {
+						t.Fatalf("unavailable approval must remain retryable: %v", err)
 					}
 					continue
 				}
