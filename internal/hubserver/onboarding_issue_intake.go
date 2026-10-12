@@ -604,7 +604,7 @@ func batchLimit(batch *tracker.GitHubBatch) int {
 }
 
 func (s *Service) githubBatchLimit(ctx context.Context, query nativeQueryer, now time.Time) (int, error) {
-	if s.database.hostedPlans == nil {
+	if s.database.plans() == nil {
 		return 1000, nil
 	}
 	entitlement, err := s.database.hostedEntitlement(ctx, query, now)

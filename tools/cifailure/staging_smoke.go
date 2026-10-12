@@ -34,7 +34,7 @@ var smokeSkipped = strings.Fields(`
  session_logout organization_switch organization_create organization_delete resume_provisioning
  organization_project_rank_update invitation_accept invitation_send invitation_edit invitation_resend invitation_revoke
  member_remove member_role member_grant credential_create credential_rotate credential_revoke credential_grant support_start
- platform_adjust_ai_credits
+ platform_adjust_ai_credits platform_change_entitlement
  refresh capacity_clear tracker_availability_clear forge_availability_clear failure_breaker_canary update_apply
  mark_urgent_runner_update issue_progress_credit acknowledge_staleness_warnings recover_work_attempt transfer_item
  create_runner_enrollment revoke_runner_enrollment revoke_runner_identity
@@ -49,11 +49,12 @@ var smokeWrites = strings.Fields(`file_issue edit_item add_comment edit_comment 
 var errSmokeFixture = errors.New("smoke resource fixture unavailable")
 
 var smokeReadSkips = map[string]string{
-	operatortool.GetChange:        "operator-only Change detail read is outside the dedicated project smoke key's authority",
-	operatortool.GetChangeVersion: "operator-only Change version read is outside the dedicated project smoke key's authority",
-	operatortool.GetNativeRun:     "operator-only native run read is outside the dedicated project smoke key's authority",
-	"get_git_hub_import":          "native smoke projects have no GitHub import; importing requires an external tracker and cutover",
-	"list_git_hub_import_records": "native smoke projects have no GitHub import; importing requires an external tracker and cutover",
+	operatortool.PlatformEntitlements: "platform entitlement administration is outside the dedicated project smoke key's authority",
+	operatortool.GetChange:            "operator-only Change detail read is outside the dedicated project smoke key's authority",
+	operatortool.GetChangeVersion:     "operator-only Change version read is outside the dedicated project smoke key's authority",
+	operatortool.GetNativeRun:         "operator-only native run read is outside the dedicated project smoke key's authority",
+	"get_git_hub_import":              "native smoke projects have no GitHub import; importing requires an external tracker and cutover",
+	"list_git_hub_import_records":     "native smoke projects have no GitHub import; importing requires an external tracker and cutover",
 }
 
 var smokeKnownGaps = map[string]map[string]string{

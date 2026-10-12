@@ -13,9 +13,9 @@ import (
 const defaultAICreditCostMultiplier = 1.5
 
 type HostedBillingPrice struct {
-	PriceID string        `yaml:"price_id"`
-	Label   string        `yaml:"label"`
-	Plan    PlanReference `yaml:"plan"`
+	PriceID string        `yaml:"price_id" json:"price_id"`
+	Label   string        `yaml:"label" json:"label"`
+	Plan    PlanReference `yaml:"plan" json:"plan"`
 }
 
 type HostedCreditPack struct {
@@ -152,18 +152,8 @@ func (d *database) configureHostedBilling(ctx context.Context, cfg *HostedConfig
 	if err == nil && (account != c.AccountID || mode != c.mode() || c.CustomerID != "" && customer != c.CustomerID) {
 		return errors.New("hosted Stripe account, customer and mode binding is immutable; a mode change cannot reinterpret existing billing records")
 	}
-	for _, price := range c.Prices {
-		var existing PlanReference
-		err := tx.QueryRowContext(ctx, "SELECT plan_id,plan_version FROM hosted_billing_prices WHERE price_id=?", price.PriceID).Scan(&existing.ID, &existing.Version)
-		if err == nil && existing != price.Plan {
-			return errors.New("hosted Stripe price mappings are immutable; configure a new price")
-		}
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_billing_prices(price_id,plan_id,plan_version) VALUES(?,?,?) ON CONFLICT DO NOTHING", price.PriceID, price.Plan.ID, price.Plan.Version); err != nil {
-			return err
-		}
+	if err := seedHostedBillingPrices(ctx, tx, c.Prices); err != nil {
+		return err
 	}
 	for _, pack := range c.CreditPacks {
 		var cents int64
@@ -202,5 +192,22 @@ func (d *database) configureHostedBilling(ctx context.Context, cfg *HostedConfig
 		d.aiCreditMode = ""
 	}
 	d.hostedBilling = true
+	return nil
+}
+
+func seedHostedBillingPrices(ctx context.Context, tx *sql.Tx, prices []HostedBillingPrice) error {
+	for _, price := range prices {
+		var existing PlanReference
+		err := tx.QueryRowContext(ctx, "SELECT plan_id,plan_version FROM hosted_billing_prices WHERE price_id=?", price.PriceID).Scan(&existing.ID, &existing.Version)
+		if err == nil && existing != price.Plan {
+			return errors.New("hosted Stripe price mappings are immutable; configure a new price")
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_billing_prices(price_id,plan_id,plan_version) VALUES(?,?,?) ON CONFLICT DO NOTHING", price.PriceID, price.Plan.ID, price.Plan.Version); err != nil {
+			return err
+		}
+	}
 	return nil
 }

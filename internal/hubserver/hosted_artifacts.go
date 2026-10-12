@@ -12,9 +12,13 @@ import (
 )
 
 func (s *Service) hostedArtifactAllowances(c echo.Context) error {
+	runtimePlans := s.database.plans()
 	credential, _, err := s.authenticateAPIRequest(c)
 	if err != nil || credential.Scope != apiScopeWorker || !credential.NativeOnly || credential.Hosted != nil || credential.Runner.RunnerID != "" || c.Request().Header.Get(echo.HeaderAuthorization) == "" {
 		return c.NoContent(http.StatusForbidden)
+	}
+	if runtimePlans == nil {
+		return c.NoContent(http.StatusServiceUnavailable)
 	}
 	var usage artifact.Usage
 	if err := decodeAPIJSON(c, &usage); err != nil {
@@ -65,7 +69,7 @@ func (s *Service) hostedArtifactAllowances(c echo.Context) error {
 		if _, err := tx.ExecContext(ctx, "UPDATE hosted_artifact_usage SET usage_json=?,observed_at=? WHERE singleton=1", string(raw), usage.ObservedAt.UnixNano()); err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		window := now.Unix() / s.database.hostedPlans.WindowSeconds * s.database.hostedPlans.WindowSeconds
+		window := now.Unix() / runtimePlans.WindowSeconds * runtimePlans.WindowSeconds
 		if usage.WindowStart.Unix() == window {
 			for _, sample := range []struct {
 				name   string
@@ -77,7 +81,7 @@ func (s *Service) hostedArtifactAllowances(c echo.Context) error {
 			}
 		}
 	}
-	limits := artifact.Limits{RelayBytes: entitlement.Allowances["relay_bytes"], WindowSeconds: s.database.hostedPlans.WindowSeconds, TelemetrySeconds: s.database.hostedPlans.WindowSeconds * s.database.hostedPlans.RetentionWindows}
+	limits := artifact.Limits{RelayBytes: entitlement.Allowances["relay_bytes"], WindowSeconds: runtimePlans.WindowSeconds, TelemetrySeconds: runtimePlans.WindowSeconds * runtimePlans.RetentionWindows}
 	if slices.Contains(entitlement.Features, "hosted_artifacts") {
 		limits.RetainedBytes = entitlement.Allowances["artifact_retained_bytes"]
 		limits.ReservedBytes = entitlement.Allowances["artifact_reserved_bytes"]

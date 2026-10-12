@@ -82,7 +82,7 @@ func (s *Service) checkCloudAttachment(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if s.database.hostedPlans != nil {
+	if s.database.plans() != nil {
 		entitlement, err := s.database.hostedEntitlement(c.Request().Context(), s.database.db, now)
 		if err != nil {
 			return s.nativeAPIError(c, err)

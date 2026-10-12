@@ -576,7 +576,7 @@ func conversationChoiceLabel(value string) string {
 // appBootstrapPlan summarizes the effective entitlement. A hub without hosted
 // plans reports no plan rather than failing the bootstrap.
 func (s *Service) appBootstrapPlan(ctx context.Context) *appBootstrapPlan {
-	if s.database.hostedPlans == nil {
+	if s.database.plans() == nil {
 		return nil
 	}
 	entitlement, err := s.database.hostedPlanUsage(ctx, s.config.now())

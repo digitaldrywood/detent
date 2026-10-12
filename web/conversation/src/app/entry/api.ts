@@ -120,6 +120,7 @@ export const PlanReference = Schema.Struct({ id: Schema.String, version: Schema.
 export type PlanReference = typeof PlanReference.Type;
 
 export const EntitlementPlan = Schema.Struct({
+  monthly_usd_cents: Schema.optional(Schema.Number),
   id: Schema.String,
   name: Schema.optional(Schema.String),
   version: Schema.Number,
@@ -174,6 +175,22 @@ export const PlatformTenantDetail = Schema.Struct({
 export type PlatformTenantDetail = typeof PlatformTenantDetail.Type;
 
 export type EntitlementChange =
+  | {
+      readonly action: "create_plan";
+      readonly definition: EntitlementPlan;
+      readonly plan: PlanReference;
+      readonly idempotency_key: string;
+      readonly expected_revision: number;
+      readonly reason: string;
+    }
+  | {
+      readonly action: "base" | "subscription" | "end_subscription";
+      readonly plan: PlanReference;
+      readonly expires_at: string | null;
+      readonly idempotency_key: string;
+      readonly expected_revision: number;
+      readonly reason: string;
+    }
   | {
       readonly action: "grant";
       readonly feature: "model_choice";

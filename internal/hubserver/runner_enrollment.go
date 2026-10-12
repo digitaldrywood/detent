@@ -106,7 +106,7 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 		notify = dispatchBefore != after
 	}
 	completion := c.Request().Method == http.MethodDelete
-	if s.database.hostedPlans != nil && (heartbeat || strings.HasSuffix(c.Path(), "/machines/register")) {
+	if s.database.plans() != nil && (heartbeat || strings.HasSuffix(c.Path(), "/machines/register")) {
 		credential, ok := c.Get("hub_api_credential").(apiCredential)
 		if !ok {
 			return s.nativeAPIError(c, runnerUnauthorized())
@@ -181,7 +181,7 @@ func (s *Service) runnerReadTransaction(c echo.Context, operation func(context.C
 // chargeRunnerRead records a successful runner read against the hosted plan's
 // request allowance in one short write, refusing it when the window is spent.
 func (s *Service) chargeRunnerRead(ctx context.Context, path string, now time.Time) error {
-	if s.database.hostedPlans == nil {
+	if s.database.plans() == nil {
 		return nil
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)

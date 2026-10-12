@@ -30,7 +30,8 @@ func (s *Service) checkoutBilling(ctx context.Context, authorize billingAuthoriz
 	if _, err := authorize(ctx); err != nil {
 		return billingDestination{}, err
 	}
-	if s.billing == nil || s.config.Hosted == nil || s.config.Hosted.Billing == nil {
+	cfg := s.hostedBillingConfig()
+	if s.billing == nil || s.config.Hosted == nil || cfg == nil {
 		return billingDestination{}, billingFailure(http.StatusServiceUnavailable, "Subscription checkout is unavailable")
 	}
 	w := s.billing
@@ -40,7 +41,6 @@ func (s *Service) checkoutBilling(ctx context.Context, authorize billingAuthoriz
 	if err != nil {
 		return billingDestination{}, err
 	}
-	cfg := s.config.Hosted.Billing
 	if cfg.CheckoutDisabled {
 		return billingDestination{}, billingFailure(http.StatusServiceUnavailable, "New subscriptions are paused")
 	}
@@ -111,14 +111,14 @@ func (s *Service) portalBilling(ctx context.Context, authorize billingAuthorizat
 	if _, err := authorize(ctx); err != nil {
 		return billingDestination{}, err
 	}
-	if s.config.Hosted == nil || s.config.Hosted.Billing == nil {
+	cfg := s.hostedBillingConfig()
+	if s.config.Hosted == nil || cfg == nil {
 		return billingDestination{}, billingFailure(http.StatusServiceUnavailable, "Billing portal is unavailable")
 	}
 	credential, err := authorize(ctx)
 	if err != nil {
 		return billingDestination{}, err
 	}
-	cfg := s.config.Hosted.Billing
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	binding, err := s.database.hostedBillingBinding(ctx, cfg)

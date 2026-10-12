@@ -116,7 +116,7 @@ COALESCE((SELECT email FROM sessions WHERE subject=a.subject ORDER BY created_at
 CASE WHEN event LIKE 'support_requested:%' OR event LIKE 'support_started:%' THEN substr(event,1,instr(event,':')-1) ELSE event END AS event,
 CASE WHEN event LIKE 'support_requested:%' OR event LIKE 'support_started:%' THEN substr(event,instr(event,':')+1) ELSE '' END AS detail FROM audit a WHERE NOT json_valid(event)`
 	entitlementAuditEvents = `SELECT CAST(rowid AS TEXT) AS id,recorded_at,organization_id,staff_email AS actor,
-CASE action WHEN 'grant' THEN 'plan_granted' ELSE 'plan_revoked' END AS event,
+CASE action WHEN 'grant' THEN 'plan_granted' WHEN 'create_plan' THEN 'plan_created' WHEN 'base' THEN 'plan_base_changed' WHEN 'subscription' THEN 'plan_subscription_changed' WHEN 'end_subscription' THEN 'plan_subscription_ended' ELSE 'plan_revoked' END AS event,
 plan_id || ' v' || plan_version || CASE WHEN expires_at='' THEN '' ELSE ' until ' || expires_at END || ' · ' || reason AS detail FROM entitlement_changes`
 	organizationAuditEvents = `SELECT CAST(id AS TEXT) AS id,recorded_at,organization_id,'system' AS actor,'organization_' || event AS event,'generation ' || generation AS detail FROM organization_events`
 	memberAuditEvents       = `SELECT CAST(id AS TEXT) AS id,recorded_at,'' AS organization_id,actor_email AS actor,'member_' || action AS event,

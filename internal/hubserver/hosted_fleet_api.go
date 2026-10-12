@@ -369,7 +369,7 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 // A hub without hosted plans reports an empty window rather than failing.
 func (s *Service) hostedFleetUsage(ctx context.Context) (hostedFleetUsage, error) {
 	usage := hostedFleetUsage{Allowances: map[string]hostedFleetAllowance{}}
-	if s.database.hostedPlans == nil {
+	if s.database.plans() == nil {
 		return usage, nil
 	}
 	entitlement, err := s.database.hostedPlanUsage(ctx, s.config.now(), hostedAllowanceNames()...)

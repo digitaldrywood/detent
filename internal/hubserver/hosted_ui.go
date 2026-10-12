@@ -61,6 +61,7 @@ func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.GET("/api/cloud/billing", s.hostedBilling)
 	e.GET("/api/v2/organizations/:organization/entitlements", s.hostedPlanReport)
 	e.POST("/api/v2/organizations/:organization/entitlements", s.updateHostedPlan)
+	e.POST("/api/v2/organizations/:organization/entitlements/runtime", s.reloadHostedRuntime)
 	e.POST("/api/v2/organizations/:organization/artifact-allowances/:service", s.hostedArtifactAllowances)
 	s.registerHostedUsageRoutes(e)
 	s.registerHostedOrganizationRoutes(e)
