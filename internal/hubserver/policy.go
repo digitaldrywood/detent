@@ -288,6 +288,11 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 	if err := followDefaultChangeReviewPolicy(ctx, tx, scope, change.Policy); err != nil {
 		return result, err
 	}
+	if current != change.Policy.ID {
+		if err := routeStaleNativeLandingChanges(ctx, tx, scope, actor, change.Policy.ID, now); err != nil {
+			return result, err
+		}
+	}
 	result, err = readProjectPolicy(ctx, tx, scope)
 	if err != nil {
 		return result, err

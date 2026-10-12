@@ -142,6 +142,218 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "cancelled"}), http.StatusNoContent)
 }
 
+func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		stale         int
+		target        string
+		refusal       string
+		status        int
+		barrier       bool
+		activeLanding bool
+	}{
+		{name: "zero", target: "Rework", status: http.StatusOK},
+		{name: "one", stale: 1, target: "Rework", status: http.StatusOK},
+		{name: "several", stale: 3, target: "Rework", status: http.StatusOK},
+		{name: "fallback", stale: 2, target: "In Progress", status: http.StatusOK},
+		{name: "rolling barrier", stale: 2, target: "Rework", status: http.StatusOK, barrier: true},
+		{name: "active landing lease", stale: 1, target: "Rework", status: http.StatusOK, activeLanding: true},
+		{name: "no allowed refusal lane", stale: 2, target: "Done", status: http.StatusUnprocessableEntity},
+		{name: "unauthorized", stale: 2, target: "Rework", refusal: "unauthorized", status: http.StatusForbidden},
+		{name: "stale approval", stale: 2, target: "Rework", refusal: "expected", status: http.StatusConflict},
+		{name: "later transition failure rolls back", stale: 2, target: "Rework", refusal: "write", status: http.StatusInternalServerError},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newNativeFixture(t, nil, "", "policy-landing")
+			states := HostedProjectStates()
+			states = append(states, tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Merging", "Done"}})
+			for i := range states {
+				if states[i].Name == "Merging" {
+					states[i].Transitions = []string{test.target}
+				}
+			}
+			previous := hubTestPolicy()
+			previous.Workflow = &policy.Workflow{Source: "detent.yaml", States: states}
+			previous = previous.WithID()
+			next := previous
+			next.Gates.AutoPromote = true
+			if test.barrier {
+				next.Gates.LandingMode = "rolling_barrier"
+				next.Gates.LandingCommandDigest = policy.Digest([]byte("make check-barrier"))
+			}
+			next = next.WithID()
+			approveHubTestPolicy(t, f.service, f.base+"/policy", next)
+			createChange := func(name, state string, descriptor policy.Descriptor) changeFixture {
+				t.Helper()
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: name}, Title: name, State: state})
+				requireNativeStatus(t, response, http.StatusOK)
+				var issue tracker.NativeIssue
+				decodeHubResponse(t, response, &issue)
+				path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
+				response = performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: name})
+				requireNativeStatus(t, response, http.StatusOK)
+				var change tracker.ChangeRequest
+				decodeHubResponse(t, response, &change)
+				path += "/" + change.ID
+				input := changeTestInput()
+				input.PolicyID = descriptor.ID
+				bundle := []byte("retained policy approval fixture")
+				input.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish"}, ChangeVersionInput: input, SourceBundle: bundle}), http.StatusOK)
+				return changeFixture{nativeFixture: f, issue: issue, change: change, path: path}
+			}
+			current := createChange("current policy", "In Progress", next)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: next.ID, Policy: previous}), http.StatusOK)
+			moveToMerging := func(change changeFixture) {
+				t.Helper()
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(change.issue.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "merging"}, ExpectedRevision: change.issue.Revision, State: "Merging", Reason: "user_requested"}), http.StatusOK)
+			}
+			moveToMerging(current)
+			changes := []changeFixture{current}
+			for i := range test.stale {
+				change := createChange(fmt.Sprintf("stale %d", i), "In Progress", previous)
+				moveToMerging(change)
+				changes = append(changes, change)
+			}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			var heldAttempts []tracker.NativeAttempt
+			for _, hold := range []struct {
+				name        string
+				disposition tracker.NativeDisposition
+			}{
+				{name: "human hold", disposition: tracker.NativeDisposition{Status: "blocked", HumanAction: true}},
+				{name: "permission hold", disposition: tracker.NativeDisposition{Status: "blocked", ReasonCode: "permission_wait"}},
+			} {
+				held := createChange(hold.name, "In Progress", previous)
+				worker := f.worker(t, hold.name)
+				lease := claimNativeAttempt(t, f, worker, hold.name, hold.name, held.issue.WorkItemID, previous.ID)
+				event := nativeStartedEvent(lease)
+				path := f.base + "/work-items/" + string(held.issue.WorkItemID)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
+				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.finished", "finished", 2
+				event.Data.Outcome, event.Data.Disposition = "succeeded", &hold.disposition
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(held.issue.WorkItemID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "hold"}, ExpectedRevision: issue.Revision, State: "Blocked", Reason: "user_requested"}), http.StatusOK)
+				attempt, err := readNativeAttempt(t.Context(), f.service.database.db, scope, string(held.issue.WorkItemID), event.Data.AttemptID, f.service.config.now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				heldAttempts = append(heldAttempts, attempt)
+				changes = append(changes, held)
+			}
+			var active tracker.NativeIssue
+			if test.activeLanding {
+				active = changes[1].issue
+			} else {
+				active = f.create(t, "active execution")
+			}
+			worker := f.worker(t, "active-worker")
+			lease := claimNativeAttempt(t, f, worker, "active-machine", "active-session", active.WorkItemID, previous.ID)
+			before := make([]tracker.ChangeDetail, len(changes))
+			issuesBefore := make([]tracker.NativeIssue, len(changes))
+			for i, change := range changes {
+				before[i] = change.detail(t)
+				issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(change.issue.WorkItemID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				issuesBefore[i] = issue
+			}
+			token, expected := testHubAdminToken, previous.ID
+			switch test.refusal {
+			case "unauthorized":
+				token = worker
+			case "expected":
+				expected = "policy_stale"
+			case "write":
+				statement := fmt.Sprintf("CREATE TRIGGER refuse_later_transition BEFORE UPDATE OF workflow_state_id ON issues WHEN OLD.native_id = '%s' BEGIN SELECT RAISE(ABORT, 'fixture transition failure'); END", changes[2].issue.WorkItemID)
+				if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
+					t.Fatal(err)
+				}
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", token, policy.Change{ExpectedID: expected, Policy: next}), test.status)
+			wantPolicy := next.ID
+			if test.status != http.StatusOK {
+				wantPolicy = previous.ID
+			}
+			approval, err := readProjectPolicy(t.Context(), f.service.database.db, string(scope.organization)+"/"+string(scope.project))
+			if err != nil || approval.Policy.ID != wantPolicy {
+				t.Fatalf("approved policy = %+v, error = %v, want %s", approval, err, wantPolicy)
+			}
+			if test.barrier {
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				var id tracker.WorkItemID
+				if err := tx.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id = ?", current.issue.WorkItemID).Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+				ready, evaluated, err := nativeLandingCandidateReady(t.Context(), tx, &scope, id, lease.MachineID, f.service.config.now())
+				if err != nil || ready || !evaluated {
+					t.Fatalf("stale landing eligibility = %t, evaluated = %t, error = %v", ready, evaluated, err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i, change := range changes {
+				issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(change.issue.WorkItemID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := "Merging"
+				if i > test.stale {
+					want = "Blocked"
+				} else if i > 0 && test.status == http.StatusOK {
+					want = test.target
+				}
+				if issue.State != want {
+					t.Errorf("%s state = %s, want %s", issue.Title, issue.State, want)
+				}
+				if (i == 0 || i > test.stale || test.status != http.StatusOK) && !reflect.DeepEqual(issue, issuesBefore[i]) {
+					t.Errorf("%s approval changed unrelated or held work", issue.Title)
+				}
+				if i > test.stale {
+					prior := heldAttempts[i-test.stale-1]
+					attempt, err := readNativeAttempt(t.Context(), f.service.database.db, scope, string(issue.WorkItemID), prior.AttemptID, f.service.config.now())
+					if err != nil || !reflect.DeepEqual(attempt.Disposition, prior.Disposition) {
+						t.Errorf("%s hold changed: %+v, error = %v", issue.Title, attempt.Disposition, err)
+					}
+				}
+				after := change.detail(t)
+				if !reflect.DeepEqual(after.Change, before[i].Change) || !reflect.DeepEqual(after.Versions, before[i].Versions) {
+					t.Errorf("%s immutable change or version changed", issue.Title)
+				}
+				var transitions int
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id = ? AND type = 'workflow.transitioned' AND json_extract(data_json, '$.reason') = 'stale_policy'", issue.WorkItemID).Scan(&transitions); err != nil {
+					t.Fatal(err)
+				}
+				wantTransitions := 0
+				if i > 0 && i <= test.stale && test.status == http.StatusOK {
+					wantTransitions = 1
+				}
+				if transitions != wantTransitions {
+					t.Errorf("%s stale_policy transitions = %d, want %d", issue.Title, transitions, wantTransitions)
+				}
+			}
+			pinned, err := f.service.database.leasePolicyID(t.Context(), lease.ID)
+			if err != nil || pinned != previous.ID {
+				t.Fatalf("active lease policy = %s, error = %v", pinned, err)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
+		})
+	}
+}
+
 func TestProjectPolicyIsolationAndRestart(t *testing.T) {
 	t.Parallel()
 	cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}
