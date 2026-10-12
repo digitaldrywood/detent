@@ -619,6 +619,7 @@ func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 		wantStatus int
 	}{
 		{name: "customer", wantStatus: http.StatusSeeOther},
+		{name: "entry fallback", wantStatus: http.StatusSeeOther},
 		{name: "support", wantStatus: http.StatusSeeOther},
 		{name: "expired local session", wantStatus: http.StatusSeeOther},
 		{name: "provider failure", wantStatus: http.StatusServiceUnavailable},
@@ -637,7 +638,14 @@ func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 			} else {
 				client.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 			}
-			_, page := client.get("/organizations/org_alpha/organization")
+			pagePath, logoutPath := "/organizations/org_alpha/organization", "/organizations/org_alpha/logout"
+			if tt.name == "entry fallback" {
+				pagePath, logoutPath = "/platform", "/logout"
+			}
+			pageResponse, page := client.get(pagePath)
+			if policy := pageResponse.Header.Get("Content-Security-Policy"); policy != contentSecurity {
+				t.Fatalf("page content security = %q, want %q", policy, contentSecurity)
+			}
 			var hash string
 			if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT token_hash FROM sessions WHERE revoked_at IS NULL").Scan(&hash); err != nil {
 				t.Fatal(err)
@@ -661,7 +669,14 @@ func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 			if tt.name == "provider failure" {
 				f.provider.revokeErr = errors.New("private provider credential")
 			}
-			response := client.do(http.MethodPost, "/organizations/org_alpha/logout?return=https%3A%2F%2Fattacker.example.test", url.Values{"csrf": {csrfFrom(t, page)}, "redirect": {"https://attacker.example.test"}}, nil)
+			denied := client.do(http.MethodPost, logoutPath, url.Values{"csrf": {"invalid"}}, nil)
+			if denied.StatusCode != http.StatusForbidden || denied.Header.Get("Location") != "" || len(f.provider.revoked) != 0 {
+				t.Fatalf("invalid CSRF logout = %d, location %q, provider revocations %v", denied.StatusCode, denied.Header.Get("Location"), f.provider.revoked)
+			}
+			if _, _, err := f.service.auth.storedSession(t.Context(), hash); err != nil {
+				t.Fatalf("invalid CSRF revoked local session: %v", err)
+			}
+			response := client.do(http.MethodPost, logoutPath+"?return=https%3A%2F%2Fattacker.example.test", url.Values{"csrf": {csrfFrom(t, page)}, "redirect": {"https://attacker.example.test"}}, nil)
 			if response.StatusCode != tt.wantStatus {
 				t.Fatalf("logout status = %d, want %d", response.StatusCode, tt.wantStatus)
 			}
