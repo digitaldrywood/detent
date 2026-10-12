@@ -294,7 +294,21 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	if prepared, ok := req.Execution.(CompletionExecution); ok {
-		if err := prepared.PrepareFinish(finishCtx, outcome, result.FinalMessage, nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused)); err != nil {
+		prepareCtx, prepareCancel := finishCtx, func() {}
+		if outcome == "succeeded" {
+			workflow, runtime, _, _ := r.runtimeSnapshot()
+			role := runtime.effectiveRunRole(runRole(req.Mode, req.Issue))
+			_, _, backend, routeErr := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), role)
+			if routeErr != nil {
+				runErr = errors.Join(runErr, routeErr)
+				outcome = "failed"
+			} else {
+				prepareCtx, prepareCancel = context.WithTimeoutCause(context.WithoutCancel(guarded), r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+			}
+		}
+		err := prepared.PrepareFinish(prepareCtx, outcome, result.FinalMessage, nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused))
+		prepareCancel()
+		if err != nil {
 			runErr = errors.Join(runErr, err)
 			outcome = "failed"
 		} else if outcome == "succeeded" {
@@ -309,7 +323,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		if change != nil && change.Landing != nil {
 			result.NativeLanding = change.Landing
 			if runtime, ok := req.Execution.(LandingRuntimeExecution); ok {
-				if err := runtime.ObserveLanding(finishCtx, *result.NativeLanding); err != nil {
+				landingCtx, landingCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
+				err := runtime.ObserveLanding(landingCtx, *result.NativeLanding)
+				landingCancel()
+				if err != nil {
 					runErr = errors.Join(runErr, err)
 				}
 			}
