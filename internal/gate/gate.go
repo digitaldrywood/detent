@@ -147,6 +147,7 @@ const (
 )
 
 type ValidatorResult struct {
+	AttachmentReads  []AttachmentRead    `json:"attachment_reads,omitempty"`
 	CriteriaEvidence []CriterionEvidence `json:"criteria_evidence,omitempty"`
 	NotVerified      []string            `json:"not_verified,omitempty"`
 	Commands         []CommandResult     `json:"commands,omitempty"`

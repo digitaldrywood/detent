@@ -364,6 +364,7 @@ func TestAgentBackendToolTurnUsesRestrictedSandbox(t *testing.T) {
 		responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
 		responseMessage(t, 2, `{"thread":{"id":"thread-1","model":"gpt-5-codex-resolved"}}`),
 		responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+		serverRequestMessage(t, 99, "item/tool/call", `{"threadId":"thread-1","turnId":"turn-1","callId":"call-1","tool":"board_state","arguments":{}}`),
 		notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
 	})
 	server, err := NewAppServer(&workerTempCapturingTransportFactory{transport: transport},
@@ -396,14 +397,16 @@ func TestAgentBackendToolTurnUsesRestrictedSandbox(t *testing.T) {
 		Name:        "board_state",
 		Description: "Return live board state.",
 		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false}`),
-	}}, nil, nil)
+	}}, func(context.Context, runner.AgentToolCall) (runner.AgentToolResult, error) {
+		return runner.AgentToolResult{Content: "published capture", Success: true, ImageURL: "data:image/png;base64,example"}, nil
+	}, nil)
 	if err != nil {
 		t.Fatalf("RunTurnWithTools() error = %v", err)
 	}
 
 	sent := transport.sentMessages()
-	if len(sent) != 4 {
-		t.Fatalf("sent messages = %d, want 4", len(sent))
+	if len(sent) != 5 {
+		t.Fatalf("sent messages = %d, want 5", len(sent))
 	}
 	assertJSONContains(t, sent[2].Params, "approvalPolicy", "never")
 	assertJSONContains(t, sent[2].Params, "sandbox", "read-only")
@@ -412,6 +415,9 @@ func TestAgentBackendToolTurnUsesRestrictedSandbox(t *testing.T) {
 	assertJSONContains(t, sent[3].Params, "approvalPolicy", "never")
 	assertJSONContains(t, sent[3].Params, "effort", "high")
 	assertJSONOmits(t, sent[3].Params, "sandboxPolicy")
+	assertResponseResultContains(t, sent[4], 99, "contentItems.0.text", "published capture")
+	assertResponseResultContains(t, sent[4], 99, "contentItems.1.type", "inputImage")
+	assertResponseResultContains(t, sent[4], 99, "contentItems.1.imageUrl", "data:image/png;base64,example")
 }
 
 func TestAgentBackendReadOnlyTurnUsesRestrictedSandbox(t *testing.T) {

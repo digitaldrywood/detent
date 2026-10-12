@@ -342,8 +342,9 @@ type AgentToolCall struct {
 }
 
 type AgentToolResult struct {
-	Content string
-	Success bool
+	Content  string
+	Success  bool
+	ImageURL string
 }
 
 type AgentToolHandler func(context.Context, AgentToolCall) (AgentToolResult, error)
@@ -751,6 +752,8 @@ const (
 )
 
 type ValidatorRequest struct {
+	EvidenceTools    []AgentTool
+	EvidenceHandler  AgentToolHandler
 	NativeVersion    *tracker.ChangeVersion
 	Issue            connector.Issue
 	Diff             *connector.ValidationDiff
