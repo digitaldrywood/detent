@@ -2043,9 +2043,10 @@ Declare the same `provider` and `shared_account_alias` on every machine using th
 same provider account, even when local aliases or backend IDs differ. Hub scopes
 sharing to the organization, uses the lowest declared limit and honors exhaustion
 from any overlapping report. Distinct explicit aliases declare independent
-accounts. An omitted shared alias means sharing is unknown: its reports and
-reservations overlap every account of that provider in the organization. Separate
-local aliases or reports never imply independent capacity. Drain work before
+accounts. An omitted shared alias keeps the account local to its enrolled runner. Local
+accounts are identified by runner identity, provider and account alias; matching
+local alias text on different runners never combines their limits or usage.
+Only matching explicit shared aliases combine accounts across runners. Drain work before
 changing account mappings; existing leases retain their original reservation.
 
 Registration and heartbeats accept typed `provider_reports` on the native machine

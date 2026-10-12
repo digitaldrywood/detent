@@ -88,7 +88,7 @@ WHERE l.machine_id IN (`+placeholders(len(machines))+`) AND l.released_at IS NUL
 		r := &runners[i]
 		r.HostUsed, r.Used = hosts[r.MachineID], used[r.MachineID][r.RunnerID]
 		for _, report := range reports[r.RunnerID] {
-			r.ProviderCapacity = append(r.ProviderCapacity, provider.view(report, now))
+			r.ProviderCapacity = append(r.ProviderCapacity, provider.view(r.RunnerID, report, now))
 		}
 	}
 	return runners, truncated, nil
