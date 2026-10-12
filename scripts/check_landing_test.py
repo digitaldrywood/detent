@@ -88,20 +88,33 @@ class ShortLandingGateTest(unittest.TestCase):
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     def test_changed_package_includes_transitive_and_test_dependents(self):
-        (self.root / "lib/source.go").write_text("package lib\nconst Value = 1\n")
-        self.commit()
-        result = self.run_gate()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        trace = self.trace()
-        self.assertEqual([(call["tool"], call["args"][0]) for call in trace], [("make", "-j1"), ("go", "build"), ("go", "list"), ("go", "test"), ("make", "-j1"), ("golangci-lint", "run")])
-        test = trace[3]
-        self.assertEqual(test["args"][-3:], ["./app", "./integration", "./lib"])
-        self.assertFalse(test["token"])
-        self.assertTrue(all(call["budget"] == "2" for call in trace))
-        self.assertEqual(trace[-1]["args"][-1], "./lib")
-        self.assertIn("--new-from-rev=" + self.base, trace[-1]["args"])
-        self.assertIn("assets", trace[0]["args"])
-        self.assertIn("generate-docs", trace[0]["args"])
+        cases = (
+            ("test only", ("lib/source_test.go",), ["./lib"]),
+            ("production", ("lib/source.go",), ["./app", "./integration", "./lib"]),
+            ("mixed", ("lib/source.go", "lib/source_test.go"), ["./app", "./integration", "./lib"]),
+            ("separate test and production", ("lib/source_test.go", "unrelated/source.go"), ["./lib", "./unrelated"]),
+        )
+        for index, (name, paths, expected) in enumerate(cases):
+            with self.subTest(name=name):
+                self.base = self.git("rev-parse", "HEAD").strip()
+                self.git("update-ref", "refs/remotes/origin/develop", self.base)
+                for path in paths:
+                    target = self.root / path
+                    value = "TestValue" if path.endswith("_test.go") else "Value"
+                    target.write_text(f"package {target.parent.name}\nconst {value} = {index}\n")
+                self.commit()
+                result = self.run_gate()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                trace = self.trace()
+                self.assertEqual([(call["tool"], call["args"][0]) for call in trace], [("make", "-j1"), ("go", "build"), ("go", "list"), ("go", "test"), ("make", "-j1"), ("golangci-lint", "run")])
+                test = trace[3]
+                self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], expected)
+                self.assertFalse(test["token"])
+                self.assertTrue(all(call["budget"] == "2" for call in trace))
+                self.assertEqual([arg for arg in trace[-1]["args"] if arg.startswith("./")], sorted({"./" + str(Path(path).parent) for path in paths}))
+                self.assertIn("--new-from-rev=" + self.base, trace[-1]["args"])
+                self.assertIn("assets", trace[0]["args"])
+                self.assertIn("generate-docs", trace[0]["args"])
 
     def test_module_change_checks_all_current_packages(self):
         with (self.root / "go.mod").open("a") as stream:
