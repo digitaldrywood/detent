@@ -22,6 +22,7 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -238,6 +239,7 @@ type registerHub struct {
 	server         *httptest.Server
 	credential     atomic.Value
 	identity       atomic.Value
+	heartbeat      atomic.Value
 	tier           atomic.Value
 	redeemed       atomic.Int32
 	projects       map[tracker.ProjectID]string
@@ -308,7 +310,12 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 		}
 		if identity, ok := hub.identity.Load().(runnerauth.Identity); ok && strings.HasSuffix(r.URL.Path, "/runners/"+identity.RunnerID+"/routing") {
 			tier, _ := hub.tier.Load().(string)
-			_ = json.NewEncoder(w).Encode(runnerauth.Runner{Binding: identity.Binding, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Build host", State: "active", CapacityLimit: 2, ProjectIDs: ids, IsolationTier: tier}.Normalized()})
+			runner := runnerauth.Runner{Binding: identity.Binding, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Build host", State: "active", CapacityLimit: 2, ProjectIDs: ids, IsolationTier: tier}.Normalized()}
+			if heartbeat, ok := hub.heartbeat.Load().(time.Time); ok {
+				runner.LastHeartbeatAt = heartbeat
+				runner.ProviderCapacity = []providercapacity.View{{Report: providercapacity.Report{Provider: "openai"}}}
+			}
+			_ = json.NewEncoder(w).Encode(runner)
 			return
 		}
 		for id, name := range projects {
@@ -376,7 +383,7 @@ func TestHubRunnerRegisterServiceRuntime(t *testing.T) {
 			root := t.TempDir()
 			configPath := filepath.Join(root, "runner config", "global.yaml")
 			var captured servicepkg.Config
-			runner := &serviceRunnerStub{startErrs: []error{test.startErr}, startResults: []servicepkg.StartResult{{Action: servicepkg.ActionInstalled, State: servicepkg.StateRunning}}}
+			runner := &serviceRunnerStub{startErrs: []error{test.startErr}, startResults: []servicepkg.StartResult{{Action: servicepkg.ActionInstalled, State: servicepkg.StateRunning}}, onStart: func() { hub.heartbeat.Store(time.Now()) }}
 			var opts options
 			command := NewRootCommand(t.Context(), func(o *options) {
 				o.lookupEnv = func(string) string { return "" }
