@@ -415,15 +415,15 @@ describe("platform console", () => {
   });
 
   it.each([
-    { self_service: true, open: true, description: "Any verified account may create an organization." },
-    { self_service: true, open: undefined, description: "Any verified account may create an organization." },
-    { self_service: false, open: undefined, description: "Self-service organization creation is not configured." },
-  ])("shows open access without list sections for $self_service self-service and $open open mode", async ({ self_service, open, description }) => {
+    { self_service: true, open: true, mode: "Open", description: "Any verified account may create an organization." },
+    { self_service: true, open: undefined, mode: "Open", description: "Any verified account may create an organization." },
+    { self_service: false, open: undefined, mode: "Disabled", description: "Self-service organization creation is not configured." },
+  ])("shows $mode access without list sections for $self_service self-service and $open open mode", async ({ self_service, open, mode, description }) => {
     renderPlatform(fakeApi({ platformAllowlist: vi.fn(async () => ({ ...allowlist, self_service, open,
       allowed_domains: [], allowed_emails: [],
     })) }), "/platform/allowlist");
     const panel = await screen.findByRole("region", { name: "Sign-up allowlist" });
-    expect(within(panel).getByText("Open")).toBeTruthy();
+    expect(within(panel).getByText(mode)).toBeTruthy();
     expect(within(panel).getByText(`${description} Changes are made in the Cloud configuration.`)).toBeTruthy();
     expect(within(panel).queryByRole("region", { name: "Domains" })).toBeNull();
     expect(within(panel).queryByRole("region", { name: "Individual emails" })).toBeNull();

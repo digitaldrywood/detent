@@ -67,7 +67,7 @@ function Panel({
 export function PlatformAllowlistPanel({ value }: { readonly value: PlatformAllowlist }): React.ReactElement {
   const [query, setQuery] = React.useState("");
   const term = query.trim().toLowerCase();
-  const open = value.open ?? (value.allowed_domains.length === 0 && value.allowed_emails.length === 0);
+  const open = value.self_service && (value.open ?? (value.allowed_domains.length === 0 && value.allowed_emails.length === 0));
   const description = !value.self_service ? "Self-service organization creation is not configured." :
     open ? "Any verified account may create an organization." : "Only the domains and emails below.";
   const lists = [
@@ -78,7 +78,7 @@ export function PlatformAllowlistPanel({ value }: { readonly value: PlatformAllo
     <section aria-label="Sign-up allowlist" className="grid min-w-0 gap-6">
       <SettingsSection title="Access" aria-label="Access">
         <SettingsRow title="Who can sign up" description={`${description} Changes are made in the Cloud configuration.`}
-          control={<Badge variant="outline">{open ? "Open" : "Restricted"}</Badge>} />
+          control={<Badge variant="outline">{!value.self_service ? "Disabled" : open ? "Open" : "Restricted"}</Badge>} />
       </SettingsSection>
       {value.self_service && !open ? <>
         <div className="w-full max-w-sm">
