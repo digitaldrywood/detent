@@ -10,12 +10,10 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"slices"
-	"strings"
 	"time"
 )
 
-// Policy bounds build artifacts by age and total cache size.
+// Policy selects safe build artifact expiry and a reported cache size target.
 type Policy struct {
 	MaxAge   time.Duration `yaml:"max_age"`
 	MaxBytes int64         `yaml:"max_bytes,omitempty"`
@@ -42,6 +40,7 @@ func (p Policy) NormalizedForCapacity(capacity uint64) Policy {
 	if p.MaxAge == 0 {
 		p.MaxAge = 48 * time.Hour
 	}
+	p.MaxAge = max(p.MaxAge, 25*time.Hour)
 	if p.MaxBytes == 0 {
 		p.MaxBytes = min(int64(capacity/10), 40<<30)
 		if p.MaxBytes == 0 {
@@ -54,7 +53,7 @@ func (p Policy) NormalizedForCapacity(capacity uint64) Policy {
 var cacheEntryName = regexp.MustCompile(`^[0-9a-f]{64}-[ad]$`)
 var cacheShardName = regexp.MustCompile(`^[0-9a-f]{2}$`)
 
-// Trim expires old entries, then evicts oldest-first to enforce MaxBytes.
+// Trim expires old entries without evicting recent outputs to meet MaxBytes.
 // Metadata is counted toward the size but is never removed.
 func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64, error) {
 	return trim(ctx, root, policy, now, nil)
@@ -104,11 +103,6 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 		slog.Warn("skip host Go cache trim: cache marker absent", "path", root)
 		return 0, nil
 	}
-	type candidate struct {
-		path string
-		info fs.FileInfo
-	}
-	var remaining []candidate
 	var total int64
 	defer func() { report.BuildBytes = total }()
 	err = fs.WalkDir(cache.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
@@ -141,7 +135,6 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 			return nil
 		}
 		if !info.ModTime().Before(now.Add(-policy.MaxAge)) {
-			remaining = append(remaining, candidate{name, info})
 			return nil
 		}
 		// Recheck immediately before removal in case a concurrent Go build touched it.
@@ -156,7 +149,6 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 			return nil
 		}
 		if !current.ModTime().Before(now.Add(-policy.MaxAge)) {
-			remaining = append(remaining, candidate{name, current})
 			return nil
 		}
 		if err := cache.Remove(name); err != nil {
@@ -172,30 +164,6 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 	})
 	if err != nil {
 		return reclaimed, err
-	}
-	slices.SortFunc(remaining, func(a, b candidate) int {
-		if order := a.info.ModTime().Compare(b.info.ModTime()); order != 0 {
-			return order
-		}
-		return strings.Compare(a.path, b.path)
-	})
-	for _, entry := range remaining {
-		if err := ctx.Err(); err != nil {
-			return reclaimed, err
-		}
-		if total <= policy.MaxBytes {
-			break
-		}
-		if err := cache.Remove(entry.path); err != nil {
-			if os.IsNotExist(err) {
-				total -= entry.info.Size()
-				continue
-			}
-			return reclaimed, err
-		}
-		report.SizeEvictedBytes += entry.info.Size()
-		reclaimed += entry.info.Size()
-		total -= entry.info.Size()
 	}
 	stamp := now.UTC().Format(time.RFC3339Nano)
 	marker := "detent-trim.txt"
