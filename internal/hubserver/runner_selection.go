@@ -88,7 +88,7 @@ projects:
 					}
 					continue
 				}
-				ready, _, err := nativeLandingCandidateReady(ctx, tx, &candidateScope, id, r.MachineID, now, false)
+				ready, _, err := nativeLandingCandidateReady(ctx, tx, &candidateScope, id, r.MachineID, now)
 				if err != nil {
 					return 0, false, err
 				}

@@ -492,7 +492,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			if err != nil {
 				return nil, err
 			}
-			return revokeProjectPolicyInTx(ctx, tx, policyScope, r.Input.ExpectedID)
+			return revokeProjectPolicyInTx(ctx, tx, policyScope, scope.credential.ID, r.Input.ExpectedID, now)
 		}
 	case "remove_project_secret":
 		r, err := projectCommandInput[struct{}](call.Arguments)

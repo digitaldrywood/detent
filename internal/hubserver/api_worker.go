@@ -563,7 +563,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 				continue
 			}
 		}
-		ready, evaluated, err := nativeLandingCandidateReady(ctx, tx, query.NativeScope, id, request.MachineID, now, true)
+		ready, evaluated, err := nativeLandingCandidateReady(ctx, tx, query.NativeScope, id, request.MachineID, now)
 		if err != nil {
 			return tracker.Lease{}, err
 		}
