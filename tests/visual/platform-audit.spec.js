@@ -58,9 +58,15 @@ for (const [name, viewport, theme] of [
   }) => {
     await page.setViewportSize(viewport);
     await page.addInitScript((theme) => {
-      document.documentElement.classList.toggle("dark", theme === "dark");
+      window.addEventListener("DOMContentLoaded", () => {
+        document.documentElement.classList.toggle("dark", theme === "dark");
+        document.documentElement.dataset.theme = theme;
+      });
     }, theme);
     const requests = await openAudit(page);
+    expect(
+      await page.evaluate(() => document.documentElement.classList.contains("dark")),
+    ).toBe(theme === "dark");
     const table = page.getByRole("table", { name: "Audit events" });
     await expect(table.getByRole("row")).toHaveCount(4);
     await expect(table).toContainText("troubleshooting");
