@@ -379,7 +379,7 @@ describe("platform console", () => {
     fireEvent.click(start);
     dialog = await screen.findByRole("dialog", { name: "Start support access" });
     await user.click(within(dialog).getByRole("combobox", { name: "Reason" }));
-    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["Customer asked for help", "Account recovery", "Troubleshooting"]);
+    expect((await screen.findAllByRole("option")).map((option) => option.textContent)).toEqual(["Customer asked for help", "Account recovery", "Troubleshooting"]);
     expect(dialog.textContent).not.toMatch(/customer-request|account-recovery/);
     await user.click(await screen.findByRole("option", { name: "Account recovery" }));
     expect(within(dialog).getByRole("combobox", { name: "Reason" }).textContent).toBe("Account recovery");
