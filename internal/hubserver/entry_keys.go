@@ -34,7 +34,7 @@ func (s *Service) entryKeyCredential(ctx context.Context, claims cloudassert.Cla
 			return apiCredential{}, http.StatusServiceUnavailable, err
 		}
 		credential.ID = "service_" + claims.Key.ID
-		_, err = s.database.db.ExecContext(ctx, "INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) VALUES(?,?,?,'','operator',1,?,?) ON CONFLICT(id) DO NOTHING", credential.ID, "Organization service principal", apikey.HashToken(token), formatHubTime(s.config.now()), formatHubTime(s.config.now()))
+		_, err = s.database.db.ExecContext(ctx, "INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) VALUES(?,?,?,'','operator',1,?,?) ON CONFLICT(id) DO NOTHING", credential.ID, "Organization service principal "+claims.Key.ID, apikey.HashToken(token), formatHubTime(s.config.now()), formatHubTime(s.config.now()))
 		if err != nil {
 			return apiCredential{}, http.StatusServiceUnavailable, err
 		}
