@@ -64,9 +64,14 @@ type finalizingTestExecution struct {
 	operationError             error
 	operationProviderCompleted bool
 	artifactExecutionProbe
-	published   bool
-	validation  *gate.CommandResult
-	disposition *tracker.NativeDisposition
+	published        bool
+	publicationDelay time.Duration
+	validatorDelay   time.Duration
+	observeLanding   bool
+	landingObserved  bool
+	onPublication    func()
+	validation       *gate.CommandResult
+	disposition      *tracker.NativeDisposition
 }
 
 func (e *finalizingTestExecution) ProviderCompleted(at time.Time) {
@@ -108,6 +113,10 @@ func (e *finalizingTestExecution) Checkpoint(ctx context.Context, checkpoint tra
 }
 
 func (e *finalizingTestExecution) PrepareFinish(ctx context.Context, outcome, message string, _ *tracker.NativeTerminalFailure) error {
+	time.Sleep(e.publicationDelay)
+	if e.onPublication != nil {
+		e.onPublication()
+	}
 	if err := e.Validate(ctx); err != nil {
 		return err
 	}
@@ -118,6 +127,34 @@ func (e *finalizingTestExecution) PrepareFinish(ctx context.Context, outcome, me
 		}
 		e.published = true
 	}
+	return nil
+}
+
+func (e *finalizingTestExecution) NativeChange() *NativeChange {
+	if !e.observeLanding || !e.published {
+		return nil
+	}
+	return &NativeChange{Landing: &NativeLanding{Landed: true, HeadSHA: "completed-head"}}
+}
+
+func (e *finalizingTestExecution) StartLanding(ctx context.Context, _ int64, _ uint64) error {
+	return e.Validate(ctx)
+}
+
+func (e *finalizingTestExecution) ObserveLanding(ctx context.Context, _ NativeLanding) error {
+	if err := e.Validate(ctx); err != nil {
+		return err
+	}
+	e.landingObserved = true
+	return nil
+}
+
+func (e *finalizingTestExecution) ValidatorVersion(ctx context.Context) (NativeValidation, error) {
+	time.Sleep(e.validatorDelay)
+	return NativeValidation{}, e.Validate(ctx)
+}
+
+func (*finalizingTestExecution) RecordValidator(context.Context, gate.ValidatorResult) error {
 	return nil
 }
 
@@ -141,27 +178,32 @@ func (b *completedTurnBackend) RunTurn(ctx context.Context, request AgentTurnReq
 
 func TestCompletedNativeTurnFinalization(t *testing.T) {
 	for _, test := range []struct {
-		name              string
-		expired           bool
-		cancelled         bool
-		revoked           bool
-		validationDelay   time.Duration
-		validationTimeout bool
-		sessionBudget     bool
-		rollingBarrier    bool
-		message           string
-		blocked           bool
-		gateFailure       bool
-		operatorStop      bool
-		wantReceipt       bool
-		wantReceiptStage  string
-		wantReceiptExit   int
-		wantCheckScope    string
-		wantCheckCommand  string
-		wantOutputText    string
-		wantOutputClean   string
-		wantOutputCut     bool
-		legacyReceiptJSON bool
+		name               string
+		expired            bool
+		cancelled          bool
+		revoked            bool
+		validationDelay    time.Duration
+		publicationDelay   time.Duration
+		publicationTimeout bool
+		validatorDelay     time.Duration
+		publicationRevoked bool
+		backendBudget      bool
+		validationTimeout  bool
+		sessionBudget      bool
+		rollingBarrier     bool
+		message            string
+		blocked            bool
+		gateFailure        bool
+		operatorStop       bool
+		wantReceipt        bool
+		wantReceiptStage   string
+		wantReceiptExit    int
+		wantCheckScope     string
+		wantCheckCommand   string
+		wantOutputText     string
+		wantOutputClean    string
+		wantOutputCut      bool
+		legacyReceiptJSON  bool
 	}{
 		{name: "active parent", message: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
 		{name: "blocked issue-state Rework avoids failing host gate", blocked: true, gateFailure: true, message: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: prj_6d4919bebd73446798e6cd807feda10e#750\n    owner: orchestrator\n    reason: prerequisite remains Backlog\n    predicate:\n      type: issue_state\n      ref: prj_6d4919bebd73446798e6cd807feda10e#750\n      states: [Done]\nhuman_action: null\n```"},
@@ -171,6 +213,11 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 		{name: "expired parent", expired: true},
 		{name: "cancelled parent", cancelled: true},
 		{name: "expired parent with revoked authority", expired: true, revoked: true},
+		{name: "publication exceeds cleanup deadline", publicationDelay: 2 * time.Minute},
+		{name: "publication inherits backend budget", publicationDelay: 2 * time.Minute, backendBudget: true},
+		{name: "long validator preserves landing and finish receipts", validatorDelay: 2 * time.Minute},
+		{name: "publication exceeds work budget", publicationDelay: 6 * time.Minute, publicationTimeout: true},
+		{name: "publication respects revoked authority", publicationDelay: 2 * time.Minute, publicationRevoked: true},
 		{name: "validation exceeds cleanup deadline", validationDelay: 2 * time.Minute},
 		{name: "validation exceeds work budget", validationDelay: 6 * time.Minute, validationTimeout: true},
 		{name: "validation uses session budget without a turn limit", validationDelay: 2 * time.Minute, sessionBudget: true},
@@ -185,7 +232,10 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				ctx, stopOperator := context.WithCancelCause(ctx)
 				defer stopOperator(context.Canceled)
 				backend := &completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: "native"}, recoveryStates: []workspace.RecoveryState{{HeadSHA: "completed-head", WorkspaceFingerprint: "completed-digest"}}}}}
-				execution := &finalizingTestExecution{}
+				execution := &finalizingTestExecution{publicationDelay: test.publicationDelay, validatorDelay: test.validatorDelay, observeLanding: test.publicationDelay > 0 || test.validatorDelay > 0}
+				if test.publicationRevoked {
+					execution.onPublication = func() { execution.validateErr = ErrExecutionAuthorityUnavailable }
+				}
 				backend.validationDelay = test.validationDelay
 				if test.gateFailure {
 					backend.validationExit = 2
@@ -206,6 +256,17 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 					}
 				}}
 				cfg := config.Config{}
+				if test.validatorDelay > 0 {
+					cfg.Gate.Validator.Enabled = true
+					cfg.Codex.TurnTimeoutMS = int((5 * time.Minute) / time.Millisecond)
+				}
+				if test.publicationDelay > 0 {
+					if test.backendBudget {
+						cfg.Codex.TurnTimeoutMS = int((5 * time.Minute) / time.Millisecond)
+					} else {
+						cfg.Agent.MaxTurnDurationMS = int((5 * time.Minute) / time.Millisecond)
+					}
+				}
 				if test.validationDelay > 0 {
 					cfg.Gate.Run = "make check-fast"
 					cfg.Agent.MaxTurnDurationMS = int((5 * time.Minute) / time.Millisecond)
@@ -233,8 +294,9 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				if backend.finalized && (!execution.operationProviderCompleted || execution.operation != "workspace.finalize_native_work") {
 					t.Fatal("host finalization preceded provider completion observation")
 				}
+				publicationFailed := test.publicationTimeout || test.publicationRevoked
 				failed := test.revoked || test.validationTimeout || test.gateFailure && !test.blocked || test.operatorStop
-				if (completion.Err != nil) != failed || execution.published != (!failed && !test.blocked) || backend.retained != failed || agent.calls != 1 {
+				if (completion.Err != nil) != (failed || publicationFailed) || execution.published != (!failed && !publicationFailed && !test.blocked) || backend.retained != failed || agent.calls != 1 {
 					t.Fatalf("error=%v published=%t retained=%t turns=%d", completion.Err, execution.published, backend.retained, agent.calls)
 				}
 				if test.gateFailure && !test.blocked && !strings.Contains(completion.Err.Error(), "source finalization gate failed") {
@@ -274,7 +336,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 						}
 					}
 				}
-				if !failed && (execution.finish != "succeeded" || execution.checkpoint == nil || execution.checkpoint.HeadSHA != "completed-head" || completion.Result.FinalState != FinalStateCompleted || backend.afterRunErr != nil) {
+				if !failed && !publicationFailed && (execution.finish != "succeeded" || execution.checkpoint == nil || execution.checkpoint.HeadSHA != "completed-head" || completion.Result.FinalState != FinalStateCompleted || backend.afterRunErr != nil) {
 					t.Fatalf("completion=%+v checkpoint=%+v finish=%s cleanup=%v", completion, execution.checkpoint, execution.finish, backend.afterRunErr)
 				}
 				if failed && backend.afterRun {
@@ -282,6 +344,15 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				}
 				if test.blocked && (backend.finalized || backend.afterRun || execution.disposition == nil || execution.disposition.Status != "blocked" || !execution.disposition.Blockers || len(execution.disposition.BlockerEvidence) != 1) {
 					t.Fatalf("blocked completion lost its handoff: finalized=%t cleanup=%t disposition=%+v", backend.finalized, backend.afterRun, execution.disposition)
+				}
+				if !failed && !publicationFailed && execution.observeLanding && (!execution.landingObserved || completion.Result.NativeLanding == nil || !completion.Result.NativeLanding.Landed) {
+					t.Fatalf("landing receipt missing after publication: observed=%t result=%+v", execution.landingObserved, completion.Result.NativeLanding)
+				}
+				if test.publicationTimeout && (!errors.Is(completion.Err, context.DeadlineExceeded) || execution.finish == "succeeded") {
+					t.Fatalf("timed-out publication was accepted: error=%v finish=%s", completion.Err, execution.finish)
+				}
+				if test.publicationRevoked && !errors.Is(completion.Err, ErrExecutionAuthorityUnavailable) {
+					t.Fatalf("publication lost authority refusal: %v", completion.Err)
 				}
 				if test.validationTimeout && (!errors.Is(completion.Err, context.DeadlineExceeded) || execution.validation != nil || execution.finish == "succeeded") {
 					t.Fatalf("timed-out validation was accepted: error=%v receipt=%+v finish=%s", completion.Err, execution.validation, execution.finish)
