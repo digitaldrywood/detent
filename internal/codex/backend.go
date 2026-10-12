@@ -73,7 +73,7 @@ func (b *AgentBackend) RunTurnWithTools(
 	if toolHandler != nil {
 		dynamicHandler = func(ctx context.Context, call DynamicToolCall) (DynamicToolResult, error) {
 			result, err := toolHandler(ctx, runner.AgentToolCall{Name: call.Name, Arguments: call.Arguments})
-			return DynamicToolResult{Content: result.Content, Success: result.Success}, err
+			return DynamicToolResult{Content: result.Content, Success: result.Success, ImageURL: result.ImageURL}, err
 		}
 	}
 	return b.runTurn(ctx, req, dynamicTools, dynamicHandler, onUpdate)
