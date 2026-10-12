@@ -60,6 +60,21 @@ func TestAppTransportRepositoryRouting(t *testing.T) {
 		case "/app/installations/2/access_tokens":
 			tokenRequests++
 			response = map[string]any{"token": "tenant-two", "expires_at": time.Now().Add(time.Hour)}
+		case "/graphql":
+			var input struct {
+				Variables map[string]string `json:"variables"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Error(err)
+			}
+			token := "Bearer tenant-one"
+			if input.Variables["owner"] == "other" {
+				token = "Bearer tenant-two"
+			}
+			if r.Header.Get("Authorization") != token {
+				t.Error("GraphQL used the wrong repository installation")
+			}
+			response = map[string]any{"data": map[string]int{"number": 12}}
 		case "/repos/acme/orders/issues/12":
 			if r.Header.Get("Authorization") != "Bearer tenant-one" {
 				t.Error("wrong installation used for acme")
@@ -88,6 +103,15 @@ func TestAppTransportRepositoryRouting(t *testing.T) {
 			}
 			if err := transport.REST(scopedRequests(t.Context(), "native", "intake"), http.MethodGet, "/repos/"+repository+"/issues/12", nil, &issue); err != nil {
 				t.Fatal(err)
+			}
+			parts := strings.SplitN(repository, "/", 2)
+			if err := transport.GraphQL(scopedRequests(t.Context(), "native", "import", repository), "query($owner:String!, $repo:String!) { repository(owner:$owner,name:$repo) { id } }", map[string]any{"owner": parts[0], "repo": parts[1]}, &issue); err != nil {
+				t.Fatal(err)
+			}
+			if repository == "acme/orders" {
+				if err := transport.GraphQL(scopedRequests(t.Context(), "native", "import", repository), "query { node(id: \"I_test\") { id } }", nil, &issue); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if issue.Number != 12 {
 				t.Fatalf("issue number = %d", issue.Number)
