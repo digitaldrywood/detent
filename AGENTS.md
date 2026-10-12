@@ -114,6 +114,10 @@ interactions are the main source of incidents, so the set may not grow.
   are attributed to the instance, never to the issue.
 - The orchestrator is the only writer of tracker lane state; workers report
   outcomes and never write lane labels.
+- This project has no human review step. Never move a Detent issue to Human
+  Review. An operator session that recovers or hand-lands work moves the issue
+  to Done once its PR merges into `develop`; work that needs a human goes to
+  Blocked with a `human_action`.
 - Do not add configuration keys, CLI subcommands, or dashboard surfaces to work
   around a mechanism. Fix the mechanism.
 - Machine-filed issues carry an origin stamp and a fingerprint; never file a
