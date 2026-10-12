@@ -10,7 +10,7 @@ on:
         type: string
         required: false
       sha:
-        description: Develop SHA (empty selects newest green full-suite SHA, otherwise develop tip)
+        description: Develop SHA (empty selects uncovered green source or unreleased tip; no-op if covered)
         type: string
         required: false
 

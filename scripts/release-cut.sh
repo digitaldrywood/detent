@@ -23,8 +23,18 @@ if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
 fi
 
 if [ -z "$source_sha" ]; then
+  coverage_refs=()
+  while IFS= read -r ref; do
+    if [[ "$ref" =~ ^refs/remotes/origin/release/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ || "$ref" =~ ^refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+      coverage_refs+=("$ref")
+    fi
+  done < <(git for-each-ref --format='%(refname)' refs/remotes/origin/release/ refs/tags/)
+  develop_history="$(git rev-list origin/develop --not "${coverage_refs[@]}")"
+  if [ -z "$develop_history" ]; then
+    echo 'No unreleased develop commits; existing release series or stable tags already cover develop.'
+    exit 0
+  fi
   runs="$(gh api --paginate --slurp "repos/$repository/actions/workflows/ci.yml/runs?status=completed&branch=develop&per_page=100" | jq -c '[.[].workflow_runs[] | select(.head_branch == "develop" and (.event == "schedule" or .event == "workflow_dispatch")) | {head_sha, html_url, conclusion}]')"
-  develop_history="$(git rev-list origin/develop)"
   while IFS= read -r candidate; do
     candidate_runs="$(jq -c --arg sha "$candidate" '[.[] | select(.head_sha == $sha) | {html_url, conclusion}]' <<< "$runs")"
     if [ "$candidate_runs" = '[]' ]; then continue; fi
