@@ -453,7 +453,12 @@ describe("empty project import", () => {
     await waitFor(() => expect((action as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(action);
     const dialog = await screen.findByRole("dialog", { name: "Import issues" });
-    const preview = await within(dialog).findByRole("button", { name: "Preview issues" });
+    const source = within(dialog).getByRole("combobox", { name: "Import source" });
+    expect((source as HTMLSelectElement).value).toBe("github");
+    expect(within(source).getAllByRole("option").map(option => option.textContent)).toEqual(["GitHub"]);
+    fireEvent.change(source, { target: { value: "github" } });
+    const intake = await within(dialog).findByRole("region", { name: "Import GitHub issues" });
+    const preview = await within(intake).findByRole("button", { name: "Preview issues" });
     fireEvent.click(preview);
     await within(dialog).findByText(/2 matching issues/);
     fireEvent.click(within(dialog).getByRole("button", { name: "Select previewed" }));
