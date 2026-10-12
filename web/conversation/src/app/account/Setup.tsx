@@ -5,7 +5,7 @@
 // forward. What it drives is exactly what `static/js/hosted-setup.js` drove,
 // step for step and payload for payload — the policy approval, the progress
 // save, the runner enrollment and its routing, the artifact binding, the
-// repository bind, the GitHub integration and the first issue.
+// repository bind and the GitHub integration.
 //
 // Two things about that page are kept deliberately:
 //
@@ -36,8 +36,8 @@ import { cn } from "../../lib/utils.ts";
 import { AccountError } from "./api.ts";
 import { ContextHelp } from "../components/ContextHelp.tsx";
 import { EnrollRunnerDialog } from "../fleet/EnrollRunner.tsx";
-import { ControlError, NativeSelect, StatusDot } from "./controls.tsx";
-import { useAccountApi, useAccountBootstrap } from "./context.ts";
+import { ControlError, StatusDot } from "./controls.tsx";
+import { useAccountApi } from "./context.ts";
 import { DetentCloudLogo } from "./Login.tsx";
 import { retireKey, setupKey } from "./idempotency.ts";
 import { useMutation, useResource } from "./useResource.ts";
@@ -344,8 +344,6 @@ export function SetupRoute({
   readonly onNavigate?: (to: string) => void;
 }): React.ReactElement {
   const api = useAccountApi();
-  const bootstrap = useAccountBootstrap();
-  const project = bootstrap?.projects.find((candidate) => candidate.id === projectId) ?? null;
   const onboarding = useResource<Onboarding>(() => api.onboarding(projectId), [api, projectId]);
   const integration = useResource<ProjectIntegration>(() => api.integration(projectId), [api, projectId]);
 
@@ -388,13 +386,6 @@ export function SetupRoute({
   const [serviceId, setServiceId] = React.useState("");
   const [serviceOrigin, setServiceOrigin] = React.useState("");
   const [servicePublisher, setServicePublisher] = React.useState("");
-  const [issueTitle, setIssueTitle] = React.useState("");
-  const [issueBody, setIssueBody] = React.useState("");
-  const [issueState, setIssueState] = React.useState("");
-  React.useEffect(() => {
-    const first = project?.profile === "native" ? project.states[0] : project?.states.find((state) => state.dispatchable) ?? project?.states[0];
-    if (first !== undefined && issueState === "") setIssueState(first.name);
-  }, [project, issueState]);
 
   const base = `${api.apiBase}/projects/${encodeURIComponent(projectId)}`;
 
@@ -529,21 +520,6 @@ export function SetupRoute({
     });
     await onboarding.refresh();
     return bound;
-  });
-
-  const createIssue = useMutation(async () => {
-    const body = {
-      title: issueTitle,
-      body: issueBody,
-      state: issueState,
-      labels: [],
-      assignees: [],
-    };
-    const created = await withSetupKey(`${base}/work-items`, body, (key) =>
-      api.createFirstIssue({ projectId, title: issueTitle, body: issueBody, state: issueState, key }),
-    );
-    onNavigate?.("/work");
-    return created;
   });
 
   if (onboarding.error !== null && onboarding.error.isAccessError) {
@@ -879,49 +855,6 @@ export function SetupRoute({
               A binding records where artifacts go. It does not verify the storage and does not
               promise offline access.
             </p>
-          </div>
-        ) : null}
-        {onboarding.value.ready ? (
-          <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
-            <div className="text-[14.5px]">Your first issue</div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="setup-issue-title">Title</Label>
-              <Input
-                id="setup-issue-title"
-                value={issueTitle}
-                onChange={(event) => setIssueTitle(event.currentTarget.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="setup-issue-body">What needs doing</Label>
-              <Textarea
-                id="setup-issue-body"
-                rows={3}
-                value={issueBody}
-                onChange={(event) => setIssueBody(event.currentTarget.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="setup-issue-state">Lane</Label>
-              <NativeSelect
-                id="setup-issue-state"
-                value={issueState}
-                options={(project?.states ?? []).map((state) => ({
-                  value: state.name,
-                  label: state.name,
-                }))}
-                onValueChange={setIssueState}
-              />
-            </div>
-            <div>
-              <Button
-                disabled={createIssue.pending || issueTitle.trim().length === 0}
-                onClick={() => void createIssue.call()}
-              >
-                {createIssue.pending ? "Creating…" : "Create the first issue"}
-              </Button>
-            </div>
-            <ControlError message={createIssue.error?.message ?? null} />
           </div>
         ) : null}
       </>
