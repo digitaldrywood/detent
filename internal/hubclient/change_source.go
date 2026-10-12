@@ -64,6 +64,14 @@ func (e *nativeExecution) RecoverChangeSource(ctx context.Context) (workspace.Ch
 			continue
 		}
 		source := workspace.ChangeSource{Version: version}
+		for _, previous := range detail.Versions {
+			if previous.Number <= 0 || previous.Number >= version.Number || previous.Repository != version.Repository || previous.Source == nil ||
+				previous.Source.Format != "git-bundle" || previous.Source.HeadSHA != previous.HeadSHA || previous.Source.BaseSHA != previous.BaseSHA ||
+				previous.Source.Bytes <= 0 || previous.Source.BundleSHA256 == "" || previous.Source.DiffSHA256 == "" {
+				continue
+			}
+			source.PreviousHeads = append(source.PreviousHeads, previous.HeadSHA)
+		}
 		if version.Source != nil {
 			source.Bundle, err = e.claim.source.client.ChangeSource(ctx, e.claim.lease.WorkItemID, detail.Change.ID, version.ID)
 			if err == nil {
