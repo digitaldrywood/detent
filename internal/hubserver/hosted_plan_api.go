@@ -52,6 +52,7 @@ type hostedEntitlementReport struct {
 	Revision       int64               `json:"revision"`
 	Features       []string            `json:"features"`
 	Grants         []hostedGrantRecord `json:"grants"`
+	GrantHistory   []hostedGrantRecord `json:"grant_history"`
 	Plans          []HostedPlan        `json:"plans"`
 }
 
@@ -79,7 +80,7 @@ func (d *database) hostedEntitlementReport(ctx context.Context) (hostedEntitleme
 	if err != nil {
 		return report, err
 	}
-	report = hostedEntitlementReport{OrganizationID: entitlement.OrganizationID, Base: entitlement.Base, EffectiveBase: entitlement.EffectiveBase, Source: entitlement.Source, Revision: entitlement.Revision, Features: entitlement.Features, Grants: []hostedGrantRecord{}, Plans: []HostedPlan{}}
+	report = hostedEntitlementReport{OrganizationID: entitlement.OrganizationID, Base: entitlement.Base, EffectiveBase: entitlement.EffectiveBase, Source: entitlement.Source, Revision: entitlement.Revision, Features: entitlement.Features, Grants: []hostedGrantRecord{}, GrantHistory: []hostedGrantRecord{}, Plans: []HostedPlan{}}
 	for _, configured := range d.hostedPlans.Plans {
 		plan, err := readHostedPlan(ctx, d.db, configured.PlanReference)
 		if err != nil {
@@ -112,12 +113,12 @@ func (d *database) hostedEntitlementReport(ctx context.Context) (hostedEntitleme
 		return report, err
 	}
 	for _, grant := range entitlement.Grants {
-		if grant.RevokedAt != nil || grant.StartsAt.After(now) || grant.ExpiresAt != nil && !grant.ExpiresAt.After(now) {
-			continue
-		}
 		record := granted[grant.ID]
 		record.HostedGrant = grant
-		report.Grants = append(report.Grants, record)
+		report.GrantHistory = append(report.GrantHistory, record)
+		if grant.RevokedAt == nil && !grant.StartsAt.After(now) && (grant.ExpiresAt == nil || grant.ExpiresAt.After(now)) {
+			report.Grants = append(report.Grants, record)
+		}
 	}
 	return report, nil
 }

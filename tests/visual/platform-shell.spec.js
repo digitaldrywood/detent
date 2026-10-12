@@ -172,7 +172,7 @@ test("the palette opens tenants and users with keyboard navigation", async ({ pa
   await expect(dialog.getByRole("option", { name: /Model Choice Labs/ })).toBeVisible();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(origin + "/platform/tenants/org_preview");
-  await expect(page.getByRole("region", { name: "Model Choice Labs", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Model Choice Labs" })).toBeVisible();
   await page.keyboard.press("Escape");
   await page.keyboard.press("Meta+k");
   dialog = page.getByRole("dialog", { name: "Find tenant or user" });

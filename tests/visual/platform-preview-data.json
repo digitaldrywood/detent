@@ -59,6 +59,7 @@
     "csrf": "preview-csrf",
     "can_grant": true,
     "can_resume": false,
+    "usage": {"window_ends_at": "2026-10-10T15:00:00Z", "allowances": {"projects": {"used": 2, "limit": 5}, "members": {"used": 1, "limit": null}, "collaboration_bytes": {"used": 408944640, "limit": 1073741824}, "api_mutations": {"used": 511, "limit": 20000}}},
     "unavailable": [],
     "members": [
       {
