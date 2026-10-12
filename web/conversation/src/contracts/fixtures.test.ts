@@ -35,6 +35,14 @@ describe("contract fixtures", () => {
     ).toThrow();
   });
 
+  it("decodes a Change review with observed attachment evidence", () => {
+    const raw = JSON.parse(readFileSync(join(directory, "work-change-detail.json"), "utf8"));
+    raw.reviews[0].validator = {
+      criteria_evidence: [{ criterion: "Page is visible", kind: "attachment", reference: "page.png", behavior: "The capture shows the requested page" }],
+    };
+    expect(() => Schema.decodeUnknownSync(FIXTURE_SCHEMAS["work-change-detail.json"]!)(raw)).not.toThrow();
+  });
+
   it("rejects a payload with an unknown enumeration member", () => {
     const raw = JSON.parse(
       readFileSync(join(directory, "conversation.json"), "utf8"),

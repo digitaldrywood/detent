@@ -702,7 +702,7 @@ export const ChangeReview = Schema.Struct({
   validator: Schema.optional(Schema.Struct({
     criteria_evidence: Schema.optional(Schema.Array(Schema.Struct({
       criterion: Schema.String,
-      kind: Schema.Literals(["receipt", "test", "not_verified"]),
+      kind: Schema.Literals(["receipt", "test", "attachment", "not_verified"]),
       reference: Schema.String,
       behavior: Schema.optional(Schema.String),
     }))),

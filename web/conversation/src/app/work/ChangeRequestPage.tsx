@@ -441,7 +441,7 @@ export function ChangeRequestView(props: ChangeRequestViewProps): React.ReactEle
                             <li key={index} className="space-y-1">
                               <p className="flex flex-wrap items-center gap-2">
                                 <Pill tone={entry.kind === "not_verified" ? "err" : "ok"}>
-                                  {entry.kind === "not_verified" ? "Not verified" : entry.kind === "receipt" ? "Command receipt" : "Named test"}
+                                  {entry.kind === "not_verified" ? "Not verified" : entry.kind === "receipt" ? "Command receipt" : entry.kind === "attachment" ? "Observed attachment" : "Named test"}
                                 </Pill>
                                 <span className="whitespace-pre-wrap">{entry.criterion}</span>
                               </p>
