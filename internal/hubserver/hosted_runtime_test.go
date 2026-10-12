@@ -88,6 +88,13 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 			}
 			update := HostedRuntimeUpdate{Plans: &plans, Prices: prices, Reason: "SIGHUP regression", ValidateOnly: test.validate}
 			path := "/api/v2/organizations/org_browser_preview/entitlements/runtime"
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil), http.StatusForbidden)
+			snapshot := performHubAPIRequest(t, f.service, http.MethodGet, path, testHostedPlanAdminToken, nil)
+			requireNativeStatus(t, snapshot, http.StatusOK)
+			var previous HostedRuntimeUpdate
+			if err := json.Unmarshal(snapshot.Body.Bytes(), &previous); err != nil {
+				t.Fatal(err)
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHubAdminToken, update), http.StatusForbidden)
 			response := performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, update)
 			applied := !test.invalid && !test.remap && !test.validate
@@ -120,6 +127,18 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 			command.ID, command.Action, command.ExpectedRevision = "stripe-ownership", "subscription", 2
 			if err := f.service.database.applyHostedPlanCommand(t.Context(), "test-operator", command); err == nil {
 				t.Fatal("reload bypassed Stripe subscription ownership")
+			}
+			previous.Reason = "SIGHUP reload failed; restore previous runtime settings"
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, previous), http.StatusNoContent)
+			if f.service.database.plans().WindowSeconds != before.Plans.WindowSeconds || !slices.Equal(f.service.hostedBillingConfig().Prices, previous.Prices) {
+				t.Fatal("rollback did not restore the prior policy and active price list")
+			}
+			entitlement, err = f.service.database.hostedEntitlement(t.Context(), f.service.database.db, time.Now())
+			if err != nil || entitlement.Base != plan.PlanReference || entitlement.Allowances["collaboration_bytes"] != 1<<34 {
+				t.Fatalf("rollback changed an independently assigned immutable version: %+v %v", entitlement, err)
+			}
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_plan_audit WHERE action='reload' AND actor_id='test-operator' AND reason=?", previous.Reason).Scan(&audits); err != nil || audits != 1 {
+				t.Fatalf("rollback audit=%d %v", audits, err)
 			}
 		})
 	}

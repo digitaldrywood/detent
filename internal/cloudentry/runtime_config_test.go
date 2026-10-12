@@ -3,14 +3,17 @@
 package cloudentry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -20,6 +23,12 @@ import (
 )
 
 type configurationLog struct{ records chan slog.Record }
+
+type runtimeTransport func(*http.Request) (*http.Response, error)
+
+func (f runtimeTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 func (h configurationLog) Enabled(context.Context, slog.Level) bool { return true }
 func (h configurationLog) WithAttrs([]slog.Attr) slog.Handler       { return h }
@@ -133,6 +142,99 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 		if !found {
 			t.Fatalf("%s did not receive reloaded plan", id)
 		}
+	}
+	readRuntime := func(id string) hubserver.HostedRuntimeUpdate {
+		t.Helper()
+		organization, err := f.service.registry.Organization(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, body, err := f.service.machineCall(t.Context(), organization, http.MethodGet, tenantEntitlementsPath(id)+"/runtime", nil, token)
+		var result hubserver.HostedRuntimeUpdate
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("read runtime: %d %v", status, err)
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	beta, err := f.service.registry.Organization(t.Context(), "org_beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorBeta := readRuntime("org_beta")
+	priorBeta.Plans.WindowSeconds = 7200
+	priorBeta.Reason = "tenant-specific window policy"
+	if err := f.service.changeTenantRuntime(t.Context(), beta, priorBeta); err != nil {
+		t.Fatal(err)
+	}
+	for _, failure := range []string{"later tenant refused", "reply lost after commit", "request canceled after commit"} {
+		t.Run(failure, func(t *testing.T) {
+			before := map[string]hubserver.HostedRuntimeUpdate{"org_alpha": readRuntime("org_alpha"), "org_beta": readRuntime("org_beta")}
+			entryBefore := f.service.runtime.Load()
+			candidate := *next.Runtime.Plans
+			candidate.WindowSeconds = 240
+			attempt := next
+			attempt.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &candidate}
+			attemptCtx, cancelAttempt := context.WithCancel(t.Context())
+			defer cancelAttempt()
+			original := f.service.config.transport
+			defer func() { f.service.config.transport = original }()
+			failed := false
+			f.service.config.transport = func(organization Organization) (http.RoundTripper, error) {
+				transport, err := original(organization)
+				if err != nil || organization.ID != "org_beta" {
+					return transport, err
+				}
+				return runtimeTransport(func(r *http.Request) (*http.Response, error) {
+					if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/entitlements/runtime") {
+						return transport.RoundTrip(r)
+					}
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						return nil, err
+					}
+					r.Body = io.NopCloser(bytes.NewReader(body))
+					var update hubserver.HostedRuntimeUpdate
+					if json.Unmarshal(body, &update) == nil && !update.ValidateOnly && !failed {
+						failed = true
+						if applied := readRuntime("org_alpha"); applied.Plans.WindowSeconds != 240 {
+							t.Errorf("earlier tenant had not applied before the later failure: window=%d", applied.Plans.WindowSeconds)
+						}
+						if failure != "later tenant refused" {
+							applied, err := transport.RoundTrip(r)
+							if err != nil {
+								return nil, err
+							}
+							if applied.StatusCode != http.StatusNoContent {
+								t.Errorf("fault injection did not commit: %d", applied.StatusCode)
+							}
+							if err := applied.Body.Close(); err != nil {
+								return nil, err
+							}
+						}
+						if failure == "request canceled after commit" {
+							cancelAttempt()
+						}
+						return nil, errors.New("tenant transport unavailable")
+					}
+					return transport.RoundTrip(r)
+				}), nil
+			}
+			readings <- reading{config: attempt}
+			if err := f.service.reloadConfiguration(attemptCtx); err == nil || !failed || !strings.Contains(err.Error(), "tenant org_beta runtime reload") {
+				t.Fatalf("later application failure was not reported: %v", err)
+			}
+			if f.service.runtime.Load() != entryBefore {
+				t.Fatal("failed reload published new tenant launch settings")
+			}
+			for _, id := range []string{"org_alpha", "org_beta"} {
+				if after := readRuntime(id); !reflect.DeepEqual(after, before[id]) {
+					t.Fatalf("%s kept a partial reload: window=%d, want %d", id, after.Plans.WindowSeconds, before[id].Plans.WindowSeconds)
+				}
+			}
+		})
 	}
 }
 

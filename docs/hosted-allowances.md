@@ -219,12 +219,17 @@ usage-window settings, and the active billing price list publish as one
 immutable snapshot in each tenant after the database transaction succeeds.
 New plans, reloads, and their reasons are recorded in `hosted_plan_audit`.
 
-The entry validates ready managed tenants before applying the reload. Invalid
-files or rejected tenant validation leave the previous settings in place. The
-entry logs the reload actor, reason and outcome. A tenant that cannot complete
-its update retains its prior runtime settings; transport failures identify an
-incomplete reload in the entry logs. Future tenant launches use the reloaded
-seeds. Startup never replaces persisted assignments or grants.
+The entry captures each ready managed tenant's current runtime and validates all
+tenants before applying the reload. Invalid files or rejected tenant validation
+leave the previous settings in place. If an application fails, the entry restores
+the captured settings on every attempted tenant, including a tenant whose reply
+was lost after commit. Restoration uses a bounded context independent of request
+cancellation and records its actor and reason in the same audit path. Restore
+failures identify the affected tenant in the reload error. The entry publishes
+new launch settings only after every tenant update succeeds. Persisted plan
+versions, assignments, grants and Stripe price identities remain immutable during
+restoration; it restores the runtime policy and active price list. Startup never
+replaces persisted assignments or grants.
 
 Listeners, origins, database/state paths, signing and provider credentials,
 platform membership seeds, attachments, allocation paths, capacity and allowlists,

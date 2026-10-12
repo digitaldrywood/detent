@@ -54,6 +54,19 @@ func (s *Service) reloadHostedRuntime(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+func (s *Service) readHostedRuntime(c echo.Context) error {
+	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
+		return c.NoContent(http.StatusForbidden)
+	}
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	update := HostedRuntimeUpdate{Plans: s.database.plans()}
+	if billing := s.hostedBillingConfig(); billing != nil {
+		update.Prices = billing.Prices
+	}
+	return c.JSON(http.StatusOK, update)
+}
+
 func (s *Service) applyHostedRuntime(ctx context.Context, update HostedRuntimeUpdate) error {
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
