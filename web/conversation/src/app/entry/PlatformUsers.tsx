@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams, useRouterState } from "@tanstack/react-ro
 import { Badge } from "../../components/ui/badge.tsx";
 import { Empty, EmptyHeader, EmptyTitle } from "../../components/ui/empty.tsx";
 import { Input } from "../../components/ui/input.tsx";
+import { Label } from "../../components/ui/label.tsx";
 import { Skeleton } from "../../components/ui/skeleton.tsx";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/table.tsx";
 import { SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
@@ -82,11 +83,17 @@ export function PlatformUsersPage(): React.ReactElement {
     <>
       <form onSubmit={(event) => {
         event.preventDefault();
+        if (query.trim() === submitted) {
+          if (valid) void resource.refresh();
+          return;
+        }
         void navigate({ to: "/platform/users", search: { q: query.trim() || undefined }, resetScroll: false } as never);
-      }} className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-        <label htmlFor="user-email" className="sr-only">Search by email</label>
-        <Input id="user-email" type="search" placeholder="Search by email" value={query} onChange={(event) => setQuery(event.target.value)} aria-describedby="user-search-help" className="min-w-0 sm:max-w-sm" />
-        <p id="user-search-help" className="text-xs text-muted-foreground">Enter at least three characters. Matches verified emails across all tenants. Search stays in the URL.</p>
+      }} className="flex flex-col gap-2">
+        <Label htmlFor="user-email">Search by email</Label>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+          <Input id="user-email" type="search" placeholder="Search by email" value={query} onChange={(event) => setQuery(event.target.value)} aria-describedby="user-search-help" className="min-w-0 sm:max-w-sm" />
+          <p id="user-search-help" className="text-xs text-muted-foreground">Enter at least three characters. Matches verified emails across all tenants. Search stays in the URL.</p>
+        </div>
       </form>
       <Problem message={resource.error?.message ?? null} />
       {loading ? <div role="status" aria-label="Searching users" className="space-y-3"><Skeleton className="h-6 w-1/2" /><Skeleton className="h-24 w-full" /></div> : null}
@@ -122,7 +129,7 @@ export function PlatformUserPage(): React.ReactElement {
             control={<Badge variant="outline">{membership.role}</Badge>} />)}
         </SettingsSection>
         <SettingsSection title="Pending invitations" aria-label="Pending invitations" headerAction={<Badge variant="outline">{user.invitations.length}</Badge>}>
-          {user.invitations.length === 0 ? <Empty size="compact"><EmptyHeader><EmptyTitle>No pending invitations</EmptyTitle></EmptyHeader></Empty> : user.invitations.map((invitation) => <SettingsRow key={invitation.organization_id}
+          {user.invitations.length === 0 ? <Empty size="compact"><EmptyHeader><EmptyTitle>No pending invitations</EmptyTitle></EmptyHeader></Empty> : user.invitations.map((invitation, index) => <SettingsRow key={`${invitation.organization_id}:${invitation.expires_at}:${index}`}
             title={<Link to={"/platform/tenants/$tenantId" as never} params={{ tenantId: invitation.organization_id } as never} className="break-words underline-offset-4 hover:underline focus-visible:underline">{invitation.organization_name}</Link>}
             description={<>Expires <time dateTime={invitation.expires_at}>{date(invitation.expires_at)}</time></>}
             control={<Badge variant="warning">invited</Badge>} />)}

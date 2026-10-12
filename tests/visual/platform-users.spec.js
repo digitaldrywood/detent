@@ -12,8 +12,8 @@ for (const width of [1440, 390]) {
     test(`users list and user page in ${theme} at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 1100 });
       await page.emulateMedia({ colorScheme: theme });
-      await page.addInitScript((theme) => { document.documentElement.classList.toggle("dark", theme === "dark"); }, theme);
-      await page.route(origin + "/**", (route) => route.fulfill({ contentType: "text/html", body: html }));
+      const themedHtml = html.replace('<html lang="en">', `<html lang="en" class="${theme === "dark" ? "dark" : ""}">`);
+      await page.route(origin + "/**", (route) => route.fulfill({ contentType: "text/html", body: themedHtml }));
       const session = { ...fixture.account, platform_role: "viewer" };
       await page.route("**/api/cloud/session", (route) => route.fulfill({ json: session }));
       await page.route("**/api/cloud/organizations", (route) => route.fulfill({ json: session }));
@@ -22,10 +22,12 @@ for (const width of [1440, 390]) {
         await route.fulfill({ json: { ...users, users: users.users.filter((user) => user.email.includes(query)) } });
       });
       await page.goto(origin + "/platform/users");
+      expect(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)).toBe(theme);
       await expect(page.getByRole("heading", { name: "Users", exact: true })).toBeVisible();
       const input = page.getByRole("searchbox", { name: "Search by email" });
       await input.fill("example.test");
       await expect(page).toHaveURL(origin + "/platform/users?q=example.test");
+      await expect(page.getByText("Search by email", { exact: true })).toBeVisible();
       const table = page.getByRole("table", { name: "Users" });
       await expect(table.getByRole("link", { name: "michael@example.test" })).toBeVisible();
       await expect(table.getByRole("row", { name: /michael@example.test/ })).toContainText("2026-10-06 14:02Z");
@@ -39,6 +41,7 @@ for (const width of [1440, 390]) {
       await expect(page).toHaveURL(origin + "/platform/users/michael%40example.test?q=example.test");
       const account = page.getByRole("region", { name: "Account" });
       await expect(account).toContainText("user_01HX_michael");
+      expect(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)).toBe(theme);
       await expect(account).toContainText("2026-10-06 14:02Z");
       await expect(account.getByRole("link", { name: "Manage in Staff" })).toHaveCount(0);
       const memberships = page.getByRole("region", { name: "Organizations" });

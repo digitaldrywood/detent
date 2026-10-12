@@ -188,8 +188,12 @@ describe("platform console", () => {
   });
 
   it("separates user organizations and pending invitations with client-side tenant links", async () => {
-    const api = fakeApi({ platformUsers: vi.fn(async () => userResults) });
-    renderPlatform(api, "/platform/users/michael%40example.test");
+    const original = userResults.users[0]!;
+    const invitation = original.invitations[0]!;
+    let invitationsResult = [invitation, { ...invitation, expires_at: "2026-10-14T00:00:00Z" }, invitation];
+    const errors = vi.spyOn(console, "error");
+    const api = fakeApi({ platformUsers: vi.fn(async () => ({ ...userResults, users: [{ ...original, invitations: invitationsResult }] })) });
+    const router = renderPlatform(api, "/platform/users/michael%40example.test");
     const account = await screen.findByRole("region", { name: "Account" });
     expect(account.textContent).toContain("user_01HX_michael");
     expect(within(account).getByRole("link", { name: "Manage in Staff" }).getAttribute("href")).toBe("/platform/staff");
@@ -199,7 +203,18 @@ describe("platform console", () => {
     expect(within(memberships).getByRole("link", { name: "Parable" }).getAttribute("href")).toBe("/platform/tenants/org_parable");
     const invitations = screen.getByRole("region", { name: "Pending invitations" });
     expect(invitations.textContent).toContain("Expires 2026-10-13");
-    expect(within(invitations).getByRole("link", { name: "Example Co" }).getAttribute("href")).toBe("/platform/tenants/org_example");
+    expect(within(invitations).getAllByRole("link", { name: "Example Co" })).toHaveLength(3);
+    expect(within(invitations).getAllByRole("link", { name: "Example Co" })[0]!.getAttribute("href")).toBe("/platform/tenants/org_example");
+    expect(invitations.textContent).toContain("Expires 2026-10-14");
+    invitationsResult = [invitationsResult[1]!];
+    await act(async () => { await router.navigate({ to: "/platform/users/$email", params: { email: "MICHAEL@example.test" } } as never); });
+    await waitFor(() => {
+      expect(within(invitations).getAllByRole("link", { name: "Example Co" })).toHaveLength(1);
+      expect(invitations.textContent).toContain("Expires 2026-10-14");
+      expect(invitations.textContent).not.toContain("Expires 2026-10-13");
+    });
+    expect(errors.mock.calls.filter((args) => args.some((arg) => typeof arg === "string" && arg.includes("same key")))).toEqual([]);
+    errors.mockRestore();
   });
 
   it("preserves the 50-result notice and explicit empty search row", async () => {
@@ -230,9 +245,10 @@ describe("platform console", () => {
 
   it.each([401, 403, 503])("handles user search failure %s", async (status) => {
     let refuse!: (error: AccountError) => void;
-    const api = fakeApi({ platformUsers: vi.fn(() => new Promise<typeof userResults>((_, reject) => { refuse = reject; })) });
+    const search = vi.fn().mockImplementationOnce(() => new Promise<typeof userResults>((_, reject) => { refuse = reject; })).mockResolvedValue(userResults);
+    const api = fakeApi({ platformUsers: search });
     const user = userEvent.setup();
-    renderPlatform(api, "/platform/users");
+    const router = renderPlatform(api, "/platform/users");
     const input = await screen.findByRole("searchbox", { name: "Search by email" });
     await user.type(input, "member");
     await waitFor(() => expect(api.platformUsers).toHaveBeenCalledExactlyOnceWith("member"));
@@ -242,6 +258,13 @@ describe("platform console", () => {
     expect(screen.queryByText("No users match")).toBeNull();
     if (status === 401) await waitFor(() => expect(assign).toHaveBeenCalledWith(SIGN_IN_PLATFORM));
     expect((input as HTMLInputElement).disabled).toBe(false);
+    fireEvent.change(input, { target: { value: " member " } });
+    fireEvent.submit(input.closest("form")!);
+    await screen.findByRole("table", { name: "Users" });
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(search).toHaveBeenLastCalledWith("member");
+    expect(router.state.location.search).toEqual({ q: "member" });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
   it.each(["admin", "support", "billing", "viewer"])("shows the shell and readable navigation for %s", async (role) => {
     const api = fakeApi({ session: vi.fn(async () => ({ email: "member@example.test", csrf: "c", platform_role: role })) });
