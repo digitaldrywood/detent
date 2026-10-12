@@ -234,7 +234,7 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scheduler.SetProjectConfigurationOwner(func(_ context.Context, project string, desired *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration {
+			scheduler.SetProjectConfigurationOwner(func(ownerCtx context.Context, project string, desired *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration {
 				projectCalls++
 				if project != "prj_test" {
 					t.Errorf("foreign owner project: %s", project)
@@ -253,7 +253,7 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 					if test.overlapControl {
 						now = now.Add(2 * time.Second)
 						go func() {
-							candidateDone <- scheduler.ensureNativeMachine(t.Context(), scheduler.nativeProjects["native"])
+							candidateDone <- scheduler.ensureNativeMachine(ownerCtx, scheduler.nativeProjects["native"])
 						}()
 						select {
 						case <-candidateEntered:
@@ -262,7 +262,7 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 						}
 					}
 					if test.reenterControl {
-						ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+						ctx, cancel := context.WithTimeout(ownerCtx, time.Second)
 						done := make(chan error, 1)
 						go func() {
 							done <- scheduler.ensureNativeMachine(ctx, scheduler.nativeProjects["native"])
