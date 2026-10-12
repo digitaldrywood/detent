@@ -236,8 +236,8 @@ function AuditTimeline({
                           <div className="flex flex-wrap items-center gap-2">
                             <Link
                               className="text-info-foreground underline underline-offset-4"
-                              to={"/platform/tenants" as never}
-                              search={{ tenant: row.organization_id } as never}
+                              to={"/platform/tenants/$organization" as never}
+                              params={{ organization: row.organization_id } as never}
                             >
                               {auditTenant(row, page.tenants)}
                             </Link>

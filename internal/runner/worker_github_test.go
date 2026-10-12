@@ -828,56 +828,59 @@ func TestWorkerGitHubProbeFailureIsInstanceDiagnostic(t *testing.T) {
 	for _, phase := range []string{"launch", "periodic"} {
 		t.Run(phase, func(t *testing.T) {
 			t.Parallel()
-			var logs bytes.Buffer
-			poll := make(chan time.Time, 1)
-			observed := make(chan struct{}, 1)
-			var calls atomic.Int64
-			policy := workerGitHubPolicy{
-				Enabled: true, CredentialMode: workerGitHubCredentialDistinct,
-				Token: "worker-token", CredentialIdentity: "github-rest:worker",
-				RateLimitURL: "https://api.github.test/rate_limit",
-				MinRemaining: 1000, Poll: poll,
-				HTTPClient: workerGitHubHTTPClientFunc(func(request *http.Request) (*http.Response, error) {
-					call := calls.Add(1)
-					if (phase == "launch" && call == 1) || (phase == "periodic" && call == 2) {
-						<-request.Context().Done()
-						observed <- struct{}{}
-						return nil, request.Context().Err()
-					}
-					return workerGitHubRateLimitResponse(), nil
-				}),
-				ProbeContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
-					if (phase == "launch" && calls.Load() == 0) || (phase == "periodic" && calls.Load() == 1) {
-						return context.WithDeadline(ctx, time.Now().Add(-time.Second))
-					}
-					return context.WithCancel(ctx)
-				},
-				Logger: slog.New(slog.NewTextHandler(&logs, nil)),
-			}
-			preclassifyWorkerGitHubPolicy(&policy)
-			governedCtx, stop, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
-			if err != nil || governedCtx.Err() != nil {
-				t.Fatalf("launch: error=%v context=%v", err, governedCtx.Err())
-			}
-			if phase == "periodic" {
-				poll <- time.Now()
-				select {
-				case <-observed:
-				case <-time.After(2 * time.Second):
-					t.Fatal("periodic timeout was not observed")
+			synctest.Test(t, func(t *testing.T) {
+				var logs bytes.Buffer
+				poll := make(chan time.Time, 1)
+				observed := make(chan struct{}, 1)
+				var calls atomic.Int64
+				policy := workerGitHubPolicy{
+					Enabled: true, CredentialMode: workerGitHubCredentialDistinct,
+					Token: "worker-token", CredentialIdentity: "github-rest:worker",
+					RateLimitURL: "https://api.github.test/rate_limit",
+					MinRemaining: 1000, Poll: poll,
+					HTTPClient: workerGitHubHTTPClientFunc(func(request *http.Request) (*http.Response, error) {
+						call := calls.Add(1)
+						if (phase == "launch" && call == 1) || (phase == "periodic" && call == 2) {
+							<-request.Context().Done()
+							observed <- struct{}{}
+							return nil, request.Context().Err()
+						}
+						return workerGitHubRateLimitResponse(), nil
+					}),
+					ProbeContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
+						if (phase == "launch" && calls.Load() == 0) || (phase == "periodic" && calls.Load() == 1) {
+							return context.WithDeadline(ctx, time.Now().Add(-time.Second))
+						}
+						return context.WithCancel(ctx)
+					},
+					Logger: slog.New(slog.NewTextHandler(&logs, nil)),
 				}
-			}
-			if governedCtx.Err() != nil {
-				t.Fatalf("probe timeout canceled active turn: %v", governedCtx.Err())
-			}
-			if err := stop(); err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(logs.String(), "scope=instance") ||
-				!strings.Contains(logs.String(), "operation="+phase+"_probe") ||
-				!strings.Contains(logs.String(), context.DeadlineExceeded.Error()) {
-				t.Fatalf("probe failure lacks instance attribution: %s", logs.String())
-			}
+				preclassifyWorkerGitHubPolicy(&policy)
+				governedCtx, stop, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
+				if err != nil || governedCtx.Err() != nil {
+					t.Fatalf("launch: error=%v context=%v", err, governedCtx.Err())
+				}
+				if phase == "periodic" {
+					poll <- time.Now()
+					select {
+					case <-observed:
+					case <-time.After(2 * time.Second):
+						t.Fatal("periodic timeout was not observed")
+					}
+				}
+				synctest.Wait()
+				if governedCtx.Err() != nil {
+					t.Fatalf("probe timeout canceled active turn: %v", governedCtx.Err())
+				}
+				if err := stop(); err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(logs.String(), "scope=instance") ||
+					!strings.Contains(logs.String(), "operation="+phase+"_probe") ||
+					!strings.Contains(logs.String(), context.DeadlineExceeded.Error()) {
+					t.Fatalf("probe failure lacks instance attribution: %s", logs.String())
+				}
+			})
 		})
 	}
 }

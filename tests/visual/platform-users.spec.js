@@ -72,7 +72,7 @@ for (const width of [1440, 390]) {
       await page.evaluate(() => { window.platformDocument = document; });
       await memberships.getByRole("link", { name: "Example Alpha" }).click();
       await expect(page).toHaveURL(origin + "/platform/tenants/org_alpha");
-      await expect(page.getByRole("region", { name: "Example Alpha", exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Example Alpha", exact: true })).toBeVisible();
       expect(await page.evaluate(() => window.platformDocument === document)).toBe(true);
     });
   }

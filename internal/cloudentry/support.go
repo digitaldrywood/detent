@@ -61,6 +61,13 @@ func (s *Service) startSupport(c echo.Context) error {
 		denial.Reason = auth.HostedReasonSupportActorInvalid
 		return s.loginDenied(c, http.StatusUnprocessableEntity, "Choose customer-request, account-recovery, or troubleshooting as the support reason", denial)
 	}
+	requested := supportAuditEvent("support_requested", reason)
+	if note := strings.TrimSpace(c.FormValue("note")); note != "" {
+		if len(note) > 2000 {
+			return c.NoContent(http.StatusUnprocessableEntity)
+		}
+		requested += " · " + note
+	}
 	denial.Reason = "transaction_failed"
 	token, err := s.config.generateToken()
 	if err != nil {
@@ -74,7 +81,7 @@ func (s *Service) startSupport(c echo.Context) error {
 	if err := s.auth.createTransaction(c.Request().Context(), apikey.HashToken(token), transaction); err != nil {
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", denial)
 	}
-	if err := s.auth.audit(c.Request().Context(), session.Subject, organization.ID, supportAuditEvent("support_requested", reason)); err != nil {
+	if err := s.auth.audit(c.Request().Context(), session.Subject, organization.ID, requested); err != nil {
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", denial)
 	}
 	s.setCookie(c, supportCookie, token, s.config.now().Add(10*time.Minute))

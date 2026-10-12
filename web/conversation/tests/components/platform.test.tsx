@@ -353,7 +353,10 @@ describe("platform console", () => {
     await screen.findByRole("heading", { name: "Alpha" });
     expect(router.state.location.pathname).toBe("/platform/tenants/org_alpha");
     expect(router.state.location.search).toMatchObject({ q: "dana", segment: "complimentary", plan: "starter", status: "Ready", sort: "name", direction: "desc" });
-    fireEvent.click(screen.getByRole("link", { name: "← Back to tenants" }));
+    fireEvent.click(screen.getByRole("button", { name: "Members 1" }));
+    await screen.findByRole("region", { name: "Members" });
+    expect(router.state.location.search).toMatchObject({ q: "dana", segment: "complimentary", plan: "starter", status: "Ready", sort: "name", direction: "desc", section: "members" });
+    fireEvent.click(within(screen.getByRole("main")).getByRole("link", { name: /^Tenants$/ }));
     await within(await screen.findByRole("table", { name: "Tenants" })).findByRole("link", { name: "Alpha" });
     await user.click(screen.getByRole("combobox", { name: "Plan" }));
     await user.click(await screen.findByRole("option", { name: "All plans" }));
@@ -436,26 +439,34 @@ describe("platform console", () => {
     expect(tenantNeedsAttention(scheduled)).toBe(false);
   });
 
-  it("starts support access through the entry form with a required reason and the CSRF token", async () => {
-    let resolveOrganizations!: (value: typeof organizations) => void;
-    const pendingOrganizations = new Promise<typeof organizations>((resolve) => { resolveOrganizations = resolve; });
-    renderPlatform(fakeApi({ platformOrganizations: vi.fn(() => pendingOrganizations) }));
-    const table = await screen.findByRole("table", { name: "Tenants" });
-    resolveOrganizations(organizations);
-    const alpha = await within(table).findByRole("link", { name: "Alpha" });
-    const rows = within(table).getAllByRole("row");
-    fireEvent.click(alpha);
-    const form = (await screen.findByRole("button", { name: "Start support access" })).closest("form")!;
+  it("requires support confirmation and submits the reason, note and CSRF token", async () => {
+    const user = userEvent.setup();
+    renderPlatform(fakeApi(), "/platform/tenants/org_alpha");
+    const start = await screen.findByRole("button", { name: "Support access" });
+    expect(screen.queryByRole("button", { name: "Start support access" })).toBeNull();
+    fireEvent.click(start);
+    let dialog = await screen.findByRole("dialog", { name: "Start support access" });
+    const submit = vi.fn((event: Event) => event.preventDefault());
+    const form = within(dialog).getByRole("button", { name: "Start support access" }).closest("form")!;
+    form.addEventListener("submit", submit);
     expect(form.getAttribute("method")).toBe("post");
     expect(form.getAttribute("action")).toBe("/support/start");
-    expect((form.querySelector('input[name="organization"]') as HTMLInputElement).value).toBe("org_alpha");
-    expect((form.querySelector('input[name="csrf"]') as HTMLInputElement).value).toBe("staff-csrf");
-    const reason = within(form).getByLabelText("Support reason for Alpha") as HTMLSelectElement;
-    expect(reason.required).toBe(true);
-    expect(reason.value).toBe("");
-    expect(Array.from(reason.options).map((option) => option.value)).toEqual(["", "customer-request", "account-recovery", "troubleshooting"]);
-    expect(within(rows[2]!).queryByRole("button", { name: "Start support access" })).toBeNull();
-
+    expect(submit).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(start);
+    dialog = await screen.findByRole("dialog", { name: "Start support access" });
+    await user.click(within(dialog).getByRole("combobox", { name: "Reason" }));
+    expect((await screen.findAllByRole("option")).map((option) => option.textContent)).toEqual(["Customer asked for help", "Account recovery", "Troubleshooting"]);
+    expect(dialog.textContent).not.toMatch(/customer-request|account-recovery/);
+    await user.click(await screen.findByRole("option", { name: "Account recovery" }));
+    expect(within(dialog).getByRole("combobox", { name: "Reason" }).textContent).toBe("Account recovery");
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Note (optional)" }), { target: { value: "Ticket 123" } });
+    const confirmed = within(dialog).getByRole("button", { name: "Start support access" }).closest("form")!;
+    confirmed.addEventListener("submit", submit);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start support access" }));
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(Object.fromEntries(new FormData(confirmed))).toEqual({ organization: "org_alpha", csrf: "staff-csrf", reason: "account-recovery", note: "Ticket 123" });
   });
 
   it("shows restricted access with individual rows and filters both allowlists live", async () => {
@@ -617,7 +628,7 @@ describe("platform console", () => {
     ["platformOrganizations", "/platform/tenants"],
     ["platformHealth", "/platform/health"],
     ["platformAllowlist", "/platform/allowlist"],
-    ["platformTenant", "/platform/tenants?tenant=org_alpha"],
+    ["platformTenant", "/platform/tenants/org_alpha"],
   ] as const)("sends an expired %s session back to sign-in", async (method, path) => {
     const expired = vi.fn(async () => {
       throw new AccountError({ status: 401, code: "unauthenticated", message: "Sign in" });
@@ -691,7 +702,7 @@ describe("complimentary plans", () => {
     renderPlatform(api);
     await screen.findByRole("table", { name: "Tenants" });
     expect(screen.queryByRole("region", { name: "Complimentary plans" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Grant complimentary plan" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change plan" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Grant model choice" })).toBeNull();
     expect(api.platformTenant).not.toHaveBeenCalled();
   });
@@ -704,13 +715,15 @@ describe("complimentary plans", () => {
     renderPlatform(api);
     fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
     const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
-    await within(plan).findByText("pilot_free v1 (base) + 1 complimentary grant");
-    expect(within(plan).getByText("pilot_free v1")).toBeTruthy();
-    const grants = within(plan).getByRole("table", { name: "Active grants for Alpha" });
+    await within(plan).findByText("Team");
+    expect(within(plan).getByText("Complimentary")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Plan and billing" }));
+    const billing = await screen.findByRole("region", { name: "Plan for Alpha" });
+    const grants = await within(billing).findByRole("table", { name: "Grant history for Alpha" });
     expect(within(grants).getByText("design partner")).toBeTruthy();
     expect(within(grants).getByText("plans@detent.build")).toBeTruthy();
-    expect(within(grants).getByText("2026-12-31")).toBeTruthy();
-    expect(within(grants).getByText("hosted_artifacts, projects")).toBeTruthy();
+    expect(within(grants).getByText(/31st December 2026/)).toBeTruthy();
+    expect(within(grants).getByText("Hosted artifacts, Projects")).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Plan for Beta" })).toBeNull();
     expect(api.platformEntitlements).toHaveBeenCalledWith("org_alpha");
   });
@@ -720,10 +733,10 @@ describe("complimentary plans", () => {
     renderPlatform(api);
     fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
     const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
-    fireEvent.click(await within(plan).findByRole("button", { name: "Grant complimentary plan" }));
+    fireEvent.click(await within(plan).findByRole("button", { name: "Change plan" }));
     const dialog = await screen.findByRole("dialog", { name: /^(Grant |Revoke )/ });
-    const picker = within(dialog).getByLabelText("Plan") as HTMLSelectElement;
-    expect(Array.from(picker.options).map((option) => option.textContent)).toEqual(["comp_team v1"]);
+    expect(within(dialog).getByRole("combobox", { name: "Plan" }).textContent).toContain("Team");
+    expect(dialog.textContent).not.toMatch(/pilot_free|comp_team|hosted_artifacts|\d{4}-\d{2}-\d{2}T/);
     fireEvent.change(within(dialog).getByLabelText("Expires (optional)"), { target: { value: "2026-12-31" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Grant" }));
     expect((await within(dialog).findByRole("alert")).textContent).toContain("Give a reason");
@@ -759,7 +772,9 @@ describe("complimentary plans", () => {
     renderPlatform(api);
     fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
     const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
-    fireEvent.click(await within(plan).findByRole("button", { name: "Grant model choice" }));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Tenant actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Grant model choice" }));
     const dialog = await screen.findByRole("dialog", { name: /^(Grant |Revoke )/ });
     expect(within(dialog).queryByLabelText("Plan")).toBeNull();
     fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Approved model choice" } });
@@ -771,7 +786,7 @@ describe("complimentary plans", () => {
         expected_revision: 3, expires_at: null, reason: "Approved model choice",
       },
     }));
-    await within(plan).findByText("Model choice: Enabled");
+    await within(plan).findByText("On");
     expect((within(plan).getByRole("button", { name: "Grant model choice" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -789,7 +804,7 @@ describe("complimentary plans", () => {
     renderPlatform(api);
     fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
     const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
-    fireEvent.click(await within(plan).findByRole("button", { name: "Grant complimentary plan" }));
+    fireEvent.click(await within(plan).findByRole("button", { name: "Change plan" }));
     const dialog = await screen.findByRole("dialog", { name: /^(Grant |Revoke )/ });
     fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "design partner" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Grant" }));
@@ -815,7 +830,7 @@ describe("complimentary plans", () => {
     renderPlatform(api);
     fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
     const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
-    fireEvent.click(await within(plan).findByRole("button", { name: "Grant complimentary plan" }));
+    fireEvent.click(await within(plan).findByRole("button", { name: "Change plan" }));
     const dialog = await screen.findByRole("dialog", { name: /^(Grant |Revoke )/ });
     fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "design partner" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Grant" }));
@@ -830,7 +845,7 @@ describe("complimentary plans", () => {
     renderPlatform(api);
     fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
     const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
-    fireEvent.click(await within(plan).findByRole("button", { name: "Grant complimentary plan" }));
+    fireEvent.click(await within(plan).findByRole("button", { name: "Change plan" }));
     const dialog = await screen.findByRole("dialog", { name: /^(Grant |Revoke )/ });
     fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "design partner" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Grant" }));
@@ -843,8 +858,10 @@ describe("complimentary plans", () => {
     renderPlatform(api);
     fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
     const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
-    fireEvent.click(await within(plan).findByRole("button", { name: "Revoke" }));
+    fireEvent.click(await within(plan).findByRole("button", { name: "Revoke grant" }));
     const dialog = await screen.findByRole("dialog", { name: /^(Grant |Revoke )/ });
+    expect(within(dialog).getByRole("heading", { name: "Revoke Team for Alpha?" })).toBeTruthy();
+    expect(dialog.textContent).not.toMatch(/pilot_free|comp_team|hosted_artifacts|\d{4}-\d{2}-\d{2}T/);
     fireEvent.click(within(dialog).getByRole("button", { name: "Revoke grant" }));
     expect((await within(dialog).findByRole("alert")).textContent).toContain("Give a reason");
     expect(api.changePlatformEntitlement).not.toHaveBeenCalled();
@@ -916,37 +933,118 @@ describe("tenant discovery and detail", () => {
 
   });
 
-  it.each(["viewer", "support", "billing", "admin"])("opens an addressable page with role-gated actions for %s", async (role) => {
+  it.each(["viewer", "support", "billing", "admin"])("opens a tenant page with role-gated actions for %s", async (role) => {
     const api = fakeApi({ session: vi.fn(async () => ({ email: "staff@example.test", csrf: "staff-csrf", platform_role: role })) });
-    renderPlatform(api, "/platform/tenants?tenant=org_alpha");
-    const sheet = await screen.findByRole("region", { name: "Alpha" });
-    await within(sheet).findByRole("region", { name: "Members (1)" });
-    expect(within(sheet).getByRole("region", { name: "Members (1)" }).textContent).toContain("owner");
-    expect(within(sheet).getByRole("region", { name: "Runners (1)" }).textContent).toContain("Mac Studio online");
-    expect(within(sheet).getByRole("region", { name: "Projects (1)" }).textContent).toContain("Detent");
-    expect(within(sheet).getByRole("region", { name: "Provisioning timeline" }).textContent).toContain("requested");
-    expect(within(sheet).queryByRole("button", { name: "Start support access" }) !== null).toBe(role === "support" || role === "admin");
-    for (const name of ["Grant complimentary plan", "Grant model choice", "Revoke"]) {
-      expect(within(sheet).queryByRole("button", { name }) !== null).toBe(role === "billing" || role === "admin");
-    }
-    expect(within(sheet).queryByRole("button", { name: "Resume provisioning" })).toBeNull();
+    renderPlatform(api, "/platform/tenants/org_alpha");
+    const organization = await screen.findByRole("region", { name: "Organization" });
+    expect(within(organization).getByRole("link", { name: "dana@example.test" }).getAttribute("href")).toBe("/platform/users/dana%40example.test");
+    expect(screen.queryByRole("dialog", { name: "Alpha" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Support access" }) !== null).toBe(role === "support" || role === "admin");
+    for (const name of ["Change plan", "Grant model choice", "Revoke grant"]) expect(screen.queryByRole("button", { name }) !== null).toBe(role === "billing" || role === "admin");
+    expect(screen.queryByRole("button", { name: "Resume provisioning" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Members 1" }));
+    const members = await screen.findByRole("region", { name: "Members" });
+    expect(within(members).getByRole("link", { name: "dana@example.test" }).getAttribute("href")).toBe("/platform/users/dana%40example.test");
+    expect(within(members).getByText("Owner")).toBeTruthy();
+  });
+
+  it("restores URL sections, navigates sections and redirects old tenant links", async () => {
+    const router = renderPlatform(fakeApi(), "/platform/tenants/org_alpha?section=runners");
+    const runners = await screen.findByRole("region", { name: "Runners" });
+    expect(within(runners).getByText("Mac Studio")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Runners 1" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Projects 1" }));
+    await screen.findByRole("region", { name: "Projects" });
+    expect(router.state.location.search).toMatchObject({ section: "projects" });
+    await act(() => router.navigate({ href: "/platform/tenants?tenant=org_alpha" } as never));
+    await screen.findByRole("region", { name: "Organization" });
+    expect(router.state.location.pathname).toBe("/platform/tenants/org_alpha");
+  });
+
+  it("disables plan grants when no other plan exists and explains why", async () => {
+    const api = fakeApi({ platformEntitlements: vi.fn(async () => ({ ...entitlements, plans: [entitlements.plans[0]!] })) });
+    renderPlatform(api, "/platform/tenants/org_alpha");
+    const grant = await screen.findByRole("button", { name: "Change plan" });
+    expect((grant as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(document, { key: "Tab" });
+    act(() => grant.parentElement!.focus());
+    expect(await screen.findByText("No other plan is configured to grant.")).toBeTruthy();
+    expect(api.changePlatformEntitlement).not.toHaveBeenCalled();
+  });
+
+  it.each(["base", "subscription"] as const)("formats tenant labels, usage and grant return plans with a %s base", async (source) => {
+    const api = fakeApi({
+      platformEntitlements: vi.fn(async () => ({
+        ...entitlements,
+        source,
+        effective_base: source === "subscription" ? { id: "paid_business", version: 1 } : entitlements.base,
+        plans: [...entitlements.plans.map((plan) => ({ ...plan, name: plan.id === "pilot_free" ? "Starter" : "Team" })),
+          { id: "paid_business", version: 1, name: "Business", features: ["collaboration"], allowances: { projects: 30, members: 20, concurrent_work: 10 } }],
+        grant_history: [
+          ...entitlements.grants,
+          { ...entitlements.grants[0]!, id: "comp_models", scope: ["model_choice"], revoked_at: "2026-10-01T10:00:00Z" },
+        ],
+      })),
+    });
+    const original = api.platformTenant;
+    api.platformTenant = vi.fn(async (id) => ({ ...await original(id), usage: { window_ends_at: "2026-10-10T15:00:00Z", allowances: { projects: { used: 2, limit: 20 }, members: { used: 3, limit: null }, concurrent_work: { used: 2, limit: null }, collaboration_bytes: { used: 390 * 1024 ** 2, limit: 1024 ** 3 } } } }));
+    const auditRow = { at: "2026-10-09T10:00:00Z", actor: "staff@example.test", organization_id: "org_alpha", organization_name: "Alpha", organization_deleted: false, source: "entry" };
+    api.platformAudit = vi.fn(async () => ({ rows: [
+      { ...auditRow, event: "plan_granted", detail: "comp_team v1 until 2026-12-31T23:59:59Z", id: "one" },
+      { ...auditRow, event: "support_requested", detail: "customer-request · Ticket 123", id: "two" },
+      { ...auditRow, event: "organization_ready", detail: "generation 7", id: "three" },
+    ], events: [], tenants: [], next_cursor: "" }));
+    renderPlatform(api, "/platform/tenants/org_alpha");
+    const rawValues = /pilot_free|comp_team|paid_business|hosted_artifacts|model_choice|collaboration_bytes|artifact_retained_bytes|plan_granted|support_requested|organization_ready|customer-request|\d{4}-\d{2}-\d{2}T|generation/;
+    expect((await screen.findByRole("meter", { name: "Projects" })).getAttribute("aria-valuetext")).toBe("2 of 20");
+    expect(screen.getByRole("meter", { name: "Workspace data" }).getAttribute("aria-valuetext")).toBe("390 MB of 1 GB");
+    expect(screen.getByText("Not included on Team")).toBeTruthy();
+    expect(screen.getByRole("meter", { name: "Members" }).getAttribute("aria-valuetext")).toBe("3 used · no plan limit");
+    expect(screen.getByRole("meter", { name: "Concurrent work" }).getAttribute("aria-valuetext")).toBe("2 used · no plan limit");
+    await waitFor(() => expect(api.platformAudit).toHaveBeenCalledWith("tenant=org_alpha&limit=3"));
+    const activity = await screen.findByRole("region", { name: "Recent activity" });
+    expect(within(activity).getByText("Plan granted")).toBeTruthy();
+    expect(within(activity).getByText(/Customer asked for help · Ticket 123/)).toBeTruthy();
+    expect(within(activity).getByText("Organization ready")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Organization" }).textContent).toContain("September 2026");
+    expect(screen.getByRole("region", { name: "Plan for Alpha" }).textContent).toContain(`Returns to ${source === "subscription" ? "Business" : "Starter"}`);
+    expect(document.body.textContent).not.toMatch(rawValues);
+    expect(within(activity).getByRole("link", { name: "Open audit log" }).getAttribute("href")).toBe("/platform/audit?tenant=org_alpha");
+    fireEvent.click(screen.getByRole("button", { name: "Plan and billing" }));
+    const history = await screen.findByRole("table", { name: "Grant history for Alpha" });
+    expect(within(history).getByRole("cell", { name: "Team" })).toBeTruthy();
+    expect(within(history).getByRole("cell", { name: "Hosted artifacts, Projects" })).toBeTruthy();
+    expect(within(history).getAllByRole("cell", { name: "Model choice" })).toHaveLength(2);
+    expect(within(history).getByRole("cell", { name: "Revoked" })).toBeTruthy();
+    expect(history.textContent).toContain("September 2026");
+    expect(document.body.textContent).not.toMatch(rawValues);
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    const audit = await screen.findByRole("region", { name: "Audit activity" });
+    await within(audit).findByText("Plan granted");
+    expect(within(audit).getByText(/Customer asked for help · Ticket 123/)).toBeTruthy();
+    const timeline = screen.getByRole("region", { name: "Provisioning timeline" });
+    expect(within(timeline).getByText("Requested")).toBeTruthy();
+    expect(timeline.textContent).toContain("September 2026");
+    expect(document.body.textContent).not.toMatch(rawValues);
   });
 
   it("renders unavailable sections independently and confirms failed tenant resume", async () => {
+    const user = userEvent.setup();
     const api = fakeApi();
     const original = api.platformTenant;
     api.platformTenant = vi.fn(async (id) => ({ ...await original(id), members: null, projects: null }));
-    renderPlatform(api, "/platform/tenants?tenant=org_beta");
-    const sheet = await screen.findByRole("region", { name: "Beta" });
-    expect((await within(sheet).findByRole("region", { name: "Members" })).textContent).toContain("Unavailable");
-    expect(within(sheet).getByRole("region", { name: "Projects" }).textContent).toContain("Unavailable");
-    expect(within(sheet).getByRole("region", { name: "Runners (1)" })).toBeTruthy();
-    fireEvent.click(within(sheet).getByRole("button", { name: "Resume provisioning" }));
+    renderPlatform(api, "/platform/tenants/org_beta?section=members");
+    expect((await screen.findByRole("region", { name: "Members" })).textContent).toContain("Unavailable");
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
+    expect((await screen.findByRole("region", { name: "Projects" })).textContent).toContain("Unavailable");
+    await user.click(screen.getByRole("button", { name: "Tenant actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Resume provisioning" }));
     const confirmation = await screen.findByRole("alertdialog");
     expect(api.resumePlatformTenant).not.toHaveBeenCalled();
     fireEvent.click(within(confirmation).getByRole("button", { name: "Resume" }));
     await waitFor(() => expect(api.resumePlatformTenant).toHaveBeenCalledWith({ organization: "org_beta", csrf: "staff-csrf" }));
   });
+
 });
 
 if (typeof globalThis.PointerEvent === "undefined") globalThis.PointerEvent = globalThis.MouseEvent as unknown as typeof PointerEvent;
@@ -1258,12 +1356,12 @@ describe("platform audit", () => {
     const table = await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
     expect(
       within(table).getByRole("link", { name: "Alpha" }).getAttribute("href"),
-    ).toBe("/platform/tenants?tenant=org_alpha");
+    ).toBe("/platform/tenants/org_alpha");
     expect(
       within(table)
         .getByRole("link", { name: "Beta" })
         .getAttribute("href"),
-    ).toBe("/platform/tenants?tenant=org_beta");
+    ).toBe("/platform/tenants/org_beta");
     expect(within(table).getByText("Deleted")).toBeTruthy();
     expect(api.platformAudit).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Load older events" }));

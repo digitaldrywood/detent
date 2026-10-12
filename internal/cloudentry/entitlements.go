@@ -24,6 +24,7 @@ type planReference struct {
 
 type entitlementPlan struct {
 	planReference
+	Name       string           `json:"name,omitempty"`
 	Features   []string         `json:"features"`
 	Allowances map[string]int64 `json:"allowances"`
 }
@@ -48,6 +49,7 @@ type organizationEntitlements struct {
 	Revision       int64              `json:"revision"`
 	Features       []string           `json:"features"`
 	Grants         []entitlementGrant `json:"grants"`
+	GrantHistory   []entitlementGrant `json:"grant_history"`
 	Plans          []entitlementPlan  `json:"plans"`
 }
 
@@ -104,9 +106,11 @@ func (s *Service) tenantEntitlements(ctx context.Context, organization Organizat
 	if err != nil {
 		return result, err
 	}
-	for index, grant := range result.Grants {
-		if email, ok := granters[grant.ID]; ok {
-			result.Grants[index].GrantedBy = email
+	for _, grants := range [][]entitlementGrant{result.Grants, result.GrantHistory} {
+		for index, grant := range grants {
+			if email, ok := granters[grant.ID]; ok {
+				grants[index].GrantedBy = email
+			}
 		}
 	}
 	return result, nil
