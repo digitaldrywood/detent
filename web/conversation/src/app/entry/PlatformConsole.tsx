@@ -36,8 +36,11 @@ import {
   type PlatformHealth,
 } from "./api.ts";
 import { PlatformTenants, PlatformTenant } from "./PlatformTenants.tsx";
+import { PlatformHealthContext, PlatformHealthContent, platformHealthState } from "./PlatformHealth.tsx";
 import { PlatformStaff } from "./PlatformStaff.tsx";
 import { Problem, SignOut, useEntryApi } from "./EntryScreens.tsx";
+
+export { formatBytes, PlatformHealthPanel } from "./PlatformHealth.tsx";
 
 function Panel({
   title,
@@ -56,17 +59,6 @@ function Panel({
       </div>
     </SettingsSection>
   );
-}
-
-export function formatBytes(value: number): string {
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let amount = value;
-  let unit = 0;
-  while (amount >= 1024 && unit < units.length - 1) {
-    amount /= 1024;
-    unit += 1;
-  }
-  return `${unit === 0 ? amount : amount.toFixed(1)} ${units[unit]}`;
 }
 
 export function PlatformAllowlistPanel({ value }: { readonly value: PlatformAllowlist }): React.ReactElement {
@@ -100,54 +92,6 @@ export function PlatformAllowlistPanel({ value }: { readonly value: PlatformAllo
   );
 }
 
-function Reading({ label, value }: { readonly label: string; readonly value: string }): React.ReactElement {
-  return (
-    <div>
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className="font-medium">{value}</dd>
-    </div>
-  );
-}
-
-export function PlatformHealthPanel({ value }: { readonly value: PlatformHealth }): React.ReactElement {
-  const admission = value.admission;
-  return (
-    <Panel title="Service health">
-      <dl className="grid gap-3 text-sm sm:grid-cols-2">
-        <Reading label="Registry" value={value.registry.ok ? "OK" : "Unavailable"} />
-        {value.tenants === undefined ? null : (
-          <Reading label="Tenant Hubs running" value={`${value.tenants.running} of ${value.tenants.expected}`} />
-        )}
-        {admission === undefined ? null : (
-          <>
-            <Reading label="Tenant slots" value={`${admission.tenants} of ${admission.max_tenants}`} />
-            <Reading label="Provisioning now" value={`${admission.allocating} of ${admission.max_concurrent}`} />
-            <Reading
-              label="Free disk"
-              value={
-                admission.disk_measured
-                  ? `${formatBytes(admission.free_disk_bytes)} (floor ${formatBytes(admission.min_free_disk_bytes)})`
-                  : "Not measurable"
-              }
-            />
-            <Reading
-              label="Available memory"
-              value={
-                admission.memory_measured
-                  ? `${formatBytes(admission.available_memory_bytes)} (floor ${formatBytes(admission.min_available_memory_bytes)})`
-                  : "Not measurable"
-              }
-            />
-          </>
-        )}
-      </dl>
-      {admission === undefined ? (
-        <p className="mt-3 text-[13px] text-muted-foreground">Self-service allocation is not configured, so there are no admission limits.</p>
-      ) : null}
-    </Panel>
-  );
-}
-
 const PLATFORM_SECTIONS = [
   { id: "tenants", title: "Tenants", icon: Building2 },
   { id: "users", title: "Users", icon: UserSearch },
@@ -170,12 +114,8 @@ const PlatformRoleContext = React.createContext("");
 const PlatformCSRFContext = React.createContext("");
 
 function HealthBadge({ value }: { readonly value: PlatformHealth }): React.ReactElement {
-  const admission = value.admission;
-  const down = !value.registry.ok;
-  const degraded = (value.tenants !== undefined && value.tenants.running < value.tenants.expected) ||
-    (admission !== undefined && ((admission.disk_measured && admission.free_disk_bytes < admission.min_free_disk_bytes) ||
-      (admission.memory_measured && admission.available_memory_bytes < admission.min_available_memory_bytes)));
-  return <Badge variant={down ? "error" : degraded ? "warning" : "success"}>{down ? "Down" : degraded ? "Degraded" : "OK"}</Badge>;
+  const state = platformHealthState(value);
+  return <Badge variant={state}>{state === "error" ? "Down" : state === "warning" ? "Degraded" : "OK"}</Badge>;
 }
 
 function PlatformNavigation({ role, email, csrf, organizations, count, health, onSearch }: {
@@ -255,7 +195,7 @@ export function PlatformConsole(): React.ReactElement {
   const value = session.value;
   const role = value?.platform_role ?? "";
   const tenants = usePlatformResource(() => role === "" ? Promise.resolve(null) : api.platformOrganizations(), [api, role]);
-  const health = usePlatformResource(() => role === "" ? Promise.resolve(null) : api.platformHealth(), [api, role]);
+  const health = usePlatformResource(() => role === "" ? Promise.resolve(null) : api.platformHealth().then((value) => ({ ...value, updatedAt: Date.now() })), [api, role]);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const section = PLATFORM_SECTIONS.find((section) => (pathname === `/platform/${section.id}` || pathname.startsWith(`/platform/${section.id}/`)));
   usePageTitle(section?.title ?? "Platform", "Platform");
@@ -266,30 +206,32 @@ export function PlatformConsole(): React.ReactElement {
   return (
     <PlatformRoleContext.Provider value={role}>
       <PlatformCSRFContext.Provider value={value?.csrf ?? ""}>
-        <PlatformActionsContext.Provider value={actions}>
-          <SidebarProvider open className="relative h-full min-h-0 flex-1">
-            <PlatformNavigation role={role} email={value?.email ?? ""} csrf={value?.csrf ?? ""} organizations={organizations.value?.organizations ?? []}
-              count={tenants.value?.organizations.length} health={health.value} onSearch={() => setSearchOpen(true)} />
-            <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-              <WorkspacePageHeader className="border-b border-border">
-                <SidebarTrigger className="md:hidden" />
-                <h1 className="min-w-0 truncate text-sm font-medium">{section?.title ?? "Platform"}</h1>
-                <div ref={setActions} className="ml-auto flex shrink-0 items-center gap-2" />
-              </WorkspacePageHeader>
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                <WorkspacePageContainer width="wide">
-                  <Problem message={error?.message ?? null} />
-                  {value === undefined ? (error === null ? <Skeleton className="h-48" aria-label="Loading platform console" /> : null) : denied ? (
-                    <Empty><EmptyHeader><EmptyTitle>You don't have access to this page</EmptyTitle>
-                      {role === "" ? <EmptyDescription>The platform console is limited to Detent staff.</EmptyDescription> : null}
-                    </EmptyHeader></Empty>
-                  ) : <Outlet />}
-                </WorkspacePageContainer>
-              </div>
-            </main>
-            {role === "" ? null : <PlatformSearch open={searchOpen} onOpenChange={setSearchOpen} tenants={tenants.value?.organizations ?? []} tenantError={tenants.error} />}
-          </SidebarProvider>
-        </PlatformActionsContext.Provider>
+        <PlatformHealthContext.Provider value={health}>
+          <PlatformActionsContext.Provider value={actions}>
+            <SidebarProvider open className="relative h-full min-h-0 flex-1">
+              <PlatformNavigation role={role} email={value?.email ?? ""} csrf={value?.csrf ?? ""} organizations={organizations.value?.organizations ?? []}
+                count={tenants.value?.organizations.length} health={health.value} onSearch={() => setSearchOpen(true)} />
+              <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+                <WorkspacePageHeader className="border-b border-border">
+                  <SidebarTrigger className="md:hidden" />
+                  <h1 className="min-w-0 truncate text-sm font-medium">{section?.title ?? "Platform"}</h1>
+                  <div ref={setActions} className="ml-auto flex shrink-0 items-center gap-2" />
+                </WorkspacePageHeader>
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  <WorkspacePageContainer width="wide">
+                    <Problem message={error?.message ?? null} />
+                    {value === undefined ? (error === null ? <Skeleton className="h-48" aria-label="Loading platform console" /> : null) : denied ? (
+                      <Empty><EmptyHeader><EmptyTitle>You don't have access to this page</EmptyTitle>
+                        {role === "" ? <EmptyDescription>The platform console is limited to Detent staff.</EmptyDescription> : null}
+                      </EmptyHeader></Empty>
+                    ) : <Outlet />}
+                  </WorkspacePageContainer>
+                </div>
+              </main>
+              {role === "" ? null : <PlatformSearch open={searchOpen} onOpenChange={setSearchOpen} tenants={tenants.value?.organizations ?? []} tenantError={tenants.error} />}
+            </SidebarProvider>
+          </PlatformActionsContext.Provider>
+        </PlatformHealthContext.Provider>
       </PlatformCSRFContext.Provider>
     </PlatformRoleContext.Provider>
   );
@@ -311,17 +253,7 @@ export function PlatformTenantPage(): React.ReactElement {
 }
 
 export function PlatformHealthPage(): React.ReactElement {
-  const api = useEntryApi();
-  const health = usePlatformResource(() => api.platformHealth(), [api]);
-  return (
-    <>
-      <PlatformPageTitle section="health" />
-      <Problem message={health.error?.message ?? null} />
-      {health.value === undefined ? (
-        health.loading ? <p className="text-sm text-muted-foreground">Loading health…</p> : null
-      ) : <PlatformHealthPanel value={health.value} />}
-    </>
-  );
+  return <><PlatformPageTitle section="health" /><PlatformHealthContent /></>;
 }
 
 export function PlatformAllowlistPage(): React.ReactElement {

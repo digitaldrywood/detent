@@ -33,6 +33,9 @@ export function UsageMeter({
   notIncludedOn,
   limitOnly = false,
   unlimited = false,
+  direction = "maximum",
+  valueText,
+  statusText,
 }: {
   readonly label: string;
   readonly used: number;
@@ -42,18 +45,24 @@ export function UsageMeter({
   readonly notIncludedOn?: string;
   readonly limitOnly?: boolean;
   readonly unlimited?: boolean;
+  readonly direction?: "maximum" | "minimum";
+  readonly valueText?: string;
+  readonly statusText?: string;
 }) {
   const id = useId();
-  const state = usageMeterState(used, limit);
+  const state = direction === "minimum"
+    ? used <= limit ? "reached" : used <= limit * 1.2 ? "warning" : "normal"
+    : usageMeterState(used, limit);
   const excluded = notIncludedOn !== undefined;
-  const text = excluded
+  const text = valueText ?? (excluded
     ? `Not included on ${notIncludedOn}`
     : unlimited
       ? `${formatUsageValue(used, unit)} used · no plan limit`
     : limitOnly
       ? `Up to ${formatUsageValue(limit, unit)}`
-      : `${formatUsageValue(used, unit)} of ${formatUsageValue(limit, unit)}`;
-  const status = state === "reached" ? "Limit reached" : state === "warning" ? "Approaching limit" : "Within limit";
+      : `${formatUsageValue(used, unit)} of ${formatUsageValue(limit, unit)}`);
+  const status = statusText ?? (state === "reached" ? "Limit reached" : state === "warning" ? "Approaching limit" : "Within limit");
+  const maximum = direction === "minimum" ? Math.max(used, limit * 2, 1) : Math.max(limit, 1);
 
   return (
     <div className="min-w-0 space-y-1.5 text-sm" data-slot="usage-meter">
@@ -66,15 +75,15 @@ export function UsageMeter({
         aria-labelledby={`${id}-label`}
         aria-describedby={`${id}-detail`}
         aria-valuemin={0}
-        aria-valuemax={unlimited ? Math.max(used, 1) : Math.max(limit, 1)}
-        aria-valuenow={unlimited ? Math.max(used, 0) : Math.min(Math.max(used, 0), Math.max(limit, 1))}
+        aria-valuemax={unlimited ? Math.max(used, 1) : maximum}
+        aria-valuenow={unlimited ? Math.max(used, 0) : Math.min(Math.max(used, 0), maximum)}
         aria-valuetext={text}
         className="h-1.5 overflow-hidden rounded-full bg-muted"
       >
-        <div className={cn("h-full rounded-full", state === "reached" ? "bg-error" : state === "warning" ? "bg-warning" : "bg-foreground/60")} style={{ width: `${excluded || limitOnly || unlimited ? 0 : limit <= 0 ? 100 : Math.min(100, Math.max(0, used / limit * 100))}%` }} />
+        <div className={cn("h-full rounded-full", state === "reached" ? "bg-error" : state === "warning" ? "bg-warning" : "bg-foreground/60")} style={{ width: `${excluded || limitOnly || unlimited ? 0 : limit <= 0 && direction === "maximum" ? 100 : Math.min(100, Math.max(0, (direction === "minimum" ? used / maximum : used / limit) * 100))}%` }} />
       </div>
       <div id={`${id}-detail`} className={cn("space-y-1 text-xs text-muted-foreground", !excluded && !limitOnly && !unlimited && (state === "reached" ? "text-error-foreground" : state === "warning" ? "text-warning-foreground" : undefined))}>
-        {!excluded && !limitOnly && !unlimited ? <p>{status} · {formatUsageValue(Math.max(0, limit - used), unit)} left</p> : null}
+        {!excluded && !limitOnly && !unlimited ? <p>{status}{statusText === undefined ? ` · ${formatUsageValue(Math.max(0, direction === "minimum" ? used - limit : limit - used), unit)} ${direction === "minimum" ? "above floor" : "left"}` : ""}</p> : null}
         {description ? <div>{description}</div> : null}
       </div>
     </div>

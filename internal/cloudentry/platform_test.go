@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -176,11 +177,74 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 		Registry  struct{ OK bool }               `json:"registry"`
 		Tenants   struct{ Expected, Running int } `json:"tenants"`
 		Admission *platformAdmission              `json:"admission"`
+		Hubs      []platformTenantHealth          `json:"tenant_hubs"`
 	}
 	decodeJSON(t, body, &health)
 	if !health.Registry.OK || health.Tenants.Expected != 2 || health.Tenants.Running != 2 || health.Admission != nil {
 		t.Fatalf("health = %s", body)
 	}
+	if len(health.Hubs) != 2 {
+		t.Fatalf("tenant Hubs = %s", body)
+	}
+	for _, hub := range health.Hubs {
+		if hub.ID == "" || hub.Name == "" || !hub.Running || hub.UptimeSeconds != nil || hub.Restarts24h != nil || hub.DatabaseBytes != nil {
+			t.Fatalf("tenant Hub = %+v", hub)
+		}
+	}
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "org_alpha"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "org_alpha", "hub.db"), []byte("database-fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed = 1 WHERE id = 'org_alpha'"); err != nil {
+		t.Fatal(err)
+	}
+	now := f.service.config.now()
+	f.service.config.Allocation = &AllocationConfig{TenantRoot: root, MaxTenants: 20, MaxConcurrent: 2,
+		MinFreeDiskBytes: 4096, MinAvailableMemoryBytes: 8192,
+		Launcher: &ExecLauncher{health: map[string]*tenantProcessHealth{"org_alpha": {startedAt: now.Add(-time.Hour), observed: true, starts: []time.Time{now.Add(-time.Hour)}}}},
+	}
+	for _, test := range []struct {
+		suffix string
+		data   string
+		bytes  int64
+	}{{"", "", 16}, {"-wal", "wal", 19}, {"-shm", "shared-memory", 32}} {
+		if test.suffix != "" {
+			if err := os.WriteFile(filepath.Join(root, "org_alpha", "hub.db"+test.suffix), []byte(test.data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, body = staff.get("/api/cloud/platform/health")
+		decodeJSON(t, body, &health)
+		if health.Admission == nil || health.Admission.MinFreeDiskBytes != 4096 || health.Admission.MinAvailableMemoryBytes != 8192 {
+			t.Fatalf("admission floors = %s", body)
+		}
+		for _, hub := range health.Hubs {
+			if hub.ID == "org_alpha" && (hub.UptimeSeconds == nil || *hub.UptimeSeconds < 3600 || hub.Restarts24h == nil || *hub.Restarts24h != 1 || hub.DatabaseBytes == nil || *hub.DatabaseBytes != test.bytes) {
+				t.Fatalf("managed tenant health after %q = %+v, want %d database bytes", test.suffix, hub, test.bytes)
+			}
+		}
+	}
+	original := f.service.config.transport
+	f.service.config.transport = func(org Organization) (http.RoundTripper, error) {
+		if org.ID == "org_beta" {
+			return timedOutPlatformTransport{}, nil
+		}
+		return original(org)
+	}
+	_, body = staff.get("/api/cloud/platform/health")
+	decodeJSON(t, body, &health)
+	if !health.Registry.OK || health.Tenants.Expected != 2 || health.Tenants.Running != 1 || len(health.Hubs) != 2 {
+		t.Fatalf("health with one Hub down = %s", body)
+	}
+	for _, hub := range health.Hubs {
+		if hub.Running != (hub.ID != "org_beta") {
+			t.Fatalf("tenant Hub with Beta down = %+v", hub)
+		}
+	}
+	f.service.config.Allocation = nil
 	_, body = staff.get("/api/cloud/platform/allowlist")
 	var allowlist map[string]any
 	decodeJSON(t, body, &allowlist)

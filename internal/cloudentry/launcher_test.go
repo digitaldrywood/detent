@@ -48,6 +48,10 @@ func TestExecLauncherWritesPrivateFilesAndStops(t *testing.T) {
 				t.Fatal(err)
 			}
 			waitLauncherFailure(t, launcher, "org_exec")
+			uptime, restarts := launcher.Health("org_exec", time.Now())
+			if uptime != nil || restarts == nil || *restarts != 0 {
+				t.Fatalf("first exited process health = %v, %v", uptime, restarts)
+			}
 			arguments, err := os.ReadFile(filepath.Join(directory, "args"))
 			if err != nil || strings.Contains(string(arguments), "--github-disabled") {
 				t.Fatalf("tenant arguments = %s: %v", arguments, err)
@@ -106,6 +110,10 @@ func TestExecLauncherStopsSupervisingAfterRestartLimit(t *testing.T) {
 			var exit *TenantExitError
 			if !errors.As(failure, &exit) || exit.Exits != tc.limit || failure.Error() != tc.want {
 				t.Fatalf("Failure() = %v, want %q", failure, tc.want)
+			}
+			uptime, restarts := launcher.Health("org_exec", time.Now())
+			if uptime != nil || restarts == nil || *restarts != tc.limit-1 {
+				t.Fatalf("exhausted process health = %v, %v", uptime, restarts)
 			}
 			launcher.mu.Lock()
 			_, running := launcher.running["org_exec"]

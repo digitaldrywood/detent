@@ -105,7 +105,7 @@ for (const width of [1440, 390]) {
           await dialog.getByRole("radio", { name: os, exact: true }).check();
           await expect(dialog).toContainText(`Installs the latest release for ${os}`);
           await expect(dialog.getByRole("button", { name: "Copy the Homebrew command" })).toHaveCount(os === "macOS" ? 1 : 0);
-          await dialog.getByRole("button", { name: /^(?:Copy|Copied) the install and register command$/ }).click();
+          await dialog.getByRole("button", { name: "Copy the install and register command", exact: true }).click();
           const combined = await page.evaluate(() => navigator.clipboard.readText());
           expect(combined).toBe(`curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh && export PATH="$HOME/.local/bin:/usr/local/bin:$PATH" && ${copied}`);
           expect(await dialog.innerHTML()).not.toContain("det_enroll_preview");
