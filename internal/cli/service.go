@@ -206,7 +206,19 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 		inspectCaches = nil
 	}
 	dashboardURL := "http://" + net.JoinHostPort(dashboardHost, strconv.Itoa(dashboardPort.Value))
+	servicePath := opts.lookupEnv("PATH")
+	if cmd.Name() != "status" && !opts.serviceInjected && (runtime.GOOS == "linux" || runtime.GOOS == "darwin") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("resolve service home: %w", err)
+		}
+		servicePath, err = providerServicePath(cfg, servicePath, home)
+		if err != nil {
+			return nil, err
+		}
+	}
 	runner, err := factory(servicepkg.Config{
+		Path:         servicePath,
 		Name:         serviceNameForConfig(cfg),
 		GOOS:         runtime.GOOS,
 		BinaryPath:   binaryPath,
@@ -223,6 +235,9 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 	}
 	if cmd.Name() == "status" {
 		return statusServiceRunner{ServiceRunner: runner, inspectCaches: inspectCaches, fallbackURL: dashboardURL, credential: statusCredential, httpDo: statusHTTPDo}, nil
+	}
+	if cfg.Client.URL != "" && cfg.Client.IdentityFile != "" {
+		return newRunnerHeartbeatService(runner, cfg)
 	}
 	return runner, nil
 }

@@ -1,6 +1,7 @@
 import { KeyRoundIcon } from "lucide-react";
 import React from "react";
 
+import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { Checkbox } from "../../components/ui/checkbox.tsx";
 import {
@@ -393,6 +394,14 @@ export function EnrollRunnerDialog({
                 <dt className="text-muted-foreground">Providers</dt>
                 <dd>{[...new Set(connected.provider_capacity.map((provider) => provider.provider))].join(", ") || "None reported"}</dd>
               </dl>
+              {connected.provider_capacity.length === 0 ? (
+                <Alert variant="warning">
+                  <AlertTitle>No providers reported</AlertTitle>
+                  <AlertDescription>
+                    This runner cannot take work yet. Check that its provider CLIs are installed, signed in, and available on the service PATH, then check the runner service logs.
+                  </AlertDescription>
+                </Alert>
+              ) : null}
             </section>
           ) : enrollment === null ? (
             <>
