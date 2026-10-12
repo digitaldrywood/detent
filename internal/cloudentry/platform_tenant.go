@@ -45,12 +45,21 @@ type platformTenantSections struct {
 
 type platformTenantDetail struct {
 	platformTenantSections
+	Usage        *platformTenantUsage        `json:"usage"`
 	Organization platformOrganization        `json:"organization"`
 	Events       []platformOrganizationEvent `json:"events"`
 	Unavailable  []string                    `json:"unavailable"`
 	CSRF         string                      `json:"csrf"`
 	CanGrant     bool                        `json:"can_grant"`
 	CanResume    bool                        `json:"can_resume"`
+}
+
+type platformTenantUsage struct {
+	WindowEndsAt string `json:"window_ends_at"`
+	Allowances   map[string]struct {
+		Used  int64  `json:"used"`
+		Limit *int64 `json:"limit"`
+	} `json:"allowances"`
 }
 
 func (s *Service) platformTenantSections(ctx context.Context, organization Organization, parallel bool) (platformTenantSections, platformBilling) {
@@ -168,6 +177,12 @@ func (s *Service) platformOrganizationJSON(c echo.Context) error {
 		var billing platformBilling
 		detail.platformTenantSections, billing = s.platformTenantSections(ctx, organization, true)
 		item.applySections(detail.platformTenantSections, billing)
+		var usage platformTenantUsage
+		call, cancel := context.WithTimeout(ctx, platformCallTimeout)
+		defer cancel()
+		if s.readPlatformSection(call, organization, "usage", &usage) {
+			detail.Usage = &usage
+		}
 	}
 	if s.config.Billing != nil {
 		var customer string
@@ -184,6 +199,7 @@ func (s *Service) platformOrganizationJSON(c echo.Context) error {
 		unavailable bool
 	}{
 		{"members", detail.Members == nil}, {"runners", detail.Runners == nil}, {"projects", detail.Projects == nil}, {"entitlements", detail.Entitlements == nil}, {"billing", !item.Billing.Available},
+		{"usage", detail.Usage == nil},
 	} {
 		if section.unavailable {
 			detail.Unavailable = append(detail.Unavailable, section.name)
@@ -214,5 +230,5 @@ func (s *Service) resumePlatformProvisioning(c echo.Context) error {
 	if _, err := s.resumeOrganization(ctx, organization); err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "Setup could not be resumed"})
 	}
-	return c.JSON(http.StatusOK, map[string]string{"next": "/platform/tenants?tenant=" + organization.ID})
+	return c.JSON(http.StatusOK, map[string]string{"next": "/platform/tenants/" + organization.ID})
 }

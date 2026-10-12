@@ -21,7 +21,7 @@ const ALLOWANCES: Readonly<Record<string, { label: string; group: string; unit?:
   concurrent_work: { label: "Concurrent work", group: "Capacity" },
 };
 
-export function planUsageRows(plan: PlanReport) {
+export function planUsageRows(plan: Pick<PlanReport, "allowances" | "usage">) {
   return Object.entries(plan.allowances).map(([name, limit]) => ({
     name,
     limit,

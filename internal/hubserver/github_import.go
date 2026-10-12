@@ -35,6 +35,7 @@ type GitHubImport struct {
 }
 
 type GitHubImportRequest struct {
+	Discovery   *tracker.GitHubDiscovery
 	Scheduled   *gate.ScheduledEvidence
 	SourceID    string
 	Repository  string
@@ -55,6 +56,7 @@ type GitHubImportRecord struct {
 }
 
 type GitHubImportPage struct {
+	BatchPage     *tracker.GitHubDiscoveryPage
 	Scheduled     *gate.ScheduledEvidence
 	RetryAt       time.Time
 	EditSequence  int64

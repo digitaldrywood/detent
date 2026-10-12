@@ -2,7 +2,6 @@ import React from "react";
 import {
   Link,
   useNavigate,
-  useParams,
   useRouterState,
 } from "@tanstack/react-router";
 import { ArrowDown, ArrowUp } from "lucide-react";
@@ -34,15 +33,6 @@ import {
   TableRow,
 } from "../../components/ui/table.tsx";
 import {
-  AlertDialog,
-  AlertDialogClose,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogPopup,
-  AlertDialogTitle,
-} from "../../components/ui/alert-dialog.tsx";
-import {
   ToggleGroup,
   ToggleGroupItem,
 } from "../../components/ui/toggle-group.tsx";
@@ -60,16 +50,8 @@ import {
   type TenantSort,
   type TenantSegment,
 } from "./tenantList.ts";
-import { ControlError } from "../account/controls.tsx";
-import { useMutation } from "../account/useResource.ts";
-import {
-  SUPPORT_REASONS,
-  type PlatformOrganization,
-  type PlatformOrganizations,
-  type PlatformTenantDetail,
-} from "./api.ts";
-import { TenantPlan } from "./ComplimentaryPlans.tsx";
-import { Problem, useEntryApi } from "./EntryScreens.tsx";
+import type { PlatformOrganizations } from "./api.ts";
+import { useEntryApi } from "./EntryScreens.tsx";
 import {
   redirectPlatformSignIn,
   usePlatformResource,
@@ -93,27 +75,6 @@ function stateVariant(
   if (state === "failed") return "error";
   if (["requested", "allocating", "deleting"].includes(state)) return "warning";
   return "outline";
-}
-
-function TenantState({
-  organization,
-}: {
-  readonly organization: PlatformOrganization;
-}): React.ReactElement {
-  return (
-    <>
-      <Badge variant={stateVariant(organization.state)}>
-        {organization.state}
-      </Badge>
-      {organization.error_code === "" ? null : (
-        <p className="mt-1 whitespace-normal text-xs text-destructive-foreground">
-          Last error: {organization.error_code}
-          {organization.step === "" ? "" : ` after ${organization.step}`}
-          {organization.error_detail ? ` (${organization.error_detail})` : ""}
-        </p>
-      )}
-    </>
-  );
 }
 
 function TenantFilter({
@@ -401,8 +362,8 @@ export function TenantTable({
                       >
                         <TableCell>
                           <Link
-                            to={"/platform/tenants/$tenantId" as never}
-                            params={{ tenantId: tenant.id } as never}
+                            to={"/platform/tenants/$organization" as never}
+                            params={{ organization: tenant.id } as never}
                             search={search as never}
                             className="font-medium hover:underline"
                           >
@@ -483,331 +444,6 @@ export function TenantTable({
   );
 }
 
-function SupportAction({
-  organization,
-  csrf,
-}: {
-  readonly organization: PlatformOrganization;
-  readonly csrf: string;
-}): React.ReactElement {
-  const reasonId = `support-reason-${organization.id}`;
-  return (
-    <form
-      method="post"
-      action="/support/start"
-      className="flex flex-wrap items-center gap-2"
-    >
-      <input type="hidden" name="organization" value={organization.id} />
-      <input type="hidden" name="csrf" value={csrf} />
-      <label htmlFor={reasonId} className="sr-only">
-        Support reason for {organization.name}
-      </label>
-      <select
-        id={reasonId}
-        name="reason"
-        required
-        defaultValue=""
-        className="h-9 rounded-lg border border-input bg-background px-2 text-sm"
-      >
-        <option value="" disabled>
-          Reason…
-        </option>
-        {SUPPORT_REASONS.map((reason) => (
-          <option key={reason} value={reason}>
-            {reason}
-          </option>
-        ))}
-      </select>
-      <Button type="submit" size="sm" variant="outline">
-        Start support access
-      </Button>
-    </form>
-  );
-}
-
-function ResumeAction({
-  detail,
-  onChanged,
-}: {
-  readonly detail: PlatformTenantDetail;
-  readonly onChanged: () => Promise<void>;
-}): React.ReactElement {
-  const api = useEntryApi();
-  const [open, setOpen] = React.useState(false);
-  const resume = useMutation(() =>
-    api.resumePlatformTenant({
-      organization: detail.organization.id,
-      csrf: detail.csrf,
-    }),
-  );
-  const submit = async () => {
-    if ((await resume.call()) !== null) {
-      await onChanged();
-      setOpen(false);
-    }
-  };
-  React.useEffect(() => {
-    redirectPlatformSignIn(resume.error);
-  }, [resume.error]);
-  return (
-    <AlertDialog open={open} onOpenChange={setOpen}>
-      <Button
-        size="sm"
-        variant="outline"
-        onClick={() => {
-          resume.clearError();
-          setOpen(true);
-        }}
-      >
-        Resume provisioning
-      </Button>
-      <AlertDialogPopup>
-        <AlertDialogHeader>
-          <AlertDialogTitle>
-            Resume provisioning for {detail.organization.name}?
-          </AlertDialogTitle>
-          <AlertDialogDescription>
-            Continue setup from the last completed step. Existing capacity and
-            retry rules apply.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <ControlError message={resume.error?.message ?? null} />
-        <AlertDialogFooter>
-          <AlertDialogClose
-            render={
-              <Button variant="outline" disabled={resume.pending}>
-                Cancel
-              </Button>
-            }
-          />
-          <Button disabled={resume.pending} onClick={() => void submit()}>
-            {resume.pending ? "Resuming…" : "Resume"}
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogPopup>
-    </AlertDialog>
-  );
-}
-
-function TenantSection({
-  title,
-  children,
-}: {
-  readonly title: string;
-  readonly children: React.ReactNode;
-}): React.ReactElement {
-  return (
-    <section aria-label={title} className="border-t border-border pt-4">
-      <h3 className="mb-2 text-sm font-medium">{title}</h3>
-      {children}
-    </section>
-  );
-}
-
-export function TenantSections({
-  detail,
-  role,
-  onChanged,
-}: {
-  readonly detail: PlatformTenantDetail;
-  readonly role: string;
-  readonly onChanged: () => Promise<void>;
-}): React.ReactElement {
-  const tenant = detail.organization;
-  const canSupport =
-    (role === "support" || role === "admin") &&
-    tenant.state === "ready" &&
-    tenant.can_support;
-  const canGrant =
-    (role === "billing" || role === "admin") &&
-    detail.can_grant &&
-    tenant.state === "ready";
-  const canResume =
-    role === "admin" && tenant.state === "failed" && detail.can_resume;
-  const unavailable = (
-    <p className="text-sm text-muted-foreground">Unavailable</p>
-  );
-  return (
-    <div className="flex flex-col gap-4 text-sm">
-      <div>
-        <TenantState organization={tenant} />
-      </div>
-      {canSupport || canResume ? (
-        <TenantSection title="Actions">
-          <div className="flex flex-wrap gap-2">
-            {canSupport ? (
-              <SupportAction organization={tenant} csrf={detail.csrf} />
-            ) : null}
-            {canResume ? (
-              <ResumeAction detail={detail} onChanged={onChanged} />
-            ) : null}
-          </div>
-        </TenantSection>
-      ) : null}
-      {detail.entitlements === null ? (
-        <TenantSection title="Plan">{unavailable}</TenantSection>
-      ) : (
-        <TenantPlan
-          organization={tenant}
-          csrf={detail.csrf}
-          value={detail.entitlements}
-          canGrant={canGrant}
-          onChanged={onChanged}
-        />
-      )}
-      <TenantSection title="Billing">
-        {tenant.billing.available ? (
-          <p>
-            {tenant.billing.status}
-            {tenant.billing.customer_id
-              ? ` · customer ${tenant.billing.customer_id}`
-              : ""}
-            {tenant.billing.plan ? ` · ${tenant.billing.plan}` : ""}
-            {tenant.billing.price_label
-              ? ` · ${tenant.billing.price_label}`
-              : ""}
-          </p>
-        ) : (
-          unavailable
-        )}
-      </TenantSection>
-      <TenantSection
-        title={`Members${detail.members === null ? "" : ` (${detail.members.length})`}`}
-      >
-        {detail.members === null ? (
-          unavailable
-        ) : detail.members.length === 0 ? (
-          <p className="text-muted-foreground">No members.</p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {detail.members.map((member) => (
-              <li key={member.id}>
-                <Badge variant="outline">{member.role}</Badge> {member.email}
-              </li>
-            ))}
-          </ul>
-        )}
-      </TenantSection>
-      <TenantSection
-        title={`Runners${detail.runners === null ? "" : ` (${detail.runners.length})`}`}
-      >
-        {detail.runners === null ? (
-          unavailable
-        ) : detail.runners.length === 0 ? (
-          <p className="text-muted-foreground">No runners.</p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {detail.runners.map((runner) => (
-              <li key={runner.id}>
-                {runner.name || runner.id}{" "}
-                <Badge
-                  variant={runner.health === "online" ? "success" : "outline"}
-                >
-                  {runner.health}
-                </Badge>
-              </li>
-            ))}
-          </ul>
-        )}
-      </TenantSection>
-      <TenantSection
-        title={`Projects${detail.projects === null ? "" : ` (${detail.projects.length})`}`}
-      >
-        {detail.projects === null ? (
-          unavailable
-        ) : detail.projects.length === 0 ? (
-          <p className="text-muted-foreground">No projects.</p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {detail.projects.map((project) => (
-              <li key={project.id}>{project.name}</li>
-            ))}
-          </ul>
-        )}
-      </TenantSection>
-      <TenantSection title="Provisioning timeline">
-        {detail.events.length === 0 ? (
-          <p className="text-muted-foreground">No provisioning events.</p>
-        ) : (
-          <ol className="flex flex-col gap-3">
-            {detail.events.map((event, index) => (
-              <li key={`${event.recorded_at}-${index}`}>
-                <time className="font-mono text-xs text-muted-foreground">
-                  {event.recorded_at}
-                </time>
-                <div>
-                  {event.event}{" "}
-                  <span className="text-muted-foreground">
-                    (generation {event.generation})
-                  </span>
-                </div>
-              </li>
-            ))}
-          </ol>
-        )}
-      </TenantSection>
-    </div>
-  );
-}
-
-export function PlatformTenant({
-  role,
-}: {
-  readonly role: string;
-}): React.ReactElement {
-  const api = useEntryApi();
-  const { tenantId } = useParams({ strict: false }) as { tenantId: string };
-  const search = useRouterState({
-    select: (state) => state.location.search as TenantSearch,
-  });
-  const resource = usePlatformResource(
-    () => api.platformTenant(tenantId),
-    [api, tenantId],
-  );
-  const detail = resource.value;
-  return (
-    <section
-      aria-label={detail?.organization.name ?? "Tenant"}
-      className="flex min-w-0 flex-col gap-4"
-    >
-      <Link
-        to={"/platform/tenants" as never}
-        search={{ ...search, tenant: undefined } as never}
-        className="text-sm text-muted-foreground hover:underline"
-      >
-        ← Back to tenants
-      </Link>
-      <div>
-        <h2 className="text-lg font-medium">
-          {detail?.organization.name ?? "Tenant"}
-        </h2>
-        <p className="break-words text-xs text-muted-foreground">
-          {tenantId}
-          {detail ? ` · created ${day(detail.organization.created_at)}` : ""}
-        </p>
-      </div>
-      <Problem
-        message={
-          resource.error === null
-            ? null
-            : `This tenant could not be reloaded and may be out of date: ${resource.error.message}`
-        }
-      />
-      {detail === undefined ? (
-        resource.loading ? (
-          <Skeleton className="h-48" aria-label="Loading tenant" />
-        ) : null
-      ) : (
-        <TenantSections
-          detail={detail}
-          role={role}
-          onChanged={resource.refresh}
-        />
-      )}
-    </section>
-  );
-}
-
 export function PlatformTenants(): React.ReactElement {
   const api = useEntryApi();
   const resource = usePlatformResource(async () => {
@@ -852,8 +488,8 @@ export function PlatformTenants(): React.ReactElement {
       }}
       onOpen={(tenantId) => {
         void navigate({
-          to: "/platform/tenants/$tenantId",
-          params: { tenantId },
+          to: "/platform/tenants/$organization",
+          params: { organization: tenantId },
           search,
         } as never);
       }}

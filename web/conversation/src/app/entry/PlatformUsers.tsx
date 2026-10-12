@@ -124,13 +124,13 @@ export function PlatformUserPage(): React.ReactElement {
         </SettingsSection>
         <SettingsSection title="Organizations" aria-label="Organizations" headerAction={<Badge variant="outline">{user.memberships.length}</Badge>}>
           {user.memberships.length === 0 ? <Empty size="compact"><EmptyHeader><EmptyTitle>No organization membership</EmptyTitle></EmptyHeader></Empty> : user.memberships.map((membership) => <SettingsRow key={membership.organization_id}
-            title={<Link to={"/platform/tenants/$tenantId" as never} params={{ tenantId: membership.organization_id } as never} className="break-words underline-offset-4 hover:underline focus-visible:underline">{membership.organization_name}</Link>}
+            title={<Link to={"/platform/tenants/$organization" as never} params={{ organization: membership.organization_id } as never} className="break-words underline-offset-4 hover:underline focus-visible:underline">{membership.organization_name}</Link>}
             description={<>Joined <time dateTime={membership.joined_at}>{date(membership.joined_at)}</time></>}
             control={<Badge variant="outline">{membership.role}</Badge>} />)}
         </SettingsSection>
         <SettingsSection title="Pending invitations" aria-label="Pending invitations" headerAction={<Badge variant="outline">{user.invitations.length}</Badge>}>
           {user.invitations.length === 0 ? <Empty size="compact"><EmptyHeader><EmptyTitle>No pending invitations</EmptyTitle></EmptyHeader></Empty> : user.invitations.map((invitation, index) => <SettingsRow key={`${invitation.organization_id}:${invitation.expires_at}:${index}`}
-            title={<Link to={"/platform/tenants/$tenantId" as never} params={{ tenantId: invitation.organization_id } as never} className="break-words underline-offset-4 hover:underline focus-visible:underline">{invitation.organization_name}</Link>}
+            title={<Link to={"/platform/tenants/$organization" as never} params={{ organization: invitation.organization_id } as never} className="break-words underline-offset-4 hover:underline focus-visible:underline">{invitation.organization_name}</Link>}
             description={<>Expires <time dateTime={invitation.expires_at}>{date(invitation.expires_at)}</time></>}
             control={<Badge variant="warning">invited</Badge>} />)}
         </SettingsSection>

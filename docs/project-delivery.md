@@ -14,6 +14,46 @@ rules are not product-wide defaults. The recommendations below describe choices
 for your repository and CI; they do not add automatic Detent configuration or
 promise that Detent implements your release pipeline.
 
+## Prove setup from a fresh checkout
+
+Commit the setup scripts and nonsecret defaults that a new workspace needs.
+A clean checkout must not depend on an untracked developer `.envrc`, another
+checkout's files, a shell profile, or data left by a previous job. Keep host tool
+installation separate from per-workspace preparation using the existing
+[setup and workspace hooks](config.md.in#agents-backends-and-routing).
+
+Make setup noninteractive and safe to repeat. Declare development and test
+credentials explicitly, or use test doubles with nonsecret placeholders. Supply
+necessary secrets through the project's approved secret mechanism; never copy a
+developer's environment or production credentials into a worker workspace.
+Generated test configuration should select development mode and mock external
+side effects deliberately, rather than inherit a host's production settings.
+Preserve explicitly supplied workspace configuration and report incompatible
+settings instead of silently overwriting them.
+
+Give each workspace its own database or isolated schema, seed data, writable
+files and service ports. A separate database name is not sufficient if setup
+still copies shared mutable data or later commands reconnect to another
+workspace's database or schema. Check the full sequence: bootstrap, application
+startup, tests and a repeated setup. All should retain the intended isolation. Recreate disposable
+data from committed migrations and fixtures; keep durable work in the selected
+tracker and its published source, not in a runner's database or checkout.
+
+Verify tools and provider access in the actual noninteractive service
+environment. A command working in a login shell does not prove that the runner
+can find it. Install required executables on the service's `PATH`; an export
+inside a setup script does not persist into later agent turns. Check the
+configured provider with the runner's identity without printing credentials.
+Use [onboarding](cloud-onboarding.md#repository-configuration-and-policy) for
+repository policy and runner setup requirements.
+
+Start with one representative issue on a fresh workspace. Record the exact
+source revision, successful setup, actual provider activity and the project's
+validation results. Then verify source publication, review and landing through
+the selected tracker. A claim or lease is not proof of a running provider;
+successful bootstrap is not proof of a published Change or a landed commit.
+Follow that commit through the release contract before increasing concurrency.
+
 ## Define what each successful check proves
 
 Record these contracts in the project's contributor and agent instructions, and
@@ -149,6 +189,15 @@ missed opportunity. Do not relabel a stale snapshot as newly delivered work or
 weaken checks to satisfy the calendar. Document what happens when the first
 release candidate predates the release workflow itself.
 
+Configure scheduled failure reporting against the project's selected tracker.
+Verify the reporting credential's scope, duplicate matching, destination lane
+and recovery behavior before enabling the schedule. Importing an external issue
+does not establish that its labels or closed state control the native workflow.
+Keep reporting credentials in the trusted reporting job, outside agent and
+candidate execution. If a later passing check closes an observation, require
+newer evidence for the same check and preserve active repairs and human holds.
+Track credential expiry as an operator maintenance responsibility.
+
 ## Keep work explainable through policy changes
 
 For an idle runner or an old queue entry, inspect the project's actual workflow,
@@ -159,6 +208,21 @@ times and revisions. A lane name or a single readiness snapshot does not prove
 that a claim can succeed. If explanation and claim results disagree, preserve
 both results and report the mismatch through the selected tracker; do not clear
 unrelated holds to force progress.
+
+Use the project's supported dispatch exclusion and verify that admission reports
+the hold. A similarly named label may have no scheduling effect. Excluding new
+claims does not stop an existing worker; use its supported execution control
+and verify that the attempt ended before starting a replacement.
+
+When importing work, reconcile dependency references with the selected
+tracker's identities and typed dependency records through its supported owner.
+An old issue number in prose is not necessarily a native dependency ID. Retain
+original links and verified merge evidence when a completed prerequisite was
+not imported; do not create a replacement dependency merely to satisfy a lookup.
+Keep dependency completion separate from human holds such as waiting for a
+release or a scope decision. Merged prerequisites do not supersede those holds.
+Only requeue work when the relevant condition is verified or an authorized
+human changes it, preserving that decision in the tracker.
 
 Before changing required issue sections, gate commands or workflow states,
 inspect open work and plan its transition through supported owners. Ensure

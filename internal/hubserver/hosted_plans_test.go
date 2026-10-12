@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"slices"
@@ -17,6 +18,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -154,6 +157,20 @@ func TestHostedPlanResolutionBoundaries(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newHostedSecurityFixture(t)
 			config := hostedTestPlans(t, f.service, map[string]int64{"projects": 2})
+			for index := range config.Plans {
+				delete(config.Plans[index].Allowances, "members")
+				config.Plans[index].Version++
+			}
+			config.Base = config.Plans[0].PlanReference
+			cfg := *f.service.config.Hosted
+			cfg.Plans = &config
+			if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_version = ?", config.Base.Version); err != nil {
+				t.Fatal(err)
+			}
+			f.user(t, "owner", "owner", "owner@example.test", "", "")
 			f.service.database.now = func() time.Time { return now }
 			revision := int64(1)
 			apply := func(command hostedPlanCommand) {
@@ -202,6 +219,21 @@ func TestHostedPlanResolutionBoundaries(t *testing.T) {
 				if fleet.Allowances[name] != (hostedFleetAllowance{Used: got.Usage[name], Limit: limit}) {
 					t.Fatalf("Fleet %s=%+v full usage=%d limit=%d", name, fleet.Allowances[name], got.Usage[name], limit)
 				}
+			}
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/internal/v1/platform/usage", nil).WithContext(t.Context())
+			if err := f.service.platformTenantUsage(echo.New().NewContext(request, response)); err != nil {
+				t.Fatal(err)
+			}
+			var tenant platformTenantUsage
+			if err := json.Unmarshal(response.Body.Bytes(), &tenant); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusOK || tenant.WindowEndsAt != fleet.WindowEndsAt || tenant.Allowances["projects"].Limit == nil || *tenant.Allowances["projects"].Limit != test.projects || tenant.Allowances["projects"].Used != 1 {
+				t.Fatalf("tenant usage = %d %+v", response.Code, tenant)
+			}
+			if members, ok := tenant.Allowances["members"]; !ok || members.Limit != nil || members.Used != 1 {
+				t.Fatalf("unlimited member usage = %+v, present = %t", members, ok)
 			}
 		})
 	}
