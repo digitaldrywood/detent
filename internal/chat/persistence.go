@@ -12,6 +12,7 @@ type SessionState struct {
 	ID         string
 	Identity   operatortool.Identity
 	Client     string
+	Origin     string
 	LastUsedAt time.Time
 }
 
@@ -20,7 +21,7 @@ type SessionStore interface {
 	Save(context.Context, SessionState, time.Time, time.Duration, int) error
 }
 
-func WithSessionStore(store SessionStore, resolve func(context.Context, operatortool.Identity) (operatortool.Authority, error)) Option {
+func WithSessionStore(store SessionStore, resolve func(context.Context, operatortool.Identity, string) (operatortool.Authority, error)) Option {
 	return func(s *Service) {
 		s.store, s.resolve = store, resolve
 	}
@@ -64,12 +65,12 @@ func (s *Service) restoreSessionState(id string, current *session, state Session
 	if current.connection != nil {
 		return
 	}
-	connection := operatortool.Connection{ID: id, Identity: state.Identity, Client: state.Client}
+	connection := operatortool.Connection{ID: id, Identity: state.Identity, Client: state.Client, Origin: state.Origin}
 	connection.Resolve = func(ctx context.Context) (operatortool.Authority, error) {
 		if s.resolve == nil {
 			return operatortool.Authority{}, operatortool.ErrAccessDenied
 		}
-		return s.resolve(ctx, state.Identity)
+		return s.resolve(ctx, state.Identity, state.Origin)
 	}
 	current.connection = &connection
 
@@ -84,7 +85,7 @@ func (s *Service) persistSession(ctx context.Context, current *session) error {
 		return nil
 	}
 	now := s.now().UTC()
-	if err := s.store.Save(ctx, SessionState{ID: current.connection.ID, Identity: current.connection.Identity, Client: current.connection.Client, LastUsedAt: now}, now, s.sessionTTL, s.sessionLimit); err != nil {
+	if err := s.store.Save(ctx, SessionState{ID: current.connection.ID, Identity: current.connection.Identity, Client: current.connection.Client, Origin: current.connection.Origin, LastUsedAt: now}, now, s.sessionTTL, s.sessionLimit); err != nil {
 		return err
 	}
 	s.mu.Lock()

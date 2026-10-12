@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +16,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type operatorEntryOriginKey struct{}
 
 func (s *Service) registerOperatorTools(e *echo.Echo) {
 	// Hubs expose native work commands and hosted billing/usage operations.
@@ -106,6 +109,13 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			return s.operatorCurrentAuthority(ctx, current, organization)
 		}}
 		ctx := operatortool.WithConnection(context.WithValue(c.Request().Context(), operatorCredentialKey{}, billingAuthorization(resolve)), connection)
+		if credential.EntryKey != nil {
+			origin, err := json.Marshal(claims)
+			if err != nil {
+				return err
+			}
+			ctx = context.WithValue(ctx, operatorEntryOriginKey{}, string(origin))
+		}
 		ctx = context.WithValue(ctx, hubOperatorResolverKey{}, resolve)
 		ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(ctx context.Context) (nativeScope, error) {
 			current, err := resolve(ctx)

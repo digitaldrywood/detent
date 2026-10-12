@@ -9,8 +9,14 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
+
+type operatorChatIdentity struct {
+	operatortool.Identity
+	Origin string `json:"origin,omitempty"`
+}
 
 type operatorChatStore struct {
 	database *database
@@ -26,15 +32,17 @@ func (store operatorChatStore) Load(ctx context.Context, id string, now time.Tim
 	if err != nil {
 		return state, false, err
 	}
-	if err := json.Unmarshal([]byte(identity), &state.Identity); err != nil {
+	var stored operatorChatIdentity
+	if err := json.Unmarshal([]byte(identity), &stored); err != nil {
 		return state, false, err
 	}
+	state.Identity, state.Origin = stored.Identity, stored.Origin
 	state.LastUsedAt, err = parseTimeValue(lastUsed)
 	return state, err == nil, err
 }
 
 func (store operatorChatStore) Save(ctx context.Context, state chat.SessionState, now time.Time, ttl time.Duration, limit int) error {
-	identity, err := json.Marshal(state.Identity)
+	identity, err := json.Marshal(operatorChatIdentity{Identity: state.Identity, Origin: state.Origin})
 	if err != nil {
 		return err
 	}
@@ -56,16 +64,16 @@ func (store operatorChatStore) Save(ctx context.Context, state chat.SessionState
 	return tx.Commit()
 }
 
-func (s *Service) resolveOperatorChatAuthority(ctx context.Context, identity operatortool.Identity) (operatortool.Authority, error) {
-	if resolve, ok := ctx.Value(hubOperatorResolverKey{}).(func(context.Context) (apiCredential, error)); ok {
-		current, err := resolve(ctx)
-		if err == nil && current.EntryKey != nil && operatorIdentity(current, identity.OrganizationID) == identity {
-			return s.operatorCurrentAuthority(ctx, current, identity.OrganizationID)
-		}
-	}
+func (s *Service) resolveOperatorChatAuthority(ctx context.Context, identity operatortool.Identity, origin string) (operatortool.Authority, error) {
 	var credential apiCredential
 	var err error
-	if identity.SessionID == "" {
+	if origin != "" {
+		var claims cloudassert.Claims
+		if !s.hostedShared() || identity.SessionID != "" || json.Unmarshal([]byte(origin), &claims) != nil || claims.Issuer != s.config.Hosted.SharedEntry.Issuer || claims.Generation != s.config.Hosted.SharedEntry.Generation {
+			return operatortool.Authority{}, operatortool.ErrAccessDenied
+		}
+		credential, _, err = s.entryKeyCredential(ctx, claims)
+	} else if identity.SessionID == "" {
 		credential, _, err = s.authenticateAPIHash(ctx, identity.CredentialID, "", "")
 	} else if s.config.Hosted != nil && strings.HasPrefix(identity.PrincipalID, "account:") {
 		credential, err = s.hostedAccountCredential(ctx, identity.SessionID)

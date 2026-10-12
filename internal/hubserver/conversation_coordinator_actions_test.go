@@ -32,7 +32,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 		outcomes := []string{"execute", "reject", "unauthorized", "revoked", "stale", "foreign issue", "expired session", "wrong role", "no write grant", "bad arguments"}
 		if tool == "propose_stop_run" {
 			outcomes = append(outcomes, "replaced attempt", "expired attempt", "release failure", "routing failure", "no active attempt")
-			outcomes = append(outcomes, "stored key preview", "shared entry preview", "shared entry expired", "shared entry mismatched principal", "shared entry revoked", "shared entry no write grant", "shared entry foreign issue")
+			outcomes = append(outcomes, "stored key preview", "shared entry preview", "shared entry expired", "shared entry mismatched principal", "shared entry revoked", "shared entry changed issuer", "shared entry changed generation", "shared entry no write grant", "shared entry foreign issue")
 		}
 		if tool == "propose_file_issue" || tool == "propose_maintenance_issue" {
 			outcomes = []string{"execute", "reject", "unauthorized", "revoked", "no write grant", "bad arguments"}
@@ -238,6 +238,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						user = message
 					}
 				}
+				if mcpPost {
+					f.service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{f.service}, chat.WithClock(f.service.config.now), chat.WithSessionStore(operatorChatStore{f.service.database}, f.service.resolveOperatorChatAuthority))
+				}
 				state := &coordinatorTurnState{coordinator: c, conversationID: record.ID, users: []conversationMessageRecord{user}}
 				tools := newCoordinatorToolset(c, state)
 				if mcpPost {
@@ -271,10 +274,17 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						state.users = []conversationMessageRecord{user}
 					case "shared entry revoked":
 						operatorSQL(t, f, "UPDATE hosted_members SET active=0 WHERE user_id=?", u.identity.Subject)
+					case "shared entry changed issuer":
+						f.service.config.Hosted.SharedEntry.Issuer = "other-entry"
+					case "shared entry changed generation":
+						f.service.config.Hosted.SharedEntry.Generation++
 					case "shared entry no write grant":
 						f.grant(t, u, false, false)
 					}
-					if outcome == "shared entry expired" || outcome == "shared entry mismatched principal" || outcome == "shared entry revoked" || outcome == "shared entry no write grant" {
+					if sharedEntry {
+						f.service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{f.service}, chat.WithClock(f.service.config.now), chat.WithSessionStore(operatorChatStore{f.service.database}, f.service.resolveOperatorChatAuthority))
+					}
+					if outcome == "shared entry expired" || outcome == "shared entry mismatched principal" || outcome == "shared entry revoked" || outcome == "shared entry changed issuer" || outcome == "shared entry changed generation" || outcome == "shared entry no write grant" {
 						for _, section := range []string{"work_item", "work_runs"} {
 							raw := json.RawMessage(fmt.Sprintf(`{"work_item_id":%q,"section":%q}`, id, section))
 							result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: "read_issue_history", Arguments: raw})

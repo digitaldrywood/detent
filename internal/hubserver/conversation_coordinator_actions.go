@@ -31,6 +31,10 @@ func (s *Service) bindCoordinatorConnection(ctx context.Context, key string) (co
 		return ctx, nil
 	}
 	origin := cmp.Or(connection.Identity.SessionID, connection.Identity.CredentialID)
+	if entryOrigin, ok := ctx.Value(operatorEntryOriginKey{}).(string); ok {
+		connection.Origin = entryOrigin
+		origin += ":" + entryOrigin
+	}
 	digest := sha256.Sum256([]byte(origin + ":" + connection.Identity.PrincipalID + ":" + key))
 	connection.ID = "luna_" + hex.EncodeToString(digest[:])
 	connection.Client = "Luna"

@@ -64,6 +64,7 @@ type Connection struct {
 	DashboardURL string
 	ID           string
 	Client       string
+	Origin       string
 	Identity     Identity
 	Resolve      func(context.Context) (Authority, error)
 }

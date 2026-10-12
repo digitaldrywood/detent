@@ -47,7 +47,7 @@ func (s *Service) attachConnection(ctx context.Context) (*session, error) {
 		return nil, err
 	}
 	if current.connection != nil {
-		if current.connection.Identity != connection.Identity {
+		if current.connection.Identity != connection.Identity || current.connection.Origin != connection.Origin {
 			return nil, operatortool.ErrAccessDenied
 		}
 		connection.Client = current.connection.Client
@@ -73,7 +73,7 @@ func (s *Service) connectionSession(ctx context.Context) (*session, error) {
 		}
 	}
 	current.mu.Lock()
-	valid := current.connection != nil && current.connection.Identity == connection.Identity
+	valid := current.connection != nil && current.connection.Identity == connection.Identity && current.connection.Origin == connection.Origin
 	current.mu.Unlock()
 	if !valid {
 		return nil, operatortool.ErrAccessDenied
