@@ -43,8 +43,6 @@ func CheckpointRefName(issue Issue) string {
 func checkpointRefGit(path string, env ...string) checkpointGitRunner {
 	env = append([]string{
 		"GIT_LITERAL_PATHSPECS=1", "GIT_TERMINAL_PROMPT=0",
-		"GIT_AUTHOR_NAME=Detent", "GIT_AUTHOR_EMAIL=checkpoint@detent.invalid",
-		"GIT_COMMITTER_NAME=Detent", "GIT_COMMITTER_EMAIL=checkpoint@detent.invalid",
 	}, env...)
 	return func(ctx context.Context, args ...string) (string, error) {
 		return runGitAtWithEnv(ctx, path, env, args...)
@@ -93,7 +91,7 @@ func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue
 	if err := checkpointUnpublishedHistory(ctx, git, head); err != nil {
 		return previous, false, err
 	}
-	output, err := git(ctx, "-c", "commit.gpgsign=false", "commit-tree", tree, "-p", head, "-m", "detent: checkpoint "+issue.Identifier)
+	output, err := l.runCommit(ctx, info.Path, nil, "commit-tree", tree, "-p", head, "-m", "detent: checkpoint "+issue.Identifier)
 	if err != nil {
 		return previous, false, fmt.Errorf("create checkpoint commit: %w", err)
 	}

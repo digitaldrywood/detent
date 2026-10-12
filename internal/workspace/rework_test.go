@@ -10,6 +10,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
 func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
@@ -246,18 +249,36 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 		t.Skip("git subprocess integration")
 	}
 
-	t.Parallel()
 	for _, test := range []struct {
-		name   string
-		signed bool
-		rework bool
+		name          string
+		signed        bool
+		rework        bool
+		noIdentity    bool
+		gpg           string
+		paused        bool
+		landingMethod string
 	}{
 		{name: "unsigned Code"},
 		{name: "signed Code", signed: true},
 		{name: "signed Rework", signed: true, rework: true},
+		{name: "no identity or GPG", noIdentity: true},
+		{name: "working OpenPGP", signed: true, gpg: "working"},
+		{name: "unusable OpenPGP key", gpg: "missing"},
+		{name: "locked OpenPGP key never prompts", gpg: "locked"},
+		{name: "unresponsive signer is bounded", gpg: "stalled"},
+		{name: "signed paused Rework", signed: true, rework: true, gpg: "working", paused: true},
+		{name: "unusable key paused Rework", rework: true, gpg: "missing", paused: true},
+		{name: "no identity paused Rework", rework: true, noIdentity: true, paused: true},
+		{name: "signed merge landing", signed: true, gpg: "working", landingMethod: "merge"},
+		{name: "signed replay landing", signed: true, gpg: "working", landingMethod: "rebase"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", home)
+			t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			t.Setenv("GNUPGHOME", filepath.Join(home, "gnupg"))
 			source := initSourceRepo(t)
 			remote := initBareRemote(t)
 			runGit(t, source, "remote", "add", "origin", remote)
@@ -283,6 +304,10 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 				}
 			}
 			runGit(t, source, "config", "core.hooksPath", ".githooks")
+			if test.paused {
+				writeCheckpointFile(t, info.Path, "README.md", "feature conflict\n")
+				runGit(t, info.Path, "add", "README.md")
+			}
 			runGit(t, info.Path, "add", ".githooks")
 			runGit(t, info.Path, "commit", "-m", "test: install tracked hooks")
 			for _, hook := range hooks {
@@ -295,7 +320,7 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 			}
 			runGit(t, source, "config", "user.name", "Native Author")
 			runGit(t, source, "config", "user.email", "native@example.com")
-			if test.signed {
+			if test.signed && test.gpg == "" {
 				signer := filepath.Join(t.TempDir(), "signing-key")
 				if output, err := exec.CommandContext(t.Context(), "ssh-keygen", "-t", "ed25519", "-N", "", "-f", signer).CombinedOutput(); err != nil {
 					t.Fatalf("create signing fixture: %v: %s", err, output)
@@ -313,8 +338,45 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 				runGit(t, source, "config", "user.signingkey", signer)
 				runGit(t, source, "config", "gpg.ssh.allowedSignersFile", allowed)
 			}
+			if test.noIdentity {
+				runGit(t, source, "config", "--unset", "user.name")
+				runGit(t, source, "config", "--unset", "user.email")
+				runGit(t, source, "config", "gpg.program", filepath.Join(home, "unavailable-gpg"))
+			}
+			pinentry := filepath.Join(home, "pinentry-called")
+			if test.gpg != "" {
+				configureGPGCommitFixture(t, source, test.gpg, pinentry)
+			}
+			probeStarted := time.Now()
+			backend, err = NewBackend(KindLocalGit, LocalGitOptions{Root: filepath.Dir(info.Path), SourceRoot: source, AutoBranch: true, CommitIdentity: CommitIdentity{Name: "Enrolled runner", Email: "machine_fixture@runners.detent.invalid"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if time.Since(probeStarted) > signingProbeTimeout+5*time.Second {
+				t.Fatal("signing probe exceeded its bounded startup deadline")
+			}
+			owner := backend.(*LocalGit)
+			report := owner.CommitReport()
+			if (report.Signing != "unsigned") != test.signed {
+				t.Fatalf("signing report = %+v", report)
+			}
+			if got := owner.Problems(); (len(got) > 0) == test.signed {
+				t.Fatalf("signing problems = %+v", got)
+			}
 			configPath := filepath.Join(source, ".git", "config")
 			configBefore := readFile(t, configPath)
+			if test.paused {
+				writeCheckpointFile(t, source, "README.md", "upstream conflict\n")
+				runGit(t, source, "add", "README.md")
+				runGit(t, source, "-c", "user.name=Upstream", "-c", "user.email=upstream@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "advance upstream")
+				runGit(t, source, "push", "origin", "main")
+				prepared, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{TargetBranch: "main"})
+				if err != nil || prepared.Status != MergePrepareStatusConflict {
+					t.Fatalf("prepare paused rework: %+v, %v", prepared, err)
+				}
+				writeCheckpointFile(t, info.Path, "README.md", "resolved conflict\n")
+				runGit(t, info.Path, "add", "README.md")
+			}
 			before := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 			if err := os.WriteFile(filepath.Join(info.Path, "repair.md"), []byte("repair\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -323,9 +385,11 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 			if _, err := backend.(*LocalGit).FinalizeNativeWork(t.Context(), info, issue, func(ctx context.Context) error { return ctx.Err() }); err != nil {
 				t.Fatal(err)
 			}
-			for _, hook := range hooks {
-				if _, err := os.Stat(filepath.Join(markers, hook)); !errors.Is(err, os.ErrNotExist) {
-					t.Errorf("host finalization executed %s: %v", hook, err)
+			if !test.paused {
+				for _, hook := range hooks {
+					if _, err := os.Stat(filepath.Join(markers, hook)); !errors.Is(err, os.ErrNotExist) {
+						t.Errorf("host finalization executed %s: %v", hook, err)
+					}
 				}
 			}
 			head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
@@ -335,12 +399,136 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 			if test.signed {
 				runGit(t, info.Path, "verify-commit", head)
 			}
-			if got := strings.TrimSpace(runGit(t, info.Path, "show", "-s", "--format=%an <%ae>", head)); got != "Native Author <native@example.com>" {
+			expected := "Native Author <native@example.com>"
+			if test.noIdentity {
+				expected = "Enrolled runner <machine_fixture@runners.detent.invalid>"
+			}
+			author := expected
+			if test.paused {
+				author = "Test User <test@example.com>"
+			}
+			if got := strings.TrimSpace(runGit(t, info.Path, "show", "-s", "--format=%an <%ae>", head)); got != author {
 				t.Fatalf("finalization changed author: %s", got)
+			}
+			assertRunnerCommitPolicy(t, info.Path, head, expected, test.signed)
+			if test.paused {
+				if readFile(t, configPath) != configBefore {
+					t.Fatal("paused rework changed host Git configuration")
+				}
+				if _, err := os.Stat(pinentry); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("paused rework invoked pinentry: %v", err)
+				}
+				return
+			}
+			owned := func(ctx context.Context) error { return ctx.Err() }
+			writeCheckpointFile(t, info.Path, "checkpoint.md", "checkpoint work\n")
+			ref, changed, err := owner.PushCheckpointRef(t.Context(), info, issue, CheckpointRef{}, owned)
+			if err != nil || !changed {
+				t.Fatalf("checkpoint ref: changed=%v error=%v", changed, err)
+			}
+			assertRunnerCommitPolicy(t, info.Path, ref.CommitSHA, expected, test.signed)
+			plan, err := owner.PrepareCheckpoint(t.Context(), info, issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkpoint, err := owner.Checkpoint(t.Context(), plan, CheckpointSelection{HeadSHA: head, Paths: []string{"checkpoint.md", "repair.md", "README.md", ".githooks/pre-commit", ".githooks/prepare-commit-msg", ".githooks/commit-msg", ".githooks/post-commit"}, Reviewed: true}, owned, procgroup.Environment{Variables: map[string]string{"GIT_COMMITTER_NAME": "inherited worker", "GIT_COMMITTER_EMAIL": "inherited@example.com", "GNUPGHOME": filepath.Join(home, "unavailable-worker-keys"), "HOME": filepath.Join(home, "worker-home")}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertRunnerCommitPolicy(t, info.Path, checkpoint, expected, test.signed)
+			method := test.landingMethod
+			if method == "" {
+				method = "squash"
+			}
+			result, err := owner.LandChange(t.Context(), info, issue, LandOptions{HeadSHA: checkpoint, Method: method, Message: "Land fixture", TargetBranch: "main", Authorize: owned})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertRunnerCommitPolicy(t, source, result.MergeSHA, expected, test.signed)
+			if _, err := os.Stat(pinentry); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("signing invoked pinentry: %v", err)
 			}
 			if got := strings.TrimSpace(runGit(t, source, "config", "core.hooksPath")); got != ".githooks" || readFile(t, configPath) != configBefore {
 				t.Fatal("finalization changed repository hooks or signing configuration")
 			}
 		})
 	}
+}
+
+func assertRunnerCommitPolicy(t *testing.T, path, head, identity string, signed bool) {
+	t.Helper()
+	if got := strings.TrimSpace(runGit(t, path, "show", "-s", "--format=%cn <%ce>", head)); got != identity {
+		t.Fatalf("committer = %q, want %q", got, identity)
+	}
+	commit := runGit(t, path, "cat-file", "commit", head)
+	if strings.Contains(commit, "\ngpgsig ") != signed {
+		t.Fatalf("commit signature present = %v, want %v", strings.Contains(commit, "\ngpgsig "), signed)
+	}
+	if signed {
+		runGit(t, path, "verify-commit", head)
+	}
+}
+
+func configureGPGCommitFixture(t *testing.T, source, mode, pinentry string) {
+	t.Helper()
+	program, err := exec.LookPath("gpg")
+	if err != nil {
+		t.Fatal("GPG is required for the commit signing regression")
+	}
+	home := os.Getenv("GNUPGHOME")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"S.gpg-agent", "S.gpg-agent.extra", "S.gpg-agent.browser", "S.gpg-agent.ssh"} {
+		if err := os.WriteFile(filepath.Join(home, name), []byte("%Assuan%\nsocket="+name+".socket\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prompt := filepath.Join(home, "pinentry")
+	if err := os.WriteFile(prompt, []byte("#!/bin/sh\nprintf called > "+shellQuote(pinentry)+"\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "gpg-agent.conf"), []byte("pinentry-program "+prompt+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	signer := filepath.Join(home, "signer")
+	script := "#!/bin/sh\ncd " + shellQuote(home) + "\nexec " + shellQuote(program) + " \"$@\"\n"
+	if err := os.WriteFile(signer, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stop := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "gpgconf", "--kill", "gpg-agent")
+		cmd.Dir = home
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("stop isolated signing agent: %v: %s", err, output)
+		}
+	}
+	if mode == "stalled" {
+		if err := os.WriteFile(signer, []byte("#!/bin/sh\nexec sleep 60\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if mode == "working" || mode == "locked" {
+		passphrase := ""
+		if mode == "locked" {
+			passphrase = "fixture-passphrase"
+		}
+		cmd := exec.CommandContext(t.Context(), program, "--batch", "--pinentry-mode", "loopback", "--passphrase", passphrase, "--quick-generate-key", "Native Author <native@example.com>", "ed25519", "sign", "0")
+		cmd.Dir = home
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("generate isolated signing key: %v: %s", err, output)
+		}
+		stop()
+	}
+	t.Cleanup(stop)
+	runGit(t, source, "config", "commit.gpgsign", "true")
+	runGit(t, source, "config", "gpg.format", "openpgp")
+	runGit(t, source, "config", "gpg.program", signer)
+	key := "native@example.com"
+	if mode == "missing" {
+		key = "unavailable@example.com"
+	}
+	runGit(t, source, "config", "user.signingkey", key)
 }

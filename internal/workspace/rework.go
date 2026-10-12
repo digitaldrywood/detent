@@ -88,7 +88,7 @@ func (l *LocalGit) VerifyReworkRecovery(ctx context.Context, info Info, issue Is
 	if workspaceRecoveryFingerprint(sourceHead, stat.Fingerprint) != sourceDigest {
 		return false, nil
 	}
-	_, rebaseErr := runGitAt(ctx, replay, "-c", "core.hooksPath="+os.DevNull, "-c", "rerere.enabled=false", "rebase", "--no-gpg-sign", "--no-update-refs", "--no-autostash", "--no-rebase-merges", onto)
+	_, rebaseErr := l.runCommit(ctx, replay, nil, "-c", "core.hooksPath="+os.DevNull, "-c", "rerere.enabled=false", "rebase", "--no-update-refs", "--no-autostash", "--no-rebase-merges", onto)
 	prepared, err := reworkRebaseResult(ctx, replay, rebaseErr)
 	if err != nil || prepared.Status != MergePrepareStatusConflict {
 		return false, err
@@ -207,7 +207,7 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 		return MergePrepareResult{}, err
 	}
 	base = strings.TrimSpace(base)
-	_, rebaseErr := runGitAt(ctx, info.Path, "rebase", "--no-gpg-sign", "--no-update-refs", "--no-autostash", "--no-rebase-merges", base)
+	_, rebaseErr := l.runCommit(ctx, info.Path, nil, "rebase", "--no-update-refs", "--no-autostash", "--no-rebase-merges", base)
 	prepared, err := reworkRebaseResult(ctx, info.Path, rebaseErr)
 	prepared.BaseSHA = base
 	return prepared, err
@@ -239,7 +239,7 @@ func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issu
 			return "", err
 		}
 		if staged != "" {
-			if _, err := runGitAt(ctx, info.Path, "-c", "core.hooksPath="+os.DevNull, "commit", "-m", "fix: complete "+issue.Identifier); err != nil {
+			if _, err := l.runCommit(ctx, info.Path, nil, "-c", "core.hooksPath="+os.DevNull, "commit", "-m", "fix: complete "+issue.Identifier); err != nil {
 				return "", err
 			}
 		}
@@ -278,16 +278,7 @@ func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issu
 		}
 		return "", fmt.Errorf("%w: unresolved source conflicts: %s", ErrMergeResolutionInvalid, strings.Join(conflicts, ", "))
 	}
-	for _, kind := range []string{"rebase-merge", "rebase-apply"} {
-		path, err := gitPathFor(ctx, info.Path, kind+"/gpg_sign_opt")
-		if err != nil {
-			return "", err
-		}
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return "", err
-		}
-	}
-	if _, err := runGitAtWithEnv(ctx, info.Path, []string{"GIT_EDITOR=true"}, "-c", "commit.gpgsign=false", "rebase", "--continue"); err != nil {
+	if _, err := l.runCommit(ctx, info.Path, nil, "rebase", "--continue"); err != nil {
 		result, inspectErr := reworkRebaseResult(ctx, info.Path, err)
 		if inspectErr != nil {
 			return "", inspectErr
