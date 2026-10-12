@@ -466,10 +466,10 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			return nil, err
 		}
 		projectID, requestID = r.ProjectID, r.RequestID
-		if r.Input.Policy.Validate() != nil {
+		if r.Input.ObservedPolicyID == "" && r.Input.Policy.Validate() != nil {
 			return nil, &operatortool.RequestError{Code: "invalid_request", Message: "Policy descriptor is invalid or its identity digest does not match. Pass the entire local_project_configuration.selected_policy object unchanged as input.policy, including authored, profile, configuration, workflow and gates.human_review when returned"}
 		}
-		if workflowconfig.ValidateSharedPolicy(r.Input.Policy) != nil {
+		if r.Input.ObservedPolicyID == "" && workflowconfig.ValidateSharedPolicy(r.Input.Policy) != nil {
 			return nil, &operatortool.RequestError{Code: "invalid_request", Message: "Policy configuration is invalid or its digest does not match the descriptor"}
 		}
 		input = r.Input
@@ -478,7 +478,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			if err != nil {
 				return nil, err
 			}
-			return s.database.approvePolicyInTx(ctx, tx, policyScope, scope.credential.ID, policy.Change{ExpectedID: r.Input.ExpectedID, Policy: r.Input.Policy})
+			return s.database.approvePolicyInTx(ctx, tx, policyScope, scope.credential.ID, policy.Change{ExpectedID: r.Input.ExpectedID, ObservedPolicyID: r.Input.ObservedPolicyID, Policy: r.Input.Policy})
 		}
 	case "revoke_project_policy":
 		r, err := projectCommandInput[operatortool.PolicyRevokeInput](call.Arguments)
