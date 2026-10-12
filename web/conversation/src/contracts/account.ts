@@ -622,6 +622,7 @@ export const FleetRunner = Schema.Struct({
   capacity_limit: Schema.Number,
   reported_capacity: Schema.Number,
   provider_capacity: Schema.Array(ProviderCapacity),
+  has_heartbeat: Schema.optional(Schema.Boolean),
   last_heartbeat_at: Schema.String,
   leases: Schema.Array(RunnerLease),
   isolation_tier: Schema.optional(Schema.String),
