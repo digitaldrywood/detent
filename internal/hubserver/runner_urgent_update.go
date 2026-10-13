@@ -40,39 +40,40 @@ func readUrgentRunnerUpdate(ctx context.Context, db nativeQueryer, organization 
 	return value, err
 }
 
-func applyUrgentRunnerRouting(ctx context.Context, db nativeQueryer, r *runnerauth.Runner) error {
+func applyUrgentRunnerRouting(r *runnerauth.Runner, urgent urgentRunnerUpdate, version string) {
 	if request := r.UpdateRequest; request != nil && request.FollowHub && r.Update != nil {
 		comparison, err := update.CompareVersions(request.Version, r.Update.Running.Version)
 		if err == nil && comparison > 0 && r.State == "active" {
 			r.State = "draining"
 		}
 	}
-	urgent, err := readUrgentRunnerUpdate(ctx, db, r.OrganizationID)
-	if err != nil || urgent.Request == nil {
-		return err
+	if urgent.Request == nil {
+		return
 	}
-	var version string
+	if r.UpdateRequest != nil {
+		comparison, err := update.CompareVersions(urgent.Request.Version, r.UpdateRequest.Version)
+		if err == nil && comparison < 0 {
+			return
+		}
+	}
 	if r.Update != nil {
 		version = r.Update.Running.Version
-	} else if err := db.QueryRowContext(ctx, "SELECT version FROM machines WHERE organization_id = ? AND id = ?", r.OrganizationID, r.MachineID).Scan(&version); err != nil {
-		return err
 	}
 	comparison, err := update.CompareVersions(urgent.Request.Version, version)
 	if err != nil || comparison <= 0 {
 		if r.Update != nil && r.Update.Receipt != nil && r.Update.Receipt.Request == *urgent.Request {
 			r.UpdateRequest = urgent.Request
 		}
-		return nil
+		return
 	}
 	if r.Update != nil && r.Update.Receipt != nil && r.Update.Receipt.Request == *urgent.Request && (r.Update.Receipt.Status == "refused" || r.Update.Receipt.Status == "uncertain" && r.Update.Receipt.FailureReason != "") {
 		r.UpdateRequest = urgent.Request
-		return nil
+		return
 	}
 	if r.State == "active" {
 		r.State = "draining"
 	}
 	r.UpdateRequest = urgent.Request
-	return nil
 }
 
 func runnerUpdateReceiptMatches(ctx context.Context, tx *sql.Tx, scope nativeScope, request runnerauth.UpdateRequest) (bool, error) {
