@@ -137,6 +137,9 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/repository", testHubAdminToken, bindNativeRepositoryRequest{Mutation: tracker.Mutation{IdempotencyKey: "bind-repository"}, ExpectedRevision: integration.Revision, Repository: "example-org/example-project"}), http.StatusOK)
 			}
 			item := f.create(t, "Preserve occupied Todo and revision")
+			baseline := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(item.WorkItemID), f.token, nil)
+			requireNativeStatus(t, baseline, http.StatusOK)
+			decodeHubResponse(t, baseline, &item)
 			candidate := original
 			candidate.SourceDigest = policy.Digest([]byte("changed repository definition"))
 			candidate.SourceRevision = strings.Repeat("b", 40)
