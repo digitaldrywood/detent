@@ -1241,8 +1241,8 @@ describe("the filter-first Work surface", () => {
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Fixture projects");
     fixture.setOrganization("Secondary Example Organization");
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Secondary Example Organization projects");
-    fixture.setOrganization("Example Organization");
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Example Organization projects");
+    fixture.setOrganization("Tertiary Example Organization");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Tertiary Example Organization projects");
     fixture.setOrganization("");
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All projects");
     fixture.setOrganization();

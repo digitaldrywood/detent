@@ -29,7 +29,7 @@
       "actor": "billing@example.com",
       "event": "plan_granted",
       "organization_id": "org_beta",
-      "organization_name": "Example Organization",
+      "organization_name": "Tertiary Example Organization",
       "organization_deleted": false,
       "detail": "growth v1 until 2026-12-31T23:59:59Z \u00b7 pilot"
     },
@@ -83,7 +83,7 @@
     },
     {
       "id": "org_beta",
-      "name": "Example Organization",
+      "name": "Tertiary Example Organization",
       "deleted": false
     },
     {
