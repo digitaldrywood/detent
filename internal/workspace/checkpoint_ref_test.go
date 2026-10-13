@@ -281,7 +281,11 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 		t.Fatalf("unchanged transaction republished: %v, %v", pushed, err)
 	}
 
-	for _, failure := range []string{"staged secret", "unresolved secret", "staged size", "executable replay", "capture failure", "push failure", "lost ownership", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "excluded index path"} {
+	failures := []string{"staged secret", "unresolved secret", "staged size", "executable replay", "capture failure", "push failure", "lost ownership", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "excluded index path"}
+	if test.baseline {
+		failures = append(failures, "unstaged excluded deletion", "staged excluded deletion", "staged excluded credential path deletion")
+	}
+	for _, failure := range failures {
 		t.Run(failure, func(t *testing.T) {
 			before := readFile(t, filepath.Join(info.Path, "staged.txt"))
 			dir := linkedWorktreeGitDir(t, info.Path)
@@ -337,6 +341,15 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 			case "excluded index path":
 				writeCheckpointFile(t, info.Path, ".env.example", "EXAMPLE=changed\n")
 				runGit(t, info.Path, "add", "--force", ".env.example")
+			case "unstaged excluded deletion", "staged excluded deletion":
+				if err := os.Remove(filepath.Join(info.Path, ".detent/fixture.md")); err != nil {
+					t.Fatal(err)
+				}
+				if failure == "staged excluded deletion" {
+					runGit(t, info.Path, "add", "--force", ".detent/fixture.md")
+				}
+			case "staged excluded credential path deletion":
+				runGit(t, info.Path, "rm", "--", ".env.example")
 			}
 			result, pushed, err := source.PushCheckpointRef(t.Context(), info, issue, checkpoint, validate)
 			if err == nil || want != nil && !errors.Is(err, want) || pushed || result.CommitSHA != checkpoint.CommitSHA {
@@ -358,6 +371,12 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 				} else if err := os.Remove(filepath.Join(info.Path, ".env.example")); err != nil {
 					t.Fatal(err)
 				}
+			case "unstaged excluded deletion", "staged excluded deletion":
+				writeCheckpointFile(t, info.Path, ".detent/fixture.md", "tracked baseline\n")
+				runGit(t, info.Path, "add", "--force", ".detent/fixture.md")
+			case "staged excluded credential path deletion":
+				writeCheckpointFile(t, info.Path, ".env.example", "EXAMPLE=fixture\n")
+				runGit(t, info.Path, "add", "--force", ".env.example")
 			}
 			runGit(t, info.Path, "add", "staged.txt")
 			writeCheckpointFile(t, info.Path, "staged.txt", before)

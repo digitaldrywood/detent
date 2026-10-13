@@ -267,6 +267,7 @@ func validateCheckpointTransaction(ctx context.Context, git checkpointGitRunner,
 	if err != nil {
 		return err
 	}
+	worktree := make(map[string]string)
 	for _, entry := range strings.Split(strings.TrimSuffix(output, "\x00"), "\x00") {
 		if entry == "" {
 			continue
@@ -276,6 +277,7 @@ func validateCheckpointTransaction(ctx context.Context, git checkpointGitRunner,
 		if !ok || len(fields) != 3 || fields[0] != "100644" && fields[0] != "100755" || fields[1] != "blob" {
 			return ErrCheckpointUnsafe
 		}
+		worktree[path] = fields[0] + " " + fields[2]
 		if unchanged[path] != fields[0]+" "+fields[2] {
 			if !checkpointPathAllowed(path) || strings.HasPrefix(path, ".detent/") {
 				return ErrCheckpointUnsafe
@@ -283,6 +285,11 @@ func validateCheckpointTransaction(ctx context.Context, git checkpointGitRunner,
 			if err := checkpointAlternative(ctx, git, fields[2]); err != nil {
 				return err
 			}
+		}
+	}
+	for path, baseline := range unchanged {
+		if (!checkpointPathAllowed(path) || strings.HasPrefix(path, ".detent/")) && (!seen[path][0] || worktree[path] != baseline) {
+			return fmt.Errorf("%w: excluded baseline path changed", ErrCheckpointUnsafe)
 		}
 	}
 	return nil
