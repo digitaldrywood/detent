@@ -235,14 +235,14 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			runRunnerGit(t, source, "commit", "-m", "base")
 			runRunnerGit(t, source, "push", "origin", "main")
 			target := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
-			if !test.staged || test.signingFail {
+			if !test.staged {
 				runRunnerGit(t, source, "config", "commit.gpgsign", "true")
 				runRunnerGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-personal-signer"))
 			}
 			signer := ""
 			var allowed string
 			var signerBefore []byte
-			if test.signed {
+			if test.signed || test.signingFail {
 				signer = filepath.Join(t.TempDir(), "signing-key")
 				if output, err := exec.CommandContext(t.Context(), "ssh-keygen", "-t", "ed25519", "-N", "", "-f", signer).CombinedOutput(); err != nil {
 					t.Fatalf("create signing fixture: %v: %s", err, output)
@@ -263,6 +263,13 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				runRunnerGit(t, source, "config", "gpg.format", "ssh")
 				runRunnerGit(t, source, "config", "user.signingkey", signer)
 				runRunnerGit(t, source, "config", "gpg.ssh.allowedSignersFile", allowed)
+				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Dir(info.Path), SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if report := backend.(*workspace.LocalGit).CommitReport(); report.Signing != "ssh" {
+					t.Fatalf("signing fixture was not captured at startup: %+v", report)
+				}
 			}
 			configBefore, err := os.ReadFile(filepath.Join(source, ".git", "config"))
 			if err != nil {
@@ -275,6 +282,14 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				runRunnerGit(t, info.Path, "add", "repair.md")
 			}
 			agent := &resolvingReworkAgent{unresolved: test.unresolved, staged: test.staged, signer: signer, t: t}
+			if test.signingFail {
+				agent.signer = ""
+				agent.afterStage = func() {
+					if err := os.Remove(signer); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 			execution := &reworkArtifactsExecution{base: base, testExecution: testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{PolicyID: "unchanged-policy"}}}}
 			request := RunRequest{Mode: RunModeImplement, Issue: issue, Execution: execution}
 			prepareConflict := (test.refusal == workspace.LandRefusalConflict || test.baseRefresh) && !test.historical && test.laterRefusal == ""
