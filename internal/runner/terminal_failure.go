@@ -2,6 +2,7 @@ package runner
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -28,8 +29,16 @@ func nativeTerminalFailure(err error, at time.Time, turnStartRefused bool) *trac
 	}
 	var hook *workspace.HookError
 	switch {
-	case errors.As(err, &hook), errors.Is(err, ErrWorkspacePreparation):
+	case errors.As(err, &hook), errors.Is(err, ErrWorkspacePreparation), errors.Is(err, ErrNativeRecoveryRequired):
 		failure.ErrorClass = "workspace_hook"
+		failure.Stage = "workspace_preparation"
+		if hook != nil {
+			output, _, _ := strings.Cut(strings.TrimSpace(hook.Output), "\n")
+			failure.Error = fmt.Sprintf("workspace hook %s failed (exit status %d)", hook.Hook, hook.ExitCode)
+			if output != "" {
+				failure.Error += ": " + output
+			}
+		}
 	case errors.Is(err, ErrMergeWorkerStartupTimeout), failure.Operation == "initialize":
 		failure.ErrorClass = "backend_startup"
 	case failure.RPCCode != nil:

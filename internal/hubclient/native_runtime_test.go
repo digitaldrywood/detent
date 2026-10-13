@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"encoding/json"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -19,7 +20,11 @@ func TestNativeAttemptTerminalActivityReceipts(t *testing.T) {
 		name, outcome string
 		duration      time.Duration
 		merge         bool
+		preProvider   bool
+		olderHub      bool
 	}{
+		{name: "older Hub setup unavailable", outcome: "failed", preProvider: true, olderHub: true},
+		{name: "workspace setup", outcome: "failed", preProvider: true},
 		{name: "failed", outcome: "failed", duration: 20 * time.Second},
 		{name: "two seconds", outcome: "succeeded", duration: 2 * time.Second},
 		{name: "interrupted", outcome: "interrupted", duration: 3 * time.Second},
@@ -36,7 +41,18 @@ func TestNativeAttemptTerminalActivityReceipts(t *testing.T) {
 			at := time.Now().UTC().Add(-time.Minute)
 			clock := at
 			h.scheduler.now = func() time.Time { return clock }
-			if tt.merge {
+			if tt.preProvider {
+				before, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+				if err != nil || before.Attempt != nil {
+					t.Fatalf("no-attempt evidence=%+v err=%v", before, err)
+				}
+				if err := execution.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 2, Phase: "completed", HeartbeatAt: clock}); err != nil {
+					t.Fatal(err)
+				}
+				if err := execution.PrepareFinish(t.Context(), "failed", "", &tracker.NativeTerminalFailure{Error: "after_create exit status 127: script not found token=private-secret", ErrorClass: "workspace_hook", ObservedAt: clock}); err != nil {
+					t.Fatal(err)
+				}
+			} else if tt.merge {
 				if err := execution.StartLanding(t.Context(), 42, 2); err != nil {
 					t.Fatal(err)
 				}
@@ -44,10 +60,27 @@ func TestNativeAttemptTerminalActivityReceipts(t *testing.T) {
 				t.Fatal(err)
 			}
 			clock = at.Add(tt.duration)
+			if tt.olderHub {
+				client := execution.claim.source.client.client
+				client.capabilities.Features = slices.DeleteFunc(client.capabilities.Features, func(feature string) bool { return feature == tracker.NativePreProviderFailureCapability })
+			}
 			if err := execution.Finish(t.Context(), tt.outcome); err != nil {
 				t.Fatal(err)
 			}
 			evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+			if tt.olderHub {
+				if err != nil || evidence.Attempt != nil || !slices.Contains(evidence.Unavailable, "native_attempt") {
+					t.Fatalf("older Hub fabricated setup history: %+v err=%v", evidence, err)
+				}
+				return
+			}
+			if tt.preProvider {
+				a := evidence.Attempt
+				if err != nil || a == nil || a.Status != "failed" || a.Identity != nil || a.Runtime == nil || a.Runtime.LocalAttemptID != 42 || a.Runtime.Generation != 2 || a.Runtime.Activity != nil || a.TerminalFailure == nil || a.TerminalFailure.Error != "after_create exit status 127: script not found [redacted]" {
+					t.Fatalf("setup receipt missing or fabricated: %+v err=%v", a, err)
+				}
+				return
+			}
 			if err != nil || evidence.Attempt == nil || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.Activity == nil {
 				t.Fatalf("terminal receipt missing: evidence=%+v err=%v", evidence, err)
 			}

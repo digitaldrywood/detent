@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -8,6 +9,8 @@ import (
 
 type NativeTerminalFailure struct {
 	Error            string    `json:"error,omitempty"`
+	Stage            string    `json:"stage,omitempty"`
+	Attribution      string    `json:"attribution,omitempty"`
 	ErrorClass       string    `json:"error_class,omitempty"`
 	TurnStartRefused bool      `json:"turn_start_refused,omitempty"`
 	ObservedAt       time.Time `json:"observed_at"`
@@ -23,14 +26,25 @@ type NativeTerminalFailure struct {
 	Summary          string    `json:"summary"`
 }
 
+var nativeFailureAssignment = regexp.MustCompile(`[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)`)
+
 func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	text := NativeFinalization{}
 	first, _, _ := strings.Cut(f.Error, "\n")
-	f.Error = text.publicText(strings.TrimSpace(first))
+	f.Error = text.publicText(nativeFailureAssignment.ReplaceAllString(strings.TrimSpace(first), "[redacted]"))
 	switch f.ErrorClass {
 	case "backend_startup", "protocol", "workspace_hook":
 	default:
 		f.ErrorClass = ""
+	}
+	switch f.Stage {
+	case "pre_provider", "workspace_preparation":
+	default:
+		f.Stage = ""
+	}
+	f.Attribution = ""
+	if f.ErrorClass != "" || f.Stage == "pre_provider" {
+		f.Attribution = "instance"
 	}
 	f.Source = "host_runner_completion"
 	f.Coverage = "recorded_execution_error_only; not_change_publication_or_issue_acceptance_or_lease_release; historical_metadata_not_backfilled"
@@ -55,6 +69,12 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	}
 	f.TurnStartRefused = f.TurnStartRefused && f.Provider == "codex" && f.Operation == "turn/start" && f.RPCCode != nil
 	f.Unavailable = []string{}
+	if f.Stage == "" {
+		f.Unavailable = append(f.Unavailable, "stage")
+	}
+	if f.Attribution == "" {
+		f.Unavailable = append(f.Unavailable, "attribution")
+	}
 	if f.Provider == "" {
 		f.Unavailable = append(f.Unavailable, "provider")
 	}

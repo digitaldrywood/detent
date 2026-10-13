@@ -15,6 +15,7 @@ import (
 const NativeExecutionCapability = "fenced_run_history"
 
 const NativeRuntimeEvidenceCapability = "native_runtime_evidence"
+const NativePreProviderFailureCapability = "native_pre_provider_failure"
 const NativeAdmissionEvidenceCapability = "native_admission_evidence"
 const NativeAdmissionObservationCapability = "native_admission_observation"
 

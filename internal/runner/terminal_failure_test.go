@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestNativeTerminalFailureSignatureEvidence(t *testing.T) {
@@ -22,6 +23,7 @@ func TestNativeTerminalFailureSignatureEvidence(t *testing.T) {
 		{"absent", nil, "", ""},
 		{"ordinary", errors.New("count 116 failed\nprivate continuation"), "", "count 116 failed"},
 		{"workspace", fmt.Errorf("%w: /private/worktree token=secret-value", ErrWorkspacePreparation), "workspace_hook", "workspace preparation failed: [redacted] [redacted]"},
+		{"hook diagnostic", &workspace.HookError{Hook: "after_create", Command: "SECRET=private-value missing-script", Dir: "/private/worktree", ExitCode: 127, Output: "script not found token=secret-value WORKSPACE_VALUE=private-value\nprivate continuation"}, "workspace_hook", "workspace hook after_create failed (exit status 127): script not found [redacted] [redacted]"},
 		{"startup timeout", ErrMergeWorkerStartupTimeout, "backend_startup", "merge worker startup timed out"},
 		{"startup failure", backendcapacity.NewError(backendcapacity.Scope{}, backendcapacity.Details{Kind: backendcapacity.StartupFailureKind}, errors.New("start backend failed")), "backend_startup", "start backend failed"},
 		{"protocol", &testProviderResponseError{operation: "turn/start"}, "protocol", "provider request refused"},
