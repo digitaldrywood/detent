@@ -48,7 +48,11 @@ func resolveLandingReviewThreads(ctx context.Context, client GitHubRESTClient, r
 	if err != nil {
 		return errors.Join(refusal, fmt.Errorf("read unresolved review conversations: %w", err))
 	}
+	needsRework := false
 	for i, thread := range threads {
+		if !thread.Bot || len(thread.Surfaced) == 0 {
+			needsRework = true
+		}
 		if thread.Bot && !surfacedAt(thread, head) {
 			if replyErr := replyLandingReviewThread(ctx, client, thread.ID, "Detent surfaced this conversation to Rework at "+shortLandingHead(head)+".\n\n<!-- detent:surfaced "+head+" -->"); replyErr != nil {
 				threads[i].Body += "\n(surfacing reply failed)"
@@ -59,7 +63,7 @@ func resolveLandingReviewThreads(ctx context.Context, client GitHubRESTClient, r
 	if len(threads) == 0 {
 		return refusal
 	}
-	return errors.Join(refuse(LandRefusalProtected, landingReviewThreadsReason(threads)), err)
+	return errors.Join(refuse(LandRefusalProtected, landingReviewThreadsReason(threads, needsRework)), err)
 }
 
 func surfacedAt(thread landingReviewThread, head string) bool {
@@ -146,10 +150,14 @@ func replyLandingReviewThread(ctx context.Context, client GitHubRESTClient, thre
 	return client.GraphQL(ctx, landingReviewThreadReply, map[string]any{"thread": thread, "body": body}, &struct{}{})
 }
 
-func landingReviewThreadsReason(threads []landingReviewThread) string {
+func landingReviewThreadsReason(threads []landingReviewThread, needsRework bool) string {
 	var b strings.Builder
-	b.WriteString(ReviewConversationsRefusalText)
-	b.WriteString(" Address each finding in Rework, then resolve its conversation with evidence of the fix or dismissal.")
+	if needsRework {
+		b.WriteString(ReviewConversationsRefusalText)
+		b.WriteString(" Address each finding in Rework, then resolve its conversation with evidence of the fix or dismissal.")
+	} else {
+		b.WriteString("GitHub review conversations already surfaced to Rework require operator disposition. Resolve each conversation with evidence of the fix or dismissal, then explicitly resume the Change Request.")
+	}
 	for i, thread := range threads {
 		if i == landingReviewThreadLimit {
 			fmt.Fprintf(&b, "\n- %d more unresolved conversation(s) on the pull request.", len(threads)-i)

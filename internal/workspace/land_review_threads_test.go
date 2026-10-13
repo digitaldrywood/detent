@@ -71,6 +71,7 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 		wantReason    []string
 		wantMutations []string
 		wantCursors   int
+		wantRework    bool
 	}{
 		{
 			name:    "other protected refusals pass through untouched",
@@ -81,7 +82,7 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			name:          "a bot finding surfaced at an earlier head stays actionable without disposition proof",
 			refusal:       conversation,
 			client:        &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P2 finding", surfacedEarlier), reviewThreadNode("T0", true, "chatgpt-codex-connector", "Bot", "done"))}},
-			wantReason:    []string{ReviewConversationsRefusalText, "P2 finding"},
+			wantReason:    []string{"operator disposition", "explicitly resume", "P2 finding"},
 			wantMutations: []string{"surface:T1"},
 			wantCursors:   1,
 		},
@@ -92,13 +93,31 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			wantReason:    []string{ReviewConversationsRefusalText, "chatgpt-codex-connector on web/app.ts:7: Honor partial baselines"},
 			wantMutations: []string{"surface:T1"},
 			wantCursors:   1,
+			wantRework:    true,
 		},
 		{
 			name:        "a bot finding already surfaced at this head stays actionable without another reply",
 			refusal:     conversation,
 			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "Still open", surfacedNow))}},
-			wantReason:  []string{"Still open"},
+			wantReason:  []string{"operator disposition", "explicitly resume", "Still open"},
 			wantCursors: 1,
+		},
+		{
+			name:          "a new bot finding keeps Rework available alongside a prior surfaced finding",
+			refusal:       conversation,
+			client:        &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "Prior finding", surfacedEarlier), reviewThreadNode("T2", false, "chatgpt-codex-connector", "Bot", "New finding"))}},
+			wantReason:    []string{ReviewConversationsRefusalText, "Prior finding", "New finding"},
+			wantMutations: []string{"surface:T1", "surface:T2"},
+			wantCursors:   1,
+			wantRework:    true,
+		},
+		{
+			name:        "a human conversation preserves existing Rework alongside a prior surfaced bot finding",
+			refusal:     conversation,
+			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "Prior finding", surfacedNow), reviewThreadNode("T2", false, "reviewer", "User", "Human finding", surfacedEarlier))}},
+			wantReason:  []string{ReviewConversationsRefusalText, "Prior finding", "Human finding"},
+			wantCursors: 1,
+			wantRework:  true,
 		},
 		{
 			name:        "human conversations are surfaced in the refusal and never resolved",
@@ -106,6 +125,7 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "corylanou", "User", "Please rename this", surfacedEarlier))}},
 			wantReason:  []string{"corylanou on web/app.ts:7: Please rename this"},
 			wantCursors: 1,
+			wantRework:  true,
 		},
 		{
 			name:          "every page of the thread connection is read",
@@ -114,12 +134,13 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			wantReason:    []string{"Second page finding"},
 			wantMutations: []string{"surface:T9"},
 			wantCursors:   2,
+			wantRework:    true,
 		},
 		{
 			name:        "an earlier surfacing marker does not resolve a finding already surfaced at this head",
 			refusal:     conversation,
 			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P1 finding", surfacedEarlier, surfacedNow))}},
-			wantReason:  []string{"P1 finding"},
+			wantReason:  []string{"operator disposition", "explicitly resume", "P1 finding"},
 			wantCursors: 1,
 		},
 		{
@@ -128,12 +149,14 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			client:      &reviewThreadClient{failReply: "T1", pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P1 finding"))}},
 			wantReason:  []string{"P1 finding", "surfacing reply failed", "mark review conversation as surfaced: mutation refused"},
 			wantCursors: 1,
+			wantRework:  true,
 		},
 		{
 			name:       "an unreadable thread list keeps the GitHub refusal",
 			refusal:    conversation,
 			client:     &reviewThreadClient{readErr: &github.StatusError{StatusCode: http.StatusBadGateway}},
 			wantReason: []string{"GitHub refused the merge"},
+			wantRework: true,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -141,6 +164,9 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			var refusal *LandRefusal
 			if !errors.As(err, &refusal) || refusal.Kind != LandRefusalProtected {
 				t.Fatalf("resolveLandingReviewThreads() = %v, want a protected refusal", err)
+			}
+			if got := ReviewConversationsRefusal(refusal.Reason); got != test.wantRework {
+				t.Fatalf("ReviewConversationsRefusal(%q) = %t, want %t", refusal.Reason, got, test.wantRework)
 			}
 			for _, want := range test.wantReason {
 				if !strings.Contains(err.Error(), want) {
