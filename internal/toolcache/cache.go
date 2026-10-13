@@ -212,9 +212,24 @@ func inspect(ctx context.Context, resolvePaths func(context.Context) (Paths, err
 	if err != nil {
 		return Report{Error: err.Error()}
 	}
-	report := Report{BuildPath: paths.Build, ModulePath: paths.Modules}
-	if paths.Build != "" && paths.Build != "off" {
-		data, readErr := os.ReadFile(filepath.Join(paths.Build, "detent-trim.txt"))
+	report := ReadTrimReport(paths.Build)
+	report.ModulePath = paths.Modules
+	report.BuildBytes, err = size(ctx, paths.Build)
+	if err != nil {
+		report.Error = err.Error()
+		return report
+	}
+	report.ModuleBytes, err = size(ctx, paths.Modules)
+	if err != nil {
+		report.Error = err.Error()
+	}
+	return report
+}
+
+func ReadTrimReport(root string) Report {
+	report := Report{BuildPath: root}
+	if root != "" && root != "off" {
+		data, readErr := os.ReadFile(filepath.Join(root, "detent-trim.txt"))
 		if readErr == nil {
 			stamp, counts, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
 			at, parseErr := time.Parse(time.RFC3339Nano, stamp)
@@ -229,15 +244,6 @@ func inspect(ctx context.Context, resolvePaths func(context.Context) (Paths, err
 		} else if !os.IsNotExist(readErr) {
 			report.Error = "read last reaper trim: " + readErr.Error()
 		}
-	}
-	report.BuildBytes, err = size(ctx, paths.Build)
-	if err != nil {
-		report.Error = err.Error()
-		return report
-	}
-	report.ModuleBytes, err = size(ctx, paths.Modules)
-	if err != nil {
-		report.Error = err.Error()
 	}
 	return report
 }

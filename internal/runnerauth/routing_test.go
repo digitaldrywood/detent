@@ -144,6 +144,7 @@ func TestRunnerEligibility(t *testing.T) {
 		{"host full", func(r *Runner) { r.HostUsed = 2 }, policy.Requirements{}, false, "host_capacity"},
 		{"runner full", func(r *Runner) { r.Used = 2 }, policy.Requirements{}, false, "runner_capacity"},
 		{"reported pause", func(r *Runner) { r.ReportedCapacity = 0 }, policy.Requirements{}, false, "runner_capacity"},
+		{"active lease survives reported pause", func(r *Runner) { r.ReportedCapacity = 0 }, policy.Requirements{}, true, ""},
 		{"active retains slot", func(r *Runner) { r.Used = 2; r.HostUsed = 2 }, policy.Requirements{}, true, ""},
 		{"provider exhausted", func(r *Runner) {
 			r.ProviderCapacity = []providercapacity.View{{Report: providercapacity.Report{MaxConcurrent: 2}, State: "exhausted"}}
