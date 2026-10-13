@@ -3038,11 +3038,34 @@ Prompt
 func TestParseWorkflowGateSecurityAuditConfig(t *testing.T) {
 	t.Parallel()
 
+	for _, test := range []struct {
+		name, setting string
+		enabled       bool
+	}{
+		{"default native", "", true},
+		{"explicit native opt out", "gate:\n  security_audit:\n    enabled: false\n", false},
+		{"explicit native enabled", "gate:\n  security_audit:\n    enabled: true\n", true},
+		{"partial audit config", "gate:\n  security_audit:\n    max_attempts: 4\n", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n" + test.setting + "---\nPrompt\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := workflow.Config.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			if workflow.Config.Gate.SecurityAudit.Enabled != test.enabled {
+				t.Fatalf("security audit enabled = %t, want %t", workflow.Config.Gate.SecurityAudit.Enabled, test.enabled)
+			}
+		})
+	}
+
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
   kind: github_local
   api_key: ghp_example
-  repository: digitaldrywood/detent
+  repository: example-org/example-project
   local_sqlite:
     path: .detent/work-items.db
 gate:
