@@ -3,6 +3,7 @@ package hubserver
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,6 +17,47 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestHostedRunnerEnrollmentValidation(t *testing.T) {
+	t.Parallel()
+	var logs hostedLogBuffer
+	f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, func(cfg *Config) {
+		cfg.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	})
+	path := browserHostedOrganizationBase + "/runner-enrollments"
+	for _, test := range []struct {
+		name, scope, reason string
+		projects            []tracker.ProjectID
+	}{
+		{name: "selected projects", scope: "projects", projects: []tracker.ProjectID{tracker.ProjectID(f.project)}},
+		{name: "organization", scope: "organization"},
+		{name: "unknown project", scope: "projects", projects: []tracker.ProjectID{"project_unknown"}, reason: "Enrollment projects must be unique and belong to the organization"},
+		{name: "duplicate projects", scope: "projects", projects: []tracker.ProjectID{tracker.ProjectID(f.project), tracker.ProjectID(f.project)}, reason: "Enrollment projects must be unique and belong to the organization"},
+		{name: "empty selection", scope: "projects", reason: "Enrollment requires valid or omitted host IDs, a project or organization scope and operations, and a TTL of 1 to 900 seconds"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := runnerauth.EnrollmentRequest{Scope: test.scope, ProjectIDs: test.projects, Operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 900}
+			if test.reason == "" {
+				var enrollment runnerauth.Enrollment
+				browserHostedDecode(t, f.api(t, "owner", http.MethodPost, path, request, http.StatusCreated), &enrollment)
+				if enrollment.ID == "" || enrollment.Token == "" || enrollment.ExpiresAt.IsZero() {
+					t.Fatalf("incomplete enrollment: id=%q expires=%v", enrollment.ID, enrollment.ExpiresAt)
+				}
+				return
+			}
+			var failure apiErrorResponse
+			browserHostedDecode(t, f.api(t, "owner", http.MethodPost, path, request, http.StatusUnprocessableEntity), &failure)
+			if failure.Code != "invalid_request" || failure.Message != test.reason {
+				t.Fatalf("failure = %#v, want invalid_request and %q", failure, test.reason)
+			}
+			for _, want := range []string{"error=", "invalid_request", test.reason, "method=POST", "route=" + enrollmentBase} {
+				if !strings.Contains(logs.String(), want) {
+					t.Fatalf("enrollment failure log lacks %q: %s", want, logs.String())
+				}
+			}
+		})
+	}
+}
 
 // TestHostedMemberManagement covers the section 12 membership endpoints: the
 // role and grant changes the organization screen makes, and the last-owner
