@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"slices"
@@ -468,6 +469,37 @@ func TestHealthFindingResolutionOwnership(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			tx, err = f.service.database.reader.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if _, err := claimCandidateIDs(t.Context(), tx, claimCandidateQuery{NativeScope: &scope, AvailableAt: now.Add(63 * time.Minute)}, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			previewed, _, err := readNativeIssue(t.Context(), tx, scope, string(item))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if previewed.State != before.State || previewed.Revision != before.Revision || previewed.Body != before.Body {
+				t.Fatalf("candidate preview changed issue: %+v", previewed)
+			}
+			if err := tx.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			var findings []healthFinding
+			if test.name == "later unresolved observation" {
+				findings = []healthFinding{finding}
+			}
+			applyTestHealth(t, f, now.Add(63*time.Minute), findings)
+			tx, err = f.service.database.reader.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
 			ids, err := claimCandidateIDs(t.Context(), tx, claimCandidateQuery{NativeScope: &scope, AvailableAt: now.Add(63 * time.Minute)}, nil, nil, nil, nil, nil, nil, nil, nil)
 			if err != nil {
 				t.Fatal(err)
