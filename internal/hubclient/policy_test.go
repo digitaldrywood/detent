@@ -1,6 +1,7 @@
 package hubclient
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -35,6 +37,8 @@ func TestNativePolicyRetryAfterApproval(t *testing.T) {
 			previous.Gates.AutoPromote = true
 			previous = previous.WithID()
 			approved := false
+			claims := 0
+			issueID := tracker.NativeWorkItemID("wi_" + strings.Repeat("a", 32))
 			path := filepath.Join(t.TempDir(), "private", "identity.json")
 			identity, err := runnerauth.Initialize(path, "https://hub.test")
 			if err != nil {
@@ -67,6 +71,35 @@ func TestNativePolicyRetryAfterApproval(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claims"):
+					var request tracker.NativeClaim
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+						t.Fatal(err)
+					}
+					if !approved || request.PolicyID != selected.ID {
+						t.Fatalf("claim reached Hub before selected policy approval: %+v", request)
+					}
+					claims++
+					if err := json.NewEncoder(w).Encode(tracker.NativeLease{
+						ID: "lease_test", WorkItemID: issueID, MachineID: request.MachineID, SessionID: request.SessionID,
+						PolicyID: selected.ID, FencingToken: 1, ServerTime: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+						IsolationPolicy: &isolation.Policy{Tier: isolation.NativeTrusted},
+					}); err != nil {
+						t.Fatal(err)
+					}
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/work-items/"+string(issueID)) && r.URL.Query().Get("view") == "recovery":
+					if err := json.NewEncoder(w).Encode(tracker.NativeRecovery{Issue: tracker.NativeIssue{
+						NativeReference: tracker.NativeReference{OrganizationID: "org_test", ProjectID: "prj_test", WorkItemID: issueID},
+						Title:           "Approved policy work", State: "Todo",
+					}}); err != nil {
+						t.Fatal(err)
+					}
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/leases/lease_test/validate"):
+					if err := json.NewEncoder(w).Encode(runnerauth.Runner{
+						Binding: identity.Identity.Binding, OrganizationID: "org_test",
+					}); err != nil {
+						t.Fatal(err)
+					}
 				default:
 					t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 				}
@@ -75,23 +108,37 @@ func TestNativePolicyRetryAfterApproval(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scheduler, err := NewScheduler(client, SchedulerConfig{OrganizationID: "org_test", NativeProjects: map[string]tracker.ProjectID{"project": "prj_test"}, Machine: Machine{ID: identity.Identity.MachineID, Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Minute, LeaseTTL: time.Hour})
+			scheduler, err := NewScheduler(client, SchedulerConfig{
+				OrganizationID: "org_test", NativeProjects: map[string]tracker.ProjectID{"project": "prj_test"},
+				Machine: Machine{ID: identity.Identity.MachineID, Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Minute, LeaseTTL: time.Hour,
+				LeaseHold: func(context.Context) (func(), error) { return func() {}, nil },
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			scheduler.nativeHeartbeats["prj_test"] = time.Now()
+			client.runner.setRouting(runnerauth.RoutingSnapshot{Routing: runnerauth.Routing{State: "active", Availability: runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}}})
 			native := scheduler.nativeProjects["project"].client
-			native.applyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "stable", PolicyID: previous.ID})
+			native.applyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "stable", PolicyID: previous.ID, Claimable: true})
+			request := orchestrator.SchedulingRequest{ProjectID: "project", Policy: selected}
 			for range 2 {
-				err := scheduler.CheckProjectPolicy(t.Context(), "project", "", selected)
+				issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
 				var failure *APIError
-				if !errors.As(err, &failure) || failure.Status != http.StatusConflict || failure.Code != "policy_mismatch" || !connector.IsRetryable(err) {
+				if !errors.As(err, &failure) || failure.Status != http.StatusConflict || failure.Code != "policy_mismatch" || !connector.IsRetryable(err) || len(issues) != 0 || claims != 0 {
 					t.Fatalf("pending approval accepted or not retryable: %v", err)
 				}
 			}
 			approved = true
 			if err := scheduler.CheckProjectPolicy(t.Context(), "project", "", selected); err != nil {
 				t.Fatalf("unchanged selected policy stayed rejected after approval: %v", err)
+			}
+			issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
+			if err != nil || len(issues) != 1 || issues[0].ID != string(issueID) || !issues[0].AssignedToWorker || claims != 1 {
+				t.Fatalf("claims did not resume after approval: issues=%+v claims=%d error=%v", issues, claims, err)
+			}
+			claimed, err := scheduler.AdoptClaim(t.Context(), issues[0], time.Now())
+			if err != nil || claimed.Issue.ID != string(issueID) || !claimed.LeaseExpiresAt.After(time.Now()) {
+				t.Fatalf("approved claim was not usable: %+v, %v", claimed, err)
 			}
 		})
 	}
