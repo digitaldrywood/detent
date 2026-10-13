@@ -853,6 +853,9 @@ func TestHostedBrowserPreviewSeed(t *testing.T) {
 	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_ACTIONS") != "" {
 		f.seedCoordinatorActions(t)
 	}
+	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_WORKFLOW") != "" {
+		f.seedCoordinatorWorkflow(t)
+	}
 	base := browserHostedOrganizationBase + "/projects/" + f.project
 	tests := []struct {
 		name, account, path string
@@ -909,6 +912,9 @@ func TestHostedBrowserPreview(t *testing.T) {
 	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_ACTIONS") != "" {
 		f.seedCoordinatorActions(t)
+	}
+	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_WORKFLOW") != "" {
+		f.seedCoordinatorWorkflow(t)
 	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_CAPACITY") != "" {
 		if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {

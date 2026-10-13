@@ -147,9 +147,9 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 			return nil, err
 		}
 		problems := slices.DeleteFunc(slices.Clone(r.Problems), func(p runnerauth.Problem) bool { return p.ProjectID != "" && p.ProjectID != string(scope.project) })
-		views = append(views, map[string]any{"runner_id": r.RunnerID, "display_name": r.DisplayName, "revision": r.Revision, "scope": r.Scope, "isolation_tier": r.IsolationTier, "backend_isolation": r.BackendIsolation, "problems": problems, "health": r.Health, "connection_health": r.ConnectionHealth})
+		views = append(views, map[string]any{"runner_id": r.RunnerID, "display_name": r.DisplayName, "revision": r.Revision, "scope": r.Scope, "isolation_tier": r.IsolationTier, "backend_isolation": r.BackendIsolation, "problems": problems, "health": r.Health, "connection_health": r.ConnectionHealth, "last_heartbeat_at": r.LastHeartbeatAt})
 	}
-	return map[string]any{"runners": views}, nil
+	return map[string]any{"runners": views, "observed_at": s.config.now().UTC()}, nil
 }
 
 func (s *Service) executeCoordinatorRunnerAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
