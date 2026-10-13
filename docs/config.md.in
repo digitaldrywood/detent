@@ -1154,7 +1154,9 @@ The effective model selection's `stages.security_audit` selects the backend,
 model and effort. Codex and Claude use their ordinary authentication, including
 subscription and metered accounts. Each audit consumes provider tokens and
 runtime, reported with other stage usage; metered accounts incur their usual
-provider charges.
+provider charges. Native direct landing also audits the integrated base/head
+before push. A rebase, an earlier batch member or a concurrent base update
+requires fresh evidence for the resulting commit and incurs another audit.
 
 To disable it, explicitly set the existing project gate policy in `detent.yaml`
 (or update that policy through the project's existing configuration API/MCP owner):

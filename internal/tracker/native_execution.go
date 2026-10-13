@@ -178,6 +178,7 @@ type NativeLandingCIReceipt struct {
 }
 
 type NativeLandingReceipt struct {
+	SecurityAudit   *SecurityAuditReview    `json:"security_audit,omitempty"`
 	Pipeline        []gate.PipelineTiming   `json:"pipeline,omitempty"`
 	PipelineDropped int                     `json:"pipeline_dropped,omitempty"`
 	Path            string                  `json:"path,omitempty"`
