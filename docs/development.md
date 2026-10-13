@@ -73,11 +73,22 @@ matching Backlog intake moves to Todo through the native workflow owner, while
 active and review lanes remain intact. Other unknown instance diagnostics remain
 in nondispatchable Backlog. A red suite receives no release tag.
 
-Several worktrees usually run gates on the same host at once. Every `make`
-test, lint, vet, and build target is capped by `TEST_PROCS` (default 4): it
-sets `go test -p`, `GOMAXPROCS` for the test binaries, `golangci-lint
---concurrency`, and vitest workers, so one worktree's gate leaves the machine
-usable for the others. Raise it for a solo run with `TEST_PROCS=8 make test`.
+Several worktrees usually run gates on the same host at once. `TEST_PROCS`
+(default 4) supplies each invocation's process budget. `make check-landing`
+runs its stages sequentially. Go builds and tests use at most `TEST_PROCS`
+concurrent package processes with `GOMAXPROCS=1` in each, so their package and
+scheduler budgets multiply to at most `TEST_PROCS`. Lint uses one runtime with
+`GOMAXPROCS=TEST_PROCS` and at most `TEST_PROCS` workers. Asset and documentation
+preparation inherit `GOMAXPROCS=1` and run through `make -j1`.
+The landing short-test deadline is three minutes for each whole package,
+including all its tests and fixtures; it is not a per-test allowance. Assertion
+failures still fail the gate, and a hung package still hits the deadline.
+This package allowance provides margin for legitimate aggregate suite costs
+under shared-host contention and remains below the source gate's ten-minute
+short-package allowance. It applies to every selected package without exceptions.
+Standalone diagnostic targets set package, scheduler, lint and vitest worker
+limits from `TEST_PROCS`; these separate limits do not by themselves bound their
+product. Raise the budget per invocation when appropriate.
 `make check-land` generates docs and checks SQL output once before overlapping
 lint, vet, build and short tests. It divides `TEST_PROCS` among these stages,
 running them in batches when the budget is below four. Unchanged conversation

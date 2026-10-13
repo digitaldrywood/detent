@@ -212,6 +212,9 @@ func sameImportSourceTime(left, right string) bool {
 func applyCutover(ctx context.Context, tx *sql.Tx, scope nativeScope, request CutoverRequest, now time.Time) error {
 	stamp := formatHubTime(now)
 	request.States = nativeTriageStates(request.States)
+	if err := validateNativeStates(request.States); err != nil {
+		return err
+	}
 	for _, state := range request.States {
 		_, err := tx.ExecContext(ctx, "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", scope.project, state.Name, state.Name, state.Terminal, state.Dispatchable, stamp, stamp)
 		if err != nil {

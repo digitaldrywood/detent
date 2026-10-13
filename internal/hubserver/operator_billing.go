@@ -176,6 +176,9 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		return hubOperatorExecutor(e).Execute(ctx, call)
 	}
 	if operatortool.IsAdministration(call.Name) {
+		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, Action: call.Name}); err != nil {
+			return result, err
+		}
 		return e.service.administration.Execute(ctx, call)
 	}
 	if call.Name == operatortool.ActionResult {

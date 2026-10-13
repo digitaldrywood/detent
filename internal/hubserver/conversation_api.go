@@ -184,7 +184,7 @@ func (c *conversationService) transact(ctx context.Context, fn func(tx *sql.Tx, 
 // revocation and expiry for API tokens.
 func (c *conversationService) requireActorAuthority(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
 	if scope.credential.Hosted != nil {
-		return c.server.recheckHostedMutation(ctx, tx, scope)
+		return c.server.recheckHostedMutation(ctx, tx, &scope)
 	}
 	return requireCredentialAuthority(ctx, tx, scope.credential, now)
 }

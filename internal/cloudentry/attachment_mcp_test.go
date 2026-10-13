@@ -494,3 +494,65 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 		}
 	}
 }
+
+func TestReporterAttachmentMCPRoundTrip(t *testing.T) {
+	f := newEntryFixture(t)
+	store := newSpacesFixture(t, false)
+	storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service.attachments = storage
+	f.provider.member("user_alice", "porg_alpha", "reporter")
+	browser := newBrowser(t, f.service.Handler())
+	browser.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	_, body := browser.get("/organizations/org_alpha/organization")
+	csrf := csrfFrom(t, body)
+	project := attachmentProject(t, browser, "org_alpha")
+	keyRaw, err := json.Marshal(map[string]any{"name": "Reporter screenshot key", "scope": "write", "expires_days": 1, "project_ids": []string{project}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := attachmentRequest(t, browser, http.MethodPost, "/api/v2/organizations/org_alpha/api-keys", bytes.NewReader(keyRaw), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
+	var key struct {
+		Token string `json:"token"`
+	}
+	if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &key) != nil || key.Token == "" {
+		t.Fatalf("key=%d %s", created.Code, created.Body.String())
+	}
+	anonymous := newBrowser(t, f.service.Handler())
+	call := attachmentMCPClient(t, anonymous, key.Token, mcp.ProtocolVersion)
+	var pixels bytes.Buffer
+	if err := png.Encode(&pixels, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	raw, failed := call(operatortool.UploadAttachment, map[string]any{"request_id": "reporter-png", "project_id": project, "name": "screenshot.png", "content_base64": base64.StdEncoding.EncodeToString(pixels.Bytes())})
+	var record attachment.Metadata
+	if failed || json.Unmarshal(raw, &record) != nil || record.ID == "" || record.ContentType != "image/png" || record.Size != int64(pixels.Len()) {
+		t.Fatalf("PNG upload=%s failed=%v", raw, failed)
+	}
+	raw, failed = call(operatortool.FileIssue, map[string]any{"request_id": "reporter-file", "project_id": project, "title": "Screenshot report", "description": "![Screenshot](attachment:" + record.ID + ")", "state": "Todo"})
+	var filed struct {
+		Data tracker.NativeIssue `json:"data"`
+	}
+	if failed || json.Unmarshal(raw, &filed) != nil || filed.Data.State != "Triage" || filed.Data.WorkItemID == "" {
+		t.Fatalf("file=%s failed=%v", raw, failed)
+	}
+	raw, failed = call(operatortool.ReadAttachment, map[string]any{"project_id": project, "attachment_id": record.ID})
+	var read struct {
+		Content  string              `json:"content_base64"`
+		Metadata attachment.Metadata `json:"metadata"`
+		Returned int                 `json:"returned_bytes"`
+		EOF      bool                `json:"eof"`
+	}
+	if failed || json.Unmarshal(raw, &read) != nil {
+		t.Fatalf("read=%s failed=%v", raw, failed)
+	}
+	content, err := base64.StdEncoding.DecodeString(read.Content)
+	if err != nil || !bytes.Equal(content, pixels.Bytes()) || read.Returned != pixels.Len() || !read.EOF {
+		t.Fatalf("PNG readback differs: bytes=%d err=%v", len(content), err)
+	}
+	if len(read.Metadata.ReferencedBy) != 1 || read.Metadata.ReferencedBy[0].WorkItemID != string(filed.Data.WorkItemID) {
+		t.Fatalf("issue reference=%+v", read.Metadata.ReferencedBy)
+	}
+}

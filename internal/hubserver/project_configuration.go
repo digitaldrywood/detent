@@ -186,7 +186,7 @@ func (s *Service) configurationRequestAuthority(ctx context.Context, tx *sql.Tx,
 	}
 	scope.requireHostedAdmin = true
 	if scope.credential.Hosted != nil {
-		return s.recheckHostedMutation(ctx, tx, scope)
+		return s.recheckHostedMutation(ctx, tx, &scope)
 	}
 	if scope.credential.Scope != apiScopeAdmin {
 		return nativeNotFound()

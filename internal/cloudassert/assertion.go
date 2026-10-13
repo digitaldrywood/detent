@@ -171,7 +171,7 @@ func validKind(claims Claims) bool {
 
 func validRole(role string) bool {
 	switch role {
-	case "owner", "admin", "member", "viewer":
+	case "owner", "admin", "member", "reporter", "viewer":
 		return true
 	default:
 		return false

@@ -414,7 +414,13 @@ func (c *conversationService) ensureWorkerConversation(ctx context.Context, tx *
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if issue.Actor.PrincipalID != "" {
-		record.OwnerPrincipalID = issue.Actor.PrincipalID
+		var owner string
+		switch err := tx.QueryRowContext(ctx, "SELECT id FROM api_tokens WHERE id = ?", issue.Actor.PrincipalID).Scan(&owner); {
+		case err == nil:
+			record.OwnerPrincipalID = owner
+		case !errors.Is(err, sql.ErrNoRows):
+			return conversationRecord{}, fmt.Errorf("read issue actor token: %w", err)
+		}
 	}
 	if err := c.store.createConversation(ctx, tx, &record); err != nil {
 		return conversationRecord{}, err
@@ -700,7 +706,7 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 	var record conversationRecord
 	var response conversationBindResponse
 	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
 		lease, err := c.requireWorkerOwner(ctx, tx, scope, item, request.conversationWorkerIdentity, request.RunID, false, now)
@@ -829,7 +835,7 @@ func (r *conversationWorkerRouter) unbind(e echo.Context) error {
 	var record conversationRecord
 	changed := false
 	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
 		if _, err := c.requireWorkerOwner(ctx, tx, scope, item, request.conversationWorkerIdentity, "", true, now); err != nil {
@@ -1016,7 +1022,7 @@ func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
 	var response conversationTurnEventsResponse
 	replayed := false
 	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
 		var item string

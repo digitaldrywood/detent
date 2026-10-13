@@ -7,7 +7,7 @@ if ! [[ "$procs" =~ ^[1-9][0-9]*$ ]]; then
     printf 'Process budget must be a positive integer.\n' >&2
     exit 1
 fi
-export GOMAXPROCS=$procs
+export GOMAXPROCS=1
 GOTOOLCHAIN=$(awk '$1 == "toolchain" {print $2}' go.mod)
 export GOTOOLCHAIN=${GOTOOLCHAIN:-auto}
 source scripts/check-evidence.sh
@@ -87,11 +87,11 @@ while IFS=$'\t' read -r scope package; do
     esac
 done <<< "$selection"
 if [ "${#test_packages[@]}" -gt 0 ]; then
-    check_with_evidence unit-short env -u DETENT_API_TOKEN go test -p "$procs" -short -timeout=60s "${test_packages[@]}"
+    check_with_evidence unit-short env -u DETENT_API_TOKEN go test -p "$procs" -short -timeout=3m "${test_packages[@]}"
 fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
     make -j1 "$linter" TEST_PROCS="$procs"
-    check_with_evidence lint "$linter" run --allow-parallel-runners --concurrency="$procs" --timeout=5m "${lint_scope[@]}" "${lint_packages[@]}"
+    check_with_evidence lint env GOMAXPROCS="$procs" "$linter" run --allow-parallel-runners --concurrency="$procs" --timeout=5m "${lint_scope[@]}" "${lint_packages[@]}"
 fi
 if [ "$(git rev-parse --verify 'HEAD^{commit}')" != "$head" ]; then
     printf 'Landing head changed during validation.\n' >&2

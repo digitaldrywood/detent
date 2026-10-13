@@ -28,6 +28,7 @@ func (i Identity) Valid() bool {
 // Requirement is application authority, independent of MCP annotations or
 // confirmation. Resource ownership must be checked by the application adapter.
 type Requirement struct {
+	Action           string
 	OrganizationWide bool // Administration cannot be performed by a project-scoped credential.
 	Scope            apikey.Scope
 	OrganizationID   string

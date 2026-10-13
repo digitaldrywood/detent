@@ -19,11 +19,25 @@ func nativeTriageStates(states []tracker.NativeState) []tracker.NativeState {
 	triage := tracker.NativeState{Name: "Triage", Transitions: []string{}}
 	result := make([]tracker.NativeState, 0, len(states)+1)
 	for _, state := range states {
-		if slices.Contains([]string{"Backlog", "Todo", "Cancelled"}, state.Name) {
+		if state.Name == "Triage" {
+			triage.Transitions = append(triage.Transitions, state.Transitions...)
+			continue
+		}
+		result = append(result, state)
+	}
+	for _, state := range result {
+		if slices.Contains([]string{"Backlog", "Todo", "Cancelled"}, state.Name) && !slices.Contains(triage.Transitions, state.Name) {
 			triage.Transitions = append(triage.Transitions, state.Name)
 		}
-		if state.Name != "Triage" {
-			result = append(result, state)
+	}
+	if len(triage.Transitions) == 0 {
+		for _, state := range result {
+			if !state.OperatorOnly && (len(triage.Transitions) == 0 || !state.Terminal) {
+				triage.Transitions = []string{state.Name}
+				if !state.Terminal {
+					break
+				}
+			}
 		}
 	}
 	return append([]tracker.NativeState{triage}, result...)

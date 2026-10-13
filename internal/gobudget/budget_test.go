@@ -52,12 +52,13 @@ func TestGOFLAGSPreservesInheritedFlags(t *testing.T) {
 		wrapper   string
 		want      string
 	}{
-		{name: "empty", wrapper: "/b/w", want: "-p=4 -toolexec=/b/w"},
+		{name: "empty", wrapper: "/b/w", want: "-p=4 -trimpath -toolexec=/b/w"},
 		{name: "inherited", inherited: "-mod=mod  -trimpath", wrapper: "/b/w", want: "-mod=mod -trimpath -p=4 -toolexec=/b/w"},
-		{name: "explicit p", inherited: "-p=2", wrapper: "/b/w", want: "-p=2 -toolexec=/b/w"},
-		{name: "explicit double dash toolexec", inherited: "--toolexec=/x", wrapper: "/b/w", want: "--toolexec=/x -p=4"},
-		{name: "wrapper with space", wrapper: "/b c/w", want: "-p=4"},
-		{name: "similar prefix is not p", inherited: "-pgo=off", wrapper: "/b/w", want: "-pgo=off -p=4 -toolexec=/b/w"},
+		{name: "explicit p", inherited: "-p=2", wrapper: "/b/w", want: "-p=2 -trimpath -toolexec=/b/w"},
+		{name: "explicit trimpath opt-out", inherited: "-trimpath=false", wrapper: "/b/w", want: "-trimpath=false -p=4 -toolexec=/b/w"},
+		{name: "explicit double dash toolexec", inherited: "--toolexec=/x", wrapper: "/b/w", want: "--toolexec=/x -p=4 -trimpath"},
+		{name: "wrapper with space", wrapper: "/b c/w", want: "-p=4 -trimpath"},
+		{name: "similar prefix is not p", inherited: "-pgo=off", wrapper: "/b/w", want: "-pgo=off -p=4 -trimpath -toolexec=/b/w"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -79,7 +80,7 @@ func TestEnvironmentPreparesSlotsAndWrapper(t *testing.T) {
 			t.Fatalf("Environment() error = %v", err)
 		}
 		want := map[string]string{
-			"GOFLAGS":        "-mod=mod -p=2 -toolexec=" + budget.WrapperPath(),
+			"GOFLAGS":        "-mod=mod -p=2 -trimpath -toolexec=" + budget.WrapperPath(),
 			"GOMAXPROCS":     "2",
 			DirEnvironment:   dir,
 			SlotsEnvironment: "8",

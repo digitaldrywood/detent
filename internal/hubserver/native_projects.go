@@ -127,7 +127,10 @@ func (s *Service) createNativeProjectOperation(request createNativeProjectReques
 		if exists != 1 {
 			return nil, nativeNotFound()
 		}
-		project := tracker.NativeProject{ID: tracker.ProjectID(newNativeID("prj")), OrganizationID: scope.organization, Name: request.Name, Profile: "native", States: request.States, RequireDependencies: true}
+		project := tracker.NativeProject{ID: tracker.ProjectID(newNativeID("prj")), OrganizationID: scope.organization, Name: request.Name, Profile: "native", States: nativeTriageStates(request.States), RequireDependencies: true}
+		if err := validateNativeStates(project.States); err != nil {
+			return nil, err
+		}
 		if request.RequireDependencies != nil {
 			project.RequireDependencies = *request.RequireDependencies
 		}
@@ -239,13 +242,7 @@ func applyNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope
 	if project.Profile != "native" {
 		return nativeInvalid("Compatibility project workflow is externally owned")
 	}
-	integration, err := readProjectIntegration(ctx, tx, scope)
-	if err != nil {
-		return err
-	}
-	if integration.Repository != "" || integration.CheckoutRepository != "" {
-		states = nativeTriageStates(states)
-	}
+	states = nativeTriageStates(states)
 	if err := validateNativeStates(states); err != nil {
 		return err
 	}

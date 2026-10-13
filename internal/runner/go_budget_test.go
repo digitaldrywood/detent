@@ -46,7 +46,7 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 			hostFlags: "-mod=mod",
 			variables: map[string]string{"A": "1"},
 			want: map[string]string{
-				"A": "1", "GOFLAGS": "-mod=mod -p=2 " + toolexec, "GOMAXPROCS": "2",
+				"A": "1", "GOFLAGS": "-mod=mod -p=2 -trimpath " + toolexec, "GOMAXPROCS": "2",
 				gobudget.DirEnvironment: dir, gobudget.SlotsEnvironment: "8",
 			},
 		},
@@ -57,7 +57,7 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 			hostFlags: "-mod=mod",
 			variables: map[string]string{"GOFLAGS": "-p=1", "GOMAXPROCS": "3"},
 			want: map[string]string{
-				"GOFLAGS": "-p=1 " + toolexec, "GOMAXPROCS": "3",
+				"GOFLAGS": "-p=1 -trimpath " + toolexec, "GOMAXPROCS": "3",
 				gobudget.DirEnvironment: dir, gobudget.SlotsEnvironment: "8",
 			},
 		},

@@ -65,6 +65,9 @@ func (s *Service) authorizeCatalog(ctx context.Context, requirement operatortool
 		return ctx, operatortool.ErrAccessDenied
 	}
 	credential := catalog.credential
+	if credential.HostedRole == "reporter" && !hostedRoleAllows(credential.HostedRole, requirement.Scope, requirement.Action) {
+		return ctx, operatortool.ErrAccessDenied
+	}
 	if credential.HostedRole == "account" {
 		if requirement.ResourceKind != "" {
 			return ctx, operatortool.ErrAccessDenied
@@ -96,7 +99,7 @@ func (s *Service) authorizeCatalog(ctx context.Context, requirement operatortool
 	}
 	if requirement.Scope != apikey.ScopeRead {
 		projectResource := requirement.ResourceKind == "work_item" || requirement.ResourceKind == "workspace" || requirement.ResourceKind == "project"
-		if credential.Hosted != nil && (!hostedRoleAllows(credential.HostedRole, requirement.Scope) || !projectResource && credential.HostedRole != "owner" && credential.HostedRole != "admin") || credential.Hosted == nil && requirement.Scope == apikey.ScopeAdmin && credential.Scope != apiScopeAdmin {
+		if credential.Hosted != nil && (!hostedRoleAllows(credential.HostedRole, requirement.Scope, requirement.Action) || !projectResource && credential.HostedRole != "owner" && credential.HostedRole != "admin") || credential.Hosted == nil && requirement.Scope == apikey.ScopeAdmin && credential.Scope != apiScopeAdmin {
 			return ctx, operatortool.ErrAccessDenied
 		}
 	}

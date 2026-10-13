@@ -261,7 +261,7 @@ func (s *Service) sendReservedHostedInvitationFor(ctx context.Context, credentia
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
-	if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
+	if err := s.recheckHostedMutation(ctx, tx, &nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
 		return hostedInvitationView{}, err
 	}
 	if err := s.validateHostedInvitationGrants(ctx, tx, credential, email, grants); err != nil {
@@ -351,7 +351,7 @@ func (s *Service) editHostedInvitationFor(ctx context.Context, credential apiCre
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
-	if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
+	if err := s.recheckHostedMutation(ctx, tx, &nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
 		return &nativeError{Code: "forbidden", Message: "You cannot edit invitations", status: 403}
 	}
 	view, err := s.pendingHostedInvitationFor(ctx, tx, credential, id)

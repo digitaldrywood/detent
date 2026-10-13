@@ -143,6 +143,7 @@ describe("platform console", () => {
   it("debounces URL-backed user search and rejects short queries", async () => {
     const search = vi.fn(async () => userResults);
     const router = renderPlatform(fakeApi({ platformUsers: search }), "/platform/users");
+    await act(async () => { await router.load(); });
     const input = await screen.findByRole("searchbox", { name: "Search by email" });
     const navigate = vi.spyOn(router, "navigate");
     let allowNavigation!: (blocked: boolean) => void;

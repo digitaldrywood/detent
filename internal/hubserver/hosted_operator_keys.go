@@ -73,14 +73,27 @@ func hostedKeyAllows(scope, required apikey.Scope) bool {
 	return apikey.ValidScope(scope) && apikey.HasScope([]string{string(scope)}, required)
 }
 
-func hostedRoleAllows(role string, scope apikey.Scope) bool {
+func hostedRoleAllows(role string, scope apikey.Scope, action ...string) bool {
 	if !auth.ValidOrganizationRole(role) {
+		return false
+	}
+	if role == "reporter" && len(action) == 1 && operatortool.IsAdministration(action[0]) {
 		return false
 	}
 	if scope == apikey.ScopeRead {
 		return true
 	}
 	if scope == apikey.ScopeWrite {
+		if role == "reporter" {
+			if len(action) != 1 {
+				return false
+			}
+			switch action[0] {
+			case operatortool.FileIssue, operatortool.UploadAttachment, operatortool.ReferenceAttachment, operatortool.AddComment, operatortool.EditComment, operatortool.MoveItem, "credentials":
+				return true
+			}
+			return false
+		}
 		return role != "viewer"
 	}
 	return scope == apikey.ScopeAdmin && (role == "owner" || role == "admin")
@@ -290,7 +303,7 @@ func (s *Service) authorizeHostedKeyRequest(ctx context.Context, credential apiC
 	if _, message := resolveHostedProjectAccess(request.ProjectAccess, request.Projects); message != "" {
 		return operatortool.ErrInvalidArguments
 	}
-	if !hostedRoleAllows(credential.HostedRole, request.Scope) {
+	if !hostedRoleAllows(credential.HostedRole, request.Scope, "credentials") {
 		return operatortool.ErrAccessDenied
 	}
 	for _, project := range request.Projects {
