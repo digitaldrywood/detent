@@ -193,8 +193,10 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 		name, policyCode, policyMessage               string
 		gaps, failure, emptyFixtures, automaticIntake bool
 		readFailure                                   string
+		unconfirmed                                   bool
 	}{
 		{name: "approved policy"},
+		{name: "service smoke key", unconfirmed: true, failure: true},
 		{name: "automatic native intake", automaticIntake: true},
 		{name: "unprovisioned fixtures", emptyFixtures: true},
 		{name: "unprovisioned fixtures with real error", emptyFixtures: true, readFailure: operatortool.RunnerFleet, failure: true},
@@ -282,6 +284,13 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 					}
 					revision++
 					result["revision"] = strconv.FormatInt(revision, 10)
+					if name == operatortool.EditItem && !test.unconfirmed {
+						result["data"] = map[string]any{"issue_contract": map[string]any{"confirmed_sections": map[string]string{
+							"acceptance criteria":   "dcd324b553949d8b626cd815ff51c9bc508dec5b322143d400305529e8b812dc",
+							"must not break":        "ed59baf6b8c58d36581feaf6a5b503c359b87bb9183b0a3a40d28181e9dc0366",
+							"how we know it worked": "ce78953979c32a131e50a2b8987b4679e8276a773814a8f212fd80e454b461bb",
+						}}}
+					}
 				case "get_project_integration":
 					result["data"] = map[string]any{"revision": strconv.FormatInt(integrationRevision, 10), "intake": "manual", "projection": "native", "repository_enabled": false}
 					if test.automaticIntake {
@@ -423,6 +432,9 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 				failedTool := "get_project_policy"
 				if test.readFailure != "" {
 					failedTool = test.readFailure
+				}
+				if test.unconfirmed {
+					failedTool = operatortool.EditItem
 				}
 				if err == nil || !strings.Contains(err.Error(), failedTool) {
 					t.Fatalf("unexpected smoke verdict: %v", err)

@@ -150,6 +150,15 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 							f.service.echo.POST("/api/v2/organizations/:organization/key-authority-test", func(c echo.Context) error { captured <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
 							initial := serve(http.MethodPost, "/api/v2/organizations/org_security/key-authority-test", `{}`)
 							if scenario == "machine" || scenario == "worker" {
+								if scenario == "worker" {
+									current, _, err := f.service.authenticateAPIToken(t.Context(), key.Token, "", "")
+									if err != nil {
+										t.Fatal(err)
+									}
+									if actor := (nativeScope{credential: current}).actor(); actor.Kind != "runner" || actor.PrincipalID != key.ID {
+										t.Fatalf("hosted worker actor=%+v", actor)
+									}
+								}
 								requireNativeStatus(t, initial, http.StatusForbidden)
 								requireNativeStatus(t, serve(http.MethodGet, f.base, ""), http.StatusNotFound)
 								return

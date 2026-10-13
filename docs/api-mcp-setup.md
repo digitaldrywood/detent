@@ -113,6 +113,18 @@ target with `X-Detent-Organization` for `/api/v2/projects` and
 and existing per-org MCP endpoints also accept a key that reaches that org.
 Browser-only settings routes continue to require browser sessions.
 
+Personal keys act as their human owner. Saving an issue body through REST,
+MCP `edit_item`, or a CLI using a personal key confirms its issue-contract
+sections. Collaboration actors record `kind: human`, the owner's principal,
+and `via_key`; audit records retain the owner and key ID. Service, runner and
+worker credentials cannot confirm issue contracts. Revoking a key refuses
+subsequent calls without removing earlier human confirmations.
+
+Historical cards with unconfirmed sections require an authorized human to
+save the current body through the web UI or a personal key. An unchanged body
+save confirms those sections. Key migration does not backfill confirmations;
+service, runner and worker keys cannot perform this confirmation.
+
 Org owners/admins manage service keys at
 `/api/cloud/organizations/:organization/service-keys`, using the same creation
 fields with one organization and selected or project context. Service keys are
@@ -155,6 +167,12 @@ endpoints. Shared Cloud uses the account key screen for newly issued personal
 keys and the org screen for service keys. Existing org keys remain available
 through `GET /api/v2/organizations/:organization/api-keys` and can be revoked
 through `DELETE /api/v2/organizations/:organization/api-keys/:key`.
+
+Existing keys created from a member's account settings are personal keys;
+runner and worker credentials remain service credentials. Per-organization
+key creation accepts `kind: personal` (the default for signed-in account
+creation) or `kind: service`. Both retain the existing permission,
+organization and project grant checks. Returned key metadata includes `kind`.
 
 On dedicated deployments, sign in to the intended Cloud organization and open **Settings → API & MCP**.
 Existing `/settings/mcp` bookmarks open this same page. Create a named key,

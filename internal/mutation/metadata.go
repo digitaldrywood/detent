@@ -19,6 +19,8 @@ var (
 // credentials, business keys, or rendered application errors in audit records.
 type Metadata struct {
 	PrincipalID    string `json:"principal_id"`
+	ActorKind      string `json:"actor_kind,omitempty"`
+	ViaKey         string `json:"via_key,omitempty"`
 	OrganizationID string `json:"organization_id"`
 	ProjectID      string `json:"project_id,omitempty"`
 	ResourceID     string `json:"resource_id,omitempty"`
