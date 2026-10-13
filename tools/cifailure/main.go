@@ -151,6 +151,11 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 	}
 
 	var failures []error
+	if cloud, ok := destination.(*cloudDestination); ok && len(jobs) > 0 {
+		if err := cloud.recordValidation(ctx, getenv, allGreen(jobs)); err != nil {
+			failures = append(failures, fmt.Errorf("record scheduled validation: %w", err))
+		}
+	}
 	runURL := fmt.Sprintf("%s/%s/actions/runs/%s/attempts/%s", getenv("GITHUB_SERVER_URL"), repository, getenv("GITHUB_RUN_ID"), getenv("GITHUB_RUN_ATTEMPT"))
 	for i, j := range jobs {
 		if (j.Name == "Finalize scheduled validation" && j.Conclusion != "failure") || j.Conclusion == "success" {
@@ -232,7 +237,7 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 		}
 	}
 	if allGreen(jobs) {
-		return destination.success(ctx, getenv)
+		return errors.Join(errors.Join(failures...), destination.success(ctx, getenv))
 	}
 	return errors.Join(failures...)
 }

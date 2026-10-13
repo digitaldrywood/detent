@@ -25,6 +25,7 @@ import (
 )
 
 type fakeCloud struct {
+	reports       []gate.ScheduledValidationReport
 	items         []tracker.NativeIssue
 	comments      map[string][]tracker.NativeComment
 	writes        []map[string]any
@@ -69,6 +70,19 @@ func (f *fakeCloud) command(_ context.Context, name string, args map[string]any,
 	}
 	var output any
 	switch name {
+	case "record_scheduled_validation":
+		raw, err := json.Marshal(args["scheduled_validation"])
+		if err != nil {
+			return err
+		}
+		var report gate.ScheduledValidationReport
+		if err := json.Unmarshal(raw, &report); err != nil {
+			return err
+		}
+		if !slices.Contains(f.reports, report) {
+			f.reports = append(f.reports, report)
+		}
+		output = report
 	case "work_config":
 		states := f.states
 		if states == nil {
@@ -292,6 +306,7 @@ func TestCloudReport(t *testing.T) {
 	}{
 		{name: "worker Backlog owner retains lane", worker: true, log: diagnostic, wantItems: 1, wantWrites: 4},
 		{name: "source problem replay", log: diagnostic, wantItems: 2, wantWrites: 4},
+		{name: "report evidence unavailable still files failures", log: diagnostic, fail: "record_scheduled_validation", wantItems: 2, wantWrites: 4, wantErrors: 5},
 		{name: "source lint replay", log: lintDiagnostic, wantItems: 2, wantWrites: 4},
 		{name: "structured check evidence replay", log: evidenceLog, wantItems: 2, wantWrites: 4},
 		{name: "recorded gosec replay", log: gosecDiagnostic, wantItems: 2, wantWrites: 4},
@@ -327,6 +342,7 @@ func TestCloudReport(t *testing.T) {
 		{name: "authentication remains intake", log: "HTTP 401: authentication required", wantItems: 2, wantWrites: 4},
 		{name: "backend startup remains intake", log: "backend startup failed: protocol handshake error", wantItems: 2, wantWrites: 4},
 		{name: "green imported evidence replay", imported: true, green: true, wantItems: 2, wantWrites: 1},
+		{name: "green without prior failure issues", green: true},
 		{name: "failed finalizer cannot publish green evidence", imported: true, finalizerFailed: true, wantItems: 3, wantWrites: 2},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -414,6 +430,9 @@ func TestCloudReport(t *testing.T) {
 			}
 			if len(f.items) != tt.wantItems || len(f.writes) != tt.wantWrites {
 				t.Fatalf("items=%d writes=%d; want %d %d", len(f.items), len(f.writes), tt.wantItems, tt.wantWrites)
+			}
+			if tt.green && (len(f.reports) != 1 || f.reports[0].Conclusion != "success" || !f.reports[0].Valid()) {
+				t.Fatalf("green run was not retained: %+v", f.reports)
 			}
 			if len(gh.created) != 0 || len(gh.comments) != 0 {
 				t.Fatal("native report wrote to GitHub")
