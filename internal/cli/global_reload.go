@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"reflect"
-	"slices"
 	"strings"
 	"time"
 
@@ -115,7 +113,7 @@ func syncLatestGlobalConfig(ctx context.Context, path string, reloader *globalCo
 	if reloader == nil {
 		return
 	}
-	latest, err := reloader.readRuntimeConfig(ctx, path)
+	latest, err := readRunnerConfiguration(path)
 	if reloader.settings != nil {
 		latest, err = readRuntimeConfiguration(ctx, reloader.settings, path)
 	}
@@ -144,7 +142,7 @@ func (r *globalConfigReloader) handle(ctx context.Context, update configwatcher.
 	}
 
 	previous := r.current
-	update = r.latestGlobalConfigUpdate(ctx, update)
+	update = latestGlobalConfigUpdate(update)
 	logger.Info("global config reconciliation started",
 		"path", update.Path,
 		"configured_projects", globalProjectIDs(update.Value.Projects),
@@ -154,6 +152,7 @@ func (r *globalConfigReloader) handle(ctx context.Context, update configwatcher.
 	applied := false
 	for {
 		var err error
+		candidate := update.Value
 		result, err = r.applyCandidate(ctx, update)
 		if err != nil {
 			if applied {
@@ -165,19 +164,20 @@ func (r *globalConfigReloader) handle(ctx context.Context, update configwatcher.
 		applied = true
 		drainedSessions = appendUniqueReconcileSessions(drainedSessions, result.DrainedSessions)
 
-		latest := r.latestGlobalConfigUpdate(ctx, configwatcher.FileUpdate[globalconfig.Config]{
+		latest := latestGlobalConfigUpdate(configwatcher.FileUpdate[globalconfig.Config]{
 			Path:  update.Path,
-			Value: r.current,
+			Value: candidate,
 			At:    time.Now(),
 		})
 		if r.settings != nil {
+			candidate = r.current
 			latest.Value, latest.Err = readRuntimeConfiguration(ctx, r.settings, update.Path)
 			if latest.Err != nil {
 				logger.Warn("local configuration reload failed", "error", latest.Err)
 				return
 			}
 		}
-		if reflect.DeepEqual(r.current, latest.Value) {
+		if reflect.DeepEqual(candidate, latest.Value) {
 			break
 		}
 		logger.Info("global config reconciliation superseded",
@@ -223,26 +223,7 @@ func appendUniqueReconcileSessions(current []project.ReconcileSession, additions
 	return current
 }
 
-func (r *globalConfigReloader) readRuntimeConfig(ctx context.Context, path string) (globalconfig.Config, error) {
-	cfg, err := readRunnerConfiguration(path)
-	if err != nil {
-		return cfg, err
-	}
-	return r.resolveRuntimeConfig(ctx, cfg)
-}
-
-func (r *globalConfigReloader) resolveRuntimeConfig(ctx context.Context, cfg globalconfig.Config) (globalconfig.Config, error) {
-	previous := r.current
-	if cfg.Client.IdentityFile != "" && cfg.Client.IdentityFile == previous.Client.IdentityFile &&
-		cfg.Client.URL == previous.Client.URL && cfg.Client.OrganizationID == previous.Client.OrganizationID &&
-		cfg.WorkspaceRoot == previous.WorkspaceRoot {
-		cfg.Projects = slices.Clone(previous.Projects)
-		cfg.Client.NativeProjects = maps.Clone(previous.Client.NativeProjects)
-	}
-	return resolveRunnerProjects(ctx, cfg)
-}
-
-func (r *globalConfigReloader) latestGlobalConfigUpdate(ctx context.Context, update configwatcher.FileUpdate[globalconfig.Config]) configwatcher.FileUpdate[globalconfig.Config] {
+func latestGlobalConfigUpdate(update configwatcher.FileUpdate[globalconfig.Config]) configwatcher.FileUpdate[globalconfig.Config] {
 	if update.WatcherErr || strings.TrimSpace(update.Path) == "" {
 		return update
 	}
@@ -253,7 +234,7 @@ func (r *globalConfigReloader) latestGlobalConfigUpdate(ctx context.Context, upd
 		}
 		latest = update.Value
 	}
-	update.Value, update.Err = r.resolveRuntimeConfig(ctx, latest)
+	update.Value, update.Err = latest, nil
 	return update
 }
 
@@ -284,6 +265,13 @@ func (r *globalConfigReloader) applyCandidate(
 	}
 	if r.manager == nil {
 		return project.ReconcileResult{}, errMissingGlobalConfigManager
+	}
+	if r.settings == nil {
+		resolved, err := resolveRunnerProjects(ctx, update.Value, r.current)
+		if err != nil {
+			return project.ReconcileResult{}, err
+		}
+		update.Value = resolved
 	}
 
 	previousGitHubToken := ""

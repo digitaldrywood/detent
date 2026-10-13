@@ -438,7 +438,7 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 		for _, periodic := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/periodic=%v", test.name, periodic), func(t *testing.T) {
 				var identity runnerauth.Identity
-				var projectReads, legacyReads atomic.Int32
+				var identityReads, projectReads, legacyReads atomic.Int32
 				var reloading atomic.Bool
 				descriptor := policy.Descriptor{
 					SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")), ConfigDigest: policy.Digest([]byte("config")),
@@ -451,7 +451,7 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 					case strings.HasSuffix(r.URL.Path, "/capabilities"):
 						_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy"}})
 					case strings.HasSuffix(r.URL.Path, "/runners/"+identity.RunnerID):
-						if test.identityUnavailable && reloading.Load() {
+						if reloading.Load() && (identityReads.Add(1) > 1 || test.identityUnavailable) {
 							w.WriteHeader(http.StatusServiceUnavailable)
 							return
 						}
@@ -555,6 +555,9 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 					syncLatestGlobalConfig(t.Context(), path, reloader)
 				} else {
 					reloader.handle(t.Context(), configwatcher.FileUpdate[globalconfig.Config]{Path: path, Value: machine})
+				}
+				if reads := identityReads.Load(); reads != 1 {
+					t.Errorf("reload identity reads = %d, want 1", reads)
 				}
 				expectedCalls := 1
 				if test.identityUnavailable {
