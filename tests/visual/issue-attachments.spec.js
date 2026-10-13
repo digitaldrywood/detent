@@ -92,7 +92,8 @@ for (const gesture of ["drop", "attach"]) {
     await page.goto(`${hub.fixture.url}/work/p/${hub.fixture.project_id}`);
     await page.getByTestId("board-new-issue").click();
     const dialog = page.getByRole("dialog", { name: "New issue", exact: true });
-    await dialog.getByLabel("Title", { exact: true }).fill(`Attachment ${gesture} issue`);
+    const title = gesture === "drop" ? "Mountain sunrise" : "Ocean sunset";
+    await dialog.getByLabel("Title", { exact: true }).fill(title);
     const body = dialog.getByLabel("What needs doing", { exact: true });
     if (gesture === "drop") await transfer(body, "drop", "new-drop.png");
     else {
@@ -103,7 +104,7 @@ for (const gesture of ["drop", "attach"]) {
     await expect(body).toHaveValue(/attachment:att_/);
     await dialog.getByRole("button", { name: "Create issue", exact: true }).click();
     await expect(dialog).toHaveCount(0);
-    await page.getByTestId("issue-card").filter({ hasText: `Attachment ${gesture} issue` }).getByTestId("issue-card-open").click();
+    await page.getByTestId("issue-card").filter({ hasText: title }).getByTestId("issue-card-open").click();
     await expect(page.getByTestId("issue-body").getByTestId(gesture === "drop" ? "issue-attachment-image" : "issue-attachment-file")).toBeVisible();
     if (gesture === "attach") {
       const chip = page.getByTestId("issue-attachment-file");
