@@ -12,6 +12,31 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func reporterPreviousHostedStates() []tracker.NativeState {
+	return []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "Human Review", "Merging", "Done"}},
+		{Name: "Blocked", Transitions: []string{"Todo", "In Progress", "Done"}},
+		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Blocked", "Merging"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Blocked", "Human Review", "In Progress"}},
+		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+	}
+}
+
+func reporterUpgradedHostedStates() []tracker.NativeState {
+	return []tracker.NativeState{
+		{Name: "Triage", Transitions: []string{"Todo", "Backlog", "Cancelled"}},
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done", "Cancelled"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "Human Review", "Merging", "Done", "Cancelled"}},
+		{Name: "Blocked", Transitions: []string{"Todo", "In Progress", "Done", "Cancelled"}},
+		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Blocked", "Merging", "Cancelled"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Blocked", "Human Review", "In Progress", "Cancelled"}},
+		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+		{Name: "Backlog", Transitions: []string{"Todo", "Cancelled"}},
+		{Name: "Cancelled", Terminal: true, Transitions: []string{"Todo"}},
+	}
+}
+
 func TestReporterAndTriageMigration(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "hub.db"))
 	if err != nil {
@@ -55,6 +80,13 @@ func TestReporterAndTriageMigration(t *testing.T) {
 		"prj_without":  {{Name: "Backlog", Transitions: []string{"Todo"}}, {Name: "Todo", Dispatchable: true}, {Name: "Cancelled", Terminal: true}},
 		"prj_existing": {{Name: "Custom", Dispatchable: true}, {Name: "Triage", Transitions: []string{"Custom"}}},
 	}
+	before["prj_default_one"] = reporterPreviousHostedStates()
+	before["prj_default_two"] = append([]tracker.NativeState{{Name: "Triage", Transitions: []string{"Todo"}}}, reporterPreviousHostedStates()...)
+	custom := reporterPreviousHostedStates()
+	custom[0].Transitions = []string{"In Progress"}
+	before["prj_custom_default"] = custom
+	before["prj_repository_default"] = reporterPreviousHostedStates()
+
 	for id, states := range before {
 		raw, err := json.Marshal(states)
 		if err != nil {
@@ -69,6 +101,10 @@ func TestReporterAndTriageMigration(t *testing.T) {
 			}
 		}
 	}
+	if _, err := db.ExecContext(t.Context(), "UPDATE projects SET workflow_source='detent.yaml' WHERE id='prj_repository_default'"); err != nil {
+		t.Fatal(err)
+	}
+
 	for _, id := range []string{"first", "second"} {
 		for _, statement := range []struct {
 			query string
@@ -85,7 +121,7 @@ func TestReporterAndTriageMigration(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"20261013050000_reporter_role.sql", "20261013050001_native_project_triage.sql"} {
+	for _, name := range []string{"20261013050000_reporter_role.sql", "20261013050001_native_project_triage.sql", "20261013085000_hosted_reporter_destinations.sql"} {
 		data, err := migrationFiles.ReadFile("migrations/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -104,9 +140,17 @@ func TestReporterAndTriageMigration(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := states
-		if id == "prj_without" {
-			want = append([]tracker.NativeState{{Name: "Triage", Transitions: []string{"Backlog", "Todo", "Cancelled"}}}, states...)
+		if id == "prj_without" || id == "prj_custom_default" || id == "prj_repository_default" {
+			transitions := []string{"Backlog", "Todo", "Cancelled"}
+			if id != "prj_without" {
+				transitions = []string{"Todo"}
+			}
+			want = append([]tracker.NativeState{{Name: "Triage", Transitions: transitions}}, states...)
 		}
+		if id == "prj_default_one" || id == "prj_default_two" {
+			want = reporterUpgradedHostedStates()
+		}
+
 		if !reflect.DeepEqual(actual, want) {
 			t.Fatalf("%s: got %#v want %#v", id, actual, want)
 		}
@@ -114,6 +158,21 @@ func TestReporterAndTriageMigration(t *testing.T) {
 		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM workflow_states WHERE project_id=? AND detent_state='Triage' AND dispatchable=0 AND terminal=0", id).Scan(&count); err != nil || count != 1 {
 			t.Fatalf("triage rows=%d err=%v", count, err)
 		}
+		if id == "prj_default_one" || id == "prj_default_two" {
+			for _, target := range []string{"Backlog", "Todo", "Cancelled"} {
+				if err := validateNativeWorkflowTransition(actual, "Triage", target, apiScopeOperator); err != nil {
+					t.Fatalf("%s Triage to %s: %v", id, target, err)
+				}
+				var terminal, dispatchable bool
+				if err := db.QueryRowContext(t.Context(), "SELECT terminal,dispatchable FROM workflow_states WHERE project_id=? AND source_name=?", id, target).Scan(&terminal, &dispatchable); err != nil {
+					t.Fatal(err)
+				}
+				if terminal != (target == "Cancelled") || dispatchable != (target == "Todo") {
+					t.Fatalf("%s %s flags: terminal=%v dispatchable=%v", id, target, terminal, dispatchable)
+				}
+			}
+		}
+
 	}
 	for _, id := range []string{"first", "second"} {
 		if _, err := db.ExecContext(t.Context(), "UPDATE hosted_members SET role='reporter' WHERE user_id=?", id); err != nil {

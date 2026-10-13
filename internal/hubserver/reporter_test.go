@@ -20,8 +20,16 @@ import (
 )
 
 func TestReporterNativeCommands(t *testing.T) {
-	for _, transport := range []string{"browser", "key"} {
-		t.Run(transport, func(t *testing.T) {
+	for _, test := range []struct {
+		name, transport string
+		upgraded        bool
+	}{
+		{"browser/new", "browser", false},
+		{"key/new", "key", false},
+		{"browser/upgraded", "browser", true},
+		{"key/upgraded", "key", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			f := newHostedSharedFixture(t)
 			u := f.user(t, "reporter", "reporter", "reporter@example.test", "write", "")
 			member := f.user(t, "member", "member", "member@example.test", "write", "")
@@ -32,6 +40,19 @@ func TestReporterNativeCommands(t *testing.T) {
 			decodeHubResponse(t, created, &project)
 			f.project = project.ID
 			f.base = "/api/v2/organizations/org_security/projects/" + string(project.ID)
+			if test.upgraded {
+				previous, err := json.Marshal(reporterPreviousHostedStates())
+				if err != nil {
+					t.Fatal(err)
+				}
+				operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET states_json=? WHERE id=?", string(previous), project.ID)
+				operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM workflow_states WHERE project_id=? AND source_name IN ('Triage','Backlog','Cancelled')", project.ID)
+				operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hub_schema_version WHERE version_id IN (20261013050001,20261013085000)")
+				if _, err := runMigrations(t.Context(), f.service.database.db, discardLogger()); err != nil {
+					t.Fatal(err)
+				}
+			}
+
 			f.grant(t, u, true, false)
 			f.grant(t, member, true, false)
 			request := func(user hostedSecurityUser, method, path string, body any) *httptest.ResponseRecorder {
@@ -44,7 +65,7 @@ func TestReporterNativeCommands(t *testing.T) {
 				if body != nil {
 					r.body = string(raw)
 				}
-				if transport == "key" {
+				if test.transport == "key" {
 					r.kind = cloudassert.KindKey
 					r.mutate = func(c *cloudassert.Claims) {
 						c.Subject, c.ProviderOrganization = user.identity.Subject, "org_provider"
