@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
 type writerReadGuardKey struct{}
@@ -127,24 +129,69 @@ func installWriterReadGuard(t *testing.T, s *Service) *writerReadGuard {
 }
 
 func TestReadOnlyGETsNeverAcquireWriter(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "reader-guard")
-	issue := f.create(t, "readable issue")
-	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	guard := installWriterReadGuard(t, f.service)
-	for _, suffix := range []string{"", "/onboarding", "/policy", "/labels", "/integration", "/actions", "/work-items/" + string(issue.WorkItemID), "/work-items/" + string(issue.WorkItemID) + "/comments", "/work-items/" + string(issue.WorkItemID) + "/runtime", "/work-items/" + string(issue.WorkItemID) + "/history", "/work-items/" + string(issue.WorkItemID) + "/attempts", "/work-items/" + string(issue.WorkItemID) + "/changes"} {
-		t.Run(suffix, func(t *testing.T) {
-			r := performHubAPIRequest(t, f.service, http.MethodGet, f.base+suffix, f.token, nil)
-			if r.Code != http.StatusOK {
-				t.Errorf("GET %s returned %d: %s", suffix, r.Code, r.Body.String())
-			}
+	t.Run("native", func(t *testing.T) {
+		f := newNativeFixture(t, nil, "", "reader-guard")
+		issue := f.create(t, "readable issue")
+		approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+		runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+		runner.enroll(t)
+		guard := installWriterReadGuard(t, f.service)
+		for _, suffix := range []string{"", "/onboarding", "/policy", "/labels", "/integration", "/actions", "/work-items", "/health/findings", "/runner-diagnostics", "/artifact-services", "/work-items/" + string(issue.WorkItemID), "/work-items/" + string(issue.WorkItemID) + "/comments", "/work-items/" + string(issue.WorkItemID) + "/runtime", "/work-items/" + string(issue.WorkItemID) + "/history", "/work-items/" + string(issue.WorkItemID) + "/attempts", "/work-items/" + string(issue.WorkItemID) + "/changes", "/work-items/" + string(issue.WorkItemID) + "/explanation", "/work-items/" + string(issue.WorkItemID) + "/pull-requests", "/work-items/" + string(issue.WorkItemID) + "/artifacts"} {
+			t.Run(suffix, func(t *testing.T) {
+				r := performHubAPIRequest(t, f.service, http.MethodGet, f.base+suffix, f.token, nil)
+				if r.Code != http.StatusOK {
+					t.Errorf("GET %s returned %d: %s", suffix, r.Code, r.Body.String())
+				}
+			})
+		}
+		for _, suffix := range []string{"/routing", "/capacity", "/update"} {
+			t.Run("runner"+suffix, func(t *testing.T) {
+				response := performHubAPIRequest(t, f.service, http.MethodGet, runner.identityPath()+suffix, testHubAdminToken, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+			})
+		}
+		f.service.tokenUseWork.Wait()
+		guard.mu.Lock()
+		defer guard.mu.Unlock()
+		if len(guard.violations) > 0 {
+			t.Fatalf("writer reads: %s", strings.Join(guard.violations, "\n"))
+		}
+	})
+	t.Run("hosted", func(t *testing.T) {
+		f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, func(cfg *Config) {
+			cfg.Hosted.EntitlementAdminToken = []byte(strings.Repeat("e", 32))
+			cfg.Hosted.EntitlementAdministrator = "test-operator"
 		})
-	}
-	f.service.tokenUseWork.Wait()
-	guard.mu.Lock()
-	defer guard.mu.Unlock()
-	if len(guard.violations) > 0 {
-		t.Fatalf("writer reads: %s", strings.Join(guard.violations, "\n"))
-	}
+		guard := installWriterReadGuard(t, f.service)
+		for _, path := range []string{
+			"/projects", "/project-rank", "/members", "/fleet", "/plan", "/billing", "/secrets/" + flySpritesToken,
+			"/monthly-budget", "/model-selection", "/integrations/slack",
+			"/sprite-pool", "/work-view-preference",
+			"/projects/" + f.project + "/work-view-preference",
+			"/activity?project=" + f.project,
+			"/reports?project=" + f.project + "&range=24h",
+			"/usage?project=" + f.project,
+			"/diagnostics?project=" + f.project,
+			"/diagnostics/requests",
+		} {
+			t.Run(path, func(t *testing.T) {
+				response := f.page(t, "owner", browserHostedOrganizationBase+path)
+				requireNativeStatus(t, response, http.StatusOK)
+			})
+		}
+		for _, path := range []string{"/entitlements", "/entitlements/runtime"} {
+			t.Run(path, func(t *testing.T) {
+				response := performHubAPIRequest(t, f.service, http.MethodGet, browserHostedOrganizationBase+path, strings.Repeat("e", 32), nil)
+				requireNativeStatus(t, response, http.StatusOK)
+			})
+		}
+		f.service.tokenUseWork.Wait()
+		guard.mu.Lock()
+		defer guard.mu.Unlock()
+		if len(guard.violations) > 0 {
+			t.Fatalf("writer reads: %s", strings.Join(guard.violations, "\n"))
+		}
+	})
 }
 
 func TestWriterReadGuardDetectsQueriesAndTransactions(t *testing.T) {
@@ -159,8 +206,22 @@ func TestWriterReadGuardDetectsQueriesAndTransactions(t *testing.T) {
 			var count int
 			return f.service.database.db.QueryRowContext(ctx, "SELECT count(*) FROM projects").Scan(&count)
 		}},
-		{"transaction", func() error {
+		{"read-only transaction", func() error {
 			tx, err := f.service.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+			if err == nil {
+				err = tx.Rollback()
+			}
+			return err
+		}},
+		{"nil transaction options", func() error {
+			tx, err := f.service.database.db.BeginTx(ctx, nil)
+			if err == nil {
+				err = tx.Rollback()
+			}
+			return err
+		}},
+		{"default transaction options", func() error {
+			tx, err := f.service.database.db.BeginTx(ctx, &sql.TxOptions{})
 			if err == nil {
 				err = tx.Rollback()
 			}
@@ -173,8 +234,71 @@ func TestWriterReadGuardDetectsQueriesAndTransactions(t *testing.T) {
 			}
 		})
 	}
-	if len(guard.violations) != 2 {
+	if len(guard.violations) != 4 {
 		t.Fatalf("guard recorded %d violations", len(guard.violations))
+	}
+}
+
+func hubWriterReadOperation(call *ast.CallExpr, writerAliases map[string]bool) string {
+	name := ""
+	writer := false
+	switch method := call.Fun.(type) {
+	case *ast.SelectorExpr:
+		name = method.Sel.Name
+		if name == "Query" || name == "QueryRow" || name == "QueryContext" || name == "QueryRowContext" || name == "Begin" || name == "BeginTx" {
+			if receiver, ok := method.X.(*ast.SelectorExpr); ok && receiver.Sel.Name == "db" {
+				writer = true
+			}
+			if receiver, ok := method.X.(*ast.Ident); ok && writerAliases[receiver.Name] {
+				writer = true
+			}
+		}
+	case *ast.Ident:
+		name = method.Name
+	}
+	if strings.HasPrefix(name, "read") || strings.HasPrefix(name, "list") || strings.HasPrefix(name, "load") {
+		for _, argument := range call.Args {
+			if receiver, ok := argument.(*ast.SelectorExpr); ok && receiver.Sel.Name == "db" {
+				writer = true
+			}
+		}
+	}
+	if writer {
+		return name
+	}
+	return ""
+}
+
+func TestHubWriterReadOperations(t *testing.T) {
+	for _, test := range []struct {
+		expression string
+		operation  string
+	}{
+		{"s.database.db.QueryContext(ctx, query)", "QueryContext"},
+		{"s.database.db.QueryRowContext(ctx, query)", "QueryRowContext"},
+		{"s.database.db.Query(query)", "Query"},
+		{"s.database.db.QueryRow(query)", "QueryRow"},
+		{"s.database.db.BeginTx(ctx, nil)", "BeginTx"},
+		{"s.database.db.BeginTx(ctx, &sql.TxOptions{})", "BeginTx"},
+		{"s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: false})", "BeginTx"},
+		{"s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})", "BeginTx"},
+		{"s.database.db.BeginTx(ctx, opts)", "BeginTx"},
+		{"s.database.db.Begin()", "Begin"},
+		{"writer.BeginTx(ctx, nil)", "BeginTx"},
+		{"reader.BeginTx(ctx, nil)", ""},
+		{"readProject(ctx, s.database.db)", "readProject"},
+		{"s.database.reader.BeginTx(ctx, nil)", ""},
+		{"s.database.reader.QueryContext(ctx, query)", ""},
+	} {
+		t.Run(test.expression, func(t *testing.T) {
+			expression, err := parser.ParseExpr(test.expression)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hubWriterReadOperation(expression.(*ast.CallExpr), map[string]bool{"writer": true}); got != test.operation {
+				t.Fatalf("writer operation=%q, want %q", got, test.operation)
+			}
+		})
 	}
 }
 
@@ -195,6 +319,80 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"claimHostedOperation":        "Idempotent command readback observes the writer insertion in this request.",
 		"tenantRequestMetrics.report": "Request metrics use their independent database, outside the tenant writer pool.",
 		"bindHostedDatabase":          "Startup verifies binding through the connection that installs it.",
+	}
+	transactionReasons := map[string]string{
+		"revokeHostedInvitationFor":         "Revokes the invitation and releases its reserved seat atomically.",
+		"sendReservedHostedInvitationFor":   "Records the invitation together with its grants and reserved seat.",
+		"editHostedInvitationFor":           "Updates invitation grants under current authority.",
+		"creditEvent":                       "Applies a billing credit event once and records its receipt.",
+		"autoFund":                          "Reserves funding before dispatching the billing operation.",
+		"changeDependency":                  "Applies a dependency mutation and its event atomically.",
+		"changeQueueOrder":                  "Applies a queue order mutation and its event atomically.",
+		"artifactReceipt":                   "Records an artifact receipt under its fenced upload grant.",
+		"authorizeArtifactUpload":           "Creates a fenced artifact upload grant.",
+		"artifactReadGrantCommand":          "Creates an artifact read grant as an explicit command.",
+		"hubTransact":                       "Runs the supplied Hub mutation and commits its resulting state.",
+		"checkAttachmentEvidence":           "Records attachment evidence inside the attempt authority transaction.",
+		"RecordConversationUsage":           "Writes conversation usage and its billing consumption.",
+		"deleteCloudAttachmentCommand":      "Deletes the attachment and records its native event.",
+		"referenceCloudAttachmentCommand":   "Adds an attachment source reference and records its event.",
+		"transact":                          "Runs the supplied conversation mutation and commits its resulting state.",
+		"conversationTurnCoordinator.write": "Runs the turn mutation after rechecking conversation authority.",
+		"normalizeAfterRestart":             "Normalizes interrupted conversation state during startup.",
+		"createAPITokenFor":                 "Creates a token together with its grants.",
+		"grantNativeTokenFor":               "Changes a native token grant under current authority.",
+		"recordWebhook":                     "Inserts the webhook inbox receipt once.",
+		"processWebhook":                    "Applies a webhook payload and advances the inbox receipt.",
+		"evaluateOrganizationHealth":        "Persists computed health findings and their history.",
+		"revokeHostedMemberLocally":         "Revokes local membership, tokens, sessions and grants.",
+		"hostedGrant":                       "Changes a member project grant under current authority.",
+		"createHostedProjectRecord":         "Creates the project together with its workflow and initial grants.",
+		"hostedArtifactAllowances":          "Records artifact usage before enforcing hosted allowances.",
+		"storeHostedMember":                 "Upserts the authenticated member and its principal grants.",
+		"saveHostedCheckout":                "Persists the checkout intent and its billing action.",
+		"recordBillingAction":               "Records a billing action and its consumption.",
+		"configureHostedBilling":            "Installs hosted billing settings at startup.",
+		"commitHostedBilling":               "Commits the reconciled billing state and consumed events.",
+		"acceptHostedInvitationReference":   "Consumes an invitation and installs the accepted membership.",
+		"applyHostedPlanCommand":            "Changes the plan and records its command receipt.",
+		"configureHostedPlans":              "Installs hosted plan configuration at startup.",
+		"applyHostedRuntime":                "Applies the signed hosted runtime update and revocations.",
+		"sharedHostedSession":               "Creates a missing shared-entry session and its support audit.",
+		"revokeHostedSharedBinding":         "Revokes the shared session and its conversation authority.",
+		"MigrateHostedSharedOrigin":         "Offline migration writes the shared-entry origin bindings.",
+		"recordHostedRequest":               "Hosted GET accounting updates consumption in its own write transaction.",
+		"reserveHostedInvitationSeat":       "Reserves an invitation seat while checking the plan allowance.",
+		"executeNativeMutation":             "Runs a native mutation with authority, event and replay receipt in one transaction.",
+		"maintainNativeRetention":           "Deletes expired native records on the existing maintenance tick.",
+		"executeAttachmentDeletion":         "Records an attachment deletion mutation and replay receipt.",
+		"operatorChatStore.Save":            "Persists and prunes operator chat sessions in their independent store.",
+		"commitOutbox":                      "Applies the outbox mutation and records its delivery atomically.",
+		"claimOutbox":                       "Claims an outbox delivery and increments its attempt.",
+		"adjustAICredits":                   "Writes the credit adjustment and its audit record.",
+		"approvePolicy":                     "Stores the approved policy and its authority record.",
+		"revokePolicy":                      "Revokes the selected policy and its authority record.",
+		"projectConfigurationCommand":       "Writes runner configuration commands; inspection and preview use the reader.",
+		"secretMutation":                    "Applies the supplied secret mutation under current authority.",
+		"RotateProjectSecrets":              "Offline rotation rewrites encrypted project secrets.",
+		"createPoolSprite":                  "Reserves and records a new pool sprite and its enrollment.",
+		"deletePoolSprite":                  "Records removal of the pool sprite and its enrollment.",
+		"applyReconcileSnapshot":            "Persists the reconcile snapshot, work items and cursor.",
+		"prepareRestore":                    "Offline restore replaces the administrator credential and writes recovery state.",
+		"runnerAdminTransaction":            "Applies a runner administration mutation with allowance checks.",
+		"updateRunnerCapacityCommand":       "Writes capacity configuration with its revision and command receipt.",
+		"runnerTransaction":                 "Applies a runner protocol mutation under current runner authority.",
+		"chargeRunnerRead":                  "Charges runner read consumption as an explicit accounting write.",
+		"applyRunnerUpdateCommand":          "Writes the selected runner update and its command receipt.",
+		"processSlackDelivery":              "Claims and records a Slack delivery attempt.",
+		"Claim":                             "Claims the work item and reserves its fenced lease.",
+		"renew":                             "Renews the fenced work lease.",
+		"Release":                           "Releases the fenced work lease.",
+		"appendEvent":                       "Writes the worker event and resulting work state.",
+		"applyObservedDefaultBranchPolicy":  "Persists the observed default-branch policy and approval.",
+		"tenantRequestMetrics.write":        "Persists request metrics in their independent database.",
+		"advanceGitHubBatch":                "The import loop applies its next batch and reads back the update.",
+		"ensureHostedCustomer":              "Billing customer creation reserves its intent and reads back that insertion.",
+		"bindHostedDatabase":                "Startup installs and verifies the hosted binding on the writer.",
 	}
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -217,60 +415,46 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 			if !ok || fn.Body == nil {
 				continue
 			}
+			writerAliases := make(map[string]bool)
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				if assignment, ok := node.(*ast.AssignStmt); ok {
+					for index, value := range assignment.Rhs {
+						if receiver, ok := value.(*ast.SelectorExpr); ok && receiver.Sel.Name == "db" && index < len(assignment.Lhs) {
+							if alias, ok := assignment.Lhs[index].(*ast.Ident); ok {
+								writerAliases[alias.Name] = true
+							}
+						}
+					}
+				}
+				return true
+			})
 			ast.Inspect(fn.Body, func(node ast.Node) bool {
 				call, ok := node.(*ast.CallExpr)
 				if !ok {
 					return true
 				}
-				name := ""
-				writer := false
-				switch method := call.Fun.(type) {
-				case *ast.SelectorExpr:
-					name = method.Sel.Name
-					if receiver, ok := method.X.(*ast.SelectorExpr); ok && receiver.Sel.Name == "db" && (name == "QueryContext" || name == "QueryRowContext" || name == "BeginTx") {
-						writer = true
-					}
-				case *ast.Ident:
-					name = method.Name
-				}
-				if strings.HasPrefix(name, "read") || strings.HasPrefix(name, "list") || strings.HasPrefix(name, "load") {
-					for _, argument := range call.Args {
-						if receiver, ok := argument.(*ast.SelectorExpr); ok && receiver.Sel.Name == "db" {
-							writer = true
-						}
-					}
-				}
-				if !writer {
+				name := hubWriterReadOperation(call, writerAliases)
+				if name == "" {
 					return true
 				}
-				if name == "BeginTx" {
-					readOnly := false
-					ast.Inspect(call, func(n ast.Node) bool {
-						if field, ok := n.(*ast.KeyValueExpr); ok {
-							if key, ok := field.Key.(*ast.Ident); ok && key.Name == "ReadOnly" {
-								if value, ok := field.Value.(*ast.Ident); ok && value.Name == "true" {
-									readOnly = true
-								}
-							}
-						}
-						return true
-					})
-					if !readOnly {
-						return true
-					}
+				ownedReasons := reasons
+				if name == "Begin" || name == "BeginTx" {
+					ownedReasons = transactionReasons
 				}
-				reason := reasons[fn.Name.Name]
+				reason := ownedReasons[fn.Name.Name]
 				if fn.Recv != nil {
-					if pointer, ok := fn.Recv.List[0].Type.(*ast.StarExpr); ok {
-						if receiverType, ok := pointer.X.(*ast.Ident); ok {
-							if scoped := reasons[receiverType.Name+"."+fn.Name.Name]; scoped != "" {
-								reason = scoped
-							}
+					receiver := fn.Recv.List[0].Type
+					if pointer, ok := receiver.(*ast.StarExpr); ok {
+						receiver = pointer.X
+					}
+					if receiverType, ok := receiver.(*ast.Ident); ok {
+						if scoped := ownedReasons[receiverType.Name+"."+fn.Name.Name]; scoped != "" {
+							reason = scoped
 						}
 					}
 				}
 				if reason == "" {
-					t.Errorf("%s: %s uses writer %s without a read-your-writes or maintenance reason", path, fn.Name.Name, name)
+					t.Errorf("%s: %s uses writer %s without an owned read or write reason", path, fn.Name.Name, name)
 				}
 				return true
 			})

@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"slices"
@@ -25,10 +26,12 @@ func freshCapacityConfig(r runnerauth.Runner, now time.Time) bool {
 }
 
 func (s *Service) readRunnerCapacity(ctx context.Context, scope nativeScope, resource, backend string) (any, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if backend != "" && (runnerauth.CapacityRequest{ExpectedConfigRevision: strings.Repeat("0", 64), Capacity: 1, Backend: backend}).Validate() != nil {
 		return nil, nativeInvalid("Backend must be a bounded provider identifier")
 	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}

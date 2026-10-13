@@ -575,6 +575,8 @@ func nativeCommandReceipt(ctx context.Context, query nativeQueryer, scope native
 // External-read commands consult the same receipt before fetching a provider.
 // Current application authority is rechecked even when returning a replay.
 func (s *Service) nativeCommandReplay(ctx context.Context, scope nativeScope, operation, key string, input any) (json.RawMessage, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if strings.TrimSpace(key) == "" || len(key) > 128 {
 		return nil, false, nativeInvalid("An idempotency key of at most 128 bytes is required")
 	}
@@ -582,7 +584,7 @@ func (s *Service) nativeCommandReplay(ctx context.Context, scope nativeScope, op
 	if err != nil {
 		return nil, false, err
 	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, false, err
 	}

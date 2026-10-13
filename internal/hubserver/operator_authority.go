@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -194,6 +195,8 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 		ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) { return scope, nil })
 		return context.WithValue(ctx, operatorCredentialKey{}, billingAuthorization(func(context.Context) (apiCredential, error) { return credential, nil }))
 	}, Check: func(ctx context.Context, requirement operatortool.Requirement) error {
+		ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+		defer cancel()
 		if credential.HostedRole == "reporter" && !hostedRoleAllows(credential.HostedRole, requirement.Scope, requirement.Action) {
 			return operatortool.ErrAccessDenied
 		}
@@ -253,7 +256,7 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 					return operatortool.ErrAccessDenied
 				}
 				checkScope.requireHostedAdmin = requirement.Scope == apikey.ScopeAdmin
-				tx, err := s.database.db.BeginTx(ctx, nil)
+				tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 				if err != nil {
 					return err
 				}
