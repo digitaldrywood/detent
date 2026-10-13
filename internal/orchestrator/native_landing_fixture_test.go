@@ -24,16 +24,19 @@ import (
 )
 
 type nativeLandingJourney struct {
-	runner     *runpkg.Runner
-	execution  *nativeLandingJourneyExecution
-	provider   *mergeFastPathAgentBackend
-	issue      connector.Issue
-	target     runpkg.NativeLandingTarget
-	base       string
-	remote     string
-	merge      string
-	mergeCalls *atomic.Int64
-	info       workspace.Info
+	runner          *runpkg.Runner
+	execution       *nativeLandingJourneyExecution
+	provider        *mergeFastPathAgentBackend
+	issue           connector.Issue
+	target          runpkg.NativeLandingTarget
+	base            string
+	remote          string
+	merge           string
+	mergeCalls      *atomic.Int64
+	info            workspace.Info
+	source          string
+	afterGate       func()
+	publishedBranch string
 }
 
 func nativeLandingGit(t *testing.T, ctx context.Context, dir string, args ...string) string {
@@ -143,6 +146,7 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 		tree := nativeLandingGit(t, t.Context(), source, "merge-tree", "--write-tree", freshBase, head)
 		merge = nativeLandingGit(t, t.Context(), source, "commit-tree", tree, "-p", freshBase, "-m", "land reviewed feature")
 	}
+	journey := &nativeLandingJourney{source: source}
 	var puts atomic.Int64
 	publishedBranch := info.Branch
 	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -168,7 +172,15 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 		case request.Method == http.MethodPost && request.URL.Path == "/graphql":
 			fmt.Fprint(w, `{"data":{"viewer":{"databaseId":42,"login":"detent-worker[bot]","__typename":"Bot"}}}`)
 		case request.Method == http.MethodGet && request.URL.Path == "/repos/example/repo/pulls":
+			if request.URL.Query().Get("head") == "" {
+				fmt.Fprint(w, `[]`)
+				return
+			}
+			if journey.afterGate != nil {
+				journey.afterGate()
+			}
 			publishedBranch = strings.TrimPrefix(request.URL.Query().Get("head"), "example:")
+			journey.publishedBranch = publishedBranch
 			fmt.Fprintf(w, `[{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/repo"}},"base":{"sha":%q,"ref":"main","repo":{"full_name":"example/repo"}}}]`, head, publishedBranch, nativeLandingGit(t, request.Context(), remote, "rev-parse", "refs/heads/main"))
 		case request.Method == http.MethodGet && request.URL.Path == "/repos/example/repo/pulls/7":
 			fmt.Fprintf(w, `{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/repo"}},"base":{"sha":%q,"ref":"main","repo":{"full_name":"example/repo"}}}`, head, publishedBranch, base)
@@ -180,12 +192,13 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
+			puts.Add(1)
 			if mergeStatus == http.StatusOK {
-				nativeLandingGit(t, request.Context(), source, "push", "origin", merge+":refs/heads/main")
-				fmt.Fprintf(w, `{"merged":true,"sha":%q}`, merge)
+				nativeLandingGit(t, request.Context(), source, "push", "origin", journey.merge+":refs/heads/main")
+				fmt.Fprintf(w, `{"merged":true,"sha":%q}`, journey.merge)
 				return
 			}
-			if puts.Add(1) == 1 || sourceConflict || mergeStatus == http.StatusMethodNotAllowed && !strings.HasPrefix(mergeMessage, "Base branch was modified") && mergeMessage != "Pull Request has merge conflicts" {
+			if puts.Load() == 1 || sourceConflict || mergeStatus == http.StatusMethodNotAllowed && !strings.HasPrefix(mergeMessage, "Base branch was modified") && mergeMessage != "Pull Request has merge conflicts" {
 				nativeLandingGit(t, request.Context(), source, "push", "origin", freshBase+":refs/heads/main")
 				w.WriteHeader(mergeStatus)
 				fmt.Fprintf(w, `{"message":%q}`, mergeMessage)
@@ -226,7 +239,10 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	}
 	target := runpkg.NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Repository: repository, Method: "squash", GitHubPullRequest: true}
 	execution := &nativeLandingJourneyExecution{target: target}
-	return &nativeLandingJourney{runner: agent, execution: execution, provider: provider, issue: issue, target: target, base: base, remote: remote, merge: merge, info: info, mergeCalls: &puts}
+	journey.runner, journey.execution, journey.provider = agent, execution, provider
+	journey.issue, journey.target, journey.base = issue, target, base
+	journey.remote, journey.merge, journey.info, journey.mergeCalls = remote, merge, info, &puts
+	return journey
 }
 
 type nativeLandingTransport func(*http.Request) (*http.Response, error)
@@ -240,6 +256,13 @@ func (j *nativeLandingJourney) run(t *testing.T) (runpkg.RunResult, error) {
 	result, err := j.runner.Run(t.Context(), runpkg.RunRequest{Mode: runpkg.RunModeMerge, Issue: j.issue, Execution: j.execution})
 	if result.NativeLanding == nil || result.NativeLanding.ChangeID != j.target.ChangeID || result.NativeLanding.VersionID != j.target.VersionID || result.NativeLanding.HeadSHA != j.target.HeadSHA || nativeLandingGit(t, t.Context(), j.info.Path, "rev-parse", "HEAD") != j.target.HeadSHA {
 		t.Fatalf("landing lost immutable identity: result %#v, error %v", result, err)
+	}
+	if j.afterGate != nil {
+		published := nativeLandingGit(t, t.Context(), j.remote, "rev-parse", "refs/heads/"+j.publishedBranch)
+		updates := nativeLandingGit(t, t.Context(), j.remote, "reflog", "show", "--format=%H", "refs/heads/"+j.publishedBranch)
+		if published != j.target.HeadSHA || len(strings.Fields(updates)) != 1 {
+			t.Fatalf("base movement rewrote published branch %s: head %s, updates %s", j.publishedBranch, published, updates)
+		}
 	}
 	if result.NativeLanding.Landed && (result.NativeLanding.MergeSHA != j.merge || nativeLandingGit(t, t.Context(), j.remote, "rev-parse", "refs/heads/main") != j.merge) {
 		t.Fatalf("landing receipt differs from actual base: %#v", result.NativeLanding)
