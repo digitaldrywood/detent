@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -31,7 +32,9 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		fleet                                                                                 bool
 		autoInitial                                                                           bool
 		bind, adopt, nativeRevision                                                           bool
+		history                                                                               int
 	}{
+		{name: "instruction change with retained history", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 64, status: http.StatusNoContent, applied: true},
 		{name: "binding leaves differing repository policy pending", initial: true, bind: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent},
 		{name: "binding without approval applies first repository policy", bind: true, canonical: true, reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "binding carries same authored approval", initial: true, bind: true, canonical: true, reachable: true, status: http.StatusNoContent, applied: true},
@@ -234,8 +237,40 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &item)
 			}
+			if test.history > 0 {
+				for i := range test.history {
+					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("history-%d", i)}, Title: "Retained history", Body: issueContractTestSections, State: "Done"})
+					requireNativeStatus(t, response, http.StatusOK)
+				}
+				for _, statement := range []string{
+					"CREATE TABLE policy_work_counts(kind TEXT NOT NULL)",
+					"CREATE TRIGGER count_policy_dirty AFTER INSERT ON native_board_dirty BEGIN INSERT INTO policy_work_counts VALUES('card'); END",
+					"CREATE TRIGGER count_policy_states AFTER UPDATE ON workflow_states BEGIN INSERT INTO policy_work_counts VALUES('state'); END",
+					"CREATE TRIGGER count_policy_projects AFTER UPDATE ON projects BEGIN INSERT INTO policy_work_counts VALUES('project'); END",
+				} {
+					if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 			report := policy.Observation{Descriptor: candidate, Source: source}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), test.status)
+			if test.history > 0 {
+				for _, kind := range []string{"card", "state", "project"} {
+					var count int
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM policy_work_counts WHERE kind=?", kind).Scan(&count); err != nil {
+						t.Fatal(err)
+					}
+					t.Logf("instruction-only adoption: %s work=%d, retained history=%d", kind, count, test.history)
+					want := 0
+					if kind == "project" {
+						want = 1
+					}
+					if count != want {
+						t.Errorf("instruction-only adoption %s work=%d, want %d", kind, count, want)
+					}
+				}
+			}
 			if test.adopt {
 				approval, err := readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
 				if err != nil || !reflect.DeepEqual(approval, initialApproval) {
