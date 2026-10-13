@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
 func coordinatorReadFixture(t *testing.T) (hostedSecurityFixture, hostedSecurityUser, conversationRecord) {
@@ -257,11 +258,12 @@ func TestCoordinatorProjectRunners(t *testing.T) {
 		t.Skip("durable SQLite integration")
 	}
 	for _, test := range []struct {
-		name     string
-		count    int
-		disabled bool
+		name         string
+		count        int
+		disabled     bool
+		organization bool
 	}{
-		{"three healthy self-hosted runners", 3, false}, {"empty project", 0, false}, {"attached disabled runner", 1, true},
+		{"three healthy self-hosted runners", 3, false, false}, {"empty project", 0, false, false}, {"attached disabled runner", 1, true, false}, {"organization-scoped runner", 1, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, owner, record := coordinatorReadFixture(t)
@@ -281,51 +283,71 @@ func TestCoordinatorProjectRunners(t *testing.T) {
 				operatorSQL(t, f, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES(?,'org_security','prj_other')", "tok_"+ids[0])
 				operatorSQL(t, f, "UPDATE projects SET scheduling_rank=2 WHERE id='prj_other'")
 			}
+			if test.organization {
+				operatorSQL(t, f, "UPDATE runner_identities SET scope='organization' WHERE id=?", ids[0])
+				operatorSQL(t, f, "DELETE FROM token_grants WHERE token_id=?", "tok_"+ids[0])
+			}
+			if test.count > 0 {
+				problems, err := json.Marshal([]runnerauth.Problem{
+					{Code: "keep_awake_failed", Message: "shared-host-problem"},
+					{ProjectID: string(f.project), Code: "backend_missing", Message: "current-project-problem"},
+					{ProjectID: "prj_other", Code: "settings_invalid", Message: "foreign-problem-sentinel", ErrorOutput: "foreign-error-sentinel", FixCommand: "foreign-command-sentinel"},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				operatorSQL(t, f, "UPDATE runner_identities SET problems_json=? WHERE id=?", string(problems), ids[0])
+			}
 			if test.disabled {
 				operatorSQL(t, f, "UPDATE runner_identities SET state='disabled' WHERE id=?", ids[0])
 			}
 			foreignMember := f.user(t, "foreign-member", "member", "foreign@example.test", "", "")
 			operatorSQL(t, f, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id) VALUES(?,'org_security','prj_other')", foreignMember.identity.Subject)
 			tools, _ := coordinatorViewerTools(t, f, record, owner)
-			result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: "get_project_runners", Arguments: json.RawMessage(`{}`)})
-			if err != nil || !result.Success {
-				t.Fatalf("runners: %#v %v", result, err)
-			}
-			var view struct {
-				Runners []struct {
-					ID        string    `json:"id"`
-					Connected bool      `json:"connected"`
-					Heartbeat time.Time `json:"last_heartbeat_at"`
-					Capacity  int       `json:"reported_capacity"`
-					Used      int       `json:"host_used"`
-					Sprite    any       `json:"sprite"`
-					Routing   struct {
-						Projects []string       `json:"project_ids"`
-						Ranks    map[string]int `json:"project_ranks"`
-					} `json:"routing"`
-				} `json:"runners"`
-				Options []string `json:"runner_options"`
-			}
-			if err := json.Unmarshal([]byte(result.Content), &view); err != nil {
-				t.Fatal(err)
-			}
-			if len(view.Runners) != test.count {
-				t.Fatalf("attached runners: %s", result.Content)
-			}
-			if !slices.Contains(view.Options, "self-hosted") || !slices.Contains(view.Options, "Sprites") {
-				t.Fatalf("missing runner options: %s", result.Content)
-			}
-			for _, r := range view.Runners {
-				if r.Connected == test.disabled || !r.Heartbeat.Equal(f.service.config.now()) || r.Capacity != 1 || r.Used != 0 || r.Sprite != nil {
-					t.Fatalf("incorrect runner health/capacity: %s", result.Content)
+			for _, read := range []string{"get_project_runners", "get_project_fleet"} {
+				result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: read, Arguments: json.RawMessage(`{}`)})
+				if err != nil || !result.Success {
+					t.Fatalf("runners: %#v %v", result, err)
 				}
-				if len(r.Routing.Projects) != 1 || r.Routing.Projects[0] != string(f.project) {
-					t.Fatalf("foreign routing: %s", result.Content)
+				var view struct {
+					Runners []struct {
+						ID        string    `json:"id"`
+						Connected bool      `json:"connected"`
+						Heartbeat time.Time `json:"last_heartbeat_at"`
+						Capacity  int       `json:"reported_capacity"`
+						Used      int       `json:"host_used"`
+						Sprite    any       `json:"sprite"`
+						Routing   struct {
+							Projects []string       `json:"project_ids"`
+							Ranks    map[string]int `json:"project_ranks"`
+						} `json:"routing"`
+					} `json:"runners"`
+					Options []string `json:"runner_options"`
 				}
-			}
-			for _, sentinel := range []string{"prj_other", "unattached-sentinel", "foreign-org", "tok_"} {
-				if strings.Contains(result.Content, sentinel) {
-					t.Fatalf("foreign or credential data: %s", result.Content)
+				if err := json.Unmarshal([]byte(result.Content), &view); err != nil {
+					t.Fatal(err)
+				}
+				if len(view.Runners) != test.count {
+					t.Fatalf("attached runners: %s", result.Content)
+				}
+				if !slices.Contains(view.Options, "self-hosted") || !slices.Contains(view.Options, "Sprites") {
+					t.Fatalf("missing runner options: %s", result.Content)
+				}
+				for _, r := range view.Runners {
+					if r.Connected == test.disabled || !r.Heartbeat.Equal(f.service.config.now()) || r.Capacity != 1 || r.Used != 0 || r.Sprite != nil {
+						t.Fatalf("incorrect runner health/capacity: %s", result.Content)
+					}
+					if test.organization && len(r.Routing.Projects) != 0 || !test.organization && (len(r.Routing.Projects) != 1 || r.Routing.Projects[0] != string(f.project)) {
+						t.Fatalf("foreign routing: %s", result.Content)
+					}
+				}
+				for _, sentinel := range []string{"prj_other", "unattached-sentinel", "foreign-org", "tok_", "foreign-problem-sentinel", "foreign-error-sentinel", "foreign-command-sentinel"} {
+					if strings.Contains(result.Content, sentinel) {
+						t.Fatalf("foreign or credential data: %s", result.Content)
+					}
+				}
+				if test.count > 0 && (!strings.Contains(result.Content, "shared-host-problem") || !strings.Contains(result.Content, "current-project-problem")) {
+					t.Fatalf("missing visible runner problems: %s", result.Content)
 				}
 			}
 			for _, name := range []string{"get_onboarding", "get_project_members", operatortool.MembershipList} {
@@ -335,6 +357,16 @@ func TestCoordinatorProjectRunners(t *testing.T) {
 				}
 			}
 			for _, tool := range []string{operatortool.GetRunnerUpdate, operatortool.GetRunnerCapacity} {
+				if test.organization {
+					raw, err := json.Marshal(map[string]string{"runner_id": ids[0]})
+					if err != nil {
+						t.Fatal(err)
+					}
+					result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: tool, Arguments: raw})
+					if err != nil || !result.Success {
+						t.Fatalf("organization runner read: %#v %v", result, err)
+					}
+				}
 				for _, id := range []string{"unattached-sentinel", "foreign-org-runner-sentinel"} {
 					raw, err := json.Marshal(map[string]string{"runner_id": id})
 					if err != nil {

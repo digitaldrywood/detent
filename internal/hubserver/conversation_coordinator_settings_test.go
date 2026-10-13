@@ -83,16 +83,27 @@ func coordinatorSettingsProposal(t *testing.T, f hostedSecurityFixture, conversa
 
 func TestCoordinatorSettingsActions(t *testing.T) {
 	for _, tool := range coordinatorSettingsNames() {
-		for _, role := range []string{"owner", "admin", "member", "runner member", "viewer"} {
+		roles := []string{"owner", "admin", "member", "runner member", "viewer"}
+		if tool == operatortool.UpdateRunnerCapacity {
+			roles = append(roles, "organization owner")
+		}
+		for _, role := range roles {
 			t.Run(tool+"/"+role, func(t *testing.T) {
 				f, _, record := coordinatorReadFixture(t)
 				name := role
+				if role == "organization owner" {
+					name = "owner"
+				}
 				if role == "runner member" {
 					name = "member"
 				}
 				u := f.user(t, "settings-viewer", name, "settings@example.test", "write", "")
 				f.grant(t, u, name != "viewer", role == "runner member")
 				args := coordinatorSettingsArguments(t, f, tool, "settings-runner")
+				if role == "organization owner" {
+					operatorSQL(t, f, "UPDATE runner_identities SET scope='organization' WHERE id='settings-runner'")
+					operatorSQL(t, f, "DELETE FROM token_grants WHERE token_id='tok_settings-runner'")
+				}
 				tools, _ := coordinatorViewerTools(t, f, record, u)
 				result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: tool, Arguments: args})
 				want := name == "owner" || name == "admin" || role == "runner member" && hubFleetTool(tool) || name == "member" && tool == "save_onboarding"

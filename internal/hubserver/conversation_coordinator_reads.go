@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -199,7 +200,7 @@ func (s *Service) coordinatorRunnerAttached(ctx context.Context, record conversa
 	if err != nil {
 		return false, err
 	}
-	return slices.Contains(r.ProjectIDs, record.ProjectID), nil
+	return r.AllowsProject(record.ProjectID), nil
 }
 
 func (s *Service) coordinatorProjectRunners(ctx context.Context, record conversationRecord, credential apiCredential, editable bool) (any, error) {
@@ -219,7 +220,7 @@ func (s *Service) coordinatorProjectRunners(ctx context.Context, record conversa
 		if err != nil {
 			return nil, err
 		}
-		if !slices.Contains(source.ProjectIDs, record.ProjectID) {
+		if !source.AllowsProject(record.ProjectID) {
 			continue
 		}
 		connected[r.ID] = source.State == "active" && source.ConnectionHealth == "online"
@@ -230,6 +231,7 @@ func (s *Service) coordinatorProjectRunners(ctx context.Context, record conversa
 			routing.ProjectRanks = map[tracker.ProjectID]int{record.ProjectID: routing.ProjectRanks[record.ProjectID]}
 			r.Routing = &routing
 		}
+		r.Problems = slices.DeleteFunc(slices.Clone(r.Problems), func(p runnerauth.Problem) bool { return p.ProjectID != "" && p.ProjectID != string(record.ProjectID) })
 		attached = append(attached, r)
 	}
 	scopeHostUsage(attached)

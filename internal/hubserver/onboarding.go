@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -85,6 +86,7 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 			return result, err
 		}
 		exclusions := runner.Exclusions(scope.project, approval.Policy.Requirements, false)
+		runner.Problems = slices.DeleteFunc(slices.Clone(runner.Problems), func(p runnerauth.Problem) bool { return p.ProjectID != "" && p.ProjectID != string(scope.project) })
 		runner.ProjectIDs = []tracker.ProjectID{scope.project}
 		runner.ProjectRanks = map[tracker.ProjectID]int{scope.project: runner.ProjectRanks[scope.project]}
 		runner.Leases = nil

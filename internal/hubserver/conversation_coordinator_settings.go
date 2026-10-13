@@ -86,7 +86,7 @@ func (s *Service) coordinatorSettingsTarget(ctx context.Context, record conversa
 		return nil
 	}
 	r, err := readRunnerWithClock(ctx, s.database.db, record.OrganizationID, target.RunnerID, s.config.now)
-	if err != nil || !slices.Contains(r.ProjectIDs, record.ProjectID) {
+	if err != nil || !r.AllowsProject(record.ProjectID) {
 		return coordinatorSettingsRefusal(name)
 	}
 	if name == operatortool.UpdateRunnerRouting {
