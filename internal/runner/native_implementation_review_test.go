@@ -74,7 +74,7 @@ func TestNativeImplementationReviewSSHCallbacksRemainSeparate(t *testing.T) {
 	var events []string
 	execution := &implementationReviewExecution{events: &events, commands: []gate.CommandResult{{ReceiptID: "receipt-original", Command: "make check", HeadSHA: "head", TreeSHA: "tree", DurationNS: 123}}}
 	human := tracker.Actor{Kind: "human", PrincipalID: "operator"}
-	execution.discussion = NativeReviewDiscussion{Issue: []tracker.NativeComment{{ID: "issue_feedback", Body: "Human edited source feedback", Actor: tracker.Actor{Kind: "runner", PrincipalID: "worker"}, EditedBy: &human, CreatedAt: time.Unix(100, 0), UpdatedAt: time.Unix(200, 0), Provenance: &tracker.Provenance{Provider: "github", ExternalID: "feedback-original", AuthorID: "author"}}}, Change: []tracker.ChangeDiscussion{{ID: "change_feedback", VersionID: "version_example", Body: "Current source discussion", Actor: human, CreatedAt: time.Unix(200, 0)}}}
+	execution.discussion = NativeReviewDiscussion{Issue: []tracker.NativeComment{{ID: "issue_feedback", Body: "Human edited source feedback", Actor: tracker.Actor{Kind: "runner", PrincipalID: "worker"}, EditedBy: &human, CreatedAt: time.Unix(100, 0).UTC(), UpdatedAt: time.Unix(200, 0).UTC(), Provenance: &tracker.Provenance{Provider: "github", ExternalID: "feedback-original", AuthorID: "author"}}}, Change: []tracker.ChangeDiscussion{{ID: "change_feedback", VersionID: "version_example", Body: "Current source discussion", Actor: human, CreatedAt: time.Unix(200, 0).UTC()}}}
 	left, right := net.Pipe()
 	central := NewSSHPeer(t.Context(), left, left, NewSSHCallbackHandler(RunRequest{Execution: execution}, nil, nil, nil))
 	remote := NewSSHPeer(t.Context(), right, right, nil)
