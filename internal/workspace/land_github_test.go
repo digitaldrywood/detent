@@ -314,6 +314,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "external incomplete review read refuses before validation", method: "squash", external: true, review: "incomplete"},
 		{name: "external clean review validates and merges", method: "squash", external: true, review: "clean"},
 		{name: "external new review after preflight retains final refusal", method: "squash", external: true, review: "late", failureMethod: "PUT", status: 405, message: "A conversation must be resolved before this pull request can be merged."},
+		{name: "external review during validation refuses an unprotected merge", method: "squash", external: true, review: "during-gate"},
+		{name: "external review during refresh refuses the merge retry", method: "squash", external: true, review: "retry", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retrySuccess: true},
+		{name: "external final review read failure refuses merge", method: "squash", external: true, review: "final-failure"},
 		{name: "external base advance after preflight refuses merge", method: "squash", external: true, baseMovesDuringGate: true},
 		{name: "external head advance after preflight refuses merge", method: "squash", external: true, moved: true, wantRefusal: LandRefusalHeadMoved},
 		{name: "prepare resumes a retained PR after a lost push receipt", prepareOnly: true, external: true, publicationBranch: "manual/recovery", publicationPrior: true, lostPushReceipt: true, method: "squash"},
@@ -516,6 +519,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			surfaceCalls := 0
 			createdPull := false
 			reset := time.Now().Add(time.Hour).Truncate(time.Second)
+			gateTrace := filepath.Join(t.TempDir(), "gate-trace")
 			newClient := func(healthy bool) *github.Client {
 				client, err := github.NewClient(github.ClientConfig{
 					TokenSource:                github.StaticTokenSource(test.name + strconv.FormatInt(time.Now().UnixNano(), 10)),
@@ -536,7 +540,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 								if request.Variables["owner"] != "example" || request.Variables["name"] != "repo" || request.Variables["number"] != float64(7) {
 									t.Fatalf("review read escaped external identity: %#v", request.Variables)
 								}
-								if test.review == "failure" {
+								if test.review == "failure" || test.review == "final-failure" && reviewReads > 1 {
 									return nil, errors.New("review read unavailable")
 								}
 								if test.review == "cancelled" {
@@ -549,7 +553,11 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 								if test.review == "incomplete" {
 									page = strings.Replace(page, `"hasNextPage":false`, `"hasNextPage":true`, 1)
 								}
-								if test.review == "known" || test.review == "base" || test.review == "late" && mergeCalls > 0 {
+								trace, traceErr := os.ReadFile(gateTrace)
+								if traceErr != nil && !errors.Is(traceErr, os.ErrNotExist) {
+									t.Fatal(traceErr)
+								}
+								if test.review == "known" || test.review == "base" || test.review == "late" && mergeCalls > 0 || test.review == "during-gate" && traceErr == nil || test.review == "retry" && len(strings.Fields(string(trace))) == 2 {
 									switch request.Variables["after"] {
 									case nil:
 										page = reviewThreadsPage("c1", reviewThreadNode("T0", true, "example-bot", "Bot", "Corrected finding"))
@@ -562,7 +570,11 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 								response = `{"data":` + page + `}`
 							case landingReviewThreadReply:
 								surfaceCalls++
-								if request.Variables["thread"] != "T1" || !strings.Contains(request.Variables["body"].(string), "<!-- detent:surfaced "+fixture.head+" -->") {
+								wantHead := fixture.head
+								if test.review == "retry" {
+									wantHead = strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
+								}
+								if request.Variables["thread"] != "T1" || !strings.Contains(request.Variables["body"].(string), "<!-- detent:surfaced "+wantHead+" -->") {
 									t.Fatalf("review surfacing lost head or thread: %#v", request.Variables)
 								}
 							default:
@@ -817,7 +829,6 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				source := tracker.GitHubIssueSourceReference("I_original", "https://github.com/digitaldrywood/detent/issues/3410")
 				opts.SourceIssues = []tracker.ExternalReference{source, source}
 			}
-			gateTrace := filepath.Join(t.TempDir(), "gate-trace")
 			if test.review != "" {
 				opts.ValidationCommand = "printf 'gate\\n' >> " + shellQuote(gateTrace) + " && " + opts.ValidationCommand
 			}
@@ -1030,16 +1041,22 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				wantGates, wantMerges, wantReads, wantSurfaces := 0, 0, 2, 1
 				switch test.review {
 				case "clean":
-					wantGates, wantMerges, wantReads, wantSurfaces = 1, 1, 1, 0
+					wantGates, wantMerges, wantReads, wantSurfaces = 1, 1, 2, 0
 				case "late":
-					wantGates, wantMerges, wantReads = 1, 1, 3
+					wantGates, wantMerges, wantReads = 1, 1, 4
+				case "during-gate":
+					wantGates, wantMerges, wantReads = 1, 0, 3
+				case "retry":
+					wantGates, wantMerges, wantReads = 2, 1, 4
+				case "final-failure":
+					wantGates, wantMerges, wantReads, wantSurfaces = 1, 0, 2, 0
 				case "failure", "cancelled", "incomplete":
 					wantReads, wantSurfaces = 1, 0
 				}
 				if wantGates == 0 && !errors.Is(traceErr, os.ErrNotExist) || wantGates > 0 && traceErr != nil || len(strings.Fields(string(trace))) != wantGates || mergeCalls != wantMerges || reviewReads != wantReads || surfaceCalls != wantSurfaces {
 					t.Fatalf("review ordering: gates=%q merges=%d reads=%d surfaces=%d result=%#v err=%v", trace, mergeCalls, reviewReads, surfaceCalls, result, err)
 				}
-				if test.review == "failure" {
+				if test.review == "failure" || test.review == "final-failure" {
 					if err == nil || !strings.Contains(err.Error(), "review read unavailable") {
 						t.Fatalf("unavailable review read approved landing: %v", err)
 					}
@@ -1064,6 +1081,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					}
 					if test.review == "base" && fixture.remoteMain(t) == base || test.review != "base" && fixture.remoteMain(t) != base {
 						t.Fatal("review refusal changed the base or missed concurrent advancement")
+					}
+					if test.review == "retry" && (!result.Rebased || result.Gate.HeadSHA == fixture.head) {
+						t.Fatalf("review refusal lost refreshed gate evidence: %#v", result)
 					}
 					return
 				}
