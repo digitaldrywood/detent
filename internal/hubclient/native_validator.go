@@ -50,7 +50,14 @@ func (e *nativeExecution) ValidatorVersion(ctx context.Context) (runner.NativeVa
 		if complete {
 			diff.Patch = patch.String()
 		}
-		return runner.NativeValidation{Version: &version, Diff: diff}, nil
+		runtime, err := e.claim.source.client.RuntimeEvidence(ctx, e.claim.lease.WorkItemID, e.data.AttemptID)
+		if err != nil {
+			return runner.NativeValidation{}, err
+		}
+		if runtime.Issue.OrganizationID != e.claim.source.client.organization || runtime.Issue.ProjectID != e.claim.source.client.project || runtime.Issue.WorkItemID != e.claim.lease.WorkItemID || runtime.Attempt == nil || runtime.Attempt.AttemptID != e.data.AttemptID || runtime.Attempt.LeaseID != e.claim.lease.ID || runtime.Attempt.FencingToken != e.claim.lease.FencingToken || runtime.Attempt.PolicyID != e.data.PolicyID {
+			return runner.NativeValidation{}, errors.New("native validator evidence differs from the current attempt")
+		}
+		return runner.NativeValidation{Version: &version, Diff: diff, Evidence: runtime.Attempt.Evidence}, nil
 	}
 	return runner.NativeValidation{}, errors.New("native validator version is no longer current")
 }

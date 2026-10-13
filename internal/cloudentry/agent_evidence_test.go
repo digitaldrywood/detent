@@ -250,6 +250,18 @@ func TestNativeAgentEvidence(t *testing.T) {
 			if err != nil || json.Unmarshal([]byte(replay.Content), &repeated) != nil || repeated.ID != uploaded.ID || repeated.Reference != uploaded.Reference {
 				t.Fatalf("upload replay: %+v, %v", replay, err)
 			}
+			native, ok := scheduler.NativeClient("local")
+			if !ok {
+				t.Fatal("native client unavailable")
+			}
+			pending, err := native.RuntimeEvidence(t.Context(), issue.WorkItemID, "")
+			if err != nil || pending.Attempt == nil || len(pending.Attempt.Evidence) != 1 || pending.Attempt.Evidence[0].AttachmentID != uploaded.ID {
+				t.Fatalf("authenticated upload unavailable before finish: %+v, %v", pending.Attempt, err)
+			}
+			before, err := native.Comments(t.Context(), issue.WorkItemID, "")
+			if err != nil || len(before.Items) != 1 {
+				t.Fatalf("premature completion comment: %+v, %v", before, err)
+			}
 			if err := execution.Checkpoint(t.Context(), tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "dirty", ExternalEffect: "none", EffectState: "none"}); err != nil {
 				t.Fatal(err)
 			}
@@ -263,10 +275,6 @@ func TestNativeAgentEvidence(t *testing.T) {
 			}
 			if err := execution.Finish(t.Context(), "failed"); err != nil {
 				t.Fatal(err)
-			}
-			native, ok := scheduler.NativeClient("local")
-			if !ok {
-				t.Fatal("native client unavailable")
 			}
 			comments, err := native.Comments(t.Context(), issue.WorkItemID, "")
 			if err != nil || len(comments.Items) != 2 || !strings.Contains(comments.Items[1].Body, completion) || !strings.Contains(comments.Items[1].Body, "Page rendered correctly") || !strings.Contains(comments.Items[1].Body, uploaded.Reference) {
