@@ -86,7 +86,9 @@ func TestNativeKeyActor(t *testing.T) {
 		{"personal hosted", apiCredential{ID: "key", HostedPrincipal: "human", HostedKeyKind: "personal", HostedKeyScope: apikey.ScopeWrite}, tracker.Actor{Kind: "human", PrincipalID: "human", ViaKey: "key"}},
 		{"service hosted", apiCredential{ID: "key", HostedPrincipal: "human", HostedKeyKind: "service", HostedKeyScope: apikey.ScopeWrite}, tracker.Actor{Kind: "integration", PrincipalID: "key", ViaKey: "key"}},
 		{"worker", apiCredential{ID: "worker", Scope: apiScopeWorker}, tracker.Actor{Kind: "runner", PrincipalID: "worker"}},
+		{"hosted worker", apiCredential{ID: "worker", Scope: apiScopeWorker, HostedKeyKind: "service"}, tracker.Actor{Kind: "runner", PrincipalID: "worker"}},
 		{"runner", apiCredential{ID: "runner", Scope: apiScopeOperator, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: "runner"}}}, tracker.Actor{Kind: "runner", PrincipalID: "runner"}},
+		{"hosted runner", apiCredential{ID: "runner", Scope: apiScopeOperator, HostedKeyKind: "service", Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: "runner"}}}, tracker.Actor{Kind: "runner", PrincipalID: "runner"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := (nativeScope{credential: test.credential}).actor(); got != test.want {

@@ -318,13 +318,9 @@ func (scope nativeScope) actor() tracker.Actor {
 		return *scope.sourceActor
 	}
 	kind := "human"
-	if scope.credential.Scope == apiScopeWorker {
+	if scope.credential.Scope == apiScopeWorker || scope.credential.Runner.RunnerID != "" {
 		kind = "runner"
-	}
-	if scope.credential.Runner.RunnerID != "" {
-		kind = "runner"
-	}
-	if scope.credential.EntryKey != nil && scope.credential.EntryKey.Kind == "service" || scope.credential.HostedKeyKind == "service" {
+	} else if scope.credential.EntryKey != nil && scope.credential.EntryKey.Kind == "service" || scope.credential.HostedKeyScope != "" && scope.credential.HostedKeyKind == "service" {
 		kind = "integration"
 	}
 	principal := operatorIdentity(scope.credential, string(scope.organization)).PrincipalID

@@ -120,6 +120,11 @@ and `via_key`; audit records retain the owner and key ID. Service, runner and
 worker credentials cannot confirm issue contracts. Revoking a key refuses
 subsequent calls without removing earlier human confirmations.
 
+Historical cards with unconfirmed sections require an authorized human to
+save the current body through the web UI or a personal key. An unchanged body
+save confirms those sections. Key migration does not backfill confirmations;
+service, runner and worker keys cannot perform this confirmation.
+
 Org owners/admins manage service keys at
 `/api/cloud/organizations/:organization/service-keys`, using the same creation
 fields with one organization and selected or project context. Service keys are
