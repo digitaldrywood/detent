@@ -680,6 +680,90 @@ func TestConversationLostAcknowledgementStaysUnknown(t *testing.T) {
 		t.Fatalf("controls replayed from zero = %#v, want none", third.Controls)
 	}
 	requireConversationDelivery(t, f, lost, "lost-1", conversation.DeliveryUnknown)
+	snapshot := (conversationAPIFixture{nativeFixture: f.nativeFixture}).snapshot(t, f.token, f.record.ID)
+	if len(snapshot.Messages) != 1 {
+		t.Fatalf("retained messages = %#v", snapshot.Messages)
+	}
+	retained := snapshot.Messages[0]
+	if retained.ID != lost.ID || retained.Text != "Did this arrive?" || retained.Delivery != conversation.DeliveryUnknown || retained.AttemptID == nil || *retained.AttemptID != f.attempt || retained.TurnID == nil || *retained.TurnID != "turn-1" {
+		t.Fatalf("unknown steering lost its content or owner: %#v", retained)
+	}
+
+	for _, test := range []struct {
+		name   string
+		events []map[string]any
+	}{
+		{name: "running before turn identity", events: []map[string]any{{"type": "execution_status", "status": "running"}}},
+		{name: "running after provider completion", events: []map[string]any{
+			{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-1"},
+			{"type": "turn_completed", "turn_id": "turn-1", "status": "completed"},
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newConversationWorkerFixture(t)
+			requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+			requireNativeStatus(t, f.turnEvents(t, test.events...), http.StatusAccepted)
+			record := f.load(t)
+			if record.Execution.Status != conversation.ExecutionRunning || record.Execution.Owner.TurnID != "" || !record.Execution.Capabilities.Steer {
+				t.Fatalf("execution without provider turn identity = %#v", record.Execution)
+			}
+			command := conversation.Command{Key: "late-1", Kind: conversation.CommandMessage, Text: "Use the attached evidence", Expected: conversation.Expected{AttemptID: f.attempt}}
+			response := f.command(t, f.token, command)
+			requireConversationErrorCode(t, response, http.StatusConflict, "stale_execution")
+			if !strings.Contains(response.Body.String(), "after the next turn starts or this attempt finishes") {
+				t.Fatalf("refusal lacks the next operator step: %s", response.Body.String())
+			}
+			after := f.load(t)
+			if after.EventSeq != record.EventSeq || len(f.messages(t)) != 0 {
+				t.Fatal("refused steering must not persist a message or change the conversation")
+			}
+			var reserved int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM conversation_commands WHERE conversation_id = ? AND key = ?", f.record.ID, command.Key).Scan(&reserved); err != nil {
+				t.Fatal(err)
+			}
+			if reserved != 0 {
+				t.Fatal("refused steering must not reserve its idempotency key")
+			}
+			api := conversationAPIFixture{nativeFixture: f.nativeFixture}
+			snapshot := api.snapshot(t, f.token, f.record.ID)
+			execution := snapshot.Conversation.Execution
+			if execution.Status != conversation.ExecutionRunning || execution.TurnID != nil || execution.Capabilities.Steer {
+				t.Fatalf("steering advertised without provider turn identity: %#v", execution)
+			}
+			requireNativeStatus(t, f.unbind(t, "succeeded"), http.StatusOK)
+			accepted := f.command(t, f.token, command)
+			requireNativeStatus(t, accepted, http.StatusOK)
+			var receipt conversation.Receipt
+			decodeHubResponse(t, accepted, &receipt)
+			if receipt.Status != conversation.DeliveryQueued {
+				t.Fatalf("message after attempt completion = %#v", receipt)
+			}
+			f.release(t)
+			f.claim(t)
+			bound := f.bind(t, nil)
+			requireNativeStatus(t, bound, http.StatusOK)
+			var next workerBindResponse
+			decodeHubResponse(t, bound, &next)
+			if len(next.Pending) != 1 || next.Pending[0].MessageID != receipt.MessageID || next.Pending[0].Text != command.Text || next.Pending[0].Expected.AttemptID != f.attempt {
+				t.Fatalf("next attempt pending controls = %#v", next.Pending)
+			}
+			requireNativeStatus(t, f.turnEvents(t,
+				map[string]any{"type": "turn_started", "thread_id": "thread-2", "turn_id": "turn-2"},
+				map[string]any{"type": "control_result", "key": command.Key, "status": "delivered"},
+			), http.StatusAccepted)
+			snapshot = api.snapshot(t, f.token, f.record.ID)
+			if !snapshot.Conversation.Execution.Capabilities.Steer || len(snapshot.Messages) != 1 || snapshot.Messages[0].Delivery != conversation.DeliveryDelivered {
+				t.Fatalf("delivery on the next provider turn = %#v", snapshot)
+			}
+			replayed := f.command(t, f.token, command)
+			requireNativeStatus(t, replayed, http.StatusOK)
+			var again conversation.Receipt
+			decodeHubResponse(t, replayed, &again)
+			if again.MessageID != receipt.MessageID || again.Status != conversation.DeliveryDelivered || len(f.messages(t)) != 1 {
+				t.Fatalf("reconnected command duplicated or lost delivery: %#v", again)
+			}
+		})
+	}
 }
 
 func TestConversationHubRestartRecovery(t *testing.T) {
