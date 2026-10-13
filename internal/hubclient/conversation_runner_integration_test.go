@@ -194,6 +194,175 @@ func TestConversationRunnerExecutesLiveTurns(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("completion before steering handoff", func(t *testing.T) {
+		hub := newConversationRunnerHub(t)
+		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+		defer cancel()
+		running, completed, acknowledged := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		handed := make(chan ConversationControlsPage, 1)
+		release := make(chan struct{})
+		var runningOnce, completedOnce, acknowledgedOnce, releaseOnce sync.Once
+		unblock := func() { releaseOnce.Do(func() { close(release) }) }
+		defer unblock()
+		transport := hub.httpClient.Transport
+		hub.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+			var events ConversationTurnEventsRequest
+			if strings.HasSuffix(request.URL.Path, "/turn-events") {
+				payload, err := io.ReadAll(request.Body)
+				if err != nil {
+					return nil, err
+				}
+				request.Body = io.NopCloser(bytes.NewReader(payload))
+				if err := json.Unmarshal(payload, &events); err != nil {
+					return nil, err
+				}
+			}
+			response, err := transport.RoundTrip(request)
+			if err != nil {
+				return nil, err
+			}
+			if response.StatusCode < 300 {
+				for _, event := range events.Events {
+					switch {
+					case event.Type == runner.ConversationEventExecutionStatus && event.Status == "running":
+						runningOnce.Do(func() { close(running) })
+					case event.Type == runner.ConversationEventTurnCompleted:
+						completedOnce.Do(func() { close(completed) })
+					}
+				}
+			}
+			if strings.HasSuffix(request.URL.Path, "/controls") && response.StatusCode == http.StatusOK {
+				payload, err := io.ReadAll(response.Body)
+				if err != nil {
+					return nil, err
+				}
+				if err := response.Body.Close(); err != nil {
+					return nil, err
+				}
+				response.Body = io.NopCloser(bytes.NewReader(payload))
+				var page ConversationControlsPage
+				if err := json.Unmarshal(payload, &page); err != nil {
+					return nil, err
+				}
+				if len(page.Controls) > 0 {
+					handed <- page
+					select {
+					case <-release:
+					case <-request.Context().Done():
+						return nil, request.Context().Err()
+					}
+				}
+				if request.URL.Query().Get("after") != "0" {
+					acknowledgedOnce.Do(func() { close(acknowledged) })
+				}
+			}
+			return response, nil
+		})
+		wait := func(event <-chan struct{}) {
+			t.Helper()
+			select {
+			case <-event:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		}
+		var issue tracker.NativeIssue
+		hub.expect(t, http.MethodPost, "/work-items", map[string]any{"idempotency_key": "handoff-issue", "title": "Preserve the parser API", "body": "Keep the parser interface stable." + issueContractTestSections, "state": "Todo"}, http.StatusOK, &issue)
+		scheduler := hub.scheduler(t)
+		candidates, err := scheduler.FetchCandidateIssues(ctx, orchestrator.SchedulingRequest{Policy: hub.descriptor, ProjectID: "local", WorkflowStates: []string{"Todo"}})
+		if err != nil || len(candidates) != 1 {
+			t.Fatalf("candidates = %#v, error = %v", candidates, err)
+		}
+		if _, err := scheduler.AdoptClaim(ctx, candidates[0], time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		execution := scheduler.RunExecution(string(issue.WorkItemID)).(*nativeExecution)
+		if err := execution.Start(ctx, tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+			t.Fatal(err)
+		}
+		session, err := execution.BindConversation(ctx, runner.ConversationCapabilities{Steer: true}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			unblock()
+			if err := session.Close(ctx, runner.ConversationOutcomeSucceeded, nil); err != nil {
+				t.Error(err)
+			}
+		}()
+		control := session.Control(runner.ConversationTurnHooks{})
+		if err := session.Report(ctx, []runner.ConversationTurnEvent{{Type: runner.ConversationEventExecutionStatus, Status: "running"}}); err != nil {
+			t.Fatal(err)
+		}
+		wait(running)
+		id := session.ConversationID()
+		var before runnerSnapshot
+		hub.expect(t, http.MethodGet, "/conversations/"+id, nil, http.StatusOK, &before)
+		if before.Conversation.Execution.Status != conversation.ExecutionRunning || before.Conversation.Execution.TurnID != nil {
+			t.Fatalf("initial execution = %#v", before.Conversation.Execution)
+		}
+		t.Logf("before acceptance: running, turn_id absent, steer=%t", before.Conversation.Execution.Capabilities.Steer)
+		operator, err := New(Config{URL: "http://hub.test", TokenSource: func() string { return hub.operator }, HTTPClient: hub.httpClient})
+		if err != nil {
+			t.Fatal(err)
+		}
+		command := conversation.Command{Key: "handoff-steer", Kind: conversation.CommandMessage, Text: "Use the attached evidence", Expected: conversation.Expected{AttemptID: before.attempt()}}
+		var receipt conversation.Receipt
+		commandErr := operator.request(ctx, http.MethodPost, hub.base+"/conversations/"+id+"/commands", command, &receipt)
+		if commandErr == nil {
+			if receipt.Status != conversation.DeliveryQueued || !before.Conversation.Execution.Capabilities.Steer {
+				t.Fatalf("accepted control = %#v, capabilities = %#v", receipt, before.Conversation.Execution.Capabilities)
+			}
+			select {
+			case page := <-handed:
+				if len(page.Controls) != 1 || page.Controls[0].Expected.AttemptID != before.attempt() || page.Controls[0].Expected.TurnID != "" {
+					t.Fatalf("control handoff = %#v", page)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			t.Log("message accepted as queued; controls response held before reaching the turn")
+		} else {
+			var failure *APIError
+			if !errors.As(commandErr, &failure) || failure.Code != "stale_execution" || before.Conversation.Execution.Capabilities.Steer {
+				t.Fatalf("steering refusal = %v, capabilities = %#v", commandErr, before.Conversation.Execution.Capabilities)
+			}
+		}
+		if err := session.Report(ctx, []runner.ConversationTurnEvent{{Type: runner.ConversationEventTurnCompleted, ThreadID: "thread-handoff", TurnID: "turn-handoff", Status: "completed"}}); err != nil {
+			t.Fatal(err)
+		}
+		session.FinishTurn()
+		wait(completed)
+		select {
+		case command := <-control.Commands:
+			t.Fatalf("control reached the provider before completion: %#v", command)
+		default:
+		}
+		t.Log("provider completed; FinishTurn returned with no control available to its transport")
+		unblock()
+		if commandErr == nil {
+			wait(acknowledged)
+		}
+		if err := session.Close(ctx, runner.ConversationOutcomeSucceeded, nil); err != nil {
+			t.Fatal(err)
+		}
+		var after runnerSnapshot
+		hub.expect(t, http.MethodGet, "/conversations/"+id, nil, http.StatusOK, &after)
+		if after.Conversation.Execution.Status != conversation.ExecutionCompleted {
+			t.Fatalf("terminal execution = %#v", after.Conversation.Execution)
+		}
+		if commandErr == nil {
+			if len(after.Messages) != 1 || after.Messages[0].ID != receipt.MessageID || after.Messages[0].Text != command.Text || after.Messages[0].Delivery != conversation.DeliveryUnknown || after.Messages[0].AttemptID == nil || *after.Messages[0].AttemptID != before.attempt() {
+				t.Fatalf("retained undelivered message = %#v", after.Messages)
+			}
+			t.Fatalf("accepted steering before provider completion never reached the transport: queued -> unknown; message retained; late handoff settled by production Close")
+		}
+		if len(after.Messages) != 0 {
+			t.Fatalf("refused steering persisted a message: %#v", after.Messages)
+		}
+	})
+
 }
 
 const conversationRunnerAdminToken = "conversation-runner-admin"
@@ -334,10 +503,13 @@ type runnerSnapshot struct {
 		Execution struct {
 			Status       conversation.ExecutionStatus `json:"status"`
 			AttemptID    *string                      `json:"attempt_id"`
+			TurnID       *string                      `json:"turn_id"`
 			Capabilities conversation.Capabilities    `json:"capabilities"`
 		} `json:"execution"`
 	} `json:"conversation"`
 	Messages []struct {
+		ID         string                   `json:"id"`
+		AttemptID  *string                  `json:"attempt_id"`
 		Role       conversation.Role        `json:"role"`
 		Kind       conversation.MessageKind `json:"kind"`
 		Text       string                   `json:"text"`
