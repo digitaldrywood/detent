@@ -82,11 +82,12 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 		if !cloudassert.CanonicalPath(request.URL) {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
-		body, err := io.ReadAll(io.LimitReader(request.Body, cloudassert.MaxBodyBytes+1))
+		limit := SharedEntryRequestBodyLimit(request.Method, request.URL.Path)
+		body, err := io.ReadAll(io.LimitReader(request.Body, limit+1))
 		if err != nil {
 			return c.JSON(http.StatusBadRequest, apiErrorResponse{Code: "invalid_request", Message: "Request body could not be read"})
 		}
-		if len(body) > cloudassert.MaxBodyBytes {
+		if int64(len(body)) > limit {
 			return c.JSON(http.StatusRequestEntityTooLarge, apiErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
 		}
 		request.Body = io.NopCloser(bytes.NewReader(body))
