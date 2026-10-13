@@ -204,7 +204,18 @@ func (s *Service) chargeRunnerRead(ctx context.Context, path string, now time.Ti
 func (s *Service) createRunnerEnrollment(c echo.Context) error {
 	var request runnerauth.EnrollmentRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		s.config.Logger.WarnContext(c.Request().Context(), "runner enrollment request rejected", "method", c.Request().Method, "route", c.Path(), "error", err)
+		reason := "Malformed JSON request body"
+		var typeError *json.UnmarshalTypeError
+		var maxBytesError *http.MaxBytesError
+		switch {
+		case errors.As(err, &maxBytesError):
+			reason = "Request body is too large"
+		case errors.As(err, &typeError):
+			reason = "Request body contains an invalid field type"
+		case strings.HasPrefix(err.Error(), "json: unknown field "):
+			reason = "Request body contains an unknown field"
+		}
+		s.config.Logger.WarnContext(c.Request().Context(), "runner enrollment request rejected", "method", c.Request().Method, "route", c.Path(), "error", reason)
 		return invalidAPIRequest(c, err)
 	}
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
@@ -215,7 +226,7 @@ func (s *Service) createRunnerEnrollment(c echo.Context) error {
 	if err != nil {
 		var failure *nativeError
 		if errors.As(err, &failure) {
-			s.config.Logger.WarnContext(c.Request().Context(), "runner enrollment request rejected", "method", c.Request().Method, "route", c.Path(), "error_class", failure.Code, "error", failure.Code+": "+failure.Message)
+			s.config.Logger.WarnContext(c.Request().Context(), "runner enrollment request rejected", "method", c.Request().Method, "route", c.Path(), "error", failure.Code+": "+failure.Message)
 		}
 		return s.nativeAPIError(c, err)
 	}

@@ -233,13 +233,29 @@ func TestSharedEntryProxyLogsLatencyWithoutIdentity(t *testing.T) {
 	if !strings.Contains(rejected.Body.String(), "Enrollment projects must be unique and belong to the organization") {
 		t.Fatalf("enrollment reason was lost: %s", rejected.Body.String())
 	}
+	privateField := "private-token@example.test"
+	request = httptest.NewRequest(http.MethodPost, alice.origin+path, strings.NewReader(`{"`+privateField+`":true}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", alice.origin)
+	request.Header.Set("X-CSRF-Token", csrfFrom(t, organizationPage))
+	for _, cookie := range alice.jar.Cookies(request.URL) {
+		request.AddCookie(cookie)
+	}
+	rejected = httptest.NewRecorder()
+	f.service.Handler().ServeHTTP(rejected, request)
+	if rejected.Code != http.StatusUnprocessableEntity || !strings.Contains(rejected.Body.String(), privateField) {
+		t.Fatalf("invalid field response lost its actionable reason: status=%d body=%s", rejected.Code, rejected.Body.String())
+	}
 	output := logs.String()
+	if strings.Contains(output, privateField) {
+		t.Fatal("proxy logs expose the request-controlled field name")
+	}
 	for _, want := range []string{"shared entry proxied request", "verification=refreshed", "verification=token", "duration_ms=", "auth_ms=", "status=200"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("log lacks %q:\n%s", want, output)
 		}
 	}
-	for _, want := range []string{"path=" + path, "status=422", "error=\"invalid_request: Enrollment projects must be unique and belong to the organization\""} {
+	for _, want := range []string{"path=" + path, "status=422", "error=\"Unprocessable Entity\""} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("failure log lacks %q:\n%s", want, output)
 		}
