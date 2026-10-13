@@ -21,6 +21,12 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 	implementationReview := func(r *tracker.ReviewChange) {
 		r.ImplementationReview, r.Validator = r.Validator, nil
 	}
+	landingAudit := func(r *tracker.ReviewChange) {
+		r.SecurityAudit.Landing = true
+		r.SecurityAudit.VersionID = r.ExpectedVersionID
+		r.SecurityAudit.Run.BaseSHA = strings.Repeat("d", 40)
+		r.SecurityAudit.Run.HeadSHA = strings.Repeat("e", 40)
+	}
 	multipleReceipts := func(r *tracker.ReviewChange) {
 		r.Validator.CriteriaEvidence[0] = gate.CriterionEvidence{Criterion: "Complete the requested work.", Kind: "receipt", Reference: "make check-app; npx playwright test", ReceiptIDs: []string{"timing_app", "timing_browser"}, Behavior: "Application and browser checks exercise the requested behavior"}
 		r.Validator.Commands = []gate.CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: r.Validator.HeadSHA, TreeSHA: strings.Repeat("d", 40)}, {ReceiptID: "timing_browser", Command: "npx playwright test", HeadSHA: r.Validator.HeadSHA, TreeSHA: strings.Repeat("d", 40)}}
@@ -59,6 +65,20 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"security audit old reviewer", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ReviewerDigest = "other" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"security audit implementing session", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ID = 41; r.SecurityAudit.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"security audit backend failure", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ExitStatus = securityaudit.ExitStatusFailed }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"security audit landing pass", landingAudit, http.StatusOK, "reviewed", nil},
+		{"security audit landing requires merge execution", landingAudit, http.StatusUnprocessableEntity, "reviewed", nil},
+		{"security audit landing stale version", func(r *tracker.ReviewChange) { landingAudit(r); r.SecurityAudit.VersionID = "other" }, http.StatusUnprocessableEntity, "reviewed", nil},
+		{"security audit landing backend failure", func(r *tracker.ReviewChange) {
+			landingAudit(r)
+			r.SecurityAudit.Run.ExitStatus = securityaudit.ExitStatusFailed
+		}, http.StatusUnprocessableEntity, "reviewed", nil},
+		{"security audit landing blocking finding", func(r *tracker.ReviewChange) {
+			landingAudit(r)
+			r.SecurityAudit.Run.Verdict = "fail"
+			r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "auth", Severity: "p1", Body: "Authorization bypass"}}
+			r.SecurityAudit.Verdict = "rework"
+			r.Decision = "changes_requested"
+		}, http.StatusOK, "needs_evidence", nil},
 		{"security audit blocking finding", func(r *tracker.ReviewChange) {
 			r.SecurityAudit.Run.Verdict = "fail"
 			r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "auth", Severity: "p1", Body: "authorization bypass"}}
@@ -128,6 +148,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				cfg := config.Default()
 				cfg.Tracker.Kind = config.TrackerHubNative
 				cfg.Gate.Validator.Enabled = true
+				cfg.Gate.SecurityAudit.Enabled = false
 				cfg.Gate.AutomatedReview = gate.AutomatedReviewOff
 				cfg.Gate.Validator.UnverifiedCriteria = gate.UnverifiedCriteriaDisclose
 				resolved, err := config.ResolvePolicy(config.Workflow{Config: cfg})
@@ -188,6 +209,26 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				now := f.service.config.now()
 				request.SecurityAudit = &tracker.SecurityAuditReview{SessionID: 42, DiffDigest: policy.Digest([]byte("diff")), Verdict: "pass", Run: securityaudit.Run{ID: 42, InvocationID: "audit-invocation", ProjectID: string(f.project.ID), IssueID: string(issue.WorkItemID), Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), AuthenticationMode: "api_key", ExitStatus: securityaudit.ExitStatusSuccess, WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now.Add(-time.Second), CompletedAt: now, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}
 				request.Validator = nil
+			}
+			landing := strings.HasPrefix(test.name, "security audit landing")
+			if landing {
+				source := request
+				sourceAudit := *request.SecurityAudit
+				sourceAudit.SessionID, sourceAudit.Run.ID = 43, 43
+				sourceAudit.Run.InvocationID = "source-audit"
+				source.SecurityAudit = &sourceAudit
+				source.IdempotencyKey = "source-audit"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, source), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				lease = claimNativeAttempt(t, f, worker, "machine", "merge-session", issue.WorkItemID, descriptor.ID)
+				merge := nativeStartedEvent(lease)
+				merge.IdempotencyKey = "merge-start"
+				merge.Data.Identity.Role = "merge"
+				if test.name == "security audit landing requires merge execution" {
+					merge.Data.Identity.Role = "code"
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, merge), http.StatusOK)
+				request.LeaseID, request.FencingToken = lease.ID, lease.FencingToken
 			}
 			test.edit(&request)
 			stageReviews := 0
@@ -267,7 +308,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			}
 			if test.want == http.StatusOK {
 				wantReviews := 1 + stageReviews
-				if counterCollision {
+				if counterCollision || landing {
 					wantReviews++
 				}
 				if len(detail.Reviews) != wantReviews {
@@ -286,6 +327,30 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				}
 				if stored == nil || stored.SessionID != wantSession || storedReview.SessionMachineID != lease.MachineID {
 					t.Fatalf("review session was not persisted: %+v", detail.Reviews)
+				}
+			}
+			if test.name == "security audit landing pass" {
+				original := request.SecurityAudit.Run
+				for _, mismatch := range []string{"base", "head", "unrecorded", "modified", "none", "pass"} {
+					audit := *request.SecurityAudit
+					receipt := &tracker.NativeLandingReceipt{SecurityAudit: &audit, BaseSHA: original.BaseSHA, MergeSHA: original.HeadSHA}
+					want := http.StatusUnprocessableEntity
+					switch mismatch {
+					case "base":
+						receipt.BaseSHA = strings.Repeat("f", 40)
+					case "head":
+						audit.Run.HeadSHA = strings.Repeat("f", 40)
+					case "unrecorded":
+						audit.Run.InvocationID = "unrecorded"
+					case "modified":
+						audit.Run.Summary = "Modified finding evidence"
+					case "none":
+						receipt.SecurityAudit = nil
+					case "pass":
+						want = http.StatusOK
+					}
+					land := tracker.LandChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "landing-" + mismatch, LeaseID: lease.ID, FencingToken: lease.FencingToken}, Receipt: receipt, MergeSHA: original.HeadSHA, BaseRef: "main", Method: "squash"}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/landing", worker, land), want)
 				}
 			}
 			if test.name == "separate session pass with multiple receipts" || test.stages != nil && test.stages.gateKind != "" {

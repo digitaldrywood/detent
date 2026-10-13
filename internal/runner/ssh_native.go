@@ -18,6 +18,7 @@ import (
 // SSHExecutionSources exposes only the checkout bound by the remote runner.
 // Upload credentials, journals, producer tuples and lease ownership stay central.
 type SSHExecutionSources struct {
+	landingAudit        func(context.Context, workspace.FileDiffs) (*tracker.SecurityAuditReview, error)
 	landingBatch        func(context.Context, []workspace.LandRequest) []sshLandingOutcome
 	mu                  sync.Mutex
 	diff                AttemptDiffSource
@@ -39,7 +40,7 @@ func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []
 	s.mu.Lock()
 	diff, directory, evidence, integration, changeSource := s.diff, s.directory, s.evidence, s.integration, s.changeSource
 	publication, publicationIdentity, publicationPeer := s.publication, s.publicationIdentity, s.publicationPeer
-	landingBatch := s.landingBatch
+	landingBatch, landingAudit := s.landingBatch, s.landingAudit
 	s.mu.Unlock()
 	switch method {
 	case "source.publication":
@@ -62,6 +63,8 @@ func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []
 			}
 			return publication(ctx, version, opts)
 		}, "", args)
+	case "source.landing_audit":
+		return invokeSSHMethod(ctx, landingAudit, "", args)
 	case "source.landing_batch":
 		if landingBatch == nil {
 			return nil, errors.New("SSH landing batch source is unavailable")

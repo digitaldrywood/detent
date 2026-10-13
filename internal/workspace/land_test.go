@@ -20,6 +20,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -759,6 +760,8 @@ func TestLocalGitNativeLanding(t *testing.T) {
 		moved                   bool
 		rolling                 bool
 		receiptMismatch         string
+		audit                   string
+		advanced                bool
 	}{
 		{name: "legacy rolling batch preserves validated heads", count: 2, conflict: -1, invalid: -1, skip: -1, rolling: true},
 		{name: "legacy rolling moved base resquashes", count: 2, conflict: -1, invalid: -1, skip: -1, moved: true, rolling: true},
@@ -770,10 +773,17 @@ func TestLocalGitNativeLanding(t *testing.T) {
 		{name: "wrong head receipt refuses", count: 1, conflict: -1, invalid: 0, skip: -1, receiptMismatch: "head"},
 		{name: "wrong tree receipt refuses", count: 1, conflict: -1, invalid: 0, skip: -1, receiptMismatch: "tree"},
 		{name: "moved base resquashes without a gate", count: 2, conflict: -1, invalid: -1, skip: -1, moved: true},
+		{name: "audit refreshed after approval base advances", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "pass", advanced: true},
+		{name: "audit each batch member exact base and landed head", count: 2, conflict: -1, invalid: -1, skip: -1, audit: "pass"},
+		{name: "audit refreshed after rejected push", count: 2, conflict: -1, invalid: -1, skip: -1, audit: "pass", moved: true},
+		{name: "stale audit refuses push", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "stale"},
+		{name: "blocking audit refuses push", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "rework"},
+		{name: "backend failure refuses push without finding", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "failure"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newLandingFixture(t)
 			requests := make([]LandRequest, test.count)
+			audits := make([][]securityaudit.Run, test.count)
 			for i := range requests {
 				issue := Issue{Identifier: fmt.Sprintf("native-%d", i)}
 				info, err := f.backend.Create(t.Context(), issue)
@@ -802,10 +812,39 @@ func TestLocalGitNativeLanding(t *testing.T) {
 						options.Validation = nil
 					}
 				}
+				if test.audit != "" {
+					options.Repository = RepositoryURL(t.Context(), info.Path)
+					options.SecurityAuditRequired = true
+					options.SecurityAuditMaxDiffBytes = securityaudit.DefaultMaxDiffBytes
+					options.SecurityAudit = func(_ context.Context, diff FileDiffs) (*tracker.SecurityAuditReview, error) {
+						if test.audit == "failure" {
+							return nil, errors.New("backend unavailable")
+						}
+						if diff.Truncated || len(diff.Files) != 1 || diff.Files[0].Path != file || !strings.Contains(diff.Files[0].Patch, "+feature") {
+							t.Errorf("audit did not collect this member's integrated diff: %+v", diff)
+						}
+						now := time.Now()
+						run := securityaudit.Run{ID: 1, InvocationID: fmt.Sprintf("audit-%d-%d", i, len(audits[i])), ProjectID: "project", Repository: options.Repository, BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), ExitStatus: securityaudit.ExitStatusSuccess, OutputDigest: securityaudit.OutputDigest("pass"), OutputBytes: 4, Verdict: "pass", Summary: "No findings", WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now}
+						audits[i] = append(audits[i], run)
+						if test.audit == "stale" {
+							run.BaseSHA = f.head
+						}
+						verdict := "pass"
+						if test.audit == "rework" {
+							run.Verdict = "fail"
+							run.Findings = []securityaudit.Finding{{ID: "auth", Severity: "p1", Body: "Missing authorization"}}
+							verdict = "rework"
+						}
+						return &tracker.SecurityAuditReview{Landing: true, Verdict: verdict, Run: run}, nil
+					}
+				}
 				requests[i] = LandRequest{Info: info, Issue: issue, Options: options}
 				if i == test.conflict {
 					f.advanceMain(t, file, "base conflicts\n")
 				}
+			}
+			if test.advanced {
+				f.advanceMain(t, "advanced.txt", "advanced after source approval\n")
 			}
 			pushes := filepath.Join(t.TempDir(), "pushes")
 			if err := os.WriteFile(filepath.Join(f.remote, "hooks", "pre-receive"), []byte("#!/bin/sh\necho push >> '"+pushes+"'\n"), 0o700); err != nil {
@@ -862,7 +901,7 @@ func TestLocalGitNativeLanding(t *testing.T) {
 			}
 			landed := 0
 			for i, outcome := range outcomes {
-				if i == test.conflict || i == test.invalid || i == test.skip {
+				if i == test.conflict || i == test.invalid || i == test.skip || test.audit != "" && test.audit != "pass" {
 					if i == test.conflict && test.count > 1 {
 						if outcome.Result.BaseBefore != "" || outcome.Result.BaseRef != "" || outcome.Result.Method != "" || outcome.Result.Gate.Command != "" || outcome.Result.Path != "batch_member" {
 							t.Fatalf("conflict replaced untouched result fields: %+v", outcome.Result)
@@ -891,6 +930,18 @@ func TestLocalGitNativeLanding(t *testing.T) {
 				}
 				if outcome.Result.Path != wantPath {
 					t.Fatalf("path = %q", outcome.Result.Path)
+				}
+				if test.audit == "pass" {
+					wantAudits := 1
+					if test.moved {
+						wantAudits = 2
+					}
+					if len(audits[i]) != wantAudits || outcome.Result.SecurityAudit == nil || outcome.Result.SecurityAudit.Run.BaseSHA != base || outcome.Result.SecurityAudit.Run.HeadSHA != outcome.Result.MergeSHA || outcome.Result.SecurityAudit.Run.HeadSHA == requests[i].Options.HeadSHA {
+						t.Fatalf("landing reused audit for another identity: audits=%+v result=%+v", audits[i], outcome.Result)
+					}
+					if test.moved && audits[i][0].BaseSHA == audits[i][1].BaseSHA {
+						t.Fatal("rejected push reused the previous audit base")
+					}
 				}
 				landed++
 				base = outcome.Result.MergeSHA
@@ -951,7 +1002,19 @@ func TestLocalGitRebasedNativeLanding(t *testing.T) {
 			}
 			t.Setenv("PATH", lint+string(os.PathListSeparator)+os.Getenv("PATH"))
 			tree := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^{tree}"))
-			result, err := f.backend.LandChange(t.Context(), f.info, f.issue, LandOptions{LandingMode: mode, Native: true, HeadSHA: head, Method: "squash", TargetBranch: "main", Message: "rebased", ValidationCommand: "exit 73", Validation: &gate.CommandResult{Command: "exit 73", HeadSHA: head, TreeSHA: tree, DurationNS: int64(time.Second)}})
+			baseBefore := f.remoteMain(t)
+			options := LandOptions{LandingMode: mode, Native: true, HeadSHA: head, Method: "squash", TargetBranch: "main", Message: "rebased", ValidationCommand: "exit 73", Validation: &gate.CommandResult{Command: "exit 73", HeadSHA: head, TreeSHA: tree, DurationNS: int64(time.Second)}, Repository: RepositoryURL(t.Context(), f.info.Path), SecurityAuditRequired: true, SecurityAuditMaxDiffBytes: securityaudit.DefaultMaxDiffBytes}
+			options.SecurityAudit = func(_ context.Context, diff FileDiffs) (*tracker.SecurityAuditReview, error) {
+				if diff.HeadSHA == head || diff.BaseSHA != baseBefore || diff.Truncated {
+					t.Errorf("rebase reused published source identity: %+v", diff)
+				}
+				now := time.Now()
+				return &tracker.SecurityAuditReview{Landing: true, Verdict: "pass", Run: securityaudit.Run{ID: 1, InvocationID: "rebase-audit", ProjectID: "project", Repository: options.Repository, BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), ExitStatus: securityaudit.ExitStatusSuccess, OutputDigest: securityaudit.OutputDigest("pass"), OutputBytes: 4, Verdict: "pass", Summary: "No findings", WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now}}, nil
+			}
+			result, err := f.backend.LandChange(t.Context(), f.info, f.issue, options)
+			if err == nil && (result.SecurityAudit == nil || result.SecurityAudit.Run.BaseSHA != result.BaseBefore || result.SecurityAudit.Run.HeadSHA != result.MergeSHA) {
+				t.Fatalf("rebased landing has no exact audit: %+v", result)
+			}
 			if len(result.Pipeline) < 1 {
 				t.Fatalf("missing rebase timing: %+v", result)
 			}

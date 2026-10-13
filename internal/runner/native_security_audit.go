@@ -2,12 +2,16 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func (execution SecurityAuditExecution) auditRun(snapshot securityaudit.Snapshot) securityaudit.Run {
@@ -88,4 +92,53 @@ func (r *Runner) auditNativeChange(ctx context.Context, req RunRequest) (approve
 		return false, err
 	}
 	return evaluation.Allowed, nil
+}
+
+func (r *Runner) auditNativeLanding(ctx context.Context, req RunRequest, target NativeLandingTarget, files workspace.FileDiffs) (review *tracker.SecurityAuditReview, err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("%w: landing security audit: %w", ErrValidatorInfrastructure, err)
+		}
+	}()
+	execution, ok := req.Execution.(NativeSecurityAuditExecution)
+	if !ok {
+		return nil, errors.New("native landing security audit producer is unavailable")
+	}
+	workflow, _, _, _ := r.runtimeSnapshot()
+	cfg := gateSecurityAuditConfig(workflow.Config)
+	raw, err := json.Marshal(files.Files)
+	if err != nil {
+		return nil, err
+	}
+	diff := connector.ValidationDiff{Repository: target.Repository, BaseSHA: files.BaseSHA, HeadSHA: files.HeadSHA, Digest: policy.Digest(raw)}
+	var patch strings.Builder
+	for _, file := range files.Files {
+		diff.Files = append(diff.Files, file.Path)
+		patch.WriteString(file.Patch)
+	}
+	diff.Patch = patch.String()
+	issue := req.Issue
+	issue.PullRequest = nil
+	snapshot, err := connector.SecurityAuditSnapshot(r.projectID, issue, diff, securityAuditMaxDiffBytes(cfg))
+	if err != nil {
+		return nil, err
+	}
+	snapshot.DiffTruncated = snapshot.DiffTruncated || files.Truncated
+	audit, err := r.Audit(ctx, SecurityAuditRequest{Issue: issue, Snapshot: snapshot, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate})
+	if err != nil {
+		return nil, err
+	}
+	run := audit.auditRun(snapshot)
+	evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: snapshot.ProjectID, Repository: target.Repository, BaseSHA: files.BaseSHA, HeadSHA: files.HeadSHA}, "", cfg.BlockOn)
+	if !evaluation.Allowed && evaluation.Reason != securityaudit.ReasonUnresolvedFindings {
+		return nil, errors.New("landing security audit evidence is incomplete")
+	}
+	review = &tracker.SecurityAuditReview{VersionID: target.VersionID, Landing: true, Identity: audit.RuntimeIdentity, SessionID: audit.SessionID, DiffDigest: diff.Digest, Run: run, Verdict: "pass"}
+	if !evaluation.Allowed {
+		review.Verdict = "rework"
+	}
+	if err := execution.RecordSecurityAudit(ctx, *review); err != nil {
+		return nil, err
+	}
+	return review, nil
 }

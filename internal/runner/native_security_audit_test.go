@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type nativeSecurityAuditTestExecution struct {
@@ -34,11 +35,15 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 	for _, test := range []struct {
 		name                       string
 		disabled, blocking, failed bool
+		landing                    bool
 	}{
 		{name: "default native pass"},
 		{name: "blocking finding", blocking: true},
 		{name: "explicit false", disabled: true},
 		{name: "backend failure", failed: true},
+		{name: "landing exact integrated identity", landing: true},
+		{name: "landing blocking finding", landing: true, blocking: true},
+		{name: "landing backend failure", landing: true, failed: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Now().UTC()
@@ -60,7 +65,18 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 				t.Fatal(err)
 			}
 			execution := &nativeSecurityAuditTestExecution{}
-			approved, err := runner.auditNativeChange(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1"}})
+			req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1"}}
+			var approved bool
+			if test.landing {
+				var review *tracker.SecurityAuditReview
+				review, err = runner.auditNativeLanding(t.Context(), req, NativeLandingTarget{VersionID: "version", Repository: "https://github.com/example-org/example-project"}, workspace.FileDiffs{BaseSHA: "base", HeadSHA: "head", Files: []workspace.FileDiff{{Path: "file.go", Patch: "+change"}}})
+				approved = review != nil && review.Verdict == "pass"
+				if err == nil && (review == nil || !review.Landing || review.VersionID != "version" || execution.versions != 0) {
+					t.Fatalf("landing audit lost integration identity: %+v", review)
+				}
+			} else {
+				approved, err = runner.auditNativeChange(t.Context(), req)
+			}
 			if (err != nil) != test.failed {
 				t.Fatalf("audit error = %v", err)
 			}

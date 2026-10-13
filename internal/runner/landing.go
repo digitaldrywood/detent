@@ -46,7 +46,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	}
 	if prepared != nil {
 		previous := *prepared
-		if previous.ChangeID != target.ChangeID || previous.VersionID != target.VersionID || previous.HeadSHA != target.HeadSHA || previous.Repository != target.Repository || previous.Method != target.Method || previous.GitHubPullRequest != target.GitHubPullRequest || !sameLandingExternal(previous.External, target.External) {
+		if previous.ChangeID != target.ChangeID || previous.VersionID != target.VersionID || previous.HeadSHA != target.HeadSHA || previous.BaseSHA != target.BaseSHA || previous.SecurityAudit != target.SecurityAudit || previous.Repository != target.Repository || previous.Method != target.Method || previous.GitHubPullRequest != target.GitHubPullRequest || !sameLandingExternal(previous.External, target.External) {
 			return r.refusedLanding(req, previous, workspace.LandRefusalHeadMoved, "the reviewed version changed during workspace preparation"), nil
 		}
 	}
@@ -68,6 +68,27 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	if effectiveGate.CITriggerLabelStaggerSeconds != nil {
 		options.CITriggerLabelStagger = time.Duration(*effectiveGate.CITriggerLabelStaggerSeconds) * time.Second
 	}
+	authorizeLanding := func(ctx context.Context) error {
+		if err := req.Execution.Validate(ctx); err != nil {
+			return err
+		}
+		current, err := landing.LandingTarget(ctx)
+		if err != nil {
+			return err
+		}
+		if current.ChangeID != target.ChangeID || current.VersionID != target.VersionID || current.HeadSHA != target.HeadSHA || current.BaseSHA != target.BaseSHA || current.SecurityAudit != target.SecurityAudit {
+			return errors.New("reviewed version changed before landing push")
+		}
+		return nil
+	}
+	if target.SecurityAudit && !target.GitHubPullRequest {
+		options.Authorize = authorizeLanding
+		options.SecurityAuditRequired = true
+		options.SecurityAuditMaxDiffBytes = securityAuditMaxDiffBytes(effectiveGate.SecurityAudit)
+		options.SecurityAudit = func(ctx context.Context, diff workspace.FileDiffs) (*tracker.SecurityAuditReview, error) {
+			return r.auditNativeLanding(ctx, req, target, diff)
+		}
+	}
 	var result workspace.LandResult
 	defer func() {
 		if runResult.NativeLanding != nil {
@@ -77,6 +98,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 			runResult.NativeLanding.Pipeline, runResult.NativeLanding.PipelineDropped = result.Pipeline, result.PipelineDropped
 			runResult.NativeLanding.Path, runResult.NativeLanding.Packages = result.Path, result.Packages
 			runResult.NativeLanding.CI = result.CI
+			runResult.NativeLanding.SecurityAudit = result.SecurityAudit
 			runResult.NativeLanding.Rebased = result.Rebased
 			if result.Gate.Command != "" {
 				runResult.NativeLanding.Gate = &result.Gate
@@ -132,17 +154,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 				if err := ctx.Err(); err != nil {
 					return err
 				}
-				if err := req.Execution.Validate(batchCtx); err != nil {
-					return err
-				}
-				current, err := landing.LandingTarget(batchCtx)
-				if err != nil {
-					return err
-				}
-				if current.ChangeID != target.ChangeID || current.VersionID != target.VersionID || current.HeadSHA != target.HeadSHA {
-					return errors.New("reviewed version changed before batch push")
-				}
-				return nil
+				return authorizeLanding(batchCtx)
 			}})
 		} else {
 			result, err = lander.LandChange(ctx, info, issue, options)
@@ -163,6 +175,11 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		if result.MergeSHA == "" {
 			if IsCapacityError(err) || errors.Is(err, github.ErrRateLimited) || errors.Is(err, forgeavailability.ErrUnavailable) {
 				return RunResult{WorkspaceBranch: info.Branch, NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA}}, err
+			}
+			if result.SecurityAudit != nil && result.SecurityAudit.Verdict == "rework" {
+				refused := r.refusedLanding(req, target, "", result.SecurityAudit.Run.Summary)
+				refused.NativeLanding.GateFailed = true
+				return refused, nil
 			}
 			var validation *workspace.ValidationError
 			if errors.As(err, &validation) {
@@ -197,7 +214,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_native_landing_warning",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "merge_sha", result.MergeSHA, "error", err.Error())
 	}
-	landed := NativeLanding{Pipeline: result.Pipeline, PipelineDropped: result.PipelineDropped, Path: result.Path, Packages: result.Packages, CI: result.CI, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, BaseSHA: result.BaseBefore, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
+	landed := NativeLanding{SecurityAudit: result.SecurityAudit, Pipeline: result.Pipeline, PipelineDropped: result.PipelineDropped, Path: result.Path, Packages: result.Packages, CI: result.CI, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, BaseSHA: result.BaseBefore, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
 	if result.Gate.Command != "" {
 		landed.Gate = &result.Gate
 	}
