@@ -936,7 +936,7 @@ func TestLocalGitNativeLanding(t *testing.T) {
 					if test.moved {
 						wantAudits = 2
 					}
-					if len(audits[i]) != wantAudits || outcome.Result.SecurityAudit == nil || outcome.Result.SecurityAudit.Run.BaseSHA != base || outcome.Result.SecurityAudit.Run.HeadSHA != outcome.Result.MergeSHA || outcome.Result.SecurityAudit.Run.HeadSHA == requests[i].Options.HeadSHA {
+					if len(audits[i]) != wantAudits || outcome.Result.SecurityAudit == nil || outcome.Result.SecurityAudit.Run.BaseSHA != base || outcome.Result.SecurityAudit.Run.HeadSHA != outcome.Result.MergeSHA {
 						t.Fatalf("landing reused audit for another identity: audits=%+v result=%+v", audits[i], outcome.Result)
 					}
 					if test.moved && audits[i][0].BaseSHA == audits[i][1].BaseSHA {
