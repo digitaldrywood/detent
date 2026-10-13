@@ -15,7 +15,7 @@ type WorkspacePreserver interface {
 }
 
 func (r *Runner) PreserveWorkspace(ctx context.Context, issue connector.Issue) (workspace.Preservation, error) {
-	preserver, ok := r.workspace.(workspace.IssuePreserver)
+	preserver, ok := r.workspaceSnapshot().(workspace.IssuePreserver)
 	if !ok {
 		return workspace.Preservation{}, ErrWorkspacePreservationUnavailable
 	}

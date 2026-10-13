@@ -270,6 +270,9 @@ func buildRunnerDependencies(
 		ProjectID: projectID,
 		Workflow:  workflow,
 		Workspace: backend,
+		WorkspaceFactory: func(cfg workflowconfig.Config, current workspace.Backend) (workspace.Backend, error) {
+			return buildWorkspaceBackend(cfg, projectWorkdir, logger, current)
+		},
 		AgentBackendFactory: runnerpkg.AgentBackendFactoryFunc(func(backend workflowconfig.AgentBackend) (runnerpkg.AgentBackend, error) {
 			return buildAgentBackendWithIsolation(backend, isolationPolicies...)
 		}),
@@ -327,7 +330,7 @@ func budgetOverrideStore(value any) budget.OverrideStore {
 	return store
 }
 
-func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string, logger *slog.Logger) (workspace.Backend, error) {
+func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string, logger *slog.Logger, previous ...workspace.Backend) (workspace.Backend, error) {
 	root := strings.TrimSpace(cfg.Workspace.Root)
 	sourceRoot := strings.TrimSpace(cfg.Workspace.SourceRoot)
 	if sourceRoot == "" {
@@ -344,7 +347,11 @@ func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string,
 	if outputRoot == "" {
 		outputRoot = strings.TrimSpace(cfg.Deliverable.OutputRoot)
 	}
-	backend, err := workspace.NewBackend(workspaceKind, workspace.LocalGitOptions{
+	var current workspace.Backend
+	if len(previous) != 0 {
+		current = previous[0]
+	}
+	backend, err := workspace.ReconfigureBackend(current, workspaceKind, workspace.LocalGitOptions{
 		Root:       root,
 		SourceRoot: sourceRoot,
 		OutputRoot: outputRoot,

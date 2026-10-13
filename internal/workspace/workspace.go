@@ -299,13 +299,13 @@ type LocalGitOptions struct {
 }
 
 type LocalGit struct {
-	uses               workspaceUses
+	uses               *workspaceUses
 	root               string
 	sourceRoot         string
 	autoBranch         bool
 	hooks              Hooks
 	logger             *slog.Logger
-	createMu           sync.Mutex
+	createMu           *sync.Mutex
 	removeOwnedPath    func(string, string) error
 	scanWorkspacePaths workspaceProcessScanner
 }
@@ -471,6 +471,32 @@ func NewBackend(kind string, opts LocalGitOptions) (Backend, error) {
 	}
 }
 
+func ReconfigureBackend(current Backend, kind string, opts LocalGitOptions) (Backend, error) {
+	backend, err := NewBackend(kind, opts)
+	if err != nil {
+		return nil, err
+	}
+	var uses *workspaceUses
+	switch previous := current.(type) {
+	case *LocalGit:
+		uses = previous.uses
+		if next, ok := backend.(*LocalGit); ok {
+			next.createMu = previous.createMu
+		}
+	case *Filesystem:
+		uses = previous.uses
+	}
+	if uses != nil {
+		switch next := backend.(type) {
+		case *LocalGit:
+			next.uses = uses
+		case *Filesystem:
+			next.uses = uses
+		}
+	}
+	return backend, nil
+}
+
 func NewLocalGit(opts LocalGitOptions) (*LocalGit, error) {
 	root, err := prepareRoot(opts.Root)
 	if err != nil {
@@ -497,6 +523,8 @@ func NewLocalGit(opts LocalGitOptions) (*LocalGit, error) {
 	}
 
 	return &LocalGit{
+		uses:               &workspaceUses{},
+		createMu:           &sync.Mutex{},
 		root:               root,
 		sourceRoot:         sourceRoot,
 		autoBranch:         opts.AutoBranch,

@@ -196,6 +196,8 @@ func TestBuildRunnerDependenciesCarriesServiceConnection(t *testing.T) {
 	cfg := workflowconfig.Default()
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Workspace.Root = t.TempDir()
+	cfg.Workspace.Kind = workspace.KindFilesystem
+	cfg.Hooks.AfterCreate = "printf A > hook-marker"
 	connection := serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"}
 
 	deps, err := buildRunnerDependencies(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil, connection)
@@ -204,6 +206,24 @@ func TestBuildRunnerDependenciesCarriesServiceConnection(t *testing.T) {
 	}
 	if deps.ServiceConnection != connection {
 		t.Fatalf("ServiceConnection = %#v, want %#v", deps.ServiceConnection, connection)
+	}
+	cfg.Hooks.AfterCreate = "printf B > hook-marker"
+	backend, err := deps.WorkspaceFactory(cfg, deps.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, test := range []struct {
+		backend workspace.Backend
+		marker  string
+	}{{deps.Workspace, "A"}, {backend, "B"}} {
+		info, err := test.backend.Create(t.Context(), workspace.Issue{ID: strconv.Itoa(index), Identifier: "owner/repository#" + strconv.Itoa(index+1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		content, err := os.ReadFile(filepath.Join(info.Path, "hook-marker"))
+		if err != nil || string(content) != test.marker {
+			t.Fatalf("hook = %q, want %s, error = %v", content, test.marker, err)
+		}
 	}
 }
 
