@@ -116,6 +116,7 @@ func TestCoordinatorScreenReads(t *testing.T) {
 				{"project_secret_metadata", `{}`, true, ""}, {"repository_freshness", `{}`, true, ""}, {"monthly_usage_costs", `{}`, true, ""},
 				{operatortool.WorkList, `{}`, true, ""}, {operatortool.HealthFindings, `{}`, true, ""}, {operatortool.BoardState, `{}`, true, ""},
 				{operatortool.TimeSeries, `{"window":"1h","bucket":"5m"}`, true, ""},
+				{operatortool.TimeSeries, fmt.Sprintf(`{"from":%q,"to":%q,"bucket":"5m"}`, f.service.config.now().Add(-49*time.Hour).Format(time.RFC3339Nano), f.service.config.now().Add(-48*time.Hour).Format(time.RFC3339Nano)), true, ""},
 				{operatortool.AnalyticsDashboard, `{}`, true, ""}, {operatortool.Reports, `{}`, true, ""}, {"get_project_usage", `{"range":"24h"}`, true, ""},
 				{"get_project_diagnostics", `{}`, true, ""}, {"get_project_reports", `{}`, true, ""},
 			}
@@ -136,6 +137,15 @@ func TestCoordinatorScreenReads(t *testing.T) {
 					}
 					if !result.Success {
 						t.Fatalf("allowed screen read failed: %s", result.Content)
+					}
+					if test.name == operatortool.TimeSeries && strings.Contains(test.args, `"from"`) {
+						var report nativeAnalyticsReport
+						if err := json.Unmarshal([]byte(result.Content), &report); err != nil {
+							t.Fatal(err)
+						}
+						if !report.Window.From.Equal(f.service.config.now().Add(-49*time.Hour)) || !report.Window.To.Equal(f.service.config.now().Add(-48*time.Hour)) {
+							t.Fatalf("historical interval was not preserved: %+v", report.Window)
+						}
 					}
 					if strings.Contains(result.Content, "ciphertext") || strings.Contains(result.Content, "token_hash") {
 						t.Fatalf("unsafe result: %s", result.Content)

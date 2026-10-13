@@ -175,7 +175,32 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 				if string(stdio) != string(raw) {
 					t.Fatalf("stdio/HTTP application divergence:\n%s\n%s", stdio, raw)
 				}
-				for _, args := range []map[string]any{{"limit": 201}, {"window": "25h"}, {"from": "bad"}, {"bucket": "1ns"}} {
+				if name == operatortool.TimeSeries && grant != "github" {
+					for _, interval := range []struct {
+						from, to     time.Time
+						queueSeconds float64
+					}{
+						{now.Add(-6 * time.Minute), now.Add(-3 * time.Minute), 180},
+						{now.Add(-49 * time.Hour), now.Add(-48 * time.Hour), 0},
+					} {
+						response, history := call(user, name, map[string]any{"project_id": f.project, "from": interval.from.Format(time.RFC3339Nano), "to": interval.to.Format(time.RFC3339Nano), "bucket": "1m"})
+						var report nativeAnalyticsReport
+						if err := json.Unmarshal(history, &report); err != nil || response.Code != http.StatusOK || len(report.Projects) != 1 {
+							t.Fatalf("historical read failed: %s, %v", response.Body.String(), err)
+						}
+						var queueSeconds float64
+						for _, bucket := range report.Projects[0].Digest {
+							if bucket.From.Before(interval.from) || bucket.To.After(interval.to) {
+								t.Fatalf("bucket outside requested interval: %+v", bucket)
+							}
+							queueSeconds += bucket.QueueSeconds
+						}
+						if queueSeconds != interval.queueSeconds || !report.Window.From.Equal(interval.from) || !report.Window.To.Equal(interval.to) {
+							t.Fatalf("historical queue read: %s", history)
+						}
+					}
+				}
+				for _, args := range []map[string]any{{"from": now.Add(-time.Hour).Format(time.RFC3339Nano), "to": now.Add(time.Hour).Format(time.RFC3339Nano)}, {"from": now.Add(-91 * 24 * time.Hour).Format(time.RFC3339Nano), "to": now.Format(time.RFC3339Nano)}, {"from": now.Add(-time.Hour).Format(time.RFC3339Nano), "to": now.Add(-2 * time.Hour).Format(time.RFC3339Nano)}, {"limit": 201}, {"window": "25h"}, {"from": "bad"}, {"bucket": "1ns"}} {
 					response, raw := call(user, name, args)
 					if len(raw) != 0 || !strings.Contains(response.Body.String(), `"isError":true`) {
 						t.Fatalf("invalid window accepted: %s", response.Body.String())
