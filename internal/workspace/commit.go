@@ -16,7 +16,6 @@ import (
 )
 
 const signingProbeTimeout = 5 * time.Second
-const runnerCommitTimeout = 30 * time.Second
 
 type CommitIdentity struct {
 	Name  string `json:"name"`
@@ -153,8 +152,6 @@ func (l *LocalGit) runCommit(ctx context.Context, path string, env []string, arg
 }
 
 func (p commitPolicy) run(ctx context.Context, path string, env []string, args ...string) (_ string, err error) {
-	ctx, cancel := context.WithTimeout(ctx, runnerCommitTimeout)
-	defer cancel()
 	identity := p.report.Identity
 	env = append(env, p.environment...)
 	env = append(env, "GIT_COMMITTER_NAME="+identity.Name, "GIT_COMMITTER_EMAIL="+identity.Email, "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
