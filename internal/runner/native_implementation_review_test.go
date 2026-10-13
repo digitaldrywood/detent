@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +31,7 @@ type implementationReviewExecution struct {
 	commands          []gate.CommandResult
 	validation        *gate.CommandResult
 	discussion        NativeReviewDiscussion
+	head              string
 }
 
 func (e *implementationReviewExecution) ReviewVersion(context.Context) (NativeValidation, error) {
@@ -35,6 +39,10 @@ func (e *implementationReviewExecution) ReviewVersion(context.Context) (NativeVa
 	input, _ := e.attachmentValidatorExecution.ValidatorVersion(context.Background())
 	input.Version.Policy.Gates.AutomatedReview = gate.AutomatedReviewRequired
 	input.Version.Policy.Gates.Validator = !e.validatorDisabled
+	if e.head != "" {
+		input.Version.HeadSHA = e.head
+		input.Diff.HeadSHA = e.head
+	}
 	input.Commands = e.commands
 	input.Discussion = e.discussion
 	if e.validation != nil {
@@ -55,6 +63,10 @@ func (e *implementationReviewExecution) RecordReview(_ context.Context, result g
 func (e *implementationReviewExecution) ValidatorVersion(ctx context.Context) (NativeValidation, error) {
 	*e.events = append(*e.events, "validator version")
 	input, err := e.attachmentValidatorExecution.ValidatorVersion(ctx)
+	if e.head != "" {
+		input.Version.HeadSHA = e.head
+		input.Diff.HeadSHA = e.head
+	}
 	input.Commands = append(input.Commands, e.commands...)
 	input.Commands = append(input.Commands, e.reviewResult.Commands...)
 	if e.validation != nil {
@@ -126,18 +138,32 @@ type implementationReviewBackend struct {
 type implementationReviewWorkspace struct {
 	attachmentValidatorWorkspace
 	commands []string
+	local    *workspace.LocalGit
 }
 
-func (*implementationReviewWorkspace) ReviewCommandEnvironment(_ context.Context, _ workspace.Info, _ workspace.Issue, command string) gate.CheckEnvironment {
+func (w *implementationReviewWorkspace) ReviewCommandEnvironment(ctx context.Context, info workspace.Info, issue workspace.Issue, command string) gate.CheckEnvironment {
+	if w.local != nil {
+		return w.local.ReviewCommandEnvironment(ctx, info, issue, command)
+	}
 	if command != "go test ./..." {
 		return gate.CheckEnvironment{}
 	}
 	return gate.CheckEnvironment{OS: "linux", Architecture: "amd64", GoVersion: "go1.26.9"}
 }
 
+func (w *implementationReviewWorkspace) ReviewCommandEvidence(ctx context.Context, info workspace.Info, issue workspace.Issue, command string) *gate.CommandEvidence {
+	if w.local != nil {
+		return w.local.ReviewCommandEvidence(ctx, info, issue, command)
+	}
+	return &gate.CommandEvidence{Environment: w.ReviewCommandEnvironment(ctx, info, issue, command), InputsSHA: strings.Repeat("a", 64)}
+}
+
 func (w *implementationReviewWorkspace) RunReviewCommand(ctx context.Context, info workspace.Info, issue workspace.Issue, command string) (gate.CommandResult, error) {
 	w.commands = append(w.commands, command)
-	return gate.CommandResult{ReceiptID: fmt.Sprintf("receipt-new-%d", len(w.commands)), Command: command, HeadSHA: issue.PullRequestHeadSHA, TreeSHA: "tree", DurationNS: int64(time.Second), StartedAt: time.Now(), Evidence: &gate.CommandEvidence{Environment: w.ReviewCommandEnvironment(ctx, info, issue, "go test ./...")}}, nil
+	if w.local != nil {
+		return w.local.RunReviewCommand(ctx, info, issue, command)
+	}
+	return gate.CommandResult{ReceiptID: fmt.Sprintf("receipt-new-%d", len(w.commands)), Command: command, HeadSHA: issue.PullRequestHeadSHA, TreeSHA: "tree", DurationNS: int64(time.Second), StartedAt: time.Now(), Evidence: w.ReviewCommandEvidence(ctx, info, issue, "go test ./...")}, nil
 }
 
 func (b *implementationReviewBackend) RunTurn(_ context.Context, request AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
@@ -159,7 +185,6 @@ func (b *implementationReviewBackend) RunTurn(_ context.Context, request AgentTu
 }
 
 func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		ssh          bool
@@ -174,6 +199,10 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		command      string
 		missingTree  bool
 		wantRuns     int
+		wrapped      bool
+		changedInput string
+		unsupported  bool
+		shadow       bool
 	}{
 		{name: "separate source and acceptance passes reuse source receipt", validator: true, verdict: "pass"},
 		{name: "source review without acceptance validator", verdict: "pass"},
@@ -188,6 +217,17 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "clock-behind failure with replayed pass requires command", validator: true, verdict: "pass", latestFailed: true, replayedPass: true, wantRuns: 1},
 		{name: "clock-behind newer pass supersedes failure", validator: true, verdict: "pass", latestPassed: true},
 		{name: "opaque make toolchain requires commands", validator: true, verdict: "pass", command: "make check-landing", wantRuns: 2},
+		{name: "matching wrapped finalization receipt is reused", validator: true, verdict: "pass", command: "make check-landing", wrapped: true},
+		{name: "wrapped receipt survives transport", ssh: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true},
+		{name: "changed effective wrapper toolchain requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "toolchain", wantRuns: 1},
+		{name: "changed Go flags require command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "flags", wantRuns: 1},
+		{name: "replaced tool requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "tool", wantRuns: 1},
+		{name: "moved landing base requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "base", wantRuns: 1},
+		{name: "changed wrapped tree requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, editReceipt: func(r *gate.CommandResult) { r.TreeSHA = strings.Repeat("f", 40) }, wantRuns: 1},
+		{name: "failed wrapped receipt requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, editReceipt: func(r *gate.CommandResult) { r.ExitCode = 7 }, wantRuns: 1},
+		{name: "legacy wrapped environment requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, editReceipt: func(r *gate.CommandResult) { r.Evidence.InputsSHA = "" }, wantRuns: 1},
+		{name: "unsupported wrapper is executed independently", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, unsupported: true, wantRuns: 2},
+		{name: "shadow Makefile is executed independently", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, unsupported: true, shadow: true, wantRuns: 2},
 		{name: "pnpm without Node toolchain evidence requires commands", validator: true, verdict: "pass", command: "pnpm test", wantRuns: 2},
 		{name: "missing candidate tree requires both commands", validator: true, verdict: "pass", missingTree: true, wantRuns: 2},
 		{name: "changed head requires command", validator: true, verdict: "pass", editReceipt: func(r *gate.CommandResult) { r.HeadSHA = "old-head" }, wantRuns: 1},
@@ -207,7 +247,84 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 			var events []string
 			backend := &implementationReviewBackend{t: t, events: &events, response: fmt.Sprintf(`{"verdict":%q,"score":1,"summary":"Independent source result","criteria_evidence":[]}`, test.verdict)}
 			worktree := &implementationReviewWorkspace{attachmentValidatorWorkspace: attachmentValidatorWorkspace{reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: []string{"head"}}}}
-			receipt := gate.CommandResult{ReceiptID: "receipt-original", Command: command, HeadSHA: "head", TreeSHA: "tree", DurationNS: int64(time.Second), StartedAt: time.Now().Add(time.Hour), Evidence: &gate.CommandEvidence{Environment: worktree.ReviewCommandEnvironment(t.Context(), workspace.Info{}, workspace.Issue{}, "go test ./...")}}
+			receipt := gate.CommandResult{ReceiptID: "receipt-original", Command: command, HeadSHA: "head", TreeSHA: "tree", DurationNS: int64(time.Second), StartedAt: time.Now().Add(time.Hour), Evidence: worktree.ReviewCommandEvidence(t.Context(), workspace.Info{}, workspace.Issue{}, "go test ./...")}
+			if test.wrapped {
+				if runtime.GOOS == "windows" {
+					t.Skip("POSIX landing wrapper")
+				}
+				source := initRunnerSourceRepo(t)
+				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh"} {
+					content, err := os.ReadFile(filepath.Join("..", "..", name))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if test.unsupported && !test.shadow && name == "scripts/check-landing.sh" {
+						content = append(content, []byte("\nprintf 'custom wrapper\\n'\n")...)
+					}
+					if err := os.MkdirAll(filepath.Dir(filepath.Join(source, name)), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(source, name), content, 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if test.shadow && name == "Makefile" {
+						if err := os.WriteFile(filepath.Join(source, "GNUmakefile"), content, 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if err := os.WriteFile(filepath.Join(source, "go.mod"), []byte("module example.test/project\n\ngo 1.26.0\ntoolchain go1.26.9\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, source, "add", ".")
+				runRunnerGit(t, source, "commit", "-m", "landing fixture")
+				runRunnerGit(t, source, "update-ref", "refs/remotes/origin/develop", "HEAD")
+				bin := t.TempDir()
+				goTool := `#!/bin/sh
+version=${FIXTURE_GO_VERSION:-${GOTOOLCHAIN:-go1.27.1}}
+if [ "$1" = env ]; then
+    if [ "$2" = -json ]; then
+        printf '{"GOHOSTOS":"linux","GOHOSTARCH":"amd64","GOVERSION":"%s"}\n' "$version"
+    else
+        case "$2" in GOHOSTOS) echo linux;; GOHOSTARCH) echo amd64;; GOVERSION) echo "$version";; esac
+    fi
+elif [ "$1" = build ]; then
+    echo build >> .git/invocations
+fi
+`
+				if err := os.WriteFile(filepath.Join(bin, "go"), []byte(goTool), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+				t.Setenv("GOTOOLCHAIN", "go1.27.1")
+				local, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Dir(source), SourceRoot: source})
+				if err != nil {
+					t.Fatal(err)
+				}
+				worktree.local = local
+				worktree.info.Path = source
+				head := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+				worktree.heads = []string{head}
+				receipt, err = local.RunReviewCommand(t.Context(), worktree.info, workspace.Issue{ProjectID: defaultProjectID, ID: "wi_example", Identifier: "prj_example#1", PullRequestHeadSHA: head}, command)
+				if err != nil || receipt.ExitCode != 0 {
+					t.Fatalf("host finalization command: %+v %v", receipt, err)
+				}
+				receipt.TimingStage = "finalization"
+				receipt = tracker.PublicGateResult(receipt)
+				switch test.changedInput {
+				case "toolchain":
+					t.Setenv("FIXTURE_GO_VERSION", "go1.26.10")
+				case "flags":
+					t.Setenv("GOFLAGS", "-tags=changed")
+				case "tool":
+					if err := os.WriteFile(filepath.Join(bin, "go"), []byte(goTool+"\n:\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				case "base":
+					runRunnerGit(t, source, "update-ref", "refs/remotes/origin/develop", "HEAD~1")
+				}
+			}
+			candidateTree := receipt.TreeSHA
 			if test.ssh {
 				receipt.StartedAt = receipt.StartedAt.UTC()
 			}
@@ -229,6 +346,9 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				t.Fatal(err)
 			}
 			execution := &implementationReviewExecution{events: &events, validatorDisabled: !test.validator, recordError: test.recordError, validation: &receipt}
+			if test.wrapped {
+				execution.head = receipt.HeadSHA
+			}
 			var reviewExecution Execution = execution
 			if test.ssh {
 				human := tracker.Actor{Kind: "human", PrincipalID: "operator"}
@@ -241,7 +361,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				reviewExecution = &sshNativeExecution{sshExecution: &sshExecution{peer: remote}}
 			}
 			if test.prior || test.editReceipt != nil {
-				execution.validation = &gate.CommandResult{TreeSHA: "tree"}
+				execution.validation = &gate.CommandResult{TreeSHA: candidateTree}
 				execution.commands = []gate.CommandResult{receipt}
 			}
 			if test.latestFailed {
@@ -280,6 +400,15 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 			}
 			if len(worktree.commands) != test.wantRuns {
 				t.Fatalf("applicable evidence was rerun or invalid evidence skipped execution: commands=%v want executions=%d", worktree.commands, test.wantRuns)
+			}
+			if test.wrapped {
+				invocations, err := os.ReadFile(filepath.Join(worktree.info.Path, ".git", "invocations"))
+				if err != nil || string(invocations) != strings.Repeat("build\n", 1+test.wantRuns) {
+					t.Fatalf("landing validation repeated: %q %v", invocations, err)
+				}
+				if !test.unsupported && receipt.Evidence.Environment.GoVersion != "go1.26.9" {
+					t.Fatalf("receipt captured ambient toolchain: %+v", receipt.Evidence)
+				}
 			}
 			if test.wantRuns == 0 && !reflect.DeepEqual(execution.reviewResult.Commands, []gate.CommandResult{expectedReceipt}) {
 				t.Fatalf("reuse rewrote the original receipt: %+v", execution.reviewResult.Commands)

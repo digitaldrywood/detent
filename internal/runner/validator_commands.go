@@ -52,14 +52,17 @@ func (v *validatorCommands) reuse(tree string, receipts []gate.CommandResult) {
 }
 
 func (v *validatorCommands) canReuse(ctx context.Context, receipt gate.CommandResult) bool {
-	provider, ok := v.run.(interface {
-		ReviewCommandEnvironment(context.Context, workspace.Info, workspace.Issue, string) gate.CheckEnvironment
-	})
-	if !ok || receipt.ReceiptID == "" || receipt.Evidence == nil {
+	if receipt.ReceiptID == "" || receipt.Evidence == nil || !receipt.Evidence.Valid() {
 		return false
 	}
-	environment := provider.ReviewCommandEnvironment(ctx, v.info, v.issue, receipt.Command)
-	return environment.Known() && receipt.Evidence.Environment == environment
+	provider, ok := v.run.(interface {
+		ReviewCommandEvidence(context.Context, workspace.Info, workspace.Issue, string) *gate.CommandEvidence
+	})
+	if !ok {
+		return false
+	}
+	evidence := provider.ReviewCommandEvidence(ctx, v.info, v.issue, receipt.Command)
+	return evidence != nil && evidence.Environment.Known() && evidence.Environment == receipt.Evidence.Environment && evidence.InputsSHA != "" && evidence.InputsSHA == receipt.Evidence.InputsSHA
 }
 
 func (v *validatorCommands) execute(ctx context.Context, command string) (receipt gate.CommandResult, resultErr error) {
