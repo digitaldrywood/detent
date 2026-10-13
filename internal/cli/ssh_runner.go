@@ -346,7 +346,7 @@ func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBoots
 		defer closeProxy()
 		connection.Address = address
 	}
-	deps, err := buildRunnerDependencies(boot.Workflow, boot.ProjectID, boot.Workdir, boot.Memory, runnerpkg.SSHSessionStore{Peer: peer}, logger, connection)
+	deps, err := buildRunnerDependenciesWithIdentity(ctx, boot.Workflow, boot.ProjectID, boot.Workdir, boot.Memory, runnerpkg.SSHSessionStore{Peer: peer}, logger, connection, workspace.CommitIdentity{})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", runnerpkg.ErrWorkspacePreparation, err)
 	}

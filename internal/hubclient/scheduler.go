@@ -659,6 +659,9 @@ func (s *Scheduler) SetNativeProjects(organization tracker.OrganizationID, proje
 	defer s.mu.Unlock()
 	for name, value := range checks {
 		previous, ok := s.localChecks[name]
+		if value.CommitSigning == "" {
+			value.CommitName, value.CommitEmail, value.CommitSigning = previous.CommitName, previous.CommitEmail, previous.CommitSigning
+		}
 		if !ok || !reflect.DeepEqual(previous, value) {
 			if s.localChecks == nil {
 				s.localChecks = make(map[string]runnerauth.LocalChecks)

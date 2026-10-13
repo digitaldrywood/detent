@@ -7,6 +7,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -39,6 +40,8 @@ const NativeProjectConfigurationCapability = "runner_project_configuration"
 const NativeRunnerCapacityCapability = "runner_capacity_configuration"
 const NativeLocalChecksCapability = "runner_local_checks"
 const NativeProjectCheckoutCapability = "runner_project_checkout"
+const NativeRunnerCommitPolicyCapability = "runner_commit_policy"
+
 const NativeRunnerSetupCapability = "runner_project_setup"
 const NativeRunnerSetupDeclarationCapability = "runner_setup_declaration"
 
@@ -210,14 +213,15 @@ type Mutation struct {
 
 type CreateIssue struct {
 	Mutation
-	GitHubIssueURL string      `json:"github_issue_url,omitempty"`
-	Title          string      `json:"title"`
-	Body           string      `json:"body"`
-	State          string      `json:"state"`
-	Priority       *int        `json:"priority,omitempty"`
-	Labels         []string    `json:"labels"`
-	Assignees      []string    `json:"assignees"`
-	Provenance     *Provenance `json:"provenance,omitempty"`
+	ScheduledValidation *gate.ScheduledValidationReport `json:"scheduled_validation,omitempty"`
+	GitHubIssueURL      string                          `json:"github_issue_url,omitempty"`
+	Title               string                          `json:"title"`
+	Body                string                          `json:"body"`
+	State               string                          `json:"state"`
+	Priority            *int                            `json:"priority,omitempty"`
+	Labels              []string                        `json:"labels"`
+	Assignees           []string                        `json:"assignees"`
+	Provenance          *Provenance                     `json:"provenance,omitempty"`
 }
 
 // PriorityPatch is the priority member of UpdateIssue.

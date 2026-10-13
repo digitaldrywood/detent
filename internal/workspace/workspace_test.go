@@ -1224,37 +1224,66 @@ func TestLocalGitHooksUseConfiguredShell(t *testing.T) {
 
 func TestRunGitAtWithEnvCancellationReturnsPromptly(t *testing.T) {
 	skipWindows(t)
+	for _, test := range []struct {
+		name    string
+		owned   bool
+		delay   string
+		timeout time.Duration
+		cancel  bool
+	}{
+		{name: "Git caller cancellation", delay: "4", timeout: 20 * time.Millisecond, cancel: true},
+		{name: "rewrite caller cancellation", owned: true, delay: "4", timeout: 20 * time.Millisecond, cancel: true},
+		{name: "rewrite retains caller deadline", owned: true, delay: "31", timeout: time.Minute},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if testing.Short() && !test.cancel {
+				t.Skip("long Git rewrite regression")
+			}
 
-	binDir := filepath.Join(t.TempDir(), "bin")
-	if err := os.MkdirAll(binDir, 0o700); err != nil {
-		t.Fatalf("mkdir bin: %v", err)
-	}
-	gitPath := filepath.Join(binDir, "git")
-	gitScript := "#!/bin/sh\nsleep 4 &\nwait\n"
-	if err := os.WriteFile(gitPath, []byte(gitScript), 0o700); err != nil {
-		t.Fatalf("write fake git: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			binDir := filepath.Join(t.TempDir(), "bin")
+			if err := os.MkdirAll(binDir, 0o700); err != nil {
+				t.Fatalf("mkdir bin: %v", err)
+			}
+			gitPath := filepath.Join(binDir, "git")
+			gitScript := "#!/bin/sh\nsleep " + test.delay + " &\nwait\n"
+			if err := os.WriteFile(gitPath, []byte(gitScript), 0o700); err != nil {
+				t.Fatalf("write fake git: %v", err)
+			}
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
+			ctx, cancel := context.WithTimeout(t.Context(), test.timeout)
+			defer cancel()
 
-	started := time.Now()
-	_, err := runGitAtWithEnv(ctx, t.TempDir(), nil, "status")
-	elapsed := time.Since(started)
+			started := time.Now()
+			var err error
+			if test.owned {
+				p := commitPolicy{report: CommitReport{Identity: CommitIdentity{Name: "Runner", Email: "runner@example.com"}, Signing: "unsigned"}}
+				_, err = p.run(ctx, t.TempDir(), nil, "cherry-pick", "HEAD")
+			} else {
+				_, err = runGitAtWithEnv(ctx, t.TempDir(), nil, "status")
+			}
+			elapsed := time.Since(started)
+			if !test.cancel {
+				if err != nil {
+					t.Fatalf("rewrite with an unexpired caller deadline failed: %v", err)
+				}
+				return
+			}
 
-	if err == nil {
-		t.Fatal("runGitAtWithEnv() error = nil, want cancellation error")
-	}
-	var commandErr *CommandError
-	if !errors.As(err, &commandErr) {
-		t.Fatalf("runGitAtWithEnv() error = %T, want *CommandError", err)
-	}
-	if !errors.Is(commandErr.Err, context.DeadlineExceeded) {
-		t.Fatalf("CommandError.Err = %v, want context deadline exceeded", commandErr.Err)
-	}
-	if elapsed > 2*time.Second {
-		t.Fatalf("runGitAtWithEnv() elapsed = %s, want cancellation within wait delay", elapsed)
+			if err == nil {
+				t.Fatal("runGitAtWithEnv() error = nil, want cancellation error")
+			}
+			var commandErr *CommandError
+			if !errors.As(err, &commandErr) {
+				t.Fatalf("runGitAtWithEnv() error = %T, want *CommandError", err)
+			}
+			if !errors.Is(commandErr.Err, context.DeadlineExceeded) {
+				t.Fatalf("CommandError.Err = %v, want context deadline exceeded", commandErr.Err)
+			}
+			if elapsed > 2*time.Second {
+				t.Fatalf("runGitAtWithEnv() elapsed = %s, want cancellation within wait delay", elapsed)
+			}
+		})
 	}
 }
 

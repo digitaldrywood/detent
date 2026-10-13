@@ -24,6 +24,7 @@ import * as workspace from "./specimens/workspace";
 import { activityPage } from "./specimens/activity";
 
 export const REGISTRY: Readonly<Record<string, GalleryDoc>> = {
+  "navigation-list": layout.navigationList,
   // Foundations (not catalog entries: token, type, icon and value rules)
   ...FOUNDATIONS,
   // Actions

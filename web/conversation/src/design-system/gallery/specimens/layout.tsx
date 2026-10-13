@@ -4,6 +4,7 @@ import { ChevronDownIcon, ChevronRightIcon, GitCommitIcon, GitPullRequestIcon, P
 import { Button } from "~/components/ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "~/components/ui/collapsible";
 import { Group, GroupSeparator, GroupText } from "~/components/ui/group";
+import { NavigationList, NavigationListLink, NavigationMonogram } from "~/components/ui/navigation-list";
 import { Kbd, KbdGroup } from "~/components/ui/kbd";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Separator } from "~/components/ui/separator";
@@ -288,4 +289,20 @@ export const kbd: GalleryDoc = {
       ),
     },
   ],
+};
+
+export const navigationList: GalleryDoc = {
+  meta: { name: "Navigation list", kind: "primitive", group: "entry" },
+  specimens: [{
+    id: "destinations",
+    title: "Named rows, neutral pending identity, create and quiet destination",
+    render: () => <div className="w-full max-w-[420px]">
+      <NavigationList aria-label="Example organizations">
+        <li><NavigationListLink href="#example" name="Example organization" description="Owner" leading={<NavigationMonogram name="Example organization" identity="org_example" />} /></li>
+        <li><NavigationListLink href="#pending" name={LONG_LABEL} description="Setting up" leading={<NavigationMonogram name="Pending organization" />} /></li>
+        <li><NavigationListLink href="#create" name="Create organization" variant="create" leading={<NavigationMonogram create />} /></li>
+      </NavigationList>
+      <NavigationListLink className="mt-7" href="#platform" name="Platform console" variant="quiet" />
+    </div>,
+  }],
 };

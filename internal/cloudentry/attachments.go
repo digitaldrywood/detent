@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -92,13 +94,19 @@ func (s *Service) attachmentCall(c echo.Context, organization Organization, meth
 	if err != nil {
 		return 0, nil, err
 	}
-	var bearer, csrf string
+	var bearer, csrf, keyHash string
 	if header := c.Request().Header.Get(echo.HeaderAuthorization); header != "" {
 		var ok bool
 		bearer, ok = strings.CutPrefix(header, "Bearer ")
 		if !ok || bearer == "" {
 			return http.StatusNotFound, nil, nil
 		}
+		keyHash, err = keyBearer(c)
+		if err != nil {
+			return http.StatusUnauthorized, nil, nil
+		}
+	} else if connection, ok := c.Request().Context().Value(accessKeyContext{}).(accessKeyConnection); ok {
+		keyHash = connection.hash
 	} else {
 		status, _, err := s.browserClaims(c, organization, &claims)
 		if err != nil {
@@ -109,6 +117,32 @@ func (s *Service) attachmentCall(c echo.Context, organization Organization, meth
 			if csrf == "" || subtle.ConstantTimeCompare([]byte(csrf), []byte(claims.CSRF)) != 1 {
 				return http.StatusForbidden, nil, nil
 			}
+		}
+	}
+	if keyHash != "" {
+		key, keyErr := s.activeAccessKey(c.Request().Context(), keyHash)
+		if keyErr != nil && !errors.Is(keyErr, sql.ErrNoRows) {
+			var refusal *apikey.Refusal
+			if errors.As(keyErr, &refusal) {
+				raw, err := json.Marshal(refusal)
+				return http.StatusForbidden, raw, err
+			}
+			return 0, nil, keyErr
+		}
+		if keyErr == nil {
+			claims, err = s.keyClaims(c.Request().Context(), key, organization, method, path, body)
+			if err != nil {
+				var refusal *apikey.Refusal
+				if errors.As(err, &refusal) {
+					raw, err := json.Marshal(refusal)
+					return http.StatusForbidden, raw, err
+				}
+				return 0, nil, err
+			}
+			if err := s.recordKeyUse(c.Request().Context(), key.ID, organization.ID); err != nil {
+				return 0, nil, err
+			}
+			bearer = ""
 		}
 	}
 	return s.signedCallCSRF(c.Request().Context(), organization, claims, body, bearer, csrf)

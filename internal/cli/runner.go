@@ -153,7 +153,22 @@ func withRunnerFactoryWithProjectTokens(
 		if run == nil {
 			projectServiceConnection := serviceConnectionForProject(serviceConnection, cfg.ID, serviceTokenSource)
 			var err error
-			run, err = buildRunner(workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), hostGoBudget(cfg.GlobalCPU.GoBuildBudget), sessionStore, deps.Logger, projectServiceConnection, isolationPolicy)
+			identity := workspace.CommitIdentity{}
+			if reporter, ok := deps.Scheduling.(interface {
+				CommitIdentity() workspace.CommitIdentity
+			}); ok {
+				identity = reporter.CommitIdentity()
+			}
+			run, err = buildRunnerWithIdentity(ctx, workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), hostGoBudget(cfg.GlobalCPU.GoBuildBudget), sessionStore, deps.Logger, projectServiceConnection, identity, isolationPolicy)
+			if err == nil {
+				if reporter, ok := deps.Scheduling.(interface {
+					ReportCommitPolicy(string, workspace.CommitReport)
+				}); ok {
+					if committed, ok := run.(interface{ CommitReport() workspace.CommitReport }); ok {
+						reporter.ReportCommitPolicy(cfg.ID, committed.CommitReport())
+					}
+				}
+			}
 			if err != nil {
 				return nil, fmt.Errorf("build project runner %s: %w", cfg.ID, err)
 			}
@@ -217,7 +232,23 @@ func buildRunner(
 	serviceConnection serviceapi.Connection,
 	isolationPolicies ...func() (isolation.Policy, error),
 ) (orchestrator.Runner, error) {
-	deps, err := buildRunnerDependencies(workflow, projectID, projectWorkdir, memory, sessionStore, logger, serviceConnection, isolationPolicies...)
+	return buildRunnerWithIdentity(context.Background(), workflow, projectID, projectWorkdir, memory, goBudget, sessionStore, logger, serviceConnection, workspace.CommitIdentity{}, isolationPolicies...)
+}
+
+func buildRunnerWithIdentity(
+	ctx context.Context,
+	workflow workflowconfig.Workflow,
+	projectID string,
+	projectWorkdir string,
+	memory globalconfig.Memory,
+	goBudget gobudget.Budget,
+	sessionStore runnerpkg.SessionStore,
+	logger *slog.Logger,
+	serviceConnection serviceapi.Connection,
+	commitIdentity workspace.CommitIdentity,
+	isolationPolicies ...func() (isolation.Policy, error),
+) (orchestrator.Runner, error) {
+	deps, err := buildRunnerDependenciesWithIdentity(ctx, workflow, projectID, projectWorkdir, memory, sessionStore, logger, serviceConnection, commitIdentity, isolationPolicies...)
 	if err != nil {
 		return nil, err
 	}
@@ -249,9 +280,24 @@ func buildRunnerDependencies(
 	serviceConnection serviceapi.Connection,
 	isolationPolicies ...func() (isolation.Policy, error),
 ) (runnerpkg.Dependencies, error) {
+	return buildRunnerDependenciesWithIdentity(context.Background(), workflow, projectID, projectWorkdir, memory, sessionStore, logger, serviceConnection, workspace.CommitIdentity{}, isolationPolicies...)
+}
+
+func buildRunnerDependenciesWithIdentity(
+	ctx context.Context,
+	workflow workflowconfig.Workflow,
+	projectID string,
+	projectWorkdir string,
+	memory globalconfig.Memory,
+	sessionStore runnerpkg.SessionStore,
+	logger *slog.Logger,
+	serviceConnection serviceapi.Connection,
+	commitIdentity workspace.CommitIdentity,
+	isolationPolicies ...func() (isolation.Policy, error),
+) (runnerpkg.Dependencies, error) {
 	cfg := workflow.Config
 
-	backend, err := buildWorkspaceBackend(cfg, projectWorkdir, logger)
+	backend, err := buildWorkspaceBackendContext(ctx, cfg, projectWorkdir, logger, commitIdentity)
 	if err != nil {
 		return runnerpkg.Dependencies{}, err
 	}
@@ -271,7 +317,7 @@ func buildRunnerDependencies(
 		Workflow:  workflow,
 		Workspace: backend,
 		WorkspaceFactory: func(cfg workflowconfig.Config, current workspace.Backend) (workspace.Backend, error) {
-			return buildWorkspaceBackend(cfg, projectWorkdir, logger, current)
+			return buildWorkspaceBackendWithCurrentContext(ctx, cfg, projectWorkdir, logger, current, commitIdentity)
 		},
 		AgentBackendFactory: runnerpkg.AgentBackendFactoryFunc(func(backend workflowconfig.AgentBackend) (runnerpkg.AgentBackend, error) {
 			return buildAgentBackendWithIsolation(backend, isolationPolicies...)
@@ -331,6 +377,22 @@ func budgetOverrideStore(value any) budget.OverrideStore {
 }
 
 func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string, logger *slog.Logger, previous ...workspace.Backend) (workspace.Backend, error) {
+	var current workspace.Backend
+	if len(previous) != 0 {
+		current = previous[0]
+	}
+	return buildWorkspaceBackendWithCurrentContext(context.Background(), cfg, sourceRootFallback, logger, current, workspace.CommitIdentity{})
+}
+
+func buildWorkspaceBackendContext(ctx context.Context, cfg workflowconfig.Config, sourceRootFallback string, logger *slog.Logger, identities ...workspace.CommitIdentity) (workspace.Backend, error) {
+	identity := workspace.CommitIdentity{}
+	if len(identities) > 0 {
+		identity = identities[0]
+	}
+	return buildWorkspaceBackendWithCurrentContext(ctx, cfg, sourceRootFallback, logger, nil, identity)
+}
+
+func buildWorkspaceBackendWithCurrentContext(ctx context.Context, cfg workflowconfig.Config, sourceRootFallback string, logger *slog.Logger, current workspace.Backend, identity workspace.CommitIdentity) (workspace.Backend, error) {
 	root := strings.TrimSpace(cfg.Workspace.Root)
 	sourceRoot := strings.TrimSpace(cfg.Workspace.SourceRoot)
 	if sourceRoot == "" {
@@ -347,15 +409,12 @@ func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string,
 	if outputRoot == "" {
 		outputRoot = strings.TrimSpace(cfg.Deliverable.OutputRoot)
 	}
-	var current workspace.Backend
-	if len(previous) != 0 {
-		current = previous[0]
-	}
-	backend, err := workspace.ReconfigureBackend(current, workspaceKind, workspace.LocalGitOptions{
-		Root:       root,
-		SourceRoot: sourceRoot,
-		OutputRoot: outputRoot,
-		AutoBranch: cfg.Workspace.AutoBranch,
+	backend, err := workspace.ReconfigureBackendContext(ctx, current, workspaceKind, workspace.LocalGitOptions{
+		CommitIdentity: identity,
+		Root:           root,
+		SourceRoot:     sourceRoot,
+		OutputRoot:     outputRoot,
+		AutoBranch:     cfg.Workspace.AutoBranch,
 		Hooks: workspace.Hooks{
 			Shell:             cfg.Hooks.Shell,
 			AfterCreate:       cfg.Hooks.AfterCreate,

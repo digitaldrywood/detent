@@ -103,7 +103,7 @@ func (l *LocalGit) PrepareMerge(
 		return l.prepareResolvedMerge(ctx, normalized, issue, opts)
 	}
 	originalHead := strings.TrimSpace(localHead)
-	if _, err := runGitAt(ctx, normalized.Path, "rebase", targetRef); err != nil {
+	if _, err := l.runCommit(ctx, normalized.Path, nil, "rebase", targetRef); err != nil {
 		conflicts, conflictErr := runGitAt(ctx, normalized.Path, "diff", "--name-only", "--diff-filter=U", "-z")
 		var conflictPaths []string
 		if conflictErr == nil && conflicts != "" {

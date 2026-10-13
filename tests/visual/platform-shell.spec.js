@@ -95,8 +95,8 @@ test("mobile platform navigation opens a sheet and closes on selection", async (
 
 test("the chooser exposes the platform entry only for platform members", async ({ page }) => {
   await openPlatform(page, { path: "/organizations?switch=1" });
-  await expect(page.getByRole("link", { name: "Open Model Choice Labs" })).toBeVisible();
-  const link = page.getByRole("link", { name: "Open Platform console" });
+  await expect(page.getByRole("link", { name: "Model Choice Labs", exact: true })).toBeVisible();
+  const link = page.getByRole("link", { name: "Platform console", exact: true });
   await expect(link).toHaveAttribute("href", "/platform/tenants");
   await test.info().attach("platform-chooser-desktop.png", {
     body: await page.screenshot({ animations: "disabled", caret: "hide" }),
@@ -105,7 +105,7 @@ test("the chooser exposes the platform entry only for platform members", async (
   await link.click();
   await expect(page.getByRole("heading", { name: "Tenants", exact: true })).toBeVisible();
   await openPlatform(page, { role: "", path: "/organizations?switch=1" });
-  await expect(page.getByRole("link", { name: "Open Model Choice Labs" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Model Choice Labs", exact: true })).toBeVisible();
   await expect(link).toHaveCount(0);
   await expect(page.getByText("Platform console", { exact: true })).toHaveCount(0);
 });

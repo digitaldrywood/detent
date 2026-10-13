@@ -373,7 +373,7 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 		return LandResult{}, fmt.Errorf("add landing worktree: %w", err)
 	}
 
-	mergeSHA, err := combine(ctx, staging, method, head, targetHead, opts.Message)
+	mergeSHA, err := l.combine(ctx, staging, method, head, targetHead, opts.Message)
 	rebased := false
 	var refusal *LandRefusal
 	if errors.As(err, &refusal) && refusal.Kind == LandRefusalConflict {
@@ -389,7 +389,7 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 			return LandResult{}, err
 		}
 		rebased = true
-		mergeSHA, err = combine(ctx, staging, method, head, targetHead, opts.Message)
+		mergeSHA, err = l.combine(ctx, staging, method, head, targetHead, opts.Message)
 	}
 	if err != nil {
 		return LandResult{Rebased: rebased}, err
@@ -551,7 +551,7 @@ func (l *LocalGit) landingWorktreeRegistered(ctx context.Context, path string) (
 // a merge commit, or the head's commits replayed onto the base. It runs in
 // the detached landing worktree, so a conflict leaves the source and the
 // attempt worktree untouched.
-func combine(ctx context.Context, staging, method, head, targetHead, message string) (string, error) {
+func (l *LocalGit) combine(ctx context.Context, staging, method, head, targetHead, message string) (string, error) {
 	if strings.TrimSpace(message) == "" {
 		message = "Land " + head
 	}
@@ -567,14 +567,14 @@ func combine(ctx context.Context, staging, method, head, targetHead, message str
 		if strings.TrimSpace(status) == "" {
 			return "", refuse(LandRefusalNothing, "the base branch already contains everything in "+head)
 		}
-		if _, err := runGitAt(ctx, staging, "commit", "--no-verify", "-m", message); err != nil {
+		if _, err := l.runCommit(ctx, staging, nil, "commit", "--no-verify", "-m", message); err != nil {
 			return "", fmt.Errorf("commit squash: %w", err)
 		}
 	case "merge":
 		if strings.TrimSpace(mustOutput(runGitAt(ctx, staging, "merge-base", "--is-ancestor", head, targetHead))) == "ancestor" {
 			return "", refuse(LandRefusalNothing, "the base branch already contains "+head)
 		}
-		if _, err := runGitAt(ctx, staging, "merge", "--no-ff", "--no-verify", "-m", message, head); err != nil {
+		if _, err := l.runCommit(ctx, staging, nil, "merge", "--no-ff", "--no-verify", "-m", message, head); err != nil {
 			return "", abandon(refuse(LandRefusalConflict, "merging "+head+" into the base conflicts: "+commandErrorOutput(err)), gitErr(ctx, staging, "merge", "--abort"))
 		}
 	case "rebase":
@@ -585,7 +585,7 @@ func combine(ctx context.Context, staging, method, head, targetHead, message str
 		if strings.TrimSpace(mergeBase) == head {
 			return "", refuse(LandRefusalNothing, "the base branch already contains "+head)
 		}
-		if _, err := runGitAt(ctx, staging, "cherry-pick", strings.TrimSpace(mergeBase)+".."+head); err != nil {
+		if _, err := l.runCommit(ctx, staging, nil, "cherry-pick", strings.TrimSpace(mergeBase)+".."+head); err != nil {
 			return "", abandon(refuse(LandRefusalConflict, "replaying "+head+" onto the base conflicts: "+commandErrorOutput(err)), gitErr(ctx, staging, "cherry-pick", "--abort"))
 		}
 	}

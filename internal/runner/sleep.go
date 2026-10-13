@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func sleepInhibitorCommand(platform string) (string, []string) {
@@ -102,8 +103,19 @@ func (r *Runner) keepAwake(ctx context.Context) func() {
 func (r *Runner) Problems() []runnerauth.Problem {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if r.sleepFailures > 0 {
-		return []runnerauth.Problem{runnerauth.NewProblem("keep_awake_failed")}
+	var problems []runnerauth.Problem
+	if reporter, ok := r.workspace.(interface{ Problems() []runnerauth.Problem }); ok {
+		problems = reporter.Problems()
 	}
-	return nil
+	if r.sleepFailures > 0 {
+		problems = append(problems, runnerauth.NewProblem("keep_awake_failed"))
+	}
+	return problems
+}
+
+func (r *Runner) CommitReport() workspace.CommitReport {
+	if reporter, ok := r.workspace.(interface{ CommitReport() workspace.CommitReport }); ok {
+		return reporter.CommitReport()
+	}
+	return workspace.CommitReport{}
 }
