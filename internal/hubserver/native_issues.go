@@ -32,6 +32,19 @@ func (s *Service) nativeIssueResponse(issue tracker.NativeIssue) tracker.NativeI
 }
 
 func (s *Service) nativeIssueJSON(body json.RawMessage) (json.RawMessage, error) {
+	var challenge duplicateChallenge
+	if err := json.Unmarshal(body, &challenge); err != nil {
+		return nil, err
+	}
+	if challenge.ChallengeToken != "" {
+		for i := range challenge.PossibleDuplicates {
+			match := &challenge.PossibleDuplicates[i]
+			var issue tracker.NativeIssue
+			issue.WorkItemID = match.WorkItemID
+			match.WebURL = s.nativeIssueResponse(issue).WebURL
+		}
+		return json.Marshal(challenge)
+	}
 	var issue tracker.NativeIssue
 	if err := json.Unmarshal(body, &issue); err != nil {
 		return nil, err
@@ -302,6 +315,16 @@ func (s *Service) createNativeIssue(c echo.Context) error {
 	result, err := s.createNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	var challenge duplicateChallenge
+	if err := json.Unmarshal(result, &challenge); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if challenge.ChallengeToken != "" {
+		return c.JSON(http.StatusConflict, struct {
+			apiErrorResponse
+			duplicateChallenge
+		}{apiErrorResponse: apiErrorResponse{Code: "possible_duplicates", Message: "Possible duplicate issues found; use file_issue to confirm whether this is new"}, duplicateChallenge: challenge})
 	}
 	return c.JSONBlob(http.StatusOK, result)
 }

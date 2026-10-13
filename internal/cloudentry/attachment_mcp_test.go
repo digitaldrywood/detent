@@ -459,7 +459,22 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 					}
 				}
 				call := entryMCPClient(t, anonymous, credential.key.Token, mcp.ProtocolVersion, "/mcp")
-				raw, failed := call(operatortool.FileIssue, map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": requestID + "-issue", "title": "Attachment evidence", "description": uploaded.Reference})
+				draft := map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": requestID + "-issue", "title": "Attachment evidence", "description": uploaded.Reference}
+				raw, failed := call(operatortool.FileIssue, draft)
+				var challenge struct {
+					Data nativeDuplicateFixture `json:"data"`
+				}
+				if failed || json.Unmarshal(raw, &challenge) != nil {
+					t.Fatalf("file fixture=%s failed=%v", raw, failed)
+				}
+				if challenge.Data.ChallengeToken != "" {
+					var numbers []int
+					for _, match := range challenge.Data.PossibleDuplicates {
+						numbers = append(numbers, match.Number)
+					}
+					draft["challenge_token"], draft["not_duplicate_of"] = challenge.Data.ChallengeToken, numbers
+					raw, failed = call(operatortool.FileIssue, draft)
+				}
 				var issue struct {
 					Data tracker.NativeIssue `json:"data"`
 				}

@@ -54,6 +54,21 @@ function renderProject(canManage = true, overrides: Partial<React.ComponentProps
 }
 
 describe("settings help interactions", () => {
+  it.each([true, false])("edits duplicate checking with manage permission=%s", async (canManage) => {
+    const onDraftChange = vi.fn();
+    renderProject(canManage, { onDraftChange });
+    const toggle = await screen.findByRole("switch", { name: "Check for duplicate issues" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    await userEvent.setup().click(toggle);
+    if (canManage) {
+      const next = { ...draftOf(integration), duplicateChallenge: false };
+      expect(onDraftChange).toHaveBeenCalledWith(next);
+      expect(draftChanged(next, draftOf(integration))).toBe(true);
+    } else {
+      expect(onDraftChange).not.toHaveBeenCalled();
+    }
+  });
+
   it("edits the archive periods and preserves Never", async () => {
     const user = userEvent.setup();
     const onDraftChange = vi.fn();
@@ -119,7 +134,7 @@ describe("settings help interactions", () => {
       projection: "summary", repository_enabled: true };
     renderProject(true, { integration: current, draft: draftOf(current), intakeHref: "/projects/prj_example/setup" });
     await screen.findByText("Automatic");
-    const expected = { importAllowed: false, projection: "summary", repositoryEnabled: true, archiveCompletedAfterDays: 30, archiveCancelledAfterDays: 7 };
+    const expected = { duplicateChallenge: true, importAllowed: false, projection: "summary", repositoryEnabled: true, archiveCompletedAfterDays: 30, archiveCancelledAfterDays: 7 };
     expect(draftOf(current)).toEqual(expected);
     expect(draftChanged(draftOf(current), expected)).toBe(false);
     expect((screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement).disabled).toBe(true);

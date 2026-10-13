@@ -326,6 +326,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       intake?: string;
       projection: string;
       repositoryEnabled: boolean;
+      duplicateChallenge?: boolean;
       archiveCompletedAfterDays?: number | null;
       archiveCancelledAfterDays?: number | null;
       states?: readonly WorkflowState[];
@@ -336,6 +337,7 @@ export function makeAccountApi(options: AccountApiOptions) {
         ...(input.intake !== undefined ? { intake: input.intake } : {}),
         projection: input.projection,
         repository_enabled: input.repositoryEnabled,
+        ...(input.duplicateChallenge !== undefined ? { duplicate_challenge: input.duplicateChallenge } : {}),
         ...(input.archiveCompletedAfterDays !== undefined ? { archive_completed_after_days: input.archiveCompletedAfterDays } : {}),
         ...(input.archiveCancelledAfterDays !== undefined ? { archive_cancelled_after_days: input.archiveCancelledAfterDays } : {}),
         ...(input.states !== undefined ? { states: input.states } : {}),
