@@ -52,7 +52,22 @@ type platformTenantDetail struct {
 	CSRF                string                      `json:"csrf"`
 	CanGrant            bool                        `json:"can_grant"`
 	CanResume           bool                        `json:"can_resume"`
+	AICredits           *platformTenantCredits      `json:"ai_credits"`
 	CreditBalanceMicros *int64                      `json:"credit_balance_micros"`
+}
+
+type platformTenantCredits struct {
+	BalanceMicros *int64 `json:"balance_micros"`
+	SpentMicros   int64  `json:"spent_micros"`
+	Month         string `json:"month"`
+	AutoEnabled   bool   `json:"auto_enabled"`
+	History       []struct {
+		AmountMicros int64  `json:"amount_micros"`
+		Kind         string `json:"kind"`
+		Actor        string `json:"actor"`
+		Reason       string `json:"reason"`
+		At           string `json:"at"`
+	} `json:"history"`
 }
 
 type platformTenantUsage struct {
@@ -183,11 +198,12 @@ func (s *Service) platformOrganizationJSON(c echo.Context) error {
 		wait.Go(func() {
 			call, cancel := context.WithTimeout(ctx, platformCallTimeout)
 			defer cancel()
-			var result struct {
-				BalanceMicros *int64 `json:"balance_micros"`
-			}
+			var result platformTenantCredits
 			if s.readPlatformSection(call, organization, "ai-credits/balance", &result) {
 				detail.CreditBalanceMicros = result.BalanceMicros
+				if result.BalanceMicros != nil && result.Month != "" && result.History != nil {
+					detail.AICredits = &result
+				}
 			}
 		})
 		wait.Wait()
