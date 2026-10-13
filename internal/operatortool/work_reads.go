@@ -29,6 +29,7 @@ const (
 	WorkRuns            = "work_runs"
 	WorkReferences      = "work_references"
 	WorkExport          = "work_export"
+	WorkBulkExport      = "work_bulk_export"
 	BoardActivity       = "board_activity"
 	BoardReceipt        = "board_receipt"
 	BoardSession        = "board_session"
@@ -126,6 +127,7 @@ func WorkReadCatalog() []Definition {
 		{WorkRelationships, "Read authorized dependencies, relationships and external references.", "reference"},
 		{WorkRuns, "Read work-item run history and change/artifact references.", "reference cursor offset limit"},
 		{WorkReferences, "Read PR, change, diff and artifact identifiers and links; detail is owned by the review/artifact tools.", "reference cursor offset limit"},
+		{WorkBulkExport, "Export complete stored work items and comments in one authorized native project. Cursor pages default to 500 items with a 16 MiB byte budget; total and truncated describe continuation. Reads never refresh linked sources.", "states open labels archived cursor limit"},
 		{WorkExport, "Export the native work-item application resource as JSON.", "reference"},
 		{BoardActivity, "Read the board activity model, with durable and live event provenance.", "reference cursor limit"},
 		{BoardReceipt, "Read a work item's recorded receipt and runtime evidence; efficiency requires its application owner.", "reference"},
@@ -171,6 +173,9 @@ func WorkReadCatalog() []Definition {
 					property["minLength"] = 1
 				}
 			}
+		}
+		if spec.name == WorkBulkExport {
+			properties["limit"] = map[string]any{"type": "integer", "minimum": 1, "maximum": WorkBulkExportMaxItems}
 		}
 		if spec.name == HealthFindings {
 			properties["state"] = map[string]any{"type": "string", "enum": []string{"open", "resolved"}}
@@ -240,9 +245,13 @@ func DecodeWorkRead(name string, raw json.RawMessage) (WorkReadRequest, error) {
 			return request, ErrInvalidArguments
 		}
 	}
+	maximum := MaxItemLimit
+	if name == WorkBulkExport {
+		maximum = WorkBulkExportMaxItems
+	}
 	request.ProjectID = strings.TrimSpace(request.ProjectID)
 	request.Reference = strings.TrimSpace(request.Reference)
-	if request.ProjectID == "" || len(request.ProjectID) > 256 || len(request.Reference) > 256 || len(request.Query) > 256 || len(request.Fingerprint) > 256 || len(request.State) > 256 || len(request.Label) > 256 || len(request.CommentID) > 256 || len(request.Cursor) > 4096 || request.Offset < 0 || request.Offset > 1000000 || request.Limit < 0 || request.Limit > MaxItemLimit {
+	if request.ProjectID == "" || len(request.ProjectID) > 256 || len(request.Reference) > 256 || len(request.Query) > 256 || len(request.Fingerprint) > 256 || len(request.State) > 256 || len(request.Label) > 256 || len(request.CommentID) > 256 || len(request.Cursor) > 4096 || request.Offset < 0 || request.Offset > 1000000 || request.Limit < 0 || request.Limit > maximum {
 		return request, ErrInvalidArguments
 	}
 	for _, field := range schema.Required {
@@ -276,7 +285,13 @@ func DecodeWorkRead(name string, raw json.RawMessage) (WorkReadRequest, error) {
 			return request, ErrInvalidArguments
 		}
 	}
-	request.Limit = itemLimit(request.Limit)
+	if name == WorkBulkExport {
+		if request.Limit == 0 {
+			request.Limit = WorkBulkExportMaxItems
+		}
+	} else {
+		request.Limit = itemLimit(request.Limit)
+	}
 	if name == GitHubScopeTimings && (request.NativeAttemptID == "" || request.RunnerID == "") {
 		return request, ErrInvalidArguments
 	}
@@ -375,8 +390,9 @@ func (e *Executor) readWork(ctx context.Context, call Call) (Result, error) {
 		}
 		return Result{}, &ReadUnavailableError{Err: fmt.Errorf("load snapshot: %w", err)}
 	}
-	if len(result.Content) > MaxResultBytes {
-		return Result{}, &ResultTooLargeError{SizeBytes: len(result.Content), LimitBytes: MaxResultBytes}
+	limit := ResultByteLimit(call.Name)
+	if len(result.Content) > limit {
+		return Result{}, &ResultTooLargeError{SizeBytes: len(result.Content), LimitBytes: limit}
 	}
 	return result, nil
 }

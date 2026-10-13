@@ -188,7 +188,7 @@ func TestStagingSmokeHostedGapDoesNotHideDecoderFailure(t *testing.T) {
 func TestStagingSmokeWriteCycle(t *testing.T) {
 	operatorReads := []string{operatortool.GetChange, operatortool.GetChangeVersion, operatortool.GetNativeRun}
 	fixtureDetails := strings.Fields(`get_conversation get_conversation_attachment list_conversation_messages stream_conversation_events change_viewed_files get_artifact_reference get_attempt_diff github_scope_timings work_attempt_receipt get_runner_capacity get_runner_update get_runner_routing runner_project_diagnostics read_attachment read_attachment_metadata`)
-	fixtureReads := strings.Fields(`list_project_conversations get_conversation get_conversation_attachment list_conversation_messages stream_conversation_events list_changes get_change get_change_version change_viewed_files artifact_references get_artifact_reference work_runs get_attempt_diff get_native_run github_scope_timings work_attempt_receipt get_runner_capacity get_runner_update get_runner_routing runner_project_diagnostics get_project_policy board_session_history get_cutover_receipt get_change_review_policy action_result`)
+	fixtureReads := strings.Fields(`work_bulk_export list_project_conversations get_conversation get_conversation_attachment list_conversation_messages stream_conversation_events list_changes get_change get_change_version change_viewed_files artifact_references get_artifact_reference work_runs get_attempt_diff get_native_run github_scope_timings work_attempt_receipt get_runner_capacity get_runner_update get_runner_routing runner_project_diagnostics get_project_policy board_session_history get_cutover_receipt get_change_review_policy action_result`)
 	for _, test := range []struct {
 		name, policyCode, policyMessage               string
 		gaps, failure, emptyFixtures, automaticIntake bool
@@ -201,6 +201,7 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 		{name: "unprovisioned fixtures", emptyFixtures: true},
 		{name: "unprovisioned fixtures with real error", emptyFixtures: true, readFailure: operatortool.RunnerFleet, failure: true},
 		{name: "available fixture with real error", readFailure: "get_conversation", failure: true},
+		{name: "bulk export service failure blocks", readFailure: operatortool.WorkBulkExport, failure: true},
 		{name: "queue service failure blocks", readFailure: operatortool.OrderItem, failure: true},
 		{name: "session service failure blocks", readFailure: operatortool.BoardSessionHistory, failure: true},
 		{name: "cutover service failure blocks", readFailure: "get_cutover_receipt", failure: true},
@@ -244,6 +245,11 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 				switch name {
 				case "list_projects":
 					result["data"] = map[string]any{"projects": []map[string]any{{"project_id": "prj_smoke", "organization_id": "org_smoke", "profile": "native", "states": []map[string]any{{"name": "Backlog", "transitions": []string{"Blocked"}}, {"name": "Blocked", "transitions": []string{"Cancelled"}}, {"name": "Cancelled", "terminal": true}}}}}
+				case operatortool.WorkBulkExport:
+					if args["project_id"] != "prj_smoke" {
+						t.Fatalf("wrong export scope: %v", args)
+					}
+					result = map[string]any{"project_id": "prj_smoke", "items": []any{}, "total": 0, "truncated": false, "freshness": "available"}
 				case operatortool.WorkList:
 					result["data"] = map[string]any{"items": []map[string]any{{"work_item_id": "wi_dependency"}}}
 				case operatortool.FileIssue:

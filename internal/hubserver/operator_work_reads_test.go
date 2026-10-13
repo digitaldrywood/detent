@@ -266,6 +266,62 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 			hostedContextData(t, call("tools/call", operatortool.WorkList, map[string]any{"project_id": string(f.project.ID), "query": needle, "state": "Todo", "label": "bounded", "cursor": expired}), true)
 		})
 	}
+
+	t.Run("bulk byte pages", func(t *testing.T) {
+		executor := hostedOperatorExecutor{service: f.service}
+		args := map[string]any{"project_id": string(f.project.ID), "labels": []string{"bounded"}, "limit": 500}
+		seen := 0
+		pages := 0
+		for {
+			raw, err := json.Marshal(args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.WorkBulkExport, Arguments: raw})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var page operatortool.WorkBulkExportPage
+			if err := json.Unmarshal(result.Content, &page); err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Content) > operatortool.WorkBulkExportMaxBytes || len(page.Items) == 0 || page.Total != len(expected) || page.Truncated != (page.NextCursor != "") {
+				t.Fatal("invalid byte-bounded export page")
+			}
+			for _, item := range page.Items {
+				if seen >= len(expected) || item.WorkItemID != expected[seen].WorkItemID || item.Body != expected[seen].Body || len(item.OmittedFields) != 0 {
+					t.Fatalf("lost full content at %d", seen)
+				}
+				seen++
+			}
+			pages++
+			if page.NextCursor == "" {
+				break
+			}
+			if pages > len(expected) {
+				t.Fatal("bulk cursor failed to advance")
+			}
+			if pages == 1 {
+				for _, changes := range []map[string]any{{"states": []string{"Done"}}, {"labels": []string{"other"}}, {"archived": "all"}, {"project_id": string(foreign.project.ID)}, {"cursor": page.NextCursor + "invalid"}} {
+					changed := map[string]any{"project_id": string(f.project.ID), "labels": []string{"bounded"}, "cursor": page.NextCursor}
+					for key, value := range changes {
+						changed[key] = value
+					}
+					arguments, err := json.Marshal(changed)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.WorkBulkExport, Arguments: arguments}); err == nil {
+						t.Fatal("bulk cursor accepted changed scope")
+					}
+				}
+			}
+			args["cursor"] = page.NextCursor
+		}
+		if seen != len(expected) || pages < 2 {
+			t.Fatalf("exported %d in %d byte pages", seen, pages)
+		}
+	})
 	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?limit=1&state=Todo&label=bounded&q="+url.QueryEscape(needle), f.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	var original tracker.Page[tracker.NativeIssue]
